@@ -157,7 +157,10 @@ def test_bridge_plate_finds_bridge_over_the_limit() -> None:
     findings = process_findings(mesh, vec3(0.0, 0.0, -1.0), _FULL_RULES)
     bridge = next((f for f in findings if f.rule == "bridge"), None)
     assert bridge is not None
-    assert "span" in bridge.measured
+    # the patch's shortest in-plane side — the span's 20 mm depth, in SI m
+    assert bridge.measured == pytest.approx(0.02)
+    assert bridge.expected == pytest.approx(0.008)
+    assert bridge.comparison == "measured 20 mm > 8 mm (max_bridge)"
 
 
 def test_bridge_plate_short_span_is_clean() -> None:

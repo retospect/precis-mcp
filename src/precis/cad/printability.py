@@ -526,19 +526,161 @@ def orient(
 # ---------------------------------------------------------------------------
 
 
+# ── finding display (shared with se's ``ValidationIssue``) ───────────────
+#
+# Findings carry STRUCTURED SI figures — a float in ``unit`` — and render
+# once, here, in the units the process tables are written in (gr551980):
+# lengths mm, areas mm², volumes mm³, leads mm/turn, angles degrees.
+
+#: SI unit → (display suffix, multiplier).
+FINDING_DISPLAY_UNITS: dict[str, tuple[str, float]] = {
+    "m": ("mm", 1e3),
+    "m2": ("mm²", 1e6),
+    "m3": ("mm³", 1e9),
+    "m/turn": ("mm/turn", 1e3),
+    "rad": ("°", 180.0 / math.pi),
+}
+#: ``requirement`` → (requirement symbol, violated-comparison symbol).
+FINDING_REQ_SYMBOLS: dict[str, tuple[str, str]] = {
+    "min": (">=", "<"),
+    "max": ("<=", ">"),
+    "gt": (">", "<="),
+    "lt": ("<", ">="),
+    "eq": ("==", "!="),
+}
+
+
+def finding_fig(value: float | None, unit: str | None) -> str | None:
+    """One SI figure rendered in display units — ``0.0008`` m →
+    ``0.8 mm``, ``0.95`` rad → ``54°``; ``None`` → ``None``, an unbounded
+    figure → ``unbounded``."""
+    if value is None:
+        return None
+    if math.isinf(value):
+        return "unbounded" if value > 0 else "-unbounded"
+    scale = FINDING_DISPLAY_UNITS.get(unit or "")
+    if scale is not None:
+        suffix, mult = scale
+        return f"{value * mult:.4g} {suffix}"
+    if unit:
+        return f"{value:g} {unit}"
+    return f"{value:g}"
+
+
+def finding_expected_text(
+    expected: float | str | None,
+    expected_hi: float | None,
+    unit: str | None,
+    requirement: str | None,
+    threshold_name: str | None,
+) -> str:
+    """``expected`` rendered the way the column reads — ``>= 0.8 mm
+    (min_wall)``, ``[0.4, 0.8] mm``, or the free-text requirement
+    ("an end stop", "qualitative") — with ``threshold_name`` appended."""
+    name = f" ({threshold_name})" if threshold_name else ""
+    if isinstance(expected, str):
+        return expected + name
+    if expected is None:
+        return name.strip()
+    if requirement == "band":
+        hi = finding_fig(expected_hi, unit) or "∞"
+        return f"[{finding_fig(expected, unit)}, {hi}]{name}"
+    sym = FINDING_REQ_SYMBOLS.get(requirement or "", ("", ""))[0]
+    return f"{sym} {finding_fig(expected, unit)}{name}".lstrip()
+
+
+def finding_comparison(
+    measured: float | None,
+    expected: float | str | None,
+    expected_hi: float | None,
+    unit: str | None,
+    requirement: str | None,
+    threshold_name: str | None,
+) -> str | None:
+    """The measured-vs-threshold verdict spelled out in display units —
+    ``measured 0.62 mm < 0.80 mm (min_wall)`` — ``None`` when there is
+    nothing to compare."""
+    name = f" ({threshold_name})" if threshold_name else ""
+    m_txt = finding_fig(measured, unit)
+    if isinstance(expected, str):
+        text = expected.strip()
+        if not text:
+            return f"measured {m_txt}{name}" if m_txt else None
+        return (
+            f"measured {m_txt} vs {text}{name}" if m_txt else f"expected {text}{name}"
+        )
+    if requirement == "band" and expected is not None:
+        lo = finding_fig(expected, unit)
+        hi = finding_fig(expected_hi, unit) or "∞"
+        return (
+            f"measured {m_txt} outside [{lo}, {hi}]{name}"
+            if m_txt
+            else f"expected inside [{lo}, {hi}]{name}"
+        )
+    if expected is None:
+        return f"measured {m_txt}{name}" if m_txt else None
+    if m_txt is None:
+        return "expected " + finding_expected_text(
+            expected, expected_hi, unit, requirement, threshold_name
+        )
+    e_txt = finding_fig(expected, unit)
+    _req, flip = FINDING_REQ_SYMBOLS.get(requirement or "", ("", ""))
+    if flip:
+        return f"measured {m_txt} {flip} {e_txt}{name}"
+    return f"measured {m_txt} vs {e_txt}{name}"
+
+
 @dataclass(frozen=True)
 class PrintFinding:
     """One process-DRC finding — se maps this onto its own
     ``precis_se.validate.ValidationIssue`` (which carries the same
-    ``measured``/``expected``/``suggested_fix`` fields, added for this
-    engine); this module never imports se."""
+    structured ``measured``/``expected``/``suggested_fix`` fields, added
+    for this engine); this module never imports se.
+
+    ``measured`` is the SI float in ``unit`` (metres/radians — never
+    display mm/°); ``expected`` the SI point threshold (or a band's low
+    bound with ``expected_hi``) or a short requirement string when the
+    rule is not numeric by nature."""
 
     rule: str
-    measured: str
-    expected: str
+    measured: float | None
+    expected: float | str | None
     severity: str
     suggested_fix: str
     detail: str
+    expected_hi: float | None = None
+    unit: str | None = None
+    requirement: str | None = None
+    threshold_name: str | None = None
+    comparison: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "comparison",
+            finding_comparison(
+                self.measured,
+                self.expected,
+                self.expected_hi,
+                self.unit,
+                self.requirement,
+                self.threshold_name,
+            ),
+        )
+
+    @property
+    def measured_text(self) -> str:
+        return finding_fig(self.measured, self.unit) or ""
+
+    @property
+    def expected_text(self) -> str:
+        return finding_expected_text(
+            self.expected,
+            self.expected_hi,
+            self.unit,
+            self.requirement,
+            self.threshold_name,
+        )
 
 
 def process_findings(
@@ -590,13 +732,17 @@ def process_findings(
             findings.append(
                 PrintFinding(
                     rule="overhang",
-                    measured=f"{worst:.1f}° worst face angle, {area:.6g} m² violating area",
-                    expected=f"<= {max_overhang:g}°",
+                    measured=math.radians(worst),
+                    expected=math.radians(max_overhang),
+                    unit="rad",
+                    requirement="max",
+                    threshold_name="max_overhang",
                     severity="warn",
                     suggested_fix=fix,
                     detail=(
                         "down-facing triangles whose angle from vertical "
-                        "exceeds max_overhang, excluding bed contact"
+                        "exceeds max_overhang, excluding bed contact "
+                        f"({area:.6g} m² violating area)"
                     ),
                 )
             )
@@ -611,13 +757,17 @@ def process_findings(
             findings.append(
                 PrintFinding(
                     rule="bridge",
-                    measured=f"{longest:.6g} m longest unsupported span",
-                    expected=f"<= {max_bridge:g} m",
+                    measured=longest,
+                    expected=float(max_bridge),
+                    unit="m",
+                    requirement="max",
+                    threshold_name="max_bridge",
                     severity="warn",
                     suggested_fix="split the span",
                     detail=(
                         f"{len(violating)} coplanar down-facing patch(es) above "
-                        "the bed exceed max_bridge (v1: plane-grouped — a "
+                        "the bed exceed max_bridge — longest unsupported span "
+                        f"{longest:.6g} m (v1: plane-grouped — a "
                         "curved ceiling reads as overhang instead)"
                     ),
                 )
@@ -630,8 +780,11 @@ def process_findings(
             findings.append(
                 PrintFinding(
                     rule="bed_contact",
-                    measured=f"{ratio:.3f}",
-                    expected=f">= {min_bed_contact:g}",
+                    measured=ratio,
+                    expected=float(min_bed_contact),
+                    unit="ratio",
+                    requirement="min",
+                    threshold_name="min_bed_contact",
                     severity="warn",
                     suggested_fix="reorient / brim",
                     detail="bed-contact area ÷ xy-AABB footprint (v1 footprint proxy)",
@@ -647,16 +800,22 @@ def process_findings(
             else [float(max_build)] * 3
         )
         if any(e > lim for e, lim in zip(extents, limits, strict=True)):
+            worst_axis = max(range(3), key=lambda i: extents[i] - limits[i])
             findings.append(
                 PrintFinding(
                     rule="build_volume",
-                    measured=(
-                        f"{extents[0]:.6g} x {extents[1]:.6g} x {extents[2]:.6g} m"
-                    ),
-                    expected=f"<= {limits} m",
+                    measured=extents[worst_axis],
+                    expected=limits[worst_axis],
+                    unit="m",
+                    requirement="max",
+                    threshold_name="max_build",
                     severity="error",
                     suggested_fix="split the block / reorient diagonally",
-                    detail="part extent in the build frame vs the printer's max_build",
+                    detail=(
+                        "part extent in the build frame "
+                        f"{extents[0]:.6g} x {extents[1]:.6g} x {extents[2]:.6g} "
+                        f"m vs the printer's max_build {limits} m"
+                    ),
                 )
             )
 

@@ -912,6 +912,27 @@ class PrestressRow:
 
 
 @dataclass
+class CheckFinding:
+    """One structural check's warn-tier finding — the ``(subject, detail)``
+    prose plus the SI figures the check compared (gr551980 r2), so
+    :mod:`precis_se.drc` lifts them straight onto its ``ValidationIssue``
+    instead of re-deriving numbers out of the detail text. Fields mirror
+    ``ValidationIssue``'s: ``expected`` is a point threshold (or a band's
+    low bound with ``expected_hi``) in ``unit``, or a short requirement
+    string ("analysable member", "free_length + rate declared") when the
+    rule has no numeric threshold by nature."""
+
+    subject: str
+    detail: str
+    measured: float | None = None
+    expected: float | str | None = None
+    expected_hi: float | None = None
+    unit: str | None = None
+    requirement: str | None = None
+    threshold_name: str | None = None
+
+
+@dataclass
 class PrestressReport:
     declared_count: int
     residual: float | None  # N — max nodal out-of-balance over free DOFs
@@ -920,7 +941,7 @@ class PrestressReport:
     worst_node: str | None
     unique: bool  # completion pinned uniquely by the declared preloads
     rows: list[PrestressRow] = field(default_factory=list)
-    findings: list[tuple[str, str]] = field(default_factory=list)
+    findings: list[CheckFinding] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     #: True when every declared preload on a live (analysable) member is
     #: exactly 0 N — the null-space tolerance scales with the declared
@@ -947,17 +968,20 @@ def prestress_report(tree: SeTree) -> PrestressReport | None:
     preload — absent prestress is not a finding. Pure over the tree."""
     system = _assemble(tree)
     rows: list[PrestressRow] = []
-    findings: list[tuple[str, str]] = []
+    findings: list[CheckFinding] = []
     notes: list[str] = []
     for row in system.members:
         preload = row.params.get("preload")
         if row.skipped is not None and preload is not None:
             findings.append(
-                (
+                CheckFinding(
                     row.subject,
                     f"preload {preload:g} N on a member that cannot be "
                     f"analysed ({row.skipped}) — the prestress check does "
                     "not cover it",
+                    measured=float(preload),
+                    expected="analysable member",
+                    unit="N",
                 )
             )
         rows.append(
@@ -1071,7 +1095,7 @@ def prestress_report(tree: SeTree) -> PrestressReport | None:
             else ""
         )
         findings.append(
-            (
+            CheckFinding(
                 worst_node,
                 "declared preload(s) are not a self-stress state: "
                 f"out-of-balance force {residual:g} N at node "
@@ -1079,6 +1103,11 @@ def prestress_report(tree: SeTree) -> PrestressReport | None:
                 f"{cause}; the members cannot hold these preloads without "
                 "an external load — fix the preload ratios or the "
                 "geometry (view='stability' reports the feasible state)",
+                measured=residual,
+                expected=tolerance,
+                unit="N",
+                requirement="max",
+                threshold_name="self-stress tolerance",
             )
         )
 
@@ -1116,22 +1145,32 @@ def prestress_report(tree: SeTree) -> PrestressReport | None:
         if row.role == "tie" and force < -tolerance:
             sign_violated = True
             findings.append(
-                (
+                CheckFinding(
                     row.subject,
                     _sign_phrase(
                         f"{-force:g} N compression in this tension-only member (tie)"
                     ),
+                    measured=-force,
+                    expected=0.0,
+                    unit="N",
+                    requirement="max",
+                    threshold_name="tie (tension-only)",
                 )
             )
             pr.flag = "sign violated (tie in compression)"
         elif row.role == "strut" and force > tolerance:
             sign_violated = True
             findings.append(
-                (
+                CheckFinding(
                     row.subject,
                     _sign_phrase(
                         f"{force:g} N tension in this compression-only member (strut)"
                     ),
+                    measured=force,
+                    expected=0.0,
+                    unit="N",
+                    requirement="max",
+                    threshold_name="strut (compression-only)",
                 )
             )
             pr.flag = "sign violated (strut in tension)"
@@ -1141,23 +1180,33 @@ def prestress_report(tree: SeTree) -> PrestressReport | None:
         compression = row.params.get("compression_capacity")
         if tension is not None and force > tension:
             findings.append(
-                (
+                CheckFinding(
                     row.subject,
                     _capacity_phrase(
                         f"{force:g} N tension against this member's "
                         f"{tension:g} N tension capacity"
                     ),
+                    measured=force,
+                    expected=float(tension),
+                    unit="N",
+                    requirement="max",
+                    threshold_name="tension_capacity",
                 )
             )
             pr.flag = pr.flag or "capacity exceeded (tension)"
         if compression is not None and -force > compression:
             findings.append(
-                (
+                CheckFinding(
                     row.subject,
                     _capacity_phrase(
                         f"{-force:g} N compression against this member's "
                         f"{compression:g} N buckling/crush ceiling"
                     ),
+                    measured=-force,
+                    expected=float(compression),
+                    unit="N",
+                    requirement="max",
+                    threshold_name="compression_capacity",
                 )
             )
             pr.flag = pr.flag or "capacity exceeded (compression)"
@@ -1187,17 +1236,16 @@ def prestress_report(tree: SeTree) -> PrestressReport | None:
 _PRELOAD_TRIPLE_RTOL = 1e-2
 
 
-def preload_findings(tree: SeTree) -> list[tuple[str, str]]:
-    """Warn-tier ``(subject, detail)`` pairs about an axial member's
-    tensioning declaration (gripe 334782). Physically,
-    ``preload = rate × (L_installed − L_free)``: a nonzero ``preload``
-    with no ``free_length`` and/or no ``rate`` has no tensioning
-    instruction behind it — nothing says how the member gets from its
-    free length to the installed one. When all three are declared, they
-    are cross-checked against the installed length — the endpoint
-    port-to-port distance stability already computes (block pose ∘ port
-    pose; a pose-less port sits at the block origin)."""
-    findings: list[tuple[str, str]] = []
+def preload_findings(tree: SeTree) -> list[CheckFinding]:
+    """Warn-tier findings about an axial member's tensioning declaration
+    (gripe 334782). Physically, ``preload = rate × (L_installed − L_free)``:
+    a nonzero ``preload`` with no ``free_length`` and/or no ``rate`` has no
+    tensioning instruction behind it — nothing says how the member gets
+    from its free length to the installed one. When all three are
+    declared, they are cross-checked against the installed length — the
+    endpoint port-to-port distance stability already computes (block pose
+    ∘ port pose; a pose-less port sits at the block origin)."""
+    findings: list[CheckFinding] = []
     for row in _axial_members(tree):
         if row.skipped is not None:
             continue
@@ -1213,13 +1261,16 @@ def preload_findings(tree: SeTree) -> list[tuple[str, str]]:
                 if val is None
             ]
             findings.append(
-                (
+                CheckFinding(
                     row.subject,
                     f"preload {preload:g} N declared but no "
                     f"{' and '.join(missing)} — preload = rate × "
                     "(installed length − free length), so nothing says how "
                     "this member gets tensioned to that number (set_joint "
                     "params)",
+                    measured=float(preload),
+                    expected="free_length + rate declared",
+                    unit="N",
                 )
             )
             continue
@@ -1230,13 +1281,19 @@ def preload_findings(tree: SeTree) -> list[tuple[str, str]]:
         tol = _PRELOAD_TRIPLE_RTOL * abs(preload)
         if abs(implied - preload) > tol:
             findings.append(
-                (
+                CheckFinding(
                     row.subject,
                     f"declared preload {preload:g} N disagrees with rate × "
                     f"(installed − free length) = {rate:g} × "
                     f"({installed:g} − {free_length:g}) = {implied:g} N "
                     "(attachment points = block pose ∘ port pose) — "
                     "reconcile the free_length/rate/preload triple",
+                    measured=implied,
+                    expected=float(preload) - tol,
+                    expected_hi=float(preload) + tol,
+                    unit="N",
+                    requirement="band",
+                    threshold_name=f"declared preload ±{_PRELOAD_TRIPLE_RTOL:.0%}",
                 )
             )
     return findings
@@ -1245,18 +1302,22 @@ def preload_findings(tree: SeTree) -> list[tuple[str, str]]:
 # ── capacity findings (rented by precis_se.drc) ──────────────────────────
 
 
-def capacity_findings(tree: SeTree) -> list[tuple[str, str]]:
-    """Warn-tier ``(subject, detail)`` pairs about axial members' declared
-    capacities vs their declared loads. Directional honesty: ``preload``
-    is signed (tension-positive) so its check is directional; a connect's
-    ``force`` objective is a world-frame vector whose sense along the
-    member is not knowable here, so only its axial *component magnitude*
-    is compared, against the member's best-case capacity."""
-    findings: list[tuple[str, str]] = []
+def capacity_findings(tree: SeTree) -> list[CheckFinding]:
+    """Warn-tier findings about axial members' declared capacities vs
+    their declared loads. Directional honesty: ``preload`` is signed
+    (tension-positive) so its check is directional; a connect's ``force``
+    objective is a world-frame vector whose sense along the member is not
+    knowable here, so only its axial *component magnitude* is compared,
+    against the member's best-case capacity."""
+    findings: list[CheckFinding] = []
     for row in _axial_members(tree):
         if row.skipped is not None:
             findings.append(
-                (row.subject, f"axial member not analysable: {row.skipped}")
+                CheckFinding(
+                    row.subject,
+                    f"axial member not analysable: {row.skipped}",
+                    expected="analysable member",
+                )
             )
             continue
         tension = row.params.get("tension_capacity")
@@ -1271,11 +1332,12 @@ def capacity_findings(tree: SeTree) -> list[tuple[str, str]]:
                 if val is None
             ]
             findings.append(
-                (
+                CheckFinding(
                     row.subject,
                     f"axial member is missing {' and '.join(missing)} — "
                     "tie/strut behaviour and the self-stress sign check "
                     "are unchecked (set_joint params)",
+                    expected="tension_capacity + compression_capacity declared",
                 )
             )
             continue
@@ -1283,19 +1345,29 @@ def capacity_findings(tree: SeTree) -> list[tuple[str, str]]:
         if preload is not None:
             if preload > tension:
                 findings.append(
-                    (
+                    CheckFinding(
                         row.subject,
                         f"preload {preload:g} N exceeds the member's "
                         f"tension capacity {tension:g} N",
+                        measured=float(preload),
+                        expected=float(tension),
+                        unit="N",
+                        requirement="max",
+                        threshold_name="tension_capacity",
                     )
                 )
             if -preload > compression:
                 findings.append(
-                    (
+                    CheckFinding(
                         row.subject,
                         f"asked to carry {-preload:g} N in compression "
                         f"against a {compression:g} N buckling/crush "
                         "ceiling",
+                        measured=-float(preload),
+                        expected=float(compression),
+                        unit="N",
+                        requirement="max",
+                        threshold_name="compression_capacity",
                     )
                 )
         force = _axial_force_component(tree, row)
@@ -1303,12 +1375,17 @@ def capacity_findings(tree: SeTree) -> list[tuple[str, str]]:
             best = max(tension, compression)
             if force > best:
                 findings.append(
-                    (
+                    CheckFinding(
                         row.subject,
                         f"declared load has a {force:g} N component along "
                         f"the member against a best-case capacity of "
                         f"{best:g} N (direction not resolvable at graph "
                         "tier — checked against the larger capacity)",
+                        measured=force,
+                        expected=float(best),
+                        unit="N",
+                        requirement="max",
+                        threshold_name="best-case capacity",
                     )
                 )
     return findings

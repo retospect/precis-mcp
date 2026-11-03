@@ -896,6 +896,11 @@ def _one(
                         "or the block's rot is wrong"
                     ),
                     severity="warn",
+                    measured=off,
+                    expected=_AXIS_TOL_RAD,
+                    unit="rad",
+                    requirement="max",
+                    threshold_name="axis tol",
                 )
             )
     res.members = _walk_axis(tree, fastener, origin, axis)
@@ -973,6 +978,11 @@ def _one(
                         f"mm ({need}) — {short * 1000:.1f} mm short"
                     ),
                     severity="warn",
+                    measured=res.length_m,
+                    expected=res.required_length_m,
+                    unit="m",
+                    requirement="min",
+                    threshold_name="length under head",
                 )
             )
     if (
@@ -999,6 +1009,11 @@ def _one(
                     "longer boss, or a heat-set insert"
                 ),
                 severity="warn",
+                measured=last.thickness_m,
+                expected=engage_d * nominal,
+                unit="m",
+                requirement="min",
+                threshold_name=f"{engage_d:g}×D engagement",
             )
         )
 
@@ -1018,6 +1033,12 @@ def _one(
                         "whole multiple; nothing else does)"
                     ),
                     severity="warn",
+                    measured=derived,
+                    expected=declared * (1.0 - _LEAD_TOL_REL),
+                    expected_hi=declared * (1.0 + _LEAD_TOL_REL),
+                    unit="m/turn",
+                    requirement="band",
+                    threshold_name=f"declared lead ±{_LEAD_TOL_REL * 100:g}%",
                 )
             )
 
@@ -1413,6 +1434,11 @@ def _pocket_findings(
                     "— it would break through the far face"
                 ),
                 severity="warn",
+                measured=feature.depth_m,
+                expected=member.thickness_m,
+                unit="m",
+                requirement="max",
+                threshold_name="member thickness",
             )
         )
 
@@ -1496,6 +1522,9 @@ def _head_feature(
                     f"{head_h * 1000:.1f} mm bore instead"
                 ),
                 severity="info",
+                measured=head_h,
+                unit="m",
+                threshold_name="proud height",
             )
         )
         return None
@@ -1542,6 +1571,11 @@ def _head_floor_finding(
                 "the head bears on the far member instead"
             ),
             severity="warn",
+            measured=hole.depth_m,
+            expected=near.thickness_m,
+            unit="m",
+            requirement="lt",
+            threshold_name="member thickness",
         )
     )
 
@@ -1608,6 +1642,9 @@ def _pattern_findings(results: list[FastenResult]) -> None:
                     f"({' | '.join(sorted(core_fit.classes()))})"
                 ),
                 severity="warn",
+                measured=fit.radial_slack_mm / 1000.0,
+                unit="m",
+                threshold_name="radial slack",
             )
         )
 

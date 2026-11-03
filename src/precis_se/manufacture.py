@@ -1634,6 +1634,9 @@ def solve_manufacture(
                         f"{gap * 1000:.3g} mm is taken as declared, unchecked"
                     ),
                     severity="info",
+                    measured=gap,
+                    unit="m",
+                    expected="qualitative — floor uncalibrated",
                     suggested_fix=(
                         "print a gap ladder and set_process_override(block="
                         f"{root!r}, field={CLEARANCE_FIELD!r}, value=<mm>)"
@@ -1651,8 +1654,11 @@ def solve_manufacture(
                         "DOF joints will fuse in the print"
                     ),
                     severity="error",
-                    measured=f"{gap * 1000:.3g} mm",
-                    expected=f">= {req.gap_floor_mm:g} mm",
+                    measured=gap,
+                    expected=req.gap_floor_mm / 1000.0,
+                    unit="m",
+                    requirement="min",
+                    threshold_name=CLEARANCE_FIELD,
                     suggested_fix=f"realize(..., gap={req.gap_floor_mm / 1000.0:g})",
                 )
             )
@@ -1961,8 +1967,11 @@ def solve_manufacture(
                         f"{gap * 1000:.3g} mm"
                     ),
                     severity="warn",
-                    measured=f"{measured * 1000:.3g} mm",
-                    expected=f">= {gap * 1000:.3g} mm",
+                    measured=measured,
+                    expected=gap,
+                    unit="m",
+                    requirement="min",
+                    threshold_name="declared gap",
                 )
             )
 
@@ -2019,6 +2028,11 @@ def solve_manufacture(
                 "severity": f.severity,
                 "measured": f.measured,
                 "expected": f.expected,
+                "expected_hi": f.expected_hi,
+                "unit": f.unit,
+                "requirement": f.requirement,
+                "threshold_name": f.threshold_name,
+                "comparison": f.comparison,
                 "suggested_fix": f.suggested_fix,
             }
             for f in findings
@@ -2421,6 +2435,10 @@ def _issue_from(row: dict[str, Any]) -> ValidationIssue:
         severity=str(row.get("severity") or "info"),
         measured=row.get("measured"),
         expected=row.get("expected"),
+        expected_hi=row.get("expected_hi"),
+        unit=row.get("unit"),
+        requirement=row.get("requirement"),
+        threshold_name=row.get("threshold_name"),
         suggested_fix=row.get("suggested_fix"),
     )
 
@@ -2467,11 +2485,11 @@ def _teardrop_findings(plan: JointPlan, down: Vec3, root: str) -> list[Validatio
                         "teardrop/diamond section yet, so this is reported, not fixed"
                     ),
                     severity="warn",
-                    measured=f"{from_plate:.0f}° from the plate",
-                    expected=(
-                        f"> {TEARDROP_ANGLE_DEG:g}° (a vertical bore), or a "
-                        "teardrop section"
-                    ),
+                    measured=math.radians(from_plate),
+                    expected=math.radians(TEARDROP_ANGLE_DEG),
+                    unit="rad",
+                    requirement="gt",
+                    threshold_name="teardrop rule",
                     suggested_fix=(
                         f"set_build_frame(block={root!r}, down=…) with the bore "
                         "axis vertical, or bridge-close the bore in the cad design"

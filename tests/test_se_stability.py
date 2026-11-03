@@ -591,9 +591,9 @@ def test_preload_with_a_free_unbalanced_node_is_refused() -> None:
     assert report.compatible is False
     assert report.worst_node == "b"
     (finding,) = report.findings
-    assert "not a self-stress state" in finding[1]
-    assert "out-of-balance force 50 N at node 'b'" in finding[1]
-    assert "no self-stress at all (s = 0)" in finding[1]
+    assert "not a self-stress state" in finding.detail
+    assert "out-of-balance force 50 N at node 'b'" in finding.detail
+    assert "no self-stress at all (s = 0)" in finding.detail
 
 
 def test_prism_preloads_in_the_state_ratio_are_compatible() -> None:
@@ -637,10 +637,10 @@ def test_prism_preloads_off_the_state_ratio_are_refused() -> None:
     )
     assert report is not None
     assert report.compatible is False
-    assert any("not a self-stress state" in d for _s, d in report.findings)
+    assert any("not a self-stress state" in f.detail for f in report.findings)
     # the s=1 geometry does admit self-stress — the diagnostic must not
     # claim otherwise
-    assert not any("s = 0" in d for _s, d in report.findings)
+    assert not any("s = 0" in f.detail for f in report.findings)
 
 
 def test_implied_sign_violation_under_an_incompatible_preload_set_is_flagged() -> None:
@@ -655,9 +655,9 @@ def test_implied_sign_violation_under_an_incompatible_preload_set_is_flagged() -
     assert report is not None
     assert report.compatible is False
     strut_findings = [
-        d
-        for _s, d in report.findings
-        if "tension in this compression-only member (strut)" in d
+        f.detail
+        for f in report.findings
+        if "tension in this compression-only member (strut)" in f.detail
     ]
     assert strut_findings, report.findings
     assert all(
@@ -682,7 +682,9 @@ def test_implied_compression_in_a_tie_is_flagged() -> None:
     assert report is not None
     assert report.compatible is True
     sign_findings = [
-        d for _s, d in report.findings if "compression in this tension-only" in d
+        f.detail
+        for f in report.findings
+        if "compression in this tension-only" in f.detail
     ]
     assert len(sign_findings) == 3
 
@@ -700,7 +702,7 @@ def test_determinate_structure_admits_no_prestress() -> None:
     report = se_stability.prestress_report(tree)
     assert report is not None
     assert report.compatible is False
-    assert any("no self-stress at all (s = 0)" in d for _s, d in report.findings)
+    assert any("no self-stress at all (s = 0)" in f.detail for f in report.findings)
 
 
 def test_implied_forces_beyond_capacity_are_flagged() -> None:
@@ -713,7 +715,7 @@ def test_implied_forces_beyond_capacity_are_flagged() -> None:
     )
     assert report is not None
     assert report.compatible is True
-    details = [d for _s, d in report.findings]
+    details = [f.detail for f in report.findings]
     assert any(
         "N tension against this member's 100 N tension capacity" in d for d in details
     )
@@ -746,8 +748,8 @@ def test_preload_on_a_skipped_member_is_reported_unchecked() -> None:
     assert report is not None
     assert report.compatible is None  # no analysable system to check against
     (finding,) = report.findings
-    assert "cannot be analysed" in finding[1]
-    assert "does not cover it" in finding[1]
+    assert "cannot be analysed" in finding.detail
+    assert "does not cover it" in finding.detail
 
 
 def test_drc_carries_prestress_state_findings() -> None:

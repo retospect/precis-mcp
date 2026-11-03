@@ -780,11 +780,12 @@ def render(check: AssemblyCheck) -> str:
                         "severity": f.severity,
                         "rule": f.rule,
                         "subject": f.subject,
+                        "comparison": f.comparison or "",
                         "detail": f.detail,
                     }
                     for f in check.findings
                 ],
-                schema=["severity", "rule", "subject", "detail"],
+                schema=["severity", "rule", "subject", "comparison", "detail"],
             )
         )
     else:

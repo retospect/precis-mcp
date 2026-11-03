@@ -353,8 +353,11 @@ def _hole_findings(
                             "process can reliably print"
                         ),
                         severity="warn",
-                        measured=f"{hole.diameter_m * scale * 1000:.2f} mm",
-                        expected=f">= {min_hole * 1000:.2f} mm (min_hole)",
+                        measured=hole.diameter_m * scale,
+                        expected=min_hole,
+                        unit="m",
+                        requirement="min",
+                        threshold_name="min_hole",
                         suggested_fix="drill after printing",
                     )
                 )
@@ -371,7 +374,9 @@ def _hole_findings(
                     + ", ".join(h.name for h in holes)
                 ),
                 severity="info",
-                measured=f"+{bump * 1000:.2f} mm",
+                measured=bump,
+                unit="m",
+                threshold_name="hole compensation",
             )
         )
     return out
@@ -435,8 +440,11 @@ def _min_feature_finding(
             f"below the process {threshold_name}"
         ),
         severity="warn",
-        measured=f"{dim * 1000:.2f} mm",
-        expected=f">= {threshold * 1000:.2f} mm ({threshold_name})",
+        measured=dim,
+        expected=threshold,
+        unit="m",
+        requirement="min",
+        threshold_name=threshold_name,
         suggested_fix=f"thicken {name!r}'s envelope parameter",
     )
 
@@ -460,8 +468,10 @@ def _layer_vs_load_finding(
             "direction)"
         ),
         severity="warn",
-        measured=f"{score.load_vs_layer:.3f}",
-        expected=f"{ratio:g} (strength_z_ratio, tensile-across-layers ÷ in-plane)",
+        measured=score.load_vs_layer,
+        expected=float(ratio),
+        unit="ratio",
+        threshold_name="strength_z_ratio, tensile-across-layers ÷ in-plane",
         suggested_fix="reorient / reroute the load through a rib",
     )
 
@@ -488,6 +498,10 @@ def frame_findings(
             severity=f.severity,
             measured=f.measured,
             expected=f.expected,
+            expected_hi=f.expected_hi,
+            unit=f.unit,
+            requirement=f.requirement,
+            threshold_name=f.threshold_name,
             suggested_fix=f.suggested_fix,
         )
         for f in cad_printability.process_findings(
@@ -804,8 +818,11 @@ def report_for(
                             "morphology re-opened a gap the AM filter had closed"
                         ),
                         severity="warn",
-                        measured=f"{voxels} unsupported voxel(s)",
-                        expected="0 (the AM filter's own rule)",
+                        measured=float(voxels),
+                        expected=0.0,
+                        unit="voxel(s)",
+                        requirement="eq",
+                        threshold_name="the AM filter's own rule",
                         suggested_fix="re-realize without open=/close=, or coarser",
                     )
                 )
@@ -1192,12 +1209,16 @@ def _island_issue(
         detail=(
             f"island {index}/{total}: a {isl.area:.3g} mm² layer polygon at "
             f"z = {isl.z:.2f} mm, centred ({isl.x:.1f}, {isl.y:.1f}) mm, "
-            "overlaps neither of the two layers below it — the slicer sees "
-            "it as a floating region (SharpTail) with nothing to print on"
+            f"overlaps neither of the two layers below it ({layer_mm:.3g} mm "
+            "layers) — the slicer sees it as a floating region (SharpTail) "
+            "with nothing to print on"
         ),
         severity="error",
-        measured=f"z = {isl.z:.2f} mm, {isl.area:.3g} mm²",
-        expected=f"0 islands at {layer_mm:.3g} mm layers",
+        measured=isl.area * 1e-6,
+        unit="m2",
+        expected=0.0,
+        requirement="eq",
+        threshold_name="floating island area",
         suggested_fix=(
             "add support under it, change the build frame, or reshape "
             "the feature so each layer grows out of the one below"
@@ -1263,8 +1284,11 @@ def _cantilever_findings(
                     )
                 ),
                 severity="error" if c.unreachable else "warn",
-                measured=f"{c.distance:.1f} mm",
-                expected=f"<= {CANTILEVER_WARN_MM:g} mm",
+                measured=c.distance * 1e-3,
+                expected=CANTILEVER_WARN_MM * 1e-3,
+                unit="m",
+                requirement="max",
+                threshold_name="slicer cantilever",
                 suggested_fix=(
                     "give the feature a full-width foot on the bed (a bed-"
                     "touching wall must be at least one line width wide in "
@@ -1285,7 +1309,11 @@ def _cantilever_findings(
                     f"region(s) not listed ({len(hits)} in total)"
                 ),
                 severity="error" if any(c.unreachable for c in hits) else "warn",
-                measured=f"{len(hits)} regions",
+                measured=float(len(hits)),
+                unit="regions",
+                expected=0.0,
+                requirement="eq",
+                threshold_name="unlisted cantilever regions",
             )
         )
     return out
@@ -1317,8 +1345,11 @@ def _mesh_findings(
                         f"island(s) not listed ({total} in total)"
                     ),
                     severity="error",
-                    measured=f"{total} islands",
-                    expected=f"0 islands at {layer_mm:.3g} mm layers",
+                    measured=float(total),
+                    unit="islands",
+                    expected=0.0,
+                    requirement="eq",
+                    threshold_name=f"0 islands at {layer_mm:.3g} mm layers",
                 )
             )
         try:
@@ -1343,6 +1374,7 @@ def _mesh_findings(
                     "the bed keep the rounded foot the voxel field gives them"
                 ),
                 severity="info",
+                expected="qualitative",
             )
         )
     if built.flat_bed:
@@ -1352,6 +1384,7 @@ def _mesh_findings(
                 subject=block,
                 detail=f"flat bed contact applied: {built.flat_bed}",
                 severity="info",
+                expected="qualitative",
             )
         )
     for why in built.lift_abandoned:
@@ -1364,6 +1397,7 @@ def _mesh_findings(
                     "unlifted and the floating-region check ran on it"
                 ),
                 severity="info",
+                expected="qualitative",
             )
         )
     if (
@@ -1386,10 +1420,7 @@ def _mesh_findings(
                     f"{built.n_kept_flip} would flip a face"
                 ),
                 severity="info",
-                measured=(
-                    f"{built.n_dropped} dropped / {built.n_slivers} slivers / "
-                    f"{built.n_lifted} lifted"
-                ),
+                expected="qualitative",
             )
         )
     return out

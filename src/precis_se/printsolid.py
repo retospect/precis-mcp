@@ -647,6 +647,12 @@ def scale_mismatch_finding(
             "part"
         ),
         severity="warn",
+        measured=diag,
+        expected=_MIN_BBOX_DIAG_M,
+        expected_hi=_MAX_BBOX_DIAG_M,
+        unit="m",
+        requirement="band",
+        threshold_name="fdm bbox diagonal",
     )
 
 
@@ -742,6 +748,11 @@ def printed_solid(
                     "envelope"
                 ),
                 severity="error",
+                measured=volume_after,
+                expected=0.0,
+                unit="m3",
+                requirement="gt",
+                threshold_name="net volume",
             )
         )
 

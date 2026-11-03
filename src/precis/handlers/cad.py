@@ -1365,8 +1365,9 @@ class CadHandler(Handler):
             frows = [
                 {
                     "rule": f.rule,
-                    "measured": f.measured,
-                    "expected": f.expected,
+                    "measured": f.measured_text,
+                    "expected": f.expected_text,
+                    "comparison": f.comparison or "",
                     "severity": f.severity,
                     "suggested_fix": f.suggested_fix,
                 }
@@ -1380,6 +1381,7 @@ class CadHandler(Handler):
                         "rule",
                         "measured",
                         "expected",
+                        "comparison",
                         "severity",
                         "suggested_fix",
                     ],

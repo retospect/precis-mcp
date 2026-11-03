@@ -365,6 +365,11 @@ def _cone_count_findings(tree: SeTree) -> list[ValidationIssue]:
                         "vacancy must stay open toward the H source"
                     ),
                     severity="error",
+                    measured=float(realised),
+                    expected=0.0,
+                    unit="count",
+                    requirement="eq",
+                    threshold_name="keep-open cone",
                 )
             )
             continue
@@ -378,9 +383,31 @@ def _cone_count_findings(tree: SeTree) -> list[ValidationIssue]:
                     f"{band[1]:g}]"
                 ),
                 severity="warn",
+                measured=float(realised),
+                expected=band[0],
+                expected_hi=band[1],
+                unit="count",
+                requirement="band",
             )
         )
     return out
+
+
+def _structural_issue(rule: str, cf: se_stability.CheckFinding) -> ValidationIssue:
+    """A stability check's ``CheckFinding`` lifted onto a DRC
+    ``ValidationIssue`` — the SI figures travel with it (gr551980 r2)."""
+    return ValidationIssue(
+        rule=rule,
+        subject=cf.subject,
+        detail=cf.detail,
+        severity="warn",
+        measured=cf.measured,
+        expected=cf.expected,
+        expected_hi=cf.expected_hi,
+        unit=cf.unit,
+        requirement=cf.requirement,
+        threshold_name=cf.threshold_name,
+    )
 
 
 def drc(
@@ -508,6 +535,13 @@ def drc(
                                     "declare a tolerance relation"
                                 ),
                                 severity="warn",
+                                measured=abs(delta),
+                                expected=tol,
+                                unit="m",
+                                requirement="max",
+                                threshold_name=(
+                                    f"nominal mate tol {_MATE_TOL_REL:g}×bore"
+                                ),
                             )
                         )
 
@@ -683,43 +717,22 @@ def drc(
     # 4b. axial-member capacity checks (the unilateral rung-1 members —
     # graph-tier only; the whole-structure rigid/mechanism/prestress
     # verdict is view='stability').
-    for subject, detail in se_stability.capacity_findings(tree):
-        findings.append(
-            ValidationIssue(
-                rule="axial_capacity",
-                subject=subject,
-                detail=detail,
-                severity="warn",
-            )
-        )
+    for cf in se_stability.capacity_findings(tree):
+        findings.append(_structural_issue("axial_capacity", cf))
 
     # 4c. prestress: declared preloads must be a self-stress state of the
     # geometry (rung 5's null-space check) — warn tier, like every other
     # structural advisory here; view='stability' has the full state.
     prestress = se_stability.prestress_report(tree)
     if prestress is not None:
-        for subject, detail in prestress.findings:
-            findings.append(
-                ValidationIssue(
-                    rule="prestress_state",
-                    subject=subject,
-                    detail=detail,
-                    severity="warn",
-                )
-            )
+        for cf in prestress.findings:
+            findings.append(_structural_issue("prestress_state", cf))
 
     # 4d. preload tensioning consistency (gripe 334782): free_length/rate/
     # preload must cross-check against the installed geometry — warn tier,
     # like every other structural advisory here.
-    for subject, detail in se_stability.preload_findings(tree):
-        findings.append(
-            ValidationIssue(
-                rule="preload_consistency",
-                subject=subject,
-                detail=detail,
-                severity="warn",
-            )
-        )
+    for cf in se_stability.preload_findings(tree):
+        findings.append(_structural_issue("preload_consistency", cf))
 
     # 4e. sign-aware completeness under each declared load case (the
     # complementarity bridge's slice-2 face): a tie a case drives into
@@ -824,12 +837,17 @@ def drc(
             continue
         band = declared_band(m)
         unmet: str | None = None
+        expected: float | None = None
+        expected_hi: float | None = None
+        requirement: str | None = None
         if band is not None:
             if not (band[0] <= realised <= band[1]):
                 unmet = (
                     f"realised {realised:g} {m.unit} outside required band "
                     f"[{band[0]:g}, {band[1]:g}] {m.unit}"
                 )
+                expected, expected_hi = band[0], band[1]
+                requirement = "band"
         elif m.value is not None:
             tol = float((m.relation or {}).get("tol") or 0.0)
             if abs(realised - m.value) > tol:
@@ -837,6 +855,12 @@ def drc(
                     f"realised {realised:g} {m.unit} vs required "
                     f"{m.value:g} {m.unit}" + (f" (tol {tol:g})" if tol > 0 else "")
                 )
+                if tol > 0:
+                    expected, expected_hi = m.value - tol, m.value + tol
+                    requirement = "band"
+                else:
+                    expected = m.value
+                    requirement = "eq"
         if unmet is not None:
             findings.append(
                 ValidationIssue(
@@ -847,6 +871,12 @@ def drc(
                         f"{' on ' + m.datum if m.datum else ''}: {unmet}"
                     ),
                     severity="warn",
+                    measured=realised,
+                    expected=expected,
+                    expected_hi=expected_hi,
+                    unit=m.unit or None,
+                    requirement=requirement,
+                    threshold_name=measurand_name(m),
                 )
             )
 
@@ -893,12 +923,23 @@ def drc(
                 )
             continue
         if "patch_exceeds_face" in rdat.flags:
+            # The worst-offending axis (patch extent vs face extent,
+            # metres) is the measured pair; both dims stay in the note.
+            m_val = e_val = None
+            if rdat.patch_vs_face_m is not None:
+                pw, ph, fw, fh = rdat.patch_vs_face_m
+                m_val, e_val = (pw, fw) if pw - fw >= ph - fh else (ph, fh)
             findings.append(
                 ValidationIssue(
                     rule="patch_exceeds_face",
                     subject=subject,
                     detail=next((n for n in rdat.notes if "extends past" in n), ""),
                     severity="warn",
+                    measured=m_val,
+                    expected=e_val,
+                    unit="m" if m_val is not None else None,
+                    requirement="max",
+                    threshold_name="patch within face extent",
                 )
             )
 
@@ -926,6 +967,11 @@ def drc(
                             "metres; set_measure to repair)"
                         ),
                         severity="warn",
+                        measured=abs(m.value),
+                        expected=_MAGNITUDE_FACTOR * extent,
+                        unit="m",
+                        requirement="max",
+                        threshold_name=f"{_MAGNITUDE_FACTOR:g}× design extent",
                     )
                 )
     # 5c. minimum-constraint advisory (se-kind.md slice 4, set-based
@@ -995,6 +1041,7 @@ def drc(
         "unit_mismatch": ("unit_mismatch", "error"),
     }
     strength_of = {f"{m.block}.{m.name}": m.strength for m in tree.measures}
+    measures_by_key = {f"{m.block}.{m.name}": m for m in tree.measures}
     for res in stack:
         if res.problem is None:
             continue
@@ -1005,12 +1052,73 @@ def drc(
         # that disagrees with its derivation gates, a gauge one reports.
         if rule == "tolerance_mismatch" and strength_of.get(res.measure) == "hard":
             severity = "error"
+        measured_f: float | None = None
+        expected_f: float | None = None
+        expected_hi_f: float | None = None
+        requirement_f: str | None = None
+        threshold_name: str | None = None
+        if res.problem_kind == "mismatch":
+            # The measured-vs-required pair, mirroring
+            # ``measures._agreement_problem``'s case order: the declared
+            # point is the offender when it misses a band (its own or the
+            # derived one); the derived point is the offender against the
+            # declared band/point; two disjoint bands report the edge
+            # that falls short.
+            m_src = measures_by_key.get(res.measure)
+            band = declared_band(m_src) if m_src is not None else None
+            value = m_src.value if m_src is not None else None
+            tol = res.tol_accum
+            if (
+                band is not None
+                and value is not None
+                and not (band[0] <= value <= band[1])
+            ):
+                measured_f = value
+                expected_f, expected_hi_f = band[0], band[1]
+                requirement_f = "band"
+                threshold_name = "own declared band"
+            elif res.derived is not None:
+                measured_f = res.derived
+                if value is not None:
+                    expected_f, expected_hi_f = value - tol, value + tol
+                    requirement_f = "band"
+                    threshold_name = "declared ±tol"
+                elif band is not None:
+                    expected_f, expected_hi_f = band[0] - tol, band[1] + tol
+                    requirement_f = "band"
+                    threshold_name = "declared band ±tol"
+            elif res.derived_min is not None and res.derived_max is not None:
+                if value is not None:
+                    measured_f = value
+                    expected_f = res.derived_min - tol
+                    expected_hi_f = res.derived_max + tol
+                    requirement_f = "band"
+                    threshold_name = "derived band ±tol"
+                elif band is not None:
+                    if res.derived_max + tol < band[0]:
+                        measured_f, expected_f = res.derived_max + tol, band[0]
+                        requirement_f = "min"
+                    else:
+                        measured_f, expected_f = res.derived_min - tol, band[1]
+                        requirement_f = "max"
+                    threshold_name = "declared band"
+            elif res.declared is not None and band is not None:
+                measured_f = res.declared
+                expected_f, expected_hi_f = band[0], band[1]
+                requirement_f = "band"
+                threshold_name = "declared band"
         findings.append(
             ValidationIssue(
                 rule=rule,
                 subject=res.measure,
                 detail=res.problem,
                 severity=severity,
+                measured=measured_f,
+                expected=expected_f,
+                expected_hi=expected_hi_f,
+                unit=res.unit or None,
+                requirement=requirement_f,
+                threshold_name=threshold_name,
             )
         )
 
@@ -1123,6 +1231,9 @@ def drc(
                         "(advisory: retention features often live at L3)"
                     ),
                     severity="warn",
+                    measured=float("inf"),
+                    unit="m",
+                    expected=f"{klass}: axis travel bounded",
                 )
             )
         elif klass in _PROBE_FREE and fwd == 0.0 and back == 0.0:
@@ -1137,6 +1248,11 @@ def drc(
                         "declared slide cannot move"
                     ),
                     severity="warn",
+                    measured=0.0,
+                    expected=0.0,
+                    unit="m",
+                    requirement="gt",
+                    threshold_name=f"{klass} axis travel",
                 )
             )
         elif klass in _PROBE_FREE and fwd == float("inf") and back == float("inf"):
@@ -1154,6 +1270,9 @@ def drc(
                         "leave its rail (advisory: end stops often live at L3)"
                     ),
                     severity="warn",
+                    measured=float("inf"),
+                    unit="m",
+                    expected=f"{klass}: an end stop",
                 )
             )
         else:

@@ -55,6 +55,7 @@ import numpy as np
 
 from precis.cad import bulk as cad_bulk
 from precis.cad import dsl as cad_dsl
+from precis.cad import printability as cad_printability
 from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
 from precis.cad.vec import Vec3
@@ -81,8 +82,18 @@ class ValidationIssue:
 
     ``measured``/``expected``/``suggested_fix`` are se-print-implementer.md
     Engine 3's addition (process DRC, :mod:`precis_se.printing`) — all
-    default ``None`` so every existing finding/renderer is unchanged; only
-    ``view='print'`` renders all six fields. No other kind's
+    default ``None`` so every existing finding/renderer is unchanged.
+    gr551980 generalised the pair beyond Engine 3 and made them STRUCTURED
+    (round 2): the measured figure and the threshold it was judged against
+    are SI floats in :attr:`unit`, ``expected`` is a point threshold (or a
+    band's low bound with :attr:`expected_hi`), :attr:`requirement` names
+    the constraint direction, and :attr:`threshold_name` the rule/
+    capability field (``min_wall``). ``expected`` may instead hold a short
+    requirement string ("an end stop", "qualitative") when the rule has no
+    numeric threshold by nature. The derived :attr:`comparison` — a real
+    field set at construction so ``dataclasses.asdict`` carries it —
+    renders the verdict in display units (mm, °): ``measured 0.62 mm <
+    0.80 mm (min_wall)``. No other kind's
     ``ValidationIssue`` is touched."""
 
     rule: str
@@ -95,13 +106,32 @@ class ValidationIssue:
     #: today only ``unconnected_port``'s "external by design" line for a
     #: port annotated ``external=true``).
     severity: str = "error"
-    #: The measured figure a process-DRC finding is about (e.g. "40.0 mm"),
-    #: ``None`` for every finding outside Engine 3.
-    measured: str | None = None
-    #: The threshold the measured figure is checked against, with its
-    #: capability-field name (e.g. "<= 10 mm (max_bridge)"), ``None``
-    #: outside Engine 3.
-    expected: str | None = None
+    #: The measured figure a finding is about, an SI float in ``unit``
+    #: (metres, radians, N — never display mm/deg), ``None`` for findings
+    #: with no measured figure (structural rules).
+    measured: float | None = None
+    #: The threshold the measured figure is checked against — an SI float
+    #: in ``unit`` (the band's LOW bound when ``expected_hi`` is set), or a
+    #: short requirement string when the criterion is not numeric
+    #: ("an end stop", "free_length + rate declared", "qualitative"),
+    #: ``None`` when there is no threshold to cite.
+    expected: float | str | None = None
+    #: The band's high bound — set only with a numeric ``expected`` and
+    #: ``requirement='band'``.
+    expected_hi: float | None = None
+    #: The unit ``measured``/``expected`` are expressed in — ``'m'``,
+    #: ``'m2'``, ``'m3'``, ``'m/turn'``, ``'rad'``, ``'N'``, ``'%'``,
+    #: ``'count'``, ``'ratio'``. Renderers convert to display units
+    #: (mm/°); ``None`` means the floats are unitless.
+    unit: str | None = None
+    #: The constraint ``measured`` violates: ``'min'`` (must be >=
+    #: expected), ``'max'`` (<=), ``'gt'`` (>), ``'lt'`` (<), ``'eq'`` (==),
+    #: or ``'band'`` (inside [expected, expected_hi]); ``None`` for a
+    #: receipt or a string ``expected``.
+    requirement: str | None = None
+    #: The capability field / rule name the threshold came from
+    #: (``'min_wall'``, ``'max_overhang'``) — rendered ``(min_wall)``.
+    threshold_name: str | None = None
     #: v1 = plain text (a later rung may promote this to a process-skill
     #: reference); ``None`` outside Engine 3.
     suggested_fix: str | None = None
@@ -112,6 +142,41 @@ class ValidationIssue:
     #: must omit the key when it is ``None`` so existing serialisations are
     #: byte-identical.
     geometry: list[dict[str, Any]] | None = None
+    #: The measured-vs-threshold verdict spelled out in display units —
+    #: ``measured 0.62 mm < 0.80 mm (min_wall)`` — derived from the SI
+    #: fields in ``__post_init__`` (gr551980 r2: a field, not a property,
+    #: so ``dataclasses.asdict`` carries it). ``None`` when there is
+    #: nothing to compare.
+    comparison: str | None = None
+
+    def __post_init__(self) -> None:
+        self.comparison = cad_printability.finding_comparison(
+            self.measured,
+            self.expected,
+            self.expected_hi,
+            self.unit,
+            self.requirement,
+            self.threshold_name,
+        )
+
+    @property
+    def measured_text(self) -> str:
+        """``measured`` in display units ("" when absent) — the table
+        column; the structured float stays SI."""
+        return cad_printability.finding_fig(self.measured, self.unit) or ""
+
+    @property
+    def expected_text(self) -> str:
+        """``expected`` rendered the way the column reads —
+        ``>= 0.8 mm (min_wall)``, ``[0.4, 0.8] mm``, or the free-text
+        requirement — with ``threshold_name`` appended."""
+        return cad_printability.finding_expected_text(
+            self.expected,
+            self.expected_hi,
+            self.unit,
+            self.requirement,
+            self.threshold_name,
+        )
 
 
 def is_realized(node: Any) -> bool:
@@ -611,6 +676,11 @@ def validate(
                     "re-pose"
                 ),
                 severity="warn",
+                measured=-gap,
+                expected=0.0,
+                unit="m",
+                requirement="max",
+                threshold_name="no interpenetration",
             )
         )
     if cross_scale:

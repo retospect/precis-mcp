@@ -112,6 +112,8 @@ def findings(store: Store, tree: SeTree, ref_id: int) -> list[ValidationIssue]:
                 f"utilisation {100 * fp.utilisation:.1f} %"
             ),
             severity="info",
+            measured=100 * fp.utilisation,
+            unit="%",
         )
     )
     return out
@@ -147,6 +149,11 @@ def _mating_findings(fp: Flatpack) -> list[ValidationIssue]:
                             "shared seam — outside every slot and gap"
                         ),
                         severity="error",
+                        measured=hit.area * 1e-6,
+                        expected=0.0,
+                        unit="m2",
+                        requirement="eq",
+                        threshold_name="tab must land in a slot",
                     )
                 )
             elif not fingers.is_empty:
@@ -163,6 +170,11 @@ def _mating_findings(fp: Flatpack) -> list[ValidationIssue]:
                                 f"{_fmt(clearance)} mm a side"
                             ),
                             severity="error",
+                            measured=gap * 1e-3,
+                            expected=clearance * 1e-3,
+                            unit="m",
+                            requirement="min",
+                            threshold_name="fit clearance a side",
                         )
                     )
             slots = region_dst.difference(dst.polygon)
@@ -220,6 +232,10 @@ def _width_findings(fp: Flatpack) -> list[ValidationIssue]:
                         "buffer(-t) leaves nothing"
                     ),
                     severity="error",
+                    expected=2 * p.thickness * 1e-3,
+                    unit="m",
+                    requirement="min",
+                    threshold_name="2t min width",
                 )
             )
     return out
@@ -249,6 +265,11 @@ def _nesting_findings(fp: Flatpack) -> list[ValidationIssue]:
                         f"the {_fmt(m)} mm sheet margin"
                     ),
                     severity="error",
+                    measured=over.area * 1e-6,
+                    expected=0.0,
+                    unit="m2",
+                    requirement="eq",
+                    threshold_name=f"outside {_fmt(m)} mm margin",
                 )
             )
     ids = sorted(placed)
@@ -265,6 +286,11 @@ def _nesting_findings(fp: Flatpack) -> list[ValidationIssue]:
                             f"{_fmt(hit.area)} mm² after kerf"
                         ),
                         severity="error",
+                        measured=hit.area * 1e-6,
+                        expected=0.0,
+                        unit="m2",
+                        requirement="eq",
+                        threshold_name="post-kerf overlap",
                     )
                 )
     return out
@@ -314,6 +340,11 @@ def _sag_finding(fp: Flatpack) -> list[ValidationIssue]:
             subject="shelves",
             detail=detail,
             severity="warn" if delta > SAG_LIMIT_MM else "info",
+            measured=delta * 1e-3,
+            expected=SAG_LIMIT_MM * 1e-3,
+            unit="m",
+            requirement="max",
+            threshold_name="sag limit",
         )
     ]
 

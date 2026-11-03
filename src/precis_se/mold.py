@@ -98,6 +98,11 @@ def findings(store: Any, tree: SeTree, ref_id: int) -> list[ValidationIssue]:
                         "args={'relief_fit': 'clip'} lowers only the "
                         "overhung relief"
                     ),
+                    measured=check.undercut_fraction * 100.0,
+                    expected=0.0,
+                    unit="%",
+                    requirement="eq",
+                    threshold_name="release cone",
                 )
             )
     return out

@@ -845,8 +845,11 @@ def report_for(
                                     f"its baked build frame ({build_dir})"
                                 ),
                                 severity="warn",
-                                measured=f"{voxels} unsupported voxel(s)",
-                                expected="0 (the AM filter's own rule)",
+                                measured=float(voxels),
+                                expected=0.0,
+                                unit="voxel(s)",
+                                requirement="eq",
+                                threshold_name="the AM filter's own rule",
                                 suggested_fix=(
                                     "re-realize without open=/close=, or coarser"
                                 ),

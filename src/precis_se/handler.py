@@ -2961,6 +2961,13 @@ class SeHandler(Handler):
         ]
         if fdm_notes:
             header_lines.append("fdm print-check: " + "; ".join(fdm_notes))
+        fdm_cites = [
+            f"{name}/{f.rule}: {f.comparison or f.detail}"
+            for name, r in fdm_status
+            for f in r.findings
+        ]
+        if fdm_cites:
+            header_lines.append("fdm findings: " + "; ".join(fdm_cites))
         fill_block = "\n".join(header_lines)
         if not findings:
             clean = f"✓ no validator findings\n{fill_block}"
@@ -2976,6 +2983,9 @@ class SeHandler(Handler):
                     "severity": f.severity,
                     "rule": f.rule,
                     "subject": f.subject,
+                    "measured": f.measured_text,
+                    "expected": f.expected_text,
+                    "comparison": f.comparison or "",
                     "detail": f.detail,
                     **({"frame": fmap[f.subject]} if f.subject in fmap else {}),
                 }
@@ -3424,6 +3434,9 @@ class SeHandler(Handler):
             lines.append(
                 f"- {name}: {n} process finding(s) — "
                 f"view='print' args={{'block': {name!r}}}"
+            )
+            lines.extend(
+                f"  · {f.rule}: {f.comparison or f.detail}" for f in report.findings
             )
         return "\n" + "\n".join(lines)
 
@@ -6913,8 +6926,27 @@ def _region_pin_findings(store: Any, tree: SeTree) -> list[se_validate.Validatio
     return out
 
 
-_FINDING_SCHEMA = ["id", "severity", "rule", "subject", "detail"]
-_FINDING_SCHEMA_DELTA = ["id", "delta", "severity", "rule", "subject", "detail"]
+_FINDING_SCHEMA = [
+    "id",
+    "severity",
+    "rule",
+    "subject",
+    "measured",
+    "expected",
+    "comparison",
+    "detail",
+]
+_FINDING_SCHEMA_DELTA = [
+    "id",
+    "delta",
+    "severity",
+    "rule",
+    "subject",
+    "measured",
+    "expected",
+    "comparison",
+    "detail",
+]
 
 
 def _render_drc(
@@ -6981,6 +7013,9 @@ def _render_drc(
                 "severity": f.severity,
                 "rule": f.rule,
                 "subject": f.subject,
+                "measured": f.measured_text,
+                "expected": f.expected_text,
+                "comparison": f.comparison or "",
                 "detail": f.detail,
                 **({"frame": fmap[f.subject]} if f.subject in fmap else {}),
             }
@@ -7029,17 +7064,19 @@ def _render_drc(
 
 
 def _findings_table(findings: list[se_validate.ValidationIssue]) -> str:
-    """The six-column ``view='print'`` findings table — the one render
-    that shows ``measured``/``expected``/``suggested_fix`` (module
-    docstring's rule: existing renderers stay 4-column, unchanged)."""
+    """The ``view='print'`` findings table — ``measured``/``expected``/
+    ``suggested_fix`` plus the derived ``comparison`` column (gr551980:
+    the measured-vs-threshold verdict spelled out, e.g. ``measured
+    0.62 mm < 0.80 mm (min_wall)``)."""
     return render_agent_table(
         [
             {
                 "severity": f.severity,
                 "rule": f.rule,
                 "subject": f.subject,
-                "measured": f.measured or "",
-                "expected": f.expected or "",
+                "measured": f.measured_text,
+                "expected": f.expected_text,
+                "comparison": f.comparison or "",
                 "detail": f.detail,
                 "suggested_fix": f.suggested_fix or "",
             }
@@ -7051,6 +7088,7 @@ def _findings_table(findings: list[se_validate.ValidationIssue]) -> str:
             "subject",
             "measured",
             "expected",
+            "comparison",
             "detail",
             "suggested_fix",
         ],
@@ -8040,8 +8078,8 @@ def _render_stability(tree: SeTree, args: dict[str, Any] | None = None) -> str:
         )
         for note in prestress.notes:
             lines.append(f"note: {note}")
-        for subject, detail in prestress.findings:
-            lines.append(f"finding: {subject} — {detail}")
+        for f in prestress.findings:
+            lines.append(f"finding: {f.subject} — {f.detail}")
 
     load_path = se_stability.load_path_report(
         tree, load_cases=_load_cases_arg(tree, args)

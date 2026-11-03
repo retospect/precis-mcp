@@ -235,6 +235,10 @@ class ResolvedDatum:
     #: ``id ASC`` in the loaded scene). Empty when unresolved or when the
     #: kind carries no atom set.
     atoms: tuple[int, ...] = ()
+    #: ``patch_exceeds_face``'s numbers — ``(patch_w, patch_h, face_w,
+    #: face_h)`` metres — so the finding cites measured-vs-bounds
+    #: structurally (gr551980 r2) instead of re-parsing the note.
+    patch_vs_face_m: tuple[float, float, float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -848,12 +852,13 @@ def resolve(
         notes: list[str] = []
         flags: set[str] = set()
         half_w, half_h = float(sel.w or 0.0) / 2.0, float(sel.h or 0.0) / 2.0
-        if (
+        exceeds = (
             u - half_w < u_lo - slack
             or u + half_w > u_hi + slack
             or v - half_h < v_lo - slack
             or v + half_h > v_hi + slack
-        ):
+        )
+        if exceeds:
             notes.append(
                 f"patch {_fmt_pair(sel.w, sel.h)} extends past face "
                 f"{target}.{sel.tag} ({_fmt_pair(u_hi - u_lo, v_hi - v_lo)}) "
@@ -874,6 +879,16 @@ def resolve(
             normal=placed.xform.apply_dir(n_l),
             notes=tuple(notes),
             flags=frozenset(flags),
+            patch_vs_face_m=(
+                (
+                    float(sel.w or 0.0),
+                    float(sel.h or 0.0),
+                    u_hi - u_lo,
+                    v_hi - v_lo,
+                )
+                if exceeds
+                else None
+            ),
         )
     # face
     target = sel.instance or node.name

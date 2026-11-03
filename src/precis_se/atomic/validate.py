@@ -1214,6 +1214,11 @@ def _port_rot_findings(
                         "wrong (set_port_pose, or move the atoms)"
                     ),
                     severity="warn",
+                    measured=deviation,
+                    expected=PORT_ROT_MISMATCH_RAD,
+                    unit="rad",
+                    requirement="max",
+                    threshold_name="port rot tol",
                 )
             )
     return findings

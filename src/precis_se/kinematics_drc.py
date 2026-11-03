@@ -119,6 +119,11 @@ def findings(store: Any, tree: SeTree, ref_id: int) -> list[ValidationIssue]:
                             "rotation; both must agree"
                         ),
                         severity="warn",
+                        measured=theta,
+                        expected=PORT_ROT_MISMATCH_RAD,
+                        unit="rad",
+                        requirement="max",
+                        threshold_name="joint/port axis agreement",
                     )
                 )
     out.extend(sweep_findings(tree))
@@ -347,6 +352,11 @@ def sweep_findings(tree: SeTree) -> list[ValidationIssue]:
                         "swept path"
                     ),
                     severity="warn",
+                    measured=float(len(idx)),
+                    expected=0.0,
+                    unit="collisions",
+                    requirement="eq",
+                    threshold_name=f"declared range {span}",
                 )
             )
         if timed_out or unchecked:

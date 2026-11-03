@@ -266,6 +266,11 @@ def _axis_findings(
                     "one of the blocks"
                 ),
                 severity="warn",
+                measured=angle,
+                expected=_AXIS_ANGLE_TOL_RAD,
+                unit="rad",
+                requirement="max",
+                threshold_name="coaxial tol",
             )
         ]
     # Perpendicular offset between the two axis LINES: since the
@@ -288,6 +293,11 @@ def _axis_findings(
                     "perpendicular to the shared axis — check pose"
                 ),
                 severity="warn",
+                measured=offset,
+                expected=tol_linear,
+                unit="m",
+                requirement="max",
+                threshold_name="contact tol",
             )
         ]
     if a_rmax <= b_rmax:
@@ -306,6 +316,11 @@ def _axis_findings(
                     f"{outer_rmin:g} m by {inner_rmax - outer_rmin:g} m"
                 ),
                 severity="warn",
+                measured=inner_rmax - outer_rmin,
+                expected=tol_linear,
+                unit="m",
+                requirement="max",
+                threshold_name="contact tol",
             )
         ]
     return []
@@ -352,6 +367,7 @@ def findings(
             continue  # no envelope on one side, or cross-scale — unverifiable
         result, scale = pair
         gap_m = result.gap / scale
+        contact_m = result.resolution / scale
 
         # gr337040 — the mirror of undeclared_interpenetration.
         if result.gap > result.resolution:
@@ -368,6 +384,11 @@ def findings(
                         "physical"
                     ),
                     severity="warn",
+                    measured=gap_m,
+                    expected=contact_m,
+                    unit="m",
+                    requirement="max",
+                    threshold_name="envelopes must touch",
                 )
             )
 
@@ -389,6 +410,11 @@ def findings(
                         "unbuildable"
                     ),
                     severity="warn",
+                    measured=gap_m,
+                    expected=-contact_m,
+                    unit="m",
+                    requirement="lt",
+                    threshold_name="interference",
                 )
             )
         if klass == "captive" and not interferes:
@@ -402,6 +428,11 @@ def findings(
                         f"do not ({gap_m:g} m gap)"
                     ),
                     severity="warn",
+                    measured=gap_m,
+                    expected=-contact_m,
+                    unit="m",
+                    requirement="lt",
+                    threshold_name="envelope overlap",
                 )
             )
         if klass == "screw" and not interferes:
@@ -416,6 +447,11 @@ def findings(
                         "gap)"
                     ),
                     severity="warn",
+                    measured=gap_m,
+                    expected=-contact_m,
+                    unit="m",
+                    requirement="lt",
+                    threshold_name="envelope overlap",
                 )
             )
         if mech == _COAXIAL_MECHANISM or klass in _COAXIAL_CLASSES:
