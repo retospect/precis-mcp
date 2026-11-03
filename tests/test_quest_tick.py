@@ -2216,6 +2216,29 @@ class TestPromptAndView:
         assert "no code fences" in p
         assert "$…$` math" in p
 
+    def test_proposal_schema_shows_derive_from_as_a_parseable_object(
+        self, store: Any
+    ) -> None:
+        """The clone recipe in the proposals schema must be a bare JSON
+        object — a quoted-string example teaches the model to emit a string
+        `structure`, which ensure_candidate then has to parse back (gr552641
+        review)."""
+        qid = _mk_quest(store, "A striving")
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        start = prompt.index('"proposals": [')
+        end = prompt.index("\n  ],", start)
+        proposals = json.loads(prompt[start + len('"proposals": ') : end + 4])
+        clones = [
+            p
+            for p in proposals
+            if isinstance(p.get("structure"), dict) and "derive_from" in p["structure"]
+        ]
+        assert clones, "the proposals example must show a derive_from clone"
+        spec = clones[0]["structure"]
+        assert isinstance(spec["ops"], list)
+        assert spec["ops"][0]["op"] == "set_element"
+
     def test_view_dossier_before_and_after(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         h = QuestHandler(hub=Hub(store=store))

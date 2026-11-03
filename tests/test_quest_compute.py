@@ -859,6 +859,288 @@ class TestRejectedProposalFeedback:
         assert {a.element for a in scene.atoms.values()} == {"Pd"}
 
 
+class TestDeriveFromSpec:
+    """``spec.derive_from`` (gr552641): a candidate cloned off an existing
+    structure — the dopant-substitution series off a baseline never
+    re-enumerates the baseline's atoms by hand."""
+
+    _PARENT_SLUG = "base-pd-mn"
+
+    @classmethod
+    def _parent(cls, store: Any) -> int:
+        """The Mn baseline: a Pd(111) slab with one surface Mn dopant
+        (labels aPd1..aPd12 ascending-z, so aPd10 is a top-layer atom —
+        transmuted labels stay stable)."""
+        StructureHandler(hub=Hub(store=store)).put(
+            id=cls._PARENT_SLUG,
+            text=json.dumps(
+                {
+                    "ops": [
+                        {
+                            "op": "slab",
+                            "element": "Pd",
+                            "size": [2, 2, 3],
+                            "fix_layers": 1,
+                        },
+                        {"op": "set_element", "atom": "aPd10", "element": "Mn"},
+                    ]
+                }
+            ),
+        )
+        ref = store.get_ref(kind="structure", id=cls._PARENT_SLUG)
+        assert ref is not None
+        return int(ref.id)
+
+    def test_clone_substitutes_one_element_and_links_lineage(self, store: Any) -> None:
+        pytest.importorskip("ase.build")
+        import numpy as np
+
+        qid = _mk_quest(store, "A dopant series")
+        parent_id = self._parent(store)
+        parent_scene, _ = store.structure_load(parent_id)
+        spec = {
+            "derive_from": self._PARENT_SLUG,
+            "ops": [{"op": "set_element", "atom": "aPd10", "element": "Co"}],
+        }
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd-Co", "structure": spec}
+        )
+        assert sid is not None and sid != parent_id
+        scene, _ = store.structure_load(sid)
+        # same atom set and positions; only aPd10's element changed
+        assert set(scene.atoms) == set(parent_scene.atoms)
+        for label, atom in scene.atoms.items():
+            src = parent_scene.atoms[label]
+            assert np.allclose(atom.frac, src.frac)
+            assert atom.element == ("Co" if label == "aPd10" else src.element)
+        # provenance: child --derived-from--> parent
+        derived = store.links_for(sid, direction="out", relation="derived-from")
+        assert parent_id in [ln.dst_ref_id for ln in derived]
+        # ordinary candidate wiring still lands
+        servers = store.links_for(qid, direction="in", relation="serves")
+        assert sid in [ln.src_ref_id for ln in servers]
+        # the same Tier-0 preflight a fresh put runs passes on the clone
+        assert preflight_mod.preflight(scene).ok
+        # the substitution lands in the param-space stamp
+        ref = store.fetch_refs_by_ids({sid})[sid]
+        assert (ref.meta or {}).get("params", {}).get("dopant") == "Co"
+
+    def test_derive_from_resolves_a_handle(self, store: Any) -> None:
+        pytest.importorskip("ase.build")
+        from precis.utils import handle_registry
+
+        qid = _mk_quest(store, "A dopant series")
+        # own parent: a subsurface-marked atom pins site-intent carry-over
+        # (gr549760 — the marker persists on the clone's hydrated scene).
+        StructureHandler(hub=Hub(store=store)).put(
+            id="base-pd-marked",
+            text=json.dumps(
+                {
+                    "ops": [
+                        {"op": "slab", "element": "Pd", "size": [2, 2, 3]},
+                        {
+                            "op": "add_atom",
+                            "element": "B",
+                            "frac": [0.5, 0.5, 0.1],
+                            "site": "subsurface",
+                        },
+                    ]
+                }
+            ),
+        )
+        parent = store.get_ref(kind="structure", id="base-pd-marked")
+        assert parent is not None
+        parent_id = int(parent.id)
+        handle = handle_registry.try_format("structure", parent_id)
+        assert handle is not None
+        spec = {"derive_from": handle, "ops": []}
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd-Mn clone", "structure": spec}
+        )
+        assert sid is not None
+        derived = store.links_for(sid, direction="out", relation="derived-from")
+        assert parent_id in [ln.dst_ref_id for ln in derived]
+        scene, _ = store.structure_load(sid)
+        assert scene.atoms["aB1"].site == "subsurface"
+
+    def test_substituting_an_absent_atom_is_rejected_with_a_note(
+        self, store: Any
+    ) -> None:
+        pytest.importorskip("ase.build")
+        qid = _mk_quest(store, "A dopant series")
+        self._parent(store)
+        spec = {
+            "derive_from": self._PARENT_SLUG,
+            "ops": [{"op": "set_element", "atom": "aFe99", "element": "Co"}],
+        }
+        assert (
+            compute_mod.ensure_candidate(store, qid, {"name": "x", "structure": spec})
+            is None
+        )
+        notes = [
+            b.text
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log" and b.text.startswith("rejected proposal:")
+        ]
+        assert len(notes) == 1
+        assert "aFe99" in notes[0]
+
+    def test_derive_from_with_a_cell_is_rejected_with_a_note(self, store: Any) -> None:
+        pytest.importorskip("ase.build")
+        qid = _mk_quest(store, "A dopant series")
+        self._parent(store)
+        spec = {
+            "derive_from": self._PARENT_SLUG,
+            "cell": _SPEC["cell"],
+            "ops": [],
+        }
+        assert (
+            compute_mod.ensure_candidate(store, qid, {"name": "x", "structure": spec})
+            is None
+        )
+        notes = [
+            b.text
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log" and b.text.startswith("rejected proposal:")
+        ]
+        assert len(notes) == 1
+        assert "derive_from" in notes[0]
+
+    def test_two_site_substitution_in_one_clone(self, store: Any) -> None:
+        """A baseline with TWO dopant sites varies both in one clone —
+        the 33-atom-per-dopant rebuild the gripe was filed against."""
+        pytest.importorskip("ase.build")
+        qid = _mk_quest(store, "A dopant series")
+        StructureHandler(hub=Hub(store=store)).put(
+            id="base-pd-2mn",
+            text=json.dumps(
+                {
+                    "ops": [
+                        {
+                            "op": "slab",
+                            "element": "Pd",
+                            "size": [2, 2, 3],
+                            "fix_layers": 1,
+                        },
+                        {"op": "set_element", "atom": "aPd10", "element": "Mn"},
+                        {"op": "set_element", "atom": "aPd11", "element": "Mn"},
+                    ]
+                }
+            ),
+        )
+        spec = {
+            "derive_from": "base-pd-2mn",
+            "ops": [
+                {"op": "set_element", "atom": "aPd10", "element": "Co"},
+                {"op": "set_element", "atom": "aPd11", "element": "Fe"},
+            ],
+        }
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd-CoFe", "structure": spec}
+        )
+        assert sid is not None
+        scene, _ = store.structure_load(sid)
+        assert len(scene.atoms) == 12
+        assert scene.atoms["aPd10"].element == "Co"
+        assert scene.atoms["aPd11"].element == "Fe"
+        rest = {
+            a.element for la, a in scene.atoms.items() if la not in ("aPd10", "aPd11")
+        }
+        assert rest == {"Pd"}
+        # both substitutions land in the param stamp
+        ref = store.fetch_refs_by_ids({sid})[sid]
+        assert (ref.meta or {}).get("params", {}).get("n_dopant") == 2
+
+    def test_source_is_byte_identical_after_the_clone(self, store: Any) -> None:
+        """Deriving touches only the child — the parent's stored atoms,
+        bonds and cell come back unchanged."""
+        pytest.importorskip("ase.build")
+        import numpy as np
+
+        qid = _mk_quest(store, "A dopant series")
+        parent_id = self._parent(store)
+        before, _ = store.structure_load(parent_id)
+        atoms_before = {
+            la: (a.element, tuple(float(x) for x in a.frac), a.fixed, a.site)
+            for la, a in before.atoms.items()
+        }
+        bonds_before = [(b.i, b.j, b.order, b.kind, b.image) for b in before.bonds]
+        cell_before = np.asarray(before.cell.lattice, dtype=float)
+        spec = {
+            "derive_from": self._PARENT_SLUG,
+            "ops": [{"op": "set_element", "atom": "aPd10", "element": "Co"}],
+        }
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd-Co", "structure": spec}
+        )
+        assert sid is not None
+        after, _ = store.structure_load(parent_id)
+        assert {
+            la: (a.element, tuple(float(x) for x in a.frac), a.fixed, a.site)
+            for la, a in after.atoms.items()
+        } == atoms_before
+        assert [(b.i, b.j, b.order, b.kind, b.image) for b in after.bonds] == (
+            bonds_before
+        )
+        assert np.array_equal(np.asarray(after.cell.lattice, dtype=float), cell_before)
+        # and the stored version didn't advance
+        assert store.structure_version(parent_id) == 1
+
+    def test_unknown_derive_from_is_rejected_with_a_note(self, store: Any) -> None:
+        qid = _mk_quest(store, "A dopant series")
+        spec = {"derive_from": "no-such-design", "ops": []}
+        assert (
+            compute_mod.ensure_candidate(store, qid, {"name": "x", "structure": spec})
+            is None
+        )
+        notes = [
+            b.text
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log" and b.text.startswith("rejected proposal:")
+        ]
+        assert len(notes) == 1
+        assert "no-such-design" in notes[0]
+
+    def test_retired_derive_from_is_rejected_with_a_note(self, store: Any) -> None:
+        pytest.importorskip("ase.build")
+        qid = _mk_quest(store, "A dopant series")
+        parent_id = self._parent(store)
+        store.retire_ref(parent_id)
+        spec = {"derive_from": self._PARENT_SLUG, "ops": []}
+        assert (
+            compute_mod.ensure_candidate(store, qid, {"name": "x", "structure": spec})
+            is None
+        )
+        notes = [
+            b.text
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log" and b.text.startswith("rejected proposal:")
+        ]
+        assert len(notes) == 1
+        assert self._PARENT_SLUG in notes[0]
+
+    def test_structure_spec_quoted_as_a_json_string_is_parsed(self, store: Any) -> None:
+        """A model copying the prompt's `structure: {...}` shape one quote
+        too far emits a STRING spec — parsed, not dropped (gr552641)."""
+        pytest.importorskip("ase.build")
+        qid = _mk_quest(store, "A dopant series")
+        parent_id = self._parent(store)
+        spec = json.dumps(
+            {
+                "derive_from": self._PARENT_SLUG,
+                "ops": [{"op": "set_element", "atom": "aPd10", "element": "Co"}],
+            }
+        )
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd-Co", "structure": spec}
+        )
+        assert sid is not None
+        scene, _ = store.structure_load(sid)
+        assert scene.atoms["aPd10"].element == "Co"
+        derived = store.links_for(sid, direction="out", relation="derived-from")
+        assert parent_id in [ln.dst_ref_id for ln in derived]
+
+
 # ── harvest ───────────────────────────────────────────────────────────
 
 

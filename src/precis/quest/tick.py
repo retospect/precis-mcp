@@ -1544,7 +1544,13 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         "set_element.\n"
         "You may combine several ops (e.g. two set_element for a 2-atom alloy, "
         "or set_element + vacancy). Vary composition; do not hand-enumerate "
-        "atoms. Worked recipes (dopant adatoms, co-adsorbates, IS/FS pairs): "
+        "atoms. To re-test a dopant series against an existing candidate, "
+        'CLONE it instead of rebuilding: "structure": '
+        '{"derive_from": "<cand-slug or st<id>>", "ops": [{"op": '
+        '"set_element", "atom": "<label>", "element": "<dopant>"}]} — the '
+        "clone keeps every atom, label and site marker, so a substitution "
+        "needs only its set_element op; no cell/slab key. Worked recipes "
+        "(dopant adatoms, co-adsorbates, IS/FS pairs): "
         "get(kind='skill', id='precis-structure-slab-help').\n"
     )
     # PBC ground rules (qu164903 corner saga): without these the model treats
@@ -2009,7 +2015,12 @@ strategy tried/killed/still open, not a single candidate material>",
 refining an existing one>",
       "structure": {{"cell": {{"a": 8.4, "b": 8.4, "c": 24.0, \
 "pbc": [true, true, false]}},
-        "ops": [{{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.5]}}]}}}}
+        "ops": [{{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.5]}}]}}}},
+    {{"name": "<a dopant variant of an existing candidate>", \
+"rationale": "<why test it>",
+      "structure": {{"derive_from": "<slug or st<id> of the candidate to \
+clone>", "ops": [{{"op": "set_element", "atom": "<label>", "element": \
+"<dopant>"}}]}}}}
   ],
   "directions": ["<0–3 strategic directions — set these on a frontier review>"],
   "needs": [
@@ -2080,9 +2091,10 @@ with nothing new to show for it gets bounced back to you to compress.
 per tick and waits for its sims before the next tick, so pick your best next \
 experiment rather than a spread) are candidate \
 materials to simulate — each an atomistic \
-`structure` (a periodic `cell` + `add_atom` ops with fractional coords, or a \
-`slab` bulk-template op that builds a metal surface for you — see the reaction \
-rules above if this is a catalyst quest). A periodic cell TILES: specs \
+`structure` (a periodic `cell` + `add_atom` ops with fractional coords, a \
+`slab` bulk-template op that builds a metal surface for you, or a \
+`derive_from` clone of an existing candidate whose `ops` then vary it — see \
+the reaction rules above if this is a catalyst quest). A periodic cell TILES: specs \
 differing only by a lattice translation/rotation/mirror are one candidate. \
 Only propose a candidate you can \
 express as a concrete structure and that is NOT already ruled out; omit \

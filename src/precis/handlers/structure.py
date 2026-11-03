@@ -1661,6 +1661,9 @@ class StructureHandler(Handler):
         # too (relax was rejected above, so the returned relax tail is empty).
         _relax_tail, import_echo = self._apply_ops_with_imports(scene, op_list)
         ttl = (title or to_slug).strip() or to_slug
+        # Tier-0 preflight (gated, default off): same gate put/edit run on a
+        # new structure's result — reject before the derived design commits.
+        preflight_caveats = _format_preflight_caveats(_run_preflight_gate(scene))
         with self.store.tx() as conn:
             ref, _created = self.store.structure_save(
                 slug=to_slug,
@@ -1682,6 +1685,7 @@ class StructureHandler(Handler):
             self._toc_response(_scene, ref, handles, head_verb="derived"),
             _combine_echo(
                 import_echo,
+                preflight_caveats,
                 self._pairability_echo(scene, parent, op_list, parent_labels),
             ),
         )

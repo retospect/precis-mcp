@@ -703,6 +703,15 @@ def _ensure_candidate_detail(
     """
     name = str(proposal.get("name") or "(unnamed)")
     spec = proposal.get("structure")
+    if isinstance(spec, str):
+        # A model that emits the spec as a quoted JSON string (copying the
+        # prompt's `structure: {...}` shape a quote too far) — parse it
+        # rather than drop the proposal; a non-dict result falls through to
+        # the same refusal.
+        try:
+            spec = json.loads(spec)
+        except ValueError:
+            pass
     if not isinstance(spec, dict):
         return (
             None,
@@ -715,14 +724,33 @@ def _ensure_candidate_detail(
                 "(`ops` and/or `cell`), not a name alone",
             ),
         )
-    # A candidate needs a cell — either given directly, or established by a bulk
+    # A candidate needs a cell — either given directly, established by a bulk
     # template op (`slab`) / a `set_cell` op (a Pd(111) slab is 30+ atoms; the
-    # proposer emits the compact `slab` op, not a hand-enumerated cell).
+    # proposer emits the compact `slab` op, not a hand-enumerated cell), or
+    # inherited from `derive_from` (a clone of an existing candidate the ops
+    # then vary — gr552641's dopant-substitution series off a baseline).
     ops = spec.get("ops") or []
-    has_cell = "cell" in spec or (
-        isinstance(ops, list)
-        and any(
-            isinstance(o, dict) and o.get("op") in ("slab", "set_cell") for o in ops
+    derive_from = str(spec.get("derive_from") or "").strip()
+    if derive_from and "cell" in spec:
+        return (
+            None,
+            False,
+            _note_rejected_proposal(
+                store,
+                quest_id,
+                name,
+                "spec carries both `derive_from` and `cell` — the clone's cell "
+                "is the parent's; drop `cell`",
+            ),
+        )
+    has_cell = (
+        "cell" in spec
+        or bool(derive_from)
+        or (
+            isinstance(ops, list)
+            and any(
+                isinstance(o, dict) and o.get("op") in ("slab", "set_cell") for o in ops
+            )
         )
     )
     if not has_cell:
@@ -733,8 +761,9 @@ def _ensure_candidate_detail(
                 store,
                 quest_id,
                 name,
-                "spec establishes no cell — give a top-level `cell`, or an op "
-                "that sets one (`slab` for a metal surface, else `set_cell`)",
+                "spec establishes no cell — give a top-level `cell`, an op "
+                "that sets one (`slab` for a metal surface, else `set_cell`), "
+                "or `derive_from` a candidate to clone",
             ),
         )
     slug = _candidate_slug(quest_id, spec)
@@ -750,13 +779,26 @@ def _ensure_candidate_detail(
     if not proposal.get("name"):
         name = slug
     try:
-        # normalize=True: quest candidates all live in one canonical
-        # periodic-symmetry frame (precis.structure.canonical.normalize_scene)
-        # so a translation/rotation/mirror twin of an already-stored candidate
-        # hashes identically below instead of minting a phantom sim.
-        StructureHandler(hub=hub).put(
-            id=slug, text=json.dumps(spec), title=name, normalize=True
-        )
+        if derive_from:
+            # Clone the named structure (slug or st<N> handle) and apply the
+            # ops on top — StructureHandler.derive keeps the parent's atom
+            # labels and records the derived-from link itself, so a dopant
+            # series never re-enumerates the baseline's atoms (gr552641). No
+            # normalize= is needed: the parent is already canonical and
+            # set_element doesn't move atoms.
+            StructureHandler(hub=hub).put(
+                id=slug,
+                title=name,
+                args={"derive_from": derive_from, "ops": ops},
+            )
+        else:
+            # normalize=True: quest candidates all live in one canonical
+            # periodic-symmetry frame (precis.structure.canonical.normalize_scene)
+            # so a translation/rotation/mirror twin of an already-stored candidate
+            # hashes identically below instead of minting a phantom sim.
+            StructureHandler(hub=hub).put(
+                id=slug, text=json.dumps(spec), title=name, normalize=True
+            )
     except Exception as exc:
         log.warning(
             "ensure_candidate: StructureHandler.put raised for quest %s slug %s "
