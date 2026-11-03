@@ -501,6 +501,12 @@ _GRAPH: dict[str, Any] = {
 }
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="gr559355: the kinetics header hardcodes T=300K regardless of "
+    "the recorded environment; kinetics_text/_eyring_rate need the real T "
+    "from pathway_conditions.kinetics_environment threaded through",
+)
 def test_kinetics_view_renders_environment_q_over_k_and_reversibility(replay) -> None:
     far, _ = replay(
         {"T": 298.15, "gases": {"inputs": {"NO": 1.0, "H2": 1.0}, "outputs": "far"}}
@@ -517,6 +523,9 @@ def test_kinetics_view_renders_environment_q_over_k_and_reversibility(replay) ->
     assert f"basis {far['environment_basis'][:12]}" in body
     assert "Q/K (overall NH3 formation)" in body
     assert "Reversibility z" in body and "*->NO@N" in body
+    # gr559355: the header must track the recorded environment (298.15 K
+    # here), not the 300 K default it reads today.
+    assert "microkinetics (Eyring TST, T = 298 K)" in body
 
 
 def test_kinetics_view_without_a_solve_is_unchanged() -> None:
@@ -524,6 +533,8 @@ def test_kinetics_view_without_a_solve_is_unchanged() -> None:
         {"graph": _GRAPH, "results": {"pathway": ["A", "B"], "target": "B"}}
     )
     assert "Environment:" not in body and "Q/K" not in body
+    # gr559355: no recorded environment keeps the 300 K default header.
+    assert "microkinetics (Eyring TST, T = 300 K)" in body
 
 
 # --- acceptance (spec §Slices item 2): provider seam + checks + record --------
