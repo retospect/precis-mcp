@@ -541,9 +541,8 @@
     #kinetics th { font-weight: 600; }
     #kinetics .kbar { display: flex; gap: .5rem; align-items: center; font-size: .8rem; margin: 2px 0; }
     #kinetics .kbar .kname { flex: none; width: 180px; overflow-wrap: anywhere; }
-    #kinetics .kbar .ktrack { flex: none; display: flex; align-items: center; width: 220px; background: rgb(var(--bg-surface-muted)); border-radius: 2px; height: 14px; }
-    #kinetics .kbar .kfill { flex: none; display: block; height: 14px; border-radius: 2px; }
-    #kinetics .kbar .kval { flex: none; font-variant-numeric: tabular-nums; font-size: .7rem; color: rgb(var(--text-fg-muted)); padding-left: 4px; white-space: nowrap; }
+    #kinetics .kbar .kfill { flex: none; display: inline-flex; align-items: center; height: 14px; border-radius: 2px; padding: 0 4px; }
+    #kinetics .kbar .kval { font-variant-numeric: tabular-nums; font-size: .7rem; line-height: 14px; color: rgb(var(--text-on-solid)); white-space: nowrap; }
     #kinetics .ksw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 2px; }
     #kinetics .kwlist .wtag { font-weight: 600; cursor: help; border-bottom: 1px dotted rgb(var(--border-line-heavy)); }
     #kinetics .kwlist .wtag.wsev-bad { color: rgb(var(--text-danger-strong)); }

@@ -9,12 +9,17 @@ HTML itself is built client-side by the vendored ``pathway-kinetics.js``.
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+import precis_web
 from precis_web.pathway_kinetics import kinetics_payload, kinetics_verdict
+from tests._node import needs_node
 
 
 def _record(**over: Any) -> dict[str, Any]:
@@ -841,3 +846,132 @@ def test_thermodynamic_drc_warning_takes_its_own_entry() -> None:
         )
     )
     assert pats[first].pattern == "thermodynamic DRC is undefined"
+
+
+# ── gr549763: rate-control bars — legend, number on the fill, → names ────
+
+#: Runs the vendored panel script under node against a stub DOM: the script
+#: builds the whole panel into ``#kinetics``'s innerHTML off the
+#: ``#kinetics-data`` JSON, so the rendered markup is assertable without a
+#: browser. Same stub-DOM probe pattern as test_pathway_detail's
+#: ``_NODE_URL_JS``.
+_NODE_PANEL_JS = r"""
+const fs = require('fs');
+const script = fs.readFileSync(process.argv[2], 'utf-8');
+const payload = fs.readFileSync(process.argv[3], 'utf-8');
+const host = {innerHTML: ''};
+global.document = {
+  getElementById: (id) => {
+    if (id === 'kinetics') return host;
+    if (id === 'kinetics-data') return {textContent: payload};
+    return null;
+  },
+};
+(0, eval)(script);
+console.log(JSON.stringify({html: host.innerHTML}));
+"""
+
+
+def _render_panel(tmp_path: Path, payload: dict[str, Any]) -> str:
+    """The innerHTML the panel script builds for ``payload`` (needs node)."""
+    js = Path(precis_web.__file__).parent / "static" / "pathway-kinetics.js"
+    (tmp_path / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
+    driver = tmp_path / "panel_driver.js"
+    driver.write_text(_NODE_PANEL_JS, encoding="utf-8")
+    out = subprocess.run(
+        ["node", str(driver), str(js), str(tmp_path / "payload.json")],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        timeout=60,
+    )
+    return json.loads(out.stdout)["html"]
+
+
+@needs_node
+def test_rate_control_legend_explains_each_colour_and_sign(
+    tmp_path: Path,
+) -> None:
+    """Each section says in plain words what its two colours mean — the
+    swatch alone told the reader nothing."""
+    out = kinetics_payload({"kinetics": _record()})
+    assert out is not None
+    html = _render_panel(tmp_path, out)
+    # X_RC: blue = speeds the cycle, red = slows it
+    assert "positive: lowering this step&#39;s barrier speeds the cycle" in html
+    assert "negative: making the step faster slows the cycle" in html
+    # X_TRC: green = speeds, red = the poison
+    assert "positive: binding this state harder speeds the cycle" in html
+    assert "a poison" in html and "stabilising it slows the cycle" in html
+    # the swatches use the same colours the fills do
+    assert "<span class='ksw' style='background:#2b6cb0'></span>" in html
+    assert "<span class='ksw' style='background:#2f855a'></span>" in html
+
+
+@needs_node
+def test_rate_control_number_sits_on_the_coloured_fill(tmp_path: Path) -> None:
+    """The value rides on the fill right after the step name — the old
+    layout parked it past a 220 px track the eye had to cross."""
+    out = kinetics_payload({"kinetics": _record()})
+    assert out is not None
+    html = _render_panel(tmp_path, out)
+    assert "ktrack" not in html
+    m = re.search(
+        r"<span class='kname'>NO\*→NOH\*</span>"
+        r"<span class='kfill' style='min-width:(\d+)px;background:#2b6cb0'>"
+        r"<span class='kval'>([+-]?\d+\.\d+)</span>",
+        html,
+    )
+    assert m is not None
+    assert m.group(2) == "+0.80"
+
+
+@needs_node
+def test_out_of_range_bar_clamps_but_keeps_the_true_number(
+    tmp_path: Path,
+) -> None:
+    """|X| beyond the 220 px scale used to draw the same full-width bar as
+    everything else; now the fill clamps, the caption says the scale is
+    relative, the section flags itself, and the printed number stays true."""
+    out = kinetics_payload(
+        {"kinetics": _record(drc={"X_RC": {"NO*->NOH*": -249.94, "a->b": 0.5}})}
+    )
+    assert out is not None
+    html = _render_panel(tmp_path, out)
+    m = re.search(
+        r"<span class='kname'>NO\*→NOH\*</span>"
+        r"<span class='kfill' style='min-width:(\d+)px;background:#a33'>"
+        r"<span class='kval'>([+-]?\d+\.\d+)</span>",
+        html,
+    )
+    assert m is not None
+    assert int(m.group(1)) <= 220  # the bar is clamped …
+    assert m.group(2) == "-249.94"  # … the number is not
+    assert "scaled to the largest shown" in html
+    assert "unusual X_RC values" in html
+    # a small value still draws SOMETHING: the fill floors at the number's
+    # width rather than vanishing (min-width 0 + the kval chip)
+    assert "floored at the number's width" in html
+
+
+@needs_node
+def test_step_names_render_real_arrows_but_keep_raw_keys(
+    tmp_path: Path,
+) -> None:
+    """``->`` displays as → wherever the panel prints a step name — bars,
+    the rate-constant table, the steps table, the verdict — while the
+    payload's data keys stay the raw stored names."""
+    out = kinetics_payload({"kinetics": _record()})
+    assert out is not None
+    assert "NO*->NOH*" in out["ml"]["drc"]  # the data key is raw
+    html = _render_panel(tmp_path, out)
+    # bars
+    assert "NO*→NOH*" in html
+    # the numbered rate-constant table and the per-step table
+    assert "NO(g)+* → NO*" in html
+    assert "NO* → NOH*" in html
+    # the verdict sentence that embeds the same step name
+    assert "Rate control sits on NO*→NOH*" in html
+    # nothing raw survives anywhere in the rendered panel
+    assert "->" not in html

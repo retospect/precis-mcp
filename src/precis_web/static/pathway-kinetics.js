@@ -11,9 +11,9 @@
 //
 // The 2026-11-01 kinetics-panel-ux gripes (gr549748/9/57/59/63) landed
 // web-side first: unit-ful headers, the net-rate wording, sorted per-class
-// coverages, the warning help table, and the rate-control rework below are
-// NOT yet in autocatpath/report.py — the upstream copy wants the same
-// changes ported to the run report.
+// coverages, the warning help table, -> rendered as a real arrow, and the
+// rate-control rework below are NOT yet in autocatpath/report.py — the
+// upstream copy wants the same changes ported to the run report.
 (function () {
   const host = document.getElementById("kinetics");
   const data = document.getElementById("kinetics-data");
@@ -336,11 +336,11 @@
     h += "<div class='verdict " + esc2(V.tone || "") + "'><span class='vhead'>" +
          esc2(vTier) + ": " + esc2(V.headline) + "</span>" +
          ((V.lines || []).length
-           ? "<ul>" + V.lines.map(x => "<li>" + esc2(x) + "</li>").join("") +
+           ? "<ul>" + V.lines.map(x => "<li>" + disp(x) + "</li>").join("") +
              "</ul>" : "") +
          ((V.caveats || []).length
            ? "<div class='vcav'>Caveats: " +
-             esc2(V.caveats.join("; ")) + ".</div>" : "") +
+             disp(V.caveats.join("; ")) + ".</div>" : "") +
          "<div class='vrule'>Synthesised from the numbers below by fixed " +
          "rules &mdash; thresholds and sentence templates, no model in the " +
          "loop. Read it as a pointer into the tables, not as a result.</div>" +
@@ -494,10 +494,12 @@
         "</td></tr>").join("") + "</table></details>";
     h += e;
   }
-  // rate-control bars (gr549763): a colour legend, the value on the fill
-  // itself, bars scaled to the section's largest |X| so magnitude survives
-  // clipping, and an unusable banner the moment a value leaves the physical
-  // range -- |X_RC| above ~2 is a broken linearisation, not a strong effect
+  // rate-control bars (gr549763): a colour legend, the value ON the fill
+  // itself (the fill carries the number, floored at the number's width so
+  // even a tiny |X| shows its figure on the colour), bars scaled to the
+  // section's largest |X| so magnitude survives clipping, and an unusable
+  // banner the moment a value leaves the physical range -- |X_RC| above ~2
+  // is a broken linearisation, not a strong effect
   const srcName = s => s === "mf" ? "mean-field solve"
                              : s === "chain" ? "chain solve" : null;
   const bars = (obj, pos, neg, what, src) => {
@@ -522,13 +524,14 @@
     out += all.slice(0, 6).map(kv => {
       const w = Math.abs(kv[1]) * scale;
       return "<div class='kbar'><span class='kname'>" + disp(kv[0]) +
-        "</span><span class='ktrack'><span class='kfill' style='width:" +
-        w.toFixed(0) + "px;background:" + (kv[1] >= 0 ? pos : neg) +
-        "'></span><span class='kval'>" + (kv[1] >= 0 ? "+" : "") +
+        "</span><span class='kfill' style='min-width:" + w.toFixed(0) +
+        "px;background:" + (kv[1] >= 0 ? pos : neg) +
+        "'><span class='kval'>" + (kv[1] >= 0 ? "+" : "") +
         Number(kv[1]).toFixed(2) + "</span></span></div>";
     }).join("");
     out += "<div class='caption'>bar length &prop; |" + esc2(what) + "|" +
       (maxAbs > 1 ? ", scaled to the largest shown" : "") +
+      ", floored at the number's width" +
       (all.length > 6 ? " &middot; top 6 of " + all.length : "") +
       (src ? " &middot; " + esc2(src) : "") + "</div>";
     return out;
@@ -548,7 +551,7 @@
   h += "<h3>Thermodynamic rate control " + term("X_TRC") + " (" + tierName +
        "; negative = poison)</h3>" +
        legend([["#2f855a", "positive: binding this state harder speeds the cycle"],
-               ["#a33", "negative: a poison &mdash; stabilising it slows the cycle"]],
+               ["#a33", "negative: a poison — stabilising it slows the cycle"]],
               srcName(base.trc_source)) +
        bars(base.trc, "#2f855a", "#a33", "X_TRC",
             srcName(base.trc_source));
