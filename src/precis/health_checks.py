@@ -557,7 +557,7 @@ def fetch_freshness_timestamps(
 
 
 def activity_by_handler(
-    store: Any, *, window_hours: int = 24 * 7
+    store: Any, *, window_hours: float = 24 * 7
 ) -> dict[str, dict[str, Any]]:
     """``handler -> {last_ok, last_fail, last_seen}`` from ``worker_logs``
     BatchResult rows.

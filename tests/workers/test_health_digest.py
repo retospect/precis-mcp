@@ -24,6 +24,7 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -61,7 +62,7 @@ from precis.workers.health_digest import (
     run_health_digest_pass,
 )
 from precis.workers.registry import ServiceKind, ServiceSpec
-from precis.workers.scheduler import Cadence
+from precis.workers.scheduler import Cadence, run_scheduler_pass
 from precis.workers.service_config import set_service_prio
 from tests._refs import insert_gripe
 from tests.workers._helpers import make_mock_bge_m3, seed_chunks, seed_ref
@@ -913,6 +914,177 @@ def test_layer2_pass_with_zero_worker_logs_rows_is_flagged(store) -> None:
     assert len(results) == 1
     assert results[0].name == fake.name
     assert results[0].status == "stale"
+
+
+# ── (1b) Layer-2 cadence-fired passes (gr551641) ────────────────────────
+
+
+def _seed_cadence_liveness_row(
+    store, handler: str, *, ok: int = 1, failed: int = 0, hours_ago: float = 0.0
+) -> None:
+    """Insert one ``worker_logs`` row shaped exactly like the per-cadence
+    liveness row ``workers/scheduler.py::_scheduler_pass`` writes after
+    each fire — ``pass='scheduler'`` (the scheduler module's logger),
+    ``payload.handler`` keyed on the cadence's registry log identity.
+    Cadence-fired passes (``citer_watch`` & co.) liveness under this
+    shape, not the ``run_loop`` ``worker: …`` row ``_seed_activity_row``
+    mints."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO worker_logs "
+            "(ts, host, process, pass, level, logger, message, payload) "
+            "VALUES (now() - (%(age)s || ' hours')::interval, 'th', "
+            "'precis-worker', 'scheduler', 'INFO', "
+            "'precis.workers.scheduler', %(msg)s, %(payload)s::jsonb)",
+            {
+                "age": hours_ago,
+                "msg": (
+                    f"scheduler: cadence {handler} outcome "
+                    f"claimed=1 ok={ok} failed={failed}"
+                ),
+                "payload": json.dumps(
+                    {
+                        "handler": handler,
+                        "claimed": 1,
+                        "ok": ok,
+                        "failed": failed,
+                        "report_only": False,
+                    }
+                ),
+            },
+        )
+        conn.commit()
+
+
+def test_layer2_cadence_liveness_row_satisfies_the_check(store) -> None:
+    """gr551641: a lit pass whose STANDING trigger is a scheduler cadence
+    (``citer_watch`` — enabled via ``service_config``, never in the
+    rotation) is not "silent" once its cadence logged the handler-keyed
+    row."""
+    fake = ServiceSpec(
+        name=f"fake-cadence-{uuid4().hex}",
+        label="Fake cadence-fired pass (test-only)",
+        category="test",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        # No default_profiles — lit only by the service_config row below,
+        # the exact citer_watch shape (gr513769 lit it in prod).
+    )
+    set_service_prio(store, "*", fake.name, 1)
+    _seed_cadence_liveness_row(store, fake.log_handler)
+
+    assert _layer2_checks(store, specs=[fake]) == []
+
+
+def test_layer2_real_cadence_fire_resolves_open_alert(
+    store, caplog: pytest.LogCaptureFixture
+) -> None:
+    """End to end: silent → finding → open ``watchdog:coherence`` alert;
+    a real ``run_scheduler_pass`` fire emits the handler-keyed liveness
+    record (what ``BufferedDBLogHandler`` persists into ``worker_logs``);
+    with the row in place the next eval is quiet and the existing
+    all-quiet sweep resolves the alert."""
+    fake = ServiceSpec(
+        name=f"fake-cad-{uuid4().hex}",
+        label="Fake cadence-fired pass (test-only)",
+        category="test",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+    )
+    set_service_prio(store, "*", fake.name, 1)
+
+    findings = _layer2_checks(store, specs=[fake])
+    assert [f.name for f in findings] == [fake.name]
+    _sync_alerts(store, findings)
+    assert any(a["source"] == "watchdog:coherence" for a in list_open_alerts(store))
+
+    fired: list[int] = []
+    cad = Cadence(
+        name=fake.name,
+        interval_s=60,
+        run=lambda s, b: fired.append(b),
+    )
+    with caplog.at_level(logging.INFO, logger="precis.workers.scheduler"):
+        result = run_scheduler_pass(store, host="h", cadences=(cad,))
+    assert result.claimed == 1 and fired == [32]
+    liveness = [
+        p
+        for r in caplog.records
+        if (p := getattr(r, "payload", None)) and p.get("handler") == fake.name
+    ]
+    assert liveness, "cadence fire emitted no handler-keyed liveness row"
+    assert liveness[0]["claimed"] == 1 and liveness[0]["ok"] == 1
+
+    # The row the DB log handler persists from that record — same shape
+    # ``_seed_cadence_liveness_row`` writes — clears the next eval.
+    _seed_cadence_liveness_row(store, fake.log_handler)
+    assert _layer2_checks(store, specs=[fake]) == []
+    _raised, resolved, _degraded = _sync_alerts(store, [])
+    assert resolved >= 1
+    assert not any(a["source"] == "watchdog:coherence" for a in list_open_alerts(store))
+
+
+def _cadence_bound_spec(store, monkeypatch, interval_s: int) -> ServiceSpec:
+    """A lit ``ref_pass`` spec whose name a same-named scheduler cadence
+    fires — registered into ``health_digest.CADENCES`` for this test so
+    the Layer-2 window derives from the cadence's interval."""
+    fake = ServiceSpec(
+        name=f"fake-cadence-{uuid4().hex}",
+        label="Fake cadence-fired pass (test-only)",
+        category="test",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+    )
+    cad = Cadence(name=fake.name, interval_s=interval_s, run=lambda s, b: None)
+    monkeypatch.setattr(health_digest, "CADENCES", (*health_digest.CADENCES, cad))
+    set_service_prio(store, "*", fake.name, 1)
+    return fake
+
+
+def test_layer2_cadence_spec_window_covers_the_fire_gap(store, monkeypatch) -> None:
+    """gr551641 follow-up: the ``citer_watch`` cadence fires every 24h57m,
+    so a flat 24 h window flapped silent for ~1 h/day once lit. The
+    spec's window is ``max(24h, 1.5 × cadence interval)`` — a row from
+    24h30m ago is inside it."""
+    fake = _cadence_bound_spec(store, monkeypatch, 24 * 3600 + 57 * 60)
+    _seed_cadence_liveness_row(store, fake.log_handler, hours_ago=24.5)
+
+    assert _layer2_checks(store, specs=[fake]) == []
+
+
+def test_layer2_cadence_spec_past_its_window_still_fires(store, monkeypatch) -> None:
+    """The wider window isn't a muzzle: a cadence-fired spec with no row
+    inside ``1.5 × interval`` (37.4 h for a 24h57m cadence) still alerts."""
+    fake = _cadence_bound_spec(store, monkeypatch, 24 * 3600 + 57 * 60)
+    _seed_cadence_liveness_row(store, fake.log_handler, hours_ago=40.0)
+
+    results = _layer2_checks(store, specs=[fake])
+    assert [r.name for r in results] == [fake.name]
+    assert "intended-on but silent" in results[0].detail
+
+
+def test_layer2_non_cadence_spec_keeps_the_24h_window(store) -> None:
+    """Rotation ref-passes log every cycle — a row 24h30m old is outside
+    their (unchanged) 24 h window and still flags."""
+    fake = ServiceSpec(
+        name=f"fake-idle-{uuid4().hex}",
+        label="Fake rotation pass (test-only)",
+        category="test",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        default_profiles=frozenset({"system"}),
+    )
+    _seed_activity_row(store, fake.log_handler, claimed=0, ok=0, failed=0)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE worker_logs SET ts = now() - interval '24.5 hours' "
+            "WHERE payload->>'handler' = %s",
+            (fake.log_handler,),
+        )
+        conn.commit()
+
+    results = _layer2_checks(store, specs=[fake])
+    assert [r.name for r in results] == [fake.name]
 
 
 # ── (2) chunks_extracted: body-row, input-aware staleness ───────────────

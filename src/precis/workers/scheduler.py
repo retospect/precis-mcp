@@ -65,7 +65,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.utils.deadline import DeadlineExceeded, call_with_deadline
 from precis.utils.env import env_float
-from precis.workers.runner import BatchResult
+from precis.workers.runner import BatchResult, _emit_handler
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -1435,6 +1435,14 @@ def _scheduler_pass(
     cadences whose work raised (the lease already advanced — a raise doesn't
     re-fire until next interval, matching the launchd timer's fire-and-forget).
 
+    Every fire — clean, raised, or abandoned past the run bound — also
+    writes one ``worker_logs`` row carrying a ``payload.handler`` BatchResult
+    shape keyed on the cadence's registry log identity, so the liveness
+    readers keyed on ``payload->>'handler'`` (health_digest's Layer-2
+    "intended-on but silent" check, the /status rollup, the pass-dead
+    probe) see cadence-fired services the same way they see rotation
+    ref-passes (gr551641).
+
     ``run_deadline_s`` bounds each cadence's work (default
     :data:`_RUN_DEADLINE_DEFAULT_S`, env ``PRECIS_CADENCE_RUN_DEADLINE_S``;
     <= 0 disables). A cadence whose previous fire is still running
@@ -1532,6 +1540,8 @@ def _scheduler_pass(
             interval_s,
             host,
         )
+        fired_ok = 1
+        fired_error: str | None = None
         try:
             if bound > 0:
                 call_with_deadline(
@@ -1552,9 +1562,42 @@ def _scheduler_pass(
                 host,
             )
             failed += 1
-        except Exception:
+            fired_ok = 0
+            fired_error = "DeadlineExceeded"
+        except Exception as exc:
             log.exception("scheduler: cadence %s work raised", cad.name)
             failed += 1
+            fired_ok = 0
+            fired_error = type(exc).__name__
+        # One ``payload.handler`` liveness row per fire — the shape
+        # ``run_loop`` mints for rotation ref-passes — so liveness readers
+        # keyed on ``payload->>'handler'`` (health_digest's Layer-2
+        # "intended-on but silent" coherence check, the /status activity
+        # rollup, the pass-dead probe) see cadence-fired passes too.
+        # gr551641: a lit ``citer_watch`` read silent — its standing
+        # trigger is this cadence, which logged only payload-free
+        # ``pass='scheduler'`` rows. ``_emit_handler`` applies the
+        # rotation's own registry resolution (a same-named spec's
+        # ``log_handler``), so a ``log_name`` divergence stays covered.
+        # No ``duration_ms``: the ``scheduler`` pass's own handler row
+        # already attributes this wall time; a second row with the key
+        # would double-count in ``loop_utilisation``.
+        liveness: dict[str, Any] = {
+            "handler": _emit_handler(cad.name, cad.name),
+            "claimed": 1,
+            "ok": fired_ok,
+            "failed": 1 - fired_ok,
+            "report_only": False,
+        }
+        if fired_error is not None:
+            liveness["error"] = fired_error
+        log.info(
+            "scheduler: cadence %s outcome claimed=1 ok=%d failed=%d",
+            cad.name,
+            fired_ok,
+            1 - fired_ok,
+            extra={"payload": liveness},
+        )
 
     return BatchResult(handler="scheduler", claimed=claimed, ok=ok, failed=failed)
 

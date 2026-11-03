@@ -58,9 +58,13 @@ In production it fires once an hour, wherever the cadence lease lands.
 3. **Layer-2 coherence (derived)** — every registered `kind=PASS` +
    `ref_pass=True` `ServiceSpec` that resolves enabled (structural
    `default_profiles`/`enable_env`, or a live `service_config` prio
-   override on any host) with **zero** `worker_logs` rows in 24h reads
-   "intended-on but silent". Straight from the registry × `service_config`
-   × `worker_logs` — a new pass needs **zero** edits here.
+   override on any host) with **zero** `worker_logs` rows in its window
+   reads "intended-on but silent". The window is 24h for rotation passes
+   and `max(24h, 1.5 × interval)` for scheduler-cadence-fired ones (their
+   only activity row is the per-fire liveness row — a flat 24h flapped
+   ~1h/day on >24h cadences, gr551641). Straight from the registry ×
+   `service_config` × `worker_logs` — a new pass needs **zero** edits
+   here.
 4. **Condition registry** (`workers/conditions.py`, spine Layer 2) —
    declarative probe rows under group `condition`: `pass-dead-on-host`
    (a handler silent past budget on ONE live host — per-`(host, process,

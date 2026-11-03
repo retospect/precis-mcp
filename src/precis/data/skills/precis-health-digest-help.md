@@ -105,7 +105,9 @@ Derived groups name their check after the thing they watch:
   on any host — fingerprint `<cadence>/never-seeded` — the eligibility
   gate may be false fleet-wide.
 - `coherence` — `<service>`: a registered PASS that resolves enabled
-  somewhere but logged nothing in 24h — intended-on but silent.
+  somewhere but logged nothing in its window — 24h for rotation passes,
+  `max(24h, 1.5 × cadence interval)` for scheduler-cadence-fired ones —
+  intended-on but silent.
 - `condition` — the `conditions.py` probe registry, each row a named
   condition whose finding keys the alert fingerprint:
   `pass-dead-on-host` → `pass-dead:<host>/<process>/<handler>`;

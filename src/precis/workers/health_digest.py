@@ -2270,11 +2270,58 @@ def _resolve_enabled_somewhere(
     return out
 
 
+#: Flat Layer-2 activity window (hours) for rotation ref-passes —
+#: ``run_loop`` logs a ``payload.handler`` row every cycle, so 24 h of
+#: silence is real silence.
+_LAYER2_WINDOW_H = 24.0
+
+#: A cadence-fired pass writes its liveness row only per *fire*, so a
+#: flat 24 h window flaps silent for ``interval − 24 h`` every cycle on
+#: cadences slower than a day (``citer_watch`` fires every 24h57m and
+#: alerted ~1 h/day once lit, gr551641). Its window is the flat floor or
+#: this margin × the cadence's interval, whichever is larger.
+_LAYER2_CADENCE_MARGIN = 1.5
+
+
+def _layer2_window_hours(store: Store, specs: list[ServiceSpec]) -> dict[str, float]:
+    """``spec.name → Layer-2 activity window (hours)`` for cadence-fired specs.
+
+    Looked up from the scheduler's ``CADENCES`` registry by service name —
+    not a hand-synced list, so a cadence's interval change moves the
+    window with it. A spec no cadence fires keeps the flat
+    :data:`_LAYER2_WINDOW_H`. A cadence's live ``resolve_interval`` wins
+    when declared (``dream_agent``/``gripe_parked``), falling back to the
+    static ``interval_s`` on a resolver fault.
+    """
+    cadences = {c.name: c for c in CADENCES}
+    out: dict[str, float] = {}
+    for spec in specs:
+        cad = cadences.get(spec.name)
+        if cad is None:
+            continue
+        interval_s = float(cad.interval_s)
+        if cad.resolve_interval is not None:
+            try:
+                interval_s = float(cad.resolve_interval(store))
+            except Exception:
+                log.warning(
+                    "health_digest: cadence interval resolution failed for %s",
+                    cad.name,
+                    exc_info=True,
+                )
+        out[spec.name] = max(
+            _LAYER2_WINDOW_H, _LAYER2_CADENCE_MARGIN * interval_s / 3600.0
+        )
+    return out
+
+
 def _layer2_checks(
     store: Store, *, specs: list[ServiceSpec] | None = None
 ) -> list[CheckResult]:
     """Registered PASS + ``ref_pass`` services that resolve enabled
-    somewhere but show zero ``worker_logs`` activity in 24h.
+    somewhere but show zero ``worker_logs`` activity in their window —
+    24h for rotation passes, ``max(24h, 1.5 × cadence interval)`` for
+    cadence-fired ones (:func:`_layer2_window_hours`).
 
     ``specs`` defaults to the real registry (``workers/registry.py``); a
     test passes a synthetic list to prove a newly-minted
@@ -2284,7 +2331,10 @@ def _layer2_checks(
     candidates = specs if specs is not None else list(SERVICES)
     pass_specs = [s for s in candidates if s.kind == ServiceKind.PASS and s.ref_pass]
     enabled = _resolve_enabled_somewhere(store, pass_specs)
-    activity = health_checks.activity_by_handler(store, window_hours=24)
+    windows = _layer2_window_hours(store, pass_specs)
+    activity = health_checks.activity_by_handler(
+        store, window_hours=max([_LAYER2_WINDOW_H, *windows.values()])
+    )
 
     out: list[CheckResult] = []
     for spec in pass_specs:
@@ -2295,8 +2345,13 @@ def _layer2_checks(
         # healthy-idle pass logs claimed=0 every cycle (workers/runner.py),
         # which has neither a last_ok nor a last_fail. Keying off those
         # alone misread "ran all day, nothing to do" as "never ran",
-        # violating the idle-vs-stuck acceptance gate.
-        if act and act.get("last_seen") is not None:
+        # violating the idle-vs-stuck acceptance gate. The fetched window
+        # is the widest any spec needs; each spec then measures the age
+        # against its own window (a cadence-fired pass's covers its fire
+        # spacing — :func:`_layer2_window_hours`).
+        window_h = windows.get(spec.name, _LAYER2_WINDOW_H)
+        age_h = _hours_since(act["last_seen"]) if act else None
+        if age_h is not None and age_h <= window_h:
             continue  # has recent worker_logs activity — not silent
         out.append(
             CheckResult(
@@ -2304,7 +2359,8 @@ def _layer2_checks(
                 spec.name,
                 "stale",
                 f"{spec.name}: registered PASS resolves enabled but zero "
-                f"worker_logs rows (ok or failed) in 24h — intended-on but silent",
+                f"worker_logs rows (ok or failed) in {window_h:g}h — "
+                "intended-on but silent",
                 _WARN,
             )
         )
