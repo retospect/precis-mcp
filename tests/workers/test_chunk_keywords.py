@@ -598,11 +598,21 @@ class TestRunChunkKeywordsPass:
                 "precis.workers.chunk_keywords._rake_phrases", bad_candidates
             )
         else:
+            # The claim walks chunk_id DESC, so don't poison "the first
+            # pooled vector" — poison the vector for a candidate only
+            # the bad chunk produces.
+            monkeypatch.setattr(
+                "precis.workers.chunk_keywords._rake_phrases",
+                lambda text, *, max_keywords: (
+                    ["poison phrase"] if text == _BODY_TEXT_1 else ["good phrase"]
+                ),
+            )
             real_embed = embedder.embed
 
             def bad_vector(texts: list[str]) -> list[list[float]]:
                 vectors = real_embed(texts)
-                vectors[0] = [1.0]  # Only the first chunk has an invalid dimension.
+                if "poison phrase" in texts:
+                    vectors[texts.index("poison phrase")] = [1.0]
                 return vectors
 
             monkeypatch.setattr(embedder, "embed", bad_vector)
@@ -674,45 +684,50 @@ class TestRunChunkKeywordsPass:
     def test_db_level_failure_on_one_chunk_does_not_cascade(
         self, store: Store, monkeypatch: Any
     ) -> None:
-        """A per-chunk savepoint isolates a genuine DB-statement abort.
+        """A bad row aborts the bulk write, then the per-chunk fallback
+        isolates it — the two good chunks still write.
 
-        Before the per-chunk ``with conn.transaction():`` savepoint, a
-        chunk that aborted the shared transaction (e.g. a failed SQL
-        execute) poisoned the connection for every *subsequent* chunk in
-        the batch — each of those then died with
-        ``InFailedSqlTransaction`` even though nothing was wrong with
-        them. The claim query orders by ``c.chunk_id`` ascending, so
-        seeding the poison chunk first (lowest chunk_id) reproduces the
-        worst case: it's processed before the two good chunks.
+        The bulk ``UPDATE ... FROM (VALUES ...)`` is one statement per
+        slice: a genuine DB-level abort (division by zero at the SQL
+        level — not a plain Python raise, this is what actually poisons
+        a transaction) fails the slice, and the fallback's per-chunk
+        ``write_chunk_keywords`` writes the survivors individually.
         """
         import precis.workers.chunk_keywords as chunk_keywords_mod
 
         ref_id = seed_ref(store)
-        # Seeded first => lowest chunk_id => claimed/processed first.
         poison_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
         good_id_1 = _seed_long_chunk(store, ref_id=ref_id, ord=1, text=_BODY_TEXT_2)
         good_id_2 = _seed_long_chunk(store, ref_id=ref_id, ord=2, text=_BODY_TEXT_1)
 
         real_write_chunk_keywords = chunk_keywords_mod.write_chunk_keywords
+        real_bulk = chunk_keywords_mod.write_chunk_keywords_bulk
 
         def _poisoning_write_chunk_keywords(
             conn: Any, chunk_id: int, *, keywords: Any, embedder_name: str
         ) -> None:
             if chunk_id == poison_id:
-                # A genuine DB-level statement error (division by zero at
-                # the SQL level) aborts the current transaction — unlike a
-                # plain Python raise, this is what actually poisons a
-                # shared connection/transaction pre-fix.
                 conn.execute("SELECT 1 / 0")
             else:
                 real_write_chunk_keywords(
                     conn, chunk_id, keywords=keywords, embedder_name=embedder_name
                 )
 
+        def _poisoning_bulk(conn: Any, items: Any, *, embedder_name: str) -> int:
+            if any(chunk_id == poison_id for chunk_id, _ in items):
+                conn.execute("SELECT 1 / 0")
+                return 0
+            return real_bulk(conn, items, embedder_name=embedder_name)
+
         monkeypatch.setattr(
             chunk_keywords_mod,
             "write_chunk_keywords",
             _poisoning_write_chunk_keywords,
+        )
+        monkeypatch.setattr(
+            chunk_keywords_mod,
+            "write_chunk_keywords_bulk",
+            _poisoning_bulk,
         )
 
         result = run_chunk_keywords_pass(store, make_mock_bge_m3(), batch_size=10)
@@ -884,3 +899,849 @@ class TestRunChunkKeywordsPass:
             "ok": 1,
             "failed": 0,
         }
+
+
+# ---------------------------------------------------------------------------
+# Tiered claim — conv/draft first, fresh backlog DESC, stale last (gr520236)
+# ---------------------------------------------------------------------------
+
+
+def _mark_stale(store: Store, chunk_id: int) -> None:
+    """Stamp ``chunk_id`` as a tier-3 stale re-derive: keywords present,
+    version stale."""
+    stale_meta = {
+        "version": "0.0-stale",
+        "embedder": "bge-m3",
+        "keywords": [{"short": None, "long": "stale", "score": 1.0}],
+    }
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET keywords = %s, keywords_meta = %s WHERE chunk_id = %s",
+            (["stale"], Jsonb(stale_meta), chunk_id),
+        )
+        conn.commit()
+
+
+class TestTieredClaim:
+    def test_conv_and_draft_chunks_claim_ahead_of_papers(self, store: Store) -> None:
+        """Tier 1 jumps the queue regardless of freshness: a conv/draft
+        chunk wins over a NEWER paper chunk, and a stale conv chunk
+        still claims in tier 1 (pending covers fresh and stale)."""
+        conv_ref = seed_ref(store, kind="conv")
+        paper_ref = seed_ref(store, kind="paper")
+        # Conv chunk seeded FIRST — strictly older. Tier order, not
+        # chunk_id, must pick it.
+        conv_id = _seed_long_chunk(store, ref_id=conv_ref, ord=0, text=_BODY_TEXT_1)
+        paper_id = _seed_long_chunk(store, ref_id=paper_ref, ord=0, text=_BODY_TEXT_2)
+        assert conv_id < paper_id
+        with store.pool.connection() as conn:
+            rows = claim_chunks_without_keywords(conn, limit=1)
+            conn.rollback()
+        assert [r[0] for r in rows] == [conv_id]
+        with store.pool.connection() as conn:
+            rows = claim_chunks_without_keywords(conn, limit=2)
+            conn.rollback()
+        assert {r[0] for r in rows} == {conv_id, paper_id}
+
+        # A stale conv/draft chunk still claims via tier 1 — the
+        # re-derive isn't pushed to tier 3 just because keywords exist.
+        _mark_stale(store, conv_id)
+        with store.pool.connection() as conn:
+            rows = claim_chunks_without_keywords(conn, limit=1)
+            conn.rollback()
+        assert [r[0] for r in rows] == [conv_id]
+
+    def test_fresh_backlog_claims_newest_first(self, store: Store) -> None:
+        """gr520236: fresh (keywords NULL) claims walk ``chunk_id DESC``
+        so a fresh ingest is labelled ahead of the older backlog."""
+        ref_id = seed_ref(store)
+        old_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        new_id = _seed_long_chunk(store, ref_id=ref_id, ord=1, text=_BODY_TEXT_2)
+        with store.pool.connection() as conn:
+            rows = claim_chunks_without_keywords(conn, limit=1)
+            conn.rollback()
+        assert [r[0] for r in rows] == [new_id]
+        assert new_id > old_id
+
+    def test_fresh_tier_beats_stale_rederive(self, store: Store) -> None:
+        """The stale re-derive tier only fills what the fresh tiers left:
+        a version-stale chunk waits behind unkeyworded ones."""
+        ref_id = seed_ref(store)
+        stale_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        fresh_id = _seed_long_chunk(store, ref_id=ref_id, ord=1, text=_BODY_TEXT_2)
+        _mark_stale(store, stale_id)
+        with store.pool.connection() as conn:
+            rows = claim_chunks_without_keywords(conn, limit=1)
+            conn.rollback()
+        assert [r[0] for r in rows] == [fresh_id]
+        # limit 2 picks up the stale row too.
+        with store.pool.connection() as conn:
+            rows = claim_chunks_without_keywords(conn, limit=2)
+            conn.rollback()
+        assert {r[0] for r in rows} == {fresh_id, stale_id}
+
+    def test_include_stale_false_skips_tier3(self, store: Store) -> None:
+        ref_id = seed_ref(store)
+        stale_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        _mark_stale(store, stale_id)
+        with store.pool.connection() as conn:
+            rows = claim_chunks_without_keywords(conn, limit=10, include_stale=False)
+            conn.rollback()
+        assert stale_id not in [r[0] for r in rows]
+        # … and with it on, the same call claims the stale chunk.
+        with store.pool.connection() as conn:
+            rows = claim_chunks_without_keywords(conn, limit=10, include_stale=True)
+            conn.rollback()
+        assert stale_id in [r[0] for r in rows]
+
+    def test_claim_literals_match_pending_index_ddl(self) -> None:
+        """The ops pre-built partial index only serves the DESC fresh
+        claim when the claim's WHERE text matches its predicate — the
+        claim inlines :func:`_eligibility_sql` literals, and
+        :data:`PENDING_INDEX_DDL` must carry the same text (the migration
+        that ships later builds exactly this statement)."""
+        import precis.workers.chunk_keywords as chunk_keywords
+
+        norm = " ".join(chunk_keywords.PENDING_INDEX_DDL.split())
+        want = " ".join(
+            f"keywords IS NULL AND {chunk_keywords._eligibility_sql('')}".split()
+        )
+        assert want in norm
+        assert norm.startswith(
+            "CREATE INDEX CONCURRENTLY chunks_keywords_pending_idx "
+            "ON chunks (chunk_id DESC) WHERE"
+        )
+
+    def test_shards_are_disjoint_and_covering(self, store: Store) -> None:
+        """Lane ``i`` of ``N`` claims ``chunk_id % N = i`` only: two
+        shards never see each other's chunks and together cover the
+        queue."""
+        ref_id = seed_ref(store)
+        seeded = {
+            _seed_long_chunk(store, ref_id=ref_id, ord=i, text=_BODY_TEXT_1)
+            for i in range(10)
+        }
+        with store.pool.connection() as conn:
+            ids0 = {
+                r[0]
+                for r in claim_chunks_without_keywords(
+                    conn, limit=100, shard_count=2, shard_index=0
+                )
+            }
+            ids1 = {
+                r[0]
+                for r in claim_chunks_without_keywords(
+                    conn, limit=100, shard_count=2, shard_index=1
+                )
+            }
+            conn.rollback()
+        assert ids0.isdisjoint(ids1)
+        assert ids0 | ids1 == seeded
+        assert all(i % 2 == 0 for i in ids0)
+        assert all(i % 2 == 1 for i in ids1)
+
+    def test_shard_index_must_be_below_count(self, store: Store) -> None:
+        with store.pool.connection() as conn:
+            with pytest.raises(ValueError, match="shard_index"):
+                claim_chunks_without_keywords(
+                    conn, limit=1, shard_count=2, shard_index=2
+                )
+
+    def test_four_way_shards_are_disjoint_and_covering(self, store: Store) -> None:
+        """The global shard space (hosts × lanes): 2 hosts × 2 lanes =
+        4 shards — distinct residue classes covering the queue, the
+        math playbook 20g renders into ``--shard-count`` /
+        ``--shard-index``."""
+        ref_id = seed_ref(store)
+        seeded = {
+            _seed_long_chunk(store, ref_id=ref_id, ord=i, text=_BODY_TEXT_1)
+            for i in range(12)
+        }
+        claimed: list[set[int]] = []
+        with store.pool.connection() as conn:
+            for shard_index in range(4):
+                claimed.append(
+                    {
+                        r[0]
+                        for r in claim_chunks_without_keywords(
+                            conn, limit=100, shard_count=4, shard_index=shard_index
+                        )
+                    }
+                )
+            conn.rollback()
+        for i, ids in enumerate(claimed):
+            assert all(c % 4 == i for c in ids)
+        union = set().union(*claimed)
+        assert union == seeded
+        for i in range(4):
+            for j in range(i + 1, 4):
+                assert claimed[i].isdisjoint(claimed[j])
+
+    def test_candidate_cap_counts_only_claimable_rows(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """The embedding gate is INSIDE ``kw_cand`` (0266 review): the
+        cap counts claimable rows only, so a not-yet-embedded head
+        block is walked past, never counted — the claim returns the
+        embedded backlog deeper in the walk instead of starving."""
+        import precis.workers.chunk_keywords as ck
+
+        ref_id = seed_ref(store)
+        # Two embedded chunks, then three NOT-yet-embedded at the head
+        # (higher chunk_ids — the DESC walk sees them first).
+        embedded = {
+            _seed_long_chunk(store, ref_id=ref_id, ord=i, text=_BODY_TEXT_1)
+            for i in range(2)
+        }
+        for i in range(3):
+            _seed_long_chunk(
+                store,
+                ref_id=ref_id,
+                ord=10 + i,
+                text=_BODY_TEXT_2,
+                with_embedding=False,
+            )
+        # Cap at 1×limit: even the smallest window skips the
+        # unembedded head and finds the two claimable rows.
+        monkeypatch.setattr(ck, "_CANDIDATE_SCAN_MULT", 1)
+        with store.pool.connection() as conn:
+            rows = claim_chunks_without_keywords(conn, limit=2)
+            conn.rollback()
+        assert {r[0] for r in rows} == embedded
+
+    def test_deep_unembedded_head_does_not_starve_the_claim(self, store: Store) -> None:
+        """3000 newest pending chunks with no embedding + 100 older
+        embedded ones: a 500 claim returns the 100 embedded — the
+        unembedded head is walked past, not counted toward the cap
+        (0266 review: the outer-join-only shape returned 0 rows
+        forever here)."""
+        ref_id = seed_ref(store)
+        vec = make_mock_bge_m3().embed_one("shared")
+        with store.pool.connection() as conn:
+            cur = conn.execute(
+                "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text) "
+                "SELECT %s, 'system', gs, 'paragraph', %s "
+                "FROM generate_series(1, 100) gs RETURNING chunk_id",
+                (ref_id, _BODY_TEXT_1),
+            )
+            emb_ids = {int(r[0]) for r in cur.fetchall()}
+            conn.execute(
+                "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, "
+                "status) SELECT cid, 'bge-m3', %s, 'ok' "
+                "FROM unnest(%s::bigint[]) AS cid",
+                (vec, list(emb_ids)),
+            )
+            # 3000 newer pending chunks with NO embedding — the head
+            # of the DESC walk.
+            conn.execute(
+                "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text) "
+                "SELECT %s, 'system', gs, 'paragraph', %s "
+                "FROM generate_series(101, 3100) gs",
+                (ref_id, _BODY_TEXT_2),
+            )
+            conn.commit()
+
+        with store.pool.connection() as conn:
+            rows = claim_chunks_without_keywords(conn, limit=500)
+            conn.rollback()
+        assert {r[0] for r in rows} == emb_ids
+
+
+# ---------------------------------------------------------------------------
+# write_chunk_keywords_bulk — UPDATE ... FROM (VALUES ...) (gr550973)
+# ---------------------------------------------------------------------------
+
+
+class TestBulkWrite:
+    def test_bulk_write_matches_single_row_shape(self, store: Store) -> None:
+        """The bulk write lands the same canonical TEXT[] + versioned
+        envelope ``write_chunk_keywords`` produces."""
+        from precis.workers.chunk_keywords import write_chunk_keywords_bulk
+
+        ref_id = seed_ref(store)
+        cid1 = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        cid2 = _seed_long_chunk(store, ref_id=ref_id, ord=1, text=_BODY_TEXT_2)
+        keywords: list[dict[str, Any]] = [
+            {"short": "MOF", "long": "metal-organic framework", "score": 0.82},
+            {"short": None, "long": "porous crystalline materials", "score": 0.71},
+        ]
+        with store.pool.connection() as conn:
+            n = write_chunk_keywords_bulk(
+                conn,
+                [(cid1, keywords), (cid2, keywords)],
+                embedder_name="bge-m3",
+            )
+            conn.commit()
+        assert n == 2
+        with store.pool.connection() as conn:
+            rows: dict[int, list[str]] = dict(
+                conn.execute(
+                    "SELECT chunk_id, keywords FROM chunks WHERE chunk_id IN (%s, %s)",
+                    (cid1, cid2),
+                ).fetchall()
+            )
+            metas: dict[int, dict[str, Any]] = dict(
+                conn.execute(
+                    "SELECT chunk_id, keywords_meta FROM chunks "
+                    "WHERE chunk_id IN (%s, %s)",
+                    (cid1, cid2),
+                ).fetchall()
+            )
+        for cid in (cid1, cid2):
+            assert rows[cid] == ["mof", "porous crystalline materials"]
+            meta = metas[cid]
+            assert meta["version"] == KEYWORDS_VERSION
+            assert meta["embedder"] == "bge-m3"
+            assert meta["keywords"] == keywords
+
+    def test_bulk_write_stale_guard_skips_written(self, store: Store) -> None:
+        """A second writer of an already-keyworded chunk is a no-op —
+        the stale guard refuses rows whose version already matches."""
+        from precis.workers.chunk_keywords import write_chunk_keywords_bulk
+
+        ref_id = seed_ref(store)
+        cid = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        first: list[dict[str, Any]] = [{"short": None, "long": "first", "score": 0.9}]
+        second: list[dict[str, Any]] = [
+            {"short": None, "long": "clobber", "score": 0.1}
+        ]
+        with store.pool.connection() as conn:
+            assert (
+                write_chunk_keywords_bulk(conn, [(cid, first)], embedder_name="bge-m3")
+                == 1
+            )
+            # Same version, unchanged text → the guard refuses: the
+            # duplicate claim window is a no-op, not a clobber.
+            assert (
+                write_chunk_keywords_bulk(conn, [(cid, second)], embedder_name="bge-m3")
+                == 0
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT keywords FROM chunks WHERE chunk_id = %s", (cid,)
+            ).fetchone()
+        assert row == (["first"],)
+
+
+# ---------------------------------------------------------------------------
+# run_dedicated_loop — the dedicated drain lane (gr520236 / gr550973)
+# ---------------------------------------------------------------------------
+
+
+class TestDedicatedLoop:
+    def test_empty_queue_sleeps_then_rechecks(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """An empty claim rests ~idle_seconds then re-polls — never a
+        hot loop."""
+        import precis.workers.chunk_keywords as ck
+
+        pass_calls: list[None] = []
+
+        def _fake_pass(*args: Any, **kwargs: Any) -> dict[str, int]:
+            pass_calls.append(None)
+            return {"claimed": 0, "ok": 0, "failed": 0}
+
+        monkeypatch.setattr(ck, "run_chunk_keywords_pass", _fake_pass)
+        sleeps: list[float] = []
+        ck.run_dedicated_loop(
+            store,
+            make_mock_bge_m3(),
+            idle_seconds=60.0,
+            should_stop=lambda: len(pass_calls) >= 3,
+            sleep=sleeps.append,
+        )
+        assert len(pass_calls) == 3
+        # Idle slicing slept at least once between re-checks.
+        assert sleeps and all(0 < s <= 60.0 for s in sleeps)
+
+    def test_claimed_work_loops_immediately(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """A pass that claimed work loops at once — the 60 s rest is
+        only for an empty queue."""
+        import precis.workers.chunk_keywords as ck
+
+        results = iter(
+            [
+                {"claimed": 2, "ok": 2, "failed": 0},
+                {"claimed": 1, "ok": 1, "failed": 0},
+                {"claimed": 0, "ok": 0, "failed": 0},
+            ]
+        )
+        pass_calls: list[None] = []
+
+        def _fake_pass(*args: Any, **kwargs: Any) -> dict[str, int]:
+            pass_calls.append(None)
+            return next(results)
+
+        monkeypatch.setattr(ck, "run_chunk_keywords_pass", _fake_pass)
+        sleeps: list[float] = []
+        ck.run_dedicated_loop(
+            store,
+            make_mock_bge_m3(),
+            idle_seconds=60.0,
+            should_stop=lambda: len(pass_calls) >= 3,
+            sleep=sleeps.append,
+        )
+        assert len(pass_calls) == 3
+        # The empty third pass entered the rest loop, but the stop flag
+        # landed before the first sleep slice — no sleep at all.
+        assert sleeps == []
+
+    def test_zero_yield_batch_backs_off(self, store: Store, monkeypatch: Any) -> None:
+        """A pass that claimed rows but wrote none (ok == 0 — a poison
+        head of queue: all failed, all deferred, or cut short) sleeps
+        the idle interval instead of hot-looping the same batch."""
+        import precis.workers.chunk_keywords as ck
+
+        results = iter(
+            [
+                {"claimed": 2, "ok": 0, "failed": 2},
+                {"claimed": 2, "ok": 0, "failed": 2},
+            ]
+        )
+        pass_calls: list[None] = []
+
+        def _fake_pass(*args: Any, **kwargs: Any) -> dict[str, int]:
+            pass_calls.append(None)
+            return next(results)
+
+        monkeypatch.setattr(ck, "run_chunk_keywords_pass", _fake_pass)
+        sleeps: list[float] = []
+        ck.run_dedicated_loop(
+            store,
+            make_mock_bge_m3(),
+            idle_seconds=0.3,
+            should_stop=lambda: len(pass_calls) >= 2,
+            sleep=sleeps.append,
+        )
+        assert len(pass_calls) == 2
+        # Both passes backed off into the idle sleep — no hot re-poll.
+        assert sleeps and all(0 < s <= 0.3 for s in sleeps)
+
+    def test_half_yield_batch_still_loops(self, store: Store, monkeypatch: Any) -> None:
+        """``ok >= claimed/2`` is progress — the loop continues without
+        sleeping; below half is the poison back-off."""
+        import precis.workers.chunk_keywords as ck
+
+        results = iter(
+            [
+                {"claimed": 4, "ok": 2, "failed": 2},  # exactly half → loop
+                {"claimed": 4, "ok": 1, "failed": 3},  # below half → back off
+                {"claimed": 0, "ok": 0, "failed": 0},
+            ]
+        )
+        events: list[str] = []
+
+        def _fake_pass(*args: Any, **kwargs: Any) -> dict[str, int]:
+            events.append("pass")
+            return next(results)
+
+        monkeypatch.setattr(ck, "run_chunk_keywords_pass", _fake_pass)
+        ck.run_dedicated_loop(
+            store,
+            make_mock_bge_m3(),
+            idle_seconds=0.3,
+            should_stop=lambda: events.count("pass") >= 3,
+            sleep=lambda s: events.append("sleep"),
+        )
+        # Pass 1's half yield continued straight into pass 2 — no
+        # sleep; pass 2's below-half yield backed off before pass 3.
+        assert events[:2] == ["pass", "pass"]
+        assert events[2] == "sleep"
+
+    def test_stop_flag_is_forwarded_into_the_pass(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """``should_stop`` reaches ``run_chunk_keywords_pass`` — the
+        mid-batch check lives inside the pass, not just the loop."""
+        import precis.workers.chunk_keywords as ck
+
+        captured: dict[str, Any] = {}
+        pass_calls: list[None] = []
+
+        def _stop() -> bool:
+            return len(pass_calls) >= 1
+
+        def _fake_pass(*args: Any, **kwargs: Any) -> dict[str, int]:
+            pass_calls.append(None)
+            captured.update(kwargs)
+            return {"claimed": 0, "ok": 0, "failed": 0}
+
+        monkeypatch.setattr(ck, "run_chunk_keywords_pass", _fake_pass)
+        ck.run_dedicated_loop(
+            store,
+            make_mock_bge_m3(),
+            should_stop=_stop,
+            sleep=lambda s: None,
+        )
+        assert captured["should_stop"] is _stop
+
+    def test_result_logged_as_runner_payload(
+        self, store: Store, monkeypatch: Any, caplog: Any
+    ) -> None:
+        """The drain ledger stays the ``pass='runner'`` /
+        ``payload.handler='chunk_keywords'`` shape the health probes
+        read — logged through the runner logger with the run_loop
+        payload keys."""
+        import logging
+
+        import precis.workers.chunk_keywords as ck
+
+        pass_calls: list[None] = []
+
+        def _fake_pass(*args: Any, **kwargs: Any) -> dict[str, int]:
+            pass_calls.append(None)
+            return {"claimed": 2, "ok": 2, "failed": 0}
+
+        monkeypatch.setattr(ck, "run_chunk_keywords_pass", _fake_pass)
+        with caplog.at_level(logging.INFO, logger="precis.workers.runner"):
+            ck.run_dedicated_loop(
+                store,
+                make_mock_bge_m3(),
+                should_stop=lambda: len(pass_calls) >= 1,
+                sleep=lambda s: None,
+            )
+        rec = next(
+            r
+            for r in caplog.records
+            if r.name == "precis.workers.runner" and "chunk_keywords" in r.message
+        )
+        assert rec.message == "worker: chunk_keywords claimed=2 ok=2 failed=0"
+        payload = rec.payload
+        assert payload["handler"] == "chunk_keywords"
+        assert payload["ok"] == 2
+        assert "duration_ms" in payload
+
+    def test_shard_index_must_be_below_count(self, store: Store) -> None:
+        import precis.workers.chunk_keywords as ck
+
+        with pytest.raises(ValueError, match="shard_index"):
+            ck.run_dedicated_loop(
+                store,
+                make_mock_bge_m3(),
+                shard_count=2,
+                shard_index=2,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Parallel-safe pass — lock-free dedicated path (gr520236 / gr550973)
+# ---------------------------------------------------------------------------
+
+
+class TestParallelPass:
+    def test_two_shards_cover_without_overlap(self, store: Store) -> None:
+        """Two dedicated lanes on N=2 write disjoint chunk sets and
+        together drain the queue — no advisory lock needed."""
+        ref_id = seed_ref(store)
+        seeded = {
+            _seed_long_chunk(store, ref_id=ref_id, ord=i, text=_BODY_TEXT_1)
+            for i in range(10)
+        }
+        emb = make_mock_bge_m3()
+        r0 = run_chunk_keywords_pass(
+            store,
+            emb,
+            batch_size=100,
+            single_runner=False,
+            shard_count=2,
+            shard_index=0,
+        )
+        r1 = run_chunk_keywords_pass(
+            store,
+            emb,
+            batch_size=100,
+            single_runner=False,
+            shard_count=2,
+            shard_index=1,
+        )
+        assert r0["claimed"] + r1["claimed"] == len(seeded)
+        with store.pool.connection() as conn:
+            written = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT chunk_id FROM chunks WHERE keywords IS NOT NULL"
+                ).fetchall()
+            }
+        assert written == seeded
+        assert {i for i in written if i % 2 == 0} <= {i for i in seeded if i % 2 == 0}
+        # Nothing left for either shard.
+        assert run_chunk_keywords_pass(
+            store,
+            emb,
+            batch_size=100,
+            single_runner=False,
+            shard_count=2,
+            shard_index=0,
+        ) == {"claimed": 0, "ok": 0, "failed": 0}
+
+    def test_no_connection_open_during_embed(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """No transaction is open across the embedder call: when
+        ``embedder.embed`` runs, every pool connection is back in the
+        pool (claim commits before the slow HTTP work)."""
+        ref_id = seed_ref(store)
+        for i in range(2):
+            _seed_long_chunk(store, ref_id=ref_id, ord=i, text=_BODY_TEXT_1)
+        emb = make_mock_bge_m3()
+        real_embed = emb.embed
+        checked: list[bool] = []
+
+        def embed_checking_pool(texts: list[str]) -> list[list[float]]:
+            stats = store.pool.get_stats()
+            checked.append(stats["pool_available"] == stats["pool_size"])
+            return real_embed(texts)
+
+        monkeypatch.setattr(emb, "embed", embed_checking_pool)
+        result = run_chunk_keywords_pass(store, emb, batch_size=10, single_runner=False)
+        assert result == {"claimed": 2, "ok": 2, "failed": 0}
+        assert checked and all(checked)
+
+    def test_stop_flag_breaks_the_batch_row_loop(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """``should_stop`` lands mid-batch: the flag is checked per
+        claimed row (between embed sub-batches and writes), so a stop
+        after the second row leaves the rest unwritten — re-claimable
+        next pass, not lost."""
+        import precis.workers.chunk_keywords as ck
+
+        ref_id = seed_ref(store)
+        for i in range(4):
+            _seed_long_chunk(store, ref_id=ref_id, ord=i, text=f"{_BODY_TEXT_1} v{i}")
+        # One unique candidate text per chunk, one text per embed call
+        # — each row is its own sub-batch, so the stop fires between
+        # real embed/write units.
+        monkeypatch.setattr(
+            "precis.workers.chunk_keywords._rake_phrases",
+            lambda text, *, max_keywords: [text[-8:]],
+        )
+        monkeypatch.setattr(ck, "_EMBED_CALL_MAX_TEXTS", 1)
+        checks = {"n": 0}
+
+        def _stop() -> bool:
+            checks["n"] += 1
+            # Row-top and write-slice checks alternate (row1, write1,
+            # row2, write2, row3…): the flag goes true on the fifth
+            # call — after row 2's write, before row 3 starts.
+            return checks["n"] > 4
+
+        result = run_chunk_keywords_pass(
+            store,
+            make_mock_bge_m3(),
+            batch_size=10,
+            single_runner=False,
+            should_stop=_stop,
+        )
+        # Two chunks written; the rest of the claim abandoned
+        # mid-batch — unwritten, not lost.
+        assert result == {"claimed": 4, "ok": 2, "failed": 0}
+        with store.pool.connection() as conn:
+            assert conn.execute(
+                "SELECT count(*) FROM chunks WHERE keywords IS NULL"
+            ).fetchone() == (2,)
+        # The abandoned two re-claim cleanly on the next pass.
+        assert run_chunk_keywords_pass(
+            store, make_mock_bge_m3(), batch_size=10, single_runner=False
+        ) == {"claimed": 2, "ok": 2, "failed": 0}
+
+    def test_dedicated_path_ignores_a_held_advisory_lock(self, store: Store) -> None:
+        """``single_runner=False`` doesn't take the fleet lock — a lock
+        held elsewhere (a shared-tick pass, an operator session) can't
+        starve the lane."""
+        import precis.workers.chunk_keywords as ck
+        from precis.store.advisory import try_xact_advisory_lock
+
+        ref_id = seed_ref(store)
+        _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        assert store.dsn
+        skip_if_backends_multiplexed(store.dsn)
+        emb = make_mock_bge_m3()
+        with try_xact_advisory_lock(store.dsn, ck._LOCK_KEY) as held:
+            assert held is True
+            result = run_chunk_keywords_pass(
+                store, emb, batch_size=10, single_runner=False
+            )
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+
+
+# ---------------------------------------------------------------------------
+# Stale-claim pacing — tier 3 seq-scans, so it runs on a cadence
+# ---------------------------------------------------------------------------
+
+
+class TestStalePacing:
+    def test_stale_claim_runs_every_nth_pass(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """Off-cadence passes skip the seq-scanning tier-3 claim; the
+        Nth pass runs it and the stale chunk is re-derived."""
+        import precis.workers.chunk_keywords as ck
+
+        monkeypatch.setattr(ck, "_pass_count", 0)
+        monkeypatch.setattr(ck, "_stale_draining", False)
+        ref_id = seed_ref(store)
+        stale_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        _mark_stale(store, stale_id)
+        emb = make_mock_bge_m3()
+        # Pass 1: _pass_count→1, 1 % 10 != 0 — tier 3 doesn't run.
+        assert run_chunk_keywords_pass(store, emb, batch_size=10) == {
+            "claimed": 0,
+            "ok": 0,
+            "failed": 0,
+        }
+        # Next pass lands on the cadence multiple → tier 3 claims it.
+        monkeypatch.setattr(ck, "_pass_count", ck._STALE_CLAIM_EVERY - 1)
+        result = run_chunk_keywords_pass(store, emb, batch_size=10)
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT keywords_meta->>'version' FROM chunks WHERE chunk_id = %s",
+                (stale_id,),
+            ).fetchone()
+        assert row == (KEYWORDS_VERSION,)
+
+    def test_stale_claim_drains_every_pass_until_empty(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """While the previous tier-3 claim returned rows the pacing is
+        suspended — a live stale backlog drains every pass, not every
+        Nth."""
+        import precis.workers.chunk_keywords as ck
+
+        monkeypatch.setattr(ck, "_pass_count", 0)
+        monkeypatch.setattr(ck, "_stale_draining", True)
+        ref_id = seed_ref(store)
+        for i in range(2):
+            _mark_stale(
+                store,
+                _seed_long_chunk(store, ref_id=ref_id, ord=i, text=_BODY_TEXT_1),
+            )
+        emb = make_mock_bge_m3()
+        # Both off-cadence passes still claim — _stale_draining holds
+        # until a claim comes back empty.
+        assert run_chunk_keywords_pass(store, emb, batch_size=1)["ok"] == 1
+        assert ck._stale_draining is True
+        assert run_chunk_keywords_pass(store, emb, batch_size=1)["ok"] == 1
+        # Queue empty → the flag clears, back to the paced cadence.
+        run_chunk_keywords_pass(store, emb, batch_size=10)
+        assert ck._stale_draining is False
+
+
+# ---------------------------------------------------------------------------
+# numpy scoring — identical output to the pure-Python reference (golden)
+# ---------------------------------------------------------------------------
+
+
+class TestNumpyScoring:
+    def test_matches_pure_python_reference(self) -> None:
+        """Top-8 order is identical and scores match the old
+        ``sum(a*b)/norms`` loop to float tolerance — the METHOD did not
+        change, only the matrix algebra."""
+        import math
+
+        from precis.workers.chunk_keywords import _score_keyword_candidates
+
+        def reference(
+            chunk_embedding: list[float],
+            candidate_meta: list[tuple[str, str | None]],
+            cand_vecs: list[list[float]],
+        ) -> list[dict[str, Any]]:
+            def _norm(v: list[float]) -> float:
+                return math.sqrt(sum(x * x for x in v))
+
+            chunk_norm = _norm(chunk_embedding)
+            scored: list[tuple[float, str, str | None]] = []
+            for (long_form, cand_short), vec in zip(candidate_meta, cand_vecs):
+                v_norm = _norm(vec)
+                score = (
+                    0.0
+                    if chunk_norm == 0.0 or v_norm == 0.0
+                    else sum(a * b for a, b in zip(chunk_embedding, vec))
+                    / (chunk_norm * v_norm)
+                )
+                scored.append((float(score), long_form, cand_short))
+            scored.sort(key=lambda t: t[0], reverse=True)
+            seen: set[str] = set()
+            kept: list[dict[str, Any]] = []
+            for score, long_form, cand_short in scored:
+                key = (cand_short or long_form).lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                kept.append({"short": cand_short, "long": long_form, "score": score})
+                if len(kept) >= 8:
+                    break
+            return kept
+
+        emb = make_mock_bge_m3()
+        chunk_vec = emb.embed_one(_BODY_TEXT_1)
+        candidate_meta: list[tuple[str, str | None]] = [
+            ("metal-organic framework", "MOF"),
+            ("gas storage", None),
+            ("catalysis", None),
+            ("separation applications", None),
+            ("pore geometry", None),
+            ("organic linkers", None),
+            ("high surface area", None),
+            ("crystalline materials", None),
+            ("tunable pore", None),
+            ("metal nodes", None),
+            ("zero-vector filler", None),
+        ]
+        cand_vecs = emb.embed([long_form for long_form, _ in candidate_meta])
+        cand_vecs[-1] = [0.0] * len(cand_vecs[0])  # zero vector → score 0.0
+
+        got = _score_keyword_candidates(chunk_vec, candidate_meta, cand_vecs)
+        want = reference(chunk_vec, candidate_meta, cand_vecs)
+
+        assert [k["long"] for k in got] == [k["long"] for k in want]
+        assert [k["short"] for k in got] == [k["short"] for k in want]
+        for g, w in zip(got, want):
+            assert g["score"] == pytest.approx(w["score"], abs=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Embed-call budget — one pass, bounded calls (gr520236 / gr550973)
+# ---------------------------------------------------------------------------
+
+
+class TestEmbedCallBudget:
+    def test_calls_bounded_by_unique_texts(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """One pass makes <= ceil(unique candidate texts /
+        _EMBED_CALL_MAX_TEXTS) embed calls — never one per chunk."""
+        import math
+
+        import precis.workers.chunk_keywords as ck
+
+        ref_id = seed_ref(store)
+        for i in range(30):
+            _seed_long_chunk(store, ref_id=ref_id, ord=i, text=f"{_BODY_TEXT_1} v{i}")
+        # Two shared phrases + one per-chunk unique phrase → 32 unique
+        # candidate texts across 30 chunks.
+        monkeypatch.setattr(
+            "precis.workers.chunk_keywords._rake_phrases",
+            lambda text, *, max_keywords: [
+                "shared a",
+                "shared b",
+                f"unique {text[-2:]}",
+            ],
+        )
+        monkeypatch.setattr(ck, "_EMBED_CALL_MAX_TEXTS", 10)
+        emb = make_mock_bge_m3()
+        embed = Mock(wraps=emb.embed)
+        monkeypatch.setattr(emb, "embed", embed)
+
+        result = run_chunk_keywords_pass(store, emb, batch_size=100, max_seconds=3600)
+
+        assert result == {"claimed": 30, "ok": 30, "failed": 0}
+        assert embed.call_count <= math.ceil(32 / 10)
+        seen: list[str] = []
+        for call in embed.call_args_list:
+            seen.extend(call.args[0])
+        assert len(seen) == len(set(seen))

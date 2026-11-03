@@ -18,7 +18,7 @@ embedder resolve is patched so no model loads and no DB is touched.
 from __future__ import annotations
 
 import argparse
-from typing import cast
+from typing import Any, cast
 from unittest.mock import patch
 
 from precis.cli._worker_passes import build_ref_passes
@@ -59,3 +59,43 @@ def test_pass_does_not_forward_the_generic_loop_batch_size() -> None:
 
     mock_run.assert_called_once()
     assert mock_run.call_args.kwargs["batch_size"] is None
+
+
+def test_dedicated_env_keeps_the_shared_pass_off(monkeypatch: Any) -> None:
+    """``PRECIS_CHUNK_KEYWORDS_DEDICATED=1`` (ops set it when the
+    dedicated lane owns the queue, gr520236) means the rotation never
+    registers the ref-pass — the lane and the tick can't double-run."""
+    monkeypatch.setenv("PRECIS_CHUNK_KEYWORDS_DEDICATED", "1")
+    with (
+        patch(_EMBED_PATH, return_value=object()),
+        patch(_RUN_PATH) as mock_run,
+    ):
+        ref_passes, _, _, _ = build_ref_passes(
+            _args(),
+            store=cast(Store, object()),
+            handlers=[],
+            _register=lambda name: name == "chunk_keywords",
+            _svc_resolver=cast(ServiceConfigResolver, object()),
+        )
+    assert not any(p.__name__ == "_chunk_keywords_pass" for p in ref_passes)
+    mock_run.assert_not_called()
+
+
+def test_only_overrides_the_dedicated_env(monkeypatch: Any) -> None:
+    """An explicit ``--only chunk_keywords`` still registers — the
+    operator escape hatch for a manual run while the lane owns prod."""
+    monkeypatch.setenv("PRECIS_CHUNK_KEYWORDS_DEDICATED", "1")
+    args = _args()
+    args.only = ["chunk_keywords"]
+    with (
+        patch(_EMBED_PATH, return_value=object()),
+        patch(_RUN_PATH),
+    ):
+        ref_passes, _, _, _ = build_ref_passes(
+            args,
+            store=cast(Store, object()),
+            handlers=[],
+            _register=lambda name: name == "chunk_keywords",
+            _svc_resolver=cast(ServiceConfigResolver, object()),
+        )
+    assert any(p.__name__ == "_chunk_keywords_pass" for p in ref_passes)

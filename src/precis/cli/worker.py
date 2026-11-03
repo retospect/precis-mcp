@@ -41,7 +41,7 @@ from precis.cli._worker_passes import build_ref_passes
 from precis.embedder import make_embedder
 from precis.format import serialize
 from precis.store import Store
-from precis.utils.env import env_flag, env_float
+from precis.utils.env import env_flag, env_float, env_int
 from precis.workers import (
     EmbedHandler,
     RakeLemmaHandler,
@@ -509,6 +509,37 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "catch-all unit when a dedicated lane owns the pass.",
     )
     p.add_argument(
+        "--dedicated",
+        action="store_true",
+        help="Run the --only pass as a dedicated single-purpose drain "
+        "loop instead of the rotation (currently chunk_keywords only): "
+        "claim a batch, process it, claim again immediately; sleep "
+        "PRECIS_CHUNK_KEYWORDS_DEDICATED_IDLE_SECONDS (default 60) "
+        "when the queue is empty. The claim runs without the "
+        "fleet-wide advisory lock — pair --shard-count/--shard-index "
+        "to run N lanes on disjoint chunk_id residue classes. Batch "
+        "size comes from PRECIS_CHUNK_KEYWORDS_DEDICATED_BATCH_SIZE "
+        "(default 500), not --batch-size. Set "
+        "PRECIS_CHUNK_KEYWORDS_DEDICATED=1 on the shared units so the "
+        "rotation stops running the same pass.",
+    )
+    p.add_argument(
+        "--shard-count",
+        type=int,
+        default=env_int("PRECIS_CHUNK_KEYWORDS_SHARDS", 1, lo=1),
+        help="Dedicated-lane shard count N — lane i claims chunk_id "
+        "%% N = i (default: PRECIS_CHUNK_KEYWORDS_SHARDS env, else 1). "
+        "Only meaningful with --dedicated.",
+    )
+    p.add_argument(
+        "--shard-index",
+        type=int,
+        default=env_int("PRECIS_CHUNK_KEYWORDS_SHARD_INDEX", 0, lo=0),
+        help="This lane's shard index i, 0..N-1 (default: "
+        "PRECIS_CHUNK_KEYWORDS_SHARD_INDEX env, else 0). Only "
+        "meaningful with --dedicated.",
+    )
+    p.add_argument(
         "--with-llm",
         action="store_true",
         help="Enable the chase worker's LLM hooks (claude -p via "
@@ -675,6 +706,35 @@ def run(args: argparse.Namespace) -> None:
     sched_thread: threading.Thread | None = None
     stop_flag: dict[str, bool] = {"stop": False}
     try:
+        if getattr(args, "dedicated", False):
+            # Dedicated drain lane (gr520236 / gr550973): a single-
+            # purpose process that owns the chunk_keywords queue — its
+            # own claim-process-loop, no rotation and no fleet-wide
+            # advisory lock (N lanes shard the claim instead).
+            # Bypasses handlers/ref_passes entirely.
+            if args.only != ["chunk_keywords"]:
+                print(
+                    "worker: --dedicated requires '--only chunk_keywords'",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+            if args.shard_index >= args.shard_count:
+                print(
+                    "worker: --shard-index must be < --shard-count",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+            from precis.workers.chunk_keywords import run_dedicated_loop
+
+            stop_flag = _install_signal_handlers()
+            run_dedicated_loop(
+                store,
+                _resolve_embedder(args, store),
+                shard_count=args.shard_count,
+                shard_index=args.shard_index,
+                should_stop=lambda: stop_flag["stop"],
+            )
+            return
         handlers = _build_handlers(args, store)
         if args.status:
             _print_status(handlers, store, format=resolve_format(args))

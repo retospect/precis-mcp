@@ -46,6 +46,16 @@ precis_capabilities:
   # `precis_worker_oasnap_enabled: true`), and the first tick starts the
   # ~675 GB works-dump transfer — enabling it needs Reto's go.
   openalex_snapshot: []
+  # precis worker --only chunk_keywords --dedicated (playbook 20g): the
+  # dedicated chunk-keyword drain lane(s), `precis_worker_kwdrain_lanes`
+  # units per listed host. Ships EMPTY like openalex_snapshot — naming
+  # hosts here names WHERE the lanes may run (the lane also needs
+  # `precis_worker_kwdrain_enabled: true`). Multi-host is supported and
+  # sharded globally: the host's position in THIS list times
+  # lanes-per-host plus the lane index is its shard index, so the list
+  # order IS the shard assignment (reshuffling it just moves which host
+  # owns which shard — harmless either way).
+  chunk_keywords_drain: []
 
   # --- GPU / compute node ---------------------------------------------------
   dft:             [node-gpu]

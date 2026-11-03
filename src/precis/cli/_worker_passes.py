@@ -49,7 +49,14 @@ def build_ref_passes(
     # used after the loop to decide whether to also start the dedicated
     # heartbeat thread (see that site for why).
     heartbeat_registered = False
-    if _register("chunk_keywords"):
+    # gr520236: when the dedicated drain lane owns the queue
+    # (PRECIS_CHUNK_KEYWORDS_DEDICATED=1 on the shared units), the
+    # rotation's ref-pass doesn't register — a ``--only`` run still
+    # registers it, the operator escape hatch.
+    if _register("chunk_keywords") and (
+        getattr(args, "only", None) is not None
+        or not env_flag("PRECIS_CHUNK_KEYWORDS_DEDICATED")
+    ):
         from precis.workers.chunk_keywords import run_chunk_keywords_pass
 
         # Narrow to EmbedHandler so mypy sees the .embedder

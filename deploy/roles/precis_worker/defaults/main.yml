@@ -115,6 +115,22 @@ precis_worker_fetch_inflight: ""
 precis_worker_oasnap_enabled: false
 precis_worker_oasnap_idle_seconds: 3600
 
+# ── Dedicated chunk_keywords drain lane (gr520236 / gr550973) ────────
+# `chunk_keywords` gets its own daemon — rendered by playbook 20g as
+# com.precis.worker-kwdrain-<N> / precis-worker-kwdrain-<N>.service,
+# `precis worker --only chunk_keywords --dedicated`, on the hosts listed
+# in `precis_capabilities.chunk_keywords_drain`. Two-key opt-in like
+# oasnap: the capability names WHERE, this flag is the go switch —
+# keep it false until ops decides the lane owns the queue, then also
+# render PRECIS_CHUNK_KEYWORDS_DEDICATED=1 on the shared worker units
+# (their env overlay) so the rotation stops running the same pass.
+# `precis_worker_kwdrain_lanes` is the lane count PER HOST; the shard
+# space is global (hosts x lanes): host h of H in the capability list
+# runs shard indexes h*L .. h*L+L-1 of H*L — disjoint sets fleet-wide,
+# no fleet-wide advisory lock.
+precis_worker_kwdrain_enabled: false
+precis_worker_kwdrain_lanes: 2
+
 # Nanopub network passes (daily host-agnostic cadences: nanopub_mirror
 # registry delta sync + ots_sweep calendar anchoring). Default ON
 # cluster-wide, unlike the per-host gates above: the cadence lease is a

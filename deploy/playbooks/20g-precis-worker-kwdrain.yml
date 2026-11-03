@@ -1,0 +1,240 @@
+---
+# 20g-precis-worker-kwdrain.yml — dedicated chunk_keywords drain lane(s)
+# (gr520236 / gr550973).
+#
+# WHY THIS EXISTS. The shared-tick `chunk_keywords` ref-pass drains ~7k
+# chunks/day against a ~2.8k/h inflow (1.6M pending) — one fleet-wide
+# advisory lock, one host at a time, a 256-chunk claim inside a serial
+# rotation. The dedicated lane runs `precis worker --only chunk_keywords
+# --dedicated`: its own loop (claim → process → immediately claim again;
+# sleep 60 s when the queue is empty), a 500-chunk default batch, NO
+# advisory lock — lanes shard the claim globally by `chunk_id % N = i`
+# (N = hosts x lanes, --shard-count / --shard-index), and the write's
+# stale guard makes a residual double-claim a no-op.
+#
+# TWO-KEY OPT-IN. `precis_capabilities.chunk_keywords_drain` names WHERE
+# the lane may run; `precis_worker_kwdrain_enabled` (role default false)
+# is the go switch. Both must be true or this playbook only retires
+# stale units.
+#
+# WHEN YOU TURN IT ON, also render `PRECIS_CHUNK_KEYWORDS_DEDICATED=1`
+# into the shared worker units' env (their overlay in 20b/20) — the
+# rotation's chunk_keywords ref-pass then doesn't register, so the lane
+# and the tick never double-run the queue. Until then the shared tick
+# keeps draining as today; the lane is additive either way (the shard
+# split plus the write's stale guard keep the overlap harmless).
+#
+# SCOPE / DEPENDENCIES. `hosts: all` because the capability list is the
+# gate (mirrors 20f): the render runs only where `inventory_hostname in
+# precis_capabilities.chunk_keywords_drain`, the retire tasks run
+# everywhere else. Requires the precis_worker provisioning (venv) to
+# have run — this play imports only `provision`, never `units.yml`
+# (the 20b bug: a `roles:` entry would re-run the role's full main.yml).
+# Requires 19-pgpass (the DSN's password file).
+#
+# LANES / GLOBAL SHARDS. `precis_worker_kwdrain_lanes` (default 2) is
+# the unit count PER HOST, and the shard space is global: with H hosts
+# in `precis_capabilities.chunk_keywords_drain` each running L lanes,
+# `--shard-count` is H*L and host h (its position in the capability
+# list — the list order IS the assignment) runs shard indexes
+# h*L .. h*L+L-1. Without this, lanes 0..L-1 on every host would share
+# the same residue classes and each shard would be worked twice
+# (double embedder cost): SKIP LOCKED only arbitrates the claim
+# instant — row locks release at the claim's commit — so the modulus
+# is the only real partition. The write's stale guard makes any
+# residual double-claim a no-op. Editing the capability list's ORDER
+# reshuffles which host owns which shard — harmless (disjointness and
+# the stale guard hold throughout the re-render window).
+#
+# Resizing `precis_worker_kwdrain_lanes` or the capability list changes
+# every unit's argv, so service_unit's launchd/systemd reload fires on
+# the diff — but units ABOVE the new lane count stop being rendered,
+# so the retire-above tasks below bootout/disable them explicitly.
+# With H*L=1 the shard clause drops out and the lane claims the whole
+# queue.
+#
+# NOT wired into site.yml — standing the lane up is a deliberate
+# operator action:
+#
+#   ansible-playbook playbooks/20g-precis-worker-kwdrain.yml \
+#     -e precis_worker_kwdrain_enabled=true
+#   # 4 lanes instead of the default 2:
+#   ansible-playbook playbooks/20g-precis-worker-kwdrain.yml \
+#     -e precis_worker_kwdrain_enabled=true -e precis_worker_kwdrain_lanes=4
+
+- name: Deploy the dedicated chunk_keywords drain lane(s)
+  hosts: all
+  become: true
+  vars:
+    _kw_lane_on: >-
+      {{ (precis_worker_kwdrain_enabled | default(false) | bool)
+         and (inventory_hostname in (precis_capabilities.chunk_keywords_drain | default([]))) }}
+    _kw_lanes: "{{ precis_worker_kwdrain_lanes | default(2) | int }}"
+    # Global shard space: hosts x lanes. The host's position in the
+    # capability list (its declared order — the same list on every
+    # host) times lanes-per-host plus the lane index is its shard
+    # index, so two hosts never share a residue class. `-1` when off —
+    # the gated tasks below never render it there.
+    _kw_hosts: "{{ precis_capabilities.chunk_keywords_drain | default([]) }}"
+    _kw_host_idx: >-
+      {{ _kw_hosts.index(inventory_hostname)
+         if inventory_hostname in _kw_hosts else -1 }}
+    _kw_shard_count: "{{ (_kw_hosts | length) * (_kw_lanes | int) }}"
+  tasks:
+    - name: precis_worker provisioning only (venv + deps + service_config seed)
+      ansible.builtin.import_role:
+        name: precis_worker
+        tasks_from: provision
+      when: _kw_lane_on | bool
+
+    # One unit per lane — `include_role` (dynamic), not `import_role`:
+    # the lane loop needs per-iteration vars and `import_role` (static)
+    # doesn't support `loop` (same shape as 20d's drain lanes).
+    - name: render + load each chunk_keywords drain lane unit
+      ansible.builtin.include_role:
+        name: service_unit
+      loop: "{{ range(1, (_kw_lanes | int) + 1) | list }}"
+      loop_control:
+        loop_var: lane
+        label: "worker-kwdrain-{{ lane }}"
+      vars:
+        service_unit_name: "worker-kwdrain-{{ lane }}"
+        service_unit_run_as: deploy
+        # /tmp avoids the getcwd() EPERM trap on an NFS-mounted cwd —
+        # same reasoning as 20b/20f.
+        service_unit_working_dir: /tmp
+        service_unit_schedule:
+          mode: keepalive
+        service_unit_timeout_stop_sec: 60
+        # --only chunk_keywords --dedicated: the pass's own loop owns
+        # the cadence (claim → work → claim; 60 s rest when empty), so
+        # no --idle-seconds/--batch-size here — the lane's env knobs
+        # (PRECIS_CHUNK_KEYWORDS_DEDICATED_*) size it. Global shard:
+        # count = hosts x lanes, index = host position x lanes + lane.
+        service_unit_exec: >-
+          {{ precis_worker_venv }}/bin/precis worker --only chunk_keywords
+          --dedicated
+          --shard-count {{ _kw_shard_count | int }}
+          --shard-index {{ (_kw_host_idx | int) * (_kw_lanes | int) + (lane | int) - 1 }}
+        service_unit_env: >-
+          {{ precis_shared_env
+             | combine(precis_identity_env | default({}))
+             | combine({
+                 'HOME': '/var/lib/precis' if os_family == 'linux' else '/Users/deploy',
+                 'PATH': precis_worker_venv + '/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
+                 'PRECIS_DATABASE_URL': precis_worker_dsn,
+                 'PGPASSFILE': '/home/deploy/.pgpass' if os_family == 'linux' else '/Users/deploy/.pgpass',
+                 'HF_HOME': precis_worker_hf_home,
+                 'PRECIS_EMBEDDER': precis_worker_embedder,
+                 'PRECIS_EMBEDDER_URL': precis_worker_embedder_url,
+                 'PRECIS_PROCESS': 'precis-worker-kwdrain-' ~ lane,
+                 'PRECIS_SOURCE': 'precis-worker-kwdrain-' ~ lane,
+               }) }}
+      when: _kw_lane_on | bool
+
+    # Lane-count shrink cleanup: lowering `precis_worker_kwdrain_lanes`
+    # re-renders lanes 1..N but leaves units N+1.. loaded — they'd keep
+    # claiming the OLD shard space (a residue class that now overlaps
+    # the re-rendered lanes'). Bootout/disable any kwdrain unit whose
+    # index is above the new count; the glob no-ops at the new size.
+    - name: retire kwdrain lanes above the current count (macOS)
+      when:
+        - os_family == 'darwin'
+        - _kw_lane_on | bool
+      ansible.builtin.shell:
+        cmd: |
+          set -u
+          for f in /Library/LaunchDaemons/com.precis.worker-kwdrain-*.plist; do
+            [ -e "$f" ] || continue
+            n="$(basename "$f" .plist)"; n="${n##*-}"
+            case "$n" in ''|*[!0-9]*) continue ;; esac
+            if [ "$n" -gt {{ _kw_lanes | int }} ]; then
+              launchctl bootout "system/$(basename "$f" .plist)" 2>/dev/null || true
+              rm -f "$f"
+            fi
+          done
+      changed_when: false
+      failed_when: false
+
+    - name: retire kwdrain lanes above the current count (Linux)
+      when:
+        - os_family == 'linux'
+        - _kw_lane_on | bool
+      ansible.builtin.shell:
+        cmd: |
+          set -u
+          for f in /etc/systemd/system/precis-worker-kwdrain-*.service; do
+            [ -e "$f" ] || continue
+            n="$(basename "$f" .service)"; n="${n##*-}"
+            case "$n" in ''|*[!0-9]*) continue ;; esac
+            if [ "$n" -gt {{ _kw_lanes | int }} ]; then
+              systemctl disable --now "$(basename "$f")" 2>/dev/null || true
+              rm -f "$f"
+            fi
+          done
+          systemctl daemon-reload
+      changed_when: false
+      failed_when: false
+
+    # Host-left-the-capability / flag-off cleanup: stale lane units
+    # would keep claiming a queue they no longer own. Bootout/disable
+    # is a no-op when the unit was never loaded.
+    - name: retire stale kwdrain LaunchDaemons (macOS)
+      when:
+        - os_family == 'darwin'
+        - not (_kw_lane_on | bool)
+      ansible.builtin.shell:
+        cmd: |
+          set -u
+          for f in /Library/LaunchDaemons/com.precis.worker-kwdrain-*.plist; do
+            [ -e "$f" ] || continue
+            launchctl bootout "system/$(basename "$f" .plist)" 2>/dev/null || true
+            rm -f "$f"
+          done
+      changed_when: false
+      failed_when: false
+
+    - name: retire stale kwdrain systemd units (Linux)
+      when:
+        - os_family == 'linux'
+        - not (_kw_lane_on | bool)
+      ansible.builtin.shell:
+        cmd: |
+          set -u
+          for f in /etc/systemd/system/precis-worker-kwdrain-*.service; do
+            [ -e "$f" ] || continue
+            systemctl disable --now "$(basename "$f")" 2>/dev/null || true
+            rm -f "$f"
+          done
+          systemctl daemon-reload
+      changed_when: false
+      failed_when: false
+
+    # Code-refresh bounce (mirrors 20f): service_unit's own reload only
+    # fires on a unit-FILE diff, so a pure venv/code refresh leaves the
+    # lanes on stale code without this.
+    - name: Bounce the kwdrain lanes on a code refresh (macOS)
+      ansible.builtin.shell:
+        cmd: |
+          set -u
+          for f in /Library/LaunchDaemons/com.precis.worker-kwdrain-*.plist; do
+            [ -e "$f" ] || continue
+            launchctl kickstart -k "system/$(basename "$f" .plist)" || true
+          done
+      when:
+        - os_family == 'darwin'
+        - _kw_lane_on | bool
+        - precis_deploy_changed is not defined
+      failed_when: false
+
+    - name: Bounce the kwdrain lanes on a code refresh (Linux)
+      ansible.builtin.shell:
+        cmd: |
+          set -u
+          systemctl restart 'precis-worker-kwdrain-*.service' || true
+      when:
+        - os_family == 'linux'
+        - _kw_lane_on | bool
+        - precis_deploy_changed is not defined
+      failed_when: false
+  tags: [precis-worker-kwdrain, precis]
