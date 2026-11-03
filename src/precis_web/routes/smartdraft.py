@@ -307,6 +307,10 @@ async def reader(
     # hydrated window (see ``blocks`` below), which never carries ``skel``
     # rows to begin with.
     review_by_dc = smartdraft.review_payloads_for(rendered_nodes, review_status, store)
+    # Pending change-request badges (gr553306) — same rendered-window
+    # scoping as review_by_dc; ONE anchored_todos call over the window's
+    # dc + base-58 forms (the stored meta.anchor can be either).
+    request_by_dc = smartdraft.request_badges_for(store, rendered_nodes)
     # ``focus_review`` — kept for back-compat with any other call site that
     # still expects the OLD raw-ledger shape (``{checker: {...}}``, not the
     # derived indicator); the widget itself reads ``review_by_dc``.
@@ -324,7 +328,9 @@ async def reader(
     # render also shows: marks (pin/eye/lock badges), the review ledger,
     # the authored-stamp index.
     view_version = smartdraft.render_version(
-        store, ref.id, overlays=(marks, review_status, authored_idx)
+        store,
+        ref.id,
+        overlays=(marks, review_status, authored_idx, request_by_dc),
     )
 
     # Document-level edges for the header panel — one query, whole-ref
@@ -379,6 +385,7 @@ async def reader(
             "focus_review": focus_review,
             # ── Review status (indicator + rollup) ──
             "review_by_dc": review_by_dc,
+            "request_by_dc": request_by_dc,
             "authored_idx": authored_idx,
             "rollup": rollup,
             "checker_counts": checker_counts,
@@ -428,6 +435,9 @@ async def blocks(
     review_by_dc = smartdraft.review_payloads_for(
         sel, _review_status_by_chunk(store, ref.id), store
     )
+    # Pending change-request badges for this hydrated window (gr553306) —
+    # same contract as the initial render's ``request_by_dc``.
+    request_by_dc = smartdraft.request_badges_for(store, sel)
     # The machine-authored marker rides the same hydrated window (a
     # scrolled-to block shows its ✎ authored stripe identically to a
     # server-rendered one).
@@ -461,6 +471,7 @@ async def blocks(
             "abbrevs": abbrevs,
             "handles": handles,
             "review_by_dc": review_by_dc,
+            "request_by_dc": request_by_dc,
             "authored_idx": authored_idx,
             "ident": ident,
             "debug": debug.strip().lower() in ("1", "true", "on", "yes"),

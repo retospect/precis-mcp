@@ -8,6 +8,8 @@ the change-request POST.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -17,14 +19,17 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from precis.store._draft_ops import ChunkReviewEntry, DraftReviewRow
 from precis.utils import handle_registry
 from precis_web.app import create_app
 from precis_web.config import WebConfig
+from precis_web.routes import drafts as drafts_routes
+from precis_web.routes.drafts import _request_sha
 
 from .conftest import FakeRuntime, FakeStore, make_ref
 
@@ -1930,7 +1935,7 @@ def test_request_ws_falls_back_to_focus_anchor_when_nothing_pinned(tmp_path) -> 
     assert r.status_code == 200 and r.json()["ok"]
     verb, args = rt.calls[-1]
     assert verb == "put"
-    assert args["meta"]["anchor"] == "BBBBBB"  # dc2 → its base-58 anchor
+    assert args["meta"]["anchor"] == "dc2"  # the dc<id> form (gr553306)
     assert "working_set" not in args["meta"]  # anchor-only, no working set
 
 
@@ -1945,7 +1950,7 @@ def test_request_ws_files_todo_carrying_the_working_set(tmp_path) -> None:
     assert verb == "put" and args["kind"] == "todo"
     assert args["parent_id"] == 1  # the draft-of project
     assert args["meta"]["working_set"]["edit_hint"] == ["dc2"]  # the pen hint
-    assert args["meta"]["anchor"] == "BBBBBB"  # dc2 → its base-58 anchor
+    assert args["meta"]["anchor"] == "dc2"  # the dc<id> form (gr553306)
     assert "llm_select" not in args["meta"]  # no structured knob → no dict
     assert args["prio"] == 3  # human-authored ask jumps the default queue
 
@@ -2026,6 +2031,334 @@ def test_request_ws_junk_knobs_leave_llm_select_absent(tmp_path) -> None:
     assert r.status_code == 200 and r.json()["ok"]
     _verb, args = rt.calls[-1]
     assert "llm_select" not in args["meta"]
+
+
+def test_request_ws_focus_anchor_outranks_a_context_eye(tmp_path) -> None:
+    """gr553306: the block the request was typed on (the caller's focus)
+    wins over a bare context *eye* — the request must land where the user
+    pointed, not where the working set happened to park an eye."""
+    rt, client = _ws_client(tmp_path)
+    client.post("/drafts/nt/marks", json={"op": "eye", "handles": ["dc3"]})
+    r = client.post("/drafts/nt/request-ws", json={"text": "tighten", "anchor": "dc2"})
+    assert r.status_code == 200 and r.json()["ok"]
+    _verb, args = rt.calls[-1]
+    assert args["meta"]["anchor"] == "dc2"
+
+
+def test_request_ws_dead_focus_anchor_is_a_visible_422(tmp_path) -> None:
+    """gr553306: a caller-supplied anchor that resolves to no live block of
+    this draft must not mint an unanchored todo — a visible error instead
+    of a silent 200."""
+    rt, client = _ws_client(tmp_path)
+    r = client.post(
+        "/drafts/nt/request-ws", json={"text": "tighten", "anchor": "dc999"}
+    )
+    assert r.status_code == 422 and not r.json()["ok"]
+    assert "dc999" in r.json()["error"]
+    assert not [c for c in rt.calls if c[0] == "put"]
+
+
+def test_request_ws_dispatch_error_surfaces_not_silent_200(tmp_path) -> None:
+    """gr553306: when the ``put`` dispatch reports a failure, the route
+    answers with the error — never ``ok: true`` with nothing minted."""
+    rt, client = _ws_client(tmp_path)
+    rt.error_verbs.add("put")
+    r = client.post("/drafts/nt/request-ws", json={"text": "tighten", "anchor": "dc2"})
+    assert r.status_code == 400 and not r.json()["ok"]
+    assert "rejected by handler" in r.json()["error"]
+
+
+def test_request_ws_dispatch_raise_is_a_logged_502(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """gr553306: an unexpected dispatch exception answers 502 and logs the
+    draft and the anchor it was filing on — the failure is never silent."""
+    rt, client = _ws_client(tmp_path)
+
+    def boom(verb, args, **_kw):
+        raise RuntimeError("handler blew up")
+
+    monkeypatch.setattr(rt, "dispatch_with_status", boom)
+    with caplog.at_level("ERROR", logger="precis_web.routes.drafts"):
+        r = client.post(
+            "/drafts/nt/request-ws", json={"text": "tighten", "anchor": "dc2"}
+        )
+    assert r.status_code == 502 and not r.json()["ok"]
+    assert "nt" in caplog.text and "dc2" in caplog.text
+
+
+def test_request_ws_dedups_an_identical_recent_request(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REQWS2: the same text on the same anchor inside the 60 s window
+    returns the existing todo — a second POST mints nothing."""
+    rt, client = _ws_client(tmp_path)
+    monkeypatch.setattr(
+        rt.store,
+        "anchored_todos",
+        lambda handles: {
+            "dc2": [
+                {
+                    "ref_id": 77,
+                    "title": "tighten",
+                    "request": "tighten",
+                    "request_sha": _request_sha("tighten"),
+                    "status": "open",
+                    "created_at": datetime.now(UTC),
+                }
+            ]
+        },
+    )
+    r = client.post("/drafts/nt/request-ws", json={"text": "tighten", "anchor": "dc2"})
+    assert r.status_code == 200 and r.json()["ok"]
+    assert r.json()["dedup"] is True
+    assert r.json()["todo"] == 77
+    assert r.json()["state"] == "queued"
+    assert not [c for c in rt.calls if c[0] == "put"]
+
+
+def test_request_ws_same_text_on_a_different_anchor_mints(
+    tmp_path, monkeypatch
+) -> None:
+    """REQWS2 boundary: the dedup keys on (anchor, text) — the same text
+    fired at a *different* block is a new request, not a retry."""
+    rt, client = _ws_client(tmp_path)
+    monkeypatch.setattr(
+        rt.store,
+        "anchored_todos",
+        lambda handles: {
+            "dc3": [
+                {
+                    "ref_id": 77,
+                    "title": "tighten",
+                    "request": "tighten",
+                    "request_sha": _request_sha("tighten"),
+                    "status": "open",
+                    "created_at": datetime.now(UTC),
+                }
+            ]
+        },
+    )
+    r = client.post("/drafts/nt/request-ws", json={"text": "tighten", "anchor": "dc2"})
+    assert r.status_code == 200 and r.json()["ok"]
+    assert "dedup" not in r.json()
+    assert rt.calls[-1][0] == "put"
+
+
+def test_request_ws_stale_identical_request_mints_again(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REQWS2 boundary: outside the 60 s window an identical request is a
+    fresh ask, not a replay."""
+    rt, client = _ws_client(tmp_path)
+    old = datetime.now(UTC) - timedelta(seconds=120)
+    monkeypatch.setattr(
+        rt.store,
+        "anchored_todos",
+        lambda handles: {
+            "dc2": [
+                {
+                    "ref_id": 77,
+                    "title": "tighten",
+                    "request": "tighten",
+                    "request_sha": _request_sha("tighten"),
+                    "status": "open",
+                    "created_at": old,
+                }
+            ]
+        },
+    )
+    r = client.post("/drafts/nt/request-ws", json={"text": "tighten", "anchor": "dc2"})
+    assert r.status_code == 200 and r.json()["ok"]
+    assert "dedup" not in r.json()
+    assert rt.calls[-1][0] == "put"
+
+
+def test_request_ws_multiline_requests_sharing_a_first_line_both_mint(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REQWS3: the dedup keys on the FULL request text (``meta.request_sha``)
+    — two multi-line requests that share only a first line are different
+    asks, so the second one's instructions mint their own todo instead of
+    being swallowed by the first-line dedup."""
+    rt, client = _ws_client(tmp_path)
+    text_a = "tighten\ndrop the second paragraph"
+    monkeypatch.setattr(
+        rt.store,
+        "anchored_todos",
+        lambda handles: {
+            "dc2": [
+                {
+                    "ref_id": 77,
+                    "title": "tighten",
+                    "request": "tighten",
+                    "request_sha": _request_sha(text_a),
+                    "status": "open",
+                    "created_at": datetime.now(UTC),
+                }
+            ]
+        },
+    )
+    text_b = "tighten\nexpand the figure caption instead"
+    r = client.post("/drafts/nt/request-ws", json={"text": text_b, "anchor": "dc2"})
+    assert r.status_code == 200 and r.json()["ok"]
+    assert "dedup" not in r.json()
+    verb, args = rt.calls[-1]
+    assert verb == "put" and args["text"] == text_b
+    assert args["meta"]["request_sha"] == _request_sha(text_b)
+    # …and an exact replay of the first request still dedups onto its todo.
+    r2 = client.post("/drafts/nt/request-ws", json={"text": text_a, "anchor": "dc2"})
+    assert r2.json()["dedup"] is True and r2.json()["todo"] == 77
+    assert len([c for c in rt.calls if c[0] == "put"]) == 1
+
+
+@pytest.mark.parametrize(
+    "inactive",
+    [
+        {"failed": True, "fail_reason": "tick blew up"},
+        {"status": "done", "done": True},
+        {"status": "won't-do", "done": True},
+    ],
+    ids=["failed", "done", "wont-do"],
+)
+def test_request_ws_identical_to_an_inactive_request_mints_anew(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, inactive: dict
+) -> None:
+    """REQWS3: the dedup matches only an *active* request (queued or
+    running) — an identical ask on top of a failed/done/won't-do row is a
+    new request, not a retry of a settled todo."""
+    rt, client = _ws_client(tmp_path)
+    text = "tighten the methods section"
+    row = {
+        "ref_id": 77,
+        "title": text,
+        "request": text,
+        "request_sha": _request_sha(text),
+        "status": "open",
+        "created_at": datetime.now(UTC),
+        **inactive,
+    }
+    monkeypatch.setattr(rt.store, "anchored_todos", lambda handles: {"dc2": [row]})
+    r = client.post("/drafts/nt/request-ws", json={"text": text, "anchor": "dc2"})
+    assert r.status_code == 200 and r.json()["ok"]
+    assert "dedup" not in r.json()
+    assert rt.calls[-1][0] == "put"
+
+
+def test_request_ws_concurrent_identical_posts_mint_once(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REQWS3: two near-simultaneous POSTs of the same request — the
+    check-then-mint gap is guarded, so only the first bills a todo and the
+    second returns its result as a dedup (a direct call to the route —
+    the ``_REQUEST_INFLIGHT`` slot is the thing under test)."""
+    rt = FakeRuntime(WsFakeStore())
+    app = create_app(runtime=rt, web_config=WebConfig(corpus_dir=tmp_path))
+    dispatched = 0
+
+    async def slow_dispatch(request, verb, args, **_kw):
+        nonlocal dispatched
+        dispatched += 1
+        await asyncio.sleep(0.2)  # hold the mint open so the rival lands mid-flight
+        return ("created todo td123 — queued", False)
+
+    monkeypatch.setattr(drafts_routes, "await_dispatch", slow_dispatch)
+
+    def _post(payload: dict) -> Request:
+        body = json.dumps(payload).encode("utf-8")
+        sent = False
+
+        async def receive():
+            nonlocal sent
+            if sent:
+                return {"type": "http.request", "body": b"", "more_body": False}
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        return Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/drafts/nt/request-ws",
+                "app": app,
+                "headers": [],
+                "state": {},
+            },
+            receive,
+        )
+
+    payload = {"text": "tighten the methods", "anchor": "dc2"}
+
+    async def _both():
+        return await asyncio.gather(
+            drafts_routes.request_change_ws(_post(payload), "nt"),
+            drafts_routes.request_change_ws(_post(payload), "nt"),
+        )
+
+    r1, r2 = asyncio.run(_both())
+    b1, b2 = json.loads(r1.body), json.loads(r2.body)
+    assert dispatched == 1
+    assert b1["ok"] and b2["ok"]
+    assert b1["todo"] == b2["todo"] == 123
+    assert (b1.get("dedup"), b2.get("dedup")).count(True) == 1
+
+
+def test_request_ws_mints_one_anchored_todo_under_project(
+    store, runtime_with_store, tmp_path
+) -> None:
+    """DB/request path (gr553306): POST on a block mints exactly one todo
+    anchored on that block's ``dc<id>``, parented on the draft's project —
+    the request cannot silently vanish. The response carries its ref_id
+    (REQWS2) so the client can badge immediately."""
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    _ref, head = store.drafts.create_draft(
+        name="reqws-mint", title="mint draft", project_ref_id=proj
+    )
+    app = create_app(
+        runtime=runtime_with_store, web_config=WebConfig(corpus_dir=tmp_path)
+    )
+    client = TestClient(app)
+
+    r = client.post(
+        "/drafts/reqws-mint/request-ws",
+        json={"text": "where is the tether attached", "anchor": head.dc},
+    )
+    assert r.status_code == 200 and r.json()["ok"]
+    assert r.json()["anchor"] == head.dc
+
+    anchored = store.drafts.anchored_todos([head.dc]).get(head.dc, [])
+    assert len(anchored) == 1
+    assert r.json()["todo"] == anchored[0]["ref_id"]  # REQWS2 response id
+    todo = store.get_ref(kind="todo", id=anchored[0]["ref_id"])
+    assert todo is not None
+    assert todo.parent_id == proj
+    assert todo.meta["anchor"] == head.dc
+    assert todo.meta["llm_tier"] == "big"
+
+
+def test_request_ws_second_identical_post_returns_the_same_todo(
+    store, runtime_with_store, tmp_path
+) -> None:
+    """REQWS2 DB path: a re-fired identical request on the same block inside
+    the window returns the same todo id — ``anchored_todos`` still shows
+    exactly one row, no second billed mint."""
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    _ref, head = store.drafts.create_draft(
+        name="reqws-dup", title="dup draft", project_ref_id=proj
+    )
+    app = create_app(
+        runtime=runtime_with_store, web_config=WebConfig(corpus_dir=tmp_path)
+    )
+    client = TestClient(app)
+    payload = {"text": "where is the tether", "anchor": head.dc}
+
+    r1 = client.post("/drafts/reqws-dup/request-ws", json=payload)
+    r2 = client.post("/drafts/reqws-dup/request-ws", json=payload)
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert r1.json()["todo"] == r2.json()["todo"]
+    assert r2.json()["dedup"] is True
+    anchored = store.drafts.anchored_todos([head.dc]).get(head.dc, [])
+    assert len(anchored) == 1
 
 
 # ── "around here" bulk expand (``/around``) ──

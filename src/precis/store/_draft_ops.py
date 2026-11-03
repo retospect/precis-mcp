@@ -1278,6 +1278,7 @@ class DraftStore(_AbbrevMixin):
         anchors = list(handles) + [f"¶{h}" for h in handles]
         sql = (
             "SELECT r.ref_id, r.title, r.meta->>'anchor' AS anchor, "
+            "  r.meta->>'request_sha' AS request_sha, "
             "  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
             "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1) AS status, "
             "  EXISTS (SELECT 1 FROM refs j WHERE j.parent_id = r.ref_id "
@@ -1291,7 +1292,8 @@ class DraftStore(_AbbrevMixin):
             # AUDIT:<category> — a content-QA audit stamps this on the anchored
             # change-request todo so the reader badges the chunk by category.
             "  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
-            "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'AUDIT' LIMIT 1) AS audit "
+            "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'AUDIT' LIMIT 1) AS audit, "
+            "  r.created_at "
             "FROM refs r "
             "WHERE r.kind = 'todo' AND r.retired_at IS NULL "
             "  AND r.meta->>'anchor' = ANY(%s)"
@@ -1299,7 +1301,18 @@ class DraftStore(_AbbrevMixin):
         out: dict[str, list[dict[str, Any]]] = {}
         with self.pool.connection() as conn:
             rows = conn.execute(sql, (anchors,)).fetchall()
-        for ref_id, title, anchor, status, started, asking, failed_tag, audit in rows:
+        for (
+            ref_id,
+            title,
+            anchor,
+            request_sha,
+            status,
+            started,
+            asking,
+            failed_tag,
+            audit,
+            created_at,
+        ) in rows:
             status = status or "open"
             handle = (anchor or "").lstrip("¶")
             # ``OPEN:ask-user:<value>`` → the human question. The value is
@@ -1330,6 +1343,10 @@ class DraftStore(_AbbrevMixin):
                     # Full first line of the original request, for the promoted
                     # "needs you" panel (the chip's title is truncated).
                     "request": (title or "").split("\n", 1)[0][:400],
+                    # sha256 of the full normalised request text, stamped at
+                    # mint — the request-ws dedup key (gr553306 REQWS3).
+                    # ``None`` on pre-REQWS3 mints; they simply never match.
+                    "request_sha": request_sha,
                     "status": status,
                     "done": status in ("done", "won't-do"),
                     # "started" = a plan_tick (or other) job minted; the
@@ -1345,6 +1362,9 @@ class DraftStore(_AbbrevMixin):
                     # AUDIT:<category> if this request came from a content-QA
                     # audit (missing-citation / empty-stub / …); '' otherwise.
                     "audit": audit or "",
+                    # Mint time — the request-ws dedup window (gr553306
+                    # REQWS2) needs it; a row without one is simply "old".
+                    "created_at": created_at,
                 }
             )
         for reqs in out.values():

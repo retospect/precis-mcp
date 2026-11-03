@@ -1272,6 +1272,91 @@ def test_smartdraft_focus_shows_connections_links_and_flags(
     assert "tighten this claim" in body and "/r/todo/99" in body  # anchored flag
 
 
+def test_smartdraft_block_shows_pending_request_badge(
+    smartdraft_client: TestClient,
+    smartdraft_runtime: FakeRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr553306: a block with an anchored change-request todo renders a small
+    state badge — state derived from the anchored todo/job status, the
+    request text on hover, linked to the todo — so a filed request is
+    visible on the block it was filed on."""
+    store = smartdraft_runtime.store
+
+    def fake_flags(handles):
+        return {
+            "dc2": [
+                {
+                    "ref_id": 99,
+                    "title": "tighten this claim",
+                    "request": "tighten this claim",
+                    "status": "open",
+                    "done": False,
+                    "started": False,
+                    "asking": "",
+                    "failed": False,
+                    "fail_reason": "",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(store, "anchored_todos", fake_flags)
+    r = smartdraft_client.get("/smartdraft/sdt?focus=dc2")
+    assert r.status_code == 200
+    body = r.text
+    assert 'class="sd-req-badge' in body  # the badge rendered
+    assert "/r/todo/99" in body  # linked to the anchored todo
+    assert "queued" in body  # the derived state
+    assert "tighten this claim" in body  # the request text (tooltip)
+
+
+def test_smartdraft_block_without_request_renders_no_badge(
+    smartdraft_client: TestClient,
+) -> None:
+    """gr553306 negative: no anchored request → no badge anywhere. (The JS
+    helper ``__sdReqBadge`` carries the class name too — the assertion keys
+    on the rendered ``class=`` attribute, not the bare string.)"""
+    r = smartdraft_client.get("/smartdraft/sdt")
+    assert r.status_code == 200
+    assert 'class="sd-req-badge' not in r.text
+
+
+def test_smartdraft_request_badge_wont_do_is_neutral_not_done(
+    smartdraft_client: TestClient,
+    smartdraft_runtime: FakeRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REQWS2: a ``STATUS:won't-do`` request gets its own neutral badge —
+    it must not wear ``done``'s green tick (a decline is not a success)."""
+    store = smartdraft_runtime.store
+
+    def fake_flags(handles):
+        return {
+            "dc2": [
+                {
+                    "ref_id": 99,
+                    "title": "drop this section",
+                    "request": "drop this section",
+                    "status": "won't-do",
+                    "done": True,
+                    "started": False,
+                    "asking": "",
+                    "failed": False,
+                    "fail_reason": "",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(store, "anchored_todos", fake_flags)
+    r = smartdraft_client.get("/smartdraft/sdt?focus=dc2")
+    assert r.status_code == 200
+    badge = re.search(r'class="sd-req-badge ([^"]+)"[^>]*>([^<]+)</a>', r.text)
+    assert badge is not None
+    assert "wont-do" in badge.group(2)  # its own state word
+    assert "bg-surface-subtle" in badge.group(1)  # neutral, not success green
+    assert "bg-success-subtle" not in badge.group(1)
+
+
 def test_smartdraft_focus_accepts_base58_handle(
     smartdraft_client: TestClient,
 ) -> None:

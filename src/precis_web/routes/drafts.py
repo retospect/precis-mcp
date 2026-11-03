@@ -150,7 +150,7 @@ from precis.utils.llm.router import llm_select_from_payload
 from precis.utils.table_data import Scalar
 from precis.utils.text import slugify
 from precis.utils.title_views import title_plain
-from precis_web import draft_eyes
+from precis_web import draft_eyes, smartdraft
 from precis_web.auth import current_user
 from precis_web.deps import (
     await_dispatch,
@@ -2491,6 +2491,78 @@ async def edit_human_review(request: Request, ident: str) -> JSONResponse:
     )
 
 
+#: A repeat POST of the same request text on the same anchor inside this
+#: window returns the already-minted todo instead of minting a second
+#: billed plan_tick — double-click / retry protection (gr553306 REQWS2);
+#: the client-side in-flight guard covers the same click, this covers the
+#: retry/refresh/replay paths it can't see.
+_REQUEST_DEDUP_WINDOW_S = 60
+
+#: In-flight request mints keyed ``(draft ref_id, anchor, request_sha)`` —
+#: REQWS3. The dedup lookup and the mint span an ``await`` (the ``put``
+#: dispatch drops to a worker thread), so two near-simultaneous POSTs of
+#: one request would each pass the dedup lookup and bill two todos. The
+#: first POST registers ``{"event", "resp"}`` and holds the key until its
+#: response is ready (released in ``finally``); a same-key POST arriving
+#: mid-flight waits up to ``_REQUEST_INFLIGHT_WAIT_S`` on the event, then
+#: returns the holder's stored response as a dedup — or, on timeout or a
+#: failed holder, falls through to its own dedup lookup + mint.
+_REQUEST_INFLIGHT: dict[tuple[int, str | None, str], dict[str, Any]] = {}
+_REQUEST_INFLIGHT_LOCK = threading.Lock()
+_REQUEST_INFLIGHT_WAIT_S = 10.0
+
+
+def _request_sha(text: str) -> str:
+    """sha256 of the normalised request text — what a minted change-request
+    todo carries in ``meta.request_sha`` and what the dedup compares
+    (REQWS3). Normalised = outer whitespace stripped, per-line trailing
+    whitespace dropped, newlines unified — a replay differs only in what
+    it says, not in how it was spaced."""
+    import hashlib
+
+    normalised = "\n".join(line.rstrip() for line in text.strip().splitlines())
+    return hashlib.sha256(normalised.encode("utf-8")).hexdigest()
+
+
+def _recent_request_match(
+    store: Store, anchor: str, request_sha: str
+) -> dict[str, Any] | None:
+    """The live anchored todo on ``anchor`` minted for THIS request text
+    inside the dedup window — the request a re-fired POST returns rather
+    than re-mints. Match is on ``meta.request_sha`` (sha256 of the full
+    normalised text, stamped at mint): comparing only the title's first
+    line deduped two different requests that happened to share one
+    (gr553306 REQWS3). Only an *active* request dedups — queued or
+    running; a done, failed or won't-do row is a settled ask and a repeat
+    mints anew. A pre-REQWS3 mint carries no sha and simply never
+    matches."""
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    best: dict[str, Any] | None = None
+    for row in store.drafts.anchored_todos([anchor]).get(anchor, []):
+        if row.get("request_sha") != request_sha:
+            continue
+        if smartdraft.request_state(row) not in ("queued", "running"):
+            continue
+        at = row.get("created_at")
+        if (
+            not isinstance(at, datetime)
+            or (now - at).total_seconds() > _REQUEST_DEDUP_WINDOW_S
+        ):
+            continue
+        if best is None or at > best["created_at"]:
+            best = row
+    return best
+
+
+def _minted_todo_id(body: str) -> int | None:
+    """The ref_id inside a ``put`` create ack (``created todo td<N> …``) —
+    the first td-handle names the minted ref; a parent handle may follow."""
+    m = re.search(r"\btd(\d+)\b", body)
+    return int(m.group(1)) if m else None
+
+
 @router.post("/drafts/{ident}/request-ws")
 async def request_change_ws(request: Request, ident: str) -> JSONResponse:
     """File a change request. With a hand-curated working set, the todo gets
@@ -2501,7 +2573,31 @@ async def request_change_ws(request: Request, ident: str) -> JSONResponse:
     three are the optional structured selection, threaded onto
     ``meta.llm_select`` alongside the ``model`` alias's ``meta.llm_tier``.
     Response carries ``note`` (gr55762's eye-cap overflow line) only when the
-    curated eye set overflowed the cap on save."""
+    curated eye set overflowed the cap on save.
+
+    Anchor precedence: the first **pen** (the author's explicit "edit
+    these" marker), then the caller's focus (``anchor`` — the block the
+    request was typed on; a bare context *eye* never outranks it, gr553306),
+    then draft-chunk eyes in mark order. A candidate wins only when it
+    resolves to a *live chunk of this draft* — a retired/deleted/foreign
+    handle is skipped (minting it would anchor the request on a block that
+    isn't here). ``meta.anchor`` stores the ``dc<id>`` form — the handle
+    the reader and ``anchored_todos`` key on.
+
+    Never a silent 200: a caller-supplied anchor that resolves to nothing
+    (dead or foreign) is a 422, not an unanchored todo; a dispatch failure
+    surfaces its error; an unexpected raise is logged with the draft and
+    block ids and answers 502.
+
+    Response carries ``todo`` (the minted ref_id, when resolvable) and
+    ``state`` so the client badges the block immediately. A repeat POST of
+    the same text on the same anchor inside ``_REQUEST_DEDUP_WINDOW_S``
+    returns the existing todo with ``dedup: true`` instead of minting a
+    second billed one (REQWS2). The match is on ``meta.request_sha`` — a
+    sha256 of the full normalised request text stamped at mint — and only
+    an *active* (queued/running) request dedups; ``_REQUEST_INFLIGHT``
+    covers the check-then-mint race between near-simultaneous POSTs
+    (REQWS3)."""
     try:
         payload = await request.json()
     except Exception:
@@ -2517,17 +2613,38 @@ async def request_change_ws(request: Request, ident: str) -> JSONResponse:
     has_marks = bool(marks["pens"] or marks["eyes"])
     model = str(payload.get("model") or "big")
     tier = model if model in _PLANNER_MODELS else "big"
-    # Anchor at the first pen (else the first draft-chunk eye, else the caller's
-    # current focus) — in the base-58 form the classic anchor modules expect.
-    anchor_dc = (
-        marks["pens"][0]
-        if marks["pens"]
-        else next((h for h in marks["eyes"] if _is_dc(h)), None)
-    ) or (str(payload.get("anchor") or "").strip() or None)
+    focus_anchor = str(payload.get("anchor") or "").strip() or None
+    candidates = [
+        *marks["pens"][:1],
+        *([focus_anchor] if focus_anchor else []),
+        *(h for h in marks["eyes"] if _is_dc(h)),
+    ]
     anchor = None
-    if anchor_dc:
-        chunk = store.drafts.get_draft_chunk(anchor_dc, kind="draft")
-        anchor = chunk.handle if chunk is not None else None
+    for cand in candidates:
+        chunk = store.drafts.get_draft_chunk(cand, kind="draft")
+        if (
+            chunk is not None
+            and not getattr(chunk, "retired", False)
+            and int(chunk.ref_id) == int(ref.id)
+        ):
+            anchor = getattr(chunk, "dc", None) or handle_registry.format_handle(
+                "draft", chunk.chunk_id, chunk=True
+            )
+            break
+        log.info(
+            "request-ws %s: anchor candidate %r skipped (dead or foreign block)",
+            ident,
+            cand,
+        )
+    if anchor is None and focus_anchor is not None:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": f"anchor {focus_anchor} isn't a live block of this "
+                "draft — refresh and retry",
+            },
+            status_code=422,
+        )
     if not has_marks and not anchor:
         return JSONResponse(
             {
@@ -2536,7 +2653,8 @@ async def request_change_ws(request: Request, ident: str) -> JSONResponse:
             },
             status_code=422,
         )
-    meta: dict[str, Any] = {"llm_tier": tier}
+    req_sha = _request_sha(text)
+    meta: dict[str, Any] = {"llm_tier": tier, "request_sha": req_sha}
     working_set_meta: dict[str, Any] | None = None
     if has_marks:
         working_set_meta = draft_eyes.to_working_set_meta(marks)
@@ -2561,17 +2679,93 @@ async def request_change_ws(request: Request, ident: str) -> JSONResponse:
         # handlers/_prio_tag.py), so we pass the translated column value.
         "prio": PRIO_TAG_TO_INT["PRIO:high"],
     }
-    project = _project_id(store, ref.id)
-    if project is not None:
-        args["parent_id"] = project
-    body, is_error = await await_dispatch(request, "put", args)
-    if is_error:
-        return JSONResponse({"ok": False, "error": body}, status_code=400)
-    resp: dict[str, Any] = {"ok": True, "anchor": anchor}
-    note = (working_set_meta or {}).get("note")
-    if note:
-        resp["note"] = note
-    return JSONResponse(resp)
+    # REQWS3 in-flight guard: the dedup check + mint below span an
+    # ``await``, so a racing identical POST would pass the same dedup
+    # lookup and mint a twin. First POST registers the slot; a same-key
+    # POST arriving mid-flight waits briefly on its event, then returns
+    # the holder's response as a dedup instead of billing again.
+    req_key = (int(ref.id), anchor, req_sha)
+    with _REQUEST_INFLIGHT_LOCK:
+        slot = _REQUEST_INFLIGHT.get(req_key)
+        if slot is None:
+            slot = _REQUEST_INFLIGHT[req_key] = {
+                "event": asyncio.Event(),
+                "resp": None,
+            }
+            owner = True
+        else:
+            owner = False
+    if not owner:
+        try:
+            await asyncio.wait_for(
+                slot["event"].wait(), timeout=_REQUEST_INFLIGHT_WAIT_S
+            )
+        except TimeoutError:
+            pass
+        resp_hit = slot["resp"]
+        if resp_hit is not None:
+            return JSONResponse({**resp_hit, "dedup": True})
+        # The holder failed or outran the wait — fall through to this
+        # POST's own dedup lookup + mint; a landed mint still dedups there.
+        # (Unregistered: ``owner`` stays False, so the finally below leaves
+        # the original holder's slot alone.)
+    try:
+        if anchor is not None:
+            prior = _recent_request_match(store, anchor, req_sha)
+            if prior is not None:
+                # Same request, same block, inside the window — return the
+                # todo already minted rather than billing a second plan_tick
+                # (gr553306 REQWS2). ``state`` rides along so the client can
+                # badge it truthfully, not just "queued".
+                resp_prior: dict[str, Any] = {
+                    "ok": True,
+                    "anchor": anchor,
+                    "todo": prior["ref_id"],
+                    "state": smartdraft.request_state(prior),
+                    "dedup": True,
+                }
+                slot["resp"] = resp_prior
+                return JSONResponse(resp_prior)
+        project = _project_id(store, ref.id)
+        if project is not None:
+            args["parent_id"] = project
+        try:
+            body, is_error = await await_dispatch(request, "put", args)
+        except Exception:
+            log.exception("request-ws put raised for draft %s anchor %s", ident, anchor)
+            return JSONResponse(
+                {"ok": False, "error": "change request failed — see server log"},
+                status_code=502,
+            )
+        if is_error:
+            log.warning(
+                "request-ws put refused for draft %s anchor %s: %s",
+                ident,
+                anchor,
+                body[:300],
+            )
+            return JSONResponse({"ok": False, "error": body}, status_code=400)
+        resp: dict[str, Any] = {"ok": True, "anchor": anchor, "state": "queued"}
+        # The minted todo's id, so the client can badge the block immediately
+        # (REQWS2): the create ack names it (``created todo td<N>``); a handler
+        # that minted without naming it falls back to the dedup lookup.
+        todo_id = _minted_todo_id(body)
+        if todo_id is None and anchor is not None:
+            match = _recent_request_match(store, anchor, req_sha)
+            todo_id = match["ref_id"] if match else None
+        if todo_id is not None:
+            resp["todo"] = todo_id
+        note = (working_set_meta or {}).get("note")
+        if note:
+            resp["note"] = note
+        slot["resp"] = resp
+        return JSONResponse(resp)
+    finally:
+        if owner:
+            with _REQUEST_INFLIGHT_LOCK:
+                if _REQUEST_INFLIGHT.get(req_key) is slot:
+                    del _REQUEST_INFLIGHT[req_key]
+            slot["event"].set()
 
 
 @router.post("/drafts/{ident}/text")

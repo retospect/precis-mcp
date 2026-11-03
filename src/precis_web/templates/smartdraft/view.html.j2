@@ -608,6 +608,7 @@
           <div class="mb-1 flex items-center gap-2 text-[10px] text-warning-strong">
             <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-info-soft', trail='') }} {% if n.locked %}🔒{% endif %}{{ sd_block.sd_authored_chip(authored_idx.get(n.chunk_id)) }}</span>
             <div class="ml-auto flex items-center gap-2">
+              {{ sd_block.sd_req_badge(request_by_dc.get(n.dc)) }}
               {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
               <button onclick="smartPin('{{ n.dc }}')" data-tour="sd-pin"
                       class="{% if focus_pinned %}font-semibold text-warning-deep{% else %}text-fg-faint hover:text-warning-strong{% endif %}"
@@ -656,6 +657,7 @@
           <div class="mb-1 flex items-center gap-2 text-[10px] text-warning-strong">
             <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-info-soft', trail='') }} {% if n.locked %}🔒{% endif %}{{ sd_block.sd_authored_chip(authored_idx.get(n.chunk_id)) }}</span>
             <div class="ml-auto flex items-center gap-2">
+              {{ sd_block.sd_req_badge(request_by_dc.get(n.dc)) }}
               {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
               <button onclick="smartPin('{{ n.dc }}')" data-tour="sd-pin"
                       class="{% if focus_pinned %}font-semibold text-warning-deep{% else %}text-fg-faint hover:text-warning-strong{% endif %}"
@@ -687,6 +689,7 @@
           <div class="mb-1 flex items-center gap-2 text-[10px] text-warning-strong">
             <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-info-soft', trail='') }} {% if n.locked %}🔒{% endif %}{{ sd_block.sd_authored_chip(authored_idx.get(n.chunk_id)) }}</span>
             <div class="ml-auto flex items-center gap-2">
+              {{ sd_block.sd_req_badge(request_by_dc.get(n.dc)) }}
               {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
               <button onclick="smartPin('{{ n.dc }}')" data-tour="sd-pin"
                       class="{% if focus_pinned %}font-semibold text-warning-deep{% else %}text-fg-faint hover:text-warning-strong{% endif %}"
@@ -735,11 +738,11 @@
         {#- list container (gr553310): no card — the slim rail head rendered by
            sd_doc_block's container branch (dc id + label + review dot); the
            sd-listrail div this row's rail_open emitted wraps it. -#}
-        {{ sd_block.sd_doc_block(n, m.display, claims, review_by_dc.get(n.dc), ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, authored=authored_idx.get(n.chunk_id), handles=handles) }}
+        {{ sd_block.sd_doc_block(n, m.display, claims, review_by_dc.get(n.dc), ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, authored=authored_idx.get(n.chunk_id), handles=handles, req=request_by_dc.get(n.dc)) }}
         {% elif m.mode == 'doc' %}
         {# full-doc mode: a chunk in the server-rendered window around the focus,
            verbatim (see smartdraft/_block.html.j2 for why it's a <div>). #}
-        {{ sd_block.sd_doc_block(n, m.display, claims, review_by_dc.get(n.dc), ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, authored=authored_idx.get(n.chunk_id), handles=handles) }}
+        {{ sd_block.sd_doc_block(n, m.display, claims, review_by_dc.get(n.dc), ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, authored=authored_idx.get(n.chunk_id), handles=handles, req=request_by_dc.get(n.dc)) }}
         {% elif m.mode in ('tail', 'head') %}
         {# ±1 neighbour: verbatim, truncated toward the focus (tail leads in,
            head flows out) — except a table chunk, which always renders in
@@ -747,7 +750,7 @@
            show). <div> not <a> for the same nested-anchor reason as the
            doc-mode block above. #}
         {% set _is_tbl = n.is_table and n.table %}
-        <div data-dc="{{ n.dc }}" class="block cursor-pointer{{ ' sd-list-item' if n.is_item }}{{ '' if _is_tbl else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-fg-subtle hover:bg-surface-subtle {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}{{ ' sd-authored' if authored_idx.get(n.chunk_id) }}">{{ sd_block.sd_doc_head(n, review_by_dc.get(n.dc), ident, authored_idx.get(n.chunk_id)) }}{% if n.is_item %}<span class="sd-list-mark">{{ n.item_marker }}</span>{% endif %}{% if _is_tbl %}{{ sd_block.sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}{% else %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}{% endif %}</div>
+        <div data-dc="{{ n.dc }}" class="block cursor-pointer{{ ' sd-list-item' if n.is_item }}{{ '' if _is_tbl else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-fg-subtle hover:bg-surface-subtle {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}{{ ' sd-authored' if authored_idx.get(n.chunk_id) }}">{{ sd_block.sd_doc_head(n, review_by_dc.get(n.dc), ident, authored_idx.get(n.chunk_id), request_by_dc.get(n.dc)) }}{% if n.is_item %}<span class="sd-list-mark">{{ n.item_marker }}</span>{% endif %}{% if _is_tbl %}{{ sd_block.sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}{% else %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}{% endif %}</div>
         {% else %}
         {# ±2 neighbour: one-line summary — the dc span sits inside this <a>, so
            sdCopyDc's stopPropagation/preventDefault (see sd_dc_id) matter here:
@@ -974,7 +977,7 @@
       <div class="flex flex-wrap items-center gap-2">
         {{ llm_selector.llm_selector(default_tier='big') }}
         <span class="text-fg-faint" x-show="msg" x-text="msg"></span>
-        <button @click="send()" :disabled="!text.trim()" class="ml-auto rounded bg-solid-strong px-2 py-1 text-on-solid disabled:opacity-40">Send ▸</button>
+        <button @click="send()" :disabled="sending || !text.trim()" class="ml-auto rounded bg-solid-strong px-2 py-1 text-on-solid disabled:opacity-40">Send ▸</button>
       </div>
     </div>
 
@@ -1877,6 +1880,49 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     const rc = rcache();
     if (rc) rc.dropFocusHandle(handle);
   };
+  // Stamp the pending-request badge on a block straight from a request-ws
+  // response — same glyph/colour table sd_req_badge renders — so a filed
+  // request is visible without waiting for the next render (gr553306
+  // REQWS2). ``anchor`` is the dc the server anchored on (the response's
+  // own field — a pin can anchor off-focus); ``focus`` is the caller's
+  // focus dc, needed because #mid-focus carries no data-dc. Falls back to
+  // a refresh when the anchored block isn't in the DOM to badge.
+  window.__sdReqBadge = (anchor, todoId, reqText, state, focus) => {
+    const styles = {
+      'queued':  ['◷', 'bg-info-subtle text-info-strong'],
+      'running': ['⟳', 'bg-teal-subtle text-teal-strong'],
+      'done':    ['✓', 'bg-success-subtle text-success-strong'],
+      'failed':  ['✗', 'bg-danger-subtle text-danger'],
+      'wont-do': ['—', 'bg-surface-subtle text-fg-faint'],
+    };
+    const [glyph, cls] = styles[state] || styles.queued;
+    // Selector choice (REQWS3 — no JS harness in this repo, so it's
+    // documented here): the badge belongs on the MIDDLE column's doc
+    // block. Every middle-column block is a <div data-dc> (doc/tail/head/
+    // skel blocks, .sd-listrail children, list heads); every data-dc
+    // elsewhere — TOC rows, search hits, the collaborate rail — is an
+    // <a data-dc> that sits EARLIER in DOM order, so an unscoped
+    // [data-dc] querySelector landed the badge inside a TOC link and the
+    // block itself got nothing. #mid-focus carries no data-dc, so when
+    // the anchor IS the focus it wins by id first.
+    let block = anchor === focus ? document.getElementById('mid-focus') : null;
+    if (!block) block = document.querySelector(`div[data-dc="${CSS.escape(anchor)}"]`);
+    if (!block) { if (window.__sdRefresh) window.__sdRefresh(); return; }
+    const host = block.querySelector('.ml-auto') || block;
+    const a = document.createElement('a');
+    a.href = `/r/todo/${todoId}`;
+    a.target = '_blank';
+    a.rel = 'noopener nofollow';
+    a.className = `sd-req-badge inline-flex items-center gap-0.5 rounded-sm px-1 font-mono text-[10px] ${cls}`;
+    a.title = `change request — ${state}: ${reqText}`;
+    a.textContent = `${glyph} ${state}`;
+    // REQWS3: a second request on the same block REPLACES the badge —
+    // keeping a stale one (a done ✓, a failed ✗) made the new request
+    // read as vanished, the original complaint.
+    const old = block.querySelector('.sd-req-badge');
+    if (old) old.remove();
+    if (host === block) host.appendChild(a); else host.prepend(a);
+  };
   const jump = navTo;
   const clearSearch = () => {
     const p = new URLSearchParams(location.search);
@@ -2536,30 +2582,44 @@ function smartTagInput(dc) {
 
 function smartAsk(ident, focus) {
   return {
-    ident, focus, text: '', msg: '',
+    ident, focus, text: '', msg: '', sending: false,
     // Structured selection from the shared llm-selector widget
     // (_llm_selector.html.j2), threaded up via its bubbling `llm-select`
     // event — the two Alpine scopes don't otherwise share state.
     llmSelect: { tier: 'big', placement: '', reasoning: '', temperature: '' },
     handleLlmSelect(sel) { this.llmSelect = sel; },
     async send() {
-      if (!this.text.trim()) return;
+      // In-flight guard (gr553306 REQWS2): a double-click while the POST
+      // is out must not fire a second one — each mint is a billed todo.
+      if (this.sending || !this.text.trim()) return;
+      this.sending = true;
       this.msg = 'sending…';
+      const reqText = this.text.trim();
       try {
         // `anchor` = the current focus, so with nothing pinned the request still
         // works on the current para + its fisheye (server falls back to it).
         const r = await fetch(`/drafts/${this.ident}/request-ws`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            text: this.text, model: this.llmSelect.tier, anchor: this.focus,
+            text: reqText, model: this.llmSelect.tier, anchor: this.focus,
             placement: this.llmSelect.placement, reasoning: this.llmSelect.reasoning,
             temperature: this.llmSelect.temperature,
           }),
         });
         const d = await r.json();
         this.msg = d.ok ? 'sent ✓' : ('error: ' + (d.error || ''));
-        if (d.ok) this.text = '';
+        if (d.ok) {
+          this.text = '';
+          // The response carries the minted (or deduped) todo id — stamp
+          // its badge on the anchored block right away (gr553306 REQWS2);
+          // __sdReqBadge itself falls back to a refresh when the block
+          // isn't on screen. No `todo` → old server → refresh instead.
+          if (d.todo && window.__sdReqBadge)
+            window.__sdReqBadge(d.anchor || this.focus, d.todo, reqText, d.state || 'queued', this.focus);
+          else if (window.__sdRefresh) window.__sdRefresh();
+        }
       } catch (e) { this.msg = 'network error'; }
+      finally { this.sending = false; }
     },
   };
 }

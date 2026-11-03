@@ -94,6 +94,31 @@
 {%- endif -%}
 {%- endmacro %}
 
+{# Pending change-request badge (gr553306): a block with an anchored
+   request todo shows its state — queued / running / done / failed — so a
+   filed request is never invisible (the gripe was a request that minted
+   nothing the reader could see). ``req`` is one entry of
+   ``request_by_dc`` (``smartdraft.request_badges_for``); ``none`` → no
+   badge. Links to the anchored todo in a new tab (same ``/r/todo/<id>``
+   target the Links-rail flag chips use); the tooltip carries the request
+   text plus any ask/fail detail. Token colours only — the colour-ratchet
+   test scans these classes. #}
+{% macro sd_req_badge(req) -%}
+{%- if req -%}
+{%- set _g = {'queued': '◷', 'running': '⟳', 'done': '✓', 'failed': '✗', 'wont-do': '—'}.get(req.state, '◷') -%}
+{%- set _c = {
+  'queued': 'bg-info-subtle text-info-strong',
+  'running': 'bg-teal-subtle text-teal-strong',
+  'done': 'bg-success-subtle text-success-strong',
+  'failed': 'bg-danger-subtle text-danger',
+  'wont-do': 'bg-surface-subtle text-fg-faint',
+}.get(req.state, 'bg-info-subtle text-info-strong') -%}
+<a href="/r/todo/{{ req.ref_id }}" target="_blank" rel="noopener nofollow"
+   class="sd-req-badge inline-flex items-center gap-0.5 rounded-sm px-1 font-mono text-[10px] {{ _c }}"
+   title="change request — {{ req.state }}: {{ req.request }}{% if req.asking %} — asking: {{ req.asking }}{% endif %}{% if req.fail_reason %} — {{ req.fail_reason }}{% endif %}{% if req.extra %} (+{{ req.extra }} more){% endif %}">{{ _g }} {{ req.state }}</a>
+{%- endif -%}
+{%- endmacro %}
+
 {# Read-only figure block for doc mode (a non-focus figure scrolled into
    view — gr496247): the SAME ``figure_media`` + ``clearance_badge`` the
    focus branch (view.html.j2) renders, so a hydrated block's figure matches
@@ -129,11 +154,11 @@
    items, so the same markup collapses to a single row. A ``<span>`` with
    ``display:flex`` — NOT a ``<div>`` — keeps the one-<div>-per-block shape
    ``_dc_block``/``sd_table`` assume (the table test counts nested divs). #}
-{% macro sd_doc_head(n, review, ident, authored=none) -%}
-<span class="flex items-center gap-2 text-[10px] text-fg-faint"><span>{{ sd_dc_id(n.dc) }}{{ sd_authored_chip(authored) }}</span>{% if review %}<span class="ml-auto flex items-center gap-2">{{ sd_review_widget(n, review, ident) }}</span>{% endif %}</span>
+{% macro sd_doc_head(n, review, ident, authored=none, req=none) -%}
+<span class="flex items-center gap-2 text-[10px] text-fg-faint"><span>{{ sd_dc_id(n.dc) }}{{ sd_authored_chip(authored) }}</span>{% if review or req %}<span class="ml-auto flex items-center gap-2">{{ sd_req_badge(req) }}{% if review %}{{ sd_review_widget(n, review, ident) }}{% endif %}</span>{% endif %}</span>
 {%- endmacro %}
 
-{% macro sd_doc_block(n, display, claims, review, ident, abbrevs=none, pending_claims=none, refuted_claims=none, hypothesis_claims=none, authored=none, handles=none) -%}
+{% macro sd_doc_block(n, display, claims, review, ident, abbrevs=none, pending_claims=none, refuted_claims=none, hypothesis_claims=none, authored=none, handles=none, req=none) -%}
 {%- set hd = 'font-semibold text-fg-strong text-base' if n.is_heading else '' -%}
 {%- set prov = ' sd-prov-' ~ n.provenance if n.provenance else '' -%}
 {%- set is_tbl = n.is_table and n.table -%}
@@ -144,9 +169,9 @@
    (gr553310). Instead it renders as the slim head of its rail: dc id +
    review dot + what it holds; the middle-pane loop emits the ``sd-listrail``
    wrapper around this head and the item rows that follow. -#}
-<div data-dc="{{ n.dc }}" class="sd-list-head block cursor-pointer rounded px-2 py-0.5 text-fg-faint hover:bg-surface-subtle{{ ' sd-authored' if authored }}">{{ sd_dc_id(n.dc) }}{{ sd_authored_chip(authored) }}{% if review %}{{ sd_review_widget(n, review, ident) }} {% endif %}{{ n.list_label }}</div>
+<div data-dc="{{ n.dc }}" class="sd-list-head block cursor-pointer rounded px-2 py-0.5 text-fg-faint hover:bg-surface-subtle{{ ' sd-authored' if authored }}">{{ sd_dc_id(n.dc) }}{{ sd_authored_chip(authored) }}{{ sd_req_badge(req) }}{% if review %}{{ sd_review_widget(n, review, ident) }} {% endif %}{{ n.list_label }}</div>
 {%- else -%}
-<div data-dc="{{ n.dc }}" class="block cursor-pointer{{ ' sd-list-item' if n.is_item }}{{ '' if (is_tbl or is_fig) else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-fg-secondary hover:bg-surface-subtle {{ hd }}{{ prov }}{{ ' sd-authored' if authored }}">{{ sd_doc_head(n, review, ident, authored) }}{% if n.is_item %}<span class="sd-list-mark">{{ n.item_marker }}</span>{% endif %}{% if is_tbl %}{{ sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}{% elif is_fig %}{{ sd_figure(n, display, claims, ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}{% else %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}{% endif %}</div>
+<div data-dc="{{ n.dc }}" class="block cursor-pointer{{ ' sd-list-item' if n.is_item }}{{ '' if (is_tbl or is_fig) else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-fg-secondary hover:bg-surface-subtle {{ hd }}{{ prov }}{{ ' sd-authored' if authored }}">{{ sd_doc_head(n, review, ident, authored, req) }}{% if n.is_item %}<span class="sd-list-mark">{{ n.item_marker }}</span>{% endif %}{% if is_tbl %}{{ sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}{% elif is_fig %}{{ sd_figure(n, display, claims, ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}{% else %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}{% endif %}</div>
 {%- endif -%}
 {%- endmacro %}
 

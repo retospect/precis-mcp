@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import threading
 import time
@@ -59,6 +60,8 @@ from precis.utils.wordcount import PROSE_CHUNK_KINDS
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+
+log = logging.getLogger(__name__)
 
 # ── pressure weights (tune later; env-overridable is a follow-up) ────────
 _W_KEYWORD = 1.0
@@ -1402,6 +1405,83 @@ def review_payloads_for(
         ind["integrity_ok"] = cite_integrity_ok(store, n.text, integrity_cache)
         ind["claim_trust"] = claim_trust_for_block(store, n.text, trust_cache)
         out[n.dc] = ind
+    return out
+
+
+#: ``anchored_todos``'s active-first status ordering (open→scheduled→doing→
+#: paused, done last), mirrored here so the union of a node's two handle-form
+#: groups can be re-ranked before the head request wins the badge.
+_REQUEST_STATUS_RANK = {"open": 0, "scheduled": 1, "doing": 2, "paused": 3}
+
+
+def request_state(row: dict[str, Any]) -> str:
+    """The badge state for one ``anchored_todos`` row (gr553306).
+
+    ``failed`` — a ``child-failed:*`` bubble parked the request;
+    ``wont-do`` — ``STATUS:won't-do``, a deliberate decline with its own
+    neutral badge (REQWS2: it must not wear ``done``'s green tick);
+    ``done`` — ``STATUS:done``; ``running`` — a job (``plan_tick``) minted
+    or ``STATUS:doing``; else ``queued``. Shared by
+    :func:`request_badges_for` and the ``request-ws`` route's dedup
+    response so client and badge agree on the word."""
+    if row.get("failed"):
+        return "failed"
+    if row.get("status") == "won't-do":
+        return "wont-do"
+    if row.get("done"):
+        return "done"
+    if row.get("started") or row.get("status") == "doing":
+        return "running"
+    return "queued"
+
+
+def request_badges_for(
+    store: Store, nodes: list[ChunkNode]
+) -> dict[str, dict[str, Any]]:
+    """``{dc: badge}`` — the per-block pending-request state chip (gr553306):
+    a filed change request must be visible on the block it was filed on, or
+    the reader can't tell "sent" from "vanished".
+
+    One ``store.drafts.anchored_todos`` call over BOTH handle forms of every
+    node — the stored ``meta.anchor`` may be a legacy ``¶<base58>``/bare
+    base-58 (older mints) or ``dc<id>`` (current), and the lookup matches on
+    the form literally. Rows merge by ``ref_id``; the most-active wins the
+    badge, ``extra`` carries the remainder count for the tooltip.
+
+    State comes from :func:`request_state` (queued / running / done /
+    wont-do / failed). An ``OPEN:ask-user:*`` yield keeps ``running`` —
+    the question text rides the tooltip. Failure must never break the
+    render: any store error degrades to no badges."""
+    handles = [h for n in nodes for h in (n.dc, n.base58) if h]
+    if not handles:
+        return {}
+    try:
+        groups = store.drafts.anchored_todos(handles)
+    except Exception:
+        log.warning("request badges lookup failed", exc_info=True)
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for n in nodes:
+        seen: set[Any] = set()
+        reqs: list[dict[str, Any]] = []
+        for form in (n.dc, n.base58):
+            for r in groups.get(form, []):
+                rid = r.get("ref_id")
+                if rid not in seen:
+                    seen.add(rid)
+                    reqs.append(r)
+        if not reqs:
+            continue
+        reqs.sort(key=lambda r: _REQUEST_STATUS_RANK.get(r.get("status") or "", 9))
+        head = reqs[0]
+        out[n.dc] = {
+            "state": request_state(head),
+            "ref_id": head.get("ref_id"),
+            "request": head.get("request") or head.get("title") or "",
+            "asking": head.get("asking") or "",
+            "fail_reason": head.get("fail_reason") or "",
+            "extra": len(reqs) - 1,
+        }
     return out
 
 
