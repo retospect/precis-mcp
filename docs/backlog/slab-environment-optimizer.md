@@ -231,6 +231,29 @@ stamps (owned by `pathway-explorer-controls.md`).
 - The quest step runs once per landed kinetics job per slab, stamps the
   three keys, and the frontier ranks the slab at `env_best`.
 
+## Slices (one gripe each, cluster `slab-environment-optimizer`; filed 2026-11-03)
+
+1. gr559661 — `meta.environment_space` on the quest, validated,
+   human-set (small; first).
+2. gr559655 — the objective terms and `J(e)` as pure functions over
+   stored data; `view='optimum'` (medium).
+3. gr559656 — catpath: selectivity stencils and `design: points` on the
+   sweep (medium; engine, pin move).
+4. gr559657 — layers 1–2: closed-form U/pH lines, stencil steps as
+   `recompute_kinetics` batches, derivative checks (medium; after 3).
+5. gr559658 — layer 3: scipy differential evolution on `J`, Pareto set
+   harvested from every evaluated point, `env_best`/`env_pareto`/
+   `env_next` (medium; after 4).
+6. gr559659 — stamps, measure declarations, frontier ranking at
+   `env_best` (medium; after 2).
+7. gr559660 — the quest step and the hand-off of `env_next` to the cart
+   door gr559662 under caps, tote and holds (medium; after 5, 6 and
+   gr559662).
+
+Cross-cluster dependencies: gr559350 (one environment record) for every
+point's encoding; gr559662 (`mode='request'`) for the hand-off; kinetics
+v2 slice 8 for a U axis on the kinetic terms (not a gripe here).
+
 ## Target + blast radius
 
 `src/precis/quest/` (new `environment_optimizer.py`, `compute.py` step,

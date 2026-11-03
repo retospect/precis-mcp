@@ -334,10 +334,17 @@ is the slab's.
    traversal, cut glyphs, route-picker marks (large).
 5. gr559350 — one environment record + URL encoding + basis lookup
    (medium, precis-side; prerequisite of 6 and 7).
-6. gr559351 — environment box with the mini map on the shared slider
-   state (large).
-7. gr559352 — compute cart: `mode='request'`, hold and cost rules, page
-   button, progress (large).
+   5a. gr559664 — the pH mechanism (protonation, fixed-SHE, HER at pH)
+   as closed-form terms on the record (medium; split 2026-11-03).
+6. gr559351 — the environment box: tab strip, sliders in their honesty
+   states, snaps, shared slider state (large).
+   6a. gr559663 — the embeddable map endpoint (small; split
+   2026-11-03).
+7. gr559352 — the cart on the page: box, request buttons, per-item
+   state (medium after the split).
+   7a. gr559662 — `put(kind='pathway', mode='request')`: validation,
+   idem keys, holds, pricing, todo storage, `view='requests'` (medium;
+   split 2026-11-03; also the quest's door).
 8. gr559353 — the optimizer's snaps in the box; the optimizer itself is
    `slab-environment-optimizer.md`.
 9. gr559428 — Pareto tab per slab (§H; large, after 5).
