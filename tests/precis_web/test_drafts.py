@@ -2618,6 +2618,139 @@ def test_retract_review_route_404s_for_missing_draft(tmp_path) -> None:
     assert r.status_code == 404
 
 
+# ── churn since review (gr553413) — reader payload fields ───────────────
+
+
+class ChurnFakeStore(ReviewFakeStore):
+    """``ReviewFakeStore`` whose review rows are dirty at ``approved_sha``
+    ``'old'`` with a scriptable churn — pins ``_review_status_by_chunk``'s
+    per-checker ``churn``/``stale`` fields (gr553413). The same scripted
+    value answers both the chunk-level ``churn_map_since`` and the
+    heading-level ``section_churn_map``."""
+
+    def __init__(self, churn) -> None:
+        super().__init__()
+        self._churn = churn
+
+    def record_review(self, chunk_id, checker, *, verdict="approved"):
+        self._reviews.setdefault(chunk_id, {})[checker] = {
+            "approved_sha": "old",
+            "verdict": verdict,
+            "at": None,
+            "dirty": True,
+        }
+        return "old"
+
+    def churn_map_since(self, pairs):
+        for _cid, sha in pairs:
+            assert sha == "old"
+        return {tuple(p): self._churn for p in pairs}
+
+    def sections_churn_map(self, ref_id, heading_chunk_ids, *, checkers):
+        return {h: {c: self._churn for c in checkers} for h in heading_chunk_ids}
+
+
+def test_review_status_by_chunk_carries_churn_and_stale(tmp_path) -> None:
+    from precis.store._draft_review_ops import REVIEW_STALE_THRESHOLD
+    from precis_web.routes.drafts import _review_status_by_chunk
+
+    store = ChurnFakeStore(REVIEW_STALE_THRESHOLD + 0.1)
+    store.record_review(2, "human")
+    record = _review_status_by_chunk(cast(Any, store), 500)[2]["human"]
+    assert record["dirty"] is True
+    assert record["churn"] == pytest.approx(REVIEW_STALE_THRESHOLD + 0.1)
+    assert record["stale"] is True
+
+    store = ChurnFakeStore(REVIEW_STALE_THRESHOLD - 0.1)
+    store.record_review(2, "human")
+    record = _review_status_by_chunk(cast(Any, store), 500)[2]["human"]
+    assert record["dirty"] is True
+    assert record["churn"] == pytest.approx(REVIEW_STALE_THRESHOLD - 0.1)
+    assert record["stale"] is False
+
+    # an unmeasurable diff (no version chain reaching the sha) reads stale
+    store = ChurnFakeStore(None)
+    store.record_review(2, "human")
+    record = _review_status_by_chunk(cast(Any, store), 500)[2]["human"]
+    assert record["churn"] is None
+    assert record["stale"] is True
+
+
+def test_review_status_by_chunk_clean_row_reports_zero_churn(tmp_path) -> None:
+    from precis_web.routes.drafts import _review_status_by_chunk
+
+    store = ReviewFakeStore()
+    store.record_review(2, "human")  # dirty=False, approved_sha 'shaX'
+    record = _review_status_by_chunk(cast(Any, store), 500)[2]["human"]
+    assert record["dirty"] is False
+    assert record["churn"] == 0.0
+    assert record["stale"] is False
+
+
+def test_heading_record_carries_section_churn(tmp_path) -> None:
+    """A HEADING block's per-checker record reports the whole SECTION's
+    churn (CHURN2), not just the heading text's — chunk 1 is
+    ``DraftFakeStore``'s ``AAAAAA`` heading."""
+    from precis_web.routes.drafts import _review_status_by_chunk
+
+    store = ChurnFakeStore(0.9)
+    store.record_review(1, "human")
+    record = _review_status_by_chunk(cast(Any, store), 500)[1]["human"]
+    assert record["churn"] == pytest.approx(0.9)
+    assert record["stale"] is True
+
+
+def test_human_review_post_stale_matches_get(tmp_path) -> None:
+    """The ``/human-review`` POST response computes the same churn/stale
+    as the GET map — no ``stale`` without a measured basis (CHURN2/3).
+    Both a paragraph (dc2, own-text churn) and a heading (dc1 — the GET
+    map's whole-section overwrite must apply to the POST answer too)."""
+    from precis_web.routes.drafts import _review_status_by_chunk
+
+    store = ChurnFakeStore(0.5)
+    rt = FakeRuntime(store)
+    app = create_app(runtime=rt, web_config=WebConfig(corpus_dir=tmp_path))
+    client = TestClient(app)
+    store.record_review(2, "human")  # dirty 'old' row already in place
+    store.record_review(1, "human")  # the AAAAAA heading, same dirty row
+
+    r = client.post("/drafts/nt/human-review", json={"dc": "dc2"})
+    assert r.status_code == 200
+    post_record = r.json()["review"]["human"]
+    get_record = _review_status_by_chunk(cast(Any, rt.store), 500)[2]["human"]
+    assert post_record["churn"] == get_record["churn"] == pytest.approx(0.5)
+    assert post_record["stale"] == get_record["stale"] is True
+
+    r = client.post("/drafts/nt/human-review", json={"dc": "dc1"})
+    assert r.status_code == 200
+    post_record = r.json()["review"]["human"]
+    get_record = _review_status_by_chunk(cast(Any, rt.store), 500)[1]["human"]
+    assert post_record["churn"] == get_record["churn"] == pytest.approx(0.5)
+    assert post_record["stale"] == get_record["stale"] is True
+
+
+def test_heading_record_without_approved_sha_keeps_churn_none(
+    tmp_path,
+) -> None:
+    """A heading record with no ``approved_sha`` (retracted / never
+    reviewed) is skipped by the section overwrite — it reports
+    ``churn=None``, not a section-wide stale at 1.0 (CHURN3)."""
+    from precis_web.routes.drafts import _review_status_by_chunk
+
+    store = ChurnFakeStore(0.9)
+    store._reviews[1] = {
+        "human": {
+            "approved_sha": None,
+            "verdict": None,
+            "at": None,
+            "dirty": True,
+        }
+    }
+    record = _review_status_by_chunk(cast(Any, store), 500)[1]["human"]
+    assert record["churn"] is None
+    assert record["stale"] is False
+
+
 # ── document rollup badge (item 8) — prose-only denominator ─────────────
 
 

@@ -12,6 +12,7 @@ from precis.errors import BadInput, NotFound
 from precis.handlers.draft import DraftHandler
 from precis.store import ChunkInsert
 from precis.store._draft_ops import DraftChunk, content_sha
+from precis.store._draft_review_ops import REVIEW_STALE_THRESHOLD, token_churn
 from precis.store.store import Store
 
 
@@ -572,3 +573,244 @@ def test_review_diff_unknown_chunk_names_the_listing(
     with pytest.raises(NotFound, match="dc999999") as ei:
         draft.get(id="dc999999", view="review-diff")
     assert "view='toc'" in str(ei.value.next)
+
+
+# ---------------------------------------------------------------------------
+# Store: churn since review (gr553413) — token_churn + per-block/section ops
+# ---------------------------------------------------------------------------
+
+
+def test_token_churn_bounds() -> None:
+    assert token_churn("a b c", "a b c") == 0.0
+    assert token_churn("", "") == 0.0
+    assert token_churn("a b c", "x y z") == 1.0
+
+
+def test_churn_since_review_none_when_never_reviewed(store: Store) -> None:
+    _ref_id, p = _draft_with_paragraph(store)
+    assert store.drafts.churn_since_review(p.chunk_id) is None
+
+
+def test_churn_since_review_zero_when_unchanged(store: Store) -> None:
+    _ref_id, p = _draft_with_paragraph(store)
+    store.drafts.record_review(p.chunk_id, "human")
+    assert store.drafts.churn_since_review(p.chunk_id) == 0.0
+
+
+def test_churn_since_review_small_for_one_word_edit_not_stale(
+    store: Store,
+) -> None:
+    ref_id, p = _draft_with_paragraph(store)
+    words = " ".join(f"w{i}" for i in range(40))
+    store.drafts.edit_text(p.handle, words)
+    store.drafts.record_review(p.chunk_id, "human")
+
+    store.drafts.edit_text(p.handle, words + " extra")
+
+    churn = store.drafts.churn_since_review(p.chunk_id)
+    assert churn is not None
+    assert 0.0 < churn < REVIEW_STALE_THRESHOLD
+
+
+def test_churn_since_review_stale_after_rewrite(store: Store) -> None:
+    ref_id, p = _draft_with_paragraph(store)
+    store.drafts.edit_text(p.handle, "alpha bravo charlie delta echo")
+    store.drafts.record_review(p.chunk_id, "human")
+
+    store.drafts.edit_text(p.handle, "completely different words altogether now")
+
+    churn = store.drafts.churn_since_review(p.chunk_id)
+    assert churn is not None
+    assert churn >= REVIEW_STALE_THRESHOLD
+
+
+def test_section_churn_counts_added_and_retired_blocks(store: Store) -> None:
+    """gr553413 spec: token-weighted mean over the section's members —
+    an added block counts fully changed at its current length, a retired
+    block counts fully changed at its reviewed length."""
+    proj = _project(store)
+    ref, title = store.drafts.create_draft(
+        name="churnsec", title="T", project_ref_id=proj
+    )
+    section = store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="heading",
+        text="Section",
+        at={"after": title.handle},
+    )[0]
+    keep = store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="alpha beta gamma delta",
+        at={"into": section.handle},
+    )[0]
+    gone = store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="one two",
+        at={"after": keep.handle},
+    )[0]
+    for c in (section, keep, gone):
+        store.drafts.record_review(c.chunk_id, "human")
+
+    store.drafts.retire_chunk(gone.handle)  # 2 reviewed tokens, churn 1.0
+    store.drafts.add_chunks(  # 3 current tokens, churn 1.0 (added)
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="x y z",
+        at={"into": section.handle},
+    )
+
+    # members: heading (1 tok, 0) + keep (4, 0) + gone (2, 1.0) + added (3, 1.0)
+    churn = store.drafts.section_churn_since_review(ref.id, section.chunk_id)
+    assert churn == pytest.approx((2 + 3) / (1 + 4 + 2 + 3))
+
+    # document scope (heading=None) adds the never-reviewed title (1 tok, 1.0)
+    doc_churn = store.drafts.section_churn_since_review(ref.id)
+    assert doc_churn == pytest.approx((5 + 1) / (10 + 1))
+
+
+def test_section_churn_none_when_no_member_has_weight(store: Store) -> None:
+    proj = _project(store)
+    ref, _title = store.drafts.create_draft(
+        name="churnempty", title="T", project_ref_id=proj
+    )
+    # an unknown heading has no members at all — nothing to weigh
+    assert store.drafts.section_churn_since_review(ref.id, 999999) is None
+
+
+class _CountingConn:
+    """Wrap one pooled connection; every ``execute`` bumps the shared
+    counter. Everything else delegates so the pool CM contract holds."""
+
+    def __init__(self, cm, counter) -> None:
+        self._cm = cm
+        self._counter = counter
+
+    def __enter__(self):
+        self._conn = self._cm.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        return self._cm.__exit__(*exc)
+
+    def execute(self, *args, **kwargs):
+        self._counter[0] += 1
+        return self._conn.execute(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+class _CountingPool:
+    """A pool stand-in whose ``connection()`` hands out counting conns;
+    everything else (``close``, …) delegates so fixture teardown holds."""
+
+    def __init__(self, pool, counter) -> None:
+        self._pool = pool
+        self._counter = counter
+
+    def connection(self):
+        return _CountingConn(self._pool.connection(), self._counter)
+
+    def __getattr__(self, name):
+        return getattr(self._pool, name)
+
+
+def test_retracted_review_row_reads_as_never_reviewed(store: Store) -> None:
+    """A retracted review leaves no live ledger row — the draft-level map
+    shows the chunk with ``checker=None`` (LEFT JOIN, no rows), i.e. the
+    "never reviewed" shape, so downstream consumers see no approved_sha
+    to diff against (CHURN3)."""
+    ref_id, p = _draft_with_paragraph(store)
+    store.drafts.record_review(p.chunk_id, "human")
+    store.drafts.retract_review(p.chunk_id, "human")
+
+    assert store.drafts.review_status_for_chunk(p.chunk_id) == []
+    rows = [
+        r
+        for r in store.drafts.review_status_for_draft(ref_id)
+        if r.chunk_id == p.chunk_id
+    ]
+    assert len(rows) == 1
+    assert rows[0].checker is None
+    assert rows[0].approved_sha is None
+    assert rows[0].dirty is True
+
+
+def test_sections_churn_map_constant_queries_for_many_headings(
+    store: Store, monkeypatch
+) -> None:
+    """CHURN3: a render over N headings costs a CONSTANT number of
+    queries — one chunks scan, one reviews fetch, one batched
+    chunk_events fetch — not O(headings) or O(dirty members)."""
+    proj = _project(store)
+    ref, title = store.drafts.create_draft(
+        name="churnsecs", title="T", project_ref_id=proj
+    )
+    heading_ids = []
+    prev = title.handle
+    for i in range(3):
+        h = store.drafts.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="heading",
+            text=f"S{i}",
+            at={"after": prev},
+        )[0]
+        p = store.drafts.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="paragraph",
+            text=f"body {i} words here",
+            at={"into": h.handle},
+        )[0]
+        store.drafts.record_review(h.chunk_id, "human")
+        store.drafts.record_review(p.chunk_id, "human")
+        store.drafts.edit_text(p.handle, f"body {i} words rewritten entirely")
+        heading_ids.append(h.chunk_id)
+        prev = h.handle
+
+    counter = [0]
+    monkeypatch.setattr(
+        store.drafts.review._core, "pool", _CountingPool(store.pool, counter)
+    )
+    result = store.drafts.sections_churn_map(ref.id, heading_ids, checkers=["human"])
+    assert counter[0] == 3  # chunks + reviews + events — constant in N
+    for hid in heading_ids:
+        churn = result[hid]["human"]
+        assert churn is not None and churn >= REVIEW_STALE_THRESHOLD
+
+
+def test_churn_map_since_batches_chain_fetches_and_memoises(
+    store: Store, monkeypatch
+) -> None:
+    """CHURN2: N dirty chunks cost a CONSTANT number of queries (one
+    ``chunks`` + one ``chunk_events``), not 2×N — and a repeat call with
+    unchanged text is served by the churn LRU (chunks SELECT only)."""
+    proj = _project(store)
+    ref, title = store.drafts.create_draft(
+        name="churnbatch", title="T", project_ref_id=proj
+    )
+    paras = store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="p1\n\np2\n\np3",
+        at={"after": title.handle},
+    )
+    pairs = []
+    for p in paras:
+        sha = store.drafts.record_review(p.chunk_id, "human")
+        store.drafts.edit_text(p.handle, f"{p.text} edited")
+        pairs.append((p.chunk_id, sha))
+
+    counter = [0]
+    monkeypatch.setattr(
+        store.drafts.review._core, "pool", _CountingPool(store.pool, counter)
+    )
+    result = store.drafts.churn_map_since(pairs)
+    assert counter[0] == 2  # one chunks + one chunk_events — not 2 per chunk
+    assert set(result) == set(pairs)
+    assert all(v is not None and v > 0 for v in result.values())
+
+    counter[0] = 0
+    assert store.drafts.churn_map_since(pairs) == result
+    assert counter[0] == 1  # LRU hit — only the current-sha re-check query

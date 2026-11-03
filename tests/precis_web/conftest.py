@@ -793,6 +793,23 @@ class FakeStore(_FakeStoreBase):
         # rendered ✓ state (see SmartDraftFakeStore).
         return []
 
+    def churn_since_sha(self, chunk_id: int, since_sha: str) -> float | None:
+        # gr553413 churn-since-review measure. The fake has no version chain
+        # to diff against, so default to None (unmeasurable); a subclass
+        # returns a number to pin the reader payload's churn/stale fields.
+        return None
+
+    def churn_map_since(self, pairs):
+        # Batched form of churn_since_sha (CHURN2 render path) — same
+        # "unmeasurable" default, keyed per (chunk_id, approved_sha) pair.
+        return {tuple(p): None for p in pairs}
+
+    def sections_churn_map(self, ref_id, heading_chunk_ids, *, checkers):
+        # Section-scope churn for heading blocks (CHURN3 multi-heading
+        # batch) — default unmeasurable per checker; a subclass returns
+        # numbers.
+        return {h: {c: None for c in checkers} for h in heading_chunk_ids}
+
     def review_rollup_for_draft(self, ref_id: int) -> dict[str, int]:
         # The toolbar N/M review-rollup badge.
         # Generic default derived from `review_status_for_draft`'s rows —

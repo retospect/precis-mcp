@@ -117,7 +117,13 @@ from precis.export._data_package import collect_entry
 from precis.export.preflight import draft_export_preflight
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT
 from precis.quest.review_fanout import ALL_PERSONAS, DOC_PERSONAS, mint_review_fanout
-from precis.store._draft_ops import ChunkReviewEntry, DraftReviewRow, content_sha
+from precis.store._draft_ops import (
+    ChunkReviewEntry,
+    DraftChunk,
+    DraftReviewRow,
+    content_sha,
+)
+from precis.store._draft_review_ops import REVIEW_STALE_THRESHOLD
 
 # The taproot backfill cascade fns (item 5b, "convert to living cites"),
 # referenced through THIS module's own names (not ``backfill.``/``canon.``
@@ -638,9 +644,31 @@ def _review_status_by_chunk(store: Store, ref_id: int) -> dict[int, dict[str, An
     ``_chunk_kind``.
 
     Records are JSON-safe (``at`` ISO-stringified via :func:`_review_entry`)
-    since this map serializes via ``tojson``/``JSONResponse``."""
+    since this map serializes via ``tojson``/``JSONResponse``.
+
+    Churn (gr553413): paragraph-kind records carry the changed-token
+    fraction between the approved text and the current text in ``churn``,
+    plus ``stale`` when it crosses ``REVIEW_STALE_THRESHOLD``. On a
+    HEADING chunk the same two fields report the whole SECTION's churn —
+    the token-weighted mean over its subtree
+    (``Store.sections_churn_map``, applied by
+    :func:`_apply_section_churn`) — so a section header's badge can show
+    "the section moved a lot" even when the heading text itself is
+    untouched. ``toc`` records are exempt: its approval pins to the toc
+    digest, not diffable text.
+
+    Render cost: all dirty rows' churns come from ONE
+    ``churn_map_since`` call (two queries + the store's churn LRU)
+    regardless of how many chunks are dirty."""
     out: dict[int, dict[str, Any]] = {}
-    for row in store.drafts.review_status_for_draft(ref_id):
+    rows = store.drafts.review_status_for_draft(ref_id)
+    pairs = [
+        (row.chunk_id, row.approved_sha)
+        for row in rows
+        if row.checker and row.dirty and row.approved_sha is not None
+    ]
+    churn_map = store.drafts.churn_map_since(pairs) if pairs else {}
+    for row in rows:
         entry = out.setdefault(
             row.chunk_id,
             {
@@ -649,38 +677,133 @@ def _review_status_by_chunk(store: Store, ref_id: int) -> dict[int, dict[str, An
             },
         )
         checker = row.checker
-        if checker:
-            entry[checker] = _review_entry(row)
+        if not checker:
+            continue
+        # a clean row's reviewed text IS the current text — 0.0 by
+        # definition, no reconstruction needed.
+        churn: float | None = 0.0
+        if row.dirty and row.approved_sha is not None:
+            churn = churn_map.get((row.chunk_id, row.approved_sha))
+        elif row.dirty:
+            churn = None
+        entry[checker] = _review_entry(row, churn=churn)
+    _apply_section_churn(store, ref_id, out)
     return out
 
 
-def _review_entry(row: ChunkReviewEntry | DraftReviewRow) -> dict[str, Any]:
+def _apply_section_churn(
+    store: Store, ref_id: int, out: dict[int, dict[str, Any]]
+) -> None:
+    """In-place: for every HEADING block in ``out``, replace each checker
+    record's own-text ``churn``/``stale`` with the whole-section measure
+    (``Store.sections_churn_map`` — ONE chunks scan + ONE reviews fetch +
+    ONE events fetch across every heading, so the cost is constant in the
+    number of headings). Shared by ``_review_status_by_chunk`` (GET) and
+    ``_review_json`` (POST), so the two answers can't disagree.
+
+    Records skipped: ``toc`` (its approval pins to the toc digest, not
+    diffable text) and any record without an ``approved_sha`` — a
+    retracted or never-reviewed row has no approved text to have "moved",
+    so it keeps ``churn=None`` instead of reading stale at 1.0."""
+    eligible = {
+        cid: [
+            k
+            for k in entry
+            if not k.startswith("_")
+            and k != "toc"
+            and isinstance(entry[k], dict)
+            and entry[k].get("approved_sha")
+        ]
+        for cid, entry in out.items()
+        if entry["_chunk_kind"] == "heading"
+    }
+    eligible = {cid: ks for cid, ks in eligible.items() if ks}
+    if not eligible:
+        return
+    checkers = sorted({k for ks in eligible.values() for k in ks})
+    per_heading = store.drafts.sections_churn_map(
+        ref_id, list(eligible), checkers=checkers
+    )
+    for cid, ks in eligible.items():
+        for checker in ks:
+            churn = per_heading.get(cid, {}).get(checker)
+            record = out[cid][checker]
+            record["churn"] = churn
+            record["stale"] = bool(
+                churn is not None and churn >= REVIEW_STALE_THRESHOLD
+            )
+
+
+def _review_entry(
+    row: ChunkReviewEntry | DraftReviewRow, *, churn: float | None = None
+) -> dict[str, Any]:
     """One JSON-safe per-checker review record ``{approved_sha, verdict, at,
-    dirty}`` — ``at`` ISO-stringified (a raw ``datetime`` isn't JSON
-    serializable, and this rides into the skeleton JSON). The single shape
-    both :func:`_review_status_by_chunk` and :func:`_review_json` build, so
-    the two paths can't drift on serializability. ``row`` accepts a
+    dirty, churn, stale}`` — ``at`` ISO-stringified (a raw ``datetime``
+    isn't JSON serializable, and this rides into the skeleton JSON). The
+    single shape both :func:`_review_status_by_chunk` and
+    :func:`_review_json` build, so the two paths can't drift on
+    serializability. ``row`` accepts a
     :class:`~precis.store._draft_ops.DraftReviewRow` too — it duck-types
-    the same checker-record fields."""
+    the same checker-record fields.
+
+    ``churn`` is the changed-token fraction between the approved text and
+    the current text (gr553413, ``Store.churn_since_sha``), ``None`` when
+    not computed. ``stale`` fires when a review exists (``approved_sha``),
+    the text moved since, and the churn is unmeasurable or at/above
+    :data:`~precis.store._draft_review_ops.REVIEW_STALE_THRESHOLD` — the
+    badge's "moved a lot" state, distinct from plain ``dirty`` (any edit).
+    On HEADING chunks :func:`_review_status_by_chunk` overwrites both
+    fields with the whole-section measure after building the record."""
     at = row.at
+    stale = bool(
+        row.dirty
+        and row.approved_sha is not None
+        and (churn is None or churn >= REVIEW_STALE_THRESHOLD)
+    )
     return {
         "approved_sha": row.approved_sha,
         "verdict": row.verdict,
         "at": at.isoformat() if at is not None and hasattr(at, "isoformat") else at,
         "dirty": row.dirty,
+        "churn": churn,
+        "stale": stale,
     }
 
 
-def _review_json(status: list[ChunkReviewEntry]) -> dict[str, Any]:
-    """JSON-safe ``{checker: {approved_sha, verdict, at, dirty}}`` for the
-    ``/human-review`` POST response — same per-checker record
-    (:func:`_review_entry`) ``_review_status_by_chunk`` attaches to a row."""
+def _review_json(
+    store: Store, chunk: DraftChunk | None, status: list[ChunkReviewEntry]
+) -> dict[str, Any]:
+    """JSON-safe ``{checker: {approved_sha, verdict, at, dirty, churn,
+    stale}}`` for the ``/human-review`` POST response — same per-checker
+    record (:func:`_review_entry`) ``_review_status_by_chunk`` attaches to
+    a row, so POST and GET answers can't disagree: ``churn`` is computed
+    here too (one ``churn_map_since`` batch for the chunk's dirty rows —
+    ``stale`` never ships without a measured-or-unmeasurable basis), and a
+    HEADING chunk gets the whole-section overwrite via the same
+    :func:`_apply_section_churn` helper the GET map runs."""
+    chunk_id = chunk.chunk_id if chunk is not None else 0
+    pairs = [
+        (chunk_id, r.approved_sha)
+        for r in status
+        if r.checker and r.dirty and r.approved_sha is not None
+    ]
+    churn_map = store.drafts.churn_map_since(pairs) if pairs else {}
     out: dict[str, Any] = {}
     for r in status:
         checker = r.checker
         if not checker:
             continue
-        out[checker] = _review_entry(r)
+        churn: float | None = 0.0
+        if r.dirty and r.approved_sha is not None:
+            churn = churn_map.get((chunk_id, r.approved_sha))
+        elif r.dirty:
+            churn = None
+        out[checker] = _review_entry(r, churn=churn)
+    if chunk is not None and chunk.chunk_kind == "heading":
+        wrapper: dict[int, dict[str, Any]] = {
+            chunk.chunk_id: {"_chunk_kind": chunk.chunk_kind, **out}
+        }
+        _apply_section_churn(store, chunk.ref_id, wrapper)
     return out
 
 
@@ -2485,7 +2608,7 @@ async def edit_human_review(request: Request, ident: str) -> JSONResponse:
     return JSONResponse(
         {
             "ok": True,
-            "review": _review_json(status),
+            "review": _review_json(store, chunk, status),
             "rollup": _rollup_json(store, ref.id),
         }
     )
@@ -3274,7 +3397,7 @@ async def retract_review_route(request: Request, ident: str) -> JSONResponse:
     return JSONResponse(
         {
             "ok": True,
-            "review": _review_json(status),
+            "review": _review_json(store, chunk, status),
             "rollup": _rollup_json(store, ref.id),
         }
     )

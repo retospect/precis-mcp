@@ -4167,6 +4167,68 @@ class DraftStore(_AbbrevMixin):
         (:attr:`review`)."""
         return self.review.review_diff_since(chunk_id, since_sha)
 
+    def churn_since_sha(self, chunk_id: int, since_sha: str) -> float | None:
+        """Transitional delegation — see
+        :meth:`~precis.store._draft_review_ops.DraftReviewStore.churn_since_sha`
+        (:attr:`review`)."""
+        return self.review.churn_since_sha(chunk_id, since_sha)
+
+    def churn_since_review(self, chunk_id: int, checker: str = "human") -> float | None:
+        """Transitional delegation — see
+        :meth:`~precis.store._draft_review_ops.DraftReviewStore.churn_since_review`
+        (:attr:`review`)."""
+        return self.review.churn_since_review(chunk_id, checker)
+
+    def churn_map_since(
+        self, pairs: Iterable[tuple[int, str]]
+    ) -> dict[tuple[int, str], float | None]:
+        """Transitional delegation — see
+        :meth:`~precis.store._draft_review_ops.DraftReviewStore.churn_map_since`
+        (:attr:`review`)."""
+        return self.review.churn_map_since(pairs)
+
+    def section_churn_since_review(
+        self,
+        ref_id: int,
+        heading_chunk_id: int | None = None,
+        *,
+        checker: str = "human",
+    ) -> float | None:
+        """Transitional delegation — see
+        :meth:`~precis.store._draft_review_ops.DraftReviewStore.section_churn_since_review`
+        (:attr:`review`)."""
+        return self.review.section_churn_since_review(
+            ref_id, heading_chunk_id, checker=checker
+        )
+
+    def section_churn_map(
+        self,
+        ref_id: int,
+        heading_chunk_id: int | None = None,
+        *,
+        checkers: Sequence[str],
+    ) -> dict[str, float | None]:
+        """Transitional delegation — see
+        :meth:`~precis.store._draft_review_ops.DraftReviewStore.section_churn_map`
+        (:attr:`review`)."""
+        return self.review.section_churn_map(
+            ref_id, heading_chunk_id, checkers=checkers
+        )
+
+    def sections_churn_map(
+        self,
+        ref_id: int,
+        heading_chunk_ids: Iterable[int | None],
+        *,
+        checkers: Sequence[str],
+    ) -> dict[int | None, dict[str, float | None]]:
+        """Transitional delegation — see
+        :meth:`~precis.store._draft_review_ops.DraftReviewStore.sections_churn_map`
+        (:attr:`review`)."""
+        return self.review.sections_churn_map(
+            ref_id, heading_chunk_ids, checkers=checkers
+        )
+
     @_write_retried
     def move_chunk(
         self,

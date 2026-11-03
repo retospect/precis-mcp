@@ -37,6 +37,9 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import threading
+from collections import OrderedDict
+from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -51,6 +54,36 @@ from precis.utils.wordcount import PROSE_CHUNK_KINDS
 
 if TYPE_CHECKING:
     from precis.store._draft_ops import DraftStore
+
+#: Churn above this fraction marks a reviewed block (or section) *stale* —
+#: the review badge's "the text it approved has moved a lot" line
+#: (gr553413). Below it a dirty chunk stays plain ``dirty`` — a one-word
+#: edit must not read the same as a rewrite.
+REVIEW_STALE_THRESHOLD = 0.25
+
+#: Cap on the per-store churn LRU (:meth:`DraftReviewStore.churn_map_since`)
+#: — keyed on ``(chunk_id, current_sha, approved_sha)`` so a re-render
+#: doesn't re-run the version-chain walk + difflib diff.
+_CHURN_LRU_MAX = 512
+
+
+def token_churn(old_text: str, new_text: str) -> float:
+    """Normalised changed-token fraction in ``[0, 1]`` between two texts —
+    :class:`difflib.SequenceMatcher` opcodes over whitespace-split tokens:
+    ``equal`` blocks contribute nothing; each ``replace``/``insert``/
+    ``delete`` contributes the longer of its two sides, divided by
+    ``max(len(old), len(new))``. ``0.0`` for identical texts (and for two
+    empty ones); ``1.0`` when nothing survives."""
+    old, new = old_text.split(), new_text.split()
+    denom = max(len(old), len(new))
+    if denom == 0:
+        return 0.0
+    changed = sum(
+        max(i2 - i1, j2 - j1)
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old, new).get_opcodes()
+        if tag != "equal"
+    )
+    return changed / denom
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +154,12 @@ class DraftReviewStore:
     def __init__(self, core: StoreCore, *, host: DraftStore) -> None:
         self._core = core
         self._host = host
+        #: ``(chunk_id, current_sha, approved_sha) -> churn`` — in-process
+        #: LRU; the current_sha key component makes it self-invalidating
+        #: on every edit. The store is shared across request threads, so
+        #: every get/move_to_end/set/popitem runs under the lock.
+        self._churn_lru: OrderedDict[tuple[int, str, str], float | None] = OrderedDict()
+        self._churn_lru_lock = threading.Lock()
 
     @property
     def pool(self) -> ConnectionPool:
@@ -603,6 +642,65 @@ class DraftReviewStore:
                 prose[row.chunk_id] = True
         return {"done": sum(1 for v in prose.values() if v), "total": len(prose)}
 
+    @staticmethod
+    def _texts_from_events(
+        events: list[tuple[str | None, str | None]], current_text: str | None
+    ) -> dict[str, str]:
+        """``{content_sha: text}`` from one chunk's ``created``/``edited``
+        ``chunk_events`` rows (``(content_sha, prev_text)`` pairs in ts
+        order). Each event's own text isn't in the row — it's the *next*
+        event's ``prev_text`` (the snapshot taken just before that later
+        edit). The last (current) sha's text comes from ``chunks.text``
+        instead, since there is no later edit to have snapshotted it."""
+        text_at: dict[str, str] = {}
+        for i in range(len(events) - 1):
+            sha_i, _ = events[i]
+            _, next_prev_text = events[i + 1]
+            if sha_i is not None and next_prev_text is not None:
+                text_at[sha_i] = next_prev_text
+        if events and events[-1][0] is not None:
+            text_at[events[-1][0]] = current_text or ""
+        return text_at
+
+    def _version_texts(
+        self, conn: psycopg.Connection, chunk_id: int, current_text: str | None
+    ) -> dict[str, str]:
+        """``{content_sha: text}`` — the chunk's text at every sha it has
+        held, reconstructed from the ``chunk_events`` version chain
+        (`created`/`edited` rows retain `prev_text` per edit — schema
+        0031)."""
+        events = conn.execute(
+            """SELECT content_sha, prev_text FROM chunk_events
+                WHERE chunk_id = %s AND event_kind IN ('created', 'edited')
+                ORDER BY ts ASC, event_id ASC""",
+            (chunk_id,),
+        ).fetchall()
+        return self._texts_from_events(events, current_text)
+
+    def _version_texts_map(
+        self, conn: psycopg.Connection, chunk_texts: dict[int, str]
+    ) -> dict[int, dict[str, str]]:
+        """Batched :meth:`_version_texts` — ``{chunk_id: {content_sha:
+        text}}`` for the union of several chunks' version chains in ONE
+        query (the whole-render churn walk only pays O(1) round trips,
+        not O(dirty chunks))."""
+        if not chunk_texts:
+            return {}
+        rows = conn.execute(
+            """SELECT chunk_id, content_sha, prev_text FROM chunk_events
+                WHERE chunk_id = ANY(%s)
+                  AND event_kind IN ('created', 'edited')
+                ORDER BY ts ASC, event_id ASC""",
+            (sorted(chunk_texts),),
+        ).fetchall()
+        by_chunk: dict[int, list[tuple[str | None, str | None]]] = {}
+        for chunk_id, sha, prev_text in rows:
+            by_chunk.setdefault(int(chunk_id), []).append((sha, prev_text))
+        return {
+            cid: self._texts_from_events(by_chunk.get(cid, []), text)
+            for cid, text in chunk_texts.items()
+        }
+
     def review_diff_since(self, chunk_id: int, since_sha: str) -> str:
         """Unified diff of ``chunk_id``'s text from ``since_sha`` to its
         current text, reconstructed by walking the `chunk_events` version
@@ -619,25 +717,7 @@ class DraftReviewStore:
             current_text, current_sha = row[0], row[1]
             if since_sha == current_sha:
                 return ""
-            events = conn.execute(
-                """SELECT content_sha, prev_text FROM chunk_events
-                    WHERE chunk_id = %s AND event_kind IN ('created', 'edited')
-                    ORDER BY ts ASC, event_id ASC""",
-                (chunk_id,),
-            ).fetchall()
-        # text_at[sha] = the chunk's text while it carried that sha. Each
-        # event's own text isn't in the row — it's the *next* event's
-        # prev_text (the snapshot taken just before that later edit). The
-        # last (current) sha's text comes from `chunks.text` instead, since
-        # there is no later edit to have snapshotted it.
-        text_at: dict[str, str] = {}
-        for i in range(len(events) - 1):
-            sha_i, _ = events[i]
-            _, next_prev_text = events[i + 1]
-            if sha_i is not None and next_prev_text is not None:
-                text_at[sha_i] = next_prev_text
-        if events and events[-1][0] is not None:
-            text_at[events[-1][0]] = current_text or ""
+            text_at = self._version_texts(conn, chunk_id, current_text)
         since_text = text_at.get(since_sha)
         if since_text is None:
             raise NotFound(
@@ -651,3 +731,292 @@ class DraftReviewStore:
             tofile="current",
         )
         return "".join(diff)
+
+    def churn_since_sha(self, chunk_id: int, since_sha: str) -> float | None:
+        """Changed-token fraction (:func:`token_churn`, ``[0, 1]``) between
+        the text ``chunk_id`` held at ``content_sha`` ``since_sha`` and its
+        current text — the block-level churn measure (gr553413). The
+        reviewed sha is what the ledger already stores
+        (``reviews.content_sha``); the reviewed *text* needs no extra
+        column — it is reconstructed from the same ``chunk_events``
+        version chain :meth:`review_diff_since` walks.
+
+        ``0.0`` when ``since_sha`` still matches the current sha; ``None``
+        when the version chain doesn't reach that sha (unmeasurable — the
+        caller decides whether an unknown diff reads as fully moved).
+        Raises :class:`NotFound` for an unknown chunk."""
+        return self.churn_map_since([(chunk_id, since_sha)])[(chunk_id, since_sha)]
+
+    def churn_map_since(
+        self, pairs: Iterable[tuple[int, str]]
+    ) -> dict[tuple[int, str], float | None]:
+        """Batched :meth:`churn_since_sha` — ``{(chunk_id, since_sha):
+        churn}`` for many ``(chunk_id, approved_sha)`` pairs in at most
+        two queries (one ``chunks`` fetch for the union of ids, one
+        ``chunk_events`` fetch for the union of the chains actually
+        needed — a pair whose approved sha still matches the current sha
+        costs no chain read). The whole-render caller
+        (``routes/drafts.py::_review_status_by_chunk``) pays O(1) round
+        trips instead of O(dirty chunks).
+
+        Diff results are memoised per ``(chunk_id, current_sha,
+        approved_sha)`` in the instance LRU (``_churn_lru``, capped at
+        ``_CHURN_LRU_MAX``) so a repeat render with unchanged text reuses
+        the churn without re-running the diff — the ``current_sha`` key
+        component makes a stale entry unreachable after any edit. Raises
+        :class:`NotFound` when any ``chunk_id`` doesn't resolve."""
+        pairs = list(dict.fromkeys(pairs))
+        out: dict[tuple[int, str], float | None] = {}
+        if not pairs:
+            return out
+        ids = sorted({cid for cid, _ in pairs})
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id, text, content_sha FROM chunks "
+                "WHERE chunk_id = ANY(%s)",
+                (ids,),
+            ).fetchall()
+            current = {int(r[0]): (r[1] or "", r[2]) for r in rows}
+            for cid in ids:
+                if cid not in current:
+                    raise NotFound(f"no chunk {cid}")
+            pending: list[tuple[int, str, str]] = []
+            need_events: dict[int, str] = {}
+            for cid, since_sha in pairs:
+                cur_text, cur_sha = current[cid]
+                if since_sha == cur_sha:
+                    out[(cid, since_sha)] = 0.0
+                    continue
+                key = (cid, cur_sha, since_sha)
+                with self._churn_lru_lock:
+                    hit = key in self._churn_lru
+                    if hit:
+                        out[(cid, since_sha)] = self._churn_lru[key]
+                        self._churn_lru.move_to_end(key)
+                if hit:
+                    continue
+                pending.append((cid, cur_sha, since_sha))
+                need_events[cid] = cur_text
+            if need_events:
+                text_at_map = self._version_texts_map(conn, need_events)
+                for cid, cur_sha, since_sha in pending:
+                    since_text = text_at_map[cid].get(since_sha)
+                    cur_text = current[cid][0]
+                    val = (
+                        None
+                        if since_text is None
+                        else token_churn(since_text, cur_text)
+                    )
+                    out[(cid, since_sha)] = val
+                    key = (cid, cur_sha, since_sha)
+                    with self._churn_lru_lock:
+                        self._churn_lru[key] = val
+                        self._churn_lru.move_to_end(key)
+                        while len(self._churn_lru) > _CHURN_LRU_MAX:
+                            self._churn_lru.popitem(last=False)
+        return out
+
+    def churn_since_review(self, chunk_id: int, checker: str = "human") -> float | None:
+        """:meth:`churn_since_sha` keyed on a checker instead of a sha —
+        churn between the text ``checker``'s latest ledger row approved on
+        ``chunk_id`` and its current text. ``None`` when the checker has no
+        live row (never reviewed, or latest row is a retraction — the same
+        "latest row per actor, retraction = no review" rule
+        :meth:`review_status_for_chunk` applies)."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                """SELECT content_sha FROM (
+                       SELECT r.content_sha, r.note
+                         FROM reviews r
+                        WHERE r.target_kind = 'chunk'
+                          AND r.target_id = %s
+                          AND r.actor = %s
+                        ORDER BY r.at DESC, r.review_id DESC
+                        LIMIT 1
+                   ) l
+                  WHERE l.note IS DISTINCT FROM '(retracted)'""",
+                (chunk_id, checker),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.churn_since_sha(chunk_id, row[0])
+
+    def section_churn_since_review(
+        self,
+        ref_id: int,
+        heading_chunk_id: int | None = None,
+        *,
+        checker: str = "human",
+    ) -> float | None:
+        """Single-checker form of :meth:`section_churn_map` — the section's
+        churn against ``checker``'s reviews."""
+        return self.section_churn_map(ref_id, heading_chunk_id, checkers=[checker])[
+            checker
+        ]
+
+    def section_churn_map(
+        self,
+        ref_id: int,
+        heading_chunk_id: int | None = None,
+        *,
+        checkers: Sequence[str],
+    ) -> dict[str, float | None]:
+        """Single-heading form of :meth:`sections_churn_map`."""
+        return self.sections_churn_map(ref_id, [heading_chunk_id], checkers=checkers)[
+            heading_chunk_id
+        ]
+
+    def sections_churn_map(
+        self,
+        ref_id: int,
+        heading_chunk_ids: Iterable[int | None],
+        *,
+        checkers: Sequence[str],
+    ) -> dict[int | None, dict[str, float | None]]:
+        """Token-weighted mean churn over sections' member blocks
+        (gr553413), per heading per checker — ``{heading_chunk_id:
+        {checker: churn | None}}``. Every member's :func:`token_churn`
+        weighted by its REVIEWED length, where a member added since
+        review counts fully changed (churn 1.0, weighted by its current
+        length — it has no reviewed length) and a member retired since
+        review counts fully changed weighted by its reviewed length. A
+        live member whose reviewed text can't be reconstructed also
+        counts fully changed (an unknown diff errs toward stale).
+
+        Members are the heading's whole subtree — the heading itself plus
+        every chunk whose ancestor walk reaches it — matching
+        :meth:`review_subtree_chunk_ids`'s member set; nested subsections
+        count as members of their parent section. Retired membership walks
+        the parent chain over retired ancestors too (a retired chunk keeps
+        the parent it had at retirement). A ``None`` entry in
+        ``heading_chunk_ids`` widens the scope to the whole ref — the
+        document-level churn number.
+
+        Chunks carry no per-member review baseline unless the checker
+        reviewed them: an unreviewed live member is "added". A retired
+        member the checker never reviewed is skipped — it existed in
+        neither the reviewed nor the current section. ``None`` when no
+        member carries any weight (empty section, or every member added
+        and retired between reviews).
+
+        Constant in the number of headings: ONE ``chunks`` scan, ONE
+        ``reviews`` fetch (union of all member ids × ``checkers``), and
+        ONE ``chunk_events`` fetch for the union of chains any
+        heading/checker needs — the whole-render caller pays O(1) round
+        trips, not O(headings)."""
+        heading_ids = list(dict.fromkeys(heading_chunk_ids))
+        checkers = list(dict.fromkeys(checkers))
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT chunk_id, parent_chunk_id, text, content_sha, retired_at
+                     FROM chunks
+                    WHERE ref_id = %s AND content_sha IS NOT NULL""",
+                (ref_id,),
+            ).fetchall()
+            parent_of = {int(r[0]): r[1] for r in rows}
+
+            def _under(cid: int, target: int) -> bool:
+                pid = parent_of.get(cid)
+                seen: set[int] = set()
+                while pid is not None and pid not in seen:
+                    if pid == target:
+                        return True
+                    seen.add(pid)
+                    pid = parent_of.get(pid)
+                return False
+
+            members_by: dict[int | None, list[tuple[int, str, str, bool]]] = {}
+            for heading_id in heading_ids:
+                members_by[heading_id] = [
+                    (int(r[0]), r[2] or "", r[3], r[4] is not None)
+                    for r in rows
+                    if heading_id is None
+                    or int(r[0]) == heading_id
+                    or _under(int(r[0]), heading_id)
+                ]
+            member_ids = sorted(
+                {m[0] for members in members_by.values() for m in members}
+            )
+            reviewed_sha: dict[tuple[int, str], str] = {}
+            if member_ids and checkers:
+                latest = conn.execute(
+                    """SELECT DISTINCT ON (r.target_id, r.actor)
+                              r.target_id, r.actor, r.content_sha, r.note
+                         FROM reviews r
+                        WHERE r.target_kind = 'chunk'
+                          AND r.actor = ANY(%s)
+                          AND r.target_id = ANY(%s)
+                        ORDER BY r.target_id, r.actor, r.at DESC, r.review_id DESC""",
+                    (checkers, member_ids),
+                ).fetchall()
+                reviewed_sha = {
+                    (int(t), actor): sha
+                    for t, actor, sha, note in latest
+                    if note != "(retracted)"
+                }
+            # one batched version-chain read for every member any
+            # heading/checker needs reconstructed — the chain is both
+            # heading- and checker-independent.
+            need_events: dict[int, str] = {}
+            for members in members_by.values():
+                for cid, text, content_sha, _retired in members:
+                    if cid in need_events:
+                        continue
+                    if any(
+                        (cid, c) in reviewed_sha
+                        and reviewed_sha[(cid, c)] != content_sha
+                        for c in checkers
+                    ):
+                        need_events[cid] = text
+            text_at_map = self._version_texts_map(conn, need_events)
+
+            def _reviewed(
+                cid: int, text: str, content_sha: str, sha: str
+            ) -> str | None:
+                if sha == content_sha:
+                    return text
+                return text_at_map.get(cid, {}).get(sha)
+
+            out: dict[int | None, dict[str, float | None]] = {}
+            for heading_id, members in members_by.items():
+                per_checker: dict[str, float | None] = {}
+                for checker in checkers:
+                    numerator = 0.0
+                    denominator = 0.0
+                    for chunk_id, text, content_sha, retired in members:
+                        current_tokens = len(text.split())
+                        approved_sha = reviewed_sha.get((chunk_id, checker))
+                        if retired:
+                            if approved_sha is None:
+                                continue  # added+retired between reviews — net zero
+                            reviewed = _reviewed(
+                                chunk_id, text, content_sha, approved_sha
+                            )
+                            # retired since review: fully changed, reviewed weight
+                            weight = (
+                                len(reviewed.split())
+                                if reviewed is not None
+                                else current_tokens
+                            )
+                            numerator += weight
+                            denominator += weight
+                            continue
+                        if approved_sha is None:
+                            # added since review: fully changed, current weight
+                            numerator += current_tokens
+                            denominator += current_tokens
+                            continue
+                        reviewed = _reviewed(chunk_id, text, content_sha, approved_sha)
+                        if reviewed is None:
+                            # unmeasurable diff — conservative: fully moved
+                            numerator += current_tokens
+                            denominator += current_tokens
+                            continue
+                        weight = len(reviewed.split())
+                        numerator += token_churn(reviewed, text) * weight
+                        denominator += weight
+                    per_checker[checker] = (
+                        None if denominator == 0 else numerator / denominator
+                    )
+                out[heading_id] = per_checker
+        return out
