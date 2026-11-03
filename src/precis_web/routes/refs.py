@@ -3130,7 +3130,11 @@ async def job_geometry(
     )
 
 
-@router.get("/{kind}/{ref_id}", response_class=HTMLResponse, response_model=None)
+# The ``:int`` path converter keeps the numeric match at the routing layer:
+# a non-digit ident (a slug, a ``pw<id>`` handle) falls through to the
+# ``/{kind}/{ident}`` public-id door below instead of dying on a 422 in
+# validation (gr553326).
+@router.get("/{kind}/{ref_id:int}", response_class=HTMLResponse, response_model=None)
 async def detail(
     request: Request, kind: str, ref_id: int
 ) -> HTMLResponse | RedirectResponse:
@@ -3387,6 +3391,32 @@ async def detail(
             "faved": faved(request, ref.id),
         },
     )
+
+
+@router.get("/{kind}/{ident}", response_class=HTMLResponse, response_model=None)
+async def detail_by_public_id(
+    request: Request, kind: str, ident: str
+) -> RedirectResponse:
+    """``/refs/<kind>/<slug-or-handle>`` → 303 to the canonical reader.
+
+    The ``{ref_id}: int`` route above owns the numeric form; this is the
+    public-id door beside it (gr553326 — a pathway slug like
+    ``q164903cand-…-rx-…`` hit the int converter's 422 and never
+    resolved). Slug first, then a universal record handle (``pw<id>``);
+    anything else is a plain 404.
+    """
+    if kind == "profile":
+        # owner-private (gr490266) — same refusal as ``detail``.
+        raise NotFound("profiles are managed under /account")
+    store = get_store(request)
+    ref = store.get_ref(kind=kind, id=ident)
+    if ref is None:
+        resolved = store.resolve_handle(ident)
+        if resolved is not None and resolved.kind == kind and resolved.chunk_id is None:
+            ref = store.get_ref(kind=kind, id=int(resolved.ref_id))
+    if ref is None:
+        raise NotFound(f"{kind} {ident!r} not found")
+    return RedirectResponse(url=ref_url(kind, ref.id, ref.slug), status_code=303)
 
 
 def _split_tag_input(raw: str) -> list[str]:

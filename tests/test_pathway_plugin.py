@@ -1428,10 +1428,88 @@ def test_compare_view(pathway_store: Store) -> None:
 
     h.put(id="cmp_pd", text=BRANCH)  # element Pd, branching (connected)
     h.put(id="cmp_pt", text=BRANCH.replace("element: Pd", "element: Pt"))
+    h.put(id="cmp_cu", text=BRANCH.replace("element: Pd", "element: Cu"))
 
     out = h.get(id="cmp-pd", view="compare").body
     assert "RATE" in out and "SPAN" in out, out
-    assert "cmp-pd" in out and "cmp-pt" in out, out  # both candidates present
+    # gr553326: every candidate cell — not only the requested one — leads
+    # with its own pw<id> handle next to the slug.
+    for slug in ("cmp-pd", "cmp-pt", "cmp-cu"):
+        ref = pathway_store.get_ref(kind="pathway", id=slug)
+        assert ref is not None
+        assert f"pw{ref.id} {slug}" in out, out
+
+
+def test_every_read_leads_with_pw_handle_and_web_path(
+    pathway_store: Store,
+) -> None:
+    """gr553326: a pathway slug led nowhere — no view printed the numeric
+    ref id, so the ``/refs/pathway/<id>`` reader was unreachable short of
+    ``extent='fisheye'``. Every read (the default card, every declared
+    view, a ``~step`` read, the "still computing" status body) now leads
+    with ``pw<id> · /refs/pathway/<id>`` — path only, no host."""
+    h = _handler(pathway_store)
+    slug = "handle-smoke"
+    h.put(id="handle_smoke", text=SMOKE)
+    ref = pathway_store.get_ref(kind="pathway", id=slug)
+    assert ref is not None
+    want = f"pw{ref.id} · /refs/pathway/{ref.id}"
+
+    for view in (None, *PathwayHandler.spec.views):
+        resp = h.get(id=slug, view=view)
+        # config/mermaid are verbatim payloads — a leading line would
+        # break YAML parse / mermaid paste, so their handle rides as a
+        # payload-native comment instead (test below pins parseability).
+        if view == "config":
+            assert resp.body.rstrip().endswith(f"# {want}")
+        elif view == "mermaid":
+            assert resp.body.startswith("```mermaid\nflowchart")
+            assert f"%% {want}" in resp.body
+        else:
+            assert resp.body.startswith(want + "\n"), (
+                f"view={view!r}: {resp.body[:120]}"
+            )
+
+    links = ((ref.meta or {}).get("graph") or {}).get("links") or []
+    assert links, "SMOKE produced no graph edges to step-read"
+    edge = links[0]
+    step = f"{edge['source']}→{edge['target']}"
+    assert h.get(id=f"{slug}~{step}").body.startswith(want + "\n")
+
+    computing = pathway_store.insert_ref(
+        kind="pathway",
+        slug="handle-computing",
+        title="t",
+        meta={"status": "computing", "content_key": "k"},
+    )
+    cbody = h.get(id="handle-computing").body
+    assert cbody.startswith(f"pw{computing.id} · /refs/pathway/{computing.id}\n")
+    assert "computing" in cbody
+
+
+def test_config_and_mermaid_payloads_still_parse(pathway_store: Store) -> None:
+    """gr553326 review: the leading ``pw<id> · …`` header broke the two
+    verbatim payloads — ``view='config'`` is a raw YAML snapshot and
+    ``view='mermaid'`` a fenced diagram meant to paste whole. The handle
+    now rides as a payload-native comment: a trailing ``#`` line on the
+    YAML (``yaml.safe_load`` still parses) and a ``%%`` line inside the
+    mermaid fence (the body still opens on the diagram keyword)."""
+    import yaml
+
+    h = _handler(pathway_store)
+    h.put(id="payload_cfg", text=SMOKE)
+    ref = pathway_store.get_ref(kind="pathway", id="payload-cfg")
+    assert ref is not None
+    want = f"pw{ref.id} · /refs/pathway/{ref.id}"
+
+    cfg = h.get(id="payload-cfg", view="config").body
+    parsed = yaml.safe_load(cfg)
+    assert isinstance(parsed, dict) and parsed["substrate"] == "NO"
+    assert cfg.rstrip().endswith(f"# {want}")
+
+    mmd = h.get(id="payload-cfg", view="mermaid").body
+    assert mmd.startswith("```mermaid\nflowchart")
+    assert mmd.endswith(f"%% {want}\n```")
 
 
 # ── the potential lever: args={'U': x} (Phase 1 item 1 of
@@ -3665,6 +3743,7 @@ def test_bare_get_lists_pathways_with_real_slugs(pathway_store: Store) -> None:
     assert "no pathways yet" in h.get().body
 
     with pathway_store.tx() as conn:
+        seeded = []
         for slug, title, status in (
             ("list-ready-a", "NO → NH3 on Pd", "ready"),
             ("list-failed-b", "pathway list-failed-b (failed)", "failed"),
@@ -3672,22 +3751,25 @@ def test_bare_get_lists_pathways_with_real_slugs(pathway_store: Store) -> None:
             meta: dict[str, Any] = {"status": status}
             if status == "ready":
                 meta |= {"tier": "neb", "span": 1.5867, "low_confidence": True}
-            pathway_store.insert_ref(
-                kind="pathway",
-                slug=slug,
-                title=title,
-                meta=meta,
-                conn=conn,
+            seeded.append(
+                pathway_store.insert_ref(
+                    kind="pathway",
+                    slug=slug,
+                    title=title,
+                    meta=meta,
+                    conn=conn,
+                )
             )
 
     body = h.get().body
     assert body.startswith("2 pathways (")
     assert "1 ready" in body and "1 failed" in body
     assert (
-        "list-ready-a | NO → NH3 on Pd | ready | neb | 1.59 (low confidence) |" in body
+        f"pw{seeded[0].id} | list-ready-a | NO → NH3 on Pd | ready | neb | "
+        "1.59 (low confidence) |" in body
     )
     assert "list-failed-b | pathway list-failed-b (failed) | failed | - | - |" in body
-    assert "list-failed-b |" in body
+    assert f"pw{seeded[1].id} | list-failed-b |" in body
     # The next-hint names a real slug, and a ready one: view='analysis' on a
     # failed or computing pathway is a dead end.
     hint = body.rsplit("next: ", 1)[1]
@@ -3934,6 +4016,11 @@ def test_search_finds_pathways_by_text_and_handle(pathway_store: Store) -> None:
         src_ref_id=ref.id, dst_ref_id=other.id, relation="related-to"
     )
     h = _handler(pathway_store)
-    assert "no-to-nh3-pd" in h.search(q="nitrate").body
+    by_text = h.search(q="nitrate").body
+    assert "no-to-nh3-pd" in by_text
+    # gr553326: a hit row carries the pw<id> handle beside the slug — the
+    # slug alone never reached the numeric id /refs/pathway/<id> keys on.
+    hit = next(l for l in by_text.splitlines() if "no-to-nh3-pd" in l)
+    assert f"pw{ref.id}" in hit
     assert "no-to-nh3-pd" in h.search(q=f"st{other.id}").body
     assert "no pathways match" in h.search(q="zzzzz-nothing").body

@@ -45,7 +45,12 @@ total per status:
 get(kind="pathway")
 ```
 
-Pass a listed slug back as `id=`. `view='compare'` on one of them ranks
+Pass a listed slug back as `id=` (its `pw<id>` handle resolves too).
+Every read leads with `pw<id> · /refs/pathway/<id>` — the handle plus
+the web reader path (the slug works there too: `/refs/pathway/<slug>`
+redirects; `view='config'`/`'mermaid'` carry it as a trailing `#`/`%%`
+comment instead, so the payload still parses). `view='compare'` on one
+of them ranks
 it against every computed pathway for the same substrate→target.
 
 `search(kind='pathway', q='<reaction|slug words|st/qu handle>')` finds

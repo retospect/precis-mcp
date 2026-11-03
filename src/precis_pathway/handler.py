@@ -24,6 +24,7 @@ import logging
 import math
 import os
 import re
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.dispatch import Hub, InitError
@@ -124,6 +125,14 @@ def _lookup(store: Any, ident: str) -> Any:
     if ref is None and ident.strip().isdigit():
         ref = store.get_ref(kind="pathway", id=int(ident))
     return ref
+
+
+def _handle_line(ref: Any) -> str:
+    """The one-line header every pathway read leads with (gr553326): the
+    ``pw<id>`` universal handle plus the ``/refs/pathway/<id>`` web reader
+    path — the two routes a bare slug never reached."""
+    handle = handle_registry.try_format("pathway", int(ref.id)) or f"pw{ref.id}"
+    return f"{handle} · /refs/pathway/{ref.id}"
 
 
 #: The kinetics v2 blocks ``put`` accepts as ``args=`` (D1), overlaid onto
@@ -924,7 +933,12 @@ class PathwayHandler(Handler):
         for ref_id, slug, title, status, matched_on in rows:
             via = via_handle.get(ref_id)
             note = via or matched_on
-            lines.append(f"  {slug or ref_id}  [{status or '?'}]  {title}  ({note})")
+            # gr553326: the pw<id> handle beside the slug — the slug alone
+            # never reached the ref id the web reader keys on.
+            handle = handle_registry.try_format("pathway", ref_id) or f"pw{ref_id}"
+            lines.append(
+                f"  {handle}  {slug or ref_id}  [{status or '?'}]  {title}  ({note})"
+            )
         return Response(body="\n".join(lines))
 
     # -- get -------------------------------------------------------------
@@ -952,12 +966,48 @@ class PathwayHandler(Handler):
         # splitting on the first one is unambiguous.
         ident = str(id)
         slug, sep, step_label = ident.partition("~")
-        if sep:
-            return self._get_step(store, slug, step_label)
         ref = _lookup(store, slug)
         if ref is None:
             raise BadInput(f"no pathway '{id}'")
+        resp = (
+            self._get_step(store, ref, step_label)
+            if sep
+            else self._get_view(store, ref, id=id, view=view, args=args, U=U, pH=pH)
+        )
+        # gr553326: every read carries the pw<id> handle + the web reader
+        # path — a bare slug reached neither. It leads prose views; config
+        # and mermaid are verbatim payloads (a YAML snapshot, a fenced
+        # diagram) where a leading line breaks parse/paste, so there it
+        # rides as a payload-native comment instead — a trailing ``#`` for
+        # YAML, a ``%%`` inside the fence for mermaid.
+        if resp.body:
+            handle = _handle_line(ref)
+            v = (view or "").lower()
+            if v == "config":
+                body = f"{resp.body}\n# {handle}"
+            elif v == "mermaid" and resp.body.endswith("\n```"):
+                body = resp.body.removesuffix("\n```") + f"\n%% {handle}\n```"
+            elif v == "mermaid":
+                body = f"{resp.body}\n%% {handle}"
+            else:
+                body = f"{handle}\n{resp.body}"
+            resp = replace(resp, body=body)
+        return resp
 
+    def _get_view(
+        self,
+        store: Store,
+        ref: Any,
+        *,
+        id: str | int,
+        view: str | None,
+        args: dict[str, Any] | None,
+        U: float | None,
+        pH: float | None,
+    ) -> Response:
+        """The per-view dispatch behind :meth:`get` — resolved ref in,
+        the view's body out. ``get`` wraps it in the ``pw<id> ·
+        /refs/pathway/<id>`` header line."""
         # An unknown view= (typo or stale doc) must never silently fall
         # through to the default analysis/profile output — gr343054.
         v = (view or "").lower()
@@ -1156,14 +1206,13 @@ class PathwayHandler(Handler):
         return Response(body=self._render_profile(ref.title, meta))
 
     # -- step selector -----------------------------------------------------
-    def _get_step(self, store: Store, slug: str, step_label: str) -> Response:
+    def _get_step(self, store: Store, ref: Any, step_label: str) -> Response:
         """Resolve a ``~<source>→<target>`` step selector against the
         computed graph's edges (``meta['graph']['links']``) — see
         ``analysis._path_steps``'s ``f"{source}→{target}"`` label, unique per
-        network."""
-        ref = _lookup(store, slug)
-        if ref is None:
-            raise BadInput(f"no pathway '{slug}'")
+        network. The ref is already resolved (``get`` looks it up once for
+        the header line)."""
+        slug = ref.slug or str(ref.id)
         meta = ref.meta or {}
         graph = meta.get("graph")
         if not graph:
@@ -1209,7 +1258,8 @@ class PathwayHandler(Handler):
                 "GROUP BY 1 ORDER BY 2 DESC"
             ).fetchall()
             rows = conn.execute(
-                "SELECT slug_id.id_value, refs.title, refs.meta->>'status', "
+                "SELECT refs.ref_id, slug_id.id_value, refs.title, "
+                "refs.meta->>'status', "
                 "refs.updated_at, refs.meta->>'tier', refs.meta->'span', "
                 "refs.meta->'low_confidence' FROM refs "
                 "LEFT JOIN ref_identifiers slug_id "
@@ -1228,7 +1278,7 @@ class PathwayHandler(Handler):
         # Quest candidates all carry the same reaction title, so a title
         # column would repeat one string 20 times. Name it once instead; the
         # tier and the energetic span are what tell the rows apart.
-        titles = {title for _, title, *_ in rows}
+        titles = {title for _, _, title, *_ in rows}
         shared = titles.pop() if len(titles) == 1 else None
         lines = [
             f"{total} pathways ("
@@ -1237,16 +1287,19 @@ class PathwayHandler(Handler):
             + (f", all '{shared}'" if shared else "")
             + ":",
             "",
-            "slug | "
+            "pw | slug | "
             + ("" if shared else "title | ")
             + "status | tier | span eV | updated",
         ]
-        for slug, title, status, updated, tier, span, low in rows:
+        for ref_id, slug, title, status, updated, tier, span, low in rows:
             span_txt = f"{span:.2f}" if isinstance(span, (int, float)) else "-"
             if low is True:
                 span_txt += " (low confidence)"
+            # gr553326: the pw<id> handle next to the slug — the web reader
+            # keys on the ref id (/refs/pathway/<id>).
+            handle = handle_registry.try_format("pathway", ref_id) or f"pw{ref_id}"
             lines.append(
-                f"{slug or '?'} | "
+                f"{handle} | {slug or '?'} | "
                 + ("" if shared else f"{title} | ")
                 + f"{status or '?'} | {tier or '-'} | {span_txt} | "
                 f"{updated:%Y-%m-%d %H:%MZ}"
@@ -1254,8 +1307,8 @@ class PathwayHandler(Handler):
         # Point the hint at a ready pathway: view='analysis' on one still
         # computing only says "check back shortly".
         first = next(
-            (row[0] for row in rows if row[0] and row[2] == "ready"),
-            next((row[0] for row in rows if row[0]), None),
+            (row[1] for row in rows if row[1] and row[3] == "ready"),
+            next((row[1] for row in rows if row[1]), None),
         )
         if first:
             lines += [
@@ -1283,7 +1336,7 @@ class PathwayHandler(Handler):
             return "cannot compare: this pathway has no computed results yet."
         with store.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT slug_id.id_value, refs.meta FROM refs "
+                "SELECT refs.ref_id, slug_id.id_value, refs.meta FROM refs "
                 "LEFT JOIN ref_identifiers slug_id "
                 "  ON slug_id.ref_id = refs.ref_id AND slug_id.id_kind = 'cite_key' "
                 "WHERE refs.kind = 'pathway' AND refs.retired_at IS NULL "
@@ -1293,13 +1346,14 @@ class PathwayHandler(Handler):
                 (substrate, target),
             ).fetchall()
         candidates = []
-        for slug, m in rows:
+        for ref_id, slug, m in rows:
             g = (m or {}).get("graph")
             if not g:
                 continue
             c_root, c_target = analysis.roots(g, m.get("results", {}))
             candidates.append(
                 {
+                    "ref_id": ref_id,
                     "slug": slug or "?",
                     "lever": (m.get("config") or {})
                     .get("slab", {})

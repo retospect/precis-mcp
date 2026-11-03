@@ -24,10 +24,12 @@ from typing import Any
 import numpy as np
 import pytest
 
+from precis.store.types import ResolvedHandle
 from precis.structure import apply_ops
 from precis.structure.cell import Cell
 from precis.structure.elements import covalent_radius
 from precis.structure.scene import Scene
+from precis.utils import handle_registry
 from precis_web.routes.structure import _geom_payload
 from tests._node import needs_node
 
@@ -63,6 +65,42 @@ def _seed_pathway(store: Any, *, meta: dict[str, Any], body_text: str | None) ->
         return out
 
     store.fetch_refs_by_ids = fetch
+
+    # Slug + pw<id> doors (the public-id redirect route resolves through
+    # get_ref/resolve_handle, neither of which the fake scans extra_refs for).
+    original_get_ref = store.get_ref
+
+    def get_ref(*, kind: str, id: Any, include_deleted: bool = False) -> Any:
+        if kind == "pathway":
+            hit = next(
+                (
+                    r
+                    for r in extra_refs.values()
+                    if r.kind == kind and (r.slug == id or r.id == id)
+                ),
+                None,
+            )
+            if hit is not None:
+                return hit
+        return original_get_ref(kind=kind, id=id)
+
+    store.get_ref = get_ref
+
+    original_resolve = store.resolve_handle
+
+    def resolve_handle(handle: str, *, conn: Any = None) -> Any:
+        parsed = handle_registry.parse(handle)
+        if parsed is not None and parsed[:2] == ("pathway", False):
+            hit = extra_refs.get(parsed[2])
+            if hit is not None:
+                return ResolvedHandle(
+                    ref_id=int(hit.id),
+                    kind="pathway",
+                    public_id=hit.slug or str(hit.id),
+                )
+        return original_resolve(handle, conn=conn)
+
+    store.resolve_handle = resolve_handle
 
     blocks = []
     if body_text is not None:
@@ -221,6 +259,24 @@ def test_pathway_detail_sparse_meta_no_500(client, runtime) -> None:
     assert "no linked adsorbate/intermediate structures recorded" in resp.text
     assert "no computed results recorded yet" in resp.text
     assert "no body chunk recorded for this pathway" in resp.text
+
+
+def test_pathway_slug_and_pw_handle_redirect_to_numeric_reader(client, runtime) -> None:
+    """gr553326: ``/refs/pathway/<slug>`` 422'd — the detail route keys on
+    ``ref_id: int``, so a slug (or the ``pw<id>`` handle the reads now
+    print) never reached the page. The public-id door resolves both and
+    303s to the numeric reader."""
+    _seed_pathway(runtime.store, meta={}, body_text=None)
+
+    resp = client.get("/refs/pathway/q1cand-abc123-rx-def456", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/refs/pathway/171696"
+
+    resp = client.get("/refs/pathway/pw171696", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/refs/pathway/171696"
+
+    assert client.get("/refs/pathway/no-such-slug").status_code == 404
 
 
 # ── Orphaned-pathway-stub status banner (no graph -> clear state) ───────

@@ -1338,10 +1338,20 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
     paths = {tuple(p["path"]) for p in profiles}
     aligned = len(paths) == 1 and all(p["path"] for p in profiles)
 
+    def _cand_cell(c: dict[str, Any]) -> str:
+        # gr553326: the pw<id> handle beside the slug — a bare slug never
+        # reached the ref id the /refs/pathway/<id> reader keys on. Bare
+        # slug when the caller supplied no ref_id (unit-level compares).
+        ref_id = c.get("ref_id")
+        if ref_id is None:
+            return str(c["slug"])
+        handle = try_format("pathway", int(ref_id)) or f"pw{ref_id}"
+        return f"{handle} {c['slug']}"
+
     def _row_scalars(p: dict[str, Any]) -> dict[str, Any]:
         rl = p["summ"]["rate_limiting"] or {}
         return {
-            "cand": p["c"]["slug"],
+            "cand": _cand_cell(p["c"]),
             "lever": p["c"].get("lever", ""),
             "RATE": _ea_or_na(rl.get("ea")),
             "SPAN": _b(p["summ"]["span"]) or "n/a",
