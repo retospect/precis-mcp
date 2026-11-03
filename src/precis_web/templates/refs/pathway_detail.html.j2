@@ -114,6 +114,11 @@
    unrecognised measure op -> skipped with a note (``measure_notes``). #}
 <section class="mb-6 rounded-lg border border-info bg-surface p-4">
   <h2 class="text-sm font-semibold text-fg-secondary mb-2">Reaction explorer</h2>
+  {% if conditions_note %}
+  {# gr553328: the profile prices gases at its own table; a recorded
+     kinetics environment gets the one-line conditions note beside it. #}
+  <p class="mb-2 text-[11px] text-fg-muted">{{ conditions_note }}</p>
+  {% endif %}
 
   {# ── candidate stepper (item E) — other pathway candidates on the same
      substrate→target reaction, ranked by rate_Ea; only rendered when
@@ -564,6 +569,11 @@
     #kinetics .kwlist { margin: .4rem 0 0 1.1rem; color: rgb(var(--text-fg-muted)); list-style: disc; }
     #kinetics .kwlist li { margin: .15rem 0; overflow-wrap: anywhere; }
   </style>
+  {% if conditions_note %}
+  {# gr553328: the solve ran at its own environment — state it beside the
+     profile's gas pricing so the kT·ln(p/p°) difference is on the page. #}
+  <p class="mb-2 text-[11px] text-fg-muted">{{ conditions_note }}</p>
+  {% endif %}
   <div id="kinetics" class="text-sm text-fg-secondary"></div>
   <script type="application/json" id="kinetics-data">{{ kinetics | tojson }}</script>
   {% else %}

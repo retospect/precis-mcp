@@ -49,7 +49,7 @@ from precis.store import scan_geometry
 from precis.structure import Measure, anchor_identity_verified, evaluate_measure
 from precis.structure.importers.extxyz import extxyz_to_scene
 from precis.taproot.seniority import is_claim_hub
-from precis.utils import handle_registry, mentions
+from precis.utils import handle_registry, mentions, pathway_conditions
 from precis.utils.authors import author_names
 from precis.utils.claude_agent import ClaudeAgentError
 from precis.utils.title_views import title_md, title_plain
@@ -2256,6 +2256,15 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
         if getattr(b, "chunk_kind", None) == "pathway_body":
             body_text = b.text or ""
             break
+    # gr553328: a pathway with a kinetics environment gets the
+    # profile-vs-kinetics conditions paragraph appended to its Methods —
+    # the stored chunk can't state it (it predates the solve) — and the
+    # one-line note carried beside the energy profile and the kinetics
+    # panel. Read-only off stored record values.
+    cond_note = pathway_conditions.conditions_note(meta)
+    methods_extra = pathway_conditions.methods_conditions(meta, body=body_text)
+    if methods_extra:
+        body_text = f"{body_text}\n\n{methods_extra}" if body_text else methods_extra
 
     # Linked structures — the candidate (base catalyst) plus every
     # adsorbate/intermediate structure ``structure_refs`` names. One
@@ -2425,6 +2434,7 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
             "results_electro": results_electro,
             "kinetics": kinetics,
             "kinetics_error": kinetics_error,
+            "conditions_note": cond_note,
             "diagram": diagram,
             "state_ids": state_ids,
             "state_sections": state_sections,

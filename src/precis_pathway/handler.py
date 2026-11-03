@@ -1047,6 +1047,14 @@ class PathwayHandler(Handler):
         if v == "methods":
             blocks = store.chunks.list_chunks_for_ref(ref.id)
             body = "\n\n".join(b.text for b in blocks if b.text)
+            # gr553328: a pathway with a kinetics environment gets the
+            # profile-vs-kinetics conditions paragraph appended — the
+            # stored methods chunk can't state it (it predates the solve).
+            from precis.utils import pathway_conditions
+
+            extra = pathway_conditions.methods_conditions(meta, body=body)
+            if extra:
+                body = f"{body}\n\n{extra}" if body else extra
             return Response(body=body or "(no methods)")
         if v == "mermaid":
             return Response(body=self._mermaid(meta))
@@ -1606,6 +1614,13 @@ class PathwayHandler(Handler):
         lines = [f"# {title}", ""]
         ref_name = r.get("pathway", [None])[0]
         lines.append(f"Energy reference: {r.get('energy_reference', '?')}")
+        # gr553328: the profile prices gases at its own table; a recorded
+        # kinetics environment gets the one-line conditions note beside it.
+        from precis.utils import pathway_conditions
+
+        cond_note = pathway_conditions.conditions_note(meta)
+        if cond_note:
+            lines.append(cond_note)
         # ``results.nodes`` holds the pooled estimates (mean/std) but no CHE
         # stamp; the per-state ``n_H`` lives on the graph node of the same id.
         n_h: dict[str, Any] = {}

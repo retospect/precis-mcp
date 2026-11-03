@@ -725,6 +725,13 @@ def analysis_text(meta: dict[str, Any], *, U: float | None = None) -> str:
     at = f" at U = {U:+.2f} V" if U is not None else ""
     span_label = "n/a" if span is None else f"{_b(span)} eV"
     head.append(f"energetic span (whole-path apparent barrier){at}: {span_label}")
+    # gr553328: the profile prices gases at its own table — a recorded
+    # kinetics environment gets the one-line conditions note beside it.
+    from precis.utils import pathway_conditions
+
+    cond_note = pathway_conditions.conditions_note(meta)
+    if cond_note:
+        head.append(cond_note)
     if U is not None:
         step = analysis.most_endergonic_step(graph, root, target)
         if step is not None:
@@ -1008,6 +1015,13 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
             "",
             *_solve_lines(kin, product=results.get("target") or target),
         ]
+    # gr553328: the solve ran at its own environment — state it beside the
+    # profile's gas pricing so the kT·ln(p/p°) difference is on the page.
+    from precis.utils import pathway_conditions
+
+    cond_note = pathway_conditions.conditions_note(meta)
+    if cond_note:
+        lines += ["", cond_note]
     return "\n".join(lines)
 
 

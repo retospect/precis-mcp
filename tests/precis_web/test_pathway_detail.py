@@ -1904,6 +1904,72 @@ def test_pathway_detail_kinetics_error_shows_reason(client, runtime) -> None:
     assert "kinetics-data" not in resp.text
 
 
+def test_pathway_detail_conditions_note_and_methods(client, runtime) -> None:
+    """gr553328: a pathway whose kinetics solved at a stated environment
+    shows BOTH condition sets — the one-line note beside the energy profile
+    and the kinetics panel, and the ``## Conditions`` block appended to the
+    Methods body — all off the stored record's values."""
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "status": "ready",
+            "results": {
+                "target": "NH3",
+                "thermo": {"mode": "table", "temperature": 298.15, "pressures": {}},
+                "kinetics": {"environment_basis": "ab" * 32},
+                "kinetics_v2": {
+                    "tof_mf": 1.0,
+                    "environment": {
+                        "T": 500.0,
+                        "p_total": 1.05,
+                        "p_total_stated": True,
+                        "gases": {
+                            "inputs": {"NO": 0.05},
+                            "outputs": {"NH3": 1e-5},
+                            "unlisted": "refuse",
+                        },
+                    },
+                },
+            },
+            "config": {"conditions": {"temperature": 298.15, "pressures": {}}},
+        },
+        body_text=(
+            "# Methods\n\nAll values are Gibbs free-energy differences at "
+            "298.15 K (all gases at the 1 bar reference)."
+        ),
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    # the one-line note beside the energy profile and the kinetics panel
+    assert resp.text.count("conditions: energy profile and span at") == 2
+    assert "T = 298.15 K, all gases at the 1 bar reference" in resp.text
+    assert "kinetics at T = 500 K" in resp.text
+    # the appended Methods block, values off the record
+    assert "## Conditions" in resp.text
+    assert "p(NO) = 0.05 bar" in resp.text
+    assert "p(NH3) = 1e-05 bar" in resp.text
+    assert "basis abababababab" in resp.text
+    assert "kT·ln(p/p°)" in resp.text
+
+
+def test_pathway_detail_no_kinetics_env_keeps_methods_unchanged(
+    client,
+    runtime,
+) -> None:
+    """A kinetics-less pathway renders the stored Methods verbatim — no
+    appended conditions block, no note lines."""
+    _seed_pathway(
+        runtime.store,
+        meta={"results": {"target": "NH3"}},
+        body_text="# Methods\n\nplain body.",
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "plain body." in resp.text
+    assert "## Conditions" not in resp.text
+    assert "conditions: energy profile" not in resp.text
+
+
 # ── step folding + annotations (pathway diagram step annotations) ──────
 
 _TEMPLATE = (
