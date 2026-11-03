@@ -617,10 +617,22 @@ def _ordered_body(store: Store, ref_id: int, *, cap: int) -> tuple[str, int]:
     return _cap(body, cap), len(body)
 
 
+#: Kinds whose ``get`` has a bounded ``view='body'`` — the call the cut
+#: marker names for them instead of the bare get, which is no promised
+#: route to the whole body (a gripe card clips the body outright; a todo
+#: card's comments+links can push it over the fitter's cap — gr554136).
+_BODY_VIEW_KINDS: frozenset[str] = frozenset({"gripe", "todo"})
+
+
 def _cut_marker(kind: str, handle: str, shown: int, total: int) -> str:
     """The line closing a body the eye cut at ``_VERBATIM_CAP``: the call that
     returns it whole, and for a memory the way to stop it recurring."""
-    line = f"… cut: {shown} of {total} chars — full body: get(kind={kind!r}, id={handle!r})"
+    call = (
+        f"get(kind={kind!r}, id={handle!r}, view='body')"
+        if kind in _BODY_VIEW_KINDS
+        else f"get(kind={kind!r}, id={handle!r})"
+    )
+    line = f"… cut: {shown} of {total} chars — full body: {call}"
     if kind == "memory":
         line += " · split it: a summary node + part-of children"
     return line

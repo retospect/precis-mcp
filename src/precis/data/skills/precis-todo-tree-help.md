@@ -105,7 +105,8 @@ add=['STATUS:cancel_requested'])` (`precis-job-help`).
 The `text=` title is the header — keep it a short imperative. For
 longer context (a spec, acceptance criteria, a plan), pass an optional
 `body=`; it lands in a `todo_body` chunk (embedded + keyworded, so it's
-searchable) and renders under the title on `get(kind='todo', id=N)`.
+searchable) and renders under the title on `get(kind='todo', id=N)` —
+`view='body'` reads it alone, untruncated.
 The tree / doable / attention views still show only the title.
 
 ```python

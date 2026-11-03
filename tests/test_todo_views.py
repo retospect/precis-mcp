@@ -420,6 +420,64 @@ def test_get_view_full_needs_an_id(handler: TodoHandler) -> None:
         handler.get(view="full")
 
 
+# ── view='body' (gr554136) ───────────────────────────────────────
+
+
+def test_get_view_body_returns_the_details_body_uncapped(
+    handler: TodoHandler,
+) -> None:
+    """gr554136: ``view='body'`` is the bounded read — title + the
+    untruncated ``todo_body``; the comment timeline stays behind
+    ``view='comments'``."""
+    details = "acceptance: " + "detail line\n" * 300
+    r = handler.put(text="Body view fixture.", body=details)
+    rid = _id_of(r.body)
+    handler.put(id=rid, text="a comment")
+    out = handler.get(id=rid, view="body")
+    assert "Body view fixture." in out.body
+    assert details in out.body
+    assert "a comment" not in out.body
+
+
+def test_get_view_body_needs_an_id(handler: TodoHandler) -> None:
+    """``view='body'`` is a single-ref read — no id gets the same
+    requires-id refusal as 'comments'."""
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="require"):
+        handler.get(view="body")
+
+
+def test_eye_cut_marker_names_the_body_view(handler: TodoHandler) -> None:
+    """gr554136: a todo whose eye body cuts at the verbatim cap names
+    ``view='body'`` — the bare get is no promised route to the whole
+    body (its comments+links can push the card over the byte budget)."""
+    from precis.utils.eye_render import _VERBATIM_CAP
+
+    details = "detail line\n" * (_VERBATIM_CAP // 10)
+    r = handler.put(text="Eye-cut fixture.", body=details)
+    rid = _id_of(r.body)
+    eye = handler.get(id=rid, view="fisheye").body
+    assert "… cut:" in eye
+    assert f"get(kind='todo', id='td{rid}', view='body')" in eye
+
+
+def test_fitted_default_card_names_the_body_view(
+    runtime_with_store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr554136: when the whole card (body + comments + links) won't fit
+    the byte budget, the fitted card's ``next:`` names ``view='body'`` —
+    the read that returns the details body alone."""
+    rt = runtime_with_store
+    h = rt.hub.handler_for("todo")
+    rid = _id_of(h.put(text="Fitted card fixture.", body="d" * 4000).body)
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "1500")
+    body, is_error = rt.dispatch_with_status("get", {"kind": "todo", "id": rid})
+    assert is_error is False
+    assert "… truncated: showing" in body
+    assert f"get(kind='todo', id={rid}, view='body')" in body
+
+
 # ── view='raw' (universal debug view) ─────────────────────────────
 
 
@@ -495,7 +553,12 @@ def test_get_unknown_view_names_the_todo_get_views(handler: TodoHandler) -> None
     with pytest.raises(Unsupported) as exc:
         handler.get(id=rid, view="frobnicate")
     options = exc.value.options or []
-    assert "comments" in options and "tree" in options and "raw" in options
+    assert (
+        "body" in options
+        and "comments" in options
+        and "tree" in options
+        and "raw" in options
+    )
     nxt = str(exc.value.next)
     assert "get(kind='todo'" in nxt and "search(kind='todo'" in nxt
 
@@ -529,6 +592,7 @@ def test_get_every_served_view_still_serves(handler: TodoHandler) -> None:
         # Todo's own get views.
         "comments",
         "tree",
+        "body",
         # Base views (links/log/raw/history/diff).
         "links",
         "log",

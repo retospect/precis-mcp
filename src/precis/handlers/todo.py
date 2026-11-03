@@ -25,7 +25,8 @@ shape with four first-class extensions:
    paused+auto-timeout union), ``doing``, ``done`` (the
    :class:`TodoView` closed vocabulary; the :data:`_TREE_SEARCH_VIEWS`
    dispatch table maps each to a renderer in
-   :mod:`precis.todo.views`), plus ``view='tree'`` on ``get``.
+   :mod:`precis.todo.views`), plus ``view='tree'`` / ``'comments'`` /
+   ``'body'`` on ``get``.
    ``projects`` lists strategic roots that own a ``meta.workspace``;
    ``attention`` unions ``ask-user:`` leaves, ``child-failed`` parents,
    and halted todos.
@@ -42,7 +43,7 @@ Views via ``view='<name>'`` on search / get (the canonical surface):
     search(kind='todo', view='roots'|'projects'|'strategic'|'doable'
                               |'waiting'|'blocked'|'ask-user'|'attention'
                               |'active'|'doing'|'done'|'work'|'asks')
-    get(kind='todo', id=N, view='tree')
+    get(kind='todo', id=N, view='tree'|'comments'|'body')
 
 ``view='work'`` (dark-factory step 1) is the cross-kind hierarchy: quest →
 the roots that ``serves`` it → subtrees, with lease and fleet agents per
@@ -319,10 +320,12 @@ _TREE_GET_VIEWS: frozenset[str] = frozenset({"tree"})
 #: ``get`` view spellings with one reading on a todo (gr511440 — the
 #: prod ledger showed ``get(kind='todo', view='full')`` refusals; the same
 #: family already folds on job/memory/gripe). ``'full'`` is the default
-#: card — a todo's plain get already is the complete read. ``'brief'``
-#: and ``'tags'`` (gr547804) read as the same card — a todo card is the
-#: brief and carries its ``tags:`` line. ``None`` maps to the default
-#: view; each alias runs the canonical call and names the reading via
+#: card — a todo's plain get already is the complete read (title +
+#: body + comments + links; ``view='body'`` is the bounded body-only
+#: read, gr554136). ``'brief'`` and ``'tags'`` (gr547804) read as the
+#: same card — a todo card is the brief and carries its ``tags:``
+#: line. ``None`` maps to the default view; each alias runs the
+#: canonical call and names the reading via
 #: :func:`interpreted` (gr494831's shape).
 _TODO_GET_VIEW_ALIASES: dict[str, str | None] = {
     "full": None,
@@ -511,6 +514,21 @@ class TodoHandler(NumericRefHandler):
         if view == "comments":
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_comments(ref, full=True))
+        if view == "body":
+            # gr554136: the bounded body-only read — title + the
+            # untruncated todo_body, no comments/links/ancestry — the
+            # call a cut or fitted marker names when the whole card
+            # can't fit (the bare get that produced the cut was no
+            # route to the rest).
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(
+                body=self._render_body_view(ref, self.store.tags_for(ref.id)),
+                result_count=1,
+                result_budget_hint=(
+                    f"get(kind='todo', id={ref.id}, q='<terms>') reads "
+                    "matching passages when the body alone is over budget"
+                ),
+            )
         if view is not None and view in _TREE_GET_VIEWS:
             # Future tree-flavoured get views land here.
             raise Unsupported(
@@ -533,7 +551,7 @@ class TodoHandler(NumericRefHandler):
             # 'brief', 'tags') without an id fall through to the
             # "requires id=" refusal; eye extents ('fisheye', 'kwd', …)
             # route to ``eye`` in the base class.
-            views_list = ["comments", "tree", "full", *_BASE_VIEWS]
+            views_list = ["body", "comments", "tree", "full", *_BASE_VIEWS]
             near = difflib.get_close_matches(view, views_list, n=1)
             lead = f"nearest is view={near[0]!r}. " if near else ""
             raise Unsupported(
@@ -541,7 +559,8 @@ class TodoHandler(NumericRefHandler):
                 options=views_list,
                 next=(
                     lead + "get(kind='todo', id=<id>) — the card (text, "
-                    "tags, status); view='comments' the timeline; "
+                    "tags, status); view='body' the untruncated details "
+                    "body; view='comments' the timeline; "
                     "view='tree' the subtree; list views are search-side: "
                     "search(kind='todo', view='projects'|'doable'|'active')"
                 ),
@@ -562,8 +581,19 @@ class TodoHandler(NumericRefHandler):
             except BadInput:
                 return interpreted(resp, readings)
             extra = views.render_ancestry_section(self.store, ref_id)
-            if extra:
-                resp = Response(body=resp.body + "\n" + extra)
+            resp = dataclasses.replace(
+                resp,
+                body=resp.body + ("\n" + extra if extra else ""),
+                # gr554136: when the fitter cuts the card (body +
+                # comments + links over the byte budget), its ``next:``
+                # must name the bounded body read — not a search that
+                # can't return it.
+                result_budget_hint=resp.result_budget_hint
+                or (
+                    f"get(kind='todo', id={ref_id}, view='body') reads "
+                    "the details body uncapped"
+                ),
+            )
         return interpreted(resp, readings)
 
     # ── eye: the tree ring ────────────────────────────────────────
@@ -2255,6 +2285,23 @@ class TodoHandler(NumericRefHandler):
     # ── single-ref render: include parent header when present ─────
 
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
+        out = self._card_lines(ref, tags)
+        comments = self._render_comments(ref, full=False)
+        if comments:
+            out.append("")
+            out.append(comments)
+        return "\n".join(out)
+
+    def _render_body_view(self, ref: Ref, tags: list[Tag]) -> str:
+        """``view='body'`` — the card minus its comment timeline:
+        header, title, the *untruncated* ``todo_body``, tags. The
+        bounded read the cut/fitted markers name when comments and
+        links push the whole card over budget (gr554136)."""
+        return "\n".join(self._card_lines(ref, tags))
+
+    def _card_lines(self, ref: Ref, tags: list[Tag]) -> list[str]:
+        """Header + title + details body + tags — everything a todo owns
+        itself, before the comment/links/ancestry appendages."""
         out = [f"# {self._sense()} {ref.id}", ""]
         if ref.parent_id is not None:
             out.append(f"parent: #{ref.parent_id}")
@@ -2271,11 +2318,7 @@ class TodoHandler(NumericRefHandler):
         if tags:
             out.append("")
             out.append("tags: " + " ".join(str(t) for t in tags))
-        comments = self._render_comments(ref, full=False)
-        if comments:
-            out.append("")
-            out.append(comments)
-        return "\n".join(out)
+        return out
 
     def _body_text(self, ref: Ref) -> str | None:
         """The todo's optional details body from its ``todo_body`` chunk,
