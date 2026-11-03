@@ -21,7 +21,11 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   goes on the job (``meta.landed_sha``); a ``landed: <sha>`` comment and
   ``STATUS:done`` go on the todo only when land_notify did not already
   write them (its comment is the todo's newest); the sha is written into
-  the plan's pending ``sha-in-prod`` gate (:func:`pending_gate`); then
+  the plan's pending ``sha-in-prod`` gate (:func:`pending_gate`). When ship
+  took its nothing-new guard (:func:`nothing_new`: the branch's tree equals
+  origin/main's, nothing squashed) no sha is the slice's: the todo closes
+  with :data:`NO_DIFF_NOTE`, the gate stays pending and no PR is closed
+  (gr561142: main's head is another land's commit). Then
   ``git worktree remove``, ``git branch -D slice/<id>`` and, when the
   branch is on origin, ``git push origin --delete slice/<id>``. A cleanup
   step that fails is reported in the summary, not a job failure: the land
@@ -103,6 +107,14 @@ _HANDLES_RE = re.compile(rf"\(({_HANDLE}(?:[,\s]+{_HANDLE})*)\)\s*$")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _STATUS_RE = re.compile(r"SHIP_STATUS:\s*(\S+)")
 _LANDED_MARK = "shipped — landed on main:"
+#: Ship's nothing-new guard: the branch's tree equals origin/main's, so no
+#: squash commit was made (the ``landed on main:`` line that follows names
+#: main's existing head, not the slice's work — gr561142).
+_NOTHING_NEW_MARK = "nothing new to ship — tree identical to origin/main"
+#: The ``landed:`` comment of a slice that landed no commit.
+NO_DIFF_NOTE = (
+    "landed: nothing — branch had no net diff against origin/main (already on main)"
+)
 
 #: Substrings of ship's own refusal lines (``die`` in ``scripts/ship``'s
 #: qland drift guard) that are about MAIN's state, not the branch's: the
@@ -371,6 +383,12 @@ def refusal_side(cross: str | None) -> str | None:
     return None
 
 
+def nothing_new(log_text: str) -> bool:
+    """True when ship took its nothing-new guard (:data:`_NOTHING_NEW_MARK`):
+    a green exit that squashed nothing, so no sha is the slice's."""
+    return any(_NOTHING_NEW_MARK in line for line in _lines(log_text))
+
+
 def landed_short(log_text: str) -> str | None:
     """The sha on the line after ship's ``shipped — landed on main:``."""
     lines = _lines(log_text)
@@ -417,13 +435,16 @@ def _close_todo(store: Any, todo_id: int) -> None:
     )
 
 
-def _record_land(store: Any, todo_id: int, sha: str, subject: str) -> list[str]:
+def _record_land(store: Any, todo_id: int, sha: str | None, subject: str) -> list[str]:
     """The ``landed:`` comment + ``STATUS:done``, each only when land_notify
-    did not write it. Returns what this wrote."""
+    did not write it. ``sha=None`` is the nothing-new land: the comment is
+    :data:`NO_DIFF_NOTE`, so no reader of ``landed: <sha>`` finds a sha
+    (gr561142). Returns what this wrote."""
     wrote: list[str] = []
     newest = (_newest_comment(store, todo_id) or "").lstrip()
     if not newest.lower().startswith("landed:"):
-        _rs._append_comment(store, todo_id, f"landed: {sha[:9]} — {subject}")
+        note = NO_DIFF_NOTE if sha is None else f"landed: {sha[:9]} — {subject}"
+        _rs._append_comment(store, todo_id, note)
         wrote.append("landed comment")
     if _rs._todo_status(store, todo_id) != "done":
         _close_todo(store, todo_id)
@@ -1105,14 +1126,19 @@ def poll(ctx: Any, handle: Any) -> bool:
         )
         return True
 
-    sha = _landed_sha(log_text, tree)
-    if sha is None:
+    # gr561142: ship's nothing-new guard squashes nothing and then names
+    # main's existing head on its ``landed on main:`` line. That sha is
+    # another land's; it must not reach the todo, the gate or the logbook.
+    no_diff = nothing_new(log_text)
+    sha = None if no_diff else _landed_sha(log_text, tree)
+    if sha is None and not no_diff:
         ctx.record_failure(
             f"land_slice: ship of td{todo_id} exited 0 but no landed sha could "
             f"be read (log {handle.get('log')}); check git log origin/main"
         )
         return True
-    summary = [f"land_slice td{todo_id}: landed {sha[:9]} — {subject}"]
+    landed = f"landed {sha[:9]} — {subject}" if sha else NO_DIFF_NOTE
+    summary = [f"land_slice td{todo_id}: {landed}"]
     store = ctx.store
     try:
         wrote = _record_land(store, todo_id, sha, subject)
@@ -1126,11 +1152,16 @@ def poll(ctx: Any, handle: Any) -> bool:
     gate_id = None
     try:
         gate_id = pending_gate(store, todo_id)
-        if gate_id is not None:
+        if gate_id is None:
+            summary.append("gate: no pending sha-in-prod gate blocked-by this todo")
+        elif sha is None:
+            summary.append(
+                f"gate td{gate_id}: left pending — no sha landed (the work is "
+                "already on main; the plan decides what the gate waits for)"
+            )
+        else:
             _write_gate(store, gate_id, sha, todo_id)
             summary.append(f"gate td{gate_id}: sha-in-prod sha set to {sha[:9]}")
-        else:
-            summary.append("gate: no pending sha-in-prod gate blocked-by this todo")
     except Exception as exc:  # pragma: no cover — reported, the land stands
         log.warning("land_slice: gate write for td%d failed", todo_id, exc_info=True)
         summary.append(f"gate: write FAILED ({exc})")
@@ -1142,8 +1173,8 @@ def poll(ctx: Any, handle: Any) -> bool:
             log_plan_event(
                 store,
                 todo_id,
-                f"slice td{todo_id} landed {sha[:9]} — {subject}",
-                entry_type="milestone",
+                f"slice td{todo_id} {landed}",
+                entry_type="milestone" if sha else "observation",
                 root=root_id,
             )
     except Exception as exc:  # pragma: no cover — reported, the land stands
@@ -1154,7 +1185,12 @@ def poll(ctx: Any, handle: Any) -> bool:
     closed_pr = None
     try:
         closed_pr = _pr_to_close(store, dict(params), todo_id)
-        if closed_pr is not None:
+        if closed_pr is None:
+            pass
+        elif sha is None:
+            summary.append(f"PR #{closed_pr}: left open — nothing landed")
+            closed_pr = None
+        else:
             summary.append(_close_pr(store, closed_pr, todo_id, sha))
     except Exception as exc:  # pragma: no cover — reported, the land stands
         log.warning("land_slice: PR close for td%d failed", todo_id, exc_info=True)

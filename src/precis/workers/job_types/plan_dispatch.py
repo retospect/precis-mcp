@@ -989,6 +989,37 @@ def _step_reopen(plan: _Plan, w: _Writer, res: PassResult) -> None:
         )
 
 
+def _step_rearm(plan: _Plan, w: _Writer, res: PassResult) -> None:
+    """An answered retry-cap ask re-arms its node with a fresh budget whatever
+    ran between the ask and its answer (gr561075). :func:`_attempts` counts
+    the ended jobs after the newest ask; five hand-run lands between a cap
+    ask and its ``retry`` once kept the node capped and minted a second ask
+    the moment the first closed. The first tick that sees the newest ask
+    terminal stamps ``meta.rearmed_after_job`` with the newest ended job
+    (the floor the review-REVERT path already uses) and records which ask
+    did it (``meta.rearmed_by_ask``), so the stamp happens once per ask."""
+    for n in plan.todos():
+        if _closed(n) or not _dispatchable(plan, n):
+            continue
+        asks = [b for b in plan.blockers.get(n.id, []) if b.is_ask]
+        if not asks:
+            continue
+        newest_ask = max(asks, key=lambda b: (b.created_at, b.id))
+        if plan.status_of(newest_ask) not in BLOCKER_TERMINAL_STATUSES:
+            continue
+        if n.meta.get("rearmed_by_ask") == newest_ask.id:
+            continue
+        ended = [j for j in plan.jobs(n) if j.status in _JOB_ENDED]
+        stamp: dict[str, Any] = {"rearmed_by_ask": newest_ask.id}
+        if ended:
+            stamp["rearmed_after_job"] = ended[-1].id
+        w.stamp_meta(n, stamp)
+        res.notes.append(
+            f"td{n.id}: ask td{newest_ask.id} answered; retry budget reset"
+            + (f" after job:{ended[-1].id}" if ended else "")
+        )
+
+
 def _step_moot(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
     """A generator ``run_slice`` closed on a ``moot:`` verdict carries
     ``MOOT_TAG`` (gr548813): the plan's reason is gone (its gripe already
@@ -1124,8 +1155,8 @@ def _retries(n: _Node) -> int:
 
 def _attempts(plan: _Plan, n: _Node) -> int:
     """Ended jobs since the newest ask on ``n`` (all of them, floored by the
-    ``attempt:<n>`` tag, when there was never an ask). A REVERT verdict
-    re-arms a node like an answered ask: only jobs after
+    ``attempt:<n>`` tag, when there was never an ask). A REVERT verdict and
+    an answered ask (:func:`_step_rearm`) re-arm a node: only jobs after
     ``meta.rearmed_after_job`` count."""
     asks = [b for b in plan.blockers.get(n.id, []) if b.is_ask]
     since = max((b.created_at for b in asks), default=None)
@@ -1674,6 +1705,7 @@ def run_pass(
         _step_loops(store, plan, w, res, now)
         _step_reviews(store, plan, w, res, now)
         _step_reopen(plan, w, res)
+        _step_rearm(plan, w, res)
         _step_moot(store, plan, w, res)
         _step_phases(plan, w, res)
         _step_dispatch(plan, w, res)

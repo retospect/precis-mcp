@@ -247,6 +247,17 @@ GREEN_LOG = (
     "land-notify abc1234: td42 done\n"
 )
 
+#: gr561142: ship's nothing-new guard — nothing squashed, then the landed
+#: line names origin/main's existing head (another session's commit).
+NO_DIFF_LOG = (
+    "quick ship (--quick)\n"
+    "nothing new to ship — tree identical to origin/main (already landed); "
+    "skipping the push\n"
+    "shipped — landed on main:\n"
+    "e249413a7 docs(backlog): memory gardener spec and its fifteen slice gripes\n"
+    "SHIP_STATUS: shipped\n"
+)
+
 # ── registry ───────────────────────────────────────────────────────
 
 
@@ -317,6 +328,10 @@ def test_ship_output_parsers() -> None:
     assert land_slice.ship_status(GREEN_LOG) is None
     noted = GREEN_LOG + "SHIP_STATUS: shipped — local main ref not moved\n"
     assert land_slice.ship_status(noted) == "shipped"
+    assert land_slice.nothing_new(GREEN_LOG) is False
+    assert land_slice.nothing_new(NO_DIFF_LOG) is True
+    # the guard's log still names main's head on the landed line
+    assert land_slice.landed_short(NO_DIFF_LOG) == "e249413a7"
 
 
 # ── submit ─────────────────────────────────────────────────────────
@@ -474,6 +489,54 @@ def test_poll_green_logs_the_land_on_the_plan_quest(
             "kw": {"entry_type": "milestone", "root": 40},
         }
     ]
+
+
+def test_poll_nothing_new_lands_no_sha(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr561142: a green ship that squashed nothing closes the todo with the
+    no-diff note; main's head never reaches the todo, the gate or the
+    logbook."""
+    seen: list[dict[str, Any]] = []
+
+    def fake_log(store: Any, node_id: int, event: str, **kw: Any) -> int:
+        seen.append({"node": node_id, "event": event, "kw": kw})
+        return 1
+
+    monkeypatch.setattr(land_slice, "log_plan_event", fake_log)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub", "plan:40"))
+    store.add_todo(
+        44,
+        status="open",
+        tags=("plan:40",),
+        meta={"gate": {"kind": "sha-in-prod", "args": {"sha": PENDING_SHA}}},
+    )
+    seams["gates"] = [(44, True)]
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, NO_DIFF_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert pctx.meta_set["landed_sha"] is None
+    assert store.comments(42)[-1] == land_slice.NO_DIFF_NOTE
+    tags = store.tag_strings(42)
+    assert "STATUS:done" in tags and "claimed-by:lane-claude-sub" not in tags
+    # the gate keeps its pending sha
+    assert store.refs[44].meta["gate"]["args"]["sha"] == PENDING_SHA
+    assert store.comments(44) == []
+    assert seen == [
+        {
+            "node": 42,
+            "event": f"slice td42 {land_slice.NO_DIFF_NOTE}",
+            "kw": {"entry_type": "observation", "root": 40},
+        }
+    ]
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "e249413a7" not in summary
+    assert "no net diff" in summary and "gate td44: left pending" in summary
+    # the branch and worktree are still cleaned up
+    assert ["branch", "-D", "slice/42"] in _cleanup_cmds(seams)
 
 
 def test_poll_green_writes_the_land_when_land_notify_did_not(

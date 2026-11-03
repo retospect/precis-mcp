@@ -475,6 +475,36 @@ def test_retry_cap_mints_exactly_one_ask(store: Store) -> None:
     assert (res.dispatched, res.asks) == (1, 0)
 
 
+def test_answered_ask_rearms_despite_jobs_run_in_between(store: Store) -> None:
+    """gr561075: jobs hand-run between a cap ask and its answer must not keep
+    the node capped (td548989 got a second ask the tick after its first was
+    closed with ``retry``)."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(store, task, "first failure")
+    _failed_job(store, task, "second failure")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 1)
+    (ask,) = [c for c in _children(store, mint.root_id) if c != task]
+
+    # Two hand-submitted lands fail while the ask is open.
+    _failed_job(store, task, "hand-run land red")
+    newest = _failed_job(store, task, "hand-run land red again")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 0)
+
+    # Closing the ask resets the budget: a dispatch, not a second ask.
+    store.add_tag(
+        ask, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    meta = _meta(store, task)
+    assert meta["rearmed_by_ask"] == ask
+    assert meta["rearmed_after_job"] == newest
+    assert len([c for c in _children(store, mint.root_id) if c != task]) == 1
+
+
 def test_unknown_loop_body_closes_the_loop_with_a_comment(store: Store) -> None:
     def build(m: T._Minter) -> None:
         m.node("root", "Plan", {"auto_close": True})
