@@ -620,7 +620,7 @@ class TestLeaseKeepalive:
         monkeypatch.setattr(coordinator, "_run_one", lambda *_a, **_k: None)
 
         store = _FakeStore()
-        out = coordinator.run_coordinator_pass(store)
+        out = coordinator.run_coordinator_pass(store, limit=1)
 
         assert entered == [1]
         assert exited == [1]
@@ -632,8 +632,7 @@ class TestLeaseKeepalive:
 # One pass may not hold the rotation for as long as its longest slice
 # runs — a >70 min survey_extract starved every other ref-pass on
 # melchior's catch-all. The pass stamps its deadline on each claimed
-# job's ctx.pass_deadline and releases its un-started claims once the
-# budget is spent.
+# job's ctx.pass_deadline and stops claiming once the budget is spent.
 
 
 class TestPassBudget:
@@ -641,21 +640,25 @@ class TestPassBudget:
         return [(i, f"job{i}", {"job_type": "x"}) for i in range(1, n + 1)]
 
     def _stub_pass(self, monkeypatch: pytest.MonkeyPatch, rows: list) -> dict:
-        monkeypatch.setattr(coordinator, "_claim_jobs", lambda conn, *, limit: rows)
         monkeypatch.setattr(coordinator, "_set_status", lambda *_a, **_k: None)
         monkeypatch.setattr(
             coordinator, "_LeaseKeepalive", lambda *_a, **_k: nullcontext()
         )
-        calls: dict[str, list] = {"ran": [], "released": []}
+        calls: dict[str, list] = {"ran": [], "claimed": []}
+
+        def _claim_one(conn: Any, *, limit: int) -> list:
+            assert limit == 1
+            if not rows:
+                return []
+            row = rows.pop(0)
+            calls["claimed"].append(row[0])
+            return [row]
 
         def _fake_run_one(ctx: Any) -> None:
             calls["ran"].append(ctx)
 
-        def _fake_yield_claim(store: Any, ref_id: int) -> None:
-            calls["released"].append(ref_id)
-
+        monkeypatch.setattr(coordinator, "_claim_jobs", _claim_one)
         monkeypatch.setattr(coordinator, "_run_one", _fake_run_one)
-        monkeypatch.setattr(coordinator, "_yield_claim", _fake_yield_claim)
         return calls
 
     def test_budget_env_default_and_override(
@@ -668,12 +671,10 @@ class TestPassBudget:
         monkeypatch.setenv("PRECIS_COORDINATOR_PASS_BUDGET_S", "bogus")
         assert coordinator._pass_budget_s() == 120.0
 
-    def test_over_budget_pass_releases_unstarted_claims(
+    def test_over_budget_pass_does_not_claim_unstarted_jobs(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Job 1's slice spends the budget; jobs 2-4 are released back
-        to STATUS:yielded without a dispatch — the next rotation
-        resumes them instead of the pass holding the loop."""
+        """Job 1 spends the budget; jobs 2-4 never leave the queue."""
         monkeypatch.setenv("PRECIS_COORDINATOR_PASS_BUDGET_S", "10")
         calls = self._stub_pass(monkeypatch, self._rows(4))
         # Clock reads: the pass's deadline stamp, then the per-job
@@ -685,8 +686,8 @@ class TestPassBudget:
 
         assert [c.ref_id for c in calls["ran"]] == [1]
         assert calls["ran"][0].pass_deadline == 10.0
-        assert calls["released"] == [2, 3, 4]
-        assert out == {"claimed": 4, "ok": 1, "failed": 0}
+        assert calls["claimed"] == [1]
+        assert out == {"claimed": 1, "ok": 1, "failed": 0}
 
     def test_zero_budget_disables_the_deadline(
         self, monkeypatch: pytest.MonkeyPatch
@@ -698,40 +699,40 @@ class TestPassBudget:
 
         assert [c.ref_id for c in calls["ran"]] == [1, 2, 3]
         assert all(c.pass_deadline is None for c in calls["ran"])
-        assert calls["released"] == []
+        assert calls["claimed"] == [1, 2, 3]
         assert out == {"claimed": 3, "ok": 3, "failed": 0}
 
-    def test_a_failed_release_does_not_strand_the_rest(
+    def test_pass_stops_at_the_exact_deadline(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A DB error releasing one un-started claim is logged and
-        skipped — the remaining claims are still released."""
-        monkeypatch.setenv("PRECIS_COORDINATOR_PASS_BUDGET_S", "10")
-        rows = self._rows(4)
-        monkeypatch.setattr(coordinator, "_claim_jobs", lambda conn, *, limit: rows)
-        monkeypatch.setattr(coordinator, "_set_status", lambda *_a, **_k: None)
-        monkeypatch.setattr(
-            coordinator, "_LeaseKeepalive", lambda *_a, **_k: nullcontext()
-        )
-        ran: list[Any] = []
-
-        def _fake_run_one(ctx: Any) -> None:
-            ran.append(ctx)
-
-        monkeypatch.setattr(coordinator, "_run_one", _fake_run_one)
-        attempted: list[int] = []
-
-        def _flaky_yield(store: Any, ref_id: int) -> None:
-            attempted.append(ref_id)
-            if ref_id == 3:
-                raise RuntimeError("db gone")
-
-        monkeypatch.setattr(coordinator, "_yield_claim", _flaky_yield)
-        ticks = iter([0.0, 5.0, 20.0])
-        monkeypatch.setattr(time, "monotonic", lambda: next(ticks, 20.0))
+        monkeypatch.setenv("PRECIS_COORDINATOR_PASS_BUDGET_S", "5")
+        calls = self._stub_pass(monkeypatch, self._rows(4))
+        ticks = iter([0.0, 5.0])
+        monkeypatch.setattr(time, "monotonic", lambda: next(ticks, 5.0))
 
         out = coordinator.run_coordinator_pass(_FakeStore())
 
-        assert [c.ref_id for c in ran] == [1]
-        assert attempted == [2, 3, 4]
-        assert out == {"claimed": 4, "ok": 1, "failed": 0}
+        assert calls == {"ran": [], "claimed": []}
+        assert out == {"claimed": 0, "ok": 0, "failed": 0}
+
+    def test_limit_caps_the_number_of_slices(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_COORDINATOR_PASS_BUDGET_S", "0")
+        calls = self._stub_pass(monkeypatch, self._rows(4))
+
+        out = coordinator.run_coordinator_pass(_FakeStore(), limit=2)
+
+        assert calls["claimed"] == [1, 2]
+        assert out == {"claimed": 2, "ok": 2, "failed": 0}
+
+    @pytest.mark.parametrize("limit", [0, -1])
+    def test_invalid_limit_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch, limit: int
+    ) -> None:
+        calls = self._stub_pass(monkeypatch, self._rows(4))
+
+        with pytest.raises(ValueError, match="limit must be positive"):
+            coordinator.run_coordinator_pass(_FakeStore(), limit=limit)
+
+        assert calls == {"ran": [], "claimed": []}

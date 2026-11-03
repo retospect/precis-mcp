@@ -23,6 +23,11 @@ The lanes
   claude CLI call) is gated dynamically per host at claim time
   (``claim_executor_jobs(check_job_type_requires=True)`` in
   ``_common.py``), not by static pass registration like ``claude_inproc``.
+  Serial passes claim one job immediately before dispatch, not a batch:
+  waiting jobs must not burn leases or appear running. The 120s default
+  pass budget is checked before each claim and cooperatively between
+  dispatch units (``survey_extract`` chunks); a unit finishes its writes
+  before checkpointing, so the budget may overrun by one unit.
 * ``ssh_node`` — runs a job's plugin on a (possibly remote) compute
   node. A job_type exposing ``spec.submit``/``spec.poll`` runs DETACHED:
   ``submit`` launches (nohup / ``docker run -d`` / sbatch) and returns a
