@@ -286,7 +286,9 @@ todo.
    stuck-watch re-issues the same tags at each poll to refresh it.
 5. Handoff: `put(kind='todo', id=T, text='handoff: <text>')`. A red round:
    `tag(kind='todo', id=T, add=['attempt:<n+1>'], remove=['attempt:<n>'])`
-   (the shape `run_slice.release_todo` writes) and
+   (the `attempt:` tag shape `run_slice.release_todo` writes — it only
+   knows `claimed-by:lane-<lane>`, so a `claimed-by:fleet-<tree>` lease is
+   released by hand when the item changes hands) and
    `put(kind='gripe', id=N, text='work: attempt <n+1> failed on <lane> — <first line>')`.
 6. Review verdict: `put(kind='todo', id=T, text='review: LAND — <findings>')`
    or `review: FIX — <list>` (the line `plan_dispatch.parse_verdict`

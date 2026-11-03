@@ -1,19 +1,21 @@
 ---
 name: gripe-fleet
-description: "Use when coordinating a builder wave in tmux: the loop itself is the product skill precis-gripe-loop-help (state on the gripe); this file holds the repo-dev mechanics — fleet-wave launch/close, tiers, Devin/Codex, board, panes, safety rules."
+description: "Use when coordinating a builder wave in tmux: the loop itself is the product skill precis-gripe-loop-help (work state on the gripe's code todo); this file holds the repo-dev mechanics — fleet-wave launch/close, tiers, Devin/Codex, board, panes, safety rules."
 ---
 
 # gripe-fleet — run a builder wave (repo-dev mechanics)
 
 **The loop is in the product skill:** `get(kind='skill',
-id='precis-gripe-loop-help')` — triage, batch + brief, assign, handoff,
-review verdict, land queue, close on deploy. Every state lives on the
-gripe (`edit(kind='gripe', id=[...], mode='fix', args={...})`) and every
-queue is `get(kind='gripe', id='/queue')`; a crashed coordinator resumes
-from that view alone. This file is what that skill cannot know — this
-repo's tmux, scripts and authority tiers. Steps 3–8 and the two sections
-after them are authority-gated text: change them only with Reto's typed
-go.
+id='precis-gripe-loop-help')` — triage, mint the code todo, assign,
+handoff, review verdict, land, close on deploy. Work state lives on the
+gripe's `fixed-by` code todo under `td559473` (`put`/`tag`/`link` on the
+todo, `work:` mirrors on the gripe) and the queue is
+`get(kind='todo', id=559473, view='tree')`; a crashed coordinator resumes
+from that view alone. The old gripe-side `edit(mode='fix')` state stays
+readable (the skill's legacy appendix). This file is what that skill
+cannot know — this repo's tmux, scripts and authority tiers. Steps 3–8
+and the two sections after them are authority-gated text: change them
+only with Reto's typed go.
 
 All mechanics go through `scripts/fleet-wave` (`--help` for flags). The
 thread-session fleet (one window per roadmap thread) is `scripts/fleet` and
@@ -27,15 +29,15 @@ the tier, with its UTC time).
 
 | loop step | here |
 |---|---|
-| batch + brief | the session MCP (`edit(mode='fix')`); the file a builder without MCP reads is `scripts/prod-precis gripe-fix brief <batch> --out FILE` (the `/batch` dossier) |
-| assign / launch | `scripts/fleet-wave launch NAME --batch SLUG --tier R\|W [--devin\|--codex]` renders that file, launches, and records `host`/`<vendor>:<window>`/`tree` on every gripe of the batch (`--brief FILE` for a one-off task); `scripts/prod-precis gripe-fix assign SLUG --host H --session S --tree T` by hand |
-| re-point a builder at a new batch | `scripts/fleet-wave reassign NAME --batch SLUG` (or `--brief FILE`): `/clear`, then "Read … and do it", then assign |
-| watch | one `scripts/fleet-wave stuck-watch` under Monitor — its `done:` line carries the finish line, so `watch-done` on top only doubles every wake-up (gr515152); it prints only changed states, batched (`--settle` 2 polls, `--digest-sec` 300, a prompt flushes at once, a quiet pane repeats every `--requiet-min` 60). Never poll with a Monitor `sleep` loop or `tmux capture` in the main loop. `scripts/fleet-wave handoff-wait NAME...` resumes a builder that printed a bare `DONE-HANDOFF` (`/clear` + resume line); `scripts/fleet panes status [--flagged]` for a one-off look |
+| mint + brief | the session MCP — `put(kind='todo', parent_id=559473, body=<the brief>, meta={'llm_tier': None, 'task_class': 'code', 'retries': 2}, tags=['waiting-for:fleet', …], link='gripe:<N>', rel='fixes')`; the file a builder without MCP reads is written by hand from the todo body and handed to launch via `--brief FILE` — no tool renders it from a todo today (phase 2); `scripts/prod-precis gripe-fix brief <batch> --out FILE` still renders a legacy `/batch` dossier. `launch --batch` taking a todo id list (or the root) instead of a gripe batch slug is phase 2 |
+| assign / launch | `scripts/fleet-wave launch NAME --brief FILE --tier R\|W [--devin\|--codex]` launches; record the assignment on the todo yourself — `tag(kind='todo', id=T, add=['claimed-by:fleet-<tree>'])` plus `put(kind='todo', id=T, text='lane: <vendor>:<window>@<host>, tree <tree>')` — and on the gripe `claimed-by:fleet-<tree>` + the `in progress <tree>` comment. `--batch SLUG` still writes `meta.fix` on the gripes (legacy); launch recording on the todo is phase 2 |
+| re-point a builder at a new item | `scripts/fleet-wave reassign NAME --brief FILE` (or `--batch SLUG` for a legacy batch): `/clear`, then "Read … and do it", then the assign calls above |
+| watch | one `scripts/fleet-wave stuck-watch` under Monitor — its `done:` line carries the finish line, so `watch-done` on top only doubles every wake-up (gr515152); it prints only changed states, batched (`--settle` 2 polls, `--digest-sec` 300, a prompt flushes at once, a quiet pane repeats every `--requiet-min` 60). Never poll with a Monitor `sleep` loop or `tmux capture` in the main loop. Both leases (todo and gripe) are 4 h: re-issue the same `claimed-by:` tag at each sweep to refresh — `stuck-watch` doing that itself is phase 2. `scripts/fleet-wave handoff-wait NAME...` resumes a builder that printed a bare `DONE-HANDOFF` (`/clear` + resume line); `scripts/fleet panes status [--flagged]` for a one-off look |
 | compact | `scripts/fleet-wave ctx-guard NAME... --compact --tokens` in a background window sends `/compact` to the peer main loops once their printed context passes the token threshold (bare `--tokens` = 120k; retune with `--tokens N` or `FLEET_COMPACT_TOKENS`; re-arms at half). It fires only on an idle pane — a busy pane is skipped to the next poll, never compacted mid-turn — and while the window's tree has no live subagent task; a pane that prints no token figure is left alone. `--ceiling C` without `--tokens` triggers on ctx % instead. Without `--compact` it is the builders' 70% WIP+handoff nudge (gr515267). Bulky reads (queue files, triage outputs, review texts) go to a Haiku digest agent, not into the main loop (gr515153) |
-| handoff | the builder's finish message / handoff → `edit(..., args={'handoff': ...})` on its gripes |
-| review | a `reviewer` agent on the branch; its verdict → `edit(..., args={'review': 'land'\|'fix', 'findings': ...})`; a fix round is the next brief, sent with `send-line` |
-| land | tier R: the release owner runs `scripts/fleet-wave land <tree>` (ship in the builder's own tree; no cherry-pick), or a round (`round` skill) for migrations; tier W: the builder lands; then `edit(..., args={'landed': '<main sha>'})`. `scripts/fleet-wave cites ID...` lists unlanded branch commits naming a gripe (is it already built somewhere?) |
-| close on deploy | the `awaiting-deploy` rows get `resolved: <sha> (r<N>) — …` + `STATUS:done`; `scripts/fleet-wave close NAME...` reaps the tree |
+| handoff | the builder's finish message / handoff → `put(kind='todo', id=T, text='handoff: …')`; a red round also bumps `attempt:<n>` on the todo and mirrors `work: attempt N failed on <lane> — <first line>` on the gripe |
+| review | a `reviewer` agent on the branch; its verdict → `put(kind='todo', id=T, text='review: LAND\|FIX\|REVERT — …')`; a fix round is the next `brief:` comment on the todo, sent with `send-line` |
+| land | tier R: the release owner runs `scripts/fleet-wave land <tree>` (ship in the builder's own tree; no cherry-pick), or a round (`round` skill) for migrations; tier W: the builder lands. The squash subject ends `(gr<N>, td<T>)` — land-notify posts `landed:` + `STATUS:done` on the todo and `resolved:` + `auto_verify` on the gripe, nothing by hand. `scripts/fleet-wave cites ID...` lists unlanded branch commits naming a gripe (is it already built somewhere?) |
+| close on deploy | `gripe-validate` after the rollout flips `auto_verify` to `done` (only `auto_verify` auto-closes; `user_verify` waits on a human); `scripts/fleet-wave close NAME...` reaps the tree |
 | import the old file state | `scripts/prod-precis gripe-fix import DIR` (dry run), `--apply` to write |
 
 Retired scratch (GRIPE_FIX's job dir): `launch3.sh`/`launch-codex.sh` →
@@ -54,7 +56,10 @@ cited sha that is not an ancestor (gr515489, gr515506). The lint step is
 `scripts/test --typecheck`, never "mypy on touched files" (gr515507). A
 rebase instruction names `git rebase --autostash origin/main` (gr513770).
 Never brief the heredoc commit recipe; the footer prescribes `git commit
--F <file>` (gr513763). A commit that touches a gripe without finishing it
+-F <file>` (gr513763). The brief names the squash subject the builder
+must end with: `(gr<N>, td<T>)` — the gripe handle plus its code todo —
+so land-notify moves both (`landed:` + `STATUS:done` on the todo,
+`resolved:` + `STATUS:auto_verify` on the gripe). A commit that touches a gripe without finishing it
 names it `refs gr<id>` inside the subject's trailing list
 (`fix(x): y (gr1, refs gr2)`, gr547015): land-notify posts a
 `landed (partial)` comment, no `resolved:` and no `STATUS:auto_verify` —
