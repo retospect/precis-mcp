@@ -617,10 +617,10 @@
           {% call draft_editors.draft_table_editor(ident, n.base58, n.sha, _seed) %}
           {% if n.table %}
           <div class="overflow-x-auto">
-            {{ sd_block.sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}
+            {{ sd_block.sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}
           </div>
           {% else %}
-          <p class="whitespace-pre-wrap text-fg {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</p>
+          <p class="whitespace-pre-wrap text-fg {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}</p>
           {% endif %}
           {% endcall %}
         </div>
@@ -670,7 +670,7 @@
                figcaption accepts. #}
             <figcaption class="mt-1.5 text-sm text-fg-secondary">
               {% call draft_editors.draft_edit(ident, n.base58, n.sha, true, false, n.text, rows=4, block_keys=false) %}
-              <span class="block whitespace-pre-wrap break-words">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</span>
+              <span class="block whitespace-pre-wrap break-words">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}</span>
               <button @click="startEdit()" class="mt-0.5 text-[10px] text-fg-faint hover:text-info"
                       title="edit this figure's caption (key: i)">✎ edit caption</button>
               {% endcall %}
@@ -702,7 +702,7 @@
           {% if n.is_list_container %}
           <div class="text-fg-secondary">{{ n.list_label }}</div>
           {% else %}
-          <div class="whitespace-pre-wrap text-fg {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{% if n.is_item %}<span class="sd-list-mark">{{ n.item_marker }}</span> {% endif %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</div>
+          <div class="whitespace-pre-wrap text-fg {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{% if n.is_item %}<span class="sd-list-mark">{{ n.item_marker }}</span> {% endif %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}</div>
           {% endif %}
           {# tag row (the T search signal) — chips + type-ahead add #}
           <div class="mt-2 flex flex-wrap items-center gap-1 border-t border-warning-subtle pt-1.5 text-[10px]">
@@ -735,11 +735,11 @@
         {#- list container (gr553310): no card — the slim rail head rendered by
            sd_doc_block's container branch (dc id + label + review dot); the
            sd-listrail div this row's rail_open emitted wraps it. -#}
-        {{ sd_block.sd_doc_block(n, m.display, claims, review_by_dc.get(n.dc), ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, authored=authored_idx.get(n.chunk_id)) }}
+        {{ sd_block.sd_doc_block(n, m.display, claims, review_by_dc.get(n.dc), ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, authored=authored_idx.get(n.chunk_id), handles=handles) }}
         {% elif m.mode == 'doc' %}
         {# full-doc mode: a chunk in the server-rendered window around the focus,
            verbatim (see smartdraft/_block.html.j2 for why it's a <div>). #}
-        {{ sd_block.sd_doc_block(n, m.display, claims, review_by_dc.get(n.dc), ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, authored=authored_idx.get(n.chunk_id)) }}
+        {{ sd_block.sd_doc_block(n, m.display, claims, review_by_dc.get(n.dc), ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, authored=authored_idx.get(n.chunk_id), handles=handles) }}
         {% elif m.mode in ('tail', 'head') %}
         {# ±1 neighbour: verbatim, truncated toward the focus (tail leads in,
            head flows out) — except a table chunk, which always renders in
@@ -747,7 +747,7 @@
            show). <div> not <a> for the same nested-anchor reason as the
            doc-mode block above. #}
         {% set _is_tbl = n.is_table and n.table %}
-        <div data-dc="{{ n.dc }}" class="block cursor-pointer{{ ' sd-list-item' if n.is_item }}{{ '' if _is_tbl else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-fg-subtle hover:bg-surface-subtle {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}{{ ' sd-authored' if authored_idx.get(n.chunk_id) }}">{{ sd_block.sd_doc_head(n, review_by_dc.get(n.dc), ident, authored_idx.get(n.chunk_id)) }}{% if n.is_item %}<span class="sd-list-mark">{{ n.item_marker }}</span>{% endif %}{% if _is_tbl %}{{ sd_block.sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% else %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% endif %}</div>
+        <div data-dc="{{ n.dc }}" class="block cursor-pointer{{ ' sd-list-item' if n.is_item }}{{ '' if _is_tbl else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-fg-subtle hover:bg-surface-subtle {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}{{ ' sd-authored' if authored_idx.get(n.chunk_id) }}">{{ sd_block.sd_doc_head(n, review_by_dc.get(n.dc), ident, authored_idx.get(n.chunk_id)) }}{% if n.is_item %}<span class="sd-list-mark">{{ n.item_marker }}</span>{% endif %}{% if _is_tbl %}{{ sd_block.sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}{% else %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}{% endif %}</div>
         {% else %}
         {# ±2 neighbour: one-line summary — the dc span sits inside this <a>, so
            sdCopyDc's stopPropagation/preventDefault (see sd_dc_id) matter here:

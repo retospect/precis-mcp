@@ -460,3 +460,150 @@ def test_autolink_invariance_pin_ignored_for_link_targets(store: Any) -> None:
 
     assert [(t.dst_ref_id, t.dst_pos) for t in plain] == [(ref.id, None)]
     assert [(t.dst_ref_id, t.dst_pos) for t in pinned] == [(ref.id, None)]
+
+
+# ---------------------------------------------------------------------------
+# Bare-handle autolinking (gripe 553317): ``gr553317`` as a whole word in
+# prose — extraction (:func:`bare_handle_tokens`) and the one-query batch
+# resolver (:func:`resolve_handle_tokens`) the web reader hands the
+# linkifier. DB-free: a duck-typed pool models the UNION query.
+# ---------------------------------------------------------------------------
+
+
+def test_bare_handle_tokens_whole_words_only() -> None:
+    body = (
+        "see gr553317 and dc5824472, plus me5 — not x/gr12, foo-gr55, "
+        "gr123-x, some5, or kind:gr12"
+    )
+    assert mentions.bare_handle_tokens(body) == ["gr553317", "dc5824472", "me5"]
+
+
+def test_bare_handle_tokens_dedupes_and_keeps_order() -> None:
+    assert mentions.bare_handle_tokens("gr1 me5 gr1 dc2 me5") == [
+        "gr1",
+        "me5",
+        "dc2",
+    ]
+
+
+def test_bare_handle_tokens_table_selector_id_is_not_split_off() -> None:
+    # ``gr12`` after ``~`` is a row/column selector id, not a mention.
+    assert mentions.bare_handle_tokens("dc12~gr12") == ["dc12"]
+
+
+class _HandleBatchStore:
+    """Duck-typed ``store.pool.connection().execute`` double for
+    :func:`resolve_handle_tokens`'s single UNION query. ``refs`` maps
+    ``pk -> (kind, converted_from_kind, retired)``; ``chunks`` maps
+    ``chunk_id -> (owning_kind, converted_from_kind)`` (a chunk's liveness
+    rides its owning ref, which this double always keeps live — retire
+    cases go through ``refs``). ``calls`` counts round-trips so a test
+    can pin the one-query contract."""
+
+    def __init__(
+        self,
+        refs: dict[int, tuple[str, str | None, bool]],
+        chunks: dict[int, tuple[str, str | None]],
+    ) -> None:
+        self._refs = refs
+        self._chunks = chunks
+        self.pool = self
+        self.calls = 0
+
+    def connection(self):
+        store = self
+
+        class _Ctx:
+            def __enter__(self_):
+                return store
+
+            def __exit__(self_, *_a):
+                return False
+
+        return _Ctx()
+
+    def execute(self, _sql: str, params: tuple):
+        self.calls += 1
+        rec_ids, chk_ids = params
+        rows = []
+        for pk in rec_ids:
+            row = self._refs.get(pk)
+            if row is None:
+                continue
+            kind, conv, retired = row
+            if retired:
+                continue
+            rows.append((False, pk, kind, conv))
+        for cid in chk_ids:
+            crow = self._chunks.get(cid)
+            if crow is None:
+                continue
+            ckind, cconv = crow
+            rows.append((True, cid, ckind, cconv))
+
+        class _Cur:
+            def fetchall(self_):
+                return rows
+
+        return _Cur()
+
+
+def test_resolve_handle_tokens_one_query_for_many_handles() -> None:
+    """N handles in one render — ONE resolution query, not N (the batch
+    contract gripe 553317 asks for)."""
+    store = _HandleBatchStore(
+        refs={553317: ("gripe", None, False), 5: ("memory", None, False)},
+        chunks={5824472: ("draft", None)},
+    )
+    out = mentions.resolve_handle_tokens(
+        store, ["gr553317", "dc5824472", "me5", "gr553317", "dc5824472", "me5"]
+    )
+    assert store.calls == 1
+    assert out == {
+        "gr553317": ("gripe", False, 553317),
+        "dc5824472": ("draft", True, 5824472),
+        "me5": ("memory", False, 5),
+    }
+
+
+def test_resolve_handle_tokens_kind_mismatch_drops() -> None:
+    # ``td5`` claims a todo, but ref 5 is a memory — the decoded kind must
+    # match the row's (``Store.resolve_handle``'s typo guard).
+    store = _HandleBatchStore(refs={5: ("memory", None, False)}, chunks={})
+    assert mentions.resolve_handle_tokens(store, ["td5"]) == {}
+
+
+def test_resolve_handle_tokens_missing_and_retired_drop() -> None:
+    store = _HandleBatchStore(
+        refs={7: ("gripe", None, True)},
+        chunks={},
+    )
+    # 7 retired, 99 absent — neither resolves.
+    assert mentions.resolve_handle_tokens(store, ["gr7", "gr99"]) == {}
+
+
+def test_resolve_handle_tokens_converted_kind_reports_row_kind() -> None:
+    # ``pa7`` on a ref converted paper -> datasheet resolves under its NEW
+    # kind (the ``converted_from_kind`` redirect) — the map carries the
+    # row's kind so ``<Kind> <id>`` shows what it is now.
+    store = _HandleBatchStore(
+        refs={7: ("datasheet", "paper", False)},
+        chunks={},
+    )
+    assert mentions.resolve_handle_tokens(store, ["pa7"]) == {
+        "pa7": ("datasheet", False, 7)
+    }
+
+
+def test_resolve_handle_tokens_malformed_tokens_cost_no_query() -> None:
+    # ``zz`` isn't a registered code and ``hi`` has no digits — nothing
+    # well-formed means the resolver never touches the pool.
+    store = _HandleBatchStore(refs={}, chunks={})
+    assert mentions.resolve_handle_tokens(store, ["zz99", "hi", "x" * 9]) == {}
+    assert store.calls == 0
+
+
+def test_resolve_handle_tokens_empty_costs_no_query() -> None:
+    store = _HandleBatchStore(refs={}, chunks={})
+    assert mentions.resolve_handle_tokens(store, []) == {}
+    assert store.calls == 0

@@ -1543,3 +1543,231 @@ def test_preview_route_runs_db_work_off_the_event_loop() -> None:
     assert "await asyncio.to_thread(" in src
     assert "_resolve_ref_id," in src and "store.fetch_refs_by_ids," in src
     assert "store.pool.connection()" in inspect.getsource(mod._fetch_preview_rows)
+
+
+# ---------------------------------------------------------------------------
+# Bare-handle autolinking (gripe 553317): a ``<code><digits>`` whole word in
+# prose renders ``<Kind> <id>`` with the same hover-preview anchor a
+# bracketed handle gets — but only when the render's batch-resolved
+# ``handles`` map says it resolves. ``handles=None`` (every non-reader
+# surface) leaves the text untouched.
+# ---------------------------------------------------------------------------
+
+_RESOLVED_HANDLES = {
+    "gr553317": ("gripe", False, 553317),
+    "me5": ("memory", False, 5),
+    "dc5824472": ("draft", True, 5824472),
+}
+
+
+def test_bare_handle_links_as_kind_id_with_preview() -> None:
+    out = str(
+        linkify_refs(
+            "filed under gr553317 last week", markdown=True, handles=_RESOLVED_HANDLES
+        )
+    )
+    assert 'href="/r/gripe/553317"' in out
+    assert 'hx-get="/preview/gripe/553317"' in out
+    assert ">Gripe 553317</a>" in out
+
+
+def test_bare_chunk_handle_links_through_c_route() -> None:
+    out = str(
+        linkify_refs(
+            "the focus is dc5824472 here", markdown=True, handles=_RESOLVED_HANDLES
+        )
+    )
+    assert 'href="/c/dc5824472"' in out
+    assert 'hx-get="/preview/chunk/dc5824472"' in out
+    assert ">Draft 5824472</a>" in out
+
+
+def test_bare_handle_in_code_span_stays_plain() -> None:
+    out = str(
+        linkify_refs(
+            "literally `gr553317` the token", markdown=True, handles=_RESOLVED_HANDLES
+        )
+    )
+    assert 'href="/r/gripe/553317"' not in out
+    assert "<code" in out and "gr553317" in out
+
+
+def test_bare_handle_in_fenced_block_stays_plain() -> None:
+    out = str(
+        linkify_refs(
+            "quote:\n```\ngr553317\n```\ndone", markdown=True, handles=_RESOLVED_HANDLES
+        )
+    )
+    assert 'href="/r/gripe/553317"' not in out
+
+
+def test_bare_handle_inside_display_link_target_is_one_anchor() -> None:
+    # ``[label](handle)`` overrides the visible text — the handle inside the
+    # target never also autolinks.
+    out = str(
+        linkify_refs(
+            "see [the state note](me5) for it", markdown=True, handles=_RESOLVED_HANDLES
+        )
+    )
+    assert out.count('href="/r/memory/5"') == 1
+    assert ">the state note</a>" in out
+    assert "me5" not in out
+
+
+def test_bare_handle_inside_bare_bracket_renders_bracket_form() -> None:
+    # ``[me5]`` keeps its bracketed rendering (verbose handle label, no
+    # resolution gate) — the bare-word pass must not also fire inside it.
+    out = str(linkify_refs("see [me5] too", markdown=True, handles=_RESOLVED_HANDLES))
+    assert out.count('href="/r/memory/5"') == 1
+    assert ">me5</a>" in out
+
+
+def test_bare_handle_without_handles_param_stays_plain() -> None:
+    # Non-reader surfaces (handles=None) keep the gripe-553317 change off.
+    out = str(linkify_refs("filed under gr553317", markdown=True))
+    assert 'href="/r/gripe/' not in out
+    assert "gr553317" in out
+
+
+def test_unresolved_bare_handle_stays_plain() -> None:
+    # Well-formed shape, no live row behind it (absent from the resolved
+    # map) → literal prose, not a dead anchor.
+    out = str(
+        linkify_refs(
+            "filed under gr553317",
+            markdown=True,
+            handles={"me5": _RESOLVED_HANDLES["me5"]},
+        )
+    )
+    assert 'href="/r/gripe/' not in out
+    assert "gr553317" in out
+
+
+def test_unknown_prefix_bare_token_stays_plain() -> None:
+    # ``zz`` is no registered code — shape matches, resolution refuses.
+    out = str(linkify_refs("word zz99 here", markdown=True, handles=_RESOLVED_HANDLES))
+    assert "zz99" in out
+    assert "href=" not in out
+
+
+def test_bare_handle_not_a_whole_word_stays_plain() -> None:
+    out = str(
+        linkify_refs(
+            "paths x/gr12, foo-gr55 and gr123-x",
+            markdown=True,
+            handles=_RESOLVED_HANDLES,
+        )
+    )
+    assert "href=" not in out
+
+
+def test_bare_handle_compact_reader_keeps_kind_id_label() -> None:
+    # The smartdraft reader runs compact=True, but a bare-word handle still
+    # renders the ``<Kind> <id>`` text — the sigil collapse is reserved for
+    # the bracketed cite forms.
+    out = str(
+        linkify_refs(
+            "see gr553317 and dc5824472",
+            markdown=True,
+            compact=True,
+            handles=_RESOLVED_HANDLES,
+        )
+    )
+    assert ">Gripe 553317</a>" in out
+    assert ">Draft 5824472</a>" in out
+
+
+def test_bare_handle_html_context_escapes_safely() -> None:
+    out = str(
+        linkify_refs(
+            "<img src=x> and gr553317", markdown=True, handles=_RESOLVED_HANDLES
+        )
+    )
+    assert "<img" not in out
+    assert "&lt;img" in out
+    assert 'href="/r/gripe/553317"' in out
+
+
+# --- gr553317 review: an UNCONSUMED handle token must keep the gap whole ---
+# Consuming a match splits the text around it into separate ``_md_inline``
+# gaps, so a token that never links must never leave the gap — whether it
+# is unresolved or sits inside a code/math/emphasis span.
+
+
+def test_unresolved_handle_in_code_span_renders_code() -> None:
+    # ``ab12`` matches the handle SHAPE but resolves to nothing — it must
+    # stay inside the backtick gap, not split it into literal backticks.
+    out = str(linkify_refs("run `ab12` now", markdown=True, handles=_RESOLVED_HANDLES))
+    assert ">ab12</code>" in out
+    assert "href=" not in out
+
+
+def test_no_handles_map_keeps_code_and_emphasis_pairs() -> None:
+    # ``handles=None`` (every non-reader surface): the handle alternative
+    # isn't in the pattern at all, so ``_md_inline`` sees whole pairs.
+    out = str(linkify_refs("run `ff00` and **the sp2 carbon**", markdown=True))
+    assert ">ff00</code>" in out
+    assert "<strong>the sp2 carbon</strong>" in out
+    assert "href=" not in out
+
+
+def test_empty_handles_map_behaves_like_none() -> None:
+    # A render window where nothing resolved hands ``{}`` — same contract.
+    out = str(
+        linkify_refs("run `ff00` and **the sp2 carbon**", markdown=True, handles={})
+    )
+    assert ">ff00</code>" in out
+    assert "<strong>the sp2 carbon</strong>" in out
+    assert "href=" not in out
+
+
+def test_unresolved_handle_inside_emphasis_keeps_strong() -> None:
+    # ``sp2`` is unresolved AND inside ``**…**`` — either reason leaves it
+    # in the gap, so the emphasis renders.
+    out = str(
+        linkify_refs("**the sp2 carbon**", markdown=True, handles=_RESOLVED_HANDLES)
+    )
+    assert "<strong>the sp2 carbon</strong>" in out
+    assert "href=" not in out
+
+
+def test_handle_shaped_token_inside_math_stays_in_formula() -> None:
+    # ``ab12`` inside ``$…$`` is part of the formula, not a mention — the
+    # whole math span is stashed for KaTeX.
+    out = str(
+        linkify_refs("see $x_{ab12}$ here", markdown=True, handles=_RESOLVED_HANDLES)
+    )
+    assert "$x_{ab12}$" in out
+    assert "href=" not in out
+
+
+def test_resolved_handle_inside_emphasis_stays_plain() -> None:
+    # Skip-in-emphasis policy: a RESOLVED handle inside ``**…**`` keeps
+    # the <strong> and renders as plain text — linking it would split the
+    # delimiter pair ``_md_inline`` must see whole.
+    handles = {"gr5": ("gripe", False, 5)}
+    out = str(linkify_refs("**see gr5 now**", markdown=True, handles=handles))
+    assert "<strong>see gr5 now</strong>" in out
+    assert 'href="/r/gripe/5"' not in out
+
+
+def test_resolved_handle_inside_math_stays_plain() -> None:
+    handles = {"gr5": ("gripe", False, 5)}
+    out = str(linkify_refs("the $x_{gr5}$ term", markdown=True, handles=handles))
+    assert "$x_{gr5}$" in out
+    assert 'href="/r/gripe/5"' not in out
+
+
+def test_display_link_to_handle_shows_label_with_preview() -> None:
+    # ``[label](handle)`` — the label overrides the visible text while
+    # the anchor keeps the ref's href + hover preview.
+    out = str(
+        linkify_refs(
+            "see [the state note](me5) for it",
+            markdown=True,
+            handles=_RESOLVED_HANDLES,
+        )
+    )
+    assert 'href="/r/memory/5"' in out
+    assert 'hx-get="/preview/memory/5"' in out
+    assert ">the state note</a>" in out

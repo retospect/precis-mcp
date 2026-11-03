@@ -27,7 +27,11 @@ from precis.store._tags_ops import escape_like
 from precis.store.types import Tag
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
-from precis.utils.mentions import COMPUTED_EVIDENCE_KINDS
+from precis.utils.mentions import (
+    COMPUTED_EVIDENCE_KINDS,
+    bare_handle_tokens,
+    resolve_handle_tokens,
+)
 from precis_web import draft_eyes, smartdraft
 from precis_web.claim_render import (
     cite_heads_in,
@@ -247,6 +251,20 @@ async def reader(
         for m in view.middle:
             m.display = strip_claim_cites(m.display, shown)
 
+    # Bare-handle autolinking (gripe 553317): every ``<code><digits>``
+    # whole-word token in the RENDERED rows, resolved in ONE query (a
+    # paragraph naming ten handles still costs one round-trip). The
+    # linkifier turns a resolving token into a ``<Kind> <id>`` hover
+    # anchor and leaves everything else literal. Scanned on the displayed
+    # text (post rail-only strip) and scoped to rendered rows — the same
+    # surface the claims sets above already scope to.
+    handles = resolve_handle_tokens(
+        store,
+        bare_handle_tokens(
+            "\n".join(m.display or "" for m in view.middle if m.mode != "skel")
+        ),
+    )
+
     # Tools pane (right-rail bottom): the export/metadata/lifecycle controls
     # ported from the classic reader. All reuse the classic /drafts/{ident}/…
     # endpoints, so this only needs the same context the classic route computes
@@ -346,6 +364,7 @@ async def reader(
             "hypothesis_claims": hypothesis_claims,
             "claims_evidence": claims_evidence,
             "abbrevs": abbrevs,
+            "handles": handles,
             "debug": debug.strip().lower() in ("1", "true", "on", "yes"),
             # ── Tools pane (right-rail bottom) — classic-reader parity ──
             "remarkable_ready": remarkable_configured(
@@ -424,6 +443,12 @@ async def blocks(
         shown_nodes = [
             replace(n, text=strip_claim_cites(n.text or "", shown)) for n in sel
         ]
+    # Bare-handle autolinking over just this hydrated window — one query,
+    # same contract as the initial render (gripe 553317).
+    handles = resolve_handle_tokens(
+        store,
+        bare_handle_tokens("\n".join(n.text or "" for n in shown_nodes)),
+    )
     return templates.TemplateResponse(
         request,
         "smartdraft/_blocks.html.j2",
@@ -434,6 +459,7 @@ async def blocks(
             "refuted_claims": refuted_claims,
             "hypothesis_claims": hypothesis_claims,
             "abbrevs": abbrevs,
+            "handles": handles,
             "review_by_dc": review_by_dc,
             "authored_idx": authored_idx,
             "ident": ident,

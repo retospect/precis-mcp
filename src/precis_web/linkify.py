@@ -49,6 +49,7 @@ living-cite discipline as ``STATUS:refuted``.
 
 from __future__ import annotations
 
+import bisect
 import re
 import uuid
 from collections.abc import Callable, Collection, Mapping
@@ -72,6 +73,9 @@ from precis.utils.mentions import (
 )
 from precis.utils.mentions import (
     BARE_CONV_PATTERN as _BARE_CONV_PATTERN,
+)
+from precis.utils.mentions import (
+    BARE_HANDLE_PATTERN as _BARE_HANDLE_PATTERN,
 )
 from precis.utils.mentions import (
     BARE_PAPER_PATTERN as _BARE_PAPER_PATTERN,
@@ -703,6 +707,12 @@ def _render_compact_cite(
 # (``$x_1$``). Math is left as $…$ for client-side KaTeX (stashed here so ``*``
 # inside a formula, e.g. ``$a*b$``, is never mistaken for emphasis).
 _MD_CODE = re.compile(r"`([^`]+)`")
+#: Fenced code blocks AND inline code spans, scanned on raw prose so the
+#: bare-handle autolinker can refuse to fire inside them (a handle an
+#: author quotes as literal code stays literal — gripe 553317). The
+#: fenced alternative runs first so `` ```…``` `` consumes its interior
+#: backticks whole; the single-backtick form mirrors ``_MD_CODE``.
+_CODE_SPAN_RE = re.compile(r"```.*?```|`[^`]+`", re.DOTALL)
 _MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
 #: Single-``*`` emphasis — the exact guard docx uses (export/docx ``_SPAN``):
 #: no adjacent ``*``/word char (so ``**bold**`` and ``a*b`` are excluded) and
@@ -878,6 +888,68 @@ def _render_universal_handle(
     )
 
 
+#: Acronym kinds rendered uppercase in a bare-handle autolink's
+#: ``<Kind> <id>`` label (``kind.title()`` would produce ``Llm``).
+_KIND_ACRONYMS = {"llm": "LLM", "cad": "CAD", "pcb": "PCB", "orcid": "ORCID"}
+
+
+def _kind_display(kind: str) -> str:
+    """``pathway`` → ``Pathway`` — the ``<Kind>`` in a bare-handle
+    autolink's ``<Kind> <id>`` label (gripe 553317's rendering rule)."""
+    if kind in _KIND_ACRONYMS:
+        return _KIND_ACRONYMS[kind]
+    return kind.replace("-", " ").title()
+
+
+def _render_bare_handle(
+    token: str,
+    *,
+    handles: Mapping[str, tuple[str, bool, int]] | None,
+) -> str:
+    """A bare ``<code><digits>`` whole word (``gr553317``, ``dc5824472``)
+    → the same hover-preview anchor a bracketed ``[gr553317]`` gets, but
+    labelled ``<Kind> <id>`` (``Gripe 553317``) — kind + number, not the
+    ref title (pathways all share one title, so the title alone can't
+    identify; gripe 553317 comment 1).
+
+    Fires ONLY on resolution: ``handles`` is the render's batch-resolved
+    map (``mentions.resolve_handle_tokens`` — one query per render
+    window), keyed by normalised handle to ``(kind, is_chunk, pk)`` where
+    ``kind`` is the resolved ROW kind (a converted ref renders under its
+    new kind). A token absent from the map — unknown prefix, dead row, or
+    a call site that never resolved (``handles=None``, every non-reader
+    surface) — stays literal prose (``_linkify_prose_core`` skips the
+    match upstream so the token never leaves the gap; the ``resolved is
+    None`` branch below is the defensive twin). The chunk branch links
+    ``/c/<h>`` / previews ``/preview/chunk/<h>`` exactly like the
+    bracketed form; the record branch ``/r/<kind>/<pk>`` /
+    ``/preview/<kind>/<pk>``.
+    """
+    norm = handle_registry.normalize(token)
+    resolved = handles.get(norm) if handles else None
+    if resolved is None:
+        return escape(token)
+    kind, is_chunk, pk = resolved
+    label = escape(f"{_kind_display(kind)} {pk}")
+    if is_chunk:
+        h = escape(norm)
+        return _anchor_html(
+            href=f"/c/{h}",
+            preview_url=f"/preview/chunk/{h}",
+            label=label,
+            target=_PAPER_WINDOW if kind == "paper" else "_blank",
+        )
+    # ``kind`` is a DB value here (the resolved row's kind, incl. a
+    # ``converted_from_kind`` redirect) — escape it into the URL paths
+    # too, defence in depth alongside the label.
+    safe_kind = escape(kind)
+    return _anchor_html(
+        href=f"/r/{safe_kind}/{pk}",
+        preview_url=f"/preview/{safe_kind}/{pk}",
+        label=label,
+    )
+
+
 def _render_authoring(
     handle: str,
     *,
@@ -1009,12 +1081,25 @@ def linkify_refs(
     pending_claims: Mapping[str, int] | None = None,
     refuted_claims: Mapping[str, int] | None = None,
     hypothesis_claims: frozenset[str] | None = None,
+    handles: Mapping[str, tuple[str, bool, int]] | None = None,
 ) -> Markup:
     """Replace ``kind:ref`` mentions in ``value`` with hover-preview
     anchors. Escaping contract + claim-rendering precedence (``claims``/
     ``pending_claims``/``refuted_claims``/``hypothesis_claims``): module
     docstring above. Every ``*_claims``/``pending_claims`` param defaults
     ``None`` (all non-reader call sites) = unchanged prior rendering.
+
+    ``handles`` — the smartdraft reader's batch-resolved bare-handle map
+    (``mentions.resolve_handle_tokens``, ``{normalised: (kind, is_chunk,
+    pk)}``, one query per render window): a bare ``gr553317``-shaped
+    whole word renders a ``<Kind> <id>`` hover anchor when it resolves,
+    stays literal otherwise — an unresolved token is never consumed, so
+    `` `ab12` `` / ``**the sp2 carbon**`` / ``$x_{ab12}$`` keep their
+    markdown rendering. ``None``/empty disables bare-handle autolinking
+    entirely — every other surface keeps plain text (gripe 553317 is a
+    web-reader change only). A resolved handle inside a code/math/
+    emphasis span stays literal there too — linking it would split the
+    delimiter pair ``_md_inline`` must see whole.
 
     ``footnotes`` — optional ``{(kind, id, chunk): N}`` map (References-panel
     numbering on memory detail pages): a present key appends a ``[N]``
@@ -1047,6 +1132,7 @@ def linkify_refs(
         pending_claims=pending_claims,
         refuted_claims=refuted_claims,
         hypothesis_claims=hypothesis_claims,
+        handles=handles,
     )
     if abbrevs:
         html = _highlight_abbrevs(html, abbrevs)
@@ -1087,6 +1173,25 @@ _COMBINED_PATTERN = re.compile(
     r"(?P<bare_conv>" + _BARE_CONV_PATTERN.pattern + r")"
     r"|"
     r"(?P<bare_paper>" + _BARE_PAPER_PATTERN.pattern + r")"
+)
+
+
+#: The same alternation plus the bare universal handle (``gr553317``)
+#: LAST — used only when a render supplies a non-empty ``handles`` map.
+#: A handle-shaped token that is consumed but never linked still splits
+#: the gap text into pieces ``_md_inline`` can't pair delimiters across
+#: (`` `ff00` `` would render literal backticks instead of ``<code>``,
+#: ``**the sp2 carbon**`` literal asterisks), so without resolved handles
+#: the alternative stays out of the pattern entirely and a handle-shaped
+#: word is just prose. Every earlier shape is either bracketed (consumed
+#: whole, so a handle inside a link never reaches this) or carries a
+#: colon/slash/cite-key shape the handle grammar doesn't touch.
+#: Deliberately AFTER ``bare_paper`` so a ``me05~3``-shaped cite_key
+#: keeps its paper interpretation (a record handle takes no ``~``
+#: selector — they can't both be right, and cite_key is the established
+#: reading).
+_COMBINED_PATTERN_HANDLE = re.compile(
+    _COMBINED_PATTERN.pattern + r"|" + _BARE_HANDLE_PATTERN.pattern
 )
 
 
@@ -1192,6 +1297,7 @@ def _linkify_prose(
     pending_claims: Mapping[str, int] | None = None,
     refuted_claims: Mapping[str, int] | None = None,
     hypothesis_claims: frozenset[str] | None = None,
+    handles: Mapping[str, tuple[str, bool, int]] | None = None,
 ) -> str:
     """Wraps :func:`_linkify_prose_core` with a block-level list transform,
     ``markdown``-only: consecutive lines matching :data:`_LIST_ITEM_RE`
@@ -1214,6 +1320,7 @@ def _linkify_prose(
             pending_claims=pending_claims,
             refuted_claims=refuted_claims,
             hypothesis_claims=hypothesis_claims,
+            handles=handles,
         )
 
     def _render_line(line: str) -> str:
@@ -1228,6 +1335,7 @@ def _linkify_prose(
             pending_claims=pending_claims,
             refuted_claims=refuted_claims,
             hypothesis_claims=hypothesis_claims,
+            handles=handles,
         )
 
     out: list[str] = []
@@ -1251,6 +1359,7 @@ def _linkify_prose_core(
     pending_claims: Mapping[str, int] | None = None,
     refuted_claims: Mapping[str, int] | None = None,
     hypothesis_claims: frozenset[str] | None = None,
+    handles: Mapping[str, tuple[str, bool, int]] | None = None,
 ) -> str:
     """Replace every ``kind:ref``, bare conv handle, and bare paper
     cite_key in plain prose with an anchor — single pass so we never
@@ -1269,6 +1378,45 @@ def _linkify_prose_core(
     whole prose (no lists) or one already-carved block/list-item's text."""
     if not prose:
         return ""
+
+    # Spans a bare-handle autolink must not fire inside (gripe 553317):
+    # the regions ``_md_inline`` pairs delimiters across — fenced code
+    # blocks and inline `` `…` `` spans, ``$…$`` math (plus its
+    # empty-base repair, e.g. ``C$_{60}$``) and ``**``/``*`` emphasis —
+    # scanned on the raw prose so a handle an author quoted as code, or
+    # one sitting inside a formula or a bold/italic run, stays literal.
+    # Chosen policy: skip linking there — consuming the token would split
+    # the gap and ``_md_inline`` could no longer pair the delimiters, so
+    # a resolved handle inside emphasis renders plain inside the
+    # ``<strong>``/``<em>`` (the emphasis survives; the link is dropped).
+    # Only computed when autolinking can match at all (``handles`` given
+    # — the handle alternative isn't in the pattern otherwise) and
+    # ``_md_inline`` will run (``markdown``); the merged span list is
+    # bisected per match.
+    protected: list[tuple[int, int]] = []
+    protected_starts: list[int] = []
+    if handles and markdown:
+        raw_spans: list[tuple[int, int]] = []
+        for rx in (
+            _MD_EMPTY_BASE_MATH,
+            _MD_MATH,
+            _CODE_SPAN_RE,
+            _MD_BOLD,
+            _MD_ITALIC,
+        ):
+            raw_spans.extend((m.start(), m.end()) for m in rx.finditer(prose))
+        raw_spans.sort()
+        for s, e in raw_spans:
+            if protected and s < protected[-1][1]:
+                if e > protected[-1][1]:
+                    protected[-1] = (protected[-1][0], e)
+            else:
+                protected.append((s, e))
+        protected_starts = [s for s, _e in protected]
+
+    def _in_protected(pos: int) -> bool:
+        i = bisect.bisect_right(protected_starts, pos) - 1
+        return i >= 0 and pos < protected[i][1]
 
     def _gap(text: str) -> str:
         e = escape(text)
@@ -1336,11 +1484,30 @@ def _linkify_prose_core(
             if compact:
                 return _render_compact_cite(slug, chunk, local=local)
             return _render_anchor("paper", slug, chunk)
+        if m.group("bhandle") is not None:
+            return _render_bare_handle(m.group("bhandle"), handles=handles)
         return escape(m.group(0))
 
+    # The handle alternative only exists when ``handles`` is non-empty —
+    # without a resolved map a handle-shaped word can't even match.
+    pattern = _COMBINED_PATTERN_HANDLE if handles else _COMBINED_PATTERN
     out: list[str] = []
     last = 0
-    for m in _COMBINED_PATTERN.finditer(prose):
+    for m in pattern.finditer(prose):
+        if (
+            handles
+            and m.group("bhandle") is not None
+            and (
+                handle_registry.normalize(m.group("bhandle")) not in handles
+                or _in_protected(m.start())
+            )
+        ):
+            # Leave the token in the gap: an unresolved handle-shaped
+            # word, or a handle inside a code/math/emphasis span, must
+            # not split the text ``_md_inline`` pairs delimiters across —
+            # consuming it would render `` `ff00` `` as literal backticks
+            # or ``**the sp2 carbon**`` as literal asterisks.
+            continue
         out.append(_gap(prose[last : m.start()]))
         out.append(_dispatch(m))
         last = m.end()

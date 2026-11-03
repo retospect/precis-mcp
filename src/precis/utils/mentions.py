@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -235,6 +236,37 @@ def parse_pin_suffix(pin: str | None) -> tuple[str | None, list[str]]:
     if not pin:
         return None, []
     return pin[0], [h for h in pin[1:].split(",") if h]
+
+
+#: A bare universal handle as a whole word in prose — ``<2-char code>
+#: <digits>`` (``gr553317``, ``dc5824472``, ``me5``). The read-side
+#: counterpart to the bracketed ``[me5]`` form (gripe 553317): authors
+#: write the handle either way and the web reader autolinks both. The
+#: leading guard keeps it out of longer words (``some5``), path/URL
+#: segments (``x/gr12``), ``kind:id`` ids (``x:gr12`` — the prefixed
+#: pattern owns that span anyway), addresses after a selector
+#: (``dc12~gr12`` — ``gr12`` is a valid ``~<sel>`` id) and hyphenated
+#: compounds; the trailing guard keeps a handle-prefix from gluing onto
+#: prose (``gr123-bilayer``, same convention as
+#: :data:`BARE_PAPER_PATTERN`). Resolution is DB-gated downstream, so the
+#: shape stays permissive — an unresolved token renders literal.
+BARE_HANDLE_PATTERN = re.compile(
+    r"(?<![\w./:~@-])"
+    r"(?P<bhandle>[a-z]{2}[0-9]+)"
+    r"(?![\w-])"
+)
+
+
+def bare_handle_tokens(body: str) -> list[str]:
+    """Every bare-handle-shaped token in ``body`` — deduplicated,
+    appearance-ordered. Extraction only (the candidate set
+    :func:`resolve_handle_tokens` batch-resolves); whether a token
+    actually links is the resolver's call."""
+    if not body:
+        return []
+    return list(
+        dict.fromkeys(m.group("bhandle") for m in BARE_HANDLE_PATTERN.finditer(body))
+    )
 
 
 #: Bracketed patent *public number* — country code + serial (+ optional
@@ -465,6 +497,72 @@ def resolve_handle_target(store: Store, token: str) -> LinkTarget | None:
         return None
     pos = r.chunk_ord if getattr(r, "chunk_id", None) is not None else None
     return LinkTarget(int(r.ref_id), pos)
+
+
+def resolve_handle_tokens(
+    # ``store`` stays Any, same as ``resolve_link_targets``: tests pass a
+    # hand-rolled fake carrying only ``pool.connection``.
+    store: Any,
+    tokens: Iterable[str],
+) -> dict[str, tuple[str, bool, int]]:
+    """Batch-resolve bare handle tokens → ``{normalized: (kind, is_chunk, pk)}``.
+
+    One UNION query covers every token: record codes (``gr``/``me``/… —
+    ``refs`` PK) and chunk codes (``dc``/``pc``/… — ``chunks`` PK, kind
+    checked on the OWNING ref) share a single ``ANY`` scan, so a render
+    window naming ten handles costs one round-trip, not ten. The
+    web reader resolves its whole rendered window up front and hands the
+    map to the linkifier; a token absent from the result stays literal.
+
+    Mirrors ``Store.resolve_handle``'s live-row + kind-match rule,
+    including the ``meta.converted_from_kind`` redirect (an old ``pa<N>``
+    handle on a ref now a datasheet resolves under its new kind — the
+    returned ``kind`` is the ROW's, so a caller rendering ``<Kind> <id>``
+    shows what it is now). Two deliberate deltas: merged-away tombstones
+    do NOT resolve here (``resolve_handle`` walks ``meta.superseded_by``;
+    a bare dead handle just stays prose — the bracketed form's anchor
+    still navigates through ``/c``/``/r``), and no merge/convert hint is
+    emitted (this is a read-side batch, not an agent path).
+    """
+    # pk -> (decoded kind, normalized handle); dedupe on pk so two
+    # spellings of one row can't double-hit the lookup.
+    rec: dict[int, tuple[str, str]] = {}
+    chk: dict[int, tuple[str, str]] = {}
+    for tok in tokens:
+        norm = handle_registry.normalize(tok)
+        parsed = handle_registry.parse(norm)
+        if parsed is None:
+            continue
+        kind, is_chunk, pk = parsed
+        (chk if is_chunk else rec).setdefault(pk, (kind, norm))
+    if not rec and not chk:
+        return {}
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT FALSE AS is_chunk, r.ref_id AS pk, r.kind, "
+                "r.meta->>'converted_from_kind' AS conv "
+                "FROM refs r WHERE r.ref_id = ANY(%s) "
+                "AND r.retired_at IS NULL "
+                "UNION ALL "
+                "SELECT TRUE, c.chunk_id, r2.kind, "
+                "r2.meta->>'converted_from_kind' "
+                "FROM chunks c JOIN refs r2 ON r2.ref_id = c.ref_id "
+                "WHERE c.chunk_id = ANY(%s) AND r2.retired_at IS NULL",
+                (sorted(rec), sorted(chk)),
+            ).fetchall()
+    except Exception:
+        log.debug("mentions: handle-token batch resolve failed", exc_info=True)
+        return {}
+    out: dict[str, tuple[str, bool, int]] = {}
+    for is_chunk, pk, row_kind, conv in rows:
+        want = (chk if is_chunk else rec).get(int(pk))
+        if want is None:
+            continue
+        kind, norm = want
+        if str(row_kind) == kind or str(conv or "") == kind:
+            out[norm] = (str(row_kind), bool(is_chunk), int(pk))
+    return out
 
 
 def resolve_patent_pubnum(store: Store, token: str) -> LinkTarget | None:

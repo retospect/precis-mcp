@@ -40,21 +40,21 @@
    depth so a nested <div> inside a FIGURE block stays readable. A caller
    that wants horizontal overflow scrolling puts it on
    THIS <table> itself (``block overflow-x-auto``) rather than wrapping. #}
-{% macro sd_table(table, claims, abbrevs=none, pending_claims=none, refuted_claims=none, hypothesis_claims=none) -%}
+{% macro sd_table(table, claims, abbrevs=none, pending_claims=none, refuted_claims=none, hypothesis_claims=none, handles=none) -%}
 <table class="w-full border-collapse text-sm">
   {% if table.caption %}
-  <caption class="mb-1 text-left text-[13px] font-semibold text-fg-secondary">{{ table.caption | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</caption>
+  <caption class="mb-1 text-left text-[13px] font-semibold text-fg-secondary">{{ table.caption | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}</caption>
   {% endif %}
   <thead><tr>
     {% for h in table.header %}
-    <th class="border-b-2 border-line-strong px-2 py-1 text-left align-top font-semibold text-fg">{{ h | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</th>
+    <th class="border-b-2 border-line-strong px-2 py-1 text-left align-top font-semibold text-fg">{{ h | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}</th>
     {% endfor %}
   </tr></thead>
   <tbody>
     {% for row in table.rows %}
     <tr class="even:bg-surface-subtle">
       {% for cell in row %}
-      <td class="border-b border-line-subtle px-2 py-1 align-top text-fg-secondary whitespace-pre-wrap break-words">{{ cell | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</td>
+      <td class="border-b border-line-subtle px-2 py-1 align-top text-fg-secondary whitespace-pre-wrap break-words">{{ cell | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}</td>
       {% endfor %}
     </tr>
     {% endfor %}
@@ -104,7 +104,7 @@
    exception to the one-``<div>``-per-block assumption; ``_dc_block`` in
    test_smartdraft_reader.py slices by nesting depth for exactly this
    reason. #}
-{% macro sd_figure(n, display, claims, ident, abbrevs=none, pending_claims=none, refuted_claims=none, hypothesis_claims=none) -%}
+{% macro sd_figure(n, display, claims, ident, abbrevs=none, pending_claims=none, refuted_claims=none, hypothesis_claims=none, handles=none) -%}
 <figure class="sd-fig-media rounded-md border border-line bg-surface p-2">
   {{ draft_figures.figure_media(ident, n.base58, n.figure_render, n.text) }}
   <figcaption class="mt-1.5 text-sm text-fg-secondary">
@@ -112,7 +112,7 @@
        is the assertion signature of the retired block-level <a> bug
        (test_smartdraft_full_doc_cited_block_is_div_not_nested_anchor
        asserts it never appears on the page). -#}
-    <span class="whitespace-pre-wrap break-words">{{ display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</span>
+    <span class="whitespace-pre-wrap break-words">{{ display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}</span>
   </figcaption>
   {{ draft_figures.clearance_badge(ident, n.base58, n.figure_origin, n.figure_cleared, n.figure_permission) }}
   {% if n.figure_has_data_package %}{{ draft_figures.figure_refresh_form(ident, n.base58) }}{% endif %}
@@ -133,7 +133,7 @@
 <span class="flex items-center gap-2 text-[10px] text-fg-faint"><span>{{ sd_dc_id(n.dc) }}{{ sd_authored_chip(authored) }}</span>{% if review %}<span class="ml-auto flex items-center gap-2">{{ sd_review_widget(n, review, ident) }}</span>{% endif %}</span>
 {%- endmacro %}
 
-{% macro sd_doc_block(n, display, claims, review, ident, abbrevs=none, pending_claims=none, refuted_claims=none, hypothesis_claims=none, authored=none) -%}
+{% macro sd_doc_block(n, display, claims, review, ident, abbrevs=none, pending_claims=none, refuted_claims=none, hypothesis_claims=none, authored=none, handles=none) -%}
 {%- set hd = 'font-semibold text-fg-strong text-base' if n.is_heading else '' -%}
 {%- set prov = ' sd-prov-' ~ n.provenance if n.provenance else '' -%}
 {%- set is_tbl = n.is_table and n.table -%}
@@ -146,7 +146,7 @@
    wrapper around this head and the item rows that follow. -#}
 <div data-dc="{{ n.dc }}" class="sd-list-head block cursor-pointer rounded px-2 py-0.5 text-fg-faint hover:bg-surface-subtle{{ ' sd-authored' if authored }}">{{ sd_dc_id(n.dc) }}{{ sd_authored_chip(authored) }}{% if review %}{{ sd_review_widget(n, review, ident) }} {% endif %}{{ n.list_label }}</div>
 {%- else -%}
-<div data-dc="{{ n.dc }}" class="block cursor-pointer{{ ' sd-list-item' if n.is_item }}{{ '' if (is_tbl or is_fig) else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-fg-secondary hover:bg-surface-subtle {{ hd }}{{ prov }}{{ ' sd-authored' if authored }}">{{ sd_doc_head(n, review, ident, authored) }}{% if n.is_item %}<span class="sd-list-mark">{{ n.item_marker }}</span>{% endif %}{% if is_tbl %}{{ sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% elif is_fig %}{{ sd_figure(n, display, claims, ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% else %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% endif %}</div>
+<div data-dc="{{ n.dc }}" class="block cursor-pointer{{ ' sd-list-item' if n.is_item }}{{ '' if (is_tbl or is_fig) else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-fg-secondary hover:bg-surface-subtle {{ hd }}{{ prov }}{{ ' sd-authored' if authored }}">{{ sd_doc_head(n, review, ident, authored) }}{% if n.is_item %}<span class="sd-list-mark">{{ n.item_marker }}</span>{% endif %}{% if is_tbl %}{{ sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}{% elif is_fig %}{{ sd_figure(n, display, claims, ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}{% else %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims, handles=handles) }}{% endif %}</div>
 {%- endif -%}
 {%- endmacro %}
 
