@@ -323,6 +323,32 @@ def _mf_reading(
     return warned, None, parsed, None, near_noise
 
 
+def _tof_sign_reading(v2: dict[str, Any]) -> dict[str, Any] | None:
+    """The ``mf_status.tof_sign`` classification (gr559294, engine >= the
+    tof_sign cut) as a renderable dict — ``{"class", "label", "detail"}``.
+    The class→label mapping lives in ``precis_pathway.tof_sign`` (the web
+    layer only renders it); ``None`` when the record carries no
+    classification — ``tof_mf >= 0`` or a pre-cut record — or the pathway
+    plugin is not importable in this process, so the panel degrades to
+    today's reading instead of dropping the box."""
+    try:
+        from precis_pathway.tof_sign import (
+            tof_sign,
+            tof_sign_detail,
+            tof_sign_label,
+        )
+    except Exception:
+        return None
+    sign = tof_sign(v2)
+    if sign is None:
+        return None
+    return {
+        "class": str(sign.get("class") or ""),
+        "label": tof_sign_label(sign),
+        "detail": tof_sign_detail(sign),
+    }
+
+
 def _v2_solve(v2: dict[str, Any], product: Any) -> dict[str, Any]:
     """The v2 solve status the panel headlines: which rung of the ranked
     ladder produced the TOF (``kmc``/``mf``/``chain``/``none``), the
@@ -353,6 +379,7 @@ def _v2_solve(v2: dict[str, Any], product: Any) -> dict[str, Any]:
     sel = _dict(v2.get("selectivity"))
     target = product if isinstance(product, str) and product else None
     positive = tof is not None and tof > 0
+    sign = _tof_sign_reading(v2)
     if failure is not None and rung != "mf":
         head = f"mean-field solve failed: {failure}"
         head += (
@@ -361,7 +388,11 @@ def _v2_solve(v2: dict[str, Any], product: Any) -> dict[str, Any]:
     else:
         head = f"TOF from the {rung} rung" if rung != "none" else "no TOF on record"
     if tof is not None and not positive:
-        head += "; no positive steady state (TOF ≤ 0, not a rate)"
+        head += (
+            f"; {sign['label']}"
+            if sign is not None
+            else "; no positive steady state (TOF ≤ 0, not a rate)"
+        )
     if unsettled and failure is None:
         head += f"; state not fully settled (ln-coverage step {state_err:.2g}) " + (
             "— no resolved rate" if near_noise else "— order-of-magnitude TOF"
@@ -389,6 +420,7 @@ def _v2_solve(v2: dict[str, Any], product: Any) -> dict[str, Any]:
         "selectivity_known": (
             None if target is None else math.isfinite(_fin(sel.get(target)))
         ),
+        "tof_sign": sign,
         "headline": head,
     }
 

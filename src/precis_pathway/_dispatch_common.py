@@ -17,6 +17,8 @@ import math
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
+from .tof_sign import pareto_keeps, tof_sign, tof_sign_label
+
 if TYPE_CHECKING:
     from .types import PathwayArtifact
 
@@ -289,14 +291,23 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
     near_noise = (method == "mf" and mf_status.get("tof_near_noise") is True) or (
         method == "chain" and v2.get("tof_chain_near_noise") is True
     )
+    # gr559294: a classified negative ``tof_mf`` (``mf_status.tof_sign``,
+    # engine >= the tof_sign cut) is no longer a bare solver anomaly —
+    # ``noise`` counts as ~0 and stays ranked; every other class leaves
+    # the front with the label as its ``kinetics_note``. The sign speaks
+    # only for the MF rung: when KMC carried the rank, the classification
+    # describes a number that isn't ranked and stays display-only.
+    sign = tof_sign(v2) if method == "mf" else None
+    noise_sign = sign is not None and pareto_keeps(sign)
+    bad_sign = sign is not None and not pareto_keeps(sign)
     trusted = (
         tof is not None
-        and tof > 0.0
+        and (tof > 0.0 or noise_sign)
         and bracket_ok
         and not uncited
         and not bep_heavy
         and not mf_failed
-        and not near_noise
+        and not (near_noise and not noise_sign)
     )
     out["kinetics_trusted"] = trusted
     # D8: a BEP-heavy run's note names the share first — the share is the
@@ -305,7 +316,9 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
     prefix = f"bep_flux_share={share:.2f}; " if bep_heavy else ""
     if tof is None:
         out["kinetics_note"] = prefix + "tof not finite"
-    elif tof <= 0.0:
+    elif bad_sign and sign is not None:
+        out["kinetics_note"] = prefix + tof_sign_label(sign)
+    elif tof <= 0.0 and not noise_sign:
         out["kinetics_note"] = prefix + "tof non-positive (solver anomaly)"
     elif not bracket_ok:
         out["kinetics_note"] = prefix + "guard bracket: excluded steps load-bearing"
@@ -326,7 +339,7 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
             and isinstance(covering, list)
             else f"mean-field failed at {mf_status.get('stage')}; chain TOF not ranked"
         )
-    elif near_noise:
+    elif near_noise and not noise_sign:
         out["kinetics_note"] = f"{method} TOF inside round-off noise"
     else:
         out["log_tof"] = math.log10(max(tof, 1e-30))

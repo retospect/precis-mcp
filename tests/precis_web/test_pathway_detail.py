@@ -1988,6 +1988,75 @@ def test_pathway_detail_kinetics_panel_payload_and_renderer(client, runtime) -> 
     assert "gas" not in payload["ml"]["transitions"][0]
 
 
+def test_pathway_detail_kinetics_panel_shows_tof_sign_label(client, runtime) -> None:
+    """gr559294: a classified negative ``tof_mf`` (``mf_status.tof_sign``)
+    renders its plain-words label in the panel payload — a pre-cut record
+    (no key) renders exactly as before."""
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "status": "ready",
+            "results": {
+                "target": "NH3",
+                "kinetics_v2": {
+                    "tof_mf": -2.45e-7,
+                    "warnings": [],
+                    "mf_status": {
+                        "ok": True,
+                        "tof_sign": {
+                            "class": "consumed_by_other",
+                            "sinks": {"NH3": -1e-7},
+                            "sources": {"N2": 5e-8},
+                        },
+                    },
+                },
+            },
+        },
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    m = re.search(
+        r'<script type="application/json" id="kinetics-data">(.*?)</script>',
+        resp.text,
+        re.S,
+    )
+    assert m is not None
+    s = json.loads(m.group(1))["ml"]["v2_solve"]
+    assert s["tof_sign"]["label"] == "consumed by another reaction: NH3"
+    assert "consumed by another reaction" in s["headline"]
+    assert "sinks: NH3" in s["tof_sign"]["detail"]
+
+
+def test_pathway_detail_kinetics_panel_unclassified_negative_unchanged(
+    client, runtime
+) -> None:
+    """A negative ``tof_mf`` with no ``tof_sign`` key keeps today's
+    rendering: no label, the bare no-positive-steady-state headline."""
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "status": "ready",
+            "results": {
+                "target": "NH3",
+                "kinetics_v2": {"tof_mf": -1e-3, "warnings": []},
+            },
+        },
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    m = re.search(
+        r'<script type="application/json" id="kinetics-data">(.*?)</script>',
+        resp.text,
+        re.S,
+    )
+    assert m is not None
+    s = json.loads(m.group(1))["ml"]["v2_solve"]
+    assert s["tof_sign"] is None
+    assert "no positive steady state" in s["headline"]
+
+
 def test_pathway_detail_no_kinetics_no_panel(client, runtime) -> None:
     """A kinetics-less pathway (older run, kinetics-less slice) omits the
     panel and its renderer entirely — no empty shell."""

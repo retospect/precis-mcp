@@ -61,6 +61,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 from precis.workers.job_types import JobTypeSpec
 
+from .tof_sign import tof_sign, tof_sign_label
+
 if TYPE_CHECKING:
     from .types import PathwayArtifact
 
@@ -529,8 +531,13 @@ def compute(
             f"autocatpath_kinetics: kinetics solve failed: {results['kinetics_error']}"
         )
     else:
-        tof = (results.get("kinetics_v2") or {}).get("tof_mf")
-        note(f"autocatpath_kinetics: kinetics solved (tof_mf={tof})")
+        v2 = results.get("kinetics_v2") or {}
+        tof = v2.get("tof_mf")
+        # gr559294: a classified negative tof_mf names its class beside the
+        # number (noise ~0 stays, other classes keep off the Pareto front)
+        sign = tof_sign(v2)
+        label = f" ({tof_sign_label(sign)})" if sign is not None else ""
+        note(f"autocatpath_kinetics: kinetics solved (tof_mf={tof}){label}")
 
     note("autocatpath_kinetics: sweeping (T, p_total)")
     runner.run_kinetics_sweep_subprocess(config, results, timeout=_sweep_budget_s())

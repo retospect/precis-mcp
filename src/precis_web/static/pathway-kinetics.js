@@ -305,6 +305,10 @@
          (bad ? "dead" : caution ? "warn" : "ok") + "'><span class='vhead'>" +
          "v2 solve: " + esc2(S.headline) + "</span><ul>" +
          "<li>TOF rung: " + esc2(S.rung) + "</li>" +
+         (S.tof_sign
+           ? "<li>tof_mf " + esc2(S.tof_sign.label) +
+             (S.tof_sign.detail ? " &mdash; " + esc2(S.tof_sign.detail) : "") +
+             "</li>" : "") +
          (S.near_noise
            ? "<li>TOF inside the solver's noise floor: its sign and " +
              "magnitude are unresolved &mdash; read it as &ldquo;no " +
@@ -357,7 +361,9 @@
       const band = d.sensitivity && d.sensitivity.tof;
       h += "<tr><td>" + esc2(pair[1]) + "</td><td>" +
            (d.v2_solve && !d.v2_solve.positive
-             ? "no positive steady state (" + sci(d.tof) + ")"
+             ? (d.v2_solve.tof_sign
+                 ? sci(d.tof) + " &mdash; " + esc2(d.v2_solve.tof_sign.label)
+                 : "no positive steady state (" + sci(d.tof) + ")")
              : sci(d.tof)) +
            "</td><td>" +
            (band ? "[" + sci(band.p5) + ", " + sci(band.p95) + "]"

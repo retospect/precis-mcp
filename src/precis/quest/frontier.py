@@ -1956,6 +1956,17 @@ def _provisional_reasons(
             )
         if not named:
             reasons.append("selectivity unavailable")
+    # gr559294: an untrusted kinetics solve names its reason — the
+    # ``kinetics_note`` the harvest stamped (a classified negative TOF's
+    # plain-words label, or the older trust reasons) — so a candidate
+    # excluded from the front says why below it.
+    if c.flags.get("kinetics_trusted") is False:
+        note = c.flags.get("kinetics_note")
+        reasons.append(
+            f"kinetics untrusted: {note}"
+            if isinstance(note, str) and note
+            else "kinetics untrusted"
+        )
     if c.flags.get("network_stale"):
         basis = c.flags.get("network_stale_basis")
         basis = basis if isinstance(basis, dict) else {}

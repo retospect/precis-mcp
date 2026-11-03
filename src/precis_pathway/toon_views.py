@@ -20,6 +20,8 @@ from precis.format import toon
 from precis.utils import reaction_graph as analysis
 from precis.utils.handle_registry import try_format
 
+from .tof_sign import tof_sign, tof_sign_detail, tof_sign_label
+
 # Drill-down hint appended once a table actually carries a structure handle —
 # see gripe 161576 (structure_refs was written by ingest.py but never surfaced
 # anywhere an agent could read it back out).
@@ -906,11 +908,24 @@ def _v2_status_lines(v2: dict[str, Any], product: str | None) -> list[str]:
     else:
         head = f"TOF from the {rung} rung" if rung != "none" else "no TOF on record"
     out = [f"v2 solve: {head}"]
+    # gr559294: a classified negative tof_mf (mf_status.tof_sign, engine
+    # >= the tof_sign cut) reads as its plain-words class, not a bare
+    # "not a rate"; the sinks/sources detail rides the line below. Absent
+    # on any older record — nothing changes there.
+    sign = tof_sign(v2)
     if tof is not None:
-        out.append(
-            f"TOF ({rung}) = {_num_str(tof)}"
-            + ("" if tof > 0 else " — no positive steady state, not a rate")
+        neg = (
+            ""
+            if tof > 0
+            else f" — {tof_sign_label(sign)}"
+            if rung == "mf" and sign is not None
+            else " — no positive steady state, not a rate"
         )
+        out.append(f"TOF ({rung}) = {_num_str(tof)}{neg}")
+    if sign is not None and rung != "mf":
+        out.append(f"tof_mf classified: {tof_sign_label(sign)}")
+    if sign is not None and (detail := tof_sign_detail(sign)):
+        out.append(detail)
     if state_err is not None:
         out.append(
             f"state not fully settled: ln-coverage step {state_err:.2g} — "

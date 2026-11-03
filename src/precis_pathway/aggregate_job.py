@@ -268,9 +268,14 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         # v1 block answers only on a pre-0.33 engine. mc_budget stays a v1
         # read — run_kinetics stamps it on the v1 result dict alone.
         from precis_pathway._dispatch_common import _ranked_tof
+        from precis_pathway.tof_sign import tof_sign, tof_sign_label
 
         tof, _method = _ranked_tof(v2, kin)
         tof_s = f"{tof:.3e} /site/s" if tof is not None else "no TOF"
+        # gr559294: a classified negative tof_mf names its class beside the
+        # number (the engine's tof_sign lives on the v2 record's mf_status)
+        if _method == "mf" and (sign := tof_sign(v2)) is not None:
+            tof_s += f" ({tof_sign_label(sign)})"
         mb = kin.get("mc_budget")
         note = (
             f" — reduced samples ({mb['n_samples']} of {mb['configured']}, budget)"
