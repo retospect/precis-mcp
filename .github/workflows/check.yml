@@ -636,6 +636,11 @@ jobs:
           path: |
             .coverage
             .coverage.precis.json
+          # Both files are dotfiles, which upload-artifact skips by default
+          # ("No files were found", no artifact): --fetch-db had nothing to
+          # download, so every gate ran the wide static selection.
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 3
 
   # macOS: no service-container support, so postgres is absent and the

@@ -1290,6 +1290,8 @@ def test_check_yml_nightly_produces_the_coverage_db() -> None:
     )
     assert upload["with"]["name"] == "precis-coverage-db"
     assert ".coverage.precis.json" in upload["with"]["path"]
+    # Both paths are dotfiles: without this the upload finds nothing.
+    assert upload["with"]["include-hidden-files"] is True
 
 
 # -- real git: the window and --start --------------------------------------
