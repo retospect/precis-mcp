@@ -810,6 +810,79 @@ def test_recall_says_so_when_the_ref_is_not_embedded(hub: Hub) -> None:
     assert "— recall: no embedded chunk on this ref yet —" in out
 
 
+def test_recall_skips_linked_refs_in_both_directions(
+    runtime_with_store: Any,
+) -> None:
+    """gr555999: a recall hit that already has a live link to or from the
+    focus — whatever the rel — is a structural neighbour the ring rungs
+    show, so the similarity rung skips it."""
+    rt = runtime_with_store
+    text = "copper catalyses nitrate reduction"
+    a = _embedded_memory(rt, text)
+    out_edge = _embedded_memory(rt, text)
+    in_edge = _embedded_memory(rt, text)
+    free = _embedded_memory(rt, text)
+    store = rt.hub.live_store
+    store.add_link(src_ref_id=a, dst_ref_id=out_edge, relation="related-to")
+    store.add_link(src_ref_id=in_edge, dst_ref_id=a, relation="derived-from")
+
+    out = render_eye(store, handle_registry.format_handle("memory", a), "+recall")
+    recall = out.split("— recall")[1]
+    assert f"me{free}" in recall
+    assert f"me{out_edge}" not in recall
+    assert f"me{in_edge}" not in recall
+    # the ring rung still shows both linked neighbours, either direction
+    assert f"related-to: me{out_edge}" in out
+    assert f"derived-into: me{in_edge}" in out
+
+
+def test_recall_excludes_linked_and_refills_the_cap(
+    runtime_with_store: Any,
+) -> None:
+    """gr555999: linked neighbours drop out of the candidate set inside the
+    query, so the 8 slots refill from the next-ranked unlinked refs."""
+    rt = runtime_with_store
+    text = "copper catalyses nitrate reduction"
+    a = _embedded_memory(rt, text)
+    linked = [_embedded_memory(rt, text) for _ in range(3)]
+    free = [_embedded_memory(rt, text) for _ in range(9)]
+    store = rt.hub.live_store
+    for rid in linked:
+        store.add_link(src_ref_id=a, dst_ref_id=rid, relation="related-to")
+
+    out = render_eye(store, handle_registry.format_handle("memory", a), "+recall")
+    recall = out.split("— recall")[1].split("Next:")[0]
+    for rid in linked:
+        assert f"me{rid}" not in recall
+    shown = sum(1 for rid in free if f"me{rid} —" in recall)
+    assert shown == 8, "the cap refills from next-ranked unlinked candidates"
+
+
+def test_recall_hit_carries_a_promote_to_link_line(
+    runtime_with_store: Any,
+) -> None:
+    """gr555999: each unlinked recall hit advertises a ready-to-run
+    ``link(...)`` — ``related-to`` by default, with the relations skill
+    named for a sharper rel."""
+    rt = runtime_with_store
+    text = "copper catalyses nitrate reduction"
+    a = _embedded_memory(rt, text)
+    b = _embedded_memory(rt, text)
+    out = render_eye(
+        rt.hub.live_store, handle_registry.format_handle("memory", a), "+recall"
+    )
+    call = f"link(kind='memory', id='me{a}', target='memory:me{b}', rel='related-to')"
+    assert call in out
+    assert "precis-relations" in out
+    # the advertised call parses through the real command parser
+    from precis.tools.command_parser import parse_command
+
+    verb, kwargs = parse_command(call)
+    assert verb == "link"
+    assert kwargs["id"] == f"me{a}"
+    assert kwargs["target"] == f"memory:me{b}"
+
+
 # ── ring filters (RingFilter): kind + the SPACE: tag axis ────────────
 
 

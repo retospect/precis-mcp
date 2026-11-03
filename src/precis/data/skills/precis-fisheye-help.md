@@ -63,7 +63,12 @@ Each rung **strictly contains** the previous one:
 Any rung takes a **`+recall` suffix** (`fisheye+1hop+recall`; bare
 `+recall` means that one): up to 8 nearest refs of the same kind and
 `finding` by embedding, each with a gist line and a similarity score —
-what is *about* the same thing but was never linked. A recall line is
+what is *about* the same thing but was never linked. Refs already
+linked to the focus (either direction, any rel) are skipped — the ring
+rungs already show them — so every hit is a genuinely unlinked
+near-match, and each carries a ready `link(..., rel='related-to')`
+promote call you run yourself to make it a real edge (a sharper rel
+from `precis-relations` is better when one applies). A recall line is
 a lead to check, not a connection. Not on draft/plan sections. On a
 memory, recall stays inside the focus's own `SPACE:` value (a
 `repo-dev` memory never recalls a `research` one).

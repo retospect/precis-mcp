@@ -30,7 +30,10 @@ link(kind="memory", id=42, target="pa5", rel="cites")
 
 Source is `(kind, id)`. Target is a canonical address. `rel=`
 defaults to `related-to` — name a specific relation when one fits.
-Re-adding the same `(source, target, rel)` is a no-op.
+Re-adding the same `(source, target, rel)` is a no-op. The eye's
+`+recall` rung (`precis-fisheye-help`) lists nearest unlinked
+near-matches with a ready `link(...)` promote call per hit — the
+deliberate step that turns a semantic near-match into a real edge.
 
 ## Address the other end of the edge
 ## What does target= take?

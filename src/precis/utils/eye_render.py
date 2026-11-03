@@ -1556,11 +1556,63 @@ _RECALL_K = 8
 RECALL_MAX_DISTANCE = 0.6
 
 
+def _linked_ref_ids(store: Store, ref_id: int) -> set[int]:
+    """Every ref a live edge joins to ``ref_id`` — either direction, any
+    relation (gr555999). ``+recall`` skips them: they are already
+    structural neighbours the link rungs render, so a semantic hit on one
+    would restate the edge instead of surfacing an unlinked near-match."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT src_ref_id, dst_ref_id FROM links "
+            "WHERE src_ref_id = %s OR dst_ref_id = %s",
+            (ref_id, ref_id),
+        ).fetchall()
+    linked = {int(r) for row in rows for r in row}
+    linked.discard(ref_id)
+    return linked
+
+
+def _recall_promote(ref_id: int, kind: str, hits: list[Any]) -> str:
+    """The ``+recall`` rung's promote affordance (gr555999): the rung lists
+    only unlinked neighbours, so every hit carries one ready-to-run
+    ``link(...)`` — ``rel='related-to'`` by default; a sharper rel
+    (``derived-from``, ``entails``, ``qualifies``, …) is better when one
+    applies. The agent decides and calls ``link`` itself — nothing here
+    writes an edge."""
+    from precis.utils.next_block import render_next_section
+
+    focus = handle_registry.try_format(kind, ref_id) or str(ref_id)
+    calls: list[tuple[str, str]] = []
+    for ref in hits:
+        rid = int(ref.id)
+        hkind = str(getattr(ref, "kind", "") or kind)
+        handle = handle_registry.try_format(hkind, rid)
+        ident = handle or str(getattr(ref, "slug", None) or rid)
+        calls.append(
+            (
+                f"link(kind={kind!r}, id='{focus}', "
+                f"target='{hkind}:{ident}', rel='related-to')",
+                f"promote {handle or ident} to a real edge",
+            )
+        )
+    calls.append(
+        (
+            "get(kind='skill', id='precis-relations')",
+            "a sharper rel than 'related-to' when one applies "
+            "(derived-from, entails, qualifies, …)",
+        )
+    )
+    return render_next_section(calls)
+
+
 def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) -> str:
     """The ``+recall`` rung: the k nearest chunks by embedding, same kind +
     ``finding``, each with its gist line. Similarity, not edges — the ring
     above says what is linked; this says what is *about* the same thing and
-    was never linked (``refeye``'s module docstring draws the same line).
+    was never linked (``refeye``'s module docstring draws the same line),
+    so refs already linked to the focus are excluded in the query and each
+    hit carries a promote-to-``link`` call (:func:`_recall_promote`,
+    gr555999).
     A ring filter narrows this rung too: kinds intersect the same-kind +
     ``finding`` leg, ``spaces`` override the focus's own partition.
     """
@@ -1586,7 +1638,10 @@ def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) ->
         tags=space or None,
         limit=_RECALL_K * 3,
         max_distance=RECALL_MAX_DISTANCE,
-        exclude_ref_ids=[ref_id],
+        # Refs the focus already links to or from (any rel) are structural
+        # neighbours the ring rungs show — exclude them in the query so the
+        # cap refills from the next-ranked unlinked candidates (gr555999).
+        exclude_ref_ids=[ref_id, *_linked_ref_ids(store, ref_id)],
         # memory-like kinds embed their whole-ref card (ord -1), not a body
         # chunk; let it match, as `seed_chunk_for_ref` does for the seed.
         card_kinds=("card_combined",),
@@ -1597,12 +1652,14 @@ def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) ->
         ring=ring,
     )
     seen: set[int] = set()
+    kept: list[Any] = []
     lines = [f"— recall (nearest by embedding, {'+'.join(kinds)}, k≤{_RECALL_K}) —"]
     for block, ref, dist in hits:
         rid = int(ref.id)
         if rid in seen:
             continue  # one line per ref: its nearest chunk speaks for it
         seen.add(rid)
+        kept.append(ref)
         gist = _cap(" ".join((block.text or "").split()), _CHUNK_SUMMARY_CAP)
         lines.append(
             f"  {_neighbor_label(ref, rid, chips=chips.get(rid, ''))}  ({1 - dist:.2f})"
@@ -1613,7 +1670,8 @@ def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) ->
             break
     if not seen:
         lines.append("  — nothing within the similarity floor —")
-    return "\n".join(lines)
+        return "\n".join(lines)
+    return "\n".join(lines) + _recall_promote(ref_id, kind, kept)
 
 
 def _rings(
