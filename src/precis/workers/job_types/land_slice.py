@@ -25,7 +25,10 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   took its nothing-new guard (:func:`nothing_new`: the branch's tree equals
   origin/main's, nothing squashed) no sha is the slice's: the todo closes
   with :data:`NO_DIFF_NOTE`, the gate stays pending and no PR is closed
-  (gr561142: main's head is another land's commit). Then
+  (gr561142: main's head is another land's commit). The land that fills a
+  ``gripe-fix`` plan's gate also moves the plan's gripe to the verify rung
+  (``resolved: <sha>`` + ``STATUS:verify``, :func:`_notify_gripe`;
+  gr561932), so ``gripe_validate`` closes it once the sha is on prod. Then
   ``git worktree remove``, ``git branch -D slice/<id>`` and, when the
   branch is on origin, ``git push origin --delete slice/<id>``. A cleanup
   step that fails is reported in the summary, not a job failure: the land
@@ -87,7 +90,7 @@ from typing import Any
 
 from precis.plans.logbook import log_plan_event
 from precis.plans.templates import PENDING_SHA
-from precis.store.types import Tag
+from precis.store.types import ChunkInsert, Tag
 from precis.workers import factory_git as _factory_git
 from precis.workers.job_types import JobTypeSpec
 from precis.workers.job_types import run_slice as _rs
@@ -480,6 +483,83 @@ def _write_gate(store: Any, gate_id: int, sha: str, todo_id: int) -> None:
     args["sha"] = sha
     store.stamp_ref_meta(gate_id, {"gate": {**gate, "args": args}})
     _rs._append_comment(store, gate_id, f"sha: {sha} — landed by td{todo_id}")
+
+
+# ── The gripe behind the plan ──────────────────────────────────────
+
+#: The gripe comment chunk kind (``handlers.gripe._COMMENT_KIND``; restated:
+#: workers never import handlers).
+_GRIPE_COMMENT_KIND = "gripe_comment"
+
+#: Gripe STATUS values a land leaves alone: terminal, or already on the
+#: verify rung (``handlers.gripe.AUTO_VERIFY_STATUSES`` + the user rung).
+_GRIPE_SETTLED = frozenset({"done", "wontfix", "verify", "auto_verify", "user_verify"})
+
+
+def _plan_gripe(store: Any, plan_tag: str) -> int | None:
+    """The gripe the plan root is ``related-to`` (a ``gripe-fix`` plan), or
+    ``None`` for any other plan."""
+    root_id = int(plan_tag[5:])
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT l.dst_ref_id
+              FROM links l JOIN refs g ON g.ref_id = l.dst_ref_id
+             WHERE l.src_ref_id = %s AND l.relation = 'related-to'
+               AND g.kind = 'gripe' AND g.retired_at IS NULL
+             ORDER BY l.dst_ref_id
+             LIMIT 1
+            """,
+            (root_id,),
+        ).fetchone()
+    return int(row[0]) if row else None
+
+
+def _notify_gripe(
+    store: Any, gripe_id: int, sha: str, subject: str, todo_id: int
+) -> str:
+    """What a session does after its own land (gr561932): ``resolved: <sha>``
+    as the gripe's newest comment and ``STATUS:verify``; ``gripe_validate``
+    closes it once the sha is on prod. Idempotent: a settled gripe is left
+    alone, a comment already naming the sha is not repeated. Returns the
+    summary line."""
+    status = _rs._todo_status(store, gripe_id)
+    if status in _GRIPE_SETTLED:
+        return f"gripe gr{gripe_id}: left STATUS:{status}"
+    comments = [
+        c
+        for c in store.chunks.list_chunks_for_ref(gripe_id)
+        if c.chunk_kind == _GRIPE_COMMENT_KIND
+    ]
+    newest = str(max(comments, key=lambda c: int(c.ord)).text or "") if comments else ""
+    wrote: list[str] = []
+    if not (newest.lstrip().lower().startswith("resolved:") and sha[:9] in newest):
+        ord_ = (
+            max(
+                (int(c.ord) for c in store.chunks.list_chunks_for_ref(gripe_id)),
+                default=0,
+            )
+            + 1
+        )
+        store.chunks.insert_chunks(
+            gripe_id,
+            [
+                ChunkInsert(
+                    ord=ord_,
+                    text=(
+                        f"resolved: {sha[:9]} (main, release pending) — {subject} "
+                        f"(landed by the factory, td{todo_id})"
+                    ),
+                    meta={"chunk_kind": _GRIPE_COMMENT_KIND},
+                )
+            ],
+        )
+        wrote.append("resolved comment")
+    store.add_tag(
+        gripe_id, Tag.closed("STATUS", "verify"), set_by="system", replace_prefix=True
+    )
+    wrote.append("STATUS:verify")
+    return f"gripe gr{gripe_id}: {', '.join(wrote)} written"
 
 
 # ── Cleanup ────────────────────────────────────────────────────────
@@ -1165,8 +1245,20 @@ def poll(ctx: Any, handle: Any) -> bool:
     except Exception as exc:  # pragma: no cover — reported, the land stands
         log.warning("land_slice: gate write for td%d failed", todo_id, exc_info=True)
         summary.append(f"gate: write FAILED ({exc})")
+    plan_tag = _plan_tag(store, todo_id)
     try:
-        plan_tag = _plan_tag(store, todo_id)
+        # gr561932: the land that fills the plan's gate is the fix; it moves
+        # the gripe the plan is about to the verify rung, as a session
+        # would. A brief node's land (a spec test) fills no gate and leaves
+        # the gripe alone.
+        if gate_id is not None and sha is not None and plan_tag is not None:
+            gripe_id = _plan_gripe(store, plan_tag)
+            if gripe_id is not None:
+                summary.append(_notify_gripe(store, gripe_id, sha, subject, todo_id))
+    except Exception as exc:  # pragma: no cover — reported, the land stands
+        log.warning("land_slice: gripe notify for td%d failed", todo_id, exc_info=True)
+        summary.append(f"gripe: notify FAILED ({exc})")
+    try:
         if plan_tag is not None:
             # gr548800: a landed slice is a quest-logbook milestone.
             root_id = int(plan_tag[5:])

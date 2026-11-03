@@ -202,6 +202,8 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     monkeypatch.setattr(
         land_slice, "_pending_gates", lambda store, plan, todo: list(calls["gates"])
     )
+    calls["gripe"] = None
+    monkeypatch.setattr(land_slice, "_plan_gripe", lambda store, plan: calls["gripe"])
     # The lander's own drift preflight: by default "no helper in this tree",
     # so ship launches and its own guard decides (the pre-gr550941 shape).
     calls["preflight"] = {"ran": False, "rc": None, "age": "", "diag": ""}
@@ -489,6 +491,70 @@ def test_poll_green_logs_the_land_on_the_plan_quest(
             "kw": {"entry_type": "milestone", "root": 40},
         }
     ]
+
+
+def test_poll_green_moves_the_plans_gripe_to_verify(seams: dict[str, Any]) -> None:
+    """gr561932: the land that fills the plan's sha-in-prod gate is the fix,
+    so the gripe the plan is about gets `resolved: <sha>` and STATUS:verify
+    (gripe_validate closes it once the sha is on prod). Idempotent; a
+    settled gripe is left alone."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub", "plan:40"))
+    store.add_todo(
+        44,
+        status="open",
+        tags=("plan:40",),
+        meta={"gate": {"kind": "sha-in-prod", "args": {"sha": PENDING_SHA}}},
+    )
+    store.refs[7] = _Ref(7, "gripe 7", {})
+    store.tags[7] = [Tag.closed("STATUS", "triaged")]
+    store.chunks.rows[7] = [_Chunk(1, "triage note", "gripe_comment")]
+    seams["gates"] = [(44, True)]
+    seams["gripe"] = 7
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert "STATUS:verify" in store.tag_strings(7)
+    newest = store.chunks.rows[7][-1]
+    assert newest.chunk_kind == "gripe_comment"
+    assert newest.text.startswith(
+        f"resolved: {FULL_SHA[:9]} (main, release pending) — {SUBJECT}"
+    )
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "gripe gr7: resolved comment, STATUS:verify written" in summary
+
+    # A second land on the same plan (a fix slice) does not repeat the comment.
+    store.tags[42] = [Tag.closed("STATUS", "doing"), Tag.open("plan:40")]
+    store.chunks.rows[42] = []
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert [c.text for c in store.chunks.rows[7]].count(newest.text) == 1
+    assert (
+        "gripe gr7: left STATUS:verify"
+        in [t for k, t in pctx.chunks if k == "job_summary"][0]
+    )
+
+
+def test_poll_green_without_a_gate_leaves_the_gripe_alone(
+    seams: dict[str, Any],
+) -> None:
+    """A brief node's land (a spec test, no gate blocked-by it) is not the fix."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub", "plan:40"))
+    store.refs[7] = _Ref(7, "gripe 7", {})
+    store.tags[7] = [Tag.closed("STATUS", "triaged")]
+    store.chunks.rows[7] = []
+    seams["gripe"] = 7
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert "STATUS:triaged" in store.tag_strings(7)
+    assert store.chunks.rows[7] == []
 
 
 def test_poll_nothing_new_lands_no_sha(
