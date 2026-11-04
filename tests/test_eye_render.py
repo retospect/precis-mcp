@@ -705,6 +705,127 @@ def test_unresolvable_flat_eye_degrades_not_crashes(hub: Hub) -> None:
 # ── fisheye+2hop and +recall (fisheye-everywhere.md AC 3-4) ────────────
 
 
+@pytest.mark.parametrize("kind", ["memory", "paper"])
+@pytest.mark.parametrize("hops", [1, 2])
+def test_empty_eye_rung_offers_explicit_recall_without_running_it(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch, kind: str, hops: int
+) -> None:
+    """gr556000: sparse link and document eyes name the requested empty rung."""
+    store = hub.live_store
+    focus = store.insert_ref(
+        kind=kind,
+        slug="isolated-focus" if kind == "paper" else None,
+        title="Isolated focus",
+    )
+    handle = handle_registry.format_handle(kind, focus.id)
+
+    def unexpected_recall(*args: Any, **kwargs: Any) -> str:
+        pytest.fail("a structural extent must not run recall automatically")
+
+    monkeypatch.setattr("precis.utils.eye_render._recall", unexpected_recall)
+    out = render_eye(store, handle, f"fisheye+{hops}hop")
+
+    unit = "hop" if hops == 1 else "hops"
+    expected = (
+        f"no structural neighbours at {hops} {unit}; wider: "
+        f"get(kind='{kind}', id='{handle}', extent='fisheye+{hops}hop+recall')"
+    )
+    assert [
+        line for line in out.splitlines() if "no structural neighbours" in line
+    ] == [expected]
+    assert out.count("wider:") == 1
+    assert "— recall" not in out
+
+
+@pytest.mark.parametrize("kind", ["memory", "paper"])
+def test_empty_second_hop_preserves_the_nonempty_first_hop(hub: Hub, kind: str) -> None:
+    store = hub.live_store
+    focus = store.insert_ref(
+        kind=kind, slug="focus" if kind == "paper" else None, title="Focus"
+    )
+    near = store.insert_ref(kind="memory", slug=None, title="Only neighbour")
+    store.add_link(src_ref_id=focus.id, dst_ref_id=near.id, relation="related-to")
+    handle = handle_registry.format_handle(kind, focus.id)
+
+    first = render_eye(store, handle, "fisheye+1hop")
+    second = render_eye(store, handle, "fisheye+2hop")
+
+    assert f"related-to: me{near.id} — Only neighbour" in first
+    assert "no structural neighbours" not in first
+    assert "wider:" not in first
+    hint = (
+        "no structural neighbours at 2 hops; wider: "
+        f"get(kind='{kind}', id='{handle}', extent='fisheye+2hop+recall')"
+    )
+
+    # Age chips may tick between calls; all other first-hop output stays intact.
+    def normalize_age(text: str) -> str:
+        return re.sub(r"-\d+s", "-Ns", text)
+
+    assert normalize_age(second) == normalize_age(first) + "\n\n" + hint
+
+
+def test_empty_filtered_eye_wider_call_preserves_the_ring(hub: Hub) -> None:
+    from precis.tools.command_parser import parse_command
+    from precis.utils.eye_render import RingFilter
+
+    store = hub.live_store
+    focus = store.insert_ref(kind="memory", slug=None, title="Focus")
+    near = store.insert_ref(kind="memory", slug=None, title="Excluded neighbour")
+    store.add_link(src_ref_id=focus.id, dst_ref_id=near.id, relation="related-to")
+    handle = handle_registry.format_handle("memory", focus.id)
+    ring = {"kinds": ["paper", "finding"], "space": ["repo-dev", "research"]}
+
+    out = render_eye(store, handle, "fisheye+1hop", ring=ring)
+
+    hint = next(line for line in out.splitlines() if "wider:" in line)
+    verb, kwargs = parse_command(hint.split("wider: ", 1)[1])
+    assert verb == "get"
+    assert kwargs["kind"] == "memory"
+    assert kwargs["id"] == handle
+    assert kwargs["extent"] == "fisheye+1hop+recall"
+    assert RingFilter.parse(kwargs["args"]["ring"]) == RingFilter.parse(ring)
+
+
+def test_empty_document_chunk_eye_wider_call_keeps_the_passage_focus(hub: Hub) -> None:
+    store = hub.live_store
+    focus = store.insert_ref(kind="paper", slug="passage-focus", title="Passage focus")
+    block = store.chunks.insert_chunks(
+        focus.id, [ChunkInsert(ord=0, text="A focused passage")]
+    )[0]
+    handle = handle_registry.format_handle("paper", block.id, chunk=True)
+
+    out = render_eye(store, handle, "fisheye+1hop")
+
+    expected = (
+        "no structural neighbours at 1 hop; wider: "
+        f"get(kind='paper', id='{handle}', extent='fisheye+1hop+recall')"
+    )
+    assert expected in out.splitlines()
+
+
+@pytest.mark.parametrize("kind", ["memory", "paper"])
+@pytest.mark.parametrize("hops", [1, 2])
+def test_empty_recall_eye_does_not_offer_another_widening(
+    hub: Hub, kind: str, hops: int
+) -> None:
+    store = hub.live_store
+    focus = store.insert_ref(
+        kind=kind,
+        slug="unembedded-focus" if kind == "paper" else None,
+        title="Unembedded focus",
+    )
+    handle = handle_registry.format_handle(kind, focus.id)
+
+    out = render_eye(store, handle, f"fisheye+{hops}hop+recall")
+
+    unit = "hop" if hops == 1 else "hops"
+    assert f"no structural neighbours at {hops} {unit}" in out.splitlines()
+    assert "— recall: no embedded chunk on this ref yet —" in out
+    assert "wider:" not in out
+    assert "Next:" not in out
+
+
 def _two_hop_fixture(hub: Hub) -> tuple[Any, Any, list[Any]]:
     """me(focus) —related-to→ me(b), me(c); b cites p1, p2; c cites p1.
     The second hop from the focus is {p1, p2} via cites — two distinct
@@ -808,6 +929,20 @@ def test_recall_says_so_when_the_ref_is_not_embedded(hub: Hub) -> None:
     mem = store.insert_ref(kind="memory", slug=None, title="Fresh note")
     out = render_eye(store, handle_registry.format_handle("memory", mem.id), "+recall")
     assert "— recall: no embedded chunk on this ref yet —" in out
+
+
+def test_recall_with_no_matches_keeps_its_no_results_message(
+    runtime_with_store: Any,
+) -> None:
+    rt = runtime_with_store
+    focus = _embedded_memory(rt, "copper catalyses nitrate reduction")
+
+    out = render_eye(rt.hub.live_store, f"me{focus}", "fisheye+1hop+recall")
+
+    assert "no structural neighbours at 1 hop" in out.splitlines()
+    assert "— nothing within the similarity floor —" in out
+    assert "wider:" not in out
+    assert "Next:" not in out
 
 
 def test_recall_skips_linked_refs_in_both_directions(

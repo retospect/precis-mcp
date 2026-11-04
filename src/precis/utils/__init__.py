@@ -7,6 +7,9 @@ across kinds (``kind_facts``, ``handle_registry``, ``search_merge``, the eye
 renderers) import from ``handlers/`` — treat those as the exceptions, not the
 pattern. Module docstrings own the detail; this one only groups them.
 
+The eye renderer assembles todo ``parent_id`` tree neighbours before its
+empty-hop decision: link edges alone cannot establish an empty first hop.
+
 **Groups.**
 
 - *Outbound network + LLM seams.* :mod:`~precis.utils.safe_fetch` (SSRF guard —

@@ -105,11 +105,9 @@ from precis.utils.edit_resolve import (
     render_dry_run_full,
     render_dry_run_header,
 )
-from precis.utils.eye_render import parse_extent
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.secret_scan import mask_secrets
-from precis.workers.working_set import Extent
 
 if TYPE_CHECKING:
     from precis.store.protocols import PoolStore
@@ -595,32 +593,6 @@ class TodoHandler(NumericRefHandler):
                 ),
             )
         return interpreted(resp, readings)
-
-    # ── eye: the tree ring ────────────────────────────────────────
-
-    def eye(
-        self,
-        *,
-        id: Any = None,
-        extent: Any = "fisheye",
-        q: str | None = None,
-        ring: Any = None,
-    ) -> Response:
-        """The shared eye, plus the todo tree as a ring at ``fisheye+1hop``
-        and up: parent, peers and children come from ``refs.parent_id``,
-        which the link neighbourhood never walks (gr541348)."""
-        resp = super().eye(id=id, extent=extent, q=q, ring=ring)
-        try:
-            rung, _recall = parse_extent(extent)
-        except ValueError:
-            return resp
-        if rung < Extent.HOP1:
-            return resp
-        ref = self._resolve_live_ref(self._coerce_id(id))
-        tree = work_view.render_tree_ring(self.store, int(ref.id))
-        if not tree:
-            return resp
-        return dataclasses.replace(resp, body=resp.body + "\n\n" + tree)
 
     # ── search: tree-aware view router ────────────────────────────
 

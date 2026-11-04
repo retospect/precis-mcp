@@ -271,7 +271,10 @@ GOLDEN_QUEST_GIST = (
     "Catalyse NO to NH3\n"
     "selectivity above 90% at ambient\n"
     "rubric: log_tof max · P_side max (optional)\n"
-    "demand: log_tof=2.0"
+    "demand: log_tof=2.0\n"
+    "\n"
+    "no structural neighbours at 1 hop; wider: "
+    "get(kind='quest', id='<Q>', extent='fisheye+1hop+recall')"
 )
 
 GOLDEN_ORDERING = (

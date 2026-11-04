@@ -594,7 +594,9 @@ def _render_doc_eye(
 
     # The reference ring is a property of the ref, not its body — an empty
     # paper linked to a note still surfaces that note at fisheye+1hop.
-    sections = _rings(store, ref_id, kind, ext, recall=recall, expand=expand, ring=ring)
+    sections = _rings(
+        store, ref_id, kind, ext, recall=recall, expand=expand, ring=ring, handle=handle
+    )
     return "\n\n".join([block, *sections])
 
 
@@ -742,6 +744,7 @@ def _render_note_eye(
         expand=expand,
         ring=ring,
         body=body if kind == "memory" else "",
+        handle=handle,
     )
     return "\n\n".join([block, *sections])
 
@@ -1833,11 +1836,21 @@ def _rings(
     expand: str | None,
     ring: RingFilter | None,
     body: str = "",
+    handle: str | None = None,
 ) -> list[str]:
     """Every neighbourhood section a non-tree eye appends at ``ext``:
     the first hop at ``fisheye+1hop`` and up, the second hop at
-    ``fisheye+2hop``, recall when asked. ``ring`` narrows all three."""
+    ``fisheye+2hop``, recall when asked. ``ring`` narrows all three.
+    An empty requested hop names the explicit recall call; never run the
+    extra search without the caller's ``+recall`` opt-in. Todo trees use
+    ``refs.parent_id`` rather than links, but still fill the first hop.
+    """
     sections: list[str] = []
+    tree = ""
+    if kind == "todo" and ext >= Extent.HOP1:
+        from precis.todo.work_view import render_tree_ring
+
+        tree = render_tree_ring(store, ref_id)
     hop1, refs = (
         _first_hop(store, ref_id, ring=ring) if ext >= Extent.HOP1 else ({}, {})
     )
@@ -1877,9 +1890,30 @@ def _rings(
                     states=states,
                 )
             )
+        if expand is None and not sections[-1] and (ext >= Extent.HOP2 or not tree):
+            hops = 2 if ext >= Extent.HOP2 else 1
+            message = (
+                f"no structural neighbours at {hops} hop{'s' if hops == 2 else ''}"
+            )
+            if not recall:
+                focus = handle or handle_registry.format_handle(kind, ref_id)
+                filters: dict[str, list[str]] = {}
+                if ring is not None:
+                    if ring.kinds is not None:
+                        filters["kinds"] = sorted(ring.kinds)
+                    if ring.spaces is not None:
+                        filters["space"] = sorted(ring.spaces)
+                args = f", args={{'ring': {filters!r}}}" if filters else ""
+                message += (
+                    f"; wider: get(kind={kind!r}, id={focus!r}, "
+                    f"extent='fisheye+{hops}hop+recall'{args})"
+                )
+            sections[-1] = message
     courtesy = courtesy_lines(handles, states, cap=_NEIGHBOR_GROUP_CAP)
     if courtesy:
         sections.insert(0, courtesy)
     if recall:
         sections.append(_recall(store, ref_id, kind, ring=ring))
+    if tree:
+        sections.append(tree)
     return [s for s in sections if s]

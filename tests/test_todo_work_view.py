@@ -342,6 +342,44 @@ def test_eye_1hop_on_the_root_shows_children(handler: TodoHandler, hub: Hub) -> 
     assert "part-of:" not in out
 
 
+@pytest.mark.parametrize("focus_child", [False, True])
+@pytest.mark.parametrize("hops", [1, 2])
+def test_todo_tree_fills_the_first_hop_without_link_edges(
+    store: Store,
+    runtime_with_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    focus_child: bool,
+    hops: int,
+) -> None:
+    """gr556000: parent_id neighbours count before declaring a hop empty."""
+    parent = store.insert_ref(kind="todo", slug=None, title="Parent")
+    child = store.insert_ref(kind="todo", slug=None, title="Child", parent_id=parent.id)
+    focus, neighbour = (child, parent) if focus_child else (parent, child)
+
+    def unexpected_recall(*args: Any, **kwargs: Any) -> str:
+        pytest.fail("a structural extent must not run recall automatically")
+
+    monkeypatch.setattr("precis.utils.eye_render._recall", unexpected_recall)
+    out, error = runtime_with_store.dispatch_with_status(
+        "get",
+        {"kind": "todo", "id": f"td{focus.id}", "extent": f"fisheye+{hops}hop"},
+    )
+
+    assert not error
+    assert out.count("— tree —") == 1
+    assert f"td{neighbour.id} ○ — {neighbour.title}" in out
+    assert ("part-of:" if focus_child else "contains (1):") in out
+    assert "no structural neighbours at 1 hop" not in out
+    if hops == 1:
+        assert "no structural neighbours" not in out
+        assert "wider:" not in out
+    else:
+        assert (
+            "no structural neighbours at 2 hops; wider: "
+            f"get(kind='todo', id='td{focus.id}', extent='fisheye+2hop+recall')"
+        ) in out
+
+
 def test_bare_fisheye_has_no_tree_ring(handler: TodoHandler, hub: Hub) -> None:
     t = _tree(handler, hub.live_store)
     out = handler.get(id=t["a"], view="fisheye").body
@@ -435,17 +473,18 @@ def test_bare_fisheye_renders_only_the_focal_card(
     assert "— linked" not in out and "— tree —" not in out
 
 
-def test_eye_1hop_on_a_linkless_todo_is_just_the_card(
-    handler: TodoHandler, hub: Hub
-) -> None:
-    """A lone todo's +1hop renders the focal card — no empty ring
-    sections, and no ``prio`` fragment on an unset column."""
+def test_eye_1hop_on_a_lone_todo_offers_recall(handler: TodoHandler, hub: Hub) -> None:
+    """A lone todo keeps the empty-hop hint and its focal card."""
     lone = id_of(handler.put(text="Lone leaf.").body)
     out = handler.get(id=lone, view="fisheye+1hop").body
     assert f"td{lone} [todo] Lone leaf." in out
     assert "status: open" in out
     assert "prio" not in out
     assert "— linked" not in out and "— tree —" not in out
+    assert (
+        "no structural neighbours at 1 hop; wider: "
+        f"get(kind='todo', id='td{lone}', extent='fisheye+1hop+recall')"
+    ) in out
 
 
 def test_eye_body_stays_under_the_verbatim_cap(handler: TodoHandler, hub: Hub) -> None:

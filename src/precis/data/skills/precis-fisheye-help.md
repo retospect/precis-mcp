@@ -73,6 +73,8 @@ a lead to check, not a connection. Not on draft/plan sections. On a
 memory, recall stays inside the focus's own `SPACE:` value (a
 `repo-dev` memory never recalls a `research` one).
 
+An empty link/document hop rung says so and names the exact `+recall` call; recall is never automatic, and an empty `+recall` result offers no wider call.
+
 The first three rungs render the node **alone**. Surroundings appear
 only at `fisheye` and up.
 
