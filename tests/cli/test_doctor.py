@@ -14,6 +14,7 @@ import re
 from argparse import Namespace
 from contextlib import redirect_stdout
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -114,13 +115,15 @@ def test_run_checks_reports_all_names_with_no_db() -> None:
     assert doctor.has_failures(checks)
 
 
-def test_roles_flag_adds_a_check(store: Any) -> None:
+def test_roles_flag_adds_a_check(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Roles are cluster-global; use a unique sentinel instead of assuming
+    # this server has never had the tiered roles provisioned.
+    missing_role = f"doctor_missing_{uuid4().hex}"
+    monkeypatch.setattr(doctor, "_TIERED_DB_ROLES", (missing_role,))
     checks = doctor.run_checks(store=store, roles=True)
     roles = next(c for c in checks if c.name == "roles")
-    # The test DB has no tiered roles — this deployment didn't run
-    # ``precis setup --roles`` — so the assert-they-exist check fails.
     assert roles.level == doctor.FAIL
-    assert "agent_rw" in roles.detail
+    assert roles.detail == f"missing DB roles: {missing_role}"
     without = doctor.run_checks(store=store, roles=False)
     assert "roles" not in [c.name for c in without]
 
