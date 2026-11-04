@@ -233,8 +233,6 @@ stamps (owned by `pathway-explorer-controls.md`).
 
 ## Slices (one gripe each, cluster `slab-environment-optimizer`; filed 2026-11-03)
 
-1. gr559661 — `meta.environment_space` on the quest, validated,
-   human-set (small; first).
 2. gr559655 — the objective terms and `J(e)` as pure functions over
    stored data; `view='optimum'` (medium).
 3. gr559656 — catpath: selectivity stencils and `design: points` on the

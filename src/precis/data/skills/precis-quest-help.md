@@ -509,7 +509,7 @@ loop, not a single step) is dark by default: `PRECIS_QUEST_LOOP_ENABLED`
 gates it, the manual CLI runs regardless, and compute stays off without
 `--compute`.
 
-## Patch quest meta — compute_lane / lit_lane / quest_body / rubric_objectives / reaction_config
+## Patch quest meta — lanes and bodies
 
 `edit(kind='quest', id=N, meta={...})` patch-merges an **allowlisted** key
 into `refs.meta` (siblings untouched — never a whole-dict clobber); an
@@ -541,6 +541,17 @@ that's wedged.
   `rubric_objectives` at all) — set it explicitly for a striving with no
   candidate materials to propose (literature synthesis, landscape
   mapping).
+- **`"roadmap"`** — a fourth body: grows a pathway/capability/rung graph
+  from measured gaps instead of proposing materials or writing prose.
+  Only the root quest ticks; see [[precis-roadmap-help]] for the rung
+  meta contract and the three roles.
+
+`edit(kind='quest', id=N, text=...)` (the founding-statement rewrite) and
+`meta=` may be combined in one call, or `meta=` passed alone — no `text=`
+required for a meta-only patch.
+
+## Patch quest meta — rubric, operating conditions and reaction config
+
 - **`rubric_objectives`** — the frontier's measured-axis override, see
   "A research tick" above. On a catalyst quest with
   `surface_coverage_scan` anchors the **window/Shapley fields** stamp on
@@ -557,20 +568,47 @@ that's wedged.
   "sense": "max"}`) promotes it to a Pareto axis; `meta.window_objectives`
   tunes the knobs (`eps_eV`, `her_margin_eV`, `reset_eta_eV`,
   `reset_ea_floor_eV`).
+- **`operating_conditions`** — human-set bulk-Pourbaix point:
+  `{"U_RHE": -0.2, "pH": 7, "ion_conc_M": 1e-6,
+  "window": {"U_RHE": [-0.4, 0], "pH": [7, 10]}}`. U_RHE and pH
+  are required finite numbers; ion_conc_M is optional in (0, 10];
+  window optionally bounds U_RHE and/or pH with ordered `[lo, hi]` spans.
 - **`reaction_config`** — the autocatpath config the compute lane
   dispatches. A dict of engine `Config` field names only (unknown keys
   refused); `network_her` must be a bool. The patch **shallow-merges**
   into the stored config — `meta={'reaction_config': {'network_her':
   true}}` flips the HER-competitor branch without touching
   `slab`/`mlip`/`search` — so re-dispatched pathways run with it on.
-- **`"roadmap"`** — a fourth body: grows a pathway/capability/rung graph
-  from measured gaps instead of proposing materials or writing prose.
-  Only the root quest ticks; see [[precis-roadmap-help]] for the rung
-  meta contract and the three roles.
 
-`edit(kind='quest', id=N, text=...)` (the founding-statement rewrite) and
-`meta=` may be combined in one call, or `meta=` passed alone — no `text=`
-required for a meta-only patch.
+## Patch quest meta — environment space
+
+- **`environment_space`** — human-set bounds and goals for the per-slab
+  environment optimizer. Set with the same meta-edit door:
+  `edit(kind='quest', id=N, meta={'environment_space': {'axes':
+  {'T': [350, 900], 'p_total': [0.1, 100, 'log'],
+  'U_RHE': [-0.4, 0], 'pH': [7, 10]}, 'TOF_floor': 0.001}})`.
+  `axes` and `TOF_floor` are required. Known axes are T (K), p_total,
+  NO and H2 (bar), U_RHE (V), pH, and ion_conc_M (M). Each span is
+  finite `[lo, hi]` with lo <= hi (equal fixes an axis); a third
+  `'log'` entry requests logarithmic sampling and requires lo > 0.
+  T, p_total and ion_conc_M must be positive; NO/H2 may start at zero
+  on a linear axis. Optional `selectivity_floor` in (0, 1] adds a mask
+  constraint. TOF_floor (/s) and optional `tau_s` (default 1 s, barrier
+  equivalent) must be finite and positive. Optional `weights` selects
+  the weighted form instead of the bottleneck: a map of objective terms
+  `m_th`, `m_kin`, `m_HER`, `s`, `r`, `m_Ea` to finite nonnegative
+  weights, at least one positive; omitted terms have zero weight.
+  Each edit replaces the whole environment_space block. At optimizer
+  read time, missing axes use T [350, 900], p_total [0.1, 100, 'log'],
+  and operating_conditions windows or fixed points (including declared
+  ion_conc_M). Each declared axis replaces that axis's default individually,
+  including its spacing: a p_total range without `'log'` loses the default
+  log spacing and samples linearly. Missing coordinates stay absent.
+  With no environment_space,
+  TOF_floor defaults to 1e-3 /s and tau_s to 1 s; no selectivity floor
+  or weights are inferred. Defaults are never persisted by a tick.
+  Ticks cannot change either human-set conditions block. Default
+  `get(kind='quest', id=N)` and `view='meta'` show the declared space.
 
 ## Trust a barrier before you rank on it
 

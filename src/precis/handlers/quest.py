@@ -39,6 +39,7 @@ queue.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections import Counter
@@ -57,6 +58,7 @@ from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
 from precis.handlers._request_state import RequestState
 from precis.protocol import ArgsSpec, KindSpec
 from precis.quest import weave_tick as _weave_tick
+from precis.quest.environment_space import ENVIRONMENT_AXES, ENVIRONMENT_TERMS
 from precis.quest.logbook import (
     BY_VALUES as _BY_VALUES,
 )
@@ -129,6 +131,7 @@ _META_ALLOWED_KEYS: frozenset[str] = frozenset(
         "demand",
         "supply",
         "operating_conditions",
+        "environment_space",
         "reaction_config",
         *_FIDELITY_INT_KEYS,
     }
@@ -281,6 +284,8 @@ def quest_gist(ref: Ref) -> str:
     if statement:
         parts.append(statement)
     parts.extend(_rubric_summary(meta))
+    if "environment_space" in meta:
+        parts.append("environment_space: " + json.dumps(meta["environment_space"]))
     return "\n".join(parts)
 
 
@@ -360,6 +365,89 @@ def _check_operating_conditions(meta: dict[str, Any]) -> None:
                     "[lo, hi] span",
                     next=f"'window': {{'{axis}': [-0.4, 0]}} (lo <= hi, both finite)",
                 )
+
+
+def _check_environment_space(meta: dict[str, Any]) -> None:
+    """Validate human-owned optimizer bounds and goals beside operating conditions."""
+    if "environment_space" not in meta:
+        return
+    value = meta["environment_space"]
+    hint = (
+        "edit(kind='quest', id=N, meta={'environment_space': "
+        "{'axes': {'T': [350, 900], 'p_total': [0.1, 100, 'log']}, "
+        "'TOF_floor': 0.001, 'tau_s': 1}})"
+    )
+    allowed = {"axes", "TOF_floor", "selectivity_floor", "tau_s", "weights"}
+    if (
+        not isinstance(value, dict)
+        or {"axes", "TOF_floor"} - set(value)
+        or set(value) - allowed
+    ):
+        raise BadInput(
+            "meta.environment_space requires axes and TOF_floor; optional keys "
+            "are selectivity_floor, tau_s and weights",
+            next=hint,
+        )
+
+    def number(x: Any) -> bool:
+        if not isinstance(x, (int, float)) or isinstance(x, bool):
+            return False
+        try:
+            return math.isfinite(x)
+        except OverflowError:
+            return False
+
+    axes = value["axes"]
+    if not isinstance(axes, dict) or set(axes) - ENVIRONMENT_AXES:
+        raise BadInput(
+            "meta.environment_space.axes must map known axis names to spans",
+            options=sorted(ENVIRONMENT_AXES),
+            next=hint,
+        )
+    for axis, span in axes.items():
+        if (
+            not isinstance(span, list)
+            or len(span) not in (2, 3)
+            or not all(number(x) for x in span[:2])
+            or span[0] > span[1]
+            or (len(span) == 3 and (span[2] != "log" or span[0] <= 0))
+            or (axis in {"T", "p_total", "ion_conc_M"} and span[0] <= 0)
+            or (axis in {"NO", "H2"} and span[0] < 0)
+        ):
+            raise BadInput(
+                f"meta.environment_space.axes.{axis} needs finite [lo, hi] "
+                "with lo <= hi; optional third entry 'log' requires lo > 0; "
+                "T, p_total and ion_conc_M must be positive, gas pressures nonnegative",
+                next=hint,
+            )
+    for field in ("TOF_floor", "selectivity_floor", "tau_s"):
+        if field not in value:
+            continue
+        if (
+            not number(value[field])
+            or value[field] <= 0
+            or (field == "selectivity_floor" and value[field] > 1)
+        ):
+            raise BadInput(
+                f"meta.environment_space.{field} must be finite and > 0 "
+                "(selectivity_floor must also be <= 1)",
+                next=hint,
+            )
+    if "weights" in value:
+        weights = value["weights"]
+        if (
+            not isinstance(weights, dict)
+            or not weights
+            or set(weights) - ENVIRONMENT_TERMS
+            or not all(number(w) and w >= 0 for w in weights.values())
+            or not any(w > 0 for w in weights.values())
+        ):
+            raise BadInput(
+                "meta.environment_space.weights must map objective terms to "
+                "finite nonnegative weights, with at least one positive weight",
+                options=sorted(ENVIRONMENT_TERMS),
+                next=hint + "; weights example: {'m_th': 1, 's': 2, 'r': 1}",
+            )
 
 
 def _check_axis_map(
@@ -1028,7 +1116,8 @@ class QuestHandler(NumericRefHandler):
         ``meta=`` is a **closed allowlist**
         (:data:`_META_ALLOWED_KEYS` — ``compute_lane``/``quest_body``/
         ``rubric_objectives``/``demand``/``supply``/
-        ``operating_conditions``/``reaction_config``), patch-merged via
+        ``operating_conditions``/``environment_space``/``reaction_config``),
+        patch-merged via
         ``store.stamp_ref_meta`` (existing keys outside the patch untouched —
         never a whole-dict clobber; ``reaction_config`` itself shallow-merges
         into the stored config so a ``network_her`` flip keeps ``slab``/
@@ -1080,6 +1169,7 @@ class QuestHandler(NumericRefHandler):
             _check_demand_meta(meta)
             _check_supply_meta(meta)
             _check_operating_conditions(meta)
+            _check_environment_space(meta)
             _check_reaction_config(meta)
             _check_fidelity_meta(meta)
             patch = dict(meta)
@@ -1109,7 +1199,7 @@ class QuestHandler(NumericRefHandler):
                 raise BadInput(
                     "edit(kind='quest', mode='replace') requires text= "
                     "(or meta= to patch compute_lane/quest_body/"
-                    "rubric_objectives/demand/supply/operating_conditions/"
+                    "rubric_objectives/demand/supply/operating_conditions/environment_space/"
                     "reaction_config)",
                     next=(
                         "edit(kind='quest', id=N, mode='replace', "
@@ -1254,8 +1344,6 @@ class QuestHandler(NumericRefHandler):
         """``view='meta'`` — the patchable meta keys
         (:data:`_META_ALLOWED_KEYS`) as compact JSON, one per line, each
         value clipped so the body stays well inside the 4 KB cap (gr537834)."""
-        import json
-
         meta = ref.meta or {}
         lines = [f"# meta — quest {ref.id} (patchable keys)"]
         for key in sorted(_META_ALLOWED_KEYS):
@@ -1669,6 +1757,8 @@ class QuestHandler(NumericRefHandler):
             lines.append(f"horizon: {meta['horizon']}")
         if tags:
             lines.append("tags: " + " ".join(str(t) for t in tags))
+        if "environment_space" in meta:
+            lines.append("environment_space: " + json.dumps(meta["environment_space"]))
         # Full statement (title may carry criteria on later lines).
         rest = ref.title.split("\n", 1)
         if len(rest) > 1 and rest[1].strip():

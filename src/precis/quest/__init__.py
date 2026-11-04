@@ -90,6 +90,13 @@ Package-level invariants (detail lives on the named module):
   query reports local vs acquired.
 - **Human-set knobs the LLM may not tune**: ``meta.rubric_composite``,
   ``meta.fidelity_levels`` (screening→neb→verify) — seed time only.
+  ``meta.operating_conditions`` and ``meta.environment_space`` use the
+  quest handler's validated meta-edit door. Tick payloads have no generic
+  meta-patch action, so they cannot change these bounds or goals.
+  ``environment_space.effective_environment_space`` resolves detached
+  defaults at optimizer read time: the kinetics sweep box plus operating
+  windows/points, TOF_floor 1e-3 /s and tau_s 1 s. This keeps absence from
+  becoming a tick-authored policy; explicit axes override defaults individually.
 - **Bulk Pourbaix gates, never ranks.** Dispatch requires human-set
   ``operating_conditions`` and content-addresses geometry + inputs; a
   successful current-input verdict is stamped as evidence. A host-phase
