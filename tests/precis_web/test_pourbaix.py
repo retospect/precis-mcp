@@ -12,6 +12,7 @@ import json
 import re
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
 from typing import Any
 
 import pytest
@@ -340,6 +341,249 @@ def test_states_rejects_bad_input(pb_client: TestClient, runtime_with_store) -> 
     assert pb_client.get(f"/pourbaix/st{bare}/states").status_code == 404
 
 
+def _svg_point(svg: ET.Element) -> ET.Element:
+    point = svg.find("{*}g[@class='pbx-pt']/{*}circle")
+    assert point is not None, "the embed marks both U and pH"
+    return point
+
+
+def test_map_endpoint_dimensions_legend_and_same_origin_headers(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    sid = _seed_structure(runtime_with_store)
+    url = f"/pourbaix/st{sid}/map"
+    for params, width, height, legend in (
+        ({}, 760, 460, True),
+        ({"w": "360", "h": "240", "legend": "0"}, 360, 240, False),
+        ({"w": "-1", "h": "0", "legend": "1"}, 240, 180, True),
+        ({"w": "99999", "h": "99999"}, 1600, 1200, True),
+    ):
+        response = pb_client.get(url, params=params)
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("image/svg+xml")
+        assert response.headers["cross-origin-resource-policy"] == "same-origin"
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["x-frame-options"] == "SAMEORIGIN"
+        assert "frame-ancestors 'self'" in response.headers["content-security-policy"]
+        assert "access-control-allow-origin" not in response.headers
+        assert "x-pourbaix-pathway" not in response.headers
+        svg = ET.fromstring(response.text)
+        assert svg.tag == "{http://www.w3.org/2000/svg}svg"
+        assert svg.attrib["width"] == str(width)
+        assert svg.attrib["height"] == str(height)
+        assert svg.attrib["viewBox"] == f"0 0 {width} {height}"
+        assert ("propagated band" in response.text) is legend
+        assert ("model-form band" in response.text) is legend
+        assert "U (V vs RHE)" in response.text
+
+
+def test_map_endpoint_point_and_coordinate_attributes(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    sid = _seed_structure(runtime_with_store)
+    response = pb_client.get(
+        f"/pourbaix/st{sid}/map", params={"w": 400, "h": 300, "u": -0.25, "ph": 3.5}
+    )
+    assert response.status_code == 200
+    svg = ET.fromstring(response.text)
+    attrs = {
+        name: float(svg.attrib[f"data-{name}"])
+        for name in ("ulo", "uhi", "x0", "pw", "phlo", "phhi", "y0", "ploth")
+    }
+    assert attrs["ulo"] == pytest.approx(-0.5)
+    assert attrs["uhi"] == pytest.approx(0.5)
+    assert attrs["phlo"] == pytest.approx(0.0)
+    assert attrs["phhi"] == pytest.approx(14.0)
+    assert attrs["pw"] > 0 and attrs["ploth"] > 0
+    point = _svg_point(svg)
+    assert float(point.attrib["cx"]) == pytest.approx(attrs["x0"] + attrs["pw"] / 4)
+    assert float(point.attrib["cy"]) == pytest.approx(
+        attrs["y0"] + attrs["ploth"] * 3 / 4
+    )
+
+
+def test_map_endpoint_defaults_match_page_and_marker_is_clipped(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    sid, _pw = _linked(runtime_with_store)
+    page = pb_client.get(f"/pourbaix/st{sid}").text
+    defaults = {
+        "u": float(_attr(_input_tag(page, "pbx-u"), "value")),
+        "ph": float(_attr(_input_tag(page, "pbx-ph"), "value")),
+    }
+    url = f"/pourbaix/st{sid}/map"
+    implicit = ET.fromstring(pb_client.get(url).text)
+    explicit = ET.fromstring(pb_client.get(url, params=defaults).text)
+    assert _svg_point(implicit).attrib == _svg_point(explicit).attrib
+    for u, ph, right, top in ((99, 99, True, True), (-99, -99, False, False)):
+        response = pb_client.get(url, params={"u": u, "ph": ph})
+        assert response.status_code == 200
+        svg = ET.fromstring(response.text)
+        point = _svg_point(svg)
+        x = float(svg.attrib["data-x0"])
+        y = float(svg.attrib["data-y0"])
+        if right:
+            x += float(svg.attrib["data-pw"])
+        if not top:
+            y += float(svg.attrib["data-ploth"])
+        assert float(point.attrib["cx"]) == pytest.approx(x)
+        assert float(point.attrib["cy"]) == pytest.approx(y)
+        label = svg.find('.//{*}g[@class="pbx-pt"]/{*}text')
+        assert label is not None
+        assert label.attrib["text-anchor"] == ("end" if right else "start")
+        assert float(label.attrib["x"]) == pytest.approx(x - 8 if right else x + 8)
+
+
+def test_map_endpoint_has_unique_pattern_ids_and_resolved_references(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    sid = _seed_structure(runtime_with_store)
+    pattern_sets = []
+    for _ in range(2):
+        response = pb_client.get(f"/pourbaix/st{sid}/map")
+        assert response.status_code == 200
+        svg = ET.fromstring(response.text)
+        ids = {p.attrib["id"] for p in svg.findall(".//{*}pattern")}
+        assert len(ids) == 2
+        assert all(name not in ids for name in ("mfHatch", "bulkHatch"))
+        references = set(re.findall(r"url\(#([^)]*)\)", response.text))
+        assert references and references <= ids
+        pattern_sets.append(ids)
+    assert pattern_sets[0].isdisjoint(pattern_sets[1])
+
+
+def test_map_endpoint_missing_nonstructure_and_no_map_are_json_404(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    qid = _mk_quest(runtime_with_store)
+    bare = _seed_structure(runtime_with_store, with_scan=False)
+    no_window = _seed_structure(runtime_with_store, "pd_no_window", sweep={})
+    for handle in ("nope", f"qu{qid}", f"st{bare}", f"st{no_window}"):
+        response = pb_client.get(f"/pourbaix/{handle}/map")
+        assert response.status_code == 404
+        assert response.headers["content-type"].startswith("application/json")
+        assert response.json()["error"]
+
+
+def test_map_endpoint_refuses_invalid_query_values(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    sid = _seed_structure(runtime_with_store)
+    for name, values in (
+        ("w", ("", "nope", "300.5", "3e2", "nan", "inf")),
+        ("h", ("", "nope", "300.5", "3e2", "nan", "inf")),
+        ("legend", ("", "true", "2", "-1")),
+        ("u", ("", "nope", "nan", "inf", "-inf", "1e999", "<script>alert(1)</script>")),
+        ("ph", ("", "nope", "nan", "inf", "-inf", "1e999", '" onload="alert(1)')),
+    ):
+        for value in values:
+            response = pb_client.get(f"/pourbaix/st{sid}/map", params={name: value})
+            assert response.status_code == 400, (name, value, response.text)
+            assert response.headers["content-type"].startswith("application/json")
+            assert response.json()["error"]
+
+
+def test_map_endpoint_explicit_pathway_selects_older_overlays(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    store = runtime_with_store.store
+    sid = _seed_structure(runtime_with_store)
+    older_results = _pathway_results()
+    # 0.3 eV equals the chemical tolerance and still yields a hysteretic
+    # band. Exceed it so this route has neither reset nor hysteretic spans.
+    older_results["che_affine"]["per_route"][0]["steps"][-1]["delta_g0"] = 0.4
+    older = _pathway(store, "map_older", older_results)
+    newer = _pathway(store, "map_newer", _reset_results())
+    for pw in (older, newer):
+        store.add_link(src_ref_id=sid, dst_ref_id=pw.id, relation="related-to")
+    url = f"/pourbaix/st{sid}/map"
+    default = pb_client.get(url)
+    assert default.status_code == 200
+    assert default.headers["x-pourbaix-pathway"] == f"pw{newer.id}"
+    assert 'data-rung="e2"' in default.text
+    assert 'data-rung="no_reduce"' not in default.text
+    assert 'class="pbx-reset"' in default.text
+    selected = pb_client.get(url, params={"pathway": f"pw{older.id}"})
+    assert selected.status_code == 200
+    assert selected.headers["x-pourbaix-pathway"] == f"pw{older.id}"
+    assert "x-pourbaix-pathway-fallback" not in selected.headers
+    assert 'data-rung="no_reduce"' in selected.text
+    assert 'data-rung="e2"' not in selected.text
+    assert "U_L1" in selected.text and "U_opt1" in selected.text
+    # The older route's potential-independent uphill desorption prevents
+    # any viable reset interval, unlike the newer e1/e2 route.
+    assert 'class="pbx-reset"' not in selected.text
+    assert 'class="pbx-window"' in selected.text
+    assert 'class="pbx-mask-her"' in selected.text
+
+
+def test_map_endpoint_explicit_pathway_without_ready_fallback_is_json_404(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    sid = _seed_structure(runtime_with_store)
+    unrelated = _pathway(runtime_with_store.store, "map_unrelated", _reset_results())
+    url = f"/pourbaix/st{sid}/map"
+    default = pb_client.get(url)
+    assert default.status_code == 200
+    assert default.headers["content-type"].startswith("image/svg+xml")
+    assert "x-pourbaix-pathway" not in default.headers
+    params = {"pathway": f"pw{unrelated.id}"}
+    response = pb_client.get(url, params=params)
+    states = pb_client.get(f"/pourbaix/st{sid}/states", params=params)
+    assert response.status_code == states.status_code == 404
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["error"]
+
+
+def test_map_endpoint_unlinked_pathway_is_json_404_naming_linked_pathway(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    sid, linked = _linked(runtime_with_store)
+    unrelated = _pathway(runtime_with_store.store, "map_unrelated", _reset_results())
+    payload = '"><script>alert("map")</script>'
+    for selection in (f"pw{unrelated.id}", payload):
+        params = {"pathway": selection}
+        states = pb_client.get(f"/pourbaix/st{sid}/states", params=params)
+        response = pb_client.get(f"/pourbaix/st{sid}/map", params=params)
+        assert states.status_code == 200
+        assert states.json()["pathway_notice"]
+        assert response.status_code == 404
+        assert response.headers["content-type"].startswith("application/json")
+        assert selection in response.json()["error"]
+        assert f"pw{linked.id}" in response.json()["error"]
+        assert "x-pourbaix-pathway" not in response.headers
+        assert "x-pourbaix-pathway-fallback" not in response.headers
+    for chosen in (None, "", "   "):
+        params = {} if chosen is None else {"pathway": chosen}
+        response = pb_client.get(f"/pourbaix/st{sid}/map", params=params)
+        assert response.status_code == 200
+        assert response.headers["x-pourbaix-pathway"] == f"pw{linked.id}"
+        assert "x-pourbaix-pathway-fallback" not in response.headers
+
+
+def test_map_embed_options_leave_the_default_page_svg_unchanged(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    from precis_pathway import pourbaix_map
+
+    sid = _seed_structure(runtime_with_store)
+    ref = runtime_with_store.store.get_ref(kind="structure", id=sid)
+    first_map = pourbaix_map.maps_for_structure(runtime_with_store.store, ref)[0]
+    legacy = map_svg(first_map, u_marker=0.0)
+    assert legacy == map_svg(
+        first_map, u_marker=0.0, legend=True, ph_marker=None, id_prefix=""
+    )
+    assert legacy == map_svg(first_map, u_marker=0.0)
+    assert 'width="760" height="460"' in legacy
+    assert "propagated band" in legacy and "model-form band" in legacy
+    assert 'id="mfHatch"' in legacy and 'id="bulkHatch"' in legacy
+    assert 'class="pbx-pt"' not in legacy
+    for _ in range(2):
+        page = pb_client.get(f"/pourbaix/st{sid}")
+        assert page.status_code == 200
+        assert legacy in page.text
+
+
 def test_map_carries_mask_overlays_and_toggles(
     pb_client: TestClient, runtime_with_store
 ) -> None:
@@ -553,6 +797,33 @@ def test_map_svg_draws_regions_bands_and_bulk_overlay() -> None:
 def test_map_svg_empty_map_is_an_honest_placeholder() -> None:
     svg = map_svg({"U_RHE_window": [None, None]})
     assert "no sweep window" in svg
+
+
+def test_map_svg_namespaces_both_hatches_and_escapes_labels_and_prefix() -> None:
+    payload = '"><script>alert("map")</script>'
+    m = {
+        "U_RHE_window": [-0.5, 0.5],
+        "pH_window": [0.0, 14.0],
+        "regions": [{"U_RHE_range": [-0.5, 0.5], "label": payload}],
+        "boundaries": [{"U_RHE": 0.0, "band_model_form": 0.05}],
+        "bulk": {"cells": [{"U_RHE": 0.0, "pH": 7.0, "verdict": "stable"}]},
+    }
+    for prefix in ("embed-one-", "embed-two-", payload):
+        rendered = map_svg(m, legend=False, id_prefix=prefix)
+        svg = ET.fromstring(rendered)
+        ids = {p.attrib["id"] for p in svg.findall(".//{*}pattern")}
+        assert ids == {f"{prefix}mfHatch", f"{prefix}bulkHatch"}
+        # Decode XML attributes before checking references: both drawing
+        # layers must resolve even when the prefix needs escaping.
+        fills = {node.attrib["fill"] for node in svg.iter() if "fill" in node.attrib}
+        assert {f"url(#{name})" for name in ids} <= fills
+        assert payload not in rendered
+        assert payload in "".join(svg.itertext())
+        assert not svg.findall(".//{*}script")
+        assert (
+            "propagated band" not in rendered
+            and "bulk layer (uncertain)" not in rendered
+        )
 
 
 # ── slice 7: the reset layer on the map ──────────────────────────────────

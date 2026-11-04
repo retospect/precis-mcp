@@ -30,6 +30,14 @@ linked reaction-staircase panel (slices 2+3).
   bank params in the address bar with ``history.replaceState`` and carries
   them on every picker link. An unparseable value is named in a notice and
   the default kept.
+* ``GET /pourbaix/{handle}/map`` — same-origin SVG embed of a structure's
+  first map (the one ``/states`` judges). ``w``/``h`` bound its size,
+  ``legend=0`` hides the legend, and ``u``/``ph`` mark the picked point.
+  ``pathway`` uses the same ready linked selection as ``/states``;
+  X-Pourbaix-Pathway names the selected handle. An unavailable explicit
+  pick returns JSON 404 because image embeds cannot show a fallback notice.
+  This deliberately
+  avoids the candidate_ref-based window-objective pathway selector.
 """
 
 from __future__ import annotations
@@ -39,9 +47,10 @@ import math
 import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, urlencode
+from uuid import uuid4
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from precis.utils import handle_registry
 from precis_web.deps import get_store, templates, timed_response
@@ -668,6 +677,106 @@ def _bank_param(v: float, digits: int) -> str:
     inputs use the same spelling so a no-JS submit round-trips."""
     s = f"{v:.{digits}f}".rstrip("0").rstrip(".")
     return "0" if s in ("", "-0") else s
+
+
+@router.get("/pourbaix/{handle}/map")
+async def pourbaix_map_embed(request: Request, handle: str) -> Response:
+    """A sized SVG using the page's first map and explicitly picked pathway.
+
+    Hatch IDs are unique per response so inline embeds cannot capture each
+    other's patterns. Full-page renderer defaults stay deterministic.
+    ``Cross-Origin-Resource-Policy`` also blocks cross-origin image embeds;
+    the app's framing policy and absence of CORS protect other consumers.
+    """
+    from precis.quest import staircase as sq
+    from precis_pathway import pourbaix_map
+    from precis_pathway import staircase_states as ss
+
+    store = get_store(request)
+    resolved = _resolve(store, handle)
+    if resolved is None or resolved[0] != "structure":
+        return JSONResponse(
+            {"error": f"no live structure with handle {handle!r}"}, status_code=404
+        )
+    ref = resolved[1]
+    params = request.query_params
+    dimensions = {}
+    for key, default, low, high in (("w", 760, 240, 1600), ("h", 460, 180, 1200)):
+        try:
+            dimensions[key] = max(low, min(high, int(params.get(key, str(default)))))
+        except ValueError:
+            return JSONResponse({"error": f"{key} must be an integer"}, status_code=400)
+    legend = params.get("legend", "1")
+    if legend not in ("0", "1"):
+        return JSONResponse({"error": "legend must be 0 or 1"}, status_code=400)
+    point: dict[str, float] = {}
+    for key, fallback in (
+        ("u", _u_default(store, "structure", ref)),
+        ("ph", _ph_default(ref)),
+    ):
+        raw = params.get(key)
+        try:
+            value = fallback if raw is None else float(raw)
+        except ValueError:
+            value = math.nan
+        if not math.isfinite(value):
+            return JSONResponse(
+                {"error": f"{key} must be a finite number"}, status_code=400
+            )
+        point[key] = value
+    maps = pourbaix_map.maps_for_structure(store, ref)
+    window = (maps[0].get("U_RHE_window") if maps else None) or [None, None]
+    if window[0] is None or window[1] is None or not window[0] < window[1]:
+        return JSONResponse(
+            {"error": "no swept map is available for this structure"}, status_code=404
+        )
+    m = maps[0]
+    staircase, sr, pw = _staircase_ctx(store, ref, pathway=params.get("pathway"))
+    if staircase is None and (params.get("pathway") or "").strip():
+        return JSONResponse(
+            {"error": "no ready pathway is linked to this structure"}, status_code=404
+        )
+    if (
+        (params.get("pathway") or "").strip()
+        and staircase is not None
+        and staircase["pathway_notice"]
+    ):
+        return JSONResponse(
+            {
+                "error": f"no ready pathway {params['pathway'].strip()!r} is linked "
+                f"to this structure; best-ranked linked pathway is "
+                f"{staircase['pathway_handle']}"
+            },
+            status_code=404,
+        )
+    coads = (
+        ss.pathway_coads(store, pw.meta or {}, ref.meta or {})
+        if pw is not None
+        else sq.coads_of(ref.meta or {})
+    )
+    headers = {
+        "Cross-Origin-Resource-Policy": "same-origin",
+        # Reused cached markup would also reuse document-wide pattern IDs.
+        "Cache-Control": "no-store",
+    }
+    if staircase is not None:
+        headers["X-Pourbaix-Pathway"] = staircase["pathway_handle"]
+    return Response(
+        map_svg(
+            m,
+            width=dimensions["w"],
+            height=dimensions["h"],
+            legend=legend == "1",
+            u_marker=max(-_LINK_U_BOUND, min(_LINK_U_BOUND, point["u"])),
+            ph_marker=max(0.0, min(14.0, point["ph"])),
+            id_prefix=f"pbx-{uuid4().hex}-",
+            vlines=_vlines(staircase),
+            reset=_reset_layer(sr, m.get("U_RHE_window")),
+            masks=_mask_layer(sr, m, coads) if sr is not None else None,
+        ),
+        media_type="image/svg+xml",
+        headers=headers,
+    )
 
 
 @router.get("/pourbaix/{handle}/states")

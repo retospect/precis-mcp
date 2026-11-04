@@ -87,7 +87,10 @@ def map_svg(
     *,
     width: int = 760,
     height: int = 460,
+    legend: bool = True,
     u_marker: float | None = None,
+    ph_marker: float | None = None,
+    id_prefix: str = "",
     vlines: list[dict[str, Any]] | None = None,
     reset: list[dict[str, Any]] | None = None,
     masks: dict[str, Any] | None = None,
@@ -101,6 +104,10 @@ def map_svg(
     and ``U_opt`` as ``{"u", "label", "color", "dash"}``). The ``data-*``
     attributes on the root carry the plot's coordinate transform so the
     shared slider bank can move the marker client-side.
+
+    Embeds pass ``legend=False`` to reclaim footer space, ``ph_marker``
+    with ``u_marker`` for the picked point, and a unique ``id_prefix``
+    for document-wide hatch IDs. Defaults preserve the full-page layout.
 
     Slice 7: ``reset`` draws the guaranteed-reset layer as one togglable
     ``<g class="pbx-reset">`` group — per route ``{"name", "color",
@@ -130,7 +137,9 @@ def map_svg(
     ph_lo, ph_hi = (m.get("pH_window") or [0.0, 14.0])[:2]
     ph_lo, ph_hi = float(ph_lo), float(ph_hi)
     plot_w = width - _ML - _MR
-    plot_h = height - _MT - _MB
+    plot_h = height - _MT - (_MB if legend else _MB - 18)
+    mf_hatch = _esc(f"{id_prefix}mfHatch")
+    bulk_hatch = _esc(f"{id_prefix}bulkHatch")
 
     def X(u: float) -> float:
         return _ML + (u - u_lo) / (u_hi - u_lo) * plot_w
@@ -147,12 +156,12 @@ def map_svg(
         f'data-phlo="{ph_lo:g}" data-phhi="{ph_hi:g}" '
         f'data-y0="{_MT}" data-ploth="{plot_h}">',
         "<defs>"
-        '<pattern id="mfHatch" width="6" height="6" '
+        f'<pattern id="{mf_hatch}" width="6" height="6" '
         'patternTransform="rotate(45)" patternUnits="userSpaceOnUse">'
         '<rect width="6" height="6" fill="none"/>'
         '<line x1="0" y1="0" x2="0" y2="6" stroke="#d97706" '
         'stroke-width="1.4" stroke-opacity="0.55"/></pattern>'
-        '<pattern id="bulkHatch" width="7" height="7" '
+        f'<pattern id="{bulk_hatch}" width="7" height="7" '
         'patternTransform="rotate(-30)" patternUnits="userSpaceOnUse">'
         '<rect width="7" height="7" fill="none"/>'
         '<line x1="0" y1="0" x2="0" y2="7" stroke="#94a3b8" '
@@ -201,7 +210,7 @@ def map_svg(
             w = abs(X(float(u) + float(mf)) - x)
             parts.append(
                 f'<rect x="{x - w:.1f}" y="{_MT}" width="{2 * w:.1f}" '
-                f'height="{plot_h}" fill="url(#mfHatch)"/>'
+                f'height="{plot_h}" fill="url(#{mf_hatch})"/>'
             )
         parts.append(
             f'<line x1="{x:.1f}" y1="{_MT}" x2="{x:.1f}" '
@@ -222,7 +231,7 @@ def map_svg(
         y0, y1 = Y(float(ph) + dp / 2), Y(float(ph) - dp / 2)
         parts.append(
             f'<rect x="{x0:.1f}" y="{y0:.1f}" width="{x1 - x0:.1f}" '
-            f'height="{y1 - y0:.1f}" fill="url(#bulkHatch)" '
+            f'height="{y1 - y0:.1f}" fill="url(#{bulk_hatch})" '
             f'stroke="{color}" stroke-width="1.2" '
             'stroke-dasharray="4 3" fill-opacity="0.35"/>'
         )
@@ -328,6 +337,21 @@ def map_svg(
             f'y2="{_MT + plot_h}" stroke="#dc2626" stroke-width="1.8" '
             'stroke-opacity="0.85"/>'
         )
+        if isinstance(ph_marker, int | float) and math.isfinite(float(ph_marker)):
+            y = Y(min(max(float(ph_marker), ph_lo), ph_hi))
+            label = f"U={u_marker:g}, pH={ph_marker:g}"
+            # The monospace label needs roughly 6 px per character at 10 px.
+            flip = x + 8 + len(label) * 6 > width - _MR
+            label_x = x - 8 if flip else x + 8
+            anchor = "end" if flip else "start"
+            parts.append(
+                '<g class="pbx-pt" pointer-events="none">'
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5" '
+                'fill="#dc2626" stroke="#f8fafc" stroke-width="1.5"/>'
+                f'<text x="{label_x:.1f}" y="{y - 8:.1f}" font-size="10" '
+                f'fill="#0f172a" text-anchor="{anchor}">'
+                f"{label}</text></g>"
+            )
 
     # Axes + ticks.
     for t in _ticks(u_lo, u_hi):
@@ -346,17 +370,24 @@ def map_svg(
             f'<text x="{_ML - 8}" y="{y + 3:.1f}" font-size="10" '
             f'fill="#475569" text-anchor="end">{t:g}</text>'
         )
+    u_label = "U (V vs RHE)"
+    if width >= 600:
+        u_label += " — pH-flat on this scale; the SHE view tilts 0.059 V/pH"
     parts.append(
         f'<text x="{_ML + plot_w / 2:.1f}" y="{_MT + plot_h + 34}" '
         'font-size="11" fill="#334155" text-anchor="middle">'
-        "U (V vs RHE) — pH-flat on this scale; the SHE view tilts "
-        "0.059 V/pH</text>"
+        f"{u_label}</text>"
         f'<text x="16" y="{_MT + plot_h / 2:.1f}" font-size="11" '
         'fill="#334155" text-anchor="middle" '
         f'transform="rotate(-90 16 {_MT + plot_h / 2:.1f})">pH</text>'
     )
 
+    if not legend:
+        parts.append("</svg>")
+        return "".join(parts)
+
     # Legend + provenance footer.
+    legend_start = len(parts)
     lx = _ML
     ly = _MT + plot_h + 46
     for label, color in legend_regions:
@@ -376,19 +407,21 @@ def map_svg(
     lx += 110
     parts.append(
         f'<rect x="{lx}" y="{ly - 9}" width="10" height="10" '
-        'fill="url(#mfHatch)" stroke="#d97706" stroke-opacity="0.4"/>'
+        f'fill="url(#{mf_hatch})" stroke="#d97706" stroke-opacity="0.4"/>'
         f'<text x="{lx + 13}" y="{ly}" font-size="9" fill="#334155">'
         "model-form band</text>"
     )
+    legend_right = lx + 118
     if cells:
         lx += 118
         parts.append(
             f'<rect x="{lx}" y="{ly - 9}" width="10" height="10" '
-            'fill="url(#bulkHatch)" stroke="#dc2626" '
+            f'fill="url(#{bulk_hatch})" stroke="#dc2626" '
             'stroke-dasharray="3 2" fill-opacity="0.35"/>'
             f'<text x="{lx + 13}" y="{ly}" font-size="9" fill="#334155">'
             "bulk layer (uncertain)</text>"
         )
+        legend_right = lx + 13 + len("bulk layer (uncertain)") * 6
     for label, color in legend_reset:
         lx += 115
         parts.append(
@@ -398,6 +431,20 @@ def map_svg(
             f'<text x="{lx + 13}" y="{ly}" font-size="9" fill="#334155">'
             f"{_esc(label)} reset (dashed = hysteretic)</text>"
         )
+        legend_right = max(
+            legend_right, lx + 13 + len(f"{label} reset (dashed = hysteretic)") * 6
+        )
+    if width < 600:
+        # The embed can hide the legend entirely; when requested, fit its
+        # fixed row into the compact viewport without changing page layout.
+        scale = min(1.0, plot_w / (legend_right - _ML))
+        parts.insert(
+            legend_start,
+            '<g class="pbx-legend" '
+            f'transform="translate({_ML} {ly}) scale({scale:.6f}) '
+            f'translate({-_ML} {-ly})">',
+        )
+        parts.append("</g>")
     parts.append("</svg>")
     return "".join(parts)
 
