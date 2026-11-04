@@ -13,7 +13,7 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
 * :func:`submit` reads the squash subject from the branch
   (:func:`squash_subject`: the slice's commit subject, its trailing handle
   list made to carry ``(td<id>)`` so ``scripts/lib/land_notify.py`` moves
-  the todo, capped at 72 bytes) and launches ``scripts/ship --quick
+  the todo, capped at 72 bytes) and launches ``scripts/ship --checked
   "<subject>"`` detached in the worktree (``PRECIS_SHIP_BIN`` overrides the
   path; ``PRECIS_SHIP_VERBOSE=1`` so the log holds the whole transcript).
 * :func:`poll` waits for ship's exit. Green: the landed sha (ship's
@@ -62,8 +62,9 @@ the relock commit), else ``slice-pr-<n>``, cut here from ``git fetch origin
 +pull/<n>/head`` and refused when the head is not the sha the intake
 classified (``meta.pr.head_sha`` on the plan root). The subject is the PR
 title made lint-clean (:func:`precis.plans.pr_class.land_subject`) plus
-``(td<id>)``, and ``params.checked`` (the template sets it) ships with
-``--checked``: a pyproject diff selects the contract and import-map tests.
+``(td<id>)``. Every land ships ``--checked`` (:func:`ship_flag`; a
+pyproject diff selects the contract and import-map tests) unless
+``params.checked`` is ``False``.
 After a green land — of a PR node, or of any slice whose todo carries
 ``meta.pr_close = <n>`` (the "land after fixes" slice) — the PR is closed
 with a comment naming the squash sha (:func:`_gh`, the host's ``gh auth``:
@@ -119,6 +120,20 @@ NO_DIFF_NOTE = (
     "landed: nothing — branch had no net diff against origin/main (already on main)"
 )
 
+
+def ship_flag(params: dict[str, Any]) -> str:
+    """``--checked`` unless ``params.checked`` is explicitly ``False``.
+
+    r200 went red on a factory land (8004d84e0): a new ``args`` key the
+    handler read without declaring it, caught by the dispatch contract test
+    ``tests/test_dispatch_args_keys.py`` that neither the build's own test
+    file nor the reviewer ran. ``--checked`` runs those contract invariants
+    (plus the impacted-tests selection) at the land, a couple of minutes a
+    slice; ``--quick`` is lint only and stays for an operator who asks.
+    """
+    return "--quick" if params.get("checked") is False else "--checked"
+
+
 #: Substrings of ship's own refusal lines (``die`` in ``scripts/ship``'s
 #: qland drift guard) that are about MAIN's state, not the branch's: the
 #: land is deferred and ship relaunched, not the slice reopened.
@@ -171,7 +186,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "target_node": {"type": "string"},
         # A pull request's land (worktree/branch then optional, see above).
         "pr": {"type": "integer"},
-        # Ship with --checked instead of --quick.
+        # False ships --quick (lint only); default and True ship --checked.
         "checked": {"type": "boolean"},
     },
     "required": ["todo_id"],
@@ -767,7 +782,7 @@ def submit(ctx: Any, spec: Any) -> Any:
             pr_class.land_subject(str(pr["title"]), str(pr.get("class") or "")),
             todo_id,
         )
-    flag = "--checked" if params.get("checked") else "--quick"
+    flag = ship_flag(params)
     if subject is None:
         what = "git log failed" if subjects is None else "no commit ahead"
         _fail(
@@ -1119,9 +1134,7 @@ def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
     params = (ctx.meta or {}).get("params") or {}
     handle.pop("not_before", None)
     tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
-    flag = str(
-        handle.get("flag") or ("--checked" if params.get("checked") else "--quick")
-    )
+    flag = str(handle.get("flag") or ship_flag(params))
     fresh = _launch_ship(
         ctx, tree, flag, str(handle.get("subject") or ""), carry=handle
     )

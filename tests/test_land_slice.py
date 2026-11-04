@@ -346,7 +346,7 @@ def test_submit_launches_ship_with_the_slice_subject(seams: dict[str, Any]) -> N
     tree = seams["tree"]
     assert ctx.failure is None and ctx.status is None
     [(argv, kw)] = seams["launch"]
-    assert argv == [str(tree / "scripts" / "ship"), "--quick", SUBJECT]
+    assert argv == [str(tree / "scripts" / "ship"), "--checked", SUBJECT]
     assert kw["cwd"] == tree
     assert kw["env"]["PRECIS_SHIP_VERBOSE"] == "1"
     # ship's uv steps run on the worker's Python line, never the newest
@@ -699,7 +699,7 @@ def _defer_setup(
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     _ctx, handle = _submit(store, seams)
-    assert handle["flag"] == "--quick"
+    assert handle["flag"] == "--checked"
     if refusals is not None:
         handle["main_refusals"] = refusals
     _finish(handle, 1, DRIFT_LOG)
@@ -796,7 +796,7 @@ def test_submit_records_the_preflight_when_the_land_goes_on(
     assert ctx.chunks[0][1] == (
         f"land_slice: drift preflight (lander identity): age=3.2; {found}"
     )
-    assert ctx.chunks[1][1].startswith("land_slice: scripts/ship --quick")
+    assert ctx.chunks[1][1].startswith("land_slice: scripts/ship --checked")
     # the helper's own none-green: ship makes the refusal, the job still says so
     seams["preflight"] = _preflight(2, "", NONE_GREEN_DIAG)
     seams["launch"].clear()
@@ -841,7 +841,7 @@ def test_submit_parks_when_the_lander_identity_cannot_read_the_gate(
     assert handle["not_before"] == "2026-11-01T10:30:00Z"
     assert handle["main_refusals"] == 1
     assert handle["last_refusal"] == land_slice.UNKNOWN_GATE_CROSS
-    assert handle["flag"] == "--quick" and handle["subject"] == SUBJECT
+    assert handle["flag"] == "--checked" and handle["subject"] == SUBJECT
     assert handle["worktree"] == str(seams["tree"])
     assert "pid" not in handle
     assert ctx.meta_set["compute_handle"] == handle
@@ -879,7 +879,7 @@ def test_relaunch_parks_again_while_the_gate_stays_unknown(
     assert handle["main_refusals"] == 2
     assert handle["not_before"] == "2026-11-01T11:00:00Z"
     assert handle["last_refusal"] == land_slice.UNKNOWN_GATE_CROSS
-    assert handle["flag"] == "--quick" and handle["subject"] == SUBJECT
+    assert handle["flag"] == "--checked" and handle["subject"] == SUBJECT
     assert pctx.meta_set["compute_handle"] == handle
     due = T0 + timedelta(seconds=1800)
     assert (
@@ -1071,13 +1071,13 @@ def test_poll_at_not_before_relaunches_once(
     clock["t"] = T0 + timedelta(seconds=1800)  # exactly due
     pctx = _Ctx(store, _params(seams))
     assert land_slice.poll(pctx, handle) is False
-    assert launched == [(seams["tree"], "--quick", SUBJECT)]
+    assert launched == [(seams["tree"], "--checked", SUBJECT)]
     assert len(seams["launch"]) == 2
     argv, kw = seams["launch"][1]
-    assert argv == [str(seams["tree"] / "scripts" / "ship"), "--quick", SUBJECT]
+    assert argv == [str(seams["tree"] / "scripts" / "ship"), "--checked", SUBJECT]
     assert kw["env"]["PRECIS_SHIP_VERBOSE"] == "1"
     assert "not_before" not in handle
-    assert handle["pid"] == 5151 and handle["flag"] == "--quick"
+    assert handle["pid"] == 5151 and handle["flag"] == "--checked"
     assert handle["main_refusals"] == 3  # carried over
     assert handle["last_refusal"].startswith("✖ main has no")
     assert pctx.meta_set["compute_handle"] == handle
@@ -1089,6 +1089,15 @@ def test_poll_at_not_before_relaunches_once(
     # the relaunch is now running: polls wait on it, no further launch
     assert land_slice.poll(pctx, handle) is False
     assert len(seams["launch"]) == 2
+
+
+def test_ship_flag_is_checked_unless_opted_out() -> None:
+    """r200 red on 8004d84e0: an undeclared args key only the dispatch
+    contract test catches. Every factory land runs --checked; --quick is an
+    explicit opt-out."""
+    assert land_slice.ship_flag({}) == "--checked"
+    assert land_slice.ship_flag({"checked": True}) == "--checked"
+    assert land_slice.ship_flag({"checked": False}) == "--quick"
 
 
 def test_poll_main_refusal_keeps_checked_flag(
@@ -1365,7 +1374,7 @@ def test_stub_ship_through_the_real_launcher(
         time.sleep(0.05)
     assert pctx.status == "succeeded", pctx.failure
     log = Path(handle["log"]).read_text(encoding="utf-8")
-    assert f"args: --quick {SUBJECT}" in log
+    assert f"args: --checked {SUBJECT}" in log
     assert "verbose: 1" in log
     assert pctx.meta_set["landed_sha"] == FULL_SHA
 
