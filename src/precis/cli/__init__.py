@@ -31,7 +31,7 @@ their spelling; only its loader changes, leaving ordinary SafeLoader semantics
 and non-string key refusal intact. Raw headers remain the export authority.
 
 The session-start ``memory index --export-dir`` snapshot also carries the
-live descendants of glossary taxon tn559460 and their ``standard_ref``
+live descendants of glossary taxon tn559460 and their ``pointer``
 pointers. ``scripts/memory-lint`` checks those cached pointers against its
 own checkout without database access; an absent snapshot is reported as
 skipped. This keeps hygiene runs offline while replacing the retired

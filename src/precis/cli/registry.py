@@ -168,11 +168,6 @@ COMMANDS: tuple[Command, ...] = (
         "Re-arm metadata enrichment for named papers (refills new fields).",
     ),
     _c(
-        "taxonomy",
-        "taxonomy",
-        "Term-taxonomy maintenance: mirror docs/glossary.md into nodes.",
-    ),
-    _c(
         "taxonomy-bootstrap",
         "taxonomy",
         "Generate a campaign's measurand list from corpus usage.",

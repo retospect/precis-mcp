@@ -5,7 +5,10 @@
 > surface for cluster agents — not dev docs for this code.
 
 Reading order: `docs/codebase.md` → owning package `__init__.py` docstring
-→ `docs/glossary.md` → `docs/backlog/INDEX.md`. Conventions, workflow, DoD,
+→ an unfamiliar or overloaded term: `search(kind='taxon', q='<term>',
+args={'under': 'tn559460'})` (the vocabulary taxonomy; a term you coin is a
+taxon under its hub there, never a file) → `docs/backlog/INDEX.md`.
+Conventions, workflow, DoD,
 repo-dev memory, prose style: `AGENTS.md`. Long form of every rule here:
 `docs/conventions/shipping.md` and `AGENTS.md` §Long form (budget 6,000 B).
 

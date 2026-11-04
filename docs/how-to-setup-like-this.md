@@ -31,7 +31,7 @@ link. Duplication = N rot sites for one fact.
 | `docs/codebase.md` | orientation | invariants, lifecycle, subsystem map, seams — the shape that survives refactors |
 | package `__init__.py` docstrings | present-state | per-subsystem truth + why (map: `docs/codebase.md`) |
 | package `__init__.py` "why" lines | rationale | why a decision, what was rejected — lives beside the code it justifies; git is the history |
-| `docs/glossary.md` | vocabulary | coined/overloaded term → best entry-point file |
+| the DB taxonomy (`taxon` kind, root `tn559460`, one node per term) | vocabulary | coined/overloaded term → best entry-point file; a tree gate keeps the old glossary file from coming back |
 | `AGENTS.md` | conventions / workflow / Definition-of-Done | the rules that bite |
 | `docs/backlog/*.md` | work items + specs | one per item; **delete-on-ship** (see §7) |
 

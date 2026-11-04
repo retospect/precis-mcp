@@ -37,9 +37,10 @@ CALLER_KEYS: frozenset[str] = frozenset(
         "excludes",
         "sign_convention",
         "difference",
-        # Mirror keys (gr548266): the glossary importer stamps where a
-        # term lives on disk — pointer is its "start here" file/skill,
-        # file_mirror is the source identity (path, line, namespace).
+        # Pointer and mirror keys: pointer is a term's "start here" file,
+        # symbol or skill (the repo-dev vocabulary under tn559460 carries
+        # one on every node); file_mirror is a file-mirrored node's source
+        # identity (path, line, namespace), kept for any future mirror.
         "pointer",
         "file_mirror",
     }
@@ -291,8 +292,8 @@ def validate_taxon_meta(
     ):
         raise BadInput(
             "file_mirror must be {'path': str, 'namespace': str, 'line': int}",
-            next="file_mirror={'path': 'docs/glossary.md', 'namespace': "
-            "'repo-dev-glossary', 'line': 42}",
+            next="file_mirror={'path': 'docs/terms.md', 'namespace': "
+            "'my-mirror', 'line': 42}",
         )
 
     contract = out.get("contract")

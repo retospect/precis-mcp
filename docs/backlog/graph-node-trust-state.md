@@ -18,7 +18,7 @@ explicit act.
 
 This change extends accountability across the existing mesh; it does not
 replace findings with a weaker claim kind or invent another trust score.
-The current [finding trust axis and trust ladder](../glossary.md#coined-terms)
+The current finding trust axis and trust ladder (vocabulary taxa under tn559460)
 retain their meaning. This document proposes storage/rollout slices, not
 a new adjudication policy.
 

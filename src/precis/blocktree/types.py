@@ -177,7 +177,7 @@ class BlockNode:
 
     Named ``BlockNode``, not the bare ``Block``, on purpose — ``Block`` is
     a reserved/overloaded class name outside ``precis.utils.prompt.model``
-    (docs/glossary.md "Overloaded — which one?", ``tests/test_vocab_lint.
+    (the vocabulary taxonomy (tn559460) "Overloaded — which one?", ``tests/test_vocab_lint.
     py``'s reserved-class-name gate); ``BlockNode`` keeps the domain word
     ("block", used freely in prose and in field names like ``a_block``)
     without colliding with that homonym's one Python class slot."""

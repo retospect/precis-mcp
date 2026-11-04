@@ -1085,7 +1085,7 @@ def taxon_pointer_snapshot(store: Store) -> dict[str, Any]:
             {
                 "handle": f"tn{rid}",
                 "title": ref.title,
-                "standard_ref": (ref.meta or {}).get("standard_ref"),
+                "pointer": (ref.meta or {}).get("pointer"),
             }
             for rid in ids
             if (ref := refs.get(rid)) is not None

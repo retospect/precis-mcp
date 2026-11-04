@@ -9,7 +9,9 @@ loads late on its own.
 
 `docs/README.md` (the doc-system contract) → `docs/codebase.md` (shape,
 lifecycle, seams) → the owning package's `__init__.py` docstring →
-`docs/glossary.md` → `docs/backlog/INDEX.md` (generated, gitignored —
+the repo-dev vocabulary taxonomy for an unfamiliar or overloaded term
+(`search(kind='taxon', q='<term>', args={'under': 'tn559460'})`) →
+`docs/backlog/INDEX.md` (generated, gitignored —
 run `scripts/docs-index` if absent). Runtime kinds and verbs:
 `get(kind='skill', id='precis-overview')`.
 
@@ -59,6 +61,18 @@ Use the bootstrap's verified root when orientation is needed; do not load
 the entire graph or use a filename as a native ID.
 
 The shared bootstrap is `~/.claude/projects/<escaped-main-checkout>/memory/MEMORY.md`: resolve the main checkout from Git's common directory and replace `/` in its absolute path with `-`. Worktrees share that pointer; do not create a second index.
+
+Vocabulary lives in the same graph, as taxa, not in a file (Reto
+2026-11-03): every coined or overloaded repo-dev term is one `taxon` under
+the root `tn559460` ("repo-dev vocabulary"), hung off the hub node that
+matches its memory hub (Ship/CI, Agent conduct, Session MCP, Product core,
+Drafts & nanopubs, CAD/se/pcb, Chemistry) or the Projects & quests node for
+a nickname. Look one up with `search(kind='taxon', q='<term>',
+args={'under': 'tn559460'})`. The session that coins a term puts it:
+`put(kind='taxon', text='<term> — <gloss> → <start-here anchor> · skill
+<name>', meta={'pointer': '<anchor>', 'aliases': [...]},
+link='taxon:<hub tn>', rel='specialises')`; a retired synonym becomes an
+alias, a pending rename is noted in the gloss and flips with the code.
 
 Search before keeping a learned fact. Use `SPACE:repo-dev`, relevant
 project/topic tags, a concise `meta.hook`, and links to supporting evidence.
@@ -171,7 +185,8 @@ doing any — precis carries curated skill families well beyond repo-dev, so
 assume one exists until search says otherwise. Missing or hard to find →
 gripe. `docs/codebase.md` (shape, lifecycle, seams) → the owning package's
 `__init__.py` docstring. Runtime kinds/affordances: skills
-`precis-overview`, `precis-toolpath-help`. Coined terms: `docs/glossary.md`.
+`precis-overview`, `precis-toolpath-help`. Coined terms: taxa under
+`tn559460` (`search(kind='taxon', q='<term>', args={'under': 'tn559460'})`).
 Planned work: `docs/backlog/` (open items only, delete-on-ship); pillars +
 the active thread set: `docs/roadmap.md`. Dated history: `git log` (no
 CHANGELOG). Schema: `docs/reference/schema.md` (generated). Mission:

@@ -167,7 +167,7 @@ Most work lands at one of these. Each has a convention that bites:
 ## Where to go deeper
 
 - Present-state + why per subsystem → the owning package's `__init__.py` docstring (map above)
-- Coined/overloaded terms → `docs/glossary.md`
+- Coined/overloaded terms → the repo-dev vocabulary taxonomy, `search(kind='taxon', q='<term>', args={'under': 'tn559460'})`
 - Why a decision is the way it is → the owning package docstring's "why" lines (history: `git log`)
 - Schema → `docs/reference/schema.md` (generated from the live DB by
   `scripts/gen-schema`; conceptual sketch: `docs/reference/schema-v2.svg`)

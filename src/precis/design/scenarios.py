@@ -22,7 +22,7 @@ asked.
 
 Vocabulary: a **scenario** is this — the production context. A *situation*
 is a different thing (a named swept-volume bundle with a three-verdict rule
-table, build-order step 3); see docs/glossary.md.
+table, build-order step 3); see the vocabulary taxonomy (tn559460).
 """
 
 from __future__ import annotations

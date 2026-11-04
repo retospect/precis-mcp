@@ -79,6 +79,8 @@ Only these are accepted; any other key is refused and the allowed set is listed.
 | `includes`, `excludes` | lists of non-empty strings: boundary examples that belong, and near-misses that do not (each naming the node it belongs to). Shown on `get`, not searched. How to write them: `precis-classify-help` |
 | `start`, `contract` | `start=true` marks a root; `contract={"required_keys": [...]}` only on a start node |
 | `legacy_source`, `applies_to_ref` | provenance and a pointer to the subject node |
+| `pointer` | a term's start-here anchor (`path/file.py::Sym`, a doc path or a skill name); every node under the repo-dev vocabulary root `tn559460` carries one (its contract requires it) |
+| `file_mirror` | `{'path', 'namespace', 'line'}` source identity of a node mirrored from a file; dedup never crosses a namespace |
 | `required_conditions` | list of condition names a measure of this term must have among its input rows (e.g. `["product", "potential"]`); allowed on any node, a descendant inherits its ancestors' names along `specialises`. A missing one flags the measure, never refuses it. Not the same as `contract.required_keys`, which binds taxon meta |
 
 ## Put a node under a parent

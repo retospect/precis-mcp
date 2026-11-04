@@ -2554,7 +2554,7 @@ def test_run_geometric_drc_threads_net_rules_into_clearance_only():
 #
 # `precis.pcb.silk.SilkPlacement` fixtures below deliberately use refdes
 # strings with no symmetry (`TP7`, `U9`) rather than anything like `S`/`N`
-# -- this module's own recent lesson (see docs/glossary.md and this
+# -- this module's own recent lesson (see the vocabulary taxonomy (tn559460) and this
 # subsystem's silk fixture postmortem): a symmetric fixture cannot see a
 # bug a count-based or shape-based assertion would otherwise catch.
 

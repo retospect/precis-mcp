@@ -1563,7 +1563,7 @@ def test_taxon_pointers_report_broken_path_in_one_run_without_edits(
     home, _mem, cache, nodes = graph_setup
     snapshot = _taxon_refs(
         nodes,
-        [{"handle": "tn1", "title": "Broken", "standard_ref": "src/missing.py"}],
+        [{"handle": "tn1", "title": "Broken", "pointer": "src/missing.py"}],
     )
     before = snapshot.read_bytes()
     status_before = _git(lint_repo, "status", "--porcelain").stdout
@@ -1597,7 +1597,7 @@ def test_taxon_pointers_accept_paths_suffixes_and_nonfile_refs(
     pointer: str,
 ) -> None:
     home, _mem, cache, nodes = graph_setup
-    _taxon_refs(nodes, [{"handle": "tn2", "title": "Valid", "standard_ref": pointer}])
+    _taxon_refs(nodes, [{"handle": "tn2", "title": "Valid", "pointer": pointer}])
 
     res = _run(lint_repo, home, cache=cache, nodes=nodes)
 
@@ -1622,7 +1622,7 @@ def test_taxon_pointers_distinguish_unresolvable_forms_from_misses(
     pointer: str,
 ) -> None:
     home, _mem, cache, nodes = graph_setup
-    _taxon_refs(nodes, [{"handle": "tn3", "title": title, "standard_ref": pointer}])
+    _taxon_refs(nodes, [{"handle": "tn3", "title": title, "pointer": pointer}])
 
     res = _run(lint_repo, home, cache=cache, nodes=nodes)
 
@@ -1632,7 +1632,7 @@ def test_taxon_pointers_distinguish_unresolvable_forms_from_misses(
     assert "missing path → tn3" not in res.stdout
 
 
-def test_taxon_pointers_missing_standard_ref_is_unresolvable(
+def test_taxon_pointers_missing_pointer_is_unresolvable(
     lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
 ) -> None:
     home, _mem, cache, nodes = graph_setup
@@ -1652,9 +1652,7 @@ def test_taxon_pointers_missing_checkout_root_files_are_misses(
     pointer: str,
 ) -> None:
     home, _mem, cache, nodes = graph_setup
-    _taxon_refs(
-        nodes, [{"handle": "tn7", "title": "Root file", "standard_ref": pointer}]
-    )
+    _taxon_refs(nodes, [{"handle": "tn7", "title": "Root file", "pointer": pointer}])
 
     res = _run(lint_repo, home, cache=cache, nodes=nodes)
 
@@ -1669,9 +1667,7 @@ def test_taxon_pointers_run_without_a_harness_memory_directory(
     _home, _mem, cache, nodes = graph_setup
     home = tmp_path / "no-harness-home"
     home.mkdir()
-    _taxon_refs(
-        nodes, [{"handle": "tn8", "title": "Broken", "standard_ref": "src/gone.py"}]
-    )
+    _taxon_refs(nodes, [{"handle": "tn8", "title": "Broken", "pointer": "src/gone.py"}])
 
     res = _run(lint_repo, home, cache=cache, nodes=nodes)
 
@@ -1721,8 +1717,8 @@ def test_taxon_pointers_resolve_in_current_worktree_not_main(
     _taxon_refs(
         nodes,
         [
-            {"handle": "tn5", "title": "Tree", "standard_ref": "docs/tree-only.md"},
-            {"handle": "tn6", "title": "Main", "standard_ref": "docs/main-only.md"},
+            {"handle": "tn5", "title": "Tree", "pointer": "docs/tree-only.md"},
+            {"handle": "tn6", "title": "Main", "pointer": "docs/main-only.md"},
         ],
     )
 

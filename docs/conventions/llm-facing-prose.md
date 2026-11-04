@@ -1,7 +1,7 @@
 # LLM-facing prose — repo-dev docs
 
 **Audience**: anyone writing/editing docs an agent reads to *develop this
-repo* — `CLAUDE.md`, `docs/codebase.md`, package `__init__.py` docstrings, `glossary.md`,
+repo* — `CLAUDE.md`, `docs/codebase.md`, package `__init__.py` docstrings, the vocabulary taxa,
 `AGENTS.md`, `docs/backlog/`, and files under
 `.claude/{agents,skills,commands}/`.
 
@@ -49,7 +49,7 @@ Duplication is N rot sites for one fact.
 | **Orientation** | `docs/codebase.md` | invariants, lifecycle, subsystem map, seams |
 | **Reference** | package docstrings, product skills | present-state per subsystem |
 | **Rationale** | the owning package docstring's "why" lines | why a decision, what was rejected |
-| **Vocabulary** | `glossary.md` | coined term → best entry-point file |
+| **Vocabulary** | taxa under `tn559460` (`search(kind='taxon', q='<term>', args={'under': 'tn559460'})`) | coined term → best entry-point file |
 
 Put a fact in the wrong altitude and it rots: status in the orientation doc,
 rationale in the router, etc.

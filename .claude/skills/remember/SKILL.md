@@ -60,7 +60,17 @@ recipe; the `put`/`edit` response's `Next:` lines do most of it for you.
    `delete(kind='memory', id='me…')` after moving any still-true gotcha or
    ruling into a live node.
 
-8. **A recalled node misled you → fix it now**, not later: wrong →
+8. **A coined or overloaded term is a taxon, not a memory line and not a
+   file** (docs/glossary.md is retired, Reto 2026-11-03, gr559340). Look it
+   up: `search(kind='taxon', q='<term>', args={'under': 'tn559460'})`. Add
+   it in the session that coins it: `put(kind='taxon', text='<term> —
+   <gloss> → <start-here anchor> · skill <name>', meta={'pointer':
+   '<anchor>', 'aliases': [<legacy names>]}, link='taxon:<hub tn>',
+   rel='specialises')`; the hub nodes are the children of `tn559460`, one
+   per memory hub plus Projects & quests for nicknames. A rename makes the
+   old name an alias; a retired term is deleted.
+
+9. **A recalled node misled you → fix it now**, not later: wrong →
    anchored `edit(…, reason='misled: <what, how found>')`; right only in some
    context → add a caveat line or a `qualifies` gotcha; obsolete → retire
    (step 7). Only if you cannot establish the truth: file the review todo

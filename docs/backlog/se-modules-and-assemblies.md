@@ -339,7 +339,7 @@ stamped definition's L3.
 | 2 | `examples`/`checks`/`expose`, `view='definition'`, definitions in `search(wants=)` | `precis_se.handler`, `precis_se.library` | 1 build |
 | 3 | `decorate` op over the multicell slice-2 primitive with the shared `sites` selector; `column:` selector | `precis_se.atomic.sites`, `hexfold.sheetnet`, `precis_se.atomic.generators.hexfold_spec._block_from_net` | 1 build (after multicell slice 2) |
 | 4 | `array_block linear.pitch: "period"`; `cap` sugar over `terminate`/`join`/`connect` with signature lookup | `precis_se.ops._parse_array_spec`, `precis_se.atomic.join`, `precis_se.library` | 1 build |
-| 5 | `precis-se-modules-help` + pointer lines; glossary entries definition / stamp / fused vs packed tile | `src/precis/data/skills/`, `docs/glossary.md` | with each slice |
+| 5 | `precis-se-modules-help` + pointer lines; glossary entries definition / stamp / fused vs packed tile | `src/precis/data/skills/`, the repo-dev vocabulary taxonomy (tn559460) | with each slice |
 
 Slice 1 alone makes `hcol-prism(R, P)` reusable today on `prism-k3-sp3-z`
 (`seams: "cccRcccRcccR"` as the literal, `R`/`P` free) — the smallest

@@ -915,7 +915,7 @@ def test_export_snapshots_live_glossary_descendants_once(
     handler = TaxonHandler(hub=hub)
 
     def taxon(name: str, pointer: str | None = None) -> int:
-        meta = {"standard_ref": pointer} if pointer is not None else {}
+        meta = {"pointer": pointer} if pointer is not None else {}
         return id_of(handler.put(text=f"{name} — fixture term", meta=meta).body)
 
     root = taxon("pointer-root")
@@ -943,17 +943,17 @@ def test_export_snapshots_live_glossary_descendants_once(
             {
                 "handle": f"tn{parent}",
                 "title": "pointer-parent",
-                "standard_ref": "memory:me42",
+                "pointer": "memory:me42",
             },
             {
                 "handle": f"tn{child}",
                 "title": "pointer-child",
-                "standard_ref": "src/missing.py::Symbol",
+                "pointer": "src/missing.py::Symbol",
             },
             {
                 "handle": f"tn{no_pointer}",
                 "title": "pointer-unset",
-                "standard_ref": None,
+                "pointer": None,
             },
         ],
     }

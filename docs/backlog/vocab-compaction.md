@@ -222,7 +222,7 @@ assertions to the quest tests.
 
 `tests/test_vocab_lint.py` retired-name/phrase scans cover `src/**/*.py`
 only. The C+D+E reviewer caught stale `precis-tasks-help` /
-`precis-dispatch-help` references in README.md and docs/glossary.md that
+`precis-dispatch-help` references in README.md and the vocabulary taxonomy (tn559460) that
 the lint could not see — fixed by hand that time. Extend the lint: scan
 `README.md`, `docs/*.md`, and `src/precis/data/skills/**/*.md` for retired
 SKILL IDS at minimum (skill ids are deterministic, no false-positive risk —

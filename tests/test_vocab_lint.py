@@ -1,16 +1,16 @@
 """Vocabulary-compaction gate (``docs/backlog/vocab-compaction.md``,
-``docs/glossary.md``) — pure AST/text, no DB, fast.
+the vocabulary taxonomy under ``tn559460``) — pure AST/text, no DB, fast.
 
-Three independent checks:
+Two independent checks (the former check 1, "every glossary pointer resolves
+to a real file", left with the glossary file on 2026-11-03, gr559340: the
+terms are taxa under ``tn559460`` whose ``meta.standard_ref`` carries the
+pointer; pointer rot there is a DB lint, not a tree test):
 
-1. Every ``→ `path` `` pointer in the glossary's Coined-terms/Overloaded
-   sections resolves to a real file (a dead pointer is worse than none —
-   it sends the reader nowhere and nobody notices until they follow it).
 2. A reserved homonym (``Tier``/``Finding``/``Candidate``/``Hub``/``Block``/
    ``Chunk``/``ChunkRow``/``GateResult``) may only be a ``class`` name in
    its allowlisted module(s)
    — new code should coin a fresh word rather than collide with one the
-   glossary already routes.
+   vocabulary already routes.
 3. A retired identifier/phrase (superseded by the vocab-compaction stages)
    doesn't creep back into a new ``def``/``class`` name or a src comment.
 
@@ -27,7 +27,6 @@ import re
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_GLOSSARY = _ROOT / "docs" / "glossary.md"
 _SRC_SKIP = {"data", "migrations", "__pycache__"}
 # Vendored packages that ship on their own (never import precis, exported as
 # their own pip later — tests/test_hexfold_import_boundary.py) keep their own
@@ -47,74 +46,10 @@ def _src_files() -> list[Path]:
     ]
 
 
-# ── Check 1 — glossary pointers resolve ──────────────────────────────────────
-
-# Only the "code entry-point index" sections carry file pointers. "Projects &
-# quests" pointers are explicitly `todo`/`quest` ids per the section's own
-# preamble ("these don't have a code home") — a `projects/<slug>` annotation
-# there is a DB project tag, not a repo path, so it is out of scope here.
-_POINTER_SECTION_START = "## Coined terms"
-_POINTER_SECTION_END = "## Projects & quests"
-
-
-def _pointer_region(text: str) -> list[tuple[int, str]]:
-    lines = text.splitlines()
-    start = next(i for i, l in enumerate(lines) if l.startswith(_POINTER_SECTION_START))
-    end = next(i for i, l in enumerate(lines) if l.startswith(_POINTER_SECTION_END))
-    return list(enumerate(lines[start:end], start=start + 1))
-
-
-def _candidate_paths(line: str) -> list[str]:
-    """Backtick spans on the pointer side (after the first ``→ ``) that look
-    like a repo path (contain ``/``) — a bare symbol/skill-id/module-dotted-
-    name/quest-id backtick span (``promote_tiers``, `precis-fisheye-help`,
-    `164903`, `precis.nanopub`) has no ``/`` and is not a pointer."""
-    if "→ " not in line:
-        return []
-    rest = line.split("→ ", 1)[1]
-    out = []
-    for span in re.findall(r"`([^`]+)`", rest):
-        if "/" not in span:
-            continue
-        path = span.split("::", 1)[0].strip()  # drop ::symbol suffix
-        out.extend(_expand_braces(path))
-    return out
-
-
-def _expand_braces(path: str) -> list[str]:
-    """``dir/{a,b,c}.py`` shorthand (one glossary entry, several files) ->
-    each concrete path. A path with no ``{...}`` expands to itself."""
-    m = re.search(r"\{([^}]+)\}", path)
-    if not m:
-        return [path]
-    alts = m.group(1).split(",")
-    return [path[: m.start()] + alt + path[m.end() :] for alt in alts]
-
-
-def test_glossary_pointers_resolve() -> None:
-    text = _GLOSSARY.read_text(encoding="utf-8")
-    missing: list[str] = []
-    for lineno, line in _pointer_region(text):
-        for cand in _candidate_paths(line):
-            if not (_ROOT / cand).exists():
-                missing.append(f"glossary.md:{lineno} → {cand}")
-    assert not missing, (
-        "glossary pointer(s) resolve to nothing (rot: the term's home moved "
-        "and the pointer wasn't updated in the same commit):\n" + "\n".join(missing)
-    )
-
-
-def test_glossary_pointer_extraction_finds_real_pointers() -> None:
-    """Self-check: an empty result would make the check above vacuous."""
-    text = _GLOSSARY.read_text(encoding="utf-8")
-    found = [c for _, line in _pointer_region(text) for c in _candidate_paths(line)]
-    assert len(found) > 50, "pointer region under-matched — regex likely broken"
-
-
 # ── Check 2 — reserved homonyms stay in their allowlisted module(s) ─────────
 
 # term -> repo-relative modules allowed to define `class <term>`. Anywhere
-# else, the class must coin a fresh word (see docs/glossary.md "Overloaded").
+# else, the class must coin a fresh word (see the vocabulary taxonomy (tn559460) "Overloaded").
 # Each vocab-compaction stage updates these lists in the same commit as its
 # renames — do not add a new offender here to make a red gate green.
 _RESERVED_CLASS_ALLOWLIST: dict[str, set[str]] = {
@@ -156,7 +91,7 @@ def test_reserved_class_names_stay_in_their_allowlisted_modules() -> None:
                     bad.append(f"{rel}:{node.lineno} class {node.name}")
     assert not bad, (
         "reserved/overloaded class name used outside its glossary-allowlisted "
-        "module(s) — see docs/glossary.md ('Overloaded — which one?') for the "
+        "module(s) — see the vocabulary taxonomy (tn559460) ('Overloaded — which one?') for the "
         "word this homonym already owns; coin a different name instead:\n"
         + "\n".join(sorted(bad))
     )
@@ -274,7 +209,7 @@ def test_retired_identifiers_do_not_reappear() -> None:
         bad += _retired_identifier_hits(path, tree)
     assert not bad, (
         "retired vocab-compaction identifier reused as a new def/class name "
-        "(see docs/glossary.md):\n" + "\n".join(sorted(bad))
+        "(see the vocabulary taxonomy (tn559460)):\n" + "\n".join(sorted(bad))
     )
 
 

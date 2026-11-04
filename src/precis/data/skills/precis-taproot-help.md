@@ -146,7 +146,7 @@ prose that cites a hub) for the read-time render.
 
 **Patent evidence grounds in description text, not legal claims.** A
 patent's claims section defines legal scope, not empirical support
-(`docs/architecture/glossary.md`'s world-claim vs legal claim) —
+(the vocabulary taxon "world-claim vs legal claim", under tn559460) —
 `hub_refine`'s discovery leg drops legal-claim blocks before Verify, so
 the automated corroborator search never surfaces one. A discovery-side
 filter, not an attach-time guard: hand-attaching via `link()` still

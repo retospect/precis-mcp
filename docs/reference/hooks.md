@@ -11,6 +11,7 @@ wired in `.claude/settings.json` under `hooks:`. Deny = exit 2 with stderr
 |---|---|---|---|
 | `guard-worktree-path.py` | `Edit\|Write\|MultiEdit\|NotebookEdit` | Rewrites an absolute `file_path` pointing at the MAIN checkout to its worktree twin | `tool_input.file_path`/`notebook_path`, `cwd` |
 | `guard-sealed-migration.py` | same | Denies edits to an already-shipped `*.sql` migration (forward-only) | `tool_input.file_path` |
+| `guard-glossary-file.py` | same | Denies writes to the retired glossary file (gr559340); names the taxon lookup under `tn559460` instead. `ALLOW_GLOSSARY_FILE=1` escape | `tool_input.file_path` |
 | `rca-triage-nudge.py` | same | One-time nudge toward bug triage on the session's first `src/` edit | `tool_input.file_path`/`notebook_path`, `session_id` |
 | `edit-delegation-nudge.py` | `Edit\|Write\|MultiEdit\|NotebookEdit\|Agent\|Task` | Counts main-loop edit calls; past THRESHOLD (50) with no `coder` dispatch, nudges to delegate | `agent_id` (early-return), `session_id`, `tool_name`, `tool_input.subagent_type` |
 | `agent-tier-nudge.py` | `Agent\|Task` | Nudges a bare `general-purpose`/`claude` spawn on a top-tier/unset model toward the cheap haiku defs | `tool_input.subagent_type`, `tool_input.model` |

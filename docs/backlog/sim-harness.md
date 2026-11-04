@@ -31,7 +31,7 @@ verbs; this remainder builds the standing loop.
 
 **Slice 2 — quest-driven automation + writeup.**
 
-- A `level:recurring` **watch** (per `glossary.md`) under each sim's quest
+- A `level:recurring` **watch** (per the vocabulary taxon "watch", tn559460) under each sim's quest
   wrapping the shipped verbs — re-run ingest/verify as inputs drift.
   Net-new; deliberately NOT the existing `quest_tick` coordinator loop
   (`src/precis/quest/loop.py`) — a builder must not reach for it by mistake.

@@ -2,8 +2,8 @@
 
 One contract, referenced by `CLAUDE.md` and `AGENTS.md`
 (tool-specific rules stay in those files; the doc system is defined once,
-here). The main reader and writer is an LLM: keep prose compact, use
-glossary terms, and prefer deleting to archiving — git is the history,
+here). The main reader and writer is an LLM: keep prose compact, use the
+vocabulary's terms, and prefer deleting to archiving — git is the history,
 `docs/` is the present.
 
 ## Where truth lives
@@ -15,7 +15,7 @@ glossary terms, and prefer deleting to archiving — git is the history,
 | Single-machine install/run | `docs/setup-single-machine.md` |
 | Cluster topology / what runs where / cluster setup | `deploy/README.md` |
 | Cross-cutting invariants | `docs/conventions/` (citing sources: `citable-sources.md`) |
-| Controlled vocabulary | `docs/glossary.md` (hand-written) |
+| Controlled vocabulary | the prod taxonomy: one `taxon` per coined/overloaded term under root `tn559460`, `search(kind='taxon', q='<term>', args={'under': 'tn559460'})` (rule: `AGENTS.md` §Repo-dev graph memory) |
 | Work items (idea → ready) | `docs/backlog/` — one file per item |
 | Pillars, active threads, retirement rules | `docs/roadmap.md` — the layer above `docs/backlog/threads/` (pointers and intent only) |
 | Operational procedures | `docs/runbooks/` |
@@ -33,7 +33,7 @@ package docstrings (present truth + rationale), or git history (past).
 
 1. `docs/codebase.md` — shape, lifecycle, seams, package map.
 2. The owning package's `__init__.py` docstring — subsystem detail.
-3. `docs/glossary.md` — when a term is unfamiliar or overloaded.
+3. `search(kind='taxon', q='<term>', args={'under': 'tn559460'})` — when a term is unfamiliar or overloaded.
 4. `docs/backlog/INDEX.md` — what's planned (generated; see below).
 
 ## Rules that keep it true
@@ -43,8 +43,9 @@ package docstrings (present truth + rationale), or git history (past).
   them freely; never strip them in a refactor. Their "why it's this way"
   paragraphs hold rejected-alternatives rationale — condense, don't delete.
 - **Code-true names.** Docs use the names the code uses, always — retrieval
-  breaks otherwise. A pending rename is declared in the glossary and tracked
-  as a backlog item; the doc flips in the same commit as the code rename.
+  breaks otherwise. A pending rename is noted in the term's taxon gloss and
+  tracked as a backlog item; the doc flips in the same commit as the code
+  rename and the old name becomes an alias.
 - **Backlog lifecycle.** An item is a few lines of prose (`# title` + what
   and why). When it grows a real spec it stays in the same file; when it is
   buildable, add `status: ready` front-matter (the fixer's pick signal;

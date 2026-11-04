@@ -12,7 +12,7 @@ Status 2026-10-17: compound→composite and the tier-1 glosses shipped; the rema
 known class. A paper cannot introduce a coined term where the literature
 already has a good one: reviewers read it as either ignorance of the field or
 a land-grab. Reto's ruling 2026-09-25: unify vocabulary to literature
-standard **where the literature's word is good**, update `docs/glossary.md`,
+standard **where the literature's word is good**, update the repo-dev vocabulary taxonomy (tn559460),
 and check MCP-facing names for consistency.
 
 **Ruling, Reto 2026-10-01 (td459590).** Do tiers 2 and 3, and carry each
@@ -31,7 +31,7 @@ ones.
 
 ## Tier 1 — glossary gloss only, no rename
 
-Glosses shipped in `docs/glossary.md` as `(lit: …)` (fisheye/eye, extent
+Glosses shipped in the repo-dev vocabulary taxonomy (tn559460) as `(lit: …)` (fisheye/eye, extent
 ladder, frontier, dossier, termination node, screening tier, spray/dreamable,
 trust ladder/axis). One row remains, held on the verification in Open:
 

@@ -59,11 +59,12 @@ attract sibling queries.
 **No writes.** Stages emit files under the campaign scratch directory. The
 `taxon` node and `measures` row writers arrive as a thin adapter once
 `measures-substrate.md` ships; until then nothing is
-promoted in the corpus, only computed. The one exception is
-:mod:`~precis.taxonomy.glossary` (gr548266): it mirrors `docs/glossary.md`
-into `repo-dev-glossary` `taxon`/`alias` nodes — a file mirror in its own
-``file_mirror.namespace``, dedup-scoped so it can never merge into or
-suppress a science node.
+promoted in the corpus, only computed. The repo-dev vocabulary (coined and
+overloaded terms, root ``tn559460``) is authored as ordinary ``taxon`` nodes
+through the handler, not by this package; the ``file_mirror`` /
+``pointer`` meta keys in :mod:`~precis.taxonomy.nodes` stay as the generic
+mirror contract (dedup is namespace-scoped so a mirrored file can never
+merge into or suppress a science node).
 """
 
 from precis.taxonomy.types import (

@@ -490,7 +490,7 @@ slice 2), a material-property migration (`resistivity_temp_coeff`),
 (`material=`), `examples/workspaces/fin-heat/`, skills
 `precis-workspace-optimize-help` (fields section),
 `precis-se-regions-help` (BC lines), `precis-material-help`
-(`resistivity_temp_coeff`, the selection rule), `docs/glossary.md`
+(`resistivity_temp_coeff`, the selection rule), the repo-dev vocabulary taxonomy (tn559460)
 (coefficient set, cut cell). `precis_flow` loses `fv` to `precis_fields` once multiphysics
 slice 1 has extracted it (or never gains it if this lands first).
 

@@ -22,7 +22,8 @@ Ignore them for your job. Your tools are code search + file reading.
 1. **Orient first.** Read `docs/codebase.md` (the shape: data model, lifecycle,
    subsystem table, seams). For a named subsystem, read the matching section of
    the owning package's `__init__.py` docstring. For an overloaded term (tier, card, tote,
-   bubble, …) consult `docs/glossary.md`. For *why* a design is
+   bubble, …) consult the vocabulary taxonomy:
+   `search(kind='taxon', q='<term>', args={'under': 'tn559460'})`. For *why* a design is
    the way it is, the owning docstring's "why" lines (history: `git log`).
 2. **Search semantically.** Prefer the precis python kind for
    "where/how" queries: `search(kind='python', mode='pattern', q='<qualname

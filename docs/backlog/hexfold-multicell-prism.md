@@ -448,7 +448,7 @@ skill: `precis-hexfold-seams-help` is about 1,700 words; split
 
 | slice | gap | lands in | size | agent |
 |---|---|---|---|---|
-| 0 SHA goldens + census + glossary | — | `tests/test_hexfold/data/`, `docs/glossary.md` | S–M, 1 build | coder (Sonnet) |
+| 0 SHA goldens + census + glossary | — | `tests/test_hexfold/data/`, the repo-dev vocabulary taxonomy (tn559460) | S–M, 1 build | coder (Sonnet) |
 | 1a primitives; prism + railtube as layouts | — | new `src/hexfold/sheetnet.py`; `prism.py`, `railtube.py` | L, 1 build | coder-chain (Sonnet); Opus design-review of the primitive signatures |
 | 1b channel, fin120, y_junction, sp3_seam as layouts | — | `channel.py`, `fin120.py`, `y_junction.py`, `sp3_seam.py`, `fin.py` | M–L, 1 build | coder-chain (Sonnet) |
 | 1c shared SE adapter | — | `precis_se/atomic/generators/` | M, 1 build | coder (Sonnet) |

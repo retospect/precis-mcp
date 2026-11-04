@@ -81,7 +81,7 @@ Why these words and not the five I first picked:
 - **`topology` beats `count`** — it names what is checked rather than the
   mechanism, and `GeneratedBlock` already has a `topology` field, so the
   vocabulary is shared rather than parallel.
-- **Do not call these "tiers".** `docs/glossary.md:51` reads "**fidelity
+- **Do not call these "tiers".** the repo-dev vocabulary taxon "fidelity levels" (under tn559460) reads "**fidelity
   ladder** (legacy: tier ladder)" — this repo already retired "tier" as
   the word for a cost ladder once. Reviving it mints a second vocabulary
   for one idea. They are check *classes*; the fidelity levels are the

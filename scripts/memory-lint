@@ -101,11 +101,9 @@
 #      token-review/db-thrash-review it needs no judgment pass — it runs
 #      itself when due and appends its own stamp to an untracked log in the
 #      per-user cache (never a repo file, gr536400).
-#  12. coined term without a node (gr548266): every **term** in
-#      docs/glossary.md's entry sections should have a live taxon in the
-#      repo-dev-glossary namespace. The comparison set is the SessionStart
-#      hook's `precis taxonomy list` export ($PRECIS_GLOSSARY_TERMS, default
-#      ~/.cache/precis/glossary-terms.txt) — missing export → skip.
+#  12. (retired 2026-11-03, gr559340: the glossary file it compared against
+#      its taxon mirror is gone; the vocabulary is authored as taxa under
+#      tn559460 and check 13 owns its pointer rot.)
 #  13. taxon start-here pointers: tn559460 descendants exported alongside
 #      memory nodes in _taxon_refs.json. Check paths against THIS checkout,
 #      not main; ::Symbol / §section / #anchor suffixes do not name files.
@@ -162,7 +160,7 @@ except (OSError, UnicodeError, ValueError) as exc:
 print("taxon pointers: tn559460 descendants (cached snapshot)")
 missing = unresolvable = 0
 for ref in refs:
-    pointer = ref.get("standard_ref")
+    pointer = ref.get("pointer")
     path = (
         re.split(r"::|§|#", pointer, maxsplit=1)[0].strip()
         if isinstance(pointer, str)
@@ -1092,31 +1090,5 @@ else
         echo "  (could not write $SIB_STATE — the weekly gate will re-run next time)"
     fi
 fi
-
-# 12. coined term without a node (gr548266): each `**term**` bullet in the
-# glossary's entry sections (## Coined terms / ## Overloaded — which one? /
-# ## Projects & quests) mirrors to a live repo-dev-glossary taxon — checked
-# against the hook's `precis taxonomy list` export, never the live DB. An
-# absent export means the hook hasn't run here yet: skip, don't fail.
-GLOSS_TERMS="${PRECIS_GLOSSARY_TERMS:-${XDG_CACHE_HOME:-$HOME/.cache}/precis/glossary-terms.txt}"
-if [[ ! -f docs/glossary.md ]]; then
-    :   # not the precis-mcp checkout — nothing to compare
-elif [[ ! -s "$GLOSS_TERMS" ]]; then
-    echo "glossary mirror: skipped (no $GLOSS_TERMS — the SessionStart hook writes it via 'precis taxonomy list')"
-else
-    file_terms="$(awk '/^## /{sec=($0 ~ /^## (Coined terms|Overloaded|Projects & quests)/)} sec && /^[[:space:]]*-[[:space:]]+\*\*/{print}' docs/glossary.md \
-        | sed -E 's/^[[:space:]]*-[[:space:]]+\*\*([^*]+)\*\*.*/\1/' \
-        | LC_ALL=C sort -u)"
-    missing="$(comm -23 <(printf '%s\n' "$file_terms") <(LC_ALL=C sort -u "$GLOSS_TERMS"))"
-    if [[ -z "$missing" ]]; then
-        echo "glossary mirror: ✓ every glossary term has a repo-dev-glossary node"
-    else
-        echo "coined term(s) without a repo-dev-glossary node — mirror with: uv run precis taxonomy import-glossary --sync"
-        while IFS= read -r t; do
-            [[ -n "$t" ]] && echo "  - $t"
-        done <<< "$missing"
-    fi
-fi
-
 
 exit 0

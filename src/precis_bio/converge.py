@@ -12,7 +12,7 @@ which is ``[dft]``-gated and absent on the always-on request path), reusing the
 same scan shape as :func:`precis_bio.ir.mean_plddt_from_cif`.
 
 This module hands atom coordinates straight into ``precis.structure``'s
-Å/eV unit enclave (`docs/glossary.md`) — coordinates and padding here stay
+Å/eV unit enclave (the vocabulary taxonomy (tn559460)) — coordinates and padding here stay
 Å-native by convention, never converted through SI.
 """
 
@@ -27,7 +27,7 @@ from precis.structure.scene import Atom, Scene
 #: self-images (molecule mode wants ≥15 Å between periodic copies;
 #: with PBC off it just keeps every atom strictly inside (0,1) fractional).
 #: This module builds a ``structure`` :class:`~precis.structure.scene.Scene`
-#: (the Å/eV unit enclave, `docs/glossary.md`), so the padding stays Å-native
+#: (the Å/eV unit enclave, the vocabulary taxonomy (tn559460)), so the padding stays Å-native
 #: rather than converting through SI.
 BOX_PADDING_A = 15.0
 

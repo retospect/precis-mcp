@@ -26,7 +26,7 @@ findings for caveat-referenced cites.
 ``taproot_enabled`` (Phase-3 W1 forward bridge, :func:`_taproot_bridge`)
 mints/attaches a taproot claim hub off a terminal ``establishes``
 verdict — the third of the glossary's three chase passes
-(``docs/glossary.md`` "fetch / chase").
+(the vocabulary taxonomy under ``tn559460`` "fetch / chase").
 """
 
 from __future__ import annotations
