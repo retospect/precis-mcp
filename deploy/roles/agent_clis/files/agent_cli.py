@@ -21,6 +21,14 @@ version, ``pinnable: false``, are reported with no rollback) and the run
 exits 1. Restoring the previous pin and running ``update`` again is the
 rollback by pin. No CLI auth file is read or copied.
 
+For pinnable npm CLIs, ``latest`` resolves via ``npm view <pkg> version``.
+Resolve once before comparing or installing, so smoke and rollback use the
+same concrete target even if the registry changes during the run. A failed
+lookup reports an error without touching the installed version.
+Only the last non-empty stdout line supplies the pin; npm warnings on stderr
+are diagnostics. Reject prereleases because smoke parses numeric versions,
+and refuse ``latest`` for installers that cannot pin a version.
+
 Output: one human line per CLI, ``ALERT`` lines for a host behind its pin
 (or below the vendor minimum) and a final ``AGENT_CLI_JSON {...}`` line the
 role parses. ``report`` exits 0 unless ``--strict`` and an alert is raised.
@@ -38,15 +46,22 @@ import socket
 import subprocess
 import sys
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 CLIS = ("claude", "codex", "devin", "kimi")
 #: Dirs a non-login ansible shell lacks: Homebrew, user-local, kimi's own.
 EXTRA_PATH = ("/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin", "~/.kimi-code/bin")
 INSTALL_TIMEOUT_S = 600.0
 SMOKE_TIMEOUT_S = 120.0
+RESOLVE_TIMEOUT_S = 30.0
 
-Runner = Callable[[list[str], float], tuple[int, str]]
+
+class Runner(Protocol):
+    def __call__(
+        self, argv: list[str], timeout: float, *, stdout_only: bool = False
+    ) -> tuple[int, str]: ...
+
+
 Finder = Callable[[str], str | None]
 
 _VERSION = re.compile(r"\d+(?:\.\d+)+")
@@ -76,8 +91,10 @@ def classify(version: str | None, pin: str, minimum: str = "") -> str:
     return "behind" if _key(version) < _key(pin) else "ahead"
 
 
-def run_command(argv: list[str], timeout: float) -> tuple[int, str]:
-    """One subprocess: (exit code, stdout+stderr). 127 not found, 124 timeout."""
+def run_command(
+    argv: list[str], timeout: float, *, stdout_only: bool = False
+) -> tuple[int, str]:
+    """Return rc and output; stdout_only omits stderr on success, keeps errors."""
     try:
         proc = subprocess.run(
             argv,
@@ -92,13 +109,38 @@ def run_command(argv: list[str], timeout: float) -> tuple[int, str]:
         return 127, f"{type(exc).__name__}: {exc}"
     except subprocess.TimeoutExpired:
         return 124, f"timed out after {timeout:.0f}s"
-    return proc.returncode, (proc.stdout + proc.stderr).strip()
+    out = proc.stdout
+    if not stdout_only or proc.returncode != 0:
+        out += proc.stderr
+    return proc.returncode, out.strip()
 
 
 def extend_path() -> None:
     have = os.environ.get("PATH", "").split(os.pathsep)
     extra = [os.path.expanduser(p) for p in EXTRA_PATH]
     os.environ["PATH"] = os.pathsep.join([*[p for p in extra if p not in have], *have])
+
+
+def _resolve_latest(cfg: dict[str, Any], run: Runner) -> tuple[int, str]:
+    """Resolve the npm package named by the installer to a concrete pin."""
+    argv = shlex.split(cfg["install"])
+    packages = [
+        arg.removesuffix("@{version}") for arg in argv if arg.endswith("@{version}")
+    ]
+    if argv[:2] != ["npm", "install"] or len(packages) != 1:
+        return 2, "latest requires an npm installer with one package@{version}"
+    rc, out = run(
+        ["npm", "view", packages[0], "version"], RESOLVE_TIMEOUT_S, stdout_only=True
+    )
+    if rc != 0:
+        return rc, f"npm view failed (rc={rc}): {out[:160]}"
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
+    if not lines:
+        return 2, "npm view returned an empty version"
+    out = lines[-1]
+    if not _SAFE_VERSION.fullmatch(out) or parse_version(out) != out:
+        return 2, f"npm view returned an invalid version: {out[:160]!r}"
+    return 0, out
 
 
 def probe(cli: str, cfg: dict[str, Any], run: Runner, find: Finder) -> dict[str, Any]:
@@ -109,7 +151,7 @@ def probe(cli: str, cfg: dict[str, Any], run: Runner, find: Finder) -> dict[str,
         rc, out = run([path, "--version"], 30.0)
         version = parse_version(out) if rc == 0 else None
     pin, minimum = str(cfg.get("pin") or ""), str(cfg.get("min") or "")
-    return {
+    row: dict[str, Any] = {
         "cli": cli,
         "path": path,
         "version": version,
@@ -117,6 +159,23 @@ def probe(cli: str, cfg: dict[str, Any], run: Runner, find: Finder) -> dict[str,
         "min": minimum,
         "status": classify(version, pin, minimum),
     }
+    if pin == "latest":
+        row["pin_source"] = "latest"
+        rc, out = (
+            _resolve_latest(cfg, run)
+            if cfg.get("pinnable", True)
+            else (2, "latest needs a pinnable CLI")
+        )
+        if rc != 0:
+            row.update(
+                status="resolve-failed",
+                action="failed",
+                ok=False,
+                detail=f"resolve latest failed: {out}",
+            )
+        else:
+            row.update(pin=out, status=classify(version, out, minimum))
+    return row
 
 
 def report(
@@ -185,7 +244,10 @@ def update_one(
 ) -> dict[str, Any]:
     """Install one CLI's pin, smoke it, roll back on failure."""
     before = probe(cli, cfg, run, find)
+    if before.get("ok") is False:
+        return {**before, "previous": before["version"]}
     pin = before["pin"]
+    cfg = {**cfg, "pin": pin}
     row: dict[str, Any] = {
         **before,
         "previous": before["version"],
@@ -235,7 +297,8 @@ def update(
         if not only or c in only
     ]
     for r in rows:
-        r["status"] = classify(r["version"], r["pin"], r["min"])
+        if r["status"] != "resolve-failed":
+            r["status"] = classify(r["version"], r["pin"], r["min"])
     return rows
 
 
@@ -263,6 +326,8 @@ def render(rows: list[dict[str, Any]]) -> list[str]:
             f"{r['cli']:<7} installed={r['version'] or '-':<12} "
             f"pin={r['pin'] or '-':<12} {r['status']}"
         )
+        if r.get("pin_source") == "latest":
+            line += " (from latest)"
         if "action" in r:
             line += f" · {r['action']}" + (f" ({r['detail']})" if r["detail"] else "")
         lines.append(line)

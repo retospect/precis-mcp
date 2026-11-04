@@ -8,6 +8,8 @@
 # or host_vars (one edit), then run `scripts/agent-cli-update --apply`.
 # Rollback is restoring the previous pin and running it again. Empty =
 # unpinned: reported, never updated.
+# For pinnable npm CLIs, "latest" resolves the current npm version at run
+# time, then installs and smoke-checks that version with rollback on failure.
 agent_cli_pin_claude: ""
 agent_cli_pin_codex: ""
 agent_cli_pin_devin: ""

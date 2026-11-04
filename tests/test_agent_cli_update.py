@@ -44,15 +44,25 @@ class FakeHost:
         self.versions = dict(versions)
         self.bad_prompt = bad_prompt or set()
         self.calls: list[list[str]] = []
+        self.latest = (0, "2.1.0", "")
 
     def find(self, name: str) -> str | None:
         return f"/bin/{name}" if name in self.versions else None
 
-    def run(self, argv: list[str], timeout: float) -> tuple[int, str]:
+    def run(
+        self, argv: list[str], timeout: float, *, stdout_only: bool = False
+    ) -> tuple[int, str]:
         self.calls.append(argv)
+        if argv[:2] == ["npm", "view"]:
+            rc, out, err = self.latest
+            return rc, out if stdout_only and rc == 0 else out + err
         if argv[0] == "npm":
             pkg, _, version = argv[-1].rpartition("@")
-            cli = {"@anthropic-ai/claude-code": "claude", "@openai/codex": "codex"}[pkg]
+            cli = {
+                "@anthropic-ai/claude-code": "claude",
+                "@openai/codex": "codex",
+                "@moonshot-ai/kimi-code": "kimi",
+            }[pkg]
             self.versions[cli] = version
             return 0, "added 1 package"
         if argv[0] == "devin":
@@ -123,6 +133,194 @@ def test_update_installs_the_pin_and_the_version_changes() -> None:
     assert (row["previous"], row["version"]) == ("2.0.0", "2.1.0")
     assert host.versions["claude"] == "2.1.0"
     assert ["npm", "install", "-g", "@anthropic-ai/claude-code@2.1.0"] in host.calls
+    assert not any(c[:2] == ["npm", "view"] for c in host.calls)
+
+
+@pytest.mark.parametrize(
+    ("cli", "package"),
+    [
+        ("claude", "@anthropic-ai/claude-code"),
+        ("codex", "@openai/codex"),
+        ("kimi", "@moonshot-ai/kimi-code"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("stdout", "stderr"),
+    [
+        ("2.1.0", ""),
+        ("2.1.0\n", "npm warn config deprecated setting\n"),
+        ("registry output\n\n 2.1.0 \n \n", ""),
+    ],
+)
+def test_latest_resolves_once_and_installs_concrete_version(
+    cli: str, package: str, stdout: str, stderr: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = FakeHost({cli: "2.0.0"})
+    host.latest = (0, stdout, stderr)
+
+    def fake_subprocess(
+        argv: list[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        assert kwargs["text"] is True and kwargs["encoding"] == "utf-8"
+        assert 0 < kwargs["timeout"] <= 600
+        rc, out = host.run(argv, kwargs["timeout"], stdout_only=True)
+        err = host.latest[2] if argv[:2] == ["npm", "view"] else ""
+        return subprocess.CompletedProcess(argv, rc, out, err)
+
+    monkeypatch.setattr(subprocess, "run", fake_subprocess)
+    config = _config({cli: "latest"}, only=[cli])
+    [row] = tool.update(config, tool.run_command, host.find)
+    assert (row["action"], row["ok"], row["status"]) == ("updated", True, "ok")
+    assert (row["previous"], row["version"], row["pin"]) == ("2.0.0", "2.1.0", "2.1.0")
+    assert row["pin_source"] == "latest"
+    assert host.versions[cli] == "2.1.0"
+    assert host.calls.count(["npm", "view", package, "version"]) == 1
+    assert ["npm", "install", "-g", f"{package}@2.1.0"] in host.calls
+    assert config["clis"][cli]["pin"] == "latest"
+
+
+@pytest.mark.parametrize(
+    ("installed", "status"), [("2.0.0", "behind"), ("2.1.0", "ok")]
+)
+def test_latest_report_shows_resolved_version_and_source(
+    installed: str, status: str
+) -> None:
+    host = FakeHost({"claude": installed})
+    [row] = tool.report(
+        _config({"claude": "latest"}, only=["claude"]), host.run, host.find
+    )
+    assert (row["pin"], row["pin_source"], row["status"]) == ("2.1.0", "latest", status)
+    [line] = tool.render([row])
+    assert "2.1.0" in line and "latest" in line and status in line
+    assert bool(tool.alerts([row])) == (status == "behind")
+    assert host.versions == {"claude": installed}
+    assert not any(c[:2] == ["npm", "install"] for c in host.calls)
+
+
+def test_latest_current_version_needs_no_install() -> None:
+    host = FakeHost({"claude": "2.1.0"})
+    [row] = tool.update(
+        _config({"claude": "latest"}, only=["claude"]), host.run, host.find
+    )
+    assert (row["action"], row["ok"], row["status"]) == ("current", True, "ok")
+    assert (
+        host.calls.count(["npm", "view", "@anthropic-ai/claude-code", "version"]) == 1
+    )
+    assert not any(c[:2] == ["npm", "install"] for c in host.calls)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        (1, "", "registry unavailable"),
+        (0, "", ""),
+        (0, "  \n", ""),
+        (0, "", "2.1.0"),
+        (0, "not-a-version", ""),
+        (0, "2.1.0\ngarbage", ""),
+        (0, "2.1.0-beta.1", ""),
+    ],
+)
+@pytest.mark.parametrize("mode", ["report", "update"])
+def test_latest_resolution_failure_leaves_install_untouched_and_reports(
+    result: tuple[int, str, str], mode: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    host = FakeHost({"claude": "2.0.0"})
+    host.latest = result
+    config = json.dumps(_config({"claude": "latest"}, only=["claude"]))
+    assert (
+        tool.main([mode, "--strict", "--config-json", config], host.run, host.find) == 1
+    )
+    out = capsys.readouterr().out
+    [row] = json.loads(out.rsplit("AGENT_CLI_JSON ", 1)[1])["rows"]
+    assert (row["action"], row["ok"], row["status"]) == (
+        "failed",
+        False,
+        "resolve-failed",
+    )
+    assert row["detail"] and "latest" in row["detail"]
+    assert "ALERT claude" in out
+    assert row["version"] == "2.0.0"
+    assert host.versions == {"claude": "2.0.0"}
+    assert not any(c[:2] == ["npm", "install"] for c in host.calls)
+
+
+def test_latest_resolution_timeout_leaves_install_untouched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host = FakeHost({"claude": "2.0.0"})
+    calls: list[list[str]] = []
+
+    def fake_subprocess(
+        argv: list[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        assert kwargs["text"] is True and kwargs["encoding"] == "utf-8"
+        assert 0 < kwargs["timeout"] <= 600
+        if argv[:2] == ["npm", "view"]:
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        rc, out = host.run(argv, kwargs["timeout"])
+        return subprocess.CompletedProcess(argv, rc, out, "")
+
+    monkeypatch.setattr(subprocess, "run", fake_subprocess)
+    [row] = tool.update(
+        _config({"claude": "latest"}, only=["claude"]), tool.run_command, host.find
+    )
+    assert row["ok"] is False and row["status"] == "resolve-failed"
+    assert "timed out" in row["detail"]
+    assert host.versions == {"claude": "2.0.0"}
+    assert not any(c[:2] == ["npm", "install"] for c in calls)
+
+
+@pytest.mark.parametrize("failure", ["install", "smoke"])
+def test_latest_failure_rolls_back_to_previous_version(failure: str) -> None:
+    host = FakeHost(
+        {"claude": "2.0.0"}, bad_prompt={"claude"} if failure == "smoke" else set()
+    )
+
+    def run(
+        argv: list[str], timeout: float, *, stdout_only: bool = False
+    ) -> tuple[int, str]:
+        result = host.run(argv, timeout, stdout_only=stdout_only)
+        if failure == "install" and argv == [
+            "npm",
+            "install",
+            "-g",
+            "@anthropic-ai/claude-code@2.1.0",
+        ]:
+            return 1, "partial install failed"
+        return result
+
+    [row] = tool.update(_config({"claude": "latest"}, only=["claude"]), run, host.find)
+    assert (row["action"], row["ok"], row["status"]) == ("rolled-back", False, "behind")
+    assert (row["pin"], row["pin_source"], row["version"]) == (
+        "2.1.0",
+        "latest",
+        "2.0.0",
+    )
+    assert failure in row["detail"]
+    assert host.versions == {"claude": "2.0.0"}
+    assert (
+        host.calls.count(["npm", "view", "@anthropic-ai/claude-code", "version"]) == 1
+    )
+    assert ["npm", "install", "-g", "@anthropic-ai/claude-code@2.0.0"] in host.calls
+
+
+def test_unpinnable_latest_is_refused_without_resolution_or_install() -> None:
+    host = FakeHost({"devin": "1.0.0"})
+    config = _config({"devin": "latest"}, only=["devin"])
+    [reported] = tool.report(config, host.run, host.find)
+    assert reported["pin"] == "latest"
+    [updated] = tool.update(config, host.run, host.find)
+    for row in (reported, updated):
+        assert (row["action"], row["ok"], row["status"]) == (
+            "failed",
+            False,
+            "resolve-failed",
+        )
+        assert "latest needs a pinnable CLI" in row["detail"]
+    assert host.versions == {"devin": "1.0.0"}
+    assert host.calls == [["/bin/devin", "--version"]] * 2
 
 
 def test_update_is_a_noop_when_already_on_the_pin() -> None:
