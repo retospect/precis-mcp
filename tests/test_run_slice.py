@@ -246,11 +246,10 @@ def _lane(name: str, cap: int, classes: set[str], enabled: bool = True) -> Lane:
 
 
 def test_seed_table_enabled_lanes() -> None:
-    """Only the Claude lane is on. codex is ready and flips with Reto's go
-    (td562568); devin waits for its CLI login on the slice host; kimi and
-    metered stay declared."""
+    """td562568: codex is on (free vendor lane, table-first); devin waits
+    for its CLI login on the slice host; kimi and metered stay declared."""
     enabled = [ln.name for ln in lanes.LANES if ln.enabled]
-    assert enabled == ["claude-sub"]
+    assert enabled == ["codex", "claude-sub"]
     sub = lanes.get_lane("claude-sub")
     assert sub is not None
     assert (sub.adapter, sub.credential_pool, sub.cap) == (
@@ -336,15 +335,20 @@ def test_pick_lane_never_picks_disabled() -> None:
 
 
 def test_pick_lane_reads_live_counts(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The seed table: claude-sub (cap 2) is the only enabled ``code`` lane;
-    a live count on a disabled lane never opens it."""
+    """The seed table: codex (cap 1) and claude-sub (cap 2) fit ``code``."""
     monkeypatch.setattr(
-        lanes, "live_lane_counts", lambda store: {"claude-sub": 2, "codex": 0}
+        lanes, "live_lane_counts", lambda store: {"claude-sub": 2, "codex": 1}
     )
     assert pick_lane(object(), "code") is None
-    monkeypatch.setattr(lanes, "live_lane_counts", lambda store: {"claude-sub": 1})
+    monkeypatch.setattr(
+        lanes, "live_lane_counts", lambda store: {"claude-sub": 1, "codex": 1}
+    )
     picked = pick_lane(object(), "code")
     assert picked is not None and picked.name == "claude-sub"
+    # Both free: the free vendor lane is first in the table (td559457).
+    monkeypatch.setattr(lanes, "live_lane_counts", lambda store: {})
+    picked = pick_lane(object(), "code")
+    assert picked is not None and picked.name == "codex"
 
 
 # ── registry ───────────────────────────────────────────────────────
