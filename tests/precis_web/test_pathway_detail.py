@@ -395,6 +395,7 @@ const currentU = -0.5, phInput = {value:'7'}, selected = null, selectedPath = nu
 const uEl = {value:'-0.5', dataset:{default:'0'}}, phEl = {value:'7', dataset:{default:'0'}};
 const resetT = {checked:true}, near = (a,b) => Math.abs(a-b) < 1e-9;
 const layerSelection = {}, pwWriteLayers = () => {};
+const filterState = {}, PathwayFilters = {write: () => {}};
 let environmentUDirty = false, environmentPhDirty = false;
 """
         + source
@@ -2693,14 +2694,21 @@ console.log(JSON.stringify(els['pw-diagram'].innerHTML));
 """
 
 
+def _explorer_script(html: str) -> str:
+    """Load both browser dependencies before the inline explorer script."""
+    scripts = re.findall(r"<script>(.*?)</script>", html, re.DOTALL)
+    (script,) = [s for s in scripts if "function renderDiagram" in s]
+    filters = Path("src/precis_web/static/pathway-filters.js").read_text(
+        encoding="utf-8"
+    )
+    return _step_kinetics_script() + "\n" + filters + "\n" + script
+
+
 def _render_diagram_svg(tmp_path: Path, html: str) -> str:
     """Run the page's own diagram script under node with a stub DOM and
     return the SVG markup ``renderDiagram`` produced (no browser)."""
-    scripts = re.findall(r"<script>(.*?)</script>", html, re.DOTALL)
-    (script,) = [s for s in scripts if "function renderDiagram" in s]
-    (tmp_path / "page.js").write_text(
-        _step_kinetics_script() + "\n" + script, encoding="utf-8"
-    )
+    script = _explorer_script(html)
+    (tmp_path / "page.js").write_text(script, encoding="utf-8")
     driver = tmp_path / "driver.js"
     driver.write_text(_NODE_PAGE_JS, encoding="utf-8")
     out = subprocess.run(
@@ -2781,8 +2789,10 @@ console.log(JSON.stringify({
         "kin_z_i",
         "kin_X_RC",
         "kin_selectivity",
+        "barrier_filter",
+        "turnover_filter",
     ]
-    defaults = {key: i < 12 for i, key in enumerate(keys)}
+    defaults = {key: i < 12 or key == "turnover_filter" for i, key in enumerate(keys)}
     assert [layer["key"] for layer in got["layers"]] == keys
     assert all(layer["label"] and layer["help"] for layer in got["layers"])
     assert got["defaults"] == defaults
@@ -3565,6 +3575,7 @@ const AFTER = process.argv[4] || '';
 const HASH = process.argv[5] || '';
 const els = {};
 const created = [];
+let diagramRects = [];
 const docHandlers = {};
 const rsCalls = [];
 const clipCalls = [];
@@ -3604,13 +3615,31 @@ const mk = () => {
   });
   return el;
 };
-const byClass = (cls) => created.filter((el) => el.classList.contains(cls));
+const byClass = (cls) => [...created, ...diagramRects].filter((el) => el.classList.contains(cls));
 global.document = {
   getElementById: (id) => {
     if (!els[id]) {
       els[id] = mk();
       // the real element ships class="hidden" — mirror that initial state
       if (id === 'pw-link-note') { els[id].className = 'hidden'; }
+      if (id === 'pw-diagram') {
+        let markup = '';
+        Object.defineProperty(els[id], 'innerHTML', {
+          get: () => markup,
+          set: (value) => {
+            markup = value;
+            // A redraw replaces the SVG nodes and their selection attributes.
+            diagramRects = [...value.matchAll(/<rect\b([^>]*)>/g)].map((match) => {
+              const rect = mk();
+              for (const [, key, val] of match[1].matchAll(/([\w-]+)="([^"]*)"/g)) {
+                rect.setAttribute(key, val);
+              }
+              rect.className = rect.getAttribute('class') || '';
+              return rect;
+            });
+          },
+        });
+      }
     }
     return els[id];
   },
@@ -3690,6 +3719,7 @@ console.log(JSON.stringify({
   layers: created.filter((el) => el.classList.contains('pw-layer-toggle'))
     .map((el) => ({key: el.dataset.layer, checked: el.checked, title: el.title})),
   svg: els['pw-diagram'] ? els['pw-diagram'].innerHTML : null,
+  diagramRects: diagramRects.map((rect) => rect.attrs),
   statesHidden: els['pw-states-panel'] ? els['pw-states-panel'].classList.contains('hidden') : null,
   hash: window.location.hash,
   explorerScrolls: scrolls.filter(el => el === els['pw-explorer']).length,
@@ -3703,11 +3733,8 @@ def _run_url_probe(
 ) -> Any:
     """Run the page's own script under :data:`_NODE_URL_JS` and return the
     dumped selection/URL observations."""
-    scripts = re.findall(r"<script>(.*?)</script>", html, re.DOTALL)
-    (script,) = [s for s in scripts if "function renderDiagram" in s]
-    (tmp_path / "page.js").write_text(
-        _step_kinetics_script() + "\n" + script, encoding="utf-8"
-    )
+    script = _explorer_script(html)
+    (tmp_path / "page.js").write_text(script, encoding="utf-8")
     driver = tmp_path / "url_driver.js"
     driver.write_text(_NODE_URL_JS, encoding="utf-8")
     out = subprocess.run(

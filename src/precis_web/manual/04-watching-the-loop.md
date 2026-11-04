@@ -108,6 +108,27 @@ or no sweep, there is no inset. The fit approximates stored mean-field
 turnover; it is not a new solve or an extrapolation. The note below the
 diagram explains the Eyring ledger, BEP fallback, sticking and entropy assumptions.
 
+The collapsible **Visual filters** box to the right walks the graph from
+the start material. A state remains visible if any uncut route reaches
+it. A cut step gets a ⊣ glyph with the reason on hover, and its route
+button says **cut at** the step.
+
+**Barrier threshold** starts off so the existing diagram stays visible.
+Enable it or move the slider to hide steps above the chosen energy. The
+initial slider position is the thermal equivalent of **1 second**;
+buttons for 1 ms, 1 s and 1 h move with temperature. Measured barriers
+always count; BEP estimates count only while **BEP humps** is on. A step
+with neither is listed as **no barrier known** and stays visible under
+this filter.
+
+**Turnover floor** starts at **1e-10 /s/site**. It uses stored v2 per-step
+rates where present, otherwise the v1 chain's `net_rate`, and names the
+source and stored conditions. Missing rates leave steps visible. Moving
+the environment does not recompute flux: the box labels it **not computed
+at the selected environment** and says which stored temperature and
+pressures it uses; re-solve kinetics to update those rates. Both filters
+and their thresholds are preserved by **copy link**.
+
 ## What the dashboard does not tell you yet
 
 It shows momentum, but not **cadence**. There is currently no place in

@@ -229,7 +229,8 @@
     screening tier: no measured barriers; estimates shown are BEP &alpha;&middot;&Delta;E+&beta; &plusmn; band.
   </p>
   {% endif %}
-  <div id="pw-diagram" class="scheme-light w-full overflow-x-auto rounded border border-info bg-surface-subtle p-1"></div>
+  <div class="flex flex-wrap items-start gap-2"><div id="pw-diagram" class="scheme-light min-w-0 flex-1 overflow-x-auto rounded border border-info bg-surface-subtle p-1"></div>
+  <details id="pw-filter-controls" class="rounded border border-line-strong p-2 text-xs text-fg-muted" style="width:18rem" open></details></div>
   <div id="pw-arrhenius-inset" class="text-xs overflow-x-auto" aria-live="polite"></div>
   <p class="mt-1 text-xs text-fg-subtle">How rates are estimated: Eyring rates use G_TS − G_IS and G_TS − G_FS from one free-energy ledger, with one transition-state floor at both endpoints. BEP fits supply missing barriers with their recorded uncertainty band. Gas exchange uses sticking probabilities and Hertz–Knudsen rates with detailed balance. The stored entropy model (gas entropy and available surface modes) sets the free energies. Transition values stay at their named solve’s stored environment; changing the diagram’s U or pH does not re-solve kinetics.</p>
   <p id="pw-diagram-key" class="mt-1 text-[10px] leading-snug text-fg-subtle">
@@ -647,6 +648,7 @@
 
 {% block scripts %}
 <script src="/static/pathway-step-kinetics.js"></script>
+<script src="/static/pathway-filters.js"></script>
 {% if kinetics %}<script src="/static/pathway-kinetics.js" defer></script>{% endif %}
 <script src="/static/3dmol/3Dmol-min.js"></script>
 <script>
@@ -693,7 +695,8 @@
   // ``~tag`` names the gas released). ──
   // pw-annot:begin
   // One set of presentation inputs for the renderer and shareable URL.
-  // Existing layers and kinetics source default on; other quantities opt in.
+  // Existing layers, kinetics source and turnover filtering default on;
+  // other kinetics quantities and barrier filtering opt in.
   const PW_LAYERS = [
     { key: 'supply', label: 'H* supply legs', help: 'Show the adsorbed-H shoulder and supply drop. Off combines adsorption and hydrogenation into one PCET rung; stored transition-state energies are unchanged.' },
     { key: 'feed', label: 'Proton + electron feeds', help: 'Draw +H⁺+e⁻ arrows onto the product level receiving the feed.' },
@@ -706,6 +709,8 @@
     { key: 'confidence', label: 'Low-confidence styling', help: 'Mark flagged states in red with a warning symbol. Hiding this styling does not change data or trust checks; reasons remain on hover.' },
     { key: 'states', label: 'States table', help: 'Show the selectable state list and previous/next controls beside the structure viewer.' },
     ...PWStepKinetics.layers,
+    { key: 'barrier_filter', label: 'Barrier threshold', help: 'Cut steps above the barrier threshold; unknown barriers stay visible.', defaultOn: false, filter: true },
+    { key: 'turnover_filter', label: 'Turnover floor', help: 'Cut steps below the stored net flux floor; missing rates stay visible.', filter: true },
   ];
   function pwLayerDefaults() {
     return Object.fromEntries(PW_LAYERS.map((layer) => [layer.key, layer.defaultOn !== false]));
@@ -951,11 +956,16 @@
   // pw-annot:end
 
   let layerSelection = pwLayerDefaults();
+  let filterState = PathwayFilters.read(new URLSearchParams());
+  let filterControls = null;
+  const filterEnvironment = { T: (V.results && V.results.T) || 298.15 };
+  const currentFilterEnvironment = () => ({...filterEnvironment, U: currentU, pH: phInput ? Number(phInput.value) : 0});
 
   function buildLayerControls() {
     const box = document.getElementById('pw-layer-controls');
     if (!box) { return; }
     PW_LAYERS.forEach((layer) => {
+      if (layer.filter) { return; }
       const label = document.createElement('label');
       label.className = 'flex items-center gap-1';
       label.title = layer.help;
@@ -973,7 +983,6 @@
       input.addEventListener('change', () => {
         layerSelection[layer.key] = input.checked;
         renderDiagram(layerSelection);
-        if (selected) { highlightState(selected, false); }
         syncUrl();
       });
     });
@@ -1196,6 +1205,7 @@
 
   function renderDiagram(layers = layerSelection) {
     const view = pwLayerPresentation(layers);
+    const filtered = V.diagram ? PathwayFilters.traverse(V.diagram, view, filterState, filterEnvironment.T) : null;
     const g = V.diagram;
     const states = document.getElementById('pw-states-panel');
     // Without a diagram there is no checkbox to restore state navigation.
@@ -1203,6 +1213,12 @@
     const el = document.getElementById('pw-diagram');
     if (!g || !el || !g.nodes.length) { return; }
 
+    // Chemistry and geometry use the original topology. Filters only decide
+    // which nodes/edges are drawn, never folding, lookahead or leaf status.
+    const drawn = filtered.graph;
+    const drawnIds = new Set(drawn.nodes.map((n) => n.id));
+    const drawnEdges = new Set(drawn.links.map((e) => e.source + '\u0001' + e.target));
+    const drawsEdge = (e) => !!e && drawnEdges.has(e.source + '\u0001' + e.target);
     const paths = (g.paths && g.paths.length) ? g.paths : [g.nodes.map((n) => n.id)];
     const byId = {}; g.nodes.forEach((n) => { byId[n.id] = n; });
 
@@ -1219,11 +1235,13 @@
     const isLeaf = (id) => !hasOut.has(id);
     const foldedPaths = paths.map((path) => pwFoldPath(path, linkByPair));
     const shoulderIds = new Set();
-    const chemPaths = paths.map((path, pi) => {
-      const sh = new Set();
-      foldedPaths[pi].forEach((s) => {
-        if (s.shoulder != null) { sh.add(s.shoulder); shoulderIds.add(s.shoulder); }
+    foldedPaths.forEach((steps) => {
+      steps.forEach((s) => {
+        if (s.shoulder != null) { shoulderIds.add(s.shoulder); }
       });
+    });
+    const chemPaths = paths.map((path, pi) => {
+      const sh = new Set(foldedPaths[pi].map((s) => s.shoulder));
       return path.filter((id) => !sh.has(id));
     });
     const steps = [];
@@ -1311,7 +1329,7 @@
     const ownerPath = {};
     chemPaths.forEach((path, pi) => {
       path.forEach((id, i) => {
-        if (xOf[id] == null) { xOf[id] = i; ownerPath[id] = pi; }
+        if (byId[id] && xOf[id] == null) { xOf[id] = i; ownerPath[id] = pi; }
       });
     });
     const maxLen = Math.max(1, ...chemPaths.map((p) => p.length));
@@ -1323,6 +1341,9 @@
     const n = Math.max(maxLen, 1);
     const xScale = (idx) => padL + ((idx + 0.5) / n) * plotW;
     const half = Math.min(0.34 * (plotW / n), 42);
+    // Cut glyphs start at the drawn level's right edge, including shoulders
+    // which have no chemical column of their own.
+    const cutX = Object.fromEntries(Object.entries(xOf).map(([id, x]) => [id, xScale(x) + half]));
 
     // A node with no computed energy yet (rel_energy == null) is excluded
     // from the y-scale, hump curves, and level line entirely — it gets its
@@ -1355,7 +1376,7 @@
     // default) — highlightState() below flips the selected state's own
     // rect to a sky-50 fill + sky-200 border on click, unifying with the
     // States-list row's own selected-row tokens.
-    g.nodes.forEach((nd) => {
+    drawn.nodes.forEach((nd) => {
       const id = nd.id;
       if (xOf[id] == null) { return; }
       const cx = xScale(xOf[id]);
@@ -1400,15 +1421,32 @@
     steps.forEach((s) => {
       const color = PATH_COLORS[s.pi % PATH_COLORS.length];
       if (xOf[s.src] == null || xOf[s.tgt] == null) { return; }
-      // No energy on one end — nothing to plot a hump between.
-      const geo = stepGeom(s);
-      if (!geo) { return; }
       const pa = pAttr(edgePaths[s.key]);
       // ``half`` is a PIXEL margin (see its definition above) — apply it
       // AFTER scaling the step index to pixel space, not before. Mixing
       // the two (index-space +/- a pixel count, then scaling the sum)
       // put humps/edges thousands of px off-canvas.
       const x0 = xScale(xOf[s.src]) + half, x1 = xScale(xOf[s.tgt]) - half;
+      // Supply survives independently of the reaction: a cut at X+H must
+      // leave its tick, connector and click target at their original position.
+      if (s.shoulder != null && drawsEdge(s.supply)) {
+        const shNode = byId[s.shoulder], src = byId[s.src];
+        const tx1 = x0 + Math.min(10, (x1 - x0) * 0.25);
+        cutX[s.shoulder] = tx1;
+        if (view.supply && shNode && shNode.rel_energy != null
+            && src && src.rel_energy != null) {
+          const shE = shNode.rel_energy, ys = py(shE);
+          const shTip = `${s.shoulder} (${shE >= 0 ? '+' : ''}${shE.toFixed(2)})${shNode.n_H != null ? ` n_H=${shNode.n_H}` : ''}\n${PWStepKinetics.text(s.supply)}`;
+          parts.push(`<line class="pw-shoulder-drop"${pa} x1="${x0}" y1="${py(src.rel_energy)}" x2="${x0}" y2="${ys}" stroke="${color}" stroke-width="1" opacity="0.5"><title>${esc(shTip)}</title></line>`);
+          parts.push(`<line class="pw-shoulder"${pa} data-state="${esc(s.shoulder)}" x1="${x0}" y1="${ys}" x2="${tx1}" y2="${ys}" stroke="${color}" stroke-width="3" stroke-linecap="round"><title>${esc(shTip)}</title></line>`);
+          parts.push(`<rect class="pw-svg-node"${pa} data-state="${esc(s.shoulder)}" x="${x0 - 2}" y="${ys - 6}" width="${tx1 - x0 + 4}" height="12" `
+            + `fill="transparent" stroke="none" style="cursor:pointer"><title>${esc(shTip)}</title></rect>`);
+        }
+      }
+      if ((s.supply && !drawsEdge(s.supply)) || (s.react && !drawsEdge(s.react))) { return; }
+      // No energy on one end — nothing to plot a hump between.
+      const geo = stepGeom(s);
+      if (!geo) { return; }
       const xm = (x0 + x1) / 2;
       // Three draw states (gr559345): a measured barrier is a solid hump;
       // a BEP-estimated one (no measured barrier, but a usable bep fit) is
@@ -1436,19 +1474,6 @@
           ? `, Ea\u2248${geo.bepEa.toFixed(2)} eV (BEP estimate)`
           : (geo.barrier > 1e-3 ? `, Ea=${geo.barrier.toFixed(2)} eV` : '');
       parts.push(`<polyline class="pw-seg"${pa} data-from="${esc(s.src)}" data-to="${esc(s.tgt)}" data-reaction-from="${esc(s.shoulder ?? s.src)}" points="${curve}" fill="none" stroke="${color}" stroke-width="2"${dash} style="cursor:pointer"><title>${esc(`step ${s.src} \u2192 ${s.tgt}${eaTitle}, source=${barrierSource}\n${PWStepKinetics.text(s.react || s.supply)}\nclick to isolate its path`)}</title></polyline>`);
-      // shoulder — the X+H level (its energy is real) as a small tick at
-      // the hump's foot, joined to X by a thin solid drop; clickable like a
-      // level, and it moves with U like any other n_H-carrying node.
-      if (view.supply && s.shoulder != null && geo.shE != null) {
-        const ys = py(geo.shE);
-        const tx1 = x0 + Math.min(10, (x1 - x0) * 0.25);
-        const shNode = byId[s.shoulder];
-        const shTip = `${s.shoulder} (${geo.shE >= 0 ? '+' : ''}${geo.shE.toFixed(2)})${shNode && shNode.n_H != null ? ` n_H=${shNode.n_H}` : ''}\n${PWStepKinetics.text(s.supply)}`;
-        parts.push(`<line class="pw-shoulder-drop"${pa} x1="${x0}" y1="${py(geo.src.rel_energy)}" x2="${x0}" y2="${ys}" stroke="${color}" stroke-width="1" opacity="0.5"><title>${esc(shTip)}</title></line>`);
-        parts.push(`<line class="pw-shoulder"${pa} data-state="${esc(s.shoulder)}" x1="${x0}" y1="${ys}" x2="${tx1}" y2="${ys}" stroke="${color}" stroke-width="3" stroke-linecap="round"><title>${esc(shTip)}</title></line>`);
-        parts.push(`<rect class="pw-svg-node"${pa} data-state="${esc(s.shoulder)}" x="${x0 - 2}" y="${ys - 6}" width="${tx1 - x0 + 4}" height="12" `
-          + `fill="transparent" stroke="none" style="cursor:pointer"><title>${esc(shTip)}</title></rect>`);
-      }
       const hasBarrierLabel = unknown || isBep || geo.barrier > 1e-3;
       if (showHump && hasBarrierLabel) {
         if (isBep && geo.bepRmse != null && geo.bepRmse > 1e-6) {
@@ -1497,7 +1522,7 @@
     // below (that's the AC (b) guard) — it gets a dashed grey "no energy
     // yet" placeholder at the plot floor instead, and keeps its click
     // target so the state remains selectable from the diagram too.
-    g.nodes.forEach((nd) => {
+    drawn.nodes.forEach((nd) => {
       const id = nd.id;
       if (xOf[id] == null) { return; }
       // Pixel-space margin applied AFTER scaling — see the edges block
@@ -1645,7 +1670,7 @@
     (V.measures || []).forEach((m) => {
       if (!m.trace_ok) { return; }
       const vals = V.stateIds
-        .filter((id) => xOf[id] != null)
+        .filter((id) => drawnIds.has(id) && xOf[id] != null)
         .map((id) => (m.per_state[id] || {}).value)
         .filter((v) => v != null);
       if (vals.length < 2) { return; }
@@ -1657,7 +1682,7 @@
       const color = TRACE_COLORS[colorIdx % TRACE_COLORS.length];
       const pts = V.stateIds
         .map((id) => {
-          if (xOf[id] == null) { return null; }
+          if (!drawnIds.has(id) || xOf[id] == null) { return null; }
           const cell = m.per_state[id];
           return (cell && cell.value != null) ? `${xScale(xOf[id])},${vy(cell.value)}` : null;
         })
@@ -1665,7 +1690,7 @@
       const dash = m.verified ? '' : ' stroke-dasharray="5 4"';
       parts.push(`<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2"${dash} opacity="0.85"/>`);
       V.stateIds.forEach((id) => {
-        if (xOf[id] == null) { return; }
+        if (!drawnIds.has(id) || xOf[id] == null) { return; }
         const cell = m.per_state[id];
         if (!cell || cell.value == null) { return; }
         parts.push(`<circle cx="${xScale(xOf[id])}" cy="${vy(cell.value)}" r="2.5" fill="${color}"/>`);
@@ -1675,11 +1700,16 @@
       colorIdx += 1;
     });
 
+    parts.push(PathwayFilters.glyphs(filtered, cutX, byId, (x) => x, py, 0));
     parts.push('</svg>');
     el.innerHTML = parts.join('');
     PWStepKinetics.renderInset(g.links || []);
-    buildPathLegend(paths);
+    buildPathLegend(V.diagram.paths || paths);
+    PathwayFilters.markRoutes(filtered);
+    if (filterControls) { filterControls.update(filtered); }
     applyPathSelection();
+    // Replacing the SVG clears selection styling for every redraw trigger.
+    if (selected) { highlightState(selected, false); }
     // clicking a hump segment picks its (first) path — same affordance as
     // the export's drawing-click; level clicks keep selecting the STATE.
     el.querySelectorAll('.pw-seg').forEach((seg) => {
@@ -2131,6 +2161,7 @@
       if (Number.isFinite(ph)) { qs.set('ph', String(ph)); }
     }
     pwWriteLayers(qs, layerSelection);
+    PathwayFilters.write(qs, filterState);
     const s = qs.toString();
     return s ? '?' + s : '';
   }
@@ -2221,6 +2252,7 @@
       else { ignored.push('ph'); }
     }
     layerSelection = pwReadLayers(qs, ignored);
+    filterState = PathwayFilters.read(qs, ignored);
     if (ignored.length) {
       showLinkNote('Ignored link parameter' + (ignored.length > 1 ? 's' : '')
         + ' that don\u2019t match this pathway (stale or invalid): '
@@ -2365,14 +2397,13 @@
     updateUReadout();
     try {
       renderDiagram();
-      if (selected) { highlightState(selected); }
     } catch (err) {
       console.error('pathway diagram re-render failed', err);
     }
     syncUrl();
   }
   if (uSlider) { uSlider.addEventListener('input', () => setU(parseFloat(uSlider.value))); }
-  if (phInput) { phInput.addEventListener('input', () => { environmentPhDirty = true; updateUReadout(); syncUrl(); }); }
+  if (phInput) { phInput.addEventListener('input', () => { environmentPhDirty = true; updateUReadout(); renderDiagram(); syncUrl(); }); }
   const snapUL = document.getElementById('pw-u-snap-ul');
   const snapUopt = document.getElementById('pw-u-snap-uopt');
   if (snapUL) snapUL.addEventListener('click', () => setU(V.results && V.results.U_L, 'U_L'));
@@ -2404,6 +2435,8 @@
 
   const initState = applyUrlSelection();
   buildLayerControls();
+  filterControls = PathwayFilters.mount(document.getElementById('pw-filter-controls'), () => layerSelection, filterState, currentFilterEnvironment, (V.diagram && V.diagram.filter_kinetics) || [], () => { renderDiagram(); syncUrl(); });
+  document.addEventListener('pw-environment-change', (event) => { Object.assign(filterEnvironment, event.detail); renderDiagram(); });
   if (uSlider) { uSlider.value = String(currentU); }  // default may be U_opt
   updateUReadout();
 

@@ -480,7 +480,10 @@ def test_pathway_rate_label_is_rendered_from_url(
     )
     html = client.get("/refs/pathway/171696").text
     assert "/static/pathway-step-kinetics.js" in html
-    out = _run_url_probe(tmp_path, html, search="?layer_kin_k_f=1")
+    # _v1's step has zero net rate, which the default turnover floor cuts.
+    out = _run_url_probe(
+        tmp_path, html, search="?layer_kin_k_f=1&layer_turnover_filter=0"
+    )
     assert "k_f" in out["svg"]
     assert next(layer for layer in out["layers"] if layer["key"] == "kin_k_f")[
         "checked"
@@ -500,7 +503,10 @@ def test_pathway_transition_hover_and_label_escape_stored_text(
         body_text=None,
     )
     html = client.get("/refs/pathway/171696").text
-    out = _run_url_probe(tmp_path, html, search="?layer_kin_k_f=1")
+    # _v1's step has zero net rate, which the default turnover floor cuts.
+    out = _run_url_probe(
+        tmp_path, html, search="?layer_kin_k_f=1&layer_turnover_filter=0"
+    )
     assert "<img" not in out["svg"]
     assert "<script" not in out["svg"]
     assert "&lt;img" in out["svg"]

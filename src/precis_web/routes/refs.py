@@ -69,6 +69,7 @@ from precis_web.deps import (
 )
 from precis_web.item_view import display_title
 from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_head
+from precis_web.pathway_filters import filter_kinetics_payload
 from precis_web.pathway_kinetics import kinetics_payload
 from precis_web.pathway_step_kinetics import attach_step_kinetics
 from precis_web.ref_urls import ref_url
@@ -2491,6 +2492,7 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
         graph, target=results.get("target"), edges=results.get("edges"), results=results
     )
     if diagram:
+        diagram["filter_kinetics"] = filter_kinetics_payload(results)
         # gr553482: per-route steady-state flux shares off the stored
         # kinetics record — the greedy net-flux decomposition lives in
         # pure ``precis_pathway.flux_share``; this layer only attaches the
