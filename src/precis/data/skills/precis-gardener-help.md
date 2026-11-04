@@ -32,7 +32,7 @@ proposal stale by itself.
 
 One bounded tick per minted job (`job_inproc` executor), `params.pass`
 selects the detector subset (`merge|split|relink|prune|tag-sweep|
-siblings|paper-identity`, one name or a list, default `all`):
+siblings|paper-identity|memory`, one name or a list, default `all`):
 
 - **merge** — same-kind node pairs that look like one term minted
   twice. taxon/concept compare their `card_combined` embeddings and
@@ -47,6 +47,22 @@ siblings|paper-identity`, one name or a list, default `all`):
   `definition_template` (both definitions are one placeholder with a
   different name in front) and `siblings_under` (the shared parents).
 - **paper-identity** — duplicate papers; see *Paper identity* below.
+- **memory** — opt-in: `all` skips this pass, so a job must name it.
+  `dangling_mention` scans live memory bodies for retired
+  handles, even when no mention edge remains. A `rewrite` proposal pins
+  the target SHA, exact spans, retire dates and any successor. Null
+  replacement text needs evaluation; it is never a deletion instruction.
+  DREAM memories are excluded. Proposals stay pending for review: there
+  is no rewrite apply or auto-apply door. `thread_shape` scans tagged
+  thread children as well as roots: a missing `Left:` line or a terminal
+  todo/gripe on that line proposes `supersede` by the nearest ancestor
+  thread with a current `Left:`, otherwise `retire`. Needed figures must
+  be folded into the ancestor's `Earlier:` line before superseding; all
+  retirement requires preservation review. Section hubs are excluded.
+  These actions are proposal-only. SHA ancestry on `origin/prod` is not
+  checked: there is no general ancestry oracle in the DB.
+## Structural scans
+
 - **relink** — a `taxon` reaching no start node gets a
   `specialises`-edge proposal naming the nearest start node by card
   embedding as candidate parent — but only when that parent sits past
@@ -104,9 +120,10 @@ only: a paper merge is a human decision.
 ## Scan windows and budget
 
 **Scan windows.** The wide scans (merge, tag-sweep, redundant_link,
-paper-identity) read one window per kind per run, starting past a
+paper-identity, memory) read one window per kind per run, starting past a
 cursor saved on the run's `meta.garden.cursors` (`dup_pair:<kind>`,
-`untagged:<kind>`, `redundant_link`, `paper_identity`). The next run
+`untagged:<kind>`, `redundant_link`, `paper_identity`,
+`dangling_mention:memory`, `thread_shape:memory`). The next run
 starts where the last stopped and wraps at the end, so successive runs
 cover every kind; a run over fewer kinds carries the other cursors
 forward. The merge window shrinks as a kind grows (each window ref is

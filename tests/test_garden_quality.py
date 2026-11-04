@@ -9,6 +9,8 @@ identical text at cosine distance ~0.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 import pytest
@@ -21,6 +23,7 @@ from precis.graph.garden.proposals import (
     emit_proposal,
     key_block,
     pending_proposals,
+    record_rejection,
 )
 from precis.graph.garden.proposer import Verdict
 from precis.graph.garden.runner import run_garden_tick
@@ -111,6 +114,77 @@ def _result(text: str, stop: str | None = "stop") -> LlmResult:
         tier=Tier.MEDIUM,
         stop_reason=stop,
     )
+
+
+@pytest.mark.parametrize(
+    ("detector", "allowed"),
+    [
+        ("dup_pair", ("merge", "split", "relink", "prune", "tag")),
+        ("dangling_mention", ("rewrite",)),
+        ("thread_shape", ("supersede", "retire")),
+    ],
+)
+def test_action_refinements_stay_in_detector_family(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    detector: str,
+    allowed: tuple[str, ...],
+) -> None:
+    candidate = GardenCandidate(
+        detector=detector,
+        action=allowed[0],
+        target_kind="ref",
+        target_id=_ref(store, "memory", "Candidate"),
+    )
+    for action in (
+        "merge",
+        "split",
+        "relink",
+        "prune",
+        "tag",
+        "rewrite",
+        "supersede",
+        "retire",
+        "sharpen",
+        "re-axis",
+        "re-parent",
+        "invented",
+    ):
+        reply = _result(json.dumps({"accept": True, "action": action}))
+        monkeypatch.setattr(router, "route", lambda _req, reply=reply: reply)
+        verdict = proposer.propose_llm(store, candidate)
+        assert verdict.accept
+        assert verdict.action == (action if action in allowed else None)
+
+
+def test_legacy_prompt_stays_byte_identical_to_v2() -> None:
+    # Recorded before the memory detectors, at b2323ff92. Rejection cache
+    # compatibility requires preserving the exact prompt, not just its label.
+    expected = "6fc3dcbf619dde09b8c4625b0b2512f6d10a145fb84c93cda46d25413241c1ee"
+    assert proposer.PROMPT_VERSION == "garden-propose.v2"
+    for detector in cand.detectors_for(("all",)):
+        if detector in {"dangling_mention", "thread_shape"}:
+            continue
+        candidate = GardenCandidate(
+            detector=detector, action="merge", target_kind="ref", target_id=1
+        )
+        head = proposer._prompt_for(candidate).split("\nCandidate:\n")[0]
+        assert hashlib.sha256(head.encode()).hexdigest() == expected
+
+
+@pytest.mark.parametrize(
+    ("detector", "actions"),
+    [("dangling_mention", "rewrite"), ("thread_shape", "supersede|retire")],
+)
+def test_memory_prompt_has_its_rules_and_actions(detector: str, actions: str) -> None:
+    candidate = GardenCandidate(
+        detector=detector, action=actions.split("|")[0], target_kind="ref", target_id=1
+    )
+    prompt = proposer._prompt_for(candidate)
+    assert f'"action": "{actions}"' in prompt
+    assert "text=null means unresolved, never delete" in prompt
+    assert "SHA ancestry on\norigin/prod has not been checked" in prompt
+    assert proposer.MEMORY_PROMPT_VERSION != proposer.PROMPT_VERSION
 
 
 def _through_chain(
@@ -217,6 +291,54 @@ _WHEELS = ("Front wheel", "Rear wheel", "Spare wheel")
 
 
 class TestRejectionRemembered:
+    def test_memory_prompt_change_keeps_legacy_rejections(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        candidates = [
+            GardenCandidate(
+                detector=detector,
+                action=action,
+                target_kind="ref",
+                target_id=_ref(store, "memory", detector),
+            )
+            for detector, action in (
+                ("dup_pair", "merge"),
+                ("dangling_mention", "rewrite"),
+                ("thread_shape", "retire"),
+            )
+        ]
+        for candidate in candidates:
+            record_rejection(
+                store,
+                candidate,
+                rationale="unchanged evidence",
+                prompt_version="garden-propose.v2"
+                if candidate.detector == "dup_pair"
+                else proposer.MEMORY_PROMPT_VERSION,
+            )
+        monkeypatch.setattr(
+            runner,
+            "run_detectors",
+            lambda *_a, **_kw: DetectorRun(candidates=candidates),
+        )
+        judge = _Rejecter()
+        assert run_garden_tick(store, propose=judge).skipped_rejected == 3
+        assert judge.asked == []
+        monkeypatch.setattr(
+            runner, "MEMORY_PROMPT_VERSION", "garden-propose.memory.test"
+        )
+        changed = run_garden_tick(store, propose=judge)
+        assert (changed.skipped_rejected, changed.rejected) == (1, 2)
+        assert set(judge.asked) == {candidate.key for candidate in candidates[1:]}
+        for candidate in candidates[1:]:
+            rejection = store.reviews_for("ref", candidate.target_id)[0]
+            assert rejection.note is not None
+            assert json.loads(rejection.note)["garden"]["prompt"] == (
+                "garden-propose.memory.test"
+            )
+        assert run_garden_tick(store, propose=judge).skipped_rejected == 3
+        assert len(judge.asked) == 2
+
     def test_second_run_does_not_re_ask(self, store: Store) -> None:
         """Before: every run re-asked the same three sibling pairs (prod:
         16-20 rejects a run, one pair asked 16 times). After: asked once,

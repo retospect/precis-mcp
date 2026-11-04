@@ -40,10 +40,16 @@ from psycopg.errors import QueryCanceled
 from precis.reading.concepts import normalize_name
 from precis.store._mappers import _coerce_vector
 from precis.taxonomy.nodes import dimension_clash
+from precis.todo import TERMINAL_TODO_STATUSES
 from precis.utils.deadline import DeadlineExceeded, call_with_deadline
+from precis.utils.handle_registry import parse as parse_handle
+from precis.utils.handle_registry import try_format
 from precis.utils.lexical import content_words, lexical_overlap
+from precis.utils.memory_threads import INDEX_TAG, THREADS_TAG, first_left, left_is_done
 
 if TYPE_CHECKING:
+    from psycopg import Connection
+
     from precis.store.store import Store
 
 log = logging.getLogger(__name__)
@@ -165,9 +171,14 @@ _DETECTOR_BY_PASS = {
     "tag-sweep": ("untagged",),
     "siblings": ("sibling_confusion",),
     "paper-identity": ("paper_identity",),
+    "memory": ("dangling_mention", "thread_shape"),
 }
 
-#: Job ``params.pass`` values → detectors. ``all`` runs everything.
+#: Passes ``all`` skips. The memory detectors spend proposer calls, so they
+#: run only when a job names ``memory``, until Reto turns them on.
+OPT_IN_PASSES: frozenset[str] = frozenset({"memory"})
+
+#: Job ``params.pass`` values → detectors. ``all`` runs everything not opt-in.
 PASS_CHOICES: tuple[str, ...] = tuple(_DETECTOR_BY_PASS) + ("all",)
 
 
@@ -183,7 +194,7 @@ class GardenCandidate:
     """
 
     detector: str
-    action: str  # merge | split | relink | prune | tag
+    action: str  # merge | split | relink | prune | tag | rewrite | supersede | retire
     target_kind: str  # 'ref' | 'link' (reviews.target_kind)
     target_id: int
     other_id: int | None = None
@@ -482,6 +493,379 @@ def _scan_window(
             ).fetchall()
         ]
     return ids, (ids[-1] if len(ids) >= size else 0)
+
+
+_MEMORY_HANDLE = re.compile(r"\b[a-zA-Z]{2}[0-9]{1,19}\b")
+
+#: Bound redirect reads and per-memory prompt evidence independently of scan_cap.
+SUCCESSOR_MAX_HOPS = 16
+MENTION_MATCH_CAP = 20
+
+
+def _memory_bodies(store: Store, ids: list[int]) -> list[tuple[int, str, str]]:
+    """Live body text and target SHA in one snapshot, excluding DREAMs.
+
+    Joining chunks in body order makes spans independent of chunk boundaries.
+    DREAMs remain in the duplicate/merge lane only.
+    """
+    if not ids:
+        return []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT r.ref_id, coalesce((SELECT string_agg(c.text, E'\\n' "
+            "ORDER BY c.ord, c.chunk_id) FROM chunks c WHERE c.ref_id = r.ref_id "
+            "AND c.chunk_kind = 'memory_body' AND c.ord >= 0 "
+            "AND c.retired_at IS NULL), ''), precis_target_sha('ref', r.ref_id) "
+            "FROM refs r WHERE r.ref_id = ANY(%s) AND r.kind = 'memory' "
+            "AND r.retired_at IS NULL AND NOT EXISTS ("
+            "SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = r.ref_id AND t.namespace = 'DREAM') "
+            "ORDER BY r.ref_id",
+            (ids,),
+        ).fetchall()
+    return [(int(rid), str(body), str(sha)) for rid, body, sha in rows]
+
+
+def _live_meta_successor(conn: Connection[Any], raw: Any) -> str | None:
+    """Follow numeric/record-handle tombstones to a verified live ref.
+
+    Cycles, missing refs, wrong kinds and exhausted chains are unresolved;
+    a chunk handle cannot identify a replacement record.
+    """
+    seen: set[int] = set()
+    for _ in range(SUCCESSOR_MAX_HOPS):
+        value = str(raw or "")
+        expected_kind = None
+        if value.isascii() and value.isdigit():
+            if len(value) > 19:
+                return None
+            rid = int(value)
+        else:
+            parsed = parse_handle(value)
+            if parsed is None or parsed[1]:
+                return None
+            expected_kind, _, rid = parsed
+        if rid > 9223372036854775807 or rid in seen:
+            return None
+        seen.add(rid)
+        row = conn.execute(
+            "SELECT kind, retired_at, meta->>'superseded_by' "
+            "FROM refs WHERE ref_id = %s",
+            (rid,),
+        ).fetchone()
+        if row is None or (expected_kind is not None and row[0] != expected_kind):
+            return None
+        kind, retired, raw = row
+        if retired is None:
+            return try_format(str(kind), rid)
+    return None
+
+
+def _retired_mentions(store: Store, tokens: set[str]) -> dict[str, dict[str, Any]]:
+    """Join decoded record/chunk handles to retired refs, never mention edges.
+
+    A chunk handle (pcN, etc.) joins through its owning ref. A successor
+    replaces only a record handle: moving to a new paper does not identify
+    the corresponding chunk in that paper.
+    """
+    decoded = {
+        token: parsed
+        for token in sorted(tokens)
+        if (parsed := parse_handle(token)) is not None
+        and parsed[2] <= 9223372036854775807
+    }
+    if not decoded:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "WITH mentioned AS ("
+            "SELECT r.ref_id, r.kind, false AS is_chunk, r.ref_id AS pk "
+            "FROM refs r WHERE r.ref_id = ANY(%s) UNION ALL "
+            "SELECT r.ref_id, r.kind, true, c.chunk_id FROM chunks c "
+            "JOIN refs r USING (ref_id) WHERE c.chunk_id = ANY(%s)) "
+            "SELECT m.kind, m.is_chunk, m.pk, r.ref_id, r.retired_at, "
+            "r.meta->>'superseded_by', s.ref_id, s.kind "
+            "FROM mentioned m JOIN refs r USING (ref_id) "
+            "LEFT JOIN LATERAL (SELECT live.ref_id, live.kind FROM links l "
+            "JOIN refs live ON live.ref_id = l.src_ref_id "
+            "WHERE l.dst_ref_id = r.ref_id AND l.relation = 'supersedes' "
+            "AND live.retired_at IS NULL ORDER BY live.ref_id LIMIT 1) s ON true "
+            "WHERE r.retired_at IS NOT NULL",
+            (
+                [pk for _, chunk, pk in decoded.values() if not chunk],
+                [pk for _, chunk, pk in decoded.values() if chunk],
+            ),
+        ).fetchall()
+        # Resolve each distinct tombstone once; never suggest a retired ref.
+        successors = {
+            raw: _live_meta_successor(conn, raw)
+            for raw in {str(row[5]) for row in rows if row[5]}
+        }
+    by_address = {}
+    for kind, chunk, pk, rid, retired, raw, sid, skind in rows:
+        successor = successors.get(str(raw))
+        if successor is None and sid is not None:
+            successor = try_format(str(skind), int(sid))
+        by_address[(kind, bool(chunk), int(pk))] = {
+            "retired_ref": try_format(str(kind), int(rid)),
+            "retired_at": retired.isoformat(),
+            "successor": successor,
+            "chunk": bool(chunk),
+        }
+    return {
+        token: by_address[address]
+        for token, address in decoded.items()
+        if address in by_address
+    }
+
+
+def dangling_mention_candidates(
+    store: Store,
+    *,
+    scan_cap: int = 2000,
+    limit: int = 50,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
+) -> list[GardenCandidate]:
+    """Propose anchored rewrites of retired handles in live memory bodies.
+
+    One proposal per memory carries at most ``MENTION_MATCH_CAP`` matching
+    spans (zero-based, end exclusive), with ``matches_capped`` in its payload
+    when more remain. Missing successors leave ``text=None`` for the evaluator;
+    this is not a deletion instruction. Even a supplied successor needs
+    semantic review. No write/apply path is invoked here. The dispatcher
+    supplies the same deadline as every other wide scan.
+    """
+    if limit <= 0 or scan_cap <= 0:
+        return []
+    key = "dangling_mention:memory"
+    window, nxt = _scan_window(
+        store, "memory", after=(cursors or {}).get(key, 0), size=scan_cap
+    )
+    bodies = _memory_bodies(store, window)
+    matches = {rid: list(_MEMORY_HANDLE.finditer(body)) for rid, body, _ in bodies}
+    retired = _retired_mentions(
+        store, {m.group() for spans in matches.values() for m in spans}
+    )
+    out: list[GardenCandidate] = []
+    for rid, body, sha in bodies:
+        evidence = []
+        ops: list[dict[str, Any]] = []
+        capped = False
+        for match in matches[rid]:
+            info = retired.get(match.group())
+            if info is None:
+                continue
+            if len(ops) >= MENTION_MATCH_CAP:
+                capped = True
+                break
+            span = [match.start(), match.end()]
+            evidence.append(
+                {
+                    "handle": match.group(),
+                    "span": span,
+                    "context": body[max(0, match.start() - 300) : match.end() + 300],
+                    **info,
+                }
+            )
+            ops.append(
+                {
+                    "find": match.group(),
+                    "text": None if info["chunk"] else info["successor"],
+                    "span": span,
+                    "successor": info["successor"],
+                }
+            )
+        if ops:
+            out.append(
+                GardenCandidate(
+                    detector="dangling_mention",
+                    action="rewrite",
+                    target_kind="ref",
+                    target_id=rid,
+                    title=f"me{rid} mentions retired handles",
+                    evidence={"mentions": evidence, "content_sha": sha},
+                    payload={
+                        "base_sha": sha,
+                        "ops": ops,
+                        "matches_capped": capped,
+                        "match_cap": MENTION_MATCH_CAP,
+                    },
+                )
+            )
+        if len(out) >= limit:
+            # Never skip later candidates merely because the output filled.
+            nxt = rid
+            break
+    if next_cursors is not None:
+        next_cursors[key] = nxt
+    return out
+
+
+def _thread_bodies(store: Store, ids: list[int]) -> list[tuple[int, str, str]]:
+    """Thread-tagged bodies, including children; section hubs stay protected."""
+    if not ids:
+        return []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT rt.ref_id FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = ANY(%s) AND t.namespace = 'OPEN' AND t.value = %s "
+            "AND NOT EXISTS (SELECT 1 FROM ref_tags ix JOIN tags it USING (tag_id) "
+            "WHERE ix.ref_id = rt.ref_id AND it.namespace = 'OPEN' AND it.value = %s)",
+            (ids, THREADS_TAG, INDEX_TAG),
+        ).fetchall()
+    return _memory_bodies(store, [int(row[0]) for row in rows])
+
+
+def _terminal_thread_work(store: Store, lefts: list[str]) -> dict[str, str]:
+    """Terminal todo/gripe handles in Left lines, with kind-checked ids."""
+    ids = set()
+    for left in lefts:
+        for match in _MEMORY_HANDLE.finditer(left):
+            parsed = parse_handle(match.group())
+            if (
+                parsed is not None
+                and parsed[0] in {"todo", "gripe"}
+                and not parsed[1]
+                and parsed[2] <= 9223372036854775807
+            ):
+                ids.add(parsed[2])
+    if not ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT r.ref_id, r.kind, t.value FROM refs r "
+            "JOIN ref_tags rt USING (ref_id) JOIN tags t USING (tag_id) "
+            "WHERE r.ref_id = ANY(%s) AND t.namespace = 'STATUS' "
+            "AND ((r.kind = 'todo' AND t.value = ANY(%s)) "
+            "OR (r.kind = 'gripe' AND t.value IN ('done', 'wontfix'))) "
+            "ORDER BY r.ref_id, t.value",
+            (sorted(ids), sorted(TERMINAL_TODO_STATUSES)),
+        ).fetchall()
+    return {str(try_format(kind, int(rid))): str(status) for rid, kind, status in rows}
+
+
+def _closed_left_handles(left: str, terminals: dict[str, str]) -> dict[str, str]:
+    """Only handles actually named on this node's Left line."""
+    return {
+        token: terminals[token]
+        for match in _MEMORY_HANDLE.finditer(left)
+        if (token := match.group().lower()) in terminals
+    }
+
+
+def _current_thread_ancestor(store: Store, ref_id: int) -> tuple[int, str, str] | None:
+    """Nearest live part-of ancestor with a nonempty, unfinished Left line.
+
+    Breadth-first traversal crosses untagged intermediate nodes and skips
+    malformed/closed thread ancestors. A visited set handles cycles; equal
+    distance ties use ref id for deterministic proposals. Deadline ownership
+    stays with run_detectors, including every query in this traversal.
+    """
+    seen = {ref_id}
+    frontier = [ref_id]
+    while frontier:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT p.ref_id FROM links l JOIN refs p "
+                "ON p.ref_id = l.dst_ref_id WHERE l.src_ref_id = ANY(%s) "
+                "AND l.relation = 'part-of' AND p.retired_at IS NULL "
+                "ORDER BY p.ref_id",
+                (frontier,),
+            ).fetchall()
+        frontier = [int(row[0]) for row in rows if int(row[0]) not in seen]
+        seen.update(frontier)
+        bodies = _thread_bodies(store, frontier)
+        lefts = {rid: first_left(body) for rid, body, _ in bodies}
+        terminals = _terminal_thread_work(
+            store, [left for left in lefts.values() if left]
+        )
+        for rid, _body, sha in bodies:
+            left = lefts[rid]
+            if (
+                left
+                and not left_is_done(left)
+                and not _closed_left_handles(left, terminals)
+            ):
+                return rid, left, sha
+    return None
+
+
+def thread_shape_candidates(
+    store: Store,
+    *,
+    scan_cap: int = 2000,
+    limit: int = 50,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
+) -> list[GardenCandidate]:
+    """Propose superseding malformed/stale thread snapshots, else retirement.
+
+    Left grammar is shared with the daily sweep. Terminal todo/gripe STATUS
+    is DB evidence; origin/prod ancestry is not stored as a general DB oracle,
+    so this detector never claims that a SHA has landed and invokes no git.
+    Preservation is a review requirement in the payload, not an edit here.
+    """
+    if limit <= 0 or scan_cap <= 0:
+        return []
+    key = "thread_shape:memory"
+    window, nxt = _scan_window(
+        store, "memory", after=(cursors or {}).get(key, 0), size=scan_cap
+    )
+    bodies = _thread_bodies(store, window)
+    lefts = {rid: first_left(body) for rid, body, _ in bodies}
+    terminals = _terminal_thread_work(store, [left for left in lefts.values() if left])
+    out = []
+    for rid, body, sha in bodies:
+        left = lefts[rid]
+        closed = _closed_left_handles(left or "", terminals)
+        if left is not None and not closed:
+            continue
+        ancestor = _current_thread_ancestor(store, rid)
+        successor = ancestor[0] if ancestor else None
+        shas = {str(rid): sha}
+        if ancestor:
+            shas[str(ancestor[0])] = ancestor[2]
+        out.append(
+            GardenCandidate(
+                detector="thread_shape",
+                action="supersede" if ancestor else "retire",
+                target_kind="ref",
+                target_id=rid,
+                other_id=successor,
+                title=f"me{rid} has {'no Left: line' if left is None else 'closed Left: work'}",
+                evidence={
+                    "reason": "missing_left" if left is None else "terminal_work",
+                    "left": left,
+                    "terminal_work": closed,
+                    "content_sha": sha,
+                    "ancestor_left": ancestor[1] if ancestor else None,
+                    "sha_on_prod": "not_checked",
+                },
+                payload={
+                    "base_sha": sha,
+                    "shas": shas,
+                    "successor": f"me{successor}" if successor else None,
+                    "requires_compaction": True,
+                    "preserve": {
+                        "target": successor,
+                        "section": "Earlier" if successor else None,
+                        "instruction": (
+                            "Fold still-needed figures into the ancestor's Earlier: line "
+                            "before superseding; never discard still-true facts."
+                            if successor
+                            else "Review and preserve still-needed facts before retirement."
+                        ),
+                    },
+                },
+            )
+        )
+        if len(out) >= limit:
+            nxt = rid
+            break
+    if next_cursors is not None:
+        next_cursors[key] = nxt
+    return out
 
 
 def _kind_count(store: Store, kind: str) -> int:
@@ -1612,9 +1996,11 @@ def sibling_confusion_candidates(
 
 def detectors_for(passes: tuple[str, ...]) -> list[str]:
     """Expand ``params.pass`` values into detector names."""
-    if "all" in passes:
-        return sorted({d for ds in _DETECTOR_BY_PASS.values() for d in ds})
     out: list[str] = []
+    if "all" in passes:
+        for p, detectors in _DETECTOR_BY_PASS.items():
+            if p not in OPT_IN_PASSES:
+                out.extend(detectors)
     for p in passes:
         out.extend(_DETECTOR_BY_PASS.get(p, ()))
     return sorted(set(out))
@@ -1724,6 +2110,17 @@ def run_detectors(
                 cursors=saved,
                 next_cursors=nxt,
             )
+        elif det in {"dangling_mention", "thread_shape"}:
+            fn = partial(
+                dangling_mention_candidates
+                if det == "dangling_mention"
+                else thread_shape_candidates,
+                store,
+                scan_cap=scan_cap,
+                limit=limit,
+                cursors=saved,
+                next_cursors=nxt,
+            )
         elif det == "polysemy":
             fn = partial(polysemy_candidates, store, limit=limit)
         elif det == "sibling_confusion":
@@ -1789,6 +2186,7 @@ __all__ = [
     "GardenCandidate",
     "cycle_edge_candidates",
     "dangling_edge_candidates",
+    "dangling_mention_candidates",
     "detectors_for",
     "dup_pair_qualifies",
     "dup_window_size",
@@ -1802,5 +2200,6 @@ __all__ = [
     "short_sibling_pair",
     "sibling_confusion_candidates",
     "stale_candidates",
+    "thread_shape_candidates",
     "untagged_candidates",
 ]

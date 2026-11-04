@@ -35,7 +35,13 @@ from precis.graph.garden.candidates import (
     short_sibling_pair,
 )
 from precis.graph.garden.proposals import emit_proposal, key_block, record_rejection
-from precis.graph.garden.proposer import PROMPT_VERSION, Verdict, propose_llm
+from precis.graph.garden.proposer import (
+    MEMORY_ACTIONS,
+    MEMORY_PROMPT_VERSION,
+    PROMPT_VERSION,
+    Verdict,
+    propose_llm,
+)
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -135,12 +141,15 @@ def run_garden_tick(
     def _one(cand: GardenCandidate) -> bool:
         """Propose one candidate; True when a proposal row was written.
         Sets ``out.paused`` on a window-scoped pause."""
+        prompt_version = (
+            MEMORY_PROMPT_VERSION if cand.detector in MEMORY_ACTIONS else PROMPT_VERSION
+        )
         block = key_block(
             store,
             cand.target_kind,
             cand.target_id,
             cand.key,
-            prompt_version=PROMPT_VERSION,
+            prompt_version=prompt_version,
         )
         if block == "rejected":
             out.skipped_rejected += 1
@@ -159,7 +168,7 @@ def run_garden_tick(
                 store,
                 cand,
                 rationale="short sibling taxa under one parent share no name word",
-                prompt_version=PROMPT_VERSION,
+                prompt_version=prompt_version,
                 reason=SIBLING_REJECT_REASON,
             )
             return False
@@ -184,7 +193,7 @@ def run_garden_tick(
                 store,
                 cand,
                 rationale=verdict.rationale,
-                prompt_version=PROMPT_VERSION,
+                prompt_version=prompt_version,
                 model=verdict.model,
             )
             return False

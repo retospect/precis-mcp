@@ -32,6 +32,23 @@ a clean graph writes nothing: no reviews, no chunks, no log spam.
    ``untagged`` (a ref missing a namespace its kind already uses),
    ``polysemy`` (split signals), ``sibling_confusion`` (exclusive-axis
    siblings one classification run can't tell apart).
+   The ``memory`` pass adds ``dangling_mention``: one handle scan over
+   live memory bodies joined to retired refs, since mention edges only
+   target live refs and disappear after retirement. Rewrite proposals pin
+   the content SHA and spans, with tombstone/edge successors as evidence.
+   Unresolved replacement text stays null for review; DREAMs are excluded.
+   Tombstone successors must resolve to a live ref within 16 cycle-checked
+   hops. Each memory carries at most 20 matches, marked when capped, to
+   bound the judge's evidence. Memory detectors have their own action sets
+   and prompt version so their rules cannot reopen existing v2 rejections.
+   These proposals have no apply or auto-apply path.
+   ``thread_shape`` covers tagged thread children too: missing ``Left:``
+   or terminal todo/gripe work proposes supersede by the nearest live
+   ancestor with a current ``Left:``, else retire. A supersede proposal
+   requires preserving needed figures in the ancestor's ``Earlier:`` line;
+   retirement also requires compaction review. No edits occur at detection.
+   Git ancestry on origin/prod is deliberately untested: the DB has no
+   general ancestry oracle and the detectors must need no network or git.
 2. Proposer (:mod:`precis.graph.garden.proposer`) — one routed LLM call
    per candidate renders it into a structured verdict
    (``accept``/rationale). Model placement is configuration: the call
@@ -62,7 +79,7 @@ a clean graph writes nothing: no reviews, no chunks, no log spam.
 
 **Scheduling.** The ``graph_garden`` job_type (``job_inproc`` executor)
 runs one bounded pass per tick — ``params.pass`` picks the detector
-subset (``merge|split|relink|prune|tag-sweep|siblings|paper-identity|all``,
+subset (``merge|split|relink|prune|tag-sweep|siblings|paper-identity|memory|all``,
 or a list), ``limit`` bounds candidates scanned, ``max_proposals``
 bounds writes, and each detector runs under a wall-clock deadline that
 skips it rather than zeroing the tick (gr503580). The wide scans walk

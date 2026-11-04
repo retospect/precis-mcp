@@ -55,6 +55,7 @@ _PASS_CHOICES = (
     "tag-sweep",
     "siblings",
     "paper-identity",
+    "memory",
     "all",
 )
 

@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from precis.graph.garden.candidates import GardenCandidate
+from precis.utils.handle_registry import parse as parse_handle
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -48,6 +49,15 @@ EXCERPT_CHARS = 600
 #: only under the same version. Bump it with any change to the prompt or
 #: to the evidence the prompt shows, so the new judge re-asks once.
 PROMPT_VERSION = "garden-propose.v2"
+
+#: Memory rules evolve independently: existing detectors must not re-ask
+#: unchanged rejections merely because another detector was introduced.
+MEMORY_PROMPT_VERSION = "garden-propose.memory.v1"
+MEMORY_ACTIONS = {
+    "dangling_mention": ("rewrite",),
+    "thread_shape": ("supersede", "retire"),
+}
+_LEGACY_ACTIONS = ("merge", "split", "relink", "prune", "tag")
 
 _PROMPT_HEAD = """You are the graph gardener's proposal judge for a knowledge graph
 (refs = typed nodes, links = typed edges, tags = closed namespaces).
@@ -84,6 +94,22 @@ excerpts define the same thing. One term narrower than the other (cost
 per unit mass under unit cost) is a relink, not a merge: reject.
 """
 
+_MEMORY_RULES = """
+dangling_mention is a proposal-only rewrite. Its ops pin find/text spans
+to base_sha; text=null means unresolved, never delete. A successor alone
+does not prove that it supports the sentence. Dated history may legitimately
+name retired refs. Preserve the SHA and spans; never turn this into a merge
+or prune. Accept only a supported rewrite; otherwise reject.
+
+thread_shape proposes supersede by an ancestor with a current Left: line,
+else retire. Neither action applies here. Before superseding, still-needed
+figures must be folded into the ancestor's Earlier: line; before retiring,
+still-true facts must be preserved. Terminal handles in Left: are evidence
+of stale resume state, not proof that all work is done. SHA ancestry on
+origin/prod has not been checked. Preserve these requirements and SHA pins;
+never refine these candidates to merge or prune.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class Verdict:
@@ -113,6 +139,11 @@ def _excerpt_ids(candidate: GardenCandidate) -> list[int]:
         ids.append(candidate.target_id)
         if candidate.other_id:
             ids.append(int(candidate.other_id))
+        if candidate.detector == "dangling_mention":
+            for mention in candidate.evidence.get("mentions", []):
+                successor = parse_handle(str(mention.get("successor") or ""))
+                if successor is not None and not successor[1]:
+                    ids.append(successor[2])
     else:
         for key in ("src", "dst", "a", "b"):
             val = candidate.evidence.get(key)
@@ -167,8 +198,16 @@ def _prompt_for(
     }
     if excerpts:
         body["excerpts"] = excerpts
+    head = _PROMPT_HEAD
+    if candidate.detector in MEMORY_ACTIONS:
+        head = (
+            head.replace(
+                "|".join(_LEGACY_ACTIONS), "|".join(MEMORY_ACTIONS[candidate.detector])
+            )
+            + _MEMORY_RULES
+        )
     return (
-        _PROMPT_HEAD
+        head
         + "\nCandidate:\n"
         + json.dumps(body, ensure_ascii=False, sort_keys=True, default=str)
         + "\n"
@@ -222,7 +261,8 @@ def propose_llm(store: Store, candidate: GardenCandidate) -> Verdict:
         accept=bool(body.get("accept")),
         rationale=str(body.get("rationale") or ""),
         action=None
-        if body.get("action") not in ("merge", "split", "relink", "prune", "tag")
+        if body.get("action")
+        not in MEMORY_ACTIONS.get(candidate.detector, _LEGACY_ACTIONS)
         else str(body.get("action")),
         payload_overrides=overrides if isinstance(overrides, dict) else {},
         model=result.model,
