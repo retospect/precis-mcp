@@ -324,6 +324,10 @@ def _dist_point_to_convex_polygon_3d(
     defaults to :func:`_linear_eps` of the polygon's own vertex extent
     (self-relative) — callers that already have a governing length
     (:class:`PolyFrustum`) pass theirs through.
+
+    Kept as the readable reference implementation — the pinned tests call
+    it directly; production point distance goes through the precomputed
+    :class:`_FaceDist` / :func:`_dist_point_to_face` path (gr561417).
     """
     if eps is None:
         extent = max((float(np.max(np.abs(as_vec3(v)))) for v in verts), default=0.0)
@@ -404,6 +408,106 @@ def _dist_points_to_convex_polygon_3d_np(
             np.minimum(best, d, out=best)
         out[~inside] = best
     return out
+
+
+@dataclass(frozen=True)
+class _FaceDist:
+    """Precomputed per-face geometry for scalar point distance.
+
+    Everything here is a function of the face alone — the inward edge
+    normals (``normal × edge``) and edge directions don't depend on the
+    query point, so they are built once at polytope construction instead
+    of paying a ``np.cross`` + ``np.linalg.norm`` per edge per query
+    (gr561417: 3.2 M crosses / 72 s of a 137 s sweep profile). ``edges``
+    rows are ``(ax, ay, az, ex, ey, ez, e·e, inx, iny, inz, |inward|)``,
+    all plain floats so the per-query loop never touches numpy.
+    """
+
+    nx: float
+    ny: float
+    nz: float
+    a0: tuple[float, float, float]
+    eps: float
+    edges: tuple[tuple[float, ...], ...]
+
+
+def _face_dist(verts: list[Vec3], normal: Vec3) -> _FaceDist:
+    """Build the :class:`_FaceDist` for one CCW-about-``normal`` ring —
+    the same eps and inward-edge tests :func:`_dist_point_to_convex_polygon_3d`
+    computes per call."""
+    extent = max((float(np.max(np.abs(as_vec3(v)))) for v in verts), default=0.0)
+    eps = _linear_eps(extent)
+    n = as_vec3(normal)
+    n_edges = len(verts)
+    edges: list[tuple[float, ...]] = []
+    for i in range(n_edges):
+        a = verts[i]
+        b = verts[(i + 1) % n_edges]
+        e = b - a
+        inward = np.cross(n, e)
+        edges.append(
+            (
+                float(a[0]),
+                float(a[1]),
+                float(a[2]),
+                float(e[0]),
+                float(e[1]),
+                float(e[2]),
+                float(e @ e),
+                float(inward[0]),
+                float(inward[1]),
+                float(inward[2]),
+                float(np.linalg.norm(inward)),
+            )
+        )
+    a0 = as_vec3(verts[0])
+    return _FaceDist(
+        nx=float(n[0]),
+        ny=float(n[1]),
+        nz=float(n[2]),
+        a0=(float(a0[0]), float(a0[1]), float(a0[2])),
+        eps=eps,
+        edges=tuple(edges),
+    )
+
+
+def _dist_point_to_face(p: Vec3, face: _FaceDist) -> float:
+    """Scalar distance from ``p`` to a precomputed convex face polygon —
+    the plain-float twin of :func:`_dist_point_to_convex_polygon_3d` (same
+    projection, same inward-edge test, same nearest-edge fallback, so the
+    two agree to float64 round-off)."""
+    px, py, pz = float(p[0]), float(p[1]), float(p[2])
+    eps = face.eps
+    a0x, a0y, a0z = face.a0
+    signed = face.nx * (px - a0x) + face.ny * (py - a0y) + face.nz * (pz - a0z)
+    qx = px - signed * face.nx
+    qy = py - signed * face.ny
+    qz = pz - signed * face.nz
+    inside = True
+    for ax, ay, az, _ex, _ey, _ez, _ee, ix, iy, iz, ilen in face.edges:
+        if (
+            ilen > eps
+            and (ix * (qx - ax) + iy * (qy - ay) + iz * (qz - az)) < -eps * ilen
+        ):
+            inside = False
+            break
+    if inside:
+        return abs(signed)
+    best = math.inf
+    for ax, ay, az, ex, ey, ez, ee, _ix, _iy, _iz, _il in face.edges:
+        if ee <= eps * eps:
+            dx, dy, dz = px - ax, py - ay, pz - az
+            d = math.sqrt(dx * dx + dy * dy + dz * dz)
+        else:
+            t = ((px - ax) * ex + (py - ay) * ey + (pz - az) * ez) / ee
+            t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+            dx = px - (ax + t * ex)
+            dy = py - (ay + t * ey)
+            dz = pz - (az + t * ez)
+            d = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if d < best:
+            best = d
+    return best
 
 
 # ---------------------------------------------------------------------------
@@ -582,6 +686,13 @@ class PolyFrustum(Primitive):
         self._scale = max((abs(c) for c in coords), default=0.0)
         self._eps = _linear_eps(self._scale)
         self._planes, self._faces, self._verts = self._build()
+        # ``(nx, ny, nz, d)`` rows for the scalar membership/distance path —
+        # a plane dot as Python floats beats ``pl.n @ p`` per half-space
+        # per query (same hot loop as ``_face_dist``, gr561417).
+        self._plane_rows = tuple(
+            (float(pl.n[0]), float(pl.n[1]), float(pl.n[2]), float(pl.d))
+            for pl in self._planes
+        )
 
     # -- construction ----------------------------------------------------
     def _build(self) -> tuple[list[_Plane], list[Face], list[Vec3]]:
@@ -642,8 +753,11 @@ class PolyFrustum(Primitive):
                 [self._bottom[i], self._bottom[j], self._top[j], self._top[i]],
                 f"side{i}",
             )
-        # Stash the face polygons for exact distance.
+        # Stash the face polygons for exact distance, and their scalar
+        # precomputed form (inward edge normals / edge data are per-face
+        # constants — gr561417).
         self._face_polys = face_polys
+        self._face_dist = tuple(_face_dist(ring, normal) for normal, ring in face_polys)
         if not planes:
             # Every face was culled as genuinely degenerate (every vertex
             # ring collapsed to <3 distinct points, or every remaining
@@ -663,7 +777,11 @@ class PolyFrustum(Primitive):
     # -- contract --------------------------------------------------------
     def contains_local(self, p: Vec3) -> bool:
         p = as_vec3(p)
-        return all(float(pl.n @ p) <= pl.d + self._eps for pl in self._planes)
+        px, py, pz = float(p[0]), float(p[1]), float(p[2])
+        eps = self._eps
+        return all(
+            nx * px + ny * py + nz * pz <= d + eps for nx, ny, nz, d in self._plane_rows
+        )
 
     def ray_hits_local(self, o: Vec3, d: Vec3) -> Intervals:
         o = as_vec3(o)
@@ -691,12 +809,18 @@ class PolyFrustum(Primitive):
 
     def distance_local(self, p: Vec3) -> float:
         p = as_vec3(p)
-        if self.contains_local(p):
-            return -min(pl.d - float(pl.n @ p) for pl in self._planes)
-        return min(
-            _dist_point_to_convex_polygon_3d(p, ring, normal)
-            for normal, ring in self._face_polys
-        )
+        px, py, pz = float(p[0]), float(p[1]), float(p[2])
+        eps = self._eps
+        worst = math.inf
+        for nx, ny, nz, d in self._plane_rows:
+            slack = d - (nx * px + ny * py + nz * pz)
+            if slack < -eps:
+                break
+            if slack < worst:
+                worst = slack
+        else:
+            return -worst
+        return min(_dist_point_to_face(p, f) for f in self._face_dist)
 
     def distance_local_np(self, pts: NDArray[np.float64]) -> NDArray[np.float64]:
         arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)

@@ -421,9 +421,6 @@ def _min_max_sdf(
     def db(p: Vec3) -> float:
         return component_sdf(design, eb, p)
 
-    def g(p: Vec3) -> float:
-        return max(da(p), db(p))
-
     scale = _governing_length(design, [ea, eb])
     if scale <= 0.0:
         scale = float(np.linalg.norm(hi - lo)) or 1.0
@@ -439,15 +436,33 @@ def _min_max_sdf(
     # walks the grid.
     seeds.extend(_contact_seeds(da, db, box_a, _bounds(design, eb), eps))
     axes = [np.linspace(lo[i], hi[i], grid) for i in range(3)]
-    seeds.extend(vec3(x, y, z) for x in axes[0] for y in axes[1] for z in axes[2])
-
-    scored: list[tuple[float, Vec3]] = []
-    for seed in seeds:
-        p = as_vec3(np.clip(seed, lo, hi))
-        v = g(p)
-        if stop_at_contact and v <= 0.0:
-            return v, p
-        scored.append((v, p))
+    gx, gy, gz = np.meshgrid(axes[0], axes[1], axes[2], indexing="ij")
+    # Every seed scored in one vectorised fold per body — the scalar loop
+    # cost 2·grid³ folded SDF evaluations of per-call overhead (gr561417).
+    # ``indexing='ij'`` keeps the historical x-slowest seed order, so the
+    # first ``stop_at_contact`` hit is the same seed the loop returned.
+    pts = np.clip(
+        np.vstack(
+            [
+                np.asarray(seeds, dtype=np.float64),
+                np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1),
+            ]
+        ),
+        lo,
+        hi,
+    )
+    vals = np.maximum(
+        component_sdf_np(design, ea, pts - offset),
+        component_sdf_np(design, eb, pts),
+    )
+    if stop_at_contact:
+        hits = np.flatnonzero(vals <= 0.0)
+        if hits.size:
+            i0 = int(hits[0])
+            return float(vals[i0]), as_vec3(pts[i0])
+    scored: list[tuple[float, Vec3]] = [
+        (float(v), as_vec3(p)) for v, p in zip(vals, pts, strict=True)
+    ]
 
     scored.sort(key=lambda sv: sv[0])
     n_starts = 1 if stop_at_contact else max(1, starts)

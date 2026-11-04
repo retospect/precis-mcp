@@ -6,10 +6,17 @@ import math
 
 import numpy as np
 
-from precis.cad.bulk import _integrate, expr_aabb, volume, volume_field
+from precis.cad.bulk import (
+    _integrate,
+    expr_aabb,
+    expr_aabb_disjoint,
+    volume,
+    volume_field,
+)
 from precis.cad.dsl import build_config
 from precis.cad.fold import Expr, Inter, Leaf, material_intervals
 from precis.cad.graph import Design
+from precis.cad.primitives import HalfSpace
 from precis.cad.scene import build_design, parse_source
 from precis.cad.vec import Vec3, translation, vec3
 
@@ -321,3 +328,58 @@ def test_volume_field_box_restricts_the_sampling_region() -> None:
     bore_lo, bore_hi = expr_aabb(d, bore)
     res = volume_field(d, expr=hole, box=(bore_lo, bore_hi))
     assert math.isclose(res.volume, math.pi * 9 * 10, rel_tol=0.1)
+
+
+# ── expr_aabb_disjoint — the sweep's provably-separate broad phase ──────
+def test_aabb_disjoint_true_for_separated_boxes() -> None:
+    d = Design()
+    d.add_component("a", d.prim("a", build_config("box:w10d10h10")))
+    d.add_component(
+        "b", d.prim("b", build_config("box:w10d10h10"), translation(11, 0, 0))
+    )
+    assert expr_aabb_disjoint(d, d.components["a"], d.components["b"])
+
+
+def test_aabb_disjoint_false_for_touching_boxes() -> None:
+    """Coincident AABBs are NOT disjoint — a face-touching pair must still
+    be scored (gr561417: the disjoint test is a strict inequality)."""
+    d = Design()
+    d.add_component("a", d.prim("a", build_config("box:w10d10h10")))
+    d.add_component(
+        "b", d.prim("b", build_config("box:w10d10h10"), translation(10, 0, 0))
+    )
+    assert not expr_aabb_disjoint(d, d.components["a"], d.components["b"])
+
+
+def test_aabb_disjoint_false_through_a_blend_bulge() -> None:
+    """A blended union's seam adds material up to blend/4 outside every
+    leaf box, so the bound is padded by (n-1)·blend/4 — a part inside the
+    bulge but outside the unpadded box is not provably disjoint."""
+    d = Design()
+    a = d.prim("a", build_config("box:w10d10h10"))
+    b = d.prim("b", build_config("box:w10d10h10"), translation(8, 0, 0))
+    d.add_component("base", d.merge(a, b, blend=4.0))
+    # unpadded bound tops at z=10, padded at z=11; the tip spans 10.4..12.4
+    d.add_component(
+        "tip",
+        d.prim("tip", build_config("box:w2d2h2"), translation(4, 0, 10.4)),
+    )
+    lo, hi = expr_aabb(d, d.components["base"])
+    assert float(hi[2]) == 11.0  # the blend pad widened the box
+    assert not expr_aabb_disjoint(d, d.components["base"], d.components["tip"])
+
+
+def test_aabb_disjoint_false_for_union_with_unbounded_leaf() -> None:
+    """A Union member with no finite bound is skipped by _expr_bound, so
+    the box under-reports the material — disjointness is unprovable and
+    the pair must be scored (programmatic exprs only: `add` refuses
+    unbounded configs)."""
+    d = Design()
+    box = d.prim("a", build_config("box:w10d10h10"))
+    hs = d.prim("hs", HalfSpace(point=vec3(0, 0, 20), normal=vec3(0, 0, 1)))
+    d.add_component("u", d.merge(box, hs))
+    d.add_component(
+        "far",
+        d.prim("far", build_config("box:w2d2h2"), translation(100, 0, 0)),
+    )
+    assert not expr_aabb_disjoint(d, d.components["u"], d.components["far"])

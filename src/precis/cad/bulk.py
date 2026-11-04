@@ -89,10 +89,17 @@ def _expr_bound(
         boxes = [b for part in e.parts if (b := _expr_bound(part, design)) is not None]
         if not boxes:
             return None
-        return (
-            np.min(np.array([b[0] for b in boxes]), axis=0),
-            np.max(np.array([b[1] for b in boxes]), axis=0),
-        )
+        lo = np.min(np.array([b[0] for b in boxes]), axis=0)
+        hi = np.max(np.array([b[1] for b in boxes]), axis=0)
+        if e.blend > 0.0 and len(e.parts) > 1:
+            # A blended union is NOT contained in its leaf boxes: each
+            # smooth_min fold dips up to blend/4 below the running min, so
+            # the seam bulge can add material up to (n-1)·blend/4 out
+            # past every part's surface (gr561417 review — an AABB-
+            # disjoint pair read as interfering through the bulge).
+            pad = 0.25 * e.blend * (len(e.parts) - 1)
+            lo, hi = lo - pad, hi + pad
+        return lo, hi
     if isinstance(e, Inter):
         boxes = [b for part in e.parts if (b := _expr_bound(part, design)) is not None]
         if not boxes:
@@ -129,6 +136,64 @@ def expr_aabb(design: Design, expr: Expr) -> tuple[Vec3, Vec3]:
         raise ValueError("cannot bound an empty / unbounded expression")
     lo, hi = bound
     return as_vec3(lo), as_vec3(hi)
+
+
+def _expr_bound_covers_material(design: Design, expr: Expr) -> bool:
+    """True iff ``_expr_bound``'s box provably contains all of ``expr``'s
+    material.
+
+    ``_expr_bound`` silently *skips* a ``Union`` part that has no finite
+    bound at all — so a union member carrying an unbounded leaf (a
+    half-space) makes the reported box under-bound the real material.
+    ``Diff`` cutters and ``Inter`` parts beyond the first can only remove
+    or constrain extent, so unbounded leaves in those positions cost
+    nothing. (Authored designs can't place an unbounded leaf additively —
+    ``add`` refuses unbounded configs — so this guards programmatic
+    exprs.)
+    """
+    if isinstance(expr, Leaf):
+        lo, hi = design.instances[expr.iid].placed.aabb()
+        return bool(np.all(np.isfinite(lo)) and np.all(np.isfinite(hi)))
+    if isinstance(expr, Union):
+        # A skipped part under-bounds: every member must both cover its
+        # own material and return a finite bound.
+        return all(
+            _expr_bound_covers_material(design, part)
+            and _expr_bound(part, design) is not None
+            for part in expr.parts
+        )
+    if isinstance(expr, Diff):
+        return _expr_bound_covers_material(design, expr.base)
+    if isinstance(expr, Inter):
+        # The meet stays a bound iff every part that contributes a finite
+        # bound is itself conservative; a no-bound part only fails to
+        # constrain and doesn't make the meet under-report.
+        return all(
+            _expr_bound(part, design) is None
+            or _expr_bound_covers_material(design, part)
+            for part in expr.parts
+        )
+    raise TypeError(f"unknown expr node: {expr!r}")
+
+
+def expr_aabb_disjoint(design: Design, ea: Expr, eb: Expr) -> bool:
+    """True iff ``ea`` and ``eb`` are *provably* spatially disjoint —
+    both bounds exist, both provably cover their material
+    (:func:`_expr_bound_covers_material`), and the boxes do not touch.
+    Anything else must be scored by the real narrow-phase check: a
+    coincident (touching) box is not disjoint, and an under-bounded or
+    unbounded expr can't prove separation at all."""
+    try:
+        alo, ahi = expr_aabb(design, ea)
+        blo, bhi = expr_aabb(design, eb)
+    except ValueError:
+        return False
+    if not (
+        _expr_bound_covers_material(design, ea)
+        and _expr_bound_covers_material(design, eb)
+    ):
+        return False
+    return bool(np.any(ahi < blo) or np.any(bhi < alo))
 
 
 def _grid_for(samples: int) -> int:

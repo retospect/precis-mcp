@@ -531,18 +531,8 @@ def test_out_of_limits_state_is_bad_input(cad):
         )
 
 
-@pytest.mark.nightly(
-    reason="~80 s plain: ~220k scalar SDF evaluations, relate._min_max_sdf's "
-    "14^3 seed grid plus descents per pair per state (gr543576)"
-)
-@pytest.mark.no_cov(
-    reason="not an OOM: the 2026-10-30 and -31 coverage-db runs each left a "
-    "hang-stack dump for gw4 (fired 5 s before the 480 s timeout), then "
-    "pytest-timeout's thread method os._exit'd the worker — 'node down'. "
-    "Traced, the scalar SDF loop outruns 480 s; the map job deselects "
-    "no_cov, the trace-free nightly legs still run it"
-)
-@pytest.mark.timeout(480)  # CI worst 173s x2.5 for runner variance (gr503084)
+@pytest.mark.timeout(30)  # ~0.9 s coverage+serial post-gr561417 (was CI worst
+# 173s pre-sweep speedup); headroom for runner variance (gr503084)
 def test_sweep_reports_collision_and_envelope(cad):
     cad.put(id="motor_j", text=_MOTOR_J)
     cad.put(id="crank_rig", text=_CRANK_RIG)
@@ -618,13 +608,8 @@ gear a1 to a2 ratio:1
 """
 
 
-@pytest.mark.no_cov(
-    reason="the 2026-11-01 and -03 coverage-db runs left hang-stack dumps "
-    "for this test, then the 480 s thread timeout os._exit'd the worker; "
-    "traced it runs ~1.6x slower on 6 workers / 4 cores. The trace-free "
-    "nightly legs still run it"
-)
-@pytest.mark.timeout(480)  # CI worst 179s x2.5 for runner variance (gr503084)
+@pytest.mark.timeout(30)  # ~0.4 s coverage+serial post-gr561417 (was CI worst
+# 179s pre-sweep speedup); headroom for runner variance (gr503084)
 def test_sweep_sees_gear_driven_collisions(cad):
     # finding-1 regression: sweeping the DRIVER must also score and
     # envelope the driven joint's parts — bar1 (r20) clears the post at
@@ -636,6 +621,32 @@ def test_sweep_sees_gear_driven_collisions(cad):
     # the driven arm's swept envelope is reported too
     env = resp.body.split("swept envelope", 1)[1]
     assert "a2" in env
+
+
+#: The blend seam bulges up to blend/4 above the boxes' own AABB — at
+#: q=0 the tip's AABB is strictly z-disjoint from the *unpadded* union
+#: bound yet it sits inside the bulge (SDF clearance −0.6). A
+#: disjoint-AABB broad phase that ignored the pad would drop the hit.
+_BLEND_RIG = """
+component base
+ba add box:w10mmd10mmh10mm
+bb add box:w10mmd10mmh10mm @8mm,0mm,0mm blend:4mm
+component arm
+tip add box:w2mmd2mmh2mm @4mm,0mm,10.4mm
+port piv of:arm
+joint arm prismatic at:piv limits:-2mm..2mm
+"""
+
+
+def test_sweep_keeps_collision_hidden_in_a_blend_bulge(cad):
+    cad.put(id="blend_rig", text=_BLEND_RIG)
+    resp = cad.get(id="blend_rig", view="sweep", args={"n": 5})
+    assert "colliding pair" in resp.body
+    assert "arm" in resp.body and "base" in resp.body
+    # q = -2, -1 (inside the boxes) and 0 (bulge only, AABB-disjoint from
+    # the unpadded bound) all hit; q = 1, 2 are clear — "3/5" pins the
+    # q=0 state being scored (an unpadded bound would report "2/5").
+    assert "3/5" in resp.body
 
 
 _HINGE_P = """

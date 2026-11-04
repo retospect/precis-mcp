@@ -30,7 +30,7 @@ from typing import Any, ClassVar
 import numpy as np
 
 from precis.cad import catalog
-from precis.cad.bulk import expr_aabb
+from precis.cad.bulk import expr_aabb, expr_aabb_disjoint
 from precis.cad.bulk import volume as cad_volume
 from precis.cad.dsl import FIELD_ALIAS, RELIEF_ALIAS, DslError, format_spec
 from precis.cad.dsl import parse as parse_shape
@@ -1678,12 +1678,26 @@ class CadHandler(Handler):
                     for comp in built.components:
                         if comp == jn or comp.startswith(jn + "."):
                             group[comp] = jn
-                conn = cad_connectivity(design)
-                for c2 in conn.contacts:
-                    ga, gb = group.get(c2.a), group.get(c2.b)
-                    if c2.interfering and ga != gb and not (ga is None and gb is None):
-                        a, b = sorted((c2.a, c2.b))
-                        hit_states.setdefault((name, a, b), []).append((i, q))
+                # Score only pairs the hit filter below could ever report
+                # (gr561417): a pair inside one rigid group moves as one
+                # body and two unmoving parts contact identically at every
+                # state, and a pair whose material AABBs are disjoint
+                # cannot interfere — the full connectivity graph paid a
+                # clearance minimisation for all three cases.
+                comps = list(design.components)
+                for ia, ca in enumerate(comps):
+                    for cb in comps[ia + 1 :]:
+                        ga, gb = group.get(ca), group.get(cb)
+                        if ga == gb:
+                            continue
+                        if expr_aabb_disjoint(
+                            design, design.components[ca], design.components[cb]
+                        ):
+                            continue
+                        cl = sdf_clearance(design, ca, cb)
+                        if cl.interfering:
+                            a, b = sorted((ca, cb))
+                            hit_states.setdefault((name, a, b), []).append((i, q))
                 for comp in group:
                     expr = design.components.get(comp)
                     if expr is None:  # pragma: no cover - defensive
