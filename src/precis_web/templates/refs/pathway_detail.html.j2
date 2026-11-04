@@ -198,6 +198,14 @@
      what a share means. #}
   <div id="pw-path-legend" class="flex flex-wrap items-center gap-1 mb-1"></div>
   {% if diagram.route_flux %}
+  {% if environment_view %}
+  {% set flux_ec = environment_view.record.get('electrochemical') or {} %}
+  <p id="pw-route-flux-environment" class="hidden mb-1 text-xs text-warning-deep">Route percentages and rates remain at the initial stored environment:
+    T = {{ environment_view.record.T }} K;
+    U {% if 'U_vs_RHE' in flux_ec %}= {{ flux_ec.U_vs_RHE }} V vs RHE{% else %}unspecified{% endif %};
+    pH {% if 'pH' in flux_ec %}= {{ flux_ec.pH }}{% else %}unspecified{% endif %}.
+    Reload this link to look up kinetics at the selected point.</p>
+  {% endif %}
   <p class="mb-1 text-[10px] text-fg-faint">{{ diagram.route_flux.note
     }}{% if diagram.route_flux.conditions.temperature is number %} (T = {{ '%g'|format(diagram.route_flux.conditions.temperature) }} K){% endif
     %}{% if diagram.route_flux.remainder_share > 0.005 %} — {{ '%.0f%%'|format(diagram.route_flux.remainder_share * 100) }} of the flux is not attributed to any route (loops or side products){% endif %}</p>
@@ -547,6 +555,21 @@
    meta['results'].kinetics by the vendored pathway-kinetics.js (payload
    trimmed + verdict synthesised server-side in pathway_kinetics.py).
    Absent on a pathway whose run recorded no kinetics. ─────────────────── #}
+{% if environment_view %}
+<div id="pw-environment-status" class="mb-3 rounded border border-line p-3 text-xs" data-status="{{ environment_view.lookup.status }}">
+  Environment: {{ environment_view.record.T }} K;
+  stored kinetics: <strong>{{ environment_view.lookup.status }}</strong>.
+  {% if environment_view.lookup.status == 'none' %}No stored result at this point.{% endif %}
+  {% if environment_view.lookup.get('reason') %}{{ environment_view.lookup.reason }}{% endif %}
+  {% if environment_view.lookup.status == 'bracketed' %}A stored sweep brackets this point; no interpolated rate is displayed.{% endif %}
+  {% if environment_view.lookup.status == 'exact' and environment_view.lookup.source in ('kinetics_sweep', 'kinetics_sweep_previous') %}
+  <span id="pw-environment-sweep-rate">Stored sweep TOF (MF): {{ environment_view.lookup.record.tof_mf }} s⁻¹
+    ({{ 'previous sweep' if environment_view.lookup.source == 'kinetics_sweep_previous' else 'current sweep' }}).</span>
+  {% endif %}
+  {% if candidate %}<a id="pw-environment-map" href="/pourbaix/st{{ candidate.ref_id }}?pathway=pw{{ ref.id }}&amp;{{ environment_view.query }}" class="text-info-strong hover:underline">Open this environment on the Pourbaix map</a>{% endif %}
+  <span id="pw-environment-moved" class="hidden">Point changed; reload this link to look up stored kinetics.</span>
+</div>
+{% endif %}
 {% if kinetics or kinetics_error %}
 <section class="mb-6 rounded-lg border border-line bg-surface p-4">
   {% if kinetics %}
@@ -626,6 +649,7 @@
   // clicking a node/row/stepper never re-fetches — 16 small cells, not a
   // new endpoint (proposal "Target + blast radius"). ──
   const V = {
+    environment: {{ (environment_view.record if environment_view else none) | tojson }},
     diagram: {{ diagram | tojson }},
     stateIds: {{ state_ids | tojson }},
     stateGeoms: {{ state_geoms | tojson }},
@@ -2063,9 +2087,19 @@
   // path, U=0, pH=0). The candidate stepper's carry-forward reads the same
   // query string, so it forwards the whole selection, not just ?state=. ──
   let urlSyncLive = false;
+  let environmentUDirty = false, environmentPhDirty = false;
 
   function pwQueryString() {
     const qs = new URLSearchParams();
+    if (V.environment) {
+      const env = JSON.parse(JSON.stringify(V.environment));
+      if (environmentUDirty || environmentPhDirty) {
+        env.electrochemical = env.electrochemical || {};
+        if (environmentUDirty) env.electrochemical.U_vs_RHE = currentU;
+        if (environmentPhDirty && phInput) env.electrochemical.pH = parseFloat(phInput.value);
+      }
+      qs.set('env', JSON.stringify(env));
+    }
     if (selected) { qs.set('state', selected); }
     if (selectedPath != null) {
       const paths = (V.diagram || {}).paths || [];
@@ -2080,9 +2114,11 @@
     // gr549591: always write u and ph — with the new non-zero defaults an
     // explicit pH 0 or U = 0 must survive a copied link, not fall back to
     // the default.
-    qs.set('u', String(+currentU.toFixed(2)));
-    const ph = phInput ? parseFloat(phInput.value) : NaN;
-    if (Number.isFinite(ph)) { qs.set('ph', String(ph)); }
+    if (!V.environment) {
+      qs.set('u', String(+currentU.toFixed(2)));
+      const ph = phInput ? parseFloat(phInput.value) : NaN;
+      if (Number.isFinite(ph)) { qs.set('ph', String(ph)); }
+    }
     pwWriteLayers(qs, layerSelection);
     const s = qs.toString();
     return s ? '?' + s : '';
@@ -2090,6 +2126,29 @@
 
   function syncUrl() {
     if (!urlSyncLive) { return; }
+    if (V.environment) {
+      const mapLink = document.getElementById('pw-environment-map');
+      if (mapLink) {
+        const target = new URL(mapLink.href, window.location.href);
+        const state = new URLSearchParams(pwQueryString());
+        ['env', 'u', 'ph'].forEach((key) => {
+          target.searchParams.delete(key);
+          if (state.has(key)) target.searchParams.set(key, state.get(key));
+        });
+        mapLink.href = target.pathname + target.search;
+      }
+      const ec = V.environment.electrochemical || {};
+      const ph = phInput ? parseFloat(phInput.value) : NaN;
+      if ((environmentUDirty && currentU !== ec.U_vs_RHE)
+          || (environmentPhDirty && ph !== ec.pH)) {
+        const panel = document.getElementById('kinetics');
+        if (panel) panel.hidden = true;
+        const moved = document.getElementById('pw-environment-moved');
+        if (moved) moved.classList.remove('hidden');
+        const fluxEnvironment = document.getElementById('pw-route-flux-environment');
+        if (fluxEnvironment) fluxEnvironment.classList.remove('hidden');
+      }
+    }
     try {
       history.replaceState(null, '', window.location.pathname + pwQueryString() + (window.location.hash || ''));
     } catch (err) { /* file:// / sandboxed context — the copy button still works */ }
@@ -2130,16 +2189,21 @@
         && (qRoute === null || (Array.isArray(route) && JSON.stringify(p) === JSON.stringify(route))));
       if (pi >= 0) { selectedPath = pi; } else { ignored.push(qRoute === null ? 'path' : 'route'); }
     } else if (qRoute !== null) { ignored.push('route'); }
-    const qU = qs.get('u');
+    const ec = (V.environment || {}).electrochemical || {};
+    const qU = qs.get('u') ?? (ec.U_vs_RHE == null ? null : String(ec.U_vs_RHE));
     if (qU != null) {
       const u = parseFloat(qU);
       if (Number.isFinite(u)) {
-        currentU = Math.max(-1.5, Math.min(0.5, u));
+        currentU = V.environment ? u : Math.max(-1.5, Math.min(0.5, u));
+        if (V.environment && uSlider) {
+          uSlider.min = String(Math.min(-1.5, u));
+          uSlider.max = String(Math.max(0.5, u));
+        }
         uNote = '';  // an explicit u= beats either default (gr549591)
         if (uSlider) { uSlider.value = String(currentU); }
       } else { ignored.push('u'); }
     }
-    const qPh = qs.get('ph');
+    const qPh = qs.get('ph') ?? (ec.pH == null ? null : String(ec.pH));
     if (qPh != null) {
       const p = parseFloat(qPh);
       if (Number.isFinite(p)) { if (phInput) { phInput.value = String(p); } }
@@ -2263,7 +2327,7 @@
   function updateUReadout() {
     if (!uReadout) { return; }
     const pH = phInput ? (parseFloat(phInput.value) || 0) : 0;
-    const T = (V.results && V.results.T) || 298.15;
+    const T = (V.environment && V.environment.T) || (V.results && V.results.T) || 298.15;
     let text = `U = ${currentU.toFixed(2)} V RHE`;
     if (pH !== 0) {
       text += ` (${sheFromRhe(currentU, pH, T).toFixed(2)} V SHE @ pH ${pH})`;
@@ -2278,7 +2342,10 @@
   let clampNote = '';
   function setU(u, name) {
     if (u == null || Number.isNaN(u)) { return; }
-    currentU = Math.max(-1.5, Math.min(0.5, u));
+    environmentUDirty = true;
+    const lo = V.environment && uSlider ? parseFloat(uSlider.min) : -1.5;
+    const hi = V.environment && uSlider ? parseFloat(uSlider.max) : 0.5;
+    currentU = Math.max(lo, Math.min(hi, u));
     clampNote = name && currentU !== u
       ? `${name} = ${u.toFixed(2)} V is off the slider (-1.50…+0.50 V); showing the nearest end`
       : '';
@@ -2294,7 +2361,7 @@
     syncUrl();
   }
   if (uSlider) { uSlider.addEventListener('input', () => setU(parseFloat(uSlider.value))); }
-  if (phInput) { phInput.addEventListener('input', () => { updateUReadout(); syncUrl(); }); }
+  if (phInput) { phInput.addEventListener('input', () => { environmentPhDirty = true; updateUReadout(); syncUrl(); }); }
   const snapUL = document.getElementById('pw-u-snap-ul');
   const snapUopt = document.getElementById('pw-u-snap-uopt');
   if (snapUL) snapUL.addEventListener('click', () => setU(V.results && V.results.U_L, 'U_L'));

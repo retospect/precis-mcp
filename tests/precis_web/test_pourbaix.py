@@ -1079,6 +1079,65 @@ def _attr(tag: str, name: str) -> str:
     return m.group(1)
 
 
+def test_pourbaix_canonical_environment_preserves_point(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    from precis_pathway.environment import Environment
+
+    sid = _seed_structure(runtime_with_store)
+    environment = Environment.from_config(
+        {
+            "environment": {
+                "T": 350,
+                "gases": {"inputs": {"NO": 1}, "outputs": "far"},
+                "electrochemical": {"U_vs_RHE": -0.3, "pH": 7},
+            }
+        }
+    )
+    response = pb_client.get(f"/pourbaix/st{sid}?" + environment.to_url())
+    assert response.status_code == 200
+    assert float(_attr(_input_tag(response.text, "pbx-u"), "value")) == -0.3
+    assert float(_attr(_input_tag(response.text, "pbx-ph"), "value")) == 7
+    assert "out.push(['env', JSON.stringify(env)])" in response.text
+    assert "350" in response.text
+    assert "{{ environment_record" not in response.text
+    assert "{{ (2.302585" not in response.text
+    assert 'const linkedEnvironment = {"' in response.text
+
+
+def test_pourbaix_canonical_environment_refuses_bad_values(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    sid = _seed_structure(runtime_with_store)
+    for endpoint in (f"/pourbaix/st{sid}", f"/pourbaix/st{sid}/states"):
+        response = pb_client.get(endpoint, params={"env": '{"T": -1}'})
+        assert response.status_code == 400
+        assert "next" in response.text.lower()
+
+
+def test_pourbaix_states_reads_shared_environment_encoding(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    from precis_pathway.environment import Environment
+
+    sid, _pw = _linked(runtime_with_store)
+    environment = Environment.from_config(
+        {
+            "environment": {
+                "T": 350,
+                "gases": {"inputs": {"NO": 1}, "outputs": "far"},
+                "electrochemical": {"U_vs_RHE": -0.3, "pH": 7},
+            }
+        }
+    )
+    response = pb_client.get(f"/pourbaix/st{sid}/states?" + environment.to_url())
+    assert response.status_code == 200
+    view = response.json()["environment_view"]
+    assert view["record"]["electrochemical"] == {"U_vs_RHE": -0.3, "pH": 7}
+    assert view["lookup"]["status"] == "none"
+    assert view["lookup"]["environment_basis"] == environment.basis
+
+
 def test_pourbaix_link_state_round_trips_u_ph_and_reset(
     pb_client: TestClient, runtime_with_store
 ) -> None:
@@ -1089,6 +1148,8 @@ def test_pourbaix_link_state_round_trips_u_ph_and_reset(
     point."""
     sid = _seed_structure(runtime_with_store)
     base = pb_client.get(f"/pourbaix/st{sid}").text
+    assert "const linkedEnvironment = null;" in base
+    assert "const PREFAC = 0.0592;" in base
     assert 'id="pbx-reset-toggle" checked' in base
     assert "history.replaceState" in base
     u_def = _attr(_input_tag(base, "pbx-u"), "data-default")

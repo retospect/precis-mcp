@@ -20,6 +20,7 @@ and need a core edit to extend.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -192,7 +193,7 @@ class PathwayHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with :func:`_point_args`.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
-        "get": ArgsSpec({"U", "pH", "point"}),
+        "get": ArgsSpec({"U", "pH", "point", "environment"}),
         # kinetics v2 D1 blocks, overlaid onto the YAML body (_env_overlay);
         # 'seeds' is mode='verify' only (the multi-seed dispatch count/list).
         "put": ArgsSpec({"environment", "objective", "manifest", "sweep", "seeds"}),
@@ -297,7 +298,7 @@ class PathwayHandler(Handler):
             return self._verify(id, args)
         if mode == "revalidate":  # engine-free: the job checks the host
             return self._revalidate(id, args)
-        if mode == "recompute_kinetics":  # engine-free: the job checks the host
+        if mode == "recompute_kinetics":  # the engine is optional on dispatch hosts
             return self._recompute_kinetics(id, args)
         if mode == "measure_modes":  # engine-free: the job checks the host
             return self._measure_modes(id)
@@ -692,11 +693,11 @@ class PathwayHandler(Handler):
         solve's record, then the config's blocks, then the legacy
         conditions). A pathway with no usable stored environment is refused
         here, not after the solve burns a run (gr550976). The environment
-        and objective are validated through the engine's own ``from_dict``;
-        an explicit ``sweep`` is shape-checked at the door
+        is validated locally and, when installed, by the compute engine;
+        objective mappings and an explicit ``sweep`` are shape-checked at the door
         (:func:`kinetics_job.sweep_shape_error` — the refusal names the
-        accepted keys), and the deeper validation stays the engine's at job
-        time. A quest-minted pathway with no sweep arg and no
+        accepted keys). Hosts without the engine defer its checks to the job.
+        A quest-minted pathway with no sweep arg and no
         config-declared ``kinetics.sweep`` takes
         :data:`kinetics_job.QUEST_KINETICS_SWEEP` instead of the stored
         record echo (gr543723); a non-quest pathway keeps the
@@ -768,8 +769,14 @@ class PathwayHandler(Handler):
         sweep_stored, sweep_src = stored_sweep(meta, config, results)
         if env is None:
             env = env_stored
+        # Config-backed environments need no overlay, but still pass the
+        # same door checks as explicit and resolved-record environments.
+        if env is None and env_src == "config":
+            env = config["environment"]
         if obj is None:
             obj = obj_stored
+        if obj is None and obj_src == "config":
+            obj = config["objective"]
         sweep_default = False
         if sweep is None:
             # a caller-declared box always wins (args above, or the
@@ -782,31 +789,60 @@ class PathwayHandler(Handler):
             else:
                 sweep = sweep_stored
         if env is not None:
-            try:
-                from autocatpath.environment import Environment
+            from .environment import Environment as PathwayEnvironment
 
-                Environment.from_dict(env)
-            except Exception as e:
+            who = "args" if given.get("environment") is not None else "stored"
+            try:
+                point = PathwayEnvironment.from_dict(env)
+            except BadInput as e:
                 env_key = _env_key(str(e))
-                # the rejected block came from the pathway's records, not
-                # args — name the stored env as what was refused
-                who = "args" if given.get("environment") is not None else "stored"
                 raise BadInput(
                     f"pathway {who} environment refused: {e}",
                     next=_env_next(env_key or "environment"),
                 ) from e
+            if "ion_conc_M" in point.electrochemical:
+                raise BadInput(
+                    f"pathway {who} environment refused: "
+                    "recompute_kinetics refuses electrochemical.ion_conc_M: "
+                    "the engine cannot price this read-only condition; "
+                    "a recompute must not silently drop it",
+                    next=(
+                        "Use get(kind='pathway', view='kinetics', "
+                        "args={'environment': ...}) to look up this condition; "
+                        "request a recompute without ion_conc_M only if a solve "
+                        "without that condition is intended."
+                    ),
+                )
+            # Validate without replacing the original block: normalization
+            # must not change the stored conditions sent to the worker.
+            try:
+                from autocatpath.environment import Environment
+            except ImportError:
+                pass
+            else:
+                try:
+                    Environment.from_dict(env)
+                except Exception as e:
+                    env_key = _env_key(str(e))
+                    raise BadInput(
+                        f"pathway {who} environment refused: {e}",
+                        next=_env_next(env_key or "environment"),
+                    ) from e
         if obj is not None:
             try:
                 from autocatpath.environment import Objective
-
-                Objective.from_dict(obj)
-            except Exception as e:
-                env_key = _env_key(str(e))
-                who = "args" if given.get("objective") is not None else "stored"
-                raise BadInput(
-                    f"pathway {who} objective refused: {e}",
-                    next=_env_next(env_key or "objective"),
-                ) from e
+            except ImportError:
+                pass
+            else:
+                try:
+                    Objective.from_dict(obj)
+                except Exception as e:
+                    env_key = _env_key(str(e))
+                    who = "args" if given.get("objective") is not None else "stored"
+                    raise BadInput(
+                        f"pathway {who} objective refused: {e}",
+                        next=_env_next(env_key or "objective"),
+                    ) from e
         if env is None and env_src is None:
             raise BadInput(
                 f"pathway '{ident}' stores no environment to re-solve under "
@@ -957,7 +993,8 @@ class PathwayHandler(Handler):
             # to find any of ~700 pathways — and this branch's error pointed
             # at an example slug that never existed.
             return Response(body=self._list(store))
-        U, pH = _point_args(args)
+        point_args = {k: val for k, val in (args or {}).items() if k != "environment"}
+        U, pH = _point_args(point_args)
         # A trailing ``~<source>→<target>`` step selector (Simulation step
         # deep-links) — dispatch's universal-handle/slug routing reattaches
         # any ``~selector`` suffix to the resolved id untouched (it only
@@ -969,11 +1006,23 @@ class PathwayHandler(Handler):
         ref = _lookup(store, slug)
         if ref is None:
             raise BadInput(f"no pathway '{id}'")
-        resp = (
-            self._get_step(store, ref, step_label)
-            if sep
-            else self._get_view(store, ref, id=id, view=view, args=args, U=U, pH=pH)
-        )
+        if args is not None and "environment" in args:
+            if sep or point_args:
+                raise BadInput(
+                    "environment supplies the whole point; do not combine it with "
+                    "U/pH/point or a step selector",
+                    next=f"get(kind='pathway', id={slug!r}, view='kinetics', "
+                    "args={'environment': {'T': 298.15}})",
+                )
+            resp = self._environment_view(
+                store, ref, id=id, view=view, raw=args["environment"]
+            )
+        else:
+            resp = (
+                self._get_step(store, ref, step_label)
+                if sep
+                else self._get_view(store, ref, id=id, view=view, args=args, U=U, pH=pH)
+            )
         # gr553326: every read carries the pw<id> handle + the web reader
         # path — a bare slug reached neither. It leads prose views; config
         # and mermaid are verbatim payloads (a YAML snapshot, a fenced
@@ -993,6 +1042,93 @@ class PathwayHandler(Handler):
                 body = f"{handle}\n{resp.body}"
             resp = replace(resp, body=body)
         return resp
+
+    def _environment_view(
+        self,
+        store: Store,
+        ref: Any,
+        *,
+        id: str | int,
+        view: str | None,
+        raw: Any,
+    ) -> Response:
+        """Read-only environment selection; never borrow an off-point solve.
+
+        CHE remains the existing U-only thermodynamic lever. T, reservoir and
+        salt changes select stored kinetics, not freshly repriced graph energies.
+        Bracketed results expose their corners, without claiming an interpolated
+        rate; computation remains behind the explicit recompute door.
+        """
+        from .environment import Environment, lookup_environment
+
+        if view not in ("analysis", "staircase", "kinetics"):
+            raise BadInput(
+                "environment applies to analysis, staircase and kinetics views",
+                options=["analysis", "staircase", "kinetics"],
+                next=f"get(kind='pathway', id={id!r}, view='kinetics', "
+                "args={'environment': {'T': 298.15}})",
+            )
+        env = Environment.from_dict(raw)
+        meta = ref.meta or {}
+        lookup = lookup_environment(meta, env)
+        header = (
+            f"environment_basis: {env.basis}\n"
+            f"environment: {json.dumps(env.to_dict(), sort_keys=True)}\n"
+            f"stored result: {lookup['status']}\n"
+        )
+        if lookup.get("reason"):
+            header += f"{lookup['reason']}\n"
+        if view == "kinetics":
+            if lookup["status"] == "none":
+                return Response(
+                    body=header
+                    + "No stored kinetics at this point. No compute started."
+                )
+            if lookup["status"] == "bracketed":
+                return Response(
+                    body=header
+                    + "Adjacent stored sweep corners (not interpolated):\n"
+                    + json.dumps(lookup["corners"], sort_keys=True)
+                )
+            if lookup["source"] in ("kinetics_sweep", "kinetics_sweep_previous"):
+                return Response(
+                    body=header + json.dumps(lookup["record"], sort_keys=True)
+                )
+            from .toon_views import kinetics_text
+
+            results = dict(meta.get("results") or {})
+            selected = lookup["source"]
+            if selected == "kinetics_v2_previous":
+                selected = "kinetics_v2"
+                results[selected] = lookup["record"]
+            other = "kinetics" if selected == "kinetics_v2" else "kinetics_v2"
+            other_lookup = lookup_environment(
+                {**meta, "results": {other: results.get(other)}}, env
+            )
+            if other_lookup["status"] != "exact":
+                results.pop(other, None)
+            return Response(body=header + kinetics_text({**meta, "results": results}))
+        ec = env.electrochemical
+        u, ph = ec.get("U_vs_RHE"), ec.get("pH")
+        args: dict[str, Any] = {}
+        if view == "staircase" and ph is not None:
+            args["pH"] = ph
+        response = self._get_view(
+            store,
+            ref,
+            id=id,
+            view=view,
+            args=args,
+            U=u,
+            pH=ph if view == "staircase" else None,
+        )
+        return replace(
+            response,
+            body=header
+            + "Thermodynamics uses stored T/gas energies with the CHE U lever; "
+            "pH and ion concentration do not reprice these energies.\n"
+            + (response.body or ""),
+        )
 
     def _get_view(
         self,

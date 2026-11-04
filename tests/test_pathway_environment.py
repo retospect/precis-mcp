@@ -470,6 +470,30 @@ def test_quest_side_basis_matches_the_engine(config: dict[str, Any]) -> None:
     assert environment_basis(config) == engine_basis(config)
 
 
+def test_pathway_environment_accepts_every_engine_electrochemical_key() -> None:
+    from autocatpath.environment import Environment as EngineEnvironment
+    from autocatpath.environment import environment_basis as engine_basis
+
+    from precis_pathway.environment import Environment
+
+    block: dict[str, Any] = {
+        "T": 350.0,
+        "gases": {"inputs": {"NO": 1.0}, "outputs": "far"},
+        "electrochemical": {
+            "provider": "che",
+            "U_vs_RHE": -0.3,
+            "pH": 7.0,
+            "sigma_uC_cm2": 2.0,
+            "U_pzc": 0.1,
+            "cation": "Na+",
+        },
+    }
+    EngineEnvironment.from_dict(block)
+    projected = Environment.from_dict(block)
+    assert projected.to_dict() == block
+    assert projected.basis == engine_basis({"environment": block})
+
+
 def test_null_environment_basis_never_compares() -> None:
     bad = _network_basis(_pw({"network": "ammonia", "environment": {"T": -1}}))
     assert bad is not None and bad["environment_basis"] is None

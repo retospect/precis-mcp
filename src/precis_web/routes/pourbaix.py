@@ -52,14 +52,17 @@ from uuid import uuid4
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
+from precis.errors import BadInput
 from precis.utils import handle_registry
 from precis_web.deps import get_store, templates, timed_response
+from precis_web.pathway_environment import environment_context, linked_environment
 from precis_web.pourbaix_svg import map_svg
 from precis_web.ref_urls import ref_url
 from precis_web.scan_view import coverage_points
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+    from precis_pathway.environment import Environment
 
 router = APIRouter(tags=["pourbaix"])
 
@@ -435,6 +438,7 @@ def _candidate_ctx(
     ph: float = 0.0,
     pathway: str | None = None,
     raw_maps: list[dict[str, Any]] | None = None,
+    environment: Environment | None = None,
 ) -> dict[str, Any]:
     """One drawn surface. ``raw_maps`` takes maps the caller already built
     (the quest page builds them from its batched scan read) so they are
@@ -445,6 +449,9 @@ def _candidate_ctx(
 
     handle = handle_registry.try_format("structure", int(ref.id)) or f"st{ref.id}"
     staircase, sr, pw = _staircase_ctx(store, ref, pathway=pathway)
+    if staircase is not None and environment is not None:
+        staircase["environment_view"] = environment_context(pw.meta or {}, environment)
+        staircase["pathway_url"] += "?" + environment.to_url()
     if raw_maps is None:
         raw_maps = pourbaix_map.maps_for_structure(store, ref)
     pw_coads = (
@@ -796,12 +803,19 @@ async def pourbaix_states(request: Request, handle: str) -> JSONResponse:
         )
     ref = resolved[1]
     params = request.query_params
+    try:
+        environment = linked_environment(params)
+    except BadInput as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    ec: dict[str, Any] = environment.electrochemical if environment is not None else {}
     point: dict[str, float] = {}
     for key, default in (
         ("U", _u_default(store, "structure", ref)),
         ("pH", _ph_default(ref)),
     ):
-        raw = params.get(key)
+        raw: Any = params.get(key)
+        if environment is not None:
+            raw = ec.get("U_vs_RHE" if key == "U" else key, raw)
         try:
             val = default if raw is None else float(raw)
         except ValueError:
@@ -822,11 +836,15 @@ async def pourbaix_states(request: Request, handle: str) -> JSONResponse:
         pw,
         sr,
         pourbaix_map.maps_for_structure(store, ref),
-        u=max(-_LINK_U_BOUND, min(_LINK_U_BOUND, point["U"])),
-        ph=max(0.0, min(14.0, point["pH"])),
+        u=point["U"]
+        if environment is not None
+        else max(-_LINK_U_BOUND, min(_LINK_U_BOUND, point["U"])),
+        ph=point["pH"] if environment is not None else max(0.0, min(14.0, point["pH"])),
     )
     body["pathway"] = staircase["pathway_handle"]
     body["pathway_notice"] = staircase["pathway_notice"]
+    if environment is not None:
+        body["environment_view"] = environment_context(pw.meta or {}, environment)
     return JSONResponse(body)
 
 
@@ -853,15 +871,28 @@ async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
             t0,
         )
     kind, ref = resolved
+    try:
+        environment = linked_environment(request.query_params)
+    except BadInput as exc:
+        from html import escape
+
+        return HTMLResponse(escape(str(exc)), status_code=400)
     # operating point known before entries: the marker/markers ride it;
     # a deep link's ?u=/?ph=/?reset= override the defaults
     u_def, ph_def = _u_default(store, kind, ref), _ph_default(ref)
     u0, ph0, reset_on, link_ignored = _link_state(request.query_params, u_def, ph_def)
+    if environment is not None:
+        u0 = environment.electrochemical.get("U_vs_RHE", u0)
+        ph0 = environment.electrochemical.get("pH", ph0)
     surfaces: list[dict[str, Any]] = []
     compare = False
     selected: dict[str, Any] | None = None
     surface_notice: str | None = None
     picker_hidden: list[tuple[str, str]] = []
+    if environment is not None:
+        import json
+
+        picker_hidden.append(("env", json.dumps(environment.to_dict())))
     picker_pathway: str | None = None
     if kind == "quest":
         # one surface at a time (gr486821): the picker's <select> lists
@@ -877,9 +908,9 @@ async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
         # deep-link state the picker links carried (a slider on its
         # default stays out, same rule as the script's bankParams); the
         # script re-stamps them live as the sliders move
-        if abs(u0 - u_def) > 1e-9:
+        if environment is None and abs(u0 - u_def) > 1e-9:
             picker_hidden.append(("u", _bank_param(u0, 3)))
-        if abs(ph0 - ph_def) > 1e-9:
+        if environment is None and abs(ph0 - ph_def) > 1e-9:
             picker_hidden.append(("ph", _bank_param(ph0, 1)))
         if not reset_on:
             picker_hidden.append(("reset", "0"))
@@ -911,6 +942,7 @@ async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
             u_marker=u0,
             ph=ph0,
             pathway=pathway,
+            environment=environment,
             raw_maps=pourbaix_map.maps_for_structure(
                 store, s["ref"], jobs=s["jobs"], verdicts=verdicts
             )
@@ -941,6 +973,9 @@ async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
                 "u_lo": u_lo,
                 "u_hi": u_hi,
                 "ph0": ph0,
+                "environment_record": environment.to_dict()
+                if environment is not None
+                else None,
                 # the server defaults: the client leaves a param out of the
                 # address bar while its slider sits on the default
                 "u_def": u_def,

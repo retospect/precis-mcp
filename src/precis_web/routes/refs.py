@@ -2344,6 +2344,20 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
     expected, not an error.
     """
     meta = ref.meta or {}
+    from html import escape
+
+    from precis.errors import BadInput
+    from precis_web.pathway_environment import (
+        environment_context,
+        linked_environment,
+        matching_kinetics_results,
+    )
+
+    try:
+        environment = linked_environment(request.query_params)
+    except BadInput as exc:
+        return HTMLResponse(escape(str(exc)), status_code=400)
+    environment_view = environment_context(meta, environment)
 
     # Body — exactly one ``pathway_body`` chunk. Rendered the same way
     # the generic detail body renders a markdown-ish chunk (linkify_toon
@@ -2358,8 +2372,12 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
     # the stored chunk can't state it (it predates the solve) — and the
     # one-line note carried beside the energy profile and the kinetics
     # panel. Read-only off stored record values.
-    cond_note = pathway_conditions.conditions_note(meta)
-    methods_extra = pathway_conditions.methods_conditions(meta, body=body_text)
+    matched_results = matching_kinetics_results(meta, environment)
+    conditions_meta = {**meta, "results": matched_results}
+    cond_note = pathway_conditions.conditions_note(conditions_meta)
+    methods_extra = pathway_conditions.methods_conditions(
+        conditions_meta, body=body_text
+    )
     if methods_extra:
         body_text = f"{body_text}\n\n{methods_extra}" if body_text else methods_extra
 
@@ -2407,13 +2425,23 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
     # vendored panel script renders (None -> panel omitted);
     # ``kinetics_error`` is the runner's did-not-run reason, shown instead.
     try:
-        kinetics = kinetics_payload(results)
+        kinetics = kinetics_payload(matched_results)
     except Exception:
         # A record shape the trim didn't anticipate must cost the panel,
         # never the page.
         log.warning("pathway %s: kinetics payload failed", ref.id, exc_info=True)
         kinetics = None
     kinetics_error = results.get("kinetics_error")
+    if environment_view:
+        match = environment_view["lookup"]
+        if match["status"] != "exact" or match.get("source") in (
+            "kinetics_sweep",
+            "kinetics_sweep_previous",
+        ):
+            # Sweep rows are scalar summaries, not a complete kinetics panel.
+            # Keep the lookup visible without relabelling the baseline solve.
+            kinetics = None
+            kinetics_error = None
 
     # CHE potential lever — the
     # explorer's U-slider readout strip. Every field is optional; on a
@@ -2466,13 +2494,22 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
         try:
             from precis_pathway import flux_share
 
-            rf = flux_share.route_flux(results.get("kinetics"), diagram["paths"])
+            rf = flux_share.route_flux(
+                matched_results.get("kinetics"), diagram["paths"]
+            )
         except Exception:
             # a record shape the decomposition didn't anticipate must cost
             # the shares, never the page
             log.warning("pathway %s: route flux failed", ref.id, exc_info=True)
             rf = None
-        if rf is not None:
+        if rf is not None and (
+            environment_view is None
+            or (
+                environment_view["lookup"]["status"] == "exact"
+                and environment_view["lookup"].get("source")
+                not in ("kinetics_sweep", "kinetics_sweep_previous")
+            )
+        ):
             diagram["route_flux"] = rf
     measure_defs, measure_notes = _pathway_measures(meta.get("measures"))
     state_ids = _pathway_state_ids(diagram, graph, structure_refs)
@@ -2555,6 +2592,7 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
             "results_electro": results_electro,
             "kinetics": kinetics,
             "kinetics_error": kinetics_error,
+            "environment_view": environment_view,
             "conditions_note": cond_note,
             "diagram": diagram,
             "state_ids": state_ids,

@@ -251,6 +251,203 @@ def test_pathway_detail_renders_dedicated_page_not_generic(client, runtime) -> N
     assert pathway_calls == []
 
 
+@pytest.mark.parametrize("matched", ["kinetics", "kinetics_v2"])
+def test_pathway_environment_filters_each_kinetics_record(matched: str) -> None:
+    from precis_pathway.environment import Environment
+    from precis_web.pathway_environment import matching_kinetics_results
+
+    environment = Environment.from_dict({"T": 350})
+    other = "kinetics_v2" if matched == "kinetics" else "kinetics"
+    meta = {
+        "results": {
+            matched: {"environment": {"T": 350}, "tof": 1},
+            other: {"environment": {"T": 450}, "tof": 999},
+        }
+    }
+    results = matching_kinetics_results(meta, environment)
+    assert results[matched] == meta["results"][matched]
+    assert other not in results
+    assert other in meta["results"]  # read-only selection
+
+
+def test_pathway_environment_promotes_previous_solve_for_kinetics_panel() -> None:
+    from precis_pathway.environment import Environment
+    from precis_web.pathway_environment import (
+        environment_context,
+        matching_kinetics_results,
+    )
+    from precis_web.pathway_kinetics import kinetics_payload
+
+    environment = Environment.from_dict({"T": 350})
+    previous: dict[str, Any] = {"environment": {"T": 350}, "tof_mf": 2.5}
+    current: dict[str, Any] = {"environment": {"T": 450}, "tof_mf": 99.0}
+    meta: dict[str, Any] = {
+        "results": {"kinetics_v2": current, "kinetics_v2_previous": previous}
+    }
+    context = environment_context(meta, environment)
+    assert context is not None
+    assert context["lookup"]["status"] == "exact"
+    assert context["lookup"]["source"] == "kinetics_v2_previous"
+    selected = matching_kinetics_results(meta, environment)
+    assert selected["kinetics_v2"] == previous
+    payload = kinetics_payload(selected)
+    assert payload is not None
+    assert payload["ml"]["tof"] == pytest.approx(2.5)
+    assert meta["results"]["kinetics_v2"] == current
+    assert meta["results"]["kinetics_v2_previous"] == previous
+
+    # A matching current solve keeps priority over its retained predecessor.
+    current_environment = Environment.from_dict({"T": 450})
+    current_payload = kinetics_payload(
+        matching_kinetics_results(meta, current_environment)
+    )
+    assert current_payload is not None
+    assert current_payload["ml"]["tof"] == pytest.approx(99.0)
+
+
+def test_pathway_previous_solve_conditions_match_selected_panel(
+    client, runtime
+) -> None:
+    """gr559350: both conditions labels must describe the selected solve."""
+    from precis_pathway.environment import Environment
+
+    current: dict[str, Any] = {"environment": {"T": 450}, "tof_mf": 99.0}
+    previous: dict[str, Any] = {"environment": {"T": 350}, "tof_mf": 2.5}
+    meta: dict[str, Any] = {
+        "results": {"kinetics_v2": current, "kinetics_v2_previous": previous}
+    }
+    _seed_pathway(runtime.store, meta=meta, body_text="# Methods\n\nStored methods.")
+    environment = Environment.from_dict({"T": 350})
+    response = client.get(f"/refs/pathway/171696?{environment.to_url()}")
+
+    assert response.status_code == 200
+    match = re.search(
+        r'<script type="application/json" id="kinetics-data">(.*?)</script>',
+        response.text,
+        re.S,
+    )
+    assert match is not None
+    assert json.loads(match.group(1))["ml"]["tof"] == pytest.approx(2.5)
+    assert response.text.count("kinetics at T = 350 K") == 2
+    assert "## Conditions" in response.text
+    assert "Kinetics: T = 350 K" in response.text
+    assert "T = 450 K" not in response.text
+    assert meta["results"]["kinetics_v2"] == current
+    assert meta["results"]["kinetics_v2_previous"] == previous
+
+
+@pytest.mark.parametrize("source", ["kinetics_sweep", "kinetics_sweep_previous"])
+def test_pathway_environment_displays_matching_sweep_rate(
+    source: str, client, runtime
+) -> None:
+    from precis_pathway.environment import Environment
+
+    environment = Environment.from_dict({"T": 350, "gases": {"inputs": {"NO": 1}}})
+    meta: dict[str, Any] = {
+        "results": {
+            "kinetics_v2": {
+                "environment": {"T": 450, "gases": {"inputs": {"NO": 1}}},
+                "tof_mf": 999,
+            },
+            source: {
+                "points": [
+                    {"T": 350, "p_total": 1, "pressures": {"NO": 1}, "tof_mf": 2}
+                ]
+            },
+        }
+    }
+    _seed_pathway(runtime.store, meta=meta, body_text=None)
+    response = client.get(f"/refs/pathway/171696?{environment.to_url()}")
+    assert response.status_code == 200
+    assert 'data-status="exact"' in response.text
+    assert 'id="pw-environment-sweep-rate"' in response.text
+    assert "Stored sweep TOF (MF): 2 s⁻¹" in response.text
+    assert (
+        "previous sweep" if source.endswith("_previous") else "current sweep"
+    ) in response.text
+    assert not any(args.get("kind") == "pathway" for _, args in runtime.calls)
+
+
+@needs_node
+@pytest.mark.parametrize(
+    ("template", "function"),
+    [
+        ("refs/pathway_detail.html.j2", "pwQueryString"),
+        ("pourbaix/detail.html.j2", "bankParams"),
+    ],
+)
+def test_environment_url_preserves_missing_coordinates_until_edited(
+    tmp_path: Path, template: str, function: str
+) -> None:
+    from precis_pathway.environment import Environment
+
+    text = (
+        Path(__file__).resolve().parents[2] / "src/precis_web/templates" / template
+    ).read_text(encoding="utf-8")
+    match = re.search(rf"  function {function}\(\) \{{.*?\n  \}}", text, re.S)
+    assert match is not None
+    source = match.group(0)
+    observed = _node_json(
+        tmp_path,
+        """
+const linkedEnvironment = {T:350}, V = {environment:linkedEnvironment};
+const currentU = -0.5, phInput = {value:'7'}, selected = null, selectedPath = null;
+const uEl = {value:'-0.5', dataset:{default:'0'}}, phEl = {value:'7', dataset:{default:'0'}};
+const resetT = {checked:true}, near = (a,b) => Math.abs(a-b) < 1e-9;
+const layerSelection = {}, pwWriteLayers = () => {};
+let environmentUDirty = false, environmentPhDirty = false;
+"""
+        + source
+        + f"\nconst read = () => Object.fromEntries(new URLSearchParams({function}()));"
+        + """
+const original = read();
+environmentUDirty = true;
+const changedU = read();
+environmentUDirty = false;
+environmentPhDirty = true;
+const changedPh = read();
+console.log(JSON.stringify([original, changedU, changedPh]));
+""",
+    )
+    assert (
+        Environment.from_url(observed[0]).basis
+        == Environment.from_dict({"T": 350}).basis
+    )
+    assert Environment.from_url(observed[1]).electrochemical == {"U_vs_RHE": -0.5}
+    assert Environment.from_url(observed[2]).electrochemical == {"pH": 7}
+    assert all("u" not in params and "ph" not in params for params in observed)
+
+
+def test_pathway_environment_link_reports_missing_result(client, runtime) -> None:
+    from precis_pathway.environment import Environment
+
+    _seed_pathway(runtime.store, meta={"status": "ready"}, body_text=None)
+    environment = Environment.from_config(
+        {
+            "environment": {
+                "T": 350,
+                "p_total": 10,
+                "gases": {"inputs": {"NO": 1}, "outputs": "far"},
+                "electrochemical": {"U_vs_RHE": -0.3, "pH": 7, "ion_conc_M": 0.1},
+            }
+        }
+    )
+    response = client.get("/refs/pathway/171696?" + environment.to_url())
+    assert response.status_code == 200
+    assert 'id="pw-environment-status"' in response.text
+    assert 'data-status="none"' in response.text
+    assert "No stored result at this point" in response.text
+    assert 'id="kinetics-data"' not in response.text
+    assert "qs.set('env', JSON.stringify(env))" in response.text
+
+
+def test_pathway_environment_link_refuses_bad_values(client, runtime) -> None:
+    _seed_pathway(runtime.store, meta={"status": "ready"}, body_text=None)
+    response = client.get("/refs/pathway/171696", params={"env": '{"T": -1}'})
+    assert response.status_code == 400
+    assert "next" in response.text.lower()
+
+
 def test_pathway_detail_sparse_meta_no_500(client, runtime) -> None:
     """A pathway with almost nothing in ``meta`` still renders — every
     field the page reads is optional, per the autocatpath data model."""
@@ -713,6 +910,34 @@ def test_pathway_route_flux_shares_sorted_with_dominant(client, runtime) -> None
     assert "kinetics solves all routes together" in resp.text
     assert "shares are flux at the stated conditions" in resp.text
     assert "(T = 500 K)" in resp.text
+    assert 'id="pw-route-flux-environment"' not in resp.text
+
+
+def test_pathway_moved_environment_labels_original_route_flux(client, runtime) -> None:
+    from precis_pathway.environment import Environment
+
+    environment = Environment.from_dict(
+        {
+            "T": 500,
+            "gases": {"inputs": {"N2": 1}},
+            "electrochemical": {"U_vs_RHE": -0.3, "pH": 7},
+        }
+    )
+    record = {**_flux_record(), "environment": environment.to_dict()}
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _flux_graph(), "results": {"target": "NH3", "kinetics": record}},
+        body_text=None,
+    )
+    response = client.get("/refs/pathway/171696?" + environment.to_url())
+    assert response.status_code == 200
+    notice = re.search(r'<p id="pw-route-flux-environment".*?</p>', response.text, re.S)
+    assert notice is not None
+    assert "initial stored environment" in notice.group(0)
+    assert "T = 500" in notice.group(0)
+    assert "-0.3 V vs RHE" in notice.group(0)
+    assert "pH = 7" in notice.group(0)
+    assert "fluxEnvironment.classList.remove('hidden')" in response.text
 
 
 def test_pathway_no_kinetics_renders_picker_as_before(client, runtime) -> None:

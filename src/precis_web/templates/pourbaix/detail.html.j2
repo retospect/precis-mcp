@@ -65,6 +65,9 @@
   </form>
   {% endif %}
 </div>
+{% if environment_record %}
+<p class="mb-3 text-xs">Environment: {{ environment_record.T }} K. Kinetics availability is shown for each linked pathway below.</p>
+{% endif %}
 {% endif %}
 
 {# The shared slider bank (slice 3, §7.1): U re-tilts every staircase rung
@@ -177,6 +180,12 @@ band — viable but not guaranteed (dashed); each in its route's colour">
     <div class="pbx-mismatch mt-1 hidden text-[11px] font-medium text-warning-strong"></div>
     {% if e.staircase %}
     {% set sc = e.staircase %}
+    {% if sc.environment_view %}
+    <p class="pbx-environment-status text-xs" data-status="{{ sc.environment_view.lookup.status }}">Stored kinetics: <strong>{{ sc.environment_view.lookup.status }}</strong>.
+      {% if sc.environment_view.lookup.status == 'none' %}No stored result at this point.{% endif %}
+      {% if sc.environment_view.lookup.status == 'bracketed' %}A stored sweep brackets this point; no interpolated rate is displayed.{% endif %}
+    </p>
+    {% endif %}
     <div class="pbx-staircase mt-3 border-t border-line pt-2">
       <div class="text-xs">
         reaction staircase —
@@ -292,7 +301,7 @@ band — viable but not guaranteed (dashed); each in its route's colour">
   const uEl = document.getElementById('pbx-u');
   const phEl = document.getElementById('pbx-ph');
   if (!uEl || !phEl) return;
-  const PREFAC = 0.0592;  // V/pH at 298.15 K — RHE -> SHE relabel only
+  const PREFAC = {% endraw %}{{ (2.302585092994046 * 8.617333262e-5 * environment_record.T) if environment_record else 0.0592 }}{% raw %};  // RHE -> SHE relabel at the linked T
   const fmt = (x) => (x >= 0 ? '+' : '') + x.toFixed(3);
 
   // pbx-pure:begin — the live re-tilt and coads-mismatch rules, DOM-free:
@@ -482,11 +491,24 @@ band — viable but not guaranteed (dashed); each in its route's colour">
   // the surface picker's hidden inputs so its no-JS GET submit carries
   // the same state. A slider on its server default stays out of the URL. ──
   const near = (a, b) => Math.abs(a - b) < 1e-9;
+  const linkedEnvironment = {% endraw %}{{ environment_record | default(none) | tojson }}{% raw %};
+  let environmentUDirty = false, environmentPhDirty = false;
   function bankParams() {
     const out = [];
     const u = parseFloat(uEl.value), ph = parseFloat(phEl.value);
-    if (!near(u, parseFloat(uEl.dataset.default))) out.push(['u', String(+u.toFixed(3))]);
-    if (!near(ph, parseFloat(phEl.dataset.default))) out.push(['ph', String(+ph.toFixed(1))]);
+    if (linkedEnvironment) {
+      const env = JSON.parse(JSON.stringify(linkedEnvironment));
+      if (environmentUDirty || environmentPhDirty) {
+        env.electrochemical = env.electrochemical || {};
+        if (environmentUDirty) env.electrochemical.U_vs_RHE = u;
+        if (environmentPhDirty) env.electrochemical.pH = ph;
+      }
+      out.push(['env', JSON.stringify(env)]);
+    }
+    if (!linkedEnvironment) {
+      if (!near(u, parseFloat(uEl.dataset.default))) out.push(['u', String(+u.toFixed(3))]);
+      if (!near(ph, parseFloat(phEl.dataset.default))) out.push(['ph', String(+ph.toFixed(1))]);
+    }
     if (resetT && !resetT.checked) out.push(['reset', '0']);
     return out;
   }
@@ -500,11 +522,11 @@ band — viable but not guaranteed (dashed); each in its route's colour">
   function syncLinks(rewriteBar) {
     document.querySelectorAll('a.pbx-carry').forEach((a) => {
       a.dataset.base = a.dataset.base || a.getAttribute('href');
-      a.setAttribute('href', withBank(a.dataset.base, ['u', 'ph', 'reset']));
+      a.setAttribute('href', withBank(a.dataset.base, ['u', 'U', 'ph', 'pH', 'reset', 'env']));
     });
     document.querySelectorAll('a.pbx-carry-pw').forEach((a) => {
       a.dataset.base = a.dataset.base || a.getAttribute('href');
-      a.setAttribute('href', withBank(a.dataset.base, ['u', 'ph']));
+      a.setAttribute('href', withBank(a.dataset.base, ['u', 'U', 'ph', 'pH', 'env']));
     });
     // the surface picker's GET form works without JS; here its hidden
     // inputs just track the sliders so a submit carries the live state
@@ -523,7 +545,7 @@ band — viable but not guaranteed (dashed); each in its route's colour">
     }
     if (!rewriteBar) return;
     try {
-      history.replaceState(null, '', withBank(window.location.href, ['u', 'ph', 'reset']));
+      history.replaceState(null, '', withBank(window.location.href, ['u', 'U', 'ph', 'pH', 'reset', 'env']));
     } catch (e) { /* sandboxed context: the links still carry the state */ }
   }
 
@@ -534,6 +556,11 @@ band — viable but not guaranteed (dashed); each in its route's colour">
   // links carry the point through syncLinks. ──
   const SVGNS = 'http://www.w3.org/2000/svg';
   function applyStates(sec, st) {
+    const availability = sec.querySelector('.pbx-environment-status');
+    if (availability && st.environment_view) {
+      availability.dataset.status = st.environment_view.lookup.status;
+      availability.textContent = 'Stored kinetics: ' + st.environment_view.lookup.status + '.';
+    }
     sec.querySelectorAll('.pbx-route').forEach((rt, i) => {
       const parents = (st.routes && st.routes[i] && st.routes[i].rungs) || [];
       rt.querySelectorAll('.pbx-rung').forEach((row) => {
@@ -561,8 +588,13 @@ band — viable but not guaranteed (dashed); each in its route's colour">
         const pt = sec.querySelector('.pbx-point');
         if (!pt || !pt.dataset.statesUrl) return;
         const url = new URL(pt.dataset.statesUrl, window.location.href);
-        url.searchParams.set('U', String(+parseFloat(uEl.value).toFixed(4)));
-        url.searchParams.set('pH', String(+parseFloat(phEl.value).toFixed(2)));
+        if (!linkedEnvironment) {
+          url.searchParams.set('U', String(+parseFloat(uEl.value).toFixed(4)));
+          url.searchParams.set('pH', String(+parseFloat(phEl.value).toFixed(2)));
+        }
+        bankParams().forEach(([key, value]) => {
+          if (key === 'env') url.searchParams.set(key, value);
+        });
         fetch(url.pathname + url.search)
           .then((r) => (r.ok ? r.json() : null))
           .then((st) => { if (st && seq === statesSeq) applyStates(sec, st); })
@@ -609,7 +641,9 @@ band — viable but not guaranteed (dashed); each in its route's colour">
       });
     });
   }
-  function setPoint(u, ph) {
+  function setPoint(u, ph, changedU = true, changedPh = true) {
+    environmentUDirty = environmentUDirty || changedU;
+    environmentPhDirty = environmentPhDirty || changedPh;
     const clamp = (v, el) => Math.min(Math.max(v, parseFloat(el.min)), parseFloat(el.max));
     uEl.value = String(clamp(u, uEl));
     phEl.value = String(clamp(ph, phEl));
@@ -652,7 +686,7 @@ band — viable but not guaranteed (dashed); each in its route's colour">
       const dp = { ArrowDown: -0.1, ArrowUp: 0.1 }[ev.key] || 0;
       if (!du && !dp) return;
       ev.preventDefault();
-      setPoint(parseFloat(uEl.value) + du, parseFloat(phEl.value) + dp);
+      setPoint(parseFloat(uEl.value) + du, parseFloat(phEl.value) + dp, du !== 0, dp !== 0);
     });
   });
   // overlay toggles: each map's checkboxes address its own svg groups
@@ -671,8 +705,8 @@ band — viable but not guaranteed (dashed); each in its route's colour">
   });
 
   if (resetT) resetT.addEventListener('change', () => { applyResetLayer(); syncLinks(true); });
-  uEl.addEventListener('input', () => { update(); syncLinks(true); fetchStates(); });
-  phEl.addEventListener('input', () => { update(); syncLinks(true); fetchStates(); });
+  uEl.addEventListener('input', () => { environmentUDirty = true; update(); syncLinks(true); fetchStates(); });
+  phEl.addEventListener('input', () => { environmentPhDirty = true; update(); syncLinks(true); fetchStates(); });
   update();
   applyResetLayer();
   syncLinks(false);

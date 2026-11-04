@@ -341,9 +341,7 @@ is the slab's.
    methods note (medium).
 4. gr559349 — visual-filter box: barrier and turnover sliders, DAG
    traversal, cut glyphs, route-picker marks (large).
-5. gr559350 — one environment record + URL encoding + basis lookup
-   (medium, precis-side; prerequisite of 6 and 7).
-   5a. gr559664 — the pH mechanism (protonation, fixed-SHE, HER at pH)
+5. gr559664 — slice 5a: the pH mechanism (protonation, fixed-SHE, HER at pH)
    as closed-form terms on the record (medium; split 2026-11-03).
 6. gr559351 — the environment box: tab strip, sliders in their honesty
    states, snaps, shared slider state (large).

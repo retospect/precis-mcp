@@ -282,17 +282,21 @@ def _record_environment_block(record: dict[str, Any]) -> dict[str, Any]:
     ``p_total`` is never restated (the env's total is the table's sum
     either way) and the ``composition``/``p_total_stated``/``legacy``
     views are dropped; a ``far`` preset maps back onto ``outputs: 'far'``.
-    Only keys the record actually carries are emitted — a missing or empty
-    value is left out."""
+    Already-unresolved D1 blocks pass through intact. Only engine-resolved
+    records need projection; their missing or empty values are left out."""
     gases = record.get("gases")
     gases = gases if isinstance(gases, dict) else {}
+    if not ({"p_total_stated", "composition", "legacy"} & record.keys()) and (
+        "preset" not in gases
+    ):
+        return copy.deepcopy(record)
     outputs = gases.get("outputs")
     gas_block: dict[str, Any] = {}
     for key in ("inputs", "inerts"):
         entry = gases.get(key)
         if isinstance(entry, dict) and entry:
             gas_block[key] = dict(entry)
-    if gases.get("preset") == "far":
+    if gases.get("preset") == "far" or outputs == "far":
         gas_block["outputs"] = "far"
     elif isinstance(outputs, dict) and outputs:
         gas_block["outputs"] = dict(outputs)

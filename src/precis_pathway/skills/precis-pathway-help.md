@@ -138,6 +138,40 @@ objective:                        # stored now; the (T, p_total) sweep acts on i
   (folded into the network basis: measures compare only on an equal
   environment) and per-step reversibility in `view='kinetics'`.
 
+## Look up a stored environment point without computing
+
+`analysis`, `staircase` and `kinetics` accept the same D1 environment:
+
+```python
+get(kind="pathway", id="no-nh3-pd", view="kinetics", args={"environment": {
+    "T": 350, "p_total": 10,
+    "gases": {"inputs": {"NO": 0.1, "H2": 1}, "outputs": "far"},
+    "electrochemical": {"U_vs_RHE": -0.3, "pH": 7, "ion_conc_M": 1e-6}
+}})
+```
+
+The reply gives `environment_basis` and `stored result: exact`, `bracketed`
+(the complete adjacent T/pressure sweep corners), or `none`. Bracketed
+returns the stored corners, not an interpolated rate. Changing composition,
+potential, pH or salt cannot reuse a solve at another point. No read queues
+work. Sweeps without a stored environment answer T and pressure requests
+from their recorded rows; requests naming electrochemical conditions return
+`none` with a reason because that provenance is missing.
+T and pressures must be positive, pH is 0–14,
+ion concentration is positive, and all numbers must be finite.
+
+`analysis` and `staircase` retain the CHE potential lever; their stored
+thermodynamic energies are not repriced in T, gas pressures, pH or salt by
+this lookup. Do not combine `environment` with `U`, `pH` or `point` args.
+
+Pathway and Pourbaix links share `?env=<URL-encoded JSON D1 block>`;
+`precis_pathway.environment.Environment.to_url` writes it. The old `u/ph`
+links and the states endpoint's `U/pH` aliases remain valid. Legacy page
+defaults and clamps are unchanged. Quest `operating_conditions.U_RHE`
+projects to `electrochemical.U_vs_RHE`; windows specify a domain, not a
+point. Older pathways project their stored legacy conditions without a
+backfill; absent electrochemical coordinates remain unknown.
+
 ## Measure the modes a stored pathway lacks
 
 A sweep that varies T needs each state's normal modes on a `thermo.mode: vib`
@@ -166,6 +200,12 @@ put(kind="pathway", id="no-nh3-pd", mode="recompute_kinetics",
 ```
 
 With no args it re-solves under the stored config on the current engine.
+CHE environments accept `electrochemical: {provider: che, U_vs_RHE: -0.3}`
+and the engine's `pH`, `sigma_uC_cm2`, `U_pzc` and `cation` fields.
+`ion_conc_M` is supported for stored-result reads only: recomputes refuse it
+before queuing work because the engine cannot price it. Use a lookup for that
+condition, or explicitly request an environment without `ion_conc_M` only if
+that different solve is intended; a recompute never silently drops it.
 `environment` and `objective` replace the stored blocks (validated at `put`);
 a new `environment` must keep the run temperature, and replaces the stored
 gas table. `sweep` replaces `kinetics.sweep` (shape-checked at `put` —

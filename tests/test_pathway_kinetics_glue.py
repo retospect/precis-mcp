@@ -2082,6 +2082,8 @@ def _stub_env_engine(monkeypatch: pytest.MonkeyPatch) -> dict[str, list]:
         @classmethod
         def from_dict(cls, d: dict[str, Any]) -> Any:
             seen["objective"].append(d)
+            if "competing" in d and len(d["competing"]) != 2:
+                raise ValueError("objective.competing requires two species")
             return d
 
     env_mod: Any = ModuleType("autocatpath.environment")
@@ -2127,8 +2129,10 @@ def test_recompute_kinetics_no_args_carries_the_stored_record(monkeypatch) -> No
         "composition": "fixed",
     }
     assert cfg["kinetics"]["n_samples"] == 50  # unrelated keys untouched
-    # the reused env passed the engine's own validation at the door
-    assert seen["environment"] == [cfg["environment"]]
+    assert seen == {
+        "environment": [cfg["environment"]],
+        "objective": [cfg["objective"]],
+    }
     for what in (
         "environment (kinetics_v2 record)",
         "objective (kinetics_sweep record)",
@@ -2136,6 +2140,243 @@ def test_recompute_kinetics_no_args_carries_the_stored_record(monkeypatch) -> No
     ):
         assert what in resp.body
     assert "overriding" not in resp.body
+
+
+@pytest.mark.parametrize("source", ["explicit", "record", "config"])
+def test_recompute_kinetics_preserves_che_provider(
+    source: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import precis.handlers.job as job_mod
+
+    _Jobs.calls.clear()
+    monkeypatch.setattr(job_mod, "JobHandler", _Jobs)
+    seen = _stub_env_engine(monkeypatch)
+    environment: dict[str, Any] = {
+        "T": 350.0,
+        "gases": {"inputs": {"NO": 1.0}, "outputs": "far"},
+        "electrochemical": {"provider": "che", "U_vs_RHE": -0.3},
+    }
+    meta = _kinetics_meta({"name": "x"})
+    args: dict[str, Any] = {}
+    if source == "explicit":
+        args["environment"] = environment
+    elif source == "record":
+        meta["results"]["kinetics_v2"]["environment"] = {
+            **environment,
+            "gases": {"inputs": {"NO": 1.0}, "preset": "far"},
+        }
+    else:
+        meta["results"].pop("kinetics_v2")
+        meta["config"]["environment"] = environment
+    response = _recompute_handler(meta).put(
+        id="pw-a", mode="recompute_kinetics", args=args or None
+    )
+    (job,) = _Jobs.calls
+    assert job["params"]["config"]["environment"] == environment
+    assert seen == {
+        "environment": [environment],
+        "objective": [job["params"]["config"]["objective"]],
+    }
+    assert "queued" in response.body
+
+
+@pytest.mark.parametrize("source", ["explicit", "record", "config"])
+def test_recompute_kinetics_refuses_read_only_ion_concentration_at_door(
+    source: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import precis.handlers.job as job_mod
+    from precis.errors import BadInput
+
+    _Jobs.calls.clear()
+    monkeypatch.setattr(job_mod, "JobHandler", _Jobs)
+    seen = _stub_env_engine(monkeypatch)
+    environment: dict[str, Any] = {
+        "T": 350.0,
+        "gases": {"inputs": {"NO": 1.0}},
+        "electrochemical": {"ion_conc_M": 0.1},
+    }
+    meta = _kinetics_meta({"name": "x"})
+    args: dict[str, Any] = {}
+    if source == "explicit":
+        args["environment"] = environment
+    elif source == "record":
+        meta["results"]["kinetics_v2"]["environment"] = environment
+    else:
+        meta["results"].pop("kinetics_v2")
+        meta["config"]["environment"] = environment
+    with pytest.raises(BadInput, match="ion_conc_M") as exc:
+        _recompute_handler(meta).put(
+            id="pw-a", mode="recompute_kinetics", args=args or None
+        )
+    assert exc.value.next
+    assert seen["environment"] == []
+    assert _Jobs.calls == []
+
+
+@pytest.mark.parametrize("source", ["explicit", "record", "config"])
+def test_recompute_kinetics_queues_without_importing_engine(
+    source: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import builtins
+
+    import precis.handlers.job as job_mod
+
+    original_import = builtins.__import__
+    attempted: list[str] = []
+
+    def no_engine(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "autocatpath" or name.startswith("autocatpath."):
+            attempted.append(name)
+            raise ModuleNotFoundError("No module named 'autocatpath'")
+        return original_import(name, *args, **kwargs)
+
+    _Jobs.calls.clear()
+    monkeypatch.setattr(job_mod, "JobHandler", _Jobs)
+    monkeypatch.setattr(builtins, "__import__", no_engine)
+    environment: dict[str, Any] = {
+        "T": 350,
+        "gases": {"inputs": {"NO": 1}, "outputs": "far"},
+    }
+    meta = _kinetics_meta({"name": "x"})
+    args: dict[str, Any] = {}
+    if source == "explicit":
+        args["environment"] = environment
+        args["objective"] = {"maximise": "tof"}
+    elif source == "record":
+        meta["results"]["kinetics_v2"]["environment"] = environment
+    else:
+        meta["results"].pop("kinetics_v2")
+        meta["config"]["environment"] = environment
+    response = _recompute_handler(meta).put(
+        id="pw-a", mode="recompute_kinetics", args=args or None
+    )
+    (job,) = _Jobs.calls
+    assert job["params"]["config"]["environment"] == environment
+    assert job["params"]["config"]["objective"]["maximise"] == "tof"
+    assert "queued" in response.body
+    assert attempted
+    assert set(attempted) == {"autocatpath.environment"}
+
+
+@pytest.mark.parametrize("source", ["explicit", "stored"])
+@pytest.mark.parametrize("key", ["environment", "objective"])
+def test_recompute_kinetics_engine_refusals_name_source_and_next_step(
+    source: str, key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import precis.handlers.job as job_mod
+    from precis.errors import BadInput
+
+    _Jobs.calls.clear()
+    monkeypatch.setattr(job_mod, "JobHandler", _Jobs)
+    seen = _stub_env_engine(monkeypatch)
+    # Numeric strings pass local validation; this engine rejects them.
+    block: dict[str, Any] = (
+        {"T": "350", "gases": {"inputs": {"NO": 1}}}
+        if key == "environment"
+        else {"competing": ["CO"]}
+    )
+    meta = _kinetics_meta({"name": "x"})
+    args: dict[str, Any] = {}
+    if source == "explicit":
+        args[key] = block
+    elif key == "environment":
+        meta["results"]["kinetics_v2"][key] = block
+    else:
+        meta["config"][key] = block
+    who = "args" if source == "explicit" else "stored"
+    with pytest.raises(BadInput, match=f"pathway {who} {key} refused") as exc:
+        _recompute_handler(meta).put(
+            id="pw-a", mode="recompute_kinetics", args=args or None
+        )
+    assert exc.value.next
+    assert seen[key] == [block]
+    assert _Jobs.calls == []
+
+
+@pytest.mark.parametrize("key", ["environment", "objective"])
+def test_recompute_kinetics_does_not_skip_import_error_during_validation(
+    key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    import precis.handlers.job as job_mod
+    from precis.errors import BadInput
+
+    _Jobs.calls.clear()
+    monkeypatch.setattr(job_mod, "JobHandler", _Jobs)
+    _stub_env_engine(monkeypatch)
+    engine_type = getattr(sys.modules["autocatpath.environment"], key.title())
+
+    def refuse(block: dict[str, Any]) -> None:
+        raise ImportError("validation dependency missing")
+
+    monkeypatch.setattr(engine_type, "from_dict", refuse)
+    with pytest.raises(BadInput, match=f"pathway stored {key} refused") as exc:
+        _recompute_handler(_kinetics_meta({"name": "x"})).put(
+            id="pw-a", mode="recompute_kinetics"
+        )
+    assert exc.value.next
+    assert _Jobs.calls == []
+
+
+def test_recompute_kinetics_preserves_stored_environment_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import precis.handlers.job as job_mod
+
+    _Jobs.calls.clear()
+    monkeypatch.setattr(job_mod, "JobHandler", _Jobs)
+    _stub_env_engine(monkeypatch)
+    environment: dict[str, Any] = {
+        "T": 350,
+        "p_total": 1,
+        "gases": {"inputs": {"NO": 1}, "outputs": "far", "inerts": {}},
+        "sticking": {},
+        "electrochemical": {"provider": "che", "U_vs_RHE": -1, "pH": "7"},
+    }
+    meta = _kinetics_meta({"name": "x"})
+    meta["results"]["kinetics_v2"]["environment"] = environment
+    _recompute_handler(meta).put(id="pw-a", mode="recompute_kinetics")
+    (job,) = _Jobs.calls
+    queued = job["params"]["config"]["environment"]
+    assert queued == environment
+    assert type(queued["T"]) is int
+    assert type(queued["electrochemical"]["U_vs_RHE"]) is int
+    assert queued["electrochemical"]["pH"] == "7"
+
+
+@pytest.mark.parametrize("source", ["explicit", "record", "config"])
+@pytest.mark.parametrize("ec", [{"pH": 15}, {"ion_conc_M": 0.1}])
+def test_recompute_kinetics_labels_local_environment_refusals(
+    source: str, ec: dict[str, float], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import precis.handlers.job as job_mod
+    from precis.errors import BadInput
+
+    _Jobs.calls.clear()
+    monkeypatch.setattr(job_mod, "JobHandler", _Jobs)
+    environment: dict[str, Any] = {
+        "T": 350,
+        "gases": {"inputs": {"NO": 1}},
+        "electrochemical": ec,
+    }
+    meta = _kinetics_meta({"name": "x"})
+    args: dict[str, Any] = {}
+    if source == "explicit":
+        args["environment"] = environment
+    elif source == "record":
+        meta["results"]["kinetics_v2"]["environment"] = environment
+    else:
+        meta["results"].pop("kinetics_v2")
+        meta["config"]["environment"] = environment
+    who = "args" if source == "explicit" else "stored"
+    with pytest.raises(BadInput, match=f"{who} environment refused") as exc:
+        _recompute_handler(meta).put(
+            id="pw-a", mode="recompute_kinetics", args=args or None
+        )
+    assert exc.value.next
+    assert next(iter(ec)) in str(exc.value)
+    assert _Jobs.calls == []
 
 
 def test_recompute_kinetics_arg_overrides_only_its_own_key(monkeypatch) -> None:

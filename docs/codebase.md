@@ -140,6 +140,10 @@ The `/rxn` web form dispatches the rxn energetics handler and renders its
 tables through the shared reader. Explicit keep stores equation inputs and
 an archival ledger in an `rxn` ref; `/refs/rxn/<id>` derives the live ledger
 from pinned sources. Catalyst `pathway` run records remain a separate kind.
+Pathway environment points cross MCP reads, explicit re-solves and web links
+through `src/precis_pathway/environment.py::Environment`; stored-result lookup
+reuses `src/precis/quest/environment_basis.py::environment_basis` without
+loading the compute engine or scheduling work.
 
 ## Package map
 

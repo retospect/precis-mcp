@@ -50,6 +50,23 @@ Sweep persistence clears a null-valued optimum rather than storing the
 first grid row as an answer. A zero KMC median with an all-zero interval
 renders as no measurement within the event budget, not a zero rate;
 the correlation diagnostic is explicitly unavailable.
+Environment lookup searches current and previous v2 solves and sweeps. Gas
+pressures use 1e-12 relative tolerance to absorb resolved-table roundoff,
+without changing the engine-compatible basis hash. Sweep rows without a
+resolved environment answer only their recorded T and gas-pressure axes.
+Sticking, electrochemical and reservoir distinctions require the sweep's own
+environment, at sweep or row level: a newer solve or graph config cannot
+establish an older sweep's provenance. Missing provenance returns no match
+with a reason; lookup never strips requested conditions to obtain a match. The read
+record preserves the engine's electrochemical envelope; ion concentration
+is read-only and recomputes refuse it because dropping it changes the request.
+The recompute door validates finite numeric values (including numeric strings)
+and environment shape locally, preserving stored/args refusal context and the
+original job environment values. Engine validation also runs when importable;
+dispatch hosts without the catalyst extra defer those checks to the remote job.
+Electrochemical number types survive validation so basis hashes match persisted
+quest keys. Web readers promote a matching previous v2 record into the kinetics
+panel and display exact current or previous sweep rates as scalar summaries.
 ``_dispatch_common`` reduces this to the scalar summary quest harvests:
 barrier/span, ``selectivity_margin``/``trap_margin``/``poison_margin``
 (from ``results_json.score``), the CHE route scalars ``U_L``/``U_opt``/
