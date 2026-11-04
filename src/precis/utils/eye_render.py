@@ -70,6 +70,11 @@ from precis._result_budget import size_cell
 from precis.errors import NotFound
 from precis.store.types import _CLOSED_VOCAB
 from precis.utils import handle_registry
+from precis.utils.entity_courtesy import (
+    courtesy_lines,
+    entity_handles,
+    safe_entity_states,
+)
 from precis.utils.refeye import RING_GROUP_KIND_RANK, RING_GROUPS, ring_group
 from precis.workers.working_set import Extent
 
@@ -729,7 +734,14 @@ def _render_note_eye(
         lines.append(body)
     block = "\n".join(lines)
     sections = _rings(
-        store, int(ref.id), kind, ext, recall=recall, expand=expand, ring=ring
+        store,
+        int(ref.id),
+        kind,
+        ext,
+        recall=recall,
+        expand=expand,
+        ring=ring,
+        body=body if kind == "memory" else "",
     )
     return "\n\n".join([block, *sections])
 
@@ -820,6 +832,7 @@ def _render_ring(
     hop1: dict[tuple[str, str], list[_RingNeighbour]],
     refs: dict[int, Any],
     ring: RingFilter | None = None,
+    states: dict[str, str] | None = None,
 ) -> str:
     """:func:`_render_first_hop` with the hub listing switched on for a
     ``section:index`` memory (its ``contains`` members are not capped)."""
@@ -836,6 +849,7 @@ def _render_ring(
         },
         ring=ring,
     )
+    _entity_row_chips(store, refs, chips, states)
     # Row sizes from one grouped read on the ref_body_bytes side table
     # (migration 0266) — a ref with no row yet renders no size; never a
     # body_byte_counts fallback here, a ring isn't page-bounded.
@@ -856,6 +870,35 @@ def _render_ring(
         if notes is not None
         else None,
     )
+
+
+def _entity_handles_for_refs(refs: dict[int, Any]) -> dict[int, str]:
+    """Record handles whose identity this surface is allowed to show."""
+    return {
+        rid: handle
+        for rid, ref in refs.items()
+        if not _scope_masks(ref)
+        and (handle := handle_registry.try_format(str(ref.kind), rid)) is not None
+    }
+
+
+def _entity_row_chips(
+    store: Store,
+    refs: dict[int, Any],
+    chips: dict[int, str],
+    states: dict[str, str] | None,
+) -> None:
+    """Add current state to ring rows; skill/markdown titles are already labels."""
+    handles = _entity_handles_for_refs(refs)
+    if states is None:
+        states = safe_entity_states(store, handles.values())
+    for rid, handle in handles.items():
+        state = states.get(handle, "")
+        if not state or state == " ".join(str(refs[rid].title or "").split()):
+            continue
+        old = chips.get(rid, "")
+        if state not in old:
+            chips[rid] = f"{old} · {state}" if old else state
 
 
 def _row_chips(
@@ -1319,6 +1362,7 @@ def _expand_first_hop(
     refs: dict[int, Any],
     label: str,
     ring: RingFilter | None = None,
+    states: dict[str, str] | None = None,
 ) -> str:
     """One first-hop label's live neighbours, uncapped by the ring's per-group
     cap (bounded by :data:`_FIRST_HOP_EXPAND_CAP`). A ``section:index``
@@ -1336,6 +1380,7 @@ def _expand_first_hop(
     chips = _row_chips(
         store, {n.ref_id: refs[n.ref_id] for n in ns if n.ref_id in refs}, ring=ring
     )
+    _entity_row_chips(store, refs, chips, states)
     sizes = {
         rid: size_cell(n)
         for rid, n in store.chunks.stored_body_byte_counts(
@@ -1506,6 +1551,8 @@ def _second_hop(
     *,
     expand: str | None = None,
     ring: RingFilter | None = None,
+    body_handles: list[str] | None = None,
+    states: dict[str, str] | None = None,
 ) -> str:
     """The ``fisheye+2hop`` layer: what the first-hop neighbours link to.
 
@@ -1583,7 +1630,9 @@ def _second_hop(
         return ""
     floor = "≥" if len(rows) >= _SECOND_HOP_ROW_CAP else ""
     if expand is not None:
-        return _expand_second_hop(store, groups, expand, ring=ring)
+        return _expand_second_hop(
+            store, groups, expand, ring=ring, body_handles=body_handles, states=states
+        )
     ranked = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
     lines = [
         f"— second hop ({len(hop1_ids)} neighbours out; counts — "
@@ -1605,6 +1654,8 @@ def _expand_second_hop(
     expand: str,
     *,
     ring: RingFilter | None = None,
+    body_handles: list[str] | None = None,
+    states: dict[str, str] | None = None,
 ) -> str:
     kind, _, label = expand.partition(":")
     ids = groups.get((kind.strip(), label.strip()))
@@ -1614,6 +1665,18 @@ def _expand_second_hop(
     shown = sorted(ids)[:_SECOND_HOP_EXPAND_CAP]
     refs = store.fetch_refs_by_ids(shown)
     chips = _row_chips(store, refs, ring=ring)
+    # In an expanded second hop these are the only neighbour rows printed.
+    # Resolve them together with the focal body's handles and return the same
+    # snapshot to _rings for its body courtesy lines.
+    if states is None:
+        states = {}
+    states.update(
+        safe_entity_states(
+            store,
+            [*(body_handles or []), *_entity_handles_for_refs(refs).values()],
+        )
+    )
+    _entity_row_chips(store, refs, chips, states)
     lines = [f"— second hop: {len(ids)} {kind} via {label} —"]
     lines.extend(
         f"  {_neighbor_label(refs[i], i, chips=chips.get(i, ''))}"
@@ -1769,22 +1832,54 @@ def _rings(
     recall: bool,
     expand: str | None,
     ring: RingFilter | None,
+    body: str = "",
 ) -> list[str]:
     """Every neighbourhood section a non-tree eye appends at ``ext``:
     the first hop at ``fisheye+1hop`` and up, the second hop at
     ``fisheye+2hop``, recall when asked. ``ring`` narrows all three."""
     sections: list[str] = []
+    hop1, refs = (
+        _first_hop(store, ref_id, ring=ring) if ext >= Extent.HOP1 else ({}, {})
+    )
+    handles = entity_handles(body)
+    neighbour_handles = _entity_handles_for_refs(refs).values()
+    # Expansion renders only second-hop rows, discovered by _second_hop.
+    # Defer this one batch until those ids are available.
+    defer_states = (
+        ext >= Extent.HOP2 and bool(hop1) and expand is not None and ":" in expand
+    )
+    states = (
+        {}
+        if defer_states
+        else safe_entity_states(store, [*handles, *neighbour_handles])
+    )
     if ext >= Extent.HOP1:
-        hop1, refs = _first_hop(store, ref_id, ring=ring)
         first_hop_label = expand if expand is not None and ":" not in expand else None
         if first_hop_label is not None:
             sections.append(
-                _expand_first_hop(store, ref_id, hop1, refs, first_hop_label, ring=ring)
+                _expand_first_hop(
+                    store, ref_id, hop1, refs, first_hop_label, ring=ring, states=states
+                )
             )
         elif expand is None:
-            sections.append(_render_ring(store, ref_id, hop1, refs, ring=ring))
+            sections.append(
+                _render_ring(store, ref_id, hop1, refs, ring=ring, states=states)
+            )
         if ext >= Extent.HOP2 and first_hop_label is None:
-            sections.append(_second_hop(store, ref_id, hop1, expand=expand, ring=ring))
+            sections.append(
+                _second_hop(
+                    store,
+                    ref_id,
+                    hop1,
+                    expand=expand,
+                    ring=ring,
+                    body_handles=handles,
+                    states=states,
+                )
+            )
+    courtesy = courtesy_lines(handles, states, cap=_NEIGHBOR_GROUP_CAP)
+    if courtesy:
+        sections.insert(0, courtesy)
     if recall:
         sections.append(_recall(store, ref_id, kind, ring=ring))
     return [s for s in sections if s]

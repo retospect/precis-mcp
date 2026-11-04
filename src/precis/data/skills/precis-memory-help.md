@@ -257,6 +257,14 @@ neighbours use `view='fisheye+1hop'` on a single id. `q=` on a single
 id is find-in-ref — matching passages with context instead of the whole
 body (`get(kind='memory', id=73, q='…')`, see `precis-get-help`).
 
+Body record handles also get a read-time `referenced entities` line: machine
+role and heartbeat status (`live`, `stale`, `no heartbeat`), gripe/todo
+`STATUS`, skill/markdown title, or `retired → <successor>` when the retired
+ref has `meta.superseded_by`. Distinct resolved handles appear once, at most
+8 with an overflow count; unresolved handles add nothing. Fisheye reads
+carry the same courtesy lines and current state on linked neighbour rows.
+These lines are computed on read; bodies and index bullets stay unchanged.
+
 ## Link a memory to the paper or patent it came from
 ## Attach a note to a specific paper section
 ## Cross-reference a memory with another ref

@@ -280,10 +280,6 @@ shas), python symbols, gripes and todos. Spark's role belongs on
 `ma_spark`; me474318 keeps "left cluster duty 2026-08-29 because …;
 rejoined compute at 932364d0a" as two dated events.
 
-- **Courtesy line**: a body handle to an entity ref renders its current
-  state beside the handle in `get` and the fisheye neighbour rows
-  (machine: role and status; gripe/todo: STATUS; skill/md: title), so a
-  reader never trusts prose for state.
 - **restated_claim** (last): sentence-level near-duplicate across live
   memories inside one hub (sentence embedding, not whole-body), proposing
   one keeper and a handle mention in the other.
@@ -345,10 +341,8 @@ third, the entity normal form last. `blocked-by` edges carry the order.
    stamp on a clean pass (small; after 6).
 9. gr560765 — `source_drift` and `entity_claim_stale` detectors (medium;
    after 6).
-10. gr560766 — entity courtesy line in get and the fisheye rows (small;
-    independent; blocks 11).
 11. gr560767 — host facts onto `machine` refs, the spark pass (small;
-    after 4 and 10).
+    after 4).
 12. gr560768 — `restated_claim`, the sentence-level DRY detector (medium;
     after 6).
 13. gr561019 — `grab_bag` detector, `split` action, `apply_split` with

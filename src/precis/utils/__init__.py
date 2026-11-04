@@ -44,6 +44,11 @@ pattern. Module docstrings own the detail; this one only groups them.
   :mod:`~precis.utils.ref_hybrid`, :mod:`~precis.utils.embed_query` (degrades
   to lexical on a bad embedder), :mod:`~precis.utils.toc` / ``toc_db``,
   :mod:`~precis.utils.fisheye` / ``refeye`` / ``eye_render``,
+  :mod:`~precis.utils.entity_courtesy` (one batched read of entity state for
+  memory bodies and neighbour rows; reads tombstones without following redirects
+  so old mentions disclose their successor, with no stored state copy;
+  render lookups log and omit the overlay on failure so source reads survive,
+  while the underlying lookup stays strict for SQL regression tests),
   :mod:`~precis.utils.next_block` (the ``Next:`` hint block),
   :mod:`~precis.utils.search_header`, :mod:`~precis.utils.reaction_graph`
   (a missing route barrier makes the whole-path span unavailable; treating

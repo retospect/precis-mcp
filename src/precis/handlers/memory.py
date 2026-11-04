@@ -2624,14 +2624,28 @@ class MemoryHandler(NumericRefHandler):
 
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         """Single-ref view: ``# memory <id>: <title>`` + body + tag line."""
+        from precis.utils.entity_courtesy import (
+            courtesy_lines,
+            entity_handles,
+            safe_entity_states,
+        )
+        from precis.utils.eye_render import _NEIGHBOR_GROUP_CAP
+
         title = ref.title or ""
         header = f"# {self._sense()} {ref.id}"
         if title:
             header += f": {title}"
         out = [header]
-        body = self._strip_title_echo(self._body_text(ref), title)
+        raw_body = self._body_text(ref)
+        body = self._strip_title_echo(raw_body, title)
         if body:
             out += ["", body]
+        handles = entity_handles(raw_body)
+        courtesy = courtesy_lines(
+            handles, safe_entity_states(self.store, handles), cap=_NEIGHBOR_GROUP_CAP
+        )
+        if courtesy:
+            out += ["", courtesy]
         # meta.rule / meta.warrant — a kind:inference memory's
         # reasoning-step label + free-text justification, rendered right
         # after the body so a proof-tree reader sees the operator + the
