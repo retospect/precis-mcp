@@ -388,11 +388,18 @@ def test_a_red_land_is_one_attempt_not_two(store: Store) -> None:
     assert _jobs_under(store, task)[-1][1]["job_type"] == "run_slice"
 
 
-def test_retry_climbs_the_lane_model_ladder(store: Store) -> None:
+def test_retry_climbs_the_lane_model_ladder(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """td559457 (Reto 2026-11-03): a failed slice is retried one rung up the
     lane's model ladder before the cap asks. First attempt: no pin (the
     lane's default); attempt 1: the rung above the default; a node whose
-    op already pins a model keeps it."""
+    op already pins a model keeps it. Pinned to the Claude lane alone so
+    the seed table's vendor lanes (codex on since td562568) do not add
+    rungs below it — the cross-lane case is the test after this one."""
+    sub = L.get_lane("claude-sub")
+    assert sub is not None
+    monkeypatch.setattr(L, "LANES", (sub,))
     mint = _one_task_plan(store)
     task = mint.ids["task"]
     res = pd.run_pass(store)

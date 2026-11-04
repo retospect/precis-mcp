@@ -221,6 +221,13 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         run_slice, "_signal_group", lambda pgid, sig: calls["signals"].append(pgid)
     )
     monkeypatch.setattr(lanes, "live_lane_counts", lambda store: calls.get("live", {}))
+    # The seams exercise the claude_p launch path: pin the table to the
+    # Claude lane so an unpinned pick lands there (the seed table's codex
+    # lane is table-first since td562568). Vendor-lane tests set LANES
+    # themselves.
+    sub = lanes.get_lane("claude-sub")
+    assert sub is not None
+    monkeypatch.setattr(lanes, "LANES", (sub,))
     monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
     monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(tmp_path / "ops"))
     monkeypatch.setenv("PRECIS_RUN_SLICE_MODEL", "claude-test-model")
@@ -238,9 +245,11 @@ def _lane(name: str, cap: int, classes: set[str], enabled: bool = True) -> Lane:
     return Lane(name, "claude_p", "pool", cap, frozenset(classes), enabled)
 
 
-def test_seed_table_has_one_enabled_lane() -> None:
+def test_seed_table_enabled_lanes() -> None:
+    """td562568: codex is on (free vendor lane, table-first); devin waits
+    for its CLI login on the slice host; kimi and metered stay declared."""
     enabled = [ln.name for ln in lanes.LANES if ln.enabled]
-    assert enabled == ["claude-sub"]
+    assert enabled == ["codex", "claude-sub"]
     sub = lanes.get_lane("claude-sub")
     assert sub is not None
     assert (sub.adapter, sub.credential_pool, sub.cap) == (
@@ -326,11 +335,20 @@ def test_pick_lane_never_picks_disabled() -> None:
 
 
 def test_pick_lane_reads_live_counts(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(lanes, "live_lane_counts", lambda store: {"claude-sub": 2})
+    """The seed table: codex (cap 1) and claude-sub (cap 2) fit ``code``."""
+    monkeypatch.setattr(
+        lanes, "live_lane_counts", lambda store: {"claude-sub": 2, "codex": 1}
+    )
     assert pick_lane(object(), "code") is None
-    monkeypatch.setattr(lanes, "live_lane_counts", lambda store: {"claude-sub": 1})
+    monkeypatch.setattr(
+        lanes, "live_lane_counts", lambda store: {"claude-sub": 1, "codex": 1}
+    )
     picked = pick_lane(object(), "code")
     assert picked is not None and picked.name == "claude-sub"
+    # Both free: the free vendor lane is first in the table (td559457).
+    monkeypatch.setattr(lanes, "live_lane_counts", lambda store: {})
+    picked = pick_lane(object(), "code")
+    assert picked is not None and picked.name == "codex"
 
 
 # ── registry ───────────────────────────────────────────────────────
@@ -860,6 +878,32 @@ def test_submit_parks_when_every_lane_full(seams: dict[str, Any]) -> None:
     assert ctx.failure is None
     assert seams["launch"] == []
     assert "STATUS:open" in store.tag_strings(42)
+
+
+def test_submit_parks_when_pinned_lane_full(seams: dict[str, Any]) -> None:
+    """td562568: ``params.lane`` is held to the lane's cap like a pick —
+    an escalated retry pinned on a free lane no longer runs it over."""
+    seams["live"] = {"claude-sub": 2}
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _Ctx(store, {"todo_id": 42, "lane": "claude-sub"})
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake_at: Any, note: str) -> bool:
+        deferred.append((wake_at, note))
+        return True
+
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    assert deferred and "pinned by params.lane is at its cap (2/2)" in deferred[0][1]
+    assert isinstance(deferred[0][0], datetime)
+    assert ctx.failure is None
+    assert seams["launch"] == []
+    assert "STATUS:open" in store.tag_strings(42)
+    # One slot free → the pin launches.
+    seams["live"] = {"claude-sub": 1}
+    ctx2, handle = _submit(store, seams, lane="claude-sub")
+    assert handle is not None and ctx2.meta_set["lane"] == "claude-sub"
 
 
 def test_submit_refuses_when_factory_off(

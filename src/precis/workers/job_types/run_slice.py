@@ -13,8 +13,8 @@ that holds the lane's credentials with ``params.target_node``):
 * :func:`submit` renders the brief (todo title + body + the newest
   ``brief:``/``handoff:`` comment + the commit-and-hand-off instruction),
   picks the lane
-  (:func:`precis.plans.lanes.pick_lane`) unless ``params.lane`` names one,
-  stamps ``meta.lane``/``meta.adapter``/``meta.model``/``meta.effort`` on
+  (:func:`precis.plans.lanes.pick_lane`) unless ``params.lane`` names one
+  (a pinned lane at its cap parks the job like a full pick does), stamps ``meta.lane``/``meta.adapter``/``meta.model``/``meta.effort`` on
   the job, takes the lease on the todo (``claimed-by:lane-<lane>`` + ``STATUS:doing``),
   cuts worktree ``slice-td<id>`` on branch ``slice/<id>`` from
   ``origin/main`` under the checkout root (:func:`slice_root`), writes
@@ -1129,10 +1129,20 @@ def _fail_submit(ctx: Any, todo_id: int, lane: str | None, reason: str) -> None:
     ctx.record_failure(f"run_slice: {reason}{suffix}")
 
 
+def _park_lane_full(ctx: Any, note: str) -> None:
+    """Park the job :data:`LANE_FULL_BACKOFF` ahead (gr561491) when ``ctx``
+    can defer; fail it with ``note`` otherwise. The todo is not claimed yet,
+    so no release and no attempt is burned."""
+    defer = getattr(ctx, "defer", None)
+    if defer is not None and defer(datetime.now(UTC) + LANE_FULL_BACKOFF, note):
+        return
+    ctx.record_failure(note)
+
+
 def submit(ctx: Any, spec: Any) -> Any:
     """Detached submit half (see the module docstring). Returns the handle,
     or ``None`` after driving the job terminal (or parking it when every
-    fit lane is full)."""
+    fit lane, or the lane ``params.lane`` pins, is at its cap)."""
     del spec
     params = dict((ctx.meta or {}).get("params") or {})
     store = ctx.store
@@ -1155,17 +1165,25 @@ def submit(ctx: Any, spec: Any) -> Any:
                 f"run_slice: lane {params['lane']!r} unknown or disabled"
             )
             return None
+        # A pinned lane (an escalated retry, a reviewer pick) is held to
+        # its cap like a picked one (td562568): before this an escalated
+        # retry ran a free lane over its cap of 1.
+        live = _lanes.live_lane_counts(store).get(lane.name, 0)
+        if live >= lane.cap:
+            _park_lane_full(
+                ctx,
+                f"run_slice: lane {lane.name!r} pinned by params.lane is at "
+                f"its cap ({live}/{lane.cap})",
+            )
+            return None
     else:
         lane = _lanes.pick_lane(store, task_class)
         if lane is None:
-            note = (
+            _park_lane_full(
+                ctx,
                 f"run_slice: no lane free for task class {task_class!r} "
-                "(every fit lane at its cap)"
+                "(every fit lane at its cap)",
             )
-            defer = getattr(ctx, "defer", None)
-            if defer is not None and defer(datetime.now(UTC) + LANE_FULL_BACKOFF, note):
-                return None
-            ctx.record_failure(note)
             return None
 
     try:

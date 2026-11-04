@@ -12,10 +12,13 @@ that can still write code, so an unpinned child never drifts to the
 frontier pin).
 
 The table lives in code until the lane registry (step 3, a ``lanes``
-table seeded from me538174) lands; :data:`LANES` is its seed. Only
-``claude-sub`` is enabled: the others are declared with their adapters
+table seeded from me538174) lands; :data:`LANES` is its seed. ``codex``
+and ``claude-sub`` are enabled (Reto 2026-11-03: "ok both devin and codex
+are ok. Lets make them go."); the others are declared with their adapters
 named so the pick, the work view and the tests already see them, and
-:func:`pick_lane` never returns a disabled lane.
+:func:`pick_lane` never returns a disabled lane. ``devin`` flips on once
+the Devin CLI is installed and logged in on the slice host (td561545,
+gr562902).
 
 Pick (:func:`pick_lane`): fit for the task class first, then the fit lane
 with the fewest live ``run_slice`` jobs carrying its ``meta.lane``, under
@@ -124,8 +127,9 @@ LANES: tuple[Lane, ...] = (
         credential_pool="devin",
         cap=1,
         task_classes=frozenset({"code"}),
-        # Flipped on once the devin_tree adapter (td561543) and deploy's
-        # Devin login on the slice host (td561545) exist.
+        # The devin_tree adapter is in (td561543); flips on once the Devin
+        # CLI is installed and logged in on the slice host under the vendor
+        # account (td561545, gr562902).
         enabled=False,
         vendor="cognition",
         # `devin models list` 2026-11-03: every SWE-2 tier is free; the
@@ -142,10 +146,12 @@ LANES: tuple[Lane, ...] = (
         # Code only (Reto 2026-10-26); reviews stay with the Claude lane
         # until Codex has a review track record.
         task_classes=frozenset({"code"}),
-        # Flipped on with the codex_exec adapter (td561543) and deploy's
-        # Codex login on the slice host (td561545). No model list: the
-        # adapter passes no model flag and the CLI's account default runs.
-        enabled=False,
+        # On since td562568: the codex_exec adapter (td561543) is in and
+        # deploy's Codex login on the slice host answered a headless
+        # ``codex exec`` 2026-11-04 (td561545; the dedicated vendor account
+        # is gr562902). No model list: the adapter passes no model flag and
+        # the CLI's account default runs.
+        enabled=True,
         vendor="openai",
     ),
     Lane(
@@ -227,7 +233,7 @@ def pick_lane(
     store: Any,
     task_class: str,
     *,
-    lanes: tuple[Lane, ...] = LANES,
+    lanes: tuple[Lane, ...] | None = None,
     counts: Mapping[str, int] | None = None,
     exclude_vendor: str | None = None,
 ) -> Lane | None:
@@ -236,8 +242,10 @@ def pick_lane(
 
     Fit first (enabled lanes whose ``task_classes`` take the class), then
     the fewest live ``run_slice`` jobs carrying that ``meta.lane``, only
-    lanes under their cap; ties keep table order. ``counts`` skips the DB
-    read (tests, or a caller that already has them).
+    lanes under their cap; ties keep table order. ``lanes`` defaults to
+    :data:`LANES` read at call time (like :func:`ladder`), so a table swap
+    is seen; ``counts`` skips the DB read (tests, or a caller that already
+    has them).
 
     ``exclude_vendor`` (the review rule: the reviewer never comes from the
     builder's vendor) drops fit lanes of that vendor. When no fit lane of
@@ -246,7 +254,8 @@ def pick_lane(
     second vendor's lane is enabled the rule holds (a full one is waited
     for, not bypassed).
     """
-    fit = [lane for lane in lanes if lane.enabled and lane.fits(task_class)]
+    table = LANES if lanes is None else lanes
+    fit = [lane for lane in table if lane.enabled and lane.fits(task_class)]
     if exclude_vendor:
         other = [lane for lane in fit if lane.vendor != exclude_vendor]
         fit = other or fit
@@ -277,8 +286,8 @@ def ladder(
     failed slice climbs before the cap asks): every enabled fit lane in
     table order, each contributing its ``models`` from ``default_model``
     upward, or one model-less rung when it declares none. With today's
-    table that is devin high → devin max → codex → sonnet → opus once the
-    vendor lanes are on, and sonnet → opus until then."""
+    table that is codex → sonnet → opus; devin high → devin max joins at
+    the foot once the devin lane is on."""
     out: list[Rung] = []
     for lane in LANES if lanes is None else lanes:
         if not lane.enabled or not lane.fits(task_class):
