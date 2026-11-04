@@ -61,6 +61,24 @@ siblings|paper-identity|memory`, one name or a list, default `all`):
   retirement requires preservation review. Section hubs are excluded.
   These actions are proposal-only. SHA ancestry on `origin/prod` is not
   checked: there is no general ancestry oracle in the DB.
+## Memory anchor checks
+
+The opt-in `memory` pass includes `anchor_rot`: Python file/symbol anchors
+and dotted qualnames, scripts/docs paths, Markdown sections and fragments,
+and mixed letter-and-digit commit SHAs of at least seven characters.
+It reads the configured Python `main` root's local `main` commit, using
+committed blobs for the Python index and Markdown heading chunks. Every
+proposal pins `base_sha` and `main_sha`, names each failed anchor, and
+records the lookups tried. Working-tree edits do not affect that evidence.
+
+Each memory checks at most 20 anchors; `matches_capped` says more remain.
+Unavailable git, indexes, or incomplete history produce `not_checked`
+entries alongside verified failures, never rot evidence. A body with only
+unverifiable anchors produces no proposal. DREAMs and retired bodies are
+excluded. The evaluator distinguishes rename, removal and already-recorded
+history; a live SHA proves existence, not that the surrounding claim is
+current. Rewrites remain proposal-only, with no apply path.
+
 ## Structural scans
 
 - **relink** — a `taxon` reaching no start node gets a
@@ -123,7 +141,7 @@ only: a paper merge is a human decision.
 paper-identity, memory) read one window per kind per run, starting past a
 cursor saved on the run's `meta.garden.cursors` (`dup_pair:<kind>`,
 `untagged:<kind>`, `redundant_link`, `paper_identity`,
-`dangling_mention:memory`, `thread_shape:memory`). The next run
+`dangling_mention:memory`, `thread_shape:memory`, `anchor_rot:memory`). The next run
 starts where the last stopped and wraps at the end, so successive runs
 cover every kind; a run over fewer kinds carries the other cursors
 forward. The merge window shrinks as a kind grows (each window ref is

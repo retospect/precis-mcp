@@ -52,10 +52,11 @@ PROMPT_VERSION = "garden-propose.v2"
 
 #: Memory rules evolve independently: existing detectors must not re-ask
 #: unchanged rejections merely because another detector was introduced.
-MEMORY_PROMPT_VERSION = "garden-propose.memory.v1"
+MEMORY_PROMPT_VERSION = "garden-propose.memory.v2"
 MEMORY_ACTIONS = {
     "dangling_mention": ("rewrite",),
     "thread_shape": ("supersede", "retire"),
+    "anchor_rot": ("rewrite",),
 }
 _LEGACY_ACTIONS = ("merge", "split", "relink", "prune", "tag")
 
@@ -95,6 +96,16 @@ per unit mass under unit cost) is a relink, not a merge: reject.
 """
 
 _MEMORY_RULES = """
+anchor_rot reports missing repo anchors at main_sha, not false claims.
+Decide whether the anchor was renamed, removed, or already described as
+removed/history by the body. A resolving commit proves only that the commit
+exists, never that the sentence still describes current code. not_checked
+anchors are unverifiable and must not support a rewrite. Preserve base_sha,
+main_sha and spans; text=null is unresolved, never an instruction to delete.
+Propose only a supported current-truth rewrite with a live anchor; reject
+when the body already records the removal or no replacement is supported.
+This detector has no apply path; never refine it to merge or prune.
+
 dangling_mention is a proposal-only rewrite. Its ops pin find/text spans
 to base_sha; text=null means unresolved, never delete. A successor alone
 does not prove that it supports the sentence. Dated history may legitimately

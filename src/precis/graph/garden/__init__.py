@@ -48,7 +48,7 @@ a clean graph writes nothing: no reviews, no chunks, no log spam.
    requires preserving needed figures in the ancestor's ``Earlier:`` line;
    retirement also requires compaction review. No edits occur at detection.
    Git ancestry on origin/prod is deliberately untested: the DB has no
-   general ancestry oracle and the detectors must need no network or git.
+   general ancestry oracle and thread_shape needs no network or git.
 2. Proposer (:mod:`precis.graph.garden.proposer`) — one routed LLM call
    per candidate renders it into a structured verdict
    (``accept``/rationale). Model placement is configuration: the call

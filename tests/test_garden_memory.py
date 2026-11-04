@@ -21,6 +21,7 @@ def test_memory_pass_is_available_to_jobs() -> None:
     assert "memory" in PARAMS_SCHEMA["properties"]["pass"]["anyOf"][0]["enum"]
     assert "dangling_mention" in cand.detectors_for(("memory",))
     assert "thread_shape" in cand.detectors_for(("memory",))
+    assert "anchor_rot" in cand.detectors_for(("memory",))
 
 
 def test_all_pass_leaves_the_memory_detectors_opt_in() -> None:
@@ -28,6 +29,8 @@ def test_all_pass_leaves_the_memory_detectors_opt_in() -> None:
     assert "dup_pair" in everything
     assert "dangling_mention" not in everything
     assert "thread_shape" not in everything
+    assert "anchor_rot" not in everything
+    assert "anchor_rot" in cand.detectors_for(("all", "memory"))
     assert "dangling_mention" in cand.detectors_for(("all", "memory"))
 
 
@@ -223,7 +226,7 @@ def test_chunk_mention_joins_retired_owner_without_guessing_replacement(
     assert op["text"] is None
 
 
-@pytest.mark.parametrize("detector", ["dangling_mention", "thread_shape"])
+@pytest.mark.parametrize("detector", ["dangling_mention", "thread_shape", "anchor_rot"])
 def test_memory_detector_timeout_does_not_save_cursor(
     store: Store, monkeypatch: pytest.MonkeyPatch, detector: str
 ) -> None:

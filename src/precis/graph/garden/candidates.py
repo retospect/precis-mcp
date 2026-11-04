@@ -29,14 +29,16 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from functools import partial
+from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from psycopg.errors import QueryCanceled
 
+from precis.graph.garden._anchors import AnchorResolver
 from precis.reading.concepts import normalize_name
 from precis.store._mappers import _coerce_vector
 from precis.taxonomy.nodes import dimension_clash
@@ -171,7 +173,7 @@ _DETECTOR_BY_PASS = {
     "tag-sweep": ("untagged",),
     "siblings": ("sibling_confusion",),
     "paper-identity": ("paper_identity",),
-    "memory": ("dangling_mention", "thread_shape"),
+    "memory": ("dangling_mention", "thread_shape", "anchor_rot"),
 }
 
 #: Passes ``all`` skips. The memory detectors spend proposer calls, so they
@@ -204,7 +206,12 @@ class GardenCandidate:
 
     @property
     def key(self) -> str:
-        return f"{self.action}:{self.target_kind}:{self.target_id}:{self.other_id or 0}"
+        key = f"{self.action}:{self.target_kind}:{self.target_id}:{self.other_id or 0}"
+        if self.detector == "anchor_rot":
+            # A mention rewrite is a different question on the same body;
+            # repo movement can also change an anchor verdict without an edit.
+            return f"{key}:anchor_rot:{self.payload.get('main_sha') or 'unavailable'}"
+        return key
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +507,146 @@ _MEMORY_HANDLE = re.compile(r"\b[a-zA-Z]{2}[0-9]{1,19}\b")
 #: Bound redirect reads and per-memory prompt evidence independently of scan_cap.
 SUCCESSOR_MAX_HOPS = 16
 MENTION_MATCH_CAP = 20
+ANCHOR_MATCH_CAP = 20
+
+# Explicit code/document syntax limits prose false positives. Dotted names
+# must name a package in the pinned tree, even inside code spans; arbitrary
+# domains and metadata fields are not Python symbols. Alternatives consume
+# entire anchors so a hash in a filename or dotted suffix is not checked twice.
+_ANCHOR_PATH = r"(?:[\w.-]+/)*[\w.-]+"
+_ANCHOR_QUAL = r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*"
+_MEMORY_ANCHOR = re.compile(
+    rf"(?P<python_path>{_ANCHOR_PATH}\.py)::(?P<symbol>{_ANCHOR_QUAL})"
+    rf"|(?P<doc>{_ANCHOR_PATH}\.(?:md|markdown))"
+    r"(?:`?[ \t]*§[ \t]*`?(?P<section>[^`\n;]+)"
+    r"|(?P<fragment>\#[\w-]+))"
+    rf"|(?<![\w/])(?P<path>(?:docs|scripts)/{_ANCHOR_PATH})"
+    rf"|`(?![^`\n]+\.(?:md|markdown|py|js|json|yaml|toml|txt)`)"
+    rf"(?:main::)?(?P<dotted>{_ANCHOR_QUAL}\.[A-Za-z_]\w*)`"
+    rf"|(?<![\w./`:])(?:main::)?(?P<project>{_ANCHOR_QUAL}\.[A-Za-z_]\w*)"
+    r"(?![\w`]|\.[A-Za-z_])"
+    r"|\b(?P<commit>(?=[a-fA-F0-9]*[a-fA-F])(?=[a-fA-F0-9]*[0-9])"
+    r"[a-fA-F0-9]{7,40})\b"
+)
+
+
+def _anchor_lookup(match: re.Match[str]) -> tuple[str, str, str | None]:
+    """Translate a prose match to one resolver lookup, without guessing repairs."""
+    if path := match.group("python_path"):
+        return "python", path, match.group("symbol")
+    if doc := match.group("doc"):
+        return (
+            "section",
+            doc,
+            (match.group("section") or match.group("fragment")).strip(),
+        )
+    if path := match.group("path"):
+        return "path", path.rstrip("."), None
+    if dotted := match.group("dotted") or match.group("project"):
+        return "python", dotted, None
+    return "commit", match.group("commit"), None
+
+
+def _memory_anchor_matches(
+    body: str, python_packages: set[str]
+) -> Iterator[re.Match[str]]:
+    """Scan inside section prose too: a title must not hide a later anchor."""
+    pos = 0
+    while match := _MEMORY_ANCHOR.search(body, pos):
+        dotted = match.group("dotted") or match.group("project")
+        if not dotted or dotted.partition(".")[0] in python_packages:
+            yield match
+        pos = match.start("section") if match.group("section") else match.end()
+
+
+def anchor_rot_candidates(
+    store: Store,
+    *,
+    scan_cap: int = 2000,
+    limit: int = 50,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
+) -> list[GardenCandidate]:
+    """Report missing repo anchors, pinned to memory content and local main.
+
+    The dispatcher supplies the detector deadline. Each body gets at most
+    ``ANCHOR_MATCH_CAP`` lookups, including successful/unavailable ones, so
+    long bodies cannot multiply git/index work without bound. Git blobs feed
+    the existing indexes: a dirty checkout cannot masquerade as the main SHA.
+    Unavailable classes go into ``not_checked`` alongside verified failures;
+    a body with only unavailable anchors emits no rot proposal. A missing
+    anchor is evidence only: the evaluator decides rename/removal/history.
+    """
+    if limit <= 0 or scan_cap <= 0:
+        return []
+    key = "anchor_rot:memory"
+    window, nxt = _scan_window(
+        store, "memory", after=(cursors or {}).get(key, 0), size=scan_cap
+    )
+    resolver: AnchorResolver | None = None
+    out: list[GardenCandidate] = []
+    for rid, body, sha in _memory_bodies(store, window):
+        if not _MEMORY_ANCHOR.search(body):
+            continue
+        if resolver is None:
+            resolver = AnchorResolver()
+        matches = list(
+            islice(
+                _memory_anchor_matches(body, resolver.python_packages),
+                ANCHOR_MATCH_CAP + 1,
+            )
+        )
+        if not matches:
+            continue
+        anchors: list[dict[str, Any]] = []
+        unchecked: list[dict[str, Any]] = []
+        ops: list[dict[str, Any]] = []
+        for match in matches[:ANCHOR_MATCH_CAP]:
+            kind, target, detail = _anchor_lookup(match)
+            exists, tried = resolver.check(kind, target, detail)
+            if exists is True:
+                continue
+            info = {
+                "anchor": match.group(),
+                "kind": kind,
+                "span": [match.start(), match.end()],
+                "context": body[max(0, match.start() - 300) : match.end() + 300],
+                "tried": tried,
+            }
+            if exists is None:
+                unchecked.append(info)
+                continue
+            anchors.append(info)
+            ops.append({"find": match.group(), "text": None, "span": info["span"]})
+        if anchors:
+            out.append(
+                GardenCandidate(
+                    detector="anchor_rot",
+                    action="rewrite",
+                    target_kind="ref",
+                    target_id=rid,
+                    title=f"me{rid} names missing repo anchors",
+                    evidence={
+                        "anchors": anchors,
+                        "content_sha": sha,
+                        "main_sha": resolver.main_sha,
+                    },
+                    payload={
+                        "base_sha": sha,
+                        "main_sha": resolver.main_sha,
+                        "ops": ops,
+                        "not_checked": unchecked,
+                        "matches_capped": len(matches) > ANCHOR_MATCH_CAP,
+                        "match_cap": ANCHOR_MATCH_CAP,
+                    },
+                )
+            )
+        if len(out) >= limit:
+            nxt = rid
+            break
+    if next_cursors is not None:
+        next_cursors[key] = nxt
+    return out
 
 
 def _memory_bodies(store: Store, ids: list[int]) -> list[tuple[int, str, str]]:
@@ -2110,11 +2257,13 @@ def run_detectors(
                 cursors=saved,
                 next_cursors=nxt,
             )
-        elif det in {"dangling_mention", "thread_shape"}:
+        elif det in {"dangling_mention", "thread_shape", "anchor_rot"}:
             fn = partial(
-                dangling_mention_candidates
-                if det == "dangling_mention"
-                else thread_shape_candidates,
+                {
+                    "dangling_mention": dangling_mention_candidates,
+                    "thread_shape": thread_shape_candidates,
+                    "anchor_rot": anchor_rot_candidates,
+                }[det],
                 store,
                 scan_cap=scan_cap,
                 limit=limit,
@@ -2184,6 +2333,7 @@ __all__ = [
     "STALE_DAYS",
     "DetectorRun",
     "GardenCandidate",
+    "anchor_rot_candidates",
     "cycle_edge_candidates",
     "dangling_edge_candidates",
     "dangling_mention_candidates",

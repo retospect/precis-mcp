@@ -122,6 +122,7 @@ def _result(text: str, stop: str | None = "stop") -> LlmResult:
         ("dup_pair", ("merge", "split", "relink", "prune", "tag")),
         ("dangling_mention", ("rewrite",)),
         ("thread_shape", ("supersede", "retire")),
+        ("anchor_rot", ("rewrite",)),
     ],
 )
 def test_action_refinements_stay_in_detector_family(
@@ -174,7 +175,11 @@ def test_legacy_prompt_stays_byte_identical_to_v2() -> None:
 
 @pytest.mark.parametrize(
     ("detector", "actions"),
-    [("dangling_mention", "rewrite"), ("thread_shape", "supersede|retire")],
+    [
+        ("dangling_mention", "rewrite"),
+        ("thread_shape", "supersede|retire"),
+        ("anchor_rot", "rewrite"),
+    ],
 )
 def test_memory_prompt_has_its_rules_and_actions(detector: str, actions: str) -> None:
     candidate = GardenCandidate(
@@ -184,6 +189,8 @@ def test_memory_prompt_has_its_rules_and_actions(detector: str, actions: str) ->
     assert f'"action": "{actions}"' in prompt
     assert "text=null means unresolved, never delete" in prompt
     assert "SHA ancestry on\norigin/prod has not been checked" in prompt
+    assert "not_checked\nanchors are unverifiable" in prompt
+    assert "body already records the removal" in prompt
     assert proposer.MEMORY_PROMPT_VERSION != proposer.PROMPT_VERSION
 
 
@@ -305,6 +312,7 @@ class TestRejectionRemembered:
                 ("dup_pair", "merge"),
                 ("dangling_mention", "rewrite"),
                 ("thread_shape", "retire"),
+                ("anchor_rot", "rewrite"),
             )
         ]
         for candidate in candidates:
@@ -322,13 +330,13 @@ class TestRejectionRemembered:
             lambda *_a, **_kw: DetectorRun(candidates=candidates),
         )
         judge = _Rejecter()
-        assert run_garden_tick(store, propose=judge).skipped_rejected == 3
+        assert run_garden_tick(store, propose=judge).skipped_rejected == 4
         assert judge.asked == []
         monkeypatch.setattr(
             runner, "MEMORY_PROMPT_VERSION", "garden-propose.memory.test"
         )
         changed = run_garden_tick(store, propose=judge)
-        assert (changed.skipped_rejected, changed.rejected) == (1, 2)
+        assert (changed.skipped_rejected, changed.rejected) == (1, 3)
         assert set(judge.asked) == {candidate.key for candidate in candidates[1:]}
         for candidate in candidates[1:]:
             rejection = store.reviews_for("ref", candidate.target_id)[0]
@@ -336,8 +344,8 @@ class TestRejectionRemembered:
             assert json.loads(rejection.note)["garden"]["prompt"] == (
                 "garden-propose.memory.test"
             )
-        assert run_garden_tick(store, propose=judge).skipped_rejected == 3
-        assert len(judge.asked) == 2
+        assert run_garden_tick(store, propose=judge).skipped_rejected == 4
+        assert len(judge.asked) == 3
 
     def test_second_run_does_not_re_ask(self, store: Store) -> None:
         """Before: every run re-asked the same three sibling pairs (prod:
