@@ -8,8 +8,9 @@ Personal identity binds anew from the trusted HTTP request's ASGI scope
 for each dispatch, including an explicit anonymous scope for stdio and
 unbound callers. Session state, wire metadata and revision attribution
 cannot authorize personal records. Learning calls never log payloads.
-Authenticated personal callers also carry their current account's legacy
-revision actor, so existing owner-aware handlers do not see a generic agent.
+Personal tokens reach only learning calls and the exact learning-help read.
+Their live account and legacy revision actor are still revalidated before
+the scope check; install, slice and in-process callers retain their scope.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from precis import serve_ledger
 from precis.handlers._interpret import PREFIX as _INTERPRETED_PREFIX
 from precis.learning_privacy import is_learning_call
 from precis.runtime.handle_deref import TEXT_PAYLOAD_MAX_BYTES
-from precis.user_context import user_actor_scope
+from precis.user_context import current_principal, user_actor_scope
 
 if TYPE_CHECKING:
     from precis.runtime import PrecisRuntime
@@ -360,6 +361,13 @@ def _dispatch_as_user(
         else:
             ctxmgr = contextlib.nullcontext()
         with ctxmgr, user_actor_scope(getattr(runtime, "store", None)):
+            # Revalidation above must win over scope refusal for revoked tokens.
+            # Verb wrappers supply None defaults; the wire boundary separately
+            # checks the exact supplied keys before SDK argument coercion.
+            _require_personal_scope(
+                verb,
+                {key: value for key, value in payload.items() if value is not None},
+            )
             body, is_error = runtime.dispatch_with_status(
                 verb,
                 payload,
@@ -390,7 +398,7 @@ def _dispatch_as_user(
         try:
             _log_tool_call(
                 verb=verb,
-                payload=payload or {},
+                payload={} if current_principal() is not None else payload or {},
                 duration_ms=(_monotonic() - started) * 1000.0,
                 error=is_error,
             )
@@ -398,6 +406,40 @@ def _dispatch_as_user(
             # Logging is best-effort — never fail a tool call because
             # the audit emitter threw.
             pass
+
+
+def _personal_call_allowed(verb: str, payload: dict[str, Any]) -> bool:
+    """Allow only calls whose runtime route stays in private learning."""
+    if verb in {
+        "get",
+        "search",
+        "put",
+        "edit",
+        "delete",
+        "tag",
+        "link",
+    } and is_learning_call(payload):
+        # dispatch_with_status uses this same classifier before any other
+        # routing. Malformed/mixed learning calls refuse in dispatch_learning;
+        # they cannot fall through to a non-learning handler or batch.
+        return True
+    # This one public, read-only document lets a personal client discover
+    # its permitted surface without opening skill search, toc or other views.
+    return verb == "get" and payload == {
+        "kind": "skill",
+        "id": "precis-learning-help",
+    }
+
+
+def _require_personal_scope(verb: str, payload: dict[str, Any]) -> None:
+    """Refuse personal MCP calls outside the allowlist without echoing input."""
+    if current_principal() is not None and not _personal_call_allowed(verb, payload):
+        from precis.errors import Denied
+
+        raise Denied(
+            "personal MCP tokens permit learning calls and learning help only",
+            next="get(kind='learning'); get(kind='skill', id='precis-learning-help')",
+        )
 
 
 def _validation_error(body: str) -> _ToolReturn:
@@ -775,7 +817,7 @@ def get(
     token = serve_ledger.bind(session, _ctx_raw_args(ctx))
     try:
         payload: dict[str, Any] = {"kind": kind, "id": id, "view": view, "q": q}
-        if args:
+        if args is not None:
             trace_filters = (
                 kind == "agentlog"
                 and isinstance(id, str)

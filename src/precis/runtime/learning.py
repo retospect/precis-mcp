@@ -88,6 +88,10 @@ def _dispatch_learning(
         clean = dict(args)
         kind = clean.pop("kind", None)
         ident = clean.get("id")
+        if ident is not None and not isinstance(ident, (str, int)):
+            raise BadInput(
+                "private learning id must be a string or integer", next=_NEXT
+            )
         if kind not in (None, "learning"):
             raise BadInput(
                 "private learning calls require kind='learning' alone", next=_NEXT

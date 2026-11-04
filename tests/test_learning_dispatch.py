@@ -136,6 +136,7 @@ def test_private_success_bypasses_shared_ledger_and_fit(
         ("search", {"kind": "paper", "id": "learning:le1"}),
         ("search", {"kind": "learning", "id": ["le1"]}),
         ("search", {"id": ["learning:le1"]}),
+        ("get", {"kind": "learning", "id": ["me1"], "extent": "fisheye"}),
     ],
 )
 def test_private_authentication_precedes_handler_resolution(
@@ -153,6 +154,26 @@ def test_private_authentication_precedes_handler_resolution(
     monkeypatch.setattr(runtime, "_resolve_handler", resolve)
     body, error = runtime.dispatch_with_status(verb, payload)
     assert error and "[error:Denied]" in body
+    resolve.assert_not_called()
+
+
+@pytest.mark.parametrize("ident", [["me1"], [1], ["learning:me1"], {}, 1.5])
+def test_malformed_learning_id_refuses_after_authentication(
+    monkeypatch: pytest.MonkeyPatch, ident: Any
+) -> None:
+    runtime = _runtime(monkeypatch)
+    owner = Mock(return_value=7)
+    resolve = Mock(side_effect=AssertionError("malformed id reached handler"))
+    monkeypatch.setattr("precis.user_context.require_user", owner)
+    monkeypatch.setattr(runtime, "_resolve_handler", resolve)
+
+    body, error = runtime.dispatch_with_status(
+        "get", {"kind": "learning", "id": ident, "extent": "fisheye"}
+    )
+
+    assert error and "[error:BadInput]" in body
+    assert "get(kind='learning', id='/activity', args={'days': 14})" in body
+    owner.assert_called_once()
     resolve.assert_not_called()
 
 
@@ -194,3 +215,35 @@ def test_private_path_still_honors_read_only_envelope(
     )
     body, error = runtime.dispatch_with_status("put", {"kind": "learning"})
     assert error and "[error:Denied]" in body
+
+
+@pytest.mark.parametrize(
+    ("verb", "payload"),
+    [
+        ("get", {"id": "learning:/activity"}),
+        ("get", {"kind": "memory", "id": "learning:/activity"}),
+        ("get", {"kind": "learning", "id": ["le1", "me1"]}),
+        ("get", {"id": ["learning:le1", "memory:me1"]}),
+        ("edit", {"kind": "learning", "id": ["le1", "me1"]}),
+        ("edit", {"kind": "memory", "id": ["learning:le1", "me1"]}),
+        ("search", {"kind": "memory,learning", "queries": [{"q": "private"}]}),
+        ("search", {"kind": " LEARNING ", "q": "private"}),
+        ("put", {"kind": "learning", "text": {"$ref": "me1"}}),
+    ],
+)
+def test_learning_classification_never_reaches_public_dispatch(
+    monkeypatch: pytest.MonkeyPatch, verb: str, payload: dict[str, Any]
+) -> None:
+    runtime = _runtime(monkeypatch)
+    public = Mock(side_effect=AssertionError("learning reached public dispatch"))
+    resolved = Mock(return_value=object())
+    monkeypatch.setattr(runtime, "_dispatch_status", public)
+    monkeypatch.setattr(runtime, "_resolve_handler", resolved)
+    monkeypatch.setattr(runtime, "_validate_mode", lambda *_a: None)
+    monkeypatch.setattr(
+        runtime, "_invoke_handler", lambda *_a, **_k: Response(body="private route")
+    )
+    assert is_learning_call(payload)
+    runtime.dispatch_with_status(verb, payload)
+    public.assert_not_called()
+    assert all(call.args[0] == "learning" for call in resolved.call_args_list)

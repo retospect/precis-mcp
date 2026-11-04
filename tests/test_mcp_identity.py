@@ -10,6 +10,7 @@ import re
 import threading
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -25,7 +26,7 @@ from precis.mcp_identity import (
 )
 from precis.store import Store
 from precis.store.revision_context import current_revision_context, revision_context
-from precis.tools import core
+from precis.tools import core, get_tool_names
 from precis.user_context import (
     Principal,
     current_principal,
@@ -181,7 +182,7 @@ def _principal_ctx(user_id: int, token_id: int) -> Context:
     )
 
 
-def test_personal_mcp_token_uses_existing_real_profile_owner_guards(
+def test_personal_mcp_token_refuses_even_owned_profiles(
     store: Store, runtime_with_store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from precis.handlers.profile import ProfileHandler
@@ -207,19 +208,21 @@ def test_personal_mcp_token_uses_existing_real_profile_owner_guards(
     ctx = _principal_ctx(alice.id, token_id)
     # The install/unbound path retains the established generic-agent behavior.
     assert "Bob private palette" in core.get(kind="profile", id=foreign.id)
-    assert "Alice palette" in core.get(kind="profile", id=own.id, ctx=ctx)
+    owned = cast(Any, core.get(kind="profile", id=own.id, ctx=ctx))
+    assert owned.isError and "Denied" in owned.content[0].text
     denied = cast(Any, core.get(kind="profile", id=foreign.id, ctx=ctx))
-    assert denied.isError and "NotFound" in denied.content[0].text
+    assert denied.isError and "Denied" in denied.content[0].text
     refused = cast(
         Any, core.edit(kind="profile", id=foreign.id, sponsor_line="unwanted", ctx=ctx)
     )
-    assert refused.isError and "NotFound" in refused.content[0].text
+    assert refused.isError and "Denied" in refused.content[0].text
     unchanged = store.get_ref(kind="profile", id=foreign.id)
     assert unchanged is not None and "sponsor_line" not in unchanged.meta["profile"]
     # A scope captured before revocation must fail before entering a legacy handler.
     revoke_user_token(store, alice.id, token_id)
     revoked = cast(Any, core.get(kind="profile", id=own.id, ctx=ctx))
     assert revoked.isError and "Denied" in revoked.content[0].text
+    assert "no longer active" in revoked.content[0].text
     assert current_principal() is None and current_revision_context() is None
 
 
@@ -344,6 +347,353 @@ async def _call(client, session, raw, call_id, address="/activity", **params):
             },
         },
     )
+
+
+_PUBLIC_TOOL_ARGS: dict[str, dict[str, Any]] = {
+    "get": {"id": "PRIVATE_SCOPE_SENTINEL"},
+    "search": {"q": "PRIVATE_SCOPE_SENTINEL"},
+    "put": {"text": "PRIVATE_SCOPE_SENTINEL"},
+    "edit": {"id": "PRIVATE_SCOPE_SENTINEL", "text": "replacement"},
+    "delete": {"id": "PRIVATE_SCOPE_SENTINEL"},
+    "tag": {"id": "PRIVATE_SCOPE_SENTINEL", "add": ["test"]},
+    "link": {"id": "PRIVATE_SCOPE_SENTINEL", "target": "memory:me1"},
+}
+
+
+@pytest.mark.parametrize("verb", get_tool_names())
+@pytest.mark.parametrize("profile", ["typed", "command"])
+def test_registered_tools_scope_personal_tokens_only(
+    store: Store,
+    runtime_with_store,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    caplog: pytest.LogCaptureFixture,
+    verb: str,
+    profile: str,
+) -> None:
+    """Exercise production registration and authentication, including expansion."""
+    from precis import slice_tokens
+
+    assert verb in _PUBLIC_TOOL_ARGS, "new tool needs a personal-scope test case"
+    alice = _user(store)
+    _token_id, personal = mint_user_token(store, alice.id, "scope test")
+    slice_raw = slice_tokens.mint(tmp_path, "td42")
+    dispatched = Mock(return_value=("handler reached", False))
+    monkeypatch.setattr(runtime_with_store, "dispatch_with_status", dispatched)
+    monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
+    mcp = FastMCP("personal-scope-test", json_response=True)
+    monkeypatch.setattr(server, "mcp", mcp)
+    monkeypatch.setattr(server, "_mcp_profile", lambda: profile)
+    server._register_tools_from_registry()
+    names = {tool.name for tool in mcp._tool_manager.list_tools()}
+    expected = {"precis"} if profile == "command" else set(_PUBLIC_TOOL_ARGS)
+    assert names == expected, "every registered tool must be covered by scope tests"
+    app = mcp.streamable_http_app()
+    server._install_token_auth(app, token="install", store=store, slice_dir=tmp_path)
+    arguments = {"kind": "memory", **_PUBLIC_TOOL_ARGS[verb]}
+    name = verb
+    if profile == "command":
+        command_args = ", ".join(f"{key}={value!r}" for key, value in arguments.items())
+        arguments = {"command": f"{verb}({command_args})"}
+        name = "precis"
+
+    async def exercise() -> None:
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://localhost:8000"
+            ) as client,
+        ):
+            session = await _initialize(client, personal)
+            refused = await _call(
+                client, session, personal, 2, name=name, arguments=arguments
+            )
+            result = refused.json()["result"]
+            body = result["content"][0]["text"]
+            assert result["isError"] and "[error:Denied]" in body
+            assert "get(kind='learning')" in body
+            assert "get(kind='skill', id='precis-learning-help')" in body
+            assert "PRIVATE_SCOPE_SENTINEL" not in body
+            assert "PRIVATE_SCOPE_SENTINEL" not in caplog.text
+            dispatched.assert_not_called()
+            for credential in ("install", slice_raw):
+                session = await _initialize(client, credential)
+                response = await _call(
+                    client, session, credential, 3, name=name, arguments=arguments
+                )
+                result = response.json()["result"]
+                assert not result.get("isError", False)
+                assert result["content"][0]["text"] == "handler reached"
+            assert dispatched.call_count == 2
+
+    with caplog.at_level(logging.INFO, logger="precis.tools.mcp_calls"):
+        asyncio.run(exercise())
+    with user_scope(alice.id, _token_id):
+        assert (
+            getattr(core, verb)(kind="memory", **_PUBLIC_TOOL_ARGS[verb])
+            == "handler reached"
+        )
+        assert current_principal() == Principal(alice.id, _token_id)
+    assert dispatched.call_count == 3
+    assert current_principal() is None
+
+
+@pytest.mark.parametrize("profile", ["typed", "command"])
+def test_personal_token_learning_and_exact_help_exception(
+    store: Store, runtime_with_store, monkeypatch: pytest.MonkeyPatch, profile: str
+) -> None:
+    alice = _user(store)
+    token_id, _raw = mint_user_token(store, alice.id, "scope test")
+    ctx = _principal_ctx(alice.id, token_id)
+    monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
+
+    def call(verb: str, arguments: dict[str, Any]) -> Any:
+        if profile == "command":
+            command_args = ", ".join(
+                f"{key}={value!r}" for key, value in arguments.items()
+            )
+            return server.precis(f"{verb}({command_args})", ctx=ctx)
+        return core.get(ctx=ctx, **arguments)
+
+    for address in ({"kind": "learning"}, {"id": "learning:/activity"}):
+        body = call("get", address)
+        assert isinstance(body, str) and "Your recorded study activity" in body
+    help_args = {"kind": "skill", "id": "precis-learning-help"}
+    body = call("get", help_args)
+    assert isinstance(body, str) and "private study activity" in body
+    for arguments in (
+        {"kind": "skill", "id": "precis-overview"},
+        {"kind": "skill", "id": "toc"},
+        {**help_args, "view": "verbatim"},
+        {**help_args, "args": {}},
+        {**help_args, "args": {"have": "PRIVATE_SCOPE_SENTINEL"}},
+        {**help_args, "full": True},
+        {**help_args, "id": ["precis-learning-help"]},
+    ):
+        refused = call("get", arguments)
+        assert refused.isError and "[error:Denied]" in refused.content[0].text
+        assert "PRIVATE_SCOPE_SENTINEL" not in refused.content[0].text
+    revoked_args = {"kind": "skill", "id": "precis-overview"}
+    revoke_user_token(store, alice.id, token_id)
+    revoked = call("get", revoked_args)
+    assert revoked.isError and "no longer active" in revoked.content[0].text
+    assert current_principal() is None
+
+
+@pytest.mark.parametrize("profile", ["typed", "command"])
+def test_every_registered_request_handler_has_personal_scope_guard(
+    runtime_with_store, monkeypatch: pytest.MonkeyPatch, profile: str
+) -> None:
+    from mcp import types
+
+    mcp = FastMCP("request-coverage-test", json_response=True)
+    monkeypatch.setattr(server, "mcp", mcp)
+    monkeypatch.setattr(server, "_mcp_profile", lambda: profile)
+    server._register_tools_from_registry()
+    server._wire_modalities(runtime_with_store)
+
+    handlers = mcp._mcp_server.request_handlers
+    assert types.CallToolRequest in handlers
+    for request_type, handler in handlers.items():
+        if request_type in {types.PingRequest, types.ListToolsRequest}:
+            continue
+        assert handler.__qualname__ == (
+            "_install_personal_scope_gate.<locals>.guarded.<locals>.call"
+        ), f"unguarded content request: {request_type.__name__}"
+
+
+@pytest.mark.parametrize("personal", [False, True])
+def test_personal_request_guard_only_offloads_personal_callers(
+    monkeypatch: pytest.MonkeyPatch, personal: bool
+) -> None:
+    from mcp import types
+
+    mcp = FastMCP("guard-thread-test")
+    ctx = _principal_ctx(7, 11) if personal else cast(Context, SimpleNamespace())
+    monkeypatch.setattr(mcp, "get_context", lambda: ctx)
+    refusal_threads: list[int] = []
+    handler_threads: list[int] = []
+
+    def refusal(_request: Any, _ctx: Context) -> None:
+        refusal_threads.append(threading.get_ident())
+
+    expected = types.ServerResult(types.ListPromptsResult(prompts=[]))
+
+    async def handler(_request: Any) -> types.ServerResult:
+        handler_threads.append(threading.get_ident())
+        return expected
+
+    monkeypatch.setattr(server, "_personal_request_refusal", refusal)
+    mcp._mcp_server.request_handlers[types.ListPromptsRequest] = handler
+    server._install_personal_scope_gate(mcp)
+    event_loop_thread = threading.get_ident()
+
+    async def exercise() -> None:
+        result = await mcp._mcp_server.request_handlers[types.ListPromptsRequest](
+            types.ListPromptsRequest(method="prompts/list")
+        )
+        assert result is expected
+
+    asyncio.run(exercise())
+    assert handler_threads == [event_loop_thread]
+    if personal:
+        assert len(refusal_threads) == 1
+        assert refusal_threads[0] != event_loop_thread
+    else:
+        assert refusal_threads == []
+    assert current_principal() is None
+
+
+@pytest.mark.parametrize("profile", ["typed", "command"])
+def test_personal_token_mixed_wire_envelopes_never_reach_public_dispatch(
+    store: Store, runtime_with_store, monkeypatch: pytest.MonkeyPatch, profile: str
+) -> None:
+    alice = _user(store)
+    _token_id, personal = mint_user_token(store, alice.id, "mixed envelope test")
+    public = Mock(side_effect=AssertionError("private call reached public dispatch"))
+    monkeypatch.setattr(runtime_with_store, "_dispatch_status", public)
+    monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
+    mcp = FastMCP("mixed-envelope-test", json_response=True)
+    monkeypatch.setattr(server, "mcp", mcp)
+    monkeypatch.setattr(server, "_mcp_profile", lambda: profile)
+    server._register_tools_from_registry()
+    app = mcp.streamable_http_app()
+    server._install_token_auth(app, token="install", store=store)
+    payloads: tuple[dict[str, Any], ...] = (
+        {"kind": "learning", "args": {"kind": "memory"}},
+        {"kind": "learning", "args": {"kinds": ["memory"]}},
+        {"kind": "memory", "id": "learning:PRIVATE_SCOPE_SENTINEL"},
+    )
+
+    async def exercise() -> None:
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://localhost:8000"
+            ) as client,
+        ):
+            session = await _initialize(client, personal)
+            for call_id, payload in enumerate(payloads, start=2):
+                name, arguments = "get", payload
+                if profile == "command":
+                    parts = ", ".join(
+                        f"{key}={value!r}" for key, value in payload.items()
+                    )
+                    name, arguments = "precis", {"command": f"get({parts})"}
+                response = await _call(
+                    client, session, personal, call_id, name=name, arguments=arguments
+                )
+                result = response.json()["result"]
+                assert result["isError"]
+                assert "[error:BadInput]" in result["content"][0]["text"]
+                assert "PRIVATE_SCOPE_SENTINEL" not in response.text
+                public.assert_not_called()
+
+    asyncio.run(exercise())
+
+
+def test_personal_token_cannot_bypass_tools_through_modalities(
+    store: Store, runtime_with_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    alice = _user(store)
+    _token_id, personal = mint_user_token(store, alice.id, "modality test")
+    monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
+    mcp = FastMCP("personal-modality-test", json_response=True)
+    monkeypatch.setattr(server, "mcp", mcp)
+    monkeypatch.setattr(server, "_mcp_profile", lambda: "typed")
+    server._register_tools_from_registry()
+    server._wire_modalities(runtime_with_store)
+    app = mcp.streamable_http_app()
+    server._install_token_auth(app, token="install", store=store)
+    requests: tuple[tuple[str, dict[str, Any]], ...] = (
+        ("prompts/list", {}),
+        ("resources/list", {}),
+        ("resources/templates/list", {}),
+        ("prompts/get", {"name": "precis-learning-help"}),
+        ("resources/read", {"uri": "precis://skill/precis-learning-help"}),
+    )
+
+    async def exercise() -> None:
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://localhost:8000"
+            ) as client,
+        ):
+            for credential in (personal, "install"):
+                session = await _initialize(client, credential)
+                for call_id, (method, params) in enumerate(requests, start=2):
+                    response = await client.post(
+                        "/mcp",
+                        headers=_headers(credential, session),
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": call_id,
+                            "method": method,
+                            "params": params,
+                        },
+                    )
+                    envelope = response.json()
+                    if credential == personal:
+                        assert "[error:Denied]" in envelope["error"]["message"]
+                        assert "get(kind='learning')" in envelope["error"]["message"]
+                    else:
+                        assert "result" in envelope and "error" not in envelope
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("profile", ["typed", "command"])
+def test_personal_help_exception_checks_supplied_wire_keys(
+    store: Store, runtime_with_store, monkeypatch: pytest.MonkeyPatch, profile: str
+) -> None:
+    alice = _user(store)
+    _token_id, personal = mint_user_token(store, alice.id, "wire help test")
+    monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
+    mcp = FastMCP("personal-help-wire-test", json_response=True)
+    monkeypatch.setattr(server, "mcp", mcp)
+    monkeypatch.setattr(server, "_mcp_profile", lambda: profile)
+    server._register_tools_from_registry()
+    app = mcp.streamable_http_app()
+    server._install_token_auth(app, token="install", store=store)
+
+    async def exercise() -> None:
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://localhost:8000"
+            ) as client,
+        ):
+            session = await _initialize(client, personal)
+            extras: tuple[dict[str, Any], ...] = (
+                {},
+                {"view": "verbatim"},
+                {"view": None},
+                {"args": {}},
+                {"args": None},
+                {"unknown": "PRIVATE_SCOPE_SENTINEL"},
+                {"unknown": None},
+            )
+            for call_id, extra in enumerate(extras, start=2):
+                arguments = {"kind": "skill", "id": "precis-learning-help", **extra}
+                name = "get"
+                if profile == "command":
+                    parts = ", ".join(f"{k}={v!r}" for k, v in arguments.items())
+                    arguments = {"command": f"get({parts})"}
+                    name = "precis"
+                response = await _call(
+                    client, session, personal, call_id, name=name, arguments=arguments
+                )
+                result = response.json()["result"]
+                if extra:
+                    assert result["isError"]
+                    assert "[error:Denied]" in result["content"][0]["text"]
+                    assert "PRIVATE_SCOPE_SENTINEL" not in response.text
+                else:
+                    assert not result.get("isError", False)
+                    assert "private study activity" in result["content"][0]["text"]
+
+    asyncio.run(exercise())
 
 
 def test_http_mcp_sessions_pin_owner_and_separate_concurrent_requests(

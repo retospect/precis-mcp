@@ -32,9 +32,11 @@ Personal-data authority is request-scoped instead: the bearer gate stamps
 stable account/token IDs on the HTTP request, and tools bind them anew for
 each call. Reusing an MCP session cannot reuse its previous owner's token.
 Install and slice credentials remain anonymous for personal data.
+Personal tokens permit learning calls and the exact learning-help tool read;
+the request boundary refuses other tools, resources and prompts.
 
 Seven tools — `get`, `search`, `put`, `edit`, `delete`, `tag`, `link`
-— plus `more` are registered as plain sync functions in
+— are registered as plain sync functions in
 :mod:`precis.tools` (the rest of the codebase — runtime, store,
 handlers — stays sync). **FastMCP 1.28.1 does NOT run them in a worker
 thread**: `FuncMetadata.call_fn_with_arg_validation` calls a sync tool
@@ -85,20 +87,25 @@ import re
 import secrets
 import sys
 import time
+import traceback
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_args
 
 import anyio
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.lowlevel.server import request_ctx
 from mcp.server.streamable_http import MCP_SESSION_ID_HEADER
+from mcp.shared import session as mcp_shared_session
+from pydantic import ValidationError
+from pydantic_core import ErrorType
 
 from precis import calllat, inflight
 from precis.budget.work_class import WorkClass, work_class_scope
 from precis.runtime import PrecisRuntime, build_runtime
 from precis.secrets import mounted_secret
 from precis.tools import TOOL_REGISTRY
+from precis.utils.secret_scan import mask_secrets
 from precis.utils.walk_budget import FILE_WALK_BUDGET_S
 
 if TYPE_CHECKING:
@@ -116,8 +123,72 @@ if TYPE_CHECKING:
 _TOOL_KW: dict[str, Any] = {"structured_output": False}
 
 
+_PYDANTIC_ERROR_TYPES = frozenset(get_args(ErrorType))
+# Logging uses co_filename, whose spelling may retain a symlinked install path.
+_SDK_SESSION_PATH = mcp_shared_session.BaseSession._receive_loop.__code__.co_filename
+
+
+def _mask_protocol_secrets(text: str) -> str:
+    # Personal bearer values have a known prefix; even a low-entropy token
+    # must be masked when the general credential heuristic does not match.
+    text = re.sub(r"\bprecis_user_[A-Za-z0-9_-]+", "[redacted]", text)
+    return mask_secrets(text, warn=False)
+
+
+def _protocol_validation_text(error: ValidationError) -> str:
+    """Render locations and safe diagnostics without reconstructing validators."""
+    errors = error.errors(include_input=False, include_context=False, include_url=False)
+    lines = [f"{len(errors)} validation errors for {error.title}"]
+    for detail in errors:
+        kind = detail["type"]
+        location = ".".join(str(part) for part in detail["loc"])
+        # Validators can interpolate input into their messages. Discriminated
+        # unions also embed the supplied tag in union_tag_invalid's message.
+        message = (
+            detail["msg"]
+            if kind in _PYDANTIC_ERROR_TYPES
+            and kind not in {"value_error", "assertion_error", "union_tag_invalid"}
+            else "[redacted]"
+        )
+        lines.append(f"{location}\n  {message} [type={kind}]")
+    return "\n".join(lines)
+
+
+def _protocol_exception_trace(exc: BaseException) -> traceback.TracebackException:
+    """Keep exception diagnostics, excluding Pydantic's client input fields."""
+    trace = traceback.TracebackException.from_exception(exc)
+
+    def redact(
+        item: traceback.TracebackException, error: BaseException
+    ) -> traceback.TracebackException:
+        if isinstance(error, ValidationError):
+            # Python 3.12 and 3.13 TracebackException capture the supplied
+            # value's str separately from exc_type. A plain text carrier keeps
+            # ValidationError's class and stack without rebuilding custom errors.
+            safe = Exception(_protocol_validation_text(error))
+            clean = traceback.TracebackException(type(error), safe, error.__traceback__)
+            clean.__cause__ = item.__cause__
+            clean.__context__ = item.__context__
+            clean.__suppress_context__ = item.__suppress_context__
+            item = clean
+        if item.__cause__ is not None and error.__cause__ is not None:
+            item.__cause__ = redact(item.__cause__, error.__cause__)
+        if item.__context__ is not None and error.__context__ is not None:
+            item.__context__ = redact(item.__context__, error.__context__)
+        if item.exceptions is not None and isinstance(error, BaseExceptionGroup):
+            item.exceptions = [
+                redact(child, child_error)
+                for child, child_error in zip(
+                    item.exceptions, error.exceptions, strict=True
+                )
+            ]
+        return item
+
+    return redact(trace, exc)
+
+
 class _ProtocolPayloadFilter(logging.Filter):
-    """Keep SDK wire bodies, SSE chunks and parser failures out of shared logs.
+    """Keep SDK wire bodies and SSE chunks private without hiding errors.
 
     These protocol loggers can format raw client input and full tool
     results before our dispatcher has an opportunity to redact them.
@@ -127,17 +198,97 @@ class _ProtocolPayloadFilter(logging.Filter):
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            return self._filter(record)
+        except Exception:
+            # Never emit a partially sanitized record, nor break the application
+            # while reporting its error. Do not stringify the failed exception.
+            error_type = (
+                type(record.exc_info[1]).__name__
+                if record.exc_info and record.exc_info[1] is not None
+                else "Exception"
+            )
+            record.msg = f"{error_type} (details unavailable)"
+            record.args = ()
+            record.exc_info = None
+            record.exc_text = None
+            record.stack_info = None
+            return True
+
+    def _filter(self, record: logging.LogRecord) -> bool:
         if record.levelno <= logging.DEBUG:
             return False
-        record.msg = "MCP protocol event (payload omitted)"
+        # MCP 1.30 also interpolates client-controlled values before logging:
+        # SSE's invalid/unknown session query and lowlevel's stream exception.
+        # The latter receives SSE ValidationError (or HTTP's Exception(err));
+        # remove only Pydantic input fields, leaving other error text intact.
+        message = str(record.msg)
+        if record.args:
+
+            def safe_arg(value: Any) -> Any:
+                return value if type(value) in (int, float, bool) else "[redacted]"
+
+            args = (
+                {key: safe_arg(value) for key, value in record.args.items()}
+                if isinstance(record.args, dict)
+                else tuple(safe_arg(value) for value in record.args)
+            )
+            try:
+                message = message % args
+            except Exception:
+                pass  # Keep the format string when placeholders do not match.
         record.args = ()
+        for prefix in (
+            "Received invalid session ID: ",
+            "Could not find session for ID: ",
+            "Created new transport with session ID: ",
+            "Terminating session: ",
+        ):
+            if message.startswith(prefix):
+                message = prefix + "[redacted]"
+                break
+        message = re.sub(
+            r"^Session .+ (idle timeout|crashed)$", r"Session [redacted] \1", message
+        )
+        # Lowlevel stream errors and shared/session.py's root warnings already
+        # contain rendered Pydantic errors. Notifications append the full body.
+        message = message.partition("Message was:")[0]
+        message = re.sub(r", input_value=[^\n]*", "]", message)
+        # shared/session.py also preformats a client-supplied response ID.
+        if message.startswith("Response ID ") and message.endswith(
+            " cannot be normalized to match pending requests"
+        ):
+            message = (
+                "Response ID [redacted] cannot be normalized to match pending requests"
+            )
+        record.msg = _mask_protocol_secrets(message)
+        if record.exc_info and record.exc_info[1] is not None:
+            record.exc_text = "".join(
+                _protocol_exception_trace(record.exc_info[1]).format()
+            ).rstrip()
+        if record.exc_text:
+            record.exc_text = _mask_protocol_secrets(record.exc_text)
+        if record.stack_info:
+            record.stack_info = _mask_protocol_secrets(record.stack_info)
+        # Stock Formatter appends exc_text without exc_info; RichHandler and the
+        # DB handler must not rebuild a raw traceback from the original tuple.
         record.exc_info = None
-        record.exc_text = None
-        record.stack_info = None
         return True
 
 
 _PROTOCOL_PAYLOAD_FILTER = _ProtocolPayloadFilter()
+
+
+class _ProtocolSessionFilter(logging.Filter):
+    """SDK shared/session.py uses root logging; match its exact source only."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.pathname != _SDK_SESSION_PATH:
+            return True
+        return _PROTOCOL_PAYLOAD_FILTER.filter(record)
+
+
+_PROTOCOL_SESSION_FILTER = _ProtocolSessionFilter()
 
 
 def _install_protocol_payload_filters() -> None:
@@ -150,6 +301,7 @@ def _install_protocol_payload_filters() -> None:
         "sse_starlette.sse",
     ):
         logging.getLogger(name).addFilter(_PROTOCOL_PAYLOAD_FILTER)
+    logging.getLogger().addFilter(_PROTOCOL_SESSION_FILTER)
 
 
 _install_protocol_payload_filters()
@@ -983,6 +1135,7 @@ def _verb_description(fn: Callable[..., Any]) -> str:
 
 def _register_tools_from_registry() -> None:
     """Register the active ``PRECIS_MCP_PROFILE`` tool surface with FastMCP."""
+    _install_personal_scope_gate(mcp)
     if _mcp_profile() == "command":
         _install_command_profile()
         return
@@ -1010,6 +1163,86 @@ def _register_tools_from_registry() -> None:
             _install_edit_schema_constraints(mcp)
         if registered is not None:
             _compress_tool_schema(registered.parameters)
+
+
+def _personal_request_refusal(request: Any, ctx: Context) -> str | None:
+    """Check raw MCP input before the SDK drops unknown keys or adds defaults."""
+    from mcp import types
+
+    from precis.errors import PrecisError
+    from precis.tools import core
+    from precis.tools.command_parser import CommandParseError, parse_command
+    from precis.user_context import current_principal, user_actor_scope
+
+    with core._ctx_user_scope(ctx):
+        if current_principal() is None:
+            return None
+        verb, payload = "", {}
+        if isinstance(request, types.CallToolRequest):
+            verb, payload = request.params.name, request.params.arguments or {}
+            if verb == "precis":
+                try:
+                    if set(payload) <= {"command", "text"} and isinstance(
+                        payload.get("command"), str
+                    ):
+                        verb, payload = parse_command(
+                            payload["command"], text=payload.get("text")
+                        )
+                except CommandParseError:
+                    # An unparseable command cannot establish learning scope.
+                    verb, payload = "", {}
+        if core._personal_call_allowed(verb, payload):
+            # The actual tool dispatch revalidates and checks scope again after
+            # normalization. Do not add an account query to permitted calls.
+            return None
+        runtime = core._get_runtime()
+        try:
+            with user_actor_scope(getattr(runtime, "store", None)):
+                core._require_personal_scope(verb, payload)
+        except PrecisError as exc:
+            return runtime.render_error(exc)
+    return None
+
+
+def _install_personal_scope_gate(fastmcp: FastMCP) -> None:
+    """Gate every registered content request, including indirect modalities.
+
+    Ping and tool-schema discovery carry no content. Every other SDK request
+    handler is guarded, so prompts/resources cannot bypass the tool boundary.
+    """
+    from mcp import types
+    from mcp.shared.exceptions import McpError
+
+    from precis.tools import core
+    from precis.user_context import current_principal
+
+    def guarded(handler: Any) -> Any:
+        async def call(request: Any) -> Any:
+            ctx = fastmcp.get_context()
+            # Transport stamps are pure context reads. Only personal callers
+            # can need the blocking revocation check in the refusal path.
+            with core._ctx_user_scope(ctx):
+                personal = current_principal() is not None
+            if not personal:
+                return await handler(request)
+            refusal = await anyio.to_thread.run_sync(
+                _personal_request_refusal, request, ctx
+            )
+            if refusal is not None:
+                if isinstance(request, types.CallToolRequest):
+                    from precis.tools.core import _validation_error
+
+                    return types.ServerResult(_validation_error(refusal))
+                raise McpError(
+                    types.ErrorData(code=types.INVALID_PARAMS, message=refusal)
+                )
+            return await handler(request)
+
+        return call
+
+    for request_type, handler in fastmcp._mcp_server.request_handlers.items():
+        if request_type not in {types.PingRequest, types.ListToolsRequest}:
+            fastmcp._mcp_server.request_handlers[request_type] = guarded(handler)
 
 
 #: Schema keywords whose value is a name→schema map, not a schema node:
@@ -1670,7 +1903,9 @@ def _install_token_auth(
     rejects cross-owner GET/POST/DELETE before the response router runs.
     Unknown sessions require reinitialization. Personal credentials are
     accepted only on ``personal_path``; legacy SSE remains anonymous for
-    personal data. Never applied to stdio.
+    personal data. Personal tools are scoped to learning and the exact
+    learning-help read at dispatch; other content requests refuse at the
+    MCP request boundary. Never applied to stdio.
 
     ``slice_dir`` (``PRECIS_MCP_SLICE_TOKEN_DIR``, the mounted
     ``/run/precis-slice-tokens`` on the shared session server) enables the

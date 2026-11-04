@@ -6,9 +6,11 @@ environment variable or wire argument never supplies a personal owner.
 The account and optional token are rechecked for each operation so a
 long-lived MCP session cannot outlive revocation. ContextVar scopes reset
 on every exit and travel through anyio's worker-thread context copy.
-Personal MCP dispatch also maps the live stable account to its current
-legacy revision actor, preserving existing owner checks without claiming
-that an agent's writes were typed by a human.
+Personal MCP dispatch permits only learning and the exact learning-help
+read. It maps the live account to its current legacy revision actor before
+checking scope, preserving revocation and attribution without claiming
+that an agent's writes were typed by a human. Trusted in-process web routes
+may bind an account directly without entering the MCP scope gate.
 """
 
 from __future__ import annotations
