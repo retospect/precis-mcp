@@ -1421,8 +1421,17 @@ def _commit_for_session(tree: Path, todo_id: int) -> str | None:
     staged = _git(["diff", "--cached", "--quiet"], tree)
     if staged.returncode == 0:
         return None
-    msg_path = tree / COMMIT_MSG_REL
-    commit = _git(["commit", "--quiet", "-F", str(msg_path)], tree)
+    # The normalised text, from a file outside the tree: the session's own
+    # file keeps its bare or overlong subject, which the lander refuses.
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", suffix=".txt", prefix="slice-commit-", delete=False
+    ) as fh:
+        fh.write(message)
+        msg_path = Path(fh.name)
+    try:
+        commit = _git(["commit", "--quiet", "-F", str(msg_path)], tree)
+    finally:
+        msg_path.unlink(missing_ok=True)
     if commit.returncode != 0:
         return f"worker commit failed ({commit.stderr.strip()[:200]})"
     return (
