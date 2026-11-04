@@ -52,11 +52,30 @@ run `scripts/docs-index` if absent). Runtime kinds and verbs:
 
 ## Repo-dev graph memory
 
+**Memory shape card**
+
+- One claim per node; no second topic.
+- The title IS the claim: at most 12 words, the sūtra, with its scope.
+- The body is the gloss: why, when it bites, what to do, one live anchor, a UTC date.
+- Edges carry roles: `part-of` the hub, `cites`/`derived-from` for evidence, `qualifies` for scope.
+- Name entities by handle; their current state belongs on their refs, never restated here.
+- Expiry follows shape (gr560763): threads/handoffs/resumes/snapshots 14 days; incidents/campaigns 90 days.
+- Rulings use `review_by`; reference/gotchas/runbooks have no age expiry; DREAM never expires by age.
+- Expiry means review and compact before retirement, preserving still-true claims.
+- No landed history or children lists; use the graph's links.
+- No plan label (slice/round/R-number/leg/wave) without its handle on the same line.
+- No bare commit sha older than 30 days; cite a live `path/file.py::Symbol` instead.
+
 After the recorded cutover, graph memory is the durable repo-dev knowledge
 source. At task start, recall relevant knowledge with
-`search(kind='memory', tags=['SPACE:repo-dev'], q='<task>', view='index')`,
-then open relevant returned handles with
-`get(kind='memory', id='<returned meID>', view='fisheye+1hop+recall')`.
+`search(kind='memory', tags=['SPACE:repo-dev'], q='<task>', view='index')`.
+For exploratory memory/hub/index reads, prefer
+`get(kind='memory', id='<handle>', extent='fisheye+2hop')`; explicit narrow
+reads stay narrow. Canonical procedure: staged Structure me563920 (via
+Curator me563916 or soul index me563907), for selective group expansion
+and truncation reporting; ordinary-skill migration gr563975. Mechanics:
+`precis-fisheye-help`, "The second hop".
+This browsing preference does not change runtime defaults.
 Use the bootstrap's verified root when orientation is needed; do not load
 the entire graph or use a filename as a native ID.
 
@@ -77,44 +96,39 @@ alias, a pending rename is noted in the gloss and flips with the code.
 Search before keeping a learned fact. Use `SPACE:repo-dev`, relevant
 project/topic tags, a concise `meta.hook`, and links to supporting evidence.
 For an existing fact, use a unique anchored `edit` and full readback;
-preserve unrelated body and history. Put new facts only when no matching
-node exists. Behavioral and workflow rules belong here, not in fact nodes.
+preserve unrelated body and history. Edit a changed fact on the same subject
+in place; correct a wrong fact with `reason=`. Put new facts only when no
+matching node exists. Behavioral and workflow rules belong here, not in fact nodes.
 
-A `section:threads` node is one campaign's resume state, days not weeks. The
+A `section:threads` node is one campaign's resume state. The
 programme lives in its `docs/backlog/threads/<slug>.md` (link it); the node
 keeps only where this campaign stopped. Its first line is `Left: …` (or
 `Left: none`) — the index shows it — and is updated in the same session an
 item finishes or appears. No untracked resume files. A follow-up that waits
 on time is a todo or gripe tagged `due:YYYY-MM-DD`, linked from the node.
 
-Retire (soft delete, recoverable at the SQL layer) so recall stays current:
-- A thread node at `Left: none` with no open linked due-item; or one
-  untouched for 14 days, after moving what still matters to its thread
-  file, a gotcha, or a todo.
-- A fact that changed but is the same subject: anchored `edit` in place, no
-  second node. A wrong fact: `edit` with a `reason=`.
+Retire (soft delete, recoverable at the SQL layer) after review and
+preservation of still-true claims:
+
+- A thread node at `Left: none` with no open linked due-item.
 - A node replaced by a different node: link the new one `supersedes` the
   old, then retire the old.
 - A mirrored node whose file was deleted: retire it (the importer's
   `--missing retire`, or by hand).
-Any session may retire a node it has shown landed or superseded.
-Since 2026-10-14 the daily `memory_thread_sweep` cadence retires the
-thread cases automatically — `Left: none`, an inbound live `supersedes`
-edge, or 14 days untouched (a `Left:` naming open work becomes a linked
-todo first); `precis memory sweep` dry-runs it.
+Any session may retire a completed or superseded node after this preservation.
+`precis memory sweep` dry-runs sweep candidates.
 `scripts/memory-lint` lists candidates; it never retires. It also lints
 each node as `fisheye+1hop` shows it.
 
-Shape (since 2026-10-10): root me474312 → subject hubs (`section:index`) →
-nodes, each with one `part-of` edge to its hub (or to a summary node that
-has one) and one type tag `section:threads|gotchas|runbooks|workflow|reference`;
-a gotcha links the threads it applies to with `qualifies`. Bodies stay under
-the 4000-char fisheye cut; longer material becomes `part-of` children of a
-short summary — a child takes a unique title (the summary's title + the
-pass/sub-thread it holds, so the dup-thread-prefix check stays quiet), the
-parent's `section:<type>` tag (`section:reference` when the child is a
-result), one `part-of` edge to the summary only, and no `qualifies` links
-(it inherits the parent's). Writes: the `remember` skill (the `put`/`edit`
+The graph runs from root me474312 through subject hubs (`section:index`)
+to nodes. Each node has exactly one parent: its hub or a summary with a
+parent chain to that hub; use one `part-of` edge and exactly one type tag
+`section:threads|gotchas|runbooks|workflow|reference`. A gotcha links the
+threads it applies to with `qualifies`. Keep glosses under the 4000-character
+fisheye cut; longer detail becomes children of a short summary. Each child
+has a unique atomic claim title, the parent's `section:<type>` tag
+(`section:reference` for results), and no `qualifies` links: it inherits
+the parent's scope. Writes: the `remember` skill (the `put`/`edit`
 response's `Next:` lines name the missing links). Periodic cleanup: the
 `reconsolidate` skill. Search one subtree with `args={'under': 'me<hub>'}`.
 
