@@ -49,6 +49,7 @@ operation is a cutover.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -1062,6 +1063,35 @@ def _render_loaded(
 #: Column order is the contract with scripts/memory-lint.
 SECTIONS_MANIFEST = "_sections.tsv"
 
+#: Snapshot consumed by scripts/memory-lint without a database connection.
+TAXON_REFS_MANIFEST = "_taxon_refs.json"
+GLOSSARY_ROOT_ID = 559460
+
+
+def taxon_pointer_snapshot(store: Store) -> dict[str, Any]:
+    """Start-here pointers under tn559460, including indirect descendants.
+
+    The shared traversal handles both edge directions and retired nodes.
+    A DAG can reach a node at several depths; export each handle once.
+    Missing metadata stays visible so the lint reports it as unresolvable.
+    """
+    ids = sorted(
+        {rid for rid, _depth, _axis in store.taxon_descendants(GLOSSARY_ROOT_ID)}
+    )
+    refs = store.fetch_refs_by_ids(ids)
+    return {
+        "root": f"tn{GLOSSARY_ROOT_ID}",
+        "refs": [
+            {
+                "handle": f"tn{rid}",
+                "title": ref.title,
+                "standard_ref": (ref.meta or {}).get("standard_ref"),
+            }
+            for rid in ids
+            if (ref := refs.get(rid)) is not None
+        ],
+    }
+
 
 def render_prune_links(store: Store, *, dry_run: bool) -> str:
     """The ``precis memory prune-links`` report — one line per dangling edge
@@ -1122,6 +1152,9 @@ def export_memory_nodes(
     update, and what a ``fisheye+1hop`` read of it shows — body chars against
     the eye's cap, ring neighbours live / hidden by the group cap / dead — so
     ``scripts/memory-lint`` lints the graph, not just the bodies.
+    ``<dest>/_taxon_refs.json`` snapshots the glossary taxon descendants'
+    start-here pointers in the same swap; lint remains offline and checks
+    paths against the checkout where it runs, not the exporter's filesystem.
     ``loaded`` reuses a :func:`_load_nodes` result.
     """
     from precis.dispatch import Hub
@@ -1217,6 +1250,10 @@ def export_memory_nodes(
             )
             manifest.append("\t".join(map(str, row)) + "\n")
         (tmp / SECTIONS_MANIFEST).write_text("".join(manifest), encoding="utf-8")
+        (tmp / TAXON_REFS_MANIFEST).write_text(
+            json.dumps(taxon_pointer_snapshot(store), ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
         if final.exists():
             os.replace(final, old)
         os.replace(tmp, final)

@@ -30,6 +30,14 @@ Mirror YAML keeps timestamp values as literal strings so JSON metadata retains
 their spelling; only its loader changes, leaving ordinary SafeLoader semantics
 and non-string key refusal intact. Raw headers remain the export authority.
 
+The session-start ``memory index --export-dir`` snapshot also carries the
+live descendants of glossary taxon tn559460 and their ``standard_ref``
+pointers. ``scripts/memory-lint`` checks those cached pointers against its
+own checkout without database access; an absent snapshot is reported as
+skipped. This keeps hygiene runs offline while replacing the retired
+glossary file's path check. Dotted module and sibling-repo pointers remain
+unresolvable findings rather than guessed paths.
+
 ``memory recall-set accept`` is a checkout-only operator door: trace proposals
 are read from parked review todos, but acceptance only edits the tracked
 six-field JSON benchmark and prints its diff. No graph write, commit or push

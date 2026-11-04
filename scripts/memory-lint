@@ -106,6 +106,12 @@
 #      repo-dev-glossary namespace. The comparison set is the SessionStart
 #      hook's `precis taxonomy list` export ($PRECIS_GLOSSARY_TERMS, default
 #      ~/.cache/precis/glossary-terms.txt) — missing export → skip.
+#  13. taxon start-here pointers: tn559460 descendants exported alongside
+#      memory nodes in _taxon_refs.json. Check paths against THIS checkout,
+#      not main; ::Symbol / §section / #anchor suffixes do not name files.
+#      Missing paths and unresolvable forms are separate advisory findings.
+#      No live database reads, resolver guesses, or edits; refresh via the
+#      existing `precis memory index --export-dir` session-start export.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -120,6 +126,74 @@ MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
 MEMDIR="$HOME/.claude/projects/${MAIN_ROOT//\//-}/memory"
 # Graph-mode node bodies, exported by scripts/hooks/session-start-memory.sh.
 NODEDIR="${PRECIS_MEMORY_NODES:-${XDG_CACHE_HOME:-$HOME/.cache}/precis/memory-nodes}"
+
+# 13. glossary taxon pointer currency (gr559649). As with the other cached
+# graph checks, a missing snapshot is skipped, never presented as clean.
+python3 - "$NODEDIR/_taxon_refs.json" "$PWD" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+snapshot = Path(sys.argv[1])
+checkout = Path(sys.argv[2]).resolve()
+if not snapshot.exists():
+    print(
+        f"taxon pointers: skipped (no {snapshot} — memory index --export-dir writes it)"
+    )
+    sys.exit(0)
+try:
+    data = json.loads(snapshot.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or data.get("root") != "tn559460":
+        raise ValueError("expected tn559460 snapshot")
+    refs = data.get("refs")
+    if not isinstance(refs, list) or any(
+        not isinstance(ref, dict)
+        or not isinstance(ref.get("handle"), str)
+        or not re.fullmatch(r"tn[0-9]+", ref["handle"])
+        or not isinstance(ref.get("title"), str)
+        for ref in refs
+    ):
+        raise ValueError("invalid taxon rows")
+except (OSError, UnicodeError, ValueError) as exc:
+    print(f"taxon pointers: unavailable ({exc}; refresh memory index --export-dir)")
+    sys.exit(0)
+
+print("taxon pointers: tn559460 descendants (cached snapshot)")
+missing = unresolvable = 0
+for ref in refs:
+    pointer = ref.get("standard_ref")
+    path = (
+        re.split(r"::|§|#", pointer, maxsplit=1)[0].strip()
+        if isinstance(pointer, str)
+        else ""
+    )
+    label = f"{ref['handle']} ({ref['title']})"
+    if re.fullmatch(r"memory:me[0-9]+", path) or path == "docs/roadmap.md":
+        continue
+    # Only checkout-relative paths are meaningful here. In particular,
+    # parking approximation's catpath / network.py and origin's dotted
+    # module reference must not turn into fabricated repo paths.
+    candidate = checkout / path
+    unsupported = (
+        not path
+        or Path(path).is_absolute()
+        or ".." in Path(path).parts
+        or path.startswith(("~", "catpath/"))
+        or path == "catpath"
+        or any(c.isspace() for c in path)
+        or ":" in path
+        or path.startswith("precis.")
+        or (ref["title"] == "parking approximation" and path == "network.py")
+    )
+    if unsupported:
+        print(f"  unresolvable form → {label}: {pointer}")
+        unresolvable += 1
+    elif not candidate.exists():
+        print(f"  missing path → {label}: {path}")
+        missing += 1
+print(f"taxon pointers: {missing} missing path(s), {unresolvable} unresolvable form(s)")
+PY
 
 if [[ ! -d "$MEMDIR" ]]; then
     echo "memory-lint: no memory dir at $MEMDIR (nothing to lint)"; exit 0
@@ -1043,5 +1117,6 @@ else
         done <<< "$missing"
     fi
 fi
+
 
 exit 0

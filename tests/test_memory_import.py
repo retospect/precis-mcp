@@ -5,6 +5,7 @@ in-scope 2 + 3, AC 2).
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from pathlib import Path
@@ -871,7 +872,7 @@ def test_export_dir_writes_one_file_per_topic_node_by_handle(
     ]
     assert len(topics) == N_BULLETS + 1  # the fixture's bullets + the native node
     assert sorted(p.name for p in dest.iterdir()) == sorted(
-        [f"{_handle(r.id)}.md" for r in topics] + ["_sections.tsv"]
+        [f"{_handle(r.id)}.md" for r in topics] + ["_sections.tsv", "_taxon_refs.json"]
     )  # one per topic, no section node, the stale file gone
     # a row per node, section in column 2: imported topics carry their
     # section slug, the native node (no section tag) an empty one, and the
@@ -903,6 +904,59 @@ def test_export_dir_writes_one_file_per_topic_node_by_handle(
     )
     # no temp / old sibling dirs left behind
     assert sorted(p.name for p in dest.parent.iterdir()) == ["memory-nodes"]
+
+
+def test_export_snapshots_live_glossary_descendants_once(
+    store: Store, hub: Hub, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.cli import memory
+    from precis.handlers.taxon import TaxonHandler
+
+    handler = TaxonHandler(hub=hub)
+
+    def taxon(name: str, pointer: str | None = None) -> int:
+        meta = {"standard_ref": pointer} if pointer is not None else {}
+        return id_of(handler.put(text=f"{name} — fixture term", meta=meta).body)
+
+    root = taxon("pointer-root")
+    parent = taxon("pointer-parent", "memory:me42")
+    child = taxon("pointer-child", "src/missing.py::Symbol")
+    no_pointer = taxon("pointer-unset")
+    retired = taxon("pointer-retired", "src/retired.py")
+    taxon("pointer-unrelated", "src/unrelated.py")
+    store.add_link(src_ref_id=parent, dst_ref_id=root, relation="specialises")
+    store.add_link(src_ref_id=parent, dst_ref_id=child, relation="generalises")
+    # Reach the same child directly and through its parent (two depths).
+    store.add_link(src_ref_id=child, dst_ref_id=root, relation="specialises")
+    store.add_link(src_ref_id=no_pointer, dst_ref_id=parent, relation="specialises")
+    store.add_link(src_ref_id=retired, dst_ref_id=root, relation="specialises")
+    store.retire_ref(retired)
+    monkeypatch.setattr(memory, "GLOSSARY_ROOT_ID", root)
+
+    dest = tmp_path / "nodes"
+    export_memory_nodes(store, dest)
+
+    snapshot = json.loads((dest / "_taxon_refs.json").read_text(encoding="utf-8"))
+    assert snapshot == {
+        "root": f"tn{root}",
+        "refs": [
+            {
+                "handle": f"tn{parent}",
+                "title": "pointer-parent",
+                "standard_ref": "memory:me42",
+            },
+            {
+                "handle": f"tn{child}",
+                "title": "pointer-child",
+                "standard_ref": "src/missing.py::Symbol",
+            },
+            {
+                "handle": f"tn{no_pointer}",
+                "title": "pointer-unset",
+                "standard_ref": None,
+            },
+        ],
+    }
 
 
 def test_export_manifest_records_the_fisheye_shape(

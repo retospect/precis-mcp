@@ -22,6 +22,7 @@ the real repo fails with "not a git repository" in-container.
 from __future__ import annotations
 
 import datetime
+import json
 import os
 import shutil
 import subprocess
@@ -1546,3 +1547,188 @@ def test_bands_without_a_manifest_says_so(
 
     assert res.returncode == 0
     assert "bands: no node manifest" in res.stdout, res.stdout
+
+
+def _taxon_refs(nodes: Path, refs: list[dict[str, str]]) -> Path:
+    snapshot = nodes / "_taxon_refs.json"
+    snapshot.write_text(
+        json.dumps({"root": "tn559460", "refs": refs}), encoding="utf-8"
+    )
+    return snapshot
+
+
+def test_taxon_pointers_report_broken_path_in_one_run_without_edits(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    snapshot = _taxon_refs(
+        nodes,
+        [{"handle": "tn1", "title": "Broken", "standard_ref": "src/missing.py"}],
+    )
+    before = snapshot.read_bytes()
+    status_before = _git(lint_repo, "status", "--porcelain").stdout
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0, res.stderr
+    assert "taxon pointers: tn559460 descendants (cached snapshot)" in res.stdout
+    assert "missing path → tn1 (Broken): src/missing.py" in res.stdout
+    assert "taxon pointers: 1 missing path(s), 0 unresolvable form(s)" in res.stdout
+    assert snapshot.read_bytes() == before
+    assert _git(lint_repo, "status", "--porcelain").stdout == status_before
+    assert not (lint_repo / "src" / "missing.py").exists()
+
+
+@pytest.mark.parametrize(
+    "pointer",
+    [
+        "README.md",
+        "README.md::Symbol",
+        " README.md § Some section ",
+        "README.md#heading",
+        "scripts/memory-lint",
+        "memory:me474312",
+        "docs/roadmap.md",
+    ],
+)
+def test_taxon_pointers_accept_paths_suffixes_and_nonfile_refs(
+    lint_repo: Path,
+    graph_setup: tuple[Path, Path, Path, Path],
+    pointer: str,
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    _taxon_refs(nodes, [{"handle": "tn2", "title": "Valid", "standard_ref": pointer}])
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0, res.stderr
+    assert "taxon pointers: 0 missing path(s), 0 unresolvable form(s)" in res.stdout
+
+
+@pytest.mark.parametrize(
+    ("title", "pointer"),
+    [
+        ("origin", "precis.store.revision_context"),
+        ("parking approximation", "catpath"),
+        ("parking approximation", "../catpath/network.py::build_network"),
+        ("parking approximation", "network.py::build_network"),
+        ("Empty", ""),
+    ],
+)
+def test_taxon_pointers_distinguish_unresolvable_forms_from_misses(
+    lint_repo: Path,
+    graph_setup: tuple[Path, Path, Path, Path],
+    title: str,
+    pointer: str,
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    _taxon_refs(nodes, [{"handle": "tn3", "title": title, "standard_ref": pointer}])
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0, res.stderr
+    assert f"unresolvable form → tn3 ({title}):" in res.stdout
+    assert "taxon pointers: 0 missing path(s), 1 unresolvable form(s)" in res.stdout
+    assert "missing path → tn3" not in res.stdout
+
+
+def test_taxon_pointers_missing_standard_ref_is_unresolvable(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    _taxon_refs(nodes, [{"handle": "tn4", "title": "No pointer"}])
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0, res.stderr
+    assert "unresolvable form → tn4 (No pointer):" in res.stdout
+    assert "taxon pointers: 0 missing path(s), 1 unresolvable form(s)" in res.stdout
+
+
+@pytest.mark.parametrize("pointer", ["pyproject.toml", "setup.py::main", "Makefile"])
+def test_taxon_pointers_missing_checkout_root_files_are_misses(
+    lint_repo: Path,
+    graph_setup: tuple[Path, Path, Path, Path],
+    pointer: str,
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    _taxon_refs(
+        nodes, [{"handle": "tn7", "title": "Root file", "standard_ref": pointer}]
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0, res.stderr
+    assert f"missing path → tn7 (Root file): {pointer.split('::')[0]}" in res.stdout
+    assert "taxon pointers: 1 missing path(s), 0 unresolvable form(s)" in res.stdout
+
+
+def test_taxon_pointers_run_without_a_harness_memory_directory(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _home, _mem, cache, nodes = graph_setup
+    home = tmp_path / "no-harness-home"
+    home.mkdir()
+    _taxon_refs(
+        nodes, [{"handle": "tn8", "title": "Broken", "standard_ref": "src/gone.py"}]
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0, res.stderr
+    assert "taxon pointers: 1 missing path(s), 0 unresolvable form(s)" in res.stdout
+    assert "missing path → tn8 (Broken): src/gone.py" in res.stdout
+    assert "no memory dir" in res.stdout
+
+
+def test_taxon_pointers_missing_cache_skips_instead_of_claiming_clean(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0, res.stderr
+    assert "taxon pointers: skipped" in res.stdout
+    assert "taxon pointers: 0 missing path(s)" not in res.stdout
+
+
+def test_taxon_pointers_malformed_cache_is_advisory_and_unchanged(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    snapshot = nodes / "_taxon_refs.json"
+    snapshot.write_text("{broken", encoding="utf-8")
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0, res.stderr
+    assert "taxon pointers: unavailable" in res.stdout
+    assert "taxon pointers: 0 missing path(s)" not in res.stdout
+    assert snapshot.read_text(encoding="utf-8") == "{broken"
+
+
+def test_taxon_pointers_resolve_in_current_worktree_not_main(
+    lint_repo: Path,
+    graph_setup: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    worktree = tmp_path / "pointer-checkout"
+    _git(lint_repo, "worktree", "add", "-q", "-b", "pointer-checkout", str(worktree))
+    (lint_repo / "docs" / "main-only.md").write_text("main", encoding="utf-8")
+    (worktree / "docs" / "tree-only.md").write_text("tree", encoding="utf-8")
+    _taxon_refs(
+        nodes,
+        [
+            {"handle": "tn5", "title": "Tree", "standard_ref": "docs/tree-only.md"},
+            {"handle": "tn6", "title": "Main", "standard_ref": "docs/main-only.md"},
+        ],
+    )
+
+    res = _run(worktree, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0, res.stderr
+    assert "missing path → tn6 (Main): docs/main-only.md" in res.stdout
+    assert "missing path → tn5" not in res.stdout
+    assert "taxon pointers: 1 missing path(s), 0 unresolvable form(s)" in res.stdout
