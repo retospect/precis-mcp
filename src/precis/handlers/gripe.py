@@ -1517,8 +1517,8 @@ class GripeHandler(NumericRefHandler):
             f"closing a {self._sense()} needs a newest comment starting "
             f"{_RESOLVED_PREFIX!r}",
             next=(
-                f"put(kind={self.kind!r}, id={ref_id}, text={example!r}) first, "
-                f"then repeat this tag (or pass tags={list(add or ())!r} on that put)"
+                f"put(kind={self.kind!r}, id={ref_id}, text={example!r}) then "
+                f"tag(kind={self.kind!r}, id={ref_id}, add={list(add or ())!r})"
             ),
         )
 
@@ -2600,22 +2600,21 @@ class GripeHandler(NumericRefHandler):
                     ),
                 ) from None
             if number not in ords:
-                # gr547802: the count and the valid ord window go in the
-                # message; the ``next=`` is the listing call — a bare
-                # ord list isn't callable and callers re-issued the same
-                # failing get.
+                # Counts let loops stop; the next call drops the invalid
+                # selector (empty) or reads the highest valid ordinal.
                 if not ords:
-                    # gr551839: no comments at all — the ref's body is
-                    # the working read, not another comments call (one
-                    # session re-issued the comment-1 get 120 times).
                     raise BadInput(
-                        f"{self._sense()} {ref.id} has no comments",
-                        next=f"get(kind={self.kind!r}, id={ref.id})",
+                        f"{self._sense()} {ref.id} has no comments (0 comments); "
+                        "stop requesting comment numbers",
+                        next=f"get(kind={self.kind!r}, id={ref.id}, view='full')",
                     )
                 raise BadInput(
                     f"{self._sense()} {ref.id} has no comment {number}"
                     f" — it has {len(ords)} comments, valid: {ords[0]}..{ords[-1]}",
-                    next=(f"get(kind={self.kind!r}, id={ref.id}, view='comments')"),
+                    next=(
+                        f"get(kind={self.kind!r}, id={ref.id}, view='comments', "
+                        f"args={{'comment': {ords[-1]}}})"
+                    ),
                 )
             return _Window(only=number)
         if comments is not None:

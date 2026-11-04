@@ -290,6 +290,11 @@ get(kind="gripe", id=42, view="comments")  # every comment, oldest first,
 get(kind="gripe", id=42, view="full")  # body + comments on one bounded page
 ```
 
+An invalid comment number refuses with the count and a working read.
+With zero comments, stop selecting comment numbers and use the full read.
+Otherwise the error names the highest valid comment; do not increment
+past it or repeat the missing number.
+
 A bare `get` shows the body (clipped at ~1500 chars when long) plus a
 one-line gist of the newest comment; the full
 comment timeline stays behind `view='comments'` (gr514351, gr515189). A
@@ -494,6 +499,18 @@ newest comment starts `resolved:`. Won't-do is
 `resolved: wontfix — <reason>` plus `STATUS:wontfix`. `delete` is only for
 duplicates, spam and gripes filed in error; a soft-deleted gripe still
 `get`s read-only (title, last STATUS, last comment).
+
+`STATUS:verify` / `STATUS:auto_verify` also need that newest comment.
+If a tag call refuses, record the actual resolution first, then tag:
+
+```python
+put(kind="gripe", id=42, text="resolved: <sha> (main, release pending) — <how verified>")
+tag(kind="gripe", id=42, add=["STATUS:auto_verify"])
+```
+
+A gripe-loop mirror still starts `work:`, never `resolved:`. It is progress,
+not resolution evidence; the loop's landing/verification writer owns closure
+(`precis-gripe-loop-help`).
 
 Near-miss status spellings with one reading run as canonical and say so
 (`'STATUS:closed'`/`'resolved'`/`'fixed'`/`'landed'` read as

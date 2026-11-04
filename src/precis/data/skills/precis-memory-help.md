@@ -29,6 +29,18 @@ notes, decisions, ideas, open questions, distilled summaries.
 Categorise with open tags (`topic:`, `project:`, `confidence-*`)
 and bare flags (`pinned`, `wip`). There is no enforced sub-kind.
 
+Tags are labels without whitespace. A `user:` tag takes a handle or slug,
+never the displayed `Name (<@ID>, human)` / `Name (<@ID>, bot)` string.
+Keep that display string in the body. Use the same label for write and read:
+
+```python
+put(kind="memory", text="Jane prefers brief replies.", tags=["user:jane-u123-human"])
+search(kind="memory", tags=["user:jane-u123-human"])
+```
+
+On a whitespace refusal, retry with the corrected label in the error;
+repeating the display string fails again.
+
 Server assigns an integer id on create. Its handle is `me<id>`
 (e.g. `me47`).
 

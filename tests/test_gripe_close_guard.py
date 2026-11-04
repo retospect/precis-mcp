@@ -20,13 +20,30 @@ def _tags(h: GripeHandler, gid: int) -> set[str]:
     return {str(t) for t in h.store.tags_for(gid)}
 
 
-@pytest.mark.parametrize("status", ["STATUS:done", "STATUS:wontfix"])
+@pytest.mark.parametrize(
+    "status",
+    ["STATUS:done", "STATUS:wontfix", "STATUS:verify", "STATUS:auto_verify"],
+)
 def test_close_refused_without_resolved_comment(hub: Hub, status: str) -> None:
     h, gid = _gripe(hub)
     with pytest.raises(BadInput) as ei:
         h.tag(id=gid, add=[status])
     assert f"put(kind='gripe', id={gid}, text='resolved:" in str(ei.value.next)
+    assert f"then tag(kind='gripe', id={gid}, add={[status]!r})" in str(ei.value)
     assert "STATUS:open" in _tags(h, gid)
+
+
+def test_closed_alias_refusal_names_resolved_put_then_canonical_tag(hub: Hub) -> None:
+    h, gid = _gripe(hub)
+    with pytest.raises(BadInput, match="resolved:") as exc:
+        h.tag(id=gid, add=["STATUS:closed"])
+    hint = str(exc.value.next)
+    assert f"put(kind='gripe', id={gid}, text='resolved:" in hint
+    assert f"then tag(kind='gripe', id={gid}, add=['STATUS:done'])" in hint
+    assert "STATUS:open" in _tags(h, gid)
+    h.put(id=gid, text="resolved: abc123 (r1) — verified")
+    h.tag(id=gid, add=["STATUS:done"])
+    assert "STATUS:done" in _tags(h, gid)
 
 
 def test_close_refused_when_newest_comment_is_not_resolved(hub: Hub) -> None:

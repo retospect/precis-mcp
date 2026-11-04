@@ -146,7 +146,7 @@ class Identity:
     @property
     def author_handle(self) -> str:
         """The ``conv`` author + the per-person ``memory`` tag key
-        (``asa_bot.preamble``'s ``user:<handle>`` mechanism, unchanged).
+        (slugged downstream by ``asa_bot.preamble`` into a ``user:`` label).
 
         Includes the Slack mention form so asa can @-mention this person
         or bot directly in a reply, and an explicit human/bot flag so

@@ -238,7 +238,7 @@ def test_comment_selector_past_the_last_names_count_and_window(
 ) -> None:
     """gr547802: ``args={'comment': K}`` past the last comment says how
     many comments exist and the valid window, and its ``next=`` is the
-    listing call. The old ``next=`` was a bare ord list — not callable —
+    highest valid comment call. The old ``next=`` was a bare ord list — not callable —
     and one session re-issued the failing get 46 times."""
     handler = GripeHandler(hub=hub)
     rid = _gripe(handler)  # comments 1..3
@@ -249,13 +249,15 @@ def test_comment_selector_past_the_last_names_count_and_window(
     nxt = str(exc.value.next)
     assert nxt.startswith("get(")
     assert f"id={rid}" in nxt and "view='comments'" in nxt
+    assert "args={'comment': 3}" in nxt
+    assert "comment number 3" in handler.get(id=rid, view="comments", comment=3).body
 
 
 def test_comment_selector_on_a_commentless_gripe_still_gives_a_call(
     hub: Hub,
 ) -> None:
     """gr551839: ``args={'comment': K}`` on a gripe with ZERO comments
-    says 'has no comments' and the ``next=`` is the body read, not
+    says 'has no comments' and the ``next=`` is the full read, not
     another comments call — one session re-issued the failing
     comment-1 get 120 times."""
     handler = GripeHandler(hub=hub)
@@ -264,5 +266,8 @@ def test_comment_selector_on_a_commentless_gripe_still_gives_a_call(
         handler.get(id=rid, view="comments", comment=1)
     assert f"gripe {rid} has no comments" in str(exc.value)
     nxt = str(exc.value.next)
-    assert nxt == f"get(kind='gripe', id={rid})"
+    assert "0 comments" in str(exc.value)
+    assert "stop requesting comment numbers" in str(exc.value)
+    assert nxt == f"get(kind='gripe', id={rid}, view='full')"
     assert "view='comments'" not in nxt
+    assert "hint fixture body" in handler.get(id=rid, view="full").body

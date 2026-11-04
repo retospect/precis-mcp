@@ -26,7 +26,12 @@ LLM call.
 the precis account that set that numeric id on ``/account``
 (``web_users.discord_user_id``); the account ``abbrev`` becomes the conv
 ``author`` and the ``user:<handle>`` memory tag. Unmapped users keep the
-Discord display name. The same abbrev attributes the turn's LLM writes
+Discord display name. Per-user memory reads, placeholder writes and prompt
+examples slug whitespace/mention-bearing display strings into the same
+``user:`` label; valid existing handles stay unchanged. Empty slugs use a
+short stable name hash so non-ASCII display names do not share a profile.
+Display names remain in prose. A refused search must not mint a placeholder:
+its error is not an empty result. The same abbrev attributes the turn's LLM writes
 (:mod:`precis.acting_user`): asa sets ``PRECIS_ACTING_USER`` on the
 ``claude -p`` run, the deployed mcp.json passes it to the ``precis serve``
 that run spawns over stdio, and that server records its writes as

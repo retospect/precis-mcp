@@ -857,6 +857,13 @@ class Tag:
             # and carries neither whitespace nor the ``<…>`` placeholder
             # brackets the next guard rejects.
             slug = re.sub(r"[^A-Za-z0-9:_-]+", "-", s).strip("-:_").lower()
+            user_calls = ""
+            if s.startswith("user:") and kind in (None, "memory"):
+                user_calls = (
+                    f"search(kind='memory', tags=[{slug!r}]) or "
+                    f"put(kind='memory', text='<memory text>', tags=[{slug!r}]); "
+                    "keep the display name in text=, not the user: tag; "
+                )
             raise BadInput(
                 "tag value must not contain whitespace (no spaces, tabs, or "
                 "newlines); whitespace means the value is prose, not a tag "
@@ -868,6 +875,7 @@ class Tag:
                         else "if it is a label: hyphenate it into one "
                         "space-free token (e.g. 'topic:co2-capture'); "
                     )
+                    + user_calls
                     + "if it is prose: pass it as text= (put) or q= "
                     "(search), not tags= — a tag takes a single "
                     "space-free label"

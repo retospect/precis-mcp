@@ -201,6 +201,30 @@ def test_memory_create_rolls_back_on_rejected_tag(memory: MemoryHandler) -> None
     assert after == before
 
 
+@pytest.mark.parametrize(
+    ("invalid", "label"),
+    [
+        (_SLACK_TAG, "user:reto-stamm-up4jth873-human"),
+        ("user:Rocky (<@U0AKBJ0A0VA>, bot)", "user:rocky-u0akbj0a0va-bot"),
+    ],
+)
+def test_memory_user_tag_refusals_name_corrected_calls(
+    memory: MemoryHandler, invalid: str, label: str
+) -> None:
+    with pytest.raises(BadInput, match="whitespace") as search_error:
+        memory.search(tags=[invalid])
+    with pytest.raises(BadInput, match="whitespace") as put_error:
+        memory.put(text="a note", tags=[invalid], auto_refresh_days=180)
+    for error in (search_error.value, put_error.value):
+        assert f"search(kind='memory', tags=[{label!r}])" in str(error)
+        assert f"put(kind='memory', text='<memory text>', tags=[{label!r}])" in str(
+            error
+        )
+    created = id_of(memory.put(text="a note", tags=[label]).body)
+    assert label in _tag_values(memory.store, created)
+    assert "a note" in memory.search(tags=[label]).body
+
+
 # ── short space-free yields stay plain tags (no redirect) ────────────
 
 

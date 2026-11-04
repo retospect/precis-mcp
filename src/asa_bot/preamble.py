@@ -17,7 +17,9 @@ parallel. Total wall-clock ~50ms over the tailnet.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -53,8 +55,8 @@ async def build(
     (``"Discord"`` by default, so the existing caller is unchanged;
     asa_slack passes ``"Slack"``). Everything else in this module is
     already transport-agnostic (``guild_name``/``channel_name`` are just
-    display strings, ``author_handle`` is just the per-user memory tag
-    key), so a second platform needs no other change here.
+    display strings). ``author_handle`` stays intact for display; user
+    memory tags use its space-free label from ``_user_note_tag``.
     """
     now = datetime.now(tz=UTC)
 
@@ -245,6 +247,18 @@ async def _fetch_recent_dreams(precis: PrecisClient) -> str:
     )
 
 
+def _user_note_tag(author_handle: str) -> str:
+    """Keep valid handles; slug display strings just as the tag refusal suggests."""
+    tag = f"user:{author_handle}"
+    if any(ch.isspace() for ch in tag) or "<" in tag or ">" in tag:
+        slug = re.sub(r"[^A-Za-z0-9:_-]+", "-", tag).strip("-:_").lower()
+        if slug == "user":
+            digest = hashlib.sha256(author_handle.encode("utf-8")).hexdigest()[:12]
+            return f"user:{digest}"
+        return slug
+    return tag
+
+
 async def _fetch_user_note(precis: PrecisClient, author_handle: str) -> str:
     """Memories tagged ``user:<handle>`` — the rolling profile note.
 
@@ -260,17 +274,16 @@ async def _fetch_user_note(precis: PrecisClient, author_handle: str) -> str:
     nothing decays on it today, so it records intent rather than
     enforcing anything.
     """
+    user_tag = _user_note_tag(author_handle)
     body = await precis.call_tool(
         "search",
         {
             "kind": "memory",
-            "tags": [f"user:{author_handle}"],
+            "tags": [user_tag],
             "page_size": 10,
         },
     )
-    is_empty = (
-        not body or not body.strip() or "no " in body.strip().lower().split("\n", 1)[0]
-    )
+    is_empty = not body or not body.strip() or body.strip().lower().startswith("no ")
     if is_empty:
         # Mint a placeholder so Asa has a starting point. Best-effort;
         # any failure is silently swallowed (the preamble renderer
@@ -286,7 +299,7 @@ async def _fetch_user_note(precis: PrecisClient, author_handle: str) -> str:
                         "preference, goal, area of expertise, "
                         "ongoing project."
                     ),
-                    "tags": [f"user:{author_handle}"],
+                    "tags": [user_tag],
                     "args": {"auto_refresh_days": 180},
                 },
             )
@@ -436,9 +449,8 @@ def _render_user_note(blob: str, author_handle: str) -> str:
     user as I learn things." Real content comes from precis search
     for memories tagged ``user:<handle>``.
     """
-    has_content = (
-        blob and blob.strip() and "no " not in blob.strip().lower().split("\n", 1)[0]
-    )
+    user_tag = _user_note_tag(author_handle)
+    has_content = blob and blob.strip() and not _is_empty_search(blob)
     if has_content:
         return (
             f"## About the user (`{author_handle}`)\n\n"
@@ -446,14 +458,14 @@ def _render_user_note(blob: str, author_handle: str) -> str:
             f"*Keep these current — when you learn something durable "
             f"about this user (preference, goal, area of expertise, "
             f"ongoing project, what they hate), capture it: "
-            f"`precis put(kind='memory', text='…', tags=['user:{author_handle}'])`.*"
+            f"`precis put(kind='memory', text='…', tags=[{user_tag!r}])`.*"
         )
     return (
         f"## About the user (`{author_handle}`)\n\n"
         f"*(no notes yet on this user)*\n\n"
         f"*Drop one when you learn something durable — preference, "
         f"goal, area of expertise, ongoing project: "
-        f"`precis put(kind='memory', text='…', tags=['user:{author_handle}'])`.*"
+        f"`precis put(kind='memory', text='…', tags=[{user_tag!r}])`.*"
     )
 
 
