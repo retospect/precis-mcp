@@ -458,6 +458,29 @@ table at a potential (rows sorted by `SPAN` at U; see the potential lever).
   `reset_window_fraction` are declared quest measures beside
   `window_area_VpH` — the guaranteed window, never blended into it.
 
+## Read the operating optimum of one slab
+
+`get(kind='pathway', id='pw…', view='optimum')` reads stored evidence and
+names the record behind each value. It queues no job and runs no engine.
+The two answers have separate validity:
+
+- **thermodynamic window at the stored T**: CHE route U_L/U_opt and spans;
+  with a coverage scan on this slab, the operating-window and Shapley
+  measures, restricted to the pathway's assumed termination. Without a
+  scan the read is pathway energetics only: resting state unknown, no
+  claimed window area or Shapley. pH is flat on RHE, so there is no unique
+  optimal pH. Each coverage footing stays separate.
+- **kinetic optimum at the run U**: the sweep's stored objective, value,
+  T, total pressure and composition. A missing run U or unrecorded
+  `subject_to` rate floor is explicit; a configured floor is labelled as
+  a declaration, not proof that the stored sweep applied it.
+
+Either half can be absent; the other still renders, with a next call for
+the missing data. An empty/null sweep optimum is not its first grid point.
+There is no joint score: CHE is thermodynamic post-processing, and a joint
+objective needs a U axis on the kinetics sweep. This view does not optimize
+or enqueue the suggested calls.
+
 ## Other reads
 
 - `view='intermediates'` / `view='steps'` — the states / elementary steps as tables.

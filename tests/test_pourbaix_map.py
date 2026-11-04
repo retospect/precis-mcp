@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -94,6 +95,41 @@ def _job(
 
 
 # ── build_map (pure) ────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("conditions", [{"temperature": 600.0}, {}, None])
+def test_map_conditions_come_from_the_stored_sweep_job(
+    conditions: dict[str, float] | None,
+) -> None:
+    store = MagicMock()
+    conn = store.pool.connection.return_value.__enter__.return_value
+    sweep = _sweep({"m": _payload("m", {"H": [-0.02]})})
+    conn.execute.return_value.fetchall.side_effect = [
+        [
+            (81, 9, {"coverage": {"conditions": {"temperature": 900.0}}}),
+            (
+                81,
+                8,
+                {
+                    "model": "m",
+                    "coverage": {"conditions": conditions},
+                    "che_sweep": sweep,
+                },
+            ),
+            (81, 7, {"coverage": {"conditions": {"temperature": 310.0}}}),
+        ],
+        [
+            (9, "STATUS", "succeeded"),
+            (8, "STATUS", "succeeded"),
+            (7, "STATUS", "succeeded"),
+        ],
+    ]
+
+    entry = pm.build_map(pm.scan_jobs(store, 81))
+
+    assert entry["sweep_job"] == 8
+    assert entry["conditions"] == conditions
+    assert entry["regions"]
 
 
 def test_map_regions_split_the_window_at_the_boundary() -> None:

@@ -256,6 +256,7 @@ class PathwayHandler(Handler):
             "kinetics",
             "kinetics-sweep",
             "kinetics-summary",
+            "optimum",
             "tpd",
             "manifest",
             "trust",
@@ -1185,6 +1186,10 @@ class PathwayHandler(Handler):
             )
 
         meta = ref.meta or {}
+        if v == "optimum":
+            from .optimum import optimum_text
+
+            return Response(body=optimum_text(store, ref))
         if meta.get("status") == "computing":
             node = meta.get("route_node", "?")
             return Response(

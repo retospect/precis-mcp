@@ -1416,8 +1416,10 @@ def test_all_declared_views_dispatch(pathway_store: Store) -> None:
     h.put(id="views_smoke", text=SMOKE)
 
     declared = PathwayHandler.spec.views
-    assert len(declared) == 17
-    assert {"kinetics-sweep", "kinetics-summary", "manifest", "tpd"} <= set(declared)
+    assert len(declared) == 18
+    assert {"kinetics-sweep", "kinetics-summary", "manifest", "tpd", "optimum"} <= set(
+        declared
+    )
     for view in declared:
         resp = h.get(id=None if view == "kinetics-summary" else slug, view=view)
         assert resp.body, f"view={view!r} returned an empty body"

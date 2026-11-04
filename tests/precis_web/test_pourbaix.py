@@ -1280,6 +1280,7 @@ def _scan_jobs_oracle(store: Any, sid: int) -> list[dict[str, Any]]:
         if not any(str(t) == "STATUS:succeeded" for t in store.tags_for(int(ref_id))):
             continue
         m = dict(meta or {})
+        coverage = m.get("coverage")
         out.append(
             {
                 "ref_id": int(ref_id),
@@ -1287,6 +1288,9 @@ def _scan_jobs_oracle(store: Any, sid: int) -> list[dict[str, Any]]:
                 "anchor_key": m.get("anchor_key"),
                 "engine_version": m.get("engine_version"),
                 "corrections": m.get("corrections"),
+                "conditions": coverage.get("conditions")
+                if isinstance(coverage, dict)
+                else None,
                 "che_sweep": m.get("che_sweep")
                 if isinstance(m.get("che_sweep"), dict)
                 else None,

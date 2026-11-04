@@ -89,8 +89,8 @@ U_RHE_WINDOW: tuple[float, float] = (-1.0, 0.5)
 def scan_jobs(store: Any, structure_ref_id: int) -> list[dict[str, Any]]:
     """Succeeded ``surface_coverage_scan`` jobs tied to a structure, newest
     first: ``[{ref_id, model, anchor_key, engine_version, corrections,
-    che_sweep}]`` (``che_sweep`` may be ``None`` on a job that predates the
-    pooled-sweep stamp). The parent convention mirrors
+    conditions, che_sweep}]`` (``che_sweep`` may be ``None`` on a job that
+    predates the pooled-sweep stamp). The parent convention mirrors
     ``precis.quest.compute``'s candidate-job lookup: parented on the
     structure or on a todo under it."""
     return scan_jobs_many(store, [int(structure_ref_id)])[int(structure_ref_id)]
@@ -145,6 +145,7 @@ def scan_jobs_many(
         if int(ref_id) not in succeeded:
             continue
         m = dict(meta or {})
+        coverage = m.get("coverage")
         out[int(sid)].append(
             {
                 "ref_id": int(ref_id),
@@ -152,6 +153,9 @@ def scan_jobs_many(
                 "anchor_key": m.get("anchor_key"),
                 "engine_version": m.get("engine_version"),
                 "corrections": m.get("corrections"),
+                "conditions": coverage.get("conditions")
+                if isinstance(coverage, dict)
+                else None,
                 "che_sweep": m.get("che_sweep")
                 if isinstance(m.get("che_sweep"), dict)
                 else None,
@@ -520,6 +524,8 @@ def build_map(
         "models": models,
         "engine_version": (newest or jobs[0]).get("engine_version") if jobs else None,
         "corrections": corrections,
+        # The sweep's own scan conditions, never a sibling's fallback.
+        "conditions": newest.get("conditions") if newest else None,
         "uncorrected": uncorrected,
         "pH": sweep.get("pH"),
         "prefac_V_per_pH": sweep.get("prefac_V_per_pH", 0.0592),

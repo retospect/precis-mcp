@@ -190,10 +190,15 @@ def assumed_label(coads: dict[str, int]) -> str:
 
 def region_coads(region: dict[str, Any] | None) -> dict[str, int]:
     """The resting termination as a ``{species: count}`` dict so it can be
-    compared against ``meta.params.coads`` — ``{}`` for the clean region."""
+    compared against ``meta.params.coads`` — ``{}`` for the clean region.
+    Mixed terminations store per-species ``counts``; their adsorbate label
+    and total ``n`` do not identify the composition."""
     term = (region or {}).get("termination")
     if not isinstance(term, dict):
         return {}
+    counts = term.get("counts")
+    if isinstance(counts, dict) and counts:
+        return {str(k): int(v) for k, v in counts.items() if isinstance(v, int | float)}
     ads = term.get("adsorbate")
     n = term.get("n")
     if not isinstance(ads, str) or not ads or not isinstance(n, int | float):
