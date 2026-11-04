@@ -56,11 +56,11 @@ when the last one does.
 ## Motivation / why
 
 The explorer is how Reto reads results (catalysis-selectivity thread
-context). Today it shows one U slider and a pH input (`#pw-u-lever`,
-`#pw-ph-input`, `setU` in `pathway_detail.html.j2`; pH moves only the
-SHE readout), no checkbox or toggle of any kind, and nothing on the page
-says which of its numbers are measured, estimated, interpolated or
-absent. The Pourbaix page's "honest slider" flag (`data-offgrid` on
+context). The environment controls are one U slider and a pH input
+(`#pw-u-lever`, `#pw-ph-input`, `setU` in `pathway_detail.html.j2`; pH
+moves only the SHE readout). The environment still needs to distinguish
+measured, estimated, interpolated and absent results. The Pourbaix
+page's "honest slider" flag (`data-offgrid` on
 `#pbx-u`/`#pbx-ph`, `pourbaix/detail.html.j2`) is wired but nothing sets
 it, so the off-grid warning has never shown. The environment is spread over four vocabularies (the pathway
 config's `electrochemistry` and `conditions` blocks, the kinetics
@@ -167,24 +167,11 @@ current point and a click in any map moves it.
   (`barrier 1.4 eV > 0.77 eV` / `no turnover: 1e-100 /s`) with hover
   text, and the route picker marks a cut route "cut at NO@N→N+O" (the
   same mark gr553482 asked for routes cut by an unpriced step).
-- **Annotation layers**, one named checkbox each with hover help, state
-  in the URL: H* supply legs (the `shoulder` of `pwFoldPath`, drawn as
-  `line.pw-shoulder-drop`; off = fold each H* adsorption + hydrogenation
-  into one PCET rung, the `staircase_masks.pcet_route` convention);
-  `+H⁺+e⁻` feed arrows (`g.pw-hydro-arrow`, `pwLinkAnnotations`); energy
-  numbers with ±σ (today the number is printed only when `energy_std` >
-  1e-6, else it lives in the tooltip); desorption labels (`−H₂O ↑`,
-  `pwFormatAnnotations`; H₂ is not in `PW_MOLECULES`, so `−H₂ ↑` needs
-  the `~h2` landing or `link.removed`); Ea labels on transition lines
-  (shown only when barrier > 1e-3); measured TS humps (`humpPoints`);
-  BEP-estimated humps (dashed, with band; slice 1); fork percentages
-  (`computeForkProbabilities`, today appended to the Ea label only);
-  low-confidence hatching (today node-level red only; edge
-  `low_confidence` is unstyled on curves); the states table.
-  Everything above lives in `renderDiagram` and the node-tested pure
-  block `// pw-annot:begin … :end` (`tests/precis_web/test_pathway_detail.py`
-  lifts it); the toggles are inputs to those functions, not a second
-  renderer.
+- Extend the existing annotation controls when adding filter and kinetics
+  layers: `src/precis_web/templates/refs/pathway_detail.html.j2::PW_LAYERS`
+  and `pwLayerPresentation` share the URL and renderer inputs. User-facing
+  behavior is in `src/precis_web/manual/04-watching-the-loop.md` under
+  "Reading a pathway".
 
 ### D. Per-step kinetics on the diagram
 
@@ -350,8 +337,6 @@ is the slab's.
    - payload + template tests · bep/source/banner coverage ·
      regression guard (`tests/precis_web/test_pathway_detail.py`,
      beside `test_pathway_graph_payload_passes_link_added_removed_through`)
-2. gr559346 — named annotation toggles with hover help, URL-persisted
-   (medium).
 3. gr559348 — per-step kinetics on hover/labels; Arrhenius inset;
    methods note (medium).
 4. gr559349 — visual-filter box: barrier and turnover sliders, DAG
@@ -381,7 +366,7 @@ coverage, decision 6) and gr559355 (`view='kinetics'` prints T = 300 K
 beside a 298.15 K environment). The title is gr549574 (backfill pending)
 and gr553416.
 
-Order: 1–3 first (stored data only; immediate value on every pathway),
+Order: 3 next (stored data only; immediate value on every pathway),
 then 4, then 5 → 6 → 7, then 8. The chemistry thread's rank rule puts UI
 last; this item is the exception the catalysis thread already states (the
 diagram is how results are read), and 1–4 touch no engine.

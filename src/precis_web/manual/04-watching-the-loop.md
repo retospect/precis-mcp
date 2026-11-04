@@ -66,6 +66,23 @@ know.
 recent tick. When you want to know *why* it did something rather than
 what it did, this is the door.
 
+## Reading a pathway
+
+On a pathway page, **Annotation layers** above the reaction diagram has
+checkboxes for H* supply legs, proton/electron feeds, species energies,
+desorption labels, Ea labels, measured humps, BEP humps, fork percentages,
+low-confidence styling, and the states table. Hover a checkbox for its
+meaning. All start on; **copy link** preserves your choices together with
+the selected state, route, potential, and pH.
+
+Turning off H* supply legs combines adsorption and hydrogenation into
+one PCET rung. Hiding a hump leaves a connector, with its stored barrier
+still on hover. Ea labels and fork percentages can be hidden separately.
+Species energies print beside the name when uncertainty is recorded;
+hover the level for its energy otherwise. Hiding low-confidence styling
+leaves the warning reasons on hover and does not change the trust checks
+used to calculate fork percentages.
+
 ## What the dashboard does not tell you yet
 
 It shows momentum, but not **cadence**. There is currently no place in

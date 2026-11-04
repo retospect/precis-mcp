@@ -186,6 +186,10 @@
   {% endif %}
 
   {% if diagram %}
+  <details class="mb-2 rounded border border-line-strong px-2 py-1.5 text-xs text-fg-muted" open>
+    <summary class="cursor-pointer font-semibold text-fg-secondary">Annotation layers</summary>
+    <div id="pw-layer-controls" class="mt-1 flex flex-wrap gap-x-3 gap-y-1"></div>
+  </details>
   {# path legend — built by JS (buildPathLegend): one button per root->leaf
      path, hover = emphasize, click = select+fade the rest, Esc = clear.
      Mirrors the autocatpath HTML export's legend-as-buttons interaction.
@@ -265,65 +269,67 @@
        clickable" too — a diagram node and its list row both resolve to
        the same ``showState(id)``. ── #}
     <div>
-      <div class="flex items-center gap-2 mb-1.5 flex-wrap">
-        <h3 class="text-xs font-semibold text-fg-muted uppercase tracking-wide">States</h3>
-        <span class="text-[11px] text-fg-faint">{{ n_states_with_geom }}/{{ state_ids | length }} with geometry</span>
-        <div class="ml-auto flex items-center gap-1">
-          <button type="button" id="pw-prev" class="rounded border border-line-strong px-2 py-0.5 text-[11px] hover:bg-surface-muted">&larr; prev</button>
-          <button type="button" id="pw-next" class="rounded border border-line-strong px-2 py-0.5 text-[11px] hover:bg-surface-muted">next &rarr;</button>
-        </div>
-      </div>
-      {# ── branch-grouped state list (item C) — one section per owner path
-         (target's own path first, then each branch), tinted to match the
-         diagram's per-path colour; a branch section carries a "branches
-         from <state>" subtitle. Selection/click/scroll behavior is
-         unchanged — every row is still a plain ``.pw-state-node`` with
-         ``data-state``, so ``highlightState``/showState work identically
-         across section boundaries. ── #}
-      <div id="pw-state-list" class="space-y-2 max-h-64 overflow-y-auto">
-        {% for sect in state_sections %}
-        <div>
-          {% if sect.leaf %}
-          <div class="text-[10px] font-semibold uppercase tracking-wide mb-0.5" style="color: {{ sect.color }}">
-            &rarr; {{ sect.leaf }}
-            {% if sect.subtitle %}<span class="ml-1 font-normal normal-case text-fg-faint">({{ sect.subtitle }})</span>{% endif %}
+      <div id="pw-states-panel">
+        <div class="flex items-center gap-2 mb-1.5 flex-wrap">
+          <h3 class="text-xs font-semibold text-fg-muted uppercase tracking-wide">States</h3>
+          <span class="text-[11px] text-fg-faint">{{ n_states_with_geom }}/{{ state_ids | length }} with geometry</span>
+          <div class="ml-auto flex items-center gap-1">
+            <button type="button" id="pw-prev" class="rounded border border-line-strong px-2 py-0.5 text-[11px] hover:bg-surface-muted">&larr; prev</button>
+            <button type="button" id="pw-next" class="rounded border border-line-strong px-2 py-0.5 text-[11px] hover:bg-surface-muted">next &rarr;</button>
           </div>
-          {% endif %}
-          <div class="space-y-0.5">
-            {% for row in sect.rows %}
-            {% set sid = row.id %}
-            <div class="pw-state-node flex items-center gap-2 flex-wrap text-xs rounded px-2 py-1 border border-line bg-surface cursor-pointer hover:bg-info-subtle"
-                 data-state="{{ sid }}" role="button" tabindex="0">
-              <span class="font-mono text-fg-secondary">{{ sid }}</span>
-              {% if row.annotation %}
-              <span class="text-fg-faint italic">{{ row.annotation }}</span>
-              {% endif %}
-              {# distinct from "no geometry linked" — this state HAS a graph node
-                 but its rel_energy hasn't been computed yet; still clickable. #}
-              {% if sid in states_missing_energy %}
-              <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-warning-subtle text-warning border border-warning" title="no computed energy yet for this state — excluded from the diagram">no energy yet</span>
-              {% endif %}
-              {% if state_warnings.get(sid) %}
-              <span class="text-[10px] px-1.5 py-0.5 rounded-full border {% if state_warnings[sid] | selectattr('severity', 'equalto', 'bad') | list %}bg-danger-muted text-danger-strong border-danger{% else %}bg-warning-subtle text-warning-strong border-warning{% endif %}"
-                    title="{{ state_warnings[sid] | map(attribute='text') | join('; ') }}">&#9888;</span>
-              {% endif %}
-              {% if state_geoms.get(sid) %}
-              <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-success-muted text-success-deep">geometry</span>
-              {% else %}
-              <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-surface-emphasis text-fg-subtle">no geometry linked</span>
-              {% endif %}
-              {# gripe 161576 remainder: what calculator produced this state's
-                 numbers — a computed run's model, or an external import's
-                 method fingerprint + explicit "external" marker. Absent
-                 (never invented) when the linked structure has no run row. #}
-              {% if state_calc.get(sid) %}
-              <span class="w-full basis-full text-[10px] text-fg-faint font-mono" title="calculator identity for this state's linked structure">{{ state_calc[sid] }}</span>
-              {% endif %}
+        </div>
+        {# ── branch-grouped state list (item C) — one section per owner path
+           (target's own path first, then each branch), tinted to match the
+           diagram's per-path colour; a branch section carries a "branches
+           from <state>" subtitle. Selection/click/scroll behavior is
+           unchanged — every row is still a plain ``.pw-state-node`` with
+           ``data-state``, so ``highlightState``/showState work identically
+           across section boundaries. ── #}
+        <div id="pw-state-list" class="space-y-2 max-h-64 overflow-y-auto">
+          {% for sect in state_sections %}
+          <div>
+            {% if sect.leaf %}
+            <div class="text-[10px] font-semibold uppercase tracking-wide mb-0.5" style="color: {{ sect.color }}">
+              &rarr; {{ sect.leaf }}
+              {% if sect.subtitle %}<span class="ml-1 font-normal normal-case text-fg-faint">({{ sect.subtitle }})</span>{% endif %}
             </div>
-            {% endfor %}
+            {% endif %}
+            <div class="space-y-0.5">
+              {% for row in sect.rows %}
+              {% set sid = row.id %}
+              <div class="pw-state-node flex items-center gap-2 flex-wrap text-xs rounded px-2 py-1 border border-line bg-surface cursor-pointer hover:bg-info-subtle"
+                   data-state="{{ sid }}" role="button" tabindex="0">
+                <span class="font-mono text-fg-secondary">{{ sid }}</span>
+                {% if row.annotation %}
+                <span class="text-fg-faint italic">{{ row.annotation }}</span>
+                {% endif %}
+                {# distinct from "no geometry linked" — this state HAS a graph node
+                   but its rel_energy hasn't been computed yet; still clickable. #}
+                {% if sid in states_missing_energy %}
+                <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-warning-subtle text-warning border border-warning" title="no computed energy yet for this state — excluded from the diagram">no energy yet</span>
+                {% endif %}
+                {% if state_warnings.get(sid) %}
+                <span class="text-[10px] px-1.5 py-0.5 rounded-full border {% if state_warnings[sid] | selectattr('severity', 'equalto', 'bad') | list %}bg-danger-muted text-danger-strong border-danger{% else %}bg-warning-subtle text-warning-strong border-warning{% endif %}"
+                      title="{{ state_warnings[sid] | map(attribute='text') | join('; ') }}">&#9888;</span>
+                {% endif %}
+                {% if state_geoms.get(sid) %}
+                <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-success-muted text-success-deep">geometry</span>
+                {% else %}
+                <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-surface-emphasis text-fg-subtle">no geometry linked</span>
+                {% endif %}
+                {# gripe 161576 remainder: what calculator produced this state's
+                   numbers — a computed run's model, or an external import's
+                   method fingerprint + explicit "external" marker. Absent
+                   (never invented) when the linked structure has no run row. #}
+                {% if state_calc.get(sid) %}
+                <span class="w-full basis-full text-[10px] text-fg-faint font-mono" title="calculator identity for this state's linked structure">{{ state_calc[sid] }}</span>
+                {% endif %}
+              </div>
+              {% endfor %}
+            </div>
           </div>
+          {% endfor %}
         </div>
-        {% endfor %}
       </div>
 
       {% if measures %}
@@ -654,6 +660,68 @@
   // fragments), ``*`` (clean slab), ``*~n2o`` / ``O~n2`` (landing state:
   // ``~tag`` names the gas released). ──
   // pw-annot:begin
+  // One set of presentation inputs for the renderer and shareable URL.
+  // All layers default on, preserving the existing conditional labels.
+  const PW_LAYERS = [
+    { key: 'supply', label: 'H* supply legs', help: 'Show the adsorbed-H shoulder and supply drop. Off combines adsorption and hydrogenation into one PCET rung; stored transition-state energies are unchanged.' },
+    { key: 'feed', label: 'Proton + electron feeds', help: 'Draw +H⁺+e⁻ arrows onto the product level receiving the feed.' },
+    { key: 'energy', label: 'Species energies ±σ', help: 'Print species energy and uncertainty when σ is recorded. Exact energies remain available on hover.' },
+    { key: 'desorption', label: 'Desorption labels', help: 'Label released molecules, including H₂, with an upward arrow.' },
+    { key: 'ea', label: 'Ea labels', help: 'Print measured or BEP activation energies, or Ea n/a where no barrier is known.' },
+    { key: 'measured', label: 'Measured humps', help: 'Draw measured transition-state humps and their uncertainty bands. Off keeps a connector and the stored barrier on hover.' },
+    { key: 'bep', label: 'BEP humps', help: 'Draw dashed estimated transition-state humps and fit uncertainty bands. Off keeps a connector and the BEP estimate on hover.' },
+    { key: 'forks', label: 'Fork percentages', help: 'Show branching percentages at forks with complete, trusted measured barriers.' },
+    { key: 'confidence', label: 'Low-confidence styling', help: 'Mark flagged states in red with a warning symbol. Hiding this styling does not change data or trust checks; reasons remain on hover.' },
+    { key: 'states', label: 'States table', help: 'Show the selectable state list and previous/next controls beside the structure viewer.' },
+  ];
+  function pwLayerDefaults() {
+    return Object.fromEntries(PW_LAYERS.map((layer) => [layer.key, true]));
+  }
+  function pwLayerPresentation(layers) {
+    const out = pwLayerDefaults();
+    PW_LAYERS.forEach(({ key }) => { if (layers && layers[key] === false) { out[key] = false; } });
+    return out;
+  }
+  function pwReadLayers(qs, ignored = []) {
+    const out = pwLayerDefaults();
+    PW_LAYERS.forEach(({ key }) => {
+      const name = 'layer_' + key, value = qs.get(name);
+      if (value === '0') { out[key] = false; }
+      else if (value != null && value !== '1') { ignored.push(name); }
+    });
+    return out;
+  }
+  function pwWriteLayers(qs, layers) {
+    PW_LAYERS.forEach(({ key }) => {
+      qs.delete('layer_' + key);
+      if (layers[key] === false) { qs.set('layer_' + key, '0'); }
+    });
+  }
+  function pwNodeLabel(nd, layers) {
+    const sd = nd.energy_std || 0;
+    return pwLayerPresentation(layers).energy && sd > 1e-6
+      ? `${nd.id} (${nd.rel_energy >= 0 ? '+' : ''}${nd.rel_energy.toFixed(2)}±${sd.toFixed(2)})` : String(nd.id);
+  }
+  function pwShowHump(geo, layers) {
+    const view = pwLayerPresentation(layers);
+    return geo.barrier != null ? view.measured : geo.bepEa != null && view.bep;
+  }
+  function pwEaLabel(geo, forkPct, layers) {
+    const view = pwLayerPresentation(layers);
+    const unknown = geo.barrier == null && geo.bepEa == null;
+    const isBep = geo.barrier == null && geo.bepEa != null;
+    // Keep the existing zero-barrier label threshold, even at a fork.
+    if (!unknown && !isBep && geo.barrier <= 1e-3) { return ''; }
+    const sd = geo.bsd || 0;
+    let text = !view.ea ? '' : unknown ? 'Ea n/a' : isBep
+      ? `Ea≈${geo.bepEa.toFixed(2)} (BEP)`
+      : `Ea=${geo.barrier.toFixed(2)}` + (sd > 1e-6 ? `±${sd.toFixed(2)}` : '');
+    if (view.forks && forkPct != null) {
+      const percent = `${Math.round(forkPct * 100)}%`;
+      text += text ? ` (${percent})` : percent;
+    }
+    return text;
+  }
   const PW_MOLECULES = ['H2O', 'NH3', 'NH2OH', 'N2O', 'N2'];
   const PW_DIGITS = '₀₁₂₃₄₅₆₇₈₉';
   const PW_PROTON = '+H⁺+e⁻';
@@ -803,7 +871,7 @@
       nProt = kind === 'adsorption' ? 0 : +(link.added.H || 0);
     }
     if (link && link.removed && typeof link.removed === 'object') {
-      leaving = Object.keys(link.removed).filter((k) => PW_MOLECULES.includes(k)
+      leaving = Object.keys(link.removed).filter((k) => k === 'H2' || PW_MOLECULES.includes(k)
         || (t.gas != null && k.toUpperCase() === t.gas));
       leaving.forEach((k) => { counts[k] = +link.removed[k] || 1; });
     }
@@ -823,7 +891,8 @@
   }
 
   // Annotations for a folded step: its supply link, then its reaction link.
-  function pwStepAnnotations(step, isLeaf) {
+  function pwStepAnnotations(step, isLeaf, layers) {
+    const view = pwLayerPresentation(layers);
     const out = [];
     if (step.supply) {
       out.push(...pwLinkAnnotations(step.supply.source, step.supply.target, step.supply,
@@ -834,13 +903,47 @@
         { after: step.after, tgtIsLeaf: !!(isLeaf && isLeaf(step.tgt)) }));
     }
     const seen = new Set();
-    return out.filter((a) => { const k = a.text + a.arrow; if (seen.has(k)) { return false; } seen.add(k); return true; });
+    return out.filter((a) => {
+      if ((!view.feed && a.proton) || (!view.desorption && a.arrow === 'up')) { return false; }
+      const k = a.text + a.arrow;
+      if (seen.has(k)) { return false; }
+      seen.add(k); return true;
+    });
   }
 
   function pwFormatAnnotations(anns) {
     return anns.map((a) => a.text + (a.arrow === 'down' ? ' ↓' : a.arrow === 'up' ? ' ↑' : '')).join(' · ');
   }
   // pw-annot:end
+
+  let layerSelection = pwLayerDefaults();
+
+  function buildLayerControls() {
+    const box = document.getElementById('pw-layer-controls');
+    if (!box) { return; }
+    PW_LAYERS.forEach((layer) => {
+      const label = document.createElement('label');
+      label.className = 'flex items-center gap-1';
+      label.title = layer.help;
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.classList.add('pw-layer-toggle');
+      input.dataset.layer = layer.key;
+      input.title = layer.help;
+      input.checked = layerSelection[layer.key];
+      const name = document.createElement('span');
+      name.textContent = layer.label;
+      label.appendChild(input);
+      label.appendChild(name);
+      box.appendChild(label);
+      input.addEventListener('change', () => {
+        layerSelection[layer.key] = input.checked;
+        renderDiagram(layerSelection);
+        if (selected) { highlightState(selected, false); }
+        syncUrl();
+      });
+    });
+  }
 
   // ── fork-probability guard (slice 3 item 4) — at every state with >=2
   // outgoing CHEMICAL edges (equal n_H on both endpoints, not a supply/
@@ -1057,8 +1160,12 @@
     return 'low confidence \u2014 ' + bits.join('; ');
   }
 
-  function renderDiagram() {
+  function renderDiagram(layers = layerSelection) {
+    const view = pwLayerPresentation(layers);
     const g = V.diagram;
+    const states = document.getElementById('pw-states-panel');
+    // Without a diagram there is no checkbox to restore state navigation.
+    if (states) { states.classList.toggle('hidden', !!g && !view.states); }
     const el = document.getElementById('pw-diagram');
     if (!g || !el || !g.nodes.length) { return; }
 
@@ -1189,8 +1296,8 @@
     // null to 0 (which would misleadingly plot it at the origin).
     let yMin = Infinity, yMax = -Infinity;
     g.nodes.forEach((nd) => {
-      // shoulder nodes (X+H) have no column but still draw a tick — in scale
-      if ((xOf[nd.id] == null && !shoulderIds.has(nd.id)) || nd.rel_energy == null) { return; }
+      // Hidden supply levels do not widen the PCET view's energy range.
+      if ((xOf[nd.id] == null && !(view.supply && shoulderIds.has(nd.id))) || nd.rel_energy == null) { return; }
       const sd = nd.energy_std || 0;
       yMin = Math.min(yMin, nd.rel_energy - sd);
       yMax = Math.max(yMax, nd.rel_energy + sd);
@@ -1198,7 +1305,7 @@
     steps.forEach((s) => {
       if (xOf[s.src] == null || xOf[s.tgt] == null) { return; }
       const geo = stepGeom(s);
-      if (geo && geo.peak != null) { yMax = Math.max(yMax, geo.peak + geo.bsd); }
+      if (geo && pwShowHump(geo, view) && geo.peak != null) { yMax = Math.max(yMax, geo.peak + geo.bsd); }
     });
     if (!isFinite(yMin) || !isFinite(yMax)) { yMin = 0; yMax = 1; }
     if (yMax - yMin < 1e-6) { yMax = yMin + 1; }
@@ -1275,12 +1382,13 @@
       // neither is a bare dashed 2-point line with no inferred TS at all.
       const unknown = geo.peak == null;
       const isBep = !unknown && geo.barrier == null;
-      const peakY = unknown ? (geo.src.rel_energy + geo.tgt.rel_energy) / 2 : geo.peak;
-      const bsd = geo.bsd;
+      const showHump = pwShowHump(geo, view);
+      const peakY = showHump ? geo.peak : (geo.src.rel_energy + geo.tgt.rel_energy) / 2;
+      const bsd = showHump ? geo.bsd : 0;
       // humpPoints runs entirely in pixel-x/energy-y space (x0/x1 are
       // already scaled above) — map ONLY y through py() when emitting
       // points; re-scaling x here would double-apply xScale.
-      const curvePts = unknown
+      const curvePts = !showHump
         ? [[x0, geo.src.rel_energy], [x1, geo.tgt.rel_energy]]
         : humpPoints(x0, geo.src.rel_energy, x1, geo.tgt.rel_energy, peakY);
       const curve = curvePts.map(([x, y]) => `${x},${py(y)}`).join(' ');
@@ -1297,7 +1405,7 @@
       // shoulder — the X+H level (its energy is real) as a small tick at
       // the hump's foot, joined to X by a thin solid drop; clickable like a
       // level, and it moves with U like any other n_H-carrying node.
-      if (s.shoulder != null && geo.shE != null) {
+      if (view.supply && s.shoulder != null && geo.shE != null) {
         const ys = py(geo.shE);
         const tx1 = x0 + Math.min(10, (x1 - x0) * 0.25);
         const shNode = byId[s.shoulder];
@@ -1307,8 +1415,8 @@
         parts.push(`<rect class="pw-svg-node"${pa} data-state="${esc(s.shoulder)}" x="${x0 - 2}" y="${ys - 6}" width="${tx1 - x0 + 4}" height="12" `
           + `fill="transparent" stroke="none" style="cursor:pointer"><title>${esc(shTip)}</title></rect>`);
       }
-      const hasEa = unknown || isBep || geo.barrier > 1e-3;
-      if (hasEa) {
+      const hasBarrierLabel = unknown || isBep || geo.barrier > 1e-3;
+      if (showHump && hasBarrierLabel) {
         if (isBep && geo.bepRmse != null && geo.bepRmse > 1e-6) {
           // translucent band — same perpendicular-error-bar shape as the
           // measured bsd one below, dimmed to mark it as a fit spread
@@ -1317,18 +1425,12 @@
         } else if (bsd > 1e-6) {
           parts.push(`<line${pa} x1="${xm}" y1="${py(peakY - bsd)}" x2="${xm}" y2="${py(peakY + bsd)}" stroke="${color}" stroke-width="1"/>`);
         }
-        let lab = unknown
-          ? 'Ea n/a'
-          : isBep
-            ? `Ea≈${geo.bepEa.toFixed(2)} (BEP)`
-            : (bsd > 1e-6 ? `Ea=${geo.barrier.toFixed(2)}±${bsd.toFixed(2)}` : `Ea=${geo.barrier.toFixed(2)}`);
-        // Fork-probability annotation (slice 3 item 4) — only present
-        // when this edge's source cleared the guard in
-        // computeForkProbabilities (numeric barriers, no low_confidence/
-        // warned-bad endpoint); a fork with a hole in the data carries no
-        // percentage at all rather than a fabricated one.
-        const forkPct = s.react ? forkProbs[s.react.source + '\u0001' + s.react.target] : null;
-        if (forkPct != null) { lab += ` (${Math.round(forkPct * 100)}%)`; }
+      }
+      // Visibility never changes the measured-data guard on fork values.
+      const forkPct = s.react ? forkProbs[s.react.source + '\u0001' + s.react.target] : null;
+      const lab = pwEaLabel(geo, forkPct, view);
+      const hasEa = !!lab;
+      if (hasEa) {
         labelQueue.push({
           x: xm, y: py(peakY + bsd) - 4, anchorX: xm, anchorY: py(peakY),
           text: lab, fontSize: 7.5, color, bold: false, title: null,
@@ -1340,7 +1442,7 @@
       // keeps this one on top). Fades with the path like every element.
       // The proton feed of a hydrogenation is NOT in this text: it is drawn
       // as an angled arrow onto the product level (hydroArrows, below).
-      const anns = pwStepAnnotations(s, isLeaf);
+      const anns = pwStepAnnotations(s, isLeaf, view);
       const textAnns = anns.filter((a) => !a.proton);
       if (textAnns.length) {
         labelQueue.push({
@@ -1387,7 +1489,7 @@
       // Bad per-state warning (item B) gets the same red treatment as
       // low_confidence — either one flags the level as untrustworthy.
       const badWarn = isBadState(id);
-      const color = (nd.low_confidence || badWarn) ? '#d9534f' : ownerColor;
+      const color = view.confidence && (nd.low_confidence || badWarn) ? '#d9534f' : ownerColor;
       const sd = nd.energy_std || 0;
       if (sd > 1e-6) {
         parts.push(`<rect class="pw-sdband"${pAttr(nodePaths[id])} x="${x0}" y="${py(nd.rel_energy + sd)}" width="${x1 - x0}" height="${py(nd.rel_energy - sd) - py(nd.rel_energy + sd)}" `
@@ -1396,7 +1498,7 @@
       const warned = !!(nd.low_confidence || badWarn);
       const reason = warned ? lowConfidenceReason(nd) : '';
       parts.push(`<line${pAttr(nodePaths[id])} x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${color}" stroke-width="4" stroke-linecap="round"><title>${esc(levelTip(nd, reason))}</title></line>`);
-      const lab = sd > 1e-6 ? `${nd.id} (${nd.rel_energy >= 0 ? '+' : ''}${nd.rel_energy.toFixed(2)}±${sd.toFixed(2)})` : `${nd.id}`;
+      const lab = pwNodeLabel(nd, view);
       // Tooltip (item 2) — the same joined warning text the States-list
       // row's own title="..." already carries (V.stateWarnings); a
       // low_confidence node with no per-state warning entry falls back to a
@@ -1404,7 +1506,7 @@
       const title = warned ? reason : null;
       labelQueue.push({
         x: (x0 + x1) / 2, y: y - 8, anchorX: (x0 + x1) / 2, anchorY: y,
-        text: lab + (warned ? ' ⚠' : ''), fontSize: 8, color, bold: true, title,
+        text: lab + (view.confidence && warned ? ' ⚠' : ''), fontSize: 8, color, bold: true, title,
         paths: nodePaths[id],
       });
       // click band (item 3) — a fixed-height band centered on THIS state's
@@ -1972,6 +2074,7 @@
     qs.set('u', String(+currentU.toFixed(2)));
     const ph = phInput ? parseFloat(phInput.value) : NaN;
     if (Number.isFinite(ph)) { qs.set('ph', String(ph)); }
+    pwWriteLayers(qs, layerSelection);
     const s = qs.toString();
     return s ? '?' + s : '';
   }
@@ -1979,7 +2082,7 @@
   function syncUrl() {
     if (!urlSyncLive) { return; }
     try {
-      history.replaceState(null, '', window.location.pathname + pwQueryString());
+      history.replaceState(null, '', window.location.pathname + pwQueryString() + (window.location.hash || ''));
     } catch (err) { /* file:// / sandboxed context — the copy button still works */ }
   }
 
@@ -2029,6 +2132,7 @@
       if (Number.isFinite(p)) { if (phInput) { phInput.value = String(p); } }
       else { ignored.push('ph'); }
     }
+    layerSelection = pwReadLayers(qs, ignored);
     if (ignored.length) {
       showLinkNote('Ignored link parameter' + (ignored.length > 1 ? 's' : '')
         + ' that don\u2019t match this pathway (stale or invalid): '
@@ -2191,6 +2295,7 @@
   }
 
   const initState = applyUrlSelection();
+  buildLayerControls();
   if (uSlider) { uSlider.value = String(currentU); }  // default may be U_opt
   updateUReadout();
 

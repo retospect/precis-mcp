@@ -16,6 +16,7 @@ import math
 import re
 import subprocess
 from contextlib import contextmanager
+from html.parser import HTMLParser
 from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
@@ -2493,6 +2494,99 @@ def _seed_parked(runtime: Any, graph: dict[str, Any]) -> None:
 
 
 @needs_node
+def test_pathway_layer_helpers_defaults_and_each_off_state(tmp_path: Path) -> None:
+    """Every layer has a named, explained input and resolves independently."""
+    got = _node_json(
+        tmp_path,
+        _annot_block()
+        + """
+const keys = PW_LAYERS.map((l) => l.key);
+const ignored = [];
+const parsed = pwReadLayers(new URLSearchParams('layer_feed=0&layer_energy=1&layer_ea=no'), ignored);
+const qs = new URLSearchParams('state=N%2BH&layer_energy=1');
+pwWriteLayers(qs, parsed);
+console.log(JSON.stringify({
+  layers: PW_LAYERS, defaults: pwLayerDefaults(),
+  off: keys.map((key) => pwLayerPresentation({[key]: false})),
+  parsed, ignored, query: qs.toString(), restored: pwReadLayers(qs),
+  node: [pwNodeLabel({id:'NH2', rel_energy:-4.47, energy_std:0.03}),
+    pwNodeLabel({id:'NH2', rel_energy:-4.47, energy_std:0.03}, {energy:false}),
+    pwNodeLabel({id:'NH2', rel_energy:-4.47, energy_std:0})],
+  humps: [pwShowHump({barrier:0.5}), pwShowHump({barrier:0.5}, {measured:false}),
+    pwShowHump({barrier:null,bepEa:0.4}),
+    pwShowHump({barrier:null,bepEa:0.4}, {bep:false}),
+    pwShowHump({barrier:null,bepEa:null})],
+  ea: [pwEaLabel({barrier:0.5,bsd:0.03}, 0.25),
+    pwEaLabel({barrier:0.5}, 0.25, {ea:false}),
+    pwEaLabel({barrier:0.5}, 0.25, {forks:false}),
+    pwEaLabel({barrier:0.5}, 0.25, {ea:false,forks:false}),
+    pwEaLabel({barrier:null,bepEa:0.4}, null),
+    pwEaLabel({barrier:null,bepEa:null}, null),
+    pwEaLabel({barrier:0}, 0.25)],
+}));
+""",
+    )
+    keys = [
+        "supply",
+        "feed",
+        "energy",
+        "desorption",
+        "ea",
+        "measured",
+        "bep",
+        "forks",
+        "confidence",
+        "states",
+    ]
+    defaults = dict.fromkeys(keys, True)
+    assert [layer["key"] for layer in got["layers"]] == keys
+    assert all(layer["label"] and layer["help"] for layer in got["layers"])
+    assert got["defaults"] == defaults
+    assert got["off"] == [defaults | {key: False} for key in keys]
+    assert got["parsed"] == defaults | {"feed": False}
+    assert got["ignored"] == ["layer_ea"]
+    assert got["query"] == "state=N%2BH&layer_feed=0"
+    assert got["restored"] == got["parsed"]
+    assert got["node"] == ["NH2 (-4.47±0.03)", "NH2", "NH2"]
+    assert got["humps"] == [True, False, True, False, False]
+    assert got["ea"] == [
+        "Ea=0.50±0.03 (25%)",
+        "25%",
+        "Ea=0.50",
+        "",
+        "Ea≈0.40 (BEP)",
+        "Ea n/a",
+        "",
+    ]
+
+
+@needs_node
+def test_pathway_layers_filter_feed_and_hydrogen_desorption(tmp_path: Path) -> None:
+    """H₂ works through both explicit removed metadata and landing labels."""
+    got = _node_json(
+        tmp_path,
+        _annot_block()
+        + """
+const link = {source:'NH', target:'NH2', kind:'reaction', added:{H:1}, removed:{H2:1}};
+const step = {src:'NH', tgt:'NH2', shoulder:null, react:link};
+const f = (layers) => pwFormatAnnotations(pwStepAnnotations(step, () => false, layers));
+console.log(JSON.stringify({
+  both:f(), feedOff:f({feed:false}), desorptionOff:f({desorption:false}),
+  bothOff:f({feed:false,desorption:false}),
+  landing:pwFormatAnnotations(pwLinkAnnotations('H+H', '*~h2', {kind:'reaction'})),
+}));
+""",
+    )
+    assert got == {
+        "both": "+H⁺+e⁻ ↓ · −H₂ ↑",
+        "feedOff": "−H₂ ↑",
+        "desorptionOff": "+H⁺+e⁻ ↓",
+        "bothOff": "",
+        "landing": "−H₂ ↑",
+    }
+
+
+@needs_node
 @pytest.mark.parametrize("folded", [False, True])
 def test_pathway_diagram_unknown_barrier_is_na_not_a_hump(
     client, runtime, tmp_path: Path, folded: bool
@@ -2596,6 +2690,79 @@ def test_pathway_diagram_bep_estimated_hump_is_dashed_with_band(
     assert "Ea≈0.21 (BEP)" in svg
     assert "Ea n/a" not in svg
     assert re.search(r'<line[^>]*opacity="0\.4"[^>]*/>', svg)
+
+
+@needs_node
+@pytest.mark.parametrize("hidden", ["measured", "bep"])
+def test_pathway_hump_layers_hide_only_their_own_curve_and_band(
+    client, runtime, tmp_path: Path, hidden: str
+) -> None:
+    graph = {
+        "nodes": [
+            {"id": "A", "rel_energy": 0.0},
+            {"id": "B", "rel_energy": 0.1},
+            {"id": "C", "rel_energy": 0.2},
+        ],
+        "links": [
+            {
+                "source": "A",
+                "target": "B",
+                "kind": "reaction",
+                "barrier": 0.5,
+                "barrier_std": 0.04,
+            },
+            {
+                "source": "B",
+                "target": "C",
+                "kind": "reaction",
+                "barrier": None,
+                "delta_e": 0.2,
+            },
+        ],
+    }
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "graph": graph,
+            "results": {
+                "edges": [
+                    {"name": "A->B", "barrier": {"mean": 0.5, "std": 0.04}},
+                    {"name": "B->C", "bep": {"alpha": 0.8, "beta": 0.05, "rmse": 0.03}},
+                ]
+            },
+        },
+        body_text=None,
+    )
+    html = client.get("/refs/pathway/171696").text
+    default = _run_url_probe(tmp_path, html)["svg"]
+    off = _run_url_probe(tmp_path, html, search=f"?layer_{hidden}=0")["svg"]
+
+    def transition(svg: str, source: str) -> tuple[int, str, str]:
+        match = re.search(
+            rf'<polyline class="pw-seg"[^>]*data-from="{source}"[^>]*'
+            r'points="([^"]*)"[^>]*><title>([^<]*)</title></polyline>'
+            r"(<line[^>]*/>)?",
+            svg,
+        )
+        assert match is not None
+        return len(match[1].split()), match[2], match[3] or ""
+
+    for source, layer, value, origin in (
+        ("A", "measured", "Ea=0.50 eV", "source=neb"),
+        ("B", "bep", "Ea≈0.21 eV", "source=bep"),
+    ):
+        default_points, default_title, default_band = transition(default, source)
+        points, title, band = transition(off, source)
+        assert default_points > 2
+        assert default_band
+        assert title == default_title
+        assert value in title and origin in title
+        if layer == hidden:
+            assert points == 2
+            assert band == ""
+        else:
+            assert points > 2
+            assert band
 
 
 @needs_node
@@ -3151,6 +3318,7 @@ const fs = require('fs');
 const script = fs.readFileSync(process.argv[2], 'utf-8');
 const SEARCH = process.argv[3] || '';
 const AFTER = process.argv[4] || '';
+const HASH = process.argv[5] || '';
 const els = {};
 const created = [];
 const docHandlers = {};
@@ -3217,8 +3385,9 @@ global.document = {
 global.window = {
   location: {
     search: SEARCH,
+    hash: HASH,
     pathname: '/refs/pathway/171696',
-    href: 'http://precis.test/refs/pathway/171696' + SEARCH,
+    href: 'http://precis.test/refs/pathway/171696' + SEARCH + HASH,
   },
 };
 global.history = {
@@ -3259,11 +3428,17 @@ console.log(JSON.stringify({
   rs: rsCalls,
   clip: clipCalls,
   copyLabel: els['pw-copy-link'] ? els['pw-copy-link'].textContent : null,
+  layers: created.filter((el) => el.classList.contains('pw-layer-toggle'))
+    .map((el) => ({key: el.dataset.layer, checked: el.checked, title: el.title})),
+  svg: els['pw-diagram'] ? els['pw-diagram'].innerHTML : null,
+  statesHidden: els['pw-states-panel'] ? els['pw-states-panel'].classList.contains('hidden') : null,
 }));
 """
 
 
-def _run_url_probe(tmp_path: Path, html: str, search: str = "", after: str = "") -> Any:
+def _run_url_probe(
+    tmp_path: Path, html: str, search: str = "", after: str = "", hash_: str = ""
+) -> Any:
     """Run the page's own script under :data:`_NODE_URL_JS` and return the
     dumped selection/URL observations."""
     scripts = re.findall(r"<script>(.*?)</script>", html, re.DOTALL)
@@ -3272,7 +3447,7 @@ def _run_url_probe(tmp_path: Path, html: str, search: str = "", after: str = "")
     driver = tmp_path / "url_driver.js"
     driver.write_text(_NODE_URL_JS, encoding="utf-8")
     out = subprocess.run(
-        ["node", str(driver), str(tmp_path / "page.js"), search, after],
+        ["node", str(driver), str(tmp_path / "page.js"), search, after, hash_],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -3395,3 +3570,194 @@ def test_pathway_url_state_escapes_state_ids(client, runtime, tmp_path: Path) ->
     raw = _run_url_probe(tmp_path, html, search="?state=N+H")
     assert raw["noteHidden"] is False
     assert "N+H" not in (raw["sel"] or "")
+
+
+@needs_node
+def test_pathway_layers_controls_render_and_url_round_trip(
+    client, runtime, tmp_path: Path
+) -> None:
+    """Checkbox changes redraw layers and survive copying a link with a hash."""
+    _seed_parked(runtime, _parked_graph())
+    html = client.get("/refs/pathway/171696").text
+    defaults = _run_url_probe(tmp_path, html)
+    assert len(defaults["layers"]) == 10
+    assert all(layer["checked"] and layer["title"] for layer in defaults["layers"])
+    assert defaults["statesHidden"] is False
+    assert 'class="pw-shoulder-drop"' in defaults["svg"]
+    assert 'class="pw-hydro-arrow"' in defaults["svg"]
+    assert "−NH₃ ↑" in defaults["svg"]
+    explicit_defaults = "?" + "&".join(
+        "layer_" + layer["key"] + "=1" for layer in defaults["layers"]
+    )
+    assert (
+        _run_url_probe(tmp_path, html, search=explicit_defaults)["svg"]
+        == defaults["svg"]
+    )
+
+    after = """
+created.filter((el) => el.classList.contains('pw-layer-toggle')).forEach((el) => {
+  el.checked = false;
+  el.handlers.change[0]();
+});
+els['pw-copy-link'].handlers.click[0]();
+"""
+    off = _run_url_probe(tmp_path, html, after=after, hash_="#kinetics")
+    assert all(not layer["checked"] for layer in off["layers"])
+    assert off["statesHidden"] is True
+    for marker in (
+        'class="pw-shoulder-drop"',
+        'class="pw-shoulder"',
+        'class="pw-hydro-arrow"',
+        "−NH₃ ↑",
+    ):
+        assert marker not in off["svg"]
+    assert not re.search(r"<text[^>]*>Ea(?:=|≈| n/a)", off["svg"])
+    assert set(_level_bars(off["svg"])) == set(_level_bars(defaults["svg"]))
+    assert len(off["rs"]) == 10
+    assert off["rs"][-1].endswith("#kinetics")
+    assert off["clip"] == ["http://precis.test" + off["rs"][-1]]
+    query = off["rs"][-1].split("?", 1)[1].split("#", 1)[0]
+    assert query.count("layer_") == 10
+    restored = _run_url_probe(tmp_path, html, search="?" + query, hash_="#kinetics")
+    assert restored["rs"] == []
+    assert restored["layers"] == off["layers"]
+    assert restored["svg"] == off["svg"]
+    assert restored["statesHidden"] is True
+    assert restored["noteHidden"] is True
+
+    back_on = _run_url_probe(
+        tmp_path,
+        html,
+        search="?" + query,
+        after="""
+created.filter((el) => el.classList.contains('pw-layer-toggle')).forEach((el) => {
+  el.checked = true;
+  el.handlers.change[0]();
+});
+""",
+        hash_="#kinetics",
+    )
+    assert back_on["svg"] == defaults["svg"]
+    assert all(layer["checked"] for layer in back_on["layers"])
+    assert back_on["statesHidden"] is False
+    assert "layer_" not in back_on["rs"][-1]
+    assert back_on["rs"][-1].endswith("#kinetics")
+
+
+@needs_node
+def test_pathway_states_layer_without_diagram_keeps_navigation(
+    client, runtime, tmp_path: Path
+) -> None:
+    """gr559346: a copied layer setting cannot hide the only state navigation."""
+    _seed_pathway(
+        runtime.store,
+        meta={"structure_refs": _GRAPH3_STRUCTURE_REFS},
+        body_text=None,
+    )
+    _seed_explorer_scenes(runtime.store)
+    resp = client.get("/refs/pathway/171696?layer_states=0")
+    assert resp.status_code == 200
+    assert 'id="pw-diagram"' not in resp.text
+    for element_id in ("pw-states-panel", "pw-state-list", "pw-prev", "pw-next"):
+        assert f'id="{element_id}"' in resp.text
+
+    out = _run_url_probe(tmp_path, resp.text, search="?layer_states=0")
+    assert out["statesHidden"] is False
+    assert "s1" in out["sel"]
+
+
+@needs_node
+def test_pathway_states_layer_preserves_measures_and_warnings(
+    client, runtime, tmp_path: Path
+) -> None:
+    """td563361: hiding state navigation leaves measure values and caveats visible."""
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "graph": _GRAPH3,
+            "structure_refs": _GRAPH3_STRUCTURE_REFS,
+            "measures": _GRAPH3_MEASURES,
+        },
+        body_text=None,
+    )
+    _seed_explorer_scenes(runtime.store)
+    resp = client.get("/refs/pathway/171696?layer_states=0")
+    assert resp.status_code == 200
+    out = _run_url_probe(tmp_path, resp.text, search="?layer_states=0")
+    assert out["statesHidden"] is True
+
+    # The JS probe stubs elements independently; parse the real markup to
+    # catch measures accidentally nested under the hidden navigation panel.
+    class PanelContents(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.div_ids: list[str | None] = []
+            self.inside_ids: set[str | None] = set()
+            self.outside_values: set[str | None] = set()
+            self.outside_text: list[str] = []
+            self.in_script = False
+
+        def handle_starttag(
+            self, tag: str, attrs: list[tuple[str, str | None]]
+        ) -> None:
+            attributes = dict(attrs)
+            if tag == "script":
+                self.in_script = True
+            if tag == "div":
+                self.div_ids.append(attributes.get("id"))
+            if "pw-states-panel" in self.div_ids:
+                self.inside_ids.add(attributes.get("id"))
+            elif "data-measure-value" in attributes:
+                self.outside_values.add(attributes["data-measure-value"])
+
+        def handle_endtag(self, tag: str) -> None:
+            if tag == "script":
+                self.in_script = False
+            if tag == "div":
+                self.div_ids.pop()
+
+        def handle_data(self, data: str) -> None:
+            if not self.in_script and "pw-states-panel" not in self.div_ids:
+                self.outside_text.append(data)
+
+    panel = PanelContents()
+    panel.feed(resp.text)
+    assert {"pw-state-list", "pw-prev", "pw-next"} <= panel.inside_ids
+    assert panel.outside_values == {"N-Pd", "N-Pd1"}
+    outside_text = " ".join(panel.outside_text)
+    assert "Measures" in outside_text
+    assert "unverified across states" in outside_text
+    assert "unknown op" in outside_text
+
+
+@needs_node
+def test_pathway_energy_and_confidence_layers_only_hide_presentation(
+    client, runtime, tmp_path: Path
+) -> None:
+    _seed_pathway(runtime.store, meta={"graph": _GRAPH3}, body_text=None)
+    html = client.get("/refs/pathway/171696").text
+    defaults = _run_url_probe(tmp_path, html)
+    off = _run_url_probe(tmp_path, html, search="?layer_energy=0&layer_confidence=0")
+    assert "s1 (+0.00±0.01)" in defaults["svg"]
+    assert "s3 ⚠" in defaults["svg"]
+    assert 'stroke="#d9534f"' in defaults["svg"]
+    assert "s1 (+0.00±0.01)" not in off["svg"]
+    assert "s3 ⚠" not in off["svg"]
+    assert 'stroke="#d9534f"' not in off["svg"]
+    assert _level_bars(defaults["svg"]) == _level_bars(off["svg"])
+
+
+@needs_node
+def test_pathway_layer_invalid_url_value_has_notice(
+    client, runtime, tmp_path: Path
+) -> None:
+    _seed_parked(runtime, _parked_graph())
+    html = client.get("/refs/pathway/171696").text
+    out = _run_url_probe(tmp_path, html, search="?layer_supply=maybe&layer_feed=0")
+    layers = {layer["key"]: layer["checked"] for layer in out["layers"]}
+    assert layers["supply"] is True
+    assert layers["feed"] is False
+    assert out["noteHidden"] is False
+    assert "layer_supply" in out["note"]
+    assert 'class="pw-shoulder-drop"' in out["svg"]
+    assert 'class="pw-hydro-arrow"' not in out["svg"]
