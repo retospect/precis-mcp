@@ -820,7 +820,10 @@ def render_brief(
         f"(`type(scope): what (td{todo_id})`, at most 72 bytes), message via "
         "`git commit -F scratch/commit-msg.txt`. One commit is best: the "
         "lander squashes the branch under that subject.",
-        "2. Leave the working tree clean (`git status --porcelain` prints nothing).",
+        "2. Leave the working tree clean (`git status --porcelain` prints nothing). "
+        "If your sandbox refuses `git commit` (a read-only `.git`), stop with "
+        "the changes in the working tree and `scratch/commit-msg.txt` written: "
+        "the worker commits them with that message after you exit.",
         "3. Stop. Do not land, push, comment `landed:` or tag this todo done: "
         "once you exit cleanly, the lander lands every commit on the branch, "
         "so commit only work fit to land.",
@@ -1363,6 +1366,70 @@ def _branch_state(tree: Path) -> tuple[int | None, list[str]]:
     return dirty, commits
 
 
+#: Where a session leaves the commit message the brief asks for; a
+#: sandboxed session that could not run ``git commit`` leaves it behind and
+#: :func:`_commit_for_session` commits with it.
+COMMIT_MSG_REL = Path("scratch") / "commit-msg.txt"
+_SUBJECT_RE = re.compile(r"^[a-z]+(\([^)\s]+\))?!?: \S")
+_SUBJECT_CAP = 72
+
+
+def _commit_message(tree: Path, todo_id: int) -> str | None:
+    """The session's ``scratch/commit-msg.txt`` with a landable subject, or
+    ``None`` when the file is missing or empty. A first line that is not a
+    conventional subject is demoted to the body under a synthesised one, and
+    an overlong subject is cut at :data:`_SUBJECT_CAP` bytes: the lander
+    squashes under that subject and refuses unprefixed ones."""
+    try:
+        text = (tree / COMMIT_MSG_REL).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    lines = [ln.rstrip() for ln in text.strip().splitlines()]
+    if not lines or not lines[0].strip():
+        return None
+    subject = lines[0].strip()
+    body = lines[1:]
+    if not _SUBJECT_RE.match(subject):
+        body = [subject, *body]
+        subject = f"fix(slice): td{todo_id} session commit"
+    if len(subject.encode("utf-8")) > _SUBJECT_CAP:
+        subject = (
+            subject.encode("utf-8")[:_SUBJECT_CAP].decode("utf-8", "ignore").rstrip()
+        )
+    return "\n".join([subject, *body]).strip() + "\n"
+
+
+def _commit_for_session(tree: Path, todo_id: int) -> str | None:
+    """Commit the working tree a clean session left uncommitted, with its
+    ``scratch/commit-msg.txt``. Returns a note for the summary, or ``None``
+    when there was nothing to do (no message file, nothing staged).
+
+    gr564261's first codex-direct run (jo565335): ``codex exec`` under
+    ``--sandbox workspace-write`` keeps ``.git`` read-only, so the session
+    changed eight files, wrote its message and reported that it could not
+    create ``index.lock``; the poll then read 0 commits ahead as "nothing to
+    land" and burned an attempt. The worker runs outside that sandbox, so
+    it commits in the session's stead. The deny check ran on the working
+    tree before this, so a denied path never reaches the commit."""
+    message = _commit_message(tree, todo_id)
+    if message is None:
+        return None
+    # scratch/ is gitignored on main, so the message file never rides along.
+    add = _git(["add", "-A"], tree)
+    if add.returncode != 0:
+        return f"worker commit skipped: git add failed ({add.stderr.strip()[:200]})"
+    staged = _git(["diff", "--cached", "--quiet"], tree)
+    if staged.returncode == 0:
+        return None
+    msg_path = tree / COMMIT_MSG_REL
+    commit = _git(["commit", "--quiet", "-F", str(msg_path)], tree)
+    if commit.returncode != 0:
+        return f"worker commit failed ({commit.stderr.strip()[:200]})"
+    return (
+        f"worker committed the session's working tree with {COMMIT_MSG_REL.as_posix()}"
+    )
+
+
 def changed_paths(tree: Path) -> list[str] | None:
     """Repo-relative paths the slice touched: the branch diff from its
     merge base with ``origin/main`` (renames split into delete + add) plus
@@ -1453,6 +1520,10 @@ def poll(ctx: Any, handle: Any) -> bool:
         except Exception:  # pragma: no cover — the job outcome still lands
             log.warning("run_slice: handoff comment on td%d failed", todo_id)
 
+    committed = None
+    if exit_code == 0 and not is_error and not denied and not vanished:
+        if not _is_generator(ctx.store, todo_id):
+            committed = _commit_for_session(tree, todo_id)
     dirty, commits = _branch_state(tree)
     ctx.set_meta(exit_code=exit_code, branch_dirty=dirty, branch_commits=commits[:50])
     vendor = "claude" if adapter.name == "claude_p" else adapter.name
@@ -1469,6 +1540,8 @@ def poll(ctx: Any, handle: Any) -> bool:
     ]
     if denied:
         summary.append(f"Deny check: {denied}.")
+    if committed:
+        summary.append(f"Commit: {committed}.")
     clean = exit_code == 0 and not is_error and not denied
     # A clean task run hands its branch to the lander; a generator's work is
     # its child todos, so it has nothing to land.

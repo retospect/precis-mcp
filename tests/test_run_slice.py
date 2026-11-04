@@ -195,6 +195,12 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
             return _proc(calls.get("porcelain_z", ""), rc=calls.get("status_rc", 0))
         if args[:2] == ["diff", "--name-only"]:
             return _proc(calls.get("diff", ""))
+        if args[:3] == ["diff", "--cached", "--quiet"]:
+            # rc 1 = something staged (git's own convention).
+            return _proc(rc=1 if calls.get("staged") else 0)
+        if args[:1] == ["commit"]:
+            calls["ahead"] = calls.get("committed_ahead", "")
+            return _proc(rc=calls.get("commit_rc", 0))
         if args[:2] == ["log", "--oneline"]:
             return _proc(calls.get("ahead", ""))
         return _proc()
@@ -1392,6 +1398,64 @@ def test_poll_clean_exit_without_a_commit_fails(seams: dict[str, Any]) -> None:
     assert pctx.failure is not None and "nothing to land" in pctx.failure
     assert seams["lands"] == []
     assert {"STATUS:open", "attempt:1"} <= store.tag_strings(42)
+
+
+def test_poll_commits_the_tree_a_sandboxed_session_left(seams: dict[str, Any]) -> None:
+    """gr564261 / jo565335: codex under workspace-write cannot write .git, so
+    it leaves the changes and scratch/commit-msg.txt; the worker commits."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    tree = Path(handle["worktree"])
+    (tree / "scratch" / "commit-msg.txt").write_text(
+        "fix(se): one drc solve per block (td42)\n\nMemo the solve per pass.\n",
+        encoding="utf-8",
+    )
+    seams["porcelain"] = " M a.py\n M b.py\n"
+    seams["staged"] = True
+    seams["committed_ahead"] = "def5678 fix(se): one drc solve per block (td42)\n"
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "Could not commit."}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    commits = [a for a, _cwd in seams["git"] if a[:1] == ["commit"]]
+    assert commits == [
+        ["commit", "--quiet", "-F", str(tree / "scratch" / "commit-msg.txt")]
+    ]
+    assert ["add", "-A"] in [a for a, _cwd in seams["git"]]
+    assert seams["lands"] == [(42, tree, "claude-sub")]
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "Commit: worker committed the session's working tree" in summary
+    assert "1 commit(s) ahead of origin/main" in summary
+
+
+def test_poll_without_a_message_file_commits_nothing(seams: dict[str, Any]) -> None:
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    seams["porcelain"] = " M a.py\n"
+    seams["staged"] = True
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "Forgot the message."}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert not [a for a, _cwd in seams["git"] if a[:1] in (["add"], ["commit"])]
+
+
+def test_commit_message_demotes_a_bare_subject(tmp_path: Path) -> None:
+    (tmp_path / "scratch").mkdir()
+    msg = tmp_path / "scratch" / "commit-msg.txt"
+    msg.write_text("Implemented the four fixes\nmore\n", encoding="utf-8")
+    out = run_slice._commit_message(tmp_path, 42)
+    assert out == "fix(slice): td42 session commit\nImplemented the four fixes\nmore\n"
+    msg.write_text("feat(x): " + "y" * 90 + "\n", encoding="utf-8")
+    out = run_slice._commit_message(tmp_path, 42)
+    assert out is not None
+    assert len(out.splitlines()[0].encode("utf-8")) <= 72
+    assert out.startswith("feat(x): yyy")
+    msg.write_text("\n\n", encoding="utf-8")
+    assert run_slice._commit_message(tmp_path, 42) is None
+    assert run_slice._commit_message(tmp_path / "missing", 42) is None
 
 
 def test_poll_task_validated_verdict_closes_it_as_done(seams: dict[str, Any]) -> None:
