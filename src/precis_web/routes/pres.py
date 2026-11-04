@@ -28,12 +28,19 @@ from fastapi.responses import (
     HTMLResponse,
     PlainTextResponse,
     RedirectResponse,
+    Response,
 )
 
 from precis.errors import NotFound
 from precis.utils.handle_registry import format_handle
 from precis_web.corpus import resolve_pdf_for_ref
-from precis_web.deps import await_dispatch, get_store, get_web_config, templates
+from precis_web.deps import (
+    await_dispatch,
+    get_store,
+    get_web_config,
+    redirect_or_error,
+    templates,
+)
 from precis_web.paper_ident import PAPER_IDENT_KINDS
 
 router = APIRouter(prefix="/pres", tags=["pres"])
@@ -204,3 +211,16 @@ async def edit(
             status_code=400,
         )
     return RedirectResponse(url=f"/pres/{slug}", status_code=303)
+
+
+@router.post("/{ref_id}/delete")
+async def delete(request: Request, ref_id: int) -> Response:
+    """Soft-delete the deck through the same handler used by Drive."""
+    ref = _load_pres(request, ref_id)
+    return await redirect_or_error(
+        request,
+        "delete",
+        {"kind": "pres", "id": ref.id},
+        redirect="/drive",
+        error_title="Delete error",
+    )

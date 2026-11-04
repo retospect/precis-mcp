@@ -77,6 +77,7 @@ class PresentationHandler(Handler):
         supports_search_hits=True,
         supports_put=True,
         supports_edit=True,
+        supports_delete=True,
         supports_tag=True,
         supports_link=True,
         is_numeric=False,
@@ -398,7 +399,22 @@ class PresentationHandler(Handler):
         )
         return Response(body=body)
 
-    # ── tag / link ──────────────────────────────────────────────────
+    # ── delete / tag / link ──────────────────────────────────────────
+
+    def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
+        """Retire the deck; the store's trigger journals the transition."""
+        if id is None:
+            raise BadInput(
+                "delete(kind='pres') needs id=",
+                next="delete(kind='pres', id='pr<id>')",
+            )
+        if isinstance(id, int):
+            # Web routes pass ref IDs; a numeric slug may name a different deck.
+            id = handle_registry.format_handle("pres", id)
+        _slug, ref_id = self._resolve_pres_slug(id)
+        self.store.retire_ref(ref_id)
+        handle = handle_registry.format_handle("pres", ref_id)
+        return Response(body=f"deleted {handle} (soft-deleted)")
 
     def _resolve_pres_slug(self, id: str | int) -> tuple[str, int]:
         slug, chunk, path_view = _parse_pres_id(str(id))

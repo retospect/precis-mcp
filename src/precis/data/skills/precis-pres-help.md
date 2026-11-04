@@ -7,7 +7,8 @@ answers:
   - how do I ingest a slide deck one slide at a time?
   - how do I capture an unpublished writeup or course notes?
   - how do I find a specific slide or paragraph in a stored deck?
-applies-to: get/search/put/tag/link (kind='pres')
+  - how do I delete or restore a presentation?
+applies-to: get/search/put/edit/delete/tag/link (kind='pres')
 tags: addressing, drafting
 kinds: pres
 status: active
@@ -147,6 +148,21 @@ tag(
     add=["topic:agent-architecture", "audience:internal"],
 )
 ```
+
+## Delete or restore a presentation
+
+```python
+delete(kind="pres", id="2026-06-talk-precis-architecture")
+delete(kind="pres", id="pr5")  # a deck handle also works
+```
+
+Delete soft-deletes the whole deck and journals its retirement. It hides
+from listings and search; slide chunks and the PDF are retained. Block
+selectors (`~N`) and path views (`/full`) are refused for deletion.
+
+In the reader's Meta panel, **Delete presentation** asks for confirmation.
+Drive's row delete uses the same operation. To restore a deck, open
+`/refs/pres/<numeric-id>` and click **Undelete** on its tombstone page.
 
 ## See also
 

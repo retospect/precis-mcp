@@ -1,10 +1,10 @@
-"""PresentationHandler attribution editing + citation export.
+"""PresentationHandler attribution, citation export and soft deletion.
 
 Covers the ``edit`` verb (writes attribution into ``meta``), the
 ``view='bibtex'`` / ``'ris'`` render it feeds, and the two pure helpers
 (``_normalize_pres_authors`` / ``_format_pres_citation``). The shared
 get/search/put machinery is exercised by the ingest tests; here we only
-assert the attribution surface added for citing slides.
+assert attribution and the reversible deletion surface.
 
 DB-bound tests use the ``store`` fixture and skip when no postgres is
 reachable (see ``tests/conftest.py``).
@@ -12,17 +12,20 @@ reachable (see ``tests/conftest.py``).
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.handlers.presentation import (
     PresentationHandler,
     _format_pres_citation,
     _normalize_pres_authors,
 )
+from precis.runtime import PrecisRuntime
+from precis.store import Store
 
 # ---------------------------------------------------------------------------
 # Pure unit — author normalisation
@@ -114,6 +117,7 @@ class TestFormatCitation:
 
 def test_spec_supports_edit_and_lists_citation_views(hub: Hub) -> None:
     assert PresentationHandler.spec.supports_edit is True
+    assert PresentationHandler.spec.supports_delete is True
     views = PresentationHandler(hub=hub).accepted_views()
     assert "bibtex" in views and "ris" in views
 
@@ -171,3 +175,116 @@ class TestEditRoundTrip:
         slug = _mk_deck(h)
         with pytest.raises(BadInput):
             h.edit(id=slug)
+
+
+@pytest.mark.parametrize("address", ["slug", "numeric", "handle"])
+def test_delete_retires_and_journals_without_removing_slides(
+    runtime_with_store: PrecisRuntime, store: Store, address: str
+) -> None:
+    handler = PresentationHandler(hub=Hub(store=store))
+    slug = _mk_deck(handler)
+    ref = store.get_ref(kind="pres", id=slug)
+    assert ref is not None
+    blocks = store.chunks.list_chunks_for_ref(ref.id)
+    addresses: dict[str, str | int] = {
+        "slug": slug,
+        "numeric": ref.id,
+        "handle": f"pr{ref.id}",
+    }
+
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "delete", {"kind": "pres", "id": addresses[address]}
+    )
+
+    assert not is_error, body
+    assert "deleted" in body
+    assert store.get_ref(kind="pres", id=slug) is None
+    retired = store.fetch_refs_by_ids([ref.id], include_deleted=True)[ref.id]
+    assert retired.retired_at is not None
+    events = store.events_for(ref.id, source="db", event="retired")
+    assert len(events) == 1
+    assert events[0].payload["kind"] == "pres"
+    assert store.chunks.list_chunks_for_ref(ref.id) == blocks
+
+
+def test_delete_preserves_pdf_attachment_and_file(store: Store, tmp_path: Path) -> None:
+    handler = PresentationHandler(hub=Hub(store=store))
+    slug = _mk_deck(handler)
+    ref = store.get_ref(kind="pres", id=slug)
+    assert ref is not None
+    pdf_path = tmp_path / "deck.pdf"
+    pdf_bytes = b"%PDF-1.4\nsoft-delete preservation fixture\n"
+    pdf_path.write_bytes(pdf_bytes)
+    sha = "a" * 64
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+            "size_bytes, storage_path) VALUES (%s, %s, 1, %s, %s)",
+            (sha, sha, len(pdf_bytes), str(pdf_path)),
+        )
+        conn.execute("UPDATE refs SET pdf_sha256 = %s WHERE ref_id = %s", (sha, ref.id))
+
+    handler.delete(id=slug)
+
+    retired = store.fetch_refs_by_ids([ref.id], include_deleted=True)[ref.id]
+    assert retired.pdf_sha256 == sha
+    assert store.pdf_storage_path(sha) == str(pdf_path)
+    assert pdf_path.read_bytes() == pdf_bytes
+
+
+def test_delete_numeric_id_does_not_resolve_a_competing_slug(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    handler = PresentationHandler(hub=Hub(store=store))
+    slug = _mk_deck(handler)
+    target = store.get_ref(kind="pres", id=slug)
+    assert target is not None
+    competing_slug = _mk_deck(handler, slug=str(target.id))
+    other = store.get_ref(kind="pres", id=competing_slug)
+    assert other is not None and other.id != target.id
+
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "delete", {"kind": "pres", "id": target.id}
+    )
+
+    assert not is_error, body
+    assert store.get_ref(kind="pres", id=target.id) is None
+    assert store.get_ref(kind="pres", id=other.id) is not None
+    assert store.events_for(other.id, event="retired") == []
+
+
+@pytest.mark.parametrize("selector", ["~0", "/full"])
+def test_delete_rejects_block_or_view_selector(store: Store, selector: str) -> None:
+    handler = PresentationHandler(hub=Hub(store=store))
+    slug = _mk_deck(handler)
+
+    with pytest.raises(BadInput, match="ref level"):
+        handler.delete(id=f"{slug}{selector}")
+
+    assert store.get_ref(kind="pres", id=slug) is not None
+
+
+def test_delete_rejects_other_kind(store: Store) -> None:
+    other = store.insert_ref(kind="memory", slug=None, title="Keep this thought")
+    handler = PresentationHandler(hub=Hub(store=store))
+
+    with pytest.raises(NotFound):
+        handler.delete(id=other.id)
+
+    assert store.get_ref(kind="memory", id=other.id) is not None
+    assert store.events_for(other.id, event="retired") == []
+
+
+def test_delete_rejects_missing_or_already_retired_pres(store: Store) -> None:
+    handler = PresentationHandler(hub=Hub(store=store))
+    with pytest.raises(NotFound):
+        handler.delete(id="absent-presentation")
+    slug = _mk_deck(handler)
+    ref = store.get_ref(kind="pres", id=slug)
+    assert ref is not None
+    handler.delete(id=slug)
+
+    with pytest.raises(NotFound):
+        handler.delete(id=slug)
+
+    assert len(store.events_for(ref.id, source="db", event="retired")) == 1

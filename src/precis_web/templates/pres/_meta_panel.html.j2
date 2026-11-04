@@ -59,6 +59,14 @@
           class="rounded bg-solid-strong px-3 py-1.5 text-sm text-on-solid hover:bg-solid">Save</button>
 </form>
 
+<form method="post" action="/pres/{{ ref.id }}/delete" class="border-t border-line-subtle pt-2"
+      onsubmit="return confirm('Delete presentation #{{ ref.id }}? This soft-deletes it (removes it from listings).');">
+  <button type="submit"
+          class="rounded border border-danger-strong bg-danger-subtle px-2 py-1 text-xs text-danger-strong hover:bg-danger-muted">
+    Delete presentation
+  </button>
+</form>
+
 {# BibTeX preview (copy target) #}
 <div class="border-t border-line-subtle pt-2">
   <div class="mb-1 flex items-center gap-2">
