@@ -405,11 +405,11 @@ def test_manifest_carries_hub_and_qualified_columns(hub: Hub, tmp_path: Path) ->
             .splitlines()
         )
     }
-    assert all(len(r) == 15 for r in rows.values())
+    assert all(len(r) == 16 for r in rows.values())
     assert rows[_h(root)][8:10] == ["-", "0"]
     assert rows[_h(thread)][8:10] == [_h(root), "1"]
     assert rows[_h(gotcha)][8:10] == [_h(root), "0"]
-    assert rows[_h(stray)][8:] == ["", "0", "", "", "", "0", ""]
+    assert rows[_h(stray)][8:] == ["", "0", "", "", "", "0", "", ""]
     # an agent read of a node's own view stamps last_recalled_at -> accessed
     store.touch_recalled(stray)
     export_memory_nodes(store, tmp_path / "n2")
@@ -421,6 +421,40 @@ def test_manifest_carries_hub_and_qualified_columns(hub: Hub, tmp_path: Path) ->
         if ln.startswith(_h(stray) + "\t")
     )
     assert row[10] == datetime.now(UTC).strftime("%Y-%m-%d")
+
+
+@pytest.mark.parametrize("incident_tags", [(), ("prod-incident",), ("incident",)])
+def test_manifest_incident_age_uses_creation_date(
+    hub: Hub, tmp_path: Path, incident_tags: tuple[str, ...]
+) -> None:
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    note = _note(
+        handler,
+        "Incident narrative",
+        "Cause remains uncertain.",
+        "section:reference",
+        *incident_tags,
+    )
+    created = datetime(2026, 1, 1, tzinfo=UTC)
+    updated = datetime(2026, 4, 2, tzinfo=UTC)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = %s, updated_at = %s WHERE ref_id = %s",
+            (created, updated, note),
+        )
+
+    export_memory_nodes(store, tmp_path / "nodes")
+
+    row = next(
+        line.split("\t")
+        for line in (tmp_path / "nodes" / "_sections.tsv")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.startswith(_h(note) + "\t")
+    )
+    assert len(row) == 16
+    assert row[2] == "2026-04-02"
+    assert row[15] == ("2026-01-01" if "incident" in incident_tags else "")
 
 
 # ── recency: ordering and the recall stamp ──────────────────────────

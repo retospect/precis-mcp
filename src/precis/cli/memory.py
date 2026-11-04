@@ -1057,7 +1057,9 @@ def _render_loaded(
 #: ``memory-review`` todos linked to the node; empty if none), ``gotchas_none``
 #: (1 if tagged ``gotchas:none``: reviewed, no gotcha applies),
 #: ``supersedes`` (comma-separated handles of the node's ``supersedes``
-#: edge targets; empty if none). ``hub`` is the nearest ``section:index``
+#: edge targets; empty if none), ``incident_created`` (UTC creation date
+#: for nodes tagged ``incident``, empty otherwise; edits must not reset age).
+#: ``hub`` is the nearest ``section:index``
 #: *ancestor* along the part-of chain, so a detail node under a summary
 #: node names the summary's hub.
 #: Column order is the contract with scripts/memory-lint.
@@ -1247,6 +1249,9 @@ def export_memory_nodes(
                 reviews.get(ref.id, ""),
                 1 if "gotchas:none" in values else 0,
                 _sup_handles(ref.id),
+                ref.created_at.astimezone(UTC).strftime("%Y-%m-%d")
+                if "incident" in values
+                else "",
             )
             manifest.append("\t".join(map(str, row)) + "\n")
         (tmp / SECTIONS_MANIFEST).write_text("".join(manifest), encoding="utf-8")

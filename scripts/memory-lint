@@ -26,7 +26,8 @@
 # chars the fisheye eye shows, live ring links, links hidden by the eye's
 # per-group cap, dead-end links, part-of hub handle, live qualified-by count,
 # last access date (viewed/recalled), open review todos, gotchas:none flag,
-# the node's supersedes targets as handles —
+# the node's supersedes targets as handles, incident creation date (empty
+# unless tagged incident) —
 # src/precis/cli/memory.py::SECTIONS_MANIFEST) carries what the bodies cannot: check 2 scopes by section, check 7 ages by
 # the node's real updated_at (the export rewrites every file, so mtimes are
 # all "today"), and check 8 lints the graph as recall walks it.
@@ -110,6 +111,9 @@
 #      Missing paths and unresolvable forms are separate advisory findings.
 #      No live database reads, resolver guesses, or edits; refresh via the
 #      existing `precis memory index --export-dir` session-start export.
+#  14. incidents older than 90 UTC calendar days, from the manifest's creation
+#      date (edits do not reset age). Report only: verify cause and fix,
+#      preserve uncertainty, and extract still-true claims before retiring.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -603,6 +607,34 @@ if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
             problems=$((problems+1))
         fi
     done < <(awk -F'\t' '$2 == "threads"' "$MANIFEST")
+fi
+
+# 14. incident age (graph mode, manifest column 16). A legacy snapshot cannot
+# identify incidents; report the skipped check instead of claiming clean.
+if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
+    if awk -F'\t' 'NF < 16 { old = 1 } END { exit !old }' "$MANIFEST"; then
+        echo "incident age: skipped (legacy manifest — refresh memory index --export-dir)"
+    else
+        while IFS=$'\037' read -r h age_d; do
+            if (( age_d > 90 )); then
+                echo "  aged incident → $(label_of "$h.md" "$SCAN_DIR/$h.md") (${age_d}d old): verify cause and fix; keep dated cause, fix and uncertainty; move still-true claims to gotchas or rulings before retiring — never invent a fix"
+                problems=$((problems+1))
+            fi
+        done < <(python3 - "$MANIFEST" <<'PY'
+import csv
+import sys
+from datetime import UTC, date, datetime
+
+today = datetime.now(UTC).date()
+with open(sys.argv[1], encoding="utf-8") as manifest:
+    for row in csv.reader(manifest, delimiter="\t"):
+        if len(row) < 16 or not row[15]:
+            continue
+        created = date.fromisoformat(row[15])
+        print(f"{row[0]}\x1f{(today - created).days}")
+PY
+        )
+    fi
 fi
 
 # 10. thread hygiene (graph mode, manifest + node bodies) — the drift the

@@ -134,6 +134,19 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      `docs/runbooks/memory-sibling-repos.md`); a finding there is a suspect
      for the SAME resolve step above (adjust / kill / promote), not a
      separate action.
+   - **Rulings reaching skills** —
+     `search(kind='memory', tags=['ruling'], view='rulings')` lists in-force
+     rulings with `review_by` dates (`due today`, `overdue Nd`, or
+     `in Nd, expiring` within 3 days), due-soon/overdue first. Rows include
+     `decides:` targets when linked with that intent; this is not the full
+     link list. For each due or overdue ruling, integrate it into the owning
+     skill or convention through a linked gripe, then
+     `edit(kind='memory', id='me<N>', meta={'status': 'absorbed'})`; or
+     extend `review_by` with `reason=` explaining the delay; or archive a
+     moot ruling with `meta={'status': 'archived'}`. Flag every in-force
+     ruling with no linked gripe (me548860): check
+     `get(kind='memory', id='me<N>', view='links')`, not just `decides:`.
+     View contract: `src/precis/utils/memory_rulings.py::render_rulings`.
    - **Skill-eval diff** (`scripts/skill-eval --runner live --diff`) — a
      budgeted planned-call `claude -p` dry run over the skills HEAD's
      commit touched (`src/precis/data/skills/`): red = the edited skill

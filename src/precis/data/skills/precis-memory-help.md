@@ -570,6 +570,22 @@ Every other closed axis (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`,
 
 See `precis-tags` for the full axis vocabulary and per-kind matrix.
 
+## Record an incident and its follow-up
+
+Use `incident` (not `prod-incident`) and `section:reference`; repo-dev
+incidents also take `SPACE:repo-dev`. Add `release:r<N>` when a release is
+involved, and link `part-of` the owning sub-hub. Record what happened,
+cause and confidence, UTC timeline, impact, why detection was slow, and
+follow-up handles. The incident narrative is exempt from
+`AUDIT:grab-bag` only; the other shape audits still apply.
+
+Once cause and fix are verified, compact to a concise dated cause, the
+verified fix and any open uncertainty. Never invent a fix. Move still-true
+claims into gotchas or rulings before retiring the incident. Incidents
+older than 90 days are review candidates reported by `scripts/memory-lint`,
+never automatically retired by it. First examples: incident me564175,
+ruling me564176.
+
 ## Rulings — the owner's one-line decisions
 ## List rulings, mark one absorbed or archived
 

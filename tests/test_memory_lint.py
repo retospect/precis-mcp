@@ -1187,6 +1187,57 @@ def _manifest_row(
     )
 
 
+@pytest.mark.parametrize("age_days", [91, 90, 89])
+def test_graph_mode_reports_incidents_older_than_ninety_days(
+    lint_repo: Path,
+    graph_setup: tuple[Path, Path, Path, Path],
+    age_days: int,
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    body = "# Worker outage\n\nCause remains uncertain; follow-up gr123.\n"
+    node = nodes / "me80.md"
+    node.write_text(body, encoding="utf-8")
+    # Recent edits and a freshly exported file must not reset incident age.
+    manifest = nodes / "_sections.tsv"
+    snapshot = (
+        _manifest_row("me80", "reference", _today())
+        + f"\t{_days_ago(age_days)}\n"
+        + _manifest_row("me81", "reference", _today())
+        + "\t\n"  # Ordinary references have no incident creation date.
+    )
+    manifest.write_text(snapshot, encoding="utf-8")
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0, res.stderr
+    if age_days > 90:
+        assert f"aged incident → me80 (Worker outage) ({age_days}d old)" in res.stdout
+        assert "verify cause and fix" in res.stdout
+        assert "never invent a fix" in res.stdout
+    else:
+        assert "aged incident → me80" not in res.stdout
+    assert "aged incident → me81" not in res.stdout
+    assert "incident age: skipped" not in res.stdout
+    assert node.read_text(encoding="utf-8") == body
+    assert manifest.read_text(encoding="utf-8") == snapshot
+
+
+def test_graph_mode_skips_incident_age_for_legacy_manifest(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    (nodes / "me80.md").write_text("# Incident narrative\n", encoding="utf-8")
+    (nodes / "_sections.tsv").write_text(
+        _manifest_row("me80", "reference", _days_ago(91)) + "\n", encoding="utf-8"
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0, res.stderr
+    assert "incident age: skipped (legacy manifest" in res.stdout
+    assert "aged incident →" not in res.stdout
+
+
 def test_graph_mode_flags_a_prose_only_supersedes(
     lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
 ) -> None:

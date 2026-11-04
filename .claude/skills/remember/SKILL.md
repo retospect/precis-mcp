@@ -89,3 +89,18 @@ recipe; the `put`/`edit` response's `Next:` lines do most of it for you.
 
 Policy (what belongs in memory at all, authority of old nodes): AGENTS.md
 §"Repo-dev graph memory". Periodic cleanup: the `reconsolidate` skill.
+
+## Incident memories
+
+Tag `incident` (not `prod-incident`), `section:reference` and
+`SPACE:repo-dev`; add `release:r<N>` when a release is involved. Link
+`part-of` the owning sub-hub. The body records what happened, cause and
+confidence, UTC timeline, impact, why detection was slow, and follow-up
+handles. One incident may need several narrative sections:
+`AUDIT:grab-bag` exempts `incident` nodes; the other shape audits still apply.
+
+Once the cause and fix are verified, compact the incident to a concise
+dated cause, the verified fix and any open uncertainty. Never invent a fix.
+Move still-true claims into gotchas or rulings before retiring the incident.
+`scripts/memory-lint` reports incidents older than 90 days for review;
+it never retires them. First examples: incident me564175, ruling me564176.

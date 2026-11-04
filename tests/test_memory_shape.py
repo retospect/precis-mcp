@@ -95,6 +95,28 @@ def test_grab_bag_clusters_repeated_topics_and_proposes_titles():
     )
 
 
+@pytest.mark.parametrize("incident_tags", [(), ("prod-incident",), ("incident",)])
+def test_incident_exempts_only_grab_bag(monkeypatch, incident_tags):
+    old = int((datetime.now(UTC) - timedelta(days=31)).timestamp())
+    monkeypatch.setattr(
+        shape, "_commit_times", lambda shas: (("abcdef1" + "0" * 33, old),)
+    )
+    audit = shape.audit_shape(
+        title="incident_snapshot",
+        body="- Cache keys always include namespace; merged at abcdef1.\n"
+        "- Parser tokens require escaping; shipped.\n"
+        "- Upload retries preserve offsets; deployed.\n"
+        "- Slice 4a repairs lease expiration; resolved.",
+        tags=iter(("section:reference", *incident_tags)),
+    )
+    expected = shape.SHAPE_CODES
+    if "incident" in incident_tags:
+        expected = expected - {"grab-bag"}
+    assert {finding.code for finding in audit.findings} == expected
+    # An exempt check is clean, not unavailable: stale grab-bag tags can clear.
+    assert audit.checked_codes == shape.SHAPE_CODES
+
+
 def test_one_topic_list_is_not_grab_bag():
     assert "grab-bag" not in _codes(
         title="Cache keys must include every input",

@@ -266,11 +266,14 @@ def audit_shape(
     A reference needs a route only for an unhedged numeric measurement or
     an absolute (always/never/only) claim in its body. Ordinary descriptive
     verbs and sentence punctuation are not evidence of such a claim.
+    Incident narratives intentionally group cause, impact and timeline;
+    only their grab-bag check is exempt, not the other shape checks.
     """
     lines = _prose_lines(body)
     findings: list[ShapeFinding] = []
     checked = set(SHAPE_CODES)
-    titles = _atomic_titles(title, lines)
+    tag_set = set(tags)
+    titles = () if "incident" in tag_set else _atomic_titles(title, lines)
     if titles:
         count = max(2, len(titles))
         findings.append(
@@ -316,7 +319,6 @@ def audit_shape(
                 "to atomic memories and remove landed history",
             )
         )
-    tag_set = set(tags)
     reference = (
         "section:reference" in tag_set or (meta or {}).get("type") == "reference"
     )
