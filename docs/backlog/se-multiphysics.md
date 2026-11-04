@@ -26,8 +26,9 @@ the Eulerian wall coefficient (`_entry_distance` + `wall_sink_star`
 `entrance=`), the slice-1 `wall-flux-fraction` flag removed, and a kernel
 acceptance test. See slice 1b below.
 
-**Ready (slice 1 only), 2026-10-21.** The later slices stay draft; each
-gets its acceptance criteria when it goes ready. A physics review (Fable,
+**Ready.** Slice 1 on 2026-10-21; slices 2, 4 and 5 on 2026-11-04, after
+the seam (§Seam slice, §Acceptance: slip, heat, Darcy). The other slices
+stay draft; each gets its acceptance when it goes ready. A physics review (Fable,
 2026-10-21) found the core relations correct: the Taylor coefficient with
 the full gap and 1/210, the reduced numbers, the series `k_eff`, the
 Erban–Chapman wall absorption, the Da definitions and the TOF→`k_s` units.
@@ -104,7 +105,7 @@ Notation: `ε = h0/L` is the thinness throughout. Permittivity is written
 | two-phase in the gap | pancake interface spanning the gap; Park–Homsy jump, one wetting convention per case (slice 8) | level set on the 2-D grid, pressure jump at the interface, contact angle θ per patch (hydrophobic region measures) | drop diameter `< 2h` (3-D drop), `Ca > 0.1` (film thickness `~h Ca^{2/3}` no longer small), contact-line pinning dynamics, unstable displacement (Saffman–Taylor) | 8 |
 
 Couplings carried: flow → species, flow → heat (one-way); T → μ → flow,
-reaction heat → T → k_s (Picard, two-way); φ → flow (one-way); p ↔ h
+reaction heat → T → k_s (Picard, two-way; `k_s(T)` open, M6); φ → flow (one-way); p ↔ h
 (Newton, two-way). Each physics is a pure function
 `(Domain, Field, params) -> field` in reduced units, with its own reduced
 numbers. A coupled run is fixed-point iteration over those functions.
@@ -372,7 +373,7 @@ Tests in `tests/test_precis_flow_species.py` (kernel) and
     within 1e-6 and its `apparent_order` line fails with the X ≲ 0.2 text.
     p5/p95 produce a conversion band on the measure.
 
-## Later slices (one physics each; acceptance written when each goes `ready`)
+## Later slices (one physics each)
 
 1b. **Entrance-region mass transfer — Landed.** Developed Sh ignored the
    concentration boundary layer that restarts at the leading edge of each
@@ -398,7 +399,8 @@ Tests in `tests/test_precis_flow_species.py` (kernel) and
    Reference for its acceptance: zero-order and Michaelis–Menten plug
    flow (closed forms).
 2. **Heat.** Fluid T plus wall-plate T, Nu coupling, `μ(T)` Picard,
-   reaction enthalpy as a wall source (catpath `dH`).
+   reaction enthalpy as a wall source (catpath `dH`; M7). Acceptance:
+   §Heat.
    - Card: `Pe_T`, `t_wall/L`, wall Biot `Bi = h_c t_wall/k_wall ≤ 0.1`
      (the 2-D plate assumes no temperature gradient across the wall
      thickness), `Ra_h`.
@@ -422,18 +424,20 @@ Tests in `tests/test_precis_flow_species.py` (kernel) and
    - Card: `λ_D/h0`, EO/pressure velocity ratio, Dukhin number
      `Du = σ_s/(σ h)` (surface conduction against bulk).
    - Outputs: `eo-flow-rate`, `current`.
-4. **Darcy / Brinkman regions.** A `porous:` region on the pocket with
-   `permeability` and `porosity` measures.
+4. **Darcy / Brinkman regions.** A floor or lid `patch:` datum with
+   `permeability` and `porosity` measures (Q1; no new selector). Acceptance:
+   §Darcy / Brinkman.
    - Transmissivity is the Brinkman closed form in the table, so no
      `κ/h²` threshold is needed for the flow. The old Darcy threshold
-     `κ/h² > 0.1` was wrong: Darcy over-reads the flux by 58% at 0.1 and
-     is within 5% only for `κ/h² ≤ 6e-4`.
+     `κ/h² > 0.1` was wrong: at 0.1 Darcy reads 2.39× the Brinkman flux,
+     and the two agree within 5% only for `κ/h² ≤ 6e-4`.
    - Species: `D_eff = D·φ/τ`. The Taylor term is off inside the region
      (the profile there is near plug). Mechanical dispersion `α_L|U|` is
-     added for coarse media, with `α_L` a region measure.
+     added for coarse media, with `τ` and `α_L` region measures.
    - Card: `κ/h²` (informational: which limit the closed form is near).
 5. **Slip.** `slip-length` per patch (hydrophobic regions), Maxwell slip
-   for gas from `λ`. The tracer profile follows the slip-shifted parabola.
+   for gas from `λ`. Acceptance: §Slip. The tracer profile follows the
+   slip-shifted parabola.
    The Knudsen line threshold becomes 0.1 when slip is on. With equal slip
    `b` on both walls, the slip part is a plug, so the Taylor coefficient
    falls by `(1 + 6b/h)⁻²` at the same mean velocity; unequal slip passes
@@ -502,9 +506,232 @@ B. **External 3-D backend — validation and 3-D flow.** Its remit
      3-D Stokes. The `thinness` threshold stays at 0.05 only if the error
      there is ≤ 5%; the measured curve replaces the guess.
 
-Order: 1 ✓ → 1b ✓ → 5 (slip: small, unlocks gas Kn up to 0.1) → 2 → 3 →
-4 → 6 → 7 → 8. 1c when a case has `|α − 1| > 0.2` at conversion above 0.2.
-B is unordered. Heat before electro-osmosis because Joule heating needs it.
+Order: 1 ✓ → 1b ✓ → seam → 5, 2 and 4 in parallel, each with its own
+measurand migration. Then 3 (Joule heating refused until heat lands), 7
+after slip (shared gap profile), 6 and 8 later. 1c when a case has
+`|α − 1| > 0.2` at conversion above 0.2. B is unordered.
+
+## Seam slice
+
+Behaviour-neutral; lands after 4a-i (both touch `src/precis_se/flow.py`).
+Heat, slip and Darcy wait for it. Existing tests stay unchanged and green.
+
+It moves the species section of `src/precis_se/flow.py`
+(`_SPECIES_INPUT_PROPS` through `_flow_damkohler`) into its own module.
+Each physics then registers on these surfaces:
+
+| Surface | Today | After the seam |
+|---|---|---|
+| Measure computers | the `src/precis_se/flow.py::FLOW_COMPUTERS` literal; the slug list in `src/precis_se/properties/__init__.py::COMPUTERS` | each physics registers its computers; slugs stay declared without importing a solver (`src/precis_se/properties/__init__.py::_LazyComputer`) |
+| Regime card line group | `src/precis_flow/regime.py::RegimeCard` field `species`, species kwargs on `from_physical`, the fixed `lines` tuple | each physics registers a group; `lines`, `ok`, `failures` and `src/precis_geom/physics.py::card_dict` cover every group; `species` keeps its attribute |
+| `flow:` token keys | the closed set in `src/precis_se/flow.py::parse_flow_shape`, fields on `FlowSpec` | each physics registers its keys; an unknown key still refuses |
+| `evaluate` spec keys | `src/precis_geom/physics.py::_FLOW_KEYS`, `MEASURANDS`, `_flow_case` | each physics registers its keys and measurands; an unknown key still refuses |
+
+The tracker names the first three. The fourth is needed because
+`src/precis_se/flow.py::_flow_measure` reaches the kernel through
+`evaluate`: a physics without a spec key never changes a flow measurand.
+An empty registration is valid. Slip and Darcy add no computers (their
+effect reaches the existing measurands); none of the three adds a token
+key (Q1). The solver layer is not covered: see log item M1.
+
+## Combination rule
+
+A lane refuses every physics combination it has not tested.
+
+- **Combination.** The set of active physics on one chamber. A physics is
+  active when any of its inputs is declared (a registered token key,
+  `evaluate` spec key or input measure), whatever output was requested:
+  `outlet-conversion` on a chamber with a `slip-length` measure is a slip +
+  species case.
+- **Tested.** The set is in the seam's `TESTED` registry. An entry lands in
+  the commit that adds its test. `{flow}` and `{flow, species}` seed it.
+- **Refusal.** `evaluate` and `view='flow'` raise `BadInput` naming
+  `physics.untested_combination`, the set, and `next=` (which input to
+  drop). A computer returns `(None, reason)` with the same text.
+- **No silent drop.** Ignoring a declared input is the failure this rule
+  stops. A physics is never left out of a solve to make a number appear.
+- **Test.** A seam test walks every subset of the registered physics and
+  asserts that each one outside `TESTED` refuses, so a new lane is covered
+  when it registers.
+
+| Active set (with `flow`) | Owner | State after wave |
+|---|---|---|
+| none | slice 2 | tested |
+| species | slice 1 | tested |
+| slip | slip lane | tested by S1–S8 |
+| heat | heat lane | tested by H1–H9 |
+| darcy | Darcy lane | tested by D1–D5, D7 |
+| slip + species | slip lane | tested by S9 |
+| heat + species | heat lane | tested by H10 |
+| darcy + species | Darcy lane | tested by D6 |
+| slip + heat, slip + darcy, heat + darcy, or three or more | none | refused; a follow-on lane writes its acceptance |
+| `flow:lumen` with any of these | none | refused |
+
+## Acceptance: slip, heat, Darcy
+
+Slices 5, 2 and 4 build in parallel after the seam. Tests:
+`tests/test_precis_flow_<slip|heat|darcy>.py` (kernel) and
+`tests/test_se_flow_<slip|heat|darcy>.py` (adapter). All three use one
+face law: `U* = −(T*/h*) ∇*p*` with face transmissivity `T*`, which gives
+the landed `U* = −h*²∇*p*` at `T* = h*³`.
+
+### Common to the three
+
+- **C1 Off is off.** With the physics inactive, `solve`, `trace`,
+  `transport` and `evaluate` results are bitwise unchanged, and the
+  existing flow and species test files pass untouched.
+- **C2 Size invariance.** The same shape and reduced numbers at 1 mm and
+  50 cm give equal reduced fields within 1e-12.
+- **C3 Determinism.** `evaluate` twice gives an equal `Outcome`.
+- **C4 No silent numbers.** A missing input gives a reason string, never 0
+  or a default.
+- **C5 Card.** The physics' card group is absent without its inputs,
+  its lines are not-applicable until their own inputs are given, and
+  `card_dict` serialises them.
+- **C6 Combinations.** Sets the §Combination rule table does not mark
+  tested refuse.
+- **C7 Migration.** One measurand seed migration per lane, in the shape of
+  `src/precis/migrations/0231_se_species_measurands.sql`. **The lane gets
+  its number from COORDINATOR and does not pick one.** That shape skips a
+  slug already present, so the later se-native-fields seed cannot clash.
+
+  | Lane | Measurands (canonical unit) |
+  |---|---|
+  | slip | `Slip length` (m) |
+  | heat | `Temperature` (K), `Heat flux` (W/m²), `Reaction enthalpy` (J/mol), `Max temperature` (K), `Outlet temperature` (K), `Wall heat flux` (W/m²) |
+  | Darcy | `Permeability` (m²), `Porosity` (ratio), `Tortuosity` (ratio), `Longitudinal dispersivity` (m) |
+
+- **C8 Docs.** `precis-se-flow-help` and `precis-se-regions-help` gain the
+  lane's vocabulary.
+
+### Slip (slice 5)
+
+Local ratios `β₁ = b_floor/h`, `β₂ = b_lid/h`. `T* = h*³ F` with
+`F = (1 + 4(β₁+β₂) + 12β₁β₂) / (1 + β₁ + β₂)`, the table's flux factor.
+
+- **S1 Flux factor.** Uniform rectangle: `R* = (nx−1)/(ny F)` within 1e-10
+  relative, at `(β₁, β₂) = (0.1, 0.1)` with `F = 1.6`, `(0.1, 0)` with
+  `F = 14/11`, and `(0.1, 0.3)` with `F = 74/35`.
+- **S2 Series.** Equal slip on the downstream half only, `nx` even:
+  `R* = ((nx−1)/2)(1 + 1/F)/ny` within 1e-10 relative. The harmonic face at
+  the step makes this exact.
+- **S3 Gap profile.** `w(ψ) = 6(−ψ² + aψ + aβ₁)/F` with
+  `a = (1+2β₂)/(1+β₁+β₂)`. `∫₀¹ w dψ = 1` within 1e-12, and `β₁ = β₂ = 0`
+  gives `6ψ(1−ψ)`. `trace` uses `w`; slip with `profile='plug'` refuses.
+- **S4 Taylor coefficient.** `κ = ∫₀¹ (∫₀^ψ (w−1) dψ′)² dψ` within 1e-9 of
+  each reference: `1/210` at no slip, `1/(210(1+6β)²)` at equal slip,
+  `210κ = 46/49` at `(0.1, 0)` and `2.68` at `(1, 0)`. As `β₁ → ∞`, `κ`
+  tends to `2/105` (within 1e-7 at `β₁ = 1e6`). `transport` takes it
+  through the existing `shear_velocity=` as `U*·sqrt(210κ)`, with no
+  signature change.
+- **S5 Taylor emerges.** Slice-1 tests 3 and 4 repeated at `ε = 0.005`,
+  `Pe = 10`, mean speed held. Equal `β = 0.1`: Eulerian `σ²_t*` matches
+  `2ε(1/Pe + (Pe/210)(1+6β)⁻²)` within 5%, Lagrangian within 10% with no
+  Taylor term added by hand. One wall `β₁ = 1`: the Lagrangian matches
+  `2ε(1/Pe + 2.68 Pe/210)` within 10%.
+- **S6 Knudsen.** With slip on, the `knudsen` line threshold is 0.1 and
+  `RegimeCard.route` answers `continuum` at `Kn = 0.05`; without slip the
+  same card raises the transition refusal. With slip, `Kn = 0.2` raises it
+  naming 0.1, and `Kn ≥ 10` still routes `knudsen`.
+  `src/precis_geom/physics.py::_card` follows the same bound. Card group
+  `slip`: `slip_ratio = max(b)/h0`, informational, giving `F`.
+- **S7 Maxwell.** `b = λ` on both walls at full accommodation gives
+  `F = 1 + 6 Kn` locally: `R*` at `Kn = 0.05` matches S1 at `F = 1.3`. A
+  stated `mean_free_path` alone does not turn slip on.
+- **S8 se.** `slip-length` on a floor or lid patch (`_patch_side`,
+  `_patch_cells`). A lateral patch or `b < 0` gives a reason, as
+  `wall-rate-constant` does; so do two overlapping `slip-length` patches on
+  one wall. A hard `resistance-ratio` bound the slip chamber misses is a
+  DRC finding.
+- **S9 Slip + species.** Slice-1 test 7 on the hex chamber at `β = 0.1`,
+  `Pe ε = 0.05`, `Da_w = 0.1`: outlet conversion agrees within 3σ Monte
+  Carlo + 2%. Eulerian with a `wall_damkohler` above reaction-limited
+  refuses naming the Lagrangian (M11).
+
+### Heat (slice 2)
+
+`α = k/(ρ c_p)` from the fluid's `thermal_conductivity`, `density` and
+`specific_heat_capacity`; `Pe_T = u0 h0/α`; `h_c = Nu k/(2h)`. BC measures
+reuse the se-native-fields §The physics registry slugs: `temperature`
+(Dirichlet), `heat-flux` (Neumann).
+
+- **H1 Energy balance.** Steady, any domain:
+  `|inflow + wall input − outflow| / inflow ≤ 1e-10`.
+- **H2 Uniform flux, mean.** Uniform rectangle, `q` on `n_w` walls:
+  `dT̄/dx = n_w q/(ρ c_p Ū h)` within 1e-6 relative past the first cells.
+- **H3 Uniform flux, wall offset.** `T_w − T̄ = 2h q/(Nu k)` within 1e-3
+  at `Nu = 140/17` (both walls) and `140/26` (one wall), the table's 8.23
+  and 5.39.
+- **H4 Fixed wall temperature.** The decay slope of `ln(T_w − T̄)` matches
+  `−n_w Nu_T/(2 ε Pe_T)` within 5%, with `Nu_T` per M5.
+- **H5 Wall plate.** Floor plate between two `temperature` patches, uniform
+  `q`, fluid temperature held by a high capacity rate:
+  `T_w − T_f = (q/h_c)(1 − cosh(m(x*−½))/cosh(m/2))`,
+  `m² = h_c L²/(k_w t_w)`, within 1% at `m = 8`, with `Bi` inside its line.
+- **H6 `μ(T)` Picard.** Uniform rectangle, uniform flux, fixed `Δp`,
+  `μ* = e^{−βθ}`. With `I(θ) = (1−e^{−βθ})/(βθ)` and `θ₁ = q₀ I(θ₁)`,
+  `R*/R*₀ = I(θ₁)` within 0.5%. At `β = 1`, `q₀ = 0.5`: `θ₁ = 0.4102`,
+  `I = 0.8203`; a one-way solve gives 0.7869 and fails. The law itself is M4.
+- **H7 Convergence reported.** `Outcome` carries `coupling` with the
+  se-native-fields §Coupling defaults (`tol` 1e-6, `max_iter` 50, `ω = 0.7`).
+  A case that does not converge refuses `coupling.diverged` with its last
+  three residuals; it never returns a value.
+- **H8 Card.** Group `heat`:
+
+  | Line | Number | Holds when | Else |
+  |---|---|---|---|
+  | `pe_t` | `Pe_T·ε` | ≤ 0.1 | refuse; heat has no Lagrangian route |
+  | `wall_thickness` | `t_wall/L` | ≤ 0.05 | hand the wall to `precis_fields` |
+  | `wall_biot` | `h_c t_wall/k_wall` | ≤ 0.1 | hand the wall to `precis_fields` |
+  | `rayleigh` | `Ra_h` | ≤ 1708 | not-applicable until M8 gives its inputs |
+  | `heat_taylor` | constant line | informational | names the insulated-wall 1/210 as the upper bound it uses |
+
+  Worked points: water, `h0 = 100 µm`, `L = 20 mm`, `u0 = 1 mm/s` gives
+  `Pe_T = 0.70`, `Pe_T·ε = 0.0035`. With `h_c = 2.47e4 W/m²K`, a 0.5 mm wall
+  at `k = 150` gives `Bi = 0.082` and holds; a 1 mm wall at `k = 1` gives
+  `Bi = 24.7` and fails.
+- **H9 se.** `max-temperature`, `outlet-temperature` and `wall-heat-flux`
+  register as computers. A hard `max-temperature` bound the chamber misses
+  is a DRC finding. A missing fluid property gives a reason naming it.
+- **H10 Heat + species.** `reaction-enthalpy` on a reactive patch adds the
+  wall source `(−ΔH)·r`: exothermic raises `T`, and the H1 balance holds
+  with the source equal to the species wall sink times `−ΔH` within 1e-10.
+  `k_s` stays fixed and the card says so (M6).
+
+### Darcy / Brinkman (slice 4)
+
+`κ* = κ/h0²`. Inside a porous region
+`T* = 12κ*h*[1 − (2√κ*/h*) tanh(h*/(2√κ*))]`, with `μ_eff = μ`. A region is
+a floor or lid `patch:` datum carrying `permeability` and `porosity`
+measures (Q1), and it fills the local gap.
+
+- **D1 Closed form.** Fully porous uniform rectangle:
+  `R* = (nx−1)/(ny T*)` within 1e-10 relative. `T*` over Darcy `12κ*h*` is
+  0.95101, 0.80002, 0.41891 and 0.07577 at `κ/h² = 6e-4, 1e-2, 0.1, 1`,
+  within 1e-5.
+- **D2 Hele-Shaw limit.** At `κ* = 1e8`, `T*/h*³ − 1` equals `−1/(10κ*)`
+  within 1e-12 absolute. The naive bracket gives −5e-8 there, so the
+  evaluation needs a series branch at small `h/√κ`.
+- **D3 Series plug.** An interior plug `n_p` columns long:
+  `R* = ((nx−1−n_p) + n_p/T*)/ny` within 1e-10 relative. The solve's own
+  floor is about 1e-11 at a 100:1 contrast, so 1e-12 is out of reach.
+- **D4 Continuity.** Net flux through every column of the plug case is equal
+  within 1e-10 relative.
+- **D5 Local gap.** A region over a deepened floor uses local `h*`:
+  `T*` at `h* = 2` equals the closed form within 1e-12.
+- **D6 Darcy + species.** Inside the region the `taylor_tensor` result equals
+  `ε(φ/τ)/Pe · I`, plus `(α_L/L)|U*|` along `U*` when `α_L` is set, within
+  1e-12; the Taylor term is zero there. Steady mass balance holds within
+  1e-10. Missing `porosity` or `tortuosity` gives a reason. Transient runs
+  and a `wall-rate-constant` patch overlapping the region refuse (M15).
+- **D7 se and card.** Group `darcy`: `kappa_ratio` `κ/h²` (informational,
+  names the nearer limit); `reynolds_pore` `ρ q √κ/μ ≤ 1` (se-native-fields
+  §Card); `full_height`, a constant line stating the insert fills the gap,
+  since nothing can detect one that does not. `κ ≤ 0`, porosity outside
+  `(0, 1]`, a lateral patch or overlapping regions give a reason. Tracer
+  measurands on a porous chamber return a reason until M10 closes;
+  `resistance-ratio` computes. A hard `resistance-ratio` bound the chamber
+  misses is a DRC finding.
 
 ## Explicitly NOT in scope
 
@@ -522,17 +749,85 @@ homogeneous (bulk) reactions. The last is a later one-liner on the same
 `regime.py`, and `trace` gains `pe=`/`walls=`/`max_steps=`.
 `src/precis_se/flow.py` gains the token keys, the computers and the
 `wall_rate` handler op. Measurand taxon nodes for the new slugs need a
-core seed migration, which goes through the release owner.
+core seed migration, which goes through the release owner (C7).
+The seam adds the registrations of §Seam slice; slices 5, 2 and 4 add one
+module each under `src/precis_flow/` and `src/precis_se/`.
 `precis-se-regions-help` and the flow skill gain the BC vocabulary.
 
-## Open questions (default taken if unanswered)
+## Rulings (Reto 2026-11-04, tracker gr563788)
 
-- Q1 BCs as measures on patch regions (default) vs. more keys in the
-  `flow:` token. Measures reuse value/band/strength/origin and DRC; the
-  token stays a role list.
-- Q2 Species scope via the measure name `<block>.<species>/<property>`
-  (default) vs. a new `species` column on `se_measures` (migration).
-- Q3 Liquid-phase catpath rates: refuse (default) until a solvation /
-  Henry model is stated.
-- Q4 Backend B1 is FEniCSx (default). Run on the compute lane as a job,
-  never in the MCP process.
+Q1–Q4 spec defaults stand:
+
+- Q1 BCs are measures on `patch:` regions; the `flow:` token stays a role
+  list.
+- Q2 Species scope is the measure name `<block>.<species>/<property>`
+  (`src/precis_se/flow.py::_scoped_prop`), not a column on `se_measures`.
+- Q3 Liquid-phase catpath rates are refused until a solvation/Henry model
+  is stated (`src/precis_se/wall_rate.py::op_wall_rate`).
+- Q4 Backend B1 is FEniCSx, run as a job on the compute lane, never in the
+  MCP process.
+
+Multiphysics runs in parallel through §Seam slice, not as a chain.
+
+## Open questions log
+
+Statements not grounded in code or in the tracker. Each names the default
+a lane takes until it closes.
+
+- **M1 Solver hook.** `src/precis_flow/flow.py::solve` hard-codes `h**3` and
+  `h**2`; `src/precis_flow/tracer.py::trace` knows `plug|parabolic`;
+  `src/precis_flow/species.py::taylor_tensor` takes one scalar `pe`. Slip,
+  heat and Darcy each need to change these, and the seam as tracked does
+  not open them, so three parallel lanes would edit the same lines.
+  Default: a behaviour-neutral hook lands with the seam, `solve` taking a
+  `T*` factor field and `trace` a per-cell profile.
+- **M2 Physics names.** `heat`, `species` and `darcy` are also rows of the
+  se-native-fields `REGISTRY`, where `evaluate(physics=[...])` routes them
+  to `precis_fields`. Default: thin-gap physics are keys of the `flow` spec,
+  so `physics=['flow']` stays the only thin-gap name.
+- **M3 Species on `evaluate`.** `MEASURANDS` holds the four flow measurands;
+  the species computers call `_species_run`, not `evaluate`, so a script
+  cannot state a species number and the import re-check cannot cover one.
+  The seam moves the code unchanged. Default: left as is; S9, H10 and D6
+  test through the kernel and the se computers.
+- **M4 Fluid properties.** The core registry
+  (`src/precis/migrations/0092_material_kind.sql`) has no viscosity or
+  diffusivity, though `_species_case_for` reads `viscosity`,
+  `dynamic_viscosity` and `diffusivity` from the fluid row. There is no
+  source for `μ(T)` either. Default: H6 runs at kernel level on a stated
+  `μ*(θ)`; se returns a reason until a property and a law are chosen.
+- **M5 Fixed-wall Nusselt.** The table's 8.23 / 5.39 are uniform-flux values;
+  a `temperature` patch is a fixed-temperature wall. Default: 7.54 / 4.86,
+  the constants of `src/precis_flow/regime.py::_SH`.
+- **M6 `k_s(T)`.** §Couplings lists reaction heat → T → `k_s`, but a
+  `wall-rate-constant` measure holds one value at one `T` and no activation
+  energy is stored. Default: one-way, `k_s` fixed.
+- **M7 Reaction enthalpy source.** Slice 2 says catpath `dH`; quest scalars
+  (`src/precis/quest/compute.py`) carry none, and the `rxn` handlers hold
+  `ΔH`. Default: `reaction-enthalpy` is typed in with `origin='user'`.
+- **M8 Rayleigh inputs.** Fluid volumetric expansion is not a property
+  (`thermal_expansion_coeff` is a linear CTE), and the chamber's orientation
+  to gravity is not modelled, though 1708 holds only heated from below.
+  Default: the line stays not-applicable.
+- **M9 Wall thickness.** Item 2 of Reto's question reads wall thickness from
+  the block's material; no material property holds it. Default: a
+  `wall-thickness` patch measure on the `length` measurand.
+- **M10 Tracer in a porous region.** Particles move at the interstitial
+  speed `U/φ`, not the superficial `U*`; the spec does not say which the
+  tracer uses, and `residence-time-t0` depends on it. Default: tracer
+  measurands refuse on a porous chamber (D7).
+- **M11 Sherwood number with slip.** 7.54 / 4.86 assume a no-slip profile and
+  no closed form for `Sh(β)` is stated. Default: Eulerian refuses outside
+  the reaction-limited band (S9).
+- **M12 Maxwell activation on se.** `mean_free_path` has no measurand, and
+  the `flow:` token stays a role list (Q1). Default: Maxwell is an `evaluate`
+  spec input; an se chamber declares `slip-length` with `b = λ` itself.
+- **M13 `resistance-ratio` reference.** `src/precis_geom/physics.py::_flow_measures`
+  solves a flat chamber with the plain gap law. Default: unchanged, so the
+  ratio compares against a no-slip, non-porous chamber.
+- **M14 Gas compressibility.** Slip widens the kernel to gas at `Kn` up to
+  0.1, and the kernel is incompressible; no card line bounds `Δp/p`.
+  Default: no line.
+- **M15 Porous storage and wall reactions.** The transient term needs `φ`
+  storage and the series `k_eff` assumes open-gap `Sh`. Default: both refuse
+  (D6).

@@ -167,11 +167,11 @@ commit carrying this line; `git log` has the sha.*
    the player** — *library half landed 2026-10-23 (the commit carrying
    this line): `precis_geom.flow`, `precis_geom.physics.evaluate`,
    `FLOW_COMPUTERS` on `evaluate`, the skill's `evaluate` section.
-   Still owed: the `out.physics` manifest → `flow:` pocket + import
-   re-check (needs structure-workspaces slice 0's importer), the
-   end-to-end run-to-player test (needs slice 1's `run`), and
-   `src/precis_flow` in the precis-geom wheel's pyproject (needs slice
-   2's packaging — `evaluate` imports it, so the wheel must ship it).*
+   `src/precis_flow` ships in the wheel (`packaging/geom/pyproject.toml`
+   force-include). Still owed: the `out.physics` manifest → `flow:`
+   pocket + import re-check (needs structure-workspaces slice 0's
+   importer) and the end-to-end run-to-player test (needs slice 1's
+   `run`).*
    No server op (the earlier `anneal_chamber` is dropped).
    Depends on [structure-workspaces](structure-workspaces.md) slices
    1–2 (the `run` loop; the `precis-geom` wheel). Order (Reto,
@@ -226,6 +226,11 @@ commit carrying this line; `git log` has the sha.*
      after `run` the design carries the `flow:` pocket, `view='flow'`
      serves the player payload (mesh, frames, ports, card — the keys the
      slice-2b test asserts) and `/se/<slug>/flow` renders it.
+     **Stand-in until `run` exists** (ruled 2026-11-04): a host `scratch/`
+     run plus the workspace tar import, in test code only, behind one
+     helper, with no product path. A second test goes through the real
+     `run`, marked `xfail(strict=True)`: it goes red once `run` works and
+     forces deleting the stand-in.
    - **Common random numbers.** `evaluate` on the same shape twice gives
      a bitwise-equal `Outcome`.
    - **Physics only.** `Outcome.measures` keys are a subset of the
@@ -245,13 +250,17 @@ commit carrying this line; `git log` has the sha.*
    want the general case implemented, the coder can do cool stuff with
    it then." And: "hole count will not be the answer to evaluate shape.
    That's what the tool makes the space to be." After 4a. Delivers:
-   - **Design representation — proposed, under discussion** (Reto is
-     still on this item; the rest of 4b is ruled). Two cases set the
-     bar: the chamber (holes poked, shifted, added, removed —
-     annealing) and a bracket (two planes at an angle, a load, a
-     material, a manufacturing spec: add small supports where the
-     remaining need is highest, anneal, then remove the least-stressed
-     ones, ESO/BESO-like). "It's the coder's choice." Recommended:
+   - **Design representation — contract** (ruled, Reto 2026-11-04:
+     "build it in"). Two cases set the bar: the chamber (holes poked,
+     shifted, added, removed — annealing) and a bracket (two planes at an
+     angle, a load, a material, a manufacturing spec: add small supports
+     where the remaining need is highest, anneal, then remove the
+     least-stressed ones, ESO/BESO-like). Every arrow is pure:
+
+     ```
+     Recipe ─build→ Built.spec (SceneSpec) ─build_design→ Design ─whole→ (Design, Expr) ─evaluate→ Outcome
+     ```
+
      0. **Recipe vs product.** The design *recipe* (feature graph +
         params) is the editable, snapshot-able thing the optimiser
         changes. Built geometry (atoms, cad instances, faces) is
@@ -265,45 +274,161 @@ commit carrying this line; `git log` has the sha.*
         history (which iteration, which proposal changed which feature)
         lives in the trace's `search` section, linked from the root,
         not stamped on objects.
-     1. **`precis_geom.design`** — the mutable recipe: a feature graph
-        whose features have stable ids (`add`/`remove`/`modify` by id,
-        never "the third hole"). The primary interface, because
-        topology changes (growing and pruning features) are awkward as
-        fixed-length parameter vectors. `build(design) -> Design` (cad
-        graph) is pure; `precis.cad.graph.Design` is a build product —
-        its `instances`/`components` dicts grow only during the build
-        (the nodes are frozen) and the kit never edits a built one in
-        place. A stable feature id
-        is not a stable face: booleans split and merge faces, so BCs and
-        ports reference semantic regions and datums — the existing
-        `patch:` selector (`precis_se/datums.py`, moving to
-        `precis.cad.patch`) is exactly that, re-resolved on every
-        rebuild; the rebuild reports `one→many`, `many→one` and
-        `deleted` mappings for the regions a spec names, and a deleted
-        region is a refusal naming the feature, not a silent drop.
-        Interchangeable features canonicalise (holes sorted spatially)
-        so permutations hash to one `shape sha` for the cache.
-     2. **Snapshot/restore**: `design.snapshot()` / `restore(snap)` —
-        copy-on-write or a plain copy, designs are small — for
-        backtracking and Metropolis rejects. Each evaluation is one
-        atomic transaction over design + grid + semantic maps + solver
-        restart data; workers hold copy-on-write snapshots, never a
-        shared undo stack. Across runs the per-run commit
-        (`script_sha`), `target:'fork'` and the retire/restore trail
-        cover it; no design snapshots in the DB.
-     3. **`precis_geom.params`** — named, bounded parameters
-        (`Continuous(lo, hi)`, `Integer(lo, hi)`, `Boolean()`) as a
-        convenience layer over feature attributes, with constraints as
-        functions of the parameters, for continuous optimisers; a
-        `Space` samples, clips and validates; params are an immutable
-        mapping (`build(params)` stays the convention for fixed-topology
-        searches).
-     4. **Ask/tell adapters** (Optuna/Nevergrad style): `ask(n) ->
-        candidates`, `tell(observations)`, `recommend()`; an
-        `Observation` carries `objectives`, `constraints` (`≤ 0`
-        feasible), `status ok|failed|pruned`, `design_hash` and
-        `artifact_uri`, so any search style plugs in and a failed solve
-        is never read as a good objective.
+     1. **`precis_geom.design`** — the mutable recipe, a feature graph
+        with stable ids. It is the primary interface: growing and
+        pruning features does not fit a fixed-length parameter vector.
+
+        ```python
+        @dataclass(frozen=True)
+        class Feature:
+            id: str                              # 'h7': minted once, never reused
+            op: str                              # a FEATURE_OPS key
+            params: tuple[tuple[str, Any], ...]  # sorted (name, value); plain values, SI
+            parents: tuple[str, ...] = ()        # feature ids; the graph is a DAG
+            group: str | None = None             # interchangeable set, canonicalised
+            pinned: bool = False                 # user-placed: modify and remove refuse
+
+        class Recipe:
+            def add(self, op, *, parents=(), group=None, pinned=False, **params) -> str: ...
+            def remove(self, id) -> None: ...    # refuses while a child names it
+            def modify(self, id, **params) -> None: ...
+            def region(self, name, selector) -> None: ...
+            def snapshot(self) -> Snapshot: ...
+            def restore(self, snap) -> None: ...
+            def to_json(self) -> dict: ...       # the full recipe.json
+            @classmethod
+            def from_json(cls, doc) -> Recipe: ...
+
+        def build(recipe, *, prev=None) -> Built: ...   # never mutates recipe or prev
+
+        @dataclass(frozen=True)
+        class Built:
+            spec: SceneSpec                      # what out.block writes
+            shape_sha: str
+            regions: tuple[RegionChange, ...]    # against prev
+            step_keys: tuple[tuple[str, str], ...]       # (feature id, step key)
+            def solid(self) -> tuple[Design, Expr]: ...  # evaluate's shape
+        ```
+
+        - **The product is a `SceneSpec`.**
+          `src/precis_geom/steps.py::_kind_of` stores it,
+          `src/precis_geom/steps.py::_digest_spec` hashes its content,
+          `src/precis_geom/out.py::_block_kind` writes it. A `Design`
+          has none of the three: `src/precis_geom/steps.py::_digest_geom`
+          hashes a `uuid4` for one, `src/precis_geom/steps.py::_encode_geom`
+          refuses one, `_block_kind` refuses one. `Built.solid()` calls
+          `src/precis/cad/scene.py::build_design` and `Design.whole`,
+          giving the pair `src/precis_geom/flow.py::_wrap_solid` takes.
+        - **Ops.** `FEATURE_OPS[op]` is a `@steps.step` function
+          `(parent: SceneSpec | None, **params) -> SceneSpec`. It returns
+          a new spec; a mutated input falls back to a content key
+          (`src/precis_geom/steps.py::_live_inst`). `NodeSpec.config`
+          uses an alias from `src/precis/cad/dsl.py::_ALIAS_KEYS`. The
+          cfdtest hex footprint builds as a `box` plus two `ngon:n4` tips,
+          checked through `domain_from_solid`.
+        - **Step layout.** A feature stacks on its parents. Group members
+          are sibling leaf steps under one `combine` step: a hole edit
+          rebuilds that leaf and the `combine`, not the other holes.
+        - **Canonical form.** Group members sort by parameter values;
+          `NodeSpec.name` is `<group>#<rank>`. Feature ids stay out of
+          step params and node names (`_digest_spec` hashes names), so
+          two hole orders, or equal geometry under different ids, give
+          one `shape_sha`.
+        - **`shape_sha`** is a public wrapper over `_digest_spec`. It
+          refuses a spec carrying `field_loader` or `hmap_loader`:
+          `_digest_spec` returns a random uuid there, which would disable
+          the evaluate cache without saying so.
+        - **Frames.** `recipe_key` is `<feature id>.<param>` (`h7.x`). A
+          list index is not an identity: a moved hole changes rank.
+        - **Regions.** A stable feature id is not a stable face, so BCs
+          and ports name regions:
+          `patch:<feature id>.<tag>@<u>,<v>+<w>x<h>`, the existing
+          grammar (`src/precis_se/datums.py::_parse_patch`) with a feature
+          id as the instance. 4b moves the DB-free half of the resolver
+          (`_parse_patch`, `_face_frame`, `FaceFrame`, `_u_axis`) to
+          `precis.cad.patch`; `datums.py` imports it. A region resolves to
+          `src/precis_geom/flow.py::PortPatch` on every build. A `patch:`
+          is a numeric rectangle on a primitive's tagged face and cad is
+          CSG with no B-rep faces, so no boolean renames it and no split
+          reports itself. `build` measures instead: it rasterises each
+          region on the built solid, counts connected components of the
+          cells still on the surface, and compares with `prev`:
+
+          | `RegionChange.state` | Condition | Effect |
+          |---|---|---|
+          | `same` | component count unchanged, above 0 | none |
+          | `one→many` | count rises | reported in `Built.regions` |
+          | `many→one` | count falls, above 0 | reported in `Built.regions` |
+          | `deleted` | anchor feature gone, or no cell survives | `BadInput` naming the region and the feature; never a silent drop |
+     2. **Snapshot/restore.** `Snapshot` is a frozen plain copy of
+        features and regions (designs are small). `restore(snap)`
+        replaces them in place and leaves the id counter alone, so a
+        rejected move never frees an id for reuse. Undo plus `build` is a
+        step-cache hit. One evaluation is one transaction:
+        `snap = r.snapshot()`; edit; `build`; `evaluate`; accept, or
+        `r.restore(snap)` on a Metropolis reject or a non-`ok`
+        observation. Workers receive a `Snapshot`, never a live `Recipe`;
+        there is no shared undo stack. Solver restart data joins the
+        transaction in 4c. Across runs the per-run commit (`script_sha`),
+        `target:'fork'` and the retire/restore trail cover it; no design
+        snapshots in the DB.
+     3. **`precis_geom.params`** — named, bounded parameters as a
+        convenience layer over feature attributes, for continuous
+        optimisers.
+
+        ```python
+        space = Space(
+            {"w1": Continuous(1e-3, 5e-3), "n": Integer(2, 8), "tip": Boolean()},
+            constraints=[g],                 # g(params) <= 0 is feasible
+            bindings={"w1": "h7.d"},         # parameter -> <feature id>.<param>
+        )
+        space.sample(rng) -> Params
+        space.clip(params) -> Params         # Integer rounds here
+        space.validate(params) -> None       # BadInput naming the parameter
+        space.apply(recipe, params) -> None  # Recipe.modify per binding
+        ```
+
+        `Params` is a frozen dataclass of sorted `(name, value)` pairs
+        with the `Mapping` interface:
+        `src/precis_geom/steps.py::_pcanon` keys a frozen dataclass and
+        refuses a `MappingProxyType`. A script's own `build(params)`
+        stays the convention for fixed-topology searches.
+     4. **Ask/tell** (Optuna/Nevergrad style), so any search style plugs
+        in:
+
+        ```python
+        class Optimizer(Protocol):
+            def ask(self, n: int = 1) -> list[Candidate]: ...
+            def tell(self, observations: Sequence[Observation]) -> None: ...
+            def recommend(self) -> Candidate | None: ...
+
+        @dataclass(frozen=True)
+        class Candidate:
+            id: str
+            params: Params | None = None      # continuous search
+            recipe: Snapshot | None = None    # feature-graph search
+
+        @dataclass(frozen=True)
+        class Observation:
+            candidate_id: str
+            status: Literal["ok", "failed", "pruned"]
+            objectives: tuple[tuple[str, float], ...] = ()
+            constraints: tuple[tuple[str, float], ...] = ()  # <= 0 is feasible
+            design_hash: str = ""             # Built.shape_sha; "" before build
+            artifact_uri: str | None = None
+            reason: str = ""
+        ```
+
+        `Observation` refuses objectives on a non-`ok` status, so a
+        failed solve can never read as a good objective. `recommend`
+        never returns a non-`ok` or infeasible candidate.
+
+        | Result | `status` | `objectives` | `constraints` |
+        |---|---|---|---|
+        | `Space.validate` or a script constraint rejects before `build` | `pruned` | empty | empty |
+        | `build` or `evaluate` raises `BadInput`, or a `Failure.value` is `None` | `failed` | empty | empty; `reason` carries the message |
+        | `Outcome.hard_ok` false, every `Failure.value` set | `ok` | from `measures` | each `Failure`'s bound violation, above 0 |
+        | `Outcome.hard_ok` true | `ok` | from `measures` | at or below 0 |
      5. **`evaluate` returns more than scalars** — still physics
         outcomes, so the physics-only ruling holds: the `fields`
         (stress, flow speed, temperature; lazy handles), queries over
@@ -313,7 +438,14 @@ commit carrying this line; `git log` has the sha.*
         support — what "remove the least-stressed support" reads), each
         value tagged with its attribution type (`direct` local metric,
         `additive` integral, `counterfactual`/adjoint influence) because
-        only additive ones sum. Later: adjoint sensitivities. Warm start
+        only additive ones sum. Attribution is a separate call,
+        `attribute(outcome, built)`, over `Outcome.paths` and
+        `Outcome.gap`; `evaluate` stays pure over its five inputs and the
+        cache key keeps five parts. Like `paths` and `gap`, `fields` and
+        attribution stay out of `Outcome.to_dict`. A broke particle counts
+        once, at the feature whose footprint is nearest its crossing
+        (`Paths.cross_star`), so `additive` rows sum. Later: adjoint
+        sensitivities. Warm start
         / incremental re-solve after a small edit (`evaluate(...,
         warm=prev)` passes restart data; the kernel decides what is
         still valid) is a performance requirement, measured in the
@@ -358,8 +490,10 @@ commit carrying this line; `git log` has the sha.*
      this slice keeps the per-step cost/rebuild report over it. `build(recipe)`
      is a stack — generally a DAG — of primitive and 3-D manipulation
      steps (box, extrude, drill, boolean, fillet, wrap, relax…). Each
-     step's output is memoised under `step key = hash(step name, its
-     params, parent step key(s))`: changing step `k` rebuilds `k` and
+     step's output is memoised under `step key = sha256(step name, its
+     params, parent step key(s), precis_geom.__version__, the step
+     function's source sha[, salt])` (`src/precis_geom/steps.py::_call`):
+     changing step `k` rebuilds `k` and
      its descendants; everything below is a cache hit. The high-water
      mark falls out of the keys with no extra bookkeeping; branches
      (two independent hole sets) keep separate entries; undo is a hit
@@ -430,16 +564,16 @@ commit carrying this line; `git log` has the sha.*
        [se-seam-spacers](se-seam-spacers.md) (literature + demo).
      - **Params in the frame.** A step-built object's creator frame
        carries the step name, its params, the recipe key that set them
-       (`holes[3].x`) and the step key; interrogating a contact point
-       answers `made by drill(x=12.1, d=3) · step 7 · set by holes[3]`
+       (`h7.x`) and the step key; interrogating a contact point
+       answers `made by drill(x=12.1, d=3) · step 7 · set by h7`
        (structure-workspaces §Construction traces).
      - **Order stable → volatile.** The kit records per-step build
        seconds and rebuild count and reports the steps that are both
        expensive and often invalidated, so a bad order is visible;
        `out.search` prints the report with the search summary.
      - **Container-only.** An LRU over step snapshots, in-process, with
-       a byte cap; never Postgres — only the final build's trace and
-       the search summary are stored (structure-workspaces
+       a byte cap; never Postgres (host runs differ: K5). Only the final
+       build's trace and the search summary are stored (structure-workspaces
        §Construction traces, Storage).
      - **Later, not v1:** incremental evaluation under the same keys
        (slice 4c).
@@ -482,9 +616,10 @@ commit carrying this line; `git log` has the sha.*
          annealer: edit recipe → build → evaluate → accept/reject,
          returns the best recipe. Two functions, one file.
        - `recipe.json` is the **full** recipe: every input `build`
-         needs (chamber dimensions, ports, the hole set as `(x, y, d,
-         depth)` rows with `user` holes pinned, material/process refs,
-         units) — not just the hole list; `build(recipe.json)` needs
+         needs (chamber dimensions, ports, the hole set as `(id, x, y,
+         d, depth)` rows with `user` holes pinned, material/process refs,
+         units; `Recipe.to_json`) — not just the hole list;
+         `build(recipe.json)` needs
          nothing else. It is stored with the run beside the code at
          `script_sha`, the built blocks and the search summary (seed,
          iterations, cost curve, best score, starting recipe hash).
@@ -528,7 +663,7 @@ commit carrying this line; `git log` has the sha.*
    - **Skill `precis-workspace-optimize-help`** gains the optimisation
      sections: params/space, the loop (objective from measures, hard
      constraints reject, common random numbers, the cache,
-     `evaluate_many`, budgets inline vs `budget='job'` on pollux/spark,
+     `evaluate_many`, budgets inline vs `budget='job'` on the compute lane,
      checkpoint/resume, recording the search), the adapters, both
      examples, the `precis-differentiation-help` link.
    Acceptance (`tests/test_precis_geom_optimize.py` for params, cache
@@ -543,17 +678,30 @@ commit carrying this line; `git log` has the sha.*
      `iters_per_temp 3`, cfdtest's iteration count), the example's best
      cost lies within the spread of cfdtest `anneal` over 5 seeds, and
      is strictly below the initial cost.
+     Fixture pending: `../cfdtest` is not on the build machine, so these
+     two items need its frozen numbers for cost parity total, breakthrough
+     fraction and anneal spread over 5 seeds, in a repo fixture.
    - **Determinism.** The same seed gives the same best hole set.
    - **Params.** `Space.validate` refuses a constraint violation naming
-     the parameter; `build` on equal params gives equal shape shas and
-     never mutates its arguments (the test passes a frozen mapping and
-     a `Design` whose instance count is asserted unchanged).
-   - **Feature graph** (if the proposed representation stands):
-     `remove(id)` then `restore(snap)` gives the same shape sha as
-     before; two hole orders give one sha (canonicalisation); a `patch:`
-     region split by a new feature reports `one→many`, a deleted one
-     refuses naming the feature; a failed solve is an `Observation`
-     with `status='failed'`, never a cost.
+     the parameter; `build` on equal `Params` gives equal shape shas and
+     never mutates its arguments (the test passes a `Params` and a
+     `SceneSpec` whose node count is asserted unchanged).
+   - **Feature graph.** `remove(id)` then `restore(snap)` gives the same
+     shape sha as before; two hole orders give one sha, and so does equal
+     geometry under different feature ids; an `add` after a `restore`
+     mints an unused id; `modify` or `remove` on a `pinned` feature
+     refuses, and `remove` on a feature with a child refuses naming the
+     child; `Recipe.from_json(r.to_json())` builds the same shape sha;
+     `shape_sha` on a spec with a `field_loader` refuses.
+   - **Regions.** A slot cut across a floor region reports `one→many`;
+     filling the slot reports `many→one`; removing the anchor feature, or
+     cutting away every cell of a region, refuses naming the region and
+     the feature; `Built.solid()` feeds `evaluate` with no adapter between.
+   - **Observations.** A failed solve is an `Observation` with
+     `status='failed'`, never a cost; a `status='failed'` observation with
+     objectives refuses at construction; `recommend` returns the best
+     feasible `ok` candidate when a `failed`, a `pruned` and an infeasible
+     one score better on paper.
    - **Attribution.** On the chamber, the per-hole flow fractions sum
      to the breakthrough fraction within 1e-9 (`additive`); the
      `counterfactual` value for one hole equals evaluate-without-it
@@ -583,17 +731,19 @@ commit carrying this line; `git log` has the sha.*
      per-evaluation construction trace) and the final build's creator
      frames only; `view='trace'` renders the best iteration with its
      measures.
-   - **Step cache.** Changing a top step (one hole's `x`) rebuilds that
-     step only — per-step rebuild counters show one increment; a base
+   - **Step cache.** Changing a top step rebuilds that step only —
+     per-step rebuild counters show one increment; one hole's `x` in a
+     group rebuilds that leaf and its `combine`, and no other hole's
+     counter moves; a base
      step edit rebuilds it and its descendants, none below; two
      independent hole sets hold separate entries and an edit to one
      leaves the other's counter at 0; undo to the previous recipe is a
      cache hit (no counter moves, the build is bitwise-equal to the
      earlier one).
    - **Params in the frame.** The creator frame of a drilled hole
-     carries the step name, params, `recipe_key` (`holes[3].x`) and
+     carries the step name, params, `recipe_key` (`h7.x`) and
      `step_key`; `view='trace'` on the hole's contact point renders
-     `drill(x=12.1, d=3) · step 7 · set by holes[3]`.
+     `drill(x=12.1, d=3) · step 7 · set by h7`.
    - **Build report.** `out.search` writes per-step build seconds and
      rebuild count into the search summary and the run echo names the
      steps that are both expensive and frequently invalidated; a
@@ -645,9 +795,9 @@ slices 1–2 and precede se-native-fields slice 1 (ranked in
   (kit + examples) so the order "tracer → visualizer, then the optimizer
   dogfood, then more physics" is one slice each.
 - The design representation (feature graph with stable ids + snapshot
-  + params layer + ask/tell + rich `evaluate` outputs) is the
-  recommended design, **proposed, under discussion** — not ruled.
-  Ruled within it: the recipe is mutable, built geometry immutable
+  + params layer + ask/tell + rich `evaluate` outputs) was the
+  recommended design; ruled 2026-11-04 (§Rulings 2026-11-04).
+  Ruled here: the recipe is mutable, built geometry immutable
   (one creator frame per object; no in-place transform, no per-move
   traces); modules are frozen units at both scales; scale evaluation
   through the evaluate cache and rebuild through the step cache.
@@ -657,8 +807,7 @@ slices 1–2 and precede se-native-fields slice 1 (ranked in
   with the chamber as the smallest demo, stable → volatile ordering
   with a per-step cost/rebuild report, in-container LRU only;
   incremental evaluation is slice 4c, later.
-- **2026-10-23, later the same day (direction; the representation stays
-  proposed, under discussion):** pre-relaxed modules are the stored
+- **2026-10-23, later the same day (direction):** pre-relaxed modules are the stored
   product and the main payoff ("we can benefit from module
   pre-relaxing") — each module relaxed once, capped, stored under its
   key; a build is an assembly, a DAG of independently built sub-stacks
@@ -696,8 +845,49 @@ slices 1–2 and precede se-native-fields slice 1 (ranked in
   `'plug'` so the landed slice-1 tracer and its cfdtest-calibrated tests
   are unchanged — the parabolic-as-default *policy* belongs to slice 2's
   adapter, which selects `profile='parabolic'` and runs its reproduction
-  test against `'plug'`. Only that policy choice is still Reto's to confirm;
-  the capability is ready.
+  test against `'plug'`. **Settled:** parabolic is the default on every
+  adapter path (`src/precis_se/flow.py::FlowSpec`,
+  `src/precis_geom/physics.py::_flow_case`).
+
+## Rulings 2026-11-04 (Reto, tracker gr563788)
+
+- 4b design representation (feature graph, snapshot, params, ask/tell):
+  build it in. Contract: slice 4b §Design representation.
+- 4a end-to-end before `run` exists: the stand-in rule in slice 4a
+  §End to end.
+- Multiphysics runs in parallel through the seam slice
+  ([se-multiphysics](se-multiphysics.md) §Seam slice), not as a chain.
+- Wave 1 go.
+
+## Open questions log
+
+Statements not grounded in code or in the tracker. None binds a builder
+until it moves into the contract.
+
+- **K1 Polygon prisms.** `src/precis/cad/dsl.py::_ALIAS_KEYS` has no
+  arbitrary polygon, and `PolyFrustum` with a free ring is reachable only
+  through `Design.prim`, which the step cache and `out.block` cannot take.
+  The hex footprint decomposes; a general polygon does not. Default:
+  `FEATURE_OPS` covers DSL aliases only.
+- **K2 Evaluate cache across wheels.** The five-part key has no kernel
+  version, and `/work/out/evaluate-cache/` persists, so a resumed run on a
+  newer wheel reuses old `Outcome`s. Default: stamp the cache file with
+  `Cost.kernel` and drop it on mismatch; the key stays five parts.
+- **K3 Import re-check inputs.** "Within 1e-9 at equal `cells`" needs the
+  server to repeat the script's solve.
+  `src/precis_se/flow.py::_flow_measure` fixes `seed=0` and
+  `cells=DEFAULT_NX`; `parse_flow_shape` has no `cells`, `seed`, `n` or
+  `seed_z` key. It also reads only the block envelope, and an imported
+  macro block's envelope is a bounding sphere
+  (`src/precis_se/workspace_import.py::_macro_envelope`). Slice 4a-i has
+  to settle both.
+- **K4 `precis.cad.patch` order.** The contract moves the resolver in 4b.
+  [se-native-fields](se-native-fields.md) slice 1 lists the same move and
+  runs after 4b, so its row needs to say the move is already done.
+- **K5 Step cache on host runs.** Reto's 2026-10-23 ruling says in-container
+  LRU only. `src/precis_geom/steps.py::_backend` also keeps a disk cache in
+  `scratch/cache/` on a host run. Open for Reto: amend the ruling or change
+  the code. Never Postgres holds either way.
 
 ## Explicitly NOT in scope
 
@@ -714,8 +904,10 @@ New `src/precis_flow/`; `precis_se` gains the adapter module and the
 (`packaging/geom/`), `precis_se/flow.py` shrinks to the tree-bound half,
 `workspace_import.py` (`out.physics` → `flow:` pocket, re-check), the
 skill `precis-workspace-optimize-help`. Slice 4b: `precis_geom.params`,
-`precis_geom.optimize`, the step cache in `precis_geom.design.build`
-with `step`/`recipe_key` on `precis_geom.trace` frames,
+`precis_geom.optimize`, `precis_geom.design.build` over the step cache
+with `recipe_key` on `precis_geom.trace` frames,
 `examples/workspaces/chamber-anneal/` and `manifold-split/`,
 `precis_flow.stats` (outlet-mask list), the skill's optimisation
-sections. Slice 4c: `precis_fields.grid` partial re-cut, `evaluate(warm=)`.
+sections, `precis_geom.design` (`Recipe`, `build`, `Built`) and
+`precis.cad.patch` (resolver out of `precis_se/datums.py`). Slice 4c:
+`precis_fields.grid` partial re-cut, `evaluate(warm=)`.
