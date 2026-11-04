@@ -82,6 +82,9 @@ todo graph (strategic/tactical gradient, `auto_check` leaves, `recurring`
 watches, planner coroutines) with **jobs** hanging off owner refs in two
 lanes — *intent* (parent is a `todo`) and *compute* (parent is a build
 artifact: derived, idempotent, content-addressed). This is "the factory."
+Headless slice jobs delegate vendor launch/output protocols to
+`workers/job_types/_slice_adapters.py`; `run_slice` owns leases, credentials
+and the branch check before handing work to the lander.
 
 ## Subsystems (where the code lives)
 

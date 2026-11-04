@@ -14,13 +14,13 @@ that holds the lane's credentials with ``params.target_node``):
   ``brief:``/``handoff:`` comment + the commit-and-hand-off instruction),
   picks the lane
   (:func:`precis.plans.lanes.pick_lane`) unless ``params.lane`` names one,
-  stamps ``meta.lane``/``meta.model``/``meta.effort`` on the job, takes
-  the lease on the todo (``claimed-by:lane-<lane>`` + ``STATUS:doing``),
+  stamps ``meta.lane``/``meta.adapter``/``meta.model``/``meta.effort`` on
+  the job, takes the lease on the todo (``claimed-by:lane-<lane>`` + ``STATUS:doing``),
   cuts worktree ``slice-td<id>`` on branch ``slice/<id>`` from
   ``origin/main`` under the checkout root (:func:`slice_root`), writes
-  ``scratch/brief.md`` there and launches ``claude -p --output-format json
-  --max-turns <n> --model <m> --permission-mode bypassPermissions
-  --settings <deny rules>`` detached with the brief on stdin. The env is
+  ``scratch/brief.md`` there and launches the lane's adapter (``claude_p``,
+  ``codex_exec`` or ``devin_tree``) detached. Claude's argv and MCP grant
+  are unchanged; the other vendors receive no precis MCP token. The env is
   an allowlist (:func:`slice_env`): no DB DSN, no vault variables reach
   the session. The handle is ``{pid, pgid, worktree, log, exit_file,
   started_at}`` plus ``boot_id``/``start_time`` (the Linux process
@@ -45,11 +45,12 @@ that holds the lane's credentials with ``params.target_node``):
   revokes the MCP grant and releases the todo even when the poison
   guard cannot safely signal a process (poll may never run).
 
-Deny paths are enforced twice: the session gets them as ``Edit``/
+Deny paths are enforced twice for Claude: the session gets them as ``Edit``/
 ``Write``/``MultiEdit``/``NotebookEdit`` deny rules through ``--settings``
 (they hold under ``bypassPermissions``), and :func:`poll` re-checks the
 branch diff and the working tree, which also catches a write made through
-Bash. The poll check is pre-land: the session only commits on its branch,
+Bash. Every vendor receives the paths in its brief and gets the poll
+check. The poll check is pre-land: the session only commits on its branch,
 and nothing is landed until the check passed.
 
 The land is the lander's: the brief ends with "commit on the branch, leave
@@ -88,6 +89,14 @@ from typing import Any
 from precis.plans import lanes as _lanes
 from precis.plans.nodes import MOOT_TAG, generator_verdict, node_kind
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
+from precis.workers.job_types._slice_adapters import (
+    PERMISSION_MODE,
+    deny_settings,
+    get_adapter,
+)
+from precis.workers.job_types._slice_adapters import (
+    parse_claude_result as parse_result,
+)
 
 log = logging.getLogger(__name__)
 
@@ -118,13 +127,6 @@ _HANDOFF_CAP = 6000
 _TAIL_CAP = 2000
 
 _ATTEMPT_RE = re.compile(r"^attempt:(\d+)$")
-
-#: The headless session's permission mode (Reto's ruling on td542236:
-#: bypass, as plan_tick runs, bounded by the lane's deny_write_paths).
-PERMISSION_MODE = "bypassPermissions"
-
-#: File-writing tools each deny path is denied for.
-_DENY_TOOLS: tuple[str, ...] = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 
 #: Parent-env names the session inherits; everything else is dropped, so
 #: no ``PRECIS_DB_*``/``PG*``/``DATABASE_URL`` DSN and no vault variable
@@ -166,8 +168,8 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "todo_id": {"type": "integer"},
         # Lane name from precis.plans.lanes; unset → pick_lane.
         "lane": {"type": "string"},
-        # claude model id/alias; unset → PRECIS_RUN_SLICE_MODEL, else the
-        # lane's default_model, else the router's FRONTIER pin.
+        # Model id/alias; unset → PRECIS_RUN_SLICE_MODEL, else the lane's
+        # default_model, else FRONTIER (Claude) or the account default.
         "model": {"type": "string"},
         # Recorded on meta.effort and exported as PRECIS_SLICE_EFFORT.
         "effort": {"type": "string"},
@@ -188,14 +190,14 @@ PARAMS_SCHEMA: dict[str, Any] = {
 
 COMPATIBLE_EXECUTORS: frozenset[str] = frozenset({"ssh_node"})
 
-#: Empty: ssh_node's static PROVIDES is ``{has_gpaw}``; the claude binary
+#: Empty: ssh_node's static PROVIDES is ``{has_gpaw}``; the vendor binary
 #: and the checkout are the pinned host's, checked at submit.
 REQUIRES: frozenset[str] = frozenset()
 
 DESCRIPTION: str = (
-    "Launch one slice (a todo with a brief) headless on a lane: claude -p in "
+    "Launch one slice (a todo with a brief) through its lane's adapter in "
     "its own worktree slice-td<id> on branch slice/<id> cut from origin/main, "
-    "meta.lane/model/effort on the job, the session's last message posted as "
+    "meta.lane/adapter/model/effort on the job, the last message posted as "
     "a handoff: comment on the todo; a clean exit mints a land_slice job "
     "that lands the branch, a branch touching the lane's deny_write_paths "
     "fails the attempt. Refused while PRECIS_FACTORY=off."
@@ -228,26 +230,27 @@ def wall_seconds() -> float:
     return float(n if n > 0 else _DEFAULT_WALL_S)
 
 
-def resolve_model(params: dict[str, Any], lane: _lanes.Lane | None = None) -> str:
-    """``params.model``, else ``PRECIS_RUN_SLICE_MODEL``, else the lane's
-    ``default_model``, else the router's ``Tier.FRONTIER`` pin."""
+def resolve_model(
+    params: dict[str, Any], lane: _lanes.Lane | None = None
+) -> str | None:
+    """``params.model``, else ``PRECIS_RUN_SLICE_MODEL`` (a claude id, so
+    it applies to ``claude_p`` lanes only), else the lane's
+    ``default_model``. Only Claude falls back to the router's
+    ``Tier.FRONTIER`` pin; other vendors use their account default."""
     model = params.get("model")
     if isinstance(model, str) and model.strip():
         return model.strip()
     env = os.environ.get("PRECIS_RUN_SLICE_MODEL", "").strip()
-    if env:
+    if env and (lane is None or lane.adapter == "claude_p"):
         return env
     if lane is not None and lane.default_model:
         return lane.default_model
+    if lane is not None and lane.adapter != "claude_p":
+        return None
     from precis.utils.llm.router import Tier
     from precis.utils.llm.router import resolve_model as _router_model
 
     return _router_model(Tier.FRONTIER)
-
-
-def claude_bin() -> str:
-    """``PRECIS_CLAUDE_BIN`` or ``claude`` on PATH (the agent lanes' seam)."""
-    return os.environ.get("PRECIS_CLAUDE_BIN") or "claude"
 
 
 def slice_root() -> Path:
@@ -315,7 +318,7 @@ def slice_branch(todo_id: int) -> str:
 
 
 def slice_env(
-    todo_id: int, effort: str, *, mcp_token: str | None = None
+    todo_id: int, effort: str, *, mcp_token: str | None = None, mcp: bool = True
 ) -> dict[str, str]:
     """The session's environment: :data:`ENV_ALLOWLIST` names present in
     the worker's env, the MCP token (env, else the mounted secret), the
@@ -327,22 +330,28 @@ def slice_env(
 
     ``mcp_token`` is the per-slice bearer :func:`_mint_slice_token`
     minted (gr543694); given, it replaces the shared token outright so
-    the server attributes the session's calls to this slice."""
+    the server attributes the session's calls to this slice. Non-MCP
+    vendors receive neither precis nor Claude credentials and never
+    consult their secret stores."""
     env = {k: os.environ[k] for k in ENV_ALLOWLIST if os.environ.get(k)}
-    from precis.utils.claude_oauth import ensure_oauth_token
+    if mcp:
+        from precis.utils.claude_oauth import ensure_oauth_token
 
-    ensure_oauth_token(env)
-    if mcp_token:
-        env["PRECIS_MCP_TOKEN"] = mcp_token
-    elif "PRECIS_MCP_TOKEN" not in env:
-        try:
-            from precis.secrets import mounted_secret
+        ensure_oauth_token(env)
+        if mcp_token:
+            env["PRECIS_MCP_TOKEN"] = mcp_token
+        elif "PRECIS_MCP_TOKEN" not in env:
+            try:
+                from precis.secrets import mounted_secret
 
-            token = mounted_secret("PRECIS_MCP_TOKEN")
-        except Exception:  # pragma: no cover — no secret store on this host
-            token = None
-        if token:
-            env["PRECIS_MCP_TOKEN"] = token
+                token = mounted_secret("PRECIS_MCP_TOKEN")
+            except Exception:  # pragma: no cover — no secret store on this host
+                token = None
+            if token:
+                env["PRECIS_MCP_TOKEN"] = token
+    else:
+        env.pop("PRECIS_MCP_TOKEN", None)
+        env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
     env["PRECIS_SLICE_ID"] = f"td{todo_id}"
     env["PRECIS_SLICE_EFFORT"] = effort
     # The checkout's SessionEnd hook (scripts/hooks/session-end-reap.sh)
@@ -354,24 +363,6 @@ def slice_env(
     # uv's cache under a dir this worker owns (see uv_cache_dir).
     env["UV_CACHE_DIR"] = str(uv_cache_dir())
     return env
-
-
-def deny_settings(deny_paths: tuple[str, ...], tree: Path) -> str:
-    """The ``--settings`` JSON for the session: one deny rule per tool in
-    :data:`_DENY_TOOLS` per path, spelled both cwd-relative (``./<glob>``)
-    and absolute (``//<tree>/<glob>``) so the rule matches whichever base
-    the CLI resolves a flag-supplied setting against. Also approves the
-    checkout's own ``.mcp.json`` servers: the slice host's checkout is a
-    service account's clone no human ever trusted interactively, and an
-    untrusted project's MCP servers (the ``precis`` server the brief relies
-    on) are otherwise skipped in ``-p`` mode."""
-    rules: list[str] = []
-    for path in deny_paths:
-        for spec in (f"./{path}", f"/{tree.as_posix()}/{path}"):
-            rules += [f"{tool}({spec})" for tool in _DENY_TOOLS]
-    return json.dumps(
-        {"permissions": {"deny": rules}, "enableAllProjectMcpServers": True}
-    )
 
 
 def deny_violations(paths: list[str], deny_paths: tuple[str, ...]) -> list[str]:
@@ -407,19 +398,19 @@ def _launch(
     argv: list[str],
     *,
     cwd: Path,
-    stdin: Path,
+    stdin: Path | None,
     log: Path,
     exit_file: Path,
     env: dict[str, str],
 ) -> int:
     """Start ``argv`` detached in its own session: stdin from ``stdin``,
     stdout+stderr to ``log``, its exit code written to ``exit_file`` by the
-    wrapping shell (so a poll from a restarted worker, which is no longer
-    the parent, still reads it). Returns the pid (= the process group)."""
+    wrapping shell (a restarted worker, no longer the parent, still reads
+    it). ``stdin=None`` feeds ``/dev/null``. Returns the process group pid."""
     script = '"$@" < "$RS_IN" > "$RS_LOG" 2>&1; echo $? > "$RS_EXIT"'
     full_env = {
         **env,
-        "RS_IN": str(stdin),
+        "RS_IN": str(stdin) if stdin is not None else os.devnull,
         "RS_LOG": str(log),
         "RS_EXIT": str(exit_file),
     }
@@ -760,10 +751,11 @@ def render_brief(
     body: str,
     latest: str | None,
     lane: str,
-    model: str,
+    model: str | None,
     effort: str,
     generator: bool = False,
     role: str | None = None,
+    mcp: bool = True,
     deny_paths: tuple[str, ...] = _lanes.FACTORY_DENY_WRITE_PATHS,
 ) -> str:
     """The prompt a slice session starts from. Ends with the commit-and-
@@ -777,12 +769,19 @@ def render_brief(
     lines = [
         f"# Slice td{todo_id}: {title.strip()}",
         "",
-        f"You are a headless build session on lane `{lane}` (model `{model}`, "
+        f"You are a headless build session on lane `{lane}` "
+        f"(model `{model or 'account default'}`, "
         f"effort `{effort}`), in git worktree `{name}` on branch "
         f"`{slice_branch(todo_id)}`, cut from `origin/main`. Work only in this "
         "worktree. Read CLAUDE.md and AGENTS.md here before editing; their "
         "rules bind you.",
     ]
+    if not mcp:
+        lines += [
+            "",
+            "This lane has no precis MCP. Do not try to reach it. "
+            "Everything you want recorded goes in your final message.",
+        ]
     if deny_paths:
         lines += [
             "",
@@ -1169,9 +1168,18 @@ def submit(ctx: Any, spec: Any) -> Any:
             ctx.record_failure(note)
             return None
 
+    try:
+        adapter = get_adapter(lane.adapter)
+    except KeyError:
+        # A lane-table error, not the slice's: the todo is not claimed yet,
+        # so no release and no attempt:<n> burned on it.
+        ctx.record_failure(
+            f"run_slice: lane {lane.name!r} has unknown adapter {lane.adapter!r}"
+        )
+        return None
     model = resolve_model(params, lane)
     effort = str(params.get("effort") or _DEFAULT_EFFORT)
-    ctx.set_meta(lane=lane.name, model=model, effort=effort)
+    ctx.set_meta(lane=lane.name, adapter=adapter.name, model=model, effort=effort)
     _claim_todo(store, todo_id, lane.name)
 
     body, latest = _brief_parts(store, todo_id)
@@ -1185,6 +1193,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         effort=effort,
         generator=node_kind(todo.meta) == "generator",
         role=_generate_role(todo.meta),
+        mcp=adapter.mcp,
         deny_paths=lane.deny_write_paths,
     )
     grant: dict[str, Any] | None = None
@@ -1198,27 +1207,33 @@ def submit(ctx: Any, spec: Any) -> Any:
         log_path = ops / "run_slice.log"
         exit_path = ops / "run_slice.exit"
         exit_path.unlink(missing_ok=True)
-        argv = [
-            claude_bin(),
-            "-p",
-            "--output-format",
-            "json",
-            "--max-turns",
-            str(_max_turns()),
-            "--model",
-            model,
-            "--permission-mode",
-            PERMISSION_MODE,
-            "--settings",
-            deny_settings(lane.deny_write_paths, tree),
-        ]
-        grant = _mint_slice_token(ctx, todo_id, model=model, brief=brief)
-        env = slice_env(todo_id, effort, mcp_token=grant["token"] if grant else None)
-        _preflight_mcp(tree, env.get("PRECIS_MCP_TOKEN"))
+        argv = adapter.argv(
+            model=model,
+            effort=effort,
+            tree=tree,
+            brief_path=brief_path,
+            deny_paths=lane.deny_write_paths,
+            max_turns=_max_turns(),
+            models=lane.models,
+        )
+        if adapter.name == "codex_exec":
+            # A retry reuses the tree: never accept a previous run's handoff.
+            (scratch / "last-message.md").unlink(missing_ok=True)
+        if adapter.mcp:
+            assert model is not None
+            grant = _mint_slice_token(ctx, todo_id, model=model, brief=brief)
+        env = slice_env(
+            todo_id,
+            effort,
+            mcp_token=grant["token"] if grant else None,
+            mcp=adapter.mcp,
+        )
+        if adapter.mcp:
+            _preflight_mcp(tree, env.get("PRECIS_MCP_TOKEN"))
         pid = _launch(
             argv,
             cwd=tree,
-            stdin=brief_path,
+            stdin=adapter.stdin(brief_path),
             log=log_path,
             exit_file=exit_path,
             env=env,
@@ -1234,11 +1249,14 @@ def submit(ctx: Any, spec: Any) -> Any:
         _fail_submit(ctx, todo_id, lane.name, f"launch failed: {exc}")
         return None
 
+    token_note = (
+        f"slice {grant['name']}" if grant else "shared" if adapter.mcp else "none"
+    )
     ctx.append_chunk(
         "job_event",
         f"run_slice: launched td{todo_id} on lane {lane.name} (model {model}, "
         f"effort {effort}) pid {pid} in {tree} "
-        f"(mcp token: {f'slice {grant["name"]}' if grant else 'shared'})",
+        f"(mcp token: {token_note})",
     )
     handle: dict[str, Any] = {
         "pid": pid,
@@ -1280,23 +1298,6 @@ def _read_log(handle: dict[str, Any]) -> str:
         )
     except OSError:
         return ""
-
-
-def parse_result(log_text: str) -> tuple[str | None, bool]:
-    """``(last assistant message, is_error)`` from ``claude -p
-    --output-format json`` output: the last JSON object line carrying a
-    ``result``. ``(None, True)`` when there is none."""
-    for line in reversed(log_text.strip().splitlines()):
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            obj = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(obj, dict) and "result" in obj:
-            return str(obj.get("result") or ""), bool(obj.get("is_error"))
-    return None, True
 
 
 def _branch_state(tree: Path) -> tuple[int | None, list[str]]:
@@ -1374,7 +1375,23 @@ def poll(ctx: Any, handle: Any) -> bool:
     todo_id = int(params.get("todo_id") or 0)
     lane = (ctx.meta or {}).get("lane")
     log_text = _read_log(handle)
-    result, is_error = parse_result(log_text)
+    adapter_name = (ctx.meta or {}).get("adapter")
+    if not adapter_name:
+        # Jobs submitted before adapters existed carry only the lane name.
+        lane_obj = _lanes.get_lane(str(lane)) if lane else None
+        adapter_name = lane_obj.adapter if lane_obj else "claude_p"
+    try:
+        adapter = get_adapter(str(adapter_name))
+    except KeyError:
+        _revoke_slice_grant(ctx, todo_id, _handle_grant(handle), "aborted")
+        _fail_submit(
+            ctx,
+            todo_id,
+            str(lane) if lane else None,
+            f"lane {lane!r} has unknown adapter {adapter_name!r}",
+        )
+        return True
+    result, is_error = adapter.parse_result(log_text, tree, exit_code=exit_code)
     # Server-side deny check, before the handoff lands: independent of
     # whether the session honoured its deny rules (Bash writes included).
     denied = _deny_reason(tree, _lane_deny_paths(lane))
@@ -1392,10 +1409,14 @@ def poll(ctx: Any, handle: Any) -> bool:
 
     dirty, commits = _branch_state(tree)
     ctx.set_meta(exit_code=exit_code, branch_dirty=dirty, branch_commits=commits[:50])
+    vendor = "claude" if adapter.name == "claude_p" else adapter.name
+    error_note = (
+        f", {vendor} reported an error" if is_error and result is not None else ""
+    )
     summary = [
         f"run_slice td{todo_id} on lane {lane}: exit "
         f"{'unknown (process gone, no exit status)' if exit_code is None else exit_code}"
-        f"{', claude reported an error' if is_error and result is not None else ''}.",
+        f"{error_note}.",
         f"Branch {slice_branch(todo_id)} in {tree}: "
         f"{'?' if dirty is None else dirty} uncommitted path(s), "
         f"{len(commits)} commit(s) ahead of origin/main.",

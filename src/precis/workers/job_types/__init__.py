@@ -30,6 +30,13 @@ removing body/hash/event evidence or calling a provider/model.
 
 ``fix_gripe`` deployment + trust model: ``docs/runbooks/fix-gripe-ops.md``.
 
+``run_slice`` delegates CLI argv, stdin and output parsing to
+``_slice_adapters``. Only ``claude_p`` gets a precis MCP grant; Codex and
+Devin hand off through their final output, and all three pass the same
+pre-land deny-path check. Persisting ``meta.adapter`` keeps an in-flight
+job's parser stable when lane configuration changes. Devin's explicit
+model must be in the selected lane's list to prevent paid overage.
+
 ``gripe_validate`` deduplicates held ship notes by fix SHA, not release,
 to keep later releases from repeating the same fix. Legacy notes inherit
 the preceding fix comment's SHA (unknown provenance counts as noted);

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -29,6 +30,7 @@ from precis.plans.lanes import ANY_CLASS, Lane, pick_lane
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers.job_types import get_job_type, known_job_types, run_slice
 from precis.workers.job_types import plan_dispatch as pd
+from precis.workers.job_types._slice_adapters import get_adapter
 
 # ── fakes ──────────────────────────────────────────────────────────
 
@@ -283,8 +285,9 @@ def test_resolve_model_order(
     assert run_slice.resolve_model({"model": " claude-pinned "}, lane) == (
         "claude-pinned"
     )
-    # The seams env pins PRECIS_RUN_SLICE_MODEL.
+    # The seams env pins PRECIS_RUN_SLICE_MODEL: a claude id, claude_p only.
     assert run_slice.resolve_model({}, lane) == "claude-test-model"
+    assert run_slice.resolve_model({}, _vendor_lane("codex", "codex_exec")) is None
     monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
     assert run_slice.resolve_model({}, lane) == "claude-sonnet-5"
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
@@ -634,6 +637,7 @@ def test_submit_launches_and_claims(
     assert ctx.status is None and ctx.failure is None
     assert ctx.meta_set == {
         "lane": "claude-sub",
+        "adapter": "claude_p",
         "model": "claude-test-model",
         "effort": "medium",
     }
@@ -1630,3 +1634,364 @@ def test_parse_result_takes_last_result_object() -> None:
     )
     assert run_slice.parse_result(log) == ("two", False)
     assert run_slice.parse_result("not json") == (None, True)
+
+
+def _vendor_lane(
+    name: str,
+    adapter: str,
+    *,
+    models: tuple[str, ...] = (),
+    default_model: str | None = None,
+) -> Lane:
+    return Lane(
+        name=name,
+        adapter=adapter,
+        credential_pool=name,
+        cap=1,
+        task_classes=frozenset({"code"}),
+        enabled=True,
+        models=models,
+        default_model=default_model,
+    )
+
+
+@pytest.mark.parametrize("model_source", ["default", "params", "lane", "env"])
+def test_submit_codex_argv_and_model(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    model_source: str,
+) -> None:
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    monkeypatch.setenv("PRECIS_CODEX_BIN", "/vendor/codex")
+    lane = _vendor_lane(
+        "codex",
+        "codex_exec",
+        models=("codex-test",) if model_source == "lane" else (),
+        default_model="codex-test" if model_source == "lane" else None,
+    )
+    monkeypatch.setattr(lanes, "LANES", (lane,))
+    params: dict[str, Any] = {"lane": "codex"}
+    if model_source == "params":
+        params["model"] = "codex-test"
+    elif model_source == "env":
+        monkeypatch.setenv("PRECIS_RUN_SLICE_MODEL", "codex-test")
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, **params)
+    assert handle is not None and ctx.failure is None
+    [(argv, kw)] = seams["launch"]
+    tree = Path(handle["worktree"])
+    expected: list[str] = [
+        "/vendor/codex",
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "-C",
+        str(tree),
+        "-o",
+        str(tree / "scratch" / "last-message.md"),
+    ]
+    # PRECIS_RUN_SLICE_MODEL names a claude id: it never reaches a vendor lane.
+    pinned = model_source in ("params", "lane")
+    if pinned:
+        expected += ["-m", "codex-test"]
+    assert argv == expected + ["--sandbox", "workspace-write", "-"]
+    assert kw["cwd"] == tree
+    assert kw["stdin"] == tree / "scratch" / "brief.md"
+    assert ctx.meta_set["adapter"] == "codex_exec"
+    assert ctx.meta_set["model"] == ("codex-test" if pinned else None)
+
+
+@pytest.mark.parametrize("model", [None, "swe-2-high", "paid-model"])
+def test_submit_devin_model_guard(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    model: str | None,
+) -> None:
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    monkeypatch.setenv("PRECIS_DEVIN_BIN", "/vendor/devin")
+    lane = _vendor_lane("devin", "devin_tree", models=("swe-2-high",))
+    monkeypatch.setattr(lanes, "LANES", (lane,))
+    store = _Store()
+    store.add_todo(42, "Build")
+    params: dict[str, Any] = {"lane": "devin"}
+    if model is not None:
+        params["model"] = model
+    ctx, handle = _submit(store, seams, **params)
+    if model == "paid-model":
+        assert handle is None and ctx.status == "failed"
+        assert ctx.failure is not None and "paid-model" in ctx.failure
+        assert seams["launch"] == []
+        assert store.tag_strings(42) == {"STATUS:open", "attempt:1"}
+        return
+    assert handle is not None and ctx.failure is None
+    [(argv, kw)] = seams["launch"]
+    tree = Path(handle["worktree"])
+    expected: list[str] = [
+        "/vendor/devin",
+        "-p",
+        "--prompt-file",
+        str(tree / "scratch" / "brief.md"),
+        "--permission-mode",
+        "dangerous",
+        "--respect-workspace-trust",
+        "false",
+        "--verbosity",
+        "1",
+    ]
+    if model is not None:
+        expected += ["--model", model]
+    assert argv == expected
+    assert kw["stdin"] is None and kw["cwd"] == tree
+    assert ctx.meta_set["adapter"] == "devin_tree"
+
+
+def test_devin_adapter_rejects_explicit_model_without_allowlist(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="paid-model"):
+        get_adapter("devin_tree").argv(
+            model="paid-model",
+            effort="high",
+            tree=tmp_path,
+            brief_path=tmp_path / "brief.md",
+            deny_paths=(),
+            max_turns=1,
+        )
+
+
+@pytest.mark.parametrize(
+    "name,adapter",
+    [("codex", "codex_exec"), ("devin", "devin_tree")],
+)
+@pytest.mark.parametrize("inherited_tokens", [False, True])
+def test_non_mcp_submit_never_uses_credentials_or_preflight(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    adapter: str,
+    inherited_tokens: bool,
+) -> None:
+    from precis import secrets as _secrets
+    from precis.utils import claude_oauth
+
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    monkeypatch.setattr(lanes, "LANES", (_vendor_lane(name, adapter),))
+    for key in ("PRECIS_MCP_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+        if inherited_tokens:
+            monkeypatch.setenv(key, "must-not-reach-vendor")
+        else:
+            monkeypatch.delenv(key, raising=False)
+    calls: list[str] = []
+
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        calls.append("credential or preflight")
+        raise AssertionError("non-MCP lane touched credentials or preflight")
+
+    monkeypatch.setattr(run_slice, "_mint_slice_token", forbidden)
+    monkeypatch.setattr(run_slice, "_preflight_mcp", forbidden)
+    monkeypatch.setattr(claude_oauth, "ensure_oauth_token", forbidden)
+    monkeypatch.setattr(_secrets, "mounted_secret", forbidden)
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, lane=name)
+    assert handle is not None and ctx.failure is None
+    assert calls == []
+    [(_argv, kw)] = seams["launch"]
+    assert "PRECIS_MCP_TOKEN" not in kw["env"]
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in kw["env"]
+    brief = (Path(handle["worktree"]) / "scratch" / "brief.md").read_text(
+        encoding="utf-8"
+    )
+    paragraph = (
+        "This lane has no precis MCP. Do not try to reach it. "
+        "Everything you want recorded goes in your final message."
+    )
+    assert paragraph in brief
+    assert (
+        brief.index(f"lane `{name}`") < brief.index(paragraph) < brief.index("## Paths")
+    )
+    assert "Your final message is posted on the todo as the `handoff:` comment" in brief
+
+
+def test_submit_unknown_adapter_fails_without_claiming(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lane-table error is not the slice's: the todo is never claimed,
+    so no attempt is burned on it."""
+    monkeypatch.setattr(lanes, "LANES", (_vendor_lane("mystery", "unknown-adapter"),))
+    store = _Store()
+    store.add_todo(42, "Build")
+    before = store.tag_strings(42)
+    ctx, handle = _submit(store, seams, lane="mystery")
+    assert handle is None and ctx.status == "failed"
+    assert ctx.failure is not None
+    assert "mystery" in ctx.failure and "unknown-adapter" in ctx.failure
+    assert seams["launch"] == []
+    assert store.tag_strings(42) == before
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+
+
+def test_submit_codex_clears_previous_last_message(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    monkeypatch.setattr(lanes, "LANES", (_vendor_lane("codex", "codex_exec"),))
+    message = (
+        tmp_path
+        / ".claude"
+        / "worktrees"
+        / "slice-td42"
+        / "scratch"
+        / "last-message.md"
+    )
+    message.parent.mkdir(parents=True)
+    message.write_text("validated: stale previous result", encoding="utf-8")
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, lane="codex")
+    assert handle is not None and not message.exists()
+    _finish(handle, 0, "{broken json\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert store.comments(42) == [] and seams["lands"] == []
+
+
+@pytest.mark.parametrize("message_file", [None, "", "  \n", "file handoff\n"])
+def test_codex_parse_prefers_file_else_last_agent_event(
+    tmp_path: Path,
+    message_file: str | None,
+) -> None:
+    if message_file is not None:
+        (tmp_path / "scratch").mkdir()
+        (tmp_path / "scratch" / "last-message.md").write_text(
+            message_file, encoding="utf-8"
+        )
+    log = (
+        '{"type":"item.completed","item":{"type":"agent_message","text":"first"}}\n'
+        '{"type":"item.completed","item":{"type":"agent_message","text":"last"}}\n'
+        '{"type":"item.completed","item":{"type":"command_execution","text":"tool"}}\n'
+        '{"type":"turn.completed"}\n{broken\n[]\n'
+    )
+    expected = "file handoff" if message_file == "file handoff\n" else "last"
+    assert get_adapter("codex_exec").parse_result(log, tmp_path) == (expected, False)
+
+
+@pytest.mark.parametrize(
+    "log",
+    [
+        "",
+        "not json",
+        '{"type":"item.completed","item":null}',
+        '{"type":"item.completed","item":{"type":"agent_message","text":7}}',
+    ],
+)
+def test_codex_parse_missing_message_is_error(tmp_path: Path, log: str) -> None:
+    assert get_adapter("codex_exec").parse_result(log, tmp_path) == (None, True)
+
+
+def test_claude_adapter_parse_preserves_result_error(tmp_path: Path) -> None:
+    log = '{"result":"first"}\n{"result":"turn limit","is_error":true}\n'
+    assert get_adapter("claude_p").parse_result(log, tmp_path) == ("turn limit", True)
+
+
+@pytest.mark.parametrize("exit_code", [0, 1, None])
+def test_devin_parse_uses_exit_code(tmp_path: Path, exit_code: int | None) -> None:
+    log = "  tool progress\n\nFinal handoff.\n"
+    assert get_adapter("devin_tree").parse_result(
+        log, tmp_path, exit_code=exit_code
+    ) == (
+        "tool progress\n\nFinal handoff.",
+        exit_code != 0,
+    )
+
+
+@pytest.mark.parametrize("lane_change", ["unchanged", "removed", "changed"])
+def test_poll_uses_persisted_adapter(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    lane_change: str,
+) -> None:
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    monkeypatch.setattr(lanes, "LANES", (_vendor_lane("codex", "codex_exec"),))
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, lane="codex")
+    assert handle is not None
+    if lane_change == "removed":
+        monkeypatch.setattr(lanes, "LANES", ())
+    elif lane_change == "changed":
+        monkeypatch.setattr(lanes, "LANES", (_vendor_lane("codex", "claude_p"),))
+    seams["ahead"] = "abc1234 feat(x): build\n"
+    _finish(
+        handle,
+        0,
+        '{"type":"item.completed","item":{"type":"agent_message","text":"Built."}}',
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert store.comments(42)[-1] == "handoff: Built."
+    assert seams["lands"] == [(42, Path(handle["worktree"]), "codex")]
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_poll_devin_legacy_lane_fallback_and_exit_failure(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    exit_code: int,
+) -> None:
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    monkeypatch.setattr(lanes, "LANES", (_vendor_lane("devin", "devin_tree"),))
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, lane="devin")
+    assert handle is not None
+    ctx.meta_set.pop("adapter")
+    seams["ahead"] = "abc1234 feat(x): build\n"
+    _finish(handle, exit_code, "Final response.\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert store.comments(42)[-1] == "handoff: Final response."
+    if exit_code:
+        assert pctx.status == "failed" and seams["lands"] == []
+        assert store.tag_strings(42) == {"STATUS:open", "attempt:1"}
+    else:
+        assert pctx.status == "succeeded"
+        assert seams["lands"] == [(42, Path(handle["worktree"]), "devin")]
+
+
+def test_launch_none_stdin_uses_devnull(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    class FakeProcess:
+        pid = 4242
+
+    def fake_popen(argv: list[str], **kwargs: Any) -> FakeProcess:
+        calls.append((argv, kwargs))
+        return FakeProcess()
+
+    monkeypatch.setattr(run_slice.subprocess, "Popen", fake_popen)
+    env: dict[str, str] = {"PATH": "/usr/bin"}
+    assert (
+        run_slice._launch(
+            ["devin", "-p"],
+            cwd=tmp_path,
+            stdin=None,
+            log=tmp_path / "log",
+            exit_file=tmp_path / "exit",
+            env=env,
+        )
+        == 4242
+    )
+    [(argv, kwargs)] = calls
+    assert argv[-2:] == ["devin", "-p"]
+    assert ' < "$RS_IN" ' in argv[2]
+    assert kwargs["env"]["RS_IN"] == os.devnull
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["start_new_session"] is True
