@@ -6931,8 +6931,15 @@ class PaperHandler(Handler):
         reason: str,
         dry: bool,
     ) -> Response:
-        """``edit(args={'convert_to': 'datasheet'})`` — flip this ref's
-        kind, keeping identity (gr515477).
+        """Convert a misfiled paper to a datasheet or presentation.
+
+        ``pres`` uses :meth:`_convert_to_pres`: new page-faithful chunks,
+        a retired paper and the existing supersede redirect. It carries
+        ref links (single-page chunk anchors/evidence pins re-point to slides) and the
+        same eligible ref-tag namespaces as datasheet conversion, plus
+        subtype:slides. Ambiguous/collapsing anchors refuse. Historical
+        chunks and chunk tags stay on the tombstone; embeddings are not
+        copied onto different text.
 
         The datasheet/manual misfiled as a paper: the ``refs.kind``
         column flips and every ``ref_id``-keyed row follows untouched —
@@ -6968,19 +6975,27 @@ class PaperHandler(Handler):
             raise BadInput(
                 f"convert_to is supported only from kind='paper' "
                 f"(this door is kind='{kind}')",
-                next="only a paper converts to a datasheet — the reverse "
+                next="only a paper converts to a datasheet or pres — the reverse "
                 "or other pairs need a migration decision first",
             )
         target_s = str(target or "").strip()
         if target_s not in CONVERT_TARGETS:
             raise BadInput(
-                f"convert_to={target_s!r} unsupported — the only "
-                "supported conversion is paper → datasheet",
+                f"convert_to={target_s!r} unsupported — supported "
+                "conversions are paper → datasheet or pres",
                 next="edit(kind='paper', id=<slug>, args="
                 "{'convert_to': 'datasheet', 'reason': '<why>'})",
             )
         ref, handle = self._require_live_body_ref(id, "convert_to")
-        self._require_reason(reason, "convert_to", kind, handle, arg="'datasheet'")
+        self._require_reason(reason, "convert_to", kind, handle, arg=repr(target_s))
+        if target_s == "pres":
+            if str(subtype or "slides").strip() != "slides":
+                raise BadInput(
+                    "paper → pres extracts slides; subtype must be 'slides'",
+                    next=f"edit(kind='paper', id='{handle}', args="
+                    "{'convert_to': 'pres', 'reason': '<why>'})",
+                )
+            return self._convert_to_pres(ref, handle, reason=reason, dry=dry)
         sub = str(subtype or "").strip() or "datasheet"
         if sub not in DATASHEET_SUBTYPES:
             raise BadInput(
@@ -7069,6 +7084,147 @@ class PaperHandler(Handler):
             )
         )
 
+    def _convert_to_pres(
+        self, ref: Ref, handle: str, *, reason: str, dry: bool
+    ) -> Response:
+        """Extract before writing; recheck and transfer ownership atomically.
+
+        No filesystem writes: the new ref shares the existing held PDF.
+        Ref/link/tag transfer policy lives in ``ingest.pres_convert``.
+        """
+        from precis.corpus_layout import corpus_roots_from_env, resolve_local_pdf
+        from precis.ingest import kind_convert, pres_convert
+        from precis.ingest import pres as pres_ingest
+
+        retry = (
+            f"edit(kind='paper', id='{handle}', "
+            "args={'convert_to': 'pres', 'reason': '<why>'})"
+        )
+        with self.store.pool.connection() as conn:
+            probe = kind_convert.probe_convert(conn, ref.id, "pres")
+            pres_convert.plan_links(conn, ref.id)
+            pres_convert.require_pdf_owner(conn, ref.id, ref.pdf_sha256)
+            keys = conn.execute(
+                "SELECT id_value FROM ref_identifiers WHERE ref_id = %s "
+                "AND id_kind IN ('cite_key', 'cite_key_alias') ORDER BY id_value",
+                (ref.id,),
+            ).fetchall()
+        self._convert_refuse(probe, handle, "pres")
+        stored_path = (
+            self.store.pdf_storage_path(ref.pdf_sha256) if ref.pdf_sha256 else None
+        )
+        path = (
+            resolve_local_pdf(
+                corpus_roots_from_env(), stored_path, [str(k[0]) for k in keys]
+            )
+            if ref.pdf_sha256
+            else None
+        )
+        if path is None:
+            raise BadInput(
+                f"{handle} has no PDF available in local storage",
+                next=f"restore or attach the paper's PDF, then {retry}",
+            )
+        try:
+            pres = pres_ingest.extract_pres(
+                path,
+                slug_hint=ref.slug or handle,
+                title_hint=ref.title or ref.slug or handle,
+            )
+        except FileNotFoundError as exc:
+            raise BadInput(
+                f"{handle}'s PDF is missing from storage",
+                next=f"restore the PDF, then {retry}",
+            ) from exc
+        except Exception as exc:
+            raise Upstream(
+                f"could not extract slides from {handle}'s PDF; nothing was written",
+                next=f"check that the stored PDF is readable, then {retry}",
+            ) from exc
+        if pres.pdf_sha256 != ref.pdf_sha256:
+            raise BadInput(
+                f"{handle}'s stored PDF does not match its recorded hash",
+                next=f"restore the matching PDF or repair its attachment, then {retry}",
+            )
+        if dry:
+            return Response(
+                body=(
+                    f"DRY RUN (no write) - would convert {handle} paper → pres: "
+                    f"{len(pres.slides)} slide block(s), one per PDF page; "
+                    "keep the PDF, transfer identifiers, links and eligible ref tags, "
+                    f"add subtype:slides and retire {handle} with a redirect to a new pr handle. "
+                    f"Paper-only tags omitted: {', '.join(probe.stripped_tags) or 'none'}. "
+                    "Links and evidence pins anchored to paper chunks refuse "
+                    "conversion, as do establishes/corroborates evidence edges; "
+                    "compatible ref links carry over and are restamped."
+                )
+            )
+        with _body_op_tx(self.store, "convert_to") as conn:
+            row = conn.execute(
+                "SELECT kind, retired_at, meta->>'superseded_by', pdf_sha256 "
+                "FROM refs WHERE ref_id = %s FOR UPDATE",
+                (ref.id,),
+            ).fetchone()
+            if (
+                row is None
+                or row[0] != "paper"
+                or row[1] is not None
+                or row[2] is not None
+                or row[3] != pres.pdf_sha256
+            ):
+                raise BadInput(
+                    f"{handle} changed kind, PDF or was retired/merged since the check",
+                    next=f"re-resolve the live paper, then {retry}",
+                )
+            probe = kind_convert.probe_convert(conn, ref.id, "pres")
+            self._convert_refuse(probe, handle, "pres")
+            result = pres_convert.apply_pres_convert(
+                self.store, conn, ref_id=ref.id, pres=pres
+            )
+            payload = {
+                "reason": reason,
+                "from_kind": "paper",
+                "to_kind": "pres",
+                "old_ref_id": ref.id,
+                "new_ref_id": result.ref_id,
+                "subtype": "slides",
+                "body_chunks": result.n_slides,
+                "pdf_kept": True,
+                "links": probe.links,
+                "chunk_links": probe.chunk_links,
+                "identifiers": probe.identifiers,
+                "stripped_tags": probe.stripped_tags,
+            }
+            self.store.append_event(
+                ref.id,
+                source="agent",
+                event="converted",
+                payload=payload,
+                conn=conn,
+            )
+            self.store.append_event(
+                result.ref_id,
+                source="agent",
+                event="converted",
+                payload=payload,
+                conn=conn,
+            )
+        new_handle = handle_registry.format_handle("pres", result.ref_id)
+        return Response(
+            body=(
+                f"converted {handle} → {new_handle} (kind='pres'): "
+                f"{result.n_slides} slide block(s), one per PDF page; PDF kept, "
+                "identifiers, links and eligible ref tags transferred; subtype:slides added. "
+                f"Paper-only tags omitted: {', '.join(probe.stripped_tags) or 'none'}. "
+                "Links and evidence pins anchored to paper chunks refuse "
+                "conversion, as do establishes/corroborates evidence edges; "
+                "compatible ref links carried over and were restamped. "
+                f"Retired {handle}; it redirects to {new_handle}. Original chunks remain "
+                "on the retired paper; new slide embeddings are left for the worker "
+                f"(ref_event 'converted' logged). get(kind='pres', id='{new_handle}')."
+            )
+        )
+
     @staticmethod
     def _convert_refuse(probe: Any, handle: str, target: str) -> None:
         """Raise the convert refusals (with ``next=``) for a probe's
@@ -7076,7 +7232,7 @@ class PaperHandler(Handler):
         change between them can't slip a refusal through."""
         if probe.is_supplement:
             raise BadInput(
-                f"{handle} is an SI record — a datasheet has no supplement parent",
+                f"{handle} is an SI record — a {target} has no supplement parent",
                 next="convert the parent paper instead, or unlink the "
                 "part-of edge first",
             )
@@ -7093,7 +7249,8 @@ class PaperHandler(Handler):
                 for lid, rel, side in probe.violated_links
             )
             raise BadInput(
-                f"{handle} carries edge(s) a {target} cannot hold: {listing}",
+                f"{handle} carries edge(s) a {target} cannot hold: {listing}; "
+                "unlink them first",
                 next="unlink them first — the relation's endpoint-kind "
                 f"constraint excludes '{target}'",
             )

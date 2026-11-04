@@ -32,6 +32,31 @@ paragraph (for writeups). Slug-addressed: pick a stable slug
 
 ## Add a new deck or writeup
 
+## Convert a deck already stored as a paper
+
+```python
+edit(kind="paper", id="pa123", args={"convert_to": "pres", "reason": "slide deck"})
+```
+
+Add `dry_run=True` to preview. Requires the paper's matching PDF in local
+storage. One transaction creates a new `pr` record with one slide per PDF
+page (including blank pages), transfers identifiers and compatible ref links,
+and retires the paper. The receipt names both handles; `get(kind='paper', id='pa123')`
+follows the existing redirect to the presentation. The PDF and original
+cite key are kept; a stable cite key is created if absent. New embeddings
+are filled by the worker.
+
+Open/shared ref tags carry over; paper-only axes, their CASCADE markers and
+`DREAM` are omitted, and `subtype:slides` is added. Any link or evidence pin
+anchored to a paper chunk refuses, naming the link and chunk handles;
+remove or move those links before converting. Chunk page estimates cannot
+identify PDF slides, so anchors are never re-anchored. SI records/parents
+and incompatible relations, including evidence edges `establishes` and
+`corroborates`, also refuse: unlink the named edges first.
+Original chunks and chunk tags remain on the retired paper; other stored
+`pc` references do not redirect. Only the `slides` subtype is supported by
+this conversion.
+
 ## Ingest a slide deck one slide at a time
 ## Capture an unpublished writeup
 

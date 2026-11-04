@@ -67,9 +67,8 @@ DATASHEET_SUBTYPES: frozenset[str] = frozenset(
     {"datasheet", "app-note", "errata", "reference-manual"}
 )
 
-#: Kinds a paper may convert to. One today — the tuple is the door's
-#: refusal vocabulary if a second target lands.
-CONVERT_TARGETS: frozenset[str] = frozenset({"datasheet"})
+#: Pres conversion re-extracts the PDF via pres_convert rather than flipping kind.
+CONVERT_TARGETS: frozenset[str] = frozenset({"datasheet", "pres"})
 
 
 def paper_only_tag_namespaces(target: str) -> frozenset[str]:

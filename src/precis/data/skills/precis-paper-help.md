@@ -204,6 +204,32 @@ See [[precis-paper-ref-help]] — identifier repair, `merge_into`,
 `split_body`/`clear_abstract`), `clear_stamp`, and `put` with
 `args={'pdf_url': …}` to attach a legal open copy to a body-less stub.
 
+## Convert a misfiled slide deck to a presentation
+
+```python
+edit(kind="paper", id="pa123", args={"convert_to": "pres", "reason": "slide deck"})
+```
+
+`dry_run=True` previews without writing. The held PDF must be available
+locally and match its stored hash; missing bytes refuse with a repair step.
+The conversion creates a new `pr` handle with one slide block per PDF page,
+keeps the PDF and cite key (creates one if absent), transfers identifiers and
+compatible ref links, and retires the paper in one transaction. The receipt
+names both handles; the retired `pa`
+handle redirects to the presentation. Original chunks stay on the tombstone;
+the worker fills embeddings for the fresh slides.
+
+As with `convert_to='datasheet'`, eligible ref tags carry and paper-only
+axes/CASCADE markers plus `DREAM` are omitted; `subtype:slides` is added.
+SI records/parents and incompatible relations, including evidence edges
+`establishes` and `corroborates`, refuse: unlink the named edges first.
+Any link or evidence pin anchored to a paper chunk refuses and names the
+link and chunk handles; remove or move those links before converting.
+Chunk page estimates cannot identify PDF slides, so anchors are never
+re-anchored. Other stored `pc` references do not redirect.
+See [[precis-pres-help]]. `datasheet` conversion remains an in-place
+kind change that preserves the existing chunks.
+
 ## Restore a paper that was merged into another ref (operator only)
 
 An operator can make the retired loser independently addressable again:

@@ -23,6 +23,14 @@ through B6 was deleted in B7. Callers that still need bundle
 parsing should pin to ``precis<0.7``; otherwise migrate to the
 direct ingest path via :func:`precis_add`.
 
+Misfiled paper → presentation conversion (``pres_convert``) re-extracts the
+held PDF into one chunk per slide and retires the paper in one transaction.
+Compatible ref links carry over; chunk anchors and evidence pins refuse
+because Marker's page estimates cannot identify PDF slides. Evidence
+relations excluding ``pres`` also refuse. The original chunks remain on
+the tombstone, and the new presentation retains a stable cite key even
+when the paper had none.
+
 Discovery layer (F20)
 ---------------------
 
