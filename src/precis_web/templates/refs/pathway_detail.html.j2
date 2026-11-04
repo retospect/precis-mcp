@@ -614,6 +614,10 @@
     #kinetics details.keq .eq { margin: .25rem 0; padding: .15rem .4rem; background: rgb(var(--bg-surface-subtle)); border-radius: 3px; white-space: nowrap; overflow-x: auto; font-variant-numeric: tabular-nums; }
     #kinetics .kwlist { margin: .4rem 0 0 1.1rem; color: rgb(var(--text-fg-muted)); list-style: disc; }
     #kinetics .kwlist li { margin: .15rem 0; overflow-wrap: anywhere; }
+    #kinetics .kwlist ul { margin-left: 1.1rem; list-style: disc; }
+    #kinetics .kinetics-highlight { background: rgb(var(--bg-warning-subtle)); outline: 2px solid rgb(var(--border-warning-solid)); }
+    #kinetics .kinetics-warning-chip { display: inline-block; border: 1px solid rgb(var(--border-warning-solid)); border-radius: 4px; padding: 0 4px; color: rgb(var(--text-warning-deep)); }
+    #pw-diagram .kinetics-highlight { stroke: rgb(var(--text-warning-deep)); stroke-width: 5; opacity: 1 !important; }
   </style>
   {% if conditions_note %}
   {# gr553328: the solve ran at its own environment — state it beside the
@@ -1431,7 +1435,7 @@
         : isBep
           ? `, Ea\u2248${geo.bepEa.toFixed(2)} eV (BEP estimate)`
           : (geo.barrier > 1e-3 ? `, Ea=${geo.barrier.toFixed(2)} eV` : '');
-      parts.push(`<polyline class="pw-seg"${pa} data-from="${esc(s.src)}" data-to="${esc(s.tgt)}" points="${curve}" fill="none" stroke="${color}" stroke-width="2"${dash} style="cursor:pointer"><title>${esc(`step ${s.src} \u2192 ${s.tgt}${eaTitle}, source=${barrierSource}\n${PWStepKinetics.text(s.react || s.supply)}\nclick to isolate its path`)}</title></polyline>`);
+      parts.push(`<polyline class="pw-seg"${pa} data-from="${esc(s.src)}" data-to="${esc(s.tgt)}" data-reaction-from="${esc(s.shoulder ?? s.src)}" points="${curve}" fill="none" stroke="${color}" stroke-width="2"${dash} style="cursor:pointer"><title>${esc(`step ${s.src} \u2192 ${s.tgt}${eaTitle}, source=${barrierSource}\n${PWStepKinetics.text(s.react || s.supply)}\nclick to isolate its path`)}</title></polyline>`);
       // shoulder — the X+H level (its energy is real) as a small tick at
       // the hump's foot, joined to X by a thin solid drop; clickable like a
       // level, and it moves with U like any other n_H-carrying node.

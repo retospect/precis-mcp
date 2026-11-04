@@ -4294,3 +4294,62 @@ def test_pathway_kinetics_shared_leaf_link_restores_the_selected_route(
         assert restored["hash"] == "#pw-explorer"
         assert restored["rs"] == []
         assert restored["noteHidden"] is True
+
+
+@needs_node
+@pytest.mark.parametrize("suffix", ["", "~history"])
+def test_folded_reaction_warning_highlights_rendered_segment(
+    client, runtime, tmp_path: Path, suffix: str
+) -> None:
+    """The warning names N+H -> NH, while the profile draws N -> NH."""
+    from precis_web.pathway_kinetics import kinetics_payload
+    from tests.precis_web.test_pathway_kinetics import _panel_probe, _record
+
+    states = ["N", "N+H" + suffix, "NH" + suffix, "NH2"]
+    graph = {
+        "nodes": [
+            {"id": state, "rel_energy": i * 0.1} for i, state in enumerate(states)
+        ],
+        "links": [
+            {
+                "source": source,
+                "target": target,
+                "kind": "supply" if i == 0 else "reaction",
+                "barrier": 0.3,
+            }
+            for i, (source, target) in enumerate(pairwise(states))
+        ],
+    }
+    _seed_pathway(runtime.store, meta={"graph": graph}, body_text=None)
+    html = client.get("/refs/pathway/171696").text
+    svg = _render_diagram_svg(tmp_path, html)
+    segments = re.findall(r'<polyline class="pw-seg"([^>]*)>', svg)
+    profile = [dict(re.findall(r'([\w-]+)="([^"]*)"', segment)) for segment in segments]
+    assert [(segment["data-from"], segment["data-to"]) for segment in profile] == [
+        ("N", "NH" + suffix),
+        ("NH" + suffix, "NH2"),
+    ]
+    payload = kinetics_payload(
+        {
+            "kinetics": _record(
+                warnings=["kinetics: X_RC of N+H->NH is undefined"],
+                transitions=[
+                    {"name": "N+H->NH", "from": "N+H", "to": "NH", "kind": "step"}
+                ],
+            )
+        }
+    )
+    assert payload is not None
+    out = _panel_probe(
+        tmp_path,
+        payload,
+        profile=profile,
+        after="""
+const anchor = {getAttribute: () => '#kinetics-step-0'};
+const target = {closest: selector => selector === "a[href^='#kinetics-']" ? anchor : null};
+handlers.click.forEach(f => f({target, button: 0}));
+""",
+    )
+    assert out["highlighted"] == ["kinetics-step-0"]
+    assert "kinetics-steps" in out["open"]
+    assert out["profileHighlights"] == [True, False]

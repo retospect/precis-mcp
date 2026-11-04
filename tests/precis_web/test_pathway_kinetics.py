@@ -866,6 +866,19 @@ const payload = fs.readFileSync(process.argv[3], 'utf-8');
 const options = JSON.parse(process.argv[4] || '{}');
 const handlers = {}, windowHandlers = {}, sections = {}, scrolls = [];
 const navigation = [];
+const classList = () => {
+  const values = new Set();
+  return {
+    toggle(name, on) { if (on) values.add(name); else values.delete(name); },
+    add(name) { values.add(name); },
+    remove(name) { values.delete(name); },
+    contains(name) { return values.has(name); },
+  };
+};
+const profile = (options.profile || []).map(attributes => ({
+  getAttribute: name => attributes[name] ?? null,
+  classList: classList(),
+}));
 const host = {
   innerHTML: '',
   addEventListener(t, f) { (handlers[t] = handlers[t] || []).push(f); },
@@ -875,6 +888,7 @@ global.window = {
   addEventListener(t, f) { (windowHandlers[t] = windowHandlers[t] || []).push(f); },
 };
 global.document = {
+  querySelectorAll: selector => selector === '#pw-diagram [data-from][data-to]' ? profile : [],
   getElementById: (id) => {
     if (id === 'kinetics') return host;
     if (id === 'kinetics-data') return {textContent: payload};
@@ -886,8 +900,14 @@ global.document = {
     if (match) {
       if (!sections[id]) sections[id] = {
         tagName: match[1].toUpperCase(), open: false, parentElement: null,
+        classList: classList(),
         scrollIntoView() { scrolls.push(id); },
       };
+      if (/^kinetics-step-\d+$/.test(id))
+        sections[id].parentElement = document.getElementById('kinetics-steps');
+      if (/^kinetics-warning-(ml|dft)-\d+$/.test(id))
+        sections[id].parentElement = document.getElementById(
+          'kinetics-warnings-' + id.split('-')[2]);
       return sections[id];
     }
     return null;
@@ -899,6 +919,8 @@ if (options.after) eval(options.after);
 console.log(JSON.stringify({
   html: host.innerHTML, initialScrolls, scrolls, navigation,
   open: Object.keys(sections).filter(id => sections[id].open),
+  highlighted: Object.keys(sections).filter(id => sections[id].classList.contains('kinetics-highlight')),
+  profileHighlights: profile.map(el => el.classList.contains('kinetics-highlight')),
 }));
 """
 
@@ -1176,9 +1198,9 @@ def test_verdict_entity_links_use_longest_literal_and_first_adjacent_path(
         for link in markup.links
     )
     verdict = payload["ml"]["verdict"]
-    assert markup.text == "ML tier: " + verdict["headline"].replace(
-        "->", "→"
-    ) + "".join(verdict["lines"]).replace("->", "→")
+    assert markup.text == "machine-learned potential solve: " + verdict[
+        "headline"
+    ].replace("->", "→") + "".join(verdict["lines"]).replace("->", "→")
 
 
 @needs_node
@@ -1356,3 +1378,509 @@ def test_verdict_v2_step_keys_link_without_transition_rows(
     assert link["text"] == step.replace("->", "→")
     assert link["data-kinetics-path"] == "0"
     assert parse_qs(urlsplit(link["href"]).query)["path"] == ["NH3"]
+
+
+# ── gr553322 / td563720: warning subjects and evidence navigation ──────
+
+
+def _warning_markup(html: str, tier: str = "ml") -> _PanelMarkup:
+    block = re.search(
+        rf"<details\b[^>]*\bid='kinetics-warnings-{tier}'[^>]*>(.*?)</details>",
+        html,
+        re.S,
+    )
+    assert block is not None
+    return _PanelMarkup(block[1])
+
+
+@needs_node
+@pytest.mark.parametrize("warning", KNOWN_WARNINGS)
+def test_each_warning_shows_its_capture_or_raw_line_inline(
+    tmp_path: Path, warning: str
+) -> None:
+    """Every table entry has a visible subject or its full evidence line.
+
+    Parsing visible HTML data excludes title attributes: the old tooltip-only
+    rendering must fail this check even though it retained the raw string.
+    """
+    js = (
+        Path(precis_web.__file__).parent / "static" / "pathway-kinetics.js"
+    ).read_text(encoding="utf-8")
+    block = js[js.index("const WARN_HELP") : js.index("const WARN_RES")]
+    entries = re.findall(r'\{re:\s*"((?:[^"\\]|\\.)*)"(.*?)\},?', block, re.S)
+    assert entries
+    payload = kinetics_payload({"kinetics": _record(warnings=[warning])})
+    assert payload is not None
+    markup = _warning_markup(_render_panel(tmp_path, payload))
+    for raw_pattern, entry in entries:
+        match = re.search(raw_pattern.replace("\\\\", "\\"), warning)
+        if match is None:
+            continue
+        capture = re.search(r"\bsubj:\s*(\d+)", entry)
+        subject = match[int(capture[1])] if capture else None
+        if subject:
+            # Multi-subject captures can be separated into counted items.
+            for item in subject.split(", "):
+                assert item.replace("->", "→") in markup.text
+        else:
+            assert warning.replace("->", "→") in markup.text
+        break
+    else:
+        pytest.fail(f"No help entry for known engine warning: {warning}")
+
+
+@needs_node
+@pytest.mark.parametrize(
+    ("warning", "subjects"),
+    [
+        ("mkm: steady-state residual on 'N' is 1e-7 /s", ["N"]),
+        (
+            "kinetics: states with no usable transition (excluded from the model): X, Y",
+            ["X", "Y"],
+        ),
+        ("kinetics: step a->b endpoint missing an energy; excluded", ["a→b"]),
+        (
+            "kinetics: transition a->b has |dG| = 20.00 eV; treated as one-way",
+            ["a→b"],
+        ),
+        ("kinetics: no state releases NH3; the cycle does not close", ["NH3"]),
+        (
+            "kinetics: cannot price the closure NOH -> * + NOH(g) (unpriced gas); closure skipped",
+            ["NOH → * + NOH(g)"],
+        ),
+        ("kinetics: MARI guess 'X' is not a network state", ["X"]),
+        ("kinetics: DFT root '*' not in the run's nodes", ["*"]),
+        ("kinetics: product 'X' is not a closed-shell gas molecule", ["X"]),
+        (
+            "kinetics.tpd: requested adsorbate(s) the network does not desorb "
+            "from a bare adsorbate state: NH3, NO",
+            ["NH3", "NO"],
+        ),
+        ("kinetics: link H -> *~h2 exchanges more than one gas", ["H → *~h2"]),
+        (
+            "kinetics: link a -> b supplies an element with no reservoir molecule",
+            ["a → b"],
+        ),
+        (
+            "kinetics: step a->b aggregated delta_e +0.080 eV differs from its endpoints",
+            ["a→b"],
+        ),
+        ("kinetics: landing state *~nh2oh sits +0.849 eV off its base *", ["*~nh2oh"]),
+    ],
+)
+def test_warning_entity_names_have_individual_counts(
+    tmp_path: Path, warning: str, subjects: list[str]
+) -> None:
+    payload = kinetics_payload({"kinetics": _record(warnings=[warning])})
+    assert payload is not None
+    markup = _warning_markup(_render_panel(tmp_path, payload))
+    for subject in subjects:
+        assert f"{subject} (1)" in markup.text
+
+
+@needs_node
+@pytest.mark.parametrize(
+    "warning",
+    [
+        "kinetics: q_over_k -- the overall reaction leaves parked fragments "
+        "(N, O) at infinite dilution; their reference energies are inside dG",
+        "kinetics: states with no usable transition (excluded from the model): N, O",
+        "kinetics.tpd: requested adsorbate(s) the network does not desorb "
+        "from a bare adsorbate state: N, O",
+        "kinetics: mean-field observable trc skipped for N, O (time budget)",
+    ],
+)
+def test_warning_lists_link_and_label_each_subject(
+    tmp_path: Path, warning: str
+) -> None:
+    payload = kinetics_payload(
+        {
+            "kinetics": _record(warnings=[warning]),
+            "trust": [
+                {"state": "N", "on_route": True},
+                {"state": "O", "on_route": False},
+            ],
+        }
+    )
+    assert payload is not None
+    out = _panel_probe(
+        tmp_path,
+        payload,
+        explorer={"states": ["N", "O"], "paths": []},
+    )
+    markup = _warning_markup(out["html"])
+    assert "N (1) — on-route" in markup.text
+    assert "O (1) — off-route" in markup.text
+    assert [(link["text"], link.get("data-state")) for link in markup.links] == [
+        ("N", "N"),
+        ("O", "O"),
+    ]
+    for link in markup.links:
+        assert parse_qs(urlsplit(link["href"]).query)["state"] == [link["text"]]
+
+
+@needs_node
+def test_warning_groups_count_each_subject_and_keep_unknown_lines(
+    tmp_path: Path,
+) -> None:
+    warnings = [
+        "kinetics: no pressure stated for NH3; first assumption",
+        "kinetics: no pressure stated for NH3; second assumption",
+        "kinetics: no pressure stated for NO; its exchange is at 1 bar",
+        "new engine warning: inspect <state> & its source",
+    ]
+    payload = kinetics_payload({"kinetics": _record(warnings=warnings)})
+    assert payload is not None
+    markup = _warning_markup(_render_panel(tmp_path, payload))
+    assert markup.text.count("gas pressures assumed") == 1
+    assert "NH3 (2)" in markup.text and "NO (1)" in markup.text
+    assert warnings[-1] in markup.text
+    assert "state" not in markup.tags
+
+
+@needs_node
+def test_failed_observable_lists_gases_as_subjects(tmp_path: Path) -> None:
+    payload = kinetics_payload(
+        {
+            "kinetics": _record(
+                warnings=[
+                    "kinetics: mean-field observable orders failed for NH3, NO "
+                    "(MKMError: mkm: steady state not resolved tightly enough)",
+                    "kinetics: mean-field observable orders skipped (time budget spent)",
+                ]
+            )
+        }
+    )
+    assert payload is not None
+    markup = _warning_markup(_render_panel(tmp_path, payload))
+    assert "NH3 (1)" in markup.text and "NO (1)" in markup.text
+    assert "orders (1)" not in markup.text
+    assert (
+        "kinetics: mean-field observable orders skipped (time budget spent)"
+        in markup.text
+    )
+
+
+@needs_node
+@pytest.mark.parametrize(
+    ("subject", "record", "expected"),
+    [
+        ("NOH", {"state": "NOH"}, "on-route"),
+        ("X", {"state": "X"}, "off-route"),
+        ("NOH", {"state": "NOH", "step": "X->Y"}, "on-route"),
+    ],
+)
+def test_warning_state_route_scope_includes_recorded_route_endpoints(
+    tmp_path: Path, subject: str, record: dict[str, str], expected: str
+) -> None:
+    payload = kinetics_payload(
+        {
+            "kinetics": _record(
+                warnings=[f"kinetics: X_TRC of {subject} is undefined"]
+            ),
+            "trust": [record],
+            "route_steps": ["NO->NOH"],
+        }
+    )
+    assert payload is not None
+    markup = _warning_markup(_render_panel(tmp_path, payload))
+    assert expected in markup.text
+    assert ("off-route" if expected == "on-route" else "on-route") not in markup.text
+
+
+@needs_node
+@pytest.mark.parametrize(
+    ("trust", "route_steps", "expected"),
+    [
+        ([{"step": "NO*->NOH*", "on_route": True}], None, "on-route"),
+        ([{"step": "NO*->NOH*", "on_route": False}], None, "off-route"),
+        ([{"step": "NO*->NOH*"}], ["NO*->NOH*"], "on-route"),
+        ([{"step": "NO*->NOH*"}], [], "off-route"),
+        ([{"state": "NO*->NOH*", "on_route": True}], None, "on-route"),
+        ([], ["NO*->NOH*"], None),
+        ([{"step": "NO*->NOH*"}], None, None),
+        ([{"step": "other", "on_route": True}], [], None),
+    ],
+)
+def test_warning_route_labels_require_matching_trust_evidence(
+    tmp_path: Path,
+    trust: list[dict[str, Any]],
+    route_steps: list[str] | None,
+    expected: str | None,
+) -> None:
+    payload = kinetics_payload(
+        {
+            "kinetics": _record(warnings=["kinetics: X_RC of NO*->NOH* is undefined"]),
+            "trust": trust,
+            "route_steps": route_steps,
+        }
+    )
+    assert payload is not None
+    markup = _warning_markup(_render_panel(tmp_path, payload))
+    if expected:
+        assert expected in markup.text
+        assert (
+            "off-route" if expected == "on-route" else "on-route"
+        ) not in markup.text
+    else:
+        assert "on-route" not in markup.text and "off-route" not in markup.text
+
+
+@needs_node
+def test_warning_step_links_open_and_highlight_row_and_profile(tmp_path: Path) -> None:
+    payload = kinetics_payload(
+        {"kinetics": _record(warnings=["kinetics: X_RC of NO*->NOH* is undefined"])}
+    )
+    assert payload is not None
+    out = _panel_probe(
+        tmp_path,
+        payload,
+        profile=[
+            {"data-from": "NO@fcc", "data-to": "NOH@fcc"},
+            {"data-from": "NOH@fcc", "data-to": "NO@fcc"},
+        ],
+        after="""
+const attributes = {'href': '#kinetics-step-1', 'data-kinetics-step': '1'};
+const anchor = {getAttribute: name => attributes[name] ?? null};
+const target = {closest: selector => selector === "a[href^='#kinetics-']"
+  || selector === 'a.kinetics-step-selection' ? anchor : null};
+handlers.click.forEach(f => f({target, button: 0,
+  preventDefault() {}, stopPropagation() {},
+}));
+""",
+    )
+    warnings = _warning_markup(out["html"])
+    (link,) = [link for link in warnings.links if "data-kinetics-step" in link]
+    assert link["data-kinetics-step"] == "1"
+    assert link["href"] == "#kinetics-step-1"
+    assert "kinetics-step-1" in out["scrolls"]
+    assert "kinetics-steps" in out["open"]
+    assert out["highlighted"] == ["kinetics-step-1"]
+    assert out["profileHighlights"] == [True, False]
+    row = re.search(
+        r"<tr\b[^>]*\bid='kinetics-step-1'[^>]*>(.*?)</tr>", out["html"], re.S
+    )
+    assert row is not None
+    chips = _PanelMarkup(row[1]).links
+    assert any(link["href"][1:] in warnings.ids for link in chips)
+
+
+@needs_node
+def test_warning_chip_backlink_reveals_warning_group(tmp_path: Path) -> None:
+    warning = "kinetics: X_RC of NO*->NOH* is undefined"
+    payload = kinetics_payload({"kinetics": _record(warnings=[warning])})
+    assert payload is not None
+    out = _panel_probe(
+        tmp_path,
+        payload,
+        after=r"""
+const row = host.innerHTML.match(/<tr\b[^>]*\bid='kinetics-step-1'[^>]*>(.*?)<\/tr>/s);
+const href = row[1].match(/href='(#kinetics-warning-ml-\d+)'/)[1];
+const anchor = {getAttribute: name => name === 'href' ? href : null};
+const target = {closest: selector => selector === "a[href^='#kinetics-']" ? anchor : null};
+handlers.click.forEach(f => f({target, button: 0,
+  preventDefault() {}, stopPropagation() {},
+}));
+navigation.push({href});
+""",
+    )
+    (navigation,) = out["navigation"]
+    group_id = navigation["href"][1:]
+    assert group_id in _warning_markup(out["html"]).ids
+    assert out["scrolls"] == [group_id]
+    assert "kinetics-warnings-ml" in out["open"]
+
+
+@needs_node
+def test_excluded_step_without_transition_has_unpriced_warning_row(
+    tmp_path: Path,
+) -> None:
+    payload = kinetics_payload(
+        {
+            "kinetics": _record(
+                warnings=["kinetics: step a->b has no computed barrier; excluded"],
+                transitions=[],
+            )
+        }
+    )
+    assert payload is not None
+    html = _render_panel(tmp_path, payload)
+    warnings = _warning_markup(html)
+    (link,) = [link for link in warnings.links if "data-kinetics-step" in link]
+    assert link["data-kinetics-step"] == "0"
+    assert link["href"] == "#kinetics-step-0"
+    row = re.search(r"<tr\b[^>]*\bid='kinetics-step-0'[^>]*>(.*?)</tr>", html, re.S)
+    assert row is not None
+    markup = _PanelMarkup(row[1])
+    assert "a→b" in markup.text and "rates not recorded" in markup.text
+    assert not re.search(r"\d\.\d+(?:e[+-]?\d+)?", markup.text)
+    assert any(link["href"][1:] in warnings.ids for link in markup.links)
+
+
+@needs_node
+def test_direct_warning_step_fragment_highlights_evidence(tmp_path: Path) -> None:
+    payload = kinetics_payload(
+        {"kinetics": _record(warnings=["kinetics: X_RC of NO*->NOH* is undefined"])}
+    )
+    assert payload is not None
+    out = _panel_probe(
+        tmp_path,
+        payload,
+        hash="#kinetics-step-1",
+        profile=[{"data-from": "NO@fcc", "data-to": "NOH@fcc"}],
+    )
+    assert out["initialScrolls"] == ["kinetics-step-1"]
+    assert "kinetics-steps" in out["open"]
+    assert out["highlighted"] == ["kinetics-step-1"]
+    assert out["profileHighlights"] == [True]
+
+
+@needs_node
+def test_warning_fragment_navigation_preserves_native_modified_click(
+    tmp_path: Path,
+) -> None:
+    payload = kinetics_payload(
+        {"kinetics": _record(warnings=["kinetics: X_RC of NO*->NOH* is undefined"])}
+    )
+    assert payload is not None
+    out = _panel_probe(
+        tmp_path,
+        payload,
+        after="""
+const anchor = {getAttribute: name => name === 'href' ? '#kinetics-step-1' : '1'};
+const target = {closest: selector => selector === "a[href^='#kinetics-']"
+  || selector === 'a.kinetics-step-selection' ? anchor : null};
+let prevented = false;
+handlers.click.forEach(f => f({target, button: 0, ctrlKey: true,
+  preventDefault() { prevented = true; }, stopPropagation() {},
+}));
+navigation.push({prevented});
+""",
+    )
+    assert out["scrolls"] == [] and out["highlighted"] == []
+    assert out["navigation"] == [{"prevented": False}]
+
+
+@needs_node
+def test_warning_subject_and_raw_fallback_escape_engine_html(tmp_path: Path) -> None:
+    subject = "A'\"><img src=x onerror=alert(1)>&"
+    raw = "kinetics: mean-field MKM failed <script>alert('x')</script> & details"
+    payload = kinetics_payload(
+        {
+            "kinetics": _record(
+                warnings=[
+                    f"kinetics: MARI guess '{subject}' is not a network state",
+                    raw,
+                ]
+            )
+        }
+    )
+    assert payload is not None
+    markup = _warning_markup(_render_panel(tmp_path, payload))
+    assert subject in markup.text and raw in markup.text
+    assert "img" not in markup.tags and "script" not in markup.tags
+
+
+@pytest.mark.parametrize(
+    ("results", "manifest", "expected"),
+    [
+        ({"kinetics": _record()}, None, "machine-learned potential solve"),
+        ({"kinetics": _record(tier="dft")}, None, "DFT-refined solve"),
+        (
+            {"kinetics": _record(), "backend": "emt"},
+            None,
+            "effective-medium potential solve",
+        ),
+        (
+            {"kinetics": _record()},
+            {"lock": {"mlip": [{"backend": "mace", "model": "medium"}]}},
+            "machine-learned potential (mace medium) solve",
+        ),
+        (
+            {"kinetics_v2": {**_v2_record(), "bep_flux_share": 0.0}},
+            None,
+            "machine-learned potential solve",
+        ),
+    ],
+)
+def test_solve_label_uses_stored_fidelity_and_names_only(
+    results: dict[str, Any], manifest: dict[str, Any] | None, expected: str
+) -> None:
+    payload = kinetics_payload(results, validation_manifest=manifest)
+    assert payload is not None
+    assert next(iter(payload.values()))["solve_label"] == expected
+
+
+@needs_node
+def test_warning_heading_uses_and_escapes_stored_solve_label(tmp_path: Path) -> None:
+    model = "MACE-MP-0 medium <img src=x onerror=alert(1)>"
+    payload = kinetics_payload(
+        {"kinetics": _record(warnings=["sticking uncited: NH3"])},
+        validation_manifest={"lock": {"mlip": [{"backend": "mace", "model": model}]}},
+    )
+    assert payload is not None
+    markup = _warning_markup(_render_panel(tmp_path, payload))
+    assert model in markup.text
+    assert (
+        "machine-learned potential" in markup.text and "solve: 1 warning" in markup.text
+    )
+    assert "ML tier" not in markup.text and "img" not in markup.tags
+
+
+@needs_node
+def test_warned_link_transition_keeps_rates_and_profile_navigation(
+    tmp_path: Path,
+) -> None:
+    payload = kinetics_payload(
+        {
+            "kinetics": _record(
+                warnings=["kinetics: link H -> *~h2 exchanges more than one gas"],
+                transitions=[
+                    {
+                        "name": "H -> *~h2",
+                        "from": "H",
+                        "to": "*~h2",
+                        "kind": "link",
+                        "k_f": 10.0,
+                        "k_b": 2.0,
+                        "net_rate": 3.0,
+                        "dG_eV": 0.1,
+                    }
+                ],
+            )
+        }
+    )
+    assert payload is not None
+    out = _panel_probe(
+        tmp_path,
+        payload,
+        profile=[{"data-from": "H", "data-to": "*~h2"}],
+        after="""
+const attributes = {'href': '#kinetics-step-0', 'data-kinetics-step': '0'};
+const anchor = {getAttribute: name => attributes[name] ?? null};
+const target = {closest: selector => selector === "a[href^='#kinetics-']"
+  || selector === 'a.kinetics-step-selection' ? anchor : null};
+handlers.click.forEach(f => f({target, button: 0,
+  preventDefault() {}, stopPropagation() {},
+}));
+""",
+    )
+    warnings = _warning_markup(out["html"])
+    (link,) = [link for link in warnings.links if "data-kinetics-step" in link]
+    assert link["data-kinetics-step"] == "0"
+    assert link["href"] == "#kinetics-step-0"
+    row = re.search(
+        r"<tr\b[^>]*\bid='kinetics-step-0'[^>]*>(.*?)</tr>", out["html"], re.S
+    )
+    assert row is not None
+    markup = _PanelMarkup(row[1])
+    assert "H → *~h2" in markup.text
+    assert all(
+        value in markup.text for value in ["0.100", "1.00e+1", "2.00e+0", "3.00e+0"]
+    )
+    assert "rates not recorded" not in markup.text
+    assert any(link["href"][1:] in warnings.ids for link in markup.links)
+    assert "kinetics-step-0" in out["scrolls"]
+    assert "kinetics-steps" in out["open"]
+    assert out["highlighted"] == ["kinetics-step-0"]
+    assert out["profileHighlights"] == [True]

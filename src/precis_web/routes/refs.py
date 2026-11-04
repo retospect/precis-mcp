@@ -2428,7 +2428,9 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
     # vendored panel script renders (None -> panel omitted);
     # ``kinetics_error`` is the runner's did-not-run reason, shown instead.
     try:
-        kinetics = kinetics_payload(matched_results)
+        kinetics = kinetics_payload(
+            matched_results, validation_manifest=meta.get("validation_manifest")
+        )
     except Exception:
         # A record shape the trim didn't anticipate must cost the panel,
         # never the page.

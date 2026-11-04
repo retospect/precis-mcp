@@ -101,8 +101,8 @@
   // message to an entry so a new one is noticed when it renders raw).
   // sev: "bad" the page's numbers can't be trusted as stated · "fix" an
   // assumption the reader can change · "info" a model limit, for
-  // information. `subj: 1` names the capture group the collapsible subject
-  // sits in (the five "no pressure stated for X" lines become one).
+  // information. `subj` names the entity capture (lists use `split`).
+  // Global warnings have no entity: their raw lines stay visible inline.
   const WARN_HELP = [
     {re: "mkm: TOF \\S+ is within 10x the balance residual noise", sev: "bad",
      name: "headline TOF unresolved",
@@ -116,7 +116,7 @@
     {re: "mean-field MKM failed", sev: "bad",
      name: "mean-field solve failed",
      help: "The site-balance solve did not converge; every v2 number that depends on it (MF TOF, coverages, MF rate control) is absent, so the panel falls back to the chain solve's."},
-    {re: "mean-field observable (\\S+) (?:failed|skipped)", sev: "bad", subj: 1,
+    {re: "mean-field observable \\S+ (?:failed|skipped)(?: for ([^(]+?) \\()?", sev: "bad", subj: 1, split: true,
      name: "mean-field observable missing",
      help: "That perturbed re-solve failed or hit its time budget; the observable it feeds (orders, apparent Ea, MF DRC/TRC) is not on the record."},
     {re: "thermodynamic DRC is undefined", sev: "bad",
@@ -125,40 +125,40 @@
     {re: "DRC is undefined", sev: "bad",
      name: "no rate control from this solve",
      help: "Same cause as the TRC line: no positive steady-state TOF to perturb about; any X_RC bars shown come from the other solve."},
-    {re: "X_(?:RC|TRC) of (\\S+) is undefined", sev: "bad", subj: 1,
+    {re: "X_(?:RC|TRC) of (.*?) is undefined", sev: "bad", subj: 1,
      name: "a rate-control entry is undefined",
      help: "A perturbed re-solve gave no positive TOF; that entry is absent rather than zero."},
     {re: "sum of X_RC .* differs from 1", sev: "bad",
      name: "X_RC sum rule failed",
      help: "X_RC should sum to ~1 for a converged steady state; the solve may be unconverged or the network mis-specified. Do not read the bars as a clean ranking."},
-    {re: "\\d+ of \\d+ (correlated|Monte-Carlo) draws", sev: "bad",
+    {re: "\\d+ of \\d+ (?:correlated|Monte-Carlo) draws", sev: "bad",
      name: "sensitivity band is partial",
      help: "The band is built only from the draws that returned a positive TOF — it is biased toward the draws that worked."},
-    {re: "GUARD -- excluded steps are load-bearing", sev: "bad",
+    {re: "GUARD -- excluded steps are load-bearing.*?missing barriers carrying flux: (.*?) --", sev: "bad", subj: 1, split: true,
      name: "missing barriers change the answer",
      help: "Steps with no computed barrier carry flux at their optimistic bound; TOF, coverages and rate control are provisional until those barriers are computed. Re-run the pathway's barrier compute."},
-    {re: "steady-state residual .* is large|mkm: steady-state residual", sev: "bad",
+    {re: "steady-state residual .* is large|mkm: steady-state residual(?: on '(.*?)')?", sev: "bad", subj: 1,
      name: "steady state may not be converged",
      help: "The balance residual is large against the rate scale; coverages and TOF are suspect."},
     {re: "the graph has more than one absorbing component", sev: "bad",
      name: "no unique steady state",
      help: "The reported coverages and TOF are the ODE's end state from one starting coverage, not the unique answer."},
-    {re: "states with no usable transition", sev: "bad",
+    {re: "states with no usable transition.*?: (.*)$", sev: "bad", subj: 1, split: true,
      name: "part of the network excluded",
      help: "Those states play no role in the solve — missing barriers or energies cut them out. The numbers describe the remaining network."},
     {re: "(?:step|link) (.*?) (?:endpoint missing|has no|by any rated source).*excluded", sev: "bad", subj: 1,
      name: "transitions excluded",
      help: "An endpoint energy or a barrier is missing and the step was dropped rather than guessed; the bracket verdict says whether it could change the answer."},
-    {re: "\\|dG\\| = .*outside double precision|treated as one-way", sev: "bad",
+    {re: "transition (.*?) has \\|dG\\| = .*(?:outside double precision|treated as one-way)", sev: "bad", subj: 1,
      name: "an endpoint energy looks wrong",
      help: "A |dG| this large (over ~15 eV) almost always means a nonsense endpoint energy upstream; no rate through that transition is trustworthy."},
-    {re: "no state releases \\S+; the cycle does not close", sev: "bad",
+    {re: "no state releases (.*?); the cycle does not close", sev: "bad", subj: 1,
      name: "cycle does not close",
      help: "No desorption channel produces the target, so the steady-state TOF is ~0 by construction — the network or the target is mis-specified."},
     {re: "kinetics_v2 record not written", sev: "bad",
      name: "v2 record incomplete",
      help: "The record itself failed to serialise; whatever is shown is partial."},
-    {re: "CONSISTENCY \\S+ failed", sev: "bad",
+    {re: "CONSISTENCY \\S+ failed(?:: edge (.*))?", sev: "bad", subj: 1,
      name: "engine consistency check failed",
      help: "One of the engine's self-checks on this network failed; the numbers carry that check's caveat."},
     {re: "the target committor did not converge", sev: "info",
@@ -167,7 +167,7 @@
     {re: "mean-field TOF departs from the chain", sev: "info",
      name: "the two solves disagree",
      help: "Mean-field and chain TOFs differ by more than 0.05 decades — reported, not gated."},
-    {re: "no pressure stated for (?:the product )?(\\w+)", sev: "fix", subj: 1,
+    {re: "no pressure stated for (?:the product )?([^;]+?)(?:;|$)", sev: "fix", subj: 1,
      name: "gas pressures assumed",
      help: "These gases' exchange rates are priced at the 1 bar reference — for a product that over-counts readsorption and distorts selectivity. State partial pressures via put(kind='pathway', mode='recompute_kinetics', args={'environment': {...}})."},
     {re: "sticking uncited: (\\S+)", sev: "fix", subj: 1,
@@ -179,43 +179,43 @@
     {re: "thermo.mode none", sev: "fix",
      name: "pressures reach only prefactors",
      help: "No gas reference carries the kT ln p term, so stated pressures affect only the collision prefactors, not the thermodynamics."},
-    {re: "no thermo table data for (\\S+)", sev: "fix", subj: 1,
+    {re: "no thermo table data for (.*?)(?:\\(g\\))?(?:;|$)", sev: "fix", subj: 1,
      name: "gas reference is E-based",
      help: "These gases have no thermo-table correction; their references stay raw electronic energies."},
     {re: "could not measure E\\((\\S+)\\(g\\)\\)", sev: "fix", subj: 1,
      name: "cycle closure unpriced",
      help: "This gas's reference energy could not be measured, so its desorption closure is unpriced; supply the reference and recompute."},
-    {re: "cannot price the closure", sev: "fix",
+    {re: "cannot price the closure (.*?) \\(unpriced gas\\)", sev: "fix", subj: 1,
      name: "a closure desorption was skipped",
      help: "A cycle-closure channel was dropped for lack of a reference energy; if it carried flux the TOF is biased."},
-    {re: "MARI (?:guess|fragment) .* (?:not|matches no)", sev: "fix",
+    {re: "MARI (?:guess|fragment) '(.*?)' (?:is not|matches no)", sev: "fix", subj: 1,
      name: "MARI seed not found",
      help: "The seeded most-abundant intermediate is not a network state; the solve started from the clean surface instead."},
-    {re: "DFT root .* not in the run's nodes|dft.json has no referenced 'rel' energies|DFT tier requested but nothing", sev: "fix",
+    {re: "DFT root '(.*?)' not in the run's nodes|dft.json has no referenced 'rel' energies|DFT tier requested but nothing", sev: "fix", subj: 1,
      name: "DFT tier not applied",
      help: "State energies stay ML-tier; the DFT overlay found nothing applicable."},
-    {re: "is not a closed-shell gas molecule", sev: "fix",
+    {re: "product '(.*?)' is not a closed-shell gas molecule", sev: "fix", subj: 1,
      name: "target cannot close the cycle",
      help: "The named product cannot be desorbed by the closure rule; re-specify the target."},
-    {re: "kinetics.tpd: requested adsorbate", sev: "fix",
+    {re: "kinetics.tpd: requested adsorbate.*?: (.*)$", sev: "fix", subj: 1, split: true,
      name: "requested TPD adsorbate not desorbed",
      help: "The network never desorbs these from a bare adsorbate state; check the request."},
-    {re: "link .* exchanges more than one gas", sev: "info",
+    {re: "link (.*?) exchanges more than one gas", sev: "info", subj: 1,
      name: "multi-gas link (model limit)",
      help: "Treated as one barrierless event — no collision-theory prefactor is defined for it (v1 limit). No user action."},
-    {re: "link .* supplies an element with no reservoir molecule", sev: "info",
+    {re: "link (.*?) supplies an element with no reservoir molecule", sev: "info", subj: 1,
      name: "barrierless link convention",
      help: "An element moves without a reservoir molecule, so the link is treated as barrierless — a network convention, not a measurement."},
-    {re: "differs from its endpoints", sev: "info",
+    {re: "step (.*?) aggregated .*differs from its endpoints", sev: "info", subj: 1,
      name: "endpoint energy disagreement",
      help: "The step's aggregated energy disagrees with its endpoints' node difference; the solve keeps the endpoint values. Worth checking that step's aggregation."},
-    {re: "landing state \\S+ sits .* eV off its base", sev: "info",
+    {re: "landing state (.*?) sits .* eV off its base", sev: "info", subj: 1,
      name: "landing state energy flagged",
      help: "Independent relaxations disagree on that state's energy by the stated amount; each transition keeps its own dG. A flag on the state, not on the solve."},
     {re: "no barrier carries a spread", sev: "info",
      name: "no uncertainty distribution",
      help: "No measured barrier spread exists to Monte-Carlo over (single seed and model?); the DRC is the only sensitivity shown."},
-    {re: "q_over_k", sev: "info",
+    {re: "q_over_k(?: unavailable -- the overall | -- the overall reaction leaves parked fragments \\()(.*?)(?: reaction|\\))|q_over_k", sev: "info", subj: 1, split: true,
      name: "reversibility metric limited",
      help: "The overall-reaction reversibility could not be priced, or parked fragments sit inside its dG."},
     {re: "net has no slab", sev: "info",
@@ -230,38 +230,47 @@
   ];
   const WARN_RES = WARN_HELP.map(w => new RegExp(w.re));
   const WARN_SEV = {bad: 0, fix: 1, info: 2};
-  const warnList = ws => {
+  const warningGroups = ws => {
     // group raw warnings by the help entry they match (same entry -> one
     // line, subjects joined), order groups by severity, leave unrecognised
     // messages verbatim at the end where a new engine message stands out
-    const groups = new Map(), unknown = [];
+    const groups = new Map();
     ws.forEach(w => {
       for (let i = 0; i < WARN_RES.length; i++) {
         const m = w.match(WARN_RES[i]);
         if (!m) continue;
-        if (!groups.has(i)) groups.set(i, {e: WARN_HELP[i], raws: [], subjs: []});
+        if (!groups.has(i)) groups.set(i, {i, e: WARN_HELP[i], raws: [], subjs: new Map(), fallback: []});
         const g = groups.get(i);
         g.raws.push(w);
-        if (g.e.subj && m[g.e.subj] && !g.subjs.includes(m[g.e.subj]))
-          g.subjs.push(m[g.e.subj]);
+        const subject = g.e.subj && m[g.e.subj];
+        if (subject) {
+          const subjects = g.e.split ? subject.split(/,\s*/) : [subject];
+          new Set(subjects.map(s => s.trim()).filter(Boolean)).forEach(s =>
+            g.subjs.set(s, (g.subjs.get(s) || 0) + 1));
+        } else g.fallback.push(w);
         return;
       }
-      unknown.push(w);
+      const i = WARN_HELP.length;
+      if (!groups.has(i)) groups.set(i, {i, e: {sev: "info", name: "unrecognised engine messages, verbatim", help: ""}, raws: [], subjs: new Map(), fallback: []});
+      groups.get(i).raws.push(w);
+      groups.get(i).fallback.push(w);
     });
-    const ordered = [...groups.values()].sort(
+    return [...groups.values()].sort(
       (a, b) => WARN_SEV[a.e.sev] - WARN_SEV[b.e.sev]);
-    const row = g =>
-      "<li><span class='wtag wsev-" + g.e.sev + "' title='" +
-      esc2(g.raws.join("\n")) + "'>" + esc2(g.e.name) +
-      (g.subjs.length ? " (" + esc2(g.subjs.join(", ")) + ")" : "") +
-      "</span> " + esc2(g.e.help) + "</li>";
-    return "<ul class='kwlist'>" + ordered.map(row).join("") + "</ul>" +
-      (unknown.length
-        ? "<div class='caption'>unrecognised engine messages, verbatim:" +
-          "</div><ul class='kwlist'>" +
-          unknown.map(x => "<li>" + esc2(x) + "</li>").join("") + "</ul>"
-        : "");
   };
+  const warningId = (key, i) => "kinetics-warning-" + key + "-" + i;
+  const warnList = (ws, d, key) => {
+    const row = g =>
+      "<li id='" + warningId(key, g.i) + "'><span class='wtag wsev-" + g.e.sev + "' title='" +
+      esc2(g.raws.join("\n")) + "'>" + esc2(g.e.name) +
+      "</span> " + esc2(g.e.help) + "<ul>" +
+      [...g.subjs].map(([s, count]) => "<li>" + warningSubject(s, d, key) +
+        " (" + count + ")" + routeLabel(s, d) + "</li>").join("") +
+      g.fallback.map(w => "<li>" + disp(w) + "</li>").join("") + "</ul></li>";
+    return "<ul class='kwlist'>" + warningGroups(ws).map(row).join("") + "</ul>";
+  };
+  const solveLabel = (d, key) => d.solve_label ||
+    (key === "dft" ? "DFT-refined solve" : "machine-learned potential solve");
   let h = "<h2>Kinetics &mdash; " + term("mean-field") + " " +
           term("microkinetics") + " at the stated conditions</h2>";
   // state the conditions the header promises (tiers share the run's)
@@ -292,9 +301,10 @@
   // so it has to say which, or a hybrid-DFT run reads as if the headline
   // covered the measured numbers
   const V = (K.ml && K.ml.verdict) || (K.dft && K.dft.verdict);
-  const vTier = K.ml ? "ML tier" : "DFT tier";
   const base = K.ml || K.dft;
   const tier = K.ml ? "ml" : "dft";
+  const vTier = solveLabel(base, tier);
+  const baseWarningGroups = warningGroups(base.warnings || []);
   // Navigation is deliberately client-side: the ported verdict and its
   // golden sentence/parity contract remain untouched. Match sentence
   // prefixes, never recompute the scientific thresholds here.
@@ -336,13 +346,56 @@
   // an exact state; otherwise select the first matching explorer state.
   const phys = s => String(s).split("~", 1)[0];
   const stateNames = [...(base.coverages || []).map(kv => kv[0]),
-    ...Object.keys(base.trc || {})];
+    ...Object.keys(base.trc || {}),
+    ...baseWarningGroups.flatMap(g => [...g.subjs.keys()].filter(s => !/->|→/.test(s)))];
   stateNames.forEach(name => {
     if (mentions.has(name)) return;
     const state = explorer.states.find(s => phys(s) === phys(name));
     if (state) addMention(name, "data-state", state, "state", state);
   });
   const stepKey = s => String(s).replace(/\s*(?:->|→)\s*/g, "→");
+  // Excluded steps and v2-only records may have no rate row. Give a named
+  // warning a row with absent numbers, never a made-up rate or barrier.
+  const panelTransitions = [...(base.transitions || [])];
+  baseWarningGroups.forEach(g => g.subjs.forEach((count, subject) => {
+    const pair = stepKey(subject).split("→");
+    if (pair.length !== 2 || panelTransitions.some(t => stepKey(t.name) === stepKey(subject))) return;
+    panelTransitions.push({name: subject, from: pair[0], to: pair[1], kind: "step", warningOnly: true});
+  }));
+  const stepIndex = s => panelTransitions.findIndex(t => stepKey(t.name) === stepKey(s));
+  const routeLabel = (subject, d) => {
+    const records = (d.trust || []).filter(r => [r.step, r.state, r.species]
+      .some(s => typeof s === "string" && stepKey(s) === stepKey(subject)));
+    const routeSteps = Array.isArray(d.route_steps) ? d.route_steps.map(stepKey) : null;
+    const routeStates = new Set((routeSteps || []).flatMap(s => s.split("→")));
+    // Same recorded route scope as trust_gate._on_route: a record's step
+    // OR state can establish membership. Unknown scope stays unknown here.
+    const memberships = records.map(r => typeof r.on_route === "boolean" ? r.on_route :
+      (routeSteps && (typeof r.step === "string" || typeof r.state === "string")
+        ? routeSteps.includes(stepKey(r.step)) || routeStates.has(r.state) : null));
+    // A state can occur on several steps: contradictory/absent evidence
+    // cannot license a single on/off-route claim for that subject.
+    if (!memberships.length || memberships.some(v => v === null)) return "";
+    if (memberships.every(v => v === true)) return " — on-route";
+    if (memberships.every(v => v === false)) return " — off-route";
+    return "";
+  };
+  const warningSubject = (subject, d, key) => {
+    const i = d === base ? stepIndex(subject) : -1;
+    if (i >= 0)
+      return "<a class='underline kinetics-step-selection' data-kinetics-step='" + i +
+        "' href='#kinetics-step-" + i + "'>" + disp(subject) + "</a>";
+    const mention = mentions.get(subject);
+    if (mention)
+      return "<a class='underline kinetics-selection' href='" + esc2(mention.href) +
+        "' " + mention.attr + "='" + esc2(mention.value) + "'>" + disp(subject) + "</a>";
+    if (Object.hasOwn(d.production || {}, subject))
+      return "<a class='underline' href='#kinetics-production-" + key + "'>" + disp(subject) + "</a>";
+    if ((d.coverages || []).some(kv => kv[0] === subject))
+      return "<a class='underline' href='#kinetics-coverages'>" + disp(subject) + "</a>";
+    // Do not invent a target for a state absent from this stored panel.
+    return disp(subject);
+  };
   const stepNames = [...Object.keys(base.drc || {}),
     ...((base.bracket || {}).load_bearing || []),
     ...((base.bracket || {}).bounded_steps || [])];
@@ -454,7 +507,7 @@
       const d = K[pair[0]];
       if (!d) return;
       const band = d.sensitivity && d.sensitivity.tof;
-      h += "<tr><td>" + esc2(pair[1]) + "</td><td>" +
+      h += "<tr><td>" + esc2(solveLabel(d, pair[0])) + "</td><td>" +
            (d.v2_solve && !d.v2_solve.positive
              ? (d.v2_solve.tof_sign
                  ? sci(d.tof) + " &mdash; " + esc2(d.v2_solve.tof_sign.label)
@@ -476,7 +529,7 @@
     const P = d ? Object.entries(d.production || {}) : [];
     if (!P.length) return;
     P.sort((a, b) => b[1] - a[1]);
-    h += "<div class='caption' id='kinetics-production-" + pair[0] + "'>" + esc2(pair[1]) + " tier " +
+    h += "<div class='caption' id='kinetics-production-" + pair[0] + "'>" + esc2(solveLabel(d, pair[0])) + ": " +
          term("net gas production") +
          (d.v2_solve ? " (chain solve)" : "") + ": " +
          P.map(kv => esc2(kv[0]) + " " + sci(kv[1]) + " /site/s")
@@ -492,12 +545,12 @@
     const d = K[pair[0]]; const b = d && d.bracket;
     if (!b) return;
     h += b.agree
-      ? "<div class='caption'>" + esc2(pair[1]) +
-        " tier: excluded-step " + term("bracket") + " agrees (fast limit " +
+      ? "<div class='caption'>" + esc2(solveLabel(d, pair[0])) +
+        ": excluded-step " + term("bracket") + " agrees (fast limit " +
         sci(b.tof_fast) + " /site/s) &mdash; steps with no computed " +
         "barrier are not load-bearing at these conditions.</div>"
-      : "<div class='kguard'>&#9888; " + esc2(pair[1]) +
-        " tier: steps with NO computed barrier are load-bearing. At " +
+      : "<div class='kguard'>&#9888; " + esc2(solveLabel(d, pair[0])) +
+        ": steps with NO computed barrier are load-bearing. At " +
         "their optimistic bound (barrier = max(0, &Delta;G), a bound, " +
         "never a measurement) the TOF moves from " + sci(b.tof_slow) +
         " to " + sci(b.tof_fast) + " /site/s. Missing barriers: " +
@@ -507,7 +560,7 @@
         ". TOF, coverages and rate control are unreliable until these " +
         "are computed.</div>";
   });
-  const tierName = K.ml ? "ML tier" : "DFT tier";
+  const tierName = esc2(solveLabel(base, tier));
   // ---- the equations actually solved -------------------------------------
   // Hand-set HTML math (sub/sup + entities), NOT MathJax/KaTeX — static
   // markup renders identically on paper and in a diff.
@@ -697,9 +750,9 @@
     const d = K[pair[0]], w = d && d.warnings;
     if (!d) return;
     // Even a multiplicity caveat without an engine warning has a target.
-    h += "<details class='kx' id='kinetics-warnings-" + pair[0] + "'><summary>" + esc2(pair[1]) + " tier: " +
+    h += "<details class='kx' id='kinetics-warnings-" + pair[0] + "'><summary>" + esc2(solveLabel(d, pair[0])) + ": " +
          (w || []).length + " warning" + ((w || []).length === 1 ? "" : "s") +
-         " from the solve, grouped by meaning</summary>" + warnList(w || []) +
+         " from the solve, grouped by meaning</summary>" + warnList(w || [], d, pair[0]) +
          ((d.verdict && d.verdict.caveats || []).length
            ? "<div class='caption'>" + disp(d.verdict.caveats.join("; ")) + ".</div>" : "") +
          "</details>";
@@ -709,21 +762,29 @@
   // net rates are the chain solve's -- the v2 record carries no per-step
   // rates, so under a v2 headline the label keeps the two solves apart
   // (gr549748)
-  const steps = (base.transitions || []).filter(t => t.kind === "step");
+  const steps = panelTransitions.filter(t => t.kind === "step" ||
+    baseWarningGroups.some(g => [...g.subjs.keys()].some(s => stepKey(s) === stepKey(t.name))));
+  const warningChips = t => baseWarningGroups
+    .filter(g => [...g.subjs.keys()].some(s => stepKey(s) === stepKey(t.name)))
+    .map(g => " <a class='kinetics-warning-chip' href='#" + warningId(tier, g.i) +
+      "' title='" + esc2(g.e.name) + "'>warning (" +
+      [...g.subjs].filter(([s]) => stepKey(s) === stepKey(t.name))
+        .reduce((n, [, count]) => n + count, 0) + ")</a>").join("");
   if (steps.length) {
     const rows = steps.slice().sort(
       (a, b) => Math.abs(b.net_rate || 0) - Math.abs(a.net_rate || 0));
     h += "<details class='kx' id='kinetics-steps'><summary>Every step: " + rows.length +
-         " transitions, by |" + term("net rate") + "|" +
+         " steps, by |" + term("net rate") + "|" +
          (base.v2_solve ? " &mdash; rates from the chain solve" : "") +
          "</summary><table><tr><th>step</th><th>" + term("dG", "ΔG (eV)") +
          "</th><th>barrier (eV)</th><th>" + term("k_f", "k_f (/s)") +
          "</th><th>" + term("k_b", "k_b (/s)") + "</th><th>" +
          term("net rate", "net rate (/site/s)") + "</th></tr>" +
-      rows.map(t => "<tr><td>" + disp(t.name) + "</td><td>" +
+      rows.map(t => "<tr id='kinetics-step-" + panelTransitions.indexOf(t) + "'><td>" +
+        disp(t.name) + (t.warningOnly ? " — rates not recorded" : "") + warningChips(t) + "</td><td>" +
         (t.dG_eV == null ? "&mdash;" : Number(t.dG_eV).toFixed(3)) +
         "</td><td>" +
-        (t.barrier_eV == null ? "<i>none computed</i>"
+        (t.barrier_eV == null ? (t.warningOnly || t.kind !== "step" ? "&mdash;" : "<i>none computed</i>")
                               : Number(t.barrier_eV).toFixed(3)) +
         "</td><td>" + sci(t.k_f) + "</td><td>" + sci(t.k_b) + "</td><td>" +
         sci(t.net_rate) + "</td></tr>").join("") + "</table></details>";
@@ -754,13 +815,34 @@
     host.addEventListener(type, refreshEntityHref));
   // Fragment navigation must expose collapsed evidence, including on a
   // pasted URL (the panel itself is rendered after the initial HTML).
+  const highlightStep = index => {
+    const selected = panelTransitions[index];
+    if (!selected) return;
+    panelTransitions.forEach((t, i) => {
+      const row = document.getElementById("kinetics-step-" + i);
+      if (row) row.classList.toggle("kinetics-highlight", i === index);
+    });
+    const segments = [...document.querySelectorAll("#pw-diagram [data-from][data-to]")];
+    const matches = (el, physical) => {
+      const key = physical ? phys : String;
+      // A supply + reaction draws from the pre-supply state. Match the
+      // reaction's own source (the folded shoulder), retained by the SVG.
+      const from = el.getAttribute("data-reaction-from") ?? el.getAttribute("data-from");
+      return key(from) === key(selected.from) &&
+        key(el.getAttribute("data-to")) === key(selected.to);
+    };
+    const exact = segments.some(el => matches(el, false));
+    segments.forEach(el => el.classList.toggle("kinetics-highlight", matches(el, !exact)));
+  };
   const revealSection = hash => {
-    if (!/^#kinetics-[a-z-]+$/.test(hash)) return;
+    if (!/^#kinetics-[a-z0-9-]+$/.test(hash)) return;
     const target = document.getElementById(hash.slice(1));
     if (!target) return;
     for (let el = target; el; el = el.parentElement) {
       if (el.tagName === "DETAILS") el.open = true;
     }
+    const step = /^#kinetics-step-(\d+)$/.exec(hash);
+    if (step) highlightStep(Number(step[1]));
     target.scrollIntoView();
   };
   host.addEventListener("click", ev => {

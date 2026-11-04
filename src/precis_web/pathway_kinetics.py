@@ -13,6 +13,10 @@ surfaces describe the same record differently.
 Same division of labour as the report: verdict in Python so the thresholds
 are unit-testable, payload a TRIM not a transform (the page never
 re-derives), all HTML built client-side by the vendored panel script.
+
+Warning navigation also carries stored trust scope and potential provenance.
+Absent route evidence stays unlabelled; the legacy numerical tier bucket
+cannot establish DFT refinement, so the solve label reads provenance separately.
 """
 
 from __future__ import annotations
@@ -516,7 +520,43 @@ def _v2_overlay(v2: dict[str, Any], product: Any) -> dict[str, Any]:
     return out
 
 
-def kinetics_payload(results: dict[str, Any]) -> dict[str, Any] | None:
+def _solve_label(
+    results: dict[str, Any], validation_manifest: dict[str, Any] | None
+) -> str:
+    """Name only recorded provenance; zero BEP share does not establish DFT.
+
+    The legacy panel bucket also classifies measured ML barriers as ``dft``.
+    Keep that numerical/parity contract separate from the reader's label.
+    The manifest names executed potentials; a requested config is not proof
+    of which backend actually ran.
+    """
+    if _dict(results.get("kinetics")).get("tier") == "dft":
+        return "DFT-refined solve"
+    models = _dict(_dict(validation_manifest).get("lock")).get("mlip")
+    records = (
+        [m for m in models if isinstance(m, dict)] if isinstance(models, list) else []
+    )
+    names = []
+    backends = []
+    for record in records or [{"backend": results.get("backend")}]:
+        backend = record.get("backend")
+        model = record.get("model")
+        if isinstance(backend, str) and backend and backend != "auto":
+            backends.append(backend.lower())
+            name = backend
+            if isinstance(model, str) and model:
+                name += " " + model
+            if name not in names:
+                names.append(name)
+    if backends and all(b == "emt" for b in backends):
+        return "effective-medium potential solve"
+    label = "machine-learned potential"
+    return label + (" (" + ", ".join(names) + ")" if names else "") + " solve"
+
+
+def kinetics_payload(
+    results: dict[str, Any], *, validation_manifest: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
     """What the panel shows, keyed by tier (``ml``/``dft``) — the shape the
     vendored panel script expects. A trim, not a transform. ``None`` when the
     run recorded no kinetics (older pathways, kinetics-less slices) — the
@@ -675,6 +715,21 @@ def kinetics_payload(results: dict[str, Any]) -> dict[str, Any] | None:
             },
             "warnings": warns,
             "n_warnings": len(warns),
+            # Display-only evidence: never infer route membership from a
+            # warning's severity or from the currently selected explorer path.
+            "trust": [
+                {k: r[k] for k in ("step", "state", "species", "on_route") if k in r}
+                for r in (
+                    results["trust"] if isinstance(results.get("trust"), list) else []
+                )
+                if isinstance(r, dict)
+            ],
+            "route_steps": (
+                _strlist(results["route_steps"])
+                if isinstance(results.get("route_steps"), list)
+                else None
+            ),
+            "solve_label": _solve_label(results, validation_manifest),
             # every transition of the master equation, in solver order: the
             # page prints the concrete ODE system, the numbered rate-constant
             # table, and the per-step arithmetic behind X_RC from these
