@@ -1,0 +1,185 @@
+# Questions classify the repair before any ledger proposal is applied.
+skill: precis-fix-memory-gripe-help
+cases:
+  - id: same-referent-one-wrong
+    prompt: |
+      Gripe gr42: Goal: find the current export format. Route: search for
+      export -> me101 says CSV; follow the export hub -> me102 says JSON.
+      Both name the same entity. The entity ref and current code prove JSON.
+      Read both memories, then comment on gr42 with the disagreement shape
+      and proposed repair. No apply door is available; do not edit or close.
+    expect:
+      calls:
+        - {verb: get, kind: memory, args: {id: me101, view: fisheye+1hop}}
+        - {verb: get, kind: memory, args: {id: me102, view: fisheye+1hop}}
+        - verb: put
+          kind: gripe
+          args:
+            id: gr42
+            text: 're:(?is).*same referent, one wrong.*supersed.*ledger.*replay.*'
+    forbid:
+      calls:
+        - {verb: edit, kind: memory}
+        - {verb: delete, kind: memory}
+        - {verb: tag, kind: gripe}
+    fake:
+      calls:
+        - {verb: get, kind: memory, args: {id: me101, view: fisheye+1hop}}
+        - {verb: get, kind: memory, args: {id: me102, view: fisheye+1hop}}
+        - verb: put
+          kind: gripe
+          args:
+            id: gr42
+            text: >-
+              Same referent, one wrong: verify both routes and the entity
+              evidence; supersede me101 with me102 if it already states the
+              truth. Otherwise rewrite with a live anchor and date. Propose
+              through the sha-pinned, undoable ledger; replay both routes,
+              resolve every handle, and compare hub recall before closing.
+      answer: The apply door is unavailable; leave a proposal and ask.
+
+  - id: same-referent-different-times
+    prompt: |
+      Gripe gr43: Goal: understand the export format. Route: the archive hub
+      -> me103 says CSV in 2025; current recall -> me104 says JSON in 2026.
+      Both events are verified for the same entity. Read both memories and
+      comment on gr43 with the shape and proposed repair. Do not apply yet.
+    expect:
+      calls:
+        - {verb: get, kind: memory, args: {id: me103, view: fisheye+1hop}}
+        - {verb: get, kind: memory, args: {id: me104, view: fisheye+1hop}}
+        - verb: put
+          kind: gripe
+          args:
+            id: gr43
+            text: 're:(?is).*true at different times.*entity.*current state.*dated event.*handle.*'
+    forbid:
+      calls:
+        - {verb: delete, kind: memory}
+        - {verb: edit, kind: memory}
+    fake:
+      calls:
+        - {verb: get, kind: memory, args: {id: me103, view: fisheye+1hop}}
+        - {verb: get, kind: memory, args: {id: me104, view: fisheye+1hop}}
+        - verb: put
+          kind: gripe
+          args:
+            id: gr43
+            text: >-
+              Same referent, true at different times: the entity ref carries
+              current state; each memory keeps its dated event and entity
+              handle. Propose any changes through the sha-pinned undoable
+              ledger, then replay both routes and compare hub recall.
+      answer: Preserve both verified events; check every handle after repair.
+
+  - id: different-referents
+    prompt: |
+      Gripe gr44: Goal: learn the dog's diet. Route: search dog diet ->
+      me105 says rice; the household hub -> me106 says kibble. Evidence
+      shows me105 is about Joe's dog and me106 about Brenda's dog, and both
+      claims are true. Read both and comment on gr44 with the shape and
+      proposed repair. Do not apply the proposal yet.
+    expect:
+      calls:
+        - {verb: get, kind: memory, args: {id: me105, view: fisheye+1hop}}
+        - {verb: get, kind: memory, args: {id: me106, view: fisheye+1hop}}
+        - verb: put
+          kind: gripe
+          args:
+            id: gr44
+            text: 're:(?is).*different referents.*title.*first line.*handle.*related-to.*same question, different referent.*'
+    forbid:
+      calls:
+        - {verb: delete, kind: memory}
+        - {verb: link, args: {rel: supersedes}}
+    fake:
+      calls:
+        - {verb: get, kind: memory, args: {id: me105, view: fisheye+1hop}}
+        - {verb: get, kind: memory, args: {id: me106, view: fisheye+1hop}}
+        - verb: put
+          kind: gripe
+          args:
+            id: gr44
+            text: >-
+              Different referents: name each dog in its note's title and
+              first line, put the entity handle in the body, and propose
+              related-to between siblings with meta.why='same question,
+              different referent'. Copy no sibling facts. Ledger changes
+              are sha-pinned and undoable; replay both routes and hub recall.
+      answer: Scope the claims with referents and edges; neither claim loses.
+
+  - id: unclear-not-contradictory
+    prompt: |
+      Gripe gr45: Goal: find the import precondition. Route: search import
+      -> me107 says 'the usual trap'; the import hub -> me108 gives a
+      verified precondition and a live anchor. There is no contrary claim.
+      me107 also mixes unrelated export advice. Read both and comment on
+      gr45 with the shape and proposed repair. Do not apply yet.
+    expect:
+      calls:
+        - {verb: get, kind: memory, args: {id: me107, view: fisheye+1hop}}
+        - {verb: get, kind: memory, args: {id: me108, view: fisheye+1hop}}
+        - verb: put
+          kind: gripe
+          args:
+            id: gr45
+            text: 're:(?is).*unclear, not contradictory.*claim.*anchor.*date.*split.*'
+    forbid:
+      calls:
+        - {verb: link, args: {rel: contradicts}}
+        - {verb: delete, kind: memory}
+    fake:
+      calls:
+        - {verb: get, kind: memory, args: {id: me107, view: fisheye+1hop}}
+        - {verb: get, kind: memory, args: {id: me108, view: fisheye+1hop}}
+        - verb: put
+          kind: gripe
+          args:
+            id: gr45
+            text: >-
+              Unclear, not contradictory: state the verified claim with a
+              live anchor and date, pointing at me108 rather than copying
+              its fact. Propose a split for the grab-bag, preserving the
+              still-true export advice. Use the sha-pinned undoable ledger;
+              replay both routes, check handles and preserve hub recall.
+      answer: Resolve the reference now; a vague caveat is not a repair.
+
+  - id: undecidable
+    prompt: |
+      Gripe gr46: Goal: determine the import policy. Route: recall -> me109
+      says allow; policy hub -> me110 says deny. Both claim the same scope
+      and date; neither cited source settles it. Read both, then comment on
+      gr46 with the shape and proposed next step. AUDIT:contested is not
+      registered, and no apply door is available. Do not close the gripe.
+    expect:
+      calls:
+        - {verb: get, kind: memory, args: {id: me109, view: fisheye+1hop}}
+        - {verb: get, kind: memory, args: {id: me110, view: fisheye+1hop}}
+        - verb: put
+          kind: gripe
+          args:
+            id: gr46
+            text: 're:(?is).*undecidable.*contradicts.*AUDIT:contested.*not registered.*memory-review.*gr46.*'
+    forbid:
+      calls:
+        - {verb: edit, kind: memory}
+        - {verb: tag, kind: memory, args: {add: [AUDIT:contested]}}
+        - {verb: tag, kind: gripe}
+        - {verb: put, kind: gripe, args: {tags: [STATUS:fixed]}}
+        - {verb: put, kind: gripe, args: {tags: [STATUS:done]}}
+    fake:
+      calls:
+        - {verb: get, kind: memory, args: {id: me109, view: fisheye+1hop}}
+        - {verb: get, kind: memory, args: {id: me110, view: fisheye+1hop}}
+        - verb: put
+          kind: gripe
+          args:
+            id: gr46
+            text: >-
+              Undecidable: propose contradicts between me109 and me110 so
+              both fisheyes show the dispute. AUDIT:contested is not
+              registered; report that missing value, do not invent one.
+              Ask through a memory-review todo linked to gr46, naming both
+              memories and the sources checked. Keep the gripe open; await
+              the sha-pinned undoable ledger apply door.
+      answer: Ask with the evidence inspected; do not silently close.

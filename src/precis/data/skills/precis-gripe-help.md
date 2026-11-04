@@ -39,7 +39,7 @@ put(kind="gripe", text="paper slug NotFound does not surface near-match options"
 **Which project is it against?** `args={'project': '<slug>'}` sets the
 open `project:<slug>` axis — `precis` by default, but gripes against
 anything can be filed (known slugs today: `precis`, `catpath`,
-`autocatpath`, `hexfold`, `infra`; any slug normalises, an unknown one
+`autocatpath`, `hexfold`, `infra`, `memory`; any slug normalises, an unknown one
 is not rejected). Omitted means `precis` — and no `project:` tag is
 written, so the triage tick may *correct* a wrong default with a
 `project: precis -> <slug>, because …` comment. A `project:` tag the
@@ -100,6 +100,23 @@ misled you, what is actually true, and where you checked. The skill then shows
 an open-concern banner at the top until the gripe closes, and the fixer
 is briefed with the skill file (`src/precis/data/skills/<id>.md`) and your notes.
 <!-- /write -->
+
+## A memory is wonky, inconsistent or unclear
+
+File with `args={'project': 'memory'}`. Include Goal, Route and the claim
+each route returned; name every involved memory and entity handle in the
+text, and pass `link=` to create an edge. Link additional refs with `link()`;
+handles in gripe text alone do not create links. Say "Which is right: unknown"
+when you only have a suspicion. The example is in [[precis-memory-help]],
+"A recalled memory misled me".
+
+The server adds `meta.route` from the session's last ten memory get/search
+calls, with masked arguments. This is best-effort: unavailable call history
+does not prevent filing, and the written story still supplies the goal.
+The gardener is the fixer for `project:memory`, never the coder lane.
+Triage judges project attribution; it does not send these gripes to a
+coder. Use [[precis-fix-memory-gripe-help]] to replay the routes, classify
+the disagreement, repair through the ledger, and close or ask.
 
 ## Why was my gripe folded into another one?
 ## Recurring friction merges into a keeper gripe
@@ -421,6 +438,9 @@ diff the branch to learn the coverage (gr514899).
 ## Who fixes a gripe?
 ## Can I hand a gripe off to an LLM to fix? {write}
 
+`project:memory` belongs to the gardener under
+[[precis-fix-memory-gripe-help]]; never submit it to the coder lane below.
+
 A coordinator running a builder wave batches gripes, briefs a builder
 and records handoff, review verdict and landed sha on each gripe with
 `edit(kind='gripe', id=[...], mode='fix', args={...})`; the queues are
@@ -675,15 +695,19 @@ unknown repo is rejected at the `put` call.
 | "I will do this"                         | `todo`   |
 | "Here's a thought I want to keep"        | `memory` |
 
-Gripe is pre-articulation friction. If you already know the fix,
-skip straight to `todo`. If you understand why something matters
+Gripe is pre-articulation friction. Memory confusion gets a
+`project:memory` gripe even when you have evidence for the repair. For
+other work, if you already know the fix, skip straight to `todo`.
+If you understand why something matters
 and want it findable, use `memory`.
 
-## A gripe is a bug in *precis*, not a defect in your content
+## Tool bugs and memory confusion go to gripes
 
 A gripe reports something wrong with the **precis tool / MCP surface /
 repo** — a verb that errors, a misleading message, a missing affordance,
 a handler bug. It is fixed by the session owning the relevant thread, in *this codebase*.
+Memory confusion is the content exception: file `project:memory` with the
+goal, routes and claims; the gardener owns its repair.
 
 A defect in **content you are authoring or auditing** — a draft chunk
 with a missing `\citep{}`, an empty section stub, an unsupported claim, a
@@ -694,6 +718,7 @@ act on it. Route it to the content substrate instead:
 | You found…                                              | File as |
 |---------------------------------------------------------|---------|
 | a precis verb/handler/message bug                       | `gripe` |
+| wonky, inconsistent or unclear memories                 | `gripe`, `project:memory` |
 | a draft chunk that needs work (add cite, fill stub)     | `todo`, linked to the draft chunk |
 | evidence that a claim *is* supported by a source chunk  | `finding` (`cited_in=` the source) |
 
@@ -722,6 +747,7 @@ citation audit emits findings and todos, not gripes.
 
 ## See also
 
+- [[precis-fix-memory-gripe-help]] — replay and resolve a `project:memory` complaint
 - [[precis-gripe-loop-help]] — the builder-wave loop: batch, brief, assign, handoff, verdict, land, close
 - [[precis-fix-gripe-help]] — the fix_gripe job recipe (lane OFF)
 - [[precis-job-help]] — monitor/cancel fix attempts

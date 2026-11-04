@@ -425,6 +425,7 @@ def test_gripe_items_promotes_diagnosed_and_skips_undiagnosed(
     assert fake.list_refs_kwargs is not None
     assert fake.list_refs_kwargs["kind"] == "gripe"
     assert set(fake.list_refs_kwargs["tags"]) == {"STATUS:open", "auto-fix"}
+    assert fake.list_refs_kwargs["exclude_tags"] == ["project:memory"]
 
 
 def test_gripe_items_db_unreachable_returns_empty(

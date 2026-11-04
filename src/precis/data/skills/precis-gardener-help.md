@@ -359,6 +359,10 @@ row the proposal resolved under (`meta.garden_relink.review`).
 
 ## If you land on a garden proposal while working
 
+For a `project:memory` reader complaint, use
+[[precis-fix-memory-gripe-help]]: replay its routes, classify the
+disagreement, apply through the ledger, then replay before closing.
+
 Treat `verdict='proposed'` rows as pending evidence, not truth. To
 dispute one, `precis garden reject <review_id>` retires it (a `rejected`
 row with the same `garden.key`), or leave it for the review queue. Do

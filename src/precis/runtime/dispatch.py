@@ -1473,7 +1473,13 @@ class DispatchMixin(RuntimeShape):
         ``PRECIS_MAX_BODY_BYTES`` bounds them.
         """
         started = time.monotonic()
-        from precis._result_budget import fit_result_body, read_shape
+        from precis._result_budget import (
+            DEFAULT_MAX_BODY_BYTES,
+            _env_cap,
+            fit_result_body,
+            read_shape,
+            result_context_cap,
+        )
 
         # Trim pasted list-row tails off the address kwargs before
         # anything parses them — a ``~`` selector under the junk still
@@ -1528,6 +1534,36 @@ class DispatchMixin(RuntimeShape):
                     read=shape,
                     outline=response.budget_outline,
                 )
+                budget_fitted = body != rendered
+                if (
+                    verb == "get"
+                    and self.store is not None
+                    and args.get("kind") in (None, "memory")
+                    and shape == "single"
+                    and args.get("view") in (None, "full", "meta", "body")
+                    and args.get("q") is None
+                    and not budget_fitted
+                ):
+                    from precis.runtime.handle_deref import memory_gripe_hint
+
+                    try:
+                        hint = memory_gripe_hint(
+                            args.get("id"),
+                            store=self.store,
+                            explicit_kind=args.get("kind"),
+                        )
+                        if hint is not None:
+                            # The optional line never takes space from the read.
+                            cap = _env_cap(
+                                "PRECIS_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES
+                            )
+                            if fold:
+                                cap = min(cap, result_context_cap())
+                            candidate = f"{body}\n{hint}"
+                            if len(candidate.encode("utf-8")) <= cap:
+                                body = candidate
+                    except Exception:
+                        log.debug("memory complaint hint skipped", exc_info=True)
                 if verb == "get" and self.store is not None:
                     from precis.runtime.handle_deref import record_exact_read
 
@@ -1541,7 +1577,7 @@ class DispatchMixin(RuntimeShape):
                     False,
                     started,
                     response.result_count,
-                    budget_fitted=body != rendered,
+                    budget_fitted=budget_fitted,
                 )
                 return body, False
             except PrecisError as e:
@@ -4734,3 +4770,7 @@ class DispatchMixin(RuntimeShape):
             )
         args["kind"] = prefix
         args["id"] = rest
+        # Only memory reads need nested handles (memory:meN). Other
+        # kinds and writes retain literal identifiers, including conv:co123.
+        if verb == "get" and prefix == "memory":
+            self._maybe_infer_kind_from_handle(args, rest, verb=verb)

@@ -32,6 +32,11 @@ on `main`, and iterating until the fix holds. Joins `precis-gripe-help` (the bug
 
 ## Who fixes a gripe now that the lane is off?
 
+`project:memory` gripes belong to the gardener, never a coder lane.
+Fixer intake excludes them even when triage has added `auto-fix` and a
+diagnosis. Use [[precis-fix-memory-gripe-help]] to replay the reader's
+routes and resolve or qualify the claims; project triage is attribution only.
+
 The repo session that owns the gripe's work thread, in its own
 worktree. Unthreaded
 gripes are relinked to a thread by `/pillar-review`. The

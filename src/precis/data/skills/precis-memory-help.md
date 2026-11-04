@@ -585,17 +585,49 @@ and `view='index'`). `q=`/`page=`/`mode=`/`scope=` are refused on the view.
 ## A recalled memory misled me
 ## Fix or escalate a stale memory
 
-You already paid to learn the truth, so fix the node now, in this order:
+**Complain first.** A wonky, inconsistent or unclear memory is enough to
+file a `project:memory` gripe; you do not need to know which claim wins.
+Name the goal, the routes followed, what each memory said, and every
+involved handle, including entity refs of other kinds. Pass `link=` to
+create an edge; handles in gripe text alone do not create links.
 
-1. **Wrong** → anchored `edit(kind='memory', id=N, find='old', text='new',
-   reason='misled: <what was wrong, how you found out>')` in the same turn.
-   `reason=` lands first in the edit's log line (`view='log'`).
-2. **True only in some context** → add the context: a caveat line in the
-   body, or a gotcha node linked `rel='qualifies'`.
-3. **Obsolete** → `delete` it, after moving any still-true part into a live
-   node.
-4. **Only if you cannot establish the correct fact** (out of scope, no time,
-   unsure) → file a review todo; the planner takes it on a stronger model:
+```python
+put(kind='gripe', args={'project': 'memory'},
+    link='me123', rel='raises-concern-about',
+    text='memory: export notes disagree\n'
+         'Goal: choose the current export format.\n'
+         'Route: search export -> me123 said CSV; '
+         'export hub -> me456 said JSON.\n'
+         'Which is right: unknown; I have not checked the source yet.')
+link(kind='gripe', id=G, target='me456', rel='raises-concern-about')
+```
+
+Use the returned gripe ID for `G`; link each additional involved ref likewise.
+
+The server attaches the session's last ten memory get/search calls as
+`meta.route`, with masked arguments, when available. Keep the human-readable
+story: those calls cannot supply your goal or the claims you understood.
+The gardener fixes this gripe using [[precis-fix-memory-gripe-help]];
+the coder lane does not take it.
+
+**Learned the truth with evidence?** Read the full node, then make a unique
+anchored correction and read it back. State the verified claim, live
+anchor and date; preserve unrelated facts and history. Hold and ask on a
+`trust_origin='human'` node.
+
+```python
+edit(kind='memory', id=N, find='old claim', text='verified claim, anchor, date',
+     reason='misled: <what was wrong; evidence checked>')
+get(kind='memory', id=N)
+```
+
+`reason=` lands first in the edit's log line (`view='log'`). Resolve a
+multi-node disagreement through the checklist: scoped truths stay scoped,
+still-true claims are preserved, and both routes are replayed before the
+gripe closes. Suspicion alone never warrants an edit or retirement.
+
+If evidence cannot settle it, keep the gripe open and ask through a review
+todo linked to it; name the disputed memories and what was checked:
 
    ```python
    put(kind='todo', text='review memory me<N>: <the claim in doubt>',
@@ -603,11 +635,12 @@ You already paid to learn the truth, so fix the node now, in this order:
             'Brief: get(kind="skill", id="precis-memory-help"), section '
             '"Working a memory-review todo".',
        tags=['memory-review'], meta={'llm_tier': 'opus'},
-       link='memory:N', rel='raises-concern-about')
+       link='gripe:G', rel='raises-concern-about')
    ```
 
-   `scripts/memory-lint` lists the node as "under review" while the todo is
-   open and as a "stalled review" after 7 days. Nothing changes ranking.
+Also link the todo to each disputed memory with `raises-concern-about`.
+`scripts/memory-lint` lists the node as "under review" while the todo is
+open and as a "stalled review" after 7 days. Nothing changes ranking.
 
 ## Working a memory-review todo
 
@@ -615,10 +648,10 @@ You are the planner on a todo tagged `memory-review`; it links to the memory
 in doubt. Read the memory (`get(kind='memory', id=N, view='fisheye+1hop')`)
 and its log, then verify against the repo through the python kind
 (`get(kind='python', id='main::<qualname>')`, `search(kind='python',
-mode='pattern', q=…)`) and the other precis kinds. Settle it in the order
-above: wrong → anchored edit with `reason='misled: …'`; right only in some
-context → caveat line or a `qualifies` gotcha; obsolete → move any still-true
-part, then `delete`. Settled → add what you changed to the todo and mark it
+mode='pattern', q=…)`) and the other precis kinds. For a linked memory gripe,
+follow [[precis-fix-memory-gripe-help]]: classify the disagreement and replay
+the routes around a sha-pinned, undoable repair. Without evidence, ask;
+never silently discard a still-true claim. Settled → add what you changed to the todo and mark it
 `STATUS:done`. Still unsettled → append your findings to the todo body, then
 `tag(kind='todo', id=<this todo>, add=['waiting-for:reto'])` — that puts it on
 Reto's queue (`precis-user-queue-help`) and takes it out of planner dispatch.

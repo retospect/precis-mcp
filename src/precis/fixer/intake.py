@@ -38,6 +38,8 @@ Three risky small bits flagged at design time live here:
   promoted gripe + its timeline; write-back (status flip / timeline
   append on build) is :mod:`precis.fixer.writeback`, called from
   ``tick.py`` once a picked gripe finishes building.
+  ``project:memory`` gripes belong to the gardener: exclude them before
+  loading timelines, even when triage promoted them with ``auto-fix``.
 """
 
 from __future__ import annotations
@@ -401,7 +403,10 @@ def gripe_items(db_url: str) -> list[WorkItem]:
 
     try:
         refs = store.list_refs(
-            kind="gripe", tags=["STATUS:open", "auto-fix"], limit=200
+            kind="gripe",
+            tags=["STATUS:open", "auto-fix"],
+            exclude_tags=["project:memory"],
+            limit=200,
         )
         items: list[WorkItem] = []
         for ref in refs:

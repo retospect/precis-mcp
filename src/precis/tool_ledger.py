@@ -595,6 +595,39 @@ def calls_for_agentlog(
     return (int(total_row["count"]) if total_row else 0), rows
 
 
+def memory_route(store: Store) -> list[dict[str, Any]] | None:
+    """The session's last ten memory reads, oldest first, for a gripe.
+
+    Reuse the ledger's masked argument samples, never re-read caller input.
+    This diagnostic lookup is isolated from the filing transaction: a missing
+    ledger or timed-out read must not prevent the complaint from being filed.
+    """
+    from psycopg.rows import dict_row
+
+    try:
+        session_id, _ = current_session_key()
+        if session_id is None:
+            return None
+        with store.pool.connection() as conn, conn.transaction():
+            conn.execute("SET LOCAL statement_timeout = '250ms'")
+            with conn.cursor(row_factory=dict_row) as cur:
+                rows = cur.execute(
+                    "SELECT session_id, seq, verb, kind, arg_sample "
+                    "FROM tool_calls WHERE session_id = %s "
+                    "AND (kind = 'memory' OR (kind IS NULL AND verb = 'get' "
+                    "AND btrim(arg_sample->>'id') "
+                    "~ '^(me[0-9]+|memory:(me)?[0-9]+)(~|/|$)')) "
+                    "AND verb IN ('get', 'search') "
+                    "ORDER BY seq DESC NULLS LAST, call_id DESC LIMIT 10",
+                    (session_id,),
+                ).fetchall()
+        rows.reverse()
+        return rows
+    except Exception:
+        log.debug("tool_ledger: memory route unavailable", exc_info=True)
+        return None
+
+
 def calls_mining(
     store: Store,
     *,
@@ -810,6 +843,7 @@ __all__ = [
     "current_session_key",
     "error_head",
     "gc",
+    "memory_route",
     "record_call",
     "sessions_rollup",
 ]

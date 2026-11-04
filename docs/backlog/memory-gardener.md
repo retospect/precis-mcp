@@ -282,7 +282,7 @@ paragraph; one claim lives in one node. The evaluator reads no skills
 today (`graph/garden/proposer.py` builds its prompt in code). DRY rule
 (Reto 2026-11-03): the whole memory-body checklist (§2 per-type checks
 and standard of done, this table, the never-list) is one skill,
-`precis-memory-checklist-help`, which the evaluator pins verbatim the
+`precis-fix-memory-gripe-help`, which the evaluator pins verbatim the
 way `workers/planner_prompt.py::_load_skill_verbatim` pins
 `precis-todo-tree-help`; prompt code holds only the output contract.
 `precis-memory-help` "A recalled memory misled me" and
@@ -335,12 +335,6 @@ third, the entity normal form last. `blocked-by` edges carry the order.
     sentence is kept, moved to a related node, minted atomic, or dropped
     as history/restatement; `apply_compact` with one undo (large; after
     4 and 6; last).
-16. gr561869 — reader intake: the first-read hint on `get(kind='memory')`
-    (one line, first sight per session, no edit clause), the story shape
-    (Goal / Route / claims, naming every handle involved, any kind), the
-    server-attached `meta.route` from the tool ledger, the fixer-intake
-    exclusion for `project:memory`, and the five skill updates (medium;
-    independent).
 17. gr561873 — `griped` detector: a `project:memory` gripe is a replayable
     test. Candidate = the gripe, its mentioned memories and entity refs,
     `meta.route`. Replay both routes, name the disagreement shape (§6),
@@ -349,11 +343,6 @@ third, the entity normal form last. `blocked-by` edges carry the order.
     handles resolve, no recall regression. Close the gripe with shape,
     change and sha, or `ask` (medium; after 4 and 6). Not a path-length
     target: a circuitous route is fine.
-18. gr561877 — the checklist skill `precis-memory-checklist-help` (§2
-    checks, standard of done, §6 shapes incl. the two the spec lacked:
-    different referents, undecidable; the never-list), pinned verbatim
-    by slice 6's evaluator and pointed at from `precis-memory-help` and
-    `precis-gardener-help` (small; independent; land with 16).
 
 Precondition for 11: `search(kind='machine')` returned zero refs on
 2026-11-03; the slice starts with `put(kind='machine', mode='sync')` plus

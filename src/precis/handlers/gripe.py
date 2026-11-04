@@ -17,6 +17,9 @@ Surface (see ``precis-gripe-help``):
   normally (the ack lists them). ``args={'observation': True}`` files
   the gripe already closed (``STATUS:done`` + ``observation`` tag) via
   the ordinary resolved-comment + tag path.
+  A ``project:memory`` filing carries the session's last ten memory
+  reads in ``meta.route`` for replay; the masked ledger lookup is
+  best-effort so unavailable diagnostics never block the complaint.
 - ``put(kind='gripe', id=N, text=...)`` appends a ``gripe_comment``
   chunk to the existing gripe (id-present routes to append; same
   verb, no separate ``comment=`` field). ``link=``/``rel=`` and
@@ -968,7 +971,9 @@ class GripeHandler(NumericRefHandler):
         note = ""
         if len(matched) == 1:
             slug = matched[0]
-            keeper = self._theme_keeper(slug)
+            keeper = self._theme_keeper(
+                slug, memory=self.kind == "gripe" and "project:memory" in (tags or ())
+            )
             if keeper is not None:
                 with _PUT_UNTIL.bind(until), _translate_status_check():
                     resp = self._merge_into_keeper(
@@ -1017,17 +1022,25 @@ class GripeHandler(NumericRefHandler):
             resp = replace(resp, body=f"{resp.body}\n{note}")
         return interpreted(resp, readings)
 
-    def _theme_keeper(self, slug: str) -> int | None:
+    def _theme_keeper(self, slug: str, *, memory: bool = False) -> int | None:
         """The oldest live gripe tagged ``theme:<slug>``, or ``None``.
 
         "Live" = not carrying a terminal STATUS — a triaged/in-review
         keeper still collects ``+1``s; once it closes, the next matching
-        filing becomes the new keeper.
+        filing becomes the new keeper. Memory complaints have separate
+        keepers so merging cannot hide a code bug from coder intake.
         """
+        tags = [f"{THEME_TAG_PREFIX}{slug}"]
+        exclude_tags = sorted(_OPEN_EXCLUDED_TAGS)
+        if self.kind == "gripe":
+            if memory:
+                tags.append("project:memory")
+            else:
+                exclude_tags.append("project:memory")
         refs = self.store.list_refs(
             kind=self.kind,
-            tags=[f"{THEME_TAG_PREFIX}{slug}"],
-            exclude_tags=sorted(_OPEN_EXCLUDED_TAGS),
+            tags=tags,
+            exclude_tags=exclude_tags,
             order_by="created_asc",
             limit=1,
         )
@@ -1077,16 +1090,28 @@ class GripeHandler(NumericRefHandler):
                 "is not accepted on a +1 comment",
                 next=f"tag(kind={self.kind!r}, id={keeper}, prio={prio})",
             )
-        resp = self._append_then_link(
-            lambda: self._append_comment(id=keeper, text=self._merge_comment(text)),
-            id=keeper,
-            link=link,
-            unlink=unlink,
-            rel=rel,
-            tags=tags,
-            untags=untags,
-            what=f"{self._sense()} comment",
-        )
+        route: list[dict[str, Any]] | None = None
+        if self.kind == "gripe" and "project:memory" in (tags or ()):
+            from precis.tool_ledger import memory_route
+
+            route = memory_route(self.store)
+        with self.store.atomic():
+            resp = self._append_then_link(
+                lambda: self._append_comment(id=keeper, text=self._merge_comment(text)),
+                id=keeper,
+                link=link,
+                unlink=unlink,
+                rel=rel,
+                tags=tags,
+                untags=untags,
+                what=f"{self._sense()} comment",
+            )
+            if route is not None:
+                # A keeper's single route describes its newest filing.
+                with self.store.tx() as conn:
+                    self.store.update_ref(
+                        keeper, meta_patch={"route": route}, conn=conn
+                    )
         from precis.utils.handle_registry import format_handle
 
         return replace(
@@ -1799,6 +1824,13 @@ class GripeHandler(NumericRefHandler):
                 "agent:<run> by file_gripe_readonly"
             )
         parsed_extra_tags = [Tag.parse_strict(t, kind=self.kind) for t in (tags or [])]
+        # Capture the reader's replay evidence before opening the write
+        # transaction, so a ledger outage cannot abort gripe creation.
+        route: list[dict[str, Any]] | None = None
+        if self.kind == "gripe" and "project:memory" in (tags or ()):
+            from precis.tool_ledger import memory_route
+
+            route = memory_route(self.store)
         park_until = None
         if any(str(t) == PARKED_STATUS_TAG for t in parsed_extra_tags):
             from precis.utils.parked import normalize_until
@@ -1864,6 +1896,10 @@ class GripeHandler(NumericRefHandler):
                         "UPDATE refs SET meta = COALESCE(meta, '{}'::jsonb) "
                         "|| %s::jsonb WHERE ref_id = %s",
                         (Jsonb({"until": park_until}), ref_id),
+                    )
+                if route is not None:
+                    self.store.update_ref(
+                        ref_id, meta_patch={"route": route}, conn=conn
                     )
                 if target is not None:
                     self.store.add_link(

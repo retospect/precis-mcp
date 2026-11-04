@@ -70,13 +70,17 @@ recipe; the `put`/`edit` response's `Next:` lines do most of it for you.
    per memory hub plus Projects & quests for nicknames. A rename makes the
    old name an alias; a retired term is deleted.
 
-9. **A recalled node misled you → fix it now**, not later: wrong →
-   anchored `edit(…, reason='misled: <what, how found>')`; right only in some
-   context → add a caveat line or a `qualifies` gotcha; obsolete → retire
-   (step 7). Only if you cannot establish the truth: file the review todo
-   (exact `put(kind='todo', …, tags=['memory-review'], meta={'llm_tier':
-   'opus'}, link='memory:N', rel='raises-concern-about')` call in
-   `precis-memory-help`, "A memory I recalled turned out wrong").
+9. **With evidence edit, on suspicion gripe.** A recalled node is wonky,
+   inconsistent or unclear → first file `put(kind='gripe',
+   args={'project': 'memory'}, link='meN', rel='raises-concern-about',
+   text='memory: <symptom>\nGoal: <goal>\nRoute:
+   <query or link> -> meN said <claim>; <query or link> -> meM said <claim>')`.
+   Name every involved handle in the body and explicitly link each additional
+   ref with `link(kind='gripe', id=G, target='meM', rel='raises-concern-about')`.
+   Learned the truth with evidence → anchored `edit(…, reason='misled: <evidence>')`
+   and full readback, following `precis-memory-help` "A recalled memory
+   misled me" and `precis-fix-memory-gripe-help`. Do not edit a human-origin
+   node; hold and ask. Suspicion alone goes to the gardener, never a coder.
 
 Policy (what belongs in memory at all, authority of old nodes): AGENTS.md
 §"Repo-dev graph memory". Periodic cleanup: the `reconsolidate` skill.

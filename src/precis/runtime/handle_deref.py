@@ -3,6 +3,10 @@
 A same-session exact read is the receipt that permits substitution. Expansion
 uses current stored bytes, never the earlier rendered response, and never
 leaves expanded content in the tool-call audit arguments.
+
+Memory complaint hints share these receipts: first sight is per node and
+session, independent of the requested view. Numeric memory ids normalize to
+the same receipt as their universal handle.
 """
 
 from __future__ import annotations
@@ -24,6 +28,13 @@ TEXT_PAYLOAD_MAX_BYTES = 2 * 1024 * 1024
 _RECEIPT_TTL_S = 3600.0
 _RECEIPT_MAX = 4096
 _Identity = tuple[str, int, int | None]
+
+MEMORY_GRIPE_HINT = (
+    "Wonky, contradicted or unclear? put(kind='gripe', args={'project': 'memory'}, "
+    "text='memory: <symptom>\\nGoal: <what you were after>\\nRoute: "
+    "<query or link> -> meN said <claim>; <query or link> -> meM said <claim>'). "
+    'Learned the truth with evidence? precis-memory-help "A recalled memory misled me".'
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,8 +101,41 @@ def reset_read_receipts() -> None:
     _RECEIPTS.clear()
 
 
+def _memory_read_handle(handle: Any, explicit_kind: Any) -> Any:
+    if isinstance(handle, str) and handle.strip().startswith("memory:"):
+        handle = handle.strip().removeprefix("memory:")
+        explicit_kind = "memory"
+    if explicit_kind == "memory" and isinstance(handle, (str, int)):
+        raw = str(handle).strip()
+        if raw.isdigit():
+            return handle_registry.format_handle("memory", int(raw))
+    return handle
+
+
+def memory_gripe_hint(
+    handle: Any, *, store: Any, explicit_kind: Any = None
+) -> str | None:
+    """Complaint prompt before the successful read records its receipt."""
+    session_id, _ = current_session_key()
+    if session_id is None:
+        return None
+    handle = _memory_read_handle(handle, explicit_kind)
+    if not isinstance(handle, str) or "~" in handle or "/" in handle:
+        return None
+    parsed = handle_registry.parse(handle.strip())
+    if parsed is None or parsed[0] != "memory" or parsed[1]:
+        return None
+    resolved = store.resolve_handle(handle.strip())
+    if resolved is None or resolved.kind != "memory" or resolved.chunk_id is not None:
+        return None
+    if _RECEIPTS.contains(session_id, resolved):
+        return None
+    return MEMORY_GRIPE_HINT
+
+
 def record_exact_read(handle: Any, *, store: Any, explicit_kind: Any = None) -> bool:
     """Record a successful exact-handle MCP get; return whether it qualified."""
+    handle = _memory_read_handle(handle, explicit_kind)
     if not isinstance(handle, str):
         return False
     raw = handle.strip()
