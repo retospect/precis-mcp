@@ -29,6 +29,11 @@ expected-count guard and dry-run default re-arm existing fetch pins without
 removing body/hash/event evidence or calling a provider/model.
 
 ``fix_gripe`` deployment + trust model: ``docs/runbooks/fix-gripe-ops.md``.
+
+``gripe_validate`` deduplicates held ship notes by fix SHA, not release,
+to keep later releases from repeating the same fix. Legacy notes inherit
+the preceding fix comment's SHA (unknown provenance counts as noted);
+held gripes retain their STATUS and existing comments.
 """
 
 from __future__ import annotations

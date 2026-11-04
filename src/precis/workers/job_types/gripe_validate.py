@@ -18,8 +18,8 @@ Per cohort (:func:`precis.cli.gripe.verify_list`):
   → verification failed: comment + back to ``STATUS:triaged``. Not yet
   in prod → pending; no sha in a comment → one dedup'd note (it can't
   be verified). A gripe carrying ``hold:no-autoclose`` (gr547015, the
-  never-close mark) is skipped: a live sha earns a dedup'd ``shipped
-  in <release>`` note, never ``STATUS:done``.
+  never-close mark) is skipped: a live sha earns one ``shipped in
+  <release> (sha <short-sha>)`` note per fix, never ``STATUS:done``.
 - ``user_verify``: a human checks — :func:`~precis.cli.gripe.user_verify_sync`
   mints or refreshes ONE ask-user todo listing the cohort and closes
   the covered gripes once the ask is answered (gr519676).
@@ -37,6 +37,7 @@ non-interactive, so the minter's recurring todo is the whole schedule::
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -197,11 +198,35 @@ _FAILED_TEXT = (
     "validate: the resolved sha is in prod but the release gate on "
     "{head} is RED{run} — verification failed, back to triaged"
 )
-#: The held gripe's per-release note (gr547015) — ``{where}`` is the
-#: release label or ``prod <head9>``. ``note_gripes`` dedupes on the
-#: exact text, so one deploy comments once; the next release notes
-#: again. The gripe's STATUS is never touched.
-_HELD_TEXT = "shipped in {where} — held from auto-close (hold:no-autoclose)"
+#: The held gripe's per-fix note; STATUS is never touched (gr561464).
+_HELD_TEXT = "shipped in {where} (sha {sha}) — held from auto-close (hold:no-autoclose)"
+_HELD_NOTE_RE = re.compile(
+    r"shipped in .+?(?: \(sha ([0-9a-f]{7,40})\))?"
+    r" — held from auto-close \(hold:no-autoclose\)"
+)
+
+
+def _held_noted(store: Any, gid: int, sha: str) -> bool:
+    """Deduplicate held notes by fix SHA, independent of release label.
+
+    Legacy notes inherit the preceding resolved:/fix-sha: comment's SHA,
+    so a later fix can still earn a note. With no preceding SHA, a legacy
+    note counts as already noted rather than re-posting ambiguous history.
+    Abbreviated and full SHAs match by prefix, as in the prod-head check.
+    """
+    from precis.cli.gripe import _VERIFY_SHA_RE
+
+    prior_sha: str | None = None
+    for comment in sorted(store.chunks.list_chunks_for_ref(gid), key=lambda c: c.ord):
+        if comment.chunk_kind != "gripe_comment":
+            continue
+        if fix := _VERIFY_SHA_RE.match(comment.text):
+            prior_sha = fix.group(1)
+        if note := _HELD_NOTE_RE.fullmatch(comment.text.strip()):
+            noted_sha = note.group(1) or prior_sha
+            if noted_sha is None or _prefix_match(noted_sha, sha):
+                return True
+    return False
 
 
 def _verify_failed(store: Any, ids: list[int], row: dict[str, Any], head: str) -> str:
@@ -257,10 +282,10 @@ def run_pass(store: Any, *, dry_run: bool = False) -> ValidateResult:
     res.held = [(g, s or "?") for g, s in held_rows]
     if dry_run:
         return res
-    live_held = [g for g, s in held_rows if s and sha_live(rec, s)]
-    if live_held:
-        where = str(rec.get("release") or f"prod {res.head[:9]}")
-        note_gripes(store, _HELD_TEXT.replace("{where}", where), live_held)
+    where = str(rec.get("release") or f"prod {res.head[:9]}")
+    for gid, sha in held_rows:
+        if sha and sha_live(rec, sha) and not _held_noted(store, gid, sha):
+            note_gripes(store, _HELD_TEXT.format(where=where, sha=sha[:9]), [gid])
     if res.failed:
         out = _verify_failed(store, res.failed, gate or {}, res.head)
         if out:

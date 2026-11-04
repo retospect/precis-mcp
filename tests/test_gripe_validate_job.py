@@ -220,9 +220,9 @@ def test_held_gripe_is_noted_never_closed(hub: Any) -> None:
         if c.chunk_kind == "gripe_comment"
     ]
     assert comments[-1] == (
-        "shipped in r161 — held from auto-close (hold:no-autoclose)"
+        f"shipped in r161 (sha {HEAD[:9]}) — held from auto-close (hold:no-autoclose)"
     )
-    # Idempotent: the second pass notes nothing new (exact-text dedup).
+    # Idempotent: the second pass notes nothing new for this fix.
     res2 = gv.run_pass(store)
     assert res2.held == [(gid, HEAD[:9])]
     comments2 = [
@@ -233,6 +233,94 @@ def test_held_gripe_is_noted_never_closed(hub: Any) -> None:
     assert comments2 == comments
     # … and it renders as held, not as a close.
     assert "held (no auto-close): " + f"gr{gid}@{HEAD[:9]}" in res.render()
+
+
+def _release(store: Store, label: str, head: str, landed: list[str]) -> None:
+    psettings.set_setting(
+        gates.PROD_HEAD_KEY,
+        json.dumps(
+            {"head": head, "deployed_at": "x", "landed": landed, "release": label}
+        ),
+        store=store,
+    )
+
+
+def _comments(store: Store, gid: int) -> list[str]:
+    return [
+        c.text
+        for c in store.chunks.list_chunks_for_ref(gid)
+        if c.chunk_kind == "gripe_comment"
+    ]
+
+
+@pytest.mark.parametrize("sha_length", [7, 9, 40])
+def test_held_same_fix_is_quiet_across_releases(hub: Any, sha_length: int) -> None:
+    """gr561464: changing the release label must not repeat a held note."""
+    store = hub.store
+    gid = _verify_gripe(hub, f"resolved: {HEAD[:sha_length]}")
+    store.add_tag(gid, Tag.open("hold:no-autoclose"), set_by="agent")
+    _release(store, "r161", HEAD, [])
+    gv.run_pass(store)
+    comments = _comments(store, gid)
+    assert comments[-1] == (
+        f"shipped in r161 (sha {HEAD[: min(sha_length, 9)]})"
+        " — held from auto-close (hold:no-autoclose)"
+    )
+    # The same fix may later be named with a longer SHA.
+    GripeHandler(hub=hub).put(id=gid, text=f"fix-sha: {HEAD}")
+    comments = _comments(store, gid)
+    _release(store, "r162", LANDED[0], [HEAD])
+    gv.run_pass(store)
+    assert _comments(store, gid) == comments
+    assert _status(store, gid) == "verify"
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_held_newer_fix_gets_one_new_note(hub: Any, legacy: bool) -> None:
+    store = hub.store
+    gid = _verify_gripe(hub, f"resolved: {HEAD[:9]}")
+    store.add_tag(gid, Tag.open("hold:no-autoclose"), set_by="agent")
+    _release(store, "r161", HEAD, [])
+    if legacy:
+        GripeHandler(hub=hub).put(
+            id=gid, text="shipped in r160 — held from auto-close (hold:no-autoclose)"
+        )
+    else:
+        gv.run_pass(store)
+    newer = LANDED[0]
+    GripeHandler(hub=hub).put(id=gid, text=f"fix-sha: {newer}")
+    before = _comments(store, gid)
+    gv.run_pass(store)  # The newer fix has not shipped yet.
+    assert _comments(store, gid) == before
+    _release(store, "r162", newer, [HEAD])
+    gv.run_pass(store, dry_run=True)
+    assert _comments(store, gid) == before
+    gv.run_pass(store)
+    expected = before + [
+        f"shipped in r162 (sha {newer[:9]}) — held from auto-close (hold:no-autoclose)"
+    ]
+    assert _comments(store, gid) == expected
+    _release(store, "r163", "d" * 40, [HEAD, newer])
+    gv.run_pass(store)
+    assert _comments(store, gid) == expected
+    assert _status(store, gid) == "verify"
+
+
+@pytest.mark.parametrize("prior_fix", [False, True])
+def test_held_legacy_note_does_not_repost(hub: Any, prior_fix: bool) -> None:
+    store = hub.store
+    gid = _verify_gripe(hub, f"resolved: {HEAD[:9]}" if prior_fix else None)
+    store.add_tag(gid, Tag.open("hold:no-autoclose"), set_by="agent")
+    handler = GripeHandler(hub=hub)
+    handler.put(
+        id=gid, text="shipped in r160 — held from auto-close (hold:no-autoclose)"
+    )
+    handler.put(id=gid, text=f"fix-sha: {HEAD}")
+    before = _comments(store, gid)
+    _release(store, "r162", LANDED[0], [HEAD])
+    gv.run_pass(store)
+    assert _comments(store, gid) == before
+    assert _status(store, gid) == "verify"
 
 
 def test_red_gate_sends_live_gripe_back_to_triaged(hub: Any) -> None:
