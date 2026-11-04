@@ -17,7 +17,9 @@
 
 The chamber build (ray-marching the envelope) and the trace dominate —
 tens of seconds on a ``field:`` chamber — so both are memoised per
-design version; a regime-card or size change reuses them.
+design version and per version of the cad design the chamber is bound
+to (a cad save does not touch the se ref); a regime-card or size change
+reuses them.
 """
 
 from __future__ import annotations
@@ -139,6 +141,17 @@ def _pick_pocket(
     )
 
 
+def _bound_version(store: Store, tree: Any, block: str) -> str:
+    """The bound cad design's version stamp — the chamber's solid lives
+    in that ref, so editing it must miss the memo. ``""`` when the block
+    binds no cad design."""
+    node = tree.blocks[block]
+    if node.bound_kind != "cad" or not node.bound:
+        return ""
+    bound = store.get_ref(kind="cad", id=node.bound)
+    return str(getattr(bound, "updated_at", "") or "")
+
+
 def player_payload(store: Store, slug: str, query: dict[str, Any]) -> dict[str, Any]:
     """The player payload for ``slug`` under ``query`` (see the module
     docstring) — memoised chamber and trace, fresh card."""
@@ -162,7 +175,11 @@ def player_payload(store: Store, slug: str, query: dict[str, Any]) -> dict[str, 
         raise BadInput(
             f"flow: frames must lie in 2..{MAX_FRAMES}", next=f"frames={DEFAULT_FRAMES}"
         )
-    version = (ref.id, str(getattr(ref, "updated_at", "") or ""))
+    version = (
+        ref.id,
+        str(getattr(ref, "updated_at", "") or ""),
+        _bound_version(store, tree, fp.block),
+    )
     ckey = (*version, *(args.get(k) for k in _CHAMBER_KEYS))
     chamber = _memo(_chambers, ckey, lambda: se_flow.flow_chamber(store, tree, args))
     tkey = (*version, *(args.get(k) for k in _TRACE_KEYS))

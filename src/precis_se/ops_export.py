@@ -68,8 +68,9 @@ from typing import Any
 from precis.handlers._interpret import PREFIX as _INTERPRETED
 from precis.handlers._slice_args import slice_window
 from precis.utils.units import vector_canonical
-from precis_se.measures import measurand_name
+from precis_se.measures import MeasureSpec, declared_band, measurand_name
 from precis_se.ops import SeTree
+from precis_se.properties import COMPUTERS
 
 #: The stated gaps, in the order the rendered header prints them. Kept
 #: beside the docstring that explains each rather than inlined into the
@@ -354,6 +355,24 @@ def _chain_op(name: str, chain: dict[str, Any] | None) -> dict[str, Any] | None:
     return None
 
 
+def _replayable_value(m: MeasureSpec) -> float | None:
+    """The ``value`` a measure replays with. A computed measurand's stored
+    number is the server's realised value, which may break its own hard
+    band — that is the DRC finding, not a contradiction — while
+    ``add_measure`` refuses a chosen point outside its band. The copy's
+    computer re-derives the number, so the out-of-band value stays out
+    of the op."""
+    band = declared_band(m)
+    if (
+        m.value is not None
+        and band is not None
+        and m.measurand in COMPUTERS
+        and not band[0] <= m.value <= band[1]
+    ):
+        return None
+    return m.value
+
+
 def _ledger_ops(tree: SeTree) -> list[dict[str, Any]]:
     """The tree-level collections. ``add_note`` takes the body under
     ``text`` while :class:`~precis.utils.notes.NoteSpec` stores it as
@@ -365,7 +384,7 @@ def _ledger_ops(tree: SeTree) -> list[dict[str, Any]]:
                 "add_measure",
                 block=m.block,
                 name=m.name,
-                value=m.value,
+                value=_replayable_value(m),
                 relation=m.relation,
                 strength=m.strength,
                 reason=m.reason,

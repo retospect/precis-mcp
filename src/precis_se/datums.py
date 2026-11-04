@@ -59,6 +59,12 @@ selectors (the closed se-region-property-layer spec slice A):
   the pocket-shape token) and ``mcone:<mol>:<atom>@<dx>,<dy>,<dz>/<half°>+
   <length Å>`` (wall atom centres inside a cone on one molecule atom,
   axis in the molecule structure's frame).
+- ``rect:<json>`` — a rectangle given outright in the block's local frame:
+  ``{"point", "normal", "u", "v"}`` 3-vectors and ``half_u``/``half_v``
+  metres, the :meth:`precis_geom.flow.PortPatch.to_dict` form (a
+  ``selector`` key is diagnostic and dropped). A workspace ``out.physics``
+  port writes it: a macro block's render envelope is a sphere with no
+  named face for a ``patch:`` to sit on. Needs no envelope to resolve.
 
 ``sites:``/``atoms:`` parse strictly but never resolve here: their
 coordinates live in the bound ``structure`` design, which this pure
@@ -99,6 +105,7 @@ taxon ref id is its identity and its slug a name —
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Callable
@@ -135,7 +142,8 @@ VOCABULARY = (
     "frame:<key>[!|/touched|/rest] | frame:qual=<qual>[!|/touched|/rest] | "
     "pi:<block>#<sys id>[/rings|/aromatic] | "
     "mpatch:<mol>:<id> | mol:<mol>@<clearance Å> | "
-    "mcone:<mol>:<atom>@<dx>,<dy>,<dz>/<half°>+<length Å> "
+    "mcone:<mol>:<atom>@<dx>,<dy>,<dz>/<half°>+<length Å> | "
+    "rect:{point,normal,u,v,half_u,half_v} "
     "(<mol> = <block> or <block>!<removed atom label>)"
 )
 
@@ -158,6 +166,9 @@ _MCONE_RE = re.compile(
 )
 #: Ceiling on the atoms one ``atoms:`` selector expands to.
 _MAX_ATOMS = 100_000
+#: ``rect:`` JSON keys: the four vectors, then the two half extents.
+_RECT_VECTORS = ("point", "normal", "u", "v")
+_RECT_HALVES = ("half_u", "half_v")
 
 
 @dataclass(frozen=True)
@@ -203,6 +214,9 @@ class Selector:
     axis: tuple[float, float, float] | None = None
     half_angle_deg: float | None = None
     length: float | None = None
+    #: ``rect:`` — ``(point, normal, u, v, half_u, half_v)``, block-local,
+    #: metres; compared by value, so two spellings of one rectangle agree.
+    rect: tuple[Any, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -331,9 +345,55 @@ def parse_selector(text: Any) -> Selector:
         return _parse_mcone(s, body)
     if head == "pi":
         return _parse_pi(s, body)
+    if head == "rect":
+        return _parse_rect(s, body)
     raise MeasureError(
         f"unknown datum selector prefix {head!r} in {s!r} — vocabulary: {VOCABULARY}"
     )
+
+
+def _parse_rect(s: str, body: str) -> Selector:
+    """``rect:<json>`` — the object ``PortPatch.to_dict`` writes: finite
+    3-vectors ``point``/``normal``/``u``/``v`` (the last three nonzero),
+    finite ``half_u``/``half_v`` ≥ 0, an optional diagnostic ``selector``
+    string that is not part of the region's identity."""
+    shape = (
+        f'rect selector is \'rect:{{"point":[x,y,z],"normal":[…],"u":[…],'
+        f'"v":[…],"half_u":<m>,"half_v":<m>}}\' (a rectangle in the '
+        f"block's local frame, metres), got {s!r} — vocabulary: {VOCABULARY}"
+    )
+    try:
+        raw = json.loads(body)
+    except ValueError:
+        raise MeasureError(shape) from None
+    if not isinstance(raw, dict):
+        raise MeasureError(shape)
+    keys = set(raw)
+    if keys - {*_RECT_VECTORS, *_RECT_HALVES, "selector"} or (
+        {*_RECT_VECTORS, *_RECT_HALVES} - keys
+    ):
+        raise MeasureError(shape)
+
+    def number(x: Any) -> float:
+        if isinstance(x, bool) or not isinstance(x, int | float):
+            raise MeasureError(shape)
+        if not math.isfinite(x):
+            raise MeasureError(f"rect numbers must be finite, got {s!r}")
+        return float(x)
+
+    vectors: list[tuple[float, float, float]] = []
+    for key in _RECT_VECTORS:
+        vec = raw[key]
+        if not isinstance(vec, list) or len(vec) != 3:
+            raise MeasureError(shape)
+        x, y, z = (number(c) for c in vec)
+        if key != "point" and math.hypot(x, y, z) < 1e-12:
+            raise MeasureError(f"rect {key} must be nonzero, got {s!r}")
+        vectors.append((x, y, z))
+    halves = [number(raw[key]) for key in _RECT_HALVES]
+    if min(halves) < 0.0:
+        raise MeasureError(f"rect half extents must be ≥ 0, got {s!r}")
+    return Selector(kind="rect", rect=(*vectors, *halves))
 
 
 def _parse_frame_sel(s: str, body: str) -> Selector:
@@ -806,6 +866,19 @@ def resolve(
             resolved=f"axis:{target}",
             point=np.asarray(placed.xform.t, dtype=float),
             normal=placed.xform.apply_dir(np.array([0.0, 0.0, 1.0])),
+        )
+    if sel.kind == "rect":
+        # Block-local by definition — only the block's pose is needed, so
+        # a sphere render envelope (or none) is no obstacle.
+        assert sel.rect is not None
+        xform = cad_pose(as_vec3(node.pose), as_vec3(node.rot))
+        n = as_vec3(sel.rect[1])
+        return ResolvedDatum(
+            selector=text,
+            kind="rect",
+            resolved=_selector_text(sel),
+            point=np.asarray(xform.apply(as_vec3(sel.rect[0])), dtype=float),
+            normal=xform.apply_dir(n / float(np.linalg.norm(n))),
         )
     if sel.kind in ("sites", "atoms"):
         return _resolve_atomic(tree, sel, pin, text)
@@ -1762,6 +1835,13 @@ def _selector_text(sel: Selector) -> str:
         return f"patch:{sel.instance}.{sel.tag}@{u},{v}+{w}x{h}"
     if sel.kind == "ring":
         return f"ring:{sel.instance}.{sel.tag}"
+    if sel.kind == "rect":
+        assert sel.rect is not None
+        doc: dict[str, Any] = {
+            k: list(v) for k, v in zip(_RECT_VECTORS, sel.rect[:4], strict=True)
+        }
+        doc.update(zip(_RECT_HALVES, sel.rect[4:], strict=True))
+        return "rect:" + json.dumps(doc, separators=(",", ":"))
     if sel.kind == "sites":
         return f"sites:{sel.instance}/{sel.seam}/s{sel.lo}..s{sel.hi}"
     if sel.kind == "atoms":
@@ -1861,6 +1941,7 @@ _REGION_KINDS = frozenset(
         "mpatch",
         "mol",
         "mcone",
+        "rect",
     }
 )
 

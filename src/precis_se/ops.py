@@ -412,6 +412,7 @@ from precis_se.notes import (
     validate_about,
 )
 from precis_se.pockets import HULL, PocketSpec, stamp_class_hashes
+from precis_se.properties import COMPUTERS
 from precis_se.properties.measurand import Measurand, MeasurandResolver
 from precis_se.rays import RayError, RaySpec
 
@@ -2250,11 +2251,15 @@ def _check_band(
     max_value: float | None,
     *,
     opname: str,
+    computed: bool = False,
 ) -> None:
     """A declared point must sit inside its own declared band (an open
     end is unbounded) — rejecting the contradiction at write time; a
-    hand-edited stored row surfaces as stack-up's ``mismatch`` instead."""
-    if value is None:
+    hand-edited stored row surfaces as stack-up's ``mismatch`` instead.
+    ``computed`` says the value is a computer's realised number nobody
+    chose: outside the band it is DRC's ``measure_unmet``, not a
+    contradiction in this op."""
+    if value is None or computed:
         return
     if min_value is not None and value < min_value:
         raise OpError(
@@ -2459,7 +2464,14 @@ def _op_set_measure(tree: SeTree, op: dict[str, Any]) -> None:
         relation=fields.get("relation", m.relation),
         opname="set_measure",
     )
-    _check_band(merged_value, merged_min, merged_max, opname="set_measure")
+    _check_band(
+        merged_value,
+        merged_min,
+        merged_max,
+        opname="set_measure",
+        computed="value" not in op
+        and fields.get("measurand", m.measurand) in COMPUTERS,
+    )
     if "datum" in fields:
         from precis_se.datums import same_region
 

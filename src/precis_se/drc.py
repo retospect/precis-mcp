@@ -49,6 +49,11 @@ declared intent and exempt), subject ``<block>.<measure>``;
 (usually a units slip). The pin rule ``region_pin_stale`` is store-aware and
 lives in the handler (:func:`precis_se.handler._region_pin_findings`).
 
+**Flow chambers** (warn, store-free): ``flow_port_on_envelope`` — a cad-bound
+block whose ``flow:`` pocket puts a ``patch:`` port on the block's own
+envelope. That solve runs on the envelope, not the bound design, so the
+design's floor topography plays no part; ``rect:`` ports solve on the design.
+
 **Connect geometric plausibility** (:mod:`precis_se.geometry_plausibility`,
 gr337040 + gr338426) closes the gap the DOF probe and the mechanism-demand
 checks (§3/3b above) both leave open: neither ever looks at whether the
@@ -390,6 +395,46 @@ def _cone_count_findings(tree: SeTree) -> list[ValidationIssue]:
                 requirement="band",
             )
         )
+    return out
+
+
+def _flow_port_findings(tree: SeTree) -> list[ValidationIssue]:
+    """``flow_port_on_envelope`` (module docstring). The flow adapter
+    imports scipy, so it loads only for a block that could warn."""
+    out: list[ValidationIssue] = []
+    for name, node in tree.blocks.items():
+        if node.bound_kind != "cad" or not node.bound:
+            continue
+        for pocket in node.pockets.values():
+            shape = (pocket.shape or "").strip()
+            if not shape.startswith("flow:"):
+                continue
+            from precis_se.flow import (
+                FlowSpec,
+                _port_on_own_envelope,
+                parse_flow_shape,
+            )
+
+            try:
+                spec = parse_flow_shape(shape)
+            except ValueError:
+                continue
+            if isinstance(spec, FlowSpec) and _port_on_own_envelope(
+                name, (spec.inlet, spec.outlet)
+            ):
+                out.append(
+                    ValidationIssue(
+                        rule="flow_port_on_envelope",
+                        subject=f"{name}.{pocket.name}",
+                        detail=(
+                            f"a port sits on block {name!r}'s envelope, so the "
+                            f"solve runs there and bound cad design "
+                            f"{node.bound!r} plays no part, floor holes "
+                            "included — use rect: ports to solve on the design"
+                        ),
+                        severity="warn",
+                    )
+                )
     return out
 
 
@@ -887,6 +932,7 @@ def drc(
     # held fragment needs open is blocked; any other miss (a hold cone
     # with no wall atom) is ``measure_unmet``.
     findings.extend(_cone_count_findings(tree))
+    findings.extend(_flow_port_findings(tree))
 
     # 5a'. region datums (se_datums.resolve, store-free): a datum that
     # resolves to an error is a reference that points at nothing

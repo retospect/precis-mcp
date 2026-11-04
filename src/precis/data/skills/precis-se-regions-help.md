@@ -76,6 +76,7 @@ search(kind='taxon', under='measurand', q='charge')
 | `mpatch:<mol>:<id>` | patch id of the molecule block's painted surface — the wall region opposite it | the wall atoms within clearance + 3 Å of the patch's points |
 | `mol:<mol>@<clearance Å>` | the molecule's whole surface — the wall region around it | the wall atoms within clearance + 3 Å of any surface point |
 | `mcone:<mol>:<atom>@<dx>,<dy>,<dz>/<half°>+<length Å>` | a cone with its apex on one molecule atom, axis in the molecule structure's own frame (it turns with the block's `rot`) | the wall atoms whose centres sit inside the cone |
+| `rect:{"point":[x,y,z],"normal":[…],"u":[…],"v":[…],"half_u":<m>,"half_v":<m>}` | a rectangle given outright in the block's local frame, metres — what a workspace `out.physics` port writes, because a macro block's render envelope has no named faces | the rectangle's centre and normal, posed with the block |
 
 `<mol>` is a block (`nh3`) or a block minus one atom of its structure
 (`nh3!aH3`, the held fragment of pocket_from_molecule's `remove=`).
@@ -83,6 +84,8 @@ search(kind='taxon', under='measurand', q='charge')
 A pocket's `shape` also accepts `mol:<mol>@<clearance Å>` — the
 molecule's surface offset outward by the clearance (default 0;
 clearance < 0 is refused, 0 allowed).
+
+## How selectors resolve
 
 - `u` runs along the face's first in-plane axis: the block's local +x
   projected onto the face, or local +y when the face normal is within 5°

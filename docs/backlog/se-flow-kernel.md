@@ -168,10 +168,9 @@ commit carrying this line; `git log` has the sha.*
    this line): `precis_geom.flow`, `precis_geom.physics.evaluate`,
    `FLOW_COMPUTERS` on `evaluate`, the skill's `evaluate` section.
    `src/precis_flow` ships in the wheel (`packaging/geom/pyproject.toml`
-   force-include). Still owed: the `out.physics` manifest → `flow:`
-   pocket + import re-check (needs structure-workspaces slice 0's
-   importer) and the end-to-end run-to-player test (needs slice 1's
-   `run`).*
+   force-include). Still owed: the end-to-end run-to-player test through
+   the real `run` (needs slice 1's `run`; an `xfail` stands in until it
+   lands and then deletes the scratch stand-in).*
    No server op (the earlier `anneal_chamber` is dropped).
    Depends on [structure-workspaces](structure-workspaces.md) slices
    1–2 (the `run` loop; the `precis-geom` wheel). Order (Reto,
@@ -873,14 +872,6 @@ until it moves into the contract.
   version, and `/work/out/evaluate-cache/` persists, so a resumed run on a
   newer wheel reuses old `Outcome`s. Default: stamp the cache file with
   `Cost.kernel` and drop it on mismatch; the key stays five parts.
-- **K3 Import re-check inputs.** "Within 1e-9 at equal `cells`" needs the
-  server to repeat the script's solve.
-  `src/precis_se/flow.py::_flow_measure` fixes `seed=0` and
-  `cells=DEFAULT_NX`; `parse_flow_shape` has no `cells`, `seed`, `n` or
-  `seed_z` key. It also reads only the block envelope, and an imported
-  macro block's envelope is a bounding sphere
-  (`src/precis_se/workspace_import.py::_macro_envelope`). Slice 4a-i has
-  to settle both.
 - **K4 `precis.cad.patch` order.** The contract moves the resolver in 4b.
   [se-native-fields](se-native-fields.md) slice 1 lists the same move and
   runs after 4b, so its row needs to say the move is already done.

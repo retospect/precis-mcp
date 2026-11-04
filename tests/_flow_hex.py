@@ -85,3 +85,26 @@ def hex_chamber_ops(field_sha: str) -> list[dict[str, Any]]:
             "regions": [],
         },
     ]
+
+
+def seed_flow_measurands() -> None:
+    """The taxonomy the flow measures resolve through: the per-test
+    TRUNCATE empties it, so a test that writes a measurand re-runs the
+    seed migrations in order: the term tree, 0231's species nodes, then
+    0274, whose eight rows skip the four 0231 already seeded."""
+    import psycopg
+
+    from precis.store.migrate import _execute_dump_sql
+    from tests.conftest import MIGRATIONS_DIR, _active_dsn
+
+    with psycopg.connect(_active_dsn(), autocommit=True) as conn:
+        with conn.cursor() as cur:
+            for name in (
+                "0174_taxon_seed.sql",
+                "0182_se_measurand_seed.sql",
+                "0231_se_species_measurands.sql",
+                "0274_se_flow_measurands.sql",
+            ):
+                _execute_dump_sql(
+                    cur, (MIGRATIONS_DIR / name).read_text(encoding="utf-8")
+                )

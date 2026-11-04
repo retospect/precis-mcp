@@ -93,6 +93,11 @@ The adapter picks the solver by the card: Pe·ε ≤ 0.1 runs the
 depth-averaged Eulerian solve; above it the Lagrangian tracer answers
 instead — the route is a verdict, not a failure.
 
+A block bound to a cad design solves on that design with `rect:` ports.
+With a `patch:` port on the block's own envelope it solves on the
+envelope, so the design's floor holes play no part, and DRC warns
+`flow_port_on_envelope`. Use `rect:` ports to solve on the design.
+
 ## wall_rate — a trusted catpath TOF → k_s
 
 ```python

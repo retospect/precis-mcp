@@ -128,6 +128,9 @@ Each refusal is a `BadInput` that carries `next=` or `options=`.
   bound refuses: free-molecular flow runs the nano propagator on
   structure lumens (`view='flow'` on a structure-bound block).
 
+`evaluate` refuses `spec` values up front. `out.physics` and the import
+refuse a few more (see the import re-check below).
+
 ## The regime card
 
 Pass `spec["fluid"] = {"mu": Pa·s, "rho": kg/m³, "u0": m/s}` (or `"dp"`
@@ -163,21 +166,70 @@ Reject a candidate on `hard_ok == False` before you read its cost.
 
 ## Import re-check — the server recomputes
 
-The server does not trust stated numbers. When a run is imported, the
-`flow:` pocket and its port measures are stored and `COMPUTERS` run
-again: the same `evaluate`, `seed=0`, at the stated `cells`. Two cases
-are flagged:
+The server does not trust stated numbers. Declare the run with
+`out.physics`:
 
-- A stated value that differs from the server's own value by more than
-  1e-9 is `measure.script_mismatch`.
-- A hard bound that the server's own number violates is a DRC finding,
-  whatever the manifest says.
+```python
+o.block("c", dsl)
+o.physics("c", ["flow"], spec, outcome=o_eval, seed=7, cells=200)
+```
 
-So report what `evaluate` returned, at the `cells` you used.
+The import writes the block's `flow:` pocket and its measures (origin
+`user`), then repeats the same `evaluate` once per row, at the `seed`,
+`cells`, `n`, `seed_z`, `dv` and `zplane` you declared, on the cad solid
+you wrote. The server's number is what the measure stores. The import
+still lands when it disagrees, and it names what it found:
 
-**Not live yet.** The manifest entry (`out.physics`), the import and
-the Flow tab player (`/se/<slug>/flow`) for script-built designs arrive
-with the workspace run loop (structure-workspaces slice 1). Today
-`evaluate` is library code in the `precis-geom` wheel. The server-side
-`FLOW_COMPUTERS` already run on op-built `flow:` pockets through the
-same function.
+- `measure.script_mismatch` — a stated value differs from the server's
+  by more than 1e-9.
+- `measure.resolution_differs` — the outcome was solved at another `nx`
+  or `seed` than the row declares. The value check still runs, so the
+  two findings can arrive together.
+- `measure.uncomputable` — the server has no number, stated or not. The
+  finding carries the reason.
+
+A hard bound the server's own number violates is a DRC finding, whatever
+the manifest says. So report what `evaluate` returned, with the `seed`
+and `cells` you used.
+
+**What the row refuses.** Each refusal carries `next=` or `options=` and
+comes before anything is written.
+
+- More than 8 rows in one run, more than 16 measures on one row, or two
+  rows on one block. Each row costs a server solve.
+- Rows that together ask for too much solving: `cells² + 30·n`, summed
+  over the rows, above 2 500 000 (about a minute). Three rows at
+  `cells=860`, `n=2000` fit, and four do not. Search at your own
+  resolution and declare the final candidate at one that fits.
+- A row on an atomic block. Flow solves a cad solid.
+- A wrongly typed payload: a string `dv`, `seed_z` that is not two
+  fractions, an `outcome` whose `measures` or `cost.nx` has the wrong
+  type.
+- A measure with a bad `datum`, a `.` in its name, a non-numeric or
+  inverted band, a `hard` strength with no band, or a measurand that is
+  not a flow outcome.
+- An `evenness` measure with no `spec["evenness_region"]`, or with a
+  `datum` that is not that region. It is stored on the region `evaluate`
+  scored.
+- `spec["fluid"]`. The import stores no SI fluid, so drop the key from
+  the spec you pass to `out.physics`; it changes no measure. The regime
+  card stays in your script, and the Flow tab takes `mu`, `rho` and
+  `u0` or `dp` as query args.
+
+**Ports.** `out.physics` writes a `PortPatch` as a `rect:` selector: the
+rectangle itself, in the block's frame. A macro block's render envelope
+is a sphere with no named faces, so a `patch:` on the block has nothing
+to sit on.
+
+**Re-running.** The manifest is the workspace's whole state. An import
+with no `out.physics` drops the pocket and measures the last import
+made. It tells your edits from its own by two fields: a pocket whose
+shape changed and a measure whose datum changed stay. Any other edit to
+them, such as a new band, is dropped with them. If a row needs a name a
+kept pocket or measure holds, the import refuses and says so.
+
+**Playing it.** The imported design opens in the Flow tab at
+`/se/<slug>/flow`. Until the workspace run loop lands (structure-workspaces
+slice 1) you run the script yourself and import the tree with the
+`import_workspace` op ([[precis-workspace-help]]). `budget='job'` waits
+on the same loop.

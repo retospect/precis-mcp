@@ -97,14 +97,20 @@ class FlowSpec:
 
     ``flow:in=<patch>;out=<patch>;dv=<d_v*>[;profile=plug|parabolic]
     [;zplane=<z*>][;fluid=<material slug>][;species=<name>[,<name>…]]``
-    — ``in``/``out`` are ``patch:`` selectors tagging the ports, ``dv``
+    — ``in``/``out`` are ``patch:`` or ``rect:`` selectors tagging the
+    ports, ``dv``
     the reduced vertical dispersion over deepened floor (required — the
     kernel never defaults it), ``profile`` the horizontal velocity
     profile (Q4; the se default is ``parabolic``), ``zplane`` the
     tracking plane in reduced height (default 0.99), ``fluid`` a
     ``kind='material'`` slug the fluid's μ/ρ/D are read from
     (se-multiphysics.md slice 1), ``species`` the transported species
-    names (measure-name scope ``<block>.<species>/<prop>``)."""
+    names (measure-name scope ``<block>.<species>/<prop>``). The
+    workspace-import terms (se-flow-kernel 4a) carry the script's own
+    solve parameters so the import re-check repeats it exactly:
+    ``cells`` (kernel nx; 0 = :data:`DEFAULT_NX`), ``seed`` (tracer
+    seed), ``n`` (particles; 0 = the kernel default),
+    ``seed_z=<lo>,<hi>`` (the seed band's gap fractions)."""
 
     inlet: str
     outlet: str
@@ -113,6 +119,10 @@ class FlowSpec:
     zplane: float = 0.99
     fluid: str | None = None
     species: tuple[str, ...] = ()
+    cells: int = 0
+    seed: int = 0
+    n: int = 0
+    seed_z: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -172,12 +182,26 @@ def parse_flow_shape(text: str) -> FlowSpec | LumenSpec:
             raise ValueError(f"flow chamber spec: {key.strip()!r} given twice")
         kv[key.strip()] = val.strip()
     stray = sorted(
-        set(kv) - {"in", "out", "dv", "profile", "zplane", "fluid", "species"}
+        set(kv)
+        - {
+            "in",
+            "out",
+            "dv",
+            "profile",
+            "zplane",
+            "fluid",
+            "species",
+            "cells",
+            "seed",
+            "n",
+            "seed_z",
+        }
     )
     if stray:
         raise ValueError(
             f"flow chamber spec: unknown key(s) {', '.join(stray)} — "
-            "keys are in, out, dv, profile, zplane, fluid, species"
+            "keys are in, out, dv, profile, zplane, fluid, species, "
+            "cells, seed, n, seed_z"
         )
     for required in ("in", "out", "dv"):
         if required not in kv:
@@ -220,6 +244,39 @@ def parse_flow_shape(text: str) -> FlowSpec | LumenSpec:
             f"{SCOPE_SEP!r} (measure scope is '<species>{SCOPE_SEP}<prop>'), "
             f"got {', '.join(bad_sp)}"
         )
+    ints: dict[str, int] = {}
+    for key in ("cells", "seed", "n"):
+        if key not in kv:
+            continue
+        try:
+            ints[key] = int(kv[key])
+        except ValueError:
+            raise ValueError(
+                f"flow chamber spec: {key} must be an integer, got {kv[key]!r}"
+            ) from None
+        if ints[key] < 0 or (
+            key == "cells" and ints[key] not in (0,) and ints[key] < 8
+        ):
+            raise ValueError(
+                f"flow chamber spec: {key} must be "
+                f"{'0 (the default) or ≥ 8' if key == 'cells' else '≥ 0'}, "
+                f"got {ints[key]}"
+            )
+    seed_z: tuple[float, float] | None = None
+    if "seed_z" in kv:
+        try:
+            lo_s, hi_s = kv["seed_z"].split(",")
+            seed_z = (float(lo_s), float(hi_s))
+        except ValueError:
+            raise ValueError(
+                f"flow chamber spec: seed_z must be <lo>,<hi> gap fractions, "
+                f"got {kv['seed_z']!r}"
+            ) from None
+        if not (0.0 <= seed_z[0] <= seed_z[1] <= 1.0):
+            raise ValueError(
+                f"flow chamber spec: seed_z must be ordered fractions in "
+                f"[0, 1], got {kv['seed_z']!r}"
+            )
     return FlowSpec(
         inlet=kv["in"],
         outlet=kv["out"],
@@ -228,21 +285,64 @@ def parse_flow_shape(text: str) -> FlowSpec | LumenSpec:
         zplane=zplane,
         fluid=fluid,
         species=species,
+        cells=ints.get("cells", 0),
+        seed=ints.get("seed", 0),
+        n=ints.get("n", 0),
+        seed_z=seed_z,
     )
 
 
-def _chamber_placed(store: Any, tree: Any, name: str) -> Placed | None:
-    """The block's envelope as a world-posed primitive — the
+def _port_on_own_envelope(chamber: str, ports: tuple[str, ...]) -> bool:
+    """Does a port sit on a face of the chamber block's own envelope? A
+    ``patch:`` names an envelope face; a ``rect:`` is plain block-local
+    coordinates and a ``patch:`` on another block re-poses into them."""
+    from precis_se import datums as se_datums
+    from precis_se.measures import MeasureError
+
+    for text in ports:
+        try:
+            sel = se_datums.parse_selector(text)
+        except MeasureError:
+            continue  # patch_port refuses it, naming the selector
+        if sel.kind == "patch" and (sel.instance or chamber) == chamber:
+            return True
+    return False
+
+
+def _chamber_placed(
+    store: Any, tree: Any, name: str, ports: tuple[str, ...] = ()
+) -> Any:
+    """The solid a chamber solves on, the one its ``ports`` were resolved
+    against. The block's envelope as a world-posed primitive — the
     ``se_datums._placed`` path with a ``field_loader`` so ``field:<sha>``
     envelopes resolve through the store. With no store (the flow
     COMPUTERS' store-free signature) the loader wired onto the loaded
     tree by :mod:`precis_se.persist` answers instead (gr503066); a bare
-    tree leaves a ``field:`` envelope unbuilt."""
+    tree leaves a ``field:`` envelope unbuilt. A ``cad``-bound block
+    resolves through its bound design — that solid carries the floor
+    topography, while a workspace macro import's envelope is only a
+    bounding sphere (se-flow-kernel 4a) — unless a port is a ``patch:``
+    on the block's own envelope: that port's rectangle exists only on
+    the envelope, so the solve stays on the envelope too, whatever the
+    bound design looks like."""
     from precis_se.ops import effective_envelope
 
     node = tree.blocks.get(name)
     if node is None:
         return None
+    if (
+        node.bound_kind == "cad"
+        and node.bound
+        and not _port_on_own_envelope(name, ports)
+    ):
+        resolver = getattr(tree, "cad_designs", None)
+        got = resolver(node.bound) if resolver is not None else None
+        if got is not None:
+            design, _meta = got
+            try:
+                return design, design.whole()
+            except ValueError:
+                pass  # no components — fall through to the envelope path
     env = effective_envelope(tree, node)
     if env is None:
         return None
@@ -262,14 +362,36 @@ def _chamber_placed(store: Any, tree: Any, name: str) -> Placed | None:
 def patch_port(tree: Any, chamber: str, selector: str) -> PortPatch:
     """Resolve a ``patch:`` selector to a :class:`PortPatch` in the
     chamber block's local frame — the patch may sit on a different
-    block's face (a port plate), re-posed through the two poses."""
+    block's face (a port plate), re-posed through the two poses. A
+    ``rect:`` selector is already chamber-local — a workspace import
+    writes it, since a macro block's envelope carries no named face
+    (se-flow-kernel 4a)."""
     from precis_se import datums as se_datums
+    from precis_se.measures import MeasureError
 
-    sel = se_datums.parse_selector(selector)
+    try:
+        sel = se_datums.parse_selector(selector)
+    except MeasureError as exc:
+        raise BadInput(
+            f"flow port: {exc}",
+            next="a flow port is a 'patch:' or 'rect:' selector",
+        ) from exc
+    if sel.kind == "rect":
+        assert sel.rect is not None
+        point, normal, u, v, half_u, half_v = sel.rect
+        return PortPatch(
+            point=np.asarray(point, dtype=float),
+            normal=np.asarray(normal, dtype=float),
+            u=np.asarray(u, dtype=float),
+            v=np.asarray(v, dtype=float),
+            half_u=half_u,
+            half_v=half_v,
+            selector=selector,
+        )
     if sel.kind != "patch":
         raise BadInput(
             f"a flow port must be a 'patch:<instance>.<tag>@<u>,<v>+<w>x<h>' "
-            f"selector, got {selector!r}"
+            f"or 'rect:' selector, got {selector!r}"
         )
     chamber_node = tree.blocks.get(chamber)
     if chamber_node is None:
@@ -811,7 +933,7 @@ def flow_chamber(store: Any, tree: Any, args: dict[str, Any]) -> Chamber:
             "view='flow' needs args={'inlet': <patch>, 'outlet': <patch>} — "
             "patch: selectors tagging the two ports"
         )
-    placed = _chamber_placed(store, tree, block)
+    placed = _chamber_placed(store, tree, block, (str(inlet_sel), str(outlet_sel)))
     if placed is None:
         raise BadInput(
             f"block {block!r} has no parseable envelope — the chamber "
@@ -1082,13 +1204,38 @@ def _lumen_measure(
     return float(1.0 - nu), None
 
 
+def flow_outcome(
+    solid: Any, tree: Any, block: str, spec: FlowSpec, region: str | None = None
+) -> geom_physics.Outcome:
+    """:func:`precis_geom.physics.evaluate` for a parsed ``flow:`` token
+    on ``solid`` — the script's implementation at the token's own
+    ``seed``/``cells``/``n``/``seed_z``. ``region`` is the selector
+    evenness scores over; it changes no other measurand. The measure
+    computers and the import re-check both call this, so they repeat
+    one solve the same way."""
+    case: dict[str, Any] = {
+        "inlet": patch_port(tree, block, spec.inlet),
+        "outlet": patch_port(tree, block, spec.outlet),
+        "dv": spec.d_v_star,
+        "profile": spec.profile,
+        "zplane": spec.zplane,
+        "evenness_region": patch_port(tree, block, region) if region else None,
+    }
+    if spec.n:
+        case["n"] = spec.n
+    if spec.seed_z is not None:
+        case["seed_z"] = list(spec.seed_z)
+    return geom_physics.evaluate(
+        solid, ["flow"], case, seed=spec.seed, cells=spec.cells or DEFAULT_NX
+    )
+
+
 def _flow_measure(
     tree: Any, measure: Any, slug: str
 ) -> tuple[float | None, str | None]:
-    """One flow measurand for a measure on a ``flow:`` pocket's region.
-    A chamber runs :func:`precis_geom.physics.evaluate` (the script's
-    implementation, ``seed=0``, ``cells=DEFAULT_NX``); evenness scores
-    over the measure's own datum patch."""
+    """One flow measurand for a measure on a ``flow:`` pocket's region:
+    :func:`flow_outcome` at the token's solve parameters; evenness scores
+    over the measure's own datum region."""
     from precis_se import datums as se_datums
 
     node = tree.blocks.get(measure.block)
@@ -1100,7 +1247,7 @@ def _flow_measure(
     _pocket, spec = got
     if isinstance(spec, LumenSpec):
         return _lumen_measure(tree, node, spec, slug)
-    placed = _chamber_placed(None, tree, measure.block)
+    placed = _chamber_placed(None, tree, measure.block, (spec.inlet, spec.outlet))
     if placed is None:
         return None, (
             f"block {measure.block!r} has no parseable envelope — the "
@@ -1112,20 +1259,16 @@ def _flow_measure(
             sel = se_datums.parse_selector(datum)
         except Exception:
             return None, f"datum {datum!r} does not parse as a patch region"
-        if sel.kind != "patch":
+        if sel.kind not in ("patch", "rect"):
             return None, f"evenness scores over a patch: region, got {datum!r}"
     try:
-        case = {
-            "inlet": patch_port(tree, measure.block, spec.inlet),
-            "outlet": patch_port(tree, measure.block, spec.outlet),
-            "dv": spec.d_v_star,
-            "profile": spec.profile,
-            "zplane": spec.zplane,
-            "evenness_region": (
-                patch_port(tree, measure.block, datum) if slug == "evenness" else None
-            ),
-        }
-        out = geom_physics.evaluate(placed, ["flow"], case, seed=0, cells=DEFAULT_NX)
+        out = flow_outcome(
+            placed,
+            tree,
+            measure.block,
+            spec,
+            datum if slug == "evenness" else None,
+        )
     except (BadInput, ValueError) as exc:
         return None, str(exc)
     if slug in out.measures:
@@ -1451,7 +1594,7 @@ def _species_run(
     node, spec, sp, err = _species_of(tree, measure)
     if err is not None or spec is None or sp is None:
         return None, None, err
-    placed = _chamber_placed(None, tree, measure.block)
+    placed = _chamber_placed(None, tree, measure.block, (spec.inlet, spec.outlet))
     if placed is None:
         return (
             None,
@@ -1608,7 +1751,7 @@ def _flow_damkohler(tree: Any, measure: Any) -> tuple[float | None, str | None]:
     node, spec, sp, err = _species_of(tree, measure)
     if err is not None or spec is None or sp is None:
         return None, err
-    placed = _chamber_placed(None, tree, measure.block)
+    placed = _chamber_placed(None, tree, measure.block, (spec.inlet, spec.outlet))
     if placed is None:
         return None, (
             f"block {measure.block!r} has no parseable envelope — the "

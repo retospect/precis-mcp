@@ -71,6 +71,33 @@ _OUT_DIRNAME = "out"
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]*$")
 
 
+def _physics_port(value: Any, what: str) -> str:
+    """A spec port → its manifest text: a ``patch:``/``rect:`` selector
+    string verbatim, or a :class:`precis_geom.flow.PortPatch` (or its
+    ``to_dict`` form) written as ``rect:<json>`` — the port rectangle
+    carried verbatim so the importer's ``flow:`` pocket resolves it
+    without an envelope face."""
+    from precis_geom.flow import PortPatch
+
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            raise ValueError(f"out.physics: spec.{what} is empty")
+        return s
+    pp = PortPatch.coerce(value, f"out.physics spec.{what}")
+    return "rect:" + json.dumps(pp.to_dict(), separators=(",", ":"))
+
+
+def _physics_spec(spec: dict[str, Any]) -> dict[str, Any]:
+    """The manifest's ``physics[].spec`` — the evaluate spec verbatim
+    except the port fields, serialised through :func:`_physics_port`."""
+    out = dict(spec)
+    for key in ("inlet", "outlet", "evenness_region"):
+        if key in out and out[key] is not None:
+            out[key] = _physics_port(out[key], key)
+    return out
+
+
 def default_root(name: str) -> Path:
     """``scratch/out/<name>/`` relative to the current directory."""
     return _SCRATCH_DIR / _OUT_DIRNAME / name
@@ -447,6 +474,10 @@ class Run:
         #: :meth:`scenario` declares it — lands as the manifest's
         #: top-level ``scenario`` (gr514245).
         self._scenario: str | None = None
+        #: ``out.physics`` rows — a workspace evaluate's spec + stated
+        #: outcome, landing as the manifest's top-level ``physics``
+        #: (se-flow-kernel slice 4a).
+        self._physics: list[dict[str, Any]] = []
 
     # -- manifest calls ---------------------------------------------------
 
@@ -704,6 +735,96 @@ class Run:
         self._rays.append(entry)
         return entry
 
+    @_trace.traced(kind="core", name="out.physics")
+    def physics(
+        self,
+        block: str,
+        physics: list[str] | tuple[str, ...] = ("flow",),
+        spec: dict[str, Any] | None = None,
+        *,
+        outcome: Any = None,
+        seed: int = 0,
+        cells: int | None = None,
+        frame: int | None = None,
+    ) -> dict[str, Any]:
+        """One manifest ``physics`` entry — a workspace physics run's
+        spec plus its stated :class:`precis_geom.physics.Outcome`
+        (se-flow-kernel slice 4a).
+
+        ``block`` names a block this run declared (:meth:`block`); the
+        importer turns the entry into the block's ``flow:`` pocket and
+        its measures and re-checks the stated values through the server's
+        own ``COMPUTERS``. ``spec`` is the dict ``evaluate`` took; its
+        ``inlet``/``outlet``/``evenness_region`` fields may be
+        :class:`precis_geom.flow.PortPatch` objects or dicts (written as
+        ``rect:<json>`` — the port rectangle verbatim, resolved against
+        no envelope face) or selector strings. A ``patch:`` string
+        is carried as written, but the block's render envelope is a sphere
+        with no named face, so a ``patch:`` on the block itself ends as
+        ``measure.uncomputable``: pass a ``PortPatch``. ``seed``/``cells`` are the
+        evaluate call's own values — the importer's re-check repeats
+        them, so the comparison is at equal resolution. ``outcome`` is
+        the :meth:`~precis_geom.physics.Outcome.to_dict` payload (or an
+        ``Outcome`` — serialized for you); its ``measures`` are advisory
+        and never trusted."""
+        from precis_geom import physics as _phys
+        from precis_geom.flow import DEFAULT_NX
+
+        self._vet_not_board("physics")
+        b = str(block or "").strip()
+        if b not in self._names:
+            raise ValueError(
+                f"out.physics: block {block!r} is not declared in this run "
+                f"(declared: {sorted(self._names) or '(none)'})"
+            )
+        names = tuple(str(p or "").strip() for p in physics or ())
+        if not names or not all(names):
+            raise ValueError("out.physics: physics must be a non-empty name list")
+        unknown = [p for p in names if p not in _phys.MEASURANDS]
+        if unknown:
+            raise ValueError(
+                f"out.physics: unknown physics {', '.join(map(repr, unknown))} "
+                f"(known: {sorted(_phys.MEASURANDS)})"
+            )
+        if not isinstance(spec, dict) or not spec:
+            raise ValueError(
+                "out.physics: spec must be the dict evaluate() took "
+                "(flow: inlet/outlet/dv at least)"
+            )
+        if spec.get("fluid") is not None:
+            raise ValueError(
+                "out.physics: spec.fluid does not reach the server — the "
+                "import stores no SI fluid, so the regime card stays in the "
+                "script. Drop 'fluid' from the spec you pass here (it changes "
+                "no measure); the Flow tab takes mu, rho and u0|dp as query "
+                "args"
+            )
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise ValueError(f"out.physics: seed must be an int, got {seed!r}")
+        entry: dict[str, Any] = {
+            "block": b,
+            "physics": list(names),
+            "spec": _physics_spec(spec),
+            "seed": int(seed),
+            "cells": int(cells if cells is not None else DEFAULT_NX),
+        }
+        if outcome is not None:
+            entry["outcome"] = (
+                outcome.to_dict() if hasattr(outcome, "to_dict") else dict(outcome)
+            )
+        fr = frame if frame is not None else _trace.leaf_id()
+        if fr is not None:
+            entry["frame"] = int(fr)
+        try:
+            json.dumps(entry)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"out.physics: spec/outcome is not JSON-safe: {exc}"
+            ) from exc
+        self._physics.append(entry)
+        _trace.record(made={"physics": 1})
+        return entry
+
     @_trace.traced(kind="core", name="out.scenario")
     def scenario(self, scenario_id: str) -> None:
         """Declare the design's governing production scenario — lands as
@@ -764,6 +885,8 @@ class Run:
             doc["connects"] = list(self._connects)
         if self._rays:
             doc["rays"] = list(self._rays)
+        if self._physics:
+            doc["physics"] = list(self._physics)
         if self._fit_rules:
             doc["fit_rules"] = dict(self._fit_rules)
         if self._scenario is not None:

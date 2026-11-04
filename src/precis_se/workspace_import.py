@@ -33,6 +33,8 @@ run's failure, refused naming the key)::
      "rays"?: [{"name", "block", "length", "origin"?, "direction"?,
                 "kind"?, "fields"?, "step"?, "reach"?, "in"?, "anchor"?,
                 "frame"?}],
+     "physics"?: [{"block", "physics", "spec", "seed"?, "cells"?,
+                   "outcome"?, "frame"?}],
      "scenario"?, "notes"?,
      "status"?="failed", "error"?}   ← a failed run's record; refused
 
@@ -41,6 +43,12 @@ run's failure, refused naming the key)::
   frame (the ray's ``made-by:``), ``in`` its reference frame. They
   replace this workspace's previous rays; one the run stops writing
   retires.
+* ``physics`` (``out.physics``, se-flow-kernel 4a): one row per macro
+  block — the ``flow:`` pocket, its port measures and the **import
+  re-check**. The server repeats each row's solve once, before any
+  transaction opens, and stores its own numbers; the row's stated
+  ``outcome`` is compared, never trusted. What the import made is
+  recorded under ``physics``, and only that is replaced or dropped.
 * ``mode``/``material``/``measures``/``loads`` on a block (gr514245):
   replayed as the ``set_mode``/``set_material``/``add_measure``/
   ``set_load`` ops — the block's manufacturing mode, its explicit
@@ -127,6 +135,7 @@ from precis.cad.scene import (
     NodeSpec,
     SceneError,
     SceneSpec,
+    build_design,
     coerce_pattern,
     parse_source,
 )
@@ -140,13 +149,16 @@ from precis.utils.md_parse import _normalize_segment
 from precis.utils.units import UnitRequiredError, parse_quantity
 from precis_geom import run_diag, trace_schema
 from precis_geom.trace import steps_line
+from precis_se import datums as se_datums
 from precis_se import persist, traceview
 from precis_se.atomic.generate import (
     PendingGenerate,
     finish_generate,
     generated_record,
 )
-from precis_se.ops import OpError, SeTree, apply_ops
+from precis_se.measures import MeasureError
+from precis_se.ops import OpError, SeTree, _find_measure, apply_ops
+from precis_se.pockets import stamp_class_hashes
 from precis_se.rays import DEFAULT_REACH_A, DEFAULT_STEP_A
 
 log = logging.getLogger(__name__)
@@ -160,6 +172,18 @@ MAX_WS_OUT_BYTES = 32_000_000
 MAX_WS_BLOCKS = 256
 MAX_WS_BLOCK_ATOMS = 100_000
 MAX_WS_FILES = 512
+#: Each physics row is one server solve at import. A row's measures all
+#: read that solve, but every stored measure costs a solve of its own on
+#: each DRC read, so the measure cap bounds that later work.
+MAX_WS_PHYSICS_ROWS = 8
+MAX_WS_PHYSICS_MEASURES = 16
+#: The server work one import may ask for, summed over its rows as
+#: ``cells² + _PHYSICS_WORK_PER_PARTICLE × n``. Two measured solves fix the
+#: rates — 18.6 s at cells=860, n=2000 and 32 s at cells=400, n=40000 give
+#: 2.32e-5 s per cells² and 7.07e-4 s per particle, a ratio of 30 — so the
+#: cap of 2 500 000 is about 58 s of solving per import.
+_PHYSICS_WORK_PER_PARTICLE = 30
+MAX_WS_PHYSICS_WORK = 2_500_000
 
 #: A workspace slug doubles as a directory name under the python-kind
 #: stage dir (:mod:`precis.handlers._python_ws`) — this regex is the
@@ -197,8 +221,42 @@ _TOP_KEYS = frozenset(
         "error",
         "fit",
         "fit_rules",
+        "physics",
     }
 )
+#: A ``physics`` manifest row (``out.physics``, se-flow-kernel 4a): the
+#: script's evaluate spec plus its stated outcome — advisory; the import
+#: re-check repeats the solve through ``COMPUTERS``.
+_PHYSICS_KEYS = frozenset(
+    {"block", "physics", "spec", "seed", "cells", "outcome", "frame"}
+)
+#: A row's ``spec`` — what ``evaluate(['flow'])`` takes.
+_PHYSICS_SPEC_KEYS = frozenset(
+    {
+        "inlet",
+        "outlet",
+        "dv",
+        "profile",
+        "zplane",
+        "n",
+        "frames",
+        "seed_z",
+        "evenness_region",
+        "fluid",
+        "measures",
+    }
+)
+#: Where a refused physics row sends the script's author.
+_PHYSICS_NEXT = (
+    "out.physics(block, ['flow'], spec, outcome=evaluate(…), seed=…, cells=…) "
+    "writes this row from the spec evaluate took — fix the script and re-run"
+)
+_PHYSICS_MEASURE_KEYS = frozenset(
+    {"name", "measurand", "strength", "min_value", "max_value", "datum"}
+)
+#: The stated-vs-server agreement bound for the import re-check
+#: (se-flow-kernel 4a acceptance: ``1e-9`` relative at equal cells).
+_PHYSICS_REL_TOL = 1e-9
 #: An ``out.ray`` entry (structure-workspaces 2r): ``frame`` is the
 #: maker's trace frame id, as on every manifest entry; ``in`` is the
 #: ray's own reference frame (omitted = the block, ``'world'``,
@@ -376,6 +434,403 @@ class BlockEntry:
     #: ``{rung, verdict, key?}`` — the block's coordinates are what the
     #: ``mol.relax`` collapse check last relaxed, not the service relax.
     relaxed_by: dict[str, str] | None = None
+
+
+def _physics_number(value: Any, where: str) -> float:
+    """A finite JSON number, or the refusal naming ``where``."""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(value)
+    ):
+        raise BadInput(
+            f"manifest {where} must be a finite number, got {value!r}",
+            next=_PHYSICS_NEXT,
+        )
+    return float(value)
+
+
+def _physics_int(value: Any, where: str, *, least: int) -> int:
+    """A whole number ≥ ``least`` (``200.0`` passes, as in ``evaluate``)."""
+    if not isinstance(value, int) and not (
+        isinstance(value, float) and value.is_integer()
+    ):
+        raise BadInput(
+            f"manifest {where} must be a whole number, got {value!r}",
+            next=_PHYSICS_NEXT,
+        )
+    if isinstance(value, bool) or int(value) < least:
+        raise BadInput(
+            f"manifest {where} must be a whole number ≥ {least}, got {value!r}",
+            next=_PHYSICS_NEXT,
+        )
+    return int(value)
+
+
+def _physics_port(value: Any, where: str) -> str:
+    """A port or region selector, vetted to ``patch:`` or ``rect:``. A
+    ``rect:`` comes back canonical: its diagnostic ``selector`` key could
+    carry the ``;`` that separates ``flow:`` token terms."""
+    if not isinstance(value, str):
+        raise BadInput(
+            f"manifest {where} must be a 'patch:' or 'rect:' selector, got {value!r}",
+            next=_PHYSICS_NEXT,
+        )
+    try:
+        sel = se_datums.parse_selector(value)
+    except MeasureError as exc:
+        raise BadInput(f"manifest {where}: {exc}", next=_PHYSICS_NEXT) from exc
+    if sel.kind not in ("patch", "rect"):
+        raise BadInput(
+            f"manifest {where} must be a 'patch:' or 'rect:' selector, got {value!r}",
+            next=_PHYSICS_NEXT,
+        )
+    return se_datums._selector_text(sel) if sel.kind == "rect" else value.strip()
+
+
+def _flow_token(
+    spec: dict[str, Any], inlet: str, outlet: str, *, seed: int, cells: int, where: str
+) -> str:
+    """The row's ``flow:`` pocket shape. Floats go through ``repr`` so the
+    token parses back to the exact number the script solved with."""
+    dv = _physics_number(spec["dv"], f"{where}.dv")
+    parts = [f"in={inlet}", f"out={outlet}", f"dv={dv!r}"]
+    profile = spec.get("profile")
+    if profile is not None:
+        if not isinstance(profile, str):
+            raise BadInput(
+                f"manifest {where}.profile must be text, got {profile!r}",
+                options=["plug", "parabolic"],
+            )
+        parts.append(f"profile={profile.strip()}")
+    if spec.get("zplane") is not None:
+        zplane = _physics_number(spec["zplane"], f"{where}.zplane")
+        parts.append(f"zplane={zplane!r}")
+    if cells:
+        parts.append(f"cells={cells}")
+    if seed:
+        parts.append(f"seed={seed}")
+    if spec.get("n") is not None:
+        parts.append(f"n={_physics_int(spec['n'], f'{where}.n', least=1)}")
+    if spec.get("frames") is not None:
+        # Frames only record the swarm (no tracer draw), so the re-check
+        # repeats the solve without them.
+        _physics_int(spec["frames"], f"{where}.frames", least=0)
+    seed_z = spec.get("seed_z")
+    if seed_z is not None:
+        if not isinstance(seed_z, list) or len(seed_z) != 2:
+            raise BadInput(
+                f"manifest {where}.seed_z must be [z_lo, z_hi] gap fractions, "
+                f"got {seed_z!r}",
+                next=_PHYSICS_NEXT,
+            )
+        lo = _physics_number(seed_z[0], f"{where}.seed_z[0]")
+        hi = _physics_number(seed_z[1], f"{where}.seed_z[1]")
+        parts.append(f"seed_z={lo!r},{hi!r}")
+    return "flow:" + ";".join(parts)
+
+
+def _vet_physics_measures(
+    raw: Any,
+    where: str,
+    *,
+    outlet: str,
+    region: str | None,
+    block: str,
+    declared: set[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    """A row's ``spec.measures`` → the ``add_measure`` fields, refused
+    with ``next=`` here so nothing reaches the op layer malformed. An
+    evenness measure sits on ``evenness_region`` — the region ``evaluate``
+    scored — and anything else on its own ``datum``, default the outlet."""
+    from precis_geom.physics import FLOW_MEASURANDS, STRENGTHS
+
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise BadInput(
+            f"manifest {where}.measures must be a list, got {raw!r}",
+            next=_PHYSICS_NEXT,
+        )
+    if len(raw) > MAX_WS_PHYSICS_MEASURES:
+        raise BadInput(
+            f"manifest {where}.measures: {len(raw)} measures exceeds the "
+            f"{MAX_WS_PHYSICS_MEASURES} measures-per-row cap",
+            next=f"keep at most {MAX_WS_PHYSICS_MEASURES} measures on one "
+            "out.physics row — there are only "
+            f"{len(FLOW_MEASURANDS)} flow measurands",
+        )
+    out: list[dict[str, Any]] = []
+    names: set[str] = set()
+    for j, mm in enumerate(raw):
+        mw = f"{where}.measures[{j}]"
+        if not isinstance(mm, dict):
+            raise BadInput(f"manifest {mw}: must be an object", next=_PHYSICS_NEXT)
+        _unknown_keys(mm, _PHYSICS_MEASURE_KEYS, mw)
+        slug = str(mm.get("measurand") or "").strip()
+        if slug not in FLOW_MEASURANDS:
+            raise BadInput(
+                f"manifest {mw}: measurand {mm.get('measurand')!r} is not an "
+                "evaluate(['flow']) outcome",
+                options=list(FLOW_MEASURANDS),
+            )
+        name = str(mm.get("name") or slug).strip()
+        if "." in name:
+            raise BadInput(
+                f"manifest {mw}: name {name!r} must not contain '.' — the "
+                "relation-source syntax ('block.measure') reserves it",
+                next="rename the measure in the spec",
+            )
+        if name in names or (block, name) in declared:
+            raise BadInput(
+                f"manifest {mw}: measure {name!r} is declared twice on block {block!r}",
+                next="measure names are unique per block — rename one",
+            )
+        names.add(name)
+        strength = mm.get("strength") or "gauge"
+        if strength not in STRENGTHS:
+            raise BadInput(
+                f"manifest {mw}: strength {strength!r}", options=list(STRENGTHS)
+            )
+        lo = (
+            _physics_number(mm["min_value"], f"{mw}.min_value")
+            if mm.get("min_value") is not None
+            else None
+        )
+        hi = (
+            _physics_number(mm["max_value"], f"{mw}.max_value")
+            if mm.get("max_value") is not None
+            else None
+        )
+        if lo is not None and hi is not None and lo > hi:
+            raise BadInput(
+                f"manifest {mw}: min_value {lo:g} exceeds max_value {hi:g} — an "
+                "empty band declares nothing satisfiable",
+                next="swap or widen the band",
+            )
+        if strength == "hard" and lo is None and hi is None:
+            raise BadInput(
+                f"manifest {mw}: a hard measure needs min_value or max_value",
+                next="give it a band, or make it 'soft' or 'gauge'",
+            )
+        datum = mm.get("datum")
+        if datum is not None:
+            if not isinstance(datum, str):
+                raise BadInput(
+                    f"manifest {mw}: datum must be a selector string, got {datum!r}",
+                    next=_PHYSICS_NEXT,
+                )
+            try:
+                sel = se_datums.parse_selector(datum)
+            except MeasureError as exc:
+                raise BadInput(f"manifest {mw}: {exc}", next=_PHYSICS_NEXT) from exc
+            datum = (
+                se_datums._selector_text(sel) if sel.kind == "rect" else datum.strip()
+            )
+        if slug == "evenness":
+            if region is None:
+                raise BadInput(
+                    f"manifest {mw}: evenness needs spec.evenness_region — it "
+                    "scores first crossings over that rectangle",
+                    next="add a floor/lid evenness_region to the spec",
+                )
+            if datum is not None and not se_datums.same_region(datum, region):
+                raise BadInput(
+                    f"manifest {mw}: datum {datum!r} is not the spec's "
+                    "evenness_region — evaluate scored that region",
+                    next="drop the measure's datum, or make it the region",
+                )
+            datum = region
+        out.append(
+            {
+                "name": name,
+                "measurand": slug,
+                "strength": strength,
+                "datum": datum or outlet,
+                **({"min": lo} if lo is not None else {}),
+                **({"max": hi} if hi is not None else {}),
+            }
+        )
+    return out
+
+
+def _vet_physics_outcome(raw: Any, where: str) -> dict[str, Any] | None:
+    """The row's stated ``outcome``: advisory, but type-checked here so
+    the re-check reads it without a raw ``TypeError`` under the lock."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise BadInput(
+            f"manifest {where}: 'outcome' must be an object", next=_PHYSICS_NEXT
+        )
+    measures = raw.get("measures")
+    if measures is not None:
+        if not isinstance(measures, dict):
+            raise BadInput(
+                f"manifest {where}.outcome.measures must be an object, "
+                f"got {measures!r}",
+                next=_PHYSICS_NEXT,
+            )
+        for slug, claim in measures.items():
+            if claim is not None:
+                _physics_number(claim, f"{where}.outcome.measures[{slug!r}]")
+    cost = raw.get("cost")
+    if cost is not None:
+        if not isinstance(cost, dict):
+            raise BadInput(
+                f"manifest {where}.outcome.cost must be an object, got {cost!r}",
+                next=_PHYSICS_NEXT,
+            )
+        if cost.get("nx") is not None:
+            _physics_int(cost["nx"], f"{where}.outcome.cost.nx", least=0)
+    if raw.get("seed") is not None:
+        _physics_int(raw["seed"], f"{where}.outcome.seed", least=0)
+    return dict(raw)
+
+
+def _vet_physics_row(
+    raw: Any,
+    where: str,
+    blocks: dict[str, str],
+    declared: set[tuple[str, str]],
+) -> dict[str, Any]:
+    """One ``physics`` row → its ``flow:`` shape, regions and measures —
+    every type refused here, before any transaction work."""
+    from precis_geom.flow import DEFAULT_NX
+    from precis_geom.physics import DEFAULT_N
+    from precis_se.flow import parse_flow_shape
+
+    if not isinstance(raw, dict):
+        raise BadInput(f"manifest {where}: must be an object", next=_PHYSICS_NEXT)
+    _unknown_keys(raw, _PHYSICS_KEYS, where)
+    block = str(raw.get("block") or "").strip()
+    if block not in blocks:
+        raise BadInput(
+            f"manifest {where}: block {block!r} is not a manifest block",
+            next="out.physics(block, …) names a block this run writes",
+        )
+    if blocks[block] != "macro":
+        raise BadInput(
+            f"manifest {where}: block {block!r} is {blocks[block]} — the flow "
+            "kernel solves a cad solid",
+            next="point out.physics at a macro block; a structure lumen runs "
+            "the nano propagator through view='flow'",
+        )
+    plist = raw.get("physics")
+    if not isinstance(plist, list) or not plist:
+        raise BadInput(
+            f"manifest {where}: 'physics' must be a non-empty list",
+            options=["flow"],
+        )
+    for p in plist:
+        if p != "flow":
+            raise BadInput(f"manifest {where}: unknown physics {p!r}", options=["flow"])
+    spec = raw.get("spec")
+    if not isinstance(spec, dict):
+        raise BadInput(
+            f"manifest {where}: 'spec' must be an object", next=_PHYSICS_NEXT
+        )
+    _unknown_keys(spec, _PHYSICS_SPEC_KEYS, f"{where}.spec")
+    for req in ("inlet", "outlet", "dv"):
+        if spec.get(req) is None:
+            raise BadInput(f"manifest {where}.spec: needs {req!r}", next=_PHYSICS_NEXT)
+    if spec.get("fluid") is not None:
+        raise BadInput(
+            f"manifest {where}.spec.fluid: the import stores no SI fluid, so "
+            "the row would lose it",
+            next="drop 'fluid' from the spec out.physics takes — it changes "
+            "no measure; the Flow tab takes mu, rho and u0|dp as query args",
+        )
+    seed = _physics_int(raw.get("seed") or 0, f"{where}.seed", least=0)
+    cells = _physics_int(raw.get("cells") or 0, f"{where}.cells", least=0)
+    if raw.get("frame") is not None:
+        _physics_int(raw["frame"], f"{where}.frame", least=0)
+    inlet = _physics_port(spec["inlet"], f"{where}.spec.inlet")
+    outlet = _physics_port(spec["outlet"], f"{where}.spec.outlet")
+    region = (
+        _physics_port(spec["evenness_region"], f"{where}.spec.evenness_region")
+        if spec.get("evenness_region") is not None
+        else None
+    )
+    shape = _flow_token(
+        spec, inlet, outlet, seed=seed, cells=cells, where=f"{where}.spec"
+    )
+    try:
+        parse_flow_shape(shape)
+    except ValueError as exc:
+        raise BadInput(f"manifest {where}.spec: {exc}", next=_PHYSICS_NEXT) from exc
+    measures = _vet_physics_measures(
+        spec.get("measures"),
+        f"{where}.spec",
+        outlet=outlet,
+        region=region,
+        block=block,
+        declared=declared,
+    )
+    regions: list[str] = []
+    for sel_text in (inlet, outlet, region, *(m["datum"] for m in measures)):
+        if sel_text is not None and not any(
+            se_datums.same_region(sel_text, r) for r in regions
+        ):
+            regions.append(sel_text)
+    n = int(spec["n"]) if spec.get("n") is not None else DEFAULT_N
+    return {
+        "block": block,
+        "work": (cells or DEFAULT_NX) ** 2 + _PHYSICS_WORK_PER_PARTICLE * n,
+        "shape": shape,
+        "region": region,
+        "regions": regions,
+        "measures": measures,
+        "outcome": _vet_physics_outcome(raw.get("outcome"), where),
+        "seed": seed,
+        "cells": cells,
+    }
+
+
+def _vet_physics(raw: Any, blocks: list[BlockEntry]) -> list[dict[str, Any]]:
+    """The manifest's ``physics`` rows: capped (each one costs a server
+    solve), one per block, vetted before any transaction work."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise BadInput(
+            f"manifest.json: 'physics' must be a list, got {raw!r}",
+            next=_PHYSICS_NEXT,
+        )
+    if len(raw) > MAX_WS_PHYSICS_ROWS:
+        raise BadInput(
+            f"manifest.json: {len(raw)} physics rows exceeds the "
+            f"{MAX_WS_PHYSICS_ROWS} rows-per-run cap — each row is a server "
+            "re-check solve",
+            next=f"declare at most {MAX_WS_PHYSICS_ROWS} chambers in one run, "
+            "or split them across workspaces",
+        )
+    scales = {b.name: b.scale for b in blocks}
+    declared = {(b.name, str(m["name"]).strip()) for b in blocks for m in b.measures}
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for i, entry in enumerate(raw):
+        row = _vet_physics_row(entry, f"physics[{i}]", scales, declared)
+        if row["block"] in seen:
+            raise BadInput(
+                f"manifest physics[{i}]: block {row['block']!r} already has a "
+                "physics row — one flow chamber per block",
+                next="merge the rows, or split the chamber into two blocks",
+            )
+        seen.add(row["block"])
+        rows.append(row)
+    work = sum(row["work"] for row in rows)
+    if work > MAX_WS_PHYSICS_WORK:
+        raise BadInput(
+            f"manifest.json: the physics rows ask for {work:,} work units "
+            f"(cells² + {_PHYSICS_WORK_PER_PARTICLE}·n, summed), over the "
+            f"{MAX_WS_PHYSICS_WORK:,} per-import cap — about a minute of "
+            "server solving",
+            next="lower cells or spec.n on the rows, or split the chambers "
+            "across runs; the script keeps its own resolution for searching "
+            "and declares the final candidate at a resolution that fits",
+        )
+    return rows
 
 
 def _vet_manifest(
@@ -707,6 +1162,7 @@ def _vet_manifest(
             "design_scenarios lists them (view='validate' names the "
             "governing one)",
         )
+    physics = _vet_physics(data.get("physics"), blocks)
     return {
         "blocks": blocks,
         "instances": [dict(x) for x in data.get("instances") or []],
@@ -716,6 +1172,7 @@ def _vet_manifest(
         "scenario": str(scenario).strip() if scenario is not None else None,
         "fit": fit,
         "fit_rules": fit_rules,
+        "physics": physics,
     }
 
 
@@ -1093,11 +1550,201 @@ def _vec_close(a: list[float], b: list[float]) -> bool:
     )
 
 
+def _solve_physics(
+    store: Any,
+    ref_id: int,
+    rows: list[dict[str, Any]],
+    parsed: dict[str, tuple[Any, Any]],
+) -> list[tuple[dict[str, float], dict[str, str]]]:
+    """Each row's re-check solve → ``(values, reasons)`` per row, in row
+    order. ``evaluate`` is pure over the solid and the token, so it runs
+    here, once per row, before :func:`~precis_se.persist.tree_mutation`
+    takes the design's advisory lock: a solve costs seconds and every
+    other writer of the design waits on that lock. The solid is the
+    parsed spec the block will bind. A row's measures all read this one
+    outcome. A row the solver refuses gives every measure that refusal as
+    its reason."""
+    from precis_se.flow import FlowSpec, flow_outcome, parse_flow_shape
+
+    # Only a ``patch:`` reads the tree; a ``rect:`` is plain coordinates.
+    tree = (
+        persist.load_tree(store, ref_id)
+        if any(r.startswith("patch:") for row in rows for r in row["regions"])
+        else None
+    )
+    solved: list[tuple[dict[str, float], dict[str, str]]] = []
+    for row in rows:
+        spec = parse_flow_shape(row["shape"])
+        assert isinstance(spec, FlowSpec)  # _flow_token writes no lumen
+        try:
+            design = build_design(parsed[row["block"]][1])
+            outcome = flow_outcome(
+                (design, design.whole()), tree, row["block"], spec, row["region"]
+            )
+        except ValueError as exc:  # BadInput is one; so is a raw kernel fault
+            solved.append(({}, {m["measurand"]: str(exc) for m in row["measures"]}))
+            continue
+        solved.append((dict(outcome.measures), dict(outcome.reasons)))
+    return solved
+
+
+def _import_physics(
+    tree: SeTree,
+    rows: list[dict[str, Any]],
+    solved: list[tuple[dict[str, float], dict[str, str]]],
+    prev: dict[str, Any],
+    declared_before: set[str],
+    declared_now: set[str],
+    *,
+    workspace: str,
+    result: ImportResult,
+) -> tuple[set[str], dict[str, Any]]:
+    """``out.physics`` rows → the ``flow:`` pocket and the port measures,
+    carrying the server's numbers from :func:`_solve_physics` (se-flow-
+    kernel slice 4a, "Offline is a design property"). The manifest's
+    stated ``outcome`` is advisory: further than :data:`_PHYSICS_REL_TOL`
+    from the server the import still lands but names
+    ``measure.script_mismatch``; a stated ``outcome.cost.nx``/``seed``
+    different from the declared ``cells``/``seed`` also names
+    ``measure.resolution_differs``; no server value names
+    ``measure.uncomputable``.
+
+    The manifest is the workspace's whole state, so what the last import
+    made (``prev``, its ``physics`` record) is dropped first, rows or no
+    rows. Only that: a pocket whose shape changed since, or a measure
+    whose datum did, is someone's edit and stays, and a row that needs
+    the name refuses. ``declared_before`` is last run's block-declared
+    ``<block>.<name>`` set; such a measure may become a physics one.
+    ``declared_now`` is this run's, already written by the block loop: a
+    physics measure that became a declared one is not dropped.
+    Returns the ``<block>.<name>`` set and the new ``physics`` record."""
+    from precis_geom.flow import DEFAULT_NX
+
+    what = f"workspace {workspace!r} physics"
+    for item in prev.get("pockets") or []:
+        node = tree.blocks.get(item["block"])
+        pocket = node.pockets.get(item["name"]) if node is not None else None
+        if pocket is not None and pocket.shape == item.get("shape"):
+            _apply(
+                tree,
+                [{"op": "remove_pocket", "block": item["block"], "name": item["name"]}],
+                what=what,
+            )
+    for item in prev.get("measures") or []:
+        if f"{item['block']}.{item['name']}" in declared_now:
+            continue
+        live = _find_measure(tree, item["block"], item["name"])
+        if live is not None and live.datum == item.get("datum"):
+            _apply(
+                tree,
+                [
+                    {
+                        "op": "remove_measure",
+                        "block": item["block"],
+                        "name": item["name"],
+                    }
+                ],
+                what=what,
+            )
+    made: set[str] = set()
+    record: dict[str, Any] = {"pockets": [], "measures": []}
+    if not rows:
+        return made, record
+
+    for row, (values, reasons) in zip(rows, solved, strict=True):
+        blk = row["block"]
+        if "flow" in tree.blocks[blk].pockets:
+            raise BadInput(
+                f"workspace import: block {blk!r} already has a pocket 'flow' "
+                f"workspace {workspace!r} did not make",
+                next="remove_pocket it, or rename it, then re-run the import",
+            )
+        _apply(
+            tree,
+            [
+                {
+                    "op": "add_pocket",
+                    "block": blk,
+                    "name": "flow",
+                    "shape": row["shape"],
+                    "regions": [{"selector": s} for s in row["regions"]],
+                }
+            ],
+            what=f"{what} {blk!r}",
+        )
+        record["pockets"].append({"block": blk, "name": "flow", "shape": row["shape"]})
+
+        outcome = row["outcome"] or {}
+        stated = outcome.get("measures") or {}
+        cost = outcome.get("cost") or {}
+        cells = row["cells"] or DEFAULT_NX
+        resolution_differs = (cost.get("nx") is not None and cost["nx"] != cells) or (
+            outcome.get("seed") is not None and outcome["seed"] != row["seed"]
+        )
+        for mm in row["measures"]:
+            mname, slug = mm["name"], mm["measurand"]
+            key = f"{blk}.{mname}"
+            if _find_measure(tree, blk, mname) is not None:
+                if key not in declared_before:
+                    raise BadInput(
+                        f"workspace import: measure {key!r} exists and workspace "
+                        f"{workspace!r} did not make it",
+                        next="remove_measure it, or rename the spec's measure, "
+                        "then re-run the import",
+                    )
+                _apply(
+                    tree,
+                    [{"op": "remove_measure", "block": blk, "name": mname}],
+                    what=f"{what} measure {key}",
+                )
+            _apply(
+                tree,
+                [{"op": "add_measure", "block": blk, "origin": "user", **mm}],
+                what=f"{what} measure {key}",
+            )
+            made.add(key)
+            record["measures"].append(
+                {"block": blk, "name": mname, "datum": mm["datum"]}
+            )
+            value = values.get(slug)
+            if value is not None:
+                measure = _find_measure(tree, blk, mname)
+                assert measure is not None
+                measure.value = float(value)  # the server's number stands
+            site = f"physics {key}"
+            if resolution_differs:
+                result.findings.append(
+                    f"{site}: measure.resolution_differs — stated at "
+                    f"nx={cost.get('nx')}/seed={outcome.get('seed')}, "
+                    f"re-checked at cells={cells}/seed={row['seed']}"
+                )
+            claim = stated.get(slug)
+            if value is None:
+                result.findings.append(
+                    f"{site}: measure.uncomputable — stated {claim!r}, "
+                    f"server got {reasons.get(slug)!r}"
+                )
+            elif claim is not None and not math.isclose(
+                float(value), float(claim), rel_tol=_PHYSICS_REL_TOL
+            ):
+                result.findings.append(
+                    f"{site}: measure.script_mismatch — manifest {claim!r}, "
+                    f"server {value!r}"
+                )
+    # The hash digests measure values, and the server's landed after the
+    # last apply_ops stamped it.
+    stamp_class_hashes(tree)
+    return made, record
+
+
 def _apply(tree: SeTree, ops: list[dict[str, Any]], *, what: str, at: str = "") -> None:
     try:
         apply_ops(tree, ops)
-    except OpError as exc:
-        raise BadInput(f"workspace import: {what}: {exc}{at}") from exc
+    except (OpError, MeasureError) as exc:
+        raise BadInput(
+            f"workspace import: {what}: {exc}{at}",
+            next="fix the manifest entry this names and re-run the import",
+        ) from exc
 
 
 def _foreign_blocks(
@@ -1140,28 +1787,25 @@ def _foreign_blocks(
     return sorted(foreign)
 
 
-def import_workspace_run(
-    store: Any,
-    *,
-    workspace: str,
-    design: str,
-    out_dir: str | Path,
-    run_job: int | None = None,
-    script_sha: str | None = None,
-    lock_sha: str | None = None,
-    image_digest: str | None = None,
-    params: dict[str, Any] | None = None,
-    requested_by: str | None = None,
-    target: str = "design",
-) -> ImportResult:
-    """Import one workspace run's ``out/`` tree into an se design.
+@dataclass
+class _LoadedRun:
+    """A run's ``out/`` tree, read and vetted, nothing written — what
+    :func:`_load_run` hands the solve and the import."""
 
-    ``design`` is the linked design's slug; ``target='fork'`` imports into
-    a copy ``<slug>--<run_job|workspace>`` linked ``derived-from`` instead.
-    Everything validates (manifest, caps, files, ops) before the single
-    ``tree_mutation`` transaction writes anything; a bad manifest or a bad
-    file refuses naming the key and writes nothing.
-    """
+    manifest_text: str
+    manifest: dict[str, Any]
+    parsed: dict[str, tuple[Any, Any]]
+    trace: TraceView | None
+    trace_view: Any
+    site: Callable[[Any], str]
+    findings: list[str]
+    verified: list[str]
+
+
+def _load_run(store: Any, workspace: str, out_dir: str | Path) -> _LoadedRun:
+    """Read and vet one run's ``out/`` tree: manifest, caps, trace, every
+    geometry file. A bad manifest or a bad file refuses naming the key;
+    nothing here writes, and it needs no transaction."""
     _vet_workspace_slug(workspace)
     out_path = Path(out_dir)
     if not out_path.is_dir():
@@ -1337,10 +1981,60 @@ def import_workspace_run(
         except BadInput as exc:
             _with_site(exc, _site(entry.frame))
             raise
+    return _LoadedRun(
+        manifest_text=manifest_text,
+        manifest=manifest,
+        parsed=parsed,
+        trace=trace,
+        trace_view=_tv,
+        site=_site,
+        findings=findings,
+        verified=verified,
+    )
+
+
+def import_workspace_run(
+    store: Any,
+    *,
+    workspace: str,
+    design: str,
+    out_dir: str | Path,
+    run_job: int | None = None,
+    script_sha: str | None = None,
+    lock_sha: str | None = None,
+    image_digest: str | None = None,
+    params: dict[str, Any] | None = None,
+    requested_by: str | None = None,
+    target: str = "design",
+    loaded: _LoadedRun | None = None,
+    physics_solved: list[tuple[dict[str, float], dict[str, str]]] | None = None,
+) -> ImportResult:
+    """Import one workspace run's ``out/`` tree into an se design.
+
+    ``design`` is the linked design's slug; ``target='fork'`` imports into
+    a copy ``<slug>--<run_job|workspace>`` linked ``derived-from`` instead.
+    Everything validates (manifest, caps, files, ops) before the single
+    ``tree_mutation`` transaction writes anything; a bad manifest or a bad
+    file refuses naming the key and writes nothing.
+
+    A caller already inside a transaction passes ``loaded`` and
+    ``physics_solved``, made before it opened one: a solve takes seconds
+    and must not hold that transaction idle (:func:`import_workspace_op`).
+    """
+    run = loaded if loaded is not None else _load_run(store, workspace, out_dir)
+    manifest_text, manifest, parsed = run.manifest_text, run.manifest, run.parsed
+    trace, _tv, _site = run.trace, run.trace_view, run.site
+    findings, verified = run.findings, run.verified
+    scenario_id = manifest["scenario"]
 
     ref = store.get_ref(kind="se", id=design)
     if ref is None:
         raise persist.design_not_found(store, design)
+    # A fork's ref carries no workspace record, but its tree is a copy of
+    # what this one's physics record describes.
+    source_physics = (
+        ((ref.meta or {}).get("workspaces") or {}).get(workspace) or {}
+    ).get("physics") or {}
     if target == "fork":
         fork_slug = f"{design}--{run_job if run_job is not None else workspace}"
         with store.tx() as conn:
@@ -1388,6 +2082,10 @@ def import_workspace_run(
         for i in manifest["instances"]
         if str(i.get("name") or "").strip()
     }
+
+    # Outside the lock (see _solve_physics).
+    if physics_solved is None:
+        physics_solved = _solve_physics(store, int(ref.id), manifest["physics"], parsed)
 
     with persist.tree_mutation(store, ref.id) as conn:
         tree = persist.load_tree(store, ref.id)
@@ -1836,6 +2534,24 @@ def import_workspace_run(
                 node.bound_kind = "cad"
                 node.bound = cad_slug
 
+        # ── physics rows (out.physics → the flow: pocket + port
+        # measures, carrying the pre-lock re-check) — before the
+        # drop-facet pass, which must not drop what they just wrote
+        # (se-flow-kernel 4a) ──
+        declared_measures = {
+            f"{e.name}.{m['name']}" for e in manifest["blocks"] for m in e.measures
+        }
+        physics_measures, physics_record = _import_physics(
+            tree,
+            manifest["physics"],
+            physics_solved,
+            source_physics,
+            set(prev.get("measures") or []),
+            declared_measures,
+            workspace=workspace,
+            result=result,
+        )
+
         # ── declared facets the manifest dropped (gr514245): the
         # manifest is the workspace's whole state, so a mode/loads/
         # measure this run no longer declares is cleared on the block it
@@ -1843,9 +2559,7 @@ def import_workspace_run(
         new_loads = {e.name for e in manifest["blocks"] if e.loads is not None}
         new_modes = {e.name for e in manifest["blocks"] if e.mode is not None}
         new_materials = {e.name for e in manifest["blocks"] if e.material is not None}
-        new_measures = {
-            f"{e.name}.{m['name']}" for e in manifest["blocks"] for m in e.measures
-        }
+        new_measures = declared_measures | physics_measures
         drop_ops: list[dict[str, Any]] = []
         for blk in sorted(set(prev.get("loads") or []) - new_loads):
             if blk in tree.blocks:
@@ -2166,7 +2880,8 @@ def import_workspace_run(
                                     for c in manifest["connects"]
                                 ],
                                 "rays": sorted(manifest_rays),
-                                "measures": sorted(new_measures),
+                                "measures": sorted(declared_measures),
+                                "physics": physics_record,
                                 "loads": sorted(new_loads),
                                 "modes": sorted(new_modes),
                                 "materials": sorted(new_materials),
@@ -2788,81 +3503,87 @@ def import_workspace_op(store: Any, *, design: str, op: dict[str, Any]) -> str:
     # ``atomic`` — the check and the writes share one serialized span.
     result: ImportResult | None = None
     files_echo: str | None = None
-    try:
-        with store.atomic() as conn:
-            if files is not None:
-                files_echo = _sync_workspace_files(
-                    store,
-                    conn,
-                    workspace=workspace,
-                    design_slug=design,
-                    design_ref_id=int(ref.id),
-                    files=files,
-                    requested_by=requested_by,
-                )
-            with TemporaryDirectory() as td:
-                out_dir = Path(td) / "out"
-                if run is not None:
-                    for rel, text in run.items():
-                        dest = out_dir / rel
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        dest.write_text(text, encoding="utf-8")
-                else:
-                    # The staged door (gr517643): the out/ tree arrived
-                    # as one tar POSTed to a signed URL — the sha names
-                    # the ``<ref_id>-<sha>.tar`` the route left under
-                    # PRECIS_UPLOAD_STAGING, bound to THIS design's ref.
-                    from precis.ingest import pdf_upload
+    with TemporaryDirectory() as td:
+        out_dir = Path(td) / "out"
+        if run is not None:
+            for rel, text in run.items():
+                dest = out_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(text, encoding="utf-8")
+        else:
+            # The staged door (gr517643): the out/ tree arrived as one tar
+            # POSTed to a signed URL — the sha names the
+            # ``<ref_id>-<sha>.tar`` the route left under
+            # PRECIS_UPLOAD_STAGING, bound to THIS design's ref.
+            from precis.ingest import pdf_upload
 
-                    pdf_upload.require_uploads_dir()
-                    assert staged_sha is not None
-                    staged = pdf_upload.staged_tree_path(staged_sha, ref_id=int(ref.id))
-                    if staged is None:
-                        raise BadInput(
-                            f"import_workspace: no staged tree "
-                            f"{staged_sha[:16]}… bound to {design!r} — "
-                            "the sha comes from the upload POST's answer "
-                            "(stagings bind to their token's design and "
-                            "sweep after 24 h)",
-                            next=f"edit(kind='se', id={design!r}, ops="
-                            "[{'op': 'workspace_upload_link'}]) for a "
-                            "fresh upload URL",
-                        )
-                    if "manifest.json" not in _extract_staged_tree(
-                        Path(staged), out_dir
-                    ):
-                        raise BadInput(
-                            "import_workspace: the staged tar holds no manifest.json",
-                            next="the out/ tree verbatim — out.run writes "
-                            "manifest.json beside trace.json and blocks/",
-                        )
-                try:
-                    result = import_workspace_run(
+            pdf_upload.require_uploads_dir()
+            assert staged_sha is not None
+            staged = pdf_upload.staged_tree_path(staged_sha, ref_id=int(ref.id))
+            if staged is None:
+                raise BadInput(
+                    f"import_workspace: no staged tree "
+                    f"{staged_sha[:16]}… bound to {design!r} — "
+                    "the sha comes from the upload POST's answer "
+                    "(stagings bind to their token's design and "
+                    "sweep after 24 h)",
+                    next=f"edit(kind='se', id={design!r}, ops="
+                    "[{'op': 'workspace_upload_link'}]) for a "
+                    "fresh upload URL",
+                )
+            if "manifest.json" not in _extract_staged_tree(Path(staged), out_dir):
+                raise BadInput(
+                    "import_workspace: the staged tar holds no manifest.json",
+                    next="the out/ tree verbatim — out.run writes "
+                    "manifest.json beside trace.json and blocks/",
+                )
+        try:
+            loaded = _load_run(store, workspace, out_dir)
+        except UnicodeDecodeError as exc:
+            # Only the staged door can land non-UTF-8 bytes in out/ — the
+            # inline 'run' map is vetted text.
+            raise BadInput(
+                f"import_workspace: a file in the staged tar is not UTF-8 text — {exc}",
+                next="manifest.json, trace.json and the blocks/ "
+                "files must be UTF-8 — re-tar the run's out/ dir "
+                "(tar cf run.tar -C out .)",
+            ) from exc
+        # Before ``atomic``: a solve takes seconds, and a session idle in a
+        # transaction holds its row locks and can hit
+        # idle_in_transaction_session_timeout, losing the compute.
+        solved = _solve_physics(
+            store, int(ref.id), loaded.manifest["physics"], loaded.parsed
+        )
+        try:
+            with store.atomic() as conn:
+                if files is not None:
+                    files_echo = _sync_workspace_files(
                         store,
+                        conn,
                         workspace=workspace,
-                        design=design,
-                        out_dir=out_dir,
-                        run_job=run_job,
-                        script_sha=script_sha,
-                        lock_sha=lock_sha,
-                        params=params,
+                        design_slug=design,
+                        design_ref_id=int(ref.id),
+                        files=files,
                         requested_by=requested_by,
-                        target=target,
                     )
-                except UnicodeDecodeError as exc:
-                    # Only the staged door can land non-UTF-8 bytes in
-                    # out/ — the inline 'run' map is vetted text.
-                    raise BadInput(
-                        "import_workspace: a file in the staged tar is "
-                        f"not UTF-8 text — {exc}",
-                        next="manifest.json, trace.json and the blocks/ "
-                        "files must be UTF-8 — re-tar the run's out/ dir "
-                        "(tar cf run.tar -C out .)",
-                    ) from exc
-            if dry_run:
-                raise _DryRunDone
-    except _DryRunDone:
-        pass
+                result = import_workspace_run(
+                    store,
+                    workspace=workspace,
+                    design=design,
+                    out_dir=out_dir,
+                    run_job=run_job,
+                    script_sha=script_sha,
+                    lock_sha=lock_sha,
+                    params=params,
+                    requested_by=requested_by,
+                    target=target,
+                    loaded=loaded,
+                    physics_solved=solved,
+                )
+                if dry_run:
+                    raise _DryRunDone
+        except _DryRunDone:
+            pass
     assert result is not None
     head = f"# se design '{result.design_slug}' — workspace {workspace!r} import" + (
         " — DRY RUN, nothing written" if dry_run else ""
