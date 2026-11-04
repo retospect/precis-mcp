@@ -257,6 +257,30 @@ The older `ready_for_fix` and `in_review` values still show as stored.
 The fix loop's own queues (brief, handoff, review, landed sha) are in
 [[precis-gripe-loop-help]].
 
+## How does a gripe reach a build lane by itself?
+## What does the gripe_dispatch pass mint, and which gripes does it skip?
+
+The `gripe_dispatch` worker pass (every 10 minutes, dark until
+`service_config` lights it for a host) mints one `gripe-fix-direct`
+chain per free code-lane slot: the summed cap of the enabled lanes that
+fit the `code` class, minus the plan roots still `related-to` a gripe
+and not `done`/`won't-do`, at most two per fire. The build node carries
+the gripe text verbatim and picks its lane at dispatch (codex first by
+table order); the land writes `resolved: <sha>` on the gripe. It picks
+the hottest `prio` then the oldest among gripes that are `open` or
+`triaged`, tagged `fix:code`, older than an hour, with no live todo
+`related-to` them, and filed by a Claude Code session or a human
+account (`meta.filed_by`). Reader-intake and worker-filed gripes never
+enter a lane this way. Keep a gripe out with any of `fix:reto`,
+`reto:ask`, `disagreement`, `flood`, or:
+
+```python
+tag(kind="gripe", id=564261, add=["hold:no-dispatch"])
+```
+
+A hand-minted chain also counts: the `related-to` link is the marker.
+Each mint leaves a `dispatch: minted gripe-fix-direct td<root>` comment.
+
 ## What is a pillar quest?
 ## Why is a paper a month todo and not a quest?
 

@@ -306,6 +306,25 @@ def _run_gripe_triage(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_gripe_dispatch(store: Store, batch_size: int) -> None:
+    """One gripe dispatch tick (dark factory intake, td564019 cut 3): mint
+    a ``gripe-fix-direct`` chain for the hottest agent- or human-filed
+    ``fix:code`` gripes, as many as the code lanes have free slots. Dark
+    unless ``service_config`` lights ``gripe_dispatch`` for this host.
+    ``batch_size`` is unused — the lane caps are the throttle. No model
+    call: spends=False."""
+    del batch_size
+    from precis.workers.gripe_dispatch import run_gripe_dispatch_pass
+
+    result = run_gripe_dispatch_pass(store)
+    log.info(
+        "scheduler: gripe_dispatch inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 #: ``anki_sync`` failure backoff (§A). A failed tick holds the *cadence* back
 #: ``min(fail_count, _ANKI_MAX_BACKOFF_STEPS) * _ANKI_BACKOFF_STEP_HOURS``
 #: before the next attempt — the whole-account analogue of
@@ -1183,6 +1202,18 @@ CADENCES: tuple[Cadence, ...] = (
         eligible=_gripe_triage_eligible,
         service="gripe_triage",
         spends=True,
+    ),
+    # Dark factory intake (td564019 cut 3): every 10 minutes, mint a
+    # gripe-fix-direct chain per free code-lane slot for the hottest
+    # agent- or human-filed fix:code gripe. `service` gates the claim on
+    # the host's resolved gripe_dispatch prio (Reto lights it); no
+    # `eligible` probe — the pass only writes todos, the build picks its
+    # own lane at dispatch. spends=False: no model call.
+    Cadence(
+        name="gripe_dispatch",
+        interval_s=10 * 60,
+        run=_run_gripe_dispatch,
+        service="gripe_dispatch",
     ),
     # gr485358 item 1: retire dead section:threads memory nodes — 'Left:
     # none' first lines, nodes another live memory supersedes, and nodes

@@ -1539,6 +1539,22 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-gripe-help",
     ),
     ServiceSpec(
+        # Dark factory intake (precis.workers.gripe_dispatch, td564019 cut
+        # 3): the 10-minute `gripe_dispatch` scheduler cadence fires the
+        # pass; this row names the service so `precis service` can light
+        # it. NO `default_profiles`, no rotation wiring (ref_pass=False):
+        # dark until a service_config row (prio > 0) lights it. No model
+        # call: it only mints plan todos.
+        name="gripe_dispatch",
+        label="Gripe dispatch",
+        category="health",
+        kind=ServiceKind.PASS,
+        one_line="10-minute tick that mints a gripe-fix-direct chain per free "
+        "code-lane slot for the hottest agent- or human-filed fix:code gripe "
+        "with no chain yet; dark until service_config lights it.",
+        doc_skill="precis-work-help",
+    ),
+    ServiceSpec(
         # 2026-10 dream hygiene (precis.workers.dream_consolidate): the
         # daily `dream_consolidate` scheduler cadence fires the pass; this
         # row names the service so `precis service` can light it. NO

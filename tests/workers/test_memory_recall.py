@@ -17,6 +17,7 @@ from precis.cli.memory import SPACE_TAG
 from precis.cli.memory_recall import CURVE_KS, measure_recall
 from precis.dispatch import Hub
 from precis.handlers.memory import MemoryHandler
+from precis.protocol import tolerates_extra_kwargs
 from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.workers.memory_recall import (
@@ -285,6 +286,10 @@ def test_curve_cutoffs_count_hits_not_hint_lines(hub: Hub, store: Store, monkeyp
     rid = _put(hub, title="wanted", hook="zebra quorum")
 
     # Pin rank eight independently of lexical/vector scoring and hint trailers.
+    # The dispatcher's extra-kwarg gate reads the *stub's* signature (and
+    # caches it per class), so a bare ``**kwargs`` would refuse q/tags/view
+    # when no earlier test warmed the cache: opt out as a real handler would.
+    @tolerates_extra_kwargs
     def ranked(self, *, page_size=10, **kwargs):
         handles = [f"me{rid + 100 + i}" for i in range(12)]
         handles[7] = f"me{rid}"

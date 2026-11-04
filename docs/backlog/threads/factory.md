@@ -78,7 +78,11 @@ quality-of-life and container items.
    instead of widening codex's writable roots. Its escalation then burned
    an attempt on the Claude weekly 429 (gr565359): a quota or rate result
    now parks the slice with no attempt, resubmitting at once on another
-   vendor's lane when one fits, else at the parsed reset.
+   vendor's lane when one fits, else at the parsed reset. Intake:
+   `workers/gripe_dispatch.py` (td564019 cut 3, dark until a
+   `service_config` row) mints a `gripe-fix-direct` chain per free
+   code-lane slot for the hottest agent- or human-filed `fix:code` gripe
+   with no chain yet; Reto lights it.
 1. **backlog/worker-rotation-starves-rescue-passes.md** — the rescue
    starvation shipped (overdue rescue passes age to the front of the
    rotation); left is the one unbounded job pass still inside the wait.
