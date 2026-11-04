@@ -1235,6 +1235,8 @@ class PcbHandler(Handler):
                 "value",
                 "footprint",
                 "force",
+                # op='footprint' bulk-fetch of a board's uncached parts (gr558714).
+                "missing",
                 "phase",
                 "profile",
                 "pins",
