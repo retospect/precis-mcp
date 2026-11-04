@@ -7,7 +7,10 @@ per paragraph for prose). Subtype (``slides`` / ``writeup`` /
 closed-axis vocabulary stays empty (same shape as ``conv``).
 
 Reads: get an overview, get a specific block (``~N``), get the
-whole rendered body (``/full``), search across blocks.
+whole rendered body (``/full``), search across blocks. The overview
+shows stored PDF metadata; ``pdf_link`` shares the document-family
+signed download renderer in :mod:`precis.handlers._doc_pdf`. Stored tags
+appear on the overview and the dedicated ``tags`` view.
 
 Writes: ``put(id='<slug>', text='<slide body>', pos=N, ...)`` is
 the bridge for both human ingest (one call per slide while
@@ -15,6 +18,10 @@ running marker on a slide PDF) and inline agent capture of an
 unpublished writeup. Subsequent calls with the same ``pos``
 overwrite; absent ``pos`` appends. Per-block metadata can carry
 ``slide_index``, ``slide_title``, ``figure_refs``, etc.
+
+Tag lists repeat the scalar operation inside one store transaction, like
+numeric-ref kinds, so a missing deck cannot leave a partially tagged batch.
+The runtime already repeats metadata edits with the same atomic contract.
 
 PDF ingest (auto-chunk a slide PDF into per-slide blocks) is a
 follow-up — see ``cluster/playbooks/27-extract-watch.yml`` for
@@ -27,7 +34,9 @@ import re
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, NotFound, Unsupported
+from precis.errors import BadInput, NotFound, PrecisError, Unsupported
+from precis.handlers._doc_pdf import pdf_overview_line, render_pdf_link
+from precis.handlers._numeric_ref import BATCH_ID_CAP, _id_batch_next
 from precis.handlers._paper_format import (
     _clean_inline_text,
     _latex_escape,
@@ -96,7 +105,7 @@ class PresentationHandler(Handler):
         # renders every slide; ``bibtex`` / ``ris`` export the deck's
         # attribution for citing slides; ``links`` is the F8 graph view
         # (OPEN-ITEMS.md 🕸️ graph-completeness audit item 1).
-        return ["full", "bibtex", "ris", "links"]
+        return ["full", "bibtex", "ris", "links", "pdf_link", "tags"]
 
     # ── get ─────────────────────────────────────────────────────────
 
@@ -120,6 +129,11 @@ class PresentationHandler(Handler):
             return self._render_full(slug, ref)
         if effective_view in ("bibtex", "ris"):
             return Response(body=_format_pres_citation(ref, style=effective_view))
+        if effective_view == "pdf_link":
+            return render_pdf_link(self.store, ref)
+        if effective_view == "tags":
+            handle = handle_registry.format_handle("pres", ref.id)
+            return Response(body=f"# {handle} — tags\n{self._tags_line(ref.id)}")
         if effective_view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.
@@ -359,7 +373,10 @@ class PresentationHandler(Handler):
         ``authors=[]`` clears the author list. Feeds
         ``get(view='bibtex')``.
         """
-        ref = resolve_live_slug_ref(self.store, kind="pres", id=str(id))
+        address = (
+            handle_registry.format_handle("pres", id) if isinstance(id, int) else id
+        )
+        ref = resolve_live_slug_ref(self.store, kind="pres", id=address)
 
         patch: dict[str, Any] = {}
         if authors is not None:
@@ -417,6 +434,8 @@ class PresentationHandler(Handler):
         return Response(body=f"deleted {handle} (soft-deleted)")
 
     def _resolve_pres_slug(self, id: str | int) -> tuple[str, int]:
+        if isinstance(id, int):
+            id = handle_registry.format_handle("pres", id)
         slug, chunk, path_view = _parse_pres_id(str(id))
         reject_chunk_or_path_view(
             kind="pres",
@@ -433,15 +452,22 @@ class PresentationHandler(Handler):
         )
         return slug, ref.id
 
-    def tag(  # type: ignore[override]
+    def tag(
         self,
         *,
-        id: str | int,
+        id: Any = None,
         add: list[str] | None = None,
         remove: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
         require_tag_ops("pres", add, remove)
+        if isinstance(id, list):
+            return self._tag_batch(id, add=add, remove=remove)
+        if not isinstance(id, (str, int)) or isinstance(id, bool):
+            raise BadInput(
+                "tag(kind='pres') needs a slug, handle or numeric id",
+                next="tag(kind='pres', id='pr<id>', add=['topic:slides'])",
+            )
         slug, ref_id = self._resolve_pres_slug(id)
         n_added, n_removed = apply_tag_ops(
             self.store, "pres", ref_id, tags=add, untags=remove
@@ -455,6 +481,52 @@ class PresentationHandler(Handler):
                 n_tags_added=n_added,
                 n_tags_removed=n_removed,
             )
+        )
+
+    def _tag_batch(
+        self,
+        ids: list[Any],
+        *,
+        add: list[str] | None,
+        remove: list[str] | None,
+    ) -> Response:
+        """Apply the same tags to distinct decks, with atomic per-id receipts."""
+        if not ids:
+            raise BadInput(
+                "id=[] is empty",
+                next="tag(kind='pres', id='pr<id>', add=['topic:slides'])",
+            )
+        if len(ids) > BATCH_ID_CAP:
+            raise BadInput(
+                f"id=[...] takes at most {BATCH_ID_CAP} ids, got {len(ids)}",
+                next=_id_batch_next("tag", "pres", ids),
+            )
+        lines: list[str] = []
+        seen: set[int] = set()
+        with self.store.atomic():
+            for raw in ids:
+                try:
+                    if not isinstance(raw, (str, int)) or isinstance(raw, bool):
+                        raise BadInput(
+                            "each pres id must be a slug, handle or integer",
+                            next="tag(kind='pres', id=['pr<id>', '<slug>'], add=['topic:slides'])",
+                        )
+                    _, ref_id = self._resolve_pres_slug(raw)
+                    if ref_id in seen:
+                        continue
+                    seen.add(ref_id)
+                    response = self.tag(id=ref_id, add=add, remove=remove)
+                except PrecisError as exc:
+                    exc.cause = (
+                        f"{raw}: {exc.cause} — batch of {len(ids)} "
+                        "rolled back, nothing applied"
+                    )
+                    exc.args = (exc.cause,)
+                    raise
+                handle = handle_registry.format_handle("pres", ref_id)
+                lines.append(f"{handle}: {response.body.splitlines()[0]}")
+        return Response(
+            body=f"tagged {len(seen)} pres in one transaction\n" + "\n".join(lines)
         )
 
     def link(  # type: ignore[override]
@@ -490,6 +562,10 @@ class PresentationHandler(Handler):
 
     # ── render helpers ──────────────────────────────────────────────
 
+    def _tags_line(self, ref_id: int) -> str:
+        tags = ", ".join(str(tag) for tag in self.store.tags_for(ref_id))
+        return f"tags: {tags or '(none)'}"
+
     def _render_list(self) -> Response:
         return render_slug_ref_list(
             self.store,
@@ -524,8 +600,11 @@ class PresentationHandler(Handler):
             )
         lines.append("")
         lines.append(f"{n_blocks} block{'s' if n_blocks != 1 else ''}")
+        lines.append(pdf_overview_line(self.store, ref))
+        lines.append(self._tags_line(ref.id))
         body = "\n".join(lines)
         next_steps = [
+            (f"/pres/{ref.id}", "open the web reader"),
             (f"get(id='{handle}/full')", "read the whole body"),
             (f"get(id='{handle}~0')", "read the first block"),
             (
@@ -533,6 +612,10 @@ class PresentationHandler(Handler):
                 "search this presentation",
             ),
         ]
+        if ref.pdf_sha256:
+            next_steps.append(
+                (f"get(id='{handle}', view='pdf_link')", "download the stored PDF")
+            )
         # Offer the citation once any attribution is filled in.
         if authors or venue or date:
             next_steps.append(

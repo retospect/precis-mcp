@@ -124,6 +124,19 @@ get(
 )  # single block (output shows handle ps<id>; get(id='ps<id>') works too)
 ```
 
+## Check or download the stored PDF
+
+The overview includes `pdf: present` with the stored page count and byte
+size, or `pdf: missing`, and a `/pres/<id>` web-reader continuation.
+
+```python
+get(kind="pres", id="pr5", view="pdf_link")
+```
+
+`pdf_link` returns a signed download URL, UTC expiry, SHA256, size, page
+count and curl command. It uses the same short-lived link as papers and
+datasheets; a deck without an attached PDF refuses with ingest guidance.
+
 ## Browse what's been stored
 
 ```python
@@ -165,6 +178,15 @@ Open-tag axes only; no closed workflow vocabulary on `pres`. To
 mark a draft's status, use a paired `todo` or `gripe`.
 
 ## Tags
+
+The overview shows stored tags; `get(kind='pres', id='pr5', view='tags')`
+reads just the tag list. In the web reader's **Meta** panel, use the quick
+tags, **+ tag** box, or **×** beside an open tag. Closed-vocabulary chips
+are inert, as on the paper reader.
+
+`tag` and metadata `edit` accept `id=[...]` (slugs, `pr` handles or numeric
+ref IDs). They apply the same arguments to each deck in one transaction,
+return per-deck results, and roll everything back if any deck fails.
 
 ```python
 tag(

@@ -8252,66 +8252,9 @@ class PaperHandler(Handler):
         token bearer at ``GET /files/pdf/<sha>?t=<token>``. Reusable
         until expiry — ``args={'ttl_s': …}``, default 600, cap 3600.
         """
-        from precis import file_links
-        from precis import secrets as vault
+        from precis.handlers._doc_pdf import render_pdf_link
 
-        handle = _pa(ref)
-        sha = getattr(ref, "pdf_sha256", None)
-        if not sha:
-            raise BadInput(
-                f"{handle} holds no PDF — nothing to link",
-                next=(
-                    f"put(kind='paper', id='{handle}', "
-                    "args={'pdf_url': 'https://…/x.pdf'})"
-                ),
-            )
-        ttl_raw = (args or {}).get("ttl_s", file_links.DEFAULT_TTL_S)
-        try:
-            # ``int(float('inf'))`` raises OverflowError — JSON Infinity
-            # arrives as exactly that.
-            ttl_s = int(ttl_raw)
-        except (TypeError, ValueError, OverflowError):
-            raise BadInput(
-                f"args['ttl_s'] must be seconds, got {ttl_raw!r}",
-                next=f"get(kind='paper', id='{handle}', view='pdf_link')",
-            ) from None
-        token = file_links.mint("get", sha, ref.id, ttl_s, store=self.store)
-        exp = file_links.parse(token).exp
-        path = f"/files/pdf/{sha}?t={token}"
-        base = (
-            vault.get_secret(file_links.WEB_BASE_URL_SECRET, store=self.store) or ""
-        ).rstrip("/")
-        url = f"{base}{path}" if base else path
-        # ``pdfs`` carries the ingest-time byte size and physical page
-        # count — surfaced so the caller can size the fetch before it
-        # commits to the download.
-        with self.store.pool.connection() as conn:
-            row = conn.execute(
-                "SELECT size_bytes, page_count FROM pdfs WHERE pdf_sha256 = %s",
-                (sha,),
-            ).fetchone()
-        size_b = f"{int(row[0])} B" if row else "unknown"
-        pages = str(int(row[1])) if row else "unknown"
-        expires = datetime.fromtimestamp(exp, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        lines: list[str] = []
-        if not base:
-            lines.append(
-                "PRECIS_WEB_BASE_URL is not set — the link below is "
-                "path-only; prepend the precis_web origin to fetch it "
-                "(the operator sets it with `precis secret set "
-                "PRECIS_WEB_BASE_URL` or on /secrets)."
-            )
-        stem = ref.slug or handle
-        lines += [
-            f"# {handle} — PDF download link",
-            f"url: {url}",
-            f"expires: {expires} (reusable until then)",
-            f"sha256: {sha}",
-            f"bytes: {size_b} · pages: {pages}",
-            "",
-            f"curl -fo {shlex.quote(stem + '.pdf')} '{url}'",
-        ]
-        return Response(body="\n".join(lines))
+        return render_pdf_link(self.store, ref, args)
 
     def _render_page_image_view(
         self, ref: Ref, args: dict[str, Any] | None = None

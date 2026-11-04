@@ -3,7 +3,11 @@
    which supplies the ``x-show="tab === 'Meta'"`` wrapper AND the
    ``x-data="paperDoc(...)"`` scope — so each slide button can call
    ``gotoPage(n)`` to drive the PDF viewer. Context: ref, attribution,
-   bibtex, slides (built by pres.detail). #}
+   bibtex, slides, tags (built by pres.detail). #}
+{% with tag_action='/pres/' ~ ref.id ~ '/tags', tag_kind='pres', tag_ref_id=ref.id %}
+{% include "_reader/_tags.html.j2" %}
+{% endwith %}
+
 <form method="post" action="/pres/{{ ref.id }}/edit" class="space-y-2">
   <h2 class="mb-1 text-xs font-semibold uppercase tracking-wide text-fg-subtle">Attribution</h2>
 

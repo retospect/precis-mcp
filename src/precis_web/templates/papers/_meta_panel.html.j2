@@ -190,44 +190,9 @@
   {% endif %}
 </div>
 
-{# Tag chips. OPEN (free) tags — the ``needs-triage`` review flag
-   included — carry a × that removes them via the tag verb; closed-
-   vocab tags (STATUS:*, project:*, …) render inert (remove those
-   through the agent tag() verb). An add box mints new OPEN tags. #}
-<div class="flex flex-wrap items-center gap-1 border-t border-line-subtle pt-2">
-  {% for t in tags %}
-    {% if t.deletable %}
-    <form method="post" action="/papers/{{ paper.id }}/tags" class="inline">
-      <input type="hidden" name="remove" value="{{ t.value }}" />
-      <span class="inline-flex items-center gap-1 rounded bg-surface-muted px-1.5 py-0.5 text-[10px] text-fg-muted">
-        {{ t.value }}
-        <button type="submit" class="text-fg-faint hover:text-danger" title="remove tag">×</button>
-      </span>
-    </form>
-    {% else %}
-    <span class="rounded bg-accent-subtle px-1.5 py-0.5 text-[10px] text-accent-strong"
-          title="closed-vocab tag — remove via tag(kind='paper', id={{ paper.id }}, remove=[…])">{{ t.label }}</span>
-    {% endif %}
-  {% else %}
-  <span class="text-[10px] italic text-fg-faint">no tags yet</span>
-  {% endfor %}
-  <form method="post" action="/papers/{{ paper.id }}/tags" class="inline">
-    <input type="hidden" name="add" value="read-later" />
-    <button type="submit"
-            class="rounded bg-surface-subtle px-1.5 py-0.5 text-[10px] text-fg-subtle hover:bg-surface-muted"
-            title="quick-tag: read-later">+ read later</button>
-  </form>
-  <form method="post" action="/papers/{{ paper.id }}/tags" class="inline">
-    <input type="hidden" name="add" value="starred" />
-    <button type="submit"
-            class="rounded bg-surface-subtle px-1.5 py-0.5 text-[10px] text-fg-subtle hover:bg-surface-muted"
-            title="quick-tag: starred">+ starred</button>
-  </form>
-  <form method="post" action="/papers/{{ paper.id }}/tags" class="inline-flex items-center gap-1">
-    <input name="add" placeholder="+ tag"
-           class="w-20 rounded border border-line-strong px-1.5 py-0.5 text-[10px]" />
-  </form>
-</div>
+{% with tag_action='/papers/' ~ paper.id ~ '/tags', tag_kind='paper', tag_ref_id=paper.id %}
+{% include "_reader/_tags.html.j2" %}
+{% endwith %}
 
 {# "Referenced by" — who links here (drafts / findings / dreams / papers),
    from the materialised ``links`` reverse index. Grouped by (source kind,

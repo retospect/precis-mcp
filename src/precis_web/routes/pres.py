@@ -13,6 +13,11 @@ resolved with :func:`precis_web.corpus.resolve_pdf_for_ref` (which honours
 vendored pdf.js viewer as the paper reader. Only the left-pane form
 differs.
 
+Meta tag chips and input parsing are shared with the paper reader. Writes
+go through the pres ``tag`` verb, keeping vocabulary validation in the handler.
+The route allows only open tags because closed tags are read-only in Meta;
+the MCP handler retains its broader tag support.
+
 There is intentionally **no** ``/pres`` list page or nav tab yet — the
 merged papers/patents/edgar/slides filtered list will own discovery; this
 router is just the single-deck editor + its endpoints.
@@ -32,6 +37,7 @@ from fastapi.responses import (
 )
 
 from precis.errors import NotFound
+from precis.store import Tag
 from precis.utils.handle_registry import format_handle
 from precis_web.corpus import resolve_pdf_for_ref
 from precis_web.deps import (
@@ -42,6 +48,7 @@ from precis_web.deps import (
     templates,
 )
 from precis_web.paper_ident import PAPER_IDENT_KINDS
+from precis_web.routes.papers import _detail_tags, _split_tags
 
 router = APIRouter(prefix="/pres", tags=["pres"])
 
@@ -138,6 +145,7 @@ async def detail(request: Request, slug: str) -> HTMLResponse:
             "attribution": _form_attribution(ref),
             "bibtex": bibtex,
             "doc": doc,
+            "tags": _detail_tags(store, ref.id),
         },
     )
 
@@ -223,4 +231,40 @@ async def delete(request: Request, ref_id: int) -> Response:
         {"kind": "pres", "id": ref.id},
         redirect="/drive",
         error_title="Delete error",
+    )
+
+
+@router.post("/{ref_id}/tags", response_model=None)
+async def edit_tags(
+    request: Request,
+    ref_id: int,
+    add: str = Form(""),
+    remove: str = Form(""),
+) -> Response:
+    """Add or remove Meta tags through the handler, then return to Meta."""
+    ref = _load_pres(request, ref_id)
+    add_list = _split_tags(add)
+    remove_list = _split_tags(remove)
+    redirect_url = f"/pres/{ref.id}?tab=Meta"
+    if not add_list and not remove_list:
+        return RedirectResponse(url=redirect_url, status_code=303)
+    for value in add_list + remove_list:
+        if Tag.parse(value).namespace != "open":
+            return templates.TemplateResponse(
+                request,
+                "error.html.j2",
+                {
+                    "title": "Tag error",
+                    "detail": f"Only open tags can be edited here: {value!r} is not open.",
+                    "status": 400,
+                },
+                status_code=400,
+            )
+    args: dict[str, Any] = {"kind": "pres", "id": ref.id}
+    if add_list:
+        args["add"] = add_list
+    if remove_list:
+        args["remove"] = remove_list
+    return await redirect_or_error(
+        request, "tag", args, redirect=redirect_url, error_title="Tag error"
     )

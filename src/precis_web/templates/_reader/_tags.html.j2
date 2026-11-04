@@ -1,0 +1,36 @@
+{# Shared Meta tag chips. Context: tags, tag_action, tag_kind, tag_ref_id.
+   Open tags carry a remove button; closed-vocab tags are inert. #}
+<div class="flex flex-wrap items-center gap-1 border-t border-line-subtle pt-2">
+  {% for t in tags %}
+    {% if t.deletable %}
+    <form method="post" action="{{ tag_action }}" class="inline">
+      <input type="hidden" name="remove" value="{{ t.value }}" />
+      <span class="inline-flex items-center gap-1 rounded bg-surface-muted px-1.5 py-0.5 text-[10px] text-fg-muted">
+        {{ t.value }}
+        <button type="submit" class="text-fg-faint hover:text-danger" title="remove tag">×</button>
+      </span>
+    </form>
+    {% else %}
+    <span class="rounded bg-accent-subtle px-1.5 py-0.5 text-[10px] text-accent-strong"
+          title="closed-vocab tag — remove via tag(kind='{{ tag_kind }}', id={{ tag_ref_id }}, remove=[…])">{{ t.label }}</span>
+    {% endif %}
+  {% else %}
+  <span class="text-[10px] italic text-fg-faint">no tags yet</span>
+  {% endfor %}
+  <form method="post" action="{{ tag_action }}" class="inline">
+    <input type="hidden" name="add" value="read-later" />
+    <button type="submit"
+            class="rounded bg-surface-subtle px-1.5 py-0.5 text-[10px] text-fg-subtle hover:bg-surface-muted"
+            title="quick-tag: read-later">+ read later</button>
+  </form>
+  <form method="post" action="{{ tag_action }}" class="inline">
+    <input type="hidden" name="add" value="starred" />
+    <button type="submit"
+            class="rounded bg-surface-subtle px-1.5 py-0.5 text-[10px] text-fg-subtle hover:bg-surface-muted"
+            title="quick-tag: starred">+ starred</button>
+  </form>
+  <form method="post" action="{{ tag_action }}" class="inline-flex items-center gap-1">
+    <input name="add" placeholder="+ tag"
+           class="w-20 rounded border border-line-strong px-1.5 py-0.5 text-[10px]" />
+  </form>
+</div>

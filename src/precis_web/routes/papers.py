@@ -440,20 +440,20 @@ def _retraction_notice(ref: Any) -> dict[str, str] | None:
 
 
 def _detail_tags(store: Store, ref_id: int) -> list[dict[str, Any]]:
-    """Tag chips for the Meta tab. OPEN (free) tags are ``deletable`` so
+    """Tag chips for the Meta tab. Open (free) tags are ``deletable`` so
     the template offers a × that removes them (the ``needs-triage`` review
-    flag included); closed-vocab tags render as inert pills, matching the
-    Refs detail strip."""
+    flag included); closed-vocab tags render as inert pills. ``Tag.namespace``
+    names the open/closed/flag variant, not the database namespace; ``str``
+    supplies the wire label with the closed prefix when needed.
+    """
     out: list[dict[str, Any]] = []
     for t in store.tags_for(ref_id):
-        ns = getattr(t, "namespace", "OPEN")
-        val = getattr(t, "value", "")
         out.append(
             {
-                "namespace": ns,
-                "value": val,
-                "label": f"{ns}:{val}" if ns not in ("", "OPEN") else val,
-                "deletable": ns == "OPEN",
+                "namespace": t.namespace,
+                "value": t.value,
+                "label": str(t),
+                "deletable": t.namespace == "open",
             }
         )
     return out
