@@ -896,6 +896,50 @@ def test_invalid_pilcrow_ref_flagged_not_anchored() -> None:
 # ── TOON / TSV tabular rendering (linkify_toon) ──────────────────────
 
 
+def test_toon_without_handles_preserves_legacy_fences_and_pipe_tables() -> None:
+    """gr561018: non-memory readers retain origin/main's literal prose HTML."""
+    from precis_web.linkify import linkify_toon
+
+    # Literal expectations from origin/main's linkify_toon: these lines
+    # all stay in one escaped prose block; only tab runs become tables.
+    cases = (
+        (
+            "before\n```python\nvalue < limit\n```\nafter",
+            '<div class="whitespace-pre-wrap">before\n```python\n'
+            "value &lt; limit\n```\nafter</div>",
+        ),
+        (
+            "before\n~~~text\nvalue & limit\n~~~\nafter",
+            '<div class="whitespace-pre-wrap">before\n~~~text\n'
+            "value &amp; limit\n~~~\nafter</div>",
+        ),
+        (
+            "before\n```\nunfinished <code>\nstill visible",
+            '<div class="whitespace-pre-wrap">before\n```\n'
+            "unfinished &lt;code&gt;\nstill visible</div>",
+        ),
+        (
+            "before\n~~~\nunfinished <code>\nstill visible",
+            '<div class="whitespace-pre-wrap">before\n~~~\n'
+            "unfinished &lt;code&gt;\nstill visible</div>",
+        ),
+        (
+            "before\n| name | value |\n| --- | --- |\n| a | <b> |\nafter",
+            '<div class="whitespace-pre-wrap">before\n| name | value |\n'
+            "| --- | --- |\n| a | &lt;b&gt; |\nafter</div>",
+        ),
+        (
+            "```\nclosed\n```\n| name | value |\n| --- | --- |\n"
+            "| a | b |\n~~~\nunfinished\nstill visible",
+            '<div class="whitespace-pre-wrap">```\nclosed\n```\n'
+            "| name | value |\n| --- | --- |\n| a | b |\n~~~\n"
+            "unfinished\nstill visible</div>",
+        ),
+    )
+    for body, expected in cases:
+        assert str(linkify_toon(body, handles=None)) == expected
+
+
 def test_toon_next_block_renders_as_table() -> None:
     """A ``Next:`` TOON block (braced header + tab-separated rows) renders
     as an aligned HTML table with a ``<thead>``; the prose above stays a

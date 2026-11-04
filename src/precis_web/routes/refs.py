@@ -3453,7 +3453,11 @@ async def detail(
     # memory typical, batched into ``fetch_refs_by_ids``.
     references: list[dict[str, Any]] = []
     footnotes: dict[tuple[str, str, str | None], int] | None = None
+    resolved_handles: dict[str, tuple[str, bool, int]] | None = None
     if kind == "memory" and not is_error and body:
+        resolved_handles = mentions.resolve_handle_tokens(
+            store, mentions.bare_handle_tokens(body)
+        )
         handles = _extract_handles(body)
         handle_to_num: dict[tuple[str, str, str | None], int] = {}
         for n, (ref_kind, ref_ident, chunk) in enumerate(handles, 1):
@@ -3493,6 +3497,7 @@ async def detail(
             "ref": _row(ref),
             "body": body,
             "footnotes": footnotes,
+            "resolved_handles": resolved_handles,
             "is_error": is_error,
             "trust_footer": trust_ctx,
             "chunks": chunks,

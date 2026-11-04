@@ -137,7 +137,7 @@
    preserved + linkified. The container is a plain div (each segment
    carries its own whitespace handling) rather than a <pre>, whose fixed
    tab-stops made the columns invisible. #}
-<div class="rounded-lg border border-line bg-surface p-4 text-xs text-fg-secondary overflow-x-auto space-y-1">{{ body | linkify_toon(footnotes, doi_links) }}</div>
+<div class="rounded-lg border border-line bg-surface p-4 text-xs text-fg-secondary overflow-x-auto space-y-1">{{ body | linkify_toon(footnotes, doi_links, handles=resolved_handles|default(none)) }}</div>
 {% endif %}
 
 {% from "_trust_footer.html.j2" import trust_footer_row %}

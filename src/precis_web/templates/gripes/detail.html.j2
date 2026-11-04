@@ -6,9 +6,10 @@
 
 <div class="mt-2 mb-4 flex flex-wrap items-start justify-between gap-3">
   <div>
-    <h1 class="text-lg font-semibold">Gripe #{{ id }}</h1>
+    <h1 class="text-lg font-semibold">{% if title %}{{ title | linkify_refs }}{% else %}Gripe #{{ id }}{% endif %}</h1>
     <p class="text-sm text-fg-subtle">
-      {% if created %}filed {{ created | ago }}{% endif %}
+      {% if title %}Gripe #{{ id }}{% endif %}
+      {% if created %}{% if title %}· {% endif %}filed {{ created | ago }}{% endif %}
       {% if updated %}· updated {{ updated | ago }}{% endif %}
       {% if set_by %}· by <span class="font-mono">{{ set_by }}</span>{% endif %}
       {% if prio %}· <span class="font-mono">PRIO:{{ prio }}</span>{% endif %}
@@ -27,7 +28,9 @@
 {# Body is immutable by design (the audit-trail record of what was
    filed) — no edit affordance here on purpose; corrections/context
    are comments below. #}
+{% if body %}
 <div class="rounded-lg border border-line bg-surface p-4 text-sm text-fg-secondary whitespace-pre-wrap leading-relaxed">{{ body | linkify_refs(markdown=True) }}</div>
+{% endif %}
 
 {% if comments %}
 <section class="mt-6">

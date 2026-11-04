@@ -99,6 +99,8 @@ from precis.utils.mentions import (
 from precis.utils.mentions import (
     REF_PATTERN as _REF_PATTERN,
 )
+from precis.utils.table_data import parse_markdown_table
+from precis_web.ref_urls import ref_url
 
 
 def _render_anchor(
@@ -905,6 +907,7 @@ def _render_bare_handle(
     token: str,
     *,
     handles: Mapping[str, tuple[str, bool, int]] | None,
+    canonical_handles: bool = False,
 ) -> str:
     """A bare ``<code><digits>`` whole word (``gr553317``, ``dc5824472``)
     → the same hover-preview anchor a bracketed ``[gr553317]`` gets, but
@@ -944,7 +947,7 @@ def _render_bare_handle(
     # too, defence in depth alongside the label.
     safe_kind = escape(kind)
     return _anchor_html(
-        href=f"/r/{safe_kind}/{pk}",
+        href=escape(ref_url(kind, pk)) if canonical_handles else f"/r/{safe_kind}/{pk}",
         preview_url=f"/preview/{safe_kind}/{pk}",
         label=label,
     )
@@ -1082,6 +1085,7 @@ def linkify_refs(
     refuted_claims: Mapping[str, int] | None = None,
     hypothesis_claims: frozenset[str] | None = None,
     handles: Mapping[str, tuple[str, bool, int]] | None = None,
+    canonical_handles: bool = False,
 ) -> Markup:
     """Replace ``kind:ref`` mentions in ``value`` with hover-preview
     anchors. Escaping contract + claim-rendering precedence (``claims``/
@@ -1100,6 +1104,9 @@ def linkify_refs(
     web-reader change only). A resolved handle inside a code/math/
     emphasis span stays literal there too — linking it would split the
     delimiter pair ``_md_inline`` must see whole.
+
+    ``canonical_handles`` sends resolved bare record handles directly to
+    their reader URL. The default retains the usual ``/r`` redirect.
 
     ``footnotes`` — optional ``{(kind, id, chunk): N}`` map (References-panel
     numbering on memory detail pages): a present key appends a ``[N]``
@@ -1133,6 +1140,7 @@ def linkify_refs(
         refuted_claims=refuted_claims,
         hypothesis_claims=hypothesis_claims,
         handles=handles,
+        canonical_handles=canonical_handles,
     )
     if abbrevs:
         html = _highlight_abbrevs(html, abbrevs)
@@ -1298,6 +1306,7 @@ def _linkify_prose(
     refuted_claims: Mapping[str, int] | None = None,
     hypothesis_claims: frozenset[str] | None = None,
     handles: Mapping[str, tuple[str, bool, int]] | None = None,
+    canonical_handles: bool = False,
 ) -> str:
     """Wraps :func:`_linkify_prose_core` with a block-level list transform,
     ``markdown``-only: consecutive lines matching :data:`_LIST_ITEM_RE`
@@ -1321,6 +1330,7 @@ def _linkify_prose(
             refuted_claims=refuted_claims,
             hypothesis_claims=hypothesis_claims,
             handles=handles,
+            canonical_handles=canonical_handles,
         )
 
     def _render_line(line: str) -> str:
@@ -1336,6 +1346,7 @@ def _linkify_prose(
             refuted_claims=refuted_claims,
             hypothesis_claims=hypothesis_claims,
             handles=handles,
+            canonical_handles=canonical_handles,
         )
 
     out: list[str] = []
@@ -1360,6 +1371,7 @@ def _linkify_prose_core(
     refuted_claims: Mapping[str, int] | None = None,
     hypothesis_claims: frozenset[str] | None = None,
     handles: Mapping[str, tuple[str, bool, int]] | None = None,
+    canonical_handles: bool = False,
 ) -> str:
     """Replace every ``kind:ref``, bare conv handle, and bare paper
     cite_key in plain prose with an anchor — single pass so we never
@@ -1485,7 +1497,11 @@ def _linkify_prose_core(
                 return _render_compact_cite(slug, chunk, local=local)
             return _render_anchor("paper", slug, chunk)
         if m.group("bhandle") is not None:
-            return _render_bare_handle(m.group("bhandle"), handles=handles)
+            return _render_bare_handle(
+                m.group("bhandle"),
+                handles=handles,
+                canonical_handles=canonical_handles,
+            )
         return escape(m.group(0))
 
     # The handle alternative only exists when ``handles`` is non-empty —
@@ -1585,7 +1601,7 @@ _TOON_TAB = "\t"
 #: sentence-final DOI keeps its period. ``linkify_toon``'s ``doi_links``
 #: map (lower DOI → URL) turns each into an anchor (gr489578).
 _DOI_CITE_RE = re.compile(
-    r"(?i)\bdoi:\s*(10\.\d{4,9}/[^\s<>'\"{}]*[^\s<>'\"{}.,;:)\]])"
+    r"(?i)\bdoi:\s*(10\.\d{4,9}/[^\s<>'\"`{}]*[^\s<>'\"`{}.,;:)\]])"
 )
 
 #: A stashed DOI token rides the escaping passes as a NUL-bracketed
@@ -1631,33 +1647,23 @@ _TOON_TH = (
 )
 
 
-def _render_toon_table(
-    run: list[str],
-    footnotes: dict[tuple[str, str, str | None], int] | None,
+def _render_text_table(
+    header: list[str] | None,
+    rows: list[list[str]],
+    render_inline: Callable[[str], str],
 ) -> str:
-    """Render a run of tab-separated lines as an aligned HTML table.
-
-    Cell text is linkified (so ``kind:ref`` handles inside a cell stay
-    clickable) via the same escaping pass the surrounding prose uses; a
-    braced first row becomes a ``<thead>`` header.
-    """
-    rows = [line.split(_TOON_TAB) for line in run]
-    header = _toon_header_cells(rows[0])
-    if header is not None:
-        rows = rows[1:]
+    """TOON and Markdown tables share the surrounding prose's inline renderer."""
     ncols = max((len(r) for r in rows), default=0)
     if header is not None:
         ncols = max(ncols, len(header))
 
     def _cell(text: str, cls: str) -> str:
-        return f'<td class="{cls}">{_linkify_prose(text, footnotes)}</td>'
+        return f'<td class="{cls}">{render_inline(text)}</td>'
 
     parts: list[str] = ['<table class="my-2 border-collapse text-xs font-sans">']
     if header is not None:
         cells = header + [""] * (ncols - len(header))
-        head = "".join(
-            f'<th class="{_TOON_TH}">{_linkify_prose(c, footnotes)}</th>' for c in cells
-        )
+        head = "".join(f'<th class="{_TOON_TH}">{render_inline(c)}</th>' for c in cells)
         parts.append(f"<thead><tr>{head}</tr></thead>")
     parts.append("<tbody>")
     for row in rows:
@@ -1672,8 +1678,10 @@ def linkify_toon(
     value: str,
     footnotes: dict[tuple[str, str, str | None], int] | None = None,
     doi_links: dict[str, str] | None = None,
+    *,
+    handles: Mapping[str, tuple[str, bool, int]] | None = None,
 ) -> Markup:
-    """Linkify a plain-text body, rendering tab-separated runs as tables.
+    """Linkify a body, rendering tab-separated and Markdown runs as tables.
 
     A drop-in replacement for ``linkify_refs`` on ref-detail bodies. Runs
     of consecutive lines that each contain a tab are rendered as an
@@ -1686,6 +1694,11 @@ def linkify_toon(
     ``doi_links`` maps a lowercased DOI to its in-app URL; each
     ``doi:<id>`` token then renders as an anchor (gr489578). ``None``
     leaves the text untouched — the caller skips the lookup entirely.
+
+    ``handles`` enables Markdown tables, fenced code, inline rendering and
+    batch-resolved bare handles, identically in prose, headers and cells.
+    Resolved records use their canonical reader URLs; code spans and fenced
+    blocks stay literal. ``None`` keeps the legacy presentation for other callers.
 
     Returns :class:`markupsafe.Markup` (safe HTML — cells + prose are
     escaped by :func:`_linkify_prose`).
@@ -1705,24 +1718,91 @@ def linkify_toon(
     out: list[str] = []
     prose: list[str] = []
 
+    def _literal_code(value: str) -> str:
+        if not doi_stash:
+            return value
+        return _DOI_SENTINEL.sub(lambda match: doi_stash[int(match.group(1))][0], value)
+
+    def _inline(value: str) -> str:
+        code_spans: list[str] = []
+
+        def _hide_code(match: re.Match[str]) -> str:
+            code_spans.append(str(render_markdown(_literal_code(match.group(0)))))
+            return f"\x00tooncode {len(code_spans) - 1}\x00"
+
+        if handles is not None:
+            value = _CODE_SPAN_RE.sub(_hide_code, value)
+        rendered = str(
+            linkify_refs(
+                value,
+                footnotes,
+                markdown=handles is not None,
+                handles=handles,
+                canonical_handles=True,
+            )
+        )
+        if not code_spans:
+            return rendered
+        return re.sub(
+            r"\x00tooncode (\d+)\x00",
+            lambda match: code_spans[int(match.group(1))],
+            rendered,
+        )
+
     def _flush_prose() -> None:
         if not prose:
             return
-        html = _linkify_prose("\n".join(prose), footnotes)
+        html = _inline("\n".join(prose))
         out.append(f'<div class="whitespace-pre-wrap">{html}</div>')
         prose.clear()
 
     i, n = 0, len(lines)
     while i < n:
-        if _TOON_TAB in lines[i]:
+        fence = re.match(r"^ {0,3}(`{3,}|~{3,})", lines[i])
+        if handles is not None and fence:
+            _flush_prose()
+            marker = fence.group(1)
+            i += 1
+            code: list[str] = []
+            while i < n:
+                closing = lines[i].strip()
+                if len(closing) >= len(marker) and set(closing) == {marker[0]}:
+                    i += 1
+                    break
+                code.append(lines[i])
+                i += 1
+            code_text = escape(_literal_code("\n".join(code)))
+            out.append(f"<pre><code>{code_text}</code></pre>")
+        elif (
+            handles is not None
+            and lines[i].lstrip().startswith("|")
+            and i + 1 < n
+            and lines[i + 1].lstrip().startswith("|")
+            and parse_markdown_table("\n".join(lines[i : i + 2])) is not None
+        ):
             run: list[str] = []
+            while i < n and lines[i].lstrip().startswith("|"):
+                run.append(lines[i])
+                i += 1
+            table = parse_markdown_table("\n".join(run))
+            assert table is not None  # header and separator passed the lookahead
+            _flush_prose()
+            out.append(_render_text_table(table["header"], table["rows"], _inline))
+        elif _TOON_TAB in lines[i]:
+            run = []
             while i < n and _TOON_TAB in lines[i]:
                 run.append(lines[i])
                 i += 1
             has_header = _toon_header_cells(run[0].split(_TOON_TAB)) is not None
             if has_header or len(run) >= 2:
                 _flush_prose()
-                out.append(_render_toon_table(run, footnotes))
+                rows = [line.split(_TOON_TAB) for line in run]
+                header = _toon_header_cells(rows[0])
+                out.append(
+                    _render_text_table(
+                        header, rows[1:] if has_header else rows, _inline
+                    )
+                )
             else:
                 prose.extend(run)
         else:

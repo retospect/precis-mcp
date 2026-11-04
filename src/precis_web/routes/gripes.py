@@ -33,8 +33,10 @@ tree guards stay single-sourced with the MCP surface (see ``deps.py``).
   attribution line naming the signed-in user appended to it (see
   ``_attribute``): a gripe's stored text *is* its whole record, and
   the human who hit friction is the one worth going back to.
-* ``GET /gripes/{id}`` — body + append-only comment timeline, a
-  comment box, and the status controls.
+* ``GET /gripes/{id}`` — title + body + append-only comment timeline, a
+  comment box, and the status controls. Legacy titles can contain the
+  whole complaint, so the heading takes their first non-blank line;
+  an identical first body line is omitted from display only.
 * ``POST /gripes/{id}/status`` — ``tag`` verb, closed ``STATUS:`` axis
   (replace-on-add, no explicit remove — see ``precis.handlers.gripe``).
   htmx re-renders just the status fragment; no-JS redirects back.
@@ -56,6 +58,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.responses import Response
 
 from precis.errors import NotFound
+from precis.handlers._gripe_title import first_line
 from precis_web.auth import current_user
 from precis_web.deps import (
     await_dispatch,
@@ -658,7 +661,7 @@ async def file_gripe(
 
 @router.get("/{id}", response_class=HTMLResponse)
 async def detail(request: Request, id: int) -> HTMLResponse:
-    """Body + comment timeline + status controls + comment box."""
+    """Title + body + comment timeline + status controls + comment box."""
     store = get_store(request)
     # include_deleted: the retired chip's rows must land somewhere —
     # a merged/duplicate gripe's body stays readable, controls hidden.
@@ -692,6 +695,11 @@ async def detail(request: Request, id: int) -> HTMLResponse:
                 }
             )
 
+    title = first_line(ref.title or "")
+    body_first, _, body_rest = body_text.lstrip().partition("\n")
+    if title and body_first.strip() == title:
+        body_text = body_rest.lstrip("\r\n")
+
     tags = store.tags_for(ref.id)
     status = _status_of(tags)
 
@@ -701,6 +709,7 @@ async def detail(request: Request, id: int) -> HTMLResponse:
         {
             "active_tab": "gripes",
             "id": ref.id,
+            "title": title,
             "created": getattr(ref, "created_at", None),
             "updated": getattr(ref, "updated_at", None),
             "set_by": getattr(ref, "set_by", None),
