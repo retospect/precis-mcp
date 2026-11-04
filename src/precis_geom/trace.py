@@ -154,9 +154,11 @@ class Tracer:
         self.by_id: dict[int, _Frame] = {0: self.root}
         self.by_key: dict[str, _Frame] = {self.root.key: self.root}
         #: One record per ``@steps.step`` call this run made
-        #: (``{name, key, occ, hit, wall_s, saved_s}``) — the source of the
-        #: run header's ``steps`` digest.
+        #: (``{name, key, occ, build, hit, wall_s, self_s, saved_s}``) —
+        #: the source of the run header's ``steps`` digest.
         self.steps_log: list[dict[str, Any]] = []
+        #: Log-only build boundary; omitted from the trace dump and step keys.
+        self._steps_build: int = 0
         self.started_utc = _utcnow()
         self.run_meta: dict[str, Any] = {}
         #: Exceptions that already marked a deeper frame. The objects

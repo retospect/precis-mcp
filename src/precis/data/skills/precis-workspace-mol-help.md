@@ -144,6 +144,7 @@ Every costly `mol` call is a cached step: `mol.prism`, `mol.generate`,
 `mol.relax`. Re-running `main.py` is resume — each step before the first
 changed one is a hit. The echo names where the rebuild began:
 `steps: 3 hits · 4 rebuilt (from decorate#0)` after editing `every`.
+Use `steps.next_build()` between builds in one run; `steps.report()` shows per-name build cost and invalidations, flagging costly repeated invalidations.
 
 - **Key.** Step name, parameters, the keys of the Geoms passed in, the
   `precis_geom` version, and the source of the step's function. A hit atom's

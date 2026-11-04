@@ -42,7 +42,8 @@ package — the pieces that are *the script's own surface*:
   parent step keys, version, function source)``; ``scratch/cache/`` on the
   host (LRU, 2 GB), in-process on the sandbox lane. A hit grafts the
   stored trace subtree under the live step frame and remaps every
-  ``maker``; ``steps.load/ls/recipe/clear`` read it back.
+  ``maker``; ``steps.load/ls/recipe/clear`` read it back;
+  ``steps.report`` and ``steps.next_build`` read the run's log.
 - :mod:`precis_geom.inspect` (``pg.inspect``) — ``ray`` / ``section`` /
   ``overlap`` / ``thickness`` of a :class:`Geom` at either scale (vdW
   spheres for atomic, the folded SDF for macro), SI metres, plain-data

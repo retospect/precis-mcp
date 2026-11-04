@@ -52,7 +52,10 @@ relative index), anything else by frame key. A stored entry that cannot
 be remapped (trace schema changed, a referenced frame is absent, no
 trace was recorded) is a miss, never a wrong maker. The run header gets
 ``steps: {hits, rebuilt, first_miss, wall_saved_s}``
-(``Tracer.dump`` → ``Run.finish``).
+(``Tracer.dump`` → ``Run.finish``); :func:`report` aggregates the same
+call log into per-step build seconds and rebuild counters, flagging the
+steps that are both expensive and often invalidated (se-flow-kernel
+slice 4b §Order stable → volatile).
 
 **Checkpoint.** A step body that runs long can :func:`checkpoint` — a JSON
 side file ``<cache>/<key[:2]>/<key>/checkpoint.json`` (in-process on the
@@ -97,6 +100,8 @@ _FORMAT = 1
 #: Default LRU caps: the host dir and the in-process fallback.
 _DEFAULT_DISK_BYTES = 2 * 1024**3
 _DEFAULT_MEM_BYTES = 512 * 1024**2
+#: Minimum cumulative invalidation cost for a report flag, in seconds.
+_MIN_INVALIDATION_S = 0.05
 _ADDR_RE = re.compile(r"0x[0-9a-fA-F]+")
 
 
@@ -622,6 +627,10 @@ def _backend() -> _Mem | _Disk | None:
 #: :func:`checkpoint` binds to.
 _ACTIVE: contextvars.ContextVar[tuple[_Mem | _Disk, str] | None] = (
     contextvars.ContextVar("precis_geom_steps_active", default=None)
+)
+#: Time in immediate nested step calls, accumulated only while a body runs.
+_CHILD_TIME: contextvars.ContextVar[list[float] | None] = contextvars.ContextVar(
+    "precis_geom_steps_child_time", default=None
 )
 
 
@@ -1368,6 +1377,8 @@ def _call(
     kwargs: dict[str, Any],
     salt: str = "",
 ) -> Any:
+    call_start = time.perf_counter()
+    parent_time = _CHILD_TIME.get()
     bound = sig.bind(*args, **kwargs)
     bound.apply_defaults()
     parents: list[_Par] = []
@@ -1381,14 +1392,17 @@ def _call(
     be = _backend()
     rec: dict[str, Any] | None = None
     fr = None
+    completed = False
     if tr is not None:
         occ = sum(1 for r in tr.steps_log if r["name"] == sname)
         rec = {
             "name": sname,
             "key": key,
             "occ": occ,
+            "build": tr._steps_build,
             "hit": None,
             "wall_s": 0.0,
+            "self_s": 0.0,
             "saved_s": 0.0,
         }
         tr.steps_log.append(rec)
@@ -1426,19 +1440,25 @@ def _call(
                 if fr is not None:
                     fr.step = {"key": key, "hit": True}
                 if rec is not None:
+                    elapsed = time.perf_counter() - t0
                     rec.update(
                         hit=True,
                         saved_s=float(doc.get("wall_s", 0.0)),
-                        wall_s=time.perf_counter() - t0,
+                        wall_s=elapsed,
+                        self_s=elapsed,
                     )
+                completed = True
                 return result
         if fr is not None:
             fr.step = {"key": key, "hit": False}
         t1 = time.perf_counter()
         token = _ACTIVE.set((be, key) if be is not None else None)
+        child_time = [0.0]
+        timing_token = _CHILD_TIME.set(child_time)
         try:
             result = f(*args, **kwargs)
         finally:
+            _CHILD_TIME.reset(timing_token)
             _ACTIVE.reset(token)
         if be is not None:
             be.ckpt_drop(key)  # the step completed: nothing left to resume
@@ -1476,7 +1496,8 @@ def _call(
                 out = _finalize(result, kind, key, sname)
                 _stamp(out, _make_inst(out, kind, key, sname, ids))
         if rec is not None:
-            rec.update(hit=False, wall_s=wall)
+            rec.update(hit=False, wall_s=wall, self_s=max(0.0, wall - child_time[0]))
+        completed = True
         return out
     except BaseException as exc:
         if tr is not None:
@@ -1490,6 +1511,8 @@ def _call(
     finally:
         if tr is not None and fr is not None:
             tr._leave(fr)
+        if parent_time is not None and completed:
+            parent_time[0] += time.perf_counter() - call_start
 
 
 # ── reading the cache ────────────────────────────────────────────────────
@@ -1578,6 +1601,112 @@ def clear() -> int:
     return be.clear() if be is not None else 0
 
 
+# ── the per-step cost/rebuild report ─────────────────────────────────────
+#
+# Slice 4b §Order stable → volatile: per-step build seconds and rebuild
+# counters over the run's steps_log, so a bad step order is visible. The
+# report only reads what the calls already recorded — it cannot change a
+# step key.
+
+
+def next_build(tr: _trace.Tracer | None = None) -> None:
+    """Advance the tracer's log-only build number (initially zero).
+
+    Call between builds within one run. Without this boundary all calls
+    belong to one build. ``tr`` defaults to the live tracer; no tracer is
+    a no-op. Build numbers never enter step keys or cached artifacts.
+    """
+    tr = tr if tr is not None else _trace.current()
+    if tr is not None:
+        tr._steps_build += 1
+
+
+def report(tr: _trace.Tracer | None = None) -> dict[str, Any]:
+    """Per-step build seconds and rebuild counters for one run. Rows come
+    in first-call order, one per step name (repeated calls of one step —
+    a ``drill`` per hole — merge into one row), each ``{name, calls,
+    hits, rebuilt, invalidated, invalidated_s, build_s, saved_s, flag}``:
+    ``rebuilt`` counts all misses; ``invalidated`` counts misses in builds
+    after the first build that name appeared in, only when the key has not
+    appeared under that name in an earlier build (boundaries set by
+    :func:`next_build`). ``invalidated_s`` sums those misses' ``self_s``.
+    ``build_s`` sums miss ``self_s``: body wall time minus time in nested
+    completed step calls; failed children's time stays in the parent.
+    ``saved_s`` sums the stored inclusive build wall time for hits, not
+    the hits' elapsed time. Times are rounded to six decimals.
+
+    A step is flagged when invalidated >= 2 and ``invalidated_s`` is at
+    least 10% of all rows' summed ``invalidated_s`` and at least
+    ``_MIN_INVALIDATION_S`` (0.05 s). Cold cost plays no part; a cold build
+    flags nobody.
+    Failed steps are removed from the log and absent here; in-flight rows
+    are skipped. ``tr`` defaults to the live tracer; no tracer (or no
+    completed step calls) gives empty ``steps`` and ``flagged``."""
+    tr = tr if tr is not None else _trace.current()
+    done = [r for r in (tr.steps_log if tr is not None else []) if r["hit"] is not None]
+    rows: list[dict[str, Any]] = []
+    by_name: dict[str, dict[str, Any]] = {}
+    first_build: dict[str, int] = {}
+    first_key_build: dict[tuple[str, str], int] = {}
+    for r in done:
+        key_build = first_key_build.setdefault((r["name"], r["key"]), r["build"])
+        row = by_name.get(r["name"])
+        if row is None:
+            first_build[r["name"]] = r["build"]
+            row = by_name[r["name"]] = {
+                "name": r["name"],
+                "calls": 0,
+                "hits": 0,
+                "rebuilt": 0,
+                "invalidated": 0,
+                "invalidated_s": 0.0,
+                "build_s": 0.0,
+                "saved_s": 0.0,
+                "flag": False,
+            }
+            rows.append(row)
+        row["calls"] += 1
+        if r["hit"]:
+            row["hits"] += 1
+            row["saved_s"] += r["saved_s"]
+        else:
+            row["rebuilt"] += 1
+            if r["build"] > first_build[r["name"]] and key_build == r["build"]:
+                row["invalidated"] += 1
+                row["invalidated_s"] += r["self_s"]
+            row["build_s"] += r["self_s"]
+    for row in rows:
+        row["invalidated_s"] = round(row["invalidated_s"], 6)
+        row["build_s"] = round(row["build_s"], 6)
+        row["saved_s"] = round(row["saved_s"], 6)
+    total_invalidated_s = sum(r["invalidated_s"] for r in rows)
+    flagged = [
+        r["name"]
+        for r in rows
+        if r["invalidated"] >= 2
+        and r["invalidated_s"] >= max(_MIN_INVALIDATION_S, 0.1 * total_invalidated_s)
+    ]
+    for row in rows:
+        row["flag"] = row["name"] in flagged
+    return {
+        "steps": rows,
+        "build_s": round(sum(r["build_s"] for r in rows), 6),
+        "saved_s": round(sum(r["saved_s"] for r in rows), 6),
+        "flagged": flagged,
+    }
+
+
+def report_line(rep: dict[str, Any]) -> str:
+    """The one-line echo of :func:`report`: ``steps: 3 rebuilt · 1.2s
+    build · volatile+costly: dear`` — names the flagged steps, or nothing
+    when no step meets the invalidation count, share and cost thresholds."""
+    rebuilt = sum(r["rebuilt"] for r in rep["steps"])
+    line = f"steps: {rebuilt} rebuilt · {rep['build_s']:.1f}s build"
+    if rep["flagged"]:
+        line += f" · volatile+costly: {', '.join(rep['flagged'])}"
+    return line
+
+
 def recipe(path: str | os.PathLike[str] = "recipe.json") -> dict[str, Any]:
     """The run's recipe: ``recipe.json`` (a JSON object) beside the calling
     script, else in the working directory. A script reads its knobs from
@@ -1612,6 +1741,9 @@ __all__ = [
     "current_key",
     "load",
     "ls",
+    "next_build",
     "recipe",
+    "report",
+    "report_line",
     "step",
 ]

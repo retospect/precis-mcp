@@ -17,8 +17,8 @@ Acceptance clauses pinned here (the spec's slice 0 row):
 - a trace-schema mismatch is a miss.
 
 Plus the key discipline (parents, content keys, mutation), the LRU cap,
-the in-process fallback, ``ls``/``load``/``recipe``/``clear`` and the run
-header + echo.
+the in-process fallback, ``ls``/``load``/``recipe``/``clear``/``report``
+and the run header + echo.
 """
 
 from __future__ import annotations
@@ -1147,3 +1147,499 @@ def test_checkpoint_is_ignored_by_fresh_runs_and_absent_with_the_cache_off(
     steps.configure("off")
     job(2)
     assert got[-1] is None  # no cache, no checkpoint
+
+
+# ── the per-step cost/rebuild report (4b §Order stable → volatile) ───────
+
+
+@pytest.fixture
+def virtual_clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    clock = [0.0]
+    monkeypatch.setattr(time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(time, "sleep", lambda d: clock.__setitem__(0, clock[0] + d))
+    return clock
+
+
+@steps.step
+def cheap(x: int) -> Any:
+    """Fast and volatile: its parameter edits on every build."""
+    CALLS.append("cheap")
+    return pga.geom(_scene_of(2), meta={"x": x})
+
+
+@steps.step
+def dear(g: Any) -> Any:
+    """Slow but stable: rebuilt only because it sits above ``cheap``."""
+    CALLS.append("dear")
+    time.sleep(0.4)
+    return dataclasses.replace(g, meta={**g.meta, "dear": True})
+
+
+def volatile_under_stable(x: int) -> Any:
+    """The bad order the report exists to show: volatile under costly."""
+    return dear(cheap(x))
+
+
+def test_report_counts_build_seconds_and_rebuilds_per_step() -> None:
+    """One run, three builds of the worked shape: the param edit moves
+    the edited step's and its descendant's counters one notch, the step
+    below them stays a hit."""
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        worked_a(3)  # cold: all three miss
+        steps.next_build(tr)
+        worked_a(4)  # mark's param: mark + cap rebuild, tube hits
+        steps.next_build(tr)
+        worked_a(4)  # all hit
+        rep = steps.report(tr)
+    rows = {r["name"]: r for r in rep["steps"]}
+    assert [r["name"] for r in rep["steps"]] == ["tube", "mark", "cap"]
+    assert (rows["tube"]["calls"], rows["tube"]["hits"], rows["tube"]["rebuilt"]) == (
+        3,
+        2,
+        1,
+    )
+    assert (rows["mark"]["rebuilt"], rows["cap"]["rebuilt"]) == (2, 2)
+    assert (rows["tube"]["invalidated"], rows["mark"]["invalidated"]) == (0, 1)
+    assert rows["cap"]["invalidated"] == 1
+    assert rows["tube"]["build_s"] > 0 and rows["tube"]["saved_s"] > 0
+    assert rep["build_s"] == pytest.approx(sum(r["build_s"] for r in rep["steps"]))
+    assert "tube" not in rep["flagged"]  # rebuilt once: never flaggable
+
+
+def test_a_cached_step_is_not_rebuilt() -> None:
+    """The hard rule: a hit never moves the rebuild counter. Two
+    identical builds → each step shows calls 2, hits 1, rebuilt 1 — and a
+    report() with no argument reads the live tracer."""
+    with trace.run(work_root=_WORK_ROOT):
+        worked_a(3)
+        steps.next_build()
+        worked_a(3)
+        rep = steps.report()
+    for r in rep["steps"]:
+        assert (r["calls"], r["hits"], r["rebuilt"]) == (2, 1, 1)
+        assert r["invalidated"] == 0
+        assert r["flag"] is False
+    assert rep["flagged"] == []
+
+
+def test_the_report_does_not_change_step_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Counters and timings sit beside the key, never in it: the same
+    inputs give identical step keys whether a report was read mid-run or
+    not."""
+    from itertools import count
+
+    clock = count(0.0, 0.001)
+    monkeypatch.setattr(time, "perf_counter", lambda: next(clock))
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        worked_a(3)
+        steps.report(tr)  # read mid-run: what follows keys as if unread
+        steps.next_build()
+        worked_a(4)
+        keys = [r["key"] for r in tr.steps_log]
+    clock = count(100.0, 0.25)  # different origin AND elapsed times
+    with trace.run(work_root=_WORK_ROOT) as tr2:
+        worked_a(3)
+        worked_a(4)
+        assert [r["key"] for r in tr2.steps_log] == keys
+        assert {r["key"] for r in steps.ls()} == set(keys)
+        assert [r["wall_s"] for r in tr2.steps_log] != [
+            r["wall_s"] for r in tr.steps_log
+        ]
+
+
+def test_report_flags_the_costly_often_invalidated_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The acceptance fixture: a volatile step placed under a stable
+    expensive one drags the expensive step through every rebuild — the
+    report names it. (The virtual clock keeps the 0.4 s build free.)"""
+    clock = [1000.0]
+    monkeypatch.setattr(time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(time, "sleep", lambda d: clock.__setitem__(0, clock[0] + d))
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        volatile_under_stable(1)
+        steps.next_build()
+        volatile_under_stable(2)
+        steps.next_build()
+        volatile_under_stable(3)
+        rep = steps.report(tr)
+    rows = {r["name"]: r for r in rep["steps"]}
+    assert rows["cheap"]["rebuilt"] == 3  # volatile: its own param edits
+    assert rows["dear"]["rebuilt"] == 3  # dragged along, never edited
+    assert rows["dear"]["invalidated"] == rows["cheap"]["invalidated"] == 2
+    assert rows["dear"]["build_s"] == pytest.approx(1.2)
+    assert rep["flagged"] == ["dear"]  # expensive AND often invalidated
+    assert rows["dear"]["flag"] and not rows["cheap"]["flag"]
+    line = steps.report_line(rep)
+    assert line.startswith("steps:") and "volatile+costly: dear" in line
+
+
+@pytest.mark.parametrize("backend", ["memory", "off"])
+def test_report_cold_build_does_not_flag_repeated_calls(
+    backend: str, virtual_clock: list[float]
+) -> None:
+    steps.configure(backend)
+
+    @steps.step
+    def base() -> str:
+        time.sleep(1.0)
+        return "base"
+
+    @steps.step
+    def drill(hole: int) -> str:
+        time.sleep(1.0)
+        return f"hole {hole}"
+
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        base()
+        for hole in range(4):
+            drill(hole)
+        base()  # identical calls with the cache off are still cold
+        rep = steps.report()
+    rows = {r["name"]: r for r in rep["steps"]}
+    assert rows["drill"]["rebuilt"] == 4
+    assert rows["base"]["rebuilt"] == (2 if backend == "off" else 1)
+    assert all(r["invalidated"] == 0 and not r["flag"] for r in rep["steps"])
+    assert rep["flagged"] == []
+    assert {r["build"] for r in tr.steps_log} == {0}
+
+
+def test_report_first_build_is_per_name(virtual_clock: list[float]) -> None:
+    @steps.step
+    def drill(hole: int) -> str:
+        time.sleep(1.0)
+        return f"hole {hole}"
+
+    steps.next_build()  # no tracer: does not seed the next run's counter
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        steps.next_build(tr)
+        for hole in range(4):
+            drill(hole)
+        assert steps.report()["flagged"] == []
+        assert steps.report()["steps"][0]["invalidated"] == 0
+        steps.next_build()
+        drill(4)
+        drill(5)
+        row = steps.report()["steps"][0]
+    assert [r["build"] for r in tr.steps_log] == [1, 1, 1, 1, 2, 2]
+    assert (row["rebuilt"], row["invalidated"], row["flag"]) == (6, 2, True)
+
+
+@pytest.mark.parametrize("cold_s", [100.0, 1000.0])
+def test_report_flags_fillet_despite_dear_cold_base(
+    cold_s: float, virtual_clock: list[float]
+) -> None:
+    @steps.step
+    def base() -> str:
+        time.sleep(cold_s)
+        return "base"
+
+    @steps.step
+    def fillet(edit: int) -> str:
+        time.sleep(1.0)
+        return f"fillet {edit}"
+
+    @steps.step
+    def hole(edit: int) -> str:
+        time.sleep(0.1)
+        return f"hole {edit}"
+
+    with trace.run(work_root=_WORK_ROOT):
+        for edit in range(21):
+            if edit:
+                steps.next_build()
+            base()
+            fillet(edit)
+            hole(edit)
+        rep = steps.report()
+    rows = {r["name"]: r for r in rep["steps"]}
+    assert rows["base"]["rebuilt"] == 1
+    assert rows["base"]["invalidated"] == 0
+    assert rows["fillet"]["invalidated"] == rows["hole"]["invalidated"] == 20
+    assert rows["base"]["invalidated_s"] == 0.0
+    assert rows["fillet"]["invalidated_s"] == 20.0
+    assert rows["hole"]["invalidated_s"] == 2.0
+    assert rep["build_s"] == cold_s + 23.1
+    assert rep["flagged"] == ["fillet"]
+
+
+def test_report_uses_exact_invalidation_cost(virtual_clock: list[float]) -> None:
+    @steps.step
+    def relax(edit: int) -> str:
+        time.sleep(100.0 if edit == 0 else 0.01)
+        return str(edit)
+
+    @steps.step
+    def other() -> str:
+        time.sleep(50.0)
+        return "other"
+
+    with trace.run(work_root=_WORK_ROOT):
+        other()
+        for edit in range(3):
+            if edit:
+                steps.next_build()
+            relax(edit)
+        rep = steps.report()
+    rows = {r["name"]: r for r in rep["steps"]}
+    assert rows["relax"]["invalidated"] == 2
+    assert rows["relax"]["invalidated_s"] == 0.02
+    assert rows["relax"]["build_s"] == 100.02
+    assert rows["other"]["invalidated_s"] == 0.0
+    assert rep["build_s"] == 150.02
+    assert rep["flagged"] == []
+
+
+@pytest.mark.parametrize("mode", ["off", "fresh", "uncacheable"])
+def test_report_identical_uncached_builds_are_not_invalidations(
+    mode: str, monkeypatch: pytest.MonkeyPatch, virtual_clock: list[float]
+) -> None:
+    if mode == "off":
+        steps.configure("off")
+    elif mode == "fresh":
+        monkeypatch.setenv("PRECIS_STEPS_FRESH", "1")
+
+    @steps.step
+    def repeat(value: int) -> Any:
+        time.sleep(1.0)
+        return value if mode == "uncacheable" else str(value)
+
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        for build in range(3):
+            if build:
+                steps.next_build()
+            repeat(1)
+        rep = steps.report()
+    [row] = rep["steps"]
+    assert (row["calls"], row["rebuilt"], row["hits"]) == (3, 3, 0)
+    assert row["build_s"] == rep["build_s"] == 3.0
+    assert row["invalidated"] == row["invalidated_s"] == 0
+    assert not row["flag"] and rep["flagged"] == []
+    assert len({r["key"] for r in tr.steps_log}) == 1
+
+
+def test_report_once_invalidated_is_not_flagged(virtual_clock: list[float]) -> None:
+    @steps.step
+    def costly(edit: int) -> str:
+        time.sleep(100.0)
+        return str(edit)
+
+    with trace.run(work_root=_WORK_ROOT):
+        costly(0)
+        steps.next_build()
+        costly(1)
+        rep = steps.report()
+    [row] = rep["steps"]
+    assert row["invalidated"] == 1
+    assert row["invalidated_s"] == 100.0
+    assert not row["flag"] and rep["flagged"] == []
+
+
+def test_report_edit_invalidates_each_descendant_but_not_its_input() -> None:
+    with trace.run(work_root=_WORK_ROOT):
+        for edit in (3, 4):
+            if edit == 4:
+                steps.next_build()
+            graft_on(worked_a(edit), "stable")
+        rep = steps.report()
+    assert {r["name"]: r["invalidated"] for r in rep["steps"]} == {
+        "tube": 0,
+        "mark": 1,
+        "cap": 1,
+        "graft_on": 1,
+    }
+
+
+@pytest.mark.parametrize("fresh", [False, True])
+def test_report_undo_does_not_invalidate_an_earlier_key(
+    fresh: bool, monkeypatch: pytest.MonkeyPatch, virtual_clock: list[float]
+) -> None:
+    if fresh:
+        monkeypatch.setenv("PRECIS_STEPS_FRESH", "1")
+
+    @steps.step
+    def edited(value: int) -> str:
+        time.sleep(1.0)
+        return str(value)
+
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        for build, value in enumerate((0, 1, 0)):
+            if build:
+                steps.next_build()
+            edited(value)
+        rep = steps.report()
+    [row] = rep["steps"]
+    assert row["rebuilt"] == (3 if fresh else 2)
+    assert row["hits"] == (0 if fresh else 1)
+    assert row["build_s"] == (3.0 if fresh else 2.0)
+    assert row["invalidated"] == 1
+    assert row["invalidated_s"] == 1.0
+    assert not row["flag"] and rep["flagged"] == []
+    assert tr.steps_log[0]["key"] == tr.steps_log[2]["key"]
+
+
+def test_report_failed_child_time_stays_with_parent(virtual_clock: list[float]) -> None:
+    @steps.step
+    def p_boom() -> str:
+        time.sleep(5.0)
+        raise RuntimeError("boom")
+
+    @steps.step
+    def p_catch() -> str:
+        time.sleep(1.0)
+        try:
+            p_boom()
+        except RuntimeError:
+            return "caught"
+        raise AssertionError("p_boom must fail")
+
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        assert p_catch() == "caught"
+        rep = steps.report()
+    [row] = rep["steps"]
+    assert row["name"] == "p_catch"
+    assert row["build_s"] == rep["build_s"] == virtual_clock[0] == 6.0
+    assert tr.steps_log[0]["wall_s"] == tr.steps_log[0]["self_s"] == 6.0
+
+
+def test_report_build_number_is_initialized_and_not_dumped(
+    virtual_clock: list[float],
+) -> None:
+    @steps.step
+    def built(edit: int) -> str:
+        time.sleep(1.0)
+        return str(edit)
+
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        assert tr._steps_build == 0
+        built(0)
+        steps.next_build(tr)
+        assert tr._steps_build == 1
+        built(1)
+        doc = tr.dump()
+    assert [r["build"] for r in tr.steps_log] == [0, 1]
+    assert doc["run"]["steps"] == {
+        "hits": 0,
+        "rebuilt": 2,
+        "first_miss": "built#0",
+        "wall_saved_s": 0.0,
+    }
+    dumped = json.dumps(doc)
+    for field in ("_steps_build", "steps_log", "build", "self_s", "invalidated_s"):
+        assert f'"{field}":' not in dumped
+
+
+def test_report_does_not_flag_submillisecond_invalidations(
+    virtual_clock: list[float],
+) -> None:
+    @steps.step
+    def tiny(edit: int) -> str:
+        time.sleep(0.0001)
+        return str(edit)
+
+    with trace.run(work_root=_WORK_ROOT):
+        for edit in range(3):
+            if edit:
+                steps.next_build()
+            tiny(edit)
+        rep = steps.report()
+    assert rep["steps"][0]["invalidated"] == 2
+    assert rep["build_s"] == 0.0003
+    assert rep["flagged"] == []
+
+
+def test_report_nested_steps_count_only_self_time(virtual_clock: list[float]) -> None:
+    @steps.step
+    def inner() -> str:
+        time.sleep(1.0)
+        return "inner"
+
+    @steps.step
+    def outer() -> str:
+        time.sleep(1.0)
+        return inner()
+
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        outer()
+        rep = steps.report()
+    assert virtual_clock[0] == rep["build_s"] == 2.0
+    assert {r["name"]: r["build_s"] for r in rep["steps"]} == {
+        "outer": 1.0,
+        "inner": 1.0,
+    }
+    assert [(r["wall_s"], r["self_s"]) for r in tr.steps_log] == [
+        (2.0, 1.0),
+        (1.0, 1.0),
+    ]
+
+
+def test_report_uses_stored_build_wall_for_savings_and_excludes_hit_cost(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: list[float]
+) -> None:
+    @steps.step
+    def timed(cost: int) -> str:
+        time.sleep(cost)
+        return str(cost)
+
+    materialise = steps._materialise
+
+    def slow_load(*args: Any, **kwargs: Any) -> Any:
+        time.sleep(0.25)
+        return materialise(*args, **kwargs)
+
+    monkeypatch.setattr(steps, "_materialise", slow_load)
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        timed(2)
+        steps.next_build()
+        timed(2)
+        timed(4)
+        timed(4)
+        rep = steps.report()
+    row = rep["steps"][0]
+    assert (row["calls"], row["hits"], row["rebuilt"], row["invalidated"]) == (
+        4,
+        2,
+        2,
+        1,
+    )
+    assert row["build_s"] == rep["build_s"] == 6.0
+    assert row["saved_s"] == rep["saved_s"] == 6.0
+    assert [r["wall_s"] for r in tr.steps_log if r["hit"]] == [0.25, 0.25]
+    assert [r["saved_s"] for r in tr.steps_log if r["hit"]] == [2.0, 4.0]
+
+
+def test_report_skips_in_flight_steps(virtual_clock: list[float]) -> None:
+    @steps.step
+    def inner() -> str:
+        time.sleep(1.0)
+        return "inner"
+
+    @steps.step
+    def outer() -> str:
+        assert steps.report() == {
+            "steps": [],
+            "build_s": 0.0,
+            "saved_s": 0.0,
+            "flagged": [],
+        }
+        inner()
+        rep = steps.report()
+        assert [r["name"] for r in rep["steps"]] == ["inner"]
+        assert rep["build_s"] == 1.0
+        time.sleep(1.0)
+        return "outer"
+
+    with trace.run(work_root=_WORK_ROOT):
+        outer()
+        assert steps.report()["build_s"] == 2.0
+
+
+def test_report_without_a_tracer_or_steps_is_empty() -> None:
+    assert steps.report() == {
+        "steps": [],
+        "build_s": 0.0,
+        "saved_s": 0.0,
+        "flagged": [],
+    }
+    with trace.run(work_root=_WORK_ROOT):
+        assert steps.report()["steps"] == []
