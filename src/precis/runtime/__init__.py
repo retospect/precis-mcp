@@ -18,6 +18,8 @@ frame limit. The tool ledger already stores only call metadata, not content.
 Read-scope handle redirects recheck the resolved kind against the sandbox
 allowlist before rewriting dispatch arguments: the server's earlier gate
 only saw the caller's kind, which a conversion can change.
+Retired memory redirects drop view, extent and q when the successor is
+another kind, with a receipt: memory read options can break that reader.
 
 Search traces reuse agentlog refs without tags or chunks: one best-effort
 INSERT after dispatch, never an embedding/summarize/keywords work item.

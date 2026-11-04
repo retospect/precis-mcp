@@ -447,14 +447,27 @@ choices between two memories:
   `edit(mode='replace', text='…')` to rewrite the whole body. The id and
   its links stay; the old body stays readable in `view='log'`.
 - **Replaced by a different node** → `link(rel='supersedes')` from the
-  new node to the old, then `delete` the old. Never write "supersedes
-  meN" in prose alone — the edge is what the graph and the sweeps read.
+  new node to the old, then dry-run the delete, fix the listed nodes,
+  and retire. A successor can be any kind; pass its full handle as
+  `args={'superseded_by': '<handle>'}` when there is no edge.
 - **`section:threads` resume nodes** — one per campaign. First body line
   is `Left: <what remains>` (`Left: none` when done); rewrite it in place
   at each resume or compact rather than `put`-ing a fresh node. A daily
   sweep retires `Left: none` nodes, superseded ones, and nodes untouched
   14 days — a stale node whose `Left:` names open work becomes a linked
   todo first.
+
+```python
+delete(kind='memory', id='me42', dry_run=True)
+# Rewrite each listed sentence to state the current truth, using its edit call.
+delete(kind='memory', id='me42', args={'superseded_by': 'me77'})
+```
+
+The preview finds prose mentions even without links. With no successor,
+live claims refuse retirement unless `args={'force': True}` is explicit;
+dated history mentions are listed but exempt. A retired handle redirects
+to its successor; `view='retired'` reads the tombstone. Full recipe:
+[[precis-delete-help]].
 
 ## Sticky memories — show up every turn until you unpin them
 

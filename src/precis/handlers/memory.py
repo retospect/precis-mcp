@@ -86,6 +86,13 @@ metadata, even on failed requests. Edit writes additionally run inside
 ``lock_timeout`` collision during an edit burst retries in-process
 instead of costing the agent a turn (gr504486); an exhausted budget
 refuses with ``Upstream`` + a ``next=`` naming the re-read.
+
+Retirement scans live memory prose inside its transaction, independently
+of mention edges. Current mentions require a successor or explicit force;
+dated history is reported but exempt. The capped receipt anchors edits on
+sentences, since replacing a handle alone cannot correct an obsolete claim.
+Successors are full handles, including file-backed ``md:path~section``;
+the runtime follows those addresses while retired view preserves the record.
 """
 
 from __future__ import annotations
@@ -3343,52 +3350,181 @@ class MemoryHandler(NumericRefHandler):
 
     # ── delete: soft-delete + edge cleanup (gr503031) ───────────────
 
-    def _delete(self, id: str | int | None, *, reason: str | None = None) -> Response:
-        """Soft-delete a memory and drop its link edges in one transaction.
+    def delete(
+        self,
+        *,
+        id: str | int | None = None,
+        reason: str | None = None,
+        dry_run: bool = False,
+        superseded_by: str | None = None,
+        force: bool = False,
+        **_kw: Any,
+    ) -> Response:
+        """Preview or retire with an explicit disposition for live prose mentions."""
+        return self._delete(
+            id, reason=reason, dry_run=dry_run, superseded_by=superseded_by, force=force
+        )
 
-        The base ``retire_ref`` leaves the ref's inbound and outbound
-        links pointing at a tombstone — ``fisheye`` renders them as dead
-        ends and ``memory-lint`` counts them (2026-10-21: 17 unlinked by
-        hand). When ``meta.superseded_by`` names a live memory the edges
-        are retargeted onto it instead (``migrate_links``, the same move
-        ``supersede`` makes); otherwise they're deleted outright. The ack
-        reports what happened to the edges.
-        """
+    def _retire_successor(
+        self, raw: str, ref_id: int, *, conn: Connection
+    ) -> tuple[str, int | None, str]:
+        """Validate a replacement; file-backed md sections have no ref to migrate."""
+        if raw.startswith("md:"):
+            address = raw.removeprefix("md:")
+            if "~" not in address or not address.rsplit("~", 1)[1]:
+                raise BadInput(
+                    "an md successor requires a docs path and section",
+                    next="superseded_by='md:main/docs/<file>.md~<heading>'",
+                )
+            handler = self.hub.handler_for("md")
+            if handler is None:
+                raise BadInput(
+                    "md successor validation requires the md handler",
+                    next="use a live record handle or enable the md reader",
+                )
+            handler.get(id=address)
+            return raw, None, "md"
+        if raw.isdecimal():
+            raw = f"me{raw}"
+        try:
+            target = parse_link_target(raw, store=self.store)
+        except NotFound as exc:
+            raise BadInput(
+                f"superseded_by must name a live successor: {raw}",
+                next=f"get(id={raw!r})",
+            ) from exc
+        if target.ref_id == ref_id:
+            raise BadInput(
+                "a memory cannot supersede itself",
+                next="superseded_by='<different live handle>'",
+            )
+        row = conn.execute(
+            "SELECT kind FROM refs WHERE ref_id = %s AND retired_at IS NULL FOR SHARE",
+            (target.ref_id,),
+        ).fetchone()
+        if row is None:
+            raise BadInput(
+                "superseded_by must name a live successor",
+                next=f"get(id={raw!r})",
+            )
+        formatted = handle_registry.try_format(str(row[0]), target.ref_id)
+        if formatted is None:
+            raise BadInput(
+                f"superseded_by kind {row[0]!r} has no record handle",
+                next="use a live record handle or an md:path~section successor",
+            )
+        address = formatted
+        if target.pos is not None:
+            # The garden's successor resolver follows records and md sections,
+            # not chunks. Refuse rather than store an address it would lose.
+            raise BadInput(
+                "superseded_by cannot name a chunk",
+                next=f"use the record handle {address!r} or an md:path~section successor",
+            )
+        return address, target.ref_id, str(row[0])
+
+    def _delete(
+        self,
+        id: str | int | None,
+        *,
+        reason: str | None = None,
+        dry_run: bool = False,
+        superseded_by: str | None = None,
+        force: bool = False,
+    ) -> Response:
+        """Scan, guard, record the redirect and retire atomically; preview writes nothing."""
+        from precis.handlers._memory_retire import scan_mentions
+
         if id is None:
             raise BadInput(
                 "delete requires id=",
                 next=f"delete(kind={self.kind!r}, id=N)",
             )
         ref_id = self._coerce_id(id)
-        ref = self._resolve_ref_for_delete(ref_id)
-        successor: int | None = None
-        raw_sup = (ref.meta or {}).get("superseded_by")
-        if raw_sup is not None:
-            try:
-                cand = int(raw_sup)
-            except (TypeError, ValueError):
-                cand = -1
-            if (
-                cand != ref_id
-                and self.store.get_ref(kind="memory", id=cand) is not None
-            ):
-                successor = cand
-        if successor is None and reason:
-            # The gardening idiom ``delete(reason='merged into meNNN')``:
-            # the named handle IS the survivor — stamp the canonical
-            # ``meta.superseded_by`` so edges migrate and the tombstone's
-            # Gone points at it (gr503546).
-            named = self._reason_named_ref({"reason": reason})
-            if (
-                named is not None
-                and named != ref_id
-                and self.store.get_ref(kind="memory", id=named) is not None
-            ):
-                successor = named
+        self._resolve_ref_for_delete(ref_id)
         with self.store.tx() as conn:
-            if successor is not None and raw_sup is None:
+            row = conn.execute(
+                "SELECT retired_at, meta FROM refs WHERE ref_id = %s "
+                "AND kind = 'memory' FOR NO KEY UPDATE",
+                (ref_id,),
+            ).fetchone()
+            if row is None or row[0] is not None:
+                raise Gone(
+                    f"memory {ref_id} is no longer live",
+                    next=f"get(kind='memory', id={ref_id}, view='retired')",
+                )
+            raw_sup = superseded_by or (row[1] or {}).get("superseded_by")
+            if superseded_by is None:
+                inbound: list[str] = []
+                for rid, kind in conn.execute(
+                    "SELECT DISTINCT r.ref_id, r.kind FROM links l JOIN refs r "
+                    "ON r.ref_id = l.src_ref_id WHERE l.dst_ref_id = %s "
+                    "AND l.relation = 'supersedes' AND r.retired_at IS NULL "
+                    "AND r.ref_id <> %s ORDER BY r.ref_id",
+                    (ref_id, ref_id),
+                ):
+                    address = handle_registry.try_format(str(kind), int(rid))
+                    if address is not None:
+                        inbound.append(address)
+                        if len(inbound) == 2:
+                            break
+                if len(inbound) > 1:
+                    raise BadInput(
+                        "multiple live successors supersede this memory; choose one",
+                        next=[
+                            f"delete(kind='memory', id={ref_id}, "
+                            f"superseded_by={address!r})"
+                            for address in inbound
+                        ],
+                    )
+                if raw_sup is None and inbound:
+                    raw_sup = inbound[0]
+            if raw_sup is None and reason:
+                named = self._reason_named_ref({"reason": reason})
+                if (
+                    named is not None
+                    and named != ref_id
+                    and self.store.get_ref(kind="memory", id=named, conn=conn)
+                    is not None
+                ):
+                    raw_sup = f"me{named}"
+            successor: int | None = None
+            successor_kind: str | None = None
+            successor_handle: str | None = None
+            if raw_sup is not None:
+                successor_handle, successor, successor_kind = self._retire_successor(
+                    str(raw_sup), ref_id, conn=conn
+                )
+            report = scan_mentions(conn, ref_id)
+            receipt = report.render(
+                f"me{ref_id}",
+                datetime.now(UTC).date().isoformat() + " UTC",
+                successor_handle or reason or "retired without a successor",
+            )
+            blocked = report.blocking and successor_handle is None and not force
+            if dry_run:
+                verdict = (
+                    "would refuse: live mentions need superseded_by= or args={'force': True}"
+                    if blocked
+                    else "would retire"
+                )
+                replacement = (
+                    f"; successor {successor_handle}" if successor_handle else ""
+                )
+                return Response(
+                    body=f"dry run: {verdict} memory id={ref_id}{replacement}\n{receipt}"
+                )
+            if blocked:
+                raise BadInput(
+                    f"cannot retire me{ref_id}: {report.blocking} live mention(s)\n{receipt}",
+                    next=[
+                        f"delete(kind='memory', id={ref_id}, superseded_by='<live handle>')",
+                        f"delete(kind='memory', id={ref_id}, args={{'force': True}})",
+                    ],
+                )
+            if successor_handle is not None:
                 self.store.stamp_ref_meta(
-                    ref_id, {"superseded_by": successor}, conn=conn
+                    ref_id, {"superseded_by": successor_handle}, conn=conn
                 )
             counts = conn.execute(
                 "SELECT count(*) FILTER (WHERE dst_ref_id = %s"
@@ -3405,7 +3541,9 @@ class MemoryHandler(NumericRefHandler):
                 else (0, 0, 0)
             )
             if successor is not None:
-                moved = self.store.migrate_links(ref_id, successor, conn=conn)
+                moved = self.store.migrate_links(
+                    ref_id, successor, conn=conn, preserve_supersedes=True
+                )
             else:
                 # Inbound ``supersedes`` edges stay: "new supersedes old"
                 # IS the tombstone trail (dangling_links skips them by
@@ -3420,7 +3558,7 @@ class MemoryHandler(NumericRefHandler):
             self.store.retire_ref(ref_id, conn=conn)
         if successor is not None:
             detail = (
-                f"{moved} link(s) migrated to memory id={successor} "
+                f"{moved} link(s) migrated to {successor_kind} id={successor} "
                 f"(meta.superseded_by)"
             )
         else:
@@ -3430,7 +3568,9 @@ class MemoryHandler(NumericRefHandler):
                 if (n_in or n_out or removed or n_sup)
                 else "no links to remove"
             )
-        return Response(body=f"deleted {self._sense()} id={ref_id} — {detail}")
+        return Response(
+            body=f"deleted {self._sense()} id={ref_id} — {detail}\n{receipt}"
+        )
 
     # ── supersede: the one guarded destructive verb (dreaming) ──────
 

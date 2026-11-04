@@ -449,7 +449,7 @@ while IFS= read -r b; do
         v=$(thread_verdict "$tf")
         if [[ "$v" == retire ]]; then
             if (( GRAPH )); then
-                echo "  landed thread → $(label_of "$b" "$tf") — verify, then delete(kind='memory', id='${b%.md}')"
+                echo "  landed thread → $(label_of "$b" "$tf") — verify, then delete(kind='memory', id='${b%.md}', dry_run=True) and retire with args={'superseded_by': …}"
             else
                 echo "  landed thread → $b (all cited commits in main, no open-work words) — verify + delete"
             fi
@@ -969,7 +969,7 @@ PY
     if (( cur_suspect == 0 )); then
         echo "  ✓ all git+fs anchors verify"
     elif (( GRAPH )); then
-        echo "  currency: $cur_suspect memory node(s) with stale anchors — adjust via edit(kind='memory', id=…) / kill via delete(kind='memory', id=…) / promote-to-doc (judgment pass)"
+        echo "  currency: $cur_suspect memory node(s) with stale anchors — adjust via edit(kind='memory', id=…) / kill via delete(kind='memory', id=…, args={'superseded_by': …}) / promote-to-doc (judgment pass)"
     else
         echo "  currency: $cur_suspect file(s) with stale anchors — adjust / kill / promote-to-doc (judgment pass)"
     fi
@@ -1012,7 +1012,7 @@ if [[ -z "$last" ]]; then
 elif [[ "$last" == "$today" ]]; then
     echo "reconsolidation: done today ($last) — skip the heavy pass"
 elif (( GRAPH )); then
-    echo "reconsolidation: DUE (last $last) — run 'scripts/memory-lint --currency' for the per-claim ledger over the memory nodes, then judgment-resolve each suspect (adjust via edit(kind='memory', id=…) / kill via delete(kind='memory', id=…) / promote-to-doc) + delete(kind='memory') any landed thread flagged above. Procedure: the reconsolidate skill; record the pass as a dated entry at the top of the memory_consolidation_log node"
+    echo "reconsolidation: DUE (last $last) — run 'scripts/memory-lint --currency' for the per-claim ledger over the memory nodes, then judgment-resolve each suspect (adjust via edit(kind='memory', id=…) / kill via delete(kind='memory', id=…, args={'superseded_by': …}) / promote-to-doc) + delete(kind='memory', args={'superseded_by': …}) any landed thread flagged above. Procedure: the reconsolidate skill; record the pass as a dated entry at the top of the memory_consolidation_log node"
 else
     echo "reconsolidation: DUE (last $last) — run 'scripts/memory-lint --currency' for the per-claim ledger, then judgment-resolve each suspect (adjust / kill / promote-to-doc) + delete any landed thread flagged above. Append a dated line to memory_consolidation_log.md"
 fi

@@ -2321,6 +2321,11 @@ def delete(
     # numeric-ref kinds: why it goes — a 'deleted' ref_events row so a
     # later get()'s Gone names the survivor ('merged into meNNN').
     reason: str | None = None,
+    # memory: preview prose mentions, name any-kind successor, or explicitly
+    # leave successor-less mentions for the gardener. Other kinds are unchanged.
+    dry_run: bool | None = None,
+    superseded_by: str | None = None,
+    force: bool | None = None,
     # gripe/todo: args={'comment': K} hides comment K (add 'restore': True to
     # undo); see precis-delete-help.
     args: dict[str, Any] | None = None,
@@ -2355,6 +2360,9 @@ def delete(
         "mode": mode,
         "base_sha": base_sha,
         "reason": reason,
+        "dry_run": dry_run,
+        "superseded_by": superseded_by,
+        "force": force,
     }
     if args:
         reserved_err = _check_reserved_args(args, reserved=("kind", "id", "mode"))

@@ -43,8 +43,8 @@ design — and a kind with no delete door refuses as `Unsupported`,
 naming the supported verbs.
 
 Soft-delete only. The ref disappears from list views and search;
-the row is retained for audit. Links pointing at the soft-deleted
-ref persist — resolve via the link table if you need them.
+the row is retained for audit. Memory retirement also cleans up links
+and checks prose mentions; see the memory recipe below.
 
 Pass `reason=` to say why — it lands as an
 `agent/deleted` row on the ref's `ref_events` log, the audit line a
@@ -55,6 +55,49 @@ row on a whole-draft delete, the chunk's `retired` event for one chunk;
 ```python
 delete(kind="memory", id=42, reason="stale duplicate, folded into me77")
 ```
+
+## Retire a memory without leaving stale claims behind
+
+Dry-run the delete, fix the listed nodes, then retire:
+
+```python
+delete(kind='memory', id='me42', dry_run=True)
+# Use each prefilled edit call: replace the sentence with the current truth.
+delete(kind='memory', id='me42', args={'superseded_by': 'me77'})
+```
+
+Both preview and delete list live memories whose bodies mention the handle,
+including mentions without links. Each entry gives the mentioning handle,
+the sentence, and an anchored edit with a retirement reason prefilled.
+Write the current truth into the placeholder; changing only the handle
+may leave the old claim false. The list shows at most 25 nodes, then
+`+N more`.
+
+An inbound `supersedes` edge supplies the successor. Without one, use
+`superseded_by=` or `args={'superseded_by': '<full handle>'}`: the
+successor can be any kind, including a skill, a todo, a gripe, or a docs
+section such as `md:main/docs/<file>.md~<heading>`.
+Chunk handles are refused; use their containing record or an `md:` section.
+Multiple live inbound successors require an explicit `superseded_by=` choice.
+Retirement preserves `supersedes` edges on the tombstone.
+The retired handle redirects there on `get`;
+`view='retired'` still reads the tombstone.
+
+With no successor, live claims refuse retirement and name the mentioning
+nodes. A line starting with a date, or under an `Earlier` / `Retired here`
+marker, is listed as history and does not block retirement. To retire
+despite live claims:
+
+```python
+delete(kind='memory', id='me42', args={'force': True}, reason='claim withdrawn')
+```
+
+Forced mentions remain for review as successor-less dangling mentions.
+The preview writes nothing, including when the real delete would refuse.
+The scan covers at most 10,000 other live memory nodes in one window.
+Above that capacity, both preview and delete refuse without writing,
+including with `force=True`: ask the service owner to raise the scan
+capacity or add an indexed handle lookup, then retry the preview.
 
 ## Hide a stale comment on a gripe or todo
 

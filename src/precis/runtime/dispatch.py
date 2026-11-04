@@ -2452,6 +2452,16 @@ class DispatchMixin(RuntimeShape):
         if verb == "delete":
             self._refuse_superseded_delete(args)
         self._maybe_split_prefixed_id(args, verb=verb)
+        if verb == "get" and not _wants_retired_view(args):
+            self._redirect_retired_memory(args)
+        redirect_note = args.pop("_memory_redirect_note", None)
+        response = self._dispatch_resolved_kind(verb, args)
+        if redirect_note is not None:
+            response = replace(response, body=f"{redirect_note}\n{response.body}")
+        return response
+
+    def _dispatch_resolved_kind(self, verb: str, args: dict[str, Any]) -> Response:
+        """Dispatch after address routing, keeping redirect receipts on every read."""
         kind = args.pop("kind", None)
 
         # Broad usability pass 2026-05-30 (#6): when an agent passes a
@@ -4240,6 +4250,13 @@ class DispatchMixin(RuntimeShape):
                         next="follow this converted handle outside the sandbox, "
                         "or read stored evidence of an allowed kind",
                     )
+        if resolved.redirected_from is not None and _wants_retired_view(args):
+            # A section successor still has to leave the tombstone reachable;
+            # this check must precede the chunk-selector routing below.
+            parsed = handle_registry.parse(normalized)
+            args["kind"] = parsed[0] if parsed else resolved.kind
+            args["id"] = (str(parsed[2]) if parsed else normalized) + suffix
+            return True
         if resolved.chunk_id is not None:
             # Chunk handle → per-kind chunk selector. Slug-document kinds take
             # ``slug~ord`` (ChunkRow.ord == chunks.ord). Numeric-chunk kinds
@@ -4296,16 +4313,6 @@ class DispatchMixin(RuntimeShape):
             args["kind"] = parsed[0] if parsed else resolved.kind
             args["id"] = (str(parsed[2]) if parsed else normalized) + suffix
             return True
-        if resolved.redirected_from is not None and _wants_retired_view(args):
-            # view='retired' / args={'retired': True} (gr548660): the
-            # caller asked for the tombstone itself — route the decoded
-            # ref_id under the handle's own kind (the survivor may have
-            # been converted), so the transparent redirect below cannot
-            # land the tombstone read on the survivor.
-            parsed = handle_registry.parse(normalized)
-            args["kind"] = parsed[0] if parsed else resolved.kind
-            args["id"] = (str(parsed[2]) if parsed else normalized) + suffix
-            return True
         args["kind"] = resolved.kind
         if ref_door:
             # The paper retire / redirect_to / merge_into / move_body_to
@@ -4317,7 +4324,75 @@ class DispatchMixin(RuntimeShape):
             args["id"] = str(resolved.ref_id) + suffix
             return True
         args["id"] = resolved.public_id + suffix
+        parsed = handle_registry.parse(normalized)
+        if (
+            verb == "get"
+            and resolved.redirected_from is not None
+            and parsed is not None
+            and parsed[0] == "memory"
+            and resolved.kind != "memory"
+        ):
+            self._drop_memory_read_options(args)
         return True
+
+    def _drop_memory_read_options(self, args: dict[str, Any]) -> None:
+        """Memory read options cannot be interpreted by a different successor kind."""
+        dropped = [
+            key for key in ("view", "extent", "q") if args.pop(key, None) is not None
+        ]
+        if dropped:
+            # Keep this in the response body: HintBus advice can be capped.
+            args["_memory_redirect_note"] = (
+                f"Dropped memory read options {', '.join(dropped)} "
+                f"when redirecting to {args['kind']}."
+            )
+
+    def _redirect_retired_memory(self, args: dict[str, Any]) -> None:
+        """Route memory tombstones to record or file-backed successor addresses.
+
+        ``resolve_handle`` owns stored-record redirects. This small bridge also
+        covers numeric ids and md sections, which have no refs row to resolve.
+        It runs before normal kind routing, so target visibility gates still run.
+        """
+        if self.store is None or args.get("kind") not in (None, "memory"):
+            return
+        raw = str(args.get("id") or "")
+        parsed = handle_registry.parse(raw)
+        if parsed is not None and parsed[0] == "memory" and not parsed[1]:
+            ref_id = parsed[2]
+        elif args.get("kind") == "memory" and raw.isascii() and raw.isdigit():
+            ref_id = int(raw)
+        else:
+            return
+        ref = self.store.get_ref(kind="memory", id=ref_id, include_deleted=True)
+        if ref is None or ref.retired_at is None:
+            return
+        target = self.store.follow_supersede_address(ref_id)
+        if target is None:
+            return
+        if target.startswith("md:"):
+            from precis.hints import merged_redirect_hint
+
+            # File targets cannot enter resolve_handle's sandbox recheck.
+            from precis.runtime.scope import current_scope
+
+            if current_scope() == "read":
+                from precis.workers.executors._sandbox_read_mcp import kind_refusal
+
+                refusal = kind_refusal("get", "md")
+                if refusal is not None:
+                    raise BadInput(
+                        refusal.splitlines()[0].removeprefix("[error:BadInput] "),
+                        next="read this successor outside the sandbox",
+                    )
+            args["kind"], args["id"] = "md", target.removeprefix("md:")
+            self._drop_memory_read_options(args)
+            self.store.emit_hint(merged_redirect_hint(f"me{ref_id}", target))
+        else:
+            # Handle routing already ran for this call. Re-enter it with the
+            # original handle so numeric ids follow cross-kind successors and
+            # retain the redirected_from marker for the visibility gate.
+            self._maybe_infer_kind_from_handle(args, f"me{ref_id}", verb="get")
 
     def _maybe_route_unresolved_record_handle(
         self, args: dict[str, Any], normalized: str, suffix: str

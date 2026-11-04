@@ -38,8 +38,9 @@ a clean graph writes nothing: no reviews, no chunks, no log spam.
    the content SHA and spans, with tombstone/edge successors as evidence.
    Unresolved replacement text stays null for review; DREAMs are excluded.
    Tombstone successors must resolve to a live ref within 16 cycle-checked
-   hops. Each memory carries at most 20 matches, marked when capped, to
-   bound the judge's evidence. Memory detectors have their own action sets
+   hops, using the tombstone reader's resolver so converted kinds retain
+   their redirect. Each memory carries at most 20 matches, marked when capped,
+   to bound the judge's evidence. Memory detectors have their own action sets
    and prompt version so their rules cannot reopen existing v2 rejections.
    These proposals have no apply or auto-apply path.
    ``thread_shape`` covers tagged thread children too: missing ``Left:``

@@ -36,6 +36,7 @@ import logging
 import re
 from collections.abc import Callable, Iterable
 from contextlib import nullcontext
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, cast
 
@@ -656,9 +657,27 @@ class RefsMixin:
                 # live survivor and redirect there transparently (universal handles
                 # handles outlive a dedup merge). ``redirected_from`` carries
                 # the original handle so the caller can nudge the agent.
-                survivor = self.follow_supersede(pk, conn=c)
-                if survivor is None:
+                original = c.execute(
+                    "SELECT kind, meta->>'converted_from_kind' "
+                    "FROM refs WHERE ref_id = %s",
+                    (pk,),
+                ).fetchone()
+                if original is None or kind not in (original[0], original[1]):
                     return None
+                address = self.follow_supersede_address(pk, conn=c)
+                parsed_target = handle_registry.parse(address) if address else None
+                if parsed_target is None:
+                    return None
+                if parsed_target[1]:
+                    target = self._resolve_chunk_handle(
+                        parsed_target[2], parsed_target[0], conn=c
+                    )
+                    if target is None or (kind != "memory" and target.kind != kind):
+                        return None
+                    old_handle = handle_registry.normalize(handle)
+                    self.emit_hint(merged_redirect_hint(old_handle, str(address)))
+                    return replace(target, redirected_from=old_handle)
+                survivor = parsed_target[2]
                 row = c.execute(sql, (survivor,)).fetchone()
                 if row is None:
                     return None
@@ -668,7 +687,7 @@ class RefsMixin:
                     # The survivor was itself converted after the merge
                     # (pa<loser> -> survivor now a datasheet): the same
                     # converted_from_kind redirect applies.
-                    if (row[3] or "") != kind:
+                    if kind != "memory" and (row[3] or "") != kind:
                         return None
                     self.emit_hint(
                         merged_redirect_hint(
@@ -746,30 +765,76 @@ class RefsMixin:
         Chains (A→B→C) are walked up to ``_cap`` hops with a seen-set guard.
         """
 
-        def _do(c: Connection) -> int | None:
+        address = self.follow_supersede_address(ref_id, conn=conn, _cap=_cap)
+        parsed = handle_registry.parse(address) if address else None
+        if parsed is None:
+            return None
+        if parsed[1]:
+            resolved = self._resolve_chunk_handle(parsed[2], parsed[0], conn=conn)
+            return resolved.ref_id if resolved is not None else None
+        return parsed[2]
+
+    def follow_supersede_address(
+        self, ref_id: int, *, conn: Connection | None = None, _cap: int = 8
+    ) -> str | None:
+        """Resolve legacy numeric pointers and full successor addresses.
+
+        File-backed md sections have no refs row: retain their full address
+        for runtime routing instead of inventing a ref id. Record successors
+        keep the same cycle/depth and kind checks as universal handles.
+        """
+
+        def _do(c: Connection) -> str | None:
             seen: set[int] = set()
             cur = ref_id
+            expected_kind: str | None = None
             for _ in range(_cap):
                 if cur in seen:
                     return None
                 seen.add(cur)
                 row = c.execute(
-                    "SELECT retired_at, meta->>'superseded_by' "
+                    "SELECT retired_at, meta->>'superseded_by', kind, "
+                    "meta->>'converted_from_kind' "
                     "FROM refs WHERE ref_id = %s",
                     (cur,),
                 ).fetchone()
                 if row is None:
                     return None
-                retired_at, sup = row[0], row[1]
+                retired_at, sup, kind, converted_from = row
+                if expected_kind is not None and expected_kind not in (
+                    kind,
+                    converted_from,
+                ):
+                    return None
                 if retired_at is None:
                     # Reached a live ref — it's the survivor iff we moved.
-                    return cur if cur != ref_id else None
+                    return (
+                        handle_registry.try_format(str(kind), cur)
+                        if cur != ref_id
+                        else None
+                    )
                 if sup is None:
                     return None
+                if kind == "memory" and str(sup).startswith("md:"):
+                    return str(sup)
+                parsed = handle_registry.parse(str(sup))
+                if parsed is not None:
+                    expected_kind, is_chunk, cur = parsed
+                    if cur < 1 or cur > 9223372036854775807:
+                        return None
+                    if is_chunk:
+                        resolved = self._resolve_chunk_handle(
+                            cur, expected_kind, conn=c
+                        )
+                        return str(sup) if resolved is not None else None
+                    continue
                 try:
                     cur = int(sup)
                 except (TypeError, ValueError):
                     return None
+                if cur < 1 or cur > 9223372036854775807:
+                    return None
+                expected_kind = None
             return None
 
         if conn is not None:

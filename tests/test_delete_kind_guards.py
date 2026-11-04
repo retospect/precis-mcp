@@ -40,7 +40,8 @@ def _base_delete_handlers() -> list[type[NumericRefHandler]]:
         kind = getattr(spec, "kind", None)
         if not kind or kind in found or not getattr(spec, "supports_delete", False):
             continue
-        if cls.delete is not NumericRefHandler.delete:
+        # memory's door adds mention checks, then keeps the base's guards.
+        if cls.delete is not NumericRefHandler.delete and kind != "memory":
             continue
         found[kind] = cls
     return [found[k] for k in sorted(found)]

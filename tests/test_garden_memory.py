@@ -141,6 +141,23 @@ def test_successor_cycle_is_unresolved(store: Store) -> None:
     assert cand._retired_mentions(store, {f"me{a}"})[f"me{a}"]["successor"] is None
 
 
+def test_converted_meta_successor_uses_current_handle(store: Store) -> None:
+    successor = store.insert_ref(
+        kind="datasheet",
+        slug="converted-garden-successor",
+        title="Current procedure",
+        meta={"converted_from_kind": "paper"},
+    )
+    old = _memory(store, "Old", meta={"superseded_by": f"pa{successor.id}"})
+    store.retire_ref(old)
+    _memory(store, f"Use me{old} for builds.")
+
+    (candidate,) = cand.dangling_mention_candidates(store)
+
+    assert candidate.payload["ops"][0]["text"] == f"da{successor.id}"
+    assert candidate.evidence["mentions"][0]["successor"] == f"da{successor.id}"
+
+
 def test_successor_chain_hop_bound(store: Store) -> None:
     end = _memory(store, "Live end")
     for _ in range(cand.SUCCESSOR_MAX_HOPS + 1):

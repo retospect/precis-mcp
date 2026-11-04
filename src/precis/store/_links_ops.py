@@ -1995,6 +1995,7 @@ class LinksMixin:
         new_ref_id: int,
         *,
         conn: Connection,
+        preserve_supersedes: bool = False,
     ) -> int:
         """Re-point every link touching ``old_ref_id`` onto ``new_ref_id``.
 
@@ -2043,6 +2044,9 @@ class LinksMixin:
         Returns the number of old rows deleted (the migrated count;
         deduped duplicates collapse into existing survivor edges).
 
+        Retirement sets ``preserve_supersedes`` to leave those edges on the
+        tombstone: moving them would invent supersession between successors.
+
         Refuses, before touching anything, when ``old_ref_id`` carries
         measures (as subject, as measurand, or through the ``quantifies``
         edge a measure's ``primary_link_id`` points at): the link delete
@@ -2073,10 +2077,15 @@ class LinksMixin:
                        CASE WHEN src_ref_id = %(old)s THEN %(new)s ELSE src_ref_id END,
                        CASE WHEN dst_ref_id = %(old)s THEN %(new)s ELSE dst_ref_id END])
               FROM links
-             WHERE src_ref_id = %(old)s OR dst_ref_id = %(old)s
+             WHERE (src_ref_id = %(old)s OR dst_ref_id = %(old)s)
+               AND (NOT %(preserve_supersedes)s OR relation <> 'supersedes')
              ORDER BY link_id
             """,
-            {"old": old_ref_id, "new": new_ref_id},
+            {
+                "old": old_ref_id,
+                "new": new_ref_id,
+                "preserve_supersedes": preserve_supersedes,
+            },
         ).fetchall()
         if rows:
             # A carry act binds to the first row of its relation inserted
@@ -2169,8 +2178,9 @@ class LinksMixin:
                 except InFailedSqlTransaction:
                     pass  # a dead transaction keeps no settings to restore
         cur = conn.execute(
-            "DELETE FROM links WHERE src_ref_id = %(old)s OR dst_ref_id = %(old)s",
-            {"old": old_ref_id},
+            "DELETE FROM links WHERE (src_ref_id = %(old)s OR dst_ref_id = %(old)s) "
+            "AND (NOT %(preserve_supersedes)s OR relation <> 'supersedes')",
+            {"old": old_ref_id, "preserve_supersedes": preserve_supersedes},
         )
         return cur.rowcount or 0
 

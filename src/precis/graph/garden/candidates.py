@@ -504,6 +504,15 @@ def _scan_window(
 
 _MEMORY_HANDLE = re.compile(r"\b[a-zA-Z]{2}[0-9]{1,19}\b")
 
+
+def memory_handle_mentions(body: str, handle: str) -> list[re.Match[str]]:
+    """The dangling-mention token predicate, narrowed to one record handle."""
+    wanted = parse_handle(handle)
+    return [
+        m for m in _MEMORY_HANDLE.finditer(body) if parse_handle(m.group()) == wanted
+    ]
+
+
 #: Bound redirect reads and per-memory prompt evidence independently of scan_cap.
 SUCCESSOR_MAX_HOPS = 16
 MENTION_MATCH_CAP = 20
@@ -673,39 +682,20 @@ def _memory_bodies(store: Store, ids: list[int]) -> list[tuple[int, str, str]]:
     return [(int(rid), str(body), str(sha)) for rid, body, sha in rows]
 
 
-def _live_meta_successor(conn: Connection[Any], raw: Any) -> str | None:
-    """Follow numeric/record-handle tombstones to a verified live ref.
-
-    Cycles, missing refs, wrong kinds and exhausted chains are unresolved;
-    a chunk handle cannot identify a replacement record.
-    """
-    seen: set[int] = set()
-    for _ in range(SUCCESSOR_MAX_HOPS):
-        value = str(raw or "")
-        expected_kind = None
-        if value.isascii() and value.isdigit():
-            if len(value) > 19:
-                return None
-            rid = int(value)
-        else:
-            parsed = parse_handle(value)
-            if parsed is None or parsed[1]:
-                return None
-            expected_kind, _, rid = parsed
-        if rid > 9223372036854775807 or rid in seen:
-            return None
-        seen.add(rid)
-        row = conn.execute(
-            "SELECT kind, retired_at, meta->>'superseded_by' "
-            "FROM refs WHERE ref_id = %s",
-            (rid,),
-        ).fetchone()
-        if row is None or (expected_kind is not None and row[0] != expected_kind):
-            return None
-        kind, retired, raw = row
-        if retired is None:
-            return try_format(str(kind), rid)
-    return None
+def _live_meta_successor(
+    store: Store, conn: Connection[Any], ref_id: int
+) -> str | None:
+    """Reuse tombstone reads' conversion-aware resolver, excluding chunk targets."""
+    # The shared resolver counts the origin too; retain 16 successor hops.
+    address = store.follow_supersede_address(
+        ref_id, conn=conn, _cap=SUCCESSOR_MAX_HOPS + 1
+    )
+    if address is None:
+        return None
+    if address.startswith("md:") and "~" in address:
+        return address
+    parsed = parse_handle(address)
+    return address if parsed is not None and not parsed[1] else None
 
 
 def _retired_mentions(store: Store, tokens: set[str]) -> dict[str, dict[str, Any]]:
@@ -745,12 +735,12 @@ def _retired_mentions(store: Store, tokens: set[str]) -> dict[str, dict[str, Any
         ).fetchall()
         # Resolve each distinct tombstone once; never suggest a retired ref.
         successors = {
-            raw: _live_meta_successor(conn, raw)
-            for raw in {str(row[5]) for row in rows if row[5]}
+            rid: _live_meta_successor(store, conn, rid)
+            for rid in {int(row[3]) for row in rows if row[5]}
         }
     by_address = {}
     for kind, chunk, pk, rid, retired, raw, sid, skind in rows:
-        successor = successors.get(str(raw))
+        successor = successors.get(int(rid))
         if successor is None and sid is not None:
             successor = try_format(str(skind), int(sid))
         by_address[(kind, bool(chunk), int(pk))] = {

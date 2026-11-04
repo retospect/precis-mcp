@@ -32,12 +32,17 @@ this field records).
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 
 from precis.dispatch import Hub, boot
+from precis.handlers.memory import MemoryHandler
+from precis.runtime import PrecisRuntime
 from precis.store import Store
+from precis.tools import core as tools_core
 
 # (kind, verb) -> the exact value that kind's KindSpec should declare.
 # Absence from this table means "expect None" (no mode= concept) for
@@ -221,3 +226,72 @@ def test_expected_modes_table_kinds_are_still_registered(full_hub: Hub) -> None:
     always_on = {"todo", "memory", "quest", "gripe", "job", "message"}
     missing = sorted(always_on - set(full_hub.handlers))
     assert not missing, f"audited kind(s) no longer registered: {missing}"
+
+
+def test_memory_delete_options_are_declared_on_tool_and_handler() -> None:
+    """Retirement kwargs must survive strict MCP schemas and the extras gate."""
+    for name in ("dry_run", "superseded_by", "force"):
+        for function in (tools_core.delete, MemoryHandler.delete):
+            parameter = inspect.signature(function).parameters[name]
+            assert parameter.kind != inspect.Parameter.VAR_KEYWORD
+
+
+@pytest.mark.parametrize("via_args", [False, True])
+def test_memory_delete_options_reach_dispatch_payload(
+    monkeypatch: pytest.MonkeyPatch, via_args: bool
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def capture(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
+        seen["verb"] = verb
+        seen["payload"] = payload
+        return "captured"
+
+    monkeypatch.setattr(tools_core, "_dispatch", capture)
+    options: dict[str, Any] = {
+        "dry_run": True,
+        "superseded_by": "td123",
+        "force": True,
+    }
+    if via_args:
+        result = tools_core.delete(kind="memory", id=42, args=options)
+    else:
+        result = tools_core.delete(kind="memory", id=42, **options)
+    assert result == "captured"
+    assert seen["verb"] == "delete"
+    payload = seen["payload"]
+    forwarded = payload["__extras__"] if via_args else payload
+    for name, value in options.items():
+        assert forwarded[name] == value
+
+
+@pytest.mark.parametrize("via_args", [False, True])
+def test_memory_delete_options_pass_runtime_validation(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch, via_args: bool
+) -> None:
+    """The real dispatcher must accept options, not merely package them."""
+    runtime = runtime_with_store
+    store = runtime.live_store
+    old = store.insert_ref(kind="memory", slug=None, title="Retirement parity old")
+    successor = store.insert_ref(
+        kind="memory", slug=None, title="Retirement parity successor"
+    )
+    monkeypatch.setattr(tools_core, "_runtime", runtime)
+    options: dict[str, Any] = {
+        "dry_run": True,
+        "superseded_by": f"me{successor.id}",
+        "force": True,
+    }
+
+    if via_args:
+        result = tools_core.delete(kind="memory", id=old.id, args=options)
+    else:
+        result = tools_core.delete(kind="memory", id=old.id, **options)
+
+    assert isinstance(result, str), result
+    assert "[error:" not in result
+    assert "dry" in result.lower()
+    assert f"me{successor.id}" in result
+    ref = store.fetch_refs_by_ids([old.id])[old.id]
+    assert ref.retired_at is None
+    assert "superseded_by" not in ref.meta

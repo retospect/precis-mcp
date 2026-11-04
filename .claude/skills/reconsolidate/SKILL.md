@@ -47,7 +47,8 @@ the `Next:` hint or the `remember` skill, not just the node.
    never drop a still-true claim without moving it; check the repo before
    calling something history; cite `path.py::Qual.name` and bare shas; no
    repo doc edits. The main loop then applies, in order: `edit`/`put` the
-   moves, `delete` the retires, rewrite the Left: lines.
+   moves, `delete` the retires (`dry_run=True` first; a node with live
+   mentions needs `superseded_by=`), rewrite the Left: lines.
 4. **Verify** with a fresh export and `scripts/memory-lint` (aim: no
    findings), and read one hub's fisheye.
 5. **Record** a dated entry at the top of memory_consolidation_log (me474383):

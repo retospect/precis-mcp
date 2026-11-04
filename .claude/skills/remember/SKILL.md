@@ -57,8 +57,13 @@ recipe; the `put`/`edit` response's `Next:` lines do most of it for you.
    is not a fact — git has it.
 7. **Thread at `Left: none` with no open linked due-item, or untouched 14
    days once anything that matters has moved → retire it**:
-   `delete(kind='memory', id='me…')` after moving any still-true gotcha or
-   ruling into a live node.
+   move any still-true gotcha or ruling into a live node, dry-run the delete,
+   fix the listed nodes, then retire. Start with
+   `delete(kind='memory', id='me…', dry_run=True)`; use each prefilled
+   sentence-anchored edit to write the current truth. An inbound
+   `supersedes` edge or `args={'superseded_by': '<full handle>'}` supplies
+   the successor (any kind). Live claims without one refuse retirement
+   unless `args={'force': True}`; dated history is listed but exempt.
 
 8. **A coined or overloaded term is a taxon, not a memory line and not a
    file** (docs/glossary.md is retired, Reto 2026-11-03, gr559340). Look it

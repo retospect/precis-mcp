@@ -192,7 +192,8 @@ see-also only — so a future dangling edge resolves by its relation.
   the entity still says what the evidence said, the node sha is unchanged.
 - **apply_supersede**: `supersedes` edge, retire the loser, write
   `meta.superseded_by` on the tombstone so `get` redirects exactly as a
-  garden merge does. **apply_retire**: through the retire door below.
+  garden merge does. **apply_retire**: through
+  `src/precis/handlers/memory.py::MemoryHandler._delete`.
 - **Human protection**: a node with `trust_origin='human'` or a current
   `considered` stamp is held (`garden_review` row, `held=human`), never
   applied by the consumer.
@@ -203,39 +204,6 @@ see-also only — so a future dangling edge resolves by its relation.
   recorded like a prune (`garden.applied='mention'`, the before/after
   span in the row). An agent-written `supersedes` with different content
   goes to the evaluator, which checks the span is still supported.
-
-### 4. Retire door
-
-`delete(kind='memory')` today soft-deletes; `get` then returns `Gone`; the
-mention edges are pruned later; prose mentions survive twice orphaned.
-New behaviour, inside the delete transaction:
-
-- Find live mentions by text (the `dangling_mention` scan for this one
-  handle).
-- With a successor — an existing `supersedes` edge into this node, or
-  `args={'superseded_by': '<handle>'}` of **any kind** (a memory, a
-  skill, an md section, a todo: "absorbed elsewhere" is the common fate
-  of rulings and threads) — write `meta.superseded_by` on the tombstone
-  (redirect on `get`), and ack the mentioning nodes with ready-to-run
-  `edit(... find='me<old>', text='<new handle>')` calls; the gardener
-  rewrites whatever the caller does not, on the next tick.
-- A mention inside a dated history line is listed in the ack but exempt
-  from the refuse rule: a record may name retired things.
-- **The "also update" list is produced here**, because the retiring
-  session knows why the node goes and what replaced it; the gardener is
-  the backstop for what it skipped. `delete(kind='memory', id=N,
-  dry_run=True)` returns the list without retiring; the real delete acks
-  the same list. Each entry is the mentioning node, the sentence holding
-  the mention, and a prefilled `edit(..., find='<that sentence>',
-  text='<write the current truth in>', reason='me<N> retired <date>:
-  <successor or why>')`. The `remember` and `reconsolidate` skills gain
-  the step: dry-run the delete, fix the listed nodes, then retire.
-- Without a successor and with live mentions: refuse, listing the
-  mentioning nodes and the two ways out, `superseded_by=` or
-  `args={'force': True}` (the mentions then go to the evaluator as
-  `dangling_mention` candidates with no successor).
-- A tombstone `get` with `meta.superseded_by` redirects like a merged
-  loser; `view='retired'` still shows the tombstone.
 
 ### 4b. Compaction before any retire
 
@@ -315,8 +283,6 @@ third, the entity normal form last. `blocked-by` edges carry the order.
 4. gr560760 — `rewrite`/`supersede`/`retire` actions, `apply_rewrite`
    with undo, consumer review extended, human hold, the successor-handle
    auto-apply (medium; blocks 6 and 11).
-5. gr560761 — the retire door: mention scan, tombstone redirect,
-   refuse-unless-successor (medium; independent).
 6. gr560762 — evaluator memory-body mode and the per-type checklist
    (medium; after 4; blocks 7, 8, 9, 12).
 7. gr560763 — `review_due`, `title_shape`, `negative_undated` detectors
@@ -363,9 +329,6 @@ table are not clickable).
   byte-for-byte; apply refuses on a sha mismatch, on a human-origin node,
   and on a stale proposal; the `kg-review` stamp lands in the same
   transaction.
-- `delete(kind='memory')` refuses with the mention list when live
-  mentions exist and no successor is given; with a successor, `get` on the
-  tombstone redirects and the ack lists the edit calls.
 - The superseded-handle auto-apply never runs a model and records the
   before/after span.
 - `precis garden stats` reports pending, sampled and the Opus agreement
