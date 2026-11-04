@@ -1177,8 +1177,25 @@ def submit(ctx: Any, spec: Any) -> Any:
             )
             return None
     else:
-        lane = _lanes.pick_lane(store, task_class)
+        # A triage-pinned model narrows the pick to lanes that run it
+        # (``Lane.accepts_model``): before this a build carrying a claude id
+        # (td543634) was codex-fit and would have launched with a model the
+        # codex CLI rejects.
+        pin = params.get("model")
+        model_pin = pin.strip() if isinstance(pin, str) and pin.strip() else None
+        lane = _lanes.pick_lane(store, task_class, model=model_pin)
         if lane is None:
+            if model_pin and not any(
+                ln.enabled and ln.fits(task_class) and ln.accepts_model(model_pin)
+                for ln in _lanes.LANES
+            ):
+                # A config error, not capacity: parking would wait forever.
+                ctx.record_failure(
+                    f"run_slice: no enabled lane fit for task class "
+                    f"{task_class!r} accepts model {model_pin!r}; pin a lane "
+                    "via params.lane or drop params.model"
+                )
+                return None
             _park_lane_full(
                 ctx,
                 f"run_slice: no lane free for task class {task_class!r} "

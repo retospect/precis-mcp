@@ -66,7 +66,11 @@ quality-of-life and container items.
    Lanes (`src/precis/plans/lanes.py`): codex on 2026-11-04 (code only,
    no MCP), so the templates class every MCP-bound node by its step
    (triage, brief, review, validate, pcb) and only builds default to
-   `code`; `run_slice` refuses a generator on an MCP-less lane.
+   `code`; `run_slice` refuses a generator on an MCP-less lane, and a
+   triage-pinned model narrows the pick to lanes that run it
+   (`Lane.accepts_model`; codex declares none, so a claude id never
+   lands there). Nodes minted before the classes (plan 543631) carry a
+   `params.lane` pin instead.
 1. **backlog/worker-rotation-starves-rescue-passes.md** — the rescue
    starvation shipped (overdue rescue passes age to the front of the
    rotation); left is the one unbounded job pass still inside the wait.

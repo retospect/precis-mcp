@@ -334,6 +334,42 @@ def test_pick_lane_never_picks_disabled() -> None:
     assert pick_lane(None, "docs", lanes=table, counts={}) is None
 
 
+def test_pick_lane_honours_a_pinned_model() -> None:
+    """A ``params.model`` pin narrows the fit to lanes that run it: the
+    table-first codex lane declares no models, so a triage-pinned claude id
+    skips it; an id no lane accepts picks nothing (the caller fails closed)."""
+    codex = Lane("codex", "codex_exec", "codex", 1, frozenset({"code"}))
+    sub = Lane(
+        "claude-sub",
+        "claude_p",
+        "sub",
+        2,
+        frozenset({ANY_CLASS}),
+        models=("claude-sonnet-5",),
+        model_prefix="claude-",
+    )
+    table = (codex, sub)
+    picked = pick_lane(None, "code", lanes=table, counts={})
+    assert picked is codex
+    picked = pick_lane(None, "code", lanes=table, counts={}, model="claude-sonnet-5")
+    assert picked is sub
+    # Outside ``models`` but under the prefix: the CLI takes any claude id.
+    picked = pick_lane(None, "code", lanes=table, counts={}, model="claude-sonnet-5-5")
+    assert picked is sub
+    assert pick_lane(None, "code", lanes=table, counts={}, model="gpt-5-codex") is None
+    assert not codex.accepts_model("gpt-5-codex")
+    # The seed table: codex accepts no pin, devin only its free list.
+    seed_codex = lanes.get_lane("codex")
+    seed_devin = lanes.get_lane("devin")
+    seed_sub = lanes.get_lane("claude-sub")
+    assert seed_codex is not None and seed_devin is not None and seed_sub is not None
+    assert not seed_codex.accepts_model("claude-sonnet-5-5")
+    assert seed_devin.accepts_model("swe-2-high")
+    assert not seed_devin.accepts_model("swe-2-high-lightning")
+    assert seed_sub.accepts_model("claude-sonnet-5-5")
+    assert seed_sub.accepts_model("claude-opus-4-8")
+
+
 def test_pick_lane_reads_live_counts(monkeypatch: pytest.MonkeyPatch) -> None:
     """The seed table: codex (cap 1) and claude-sub (cap 2) fit ``code``."""
     monkeypatch.setattr(
@@ -928,6 +964,35 @@ def test_submit_refuses_a_generator_on_a_lane_without_mcp(
     assert seams["launch"] == []
     assert "STATUS:open" in store.tag_strings(42)
     assert "claimed-by:lane-codex" not in store.tag_strings(42)
+
+
+def test_submit_routes_a_pinned_claude_model_off_the_codex_lane(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td543634: a build whose triage pinned a claude id, unpinned on lane,
+    lands on the Claude lane although codex is table-first and free; with
+    no lane that runs the id the submit fails closed before the claim."""
+    codex = Lane("codex", "codex_exec", "codex", 1, frozenset({"code"}))
+    sub = lanes.get_lane("claude-sub")
+    assert sub is not None
+    monkeypatch.setattr(lanes, "LANES", (codex, sub))
+    store = _Store()
+    store.add_todo(42, "Build the fix for gr1")
+    ctx, handle = _submit(store, seams, model="claude-sonnet-5-5")
+    assert handle is not None and ctx.failure is None
+    assert ctx.meta_set["lane"] == "claude-sub"
+    assert ctx.meta_set["model"] == "claude-sonnet-5-5"
+
+    monkeypatch.setattr(lanes, "LANES", (codex,))
+    store2 = _Store()
+    store2.add_todo(42, "Build the fix for gr1")
+    ctx2, handle2 = _submit(store2, seams, model="claude-sonnet-5-5")
+    assert handle2 is None and ctx2.status == "failed"
+    assert ctx2.failure is not None
+    assert "accepts model 'claude-sonnet-5-5'" in ctx2.failure
+    assert "params.lane" in ctx2.failure
+    assert "STATUS:open" in store2.tag_strings(42)
+    assert "claimed-by:lane-codex" not in store2.tag_strings(42)
 
 
 def test_submit_refuses_when_factory_off(

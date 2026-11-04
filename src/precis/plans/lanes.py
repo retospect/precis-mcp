@@ -100,7 +100,11 @@ class Lane:
     ``models`` are the model ids the lane's adapter accepts, cheapest
     first (empty while the adapter is unbuilt). ``default_model`` is what
     an unpinned ``run_slice`` job on this lane gets; ``None`` falls to
-    the router's frontier pin.
+    the router's frontier pin. ``model_prefix`` widens :meth:`accepts_model`
+    past ``models``: the ``claude -p`` CLI takes any ``claude-`` id, so a
+    triage pin like ``claude-sonnet-5-5`` still routes to the Claude lane
+    (``''`` = ``models`` is exhaustive; a lane with neither accepts no pin,
+    so a pinned model never lands on a lane that cannot run it).
     """
 
     name: str
@@ -113,10 +117,18 @@ class Lane:
     vendor: str = ""
     models: tuple[str, ...] = ()
     default_model: str | None = None
+    model_prefix: str = ""
 
     def fits(self, task_class: str) -> bool:
         """``True`` when this lane takes ``task_class`` work."""
         return ANY_CLASS in self.task_classes or task_class in self.task_classes
+
+    def accepts_model(self, model: str) -> bool:
+        """``True`` when a slice pinned to ``model`` may launch here: the id
+        is in ``models``, or starts with ``model_prefix``."""
+        if model in self.models:
+            return True
+        return bool(self.model_prefix) and model.startswith(self.model_prefix)
 
 
 #: Seed table, in preference order (ties in :func:`pick_lane` keep it, and
@@ -171,6 +183,9 @@ LANES: tuple[Lane, ...] = (
         ),
         # Sonnet-class: the cheapest accepted id that still writes code.
         default_model="claude-sonnet-5",
+        # The CLI takes any claude id: a triage pin outside ``models``
+        # (td543634 carried claude-sonnet-5-5) still fits this lane.
+        model_prefix="claude-",
     ),
     Lane(
         name="kimi",
@@ -239,16 +254,19 @@ def pick_lane(
     lanes: tuple[Lane, ...] | None = None,
     counts: Mapping[str, int] | None = None,
     exclude_vendor: str | None = None,
+    model: str | None = None,
 ) -> Lane | None:
     """The lane a ``task_class`` slice launches on, or ``None`` when every
     fit lane is full (or none fits).
 
-    Fit first (enabled lanes whose ``task_classes`` take the class), then
-    the fewest live ``run_slice`` jobs carrying that ``meta.lane``, only
-    lanes under their cap; ties keep table order. ``lanes`` defaults to
-    :data:`LANES` read at call time (like :func:`ladder`), so a table swap
-    is seen; ``counts`` skips the DB read (tests, or a caller that already
-    has them).
+    Fit first (enabled lanes whose ``task_classes`` take the class and,
+    with ``model`` -- the slice's ``params.model`` pin -- whose
+    :meth:`Lane.accepts_model` takes it: a triage-pinned claude id never
+    lands on the codex lane, which cannot run it), then the fewest live
+    ``run_slice`` jobs carrying that ``meta.lane``, only lanes under their
+    cap; ties keep table order. ``lanes`` defaults to :data:`LANES` read at
+    call time (like :func:`ladder`), so a table swap is seen; ``counts``
+    skips the DB read (tests, or a caller that already has them).
 
     ``exclude_vendor`` (the review rule: the reviewer never comes from the
     builder's vendor) drops fit lanes of that vendor. When no fit lane of
@@ -259,6 +277,8 @@ def pick_lane(
     """
     table = LANES if lanes is None else lanes
     fit = [lane for lane in table if lane.enabled and lane.fits(task_class)]
+    if model:
+        fit = [lane for lane in fit if lane.accepts_model(model)]
     if exclude_vendor:
         other = [lane for lane in fit if lane.vendor != exclude_vendor]
         fit = other or fit
