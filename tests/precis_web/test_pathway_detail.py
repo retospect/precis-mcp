@@ -2541,7 +2541,13 @@ def _annot_block() -> str:
     tpl = _TEMPLATE.read_text(encoding="utf-8")
     start = tpl.index("// pw-annot:begin")
     end = tpl.index("// pw-annot:end")
-    return tpl[start:end]
+    return _step_kinetics_script() + "\n" + tpl[start:end]
+
+
+def _step_kinetics_script() -> str:
+    return (_TEMPLATE.parents[2] / "static" / "pathway-step-kinetics.js").read_text(
+        encoding="utf-8"
+    )
 
 
 def _node_json(tmp_path: Path, js: str) -> Any:
@@ -2692,7 +2698,9 @@ def _render_diagram_svg(tmp_path: Path, html: str) -> str:
     return the SVG markup ``renderDiagram`` produced (no browser)."""
     scripts = re.findall(r"<script>(.*?)</script>", html, re.DOTALL)
     (script,) = [s for s in scripts if "function renderDiagram" in s]
-    (tmp_path / "page.js").write_text(script, encoding="utf-8")
+    (tmp_path / "page.js").write_text(
+        _step_kinetics_script() + "\n" + script, encoding="utf-8"
+    )
     driver = tmp_path / "driver.js"
     driver.write_text(_NODE_PAGE_JS, encoding="utf-8")
     out = subprocess.run(
@@ -2763,8 +2771,18 @@ console.log(JSON.stringify({
         "forks",
         "confidence",
         "states",
+        "kinetics",
+        "kin_source",
+        "kin_ea_forward",
+        "kin_ea_reverse",
+        "kin_k_f",
+        "kin_k_b",
+        "kin_net_rate",
+        "kin_z_i",
+        "kin_X_RC",
+        "kin_selectivity",
     ]
-    defaults = dict.fromkeys(keys, True)
+    defaults = {key: i < 12 for i, key in enumerate(keys)}
     assert [layer["key"] for layer in got["layers"]] == keys
     assert all(layer["label"] and layer["help"] for layer in got["layers"])
     assert got["defaults"] == defaults
@@ -3687,7 +3705,9 @@ def _run_url_probe(
     dumped selection/URL observations."""
     scripts = re.findall(r"<script>(.*?)</script>", html, re.DOTALL)
     (script,) = [s for s in scripts if "function renderDiagram" in s]
-    (tmp_path / "page.js").write_text(script, encoding="utf-8")
+    (tmp_path / "page.js").write_text(
+        _step_kinetics_script() + "\n" + script, encoding="utf-8"
+    )
     driver = tmp_path / "url_driver.js"
     driver.write_text(_NODE_URL_JS, encoding="utf-8")
     out = subprocess.run(
@@ -3824,14 +3844,18 @@ def test_pathway_layers_controls_render_and_url_round_trip(
     _seed_parked(runtime, _parked_graph())
     html = client.get("/refs/pathway/171696").text
     defaults = _run_url_probe(tmp_path, html)
-    assert len(defaults["layers"]) == 10
-    assert all(layer["checked"] and layer["title"] for layer in defaults["layers"])
+    assert len(defaults["layers"]) == 20
+    assert all(layer["title"] for layer in defaults["layers"])
+    assert [layer["checked"] for layer in defaults["layers"]] == [True] * 12 + [
+        False
+    ] * 8
     assert defaults["statesHidden"] is False
     assert 'class="pw-shoulder-drop"' in defaults["svg"]
     assert 'class="pw-hydro-arrow"' in defaults["svg"]
     assert "−NH₃ ↑" in defaults["svg"]
     explicit_defaults = "?" + "&".join(
-        "layer_" + layer["key"] + "=1" for layer in defaults["layers"]
+        "layer_" + layer["key"] + ("=1" if layer["checked"] else "=0")
+        for layer in defaults["layers"]
     )
     assert (
         _run_url_probe(tmp_path, html, search=explicit_defaults)["svg"]
@@ -3857,11 +3881,11 @@ els['pw-copy-link'].handlers.click[0]();
         assert marker not in off["svg"]
     assert not re.search(r"<text[^>]*>Ea(?:=|≈| n/a)", off["svg"])
     assert set(_level_bars(off["svg"])) == set(_level_bars(defaults["svg"]))
-    assert len(off["rs"]) == 10
+    assert len(off["rs"]) == 20
     assert off["rs"][-1].endswith("#kinetics")
     assert off["clip"] == ["http://precis.test" + off["rs"][-1]]
     query = off["rs"][-1].split("?", 1)[1].split("#", 1)[0]
-    assert query.count("layer_") == 10
+    assert query.count("layer_") == 12
     restored = _run_url_probe(tmp_path, html, search="?" + query, hash_="#kinetics")
     assert restored["rs"] == []
     assert restored["layers"] == off["layers"]
@@ -3881,10 +3905,25 @@ created.filter((el) => el.classList.contains('pw-layer-toggle')).forEach((el) =>
 """,
         hash_="#kinetics",
     )
-    assert back_on["svg"] == defaults["svg"]
+    all_on_query = "?" + "&".join(
+        "layer_" + layer["key"] + "=1" for layer in defaults["layers"]
+    )
+    assert back_on["svg"] == _run_url_probe(tmp_path, html, search=all_on_query)["svg"]
+    assert set(_level_bars(back_on["svg"])) == set(_level_bars(defaults["svg"]))
     assert all(layer["checked"] for layer in back_on["layers"])
     assert back_on["statesHidden"] is False
-    assert "layer_" not in back_on["rs"][-1]
+    assert back_on["rs"][-1].count("layer_") == 8
+    for key in (
+        "ea_forward",
+        "ea_reverse",
+        "k_f",
+        "k_b",
+        "net_rate",
+        "z_i",
+        "X_RC",
+        "selectivity",
+    ):
+        assert "layer_kin_" + key + "=1" in back_on["rs"][-1]
     assert back_on["rs"][-1].endswith("#kinetics")
 
 

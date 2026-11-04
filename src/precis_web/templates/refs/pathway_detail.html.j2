@@ -230,6 +230,8 @@
   </p>
   {% endif %}
   <div id="pw-diagram" class="scheme-light w-full overflow-x-auto rounded border border-info bg-surface-subtle p-1"></div>
+  <div id="pw-arrhenius-inset" class="text-xs overflow-x-auto" aria-live="polite"></div>
+  <p class="mt-1 text-xs text-fg-subtle">How rates are estimated: Eyring rates use G_TS − G_IS and G_TS − G_FS from one free-energy ledger, with one transition-state floor at both endpoints. BEP fits supply missing barriers with their recorded uncertainty band. Gas exchange uses sticking probabilities and Hertz–Knudsen rates with detailed balance. The stored entropy model (gas entropy and available surface modes) sets the free energies. Transition values stay at their named solve’s stored environment; changing the diagram’s U or pH does not re-solve kinetics.</p>
   <p id="pw-diagram-key" class="mt-1 text-[10px] leading-snug text-fg-subtle">
     <b>Key:</b>
     thick bar = a state's free-energy level (hover for value; shaded band = &plusmn;1&sigma;);
@@ -640,6 +642,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/pathway-step-kinetics.js"></script>
 {% if kinetics %}<script src="/static/pathway-kinetics.js" defer></script>{% endif %}
 <script src="/static/3dmol/3Dmol-min.js"></script>
 <script>
@@ -686,7 +689,7 @@
   // ``~tag`` names the gas released). ──
   // pw-annot:begin
   // One set of presentation inputs for the renderer and shareable URL.
-  // All layers default on, preserving the existing conditional labels.
+  // Existing layers and kinetics source default on; other quantities opt in.
   const PW_LAYERS = [
     { key: 'supply', label: 'H* supply legs', help: 'Show the adsorbed-H shoulder and supply drop. Off combines adsorption and hydrogenation into one PCET rung; stored transition-state energies are unchanged.' },
     { key: 'feed', label: 'Proton + electron feeds', help: 'Draw +H⁺+e⁻ arrows onto the product level receiving the feed.' },
@@ -698,13 +701,14 @@
     { key: 'forks', label: 'Fork percentages', help: 'Show branching percentages at forks with complete, trusted measured barriers.' },
     { key: 'confidence', label: 'Low-confidence styling', help: 'Mark flagged states in red with a warning symbol. Hiding this styling does not change data or trust checks; reasons remain on hover.' },
     { key: 'states', label: 'States table', help: 'Show the selectable state list and previous/next controls beside the structure viewer.' },
+    ...PWStepKinetics.layers,
   ];
   function pwLayerDefaults() {
-    return Object.fromEntries(PW_LAYERS.map((layer) => [layer.key, true]));
+    return Object.fromEntries(PW_LAYERS.map((layer) => [layer.key, layer.defaultOn !== false]));
   }
   function pwLayerPresentation(layers) {
     const out = pwLayerDefaults();
-    PW_LAYERS.forEach(({ key }) => { if (layers && layers[key] === false) { out[key] = false; } });
+    PW_LAYERS.forEach(({ key }) => { if (layers && typeof layers[key] === 'boolean') { out[key] = layers[key]; } });
     return out;
   }
   function pwReadLayers(qs, ignored = []) {
@@ -712,14 +716,15 @@
     PW_LAYERS.forEach(({ key }) => {
       const name = 'layer_' + key, value = qs.get(name);
       if (value === '0') { out[key] = false; }
+      else if (value === '1') { out[key] = true; }
       else if (value != null && value !== '1') { ignored.push(name); }
     });
     return out;
   }
   function pwWriteLayers(qs, layers) {
-    PW_LAYERS.forEach(({ key }) => {
+    PW_LAYERS.forEach(({ key, defaultOn }) => {
       qs.delete('layer_' + key);
-      if (layers[key] === false) { qs.set('layer_' + key, '0'); }
+      if (typeof layers[key] === 'boolean' && layers[key] !== (defaultOn !== false)) { qs.set('layer_' + key, layers[key] ? '1' : '0'); }
     });
   }
   function pwNodeLabel(nd, layers) {
@@ -960,7 +965,7 @@
       name.textContent = layer.label;
       label.appendChild(input);
       label.appendChild(name);
-      box.appendChild(label);
+      PWStepKinetics.controlHost(box, layer).appendChild(label);
       input.addEventListener('change', () => {
         layerSelection[layer.key] = input.checked;
         renderDiagram(layerSelection);
@@ -1420,13 +1425,13 @@
       const dash = (unknown || isBep) ? ' stroke-dasharray="4 3"' : '';
       // The barrier-source word rides on every transition's hover, not
       // just the unknown case — the explorer's trust surface (gr559345).
-      const barrierSource = s.react ? (s.react.barrier_source || 'none') : 'none';
+      const barrierSource = s.react ? ((s.react.step_kinetics || {}).source || s.react.barrier_source || 'none') : 'none';
       const eaTitle = unknown
         ? ', Ea n/a (no computed barrier)'
         : isBep
           ? `, Ea\u2248${geo.bepEa.toFixed(2)} eV (BEP estimate)`
           : (geo.barrier > 1e-3 ? `, Ea=${geo.barrier.toFixed(2)} eV` : '');
-      parts.push(`<polyline class="pw-seg"${pa} data-from="${esc(s.src)}" data-to="${esc(s.tgt)}" points="${curve}" fill="none" stroke="${color}" stroke-width="2"${dash} style="cursor:pointer"><title>${esc(`step ${s.src} \u2192 ${s.tgt}${eaTitle}, source=${barrierSource}\nclick to isolate its path`)}</title></polyline>`);
+      parts.push(`<polyline class="pw-seg"${pa} data-from="${esc(s.src)}" data-to="${esc(s.tgt)}" points="${curve}" fill="none" stroke="${color}" stroke-width="2"${dash} style="cursor:pointer"><title>${esc(`step ${s.src} \u2192 ${s.tgt}${eaTitle}, source=${barrierSource}\n${PWStepKinetics.text(s.react || s.supply)}\nclick to isolate its path`)}</title></polyline>`);
       // shoulder — the X+H level (its energy is real) as a small tick at
       // the hump's foot, joined to X by a thin solid drop; clickable like a
       // level, and it moves with U like any other n_H-carrying node.
@@ -1434,7 +1439,7 @@
         const ys = py(geo.shE);
         const tx1 = x0 + Math.min(10, (x1 - x0) * 0.25);
         const shNode = byId[s.shoulder];
-        const shTip = `${s.shoulder} (${geo.shE >= 0 ? '+' : ''}${geo.shE.toFixed(2)})${shNode && shNode.n_H != null ? ` n_H=${shNode.n_H}` : ''}`;
+        const shTip = `${s.shoulder} (${geo.shE >= 0 ? '+' : ''}${geo.shE.toFixed(2)})${shNode && shNode.n_H != null ? ` n_H=${shNode.n_H}` : ''}\n${PWStepKinetics.text(s.supply)}`;
         parts.push(`<line class="pw-shoulder-drop"${pa} x1="${x0}" y1="${py(geo.src.rel_energy)}" x2="${x0}" y2="${ys}" stroke="${color}" stroke-width="1" opacity="0.5"><title>${esc(shTip)}</title></line>`);
         parts.push(`<line class="pw-shoulder"${pa} data-state="${esc(s.shoulder)}" x1="${x0}" y1="${ys}" x2="${tx1}" y2="${ys}" stroke="${color}" stroke-width="3" stroke-linecap="round"><title>${esc(shTip)}</title></line>`);
         parts.push(`<rect class="pw-svg-node"${pa} data-state="${esc(s.shoulder)}" x="${x0 - 2}" y="${ys - 6}" width="${tx1 - x0 + 4}" height="12" `
@@ -1462,6 +1467,7 @@
           paths: edgePaths[s.key],
         });
       }
+      PWStepKinetics.enqueue(labelQueue, s.react || s.supply, view, {x: xm, y: py(peakY + bsd) - 14, anchorX: xm, anchorY: py(peakY), color, paths: edgePaths[s.key]});
       // step annotation — what entered/left, above the hump (and above its
       // Ea label: both share the gap column, so the order-preserving stack
       // keeps this one on top). Fades with the path like every element.
@@ -1667,6 +1673,7 @@
 
     parts.push('</svg>');
     el.innerHTML = parts.join('');
+    PWStepKinetics.renderInset(g.links || []);
     buildPathLegend(paths);
     applyPathSelection();
     // clicking a hump segment picks its (first) path — same affordance as

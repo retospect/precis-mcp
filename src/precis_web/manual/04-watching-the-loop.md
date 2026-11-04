@@ -72,7 +72,7 @@ On a pathway page, **Annotation layers** above the reaction diagram has
 checkboxes for H* supply legs, proton/electron feeds, species energies,
 desorption labels, Ea labels, measured humps, BEP humps, fork percentages,
 low-confidence styling, and the states table. Hover a checkbox for its
-meaning. All start on; **copy link** preserves your choices together with
+meaning. These layers start on; **copy link** preserves your choices together with
 the selected state, route, potential, and pH.
 
 Turning off H* supply legs combines adsorption and hydrogenation into
@@ -82,6 +82,31 @@ Species energies print beside the name when uncertainty is recorded;
 hover the level for its energy otherwise. Hiding low-confidence styling
 leaves the warning reasons on hover and does not change the trust checks
 used to calculate fork percentages.
+
+**Kinetics on transitions** controls labels at each transition. Barrier
+source starts on; forward/reverse Ea, k_f, k_b, net flux, reversibility
+z_i, rate control X_RC and product selectivity each have an optional
+checkbox. The choices round-trip in the URL. Hover a transition for all
+quantities, including those whose labels are hidden. Missing values read
+“absent”, not zero. BEP sources show the recorded fit band when available.
+
+Each number names its solve and stored environment: v1 chain rates can
+appear beside v2 mean-field rate control. Moving U or pH changes the
+energy diagram, not these stored kinetic numbers. Desorption selectivity
+is the released product’s share of production, not a branching probability
+for that particular edge.
+
+When a stored temperature sweep has positive turnover at three or more
+distinct temperatures at fixed pressure and composition, hovering or
+focusing a transition opens an Arrhenius inset below the diagram:
+ln(turnover) against 1/T, labeled **apparent, whole network**. Per-step
+rates are not stored in sweeps. The inset uses the pressure and composition
+set with the most qualifying temperatures and reports its fitted apparent
+prefactor and apparent Ea, plus read-offs at the stored solve temperature
+±10 K inside the sampled range. With fewer than three qualifying temperatures,
+or no sweep, there is no inset. The fit approximates stored mean-field
+turnover; it is not a new solve or an extrapolation. The note below the
+diagram explains the Eyring ledger, BEP fallback, sticking and entropy assumptions.
 
 ## What the dashboard does not tell you yet
 

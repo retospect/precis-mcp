@@ -70,6 +70,7 @@ from precis_web.deps import (
 from precis_web.item_view import display_title
 from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_head
 from precis_web.pathway_kinetics import kinetics_payload
+from precis_web.pathway_step_kinetics import attach_step_kinetics
 from precis_web.ref_urls import ref_url
 from precis_web.routes.favorites import faved
 from precis_web.routes.rxn import doi_link_map as rxn_doi_links
@@ -1210,6 +1211,7 @@ def _pathway_graph_payload(
     graph: dict[str, Any] | None,
     target: str | None = None,
     edges: Any = None,
+    results: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Trim ``meta.graph`` (a networkx ``node_link_data`` dict) to exactly what
     the client-side energy diagram needs, plus the server-enumerated root->leaf
@@ -1269,6 +1271,7 @@ def _pathway_graph_payload(
         for e in graph.get("links", [])
         if e.get("source") is not None and e.get("target") is not None
     ]
+    attach_step_kinetics(links, results or {})
     node_ids = [n["id"] for n in nodes]
     paths = _pathway_paths(node_ids, links, str(target) if target is not None else None)
     # ``has_n_h`` gates the whole U-slider control strip in the template —
@@ -2483,7 +2486,7 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
     # linked" (AC4); an unrecognised measure op -> skipped with a note.
     graph = meta.get("graph")
     diagram = _pathway_graph_payload(
-        graph, target=results.get("target"), edges=results.get("edges")
+        graph, target=results.get("target"), edges=results.get("edges"), results=results
     )
     if diagram:
         # gr553482: per-route steady-state flux shares off the stored
