@@ -63,6 +63,9 @@ package — the pieces that are *the script's own surface*:
   adapter, and :mod:`precis_geom.physics` — ``evaluate(shape, physics,
   spec, *, seed, cells)``, the toolkit's one physics call (flow first;
   se-flow-kernel slice 4a). Both are numpy/``precis_flow`` code.
+- :mod:`precis_geom.optimize` — stdlib Metropolis annealing over caller-owned
+  moves, snapshots, energy, schedule and RNG; domain-specific proposals stay
+  with the script (se-flow-kernel slice 4b).
 
 The runnable dev-loop recipe — the PCB path and the ``hexfold
 prism_tube`` → ``pga.geom`` → ``out.block`` atomic path — is

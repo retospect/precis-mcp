@@ -236,6 +236,14 @@ def test_pyproject_lists_the_shipped_set() -> None:
         assert str(ex.relative_to(_SRC)) in _WHEEL["exclude"], ex
 
 
+def test_optimize_is_shipped_and_scanned() -> None:
+    for name in ("__init__.py", "anneal.py"):
+        path = _SRC / "precis_geom" / "optimize" / name
+        assert path in _iter_files()
+        assert _is_shipped(path)
+        assert _wheel_path(path) == Path("precis_geom/optimize") / name
+
+
 def test_wheel_import_graph() -> None:
     offenders: list[str] = []
     for path in _iter_files():
