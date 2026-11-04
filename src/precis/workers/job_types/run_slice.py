@@ -690,10 +690,21 @@ def _generator_close(todo_id: int, models: tuple[str, ...] = ()) -> list[str]:
     ]
 
 
-def _reviewer_close(todo_id: int) -> list[str]:
-    """Closing steps of a reviewer generator's brief: one verdict comment,
-    nothing minted, nothing committed, nothing landed. The grammar is the
-    one ``plan_dispatch._VERDICT_RE`` parses."""
+def _reviewer_close(todo_id: int, mcp: bool = True) -> list[str]:
+    """Closing steps of a reviewer generator's brief: one verdict, nothing
+    minted, nothing committed, nothing landed. The grammar is the one
+    ``plan_dispatch._VERDICT_RE`` parses; it reads a ``handoff: review: …``
+    the same as a bare comment, so a lane without the precis MCP (``mcp``
+    false) delivers the verdict as the first line of its final message."""
+    where = (
+        f"Post exactly one comment on td{todo_id} (the node you were given), "
+        "or make it the FIRST line of your final message (posted as the "
+        "`handoff:` comment; the dispatcher reads the verdict there), one of:"
+        if mcp
+        else "Make your verdict the FIRST line of your final message (it is "
+        f"posted on td{todo_id} as the `handoff:` comment and the dispatcher "
+        "reads it there; this lane has no MCP to post with), one of:"
+    )
     return [
         "",
         "## When done: post your verdict",
@@ -701,7 +712,7 @@ def _reviewer_close(todo_id: int) -> list[str]:
         "This todo is a reviewer: your work is one verdict, not a land and "
         "not child todos.",
         "",
-        f"Post exactly one comment on td{todo_id} (the node you were given), one of:",
+        where,
         "",
         "- `review: LAND`",
         "- `review: FIX — <list of findings>`",
@@ -713,17 +724,27 @@ def _reviewer_close(todo_id: int) -> list[str]:
         "land, push or ship. Do not tag this todo done: the dispatcher "
         "closes it on your verdict.",
         "",
-        "Your final message is posted as the `handoff:` comment: what you "
-        "checked, in a line or two.",
+        "The rest of your final message: what you checked, in a line or two.",
     ]
 
 
-def _analyst_close(todo_id: int) -> list[str]:
+def _analyst_close(todo_id: int, mcp: bool = True) -> list[str]:
     """Closing steps of an analyst generator's brief (PR analysis): one
     ``analysis:`` comment, nothing minted, nothing committed, nothing run.
-    The prefix is the one ``plan_dispatch._analysis_posted`` looks for."""
+    The prefix is the one ``plan_dispatch._analysis_posted`` looks for (a
+    ``handoff:`` carrying it counts, so an MCP-less lane puts it first in
+    its final message)."""
     from precis.plans.templates import ANALYSIS_PREFIX
 
+    where = (
+        f"Post exactly one comment on td{todo_id} (the node you were given), "
+        f"starting with `{ANALYSIS_PREFIX}`, or make that the FIRST line of "
+        "your final message (posted as the `handoff:` comment),"
+        if mcp
+        else f"Make `{ANALYSIS_PREFIX}` the FIRST line of your final message (it "
+        f"is posted on td{todo_id} as the `handoff:` comment; this lane has no "
+        "MCP to post with),"
+    )
     return [
         "",
         "## When done: post your analysis",
@@ -731,9 +752,7 @@ def _analyst_close(todo_id: int) -> list[str]:
         "This todo is an analyst: your work is one analysis, not a land and "
         "not child todos.",
         "",
-        f"Post exactly one comment on td{todo_id} (the node you were given), "
-        f"starting with `{ANALYSIS_PREFIX}`, with three parts: (a) threats, "
-        "(b) fit, (c) size.",
+        f"{where} with three parts: (a) threats, (b) fit, (c) size.",
         "",
         "Mint nothing: no child todos, no fix task. Commit nothing. Never "
         "run `uv sync`, tests or any file from the PR: read it with "
@@ -741,17 +760,67 @@ def _analyst_close(todo_id: int) -> list[str]:
         "tag this todo done: the dispatcher closes it once your comment is "
         "posted.",
         "",
-        "Your final message is posted as the `handoff:` comment: what you "
-        "read, in a line or two.",
+        "The rest of your final message: what you read, in a line or two.",
     ]
 
 
-#: Generator role -> closing-section builder; a role not listed gets
-#: :func:`_generator_close` (create the child todos). A third role is one line.
-_ROLE_CLOSE: dict[str, Callable[[int], list[str]]] = {
+#: Generator role -> closing-section builder ``(todo_id, mcp)``; a role not
+#: listed gets :func:`_generator_close` (create the child todos). A third
+#: role is one line.
+_ROLE_CLOSE: dict[str, Callable[[int, bool], list[str]]] = {
     "reviewer": _reviewer_close,
     "analyst": _analyst_close,
 }
+
+_TD_FROM_RE = re.compile(r"td(\d+)")
+_LANDED_RE = re.compile(r"^\s*landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
+#: Cap on the reviewed todo's brief inlined into a reviewer's brief.
+_TARGET_CAP = 6000
+
+
+def _review_target(store: Any, meta: Any) -> str | None:
+    """What a reviewer judges, inlined so a lane without the precis MCP can
+    review (td564019 cut 1): the reviewed todo's title, its newest
+    ``landed: <sha>`` comment and its brief (body plus the newest
+    ``brief:``/``handoff:``), capped. ``None`` for any other node."""
+    if _generate_role(meta) != "reviewer":
+        return None
+    m = _TD_FROM_RE.fullmatch(str((meta.get("generate") or {}).get("from") or ""))
+    if m is None:
+        return None
+    target_id = int(m.group(1))
+    ref = store.get_ref(kind="todo", id=target_id)
+    if ref is None:
+        return None
+    landed = None
+    for c in reversed(_todo_chunks(store, target_id)):
+        if c.chunk_kind != _COMMENT_KIND:
+            continue
+        hit = _LANDED_RE.match(str(c.text or ""))
+        if hit:
+            landed = hit.group(1)
+            break
+    body, latest = _brief_parts(store, target_id)
+    lines = [f"td{target_id}: {str(ref.title or '').strip()}", ""]
+    if landed:
+        lines.append(
+            f"Landed squash: `{landed}` — read it with `git show {landed}` in "
+            "this worktree (it is on origin/main)."
+        )
+    else:
+        lines.append(
+            f"td{target_id} has no `landed:` comment yet: nothing is on main to "
+            "review. End with `no-op: nothing landed yet` as the first line of "
+            "your final message."
+        )
+    text = (body or "").strip()
+    if latest:
+        text = f"{text}\n\n{latest.strip()}".strip()
+    if len(text) > _TARGET_CAP:
+        text = text[:_TARGET_CAP].rstrip() + "\n\n[brief cut here]"
+    if text:
+        lines += ["", "Its brief:", "", text]
+    return "\n".join(lines)
 
 
 def render_brief(
@@ -767,14 +836,16 @@ def render_brief(
     role: str | None = None,
     mcp: bool = True,
     deny_paths: tuple[str, ...] = _lanes.FACTORY_DENY_WRITE_PATHS,
+    target: str | None = None,
 ) -> str:
     """The prompt a slice session starts from. Ends with the commit-and-
     hand-off instruction (the ``land_slice`` job lands the branch); a
     ``generator`` brief ends with the child-todo instruction instead (the
     plan tick closes it), and a generator whose ``role`` is in ``_ROLE_CLOSE``
     (reviewer: one verdict comment; analyst: one analysis comment) ends with
-    that role's instruction. Names the ``deny_paths`` the session may not
-    write."""
+    that role's instruction, worded for a lane with or without the MCP.
+    ``target`` (:func:`_review_target`) is the reviewed todo inlined for a
+    reviewer. Names the ``deny_paths`` the session may not write."""
     name = slice_name(todo_id)
     lines = [
         f"# Slice td{todo_id}: {title.strip()}",
@@ -812,10 +883,12 @@ def render_brief(
     ]
     if latest:
         lines += ["", "## Latest brief / handoff on the todo", "", latest.strip()]
+    if target:
+        lines += ["", "## Review target", "", target.strip()]
     if generator:
         close = _ROLE_CLOSE.get(role or "")
         if close is not None:
-            lines += close(todo_id)
+            lines += close(todo_id, mcp)
         else:
             lane_obj = _lanes.get_lane(lane)
             lines += _generator_close(
@@ -1229,11 +1302,14 @@ def submit(ctx: Any, spec: Any) -> Any:
             f"run_slice: lane {lane.name!r} has unknown adapter {lane.adapter!r}"
         )
         return None
-    if not adapter.mcp and node_kind(todo.meta) == "generator":
-        # A generator mints its children through the precis MCP; a lane
+    if not adapter.mcp and _mints_children(store, todo_id):
+        # A child-minting generator works through the precis MCP; a lane
         # without one ends with nothing minted. The templates class such
         # nodes off ``code`` (plans/templates.py) so the pick never lands
-        # here; a hand-minted generator can. Not claimed yet: no attempt burned.
+        # here; a hand-minted generator can. Not claimed yet: no attempt
+        # burned. A reviewer or analyst is not refused: its one verdict
+        # rides the final message (``handoff: review: …``), which
+        # plan_dispatch reads (td564019 cut 1).
         ctx.record_failure(
             f"run_slice: td{todo_id} is a generator (mints children through "
             f"the precis MCP) but lane {lane.name!r} has no MCP; set "
@@ -1258,6 +1334,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         role=_generate_role(todo.meta),
         mcp=adapter.mcp,
         deny_paths=lane.deny_write_paths,
+        target=_review_target(store, todo.meta),
     )
     grant: dict[str, Any] | None = None
     try:

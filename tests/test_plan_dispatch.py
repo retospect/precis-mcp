@@ -1218,20 +1218,15 @@ def test_review_without_verdict_retries_once_then_asks(store: Store) -> None:
     assert (res.reviews, res.asks) == (0, 0)
     assert _meta(store, review)["review"]["verdict"] is None
     assert "malformed verdict" in _todo_comments(store, review)[-1]
-    # One retry, pinned to the review lane; one lane only, so the note says so.
-    # The retry is attempt 1, so it also climbs one rung above the lane's
-    # default model (td559457): a stronger reviewer reads the malformed one.
+    # One retry, pinned to the review lane. The builder ran on the Claude
+    # lane, so the cross-vendor rule picks codex (it fits `review` since
+    # td564019 cut 1; no model list, so no rung to climb).
     assert res.dispatched == 1
     (_old, (retry, meta)) = _jobs_under(store, review)
-    lane = L.get_lane("claude-sub")
-    assert lane is not None
-    rung = lane.models.index(lane.default_model) + 1
-    assert meta["params"] == {
-        "todo_id": review,
-        "lane": "claude-sub",
-        "model": lane.models[rung],
-    }
-    assert any("shares the builder's vendor 'anthropic'" in n for n in res.notes)
+    assert meta["params"]["todo_id"] == review
+    assert meta["params"]["lane"] == "codex"
+    assert "model" not in meta["params"]
+    assert not any("shares the builder's vendor" in n for n in res.notes)
     # The retry posts nothing either: the hygiene ask follows.
     store.add_tag(
         retry, Tag.closed("STATUS", "succeeded"), set_by="system", replace_prefix=True

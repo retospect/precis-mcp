@@ -216,14 +216,17 @@ def _phase() -> dict[str, Any]:
 
 
 #: ``meta.task_class`` picks the lane (``run_slice`` → ``lanes.pick_lane``).
-#: Unset, ``run_slice`` reads ``code`` — the one class the MCP-less vendor
-#: lanes fit (codex: code only, no MCP). So every node whose session works
+#: Unset, ``run_slice`` reads ``code``. Every node whose session works
 #: through the precis MCP carries another class: a generator its role (it
 #: mints its children), the brief-writer :data:`BRIEF_TASK_CLASS` (posts
-#: the ``brief:`` comment), the validate :data:`VALIDATE_TASK_CLASS` (reads
-#: the gripe it re-runs), a pcb fix :data:`PCB_TASK_CLASS` (drives the pcb
+#: the ``brief:`` comment), a pcb fix :data:`PCB_TASK_CLASS` (drives the pcb
 #: kind). Found 2026-11-04 as the codex lane went on (td562568): unclassed,
 #: a triage would have launched on codex and ended with nothing minted.
+#: The validate :data:`VALIDATE_TASK_CLASS` and the reviewer
+#: :data:`REVIEW_TASK_CLASS` are classes the MCP-less lanes also fit
+#: (td564019 cut 1): the gripe report is inlined in the validate body, the
+#: reviewed land in the reviewer's brief, and each verdict rides the final
+#: message (``validated:``, ``handoff: review: …``).
 BRIEF_TASK_CLASS = "brief"
 VALIDATE_TASK_CLASS = "validate"
 PCB_TASK_CLASS = "pcb"
@@ -390,6 +393,8 @@ def mint_gripe_fix(
     if lane:
         build_op = {"type": "run_slice", "params": {"lane": str(lane)}}
 
+    report = _gripe_report(store, gid, handle, title)
+
     def build(m: _Minter) -> None:
         if direct:
             _build_direct(m)
@@ -402,7 +407,7 @@ def mint_gripe_fix(
             "build",
             f"Build the fix for {handle}",
             _task(build_op),
-            body=_direct_build_body(handle, _gripe_report(store, gid, handle, title)),
+            body=_direct_build_body(handle, report),
         )
         _tail(m)
 
@@ -430,7 +435,8 @@ def mint_gripe_fix(
                 "report against the landed change otherwise. The fix holds? "
                 "Commit nothing and make `validated: <why>` the first line of "
                 "your final message. It does not? Commit the correction on "
-                "the branch and hand off as a build would."
+                "the branch and hand off as a build would. This lane may have "
+                "no precis MCP: the report is below verbatim as of mint.\n\n" + report
             ),
             blocked_by=("gate",),
         )

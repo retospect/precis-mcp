@@ -127,6 +127,11 @@ def test_gripe_fix_direct_shape(handler: TodoHandler, store: Store) -> None:
     assert "no triage and no brief" in body
     assert _meta(store, mint.ids["validate"])["task_class"] == VALIDATE_TASK_CLASS
     assert _meta(store, mint.ids["review"])["task_class"] == "review"
+    # td564019 cut 1: the validate may run on an MCP-less lane too, so its
+    # body carries the gripe report as the build's does.
+    validate = _body(store, mint.ids["validate"])
+    assert f"gr{gripe}" in validate and "the widget leaks" in validate
+    assert "validated: <why>" in validate
     # The staged form is untouched by the split.
     staged = TEMPLATES["gripe-fix"].mint(store, None, gripe_id=gripe)
     assert {"triage", "brief"} <= set(staged.ids)
@@ -212,11 +217,13 @@ def test_gripe_fix_shape(handler: TodoHandler, store: Store) -> None:
 def test_mcp_bound_nodes_never_fit_the_codex_lane(
     handler: TodoHandler, store: Store
 ) -> None:
-    """td562568: with the codex lane on (code only, no MCP), a node whose
-    session mints children or posts through the precis MCP must carry a
-    class codex does not fit — unclassed it reads ``code`` and would launch
-    there. Every generator is classed by its role; the gripe-fix brief and
-    validate and the pcb-fix fix by their step; the builds stay ``code``."""
+    """td562568: with the codex lane on (no MCP), a node whose session mints
+    children or posts through the precis MCP must carry a class codex does
+    not fit — unclassed it reads ``code`` and would launch there. Every
+    generator is classed by its role, the gripe-fix brief and the pcb-fix
+    fix by their step; the builds stay ``code``. td564019 cut 1: a review
+    and a validate deliver one verdict in the final message and need no
+    MCP, so codex fits those two classes as well."""
     codex = lanes.get_lane("codex")
     sub = lanes.get_lane("claude-sub")
     assert codex is not None and sub is not None
@@ -228,6 +235,8 @@ def test_mcp_bound_nodes_never_fit_the_codex_lane(
         ),
     }
     code_only = {("gripe-fix", "build")}
+    verdict_classes = {"code", "review", VALIDATE_TASK_CLASS}
+    seen: set[str] = set()
     for name, mint in mints.items():
         for key, todo_id in mint.ids.items():
             meta = _meta(store, todo_id)
@@ -235,13 +244,14 @@ def test_mcp_bound_nodes_never_fit_the_codex_lane(
             if kind not in ("task", "generator"):
                 continue
             cls = str(meta.get("task_class") or "code")
+            seen.add(cls)
             assert sub.fits(cls), (name, key)
             if (name, key) in code_only:
-                assert cls == "code" and codex.fits(cls), (name, key)
-            else:
-                assert not codex.fits(cls), (name, key, cls)
+                assert cls == "code", (name, key)
+            assert codex.fits(cls) == (cls in verdict_classes), (name, key, cls)
             if kind == "generator":
                 assert cls in (meta["generate"]["role"], "review"), (name, key)
+    assert {"triage", "brief", "review", VALIDATE_TASK_CLASS} <= seen
     assert PCB_TASK_CLASS not in codex.task_classes
 
 

@@ -89,10 +89,12 @@ class Lane:
     ``adapter`` names how a slice is launched (``claude_p`` is
     ``claude -p`` in a worktree; ``codex_exec``, ``kimi_tree``,
     ``devin_tree`` and ``api`` are declared, not built). ``task_classes``
-    is the fit set; :data:`ANY_CLASS` fits every class. ``code`` is the
-    only class an MCP-less lane may take: the templates class every node
-    that works through the precis MCP by its step (``triage``, ``brief``,
-    ``review``, ``validate``, ``pcb``; :mod:`precis.plans.templates`).
+    is the fit set; :data:`ANY_CLASS` fits every class. An MCP-less lane
+    takes ``code``, plus ``review`` and ``validate`` whose one verdict rides
+    the session's final message (``handoff: review: …``, ``validated: …``;
+    td564019 cut 1); the templates class every node that mints or posts
+    through the precis MCP by its step (``triage``, ``brief``, ``pcb``;
+    :mod:`precis.plans.templates`) so it never lands on such a lane.
     ``deny_write_paths`` are the repo globs a slice on this lane may not
     write (:data:`FACTORY_DENY_WRITE_PATHS` for every seed lane).
     ``vendor`` is the model vendor behind the lane (``''`` = unknown); a
@@ -141,7 +143,7 @@ LANES: tuple[Lane, ...] = (
         adapter="devin_tree",
         credential_pool="devin",
         cap=1,
-        task_classes=frozenset({"code"}),
+        task_classes=frozenset({"code", "review", "validate"}),
         # The devin_tree adapter is in (td561543); flips on once the Devin
         # CLI is installed and logged in on the slice host under the vendor
         # account (td561545, gr562902).
@@ -158,9 +160,11 @@ LANES: tuple[Lane, ...] = (
         adapter="codex_exec",
         credential_pool="codex",
         cap=1,
-        # Code only (Reto 2026-10-26); reviews stay with the Claude lane
-        # until Codex has a review track record.
-        task_classes=frozenset({"code"}),
+        # Code (Reto 2026-10-26), plus review and validate (Reto
+        # 2026-11-04 "we can route to another devin for now", with the
+        # Claude weekly quota out): both deliver one verdict in the final
+        # message and need no MCP. Triage, brief and pcb stay off.
+        task_classes=frozenset({"code", "review", "validate"}),
         # On (td562568, Reto 2026-11-04 "And do land the flip."): the
         # codex_exec adapter (td561543) is in and deploy's Codex login on
         # the slice host answered a headless ``codex exec`` (td561545; the

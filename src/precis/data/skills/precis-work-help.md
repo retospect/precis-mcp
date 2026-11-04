@@ -281,6 +281,23 @@ tag(kind="gripe", id=564261, add=["hold:no-dispatch"])
 A hand-minted chain also counts: the `related-to` link is the marker.
 Each mint leaves a `dispatch: minted gripe-fix-direct td<root>` comment.
 
+## Can a review or a validate run on a lane without the precis MCP?
+## Which plan nodes still need a Claude lane?
+
+Yes for both. A reviewer mints nothing: its one verdict is the first line
+of its final message (`review: LAND`, `review: FIX — <findings>`,
+`review: REVERT — <why>`), which `run_slice` posts as the `handoff:`
+comment and `plan_dispatch` reads there; the reviewed todo's `landed:`
+sha and brief are inlined in the reviewer's brief, so `git show <sha>`
+in the slice worktree is all it needs. A validate's `validated: <why>`
+first line closes it the same way, and a gripe chain's validate body
+carries the gripe report verbatim. The codex and devin lanes therefore
+fit `code`, `review` and `validate`; the review is still picked off the
+builder's vendor. Nodes that mint or post through the MCP stay on a
+Claude lane: a triage or slicer (mints children), a brief writer (posts
+`brief:`), a pcb fix (drives the pcb kind). `run_slice` refuses a
+child-minting generator on an MCP-less lane before the claim.
+
 ## What is a pillar quest?
 ## Why is a paper a month todo and not a quest?
 

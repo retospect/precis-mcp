@@ -82,7 +82,13 @@ quality-of-life and container items.
    `workers/gripe_dispatch.py` (td564019 cut 3, dark until a
    `service_config` row) mints a `gripe-fix-direct` chain per free
    code-lane slot for the hottest agent- or human-filed `fix:code` gripe
-   with no chain yet; Reto lights it.
+   with no chain yet; Reto lights it. Review and validate off Claude
+   (td564019 cut 1, Reto 2026-11-04 "route to another devin for now"):
+   the reviewer's verdict already rode the final message
+   (`handoff: review: …`), so `run_slice` now refuses an MCP-less lane only
+   to child-minting generators, inlines the reviewed todo's `landed:` sha
+   and brief into a reviewer's brief, the validate body carries the gripe
+   report, and the codex and devin lanes fit `review` and `validate`.
 1. **backlog/worker-rotation-starves-rescue-passes.md** — the rescue
    starvation shipped (overdue rescue passes age to the front of the
    rotation); left is the one unbounded job pass still inside the wait.

@@ -977,6 +977,64 @@ def test_submit_refuses_a_generator_on_a_lane_without_mcp(
     assert "claimed-by:lane-codex" not in store.tag_strings(42)
 
 
+def test_submit_runs_a_reviewer_on_a_lane_without_mcp(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """td564019 cut 1: a reviewer mints nothing, so it needs no MCP — its
+    verdict rides the final message (``handoff: review: …``, which
+    plan_dispatch reads) and the reviewed land is inlined in its brief."""
+    codex = Lane("codex", "codex_exec", "codex", 1, frozenset({"code", "review"}))
+    monkeypatch.setattr(lanes, "LANES", (codex,))
+    store = _Store()
+    store.add_todo(
+        7,
+        "Build the fix for gr1",
+        body="Fix the widget leak in a.py.",
+        status="done",
+        comments=("handoff: committed the fix with its test", "landed: abc1234def"),
+    )
+    store.add_todo(
+        42,
+        "Review the gr1 fix after land",
+        body="Review td7.",
+        meta={"generate": {"role": "reviewer", "from": "td7"}, "task_class": "review"},
+    )
+    ctx, handle = _submit(store, seams)
+    assert handle is not None and ctx.meta_set["lane"] == "codex"
+    tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
+    assert "This lane has no precis MCP" in brief
+    target = brief[brief.index("## Review target") : brief.index("## When done")]
+    assert "td7: Build the fix for gr1" in target
+    assert "git show abc1234def" in target
+    assert "Fix the widget leak in a.py." in target
+    assert "handoff: committed the fix with its test" in target
+    tail = brief[brief.index("## When done") :]
+    assert tail.startswith("## When done: post your verdict")
+    assert "FIRST line of your final message" in tail
+    assert "Post exactly one comment" not in tail
+    assert "`review: FIX — <list of findings>`" in tail
+
+
+def test_review_target_without_a_land_says_so(seams: dict[str, Any]) -> None:
+    store = _Store()
+    store.add_todo(7, "Build it", body="Build.", comments=("handoff: half done",))
+    meta = {"generate": {"role": "reviewer", "from": "td7"}}
+    target = run_slice._review_target(store, meta)
+    assert target is not None
+    assert (
+        "no `landed:` comment yet" in target and "no-op: nothing landed yet" in target
+    )
+    assert run_slice._review_target(store, {"generate": {"role": "triage"}}) is None
+    assert run_slice._review_target(store, {"op": "run_slice"}) is None
+    assert (
+        run_slice._review_target(
+            store, {"generate": {"role": "reviewer", "from": "td9"}}
+        )
+        is None
+    )
+
+
 def test_submit_routes_a_pinned_claude_model_off_the_codex_lane(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
