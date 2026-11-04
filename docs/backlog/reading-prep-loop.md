@@ -28,7 +28,21 @@ derived view), `has-prerequisite`/`analogy-of`/`contrasts-with` edges,
 `derived-from` provenance. **Anki is a renderer, not the brain** — a
 thin sync adapter; scheduling intelligence migrates up into the graph.
 
+The shared scalar below describes shipped code. The proposed learner model
+in [quest-learning-plan.md](quest-learning-plan.md) adds owner-scoped temporal
+evidence, concept/relationship estimates and uncertainty. Reto's clarification
+makes that memory twin foundational for adaptive learning; it is not yet built.
+
 ## Open scope
+
+### Quest guided daily study
+
+[quest-learning-plan.md](quest-learning-plan.md) specifies the proposed
+personal memory twin, importance-ordered continuing queue, private study
+activity calendar, Users preferences, advance Anki preparation and calibration
+of challenge. Thirty minutes is adjustable guidance rather than a fixed budget.
+This extends routing and intake;
+the concept-quality and corpus-wide enablement gates below still apply.
 
 ### Routing (revised slice 5)
 
@@ -41,9 +55,10 @@ thin sync adapter; scheduling intelligence migrates up into the graph.
 - **Daily review walk** — a greedy walk over due concepts along
   edges/embedding proximity into a connected narrative path,
   different each day; structured interleaving with a tunable semantic
-  step-size; recalling A-then-B along an edge can strengthen the edge
-  weight. Constraint: maximize narrative coherence subject to spacing
-  validity.
+  step-size. Only a task that explains/uses a relationship contributes
+  personal edge evidence; adjacent recall of A then B is sequence metadata,
+  not demonstrated understanding of their connection. Constraint:
+  maximize narrative coherence subject to spacing validity.
 
 ### Booklet (revised slice 6)
 
@@ -67,12 +82,16 @@ paper recency. No migration.
 
 ### Briefing + audio (revised slice 8; partial)
 
-The brief's recall lane already reports forged cards + escalations.
-Open: the graph-aware segment (today's path + readiness + due/weak);
-the pluggable TTS stage (Piper/Kokoro on-cluster; greenfield — new dep
-+ ansible install); `/briefing/feed.xml` RSS + MP3 route in
-`precis_web` behind the existing `PRECIS_WEB_AUTH_TOKEN` (wire the
-FastAPI dependency — plumbing exists, middleware doesn't).
+The morning reading brief and evening nidra already compose drafts for the
+`cast_audio` narration/publication pass, served by the podcast routes.
+Open: personal memory forecasts/queue context in the morning lanes and
+owner-specific familiar-concept walks in nidra. See
+[quest-learning-plan.md](quest-learning-plan.md) for integration and privacy:
+existing feed authentication does not filter the shared episode directory
+by owner. Personalized transcripts/audio require owner-scoped RSS and direct
+media access before publication. Keep the current nidra profile free of
+recall prompts. Podcasts are extra listening beside the configurable
+focused-study session estimate, initially thirty minutes and adjustable.
 
 ### Concept quality — v2 extraction
 
@@ -99,15 +118,15 @@ calibration.
 
 ### Later / deferred
 
-- **Prerequisite-edge mastery propagation** (mastering a concept bumps
-  prereq confidence; weakness flows to dependents) — layered on once
-  the base field has real data.
-- **Scalar vs event-sourced mastery vector** — unresolved; scalar is
-  the shipped default. The vector (append-only evidence timeline +
-  typed axis projections: exposure/retention/fluency) wins if the axes
-  need opposite behavior (retained-but-never-used vs used-but-decaying
-  vs seen-once). Decide with real anki data. Either way:
-  storage-liberal, action-conservative.
+- **Learned transfer across prerequisites** — deferred until personal
+  observations support conditional changes between related concepts.
+  Corpus prerequisite edges alone do not change a learner's memory estimate.
+- **Richer memory estimators** — the shipped default is still the shared
+  scalar. Owner-scoped append-only evidence, decay, uncertainty and distinct
+  recall/application/relationship projections are now foundation scope in
+  [quest-learning-plan.md](quest-learning-plan.md). Exact estimators and learned
+  transfer between graph neighbors wait for calibrated personal observations;
+  a prerequisite edge must never certify a person's mastery automatically.
 - **Guid-preserving in-place card edit** — deferred; v1 = always
   `delete + put` (curve resets; decision 2). Add only if mature-card
   churn proves costly.
