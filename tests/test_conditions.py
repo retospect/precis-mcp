@@ -93,6 +93,7 @@ def _seed_pass_logs(
     last_age_s: float,
     process: str = _PROC,
     registered: bool = True,
+    replace: bool = True,
 ) -> None:
     """n rows over the past 7 days for (host, proc, handler), the newest
     ``last_age_s`` old — the every-cycle BatchResult log shape.
@@ -100,12 +101,14 @@ def _seed_pass_logs(
     ``registered`` (default) plants a ``service_config`` row so the
     handler resolves as a live pass — ``_probe_pass_dead`` ignores names
     nothing registers (gr501991). Pass ``registered=False`` to seed a
-    ghost name."""
+    ghost name. ``replace`` (default) first drops the handler's rows on
+    the host; ``replace=False`` adds a second process's history."""
     with store.pool.connection() as conn:
-        conn.execute(
-            "DELETE FROM worker_logs WHERE host = %s AND payload->>'handler' = %s",
-            (_HOST, handler),
-        )
+        if replace:
+            conn.execute(
+                "DELETE FROM worker_logs WHERE host = %s AND payload->>'handler' = %s",
+                (_HOST, handler),
+            )
         if registered:
             conn.execute(
                 "INSERT INTO service_config (host, service, prio) "
@@ -450,6 +453,48 @@ def test_pass_dead_reports_retired_lane_when_unit_is_not_installed(
     _seed_heartbeat(store)
     (found,) = [f for f in _probe_pass_dead(store) if handler in f.key]
     assert "dead handler" in found.detail
+
+
+def test_pass_dead_excuses_a_handler_that_moved_lanes_on_the_host(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr558710: 8c813c1b7 moved hub_refine and job_claude_inproc off the
+    base lane on purpose; both kept logging under their own lane on the
+    same host, yet the base lane's silence read as a dead handler with a
+    restart-worker heal for a lane that had nothing to heal."""
+    handler = _uniq("moved")
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", "5")
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, handler, n=10, last_age_s=4 * 3600)
+    assert any(handler in f.key for f in _probe_pass_dead(store))
+
+    # Live on another lane of the same host inside the budget: not dead.
+    _seed_pass_logs(
+        store,
+        handler,
+        n=10,
+        last_age_s=60.0,
+        process="precis-worker-hubrefine",
+        replace=False,
+    )
+    assert [f for f in _probe_pass_dead(store) if handler in f.key] == []
+
+    # Silent on both lanes: each lane's silence is a finding again.
+    _seed_pass_logs(store, handler, n=10, last_age_s=4 * 3600)
+    _seed_pass_logs(
+        store,
+        handler,
+        n=10,
+        last_age_s=2 * 3600,
+        process="precis-worker-hubrefine",
+        replace=False,
+    )
+    found = [f for f in _probe_pass_dead(store) if handler in f.key]
+    assert sorted(f.key.split("/")[1] for f in found) == [
+        _PROC,
+        "precis-worker-hubrefine",
+    ]
 
 
 @pytest.mark.parametrize(

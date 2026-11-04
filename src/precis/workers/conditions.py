@@ -191,10 +191,16 @@ WITH live AS (
      WHERE ts > now() - make_interval(days => %(lookback_d)s)
        AND payload ? 'handler'
      GROUP BY 1, 2, 3
+), on_host AS (
+    -- the handler's newest row on the host under *any* process: a pass
+    -- moved to another lane (host-lanes --skip) is live there, not dead
+    SELECT host, handler, max(last_seen) AS last_seen FROM hist GROUP BY 1, 2
 )
 SELECT h.host, h.process, h.handler,
-       EXTRACT(EPOCH FROM (now() - h.last_seen)) / 3600.0 AS silent_h
+       EXTRACT(EPOCH FROM (now() - h.last_seen)) / 3600.0 AS silent_h,
+       EXTRACT(EPOCH FROM (now() - oh.last_seen)) / 3600.0 AS host_silent_h
   FROM hist h JOIN live l ON l.host = h.host
+  JOIN on_host oh ON oh.host = h.host AND oh.handler = h.handler
  WHERE (h.last_seen < now() - make_interval(secs => %(budget_s)s)
         AND h.n7d >= %(min_rows)s)
     OR (h.last_seen < now() - make_interval(secs => %(slow_budget_s)s)
@@ -370,9 +376,16 @@ def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
     live_names = _liveness_handler_names(store)
     shadowed = _shadowed_service_names()
     out: list[ConditionFinding] = []
-    for host, process, handler, silent_h in rows:
+    for host, process, handler, silent_h, host_silent_h in rows:
         if str(handler) not in live_names:
             continue  # renamed/removed pass — stale history, not a death
+        if float(host_silent_h) * 3600.0 < budget_s:
+            # The handler logged inside the budget on this host under
+            # another process: it moved lanes (host-lanes ``--skip``, the
+            # 8c813c1b7 hub_refine/job_claude_inproc move), so the old
+            # lane's silence is by design and a restart of that lane
+            # would heal nothing (gr558710).
+            continue
         if str(handler) in shadowed:
             # A service token shadowed by its own ``log_name`` is never a
             # ``payload.handler`` emitter — the log name's row carries
