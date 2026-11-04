@@ -174,6 +174,8 @@ def _collect_file(path: Path, ext: Extraction, consts: dict[str, str]) -> None:
     except (SyntaxError, UnicodeDecodeError):
         return
 
+    file_consts = dict(consts)
+    _module_consts(tree, file_consts)
     rel = str(path.relative_to(SRC_ROOT))
 
     # *_TABLES collections of string literals -> validate as table names.
@@ -199,7 +201,7 @@ def _collect_file(path: Path, ext: Extraction, consts: dict[str, str]) -> None:
             continue
         if not node.args:
             continue
-        sql = _reconstruct(node.args[0], consts)
+        sql = _reconstruct(node.args[0], file_consts)
         if sql is None:
             # Only count the ones that plausibly *are* SQL (string-ish) as
             # skipped-dynamic; ignore unrelated .execute() calls.
@@ -219,7 +221,8 @@ def _extract_all() -> Extraction:
     ]
     # First pass: gather every module-level string constant across the package
     # so cross-module references (e.g. finding.py interpolating _mappers'
-    # _REFS_COLS) resolve. Names are package-unique in practice.
+    # _REFS_COLS) resolve as a fallback. Each file's own constants override
+    # this table during extraction so unrelated same-name constants cannot win.
     consts: dict[str, str] = {}
     for path in paths:
         try:
@@ -232,6 +235,40 @@ def _extract_all() -> Extraction:
     for path in paths:
         _collect_file(path, ext, consts)
     return ext
+
+
+@pytest.mark.parametrize(
+    ("learning_file", "events_file"),
+    [("a.py", "z.py"), ("z.py", "a.py")],
+    ids=["learning-first", "learning-last"],
+)
+def test_extract_all_preserves_module_constants(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    learning_file: str,
+    events_file: str,
+) -> None:
+    """Same-name column lists must not fabricate schema drift in another file."""
+    (tmp_path / learning_file).write_text(
+        "_EVENT_COLS = 'event_id,study_date'\n"
+        'conn.execute(f"SELECT {_EVENT_COLS} FROM learning_events")\n',
+        encoding="utf-8",
+    )
+    (tmp_path / events_file).write_text(
+        "_EVENT_COLS = 'event_id,ref_id'\n"
+        'conn.execute(f"SELECT {_EVENT_COLS} FROM events")\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(f"{__name__}.SRC_ROOT", tmp_path)
+    monkeypatch.setattr(f"{__name__}.SCAN_ROOTS", (tmp_path,))
+
+    ext = _extract_all()
+
+    assert {q.file: q.sql for q in ext.queries} == {
+        learning_file: "SELECT event_id,study_date FROM learning_events",
+        events_file: "SELECT event_id,ref_id FROM events",
+    }
+    assert ext.skipped_dynamic == 0
 
 
 def _leading_keyword(sql: str) -> str:

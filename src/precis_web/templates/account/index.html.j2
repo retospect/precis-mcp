@@ -69,6 +69,63 @@
   </p>
 </div>
 
+<h2 class="text-sm font-semibold text-fg-secondary mb-2">Learning</h2>
+<div class="rounded-lg border border-line bg-surface px-4 py-4 mb-6 max-w-2xl">
+  <a href="/learning" class="text-sm text-link hover:underline">Private study activity</a>
+  <p class="mt-2 text-xs text-fg-subtle">
+    Record your own study check-ins and view your activity calendar.
+    <a href="/learning#settings" class="text-link hover:underline">Learning preferences</a>
+    include timezone and optional suggested session minutes.
+  </p>
+</div>
+
+<h2 class="text-sm font-semibold text-fg-secondary mb-2">Personal MCP tokens</h2>
+<div class="rounded-lg border border-line bg-surface px-4 py-4 mb-6 max-w-2xl">
+  <p class="text-xs text-fg-subtle mb-3">
+    Use a personal bearer token to let an MCP client access your private learning
+    activity. Create a separate token for each client. Keep tokens private;
+    a new token is shown only once.
+  </p>
+  {% if new_mcp_token %}
+  <label for="new-mcp-token" class="block text-xs font-medium text-fg-muted mb-1">Copy this token now</label>
+  <input id="new-mcp-token" readonly value="{{ new_mcp_token }}" autocomplete="off"
+         placeholder="New personal MCP token" aria-describedby="new-mcp-token-help"
+         onclick="this.select()"
+         class="w-full rounded border border-success-strong bg-success-subtle px-2 py-1 text-xs font-mono text-fg-secondary" />
+  <p id="new-mcp-token-help" class="mt-1 mb-3 text-xs text-fg-subtle">Copy this into your MCP client's bearer token setting. It will not be shown again.</p>
+  {% endif %}
+  <form method="post" action="/account/mcp-tokens" class="flex items-end gap-2 mb-1">
+    <div>
+      <label for="mcp-token-label" class="block text-xs text-fg-muted mb-1">Token label</label>
+      <input id="mcp-token-label" name="label" required maxlength="100" placeholder="Client label"
+             aria-describedby="mcp-token-label-help" autocomplete="off"
+             class="rounded border border-line px-2 py-1 text-sm" />
+    </div>
+    <button type="submit" class="rounded bg-info-solid text-on-solid text-xs px-3 py-1.5 hover:bg-info-solid-strong">Create token</button>
+  </form>
+  <p id="mcp-token-label-help" class="mb-3 text-xs text-fg-subtle">Name the client using this token so you can identify it later, for example Laptop.</p>
+  {% if mcp_tokens %}
+  <ul class="space-y-2">
+    {% for token in mcp_tokens %}
+    <li class="flex items-center gap-3 text-xs text-fg-subtle">
+      <span class="font-medium text-fg-secondary">{{ token.label }}</span>
+      <span>{{ token.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</span>
+      {% if token.revoked_at %}
+      <span>Revoked</span>
+      {% else %}
+      <form method="post" action="/account/mcp-tokens/revoke" class="ml-auto">
+        <input type="hidden" name="token_id" value="{{ token.id }}" />
+        <button type="submit" class="text-danger hover:underline">Revoke</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="text-xs text-fg-faint">No personal MCP tokens yet.</p>
+  {% endif %}
+</div>
+
 {# ── password ────────────────────────────────────────────────────── #}
 <h2 class="text-sm font-semibold text-fg-secondary mb-2">Change password</h2>
 <div class="rounded-lg border border-line bg-surface px-4 py-4 mb-6 max-w-2xl">

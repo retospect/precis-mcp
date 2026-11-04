@@ -52,7 +52,8 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Kinds with no universal handle by design (handle_registry.py's own module
 # docstring: "Providers ... and stateless tools ... are addressed by
-# URL/query/compute, not handles"). A kind landing here that should
+# URL/query/compute, not handles"). Private non-ref kinds also have no shared
+# handle code. A kind landing here that should
 # actually carry a handle code is a real gap — add its code to
 # ``KIND_CODES`` instead of adding it to this list.
 # ---------------------------------------------------------------------------
@@ -68,6 +69,7 @@ _NO_HANDLE_KINDS: frozenset[str] = frozenset(
         "perplexity-research",
         "websearch",
         "email",  # live IMAP browse — addressed by folder/uid, never a ref
+        "learning",  # private non-ref records; leN stays local to the owned store
         # stateless compute — addressed by the query/expression itself
         "calc",
         "time",
@@ -85,7 +87,7 @@ def _specs() -> list[KindSpec]:
 def test_every_declared_kind_is_handle_registered_or_explicitly_exempt() -> None:
     """Every kind declared under ``precis.handlers`` either carries a
     ``handle_registry.KIND_CODES`` entry or is named in
-    :data:`_NO_HANDLE_KINDS` (a live-fetch provider / stateless tool, by
+    :data:`_NO_HANDLE_KINDS` (a provider, stateless tool or private non-ref kind, by
     design). A kind satisfying neither is the exact "forgot the
     touch-point" bug ``handle_registry.py``'s own docstring calls out
     (``news``/``message``/``cron`` all slipped through by hand once)."""
@@ -95,7 +97,7 @@ def test_every_declared_kind_is_handle_registered_or_explicitly_exempt() -> None
         f"kind(s) {sorted(unaccounted)} are neither handle-coded "
         "(add to handle_registry.KIND_CODES) nor exempt "
         "(add to tests/test_kind_totality.py::_NO_HANDLE_KINDS if this is "
-        "a provider/stateless kind with no addressable ref)"
+        "a provider/stateless/private kind with no addressable ref)"
     )
 
 

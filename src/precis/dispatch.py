@@ -1139,6 +1139,9 @@ def boot(
         _gated(FleetHandler)
         _gated(JobHandler)
         _gated(AnkiHandler)
+        from precis.handlers.learning import LearningHandler
+
+        _gated(LearningHandler)
         _gated(ConceptHandler)
         _gated(TaxonHandler)
         _gated(QuestHandler)

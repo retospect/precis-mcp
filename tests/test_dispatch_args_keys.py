@@ -25,9 +25,14 @@ from precis.errors import BadInput
 from precis.protocol import ArgsSpec, Handler, UndeclaredArgsKey
 from precis.runtime import PrecisRuntime
 from precis.store import Store
+from precis.user_context import user_scope
+from precis.users import PasswordRecord
 
 #: (kind, verb) for every in-repo handler verb that declares ``args``.
 PASSTHROUGH = [
+    ("learning", "get"),
+    ("learning", "put"),
+    ("learning", "edit"),
     ("todo", "search"),
     ("todo", "delete"),
     ("gripe", "delete"),
@@ -70,6 +75,17 @@ def _handler_class(runtime: PrecisRuntime, kind: str) -> type[Handler]:
 
 
 def _call(runtime: PrecisRuntime, kind: str, verb: str, extras: dict) -> str:
+    if kind == "learning":
+        # Exercise the argument gate after a real account passes the private
+        # kind's authentication boundary; anonymous calls stop before it.
+        assert runtime.store is not None
+        owner = runtime.store.create_web_user(
+            login="args-learner",
+            abbrev="arg",
+            password=PasswordRecord("unused", "unused", "scrypt-v1"),
+        )
+        with user_scope(owner.id):
+            return runtime.dispatch(verb, {"kind": kind, "__extras__": extras})
     return runtime.dispatch(verb, {"kind": kind, "__extras__": extras})
 
 

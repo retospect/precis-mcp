@@ -81,6 +81,10 @@
           </a>
           {% endfor %}
 
+          {% if nav_user %}
+          <a href="/learning" class="px-2 py-1 rounded text-xs font-medium transition {% if active_tab == 'learning' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">Learning</a>
+          {% endif %}
+
           <span class="mx-1 h-4 w-px bg-chrome-hover"></span>
 
           {# ── Browse ▾: the corpus look-up long tail ──

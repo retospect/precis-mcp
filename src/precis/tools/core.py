@@ -3,6 +3,13 @@
 These are the actual tool functions that implement the seven-verb API.
 Both the MCP server and CLI interface consume these functions through
 the shared registry in tools/__init__.py.
+
+Personal identity binds anew from the trusted HTTP request's ASGI scope
+for each dispatch, including an explicit anonymous scope for stdio and
+unbound callers. Session state, wire metadata and revision attribution
+cannot authorize personal records. Learning calls never log payloads.
+Authenticated personal callers also carry their current account's legacy
+revision actor, so existing owner-aware handlers do not see a generic agent.
 """
 
 from __future__ import annotations
@@ -15,7 +22,9 @@ from typing import TYPE_CHECKING, Any
 
 from precis import serve_ledger
 from precis.handlers._interpret import PREFIX as _INTERPRETED_PREFIX
+from precis.learning_privacy import is_learning_call
 from precis.runtime.handle_deref import TEXT_PAYLOAD_MAX_BYTES
+from precis.user_context import user_actor_scope
 
 if TYPE_CHECKING:
     from precis.runtime import PrecisRuntime
@@ -162,6 +171,11 @@ def _log_tool_call(
             return v[:limit] + "…"
         return v
 
+    if is_learning_call(payload):
+        # Private notes, identifiers, forged fields and their error text
+        # must not enter the generic shared audit stream on either path.
+        payload = {"kind": "learning"}
+
     sample: dict[str, Any] = {}
     for key in _SCALAR_KEYS:
         if key in payload and payload[key] is not None:
@@ -269,6 +283,32 @@ def _build_runtime_locked() -> None:
 def _dispatch(
     verb: str, payload: dict[str, Any], ctx: Context | None = None
 ) -> _ToolReturn:
+    """Bind this request's personal identity, dispatch, then always reset it."""
+    with _ctx_user_scope(ctx):
+        return _dispatch_as_user(verb, payload, ctx)
+
+
+def _ctx_user_scope(ctx: Context | None) -> contextlib.AbstractContextManager[None]:
+    """Read only trusted transport stamps; an MCP session carries no owner."""
+    from precis.mcp_identity import SCOPE_TOKEN_ID, SCOPE_USER_ID
+    from precis.user_context import user_scope
+
+    try:
+        request = ctx.request_context.request if ctx is not None else None
+        scope = request.scope if request is not None else {}
+    except (AttributeError, ValueError):
+        scope = {}
+    if not isinstance(scope, dict):
+        scope = {}
+    user_id, token_id = scope.get(SCOPE_USER_ID), scope.get(SCOPE_TOKEN_ID)
+    if type(user_id) is int and user_id > 0 and type(token_id) is int and token_id > 0:
+        return user_scope(user_id, token_id)
+    return user_scope(None)
+
+
+def _dispatch_as_user(
+    verb: str, payload: dict[str, Any], ctx: Context | None = None
+) -> _ToolReturn:
     """Dispatch one verb call and shape the result.
 
     On success, returns the rendered string.
@@ -287,8 +327,8 @@ def _dispatch(
     runtime = _get_runtime()
     started = _monotonic()
     is_error = False
-    run_ctx = _ctx_run_context(ctx, store=getattr(runtime, "store", None))
     try:
+        run_ctx = _ctx_run_context(ctx, store=getattr(runtime, "store", None))
         ctxmgr: contextlib.AbstractContextManager[None]
         if run_ctx is not None:
             import dataclasses
@@ -319,9 +359,11 @@ def _dispatch(
             )
         else:
             ctxmgr = contextlib.nullcontext()
-        with ctxmgr:
+        with ctxmgr, user_actor_scope(getattr(runtime, "store", None)):
             body, is_error = runtime.dispatch_with_status(
-                verb, payload, fold=_ctx_session(ctx) is not None
+                verb,
+                payload,
+                fold=_ctx_session(ctx) is not None and not is_learning_call(payload),
             )
         if is_error:
             return CallToolResult(

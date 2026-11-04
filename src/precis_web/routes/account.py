@@ -6,9 +6,14 @@ disabling them, deleting) deliberately stays CLI-only — every account is
 fully authorized, so a web affordance for "add a user" would let anyone
 who reaches one credential mint more of them.
 
-Three things live here today:
+Self-service controls:
 
-* **Change password** — the only self-service credential path there is.
+* **Change password** — verifies the current password before replacing it.
+* **Personal MCP tokens** — independent revocable credentials for private
+  learning access. Only digests persist; the mint POST shows plaintext
+  once, with no-store. Every token operation rechecks the stable account
+  ID, and list/revoke queries always include that owner. Learning settings
+  link to the protected ``/learning`` page.
 * **Profile** — full name, email, and ORCID iD. The first two are
   display-only; the iD is not. A nanopub signature is attributed to an
   ORCID, never to a login (:func:`precis.nanopub.keys.load_profile`
@@ -80,6 +85,9 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.responses import Response
 
+from precis.errors import BadInput, Denied, Upstream
+from precis.mcp_identity import list_user_tokens, mint_user_token, revoke_user_token
+from precis.user_context import require_user, user_scope
 from precis.users import (
     MIN_PASSWORD_LENGTH,
     PepperUnavailable,
@@ -119,7 +127,23 @@ def _require_self(request: Request) -> WebUser:
                 "no signed-in user to act on. Manage accounts with "
                 "`precis users` on the host."
             ),
+            headers={"Cache-Control": "no-store"},
         )
+    return user
+
+
+def _require_token_owner(request: Request) -> WebUser:
+    """Revalidate the stable account ID before any credential operation."""
+    user = _require_self(request)
+    try:
+        with user_scope(user.id):
+            require_user(get_store(request))
+    except (Denied, Upstream) as exc:
+        raise HTTPException(
+            status_code=403 if isinstance(exc, Denied) else 503,
+            detail=exc.cause,
+            headers={"Cache-Control": "no-store"},
+        ) from exc
     return user
 
 
@@ -145,6 +169,7 @@ def _render(
     error: str = "",
     notice: str = "",
     feed_url: str | None = None,
+    new_mcp_token: str | None = None,
 ) -> HTMLResponse:
     """Render the page, looking the feed URL up unless one was passed.
 
@@ -164,12 +189,14 @@ def _render(
     anki_email: str | None = None
     poster_profile: dict[str, Any] | None = None
     poster_roles: list[str] = []
+    mcp_tokens = []
     if user is not None:
         from precis import profiles
         from precis.anki.creds import get_user_credentials
         from precis.export.remarkable import user_remarkable_configured
 
         store = get_store(request)
+        mcp_tokens = list_user_tokens(store, user.id)
         remarkable_paired = user_remarkable_configured(store, user.login)
         creds = get_user_credentials(store, user.login)
         anki_connected = creds is not None
@@ -195,6 +222,9 @@ def _render(
             "anki_email": anki_email,
             "poster_profile": poster_profile,
             "poster_roles": poster_roles,
+            "mcp_tokens": mcp_tokens,
+            # Returned by the mint POST only; no URL, vault or persistence.
+            "new_mcp_token": new_mcp_token,
             "auth_on": get_web_config(request).auth_required,
             "min_password_length": MIN_PASSWORD_LENGTH,
         },
@@ -223,6 +253,45 @@ async def index(request: Request, changed: str = "", saved: str = "") -> HTMLRes
     if user is None:
         return _render(request, user=None, notice=notice)
     return _render(request, user=_fresh(request, user), notice=notice)
+
+
+@router.post("/mcp-tokens", response_class=HTMLResponse)
+def create_mcp_token(request: Request, label: str = Form("")) -> HTMLResponse:
+    """Show a newly minted personal credential exactly once, with no cache."""
+    user = _require_token_owner(request)
+    try:
+        _token_id, raw = mint_user_token(get_store(request), user.id, label)
+    except BadInput as exc:
+        return _render(request, user=user, error=exc.cause)
+    except Denied as exc:
+        raise HTTPException(
+            status_code=403, detail=exc.cause, headers={"Cache-Control": "no-store"}
+        ) from exc
+    return _render(
+        request,
+        user=user,
+        notice="MCP token created. Copy it now; it will not be shown again.",
+        new_mcp_token=raw,
+    )
+
+
+@router.post("/mcp-tokens/revoke", response_class=HTMLResponse)
+def revoke_mcp_token(request: Request, token_id: str = Form("")) -> Response:
+    """Revoke only the signed-in owner's token; never accept an owner field."""
+    user = _require_token_owner(request)
+    if not token_id.isascii() or not token_id.isdecimal() or len(token_id) > 19:
+        return _render(
+            request, user=user, error="Choose an active MCP token to revoke."
+        )
+    if not revoke_user_token(get_store(request), user.id, int(token_id)):
+        raise HTTPException(
+            status_code=404,
+            detail="MCP token not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    return RedirectResponse(
+        "/account", status_code=303, headers={"Cache-Control": "no-store"}
+    )
 
 
 @router.post("/password")

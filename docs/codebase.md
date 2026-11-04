@@ -62,6 +62,14 @@ bypass.
 
 ## The lifecycle, end to end
 
+Private study activity is a non-ref exception to the corpus model:
+`precis.learning` stores owner-keyed settings and append-only self-report
+events in dedicated tables, outside chunks, embeddings and public graph
+search. `user_context` binds stable authenticated account IDs; `mcp_identity`
+stores revocable per-user bearer digests. The `learning` handler and web page
+share that store. `runtime.learning` bypasses shared payload ledgers and
+continuation caches; learning events record engagement, never concept mastery.
+
 ```
   precis add <input>
         │  ingest/{marker,pipeline,text_chunker,db_writer}.py

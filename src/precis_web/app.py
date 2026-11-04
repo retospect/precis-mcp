@@ -140,8 +140,10 @@ def create_app(
     # on the 401 challenge and /static too, not just handler responses.
     # Unconditional: framing and MIME-sniffing don't care whether auth is
     # on, and the auth-off path is exactly when the app is most exposed.
+    from precis_web.routes.learning import LearningPrivacyMiddleware
     from precis_web.security_headers import SecurityHeadersMiddleware
 
+    app.add_middleware(LearningPrivacyMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
 
     register_error_handlers(app)
@@ -185,6 +187,7 @@ def create_app(
         graph,
         gripes,
         items,
+        learning,
         llm,
         manual,
         mermaid,
@@ -269,6 +272,7 @@ def create_app(
     app.include_router(manual.router)
     app.include_router(account.router)
     app.include_router(anki.router)
+    app.include_router(learning.router)
 
     @app.get("/", include_in_schema=False)
     async def _root() -> RedirectResponse:

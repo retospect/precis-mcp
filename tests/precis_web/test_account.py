@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
@@ -140,9 +141,102 @@ def _client(store: FakeStore, **cfg_kw) -> TestClient:
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _fake_token_listing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Legacy page tests fake roster writes; credential tests use real SQL."""
+    from precis.mcp_identity import list_user_tokens
+    from precis_web.routes import account
+
+    monkeypatch.setattr(
+        account,
+        "list_user_tokens",
+        lambda store, user_id: (
+            [] if isinstance(store, FakeStore) else list_user_tokens(store, user_id)
+        ),
+    )
+
+
 def _auth(password: str = GOOD, login: str = "reto") -> dict[str, str]:
     raw = base64.b64encode(f"{login}:{password}".encode()).decode()
     return {"Authorization": f"Basic {raw}"}
+
+
+def test_personal_mcp_token_mint_show_once_and_owner_only_revoke(store) -> None:
+    from precis.mcp_identity import (
+        list_user_tokens,
+        mint_user_token,
+        resolve_user_token,
+    )
+
+    alice = store.create_web_user(
+        login="alice", abbrev="al", password=hash_password(GOOD)
+    )
+    bob = store.create_web_user(login="bob", abbrev="bo", password=hash_password(GOOD))
+    bob_id, bob_raw = mint_user_token(store, bob.id, "Bob private client")
+    app = create_app(
+        runtime=SimpleNamespace(store=store),
+        web_config=WebConfig(corpus_dir=None, auth_required=True),
+    )
+    with TestClient(app) as client:
+        auth = _auth(login="alice")
+        minted = client.post(
+            "/account/mcp-tokens",
+            data={"label": "<script>laptop</script>", "owner": "bob"},
+            headers=auth,
+        )
+        assert minted.status_code == 200
+        assert minted.headers["cache-control"] == "no-store"
+        match = re.search(r"precis_user_[A-Za-z0-9_-]{43}", minted.text)
+        assert match is not None
+        raw = match.group()
+        principal = resolve_user_token(store, raw)
+        assert principal is not None and principal.user_id == alice.id
+        assert principal.token_id is not None
+        assert "<script>laptop</script>" not in minted.text
+        assert "&lt;script&gt;laptop&lt;/script&gt;" in minted.text
+        assert bob_raw not in minted.text and "Bob private client" not in minted.text
+        later = client.get("/account", headers=auth)
+        assert raw not in later.text
+        assert 'href="/learning"' in later.text
+        assert later.headers["cache-control"] == "no-store"
+        foreign = client.post(
+            "/account/mcp-tokens/revoke", data={"token_id": str(bob_id)}, headers=auth
+        )
+        missing = client.post(
+            "/account/mcp-tokens/revoke",
+            data={"token_id": str(bob_id + 999)},
+            headers=auth,
+        )
+        assert foreign.status_code == missing.status_code == 404
+        assert foreign.json() == missing.json()
+        assert foreign.headers["cache-control"] == "no-store"
+        assert resolve_user_token(store, bob_raw) is not None
+        revoked = client.post(
+            "/account/mcp-tokens/revoke",
+            data={"token_id": str(principal.token_id)},
+            headers=auth,
+            follow_redirects=False,
+        )
+        assert revoked.status_code == 303
+        assert revoked.headers["cache-control"] == "no-store"
+        assert resolve_user_token(store, raw) is None
+        assert list_user_tokens(store, alice.id)[0].revoked_at is not None
+
+
+def test_personal_mcp_tokens_refuse_auth_off() -> None:
+    cfg = WebConfig(corpus_dir=None, auth_required=False)
+    app = create_app(runtime=SimpleNamespace(store=FakeStore()), web_config=cfg)
+    with TestClient(app) as client:
+        assert (
+            client.post("/account/mcp-tokens", data={"label": "client"}).status_code
+            == 503
+        )
+        assert (
+            client.post(
+                "/account/mcp-tokens/revoke", data={"token_id": "1"}
+            ).status_code
+            == 503
+        )
 
 
 @pytest.fixture(autouse=True)

@@ -49,6 +49,10 @@ from precis.tools import core as tools_core
 # that (kind, verb) pair. An entry of `()` means "recognises mode= but
 # rejects every value" — a deliberately different state from absence.
 _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
+    # Private learning appends check-ins without a mode; only settings
+    # replacement is exposed by edit. The common mode gate enforces both.
+    ("learning", "put"): (),
+    ("learning", "edit"): ("replace",),
     # -- put: file kinds, creation-only -------------------------------
     ("markdown", "put"): ("create",),
     ("plaintext", "put"): ("create",),

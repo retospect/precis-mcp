@@ -17,8 +17,9 @@ one lives in its own table (``tag`` → ``tg``); they keep their existing
 ``kind`` + slug/id addressing rather than decimal-handle resolution.
 Skill anchors are refs rows, so ``sk<ref_id>`` resolves like every other
 record handle. :func:`parse` / :func:`is_well_formed` accept only the
-refs-backed (record + chunk) decimal codes. ``random`` is a stateless
-generator and has **no handle**.
+refs-backed (record + chunk) decimal codes. Codeless kinds include stateless
+tools and private non-ref data: learning's ``leN`` addresses are local to its
+owner-scoped store and never resolve through this shared registry.
 
 Why code-as-SSOT (not a hand-maintained ADR table): kinds slip through
 manual diligence (``news``/``message``/``cron`` all did). The totality
@@ -50,8 +51,8 @@ PLUGIN_GROUP = "precis.handle_codes"
 # --- record codes (the addressable persistent-ref kinds) ------------------
 # Authoritative kind list: dispatch.boot() composition root. Providers
 # (web/youtube/wikipedia/semanticscholar/perplexity-*) and stateless tools
-# (calc/time/math/provenance/random) are addressed by URL/query/compute, not
-# handles.
+# (calc/time/math/provenance/random) are addressed by URL/query/compute.
+# Private non-ref kinds retain their own store-local addresses.
 
 KIND_CODES: dict[str, str] = {
     # corpus / documents
@@ -212,9 +213,9 @@ _FILE_BACKED_KINDS = frozenset({"python", "md"})
 # decimal handle (``precis.handlers.part`` docstring).
 _OTHER_TABLE_KINDS = frozenset({"tag"})
 
-# --- codeless kinds (providers / stateless tools / live adapters) ---------
+# --- codeless kinds (providers / stateless tools / private data) ----------
 # Registered handler kinds (``dispatch.boot()``) that are never addressed by
-# a computed ``<code><pk>`` handle — no row, so nothing to encode. Curated
+# a shared ``<code><pk>`` handle — no public ref row to encode. Curated
 # (not derived) because these kinds are a closed, deliberate set; totality
 # in the OTHER direction — every *registered* kind is either handle-coded or
 # listed here — is enforced by ``tests/test_handle_registry.py`` against the
@@ -237,6 +238,8 @@ CODELESS_KINDS: Final[tuple[str, ...]] = (
     "chem",
     # live adapter — IMAP is the source of truth, addressed by folder/uid
     "email",
+    # private non-ref records — leN is store-local, never a shared ref code
+    "learning",
 )
 
 #: Codes whose body is the row's decimal primary key and which
@@ -323,7 +326,7 @@ def _kind_codes() -> dict[str, str]:
 def is_known_kind(kind: str) -> bool:
     """True if ``kind`` is in the full registry — built-ins *plus*
     plugin-contributed kinds *plus* :data:`CODELESS_KINDS` (registered
-    provider/stateless kinds with no handle code). Validators must use
+    kinds with no shared handle code). Validators must use
     this rather than the raw :data:`KIND_CODES` module dict, which is
     built-ins only and excludes codeless kinds entirely."""
     return kind in _kind_codes() or kind in CODELESS_KINDS

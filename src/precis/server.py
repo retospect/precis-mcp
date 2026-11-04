@@ -28,6 +28,11 @@ the shared server. State that must not leak between sessions is keyed
 on the FastMCP session object instead (:mod:`precis.serve_ledger`);
 `tests/test_mcp_session_concurrency.py` pins both halves of that.
 
+Personal-data authority is request-scoped instead: the bearer gate stamps
+stable account/token IDs on the HTTP request, and tools bind them anew for
+each call. Reusing an MCP session cannot reuse its previous owner's token.
+Install and slice credentials remain anonymous for personal data.
+
 Seven tools — `get`, `search`, `put`, `edit`, `delete`, `tag`, `link`
 — plus `more` are registered as plain sync functions in
 :mod:`precis.tools` (the rest of the codebase — runtime, store,
@@ -109,6 +114,45 @@ if TYPE_CHECKING:
 # difference — every wrapper has always grokked the ``[error:Class]
 # cause / options / next`` text.
 _TOOL_KW: dict[str, Any] = {"structured_output": False}
+
+
+class _ProtocolPayloadFilter(logging.Filter):
+    """Keep SDK wire bodies, SSE chunks and parser failures out of shared logs.
+
+    These protocol loggers can format raw client input and full tool
+    results before our dispatcher has an opportunity to redact them.
+    Filtering is independent of an ambient owner: transport tasks outlive
+    request contexts, and denied anonymous learning calls are private too.
+    Application logger levels and diagnostics are unaffected.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno <= logging.DEBUG:
+            return False
+        record.msg = "MCP protocol event (payload omitted)"
+        record.args = ()
+        record.exc_info = None
+        record.exc_text = None
+        record.stack_info = None
+        return True
+
+
+_PROTOCOL_PAYLOAD_FILTER = _ProtocolPayloadFilter()
+
+
+def _install_protocol_payload_filters() -> None:
+    """Install narrow wire-log filters, without changing any logger level."""
+    for name in (
+        "mcp.server.sse",
+        "mcp.server.streamable_http",
+        "mcp.server.streamable_http_manager",
+        "mcp.server.lowlevel.server",
+        "sse_starlette.sse",
+    ):
+        logging.getLogger(name).addFilter(_PROTOCOL_PAYLOAD_FILTER)
+
+
+_install_protocol_payload_filters()
 
 
 # ---------------------------------------------------------------------------
@@ -1571,20 +1615,62 @@ def _check_bearer_token(header_value: str | None, expected: str) -> bool:
     """
     if not header_value:
         return False
-    return secrets.compare_digest(header_value, f"Bearer {expected}")
+    try:
+        return secrets.compare_digest(header_value, f"Bearer {expected}")
+    except TypeError:
+        # Non-ASCII credentials are never one of the minted token shapes.
+        return False
 
 
-def _install_token_auth(app: Any, *, token: str, slice_dir: Any = None) -> None:
+def _sdk_session_ownership_supported() -> bool:
+    """Personal tokens require the tested MCP 1.30+ owner-validation hooks.
+
+    The broad legacy dependency range also supports stdio and install/slice
+    deployments. Keep those working, but never enable personal data on an
+    SDK that treats every bearer as the same owner. Check the supported
+    version family and actual hooks that capture/check session owners.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        from mcp.server.auth.provider import AccessToken
+        from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+
+        installed = re.match(r"1\.(\d+)\.", version("mcp"))
+        check = StreamableHTTPSessionManager._handle_stateful_request
+        capture = StreamableHTTPSessionManager._admit_session
+        return bool(
+            installed
+            and int(installed[1]) >= 30
+            and "subject" in AccessToken.model_fields
+            and {"authorization_context", "_session_owners"}
+            <= set(check.__code__.co_names)
+            and "_session_owners" in capture.__code__.co_names
+        )
+    except (ImportError, AttributeError, PackageNotFoundError):
+        return False
+
+
+def _install_token_auth(
+    app: Any,
+    *,
+    token: str,
+    slice_dir: Any = None,
+    store: Any = None,
+    personal_path: str | None = "/mcp",
+) -> None:
     """Wrap a FastMCP-built Starlette ``app`` (``sse_app()`` /
     ``streamable_http_app()``) with a bearer-token gate.
 
-    The simplest header check the framework allows (spec §"precis
-    serve gains an optional network transport"): every request on a
-    network transport must carry ``Authorization: Bearer <token>`` or
-    gets a bare 401 — no session, no OAuth dance, this endpoint's only
-    caller is a single per-run sandbox container reading a token minted
-    for it and written to ``/work/mcp.json``. Never applied to stdio
-    (that transport has no HTTP request to check).
+    Every HTTP request carries an install, slice or personal bearer.
+    Only personal tokens stamp stable owner/token IDs, and those stamps
+    are cleared before checking each request. No authority lives in a
+    middleware ContextVar. The SDK's authenticated-user owner map binds
+    server-issued streamable session IDs to an immutable identity and
+    rejects cross-owner GET/POST/DELETE before the response router runs.
+    Unknown sessions require reinitialization. Personal credentials are
+    accepted only on ``personal_path``; legacy SSE remains anonymous for
+    personal data. Never applied to stdio.
 
     ``slice_dir`` (``PRECIS_MCP_SLICE_TOKEN_DIR``, the mounted
     ``/run/precis-slice-tokens`` on the shared session server) enables the
@@ -1594,25 +1680,135 @@ def _install_token_auth(app: Any, *, token: str, slice_dir: Any = None) -> None:
     the dispatch path attributes the call to its slice
     (:mod:`precis.slice_tokens`).
     """
-    from starlette.middleware.base import BaseHTTPMiddleware
-    from starlette.requests import Request
+    from starlette.authentication import AuthCredentials
+    from starlette.datastructures import Headers
     from starlette.responses import JSONResponse
+    from starlette.types import ASGIApp, Receive, Send
 
-    from precis import slice_tokens
+    from precis import mcp_identity, slice_tokens
 
-    class _TokenAuthMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request: Request, call_next: Any) -> Any:
-            header = request.headers.get("authorization")
+    class _TokenAuthMiddleware:
+        def __init__(self, app: ASGIApp) -> None:
+            self.app = app
+            self.ownership_supported = _sdk_session_ownership_supported()
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+            for key in (
+                mcp_identity.SCOPE_USER_ID,
+                mcp_identity.SCOPE_TOKEN_ID,
+                slice_tokens.SCOPE_SLICE_ID,
+                slice_tokens.SCOPE_AGENTLOG_ID,
+                "user",
+                "auth",
+            ):
+                scope.pop(key, None)
+            header = Headers(scope=scope).get("authorization")
             if _check_bearer_token(header, token):
-                return await call_next(request)
+                await self._authorized(scope, receive, send, "precis-install")
+                return
             grant = slice_tokens.grant(slice_dir, header)
-            if grant is None:
-                return JSONResponse({"error": "unauthorized"}, status_code=401)
-            slice_id, agentlog_id = grant
-            request.scope[slice_tokens.SCOPE_SLICE_ID] = slice_id
-            if agentlog_id is not None:
-                request.scope[slice_tokens.SCOPE_AGENTLOG_ID] = agentlog_id
-            return await call_next(request)
+            if grant is not None:
+                slice_id, agentlog_id = grant
+                scope[slice_tokens.SCOPE_SLICE_ID] = slice_id
+                if agentlog_id is not None:
+                    scope[slice_tokens.SCOPE_AGENTLOG_ID] = agentlog_id
+                await self._authorized(
+                    scope, receive, send, "precis-slice", subject=slice_id
+                )
+                return
+            if store is not None and header and header.startswith("Bearer "):
+                raw = header.removeprefix("Bearer ")
+                if (
+                    raw.startswith(mcp_identity.TOKEN_PREFIX)
+                    and not self.ownership_supported
+                ):
+                    response = JSONResponse(
+                        {
+                            "error": "personal tokens require SDK session-owner validation",
+                            "next": "upgrade MCP to a compatible 1.30+ release; run uv sync for this checkout",
+                        },
+                        status_code=503,
+                        headers={"Cache-Control": "no-store"},
+                    )
+                    await response(scope, receive, send)
+                    return
+                try:
+                    principal = await anyio.to_thread.run_sync(
+                        mcp_identity.resolve_user_token, store, raw
+                    )
+                except Exception:
+                    # Do not attach exception messages or credentials to logs.
+                    response = JSONResponse(
+                        {"error": "authentication unavailable"}, status_code=503
+                    )
+                    await response(scope, receive, send)
+                    return
+                if principal is not None:
+                    if personal_path is None or scope.get("path") != personal_path:
+                        response = JSONResponse(
+                            {
+                                "error": "personal tokens require streamable HTTP",
+                                "next": "connect to the streamable HTTP MCP endpoint",
+                            },
+                            status_code=403,
+                            headers={"Cache-Control": "no-store"},
+                        )
+                        await response(scope, receive, send)
+                        return
+                    scope[mcp_identity.SCOPE_USER_ID] = principal.user_id
+                    scope[mcp_identity.SCOPE_TOKEN_ID] = principal.token_id
+                    await self._authorized(
+                        scope,
+                        receive,
+                        send,
+                        "precis-user",
+                        subject=str(principal.user_id),
+                    )
+                    return
+            response = JSONResponse({"error": "unauthorized"}, status_code=401)
+            await response(scope, receive, send)
+
+        async def _authorized(
+            self,
+            scope: Scope,
+            receive: Receive,
+            send: Send,
+            client_id: str,
+            *,
+            subject: str | None = None,
+        ) -> None:
+            # The SDK compares client_id + issuer + subject with the
+            # owner recorded when it minted the session. No raw bearer
+            # is copied into SDK contexts or reusable session objects.
+            if self.ownership_supported:
+                from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+                from mcp.server.auth.provider import AccessToken
+
+                scope["user"] = AuthenticatedUser(
+                    AccessToken(
+                        token="", client_id=client_id, subject=subject, scopes=[]
+                    )
+                )
+                scope["auth"] = AuthCredentials([])
+
+            async def send_with_hint(message: Any) -> None:
+                if (
+                    message["type"] == "http.response.start"
+                    and message["status"] == 404
+                    and Headers(scope=scope).get(MCP_SESSION_ID_HEADER) is not None
+                ):
+                    message = dict(message)
+                    message["headers"] = [
+                        *message.get("headers", []),
+                        (b"mcp-session-error", b"reinitialize"),
+                        (b"cache-control", b"no-store"),
+                    ]
+                await send(message)
+
+            await self.app(scope, receive, send_with_hint)
 
     app.add_middleware(_TokenAuthMiddleware)
 
@@ -1786,6 +1982,12 @@ def _run_network_transport(
     _install_token_auth(
         app,
         token=token,
+        store=getattr(_runtime, "store", None),
+        personal_path=(
+            mcp.settings.streamable_http_path
+            if transport == "streamable-http"
+            else None
+        ),
         slice_dir=(
             Path(p) if (p := os.environ.get(slice_tokens.ENV_DIR, "").strip()) else None
         ),
