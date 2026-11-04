@@ -89,7 +89,10 @@ class Lane:
     ``adapter`` names how a slice is launched (``claude_p`` is
     ``claude -p`` in a worktree; ``codex_exec``, ``kimi_tree``,
     ``devin_tree`` and ``api`` are declared, not built). ``task_classes``
-    is the fit set; :data:`ANY_CLASS` fits every class.
+    is the fit set; :data:`ANY_CLASS` fits every class. ``code`` is the
+    only class an MCP-less lane may take: the templates class every node
+    that works through the precis MCP by its step (``triage``, ``brief``,
+    ``review``, ``validate``, ``pcb``; :mod:`precis.plans.templates`).
     ``deny_write_paths`` are the repo globs a slice on this lane may not
     write (:data:`FACTORY_DENY_WRITE_PATHS` for every seed lane).
     ``vendor`` is the model vendor behind the lane (``''`` = unknown); a

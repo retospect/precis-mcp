@@ -213,12 +213,29 @@ def _phase() -> dict[str, Any]:
     return {"auto_close": True}
 
 
-def _task(op: Any = "run_slice") -> dict[str, Any]:
-    return {"op": op}
+#: ``meta.task_class`` picks the lane (``run_slice`` → ``lanes.pick_lane``).
+#: Unset, ``run_slice`` reads ``code`` — the one class the MCP-less vendor
+#: lanes fit (codex: code only, no MCP). So every node whose session works
+#: through the precis MCP carries another class: a generator its role (it
+#: mints its children), the brief-writer :data:`BRIEF_TASK_CLASS` (posts
+#: the ``brief:`` comment), the validate :data:`VALIDATE_TASK_CLASS` (reads
+#: the gripe it re-runs), a pcb fix :data:`PCB_TASK_CLASS` (drives the pcb
+#: kind). Found 2026-11-04 as the codex lane went on (td562568): unclassed,
+#: a triage would have launched on codex and ended with nothing minted.
+BRIEF_TASK_CLASS = "brief"
+VALIDATE_TASK_CLASS = "validate"
+PCB_TASK_CLASS = "pcb"
+
+
+def _task(op: Any = "run_slice", *, task_class: str | None = None) -> dict[str, Any]:
+    meta: dict[str, Any] = {"op": op}
+    if task_class is not None:
+        meta["task_class"] = task_class
+    return meta
 
 
 def _generate(role: str, source: str) -> dict[str, Any]:
-    return {"generate": {"role": role, "from": source}}
+    return {"generate": {"role": role, "from": source}, "task_class": role}
 
 
 #: ``meta.task_class`` of a reviewer node (``run_slice`` picks its lane by it).
@@ -332,7 +349,7 @@ def mint_gripe_fix(
         m.node(
             "brief",
             f"Write the builder brief for {handle}",
-            _task(),
+            _task(task_class=BRIEF_TASK_CLASS),
             body=(
                 f"A frontier model writes the builder's brief chunk for "
                 f"{handle}; it names each step in the summary-title house "
@@ -375,7 +392,7 @@ def mint_gripe_fix(
         m.node(
             "validate",
             f"Validate the {handle} fix",
-            _task(),
+            _task(task_class=VALIDATE_TASK_CLASS),
             body=(
                 "Re-run the repro or test the gripe names; an LLM read of the "
                 "report against the landed change otherwise. The fix holds? "
@@ -1143,7 +1160,7 @@ def mint_pcb_fix(
         m.node(
             "fix",
             f"Fix the DRC violations of {board}{suffix}",
-            _task(),
+            _task(task_class=PCB_TASK_CLASS),
             body=(
                 f"Fix the violations the last DRC review of {board} listed; "
                 "re-route where a fix needs it."

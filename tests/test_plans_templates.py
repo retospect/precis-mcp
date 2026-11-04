@@ -12,8 +12,15 @@ from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.gripe import GripeHandler
 from precis.handlers.todo import TodoHandler
+from precis.plans import lanes
 from precis.plans.nodes import node_kind, validate_plan_meta
-from precis.plans.templates import TEMPLATES, PlanMint
+from precis.plans.templates import (
+    BRIEF_TASK_CLASS,
+    PCB_TASK_CLASS,
+    TEMPLATES,
+    VALIDATE_TASK_CLASS,
+    PlanMint,
+)
 from precis.store import Store
 from tests.conftest import id_of
 
@@ -125,6 +132,12 @@ def test_gripe_fix_shape(handler: TodoHandler, store: Store) -> None:
     review = _meta(store, mint.ids["review"])
     assert review["generate"] == {"role": "reviewer", "from": f"td{mint.ids['build']}"}
     assert review["task_class"] == "review"
+    # Only the build is plain ``code`` work; the other sessions work through
+    # the precis MCP and carry a class the MCP-less codex lane does not fit.
+    assert "task_class" not in _meta(store, mint.ids["build"])
+    assert _meta(store, mint.ids["triage"])["task_class"] == "triage"
+    assert _meta(store, mint.ids["brief"])["task_class"] == BRIEF_TASK_CLASS
+    assert _meta(store, mint.ids["validate"])["task_class"] == VALIDATE_TASK_CLASS
     assert _body(store, mint.ids["review"]).count("review: LAND") == 1
     assert "Mint nothing yourself" in _body(store, mint.ids["review"])
     assert f"td{mint.ids['build']}" in _body(store, mint.ids["review"])
@@ -144,6 +157,42 @@ def test_gripe_fix_shape(handler: TodoHandler, store: Store) -> None:
             (mint.root_id, gripe),
         ).fetchone()
     assert row is not None and row[0] == 1
+
+
+def test_mcp_bound_nodes_never_fit_the_codex_lane(
+    handler: TodoHandler, store: Store
+) -> None:
+    """td562568: with the codex lane on (code only, no MCP), a node whose
+    session mints children or posts through the precis MCP must carry a
+    class codex does not fit — unclassed it reads ``code`` and would launch
+    there. Every generator is classed by its role; the gripe-fix brief and
+    validate and the pcb-fix fix by their step; the builds stay ``code``."""
+    codex = lanes.get_lane("codex")
+    sub = lanes.get_lane("claude-sub")
+    assert codex is not None and sub is not None
+    gripe = _gripe(handler)
+    mints = {
+        "gripe-fix": TEMPLATES["gripe-fix"].mint(store, None, gripe_id=gripe),
+        "slice-tree": TEMPLATES["slice-tree"].mint(
+            store, None, section="main/docs/backlog/x.md~H"
+        ),
+    }
+    code_only = {("gripe-fix", "build")}
+    for name, mint in mints.items():
+        for key, todo_id in mint.ids.items():
+            meta = _meta(store, todo_id)
+            kind = node_kind(meta)
+            if kind not in ("task", "generator"):
+                continue
+            cls = str(meta.get("task_class") or "code")
+            assert sub.fits(cls), (name, key)
+            if (name, key) in code_only:
+                assert cls == "code" and codex.fits(cls), (name, key)
+            else:
+                assert not codex.fits(cls), (name, key, cls)
+            if kind == "generator":
+                assert cls in (meta["generate"]["role"], "review"), (name, key)
+    assert PCB_TASK_CLASS not in codex.task_classes
 
 
 def test_gripe_fix_triage_pins_the_builder_model_in_meta(

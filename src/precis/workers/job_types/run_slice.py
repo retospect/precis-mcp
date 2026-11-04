@@ -1195,6 +1195,17 @@ def submit(ctx: Any, spec: Any) -> Any:
             f"run_slice: lane {lane.name!r} has unknown adapter {lane.adapter!r}"
         )
         return None
+    if not adapter.mcp and node_kind(todo.meta) == "generator":
+        # A generator mints its children through the precis MCP; a lane
+        # without one ends with nothing minted. The templates class such
+        # nodes off ``code`` (plans/templates.py) so the pick never lands
+        # here; a hand-minted generator can. Not claimed yet: no attempt burned.
+        ctx.record_failure(
+            f"run_slice: td{todo_id} is a generator (mints children through "
+            f"the precis MCP) but lane {lane.name!r} has no MCP; set "
+            "meta.task_class off 'code' or pin an MCP lane via params.lane"
+        )
+        return None
     model = resolve_model(params, lane)
     effort = str(params.get("effort") or _DEFAULT_EFFORT)
     ctx.set_meta(lane=lane.name, adapter=adapter.name, model=model, effort=effort)

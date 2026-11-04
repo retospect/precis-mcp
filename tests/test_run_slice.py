@@ -906,6 +906,30 @@ def test_submit_parks_when_pinned_lane_full(seams: dict[str, Any]) -> None:
     assert handle is not None and ctx2.meta_set["lane"] == "claude-sub"
 
 
+def test_submit_refuses_a_generator_on_a_lane_without_mcp(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A generator mints its children through the precis MCP; the codex lane
+    has none. A hand-minted generator left in the default ``code`` class
+    (the templates class theirs off it) fails the submit with the fix
+    named, before the claim: no launch, no attempt burned."""
+    # The seams fixture pinned the table to claude-sub; stand the seed
+    # table's codex lane (codex_exec adapter, no MCP) in its place.
+    codex = Lane("codex", "codex_exec", "codex", 1, frozenset({"code"}))
+    monkeypatch.setattr(lanes, "LANES", (codex,))
+    store = _Store()
+    store.add_todo(
+        42, "Triage gr1", meta={"generate": {"role": "triage", "from": "gr1"}}
+    )
+    ctx, handle = _submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.failure is not None
+    assert "has no MCP" in ctx.failure and "meta.task_class" in ctx.failure
+    assert seams["launch"] == []
+    assert "STATUS:open" in store.tag_strings(42)
+    assert "claimed-by:lane-codex" not in store.tag_strings(42)
+
+
 def test_submit_refuses_when_factory_off(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
