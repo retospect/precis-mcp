@@ -11,10 +11,18 @@
       {% if title %}Gripe #{{ id }}{% endif %}
       {% if created %}{% if title %}· {% endif %}filed {{ created | ago }}{% endif %}
       {% if updated %}· updated {{ updated | ago }}{% endif %}
-      {% if set_by %}· by <span class="font-mono">{{ set_by }}</span>{% endif %}
+      {% if filing_origin.actor or set_by %}· by <span class="font-mono">{{ filing_origin.actor or set_by }}</span>{% endif %}
       {% if prio %}· <span class="font-mono">PRIO:{{ prio }}</span>{% endif %}
       {% if project and project != 'project:precis' %}· <span class="font-mono">{{ project }}</span>{% endif %}
     </p>
+    <p class="text-xs text-fg-faint break-words" data-filing-origin>
+      client {{ filing_origin.client or 'unknown' }} ·
+      session {% if filing_origin.session_id %}<span class="font-mono">{{ filing_origin.session_id|string|truncate(16, True, '…', 0) }}</span>{% else %}unknown{% endif %} ·
+      model {{ filing_origin.model or 'unknown' }}{% if filing_origin.model_source == 'declared' %} (declared){% elif filing_origin.model_source == 'agentlog' %} (agentlog){% endif %} ·
+      source {{ filing_origin.source or 'unknown' }}
+      {% for tag in filing_origin.tags or [] %}· <span class="font-mono">{{ tag }}</span>{% endfor %}
+    </p>
+    {% if trust_stamp %}<p class="mt-1 text-xs text-fg-faint">trust: {{ trust_stamp }}</p>{% endif %}
   </div>
   {% if not retired %}{% include "gripes/_gripe_status.html.j2" %}{% endif %}
 </div>

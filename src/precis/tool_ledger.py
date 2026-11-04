@@ -364,6 +364,23 @@ def current_client() -> str | None:
     return label[:_CLIENT_CHARS]
 
 
+def current_client_model() -> str | None:
+    """Model declared by the bound client, independent of its clientInfo label."""
+    try:
+        from precis import serve_ledger
+
+        session = serve_ledger.current_session()
+        params = getattr(session, "client_params", None)
+        meta = getattr(params, "meta", None)
+        for key in _CLIENT_MODEL_KEYS:
+            value = getattr(meta, key, None)
+            if isinstance(value, str) and value:
+                return value
+    except Exception:
+        return None
+    return None
+
+
 def _client_model(meta: Any) -> str | None:
     """The model id the client declared in initialize ``_meta``, if any."""
     if meta is None:

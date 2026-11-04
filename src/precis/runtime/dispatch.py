@@ -3281,6 +3281,18 @@ class DispatchMixin(RuntimeShape):
                 response = self._tag_defaulted_kind(response, kind)
             return response
 
+        # Creation identity is server-owned, including on edits and through
+        # args={meta: ...}. Reject before any handler can merge caller data.
+        if verb in _WRITE_VERBS:
+            extras = args.get(_EXTRAS_KEY)
+            for payload in (args, extras):
+                meta = payload.get("meta") if isinstance(payload, dict) else None
+                if isinstance(meta, dict) and "filed_by" in meta:
+                    raise BadInput(
+                        "meta.filed_by is server-owned filing provenance",
+                        next="omit filed_by from meta; filing origin is recorded on create",
+                    )
+
         # local-mesh-upkeep §2b: edit's reason= belongs to the revision
         # log, not the handler — consume it before the kwargs gate. put's
         # reason= is consumed the same way unless the handler's own put

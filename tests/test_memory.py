@@ -1842,6 +1842,7 @@ def test_shared_runtime_put_keeps_creation_fields_request_local(
             "rule": f"rule {label}",
             "warrant": f"warrant {label}",
             "hook": f"hook {label}",
+            "filed_by": {"actor": "agent"},
         }
 
 

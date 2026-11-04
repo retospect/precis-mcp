@@ -37,6 +37,11 @@ tree guards stay single-sourced with the MCP surface (see ``deps.py``).
   comment box, and the status controls. Legacy titles can contain the
   whole complaint, so the heading takes their first non-blank line;
   an identical first body line is omitted from display only.
+  Filing origin comes from server-stamped ``meta.filed_by``; read-only
+  legacy rows retain their ``agent:`` / ``source:agent_ro`` tag attribution.
+  A recorded agentlog can resolve a model after the run finishes; interactive
+  models remain unknown unless the client declared one. Trust uses the same
+  stamp as the MCP get footer.
 * ``POST /gripes/{id}/status`` — ``tag`` verb, closed ``STATUS:`` axis
   (replace-on-add, no explicit remove — see ``precis.handlers.gripe``).
   htmx re-renders just the status fragment; no-JS redirects back.
@@ -50,6 +55,7 @@ tree guards stay single-sourced with the MCP surface (see ``deps.py``).
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC
 from typing import TYPE_CHECKING, Any
 
@@ -58,7 +64,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.responses import Response
 
 from precis.errors import NotFound
+from precis.filing_origin import agentlog_model
 from precis.handlers._gripe_title import first_line
+from precis.runtime.trust_verb import trust_footer
 from precis_web.auth import current_user
 from precis_web.deps import (
     await_dispatch,
@@ -72,6 +80,7 @@ if TYPE_CHECKING:
     from precis.store.store import Store
 
 router = APIRouter(prefix="/gripes", tags=["gripes"])
+log = logging.getLogger(__name__)
 
 #: STATUS transitions the detail page offers, in workflow order.
 #: Mirrors ``GripeHandler.default_tags_on_create`` + the lifecycle
@@ -659,6 +668,30 @@ async def file_gripe(
     )
 
 
+def _filing_origin(store: Store, meta: Any, tags: Any) -> dict[str, Any]:
+    """Page-safe origin, with existing read-only tags when no stamp exists."""
+    stored = meta.get("filed_by") if isinstance(meta, dict) else None
+    origin: dict[str, Any] = {}
+    if isinstance(stored, dict) and stored:
+        origin = {
+            key: value
+            for key, value in stored.items()
+            if isinstance(value, str | int) and value
+        }
+        run_id = origin.get("agentlog_id")
+        if isinstance(run_id, int):
+            model = agentlog_model(store.pool, run_id)
+            if model:
+                origin.update(model=model, model_source="agentlog")
+    else:
+        origin["tags"] = [
+            str(tag)
+            for tag in tags
+            if str(tag).startswith("agent:") or str(tag) == "source:agent_ro"
+        ]
+    return origin
+
+
 @router.get("/{id}", response_class=HTMLResponse)
 async def detail(request: Request, id: int) -> HTMLResponse:
     """Title + body + comment timeline + status controls + comment box."""
@@ -702,6 +735,12 @@ async def detail(request: Request, id: int) -> HTMLResponse:
 
     tags = store.tags_for(ref.id)
     status = _status_of(tags)
+    origin = _filing_origin(store, getattr(ref, "meta", None), tags)
+    try:
+        footer = trust_footer(store, "gripe", ref.id)
+    except Exception:
+        log.debug("gripe trust stamp unavailable", exc_info=True)
+        footer = None
 
     return templates.TemplateResponse(
         request,
@@ -713,6 +752,8 @@ async def detail(request: Request, id: int) -> HTMLResponse:
             "created": getattr(ref, "created_at", None),
             "updated": getattr(ref, "updated_at", None),
             "set_by": getattr(ref, "set_by", None),
+            "filing_origin": origin,
+            "trust_stamp": footer.stamp if footer else None,
             "body": body_text,
             "comments": comments,
             "status": status,

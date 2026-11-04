@@ -23,6 +23,11 @@ Assumes the concrete Store provides ``self.pool``
 ``self._validate_slug_for_kind(kind, slug, conn=...)`` — declared as
 class-level annotations so the mixin type-checks in isolation; resolved
 at runtime by MRO against the concrete ``Store``.
+
+Numeric creates stamp ``meta.filed_by`` here because todo, finding and other
+writers override the common handler's creation path. This keeps their origin
+consistent without changing callers' metadata. Writable gripe filing uses
+the same collector after its SECURITY DEFINER insert (``handlers.gripe``).
 """
 
 from __future__ import annotations
@@ -470,6 +475,11 @@ class RefsMixin:
         (gr517405).
         """
         self._validate_slug_for_kind(kind, slug, conn=conn)
+
+        if slug is None:
+            from precis.filing_origin import stamp_meta
+
+            meta = stamp_meta(meta, self.pool, conn=conn)
 
         # ``auto_refresh_days`` (migration 0011) opts the ref into
         # Model A relevance decay: weight slides from 1.0 → 0 over

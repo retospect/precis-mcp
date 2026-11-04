@@ -533,19 +533,19 @@ delete(kind="gripe", id=42)
 ## Who filed this gripe?
 ## Was this filed by a human or an agent?
 
-Not tracked on this surface. `put(kind='gripe', ...)` — and the
-read-only carve-out it always routes through
-(`file_gripe_readonly`, migration 0079) — insert the ref with no
-`set_by`. `get(kind='gripe', id=N)`'s header
-shows `filed by: ...` only on the rare pre-migration row that has
-it; in practice, assume it's absent. If you need provenance, say
-who you are in the body text or a follow-up comment.
+New writable filings carry server-owned `meta.filed_by`: the available
+client, session, actor, producing source and agentlog id. Inspect it with
+`get(kind='gripe', id=N, view='raw')`. Callers cannot supply this metadata.
+The `/gripes/N` page shows the origin beside the filing time, with a short
+session prefix (full id on hover), plus the trust origin and confidence.
+Model stays **unknown** unless recorded by an agentlog or declared by the
+client; a client declaration is labelled **declared**, never inferred from
+the client name. An agentlog may resolve the model after filing.
 
-(The `/gripes` **web form** is a separate surface with its own
-attribution: it appends a `— filed by <login> via the /gripes web
-form` line to the *body text* itself. That's a web-only convention,
-invisible here — it doesn't populate the header either, and MCP
-`put` has no equivalent.)
+Read-only filings still use `file_gripe_readonly(text, text)` without this
+stamp: their `agent:<run>` and `source:agent_ro` tags appear on the page
+instead. Older rows may have neither stamp nor tags. The `/gripes` web
+form also keeps its signed-in `user:<login>` tag and body attribution.
 
 Two automated filers exist. The daily `call_errors` pass files gripes
 for clusters of MCP calls the server rejected before real work, tagged

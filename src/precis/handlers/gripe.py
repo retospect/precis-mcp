@@ -1834,6 +1834,18 @@ class GripeHandler(NumericRefHandler):
                     raise
                 assert row is not None
                 ref_id = int(row[0])
+                if not ro:
+                    from psycopg.types.json import Jsonb
+
+                    from precis.filing_origin import current_filed_by
+
+                    origin = current_filed_by(self.store.pool, conn=conn)
+                    if origin:
+                        conn.execute(
+                            "UPDATE refs SET meta = COALESCE(meta, '{}'::jsonb) "
+                            "|| %s::jsonb WHERE ref_id = %s",
+                            (Jsonb({"filed_by": origin}), ref_id),
+                        )
                 short = self._shorten_title(conn, ref_id, text)
                 if not ro and prio_from_tag is not None:
                     self.store.set_prio(ref_id, prio_from_tag, conn=conn)
