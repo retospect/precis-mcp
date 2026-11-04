@@ -1,6 +1,8 @@
 {% extends "base.html.j2" %}
 {% block title %}{{ ref.title }} — smartdraft{% endblock %}
+{% block main_class %}px-4 py-6{% endblock %}
 {% block content %}
+<link rel="stylesheet" href="/static/smartdraft-layout.css">
 {# The shared draftEdit/tableEditor Alpine components + ProseMirror mount
    (gripe 56746) — same macros the classic /drafts reader uses, so smartdraft
    gets the rich in-place editor (incl. `[`-citation autocomplete) and the
@@ -508,11 +510,15 @@
   }
 </script>
 
-<div id="sd-content" class="grid grid-cols-1 items-start gap-3 lg:grid-cols-[28%_44%_28%]">
+<div id="sd-content" class="sd-layout grid grid-cols-1 items-start gap-3">
 
   {# ── LEFT: fisheye TOC nav (sticky sidebar; the middle flows so its
        hover-preview popovers aren't clipped by an overflow container) ── #}
-  <div class="sticky top-2 self-start rounded border border-line bg-surface" data-tour="sd-toc">
+  <div id="sd-search" class="sticky top-2 self-start rounded border border-line bg-surface" data-tour="sd-toc">
+    <div class="sd-column-heading sd-search-heading">
+      <span>Search</span>
+      <button type="button" class="sd-layout-control" data-sd-hide="search" aria-controls="sd-search" aria-label="Hide Search" title="Hide Search">Hide</button>
+    </div>
     {# header: search + signal toggles + fisheye/full + results view #}
     <div class="space-y-1.5 border-b border-line-subtle p-2">
       <form method="get" action="/smartdraft/{{ ident }}">
@@ -595,11 +601,19 @@
     </div>
   </div>
 
+  <div class="sd-resize" data-sd-resize="search" tabindex="0" role="separator"
+       aria-label="Resize Search" aria-orientation="vertical" aria-controls="sd-search"
+       title="Resize Search (Left and Right arrow keys)"></div>
+
   {# ── MIDDLE: the focus + its neighbourhood. NOT an overflow container —
        it flows with the page so linkify hover-preview popovers escape freely
        (an overflow-auto ancestor would clip them at the panel edge). ── #}
-  <div class="rounded border border-line bg-surface">
-    <div class="border-b border-line-subtle px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-fg-faint">Focus</div>
+  <div id="sd-focus" class="rounded border border-line bg-surface">
+    <div class="sd-column-heading">
+      <button type="button" class="sd-layout-control" data-sd-show="search" aria-controls="sd-search" title="Show Search" hidden>&lt;- Search</button>
+      <span>Focus</span>
+      <button type="button" class="sd-layout-control sd-show-collaborate" data-sd-show="collaborate" aria-controls="sd-collaborate" title="Show Collaborate" hidden>Collaborate -&gt;</button>
+    </div>
     {# ``tex-scope`` (the opt-in KaTeX convention, base.html.j2) marks
        this as a prose container eligible for math rendering — the sanctioned
        overlap point with that slice; nothing else in this file changes. #}
@@ -783,6 +797,10 @@
     </div>
   </div>
 
+  <div class="sd-resize" data-sd-resize="collaborate" tabindex="0" role="separator"
+       aria-label="Resize Collaborate" aria-orientation="vertical" aria-controls="sd-collaborate"
+       title="Resize Collaborate (Left and Right arrow keys)"></div>
+
   {# ── RIGHT: docked Claim pane + collaboration — one sticky grid column.
        The claim pane (the claim-UX docked pane — a "4th column"
        without an actual grid change) sits ABOVE Collaborate: a persistent,
@@ -800,7 +818,7 @@
        list. The overflow container deliberately excludes the Tools pane —
        its upward-opening popovers aren't teleported and an overflow ancestor
        would clip them. ── #}
-  <div class="sticky top-2 flex max-h-[calc(100vh-1rem)] flex-col gap-2 self-start">
+  <div id="sd-collaborate" class="sticky top-2 flex max-h-[calc(100vh-1rem)] flex-col gap-2 self-start">
     <div id="claim-pane" class="hidden shrink-0 rounded border border-accent bg-accent-subtle">
       <div class="flex items-center justify-between border-b border-accent-subtle px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-accent">
         <span>Claim</span>
@@ -816,7 +834,10 @@
 
   <div class="flex min-h-0 flex-col rounded border border-line bg-surface" x-data="smartAsk('{{ ident }}', '{{ focus_dc }}')"
        @llm-select="handleLlmSelect($event.detail)">
-    <div class="shrink-0 border-b border-line-subtle px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-fg-faint">Collaborate</div>
+    <div class="sd-column-heading shrink-0">
+      <span>Collaborate</span>
+      <button type="button" class="sd-layout-control" data-sd-hide="collaborate" aria-controls="sd-collaborate" aria-label="Hide Collaborate" title="Hide Collaborate">Hide</button>
+    </div>
     <div class="min-h-0 space-y-2 overflow-y-auto p-2 text-xs">
       {% if needs %}
       <div class="rounded border border-warning bg-warning-subtle p-1.5">
@@ -1484,6 +1505,7 @@
   <script type="application/json" id="sd-state">{{ {"order": view.order, "hits": (hits | map(attribute='node') | map(attribute='dc') | list), "focus": focus_dc, "focusHandle": (view.focus.base58 if view.focus else ""), "q": q, "eyes": eye_dcs, "v": view_version} | tojson }}</script>
 </div>
 
+<script src="/static/smartdraft-layout.js"></script>
 <script type="module">
 // Prefetch/render-cache module (gr553319) — an ES module so node can test
 // it; exposed on window for the classic nav script below (which must stay
@@ -1671,15 +1693,15 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
       ST = readState(); afterSwap();
     } catch (e) { fallback(); }
   }
-  // True while #sd-content holds an open inline editor or a visible text
-  // surface the user may have typed into. draftEdit/tableEditor surfaces
-  // stay in the DOM under x-show containers, so VISIBILITY — not presence
-  // — is the signal. A revalidate swap would silently discard that work.
+  // Protect visible editors and unsent textarea text even when its column
+  // is collapsed. Idle draftEdit/tableEditor surfaces stay in the DOM under
+  // x-show containers, so their presence alone does not mean an edit is open.
   function panelBusy() {
     const c = document.getElementById('sd-content');
     if (!c) return false;
     const sel = '[x-show="editing"], [x-show="ted"], textarea, [contenteditable="true"]';
     for (const el of c.querySelectorAll(sel)) {
+      if (el.tagName === 'TEXTAREA' && el.value.trim()) return true;
       if (el.offsetParent !== null) return true;
     }
     return false;
@@ -1738,6 +1760,7 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     }, 150);
   }
   function afterSwap(revalUrl) {
+    window.__sdLayout.refresh();
     const el = document.getElementById('toc-' + ST.focus);
     if (el) el.scrollIntoView({ block: 'center' });
     const mid = document.getElementById('mid-focus');
@@ -1989,6 +2012,7 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     const body = document.getElementById('claim-pane-body');
     const openLink = document.getElementById('claim-pane-open');
     if (!pane || !body) return;
+    window.__sdLayout.show('collaborate');
     pane.classList.remove('hidden');
     pane.dataset.head = head;
     if (openLink) openLink.setAttribute('href', '/claim/' + head);
@@ -2384,7 +2408,8 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     if (e.key === 'Escape' && ST.q) { e.preventDefault(); clearSearch(); return; }
     if (e.key === '/' && !inField) {   // focus the search box
       e.preventDefault();
-      const box = document.querySelector('input[name="q"]');
+      window.__sdLayout.show('search');
+      const box = document.querySelector('#sd-search input[name="q"]');
       if (box) box.focus();
       return;
     }

@@ -1,0 +1,58 @@
+/* Keep the existing stacked reader below Tailwind's lg breakpoint. */
+.sd-layout > div { min-width: 0; }
+.sd-column-heading {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .25rem .5rem;
+  border-bottom: 1px solid rgb(var(--border-line-subtle));
+  color: rgb(var(--text-fg-faint));
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .025em;
+}
+.sd-layout-control, .sd-resize { display: none; }
+.sd-search-heading { display: none; }
+.sd-column-heading [data-sd-hide], .sd-show-collaborate { margin-left: auto; }
+.sd-layout-control {
+  color: rgb(var(--text-info-strong));
+  text-transform: none;
+  letter-spacing: normal;
+}
+.sd-layout-control:focus-visible, .sd-resize:focus-visible {
+  outline: 2px solid rgb(var(--border-info-emphasis));
+  outline-offset: -2px;
+}
+@media (min-width: 1024px) {
+  .sd-search-heading { display: flex; }
+  .sd-layout {
+    grid-template-columns: minmax(220px, 28%) minmax(360px, 1fr) minmax(220px, 28%);
+  }
+  .sd-layout.sd-layout-wide { column-gap: 0; }
+  .sd-layout-wide .sd-layout-control { display: inline-block; }
+  .sd-layout-wide .sd-resize {
+    display: block;
+    position: sticky;
+    top: .5rem;
+    height: calc(100vh - 1rem);
+    cursor: col-resize;
+    touch-action: none;
+    user-select: none;
+  }
+  .sd-resize::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 5px;
+    width: 2px;
+    background: rgb(var(--border-line));
+  }
+  .sd-resize:hover::after, .sd-resize:focus-visible::after {
+    background: rgb(var(--border-info-emphasis));
+  }
+  .sd-layout.sd-layout-dragging { cursor: col-resize; user-select: none; }
+}
+/* Hidden must win over flex/block declarations on both panels and controls. */
+.sd-layout [hidden] { display: none !important; }

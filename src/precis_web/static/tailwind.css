@@ -4213,10 +4213,6 @@ video {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
-  .lg\:grid-cols-\[28\%_44\%_28\%\] {
-    grid-template-columns: 28% 44% 28%;
-  }
-
   .lg\:flex-row {
     flex-direction: row;
   }
