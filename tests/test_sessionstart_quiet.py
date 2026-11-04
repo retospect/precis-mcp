@@ -58,6 +58,10 @@ def _stage_repo(tmp_path: Path, *script_names: str) -> Path:
     for name in script_names:
         shutil.copy2(REPO / "scripts" / name, repo / "scripts" / name)
         (repo / "scripts" / name).chmod(0o755)
+    if "reap-worktrees" in script_names:
+        (repo / "scripts/lib").mkdir()
+        for name in ("git-network.sh", "git_network.py"):
+            shutil.copy2(REPO / "scripts/lib" / name, repo / "scripts/lib" / name)
     if "inflight" in script_names:
         _git(repo, "add", "-A")
         _git(repo, "commit", "-qm", "init")

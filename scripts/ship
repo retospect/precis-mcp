@@ -189,6 +189,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 WORKTREE="$PWD"
+# shellcheck source=scripts/lib/git-network.sh
+source "${WORKTREE}/scripts/lib/git-network.sh"
 # Tolerant: --await reads only the state file and must answer from a tree
 # git cannot see (the test container's /app); the ship path still refuses
 # an empty BRANCH below ("detached HEAD").
@@ -611,7 +613,7 @@ _deploy_lag_stats() {
     local state_file deployed_sha count oldest src
     # Refresh best-effort first (offline/no-remote is fine: a stale local ref
     # still beats the marker).
-    git fetch -q origin prod:refs/remotes/origin/prod >/dev/null 2>&1 || true
+    git_network fetch -q origin prod:refs/remotes/origin/prod >/dev/null || true
     if git rev-parse --verify -q "refs/remotes/origin/prod^{commit}" >/dev/null 2>&1; then
         deployed_sha="$(git rev-parse "refs/remotes/origin/prod^{commit}" 2>/dev/null || true)"
         src="origin/prod"
@@ -1389,10 +1391,14 @@ acquire_ship_lock() {
 # The network calls INSIDE the lock (fetch, push) are bounded: a hung one
 # would hold every sibling's landing for the full steal window. macOS ships
 # no `timeout`; perl's alarm is on both platforms (same pattern as
-# scripts/fleet's gh calls). rc 142 = SIGALRM. Without perl: unbounded.
+# scripts/fleet's gh calls). Git uses the shared retry helper (rc 124 on
+# timeout); other commands use perl's alarm (rc 142 = SIGALRM).
 LOCKED_NET_TIMEOUT="${PRECIS_SHIP_LOCKED_NET_TIMEOUT:-60}"
 _locked_net() {
-    if command -v perl >/dev/null 2>&1; then
+    if [[ "$1" == git ]]; then
+        shift
+        git_network_bounded "$LOCKED_NET_TIMEOUT" "$@"
+    elif command -v perl >/dev/null 2>&1; then
         perl -e 'alarm shift; exec @ARGV' "$LOCKED_NET_TIMEOUT" "$@"
     else
         "$@"
@@ -1783,7 +1789,7 @@ _release_preflight() {
     [[ "$REL_BRANCH" =~ ^release/r([0-9]+)$ ]] \
         || die "the open release branch '${REL_BRANCH}' is not named release/r<N> — refusing. Nothing was pushed."
     REL_N="${BASH_REMATCH[1]}"
-    out="$(git ls-remote --heads origin "refs/heads/${REL_BRANCH}")" \
+    out="$(git_network ls-remote --heads origin "refs/heads/${REL_BRANCH}")" \
         || die "could not read origin's branches (git ls-remote failed) — check the network and re-run scripts/ship --release."
     [[ -n "$out" ]] \
         || die "the recorded open release ${REL_BRANCH} is not on origin — reconcile round state with the coordinator. Nothing was pushed."
@@ -1826,7 +1832,7 @@ _release_merge_tree() {
 _release_fetch_tip() {
     local rc=0
     _locked_net git fetch -q origin "$1" || rc=$?
-    if (( rc == 142 )); then
+    if (( rc == 124 || rc == 142 )); then
         die "git fetch of $1 timed out after ${LOCKED_NET_TIMEOUT}s inside the ship lock (PRECIS_SHIP_LOCKED_NET_TIMEOUT) — lock released; $(_release_state_note "nothing pushed"). Check the network and re-run scripts/ship --release."
     elif (( rc != 0 )); then
         die "git fetch of $1 failed inside the ship lock (exit ${rc}; did the release branch get deleted?) — lock released; $(_release_state_note "nothing pushed"). Re-run scripts/ship --release."
@@ -1869,7 +1875,7 @@ _release_push() {
     out="$(_locked_net git push --force-with-lease="${1}:${3}" origin "${2}:${1}" 2>&1)" || rc=$?
     [[ -n "$out" ]] && printf '%s\n' "$out"
     (( rc == 0 )) && return 0
-    if (( rc == 142 )); then
+    if (( rc == 124 || rc == 142 )); then
         die "git push of ${1} timed out after ${LOCKED_NET_TIMEOUT}s inside the ship lock (PRECIS_SHIP_LOCKED_NET_TIMEOUT) — lock released. The push may or may not have landed: check 'git ls-remote origin ${1}' for ${2:0:8} before re-running.${partial}"
     fi
     if ! _push_is_lost_race "$out"; then
@@ -1982,7 +1988,7 @@ EOF
 _release_after_landing() {
     local url=""
     _relock
-    git fetch -q origin main || true
+    git_network fetch -q origin main || true
     if [[ -n "$(git status --porcelain)" ]]; then
         echo "WARNING: worktree dirty after the release ship — skipping the branch sync."
         SHIP_STATUS_NOTE="worktree dirty after the ship — branch sync skipped"
@@ -2090,7 +2096,7 @@ remote_gate_wait() {
     _remote_gate_admit "${PRECIS_REMOTE_GATE_SLOTS:-2}" "${PRECIS_REMOTE_GATE_WAIT_MIN:-60}" \
         || return 1
     say "remote gate — pushing ci/${BRANCH}, waiting for check.yml on ${sha:0:8} (gate shape: lint + 10 shards, ~90 min green; docs-only diffs ~5 min)"
-    git push -q -f origin "HEAD:refs/heads/ci/${BRANCH}" \
+    git_network push -q -f origin "HEAD:refs/heads/ci/${BRANCH}" \
         || { echo "✖ could not push ci/${BRANCH}" >&2; return 1; }
     while :; do
         if (( $(date +%s) > deadline )); then
@@ -2268,7 +2274,7 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
     GATE_TRAILER=""; FWD_UNGATED=0; FWD_BASE=""; FWD_N=0
 
     say "syncing origin/main"
-    git fetch -q origin main || die "git fetch failed — check the network/remote and re-run scripts/ship."
+    git_network fetch -q origin main || die "git fetch failed — check the network/remote and re-run scripts/ship."
     if [[ "$RELEASE" == 1 ]]; then
         # No merge of main into a release-fix tree: it stays as cut from the
         # release head, so the lint runs on the code that will deploy and
@@ -2278,7 +2284,7 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         _squash_and_rebase
     fi
 
-    git fetch -q origin main
+    git_network fetch -q origin main
     CHANGED="$(git diff --name-only "$(git merge-base origin/main HEAD)" HEAD)"
 
     # Harness classifier (release-train, docs/backlog/release-train.md §1) —
@@ -2733,7 +2739,7 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         inlock_try=$(( inlock_try + 1 ))
         _locked_net git fetch -q origin main || {
             rc=$?
-            [[ "$rc" == 142 ]] && die "git fetch timed out after ${LOCKED_NET_TIMEOUT}s inside the ship lock (PRECIS_SHIP_LOCKED_NET_TIMEOUT) — lock released, nothing pushed. Check the network and re-run scripts/ship."
+            [[ "$rc" == 124 || "$rc" == 142 ]] && die "git fetch timed out after ${LOCKED_NET_TIMEOUT}s inside the ship lock (PRECIS_SHIP_LOCKED_NET_TIMEOUT) — lock released, nothing pushed. Check the network and re-run scripts/ship."
             die "git fetch failed inside the ship lock — lock released, nothing pushed. Check the network/remote and re-run scripts/ship."
         }
         # Capture the tip ONCE, from this worktree's own FETCH_HEAD (per-worktree,
@@ -2805,7 +2811,7 @@ EOF
         push_rc=0
         push_out="$(_locked_net git push --force-with-lease=main:"$OLD_MAIN" origin "${NEW}:refs/heads/main" 2>&1)" || push_rc=$?
         [[ -n "$push_out" ]] && printf '%s\n' "$push_out"
-        if [[ "$push_rc" == 142 ]]; then
+        if [[ "$push_rc" == 124 || "$push_rc" == 142 ]]; then
             die "git push timed out after ${LOCKED_NET_TIMEOUT}s inside the ship lock (PRECIS_SHIP_LOCKED_NET_TIMEOUT) — lock released. The push may or may not have landed: check 'git ls-remote origin main' for ${NEW:0:8} before re-running scripts/ship."
         fi
         if [[ "$push_rc" == 0 ]]; then
@@ -2876,9 +2882,9 @@ if [[ "$QUICK" != 1 && "$DOCS_ONLY" != 1 && ( "$IMPACTED" != 1 || "$REMOTE" == 1
 elif [[ "$QUICK" != 1 && "$DOCS_ONLY" == 1 && -n "$GATED_SHA" && "$FWD_UNGATED" != 1 ]]; then
     say "docs-only lane — no deploy pin written (the suite did not run on ${GATED_SHA:0:8}); to certify it for deploy run scripts/ship --full (/go) on the landed tree"
 fi
-git push origin --delete "$BRANCH" 2>/dev/null || true
+git_network push origin --delete "refs/heads/$BRANCH" || true
 if [[ "$REMOTE" == 1 ]]; then
-    git push origin --delete "ci/${BRANCH}" 2>/dev/null || true
+    git_network push origin --delete "refs/heads/ci/${BRANCH}" || true
 fi
 
 # A release fix (--release) has its own tail: the branch sync is a merge +
@@ -2916,7 +2922,7 @@ else
     # section — see _sync_local_main.)
 
     # ── 7. report ───────────────────────────────────────────────────────────
-    git fetch -q origin main
+    git_network fetch -q origin main
     # The lock is long released: origin/main may already be a sibling's newer
     # commit, so name OUR landed sha rather than whatever main is by now.
     say "shipped — landed on main:"

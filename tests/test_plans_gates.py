@@ -547,7 +547,7 @@ def test_record_reports_failures_without_raising(
 
     assert (
         release.record_prod_head("p", HEAD, transport=boom, landed=LANDED)
-        == "prod head not recorded: OSError"
+        == "prod head not recorded: OSError: no wrapper"
     )
     assert release.record_prod_head("p", "", transport=boom).endswith("no head sha")
 
@@ -673,7 +673,7 @@ def test_record_ci_verdict_reports_failures_without_raising(
 
     assert (
         release.record_ci_verdict(CAND, "r", "red", transport=boom)
-        == "ci verdict not recorded: OSError"
+        == "ci verdict not recorded: OSError: no wrapper"
     )
     assert release.record_ci_verdict("", "r", "red", transport=boom).endswith("no sha")
     assert "not green|red" in release.record_ci_verdict(CAND, "r", "?", transport=boom)

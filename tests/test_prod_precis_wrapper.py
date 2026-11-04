@@ -120,6 +120,9 @@ def _stale_tree_fixture(tmp_path: Path, *, stale: bool) -> tuple[Path, dict[str,
         _git(origin, "commit", "-q", "--allow-empty", "-m", "prod moves on")
     (clone / "scripts").mkdir()
     shutil.copy(_WRAPPER, clone / "scripts" / "prod-precis")
+    (clone / "scripts/lib").mkdir()
+    for name in ("git-network.sh", "git_network.py"):
+        shutil.copy(_WRAPPER.parent / "lib" / name, clone / "scripts/lib")
     secret_dir = tmp_path / "home" / ".secrets" / "pw"
     secret_dir.mkdir(parents=True)
     (secret_dir / "PRECIS_DATABASE_URL").write_text(

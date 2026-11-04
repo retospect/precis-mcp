@@ -1,5 +1,14 @@
 # Shipping — the four ship paths in detail
 
+Failed commands must show the original error, command and exit code (or timeout
+duration), with URL credentials removed; best-effort failures still warn.
+Use `scripts/lib/git_network.py::run_git` for network git calls: transient pushes
+retry briefly after reconciling the remote ref, retaining the original lease.
+On an unexplained push failure, check githubstatus.com first. A converged
+release whose `prod` publication failed can use `scripts/round deploy
+--finish-pointer` to recover from its receipt without another rollout; runtime
+confirmation remains required.
+
 CLAUDE.md carries the one-line version of each path and the rules that bite;
 this file is the mechanics. The skills (`/land`, `/go`, `/qland`, `/qgo`,
 `/round`) carry the step-by-step.

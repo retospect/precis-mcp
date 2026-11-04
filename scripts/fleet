@@ -60,6 +60,7 @@
 # PRECIS_FLEET_WATCH_TICKS (watch exits after N ticks), PRECIS_FLEET_COMPACT_POLL
 # (compact's idle-poll interval, 5 s).
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/git-network.sh"
 
 common=$(git rev-parse --path-format=absolute --git-common-dir)
 root=$(dirname "$common")
@@ -508,7 +509,7 @@ ref_line() { # ref_line <name> -> `name sha9 age [N behind main]`
 }
 
 cmd_refs() {
-  git fetch -q origin 2>/dev/null || echo "scripts/fleet refs: fetch failed — showing the local origin/* refs" >&2
+  git_network fetch -q origin || echo "scripts/fleet refs: fetch failed — showing the local origin/* refs" >&2
   ref_line main
   ref_line gated
   ref_line prod

@@ -91,6 +91,9 @@ def repo(tmp_path: Path) -> Path:
     scripts_dir.mkdir()
     shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
     shutil.copy2(REAP_SRC, scripts_dir / "reap-worktrees")
+    (scripts_dir / "lib").mkdir()
+    for name in ("git-network.sh", "git_network.py"):
+        shutil.copy2(REAP_SRC.parent / "lib" / name, scripts_dir / "lib" / name)
     (scripts_dir / "inflight").chmod(0o755)
     (scripts_dir / "reap-worktrees").chmod(0o755)
 

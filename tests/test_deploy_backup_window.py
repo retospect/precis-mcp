@@ -633,6 +633,8 @@ def deploy_fx(tmp_path: Path) -> DeployFixture:
         ("scripts/lib/deploy-state.sh", DEPLOY_STATE_LIB_SRC),
         ("scripts/lib/lock-holder.sh", LOCK_HOLDER_LIB_SRC),
         ("scripts/lib/backup-window.sh", LIB),
+        ("scripts/lib/git-network.sh", REPO_ROOT / "scripts/lib/git-network.sh"),
+        ("scripts/lib/git_network.py", REPO_ROOT / "scripts/lib/git_network.py"),
         (str(DEFAULTS_REL), REPO_ROOT / DEFAULTS_REL),
     ):
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)

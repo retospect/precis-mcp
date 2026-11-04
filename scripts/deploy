@@ -197,6 +197,8 @@ CLUSTER_DIR="${PRECIS_CLUSTER_DIR:-${HOME}/work/cluster}"
 # checkout) — the deploy-state marker always belongs at THIS repo's root, the
 # one scripts/ship reads it from, regardless of where ansible itself runs.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/git-network.sh
+source "${REPO_ROOT}/scripts/lib/git-network.sh"
 # A short sha is expanded to the full 40-char commit here: the playbook's pin
 # step treats anything that is not ^[0-9a-f]{40}$ as a ref NAME and resolves
 # it with `git ls-remote`, which never matches a bare abbreviated sha, so
@@ -512,13 +514,7 @@ _move_prod_pointer() {
 # No clone resolved at all -> nothing to confirm (machines that deploy but
 # do not host the session server); the sync's warning already said so.
 _confirm_prod_clone() {
-    local sha="$1" dir head
-    dir="$(env_prod_checkout_dir "$REPO_ROOT" 2>/dev/null || true)"
-    [[ -n "$dir" && -f "${dir}/.git/HEAD" ]] || return 0
-    head="$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)"
-    [[ "$head" == "$sha" ]] || die "prod clone ${dir} is at ${head:-unknown} but this deploy put ${sha} on the fleet — the session MCP keeps serving the old sha. Fix it with:
-    bash ~/work/infrastructure/precis-mcp/scripts/precis-mcp-http-ensure.sh
-or  git -C ${dir} fetch origin && git -C ${dir} checkout --detach ${sha}"
+    env_prod_checkout_confirm "$REPO_ROOT" "$1" || exit 1
 }
 
 _rollout_converged() {
@@ -1139,7 +1135,7 @@ fi
 # without the §F-b env exports). Refuse the skew unless explicitly overridden.
 # Inert when the render worktree above took over: there is no skew to find.
 if [[ -z "${PRECIS_DEPLOY_ALLOW_STALE:-}" && -z "$_DEPLOY_TREE" ]]; then
-    git -C "$REPO_ROOT" fetch -q origin "$REF" 2>/dev/null || true
+    git_network -C "$REPO_ROOT" fetch -q origin "$REF" || true
     _remote="$(git -C "$REPO_ROOT" rev-parse -q --verify "origin/${REF}" 2>/dev/null || true)"
     if [[ -n "$_remote" ]] && ! git -C "$REPO_ROOT" merge-base --is-ancestor "$_remote" HEAD; then
         die "local tree does not contain origin/${REF} ($(git -C "$REPO_ROOT" rev-parse --short HEAD) vs ${_remote:0:8}) — templates would render stale. Sync this checkout (git merge origin/${REF}) or set PRECIS_DEPLOY_ALLOW_STALE=1."
@@ -1184,7 +1180,7 @@ if [[ "$FORCE_ROLLBACK" != 1 ]]; then
             _rb_deployed="$(awk '{print $1}' "$_rb_marker" 2>/dev/null || true)"
             git -C "$REPO_ROOT" cat-file -e "${_rb_deployed}^{commit}" 2>/dev/null || _rb_deployed=""
         fi
-        git -C "$REPO_ROOT" fetch -q origin main 2>/dev/null || true
+        git_network -C "$REPO_ROOT" fetch -q origin main || true
         _rb_origin_main="$(git -C "$REPO_ROOT" rev-parse -q --verify origin/main 2>/dev/null || true)"
 
         # --pinned: the target is deliberately behind origin/main (it is the sha
@@ -1244,11 +1240,10 @@ fi
 # pinged yet. The real clock applies to every deploy — the guard says nothing
 # at all outside the window. Deliberately NOT written to the attempt stamp as
 # "refused": scripts/ship reads that outcome as the rollback guard.
-# Tolerant of a tree without the lib (the throwaway-repo fixtures in tests/
-# copy only scripts/deploy + deploy-state.sh), same as env-pointers.sh.
+# Tolerant of fixture trees that omit the backup-window library.
 if [[ -f "${REPO_ROOT}/scripts/lib/backup-window.sh" ]]; then
     . "${REPO_ROOT}/scripts/lib/backup-window.sh"
-    git -C "$REPO_ROOT" fetch -q origin prod 2>/dev/null || true
+    git_network -C "$REPO_ROOT" fetch -q origin prod || true
     _bw_rc=0
     backup_window_guard "$REPO_ROOT" "$REF" "$IGNORE_BACKUP_WINDOW" || _bw_rc=$?
     case "$_bw_rc" in
@@ -1535,7 +1530,7 @@ Set PRECIS_CATPATH_DIR to a catpath checkout, or PRECIS_DEPLOY_SKIP_CATPATH_WHEE
             # different code, and the wheelhouse keeps whichever landed last.
             # A deploy is the wrong place to be relaxed about that: refuse
             # rather than ship a plausible-looking wheel nobody can identify.
-            git -C "$_CATPATH_DIR" fetch -q origin 2>/dev/null || true
+            git_network -C "$_CATPATH_DIR" fetch -q origin || true
             [[ -z "$(git --no-optional-locks -C "$_CATPATH_DIR" status --porcelain 2>/dev/null)" ]] \
                 || die "catpath at ${_CATPATH_DIR} has uncommitted changes — a wheel built from it would be named autocatpath-${_PROJ_V} but contain code no one else has. Commit/stash there, or build the wheel on the release machine and pass -e autocatpath_wheel=<path>. (gr263082)"
 
@@ -1747,7 +1742,7 @@ else
         say "canary deploy: '${REF}' is a commit this checkout contains — pinned ${_target_sha:0:8}"
     else
         say "canary deploy: resolving '${REF}' to a single commit (git ls-remote)"
-        _target_sha="$(git ls-remote https://github.com/retospect/precis-mcp "$REF" | awk 'NR==1{print $1}')"
+        _target_sha="$(git_network ls-remote https://github.com/retospect/precis-mcp "$REF" | awk 'NR==1{print $1}')"
         [[ ${#_target_sha} -eq 40 ]] || die "could not resolve '${REF}' to a commit via git ls-remote (got '${_target_sha:-empty}') — refusing to deploy an unpinned/unresolvable ref."
     fi
     # A ref name resolved via ls-remote can differ from the local rev-parse

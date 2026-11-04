@@ -52,7 +52,7 @@ CONNECTED = 'Connection established with capabilities: {"hasTools":true}'
 def wf(fleet: Fleet, tmp_path: Path) -> Iterator[Fleet]:  # noqa: F811
     """The shared fleet plus the MCP helper, a fake gh and short waits."""
     lib = fleet.repo / "scripts" / "lib"
-    lib.mkdir(parents=True)
+    lib.mkdir(parents=True, exist_ok=True)
     shutil.copy2(REPO / "scripts" / "lib" / "fleet_mcp_state.py", lib)
     gh_dir = tmp_path / "gh"
     gh_dir.mkdir()

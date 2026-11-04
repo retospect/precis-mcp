@@ -26,7 +26,8 @@ waits for CI only if the head is not yet green, then runs step 7 and prints
 Steps, in order:
   1. fetch origin main/prod; S = --sha or origin/main; S must sit on
      origin/main's first-parent line (else exit 1).
-  2. S already in origin/prod: "already live", exit 0.
+  2. S already in origin/prod: the release owner can finish its matching open
+     round without another rollout; siblings and --cut-only exit 0, "already live".
   3. A release in flight (a live round.json record or an unrecorded origin
      `release/*`; a branch recorded terminal, or whose head origin/main
      already contains, is a leftover — ignored, with the delete command
@@ -71,6 +72,8 @@ Re-running after any partial state resumes: a recorded release containing S
 skips the cut (owner only; the marker is removed after `round close`
 succeeds or once the recorded release is gone; a re-run retries a close that
 failed); a journal with rollout done prints the `next:` line at once.
+A converged deployment with an unpublished prod pointer takes `round deploy
+--finish-pointer`, using round's receipt proof without repeating the rollout.
 
 --dry-run only reads; it prints the plan and passes --dry-run to round cut and
 round deploy where they apply.
@@ -88,6 +91,7 @@ import json
 import math
 import os
 import re
+import runpy
 import shlex
 import signal
 import subprocess
@@ -99,6 +103,8 @@ from pathlib import Path
 from typing import Any
 
 HERE = Path(__file__).resolve().parent
+_CI = runpy.run_path(str(HERE / "lib/ci_run.py"))
+_NETWORK = runpy.run_path(str(HERE / "lib/git_network.py"))
 ROUND = HERE / "round"
 OK_CONCLUSIONS = ("success", "skipped", "neutral")
 OPEN_STATES = ("cut", "gating", "fixing", "green")
@@ -123,7 +129,31 @@ def say(msg: str) -> None:
     print(msg, flush=True)
 
 
+def _error_detail(exc: BaseException) -> str:
+    """TimeoutExpired's string omits captured stderr; retain it explicitly."""
+    detail = f"{type(exc).__name__}: {exc}"
+    err = getattr(exc, "stderr", None)
+    if isinstance(err, bytes):
+        err = err.decode("utf-8", errors="replace")
+    if err:
+        detail += f"\n{err.strip()}"
+    return _NETWORK["redact"](detail)
+
+
+def _command_failed(command: str, cp: subprocess.CompletedProcess[str]) -> None:
+    detail = cp.stderr.strip() or "command returned no error text"
+    redact = _NETWORK["redact"]
+    print(
+        redact(f"{command} failed (exit {cp.returncode}): {detail}"),
+        file=sys.stderr,
+    )
+
+
 def git(*args: str) -> str | None:
+    if args and args[0] in ("push", "fetch", "ls-remote"):
+        runner = _NETWORK["run_git"]
+        cp = runner(list(args), cwd=ROOT, timeout=120)
+        return cp.stdout.strip() if cp.returncode == 0 else None
     try:
         cp = subprocess.run(
             ["git", "-C", str(ROOT), *args],
@@ -133,8 +163,11 @@ def git(*args: str) -> str | None:
             check=False,
             timeout=120,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"git {shlex.join(args)}: {_error_detail(exc)}", file=sys.stderr)
         return None
+    if cp.returncode and (args[0] != "rev-parse" or cp.stderr):
+        _command_failed(f"git {shlex.join(args)}", cp)
     return cp.stdout.strip() if cp.returncode == 0 else None
 
 
@@ -142,8 +175,12 @@ def ancestor(older: str, newer: str) -> bool:
     cp = subprocess.run(
         ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", older, newer],
         capture_output=True,
+        text=True,
+        encoding="utf-8",
         check=False,
     )
+    if cp.returncode not in (0, 1):
+        _command_failed(f"git merge-base --is-ancestor {older} {newer}", cp)
     return cp.returncode == 0
 
 
@@ -194,10 +231,17 @@ def fetch() -> None:
 
 def round_state() -> dict[str, Any] | None:
     cp = rnd("status", "--json")
+    if cp.returncode:
+        _command_failed("scripts/round status --json", cp)
+        return None
     try:
         data = json.loads(cp.stdout)
         cur = data["round"]
-    except (ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError) as exc:
+        print(
+            f"scripts/round status --json unreadable: {_error_detail(exc)}",
+            file=sys.stderr,
+        )
         return None
     return cur if cp.returncode == 0 and isinstance(cur, dict) else None
 
@@ -246,9 +290,14 @@ def ci_red(head: str) -> dict[str, Any] | bool | None:
             check=False,
             timeout=120,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"gh api check-runs for {head}: {_error_detail(exc)}", file=sys.stderr)
         return False
     if cp.returncode != 0:
+        print(
+            f"gh api check-runs for {head} failed (exit {cp.returncode}): {cp.stderr.strip()}",
+            file=sys.stderr,
+        )
         return False
     rows = [ln.split("\t") for ln in cp.stdout.splitlines() if ln.count("\t") >= 3]
     # gr504329: check-runs are sha-keyed, so rows span every workflow run
@@ -268,6 +317,11 @@ def ci_red(head: str) -> dict[str, Any] | bool | None:
         current_run = max((_row_run_id(r) for r in rows), default=0)
     if current_run:
         rows = [r for r in rows if _row_run_id(r) in (0, current_run)]
+        terminal = completed_run_red(str(current_run))
+        if isinstance(terminal, dict):
+            return terminal
+    else:
+        terminal = None
     # A rerun adds a newer check-run of the same name: only the latest counts,
     # and a latest that is still running is not red yet.
     latest: dict[str, list[str]] = {}
@@ -283,7 +337,7 @@ def ci_red(head: str) -> dict[str, Any] | bool | None:
         r for r in latest.values() if r[1] == "completed" and r[2] not in OK_CONCLUSIONS
     ]
     if not bad:
-        return None
+        return terminal
     urls: list[str] = []
     for r in bad:
         for u in (r[3], r[4] if len(r) > 4 else ""):
@@ -298,15 +352,63 @@ def ci_red(head: str) -> dict[str, Any] | bool | None:
     return {"jobs": [r[0] for r in bad], "urls": urls, "run_id": run_id}
 
 
+def completed_run_red(run_id: str) -> dict[str, Any] | bool | None:
+    """A completed non-green workflow is red if a gate job never went green."""
+    try:
+        cp = subprocess.run(
+            ["gh", "run", "view", run_id, "--json", "status,conclusion,jobs,url"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=120,
+        )
+        if cp.returncode:
+            raise RuntimeError(f"exit {cp.returncode}: {cp.stderr.strip()}")
+        run = json.loads(cp.stdout)
+        if not isinstance(run, dict):
+            raise ValueError("expected a workflow-run object")
+    except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
+        print(f"gh run view {run_id} unreadable: {_error_detail(exc)}", file=sys.stderr)
+        return False
+    if run.get("status") != "completed" or run.get("conclusion") in OK_CONCLUSIONS:
+        return None
+    jobs = [
+        job["name"]
+        for job in run.get("jobs", [])
+        if (
+            job.get("name") in ("lint", "failed-first")
+            or job.get("name", "").startswith("test-linux")
+        )
+        and (
+            job.get("status") != "completed"
+            or job.get("conclusion") not in OK_CONCLUSIONS
+        )
+    ]
+    if not jobs:
+        return None
+    return {
+        "jobs": jobs,
+        "urls": [run["url"]] if run.get("url") else [],
+        "run_id": run_id,
+        "diagnostics": _CI["run_diagnostics"](run, run_id),
+        "completed": True,
+    }
+
+
 def marker_path() -> Path:
     """`.release-owner` at THIS worktree's root (round.json is shared by all)."""
-    top = subprocess.run(
+    cp = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
         capture_output=True,
         text=True,
         encoding="utf-8",
         check=False,
-    ).stdout.strip()
+    )
+    if cp.returncode:
+        _command_failed("git rev-parse --show-toplevel", cp)
+    top = cp.stdout.strip()
     return Path(top or Path.cwd()) / ".release-owner"
 
 
@@ -345,9 +447,15 @@ def owns(rel: dict[str, Any]) -> bool:
 
 def gate_facts() -> dict[str, Any]:
     cp = rnd("gate", "--json")
+    if cp.returncode:
+        _command_failed("scripts/round gate --json", cp)
     try:
         data = json.loads(cp.stdout)
-    except ValueError:
+    except ValueError as exc:
+        print(
+            f"scripts/round gate --json unreadable: {_error_detail(exc)}",
+            file=sys.stderr,
+        )
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -392,8 +500,16 @@ def _regate_run_id(sha: str) -> str:
             check=False,
             timeout=120,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(
+            f"gh run list for {sha} unreadable: {_error_detail(exc)}", file=sys.stderr
+        )
         return ""
+    if cp.returncode:
+        print(
+            f"gh run list for {sha} failed (exit {cp.returncode}): {cp.stderr.strip()}",
+            file=sys.stderr,
+        )
     return cp.stdout.strip() if cp.returncode == 0 else ""
 
 
@@ -424,6 +540,8 @@ def _wait_fresh_verdict(head: str, args: argparse.Namespace) -> int:
             )
             for u in red["urls"]:
                 print(f"  {u}", file=sys.stderr)
+            for line in red.get("diagnostics", []):
+                print(f"  {line}", file=sys.stderr)
             return 2
         if time.monotonic() >= deadline:
             say(
@@ -460,15 +578,19 @@ def _regate_if_stale(args: argparse.Namespace) -> int:
             "no check.yml run found on that sha to re-run — deploy proceeds to its own verdict check"
         )
         return 0
-    cp = subprocess.run(
-        ["gh", "run", "rerun", run_id],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=120,
-    )
+    try:
+        cp = subprocess.run(
+            ["gh", "run", "rerun", run_id],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        say(f"gh run rerun {run_id} failed: {_error_detail(exc)}")
+        return 0
     if cp.returncode != 0:
         say(
             f"gh run rerun {run_id} failed ({cp.stderr.strip() or cp.returncode}) — deploy proceeds to its own verdict check"
@@ -528,23 +650,31 @@ def note_gripes(prev: str, head: str, text: str) -> None:
             [str(HERE / "gripe-note"), "--rev", rng, "--text", text],
             cwd=str(ROOT),
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             start_new_session=True,
         )
     except OSError as e:
-        say(f"gripe-note: {type(e).__name__} — no deploy comments posted")
+        say(f"gripe-note: {_error_detail(e)} — no deploy comments posted")
         return
     try:
-        out, _ = proc.communicate(timeout=NOTE_TIMEOUT_S)
+        out, err = proc.communicate(timeout=NOTE_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGKILL)
-        proc.communicate()
+        _, err = proc.communicate()
         say(
             f"gripe-note: TimeoutExpired after {NOTE_TIMEOUT_S:g}s — no deploy comments"
         )
+        _command_failed(
+            "scripts/gripe-note", subprocess.CompletedProcess(proc.args, 124, "", err)
+        )
         return
+    if proc.returncode:
+        _command_failed(
+            "scripts/gripe-note",
+            subprocess.CompletedProcess(proc.args, proc.returncode, out, err),
+        )
     if out.strip():
         say(out.strip())
 
@@ -693,15 +823,20 @@ def record_prod_head(
     shas = landed if landed is not None else landed_shas(prev, head)
     try:
         rc, out, _err = send(["settings", "get", PROD_HEAD_KEY])
+        if rc and _err.strip():
+            _command_failed(
+                f"scripts/prod-precis settings get {PROD_HEAD_KEY}",
+                subprocess.CompletedProcess([], rc, out, _err),
+            )
         previous = parse_prod_head(out) if rc == 0 else None
         rec = prod_head_record(head, shas, previous, when, release=release)
         value = json.dumps(rec, separators=(",", ":"))
         rc, _out, err = send(["settings", "set", PROD_HEAD_KEY, value])
     except (OSError, subprocess.SubprocessError) as e:
-        return f"prod head not recorded: {type(e).__name__}"
+        return f"prod head not recorded: {_error_detail(e)}"
     if rc != 0:
-        tail = re.sub(r"[a-z]+://\S+", "<url>", (err.strip().splitlines() or [""])[-1])
-        return f"prod head not recorded (exit {rc}): {tail[:200]}"
+        detail = re.sub(r"[a-z]+://\S+", "<url>", err.strip())
+        return f"prod head not recorded (exit {rc}): {detail}"
     return f"prod head recorded: {head[:9]} (+{len(shas)} landed)"
 
 
@@ -778,15 +913,20 @@ def record_ci_verdict(
     when = now or datetime.now(UTC)
     try:
         rc, out, _err = send(["settings", "get", CI_VERDICTS_KEY])
+        if rc and _err.strip():
+            _command_failed(
+                f"scripts/prod-precis settings get {CI_VERDICTS_KEY}",
+                subprocess.CompletedProcess([], rc, out, _err),
+            )
         previous = parse_ci_verdicts(out) if rc == 0 else []
         rows = ci_verdict_rows(sha, rng, verdict, run_id, previous, when)
         value = json.dumps(rows, separators=(",", ":"))
         rc, _out, err = send(["settings", "set", CI_VERDICTS_KEY, value])
     except (OSError, subprocess.SubprocessError) as e:
-        return f"ci verdict not recorded: {type(e).__name__}"
+        return f"ci verdict not recorded: {_error_detail(e)}"
     if rc != 0:
-        tail = re.sub(r"[a-z]+://\S+", "<url>", (err.strip().splitlines() or [""])[-1])
-        return f"ci verdict not recorded (exit {rc}): {tail[:200]}"
+        detail = re.sub(r"[a-z]+://\S+", "<url>", err.strip())
+        return f"ci verdict not recorded (exit {rc}): {detail}"
     return f"ci verdict recorded: {sha[:9]} {verdict}"
 
 
@@ -798,7 +938,7 @@ def note_ci_verdict(head: str, verdict: str, run_id: str = "") -> None:
     try:
         say(record_ci_verdict(head, rng, verdict, run_id))
     except Exception as e:  # the gate step must not die on bookkeeping
-        say(f"ci verdict not recorded: {type(e).__name__}")
+        say(f"ci verdict not recorded: {_error_detail(e)}")
 
 
 #: Longest the deploy path waits on scripts/gripe-validate (two prod calls,
@@ -818,21 +958,30 @@ def validate_gripes() -> None:
             [str(script)],
             cwd=str(ROOT),
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             start_new_session=True,
         )
     except OSError as e:
-        say(f"gripe-validate: {type(e).__name__} — no gripes validated")
+        say(f"gripe-validate: {_error_detail(e)} — no gripes validated")
         return
     try:
-        out, _ = proc.communicate(timeout=VALIDATE_TIMEOUT_S)
+        out, err = proc.communicate(timeout=VALIDATE_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGKILL)
-        proc.communicate()
+        _, err = proc.communicate()
         say(f"gripe-validate: TimeoutExpired after {VALIDATE_TIMEOUT_S:g}s")
+        _command_failed(
+            "scripts/gripe-validate",
+            subprocess.CompletedProcess(proc.args, 124, "", err),
+        )
         return
+    if proc.returncode:
+        _command_failed(
+            "scripts/gripe-validate",
+            subprocess.CompletedProcess(proc.args, proc.returncode, out, err),
+        )
     if out.strip():
         say(out.strip())
 
@@ -873,7 +1022,7 @@ def warn_post_migration() -> None:
             timeout=POST_MIGRATION_CHECK_TIMEOUT_S,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        say(f"post-migration check skipped: {type(e).__name__}")
+        say(f"post-migration check skipped: {_error_detail(e)}")
         return
     if cp.returncode == 0:
         for line in cp.stdout.strip().splitlines():
@@ -884,6 +1033,7 @@ def warn_post_migration() -> None:
         f"post-migration check unreadable (rc {cp.returncode}): "
         f"{tail[-1][:200] if tail else 'no output'}"
     )
+    _command_failed("scripts/prod-precis post-migration-check", cp)
 
 
 def warn_hook_drift() -> None:
@@ -908,8 +1058,10 @@ def warn_hook_drift() -> None:
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        say(f"hook-sync check skipped: {type(e).__name__}")
+        say(f"hook-sync check skipped: {_error_detail(e)}")
         return
+    if cp.returncode:
+        _command_failed("bash scripts/hook-sync", cp)
     for line in cp.stdout.strip().splitlines():
         say(line)
 
@@ -948,6 +1100,8 @@ def wait_ci(branch: str, args: argparse.Namespace) -> int:
                 )
                 for u in red["urls"]:
                     print(f"  {u}", file=sys.stderr)
+                for line in red.get("diagnostics", []):
+                    print(f"  {line}", file=sys.stderr)
                 if red["run_id"]:
                     print(f"  scripts/ci-failed {red['run_id']}", file=sys.stderr)
                 print(
@@ -965,13 +1119,20 @@ def wait_ci(branch: str, args: argparse.Namespace) -> int:
         time.sleep(args.poll)
 
 
-def deploy_and_close(args: argparse.Namespace, sha: str) -> int:
-    stale_rc = _regate_if_stale(args)
+def deploy_and_close(
+    args: argparse.Namespace, sha: str, *, finish_pointer: bool = False
+) -> int:
+    stale_rc = 0 if finish_pointer else _regate_if_stale(args)
     if stale_rc:
         return stale_rc
-    label = release_label(round_state() or {})
+    before = round_state() or {}
+    finished = _release_by_state(before, DEPLOYING_STATES) or _release_by_state(
+        before, OPEN_STATES
+    )
+    label = release_label(before)
     prev = rev("origin/prod")
-    rc = rnd("deploy", stream=True).returncode
+    command = ("deploy", "--finish-pointer") if finish_pointer else ("deploy",)
+    rc = rnd(*command, stream=True).returncode
     if rc in (0, 3):
         # The rollout ran, so its migrate play did too — name whatever
         # post-migration steps it left pending (gr514955). Best-effort.
@@ -995,6 +1156,12 @@ def deploy_and_close(args: argparse.Namespace, sha: str) -> int:
         say(next_line(head))
         return 3
     if rc != 0:
+        if finish_pointer:
+            return die(
+                rc,
+                "release finish refused — see the reason above; next: resolve it "
+                "and re-run scripts/round deploy --finish-pointer",
+            )
         return die(
             rc,
             "deploy failed — the release pin is retained; fix and re-run "
@@ -1005,7 +1172,8 @@ def deploy_and_close(args: argparse.Namespace, sha: str) -> int:
     if cur.get("open") and cur.get("deployed") and not live_releases(cur):
         if rnd("close", stream=True).returncode:
             return 0  # deployed; keep the marker, a re-run retries the close
-    clear_owner()
+    if owns(finished):
+        clear_owner()
     return 0
 
 
@@ -1077,6 +1245,17 @@ def run(args: argparse.Namespace) -> int:
         dsha = str(dep.get("sha") or "")
         if (
             mine
+            and not args.cut_only
+            and dep.get("converged")
+            and not dep.get("rollout_at")
+        ):
+            if args.dry_run:
+                say("would finish the prod pointer and round without another rollout")
+                return 0
+            return deploy_and_close(args, dsha, finish_pointer=True)
+        if (
+            mine
+            and not args.cut_only
             and dep.get("rollout_at")
             and not dep.get("runtime_confirmed_at")
             and rev(dsha)
@@ -1091,6 +1270,11 @@ def run(args: argparse.Namespace) -> int:
             git("fetch", "-q", "origin", "prod")
         if prod and rev(prod) and ancestor(s, prod):
             say(f"already live: {s9} is in origin/prod {prod[:9]}")
+            if mine and not args.cut_only and cur.get("open") and dsha == prod:
+                if args.dry_run:
+                    say("would finish the open round without another rollout")
+                    return 0
+                return deploy_and_close(args, dsha, finish_pointer=True)
             return 0
 
         branches = release_branches()
@@ -1252,6 +1436,11 @@ def deploy_only(args: argparse.Namespace) -> int:
             write_owner(str(rel["branch"]), str(rel["base"]), str(rel.get("cut_at")))
     dep = rel.get("deployment") or {}
     sha = str(rel.get("base") or "")
+    if dep.get("converged") and not dep.get("rollout_at"):
+        if args.dry_run:
+            say("would finish the prod pointer and round without another rollout")
+            return 0
+        return deploy_and_close(args, pending_sha(rel, sha), finish_pointer=True)
     if dep.get("rollout_at") and not dep.get("runtime_confirmed_at"):
         say(f"{want}: rollout already done")
         say(next_line(pending_sha(rel, sha)))
@@ -1338,6 +1527,11 @@ def resume(
         )
     if getattr(args, "cut_only", False):
         return 0 if args.dry_run else report_cut(branch)
+    if dep.get("converged") and not dep.get("rollout_at"):
+        if args.dry_run:
+            say("would finish the prod pointer and round without another rollout")
+            return 0
+        return deploy_and_close(args, pending_sha(rel, s), finish_pointer=True)
     if dep.get("rollout_at") and not dep.get("runtime_confirmed_at"):
         say(next_line(pending_sha(rel, s)))
         return 3

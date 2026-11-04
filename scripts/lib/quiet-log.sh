@@ -7,6 +7,7 @@
 #
 #   · the ✖ lines (with their indented continuation lines), on stderr —
 #     the channel die() and the gate-failure reports already use
+#   · git-network diagnostics, including best-effort command failures
 #   · Python Traceback blocks (from "Traceback" through the exception
 #     line) and lines matching error|Error|FAILED — a crash that never
 #     reached a die() stays readable
@@ -40,7 +41,7 @@ quiet_epilogue() {
     awk -v rc="$rc" '
          function emit() { if (!shown[NR]++) print }
          { tail[NR % 5] = $0 }
-         /✖/{c=1;emit();next}
+         /✖|^[ \t]*git-network:|^warning: .*pointer not moved/{c=1;emit();next}
          c&&/^[ \t]/{emit();next}
          {c=0}
          /Traceback/{t=1;emit();next}

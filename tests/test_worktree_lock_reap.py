@@ -243,6 +243,9 @@ def repo_trio(tmp_path: Path) -> dict[str, Path]:
     lib_dir.mkdir(parents=True)
     shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
     shutil.copy2(REAP_SRC, scripts_dir / "reap-worktrees")
+    (scripts_dir / "lib").mkdir(exist_ok=True)
+    for name in ("git-network.sh", "git_network.py"):
+        shutil.copy2(REPO_ROOT / "scripts/lib" / name, scripts_dir / "lib" / name)
     shutil.copy2(TAKE_AGENT_SRC, scripts_dir / "take-agent")
     shutil.copy2(LOCK_HOOK_SRC, hooks_dir / "session-start-lock.sh")
     shutil.copy2(SESSION_END_HOOK_SRC, hooks_dir / "session-end-reap.sh")
@@ -1143,6 +1146,9 @@ def guard_repo(tmp_path: Path) -> dict[str, Path]:
     hooks_dir.mkdir()
     shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
     shutil.copy2(REAP_SRC, scripts_dir / "reap-worktrees")
+    (scripts_dir / "lib").mkdir(exist_ok=True)
+    for name in ("git-network.sh", "git_network.py"):
+        shutil.copy2(REPO_ROOT / "scripts/lib" / name, scripts_dir / "lib" / name)
     shutil.copy2(SUBAGENT_TASK_STATE_SRC, hooks_dir / "subagent-task-state.py")
     (scripts_dir / "inflight").chmod(0o755)
     (scripts_dir / "reap-worktrees").chmod(0o755)
@@ -2825,6 +2831,9 @@ def gate_ref_repo(tmp_path: Path) -> dict[str, Path]:
     scripts_dir.mkdir()
     shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
     shutil.copy2(REAP_SRC, scripts_dir / "reap-worktrees")
+    (scripts_dir / "lib").mkdir(exist_ok=True)
+    for name in ("git-network.sh", "git_network.py"):
+        shutil.copy2(REPO_ROOT / "scripts/lib" / name, scripts_dir / "lib" / name)
     (scripts_dir / "inflight").chmod(0o755)
     (scripts_dir / "reap-worktrees").chmod(0o755)
     (primary / ".gitignore").write_text(".claude/*\n", encoding="utf-8")
@@ -3267,6 +3276,9 @@ def report_repo(tmp_path: Path) -> dict[str, Any]:
     hooks_dir.mkdir(parents=True)
     shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
     shutil.copy2(REAP_SRC, scripts_dir / "reap-worktrees")
+    (scripts_dir / "lib").mkdir(exist_ok=True)
+    for name in ("git-network.sh", "git_network.py"):
+        shutil.copy2(REPO_ROOT / "scripts/lib" / name, scripts_dir / "lib" / name)
     shutil.copy2(SUBAGENT_TASK_STATE_SRC, hooks_dir / "subagent-task-state.py")
     (scripts_dir / "inflight").chmod(0o755)
     (scripts_dir / "reap-worktrees").chmod(0o755)

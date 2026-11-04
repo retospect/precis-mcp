@@ -254,6 +254,8 @@ def deploy_repo(tmp_path: Path) -> tuple[Path, Path]:
     shutil.copy2(DEPLOY_SRC, scripts_dir / "deploy")
     shutil.copy2(DEPLOY_STATE_LIB_SRC, lib_dir / "deploy-state.sh")
     shutil.copy2(LOCK_HOLDER_LIB_SRC, lib_dir / "lock-holder.sh")
+    for name in ("git-network.sh", "git_network.py"):
+        shutil.copy2(DEPLOY_SRC.parent / "lib" / name, lib_dir / name)
     (scripts_dir / "deploy").chmod(0o755)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "add deploy scripts")
@@ -528,6 +530,8 @@ def ship_repo(tmp_path: Path) -> Path:
     lib_dir.mkdir(parents=True)
     shutil.copy2(DEPLOY_STATE_LIB_SRC, lib_dir / "deploy-state.sh")
     _write_ship_prelude(repo)
+    for name in ("git-network.sh", "git_network.py"):
+        shutil.copy2(DEPLOY_SRC.parent / "lib" / name, lib_dir / name)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "add ship prelude + deploy-state lib")
     return repo

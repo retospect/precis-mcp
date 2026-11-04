@@ -89,7 +89,12 @@ def _stage(tmp_path: Path) -> tuple[Path, Path, Path]:
     tree = tmp_path / "tree"
     (tree / "scripts" / "lib").mkdir(parents=True)
     shutil.copy2(REPO / "scripts" / "build-image", tree / "scripts" / "build-image")
-    for lib in ("autocatpath-wheel.sh", "docker-disk.sh"):
+    for lib in (
+        "autocatpath-wheel.sh",
+        "docker-disk.sh",
+        "git-network.sh",
+        "git_network.py",
+    ):
         shutil.copy2(REPO / "scripts" / "lib" / lib, tree / "scripts" / "lib" / lib)
     shutil.copy2(REPO / "uv.lock", tree / "uv.lock")
     compose = tree / "compose.yaml"

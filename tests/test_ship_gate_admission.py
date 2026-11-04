@@ -159,6 +159,6 @@ def test_remote_gate_waits_for_admission_before_pushing(stub) -> None:
     assert m, "remote_gate_wait not found in scripts/ship"
     body = m.group(0)
     admit = body.index("_remote_gate_admit")
-    push = body.index("git push -q -f origin")
+    push = body.index("git_network push -q -f origin")
     assert admit < push
     assert "PRECIS_REMOTE_GATE_SLOTS" in body

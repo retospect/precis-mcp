@@ -475,6 +475,9 @@ def test_reap_worktrees_for_hook_invokes_the_sweep(
     primary = lock_repo["primary"]
     scripts = primary / "scripts"
     shutil.copy2(REAP_WORKTREES_SRC, scripts / "reap-worktrees")
+    (scripts / "lib").mkdir(exist_ok=True)
+    for name in ("git-network.sh", "git_network.py"):
+        shutil.copy2(REPO_ROOT / "scripts/lib" / name, scripts / "lib" / name)
     (scripts / "reap-worktrees").chmod(0o755)
     inflight = scripts / "inflight"
     inflight.write_text(

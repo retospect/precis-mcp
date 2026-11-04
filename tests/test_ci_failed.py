@@ -9,6 +9,7 @@ markers) with a tail fallback for jobs that log nothing matching.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -28,6 +29,11 @@ import os
 import sys
 from pathlib import Path
 
+if os.environ.get("GH_STUB_ERROR"):
+    sys.stderr.write(os.environ["GH_STUB_ERROR"])
+if "--json" in sys.argv:
+    sys.stdout.write(os.environ.get("GH_STUB_RUN", '{"status":"completed","conclusion":"failure","jobs":[]}'))
+    sys.exit(int(os.environ.get("GH_STUB_META_RC", "0")))
 sys.stdout.write(Path(os.environ["GH_STUB_STATE"]).read_text(encoding="utf-8"))
 sys.exit(int(os.environ.get("GH_STUB_RC", "0")))
 """
@@ -117,3 +123,33 @@ def test_gh_failure_exits_one_with_reason(tmp_path: Path) -> None:
 def test_non_numeric_run_id_is_usage_error(tmp_path: Path) -> None:
     cp = _run(["abc"], _gh_stub(tmp_path))
     assert cp.returncode == 2
+
+
+def test_completed_run_reports_jobs_that_never_concluded(tmp_path: Path) -> None:
+    env = _gh_stub(tmp_path, log="")
+    env["GH_STUB_RUN"] = json.dumps(
+        {
+            "status": "completed",
+            "conclusion": "failure",
+            "jobs": [
+                {"name": "shard 2", "status": "queued", "conclusion": ""},
+                {"name": "shard 7", "status": "in_progress", "conclusion": ""},
+            ],
+        }
+    )
+    cp = _run(["223355"], env)
+    assert cp.returncode == 0, cp.stderr
+    assert "never concluded: shard 2 (queued)" in cp.stdout
+    assert "never concluded: shard 7 (in_progress)" in cp.stdout
+    assert "full rerun needed: gh run rerun 223355" in cp.stdout
+    assert "--failed cannot rerun jobs that never concluded" in cp.stdout
+
+
+def test_metadata_unreadable_is_reported(tmp_path: Path) -> None:
+    env = _gh_stub(tmp_path)
+    env["GH_STUB_META_RC"] = "1"
+    env["GH_STUB_ERROR"] = "HTTP 503: service unavailable"
+    cp = _run(["223355"], env)
+    assert cp.returncode == 1
+    assert "--json status,conclusion,jobs unreadable: exit 1" in cp.stderr
+    assert "HTTP 503: service unavailable" in cp.stderr

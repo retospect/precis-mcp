@@ -96,8 +96,7 @@ def _run_gate(
         'say() { printf "%s\\n" "$*"; }\n'
         "sleep() { :; }\n"
         "_remote_gate_admit() { return 0; }\n"
-        + _remote_gate_function()
-        + "remote_gate_wait\n"
+        'git_network() { git "$@"; }\n' + _remote_gate_function() + "remote_gate_wait\n"
     )
     env = {
         **os.environ,
@@ -149,8 +148,7 @@ def test_failed_gate_is_not_retried(tmp_path: Path) -> None:
         'say() { printf "%s\\n" "$*"; }\n'
         "sleep() { :; }\n"
         "_remote_gate_admit() { return 0; }\n"
-        + _remote_gate_function()
-        + "remote_gate_wait\n"
+        'git_network() { git "$@"; }\n' + _remote_gate_function() + "remote_gate_wait\n"
     )
     proc = subprocess.run(
         ["bash", "-c", shell],

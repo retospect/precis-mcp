@@ -78,7 +78,8 @@ if [ "${DEPLOY_STUB_VERIFY:-}" = 1 ]; then
   else
     rm -f "$common/precis-deploy-skipped"
   fi
-  git push -q origin "$1:refs/heads/prod" || exit 1
+  # Publication is best-effort after convergence, as in scripts/deploy.
+  git push -q origin "$1:refs/heads/prod" || true
 fi
 exit "${DEPLOY_STUB_RC:-0}"
 """
@@ -203,7 +204,8 @@ def rig(tmp_path: Path) -> Rig:
     _git(root, "remote", "add", "origin", str(origin))
     scripts = root / "scripts"
     (scripts / "lib").mkdir(parents=True)
-    shutil.copy(REPO_ROOT / "scripts" / "lib" / "env-pointers.sh", scripts / "lib")
+    for name in ("env-pointers.sh", "git-network.sh", "git_network.py"):
+        shutil.copy(REPO_ROOT / "scripts" / "lib" / name, scripts / "lib")
     for name, body in (("last-gated-main-sha", _LGM_STUB), ("deploy", _DEPLOY_STUB)):
         (scripts / name).write_text(body, encoding="utf-8")
         (scripts / name).chmod(0o755)
@@ -244,6 +246,8 @@ def test_docs_only_regex_is_the_one_check_yml_uses(tmp_path: Path) -> None:
     # path crashes its get_file (gr450298).
     copy = tmp_path / "round_script.py"
     copy.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "lib").mkdir()
+    shutil.copy(REPO_ROOT / "scripts/lib/git_network.py", tmp_path / "lib")
     mod = load_script("round_script", copy)
     workflow = (REPO_ROOT / ".github" / "workflows" / "check.yml").read_text(
         encoding="utf-8"

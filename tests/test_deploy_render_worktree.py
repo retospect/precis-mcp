@@ -216,6 +216,8 @@ def build_fixture(tmp_path: Path) -> Fixture:
     shutil.copy2(DEPLOY_SRC, repo / "scripts" / "deploy")
     shutil.copy2(DEPLOY_STATE_LIB_SRC, repo / "scripts" / "lib" / "deploy-state.sh")
     shutil.copy2(LOCK_HOLDER_LIB_SRC, repo / "scripts" / "lib" / "lock-holder.sh")
+    for name in ("git-network.sh", "git_network.py"):
+        shutil.copy2(DEPLOY_SRC.parent / "lib" / name, repo / "scripts/lib" / name)
     (repo / "scripts" / "deploy").chmod(0o755)
     # A local deploy/inventory makes the from-tree path take its "local
     # overlay" branch, so the test needs no private overlay on disk.

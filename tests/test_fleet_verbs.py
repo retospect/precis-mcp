@@ -231,6 +231,9 @@ def fleet(tmp_path: Path) -> Iterator[Fleet]:
     (repo / "scripts").mkdir(parents=True)
     (repo / ".claude" / "fleet").mkdir(parents=True)
     shutil.copy2(REPO / "scripts" / "fleet", repo / "scripts" / "fleet")
+    (repo / "scripts/lib").mkdir()
+    for name in ("git-network.sh", "git_network.py"):
+        shutil.copy2(REPO / "scripts/lib" / name, repo / "scripts/lib" / name)
     _thread(repo, "alpha", "active", "high")
     _thread(repo, "beta", "active", "medium")
     _thread(repo, "gamma", "dormant", "medium")

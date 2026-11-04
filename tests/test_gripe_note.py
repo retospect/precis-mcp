@@ -38,6 +38,14 @@ def _load(path: Path, name: str, tmp_path: Path) -> ModuleType:
     # A .py copy: a dotless script path does not load as a module.
     copy = tmp_path / f"{name}.py"
     copy.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    if path.name == "release":
+        lib = tmp_path / "lib"
+        lib.mkdir(exist_ok=True)
+        for helper in ("ci_run.py", "git_network.py"):
+            (lib / helper).write_text(
+                (REPO / "scripts/lib" / helper).read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
     return load_script(name, copy)
 
 

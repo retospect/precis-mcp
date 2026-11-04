@@ -33,6 +33,9 @@
 #         env_pointer_move "$REPO_ROOT" prod "$sha" force    # deliberate rollback
 #         env_prod_checkout_sync "$REPO_ROOT" "$sha"         # the served clone
 
+# shellcheck source=scripts/lib/git-network.sh
+source "$(dirname "${BASH_SOURCE[0]}")/git-network.sh"
+
 # Move origin's <branch> to <sha>. Returns 0 when the ref now names <sha>,
 # 1 otherwise (skipped, no origin, unknown sha, push refused). Never exits.
 env_pointer_move() {
@@ -46,8 +49,11 @@ env_pointer_move() {
     }
     spec="${sha}:refs/heads/${branch}"
     [[ "$mode" == force ]] && spec="+${spec}"
-    out="$(git -C "$root" push -q origin "$spec" 2>&1)" || rc=$?
+    out="$(git_network -C "$root" push -q origin "$spec" 2>&1)" || rc=$?
     if [[ "$rc" -eq 0 ]]; then
+        # The helper is silent on an ordinary success; recovered transient
+        # failures still belong in the operator's transcript.
+        [[ -z "$out" ]] || printf '%s\n' "$out" >&2
         return 0
     fi
     # git's own words, inline credentials stripped from any http(s) URL,
@@ -83,6 +89,19 @@ env_prod_checkout_dir() {
     fi
 }
 
+# Confirm an existing served clone before recording a successful deploy.
+env_prod_checkout_confirm() {
+    local root="$1" sha="$2" dir head
+    dir="$(env_prod_checkout_dir "$root" 2>/dev/null || true)"
+    [[ -n "$dir" && -f "${dir}/.git/HEAD" ]] || return 0
+    head="$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)"
+    [[ "$head" == "$sha" ]] && return 0
+    printf '%s\n' "prod clone ${dir} is at ${head:-unknown} but this deploy put ${sha} on the fleet — the session MCP keeps serving the old sha. Fix it with:
+    bash ~/work/infrastructure/precis-mcp/scripts/precis-mcp-http-ensure.sh
+or  git -C ${dir} fetch origin && git -C ${dir} checkout --detach ${sha}" >&2
+    return 1
+}
+
 # Put the prod clone on <sha>, detached. The clone is what the shared session
 # MCP serves (its ensure script mounts it), so "the session server runs what
 # the cluster runs" holds only while every deploy moves it. A PLAIN clone, not
@@ -112,7 +131,7 @@ env_prod_checkout_sync() {
         return 1
     fi
     if ! git -C "$dir" cat-file -e "${sha}^{commit}" 2>/dev/null; then
-        git -C "$dir" fetch -q origin >/dev/null 2>&1 || true
+        git_network -C "$dir" fetch -q origin >/dev/null || true
     fi
     if git -C "$dir" checkout -q --detach "$sha" >/dev/null 2>&1; then
         return 0

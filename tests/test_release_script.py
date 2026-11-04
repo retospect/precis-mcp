@@ -494,6 +494,24 @@ def test_failed_close_is_retried_before_already_live(rig: Rig) -> None:
     assert not _marker(rig).exists()
 
 
+def test_already_live_leaves_completed_round_open_without_owner_marker(
+    rig: Rig,
+) -> None:
+    sha = rig.shas["c3"]
+    assert _release(rig, *FAST, **_green(rig)).returncode == 3
+    confirmed = rig.round(
+        "deploy", "--confirm-runtime", sha, "--runtime-evidence", "ok"
+    )
+    assert confirmed.returncode == 0, confirmed.stderr
+    _marker(rig).unlink()
+    previous = rig.deploy_log()
+    result = _release(rig, *FAST)
+    assert result.returncode == 0, result.stderr
+    assert _round_json(rig)["open"] is True
+    assert rig.deploy_log() == previous
+    assert not _marker(rig).exists()
+
+
 def test_rerun_failure_superseded_by_newer_check_run_is_not_red(rig: Rig) -> None:
     s = rig.shas["c3"]
     url = "https://github.com/o/r/actions/runs/4242/job/9"
@@ -552,9 +570,174 @@ def test_red_names_job_and_run_of_the_current_run(rig: Rig) -> None:
 def _load_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     copy = tmp_path / "release_script.py"
     copy.write_text(RELEASE.read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "lib").mkdir(exist_ok=True)
+    for name in ("ci_run.py", "git_network.py"):
+        (tmp_path / "lib" / name).write_text(
+            (RELEASE.parent / "lib" / name).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
     mod = load_script("release_script", copy)
     monkeypatch.setattr(mod, "marker_path", lambda: tmp_path / ".release-owner")
     return mod
+
+
+def test_completed_non_green_run_fails_fast_with_queued_jobs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mod = _load_release(tmp_path, monkeypatch)
+    head = "1" * 40
+    run = {
+        "status": "completed",
+        "conclusion": "failure",
+        "jobs": [
+            {"name": "shard 2", "status": "queued", "conclusion": ""},
+            {"name": "test-linux (2)", "status": "queued", "conclusion": ""},
+        ],
+    }
+
+    def fake_run(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        if command[1] == "api":
+            return subprocess.CompletedProcess(command, 0, "", "")
+        assert command[1:4] == ["run", "view", "4242"]
+        return subprocess.CompletedProcess(command, 0, json.dumps(run), "")
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod, "_regate_run_id", lambda sha: "4242")
+    monkeypatch.setattr(
+        mod,
+        "gate_facts",
+        lambda: {"release_head": head, "release_branch": "release/r1"},
+    )
+    monkeypatch.setattr(mod, "note_ci_verdict", lambda *args: None)
+    sleeps: list[float] = []
+    monkeypatch.setattr(mod.time, "sleep", sleeps.append)
+    args = mod.argparse.Namespace(ci_timeout=90.0, poll=60.0)
+    assert mod.wait_ci("release/r1", args) == 2
+    assert sleeps == [60.0]  # Confirm rerun lag once, then fail fast.
+    err = capsys.readouterr().err
+    assert "never concluded: shard 2 (queued)" in err
+    assert "test-linux (2)" in err
+    assert "full rerun needed: gh run rerun 4242" in err
+
+
+def test_ci_unreadable_reports_original_gh_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mod = _load_release(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 1, "", "HTTP 503: service unavailable"
+        ),
+    )
+    assert mod.ci_red("1" * 40) is False
+    assert "HTTP 503: service unavailable" in capsys.readouterr().err
+
+
+def test_finish_pointer_never_regates_or_starts_rollout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = _load_release(tmp_path, monkeypatch)
+    calls: list[tuple[str, ...]] = []
+
+    def fake_round(*args: str, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 3, "", "")
+
+    monkeypatch.setattr(mod, "rnd", fake_round)
+    monkeypatch.setattr(mod, "_regate_if_stale", lambda args: pytest.fail("regated"))
+    monkeypatch.setattr(mod, "round_state", lambda: {"n": 1})
+    monkeypatch.setattr(mod, "rev", lambda name: "2" * 40)
+    monkeypatch.setattr(mod, "record_prod_head", lambda *args, **kwargs: "recorded")
+    monkeypatch.setattr(mod, "warn_post_migration", lambda: None)
+    monkeypatch.setattr(mod, "note_gripes", lambda *args: None)
+    monkeypatch.setattr(mod, "validate_gripes", lambda: None)
+    args = mod.argparse.Namespace(deploy_only="")
+    assert mod.deploy_and_close(args, "1" * 40, finish_pointer=True) == 3
+    assert calls == [("deploy", "--finish-pointer")]
+
+
+@pytest.mark.parametrize(
+    ("already_live", "pipelined"), [(False, False), (True, False), (True, True)]
+)
+def test_release_resumes_only_pointer_for_converged_or_already_live_deploy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, already_live: bool, pipelined: bool
+) -> None:
+    mod = _load_release(tmp_path, monkeypatch)
+    head = "1" * 40
+    rel = {
+        "branch": "release/r1",
+        "base": head,
+        "state": "deploying",
+        "deployment": {"sha": head, "converged": not already_live},
+    }
+    calls: list[tuple[str, bool]] = []
+    releases = [rel]
+    if pipelined:
+        releases.append({"branch": "release/r2", "base": "2" * 40, "state": "cut"})
+
+    def finish(args: object, sha: str, *, finish_pointer: bool = False) -> int:
+        calls.append((sha, finish_pointer))
+        return 3
+
+    monkeypatch.setattr(mod, "warn_hook_drift", lambda: None)
+    monkeypatch.setattr(mod, "fetch", lambda: None)
+    monkeypatch.setattr(mod, "rev", lambda name: head)
+    monkeypatch.setattr(mod, "git", lambda *args: head)
+    monkeypatch.setattr(
+        mod, "round_state", lambda: {"open": True, "releases": releases}
+    )
+    monkeypatch.setattr(mod, "owns", lambda release: release is rel)
+    monkeypatch.setattr(mod, "read_owner", lambda: {})
+    monkeypatch.setattr(mod, "remote", lambda ref: head if already_live else "")
+    monkeypatch.setattr(mod, "ancestor", lambda *args: True)
+    monkeypatch.setattr(mod, "deploy_and_close", finish)
+    args = mod.argparse.Namespace(
+        deploy_only="", sha=head, adopt=False, dry_run=False, cut_only=False
+    )
+    assert mod.run(args) == 3
+    assert calls == [(head, True)]
+
+
+@pytest.mark.parametrize("method", ["round_state", "gate_facts"])
+def test_round_read_failure_preserves_original_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    method: str,
+) -> None:
+    mod = _load_release(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        mod,
+        "rnd",
+        lambda *args: subprocess.CompletedProcess(
+            args, 1, "", "git remote error: upstream unavailable"
+        ),
+    )
+    assert not getattr(mod, method)()
+    err = capsys.readouterr().err
+    assert "exit 1" in err
+    assert "git remote error: upstream unavailable" in err
+
+
+def test_gh_timeout_preserves_captured_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mod = _load_release(tmp_path, monkeypatch)
+
+    def timed_out(*args: object, **kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(
+            ["gh", "api"], 120, stderr=b"connection reset by peer"
+        )
+
+    monkeypatch.setattr(mod.subprocess, "run", timed_out)
+    assert mod.ci_red("1" * 40) is False
+    err = capsys.readouterr().err
+    assert "timed out after 120 seconds" in err
+    assert "connection reset by peer" in err
 
 
 SKIP_LINE = "ci verdict not recorded: PRECIS_ROUND_ROOT names another checkout"

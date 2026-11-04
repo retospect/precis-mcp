@@ -10,6 +10,8 @@ signal lines (errors, ✖ markers, timeouts, the runner's own
 "Process completed with exit code" verdict), deduplicated. A failed job
 with no signal lines — a lint gate, an infra kill — gets its tail
 instead, which is where the reason lives.
+Workflow metadata also names queued/in-progress jobs stranded by a completed
+run, which have no failed-job logs and need a full rerun.
 
     scripts/ci-failed <run-id>            digest of the run's failed jobs
     scripts/ci-failed <run-id> -n N       cap per-job output at N lines
@@ -28,10 +30,15 @@ is always one flag away: `gh run view <id> --log-failed`.
 from __future__ import annotations
 
 import argparse
+import json
 import re
+import runpy
 import subprocess
 import sys
 from collections import OrderedDict
+from pathlib import Path
+
+_CI = runpy.run_path(str(Path(__file__).resolve().parent / "lib/ci_run.py"))
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 #: ``2026-10-24T21:00:00.0000000Z `` leading a gh log line's text field.
@@ -110,6 +117,30 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     if not re.fullmatch(r"\d+", a.run_id):
         ap.error(f"run id must be numeric: {a.run_id!r}")
+    metadata_ok = True
+    try:
+        metadata = subprocess.run(
+            ["gh", "run", "view", a.run_id, "--json", "status,conclusion,jobs"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            check=False,
+        )
+        if metadata.returncode:
+            raise RuntimeError(f"exit {metadata.returncode}: {metadata.stderr.strip()}")
+        run = json.loads(metadata.stdout)
+        if not isinstance(run, dict):
+            raise ValueError("expected a workflow-run object")
+        for line in _CI["run_diagnostics"](run, a.run_id):
+            print(line)
+    except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
+        print(
+            f"ci-failed: gh run view {a.run_id} --json status,conclusion,jobs "
+            f"unreadable: {exc}",
+            file=sys.stderr,
+        )
+        metadata_ok = False
     try:
         cp = subprocess.run(
             ["gh", "run", "view", a.run_id, "--log-failed"],
@@ -130,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     print(digest(cp.stdout, lines=a.lines, tail=a.tail))
-    return 0
+    return 0 if metadata_ok else 1
 
 
 if __name__ == "__main__":

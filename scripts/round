@@ -22,6 +22,8 @@ and nothing is tracked or pushed.
   scripts/round close                 coordinator: end the round
   scripts/round gate [--json]         coordinator: exact release head verdict, else newest green main
   scripts/round deploy [--dry-run]    coordinator: deploy pinned, tag/forward/retire a release
+                [--finish-pointer]   retry prod publication from a matching convergence
+                                      receipt; never starts a rollout
                 [--catch-up [HOST …]] re-run the pinned rollout for hosts it skipped
                                       (down, dropped mid-run or PRECIS_DEPLOY_SKIP_HOSTS);
                                       on a completed round, name hosts from its recorded
@@ -112,6 +114,13 @@ process reloaded. Main gates retain local pins but defer global gated
 publication while the release owns it. No live health result is inferred
 from these tooling tests.
 
+The deploy success marker is written before prod publication, so a failed
+pointer push must not require another install. `--finish-pointer` validates
+that exact generation against the pinned journal, with no active attempt,
+then moves prod, syncs and confirms the served clone using deploy's guard,
+and resumes the existing runtime-confirmation/retirement path. A convergence
+receipt alone cannot prove that the session MCP clone moved to the pinned SHA.
+
 Round numbers are global: `open` takes max(local n, highest deployed/r<N> tag
 or release/r<N> branch on origin) + 1, and `cut` refuses if deployed/r<N> exists.
 
@@ -157,20 +166,11 @@ DOCS_ONLY_RE = r"^(docs/|[^/]+\.md$)"
 # ruling on the right window is pending; only this default may change.
 DEFAULT_MAX_CANDIDATE_HOURS = 6.0
 _SHA = re.compile(r"^[0-9a-f]{7,40}$")
+_NETWORK = runpy.run_path(str(Path(__file__).resolve().parent / "lib/git_network.py"))
 
 
 def _git(*args: str) -> str | None:
-    try:
-        cp = subprocess.run(
-            ["git", *args],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-            timeout=60,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
+    cp = _NETWORK["run_git"](list(args))
     return cp.stdout.strip() if cp.returncode == 0 else None
 
 
@@ -520,6 +520,18 @@ def cmd_status(state: Path, args: argparse.Namespace) -> int:
         return 0
     rows = _rows(state, cur)
     if args.json:
+        for rel in _live(cur):
+            journal = rel.get("deployment", {})
+            if journal.get("started_epoch"):
+                journal["converged"] = (
+                    _deploy_receipt(
+                        _root(),
+                        journal["sha"],
+                        journal["started_epoch"],
+                        require_prod=False,
+                    )
+                    is not None
+                )
         print(json.dumps({"round": cur, "peers": rows}))
         return 0
     print(
@@ -751,13 +763,9 @@ def _release_candidate(root: Path, rel: dict[str, Any]) -> dict[str, Any]:
         facts["candidate_state"] = "unreadable"
         return facts
     try:
-        cp = subprocess.run(
+        cp = _NETWORK["run_command"](
             [str(root / "scripts/last-gated-main-sha"), "--exact", head],
             cwd=root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
             timeout=60,
         )
         verdict = json.loads(cp.stdout)
@@ -766,7 +774,11 @@ def _release_candidate(root: Path, rel: dict[str, Any]) -> dict[str, Any]:
         if verdict.get("candidate") not in ("", head):
             raise ValueError
         facts.update(verdict)
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except ValueError as exc:
+        print(
+            f"scripts/round: release CI response unreadable: {_NETWORK['redact'](str(exc))}",
+            file=sys.stderr,
+        )
         facts["candidate_state"] = "unreadable"
     return facts
 
@@ -776,10 +788,9 @@ def _ref(root: Path, name: str) -> str:
 
 
 def _ancestor(root: Path, older: str, newer: str) -> bool:
-    cp = subprocess.run(
+    cp = _NETWORK["run_command"](
         ["git", "-C", str(root), "merge-base", "--is-ancestor", older, newer],
-        capture_output=True,
-        check=False,
+        allowed=(0, 1),
     )
     return cp.returncode == 0
 
@@ -797,17 +808,16 @@ def _lgm_run(root: Path, *flags: str) -> tuple[str, int]:
         "--start",
         "origin/main",
     ]
-    try:
-        cp = subprocess.run(
-            argv,
-            cwd=root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-        )
-    except OSError:
-        return "", 1
+    # The history lookup makes multiple gh calls, each with its own 30s bound.
+    # Allow the full default history window to finish on a degraded link.
+    cp = _NETWORK["run_command"](
+        argv,
+        cwd=root,
+        timeout=900,
+        allowed=(0, 2),
+    )
+    if cp.returncode == 2 and cp.stderr:
+        _NETWORK["report_failure"](cp)
     return cp.stdout.strip(), cp.returncode
 
 
@@ -840,24 +850,17 @@ def _red_verdict(root: Path, sha: str) -> tuple[bool, dict[str, Any] | None]:
     False when `gh` could not answer at all.
     """
     jq = r'.check_runs[] | [.name, .status, (.conclusion // ""), .html_url] | @tsv'
-    try:
-        cp = subprocess.run(
-            [
-                "gh",
-                "api",
-                f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs",
-                "--jq",
-                jq,
-            ],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-            timeout=60,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False, None
+    cp = _NETWORK["run_command"](
+        [
+            "gh",
+            "api",
+            f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs",
+            "--jq",
+            jq,
+        ],
+        cwd=root,
+        timeout=60,
+    )
     if cp.returncode != 0:
         return False, None
     rows = [ln.split("\t") for ln in cp.stdout.splitlines() if ln.count("\t") == 3]
@@ -1159,11 +1162,13 @@ def _release_unchanged(root: Path, branch: str, sha: str) -> bool:
     return _remote(root, f"refs/heads/{branch}") == sha
 
 
-def _deploy_receipt(root: Path, sha: str, since: int = 0) -> dict[str, Any] | None:
+def _deploy_receipt(
+    root: Path, sha: str, since: int = 0, *, require_prod: bool = True
+) -> dict[str, Any] | None:
     """Exact local install generation plus prod, never service-health evidence."""
     common = _round_state(root).parent
     try:
-        with (common / "precis-deploy-state").open() as marker:
+        with (common / "precis-deploy-state").open(encoding="utf-8") as marker:
             before = os.fstat(marker.fileno())
             content = marker.read()
             after = os.fstat(marker.fileno())
@@ -1176,7 +1181,7 @@ def _deploy_receipt(root: Path, sha: str, since: int = 0) -> dict[str, Any] | No
             and before.st_mtime_ns == after.st_mtime_ns
             and before.st_size == after.st_size
             and not (common / "precis-deploy-attempt").exists()
-            and _remote(root, "refs/heads/prod") == sha
+            and (not require_prod or _remote(root, "refs/heads/prod") == sha)
         ):
             return {
                 "content": content,
@@ -1422,6 +1427,13 @@ def _closed_round_catch_up(
 
 
 def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
+    if (
+        getattr(args, "finish_pointer", False)
+        and getattr(args, "catch_up", None) is not None
+    ):
+        return _deploy_refuse(
+            "--finish-pointer takes no --catch-up; it never rolls out"
+        )
     root = _root()
     state = _round_state(root)
     cur = _read_round(state)
@@ -1443,6 +1455,76 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
         if recovered is not None:
             return recovered
     journal = rel.get("deployment", {}) if rel else {}
+    if getattr(args, "finish_pointer", False):
+        if not rel or not journal.get("started_epoch"):
+            return _deploy_refuse("--finish-pointer requires a recorded deployment")
+        sha = journal["sha"]
+        receipt = _deploy_receipt(
+            root, sha, journal["started_epoch"], require_prod=False
+        )
+        if receipt is None:
+            return _deploy_refuse(
+                "--finish-pointer requires a fresh matching convergence receipt and no active attempt"
+            )
+        if not journal.get("rollout_at"):
+            if not _release_unchanged(root, rel["branch"], sha):
+                return _deploy_refuse("release head changed before pointer recovery")
+            if args.dry_run:
+                print(
+                    f"dry-run: would finish prod pointer for {sha[:9]} without reinstalling"
+                )
+                return 0
+            prod = _remote(root, "refs/heads/prod")
+            if prod is None:
+                return _deploy_refuse("prod could not be read before pointer recovery")
+            if prod != sha:
+                move = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        '. scripts/lib/env-pointers.sh && env_pointer_move "$1" prod "$2"',
+                        "_",
+                        str(root),
+                        sha,
+                    ],
+                    cwd=root,
+                    check=False,
+                )
+                if move.returncode:
+                    return _deploy_refuse(
+                        f"prod pointer recovery failed (exit {move.returncode}); retry --finish-pointer"
+                    )
+            if _deploy_receipt(root, sha, journal["started_epoch"]) != receipt:
+                return _deploy_refuse(
+                    "convergence receipt/prod changed during pointer recovery"
+                )
+        if not args.dry_run:
+            clone = _NETWORK["run_command"](
+                [
+                    "bash",
+                    "-c",
+                    ". scripts/lib/env-pointers.sh && "
+                    '{ env_prod_checkout_sync "$1" "$2" || true; '
+                    'env_prod_checkout_confirm "$1" "$2"; }',
+                    "_",
+                    str(root),
+                    sha,
+                ],
+                cwd=root,
+                timeout=360,
+            )
+            if clone.returncode:
+                return _deploy_refuse(
+                    "prod clone confirmation failed; fix the clone as above, "
+                    "then retry scripts/round deploy --finish-pointer"
+                )
+            if clone.stderr:
+                print(clone.stderr.strip(), file=sys.stderr)
+        if not journal.get("rollout_at"):
+            journal["rollout_at"] = _now()
+            journal["skipped_hosts"] = _deploy_skipped(root, sha)
+            rel["state"] = "deployed"
+            _write(state / "round.json", cur)
     if rel and journal.get("rollout_at"):
         sha = journal["sha"]
         if getattr(args, "catch_up", None) is not None:
@@ -1678,12 +1760,22 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
         pass_fds=(lock_fd,),
     ).returncode
     if not rel or rc:
+        if rel and _deploy_receipt(root, cand, started, require_prod=False):
+            print(
+                "rollout converged; finish publication without reinstalling: scripts/round deploy --finish-pointer",
+                file=sys.stderr,
+            )
         return rc
     if not _release_unchanged(root, rel["branch"], cand):
         return _deploy_refuse(
             "release head changed during rollout; pinned SHA may be live"
         )
     if not _deploy_receipt_matches(root, cand, started):
+        if _deploy_receipt(root, cand, started, require_prod=False):
+            print(
+                "rollout converged; finish publication without reinstalling: scripts/round deploy --finish-pointer",
+                file=sys.stderr,
+            )
         return _deploy_refuse(
             "deploy returned zero without matching fresh success marker and origin/prod"
         )
@@ -1924,10 +2016,9 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
                 f"origin/main does not contain {prev['branch']}'s head {n_head[:9]}"
                 " — forward it to main first"
             )
-        same = subprocess.run(
+        same = _NETWORK["run_command"](
             ["git", "-C", str(root), "diff", "--quiet", n_head, main],
-            capture_output=True,
-            check=False,
+            allowed=(0, 1),
         )
         if same.returncode == 0:
             return _cut_refuse(
@@ -2112,6 +2203,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("gate").add_argument("--json", action="store_true")
     p_deploy = sub.add_parser("deploy")
     p_deploy.add_argument("--dry-run", action="store_true")
+    p_deploy.add_argument(
+        "--finish-pointer",
+        action="store_true",
+        help="finish prod publication from the matching convergence receipt; never reinstall",
+    )
     p_deploy.add_argument(
         "--confirm-runtime",
         default="",

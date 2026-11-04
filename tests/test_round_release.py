@@ -92,10 +92,11 @@ def _load_round(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     copy = rig.root / "round_script.py"
     copy.write_text(script.read_text(encoding="utf-8"), encoding="utf-8")
     (rig.root / "lib").mkdir(exist_ok=True)
-    (rig.root / "lib/round_state.py").write_text(
-        (script.parent / "lib/round_state.py").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
+    for name in ("round_state.py", "git_network.py"):
+        (rig.root / "lib" / name).write_text(
+            (script.parent / "lib" / name).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
     mod = load_script("round_script", copy)
     monkeypatch.chdir(rig.root)
     for key, val in rig.env.items():
@@ -112,6 +113,146 @@ def test_completed_round_retry_never_deploys_newer_green_main(rig: Rig) -> None:
     assert "already completed" in out.stdout
     assert rig.deploy_log() == [f"{head} --pinned"]
     assert {name: rig.origin_ref(name) for name in before} == before
+
+
+def _converged_without_prod(rig: Rig) -> str:
+    head = _cut(rig)
+    hook = _hook(
+        rig,
+        "while read old new ref; do\n"
+        '  if [ "$ref" = refs/heads/prod ]; then\n'
+        '    echo "remote transport unavailable after convergence" >&2\n'
+        "    exit 1\n"
+        "  fi\n"
+        "done\n",
+    )
+    out = rig.round("deploy", DEPLOY_STUB_VERIFY="1", **_verdict(head))
+    assert out.returncode == 1
+    assert "transport unavailable" in out.stderr
+    assert "scripts/round deploy --finish-pointer" in out.stderr
+    assert "deploy returned zero" in out.stderr
+    assert _rel(_round_json(rig))["state"] == "deploying"
+    assert not _rel(_round_json(rig))["deployment"].get("rollout_at")
+    hook.unlink()
+    return head
+
+
+def test_finish_pointer_recovers_converged_deploy_without_rollout(rig: Rig) -> None:
+    head = _converged_without_prod(rig)
+    out = rig.round("deploy", "--finish-pointer")
+    assert out.returncode == 3, out.stderr
+    assert rig.origin_ref("prod") == head
+    assert rig.deploy_log() == [f"{head} --pinned"]
+    rel = _rel(_round_json(rig))
+    assert rel["state"] == "deployed"
+    assert rel["deployment"]["rollout_at"]
+    assert not rel["deployment"].get("runtime_confirmed_at")
+    out = _deploy(
+        rig,
+        "--finish-pointer",
+        "--confirm-runtime",
+        head,
+        "--runtime-evidence",
+        "fixture daemon boot SHA and readiness observed",
+    )
+    assert out.returncode == 0, out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "confirmed"
+    assert rig.deploy_log() == [f"{head} --pinned"]
+
+
+@pytest.mark.parametrize("invalid", ["missing", "wrong-sha", "stale", "in-progress"])
+def test_finish_pointer_requires_current_convergence_receipt(
+    rig: Rig, invalid: str
+) -> None:
+    head = _converged_without_prod(rig)
+    common = rig.root / ".git"
+    marker = common / "precis-deploy-state"
+    if invalid == "missing":
+        marker.unlink()
+    elif invalid == "wrong-sha":
+        marker.write_text(
+            f"{rig.shas['c0']} {int(time.time())} success\n", encoding="utf-8"
+        )
+    elif invalid == "stale":
+        marker.write_text(f"{head} 1 success\n", encoding="utf-8")
+    else:
+        (common / "precis-deploy-attempt").write_text(head, encoding="utf-8")
+    before = _round_json(rig)
+    out = rig.round("deploy", "--finish-pointer")
+    assert out.returncode == 1
+    assert rig.origin_ref("prod") != head
+    assert _round_json(rig) == before
+    assert rig.deploy_log() == [f"{head} --pinned"]
+
+
+def test_finish_pointer_never_starts_an_unstarted_release(rig: Rig) -> None:
+    _cut(rig)
+    before = _round_json(rig)
+    out = rig.round("deploy", "--finish-pointer")
+    assert out.returncode == 1
+    assert _round_json(rig) == before
+    assert rig.deploy_log() == []
+
+
+@pytest.mark.parametrize("already_published", [False, True])
+def test_finish_pointer_syncs_served_clone_before_recording_deployed(
+    rig: Rig, already_published: bool
+) -> None:
+    head = _converged_without_prod(rig)
+    clone = rig.root.parent / "served"
+    _git(rig.root.parent, "clone", "-q", str(rig.origin), str(clone))
+    _git(clone, "checkout", "-q", "--detach", rig.shas["c0"])
+    if already_published:
+        _push_branch(rig, "prod", head)
+    out = rig.round("deploy", "--finish-pointer", PRECIS_PROD_CHECKOUT=str(clone))
+    assert out.returncode == 3, out.stderr
+    assert _git(clone, "rev-parse", "HEAD") == head
+    assert _rel(_round_json(rig))["state"] == "deployed"
+    assert rig.deploy_log() == [f"{head} --pinned"]
+
+
+@pytest.mark.parametrize("already_published", [False, True])
+def test_finish_pointer_refuses_stale_clone_and_retries_without_rollout(
+    rig: Rig, already_published: bool
+) -> None:
+    head = _converged_without_prod(rig)
+    clone = rig.root.parent / "served"
+    _git(rig.root.parent, "clone", "-q", str(rig.origin), str(clone))
+    old = rig.shas["c0"]
+    _git(clone, "checkout", "-q", "--detach", old)
+    # The target adds README.md: preserve this untracked local edit and refuse.
+    (clone / "README.md").write_text("local clone edit\n", encoding="utf-8")
+    if already_published:
+        _push_branch(rig, "prod", head)
+    before = _round_json(rig)
+    out = rig.round("deploy", "--finish-pointer", PRECIS_PROD_CHECKOUT=str(clone))
+    assert out.returncode == 1
+    assert "session MCP keeps serving the old sha" in out.stderr
+    assert old in out.stderr and head in out.stderr
+    assert "scripts/round deploy --finish-pointer" in out.stderr
+    assert _git(clone, "rev-parse", "HEAD") == old
+    assert _round_json(rig) == before
+    assert rig.origin_ref("prod") == head
+    assert rig.deploy_log() == [f"{head} --pinned"]
+    (clone / "README.md").unlink()
+    retry = rig.round("deploy", "--finish-pointer", PRECIS_PROD_CHECKOUT=str(clone))
+    assert retry.returncode == 3, retry.stderr
+    assert _git(clone, "rev-parse", "HEAD") == head
+    assert _rel(_round_json(rig))["state"] == "deployed"
+    assert rig.deploy_log() == [f"{head} --pinned"]
+
+
+def test_history_ci_lookup_keeps_time_for_multiple_gh_calls(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = _load_round(rig, monkeypatch)
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert kwargs["timeout"] == 900
+        return subprocess.CompletedProcess(command, 0, rig.shas["c2"], "")
+
+    monkeypatch.setitem(mod._NETWORK, "run_command", run)
+    assert mod._lgm_run(rig.root) == (rig.shas["c2"], 0)
 
 
 def test_round_receipt_survives_close_and_open_immutably(rig: Rig) -> None:

@@ -24,6 +24,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+source scripts/lib/git-network.sh
 
 INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 if [[ ! -f "${INFRA_COMPOSE}" ]]; then
@@ -114,7 +115,7 @@ UV_LOCK_SHA256="$(shasum -a 256 uv.lock | cut -d ' ' -f1)"
 source scripts/lib/autocatpath-wheel.sh
 AUTOCATPATH_REV="$(autocatpath_locked_sha uv.lock 2>/dev/null || true)"
 if [[ -z "$AUTOCATPATH_REV" ]]; then
-    AUTOCATPATH_REV="$(git ls-remote https://github.com/retospect/catpath main 2>/dev/null | cut -f1)"
+    AUTOCATPATH_REV="$(git_network ls-remote https://github.com/retospect/catpath main | cut -f1)"
 fi
 AUTOCATPATH_REV="${AUTOCATPATH_REV:-main}"
 

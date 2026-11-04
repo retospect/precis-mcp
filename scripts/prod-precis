@@ -27,6 +27,8 @@
 # from a tree that is.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=scripts/lib/git-network.sh
+source "${root}/scripts/lib/git-network.sh"
 
 # The single read-only list — the doc above points here instead of carrying
 # a second copy to drift from. A bare word is a whole-subcommand match;
@@ -56,7 +58,7 @@ is_read_only() {
 }
 
 if [[ "${PRECIS_ALLOW_STALE_PROD_TREE:-}" != 1 ]]; then
-    git -C "$root" fetch --quiet origin prod 2>/dev/null ||
+    git_network -C "$root" fetch --quiet origin prod ||
         echo "prod-precis: WARNING: could not fetch origin/prod; checking against the local ref" >&2
     stale=""
     if ! git -C "$root" rev-parse --verify --quiet origin/prod >/dev/null; then
