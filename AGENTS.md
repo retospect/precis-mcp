@@ -66,6 +66,16 @@ run `scripts/docs-index` if absent). Runtime kinds and verbs:
 - No plan label (slice/round/R-number/leg/wave) without its handle on the same line.
 - No bare commit sha older than 30 days; cite a live `path/file.py::Symbol` instead.
 
+A recalled memory or set of memories is wonky, inconsistent or unclear →
+file a `project:memory` gripe first. Include Goal, Route and the claims,
+naming every involved memory and entity handle. The server attaches the
+session's last ten memory get/search calls as `meta.route`; the written
+story supplies the goal and the disagreement. The gardener fixes these,
+never a coder lane. With evidence edit, on suspicion gripe: after learning
+the truth with evidence, follow `precis-memory-help` "A recalled memory
+misled me" and `precis-fix-memory-gripe-help`. Hold and ask before changing
+a human-origin node. Replays must preserve both routes and recall coverage.
+
 After the recorded cutover, graph memory is the durable repo-dev knowledge
 source. At task start, recall relevant knowledge with
 `search(kind='memory', tags=['SPACE:repo-dev'], q='<task>', view='index')`.
@@ -95,7 +105,8 @@ alias, a pending rename is noted in the gloss and flips with the code.
 
 Search before keeping a learned fact. Use `SPACE:repo-dev`, relevant
 project/topic tags, a concise `meta.hook`, and links to supporting evidence.
-For an existing fact, use a unique anchored `edit` and full readback;
+For an evidence-backed change to an existing fact, subject to the
+human-origin hold above, use a unique anchored `edit` and full readback;
 preserve unrelated body and history. Edit a changed fact on the same subject
 in place; correct a wrong fact with `reason=`. Put new facts only when no
 matching node exists. Behavioral and workflow rules belong here, not in fact nodes.
@@ -115,7 +126,8 @@ preservation of still-true claims:
   old, then retire the old.
 - A mirrored node whose file was deleted: retire it (the importer's
   `--missing retire`, or by hand).
-Any session may retire a completed or superseded node after this preservation.
+Any session may retire a completed or superseded node after this preservation,
+subject to the human-origin hold above.
 `precis memory sweep` dry-runs sweep candidates.
 `scripts/memory-lint` lists candidates; it never retires. It also lints
 each node as `fisheye+1hop` shows it.
