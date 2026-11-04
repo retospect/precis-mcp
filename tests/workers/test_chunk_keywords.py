@@ -923,6 +923,33 @@ def _mark_stale(store: Store, chunk_id: int) -> None:
 
 
 class TestTieredClaim:
+    @pytest.mark.parametrize("shard_count", [1, 2])
+    def test_fresh_backlog_embedding_exists_keeps_planner_fence(
+        self, shard_count: int
+    ) -> None:
+        """gr520236: tier 2 must not flatten EXISTS into a full embedding scan."""
+        conn = Mock()
+        conn.execute.return_value.fetchall.return_value = []
+
+        claim_chunks_without_keywords(conn, limit=500, shard_count=shard_count)
+
+        queries = [
+            " ".join(call.args[0].split()) for call in conn.execute.call_args_list
+        ]
+        assert len(queries) == 3
+        tier1, tier2, tier3 = queries
+        assert "OFFSET 0" not in tier1
+        assert "OFFSET 0" not in tier3
+        assert "c2.ref_id NOT IN (SELECT ref_id FROM kw_refs)" in tier2
+        assert "AND c2.keywords IS NULL" in tier2
+        candidate = tier2.split("kw_cand AS MATERIALIZED (", 1)[1]
+        embedding_gate = candidate.split("AND EXISTS (", 1)[1].split(")", 1)[0]
+        assert "FROM chunk_embeddings ce2" in embedding_gate
+        assert embedding_gate.rstrip().endswith(
+            "AND ce2.content_sha IS NOT DISTINCT FROM c2.content_sha OFFSET 0"
+        )
+        assert tier2.count("OFFSET 0") == 1
+
     def test_conv_and_draft_chunks_claim_ahead_of_papers(self, store: Store) -> None:
         """Tier 1 jumps the queue regardless of freshness: a conv/draft
         chunk wins over a NEWER paper chunk, and a stale conv chunk

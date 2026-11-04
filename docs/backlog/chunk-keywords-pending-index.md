@@ -110,7 +110,10 @@ backward (once the index exists — without it, a `chunks_pkey`
 backward scan plus predicate filter is the expected slower path and
 the reason the pre-build comes first), bounded by `LIMIT 2000` on
 `kw_cand`, with `NOT IN (SELECT ref_id FROM kw_refs)` as a hashed
-subplan, not a per-row `refs` join:
+subplan, not a per-row `refs` join. The `OFFSET 0` fence inside the
+embedding `EXISTS` prevents flattening into a hash join that scans all
+`chunk_embeddings`; per-row `chunk_embeddings_pkey` probes are why the
+plan stays bounded under the candidate limit:
 
 ```sql
 EXPLAIN
@@ -130,7 +133,8 @@ kw_cand AS MATERIALIZED (
             WHERE ce2.chunk_id = c2.chunk_id
               AND ce2.embedder = 'bge-m3' AND ce2.status = 'ok'
               AND ce2.vector IS NOT NULL
-              AND ce2.content_sha IS NOT DISTINCT FROM c2.content_sha)
+              AND ce2.content_sha IS NOT DISTINCT FROM c2.content_sha
+           OFFSET 0)
        AND c2.ref_id NOT IN (SELECT ref_id FROM kw_refs)
        AND c2.keywords IS NULL
      ORDER BY c2.chunk_id DESC
@@ -148,7 +152,16 @@ SELECT c.chunk_id
    FOR UPDATE OF c SKIP LOCKED;
 ```
 
+The unfenced tier 2 failed the prod plan check: PostgreSQL flattened
+the embedding `EXISTS` into a hash join and sequentially scanned all
+5.2M `chunk_embeddings` rows inside `kw_cand` (estimated cost 581k),
+including on empty polls. Plain `EXPLAIN` with `OFFSET 0` instead showed
+the pending-index walk under `Limit`, hashed `NOT IN`, and per-row
+`chunk_embeddings_pkey` probes (estimated cost 32k; gr520236 / td564664).
+Tier 1 already passed and keeps its SQL unchanged.
+
 If either plan shows a multi-million-row sequential or backward pkey
-walk inside `kw_cand`, keep the lane off and re-open the 0266 review.
+walk inside `kw_cand`, keep the lane off and re-open the 0266 review;
+for tier 2, verify that the embedding `EXISTS` retains its `OFFSET 0` fence.
 
 Delete this file when the migration ships.

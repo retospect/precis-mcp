@@ -467,7 +467,7 @@ def claim_chunks_without_keywords(
                         AND ce2.embedder = %s
                         AND ce2.status = 'ok'
                         AND ce2.vector IS NOT NULL
-                        AND ce2.content_sha IS NOT DISTINCT FROM c2.content_sha
+                        AND ce2.content_sha IS NOT DISTINCT FROM c2.content_sha{embedding_fence}
                    )
                AND {where}
              ORDER BY c2.chunk_id DESC
@@ -497,7 +497,13 @@ def claim_chunks_without_keywords(
     shard_clause = " AND c2.chunk_id %% %s = %s" if shard_count > 1 else ""
     out: list[tuple[int, int, str, str | None]] = []
 
-    def _claim(join: str, where: str, params: tuple[Any, ...]) -> None:
+    def _claim(
+        join: str,
+        where: str,
+        params: tuple[Any, ...],
+        *,
+        embedding_fence: str = "",
+    ) -> None:
         remaining = limit - len(out)
         shard_params: tuple[Any, ...] = (
             (shard_count, shard_index) if shard_count > 1 else ()
@@ -508,6 +514,9 @@ def claim_chunks_without_keywords(
                 where=where + shard_clause,
                 eligibility=_ELIGIBILITY_SQL,
                 inner_eligibility=_eligibility_sql("c2."),
+                embedding_fence=f"\n                     {embedding_fence}"
+                if embedding_fence
+                else "",
             ),
             (
                 "bge-m3",
@@ -531,6 +540,8 @@ def claim_chunks_without_keywords(
             "",
             "c2.ref_id NOT IN (SELECT ref_id FROM kw_refs) AND c2.keywords IS NULL",
             (),
+            # Keep OFFSET 0: EXISTS flattening would scan all chunk_embeddings.
+            embedding_fence="OFFSET 0",
         )
     if include_stale and len(out) < limit:
         before = len(out)
