@@ -21,6 +21,7 @@ from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 import pytest
@@ -3324,6 +3325,7 @@ const created = [];
 const docHandlers = {};
 const rsCalls = [];
 const clipCalls = [];
+const scrolls = [], kineticsClicks = [];
 const mk = () => {
   const el = {
     innerHTML: '', textContent: '', style: {}, dataset: {}, value: '0',
@@ -3349,7 +3351,7 @@ const mk = () => {
     querySelectorAll() { return []; },
     closest() { return null; },
     getBoundingClientRect() { return { top: 0, bottom: 0 }; },
-    scrollIntoView() {},
+    scrollIntoView() { scrolls.push(el); },
     scrollTop: 0,
     title: '',
     type: '',
@@ -3383,12 +3385,7 @@ global.document = {
   readyState: 'complete',
 };
 global.window = {
-  location: {
-    search: SEARCH,
-    hash: HASH,
-    pathname: '/refs/pathway/171696',
-    href: 'http://precis.test/refs/pathway/171696' + SEARCH + HASH,
-  },
+  location: new URL('http://precis.test/refs/pathway/171696' + SEARCH + HASH),
 };
 global.history = {
   replaceState: (a, b, url) => {
@@ -3412,6 +3409,25 @@ Object.defineProperty(globalThis, 'navigator', {
 global.setTimeout = () => 0;
 global.CSS = { escape: (s) => s };
 (0, eval)(script);
+// Dispatch an emitted entity link through both delegation levels. A
+// modified click must survive the document's generic data-state handler.
+const clickKinetics = (attrs, flags = {}) => {
+  const a = mk();
+  a.attrs = attrs;
+  a.closest = selector => {
+    if (selector === 'a.kinetics-selection') return a;
+    if (selector === '[data-state]' && 'data-state' in attrs) return a;
+    return null;
+  };
+  const ev = {
+    target: a, button: 0, ...flags, prevented: false, stopped: false,
+    preventDefault() { this.prevented = true; },
+    stopPropagation() { this.stopped = true; },
+  };
+  (els.kinetics.handlers.click || []).forEach(f => f(ev));
+  if (!ev.stopped) (docHandlers.click || []).forEach(f => f(ev));
+  kineticsClicks.push({prevented: ev.prevented, stopped: ev.stopped});
+};
 // direct eval (not (0, eval)) — AFTER must see this scope's els/handlers
 if (AFTER) { eval(AFTER); }
 const note = els['pw-link-note'];
@@ -3432,6 +3448,9 @@ console.log(JSON.stringify({
     .map((el) => ({key: el.dataset.layer, checked: el.checked, title: el.title})),
   svg: els['pw-diagram'] ? els['pw-diagram'].innerHTML : null,
   statesHidden: els['pw-states-panel'] ? els['pw-states-panel'].classList.contains('hidden') : null,
+  hash: window.location.hash,
+  explorerScrolls: scrolls.filter(el => el === els['pw-explorer']).length,
+  kineticsClicks,
 }));
 """
 
@@ -3761,3 +3780,253 @@ def test_pathway_layer_invalid_url_value_has_notice(
     assert "layer_supply" in out["note"]
     assert 'class="pw-shoulder-drop"' in out["svg"]
     assert 'class="pw-hydro-arrow"' not in out["svg"]
+
+
+def _kinetics_page_links(
+    client: Any, runtime: Any, tmp_path: Path
+) -> tuple[str, list[dict[str, str]]]:
+    """Get actual panel links from the graph JSON shipped by the page."""
+    from tests.precis_web.test_pathway_kinetics import (
+        _panel_probe,
+        _record,
+        _verdict_markup,
+    )
+
+    graph = _parked_graph()
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "graph": graph,
+            "results": {
+                "substrate": "NO",
+                "target": "NH3",
+                "kinetics": _record(
+                    coverages={"NH2+H": 0.9},
+                    drc={"X_RC": {"NO@N -> N+O": 0.8}},
+                    thermodynamic_drc={"X_TRC": {}},
+                    transitions=[
+                        {
+                            "name": "NO@N -> N+O",
+                            "from": "NO@N",
+                            "to": "N+O",
+                            "kind": "step",
+                        }
+                    ],
+                ),
+            },
+        },
+        body_text=None,
+    )
+    response = client.get("/refs/pathway/171696")
+    assert response.status_code == 200
+    html = response.text
+    assert 'id="pw-explorer"' in html
+    blobs = {
+        name: json.loads(value)
+        for name, value in re.findall(
+            r'<script type="application/json" id="(kinetics[^\"]*)">(.*?)</script>',
+            html,
+            re.S,
+        )
+    }
+    explorer = blobs["kinetics-explorer-data"]
+    assert set(explorer["states"]) == {node["id"] for node in graph["nodes"]}
+    assert explorer["paths"] == _graph_paths(graph)
+    panel = _panel_probe(tmp_path, blobs["kinetics-data"], explorer=explorer)
+    links = [
+        link
+        for link in _verdict_markup(panel["html"]).links
+        if "kinetics-selection" in link.get("class", "")
+    ]
+    return html, links
+
+
+@needs_node
+def test_pathway_kinetics_emitted_links_select_state_and_toggle_path(
+    client, runtime, tmp_path: Path
+) -> None:
+    html, links = _kinetics_page_links(client, runtime, tmp_path)
+    state = next(link for link in links if "data-state" in link)
+    path = next(link for link in links if "data-kinetics-path" in link)
+    assert state["data-state"] == "NH2+H"
+    assert path["data-kinetics-path"] == "0"
+    after = f"clickKinetics({json.dumps(state)}); clickKinetics({json.dumps(path)});"
+    out = _run_url_probe(tmp_path, html, after=after, hash_="#kinetics-coverages")
+    assert "NH2+H" in out["sel"]
+    assert out["pressed"] == ["true", "false"]
+    assert out["kineticsClicks"] == [{"prevented": True, "stopped": True}] * 2
+    assert out["explorerScrolls"] == 2
+    assert out["hash"] == "#pw-explorer"
+    assert out["rs"] == [
+        "/refs/pathway/171696?state=NH2%2BH&u=-0.5&ph=0#pw-explorer",
+        "/refs/pathway/171696?state=NH2%2BH&path=NH3&u=-0.5&ph=0#pw-explorer",
+    ]
+    toggled = _run_url_probe(
+        tmp_path, html, after=after + f"clickKinetics({json.dumps(path)});"
+    )
+    assert toggled["pressed"] == ["false", "false"]
+    assert "path=" not in toggled["rs"][-1]
+    # Opening an actual href in a new tab restores the same selection.
+    for link in (state, path):
+        url = urlsplit(link["href"])
+        restored = _run_url_probe(
+            tmp_path, html, search="?" + url.query, hash_="#" + url.fragment
+        )
+        assert restored["hash"] == "#pw-explorer"
+        assert restored["rs"] == []
+        if link is state:
+            assert "NH2+H" in restored["sel"]
+        else:
+            assert restored["pressed"] == ["true", "false"]
+
+
+@needs_node
+@pytest.mark.parametrize(
+    "flags",
+    [
+        {"ctrlKey": True},
+        {"metaKey": True},
+        {"shiftKey": True},
+        {"altKey": True},
+        {"button": 1},
+    ],
+)
+def test_pathway_kinetics_modified_click_keeps_browser_navigation(
+    client, runtime, tmp_path: Path, flags: dict[str, Any]
+) -> None:
+    html, links = _kinetics_page_links(client, runtime, tmp_path)
+    after = "".join(
+        f"clickKinetics({json.dumps(link)}, {json.dumps(flags)});" for link in links
+    )
+    out = _run_url_probe(tmp_path, html, after=after, hash_="#kinetics-steps")
+    assert out["rs"] == []
+    assert "NO@N" in out["sel"]
+    assert out["pressed"] == ["false", "false"]
+    assert out["hash"] == "#kinetics-steps"
+    assert out["explorerScrolls"] == 0
+    assert out["kineticsClicks"] == [{"prevented": False, "stopped": False}] * len(
+        links
+    )
+
+
+@needs_node
+def test_pathway_url_preserves_section_hash_through_controls_and_copy(
+    client, runtime, tmp_path: Path
+) -> None:
+    _seed_parked(runtime, _parked_graph())
+    html = client.get("/refs/pathway/171696").text
+    after = """
+docHandlers.click.forEach(f => f({target: {closest: () => ({getAttribute: () => 'NH3'})}}));
+created.filter(e => e.classList.contains('pw-path-btn'))[0].handlers.click[0]();
+els['pw-u-slider'].value = '-1';
+els['pw-u-slider'].handlers.input[0]();
+els['pw-ph-input'].value = '7';
+els['pw-ph-input'].handlers.input[0]();
+els['pw-copy-link'].handlers.click[0]();
+"""
+    out = _run_url_probe(tmp_path, html, after=after, hash_="#kinetics-steps")
+    assert out["rs"] == [
+        "/refs/pathway/171696?state=NH3&u=-0.5&ph=0#kinetics-steps",
+        "/refs/pathway/171696?state=NH3&path=NH3&u=-0.5&ph=0#kinetics-steps",
+        "/refs/pathway/171696?state=NH3&path=NH3&u=-1&ph=0#kinetics-steps",
+        "/refs/pathway/171696?state=NH3&path=NH3&u=-1&ph=7#kinetics-steps",
+    ]
+    assert out["clip"] == ["http://precis.test" + out["rs"][-1]]
+    copied = urlsplit(out["clip"][0])
+    restored = _run_url_probe(
+        tmp_path,
+        html,
+        search="?" + copied.query,
+        hash_="#" + copied.fragment,
+        after="els['pw-copy-link'].handlers.click[0]();",
+    )
+    assert restored["rs"] == []
+    assert restored["hash"] == "#kinetics-steps"
+    assert "NH3" in restored["sel"]
+    assert restored["pressed"] == ["true", "false"]
+    assert restored["u"] == "-1" and restored["ph"] == "7"
+    assert restored["clip"] == out["clip"]
+
+
+@needs_node
+def test_pathway_kinetics_shared_leaf_link_restores_the_selected_route(
+    client, runtime, tmp_path: Path
+) -> None:
+    """A leaf alone cannot identify the second arm of a diamond graph."""
+    from tests.precis_web.test_pathway_kinetics import (
+        _panel_probe,
+        _record,
+        _verdict_markup,
+    )
+
+    graph = {
+        "nodes": [
+            {"id": sid, "rel_energy": 0.1 * i}
+            for i, sid in enumerate(["A", "B", "C", "D"])
+        ],
+        "links": [
+            {"source": s, "target": t, "kind": "reaction", "barrier": 0.5}
+            for s, t in [("A", "B"), ("B", "D"), ("A", "C"), ("C", "D")]
+        ],
+    }
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "graph": graph,
+            "results": {
+                "target": "D",
+                "kinetics": _record(
+                    product="D",
+                    coverages={},
+                    thermodynamic_drc={"X_TRC": {}},
+                    drc={"X_RC": {"C -> D": 0.8}},
+                    transitions=[
+                        {"name": "C -> D", "from": "C", "to": "D", "kind": "step"}
+                    ],
+                ),
+            },
+        },
+        body_text=None,
+    )
+    html = client.get("/refs/pathway/171696").text
+    blobs = {
+        name: json.loads(value)
+        for name, value in re.findall(
+            r'<script type="application/json" id="(kinetics[^\"]*)">(.*?)</script>',
+            html,
+            re.S,
+        )
+    }
+    explorer = blobs["kinetics-explorer-data"]
+    path_index = explorer["paths"].index(["A", "C", "D"])
+    panel = _panel_probe(tmp_path, blobs["kinetics-data"], explorer=explorer)
+    (link,) = [
+        link
+        for link in _verdict_markup(panel["html"]).links
+        if "data-kinetics-path" in link
+    ]
+    assert link["data-kinetics-path"] == str(path_index)
+    url = urlsplit(link["href"])
+    query = parse_qs(url.query)
+    assert query["path"] == ["D"]
+    assert json.loads(query["route"][0]) == ["A", "C", "D"]
+    clicked = _run_url_probe(
+        tmp_path,
+        html,
+        after=f"clickKinetics({json.dumps(link)}); els['pw-copy-link'].handlers.click[0]();",
+    )
+    expected = ["true" if i == path_index else "false" for i in range(2)]
+    assert clicked["pressed"] == expected
+    copied = urlsplit(clicked["clip"][0])
+    assert json.loads(parse_qs(copied.query)["route"][0]) == ["A", "C", "D"]
+    for location in (url, copied):
+        restored = _run_url_probe(
+            tmp_path,
+            html,
+            search="?" + location.query,
+            hash_="#" + location.fragment,
+        )
+        assert restored["pressed"] == expected
+        assert restored["hash"] == "#pw-explorer"
+        assert restored["rs"] == []
+        assert restored["noteHidden"] is True

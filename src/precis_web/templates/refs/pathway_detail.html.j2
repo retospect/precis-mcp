@@ -112,7 +112,7 @@
    ``measures``. Degrades per AC4: no graph -> no diagram (below); no/
    partial ``structure_refs`` -> "no geometry linked" per state; an
    unrecognised measure op -> skipped with a note (``measure_notes``). #}
-<section class="mb-6 rounded-lg border border-info bg-surface p-4">
+<section id="pw-explorer" class="mb-6 rounded-lg border border-info bg-surface p-4">
   <h2 class="text-sm font-semibold text-fg-secondary mb-2">Reaction explorer</h2>
   {% if conditions_note %}
   {# gr553328: the profile prices gases at its own table; a recorded
@@ -597,6 +597,7 @@
   {% endif %}
   <div id="kinetics" class="text-sm text-fg-secondary"></div>
   <script type="application/json" id="kinetics-data">{{ kinetics | tojson }}</script>
+  <script type="application/json" id="kinetics-explorer-data">{{ {'states': state_ids, 'paths': (diagram or {}).get('paths', [])} | tojson }}</script>
   {% else %}
   <h2 class="text-sm font-semibold text-fg-secondary mb-2">Kinetics</h2>
   <p class="text-xs text-warning-deep bg-warning-subtle border border-warning rounded px-2 py-1 inline-block">&#9888; kinetics did not run: {{ kinetics_error }}</p>
@@ -2054,7 +2055,9 @@
   // reload, no history entries), and a pasted link re-opens the same view.
   // Params carry STABLE identifiers — the state id, and a path's leaf state
   // id (what the legend prints), never a list position — so a link
-  // survives path re-ordering. A param that doesn't resolve on this
+  // survives path re-ordering. Converging paths also carry their full
+  // state sequence in route=, since a shared leaf cannot identify one.
+  // A param that doesn't resolve on this
   // pathway (stale or hand-edited) is ignored with a one-line note, never
   // an error; absent params keep their defaults (first state, no isolated
   // path, U=0, pH=0). The candidate stepper's carry-forward reads the same
@@ -2065,8 +2068,14 @@
     const qs = new URLSearchParams();
     if (selected) { qs.set('state', selected); }
     if (selectedPath != null) {
-      const p = ((V.diagram || {}).paths || [])[selectedPath];
-      if (p && p.length) { qs.set('path', p[p.length - 1]); }
+      const paths = (V.diagram || {}).paths || [];
+      const p = paths[selectedPath];
+      if (p && p.length) {
+        const leaf = p[p.length - 1];
+        qs.set('path', leaf);
+        if (paths.filter(route => route[route.length - 1] === leaf).length > 1)
+          qs.set('route', JSON.stringify(p));
+      }
     }
     // gr549591: always write u and ph — with the new non-zero defaults an
     // explicit pH 0 or U = 0 must survive a copied link, not fall back to
@@ -2112,11 +2121,15 @@
       else { ignored.push('state'); }
     }
     const qPath = qs.get('path');
+    const qRoute = qs.get('route');
     if (qPath) {
       const paths = (V.diagram && V.diagram.paths) || [];
-      const pi = paths.findIndex((p) => p.length && p[p.length - 1] === qPath);
-      if (pi >= 0) { selectedPath = pi; } else { ignored.push('path'); }
-    }
+      let route = null;
+      try { route = qRoute === null ? null : JSON.parse(qRoute); } catch (err) { /* stale route */ }
+      const pi = paths.findIndex((p) => p.length && p[p.length - 1] === qPath
+        && (qRoute === null || (Array.isArray(route) && JSON.stringify(p) === JSON.stringify(route))));
+      if (pi >= 0) { selectedPath = pi; } else { ignored.push(qRoute === null ? 'path' : 'route'); }
+    } else if (qRoute !== null) { ignored.push('route'); }
     const qU = qs.get('u');
     if (qU != null) {
       const u = parseFloat(qU);
@@ -2185,7 +2198,24 @@
       if (sid) { showState(sid); }
     });
   }
+  const kineticsPanel = document.getElementById('kinetics');
+  if (kineticsPanel) kineticsPanel.addEventListener('click', (ev) => {
+    const a = ev.target.closest('a.kinetics-selection');
+    if (!a || ev.button > 0 || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
+    const state = a.getAttribute('data-state');
+    const path = a.getAttribute('data-kinetics-path');
+    const pi = path === null ? null : Number(path);
+    const paths = (V.diagram || {}).paths || [];
+    if (!V.stateIds.includes(state) && !(Number.isInteger(pi) && paths[pi])) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    window.location.hash = 'pw-explorer';
+    if (state) showState(state);
+    else togglePathSelection(pi);
+    document.getElementById('pw-explorer').scrollIntoView();
+  });
   document.addEventListener('click', (ev) => {
+    if (ev.button > 0 || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
     const t = ev.target.closest('[data-state]');
     if (t) { showState(t.getAttribute('data-state')); }
   });

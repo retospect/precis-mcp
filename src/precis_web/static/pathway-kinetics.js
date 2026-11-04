@@ -7,7 +7,8 @@
 // Deviations from the report version, all because this renders a stored ref
 // rather than a run folder: the payload arrives in the #kinetics-data JSON
 // script tag (not window.CATPATH_REPORT), and the tier table has no `record`
-// file-link column (there is no side-car file to link).
+// file-link column (there is no side-car file to link). Verdict navigation
+// uses a separate explorer JSON blob so it cannot alter the ported rules.
 //
 // The 2026-11-01 kinetics-panel-ux gripes (gr549748/9/57/59/63) landed
 // web-side first: unit-ful headers, the net-rate wording, sorted per-class
@@ -292,6 +293,100 @@
   // covered the measured numbers
   const V = (K.ml && K.ml.verdict) || (K.dft && K.dft.verdict);
   const vTier = K.ml ? "ML tier" : "DFT tier";
+  const base = K.ml || K.dft;
+  const tier = K.ml ? "ml" : "dft";
+  // Navigation is deliberately client-side: the ported verdict and its
+  // golden sentence/parity contract remain untouched. Match sentence
+  // prefixes, never recompute the scientific thresholds here.
+  const verdictSection = text => {
+    if (/^(Product-inhibited:|The surface is saturated|No single intermediate)/.test(text))
+      return "kinetics-coverages";
+    if (/^Rate control/.test(text)) return "kinetics-rate-control";
+    if (/^Strongest thermodynamic brake:/.test(text)) return "kinetics-thermodynamic-control";
+    if (/^(Not determined:|The TOF lies between)/.test(text)) return "kinetics-steps";
+    if (/^Not fully selective:/.test(text)) return "kinetics-production-" + tier;
+    return "kinetics-tof";
+  };
+  let explorer = {states: [], paths: []};
+  const explorerData = document.getElementById("kinetics-explorer-data");
+  if (explorerData) {
+    try { explorer = JSON.parse(explorerData.textContent); } catch (e) { /* no links */ }
+  }
+  const entityHref = (param, selected, value) => {
+    const qs = new URLSearchParams(window.location.search);
+    qs.set(param, selected);
+    if (param === "path") {
+      const sameLeaf = explorer.paths.filter(p => p[p.length - 1] === selected);
+      // A leaf alone is ambiguous when two routes converge on it.
+      if (sameLeaf.length > 1) qs.set("route", JSON.stringify(explorer.paths[value]));
+      else qs.delete("route");
+    }
+    return "?" + qs.toString() + "#pw-explorer";
+  };
+  const mentions = new Map();
+  const addMention = (name, attr, value, param, selected) => {
+    if (!name) return;
+    mentions.set(name, {attr, value, href: entityHref(param, selected, value)});
+  };
+  // Only graph states and transitions on an actual explorer path get an
+  // entity link. Kinetics-only states keep the sentence's evidence link.
+  explorer.states.forEach(s => addMention(s, "data-state", s, "state", s));
+  // Same physical-name seam as precis_pathway.flux_share._phys: graph
+  // landings can retain ~history that the kinetics solve strips. Prefer
+  // an exact state; otherwise select the first matching explorer state.
+  const phys = s => String(s).split("~", 1)[0];
+  const stateNames = [...(base.coverages || []).map(kv => kv[0]),
+    ...Object.keys(base.trc || {})];
+  stateNames.forEach(name => {
+    if (mentions.has(name)) return;
+    const state = explorer.states.find(s => phys(s) === phys(name));
+    if (state) addMention(name, "data-state", state, "state", state);
+  });
+  const stepKey = s => String(s).replace(/\s*(?:->|→)\s*/g, "→");
+  const stepNames = [...Object.keys(base.drc || {}),
+    ...((base.bracket || {}).load_bearing || []),
+    ...((base.bracket || {}).bounded_steps || [])];
+  const linkStep = (name, from, to) => {
+    if (!from || !to) return;
+    let pi = explorer.paths.findIndex(p => p.some((s, i) =>
+      s === from && p[i + 1] === to));
+    if (pi < 0) pi = explorer.paths.findIndex(p => p.some((s, i) =>
+      i + 1 < p.length && phys(s) === phys(from) && phys(p[i + 1]) === phys(to)));
+    if (pi < 0) return;
+    const path = explorer.paths[pi];
+    addMention(name, "data-kinetics-path", pi, "path", path[path.length - 1]);
+  };
+  (base.transitions || []).forEach(t => {
+    const names = [t.name, ...stepNames.filter(s => stepKey(s) === stepKey(t.name))];
+    names.forEach(s => linkStep(s, t.from, t.to));
+  });
+  // v2-only records can carry sensitivities without the v1 transitions
+  // table. Their canonical from->to keys still resolve against the graph.
+  stepNames.forEach(name => {
+    if (mentions.has(name)) return;
+    const pair = stepKey(name).split("→");
+    if (pair.length === 2) linkStep(name, pair[0], pair[1]);
+  });
+  // Longest literal match wins (a whole step before its component states).
+  // Sibling anchors avoid invalid nested links; every other text segment
+  // still points at the sentence's source section. Escape all text/attrs.
+  const names = [...mentions.keys()].sort((a, b) => b.length - a.length);
+  const verdictText = (text, section) => {
+    const evidence = s => s ? "<a class='underline' href='#" + section + "'>" + disp(s) + "</a>" : "";
+    let out = "", start = 0, i = 0;
+    while (i < text.length) {
+      const name = names.find(n => text.startsWith(n, i)
+        && (i === 0 || !/[\w@~+*]/.test(text[i - 1]))
+        && (i + n.length === text.length || !/[\w@~+*]/.test(text[i + n.length])));
+      if (!name) { i++; continue; }
+      const m = mentions.get(name);
+      out += evidence(text.slice(start, i)) + "<a class='underline kinetics-selection' href='" +
+        esc2(m.href) + "' " + m.attr + "='" + esc2(m.value) + "'>" + disp(name) + "</a>";
+      i += name.length;
+      start = i;
+    }
+    return out + evidence(text.slice(start));
+  };
   // the v2 solve status, ahead of the verdict: which rung produced the TOF,
   // why the mean-field solve failed, and what the answer is priced against
   const S = (K.ml && K.ml.v2_solve) || (K.dft && K.dft.v2_solve);
@@ -338,19 +433,19 @@
   }
   if (V) {
     h += "<div class='verdict " + esc2(V.tone || "") + "'><span class='vhead'>" +
-         esc2(vTier) + ": " + esc2(V.headline) + "</span>" +
+         esc2(vTier) + ": " + verdictText(V.headline, verdictSection(V.headline)) + "</span>" +
          ((V.lines || []).length
-           ? "<ul>" + V.lines.map(x => "<li>" + disp(x) + "</li>").join("") +
+           ? "<ul>" + V.lines.map(x => "<li>" + verdictText(x, verdictSection(x)) + "</li>").join("") +
              "</ul>" : "") +
          ((V.caveats || []).length
            ? "<div class='vcav'>Caveats: " +
-             disp(V.caveats.join("; ")) + ".</div>" : "") +
+             V.caveats.map(x => verdictText(x, "kinetics-warnings-" + tier)).join("; ") + ".</div>" : "") +
          "<div class='vrule'>Synthesised from the numbers below by fixed " +
          "rules &mdash; thresholds and sentence templates, no model in the " +
          "loop. Read it as a pointer into the tables, not as a result.</div>" +
          "</div>";
   }
-  h += "<table><tr><th>tier</th><th>" + term("TOF", "TOF (/site/s)") +
+  h += "<table id='kinetics-tof'><tr><th>tier</th><th>" + term("TOF", "TOF (/site/s)") +
        "</th><th>" + term("5-95 % band", "5–95 % band (/site/s)") + "</th><th>" +
        term("span limit", "span limit (/site/s)") + "</th><th>" +
        term("MARI seed") + "</th></tr>";
@@ -381,7 +476,7 @@
     const P = d ? Object.entries(d.production || {}) : [];
     if (!P.length) return;
     P.sort((a, b) => b[1] - a[1]);
-    h += "<div class='caption'>" + esc2(pair[1]) + " tier " +
+    h += "<div class='caption' id='kinetics-production-" + pair[0] + "'>" + esc2(pair[1]) + " tier " +
          term("net gas production") +
          (d.v2_solve ? " (chain solve)" : "") + ": " +
          P.map(kv => esc2(kv[0]) + " " + sci(kv[1]) + " /site/s")
@@ -412,7 +507,6 @@
         ". TOF, coverages and rate control are unreliable until these " +
         "are computed.</div>";
   });
-  const base = K.ml || K.dft;
   const tierName = K.ml ? "ML tier" : "DFT tier";
   // ---- the equations actually solved -------------------------------------
   // Hand-set HTML math (sub/sup + entities), NOT MathJax/KaTeX — static
@@ -547,14 +641,14 @@
       "<span class='ksw' style='background:" + p[0] + "'></span> " +
       esc2(p[1])).join(" &middot; ") +
     (src ? " &middot; " + esc2(src) : "") + "</div>";
-  h += "<h3>Degree of rate control " + term("X_RC") + " (" + tierName +
+  h += "<h3 id='kinetics-rate-control'>Degree of rate control " + term("X_RC") + " (" + tierName +
        ")</h3>" +
        legend([["#2b6cb0", "positive: lowering this step's barrier speeds the cycle"],
                ["#a33", "negative: making the step faster slows the cycle"]],
               srcName(base.drc_source)) +
        bars(base.drc, "#2b6cb0", "#a33", "X_RC",
             srcName(base.drc_source));
-  h += "<h3>Thermodynamic rate control " + term("X_TRC") + " (" + tierName +
+  h += "<h3 id='kinetics-thermodynamic-control'>Thermodynamic rate control " + term("X_TRC") + " (" + tierName +
        "; negative = poison)</h3>" +
        legend([["#2f855a", "positive: binding this state harder speeds the cycle"],
                ["#a33", "negative: a poison — stabilising it slows the cycle"]],
@@ -585,14 +679,14 @@
   };
   const covCls = base.coverage_classes || [];
   if (covCls.length > 1) {
-    h += "<h3>Steady-state " + term("coverage", "coverages") + " (" +
+    h += "<h3 id='kinetics-coverages'>Steady-state " + term("coverage", "coverages") + " (" +
          tierName + ", per site class; mean-field solve)</h3>" +
          covCls.map(c => covBlock(c.states || [], c.cls + " sites")).join("");
   } else {
     const states = covCls.length ? (covCls[0].states || [])
                                  : (base.coverages || []);
     if (states.length)
-      h += "<h3>Steady-state " + term("coverage", "coverages") + " (" +
+      h += "<h3 id='kinetics-coverages'>Steady-state " + term("coverage", "coverages") + " (" +
            tierName + (covCls.length ? ", mean-field solve" : "") +
            ")</h3>" + covBlock(states, null);
   }
@@ -601,10 +695,13 @@
   // meaning and what to do from WARN_HELP; unrecognised ones stay verbatim
   [["ml", "ML"], ["dft", "DFT"]].forEach(pair => {
     const d = K[pair[0]], w = d && d.warnings;
-    if (!w || !w.length) return;
-    h += "<details class='kx'><summary>" + esc2(pair[1]) + " tier: " +
-         w.length + " warning" + (w.length === 1 ? "" : "s") +
-         " from the solve, grouped by meaning</summary>" + warnList(w) +
+    if (!d) return;
+    // Even a multiplicity caveat without an engine warning has a target.
+    h += "<details class='kx' id='kinetics-warnings-" + pair[0] + "'><summary>" + esc2(pair[1]) + " tier: " +
+         (w || []).length + " warning" + ((w || []).length === 1 ? "" : "s") +
+         " from the solve, grouped by meaning</summary>" + warnList(w || []) +
+         ((d.verdict && d.verdict.caveats || []).length
+           ? "<div class='caption'>" + disp(d.verdict.caveats.join("; ")) + ".</div>" : "") +
          "</details>";
   });
   // per-step detail: X_RC says which steps matter, this is the arithmetic
@@ -616,7 +713,7 @@
   if (steps.length) {
     const rows = steps.slice().sort(
       (a, b) => Math.abs(b.net_rate || 0) - Math.abs(a.net_rate || 0));
-    h += "<details class='kx'><summary>Every step: " + rows.length +
+    h += "<details class='kx' id='kinetics-steps'><summary>Every step: " + rows.length +
          " transitions, by |" + term("net rate") + "|" +
          (base.v2_solve ? " &mdash; rates from the chain solve" : "") +
          "</summary><table><tr><th>step</th><th>" + term("dG", "ΔG (eV)") +
@@ -630,9 +727,47 @@
                               : Number(t.barrier_eV).toFixed(3)) +
         "</td><td>" + sci(t.k_f) + "</td><td>" + sci(t.k_b) + "</td><td>" +
         sci(t.net_rate) + "</td></tr>").join("") + "</table></details>";
+  } else {
+    h += "<div class='caption' id='kinetics-steps'>No per-step transitions recorded.</div>";
   }
   h += "<details class='kx'><summary>Glossary</summary><table>" +
        Object.keys(TERMS).map(t => "<tr><td><b>" + esc2(t) + "</b></td><td>" +
          esc2(TERMS[t]) + "</td></tr>").join("") + "</table></details>";
   host.innerHTML = h;
+  // Explorer controls rewrite the address bar after this panel renders.
+  // Refresh before native navigation, including new tabs and context menus.
+  const refreshEntityHref = ev => {
+    const a = ev.target.closest("a.kinetics-selection");
+    if (!a) return;
+    const state = a.getAttribute("data-state");
+    if (explorer.states.includes(state)) {
+      a.setAttribute("href", entityHref("state", state));
+      return;
+    }
+    const rawPath = a.getAttribute("data-kinetics-path");
+    const pi = rawPath === null ? null : Number(rawPath);
+    const path = Number.isInteger(pi) && explorer.paths[pi];
+    if (path && path.length)
+      a.setAttribute("href", entityHref("path", path[path.length - 1], pi));
+  };
+  ["click", "auxclick", "contextmenu"].forEach(type =>
+    host.addEventListener(type, refreshEntityHref));
+  // Fragment navigation must expose collapsed evidence, including on a
+  // pasted URL (the panel itself is rendered after the initial HTML).
+  const revealSection = hash => {
+    if (!/^#kinetics-[a-z-]+$/.test(hash)) return;
+    const target = document.getElementById(hash.slice(1));
+    if (!target) return;
+    for (let el = target; el; el = el.parentElement) {
+      if (el.tagName === "DETAILS") el.open = true;
+    }
+    target.scrollIntoView();
+  };
+  host.addEventListener("click", ev => {
+    const a = ev.target.closest("a[href^='#kinetics-']");
+    if (a && !(ev.button > 0) && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey && !ev.altKey)
+      revealSection(a.getAttribute("href"));
+  });
+  window.addEventListener("hashchange", () => revealSection(window.location.hash));
+  revealSection(window.location.hash);
 })();

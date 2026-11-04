@@ -12,14 +12,18 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 
 import precis_web
+from precis_pathway.persist import _json_finite
 from precis_web.pathway_kinetics import kinetics_payload, kinetics_verdict
 from tests._node import needs_node
+from tests.precis_web.test_pathway_kinetics_parity import CASES, GOLDEN
 
 
 def _record(**over: Any) -> dict[str, Any]:
@@ -859,34 +863,76 @@ _NODE_PANEL_JS = r"""
 const fs = require('fs');
 const script = fs.readFileSync(process.argv[2], 'utf-8');
 const payload = fs.readFileSync(process.argv[3], 'utf-8');
-const host = {innerHTML: ''};
+const options = JSON.parse(process.argv[4] || '{}');
+const handlers = {}, windowHandlers = {}, sections = {}, scrolls = [];
+const navigation = [];
+const host = {
+  innerHTML: '',
+  addEventListener(t, f) { (handlers[t] = handlers[t] || []).push(f); },
+};
+global.window = {
+  location: {search: options.search || '', hash: options.hash || ''},
+  addEventListener(t, f) { (windowHandlers[t] = windowHandlers[t] || []).push(f); },
+};
 global.document = {
   getElementById: (id) => {
     if (id === 'kinetics') return host;
     if (id === 'kinetics-data') return {textContent: payload};
+    if (id === 'kinetics-explorer-data' && options.explorer)
+      return {textContent: JSON.stringify(options.explorer)};
+    // Only an id emitted by the panel can be revealed. Keep the same
+    // element across calls so open/scroll observations reflect the DOM.
+    const match = host.innerHTML.match(new RegExp("<([a-z0-9]+)[^>]*\\bid=['\"]" + id + "['\"]"));
+    if (match) {
+      if (!sections[id]) sections[id] = {
+        tagName: match[1].toUpperCase(), open: false, parentElement: null,
+        scrollIntoView() { scrolls.push(id); },
+      };
+      return sections[id];
+    }
     return null;
   },
 };
 (0, eval)(script);
-console.log(JSON.stringify({html: host.innerHTML}));
+const initialScrolls = scrolls.slice();
+if (options.after) eval(options.after);
+console.log(JSON.stringify({
+  html: host.innerHTML, initialScrolls, scrolls, navigation,
+  open: Object.keys(sections).filter(id => sections[id].open),
+}));
 """
 
 
-def _render_panel(tmp_path: Path, payload: dict[str, Any]) -> str:
-    """The innerHTML the panel script builds for ``payload`` (needs node)."""
+def _panel_probe(
+    tmp_path: Path, payload: dict[str, Any], **options: Any
+) -> dict[str, Any]:
+    """Render the real panel and optionally dispatch fragment navigation."""
     js = Path(precis_web.__file__).parent / "static" / "pathway-kinetics.js"
-    (tmp_path / "payload.json").write_text(json.dumps(payload), encoding="utf-8")
+    (tmp_path / "payload.json").write_text(
+        json.dumps(payload, allow_nan=False), encoding="utf-8"
+    )
     driver = tmp_path / "panel_driver.js"
     driver.write_text(_NODE_PANEL_JS, encoding="utf-8")
     out = subprocess.run(
-        ["node", str(driver), str(js), str(tmp_path / "payload.json")],
+        [
+            "node",
+            str(driver),
+            str(js),
+            str(tmp_path / "payload.json"),
+            json.dumps(options),
+        ],
         capture_output=True,
         text=True,
         encoding="utf-8",
         check=True,
         timeout=60,
     )
-    return json.loads(out.stdout)["html"]
+    return json.loads(out.stdout)
+
+
+def _render_panel(tmp_path: Path, payload: dict[str, Any]) -> str:
+    """The innerHTML the panel script builds for ``payload`` (needs node)."""
+    return _panel_probe(tmp_path, payload)["html"]
 
 
 @needs_node
@@ -975,3 +1021,338 @@ def test_step_names_render_real_arrows_but_keep_raw_keys(
     assert "Rate control sits on NO*→NOH*" in html
     # nothing raw survives anywhere in the rendered panel
     assert "->" not in html
+
+
+class _PanelMarkup(HTMLParser):
+    """Inspect emitted anchors without a browser repairing nested links."""
+
+    def __init__(self, html: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: list[dict[str, str]] = []
+        self.ids: list[str] = []
+        self.tags: list[str] = []
+        self.parts: list[str] = []
+        self.active: dict[str, str] | None = None
+        self.feed(html)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = {key: value or "" for key, value in attrs}
+        self.tags.append(tag)
+        assert not any(key.startswith("on") for key in attributes)
+        if "id" in attributes:
+            self.ids.append(attributes["id"])
+        if tag == "a":
+            assert self.active is None, "verdict links must be siblings, never nested"
+            self.active = {**attributes, "text": ""}
+            self.links.append(self.active)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a":
+            self.active = None
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+        if self.active is not None:
+            self.active["text"] += data
+
+    @property
+    def text(self) -> str:
+        return "".join(self.parts)
+
+
+def _verdict_markup(html: str) -> _PanelMarkup:
+    verdict = re.search(
+        r"<div class='verdict [^']*'>(.*?)<div class='vrule'>", html, re.S
+    )
+    assert verdict is not None
+    return _PanelMarkup(verdict[1])
+
+
+_LINE_SECTIONS = {
+    "bracket_disagrees": ["steps"],
+    "bracket_empty_load_bearing": ["steps"],
+    "compound": ["coverages", "production", "rate-control", "thermodynamic-control"],
+    "coverage_no_dominant": ["coverages"],
+    "coverage_null_is_absent": ["coverages"],
+    "coverage_product_inhibited": ["coverages"],
+    "coverage_saturated_other": ["coverages"],
+    "drc_shared": ["rate-control"],
+    "drc_single_step": ["rate-control"],
+    "drc_unusable": ["rate-control"],
+    "edge_over_brake": ["thermodynamic-control"],
+    "edge_over_dominant_coverage": ["coverages"],
+    "edge_over_single_drc": ["rate-control"],
+    "edge_over_unusable_drc": ["rate-control"],
+    "edge_under_dominant_coverage": ["coverages"],
+    "edge_under_single_drc": ["rate-control"],
+    "edge_under_unusable_drc": ["rate-control"],
+    "side_products_many": ["production"],
+    "side_products_one": ["production"],
+    "trc_brake": ["thermodynamic-control"],
+}
+
+
+@needs_node
+@pytest.mark.parametrize("name", sorted(CASES))
+@pytest.mark.parametrize("tier", ["ml", "dft"])
+def test_verdict_golden_sentences_link_to_existing_evidence_sections(
+    tmp_path: Path, name: str, tier: str
+) -> None:
+    """All verdict branches keep their golden text and identify their source."""
+    # Stored records have already passed the persistence JSON boundary.
+    payload = kinetics_payload(
+        {"kinetics": _json_finite({**CASES[name], "tier": tier})}
+    )
+    assert payload is not None
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))[name]
+    # Exercise navigation on the raw golden sentences. Payload verdicts
+    # intentionally exclude vacancies; their separate tests retain that rule.
+    payload[tier]["verdict"] = golden
+    html = _render_panel(tmp_path, payload)
+    markup = _verdict_markup(html)
+    texts = [golden["headline"], *golden["lines"], *golden["caveats"]]
+    assert [link["text"] for link in markup.links] == [
+        text.replace("->", "→") for text in texts
+    ]
+    headline = (
+        "steps"
+        if name in {"bracket_disagrees", "bracket_empty_load_bearing"}
+        else "tof"
+    )
+    sections = [headline, *_LINE_SECTIONS.get(name, [])]
+    sections = [f"{s}-{tier}" if s == "production" else s for s in sections]
+    sections += [f"warnings-{tier}"] * len(golden["caveats"])
+    assert [link["href"] for link in markup.links] == [
+        f"#kinetics-{section}" for section in sections
+    ]
+    ids = _PanelMarkup(html).ids
+    assert len(ids) == len(set(ids)), "section ids must be unique"
+    assert all(link["href"][1:] in ids for link in markup.links)
+
+
+@needs_node
+@pytest.mark.parametrize("step", ["NO*->NOH*", "NO* → NOH*", "NO*  ->  NOH*"])
+def test_verdict_entity_links_use_longest_literal_and_first_adjacent_path(
+    tmp_path: Path, step: str
+) -> None:
+    payload = kinetics_payload(
+        {
+            "kinetics": _record(
+                drc={"X_RC": {step: 0.8}},
+                thermodynamic_drc={"X_TRC": {"unknown@fcc": -0.7}},
+            )
+        }
+    )
+    assert payload is not None
+    explorer = {
+        "states": ["NO", "NO@fcc", "NO*", "NOH*", "NOH@fcc", "NH3"],
+        "paths": [
+            ["NO@fcc", "detour", "NOH@fcc", "wrong"],
+            ["NO@fcc", "NOH@fcc", "NH3"],
+            ["NO@fcc", "NOH@fcc", "other"],
+        ],
+    }
+    out = _panel_probe(tmp_path, payload, explorer=explorer, search="?u=-1&ph=7")
+    markup = _verdict_markup(out["html"])
+    entities = [
+        link for link in markup.links if "kinetics-selection" in link.get("class", "")
+    ]
+    assert [
+        (link["text"], link.get("data-state"), link.get("data-kinetics-path"))
+        for link in entities
+    ] == [
+        ("NO@fcc", "NO@fcc", None),
+        (step.replace("->", "→"), None, "1"),
+    ]
+    for link, key, value in zip(
+        entities, ["state", "path"], ["NO@fcc", "NH3"], strict=True
+    ):
+        url = urlsplit(link["href"])
+        assert url.fragment == "pw-explorer"
+        assert parse_qs(url.query) == {"u": ["-1"], "ph": ["7"], key: [value]}
+    assert any(
+        "unknown@fcc" in link["text"]
+        and link["href"] == "#kinetics-thermodynamic-control"
+        for link in markup.links
+    )
+    verdict = payload["ml"]["verdict"]
+    assert markup.text == "ML tier: " + verdict["headline"].replace(
+        "->", "→"
+    ) + "".join(verdict["lines"]).replace("->", "→")
+
+
+@needs_node
+@pytest.mark.parametrize("selection", ["state", "path", "converging-path"])
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"type": "click", "button": 0, "ctrlKey": True},
+        {"type": "click", "button": 0, "metaKey": True},
+        {"type": "click", "button": 0, "shiftKey": True},
+        {"type": "click", "button": 0, "altKey": True},
+        {"type": "auxclick", "button": 1},
+        {"type": "contextmenu", "button": 2},
+    ],
+    ids=["ctrl", "cmd", "shift", "alt", "middle", "context-menu"],
+)
+def test_verdict_entity_navigation_keeps_current_explorer_settings(
+    tmp_path: Path, selection: str, event: dict[str, Any]
+) -> None:
+    """Native navigation must use controls changed after the initial render."""
+    payload = kinetics_payload({"kinetics": _record()})
+    assert payload is not None
+    path = ["NO@fcc", "NOH@fcc", "NH3"]
+    paths = [path]
+    if selection == "converging-path":
+        paths.append(["NO@fcc", "detour", "NH3"])
+    current = {
+        "u": "-1",
+        "ph": "7",
+        "state": "H@fcc",
+        "path": "old-leaf",
+        "route": '["old","old-leaf"]',
+    }
+    attributes = {"href": "?u=-0.5&ph=0#pw-explorer"}
+    if selection == "state":
+        attributes["data-state"] = "NO@fcc"
+        expected = {**current, "state": "NO@fcc"}
+    else:
+        attributes["data-kinetics-path"] = "0"
+        expected = {**current, "path": "NH3"}
+        if selection == "converging-path":
+            expected["route"] = json.dumps(path, separators=(",", ":"))
+        else:
+            del expected["route"]
+    out = _panel_probe(
+        tmp_path,
+        payload,
+        explorer={"states": path, "paths": paths},
+        search="?u=-0.5&ph=0",
+        current_search="?" + urlencode(current),
+        attributes=attributes,
+        event=event,
+        after="""
+window.location.search = options.current_search;
+const attributes = {...options.attributes};
+const anchor = {
+  getAttribute: name => attributes[name] ?? null,
+  setAttribute: (name, value) => { attributes[name] = value; },
+};
+const target = {closest: selector => selector === 'a.kinetics-selection' ? anchor : null};
+let prevented = false, stopped = false;
+const event = {...options.event, target,
+  preventDefault: () => { prevented = true; },
+  stopPropagation: () => { stopped = true; },
+};
+(handlers[event.type] || []).forEach(f => f(event));
+navigation.push({href: attributes.href, prevented, stopped});
+""",
+    )
+    (navigation,) = out["navigation"]
+    url = urlsplit(navigation["href"])
+    assert parse_qs(url.query) == {key: [value] for key, value in expected.items()}
+    assert url.fragment == "pw-explorer"
+    assert not navigation["prevented"] and not navigation["stopped"]
+    assert out["scrolls"] == []
+
+
+@needs_node
+def test_verdict_hostile_names_are_literal_escaped_links(tmp_path: Path) -> None:
+    state = "A'\"><img src=x onerror=alert(1)>&"
+    step = state + " -> B"
+    payload = kinetics_payload(
+        {
+            "kinetics": _record(
+                coverages={state: 0.9},
+                drc={"X_RC": {step: 0.8}},
+                thermodynamic_drc={"X_TRC": {}},
+                transitions=[{"name": step, "from": state, "to": "B", "kind": "step"}],
+            )
+        }
+    )
+    assert payload is not None
+    html = _panel_probe(
+        tmp_path,
+        payload,
+        explorer={"states": ["A", state, "B"], "paths": [[state, "B"]]},
+    )["html"]
+    markup = _verdict_markup(html)
+    assert "img" not in markup.tags and "script" not in markup.tags
+    entities = [
+        link for link in markup.links if "kinetics-selection" in link.get("class", "")
+    ]
+    assert [link["text"] for link in entities] == [state, step.replace("->", "→")]
+    assert entities[0]["data-state"] == state
+    assert parse_qs(urlsplit(entities[0]["href"]).query)["state"] == [state]
+    assert entities[1]["data-kinetics-path"] == "0"
+    assert parse_qs(urlsplit(entities[1]["href"]).query)["path"] == ["B"]
+
+
+@needs_node
+def test_verdict_section_navigation_opens_collapsed_evidence(tmp_path: Path) -> None:
+    payload = kinetics_payload({"kinetics": _record(steady_state={"nullity": 2})})
+    assert payload is not None
+    out = _panel_probe(
+        tmp_path,
+        payload,
+        hash="#kinetics-warnings-ml",
+        after="""
+const target = {closest: selector => selector === "a[href^='#kinetics-']"
+  ? {getAttribute: () => '#kinetics-steps'} : null};
+handlers.click.forEach(f => f({target, button: 0}));
+window.location.hash = '#kinetics-warnings-ml';
+windowHandlers.hashchange.forEach(f => f());
+window.location.hash = '#missing';
+windowHandlers.hashchange.forEach(f => f());
+handlers.click.forEach(f => f({target, button: 0, ctrlKey: true}));
+""",
+    )
+    assert out["initialScrolls"] == ["kinetics-warnings-ml"]
+    assert out["scrolls"] == [
+        "kinetics-warnings-ml",
+        "kinetics-steps",
+        "kinetics-warnings-ml",
+    ]
+    assert set(out["open"]) == {"kinetics-warnings-ml", "kinetics-steps"}
+
+
+@needs_node
+@pytest.mark.parametrize("exact", [False, True])
+def test_verdict_physical_names_prefer_exact_graph_states_and_edges(
+    tmp_path: Path, exact: bool
+) -> None:
+    payload = kinetics_payload({"kinetics": _record(thermodynamic_drc={"X_TRC": {}})})
+    assert payload is not None
+    paths = [["NO@fcc~old", "NOH@fcc~old", "old-leaf"]]
+    if exact:
+        paths.append(["NO@fcc", "NOH@fcc", "exact-leaf"])
+    explorer = {"states": [s for path in paths for s in path], "paths": paths}
+    markup = _verdict_markup(_panel_probe(tmp_path, payload, explorer=explorer)["html"])
+    states = [link for link in markup.links if "data-state" in link]
+    steps = [link for link in markup.links if "data-kinetics-path" in link]
+    assert len(states) == len(steps) == 1
+    assert states[0]["text"] == "NO@fcc"
+    assert states[0]["data-state"] == ("NO@fcc" if exact else "NO@fcc~old")
+    assert steps[0]["text"] == "NO*→NOH*"
+    assert steps[0]["data-kinetics-path"] == ("1" if exact else "0")
+
+
+@needs_node
+@pytest.mark.parametrize("step", ["NO@fcc->NOH@fcc", "NO@fcc → NOH@fcc"])
+def test_verdict_v2_step_keys_link_without_transition_rows(
+    tmp_path: Path, step: str
+) -> None:
+    payload = kinetics_payload(
+        {"kinetics_v2": {**_v2_record(), "drc": {step: 0.8}, "trc": {}}}
+    )
+    assert payload is not None and payload["ml"]["transitions"] == []
+    path = ["NO@fcc~landing", "NOH@fcc~landing", "NH3"]
+    markup = _verdict_markup(
+        _panel_probe(tmp_path, payload, explorer={"states": path, "paths": [path]})[
+            "html"
+        ]
+    )
+    (link,) = [link for link in markup.links if "data-kinetics-path" in link]
+    assert link["text"] == step.replace("->", "→")
+    assert link["data-kinetics-path"] == "0"
+    assert parse_qs(urlsplit(link["href"]).query)["path"] == ["NH3"]
