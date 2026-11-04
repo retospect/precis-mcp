@@ -642,6 +642,16 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 3
+      # A pytest-timeout kill shows only as "worker crashed"; the stacks that
+      # name the hang are in this dir (gr561417). A dotdir, so hidden files on.
+      - if: ${{ !cancelled() && hashFiles('.test-hang-stacks/**') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-hang-stacks
+          path: .test-hang-stacks/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
 
   # macOS: no service-container support, so postgres is absent and the
   # db-tagged tests auto-skip via the conftest probe. This leg covers the

@@ -9,7 +9,9 @@ updates:
     groups:
       minor-and-patch:
         update-types: ["minor", "patch"]
-    open-pull-requests-limit: 10
+    # Paused: Dependabot cannot fetch private catpath, so every uv PR fails.
+    # Restore once it has a secret and a registries: entry.
+    open-pull-requests-limit: 0
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
