@@ -63,6 +63,19 @@ A node over 24 kB returns a head plus a section outline —
 What belongs: a stable fact, decision, lesson or open question — not
 transcript, not landed history (those live in `git log` and the docs).
 
+**Memory shape card**
+- One claim per node; no second topic.
+- The title IS the claim: at most 12 words, the sūtra, with its scope.
+- The body is the gloss: why, when it bites, what to do, one live anchor, a UTC date.
+- Edges carry roles: `part-of` the hub, `cites`/`derived-from` for evidence, `qualifies` for scope.
+- Name entities by handle; their current state belongs on their refs, never restated here.
+- Expiry follows shape (gr560763): threads/handoffs/resumes/snapshots 14 days; incidents/campaigns 90 days.
+- Rulings use `review_by`; reference/gotchas/runbooks have no age expiry; DREAM never expires by age.
+- Expiry means review and compact before retirement, preserving still-true claims.
+- No landed history or children lists; use the graph's links.
+- No plan label (slice/round/R-number/leg/wave) without its handle on the same line.
+- No bare commit sha older than 30 days; cite a live `path/file.py::Symbol` instead.
+
 1. **Search first.** `search(kind='memory', q='<the fact>',
    scope='title')`, then plain `search(kind='memory', q='<the fact>')`.
    On a near hit, `get(kind='memory', id='me<N>',
@@ -84,8 +97,8 @@ transcript, not landed history (those live in `git log` and the docs).
    will ask next time>', view='index')`. If the new `me<N>` is not
    listed, rewrite `title=` / `meta.hook` with those task words — the
    index view applies a hard 0.42 recall cut, so a memory without them
-   silently never comes back. Title vs hook vs first body line:
-   `precis-firstline-help` (Retrieval keys).
+   silently never comes back. Retrieval keys and field fallbacks:
+   `precis-firstline-help`.
 5. **Link it in.** One `part-of` to a hub (or to a summary node for a
    detail node) plus 0–3 typed edges — more belongs in the body as
    `[handle]` mentions (`precis-relations`, the memory↔memory block).
@@ -119,14 +132,13 @@ put(
 # → returns integer id (e.g. 73)
 ```
 
-`text=` is the only required arg — it is the memory's **body prose**,
-stored in a chunk (embedded + keyworded, so search finds it). `title=`
-is the short **header** — the retrieval keys (title vs `meta.hook` vs
-first body line) are defined once in `precis-firstline-help`; write the
-body first, then a title carrying the words you will search for. Omit
-`title=` and one is derived from the body's first line (capped at 80
-chars), but an explicit title reads better. `tags=` and `link=` on
-create save a round-trip vs. a follow-up `tag()` / `link()`.
+`text=` is the only required arg — the memory's body prose is embedded
+and keyworded for search. Write the body first, then set `title=` to a
+complete claim with the words you will search for (at most 12 words).
+Omit it and the first body line supplies a title, truncated at 80 chars:
+that fallback cap is not the card's authoring limit and can cut a claim
+short. Retrieval keys: `precis-firstline-help`. `tags=` and `link=` on
+create save a follow-up call.
 
 ## Edit a memory in place
 ## Rewrite a memory body without losing its id or links
@@ -395,13 +407,10 @@ tag(kind="memory", id="me12", add=["section:gotchas"])
 link(kind="memory", id="me12", target="me40", rel="qualifies")   # me40 = thread
 ```
 
-A detail node is `part-of` its summary node, not the hub; it belongs to
-the nearest hub up the `part-of` chain. Its title is unique (the
-summary's title + the pass/sub-thread it holds — a shared title prefix
-trips the duplicate-thread check), it carries the parent's
-`section:<type>` tag (`section:reference` when the detail is a result),
-and it takes no `qualifies` links — the summary's gotcha links already
-cover it.
+A detail node takes a unique claim title, one `part-of` to its summary,
+and the parent's type (`section:reference` for a result). It inherits
+the summary's `qualifies` scope and nearest hub; give the detail node no
+`qualifies` links of its own.
 
 A summary node that grows past 8 children becomes a sub-hub (`section:index`), still `part-of` its parent hub.
 
@@ -506,20 +515,27 @@ unaddressed caveat). Full workflow: `precis-argument-help`.
 
 ## Tag axes available on memory
 
-Three closed UPPERCASE axes are accepted on memory. `SPACE:` is
-**author-writable**; `DREAM:` and `STALE:` are **system-set** (the
-agent-facing `tag()` verb refuses to add/remove those two):
+Memory accepts four closed UPPERCASE axes:
 
 - `SPACE:` (`research` / `repo-dev` / `personal`) — author-selected scope;
   `research` is the default, `repo-dev` isolates development knowledge,
   and `personal` is reserved.
-- `DREAM:` (`consolidated` / `speculative` / `acquire`) — written by
-  the dreaming worker.
-- `STALE:` (`retracted-premise`) — written by the argument-graph
-  retraction-ripple hook on a `kind:inference` memory
-  when it rests on a source that now carries a `retracts` /
-  `raises-concern-about` edge. Derived, not toggled — recomputed on
-  every retraction-edge add or remove.
+- `DREAM:` (`consolidated` / `speculative` / `acquire`) — provenance;
+  `consolidated` and `acquire` are system-set: `tag()` refuses to add
+  them. `speculative` remains author-writable for low-confidence hunches.
+- `STALE:retracted-premise` — system-set when an inference's source
+  carries `retracts` / `raises-concern-about`; recomputed as edges change.
+  `tag()` refuses to add or remove `STALE:` tags.
+- `AUDIT:` — write checks set `ungrounded-number`, `grab-bag`,
+  `unanchored-plan`, `old-sha`, `history-density`, `missing-route` or
+  `title-shape`. Each ack names the fix. Shape checks advise on agent
+  writes, never refuse; attribution has the separate reject option above.
+
+A clean rewrite clears only system-set audit flags; hand-set flags stay.
+Unavailable checks preserve their flags, including `old-sha` when Git
+cannot be queried. Preview a grab-bag with `put(..., dry_run=True)` or an
+anchored edit's `dry_run=True` to see proposed atomic titles; these are
+suggestions, not writes. Whole-body `mode='replace'` has no dry-run.
 
 `search(kind='memory', view='count', args={'group_by': 'tag:SPACE'})`
 counts every live memory per space; untagged nodes land in an

@@ -1442,6 +1442,13 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             # write and by scripts/memory-attribution-audit; cleared by a
             # clean rewrite. Agents may also set it by hand.
             "ungrounded-number",
+            # Advisory memory write-shape checks, cleared by clean rewrites.
+            "grab-bag",
+            "unanchored-plan",
+            "old-sha",
+            "history-density",
+            "missing-route",
+            "title-shape",
         }
     ),
     # Argument graph — retraction-ripple marker. Set by the

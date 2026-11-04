@@ -85,7 +85,7 @@ the repo, to the main sha it checked against.
 - **review_due** — no current `kg-review` stamp at this sha and checklist
   version, by type age (reference/gotchas 30 d, runbooks 60 d, workflow
   and rulings at `review_by`, threads never: the sweep owns them). This is
-  the backfill walk.
+  the backfill walk; read the write path's `AUDIT:` flags first.
 
 ### 2. Evaluator (the existing proposer, a memory-body mode)
 
@@ -254,22 +254,6 @@ without being moved. This is what the reconsolidate skill does by hand
 for its judgment findings; after this slice the skill shrinks to
 reading stats, deciding held items and the promote-to-doc list.
 
-### 4c. The write path
-
-The gardener fixes legacy; the write path prevents new grab-bags. A
-shape card of fifteen lines at the top of the `remember` skill,
-`precis-memory-help`, `precis-firstline-help` and AGENTS.md: one claim
-per node, the title is the claim, the body is the gloss (why, when it
-bites, what to do, one live anchor, a date), edges carry roles, entities
-by handle, expiry by shape, no history, no children lists, no plan
-labels without a handle, no shas older than 30 days, no second topic.
-Insert-time checks on put/edit as code, never triggers: grab-bag
-predicate, unanchored plan labels, old shas, history density, missing
-route, title shape, reported as ack lines and `AUDIT:` tags the way the
-ungrounded-number check does today, never refusals; `dry_run` returns
-the proposed atomic titles for a grab-bag. `review_due` reads the
-`AUDIT:` tags first, and a clean rewrite clears them.
-
 ### 5. One fact, one ref
 
 Rule (goes into `precis-memory-help` and the `remember` skill): the
@@ -351,15 +335,12 @@ third, the entity normal form last. `blocked-by` edges carry the order.
     sentence is kept, moved to a related node, minted atomic, or dropped
     as history/restatement; `apply_compact` with one undo (large; after
     4 and 6; last).
-15. gr561026 — the write path: the shape card in the skills and the
-    insert-time shape checks as ack lines and `AUDIT:` tags (medium;
-    independent; the highest-leverage slice, start it early).
 16. gr561869 — reader intake: the first-read hint on `get(kind='memory')`
     (one line, first sight per session, no edit clause), the story shape
     (Goal / Route / claims, naming every handle involved, any kind), the
     server-attached `meta.route` from the tool ledger, the fixer-intake
     exclusion for `project:memory`, and the five skill updates (medium;
-    independent; start it with 15).
+    independent).
 17. gr561873 — `griped` detector: a `project:memory` gripe is a replayable
     test. Candidate = the gripe, its mentioned memories and entity refs,
     `meta.route`. Replay both routes, name the disagreement shape (§6),

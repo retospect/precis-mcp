@@ -5,10 +5,25 @@ description: "Use when you learned something durable for repo-dev memory (a gotc
 
 # remember — keep one fact in the repo-dev graph
 
+**Memory shape card**
+- One claim per node; no second topic.
+- The title IS the claim: at most 12 words, the sūtra, with its scope.
+- The body is the gloss: why, when it bites, what to do, one live anchor, a UTC date.
+- Edges carry roles: `part-of` the hub, `cites`/`derived-from` for evidence, `qualifies` for scope.
+- Name entities by handle; their current state belongs on their refs, never restated here.
+- Expiry follows shape (gr560763): threads/handoffs/resumes/snapshots 14 days; incidents/campaigns 90 days.
+- Rulings use `review_by`; reference/gotchas/runbooks have no age expiry; DREAM never expires by age.
+- Expiry means review and compact before retirement, preserving still-true claims.
+- No landed history or children lists; use the graph's links.
+- No plan label (slice/round/R-number/leg/wave) without its handle on the same line.
+- No bare commit sha older than 30 days; cite a live `path/file.py::Symbol` instead.
+
 The graph shape (root me474312 → subject hubs → nodes, `part-of` edges, one
 type tag, gotchas `qualifies` threads) is described in the root node and in
 `precis-memory-help` §"Hubs, part-of and qualifies". This skill is the write
 recipe; the `put`/`edit` response's `Next:` lines do most of it for you.
+
+## Write recipe
 
 1. **Search first.** `search(kind='memory', tags=['SPACE:repo-dev'],
    q='<the fact>', view='index')`. Narrow to one hub with
@@ -21,8 +36,8 @@ recipe; the `put`/`edit` response's `Next:` lines do most of it for you.
    meta={'hook': '<one line: status + what you need to resume>'}, text=…)`.
    Type: `threads` (one campaign's resume state; see below), `gotchas` (trap), `runbooks`
    (how to do X), `workflow` (how agents/Reto work), `reference` (stable fact).
-   First body line is the title — keep it short, except for a thread: its
-   first body line is `Left: <what remains>` (`Left: none` when finished).
+   Set `title=` explicitly. A thread's first body line is
+   `Left: <what remains>` (`Left: none` when finished).
    The programme lives in the linked `docs/backlog/threads/<slug>.md`; the
    node holds only where this campaign stopped. Update `Left:` in the same
    session an item finishes or appears. AGENTS.md §"Repo-dev graph memory"
@@ -31,17 +46,15 @@ recipe; the `put`/`edit` response's `Next:` lines do most of it for you.
    suggested hub (check it fits; the root lists all hubs), the `qualifies`
    links from relevant gotchas to a new thread, the type tag if missing.
    No `Next:` lines = the node is in place.
-5. **Size.** The fisheye shows 4000 chars of a body. Over that, the response
-   says so: keep the node as a short summary and move detail into children
-   `put(…, link='memory:<summary id>', rel='part-of')`. Each child gets a
-   unique title (the summary's title + the pass/sub-thread it holds — a
-   shared title prefix trips the dup-thread check), the parent's
-   `section:<type>` tag (`section:reference` when the child is a result),
-   one `part-of` edge to the summary only, and no `qualifies` links —
-   those live on the summary.
+5. **Size.** Keep the gloss under the fisheye's 4000 characters. Split
+   independent claims into atomic nodes; detail nodes take unique claim
+   titles, the parent's type (`section:reference` for a result), one
+   `part-of` to the summary only, and no `qualifies` links of their own —
+   those live on the summary and cover its details.
 6. **Cite durably.** Code as `path/file.py::Qual.name`
-   (`docs/conventions/code-anchors.md`), commits as bare short shas, dates
-   in UTC. A thread's landed history is not a fact — git has it.
+   (`docs/conventions/code-anchors.md`), dates in UTC. Replace commit
+   shas older than 30 days with live anchors. A thread's landed history
+   is not a fact — git has it.
 7. **Thread at `Left: none` with no open linked due-item, or untouched 14
    days once anything that matters has moved → retire it**:
    `delete(kind='memory', id='me…')` after moving any still-true gotcha or

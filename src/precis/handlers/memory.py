@@ -56,6 +56,15 @@ adds an advisory line to the ack; ``PRECIS_MEMORY_ATTRIBUTION_GATE=reject``
 refuses the write instead. A lookup error fails open and changes no tag.
 ``scripts/memory-attribution-audit`` retro-applies the same check.
 
+Shape checks (``handlers/_memory_shape.py``) run alongside attribution on
+agent put/edit, but are always advisory; non-agent puts skip them. Each
+checked code maintains its own system-owned ``AUDIT`` tag; a clean rewrite
+clears it. Hand-set flags retain their owner even on a matching finding.
+Preview responses
+include proposed titles for grab-bags. Unavailable checks leave flags
+untouched; tag maintenance has a savepoint so failures cannot poison the
+body write.
+
 Anchored body edits reuse ``utils.edit_resolve``. All handler body writes
 lock the owning ref; anchored writes also compare the previous body with
 the resolver's snapshot inside the transaction. The comparison alone
@@ -113,6 +122,7 @@ from precis.handlers._attribution import (
 )
 from precis.handlers._eye import EYE_LADDER, is_eye_view
 from precis.handlers._interpret import interpreted
+from precis.handlers._memory_shape import ShapeAudit, audit_shape
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.handlers._tag_redirect import redirect_long_tag_values
@@ -1206,6 +1216,16 @@ class MemoryHandler(NumericRefHandler):
 
         # Attribution gate: before any write, so ``reject`` mode leaves nothing.
         misses = self._attribution_misses(body, reject=set_by == "agent")
+        shape = None
+        if set_by == "agent":
+            shape = self._shape_audit(
+                title=title,
+                body=body,
+                tags=all_tag_strs,
+                meta=meta,
+                has_evidence=target is not None
+                and relation in {"cites", "derived-from"},
+            )
         facts_deferred = 0
 
         with self.store.tx() as conn:
@@ -1250,6 +1270,7 @@ class MemoryHandler(NumericRefHandler):
                 )
             if misses:
                 self._apply_attribution_tag(ref.id, misses, conn=conn)
+            self._apply_shape_tags(ref.id, shape, conn=conn)
             if self.autolink_mentions:
                 facts_deferred = self._sync_mention_links(ref.id, body, conn=conn)
             self.store.chunks.sync_header_card(ref.id, conn=conn)
@@ -1263,7 +1284,7 @@ class MemoryHandler(NumericRefHandler):
         agentlog.touch_from_env(self.store, chunk_ids=[b.id for b in body_blocks])
         ack = self._with_first_line_nudge(self._render_create_ack(ref.id), title)
         ack = self._facts_note(ack, facts_deferred)
-        return self._with_attribution_advisory(ack, misses), int(ref.id)
+        return self._with_attribution_advisory(ack, misses, shape), int(ref.id)
 
     def _put_dry_run(
         self,
@@ -1337,13 +1358,21 @@ class MemoryHandler(NumericRefHandler):
         dups = _put_preview.nearest_duplicates(
             self, f"{title}\n{text}", kind=self.kind, space=space
         )
-        return _put_preview.render_preview(
+        ack = _put_preview.render_preview(
             self.kind,
             dups=dups,
             space=space,
             next_rows=rows,
             rule=_put_preview.kind_rule(text),
         )
+        shape = self._shape_audit(
+            title=title,
+            body=text,
+            tags=all_tags,
+            meta=put_meta,
+            has_evidence=link is not None and rel in {"cites", "derived-from"},
+        )
+        return self._with_shape_advisory(ack, shape, dry_run=True)
 
     # ── attribution gate (precis.handlers._attribution) ──
 
@@ -1430,12 +1459,154 @@ class MemoryHandler(NumericRefHandler):
 
     @staticmethod
     def _with_attribution_advisory(
-        ack: Response, misses: list[UngroundedNumber] | None
+        ack: Response,
+        misses: list[UngroundedNumber] | None,
+        shape: ShapeAudit | None = None,
     ) -> Response:
-        if not misses:
+        if misses:
+            lines = "\n".join(m.advisory() for m in misses)
+            ack = Response(body=f"{ack.body}\n\n{lines}", cost=ack.cost)
+        return MemoryHandler._with_shape_advisory(ack, shape)
+
+    @staticmethod
+    def _shape_audit(**kwargs: Any) -> ShapeAudit | None:
+        """Advisory checks fail open; unavailable checks change no tags."""
+        try:
+            return audit_shape(**kwargs)
+        except Exception:
+            log.warning("memory shape audit failed open", exc_info=True)
+            return None
+
+    def _shape_for_edit(
+        self,
+        ref: Ref,
+        body: str,
+        *,
+        old_body: str,
+        new_title: str | None,
+        meta_patch: dict[str, Any],
+    ) -> ShapeAudit | None:
+        """Audit the resulting title/body and current evidence before writing."""
+        try:
+            title = new_title or ref.title or ""
+            if new_title is None and title == _derive_title(old_body):
+                title = _derive_title(body)
+            return self._shape_audit(
+                title=title,
+                body=body,
+                tags=[str(tag) for tag in self.store.tags_for(ref.id)],
+                meta={**(ref.meta or {}), **meta_patch},
+                has_evidence=any(
+                    link.relation in {"cites", "derived-from"}
+                    for link in self.store.links_for(ref.id, direction="out")
+                ),
+            )
+        except Exception:
+            log.warning("memory shape context unavailable", exc_info=True)
+            return None
+
+    def _apply_shape_tags(
+        self, ref_id: int, shape: ShapeAudit | None, *, conn: Connection
+    ) -> None:
+        """Maintain system-owned flags; a failed audit never poisons a write.
+
+        The savepoint makes tag maintenance best effort without swallowing a
+        SQL error into an aborted body transaction. Each code coexists with
+        the other AUDIT codes, including attribution and author-set flags.
+        Read ownership before adding: add_tag upserts would otherwise take
+        over an author-set flag and let a later clean rewrite erase it.
+        """
+        if shape is None:
+            return
+        found = {finding.code for finding in shape.findings}
+        try:
+            with conn.transaction():
+                for code in sorted(shape.checked_codes):
+                    tag = Tag.closed("AUDIT", code)
+                    row = conn.execute(
+                        "SELECT rt.set_by FROM ref_tags rt JOIN tags t "
+                        "ON t.tag_id = rt.tag_id WHERE rt.ref_id = %s "
+                        "AND t.namespace = 'AUDIT' AND t.value = %s",
+                        (ref_id, code),
+                    ).fetchone()
+                    if row is not None and row[0] != "system":
+                        continue
+                    if code in found:
+                        self.store.add_tag(ref_id, tag, set_by="system", conn=conn)
+                    elif row is not None:
+                        self.store.remove_tag(ref_id, tag, conn=conn)
+        except Exception:
+            log.warning("memory shape tags failed open", exc_info=True)
+
+    def _shape_after_write(
+        self, ref_id: int, prior: ShapeAudit | None, *, conn: Connection
+    ) -> ShapeAudit | None:
+        """Check locked, final state; reuse Git only for identical title/body.
+
+        A title or metadata writer may have committed since the preflight.
+        Rechecking on the body transaction prevents its clean snapshot from
+        clearing flags for that writer's new claim. Git stays outside locks.
+        """
+        try:
+            with conn.transaction():
+                row = conn.execute(
+                    "SELECT title, meta FROM refs WHERE ref_id = %s", (ref_id,)
+                ).fetchone()
+                if row is None:
+                    return None
+                title = str(row[0] or "")
+                chunks = self.store.chunks.list_chunks_for_ref(ref_id, conn=conn)
+                body = next(
+                    (chunk.text for chunk in chunks if chunk.chunk_kind == _BODY_KIND),
+                    title,
+                )
+                evidence = conn.execute(
+                    "SELECT 1 FROM links WHERE src_ref_id = %s "
+                    "AND relation IN ('cites', 'derived-from') LIMIT 1",
+                    (ref_id,),
+                ).fetchone()
+                final = self._shape_audit(
+                    title=title,
+                    body=body,
+                    tags=[str(tag) for tag in self.store.tags_for(ref_id, conn=conn)],
+                    meta=row[1] or {},
+                    has_evidence=evidence is not None,
+                    check_git=False,
+                )
+                if (
+                    final is not None
+                    and prior is not None
+                    and prior.git_context == (title, body)
+                ):
+                    final = replace(
+                        final,
+                        findings=final.findings
+                        + tuple(
+                            finding
+                            for finding in prior.findings
+                            if finding.code == "old-sha"
+                        ),
+                        checked_codes=final.checked_codes | {"old-sha"},
+                        git_context=prior.git_context,
+                    )
+                return final
+        except Exception:
+            log.warning("locked memory shape context unavailable", exc_info=True)
+            return None
+
+    @staticmethod
+    def _with_shape_advisory(
+        ack: Response, shape: ShapeAudit | None, *, dry_run: bool = False
+    ) -> Response:
+        if shape is None or not shape.findings:
             return ack
-        lines = "\n".join(m.advisory() for m in misses)
-        return Response(body=f"{ack.body}\n\n{lines}", cost=ack.cost)
+        lines = [finding.advisory() for finding in shape.findings]
+        if dry_run:
+            for finding in shape.findings:
+                if finding.titles:
+                    lines.append("Proposed atomic titles:")
+                    lines.extend(f"- {title}" for title in finding.titles)
+        return Response(body=ack.body + "\n\n" + "\n".join(lines), cost=ack.cost)
 
     def _create_ack_next_hints(self, ref_id: int) -> list[tuple[str, str]]:
         """Lead the create-ack trailer with the title/first-line convention,
@@ -1747,18 +1918,34 @@ class MemoryHandler(NumericRefHandler):
         if warrant_clean is not None:
             meta_patch["warrant"] = warrant_clean
         meta_patch.update(meta_clean)
+        previous_body = self._body_text(ref)
+        shape = self._shape_for_edit(
+            ref,
+            text if has_text and text is not None else previous_body,
+            old_body=previous_body,
+            new_title=new_title,
+            meta_patch=meta_patch,
+        )
+        final_shape: list[ShapeAudit | None] = []
         if not has_text:
             # Meta-only patch (rule=/warrant=/meta=, no body rewrite) — skip the
             # chunk delete+reinsert and mention re-sync entirely; nothing
             # in the prose changed.
             def _patch_meta() -> None:
                 with self.store.tx() as conn:
+                    conn.execute(
+                        "SELECT ref_id FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+                        (ref.id,),
+                    )
                     self.store.update_ref(ref.id, meta_patch=meta_patch, conn=conn)
                     if new_title is not None:
                         self.store.chunks.set_ref_title(
                             ref.id, new_title, source="agent", conn=conn
                         )
                     self.store.chunks.sync_header_card(ref.id, conn=conn)
+                    checked = self._shape_after_write(ref.id, shape, conn=conn)
+                    self._apply_shape_tags(ref.id, checked, conn=conn)
+                    final_shape[:] = [checked]
 
             self._write_retried(ref.id, "meta edit", _patch_meta)
             changed = ", ".join(
@@ -1773,7 +1960,10 @@ class MemoryHandler(NumericRefHandler):
                 ref.id,
                 meta_clean,
                 dry_mode,
-                Response(body=out + render_next_section(link_hints(self, ref.id))),
+                self._with_shape_advisory(
+                    Response(body=out + render_next_section(link_hints(self, ref.id))),
+                    final_shape[0],
+                ),
             )
 
         assert text is not None
@@ -1786,6 +1976,8 @@ class MemoryHandler(NumericRefHandler):
             new_title=new_title,
             meta_patch=meta_patch,
             misses=misses,
+            shape=shape,
+            shape_out=final_shape,
             reason=reason,
             deferred_out=deferred,
             derived_title_out=derived_title,
@@ -1815,6 +2007,7 @@ class MemoryHandler(NumericRefHandler):
             self._with_attribution_advisory(
                 self._facts_note(Response(body=body), deferred[0] if deferred else 0),
                 misses,
+                final_shape[0],
             ),
         )
 
@@ -1928,6 +2121,8 @@ class MemoryHandler(NumericRefHandler):
         meta_patch: dict[str, Any],
         expected_body: str | None = None,
         misses: list[UngroundedNumber] | None = None,
+        shape: ShapeAudit | None = None,
+        shape_out: list[ShapeAudit | None] | None = None,
         reason: str | None = None,
         op: str | None = None,
         deferred_out: list[int] | None = None,
@@ -1944,7 +2139,10 @@ class MemoryHandler(NumericRefHandler):
         the replacement and its derived-row cascade. ``misses`` is the
         attribution gate's verdict on ``new_text`` (``None`` = not checked):
         it sets or clears ``AUDIT:ungrounded-number`` in the same
-        transaction. Returns the old body.
+        transaction. Shape checks re-read the final stored context under the
+        same lock, and return their verdict through ``shape_out`` for the
+        ack; Git preflight results apply only to identical title/body text.
+        Returns the old body.
 
         Title derivation (gr538501): when no explicit ``new_title`` was
         given and the stored title still reads as the old body's derived
@@ -2026,6 +2224,10 @@ class MemoryHandler(NumericRefHandler):
                     deferred_out[:] = [deferred]
                 if misses is not None:
                     self._apply_attribution_tag(ref_id, misses, conn=conn)
+                checked = self._shape_after_write(ref_id, shape, conn=conn)
+                self._apply_shape_tags(ref_id, checked, conn=conn)
+                if shape_out is not None:
+                    shape_out[:] = [checked]
             return old_body
 
         return self._write_retried(ref_id, "body edit", _do)
@@ -2162,6 +2364,9 @@ class MemoryHandler(NumericRefHandler):
                     "or edit with replacement text"
                 ),
             )
+        shape = self._shape_for_edit(
+            ref, new_body, old_body=old_body, new_title=new_title, meta_patch=meta_patch
+        )
         if dry_mode is not None:
             header = render_dry_run_header(
                 region_label=label,
@@ -2177,10 +2382,13 @@ class MemoryHandler(NumericRefHandler):
                 body = diff.rstrip("\n") or "(no diff - pre and post are identical)"
             if new_title is not None:
                 body += f"\n(title would become {new_title!r})"
-            return Response(body="\n".join([*header, "", body]))
+            return self._with_shape_advisory(
+                Response(body="\n".join([*header, "", body])), shape, dry_run=True
+            )
         misses = self._attribution_misses(new_body)
         deferred: list[int] = []
         derived_title: list[str] = []
+        final_shape: list[ShapeAudit | None] = []
         self._write_body(
             ref.id,
             new_body,
@@ -2188,6 +2396,8 @@ class MemoryHandler(NumericRefHandler):
             meta_patch=meta_patch,
             expected_body=old_body,
             misses=misses,
+            shape=shape,
+            shape_out=final_shape,
             reason=reason,
             op=op_kind if op_kind == "delete-span" else None,
             deferred_out=deferred,
@@ -2221,6 +2431,7 @@ class MemoryHandler(NumericRefHandler):
         return self._with_attribution_advisory(
             self._facts_note(Response(body=ack), deferred[0] if deferred else 0),
             misses,
+            final_shape[0],
         )
 
     def _edit_append(
@@ -2280,6 +2491,9 @@ class MemoryHandler(NumericRefHandler):
             if old_body.strip()
             else text.strip()
         )
+        shape = self._shape_for_edit(
+            ref, new_body, old_body=old_body, new_title=new_title, meta_patch=meta_patch
+        )
         if dry_mode is not None:
             start = old_body.count("\n") + 1
             end = new_body.count("\n") + 1
@@ -2295,10 +2509,13 @@ class MemoryHandler(NumericRefHandler):
             else:
                 diff = format_unified_diff(old_body, new_body, file_label=label)
                 body = diff.rstrip("\n") or "(no diff - pre and post are identical)"
-            return Response(body="\n".join([*header, "", body]))
+            return self._with_shape_advisory(
+                Response(body="\n".join([*header, "", body])), shape, dry_run=True
+            )
         misses = self._attribution_misses(new_body)
         deferred: list[int] = []
         derived_title: list[str] = []
+        final_shape: list[ShapeAudit | None] = []
         self._write_body(
             ref.id,
             new_body,
@@ -2306,6 +2523,8 @@ class MemoryHandler(NumericRefHandler):
             meta_patch=meta_patch,
             expected_body=old_body,
             misses=misses,
+            shape=shape,
+            shape_out=final_shape,
             reason=reason,
             deferred_out=deferred,
             derived_title_out=derived_title,
@@ -2326,6 +2545,7 @@ class MemoryHandler(NumericRefHandler):
         return self._with_attribution_advisory(
             self._facts_note(Response(body=ack), deferred[0] if deferred else 0),
             misses,
+            final_shape[0],
         )
 
     def _edit_ops(
@@ -2403,6 +2623,9 @@ class MemoryHandler(NumericRefHandler):
                     "memory, or keep some body text"
                 ),
             )
+        shape = self._shape_for_edit(
+            ref, new_body, old_body=old_body, new_title=None, meta_patch=meta_patch
+        )
         if dry_mode is not None:
             header = render_dry_run_header(
                 region_label=label,
@@ -2416,10 +2639,13 @@ class MemoryHandler(NumericRefHandler):
             else:
                 diff = format_unified_diff(old_body, new_body, file_label=label)
                 body = diff.rstrip("\n") or "(no diff - pre and post are identical)"
-            return Response(body="\n".join([*header, "", body]))
+            return self._with_shape_advisory(
+                Response(body="\n".join([*header, "", body])), shape, dry_run=True
+            )
         misses = self._attribution_misses(new_body)
         deferred: list[int] = []
         derived_title: list[str] = []
+        final_shape: list[ShapeAudit | None] = []
         self._write_retried(
             ref.id,
             "body edit",
@@ -2430,6 +2656,8 @@ class MemoryHandler(NumericRefHandler):
                 meta_patch=meta_patch,
                 expected_body=old_body,
                 misses=misses,
+                shape=shape,
+                shape_out=final_shape,
                 reason=reason,
                 deferred_out=deferred,
                 derived_title_out=derived_title,
@@ -2449,6 +2677,7 @@ class MemoryHandler(NumericRefHandler):
         return self._with_attribution_advisory(
             self._facts_note(Response(body=ack), deferred[0] if deferred else 0),
             misses,
+            final_shape[0],
         )
 
     @staticmethod

@@ -51,7 +51,7 @@ _LAST_UPDATED_ALLOWLIST = frozenset(
 _INTERNAL_ALLOWLIST = {
     "precis-cad-help.md": 1,
     "precis-common-reviewer.md": 1,
-    "precis-firstline-help.md": 5,
+    "precis-firstline-help.md": 4,
     "precis-inner-life-help.md": 2,
     "precis-overview.md": 2,
     "precis-pres-help.md": 1,
