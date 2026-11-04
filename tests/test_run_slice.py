@@ -659,6 +659,10 @@ def test_task_brief_commits_and_never_ships(
     assert "add=['STATUS:done']" not in brief
     assert "Do not land, push" in brief
     assert "create the child todos" not in brief
+    # td565331: the land's lint gate reopened a codex build for six missing
+    # test annotations; the brief now asks for ruff + mypy before the commit.
+    assert "`uv run ruff check <files>`" in tail and "`uv run mypy <files>`" in tail
+    assert tail.index("uv run mypy") < tail.index("1. Commit on")
 
 
 # ── submit / poll ──────────────────────────────────────────────────

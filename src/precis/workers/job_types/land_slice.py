@@ -369,6 +369,34 @@ def cross_line(log_text: str) -> str | None:
     return None
 
 
+_GATE_ERROR_RE = re.compile(
+    r"^(?:\S+\.py:\d+(?::\d+)?: (?:error|[A-Z]{1,4}\d{3,4})\b|FAILED |E {3})"
+)
+_GATE_ERROR_LINES = 20
+_GATE_ERROR_CHARS = 2500
+
+
+def gate_error_lines(log_text: str) -> str:
+    """The lint gate's own error lines in ship's output — mypy
+    (``path.py:N: error: …``), ruff (``path.py:N:M: F401 …``) and pytest
+    (``FAILED …`` / ``E   …``) — joined, at most :data:`_GATE_ERROR_LINES`
+    and :data:`_GATE_ERROR_CHARS`; ``''`` when there are none. The next
+    session's brief starts from the ``handoff:`` comment, so the red's
+    reason has to ride it (td565331: six mypy errors reached the todo as
+    the one ✖ verdict line and nothing else)."""
+    out: list[str] = []
+    for line in _lines(log_text):
+        s = line.strip()
+        if _GATE_ERROR_RE.match(s):
+            out.append(s)
+            if len(out) >= _GATE_ERROR_LINES:
+                break
+    text = "\n".join(out)
+    if len(text) > _GATE_ERROR_CHARS:
+        text = text[:_GATE_ERROR_CHARS].rstrip() + " …"
+    return text
+
+
 def is_main_refusal(cross: str | None) -> bool:
     """True when ``cross`` (a :func:`cross_line` result) is ship refusing on
     main's state (:data:`MAIN_REFUSAL_MARKS`), not on the branch."""
@@ -1195,6 +1223,9 @@ def poll(ctx: Any, handle: Any) -> bool:
             f"land FAILED on {branch}: {cross}. Fix it on the branch, commit, "
             "leave the tree clean; the lander re-runs scripts/ship."
         )
+        errors = gate_error_lines(log_text)
+        if errors:
+            handoff += f"\n\nThe gate's error lines:\n{errors}"
         side = refusal_side(cross)
         if side is not None:
             # Main's or the host's state, not the branch's: park and retry
@@ -1358,6 +1389,7 @@ __all__ = [
     "SUBJECT_CAP",
     "UNKNOWN_GATE_CROSS",
     "cross_line",
+    "gate_error_lines",
     "host_refusal_line",
     "is_host_refusal",
     "is_main_refusal",

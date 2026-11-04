@@ -633,7 +633,14 @@ def test_poll_red_lint_fails_with_the_cross_line(seams: dict[str, Any]) -> None:
     _finish(
         handle,
         1,
-        "ruff format --check\n\x1b[31m✖ ruff format: 1 file would be reformatted\x1b[0m\n",
+        "ruff format --check\n"
+        "All checks passed!\n"
+        'tests/test_se_flow.py:450: error: Need type annotation for "memo"  '
+        "[var-annotated]\n"
+        "tests/precis_web/test_se_flow_tab.py:193: error: Argument 1 to "
+        '"player_payload" has incompatible type "None"  [arg-type]\n'
+        "Found 2 errors in 2 files (checked 4195 source files)\n"
+        "\x1b[31m✖ ruff format: 1 file would be reformatted\x1b[0m\n",
     )
     pctx = _Ctx(store, _params(seams))
     assert land_slice.poll(pctx, handle) is True
@@ -646,7 +653,16 @@ def test_poll_red_lint_fails_with_the_cross_line(seams: dict[str, Any]) -> None:
     tags = store.tag_strings(42)
     assert {"STATUS:open", "attempt:1"} <= tags
     assert "claimed-by:lane-claude-sub" not in tags
-    assert store.comments(42)[-1].startswith("handoff: land FAILED on slice/42: ✖")
+    handoff = store.comments(42)[-1]
+    assert handoff.startswith("handoff: land FAILED on slice/42: ✖")
+    # td565331: the gate's own error lines ride the handoff, so the next
+    # session's brief names what to fix, not only the verdict line.
+    assert "The gate's error lines:" in handoff
+    assert (
+        'tests/test_se_flow.py:450: error: Need type annotation for "memo"' in handoff
+    )
+    assert "test_se_flow_tab.py:193: error:" in handoff
+    assert "Found 2 errors" not in handoff and "All checks passed" not in handoff
     # the branch and worktree stay for the fix round
     assert _cleanup_cmds(seams) == []
     assert "landed_sha" not in pctx.meta_set

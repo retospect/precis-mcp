@@ -899,6 +899,11 @@ def render_brief(
         "",
         "## When done: commit on the branch and hand off",
         "",
+        "Before you commit, run `uv run ruff check <files>` and `uv run mypy "
+        "<files>` on the files you touched (tests included; annotate test "
+        "literals). The land's lint gate runs both and a red reopens this "
+        "todo: td565331 came back for six missing annotations in its tests.",
+        "",
         f"1. Commit on `{slice_branch(todo_id)}` with a conventional subject "
         f"(`type(scope): what (td{todo_id})`, at most 72 bytes), message via "
         "`git commit -F scratch/commit-msg.txt`. One commit is best: the "
