@@ -20,9 +20,10 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, Unsupported
+from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers import job as job_mod
 from precis.handlers.job import JobHandler
+from precis.runtime import PrecisRuntime
 from precis.store import Store, Tag
 
 
@@ -832,6 +833,140 @@ def _insert_job(store: Store, *, meta: dict, status: str) -> int:
     ref = store.insert_ref(kind="job", slug=None, title="t", meta=meta)
     store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="system")
     return ref.id
+
+
+@pytest.mark.parametrize("reason", [None, "lane capacity available"])
+def test_wake_requeues_clears_lease_and_audits(
+    jobs: JobHandler,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    reason: str | None,
+) -> None:
+    monkeypatch.setenv("PRECIS_SOURCE", "cli")
+    meta: dict[str, Any] = {
+        "lease_until": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+        "wake_when": {
+            "kind": "at_time",
+            "payload": {"why": "all lanes full"},
+        },
+    }
+    job_id = _insert_job(store, meta=meta, status="waiting_time")
+
+    body = jobs.put(id=job_id, mode="wake", reason=reason).body
+
+    assert {str(t) for t in store.tags_for(job_id)} == {"STATUS:queued"}
+    ref = store.get_ref(kind="job", id=job_id)
+    assert ref is not None
+    assert "lease_until" not in (ref.meta or {})
+    events = [
+        chunk.text
+        for chunk in store.chunks.list_chunks_for_ref(job_id)
+        if chunk.chunk_kind == "job_event"
+    ]
+    assert len(events) == 1
+    assert f"woken by cli: {reason or 'no reason given'}" in events[0]
+    assert "all lanes full" in events[0]
+    assert f"woke jo{job_id}: STATUS:waiting_time → STATUS:queued" in body
+    assert "Next:" in body
+    assert f"get(kind='job', id={job_id})" in body
+
+
+@pytest.mark.parametrize("status", ["running", "queued", "failed"])
+def test_wake_refuses_other_statuses(
+    jobs: JobHandler, store: Store, status: str
+) -> None:
+    meta: dict[str, Any] = {}
+    job_id = _insert_job(store, meta=meta, status=status)
+    with pytest.raises(BadInput, match=f"STATUS:{status}") as exc:
+        jobs.put(id=job_id, mode="wake", force=True)
+    assert "mode='retry'" in str(exc.value)
+    assert {str(t) for t in store.tags_for(job_id)} == {f"STATUS:{status}"}
+    assert not store.chunks.list_chunks_for_ref(job_id)
+
+
+@pytest.mark.parametrize("why", ["QUOTA exhausted", "operator PaUsE"])
+@pytest.mark.parametrize("force", [True, "true"])
+def test_wake_quota_pause_requires_force(
+    jobs: JobHandler, store: Store, why: str, force: bool | str
+) -> None:
+    meta: dict[str, Any] = {"wake_when": {"payload": {"why": why}}}
+    job_id = _insert_job(store, meta=meta, status="waiting_time")
+    for no_force in (None, False, "false"):
+        with pytest.raises(BadInput, match="protected quota/pause"):
+            jobs.put(id=job_id, mode="wake", force=no_force)
+        assert {str(t) for t in store.tags_for(job_id)} == {"STATUS:waiting_time"}
+        assert not store.chunks.list_chunks_for_ref(job_id)
+
+    jobs.put(id=job_id, mode="wake", force=force, reason="quota restored")
+    assert {str(t) for t in store.tags_for(job_id)} == {"STATUS:queued"}
+
+
+def test_wake_pause_park_counter_requires_force(jobs: JobHandler, store: Store) -> None:
+    """The executors' quota parks (park_job_until) count meta.pause_parks
+    and set no payload.why: the counter alone protects the job."""
+    meta: dict[str, Any] = {
+        "pause_parks": 2,
+        "wake_when": {"kind": "at_time", "payload": {"ts": "2026-11-04T03:00:00Z"}},
+    }
+    job_id = _insert_job(store, meta=meta, status="waiting_time")
+    with pytest.raises(BadInput, match="2 pause park"):
+        jobs.put(id=job_id, mode="wake")
+    assert {str(t) for t in store.tags_for(job_id)} == {"STATUS:waiting_time"}
+    jobs.put(id=job_id, mode="wake", force=True, reason="quota restored")
+    assert {str(t) for t in store.tags_for(job_id)} == {"STATUS:queued"}
+
+
+@pytest.mark.parametrize("mode", [None, "retry", "retarget", "setting"])
+@pytest.mark.parametrize("force", [True, False, "false"])
+def test_wake_force_refused_on_other_modes(
+    jobs: JobHandler, mode: str | None, force: bool | str
+) -> None:
+    with pytest.raises(BadInput, match="force= only applies"):
+        jobs.put(id=42, mode=mode, force=force)
+
+
+def test_wake_requires_id(jobs: JobHandler) -> None:
+    with pytest.raises(BadInput, match="requires id="):
+        jobs.put(mode="wake")
+
+
+def test_wake_missing_job(jobs: JobHandler) -> None:
+    with pytest.raises(NotFound):
+        jobs.put(id=999999999, mode="wake")
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"job_type": "run_slice"}, {"params": {}}, {"text": "mint"}, {"bogus": True}],
+)
+def test_wake_refuses_mint_kwargs(jobs: JobHandler, kwargs: dict[str, Any]) -> None:
+    with pytest.raises(BadInput, match="mints no job row"):
+        jobs.put(id=42, mode="wake", **kwargs)
+
+
+@pytest.mark.parametrize("mode", ["wake", "retry", "retarget"])
+def test_wake_setting_kwargs_remain_setting_only(jobs: JobHandler, mode: str) -> None:
+    with pytest.raises(BadInput, match="only apply to put"):
+        jobs.put(id=42, mode=mode, key="claim.max_running.run_slice")
+
+
+def test_wake_args_reach_handler(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    meta: dict[str, Any] = {"wake_when": {"payload": {"why": "quota exhausted"}}}
+    job_id = _insert_job(store, meta=meta, status="waiting_time")
+    body = runtime_with_store.dispatch(
+        "put",
+        {
+            "kind": "job",
+            "id": job_id,
+            "mode": "wake",
+            "__extras__": {"force": True, "reason": "quota restored"},
+        },
+    )
+    assert f"woke jo{job_id}" in body
+    assert "quota restored" in body
+    assert {str(t) for t in store.tags_for(job_id)} == {"STATUS:queued"}
 
 
 class TestJobCardErrorLine:

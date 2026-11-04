@@ -235,8 +235,8 @@ put(kind='job', parent_id=<todo>, job_type='survey_extract',
   on any non-terminal job (queued, running, `waiting_*`; the write
   lands on the row's next claim/re-queue). A terminal job refuses:
   nothing claims it again. `prio=`/`origin=` on `mode='retry'` /
-  `mode='retarget'` / `mode='setting'` are refused — those verbs don't
-  mint.
+  `mode='retarget'` / `mode='setting'` / `mode='wake'` are refused —
+  those verbs don't mint.
 
 The handler validates `job_type`, `executor`, `params`, AND the
 parent todo's existence at submit time. If something's wrong, the
@@ -521,6 +521,15 @@ type. Writes are operator-only: only `PRECIS_SOURCE` `cli` or
 (`precis-worker*`, `asa-*`, calls inside a background pass) is denied.
 Read the live overrides next to their code defaults with
 `get(kind='job', id='/claim')` ([[precis-job-observe-help]]).
+
+## Wake a time-parked job now
+
+`put(kind='job', id=N, mode='wake', args={'reason': '<why>'})` re-queues a
+`STATUS:waiting_time` job immediately, clearing its stale lease and recording
+the caller and reason in a job event.
+It refuses other statuses and mint arguments; use `mode='retry'` for a failed job.
+Waits whose `wake_when.payload.why` contains `quota` or `pause` (case-insensitive)
+are protected unless you explicitly pass `args={'force': true, 'reason': '<why>'}`.
 
 ## Re-submit a failed job
 ## Retry a failed job

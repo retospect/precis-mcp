@@ -84,6 +84,7 @@ from precis.workers.executors._common import (
     claim_class_rank_enabled,
 )
 from precis.workers.job_types import get_job_type, known_job_types
+from precis.workers.wake_runner import _requeue
 
 #: Inverse of ``_BASE_CLASS_RANK`` — base-class integer -> origin class
 #: name, for the ``queue:`` hint's per-class readout (slice 6, D6).
@@ -900,10 +901,11 @@ class JobHandler(NumericRefHandler):
         # put() genuinely branches on mode= — the recognised
         # values are the retry surface (put(id=N, mode='retry')), the
         # queued-pin move (put(id=N, mode='retarget')) and the audited
-        # claim.* override door (put(mode='setting')); every other
+        # claim.* override door (put(mode='setting')), and immediate
+        # wake of a time-parked job (put(mode='wake')); every other
         # value is rejected (gr343755 — a real vocabulary, not the
         # "every mode= rejected" `()` shape).
-        modes=("retry", "retarget", "setting"),
+        modes=("retry", "retarget", "setting", "wake"),
     )
 
     kind: ClassVar[str] = "job"
@@ -2918,13 +2920,14 @@ class JobHandler(NumericRefHandler):
         placement: str | None = None,
         prio: int | None = None,
         origin: str | None = None,
-        # mode='setting' args (gr556919): the claim.* override door.
+        # mode='setting' / 'wake' args: audited operator actions.
         # Declared (not read off ``**_kw``) so the args= extras gate
-        # passes them; refused below on every other mode.
+        # passes them; validated against their modes below.
         key: str | None = None,
         value: Any = None,
         reason: str | None = None,
         unset: bool | str | None = None,
+        force: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
         # Retry surface: ``put(kind='job', id=N, mode='retry')`` re-runs a
@@ -2938,7 +2941,24 @@ class JobHandler(NumericRefHandler):
         # the same way unless it is overridden here).
         # Handled before the generic ``id is not None`` /
         # ``mode`` rejections below.
-        if mode in ("retry", "retarget", "setting") and (
+        if force is not None and mode != "wake":
+            raise BadInput(
+                "force= only applies to put(mode='wake')",
+                next="put(kind='job', id=<waiting_job_id>, mode='wake')",
+            )
+        if mode != "setting" and (
+            key is not None or value is not None or unset is not None
+        ):
+            raise BadInput(
+                "key=/value=/unset= only apply to put(mode='setting')",
+                next=_CLAIM_SETTING_NEXT,
+            )
+        if reason is not None and mode not in ("setting", "wake"):
+            raise BadInput(
+                "reason= only applies to put(mode='setting') or put(mode='wake')",
+                next="use reason= with mode='setting' or mode='wake'",
+            )
+        if mode in ("retry", "retarget", "setting", "wake") and (
             prio is not None or origin is not None
         ):
             raise BadInput(
@@ -2952,6 +2972,28 @@ class JobHandler(NumericRefHandler):
             )
         if mode == "retarget":
             return self._retarget_job(id=id, text=text, params=params)
+        if mode == "wake":
+            return self._wake_job(
+                id=id,
+                reason=reason,
+                force=force,
+                text=text,
+                tags=tags,
+                untags=untags,
+                link=link,
+                unlink=unlink,
+                rel=rel,
+                job_type=job_type,
+                executor=executor,
+                params=params,
+                idem_key=idem_key,
+                requires=requires,
+                parent_id=parent_id,
+                model=model,
+                select=select,
+                placement=placement,
+                **_kw,
+            )
         if mode == "setting":
             return self._put_claim_setting(
                 id=id,
@@ -2974,11 +3016,6 @@ class JobHandler(NumericRefHandler):
                 value=value,
                 reason=reason,
                 unset=unset,
-            )
-        if key is not None or value is not None or reason is not None or _truthy(unset):
-            raise BadInput(
-                "key=/value=/reason=/unset= only apply to put(mode='setting')",
-                next=_CLAIM_SETTING_NEXT,
             )
         if id is not None:
             raise BadInput(
@@ -3406,6 +3443,73 @@ class JobHandler(NumericRefHandler):
                 )
             self.store.retire_ref(job_id, conn=conn)
         return Response(body=f"deleted {self._sense()} id={job_id}")
+
+    def _wake_job(
+        self,
+        *,
+        id: str | int | None,
+        reason: str | None,
+        force: bool | str | None,
+        **_kw: Any,
+    ) -> Response:
+        """Wake a time-parked job through the runner's lease-clearing transition."""
+        next_wake = "put(kind='job', id=<waiting_job_id>, mode='wake')"
+        stray = sorted(k for k, v in _kw.items() if v is not None)
+        if stray:
+            raise BadInput(
+                f"mode='wake' mints no job row — {stray} don't apply; "
+                "it takes only id= and args={'reason', 'force'}",
+                next=next_wake,
+            )
+        if id is None:
+            raise BadInput("put(mode='wake') requires id=", next=next_wake)
+        job_id = self._coerce_id(id)
+        ref = self._resolve_live_ref(job_id)
+        status = _status_of(self.store.tags_for(job_id))
+        if status != "waiting_time":
+            raise BadInput(
+                f"job id={job_id} is STATUS:{status or 'unset'}; "
+                "only STATUS:waiting_time can be woken",
+                next=(
+                    "to re-run a failed job: "
+                    f"put(kind='job', id={job_id}, mode='retry')"
+                ),
+            )
+        meta = ref.meta or {}
+        wake_when = meta.get("wake_when")
+        payload = wake_when.get("payload") if isinstance(wake_when, dict) else None
+        why = payload.get("why") if isinstance(payload, dict) else None
+        # A quota/pause park (executors' park_job_until) counts
+        # meta.pause_parks and never sets payload.why; waking it early
+        # spends one of its MAX_PAUSE_PARKS on the next claim.
+        try:
+            pause_parks = int(meta.get("pause_parks") or 0)
+        except (TypeError, ValueError):
+            pause_parks = 0
+        paused = pause_parks > 0 or (
+            isinstance(why, str)
+            and any(word in why.lower() for word in ("quota", "pause"))
+        )
+        if paused and not _truthy(force):
+            raise BadInput(
+                f"job id={job_id} has a protected quota/pause wait: "
+                f"{why or f'{pause_parks} pause park(s)'}",
+                next=(
+                    f"put(kind='job', id={job_id}, mode='wake', "
+                    "args={'force': true, 'reason': '<why override the pause>'})"
+                ),
+            )
+        source = todo_guards._caller_source()
+        wake_reason = f"woken by {source}: {reason or 'no reason given'}"
+        _requeue(self.store, job_id, wake_reason)
+        return Response(
+            body=(
+                f"woke jo{job_id}: STATUS:waiting_time → STATUS:queued ({wake_reason})"
+                + render_next_section(
+                    [(f"get(kind='job', id={job_id})", "check the job")]
+                )
+            )
+        )
 
     def _put_claim_setting(
         self, *, key: Any, value: Any, reason: Any, unset: Any, **_kw: Any

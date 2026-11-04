@@ -1517,6 +1517,10 @@ def put(
     # MCP clients don't strip them.
     key: str | None = None,
     unset: bool | None = None,
+    # job wake (put(kind='job', id=N, mode='wake'[, force=True]), see
+    # precis-job-help): force=True wakes a quota/pause park too. Declared
+    # at the verb level (the gr262482 pattern) for the same reason.
+    force: bool | None = None,
     # todo plan mint (put(kind='todo', mode='plan'), see precis-plan-help):
     # template= names the plan template, gripe_id=/section=/board= are its
     # arguments. Declared at the verb level (the gr262482 pattern) so
@@ -1833,6 +1837,7 @@ def put(
                 "origin": origin,
                 "key": key,
                 "unset": unset,
+                "force": force,
                 "template": template,
                 "gripe_id": gripe_id,
                 "section": section,

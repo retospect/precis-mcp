@@ -76,7 +76,7 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     #    and the audited claim.* override door (mode='setting', gr556919);
     #    every other value is rejected — a real vocabulary, not the
     #    reject-all `()` shape (gr343755) --------------------------------
-    ("job", "put"): ("retry", "retarget", "setting"),
+    ("job", "put"): ("retry", "retarget", "setting", "wake"),
     # -- fleet: put is the collector report only; edit rewrites the
     #    coordinator-owned fields (assigned/slice/note) -----------------
     ("fleet", "put"): ("report",),
@@ -202,7 +202,7 @@ def test_job_retry_and_message_reject_all_are_distinct_sentinels(
     other."""
     job = full_hub.handlers["job"].spec
     message = full_hub.handlers["message"].spec
-    assert job.modes == ("retry", "retarget", "setting")
+    assert job.modes == ("retry", "retarget", "setting", "wake")
     assert message.modes == ()
     assert job.modes is not None
     assert message.modes is not None
