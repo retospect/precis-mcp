@@ -23,7 +23,8 @@
 # the visible sign the cluster is running code no gate has passed.
 #
 # Best-effort by contract: moving a pointer never fails a gate that passed or
-# a deploy that converged. Every failure is one warning line on stderr.
+# a deploy that converged. Every failure is a warning on stderr: one line, then for a
+# refused push git's own output, indented, at most 12 lines.
 #
 # PRECIS_ENV_POINTERS=0 turns both off (throwaway repos, rigs).
 #
@@ -35,7 +36,7 @@
 # Move origin's <branch> to <sha>. Returns 0 when the ref now names <sha>,
 # 1 otherwise (skipped, no origin, unknown sha, push refused). Never exits.
 env_pointer_move() {
-    local root="$1" branch="$2" sha="$3" mode="${4:-}" spec
+    local root="$1" branch="$2" sha="$3" mode="${4:-}" spec out rc=0
     [[ "${PRECIS_ENV_POINTERS:-1}" != 0 ]] || return 1
     [[ -n "$root" && -n "$branch" && "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
     git -C "$root" remote get-url origin >/dev/null 2>&1 || return 1
@@ -45,10 +46,15 @@ env_pointer_move() {
     }
     spec="${sha}:refs/heads/${branch}"
     [[ "$mode" == force ]] && spec="+${spec}"
-    if git -C "$root" push -q origin "$spec" >/dev/null 2>&1; then
+    out="$(git -C "$root" push -q origin "$spec" 2>&1)" || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
         return 0
     fi
-    printf 'warning: %s pointer not moved to %s — the push was refused (not a fast-forward, or origin unreachable); the local marker is still correct\n' "$branch" "${sha:0:8}" >&2
+    # git's own words, inline credentials stripped from any http(s) URL,
+    # indented and capped at 12 lines so one failure stays one readable block.
+    out="$(printf '%s\n' "$out" | sed -E 's#(https?://)[^/@[:space:]]*@#\1#g; s/^/    /' | head -n 12 || true)"
+    printf 'warning: %s pointer not moved to %s — git push exited %s (not a fast-forward, or origin unreachable); the local marker is still correct\n' "$branch" "${sha:0:8}" "$rc" >&2
+    [[ -z "$out" ]] || printf '%s\n' "$out" >&2
     return 1
 }
 

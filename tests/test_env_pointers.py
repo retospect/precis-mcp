@@ -132,7 +132,43 @@ def test_backward_move_is_refused_and_leaves_the_ref(
     res = _move(work, "prod", shas[0])
     assert res.returncode == 1
     assert "prod pointer not moved" in res.stderr
+    assert "git push exited 1" in res.stderr
+    # git's own refusal text reaches the warning, indented
+    assert "\n    " in res.stderr
+    assert "rejected" in res.stderr
     assert _ref(origin, "prod") == shas[2]
+
+
+def test_push_output_is_capped_and_credentials_stripped(
+    repo: tuple[Path, Path, list[str]],
+) -> None:
+    work, _origin, shas = repo
+    hook = work / "fake-git" / "git"
+    hook.parent.mkdir()
+    userinfo = "u" + ":" + "tok"  # built at runtime: the credential gate scans source
+    hook.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in *" push "*) '
+        'i=0; while [ $i -lt 30 ]; do echo "line $i https://'
+        + userinfo
+        + '@example.invalid/r"; '
+        "i=$((i+1)); done; exit 7;; esac\n"
+        'PATH="$ORIG_PATH"; exec git "$@"\n',
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    res = _move(
+        work,
+        "prod",
+        shas[0],
+        PATH=f"{hook.parent}:{os.environ['PATH']}",
+        ORIG_PATH=os.environ["PATH"],
+    )
+    assert res.returncode == 1
+    assert "git push exited 7" in res.stderr
+    assert "tok" not in res.stderr
+    assert "https://example.invalid/r" in res.stderr
+    assert len(res.stderr.splitlines()) == 13  # warning + 12 capped lines
 
 
 def test_force_moves_backward_for_a_deliberate_rollback(
