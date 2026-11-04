@@ -4,15 +4,17 @@ gr509441: a body-less stub minted by mistake (title-only, no DOI, no
 chunks, nothing citing it) had no MCP door to retire — ``delete`` is
 Unsupported for papers and ``redirect_to`` only re-points an existing
 merge tombstone. These tests pin the door's contract: ``retire: True``
-refuses anything that isn't a phantom (body chunks, attached PDF,
+without force refuses anything that isn't a phantom (body chunks, attached PDF,
 external ids, live inbound cites, bib holds, inbound supersedes
 redirects) and writes a ``deleted`` ref_event; ``retire: False`` on the
 tombstone is the undo (``restored`` ref_event), refusing merge
-tombstones.
+tombstones. Explicit ``force: True`` retires an unwanted bodied paper
+while preserving its chunks, stored PDF, identifiers and links.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -54,14 +56,14 @@ def _seed_draft_chunk(store: Store, slug: str, text: str) -> int:
     return ref.id
 
 
-def _set_pdf(store: Store, ref_id: int) -> None:
+def _set_pdf(store: Store, ref_id: int, storage_path: str = "") -> None:
     sha = "ab" * 32
     with store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
-            "size_bytes, storage_path) VALUES (%s, %s, 1, 100, '') "
+            "size_bytes, storage_path) VALUES (%s, %s, 1, 100, %s) "
             "ON CONFLICT (pdf_sha256) DO NOTHING",
-            (sha, sha),
+            (sha, sha, storage_path),
         )
         conn.execute(
             "UPDATE refs SET pdf_sha256 = %s WHERE ref_id = %s",
@@ -135,12 +137,175 @@ class TestRetireHappyPath:
         assert _is_retired(store, stub)
 
 
+class TestForceRetire:
+    @pytest.mark.parametrize("reason", [None, "", " \n\t"])
+    def test_reason_required(
+        self, store: Store, handler: PaperHandler, reason: str | None
+    ) -> None:
+        paper = _seed_paper(store, "force-no-reason")
+        store.chunks.insert_chunks(paper, [ChunkInsert(ord=0, text="held body")])
+        with pytest.raises(BadInput, match="reason") as exc:
+            handler.edit(
+                id=f"pa{paper}",
+                args={"retire": True, "force": True, "reason": reason},
+            )
+        assert exc.value.next == (
+            f"edit(kind='paper', id='pa{paper}', "
+            "args={'retire': True, 'force': True, 'reason': '<why>'})"
+        )
+        assert not _is_retired(store, paper)
+        assert not [e for e in store.events_for(paper) if e.event == "deleted"]
+
+    def test_retains_content_and_links_and_can_restore(
+        self, store: Store, handler: PaperHandler, tmp_path: Path
+    ) -> None:
+        paper = _seed_paper(store, "forced-upload")
+        body = "The uploaded paper's body remains stored."
+        store.chunks.insert_chunks(paper, [ChunkInsert(ord=0, text=body)])
+        pdf_path = tmp_path / "retained.pdf"
+        pdf_bytes = b"%PDF-1.4\nretained upload\n"
+        pdf_path.write_bytes(pdf_bytes)
+        _set_pdf(store, paper, str(pdf_path))
+        store.set_ref_identifier(paper, "doi", "10.1/forced-upload", source="test")
+        citer = _seed_paper(store, "forced-citer")
+        store.add_link(src_ref_id=citer, dst_ref_id=paper, relation="cites")
+        other = _seed_paper(store, "forced-other")
+        store.add_link(src_ref_id=other, dst_ref_id=paper, relation="cites")
+        store.add_link(src_ref_id=paper, dst_ref_id=other, relation="cites")
+        with store.pool.connection() as conn:
+            chunks_before = conn.execute(
+                "SELECT chunk_id, text, retired_at FROM chunks WHERE ref_id = %s",
+                (paper,),
+            ).fetchall()
+            pdf_before = conn.execute(
+                "SELECT p.* FROM pdfs p JOIN refs r USING (pdf_sha256) "
+                "WHERE r.ref_id = %s",
+                (paper,),
+            ).fetchall()
+            identifiers_before = conn.execute(
+                "SELECT id_kind, id_value FROM ref_identifiers "
+                "WHERE ref_id = %s ORDER BY id_kind, id_value",
+                (paper,),
+            ).fetchall()
+            links_before = conn.execute(
+                "SELECT * FROM links WHERE src_ref_id = %s OR dst_ref_id = %s "
+                "ORDER BY src_ref_id, dst_ref_id",
+                (paper, paper),
+            ).fetchall()
+        resp = handler.edit(
+            id=f"pa{paper}",
+            args={"retire": True, "force": True, "reason": "unwanted upload"},
+        )
+        assert _is_retired(store, paper)
+        assert "Chunks, stored PDF, identifiers and links kept" in resp.body
+        assert "Inbound links: 2" in resp.body
+        assert "'retire': False" in resp.body
+        with store.pool.connection() as conn:
+            assert (
+                conn.execute(
+                    "SELECT chunk_id, text, retired_at FROM chunks WHERE ref_id = %s",
+                    (paper,),
+                ).fetchall()
+                == chunks_before
+            )
+            assert (
+                conn.execute(
+                    "SELECT p.* FROM pdfs p JOIN refs r USING (pdf_sha256) "
+                    "WHERE r.ref_id = %s",
+                    (paper,),
+                ).fetchall()
+                == pdf_before
+            )
+            assert (
+                conn.execute(
+                    "SELECT id_kind, id_value FROM ref_identifiers "
+                    "WHERE ref_id = %s ORDER BY id_kind, id_value",
+                    (paper,),
+                ).fetchall()
+                == identifiers_before
+            )
+            assert (
+                conn.execute(
+                    "SELECT * FROM links WHERE src_ref_id = %s OR dst_ref_id = %s "
+                    "ORDER BY src_ref_id, dst_ref_id",
+                    (paper, paper),
+                ).fetchall()
+                == links_before
+            )
+        assert pdf_path.read_bytes() == pdf_bytes
+        events = [
+            e for e in store.events_for(paper) if e.event in {"deleted", "retired"}
+        ]
+        assert len(events) == 1
+        assert events[0].event == "deleted"
+        assert events[0].payload == {
+            "reason": "unwanted upload",
+            "force": True,
+            "inbound_links": 2,
+        }
+        _unretire(handler, f"pa{paper}")
+        assert not _is_retired(store, paper)
+        assert body in handler.get(id=f"pa{paper}~0").body
+
+    def test_excluded_from_normal_get_and_search(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        slug = "forced-search-exclusion"
+        paper = _seed_paper(store, slug)
+        store.chunks.insert_chunks(paper, [ChunkInsert(ord=0, text="searchable body")])
+        assert f"pa{paper}" in handler.search(title=f"Test paper {slug}").body
+        assert "searchable body" in handler.get(id=f"pa{paper}~0").body
+        handler.edit(
+            id=f"pa{paper}",
+            args={"retire": True, "force": True, "reason": "unwanted upload"},
+        )
+        for address in (f"pa{paper}", slug, f"pa{paper}~0"):
+            with pytest.raises(NotFound):
+                handler.get(id=address)
+        assert f"pa{paper}" not in handler.search(title=f"Test paper {slug}").body
+
+    def test_dry_run_keeps_ref_live(self, store: Store, handler: PaperHandler) -> None:
+        paper = _seed_paper(store, "forced-preview")
+        store.chunks.insert_chunks(paper, [ChunkInsert(ord=0, text="held body")])
+        resp = handler.edit(
+            id=f"pa{paper}",
+            args={"retire": True, "force": True, "reason": "preview unwanted upload"},
+            dry_run=True,
+        )
+        assert "DRY RUN" in resp.body
+        assert "Inbound links: 0" in resp.body
+        assert not _is_retired(store, paper)
+        assert not [e for e in store.events_for(paper) if e.event == "deleted"]
+
+    def test_force_needs_retire_door(self, store: Store, handler: PaperHandler) -> None:
+        paper = _seed_paper(store, "force-wrong-door")
+        with pytest.raises(BadInput, match="force only modifies retire=True"):
+            handler.edit(id=f"pa{paper}", title="changed", args={"force": True})
+
+    def test_force_still_refuses_merge_tombstone(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        survivor = _seed_paper(store, "forced-survivor")
+        loser = _seed_paper(store, "forced-loser")
+        _merge(store, loser, survivor)
+        with pytest.raises(BadInput, match="merge tombstone"):
+            handler.edit(
+                id=f"pa{loser}",
+                args={"retire": True, "force": True, "reason": "unwanted upload"},
+            )
+        assert not _is_retired(store, survivor)
+
+
 class TestRetireRefusals:
     def test_body_chunks_refused(self, store: Store, handler: PaperHandler) -> None:
         stub = _seed_paper(store, "bodied2020")
         store.chunks.insert_chunks(stub, [ChunkInsert(ord=0, text="real body")])
-        with pytest.raises(BadInput, match="body chunk"):
+        with pytest.raises(BadInput, match="body chunk") as exc:
             _retire(handler, f"pa{stub}")
+        assert exc.value.next == (
+            f"edit(kind='paper', id='pa{stub}', "
+            "args={'retire': True, 'force': True, 'reason': '<why>'})"
+        )
         assert not _is_retired(store, stub)
 
     def test_attached_pdf_refused(self, store: Store, handler: PaperHandler) -> None:
@@ -377,6 +542,63 @@ class TestRetireDispatch:
     """End-to-end through the runtime: tombstone handles must reach the
     door rather than dying on the unresolved-handle NotFound (undo) or
     being rewritten to the merge survivor."""
+
+    def test_force_retire_through_slim_core(
+        self,
+        runtime_with_store: PrecisRuntime,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from precis.tools import core
+        from precis.tools.mcp_slim import make_slim_verb
+
+        store = runtime_with_store.store
+        assert store is not None
+        monkeypatch.setattr(core, "_runtime", runtime_with_store)
+        paper = _seed_paper(store, "forced-slim-upload")
+        store.chunks.insert_chunks(paper, [ChunkInsert(ord=0, text="retained body")])
+        slim_edit = make_slim_verb("edit", core.edit)
+        result = slim_edit(
+            kind="paper",
+            id=f"pa{paper}",
+            args={
+                "retire": True,
+                "force": True,
+                "reason": "unwanted upload via MCP",
+            },
+        )
+        assert isinstance(result, str), result
+        assert "retired" in result
+        assert _is_retired(store, paper)
+        events = [e for e in store.events_for(paper) if e.event == "deleted"]
+        assert len(events) == 1
+        assert events[0].payload["reason"] == "unwanted upload via MCP"
+
+    @pytest.mark.parametrize("reason", [None, "", " \t\n"])
+    def test_force_retire_reason_required_through_slim_core(
+        self,
+        runtime_with_store: PrecisRuntime,
+        monkeypatch: pytest.MonkeyPatch,
+        reason: str | None,
+    ) -> None:
+        from mcp.types import CallToolResult
+
+        from precis.tools import core
+        from precis.tools.mcp_slim import make_slim_verb
+
+        store = runtime_with_store.store
+        assert store is not None
+        monkeypatch.setattr(core, "_runtime", runtime_with_store)
+        paper = _seed_paper(store, "forced-slim-no-reason")
+        store.chunks.insert_chunks(paper, [ChunkInsert(ord=0, text="retained body")])
+        result = make_slim_verb("edit", core.edit)(
+            kind="paper",
+            id=f"pa{paper}",
+            args={"retire": True, "force": True, "reason": reason},
+        )
+        assert isinstance(result, CallToolResult)
+        assert result.isError
+        assert not _is_retired(store, paper)
+        assert not [e for e in store.events_for(paper) if e.event == "deleted"]
 
     def test_retire_then_unretire_via_dispatch(
         self, runtime_with_store: PrecisRuntime

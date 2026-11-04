@@ -6,10 +6,16 @@ batched ``precis backfill-ref-bytes`` fills the missing rows."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
+
 from precis.cli.ref_bytes_backfill import backfill_ref_bytes
 from precis.dispatch import Hub
 from precis.store import Store
 from precis.store.types import ChunkInsert
+from precis.taproot.canon import CanonicalClaim
+from precis.taproot.hub import mint_hub
 from precis.utils import handle_registry
 from precis.utils.eye_render import render_eye
 from precis.utils.refeye import collect_ring
@@ -137,6 +143,49 @@ def test_missing_side_row_renders_no_size(hub: Hub) -> None:
     # bounded live-sum fallback.
     assert store.chunks.body_byte_counts([near.id]) == {near.id: 2048}
     assert store.chunks.stored_body_byte_counts([near.id]) == {}
+
+
+@pytest.mark.parametrize("kind", ["memory", "finding"])
+@pytest.mark.parametrize("known_empty", [False, True])
+def test_collect_ring_omits_unknown_and_zero_sizes(
+    hub: Hub, kind: str, known_empty: bool
+) -> None:
+    store = hub.live_store
+    if kind == "finding":
+        near_id = mint_hub(
+            store,
+            CanonicalClaim(sentence="Copper conducts electricity.", scope={}),
+        )
+    else:
+        near_id = store.insert_ref(kind="memory", slug=None, title="neighbour").id
+        _put_body(store, near_id, ["nonempty body awaiting byte counting"])
+    if known_empty:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE chunks SET retired_at = now() WHERE ref_id = %s", (near_id,)
+            )
+        run_ref_body_bytes_pass(store)
+        assert store.chunks.stored_body_byte_counts([near_id]) == {near_id: 0}
+    else:
+        assert store.chunks.stored_body_byte_counts([near_id]) == {}
+        assert store.chunks.body_byte_counts([near_id])[near_id] > 0
+
+    handle = handle_registry.format_handle(kind, near_id)
+    cite = f"[{handle}]" if kind == "finding" else f"[[{handle}]]"
+    draft = store.insert_ref(kind="draft", slug="unknown-size-ring", title="focus")
+    rows = store.chunks.insert_chunks(
+        draft.id, [ChunkInsert(ord=0, text=f"See {cite}.")]
+    )
+    chunks = [
+        SimpleNamespace(
+            chunk_id=row.id, ref_id=row.ref_id, text=row.text, parent_chunk_id=None
+        )
+        for row in rows
+    ]
+    groups = collect_ring(store, chunks[0], chunks)
+    group = "Claims" if kind == "finding" else "Notes"
+    label = dict(groups[group])[near_id]
+    assert " · 0B" not in label
 
 
 def test_chunk_insert_takes_no_refs_row_lock(hub: Hub) -> None:

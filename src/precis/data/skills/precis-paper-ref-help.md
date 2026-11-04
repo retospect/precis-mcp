@@ -2,13 +2,14 @@
 id: precis-paper-ref-help
 family: paper
 title: precis — repair and maintain paper refs
-summary: the doors that fix a paper record — bylines, identifiers, merging a duplicate pair, re-pointing a merged stub, retiring a phantom, re-arming a worker stamp, attaching a legal PDF; finding and reading papers is precis-paper-help
+summary: the doors that fix a paper record — bylines, identifiers, merging a duplicate pair, re-pointing a merged stub, retiring an unwanted paper, re-arming a worker stamp, attaching a legal PDF; finding and reading papers is precis-paper-help
 answers:
   - how do I fix a wrong or missing author on a paper?
   - two live refs are the same paper — how do I merge them?
   - an identifier collision blocked my edit — what now?
   - a merged stub resolves to the wrong paper — how do I re-point it?
   - how do I retire a phantom citation stub?
+  - how do I retire an unwanted paper while keeping its body and PDF?
   - a ref holds the wrong paper's body — how do I detach or re-home it?
   - a ref carries one wrong identifier next to right ones — how do I remove just it?
   - the body is another paper's but the attached PDF is right — how do I re-extract it?
@@ -47,6 +48,7 @@ share the same `refs` machinery.
 | fold a duplicate pair | `args={'merge_into': '<survivor>', 'reason': …}` |
 | re-point a merged stub | `args={'redirect_to': '<pa>', 'reason': …}` |
 | retire a phantom stub | `args={'retire': True, 'reason': …}` (`retire: False` restores) |
+| retire an unwanted paper with body/PDF | `args={'retire': True, 'force': True, 'reason': …}` (same undo) |
 | re-home a wrong body | `args={'drop_body'/'move_body_to'/'split_body'/'clear_abstract': …, 'reason': …}` (drop_body takes `'keep_pdf': True` to keep the stored pdf) |
 | re-extract from the stored pdf | `args={'reextract': True, 'reason': …}` — keeps the pdf, queues a `paper_reextract` job; `'pdf_sha256': '<sha>'` names the file when several are attached |
 | re-home a stored pdf / adopt an orphan | `args={'move_pdf_to': '<pa>'/'attach_pdf': '<sha>', 'reason': …}` — identity-gated on the target's title/DOI |
@@ -227,7 +229,7 @@ Refuses a source that isn't a retired merge, a target that isn't live
 required and lands in the `redirect_repointed` ref_event with old+new
 targets; undo is the same call aimed back at the old target.
 
-## A phantom citation stub should not exist — how do I retire it?
+## Retire a phantom citation stub or an unwanted uploaded paper
 
 ```python
 edit(kind="paper", id="pa454024", args={"retire": True, "reason": "invented citation, gr509441"})
@@ -240,6 +242,26 @@ an attached PDF, an external identifier, live inbound cites (edges,
 `[pa<id>]`/`§<cite_key>` tokens in draft chunks, bib holds), or inbound
 `supersedes` (move each tombstone's redirect with `redirect_to` first).
 A duplicate of a real record wants a merge instead. `dry_run` previews.
+
+For an unwanted paper that carries body chunks, a PDF, identifiers or
+inbound citations, explicitly override those phantom-only checks:
+
+```python
+edit(kind="paper", id="pa560323", args={"retire": True, "force": True, "reason": "unwanted upload"})
+```
+
+A missing or blank `reason` refuses. This sets `retired_at` and records
+the reason in a `deleted` ref_event; normal get/search no longer return
+the paper. Chunks, stored PDF, identifiers and links stay stored. The
+receipt reports the number of inbound links and the undo call:
+
+```python
+edit(kind="paper", id="pa560323", args={"retire": False, "reason": "undo retirement"})
+```
+
+Undo restores the whole ref with its retained content and logs a
+`restored` event. Force does not bypass the merged-alias or merge-tombstone
+guards, and only modifies `retire=True`. It never purges files or chunks.
 
 ## A ref holds the wrong paper's body — how do I detach or re-home it?
 

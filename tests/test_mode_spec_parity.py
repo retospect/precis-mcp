@@ -128,6 +128,39 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
 }
 
 
+def test_paper_retire_force_is_an_edit_arg_not_a_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.handlers.paper import PaperHandler
+    from precis.tools import core
+
+    captured: dict[str, Any] = {}
+
+    def capture(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
+        assert verb == "edit"
+        captured.update(payload)
+        return "captured"
+
+    monkeypatch.setattr(core, "_dispatch", capture)
+    assert (
+        core.edit(
+            kind="paper",
+            id="pa1",
+            args={"retire": True, "force": True, "reason": "unwanted upload"},
+        )
+        == "captured"
+    )
+    assert "force" not in captured
+    assert captured.get("reason") is None
+    assert captured["__extras__"] == {
+        "retire": True,
+        "force": True,
+        "reason": "unwanted upload",
+    }
+    assert "force" in PaperHandler.ARGS_KEYS["edit"]
+    assert PaperHandler.spec.edit_modes is None
+
+
 @pytest.fixture
 def full_hub(store: Store) -> Iterator[Hub]:
     """Every store-backed handler registered — the real dispatch registry,

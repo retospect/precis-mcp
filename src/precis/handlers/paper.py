@@ -689,7 +689,8 @@ class PaperHandler(Handler):
         ),
         # ``redirect_to`` re-points a retired/merged stub's supersede
         # redirect (:meth:`_repoint_supersede`); ``retire`` soft-deletes a
-        # phantom stub (:meth:`_retire_stub`); ``merge_into`` folds a live
+        # phantom stub, or any live paper with ``force=True``
+        # (:meth:`_retire_stub`); ``merge_into`` folds a live
         # duplicate into a named survivor (:meth:`_merge_duplicate_into`);
         # ``clear_stamp`` removes allow-listed worker-retry meta keys
         # so the owning pass re-claims the ref
@@ -715,6 +716,7 @@ class PaperHandler(Handler):
             {
                 "redirect_to",
                 "retire",
+                "force",
                 "merge_into",
                 "clear_stamp",
                 "drop_body",
@@ -4132,6 +4134,12 @@ class PaperHandler(Handler):
         """
         dry_mode = normalize_dry_run(dry_run)
         raw_args = dict(args) if args else {}
+        if "force" in raw_args and not _args_truthy(raw_args.get("retire")):
+            raise BadInput(
+                "force only modifies retire=True",
+                next=f"edit(kind='{self.spec.kind}', id='{id}', "
+                "args={'retire': True, 'force': True, 'reason': '<why>'})",
+            )
         if "clear_stamp" in raw_args:
             if (
                 any(k in raw_args for k in _EDIT_DOOR_ARGS)
@@ -4227,7 +4235,11 @@ class PaperHandler(Handler):
                 )
             if door == "retire":
                 return self._retire_stub(
-                    id, raw_args["retire"], reason=reason, dry=bool(dry_mode)
+                    id,
+                    raw_args["retire"],
+                    reason=reason,
+                    dry=bool(dry_mode),
+                    force=_args_truthy(raw_args.get("force")),
                 )
             if door == "redirect_to":
                 return self._repoint_supersede(
@@ -5128,7 +5140,7 @@ class PaperHandler(Handler):
         )
 
     def _retire_stub(
-        self, id: str | int, retire: Any, *, reason: str, dry: bool
+        self, id: str | int, retire: Any, *, reason: str, dry: bool, force: bool = False
     ) -> Response:
         """``edit(args={'retire': True, 'reason': ...})`` — retire a
         phantom stub; ``{'retire': False}`` un-retires it (gr509441).
@@ -5151,6 +5163,12 @@ class PaperHandler(Handler):
         logs ``restored`` — the inverse call, so the door undoes itself.
         A merge tombstone (``meta.superseded_by``) is refused on both
         directions: re-point it with ``redirect_to``, don't resurrect it.
+
+        ``force=True`` explicitly bypasses the phantom-only guards for
+        an unwanted paper, including one carrying body/PDF/identifiers
+        or inbound citations. It still requires a reason and preserves
+        chunks, stored PDFs, identifiers and links; only ``retired_at``
+        changes. The receipt reports the inbound link count and undo.
         """
         kind = self.spec.kind
         ref = self._resolve_door_subject(id, door="retire")
@@ -5160,14 +5178,20 @@ class PaperHandler(Handler):
                 next=f"search(kind='{kind}', q='...') to find the ref",
             )
         handle = _pa(ref)
+        force_call = (
+            f"edit(kind='{kind}', id='{handle}', "
+            "args={'retire': True, 'force': True, 'reason': '<why>'})"
+        )
         if not _args_truthy(retire):
             return self._unretire_stub(ref, reason=reason, dry=dry)
         if not reason:
             raise BadInput(
-                "args['retire'] needs args['reason'] — the deleted "
+                "args['retire'] needs a nonblank args['reason'] — the deleted "
                 "ref_event carries it",
-                next=f"edit(kind='{kind}', id='{handle}', args="
-                "{'retire': True, 'reason': '<why>'})",
+                next=force_call
+                if force
+                else f"edit(kind='{kind}', id='{handle}', "
+                "args={'retire': True, 'reason': '<why>'})",
             )
         if ref.retired_at is not None:
             if (ref.meta or {}).get("superseded_by") is not None:
@@ -5184,35 +5208,41 @@ class PaperHandler(Handler):
                 "args={'retire': False, 'reason': '<why>'})",
             )
         with self.store.pool.connection() as conn:
-            blockers = _retire_blockers(conn, ref)
+            blockers = [] if force else _retire_blockers(conn, ref)
+            inbound_row = conn.execute(
+                "SELECT count(*) FROM links WHERE dst_ref_id = %s", (ref.id,)
+            ).fetchone()
+            inbound = inbound_row[0] if inbound_row is not None else 0
         if blockers:
             raise BadInput(
                 f"{handle} is not a phantom stub — refusing to retire: "
                 + "; ".join(blockers),
-                next=f"a duplicate of a real record wants a merge, not a "
-                f"retire: edit(kind='{kind}', id='{handle}', args="
-                "{'merge_into': 'pa<M>', 'reason': '<why>'})",
+                next=force_call,
             )
         if dry:
             return Response(
                 body=(
                     f"DRY RUN (no write) - would retire {handle}: "
-                    "retired_at set and a 'deleted' ref_event logged."
+                    "retired_at set and a 'deleted' ref_event logged; "
+                    "chunks, stored PDF, identifiers and links kept. "
+                    f"Inbound links: {inbound}."
                 )
             )
         with self.store.tx() as conn:
             # Re-check inside the transaction: the guards above read on a
             # pooled conn, so a concurrent import/link between the two
             # could slip a blocker past them (TOCTOU).
-            blockers = _retire_blockers(conn, ref)
+            blockers = [] if force else _retire_blockers(conn, ref)
             if blockers:
                 raise BadInput(
                     f"{handle} is not a phantom stub — refusing to retire: "
                     + "; ".join(blockers),
-                    next=f"a duplicate of a real record wants a merge, not "
-                    f"a retire: edit(kind='{kind}', id='{handle}', args="
-                    "{'merge_into': 'pa<M>', 'reason': '<why>'})",
+                    next=force_call,
                 )
+            inbound_row = conn.execute(
+                "SELECT count(*) FROM links WHERE dst_ref_id = %s", (ref.id,)
+            ).fetchone()
+            inbound = inbound_row[0] if inbound_row is not None else 0
             # The event goes in BEFORE the UPDATE: migration 0229's
             # trail trigger writes its own ('db','retired') row unless a
             # ref_event for this ref already exists in this tx, so
@@ -5221,14 +5251,15 @@ class PaperHandler(Handler):
                 ref.id,
                 source="agent",
                 event="deleted",
-                payload={"reason": reason},
+                payload={"reason": reason, "force": force, "inbound_links": inbound},
                 conn=conn,
             )
             self.store.retire_ref(ref.id, conn=conn)
         return Response(
             body=(
                 f"retired {handle} (soft-deleted; ref_event 'deleted' "
-                f"logged). Undo: edit(kind='{kind}', id='{handle}', "
+                "logged). Chunks, stored PDF, identifiers and links kept. "
+                f"Inbound links: {inbound}. Undo: edit(kind='{kind}', id='{handle}', "
                 "args={'retire': False, 'reason': '<why>'})"
             )
         )

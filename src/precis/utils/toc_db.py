@@ -55,6 +55,10 @@ table. Papers have no heading tree, so this recursive keyword
 clustering *is* the hierarchy. Only a range too small
 to split further shows one row per chunk. For the actual chunk text,
 call ``get(...)`` without ``view='toc'``.
+
+Paper sub-TOCs label nonempty rows below 1 kB as ``<1kB`` because a
+reader took the blank size cell for missing data. Other TOCs and empty
+rows retain the shared ``size_cell`` policy.
 """
 
 from __future__ import annotations
@@ -192,6 +196,7 @@ def render_from_store(
         store=store, handle=handle, kind=kind, scope=scope, blocks=blocks
     )
     n = len(blocks)
+    paper_subtoc = kind == "paper" and scope is not None
     groups, mode = _clusters(blocks, scope=scope)
     if mode == "per-chunk":
         return _render_per_chunk(
@@ -199,6 +204,7 @@ def render_from_store(
             groups=groups,
             n_total=n,
             scope=scope,
+            paper_subtoc=paper_subtoc,
             readiness_line=readiness_line,
             meta_line=meta_line,
         )
@@ -215,8 +221,9 @@ def render_from_store(
         rows.append(
             {
                 "handle": row_handle,
-                "size": size_cell(
-                    sum(len((b.text or "").encode("utf-8")) for b in bucket)
+                "size": _row_size(
+                    sum(len((b.text or "").encode("utf-8")) for b in bucket),
+                    paper_subtoc=paper_subtoc,
                 ),
                 "keywords": ", ".join(label_terms),
             }
@@ -742,6 +749,12 @@ def _topics_line(row_keyword_sets: Sequence[Sequence[str]]) -> str:
 # ── helpers: rendering ──────────────────────────────────────────────
 
 
+def _row_size(n_bytes: int, *, paper_subtoc: bool) -> str:
+    if paper_subtoc and 0 < n_bytes < 1024:
+        return "<1kB"
+    return size_cell(n_bytes)
+
+
 def _bytes_label(n_bytes: int) -> str:
     """Total-size label for the meta line: ``size_cell``'s kB at ≥1 kB,
     raw bytes below — the aggregate must name a size even when every
@@ -853,6 +866,7 @@ def _render_per_chunk(
     groups: Sequence[tuple[list[Any], list[str]]],
     n_total: int,
     scope: tuple[int, int] | None,
+    paper_subtoc: bool,
     readiness_line: str | None = None,
     meta_line: str | None = None,
 ) -> str:
@@ -873,8 +887,9 @@ def _render_per_chunk(
         rows.append(
             {
                 "handle": row_handle,
-                "size": size_cell(
-                    sum(len((b.text or "").encode("utf-8")) for b in bucket)
+                "size": _row_size(
+                    sum(len((b.text or "").encode("utf-8")) for b in bucket),
+                    paper_subtoc=paper_subtoc,
                 ),
                 "keywords": ", ".join(label),
             }

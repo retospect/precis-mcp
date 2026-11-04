@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from itertools import pairwise
 
+import pytest
+
 from precis.utils.toc_db import build_toc_segments, cluster_blocks, render_from_store
 
 
@@ -97,6 +99,38 @@ class TestPerChunkPath:
         # One row per chunk, with the chunk's own keyword as the label.
         for i in range(4):
             assert f"pa1~{i}\t\tkw{i}" in out
+
+    @pytest.mark.parametrize(
+        ("kind", "scope", "expected_sizes"),
+        [
+            ("paper", (0, 3), ["", "<1kB", "<1kB", "1kB"]),
+            ("paper", None, ["", "", "", "1kB"]),
+            ("patent", (0, 3), ["", "", "", "1kB"]),
+        ],
+    )
+    def test_small_size_labels_only_in_paper_subtoc(
+        self,
+        kind: str,
+        scope: tuple[int, int] | None,
+        expected_sizes: list[str],
+    ) -> None:
+        blocks = [
+            _Stub(ord=i, keywords=[f"kw{i}"], text=text)
+            for i, text in enumerate(["", "x", "x" * 1023, "é" * 512])
+        ]
+        out = render_from_store(
+            store=_StubStore(blocks),
+            ref_id=1,
+            handle="pa1" if kind == "paper" else "pt1",
+            kind=kind,
+            scope=scope,
+        )
+        sizes = [
+            line.split("\t")[1]
+            for line in out.splitlines()
+            if line.startswith(("pa1~", "pt1~")) and "\t" in line
+        ]
+        assert sizes == expected_sizes
 
     def test_short_range_keywords_never_snippets(self) -> None:
         """Regression: the dropped preview path used to leak chunk
@@ -302,6 +336,31 @@ class TestDrillHierarchy:
         # Bucketed headline names a cluster count; the per-chunk fallback
         # would omit it. This pins the fix.
         assert "clusters" in out
+
+    def test_sub_kilobyte_clusters_show_size_label(self) -> None:
+        blocks = [
+            _Stub(ord=i, keywords=[f"kw{i}", "topic"], text="é" * 20)
+            for i in range(10, 22)
+        ]
+        out = _render(blocks, scope=(10, 21))
+        rows = [
+            line.split("\t")
+            for line in out.splitlines()
+            if line.startswith("pa1~") and "\t" in line
+        ]
+        assert rows
+        assert any(".." in row[0] for row in rows)
+        for handle, size, _keywords in rows:
+            selector = handle.split("~")[1]
+            first, _, last = selector.partition("..")
+            lo, hi = int(first), int(last or first)
+            n_bytes = sum(
+                len(block.text.encode("utf-8"))
+                for block in blocks
+                if lo <= block.ord <= hi
+            )
+            assert 0 < n_bytes < 1024
+            assert size == "<1kB"
 
 
 # ── section_path fallback (gr520232: the keyword backlog drains) ─────

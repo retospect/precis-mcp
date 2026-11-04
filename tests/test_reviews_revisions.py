@@ -24,6 +24,8 @@ from precis.store.revision_context import (
     revision_context,
 )
 from precis.store.types import ChunkInsert
+from precis.taproot.canon import CanonicalClaim
+from precis.taproot.hub import mint_hub
 from tests._timing import budget
 
 
@@ -477,6 +479,39 @@ def test_edit_without_reason_names_the_verb(
     )
     (rev,) = store.revisions_for("ref", memory_id)
     assert rev.reason == "edit(kind='memory')"
+
+
+def test_finding_retitle_with_reason_records_revision(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    original_title = "Copper is an electrical conductor."
+    finding_id = mint_hub(store, CanonicalClaim(sentence=original_title, scope={}))
+    new_title = "Copper conducts electricity."
+
+    out = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "finding",
+            "id": f"fi{finding_id}",
+            "title": new_title,
+            "reason": "clarify wording",
+        },
+    )
+
+    assert f"retitled claim hub fi{finding_id}" in out, out
+    ref = store.get_ref(kind="finding", id=finding_id)
+    assert ref is not None
+    assert ref.title == new_title
+    with store.pool.connection() as conn:
+        body = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND ord = 0 "
+            "AND chunk_kind = 'finding_body' AND retired_at IS NULL",
+            (finding_id,),
+        ).fetchone()
+    assert body == (new_title,)
+    (rev,) = store.revisions_for("ref", finding_id)
+    assert (rev.reason, rev.actor) == ("clarify wording", "agent")
+    assert rev.prev_state["title"] == original_title
 
 
 # ── the context itself ─────────────────────────────────────────────────────
