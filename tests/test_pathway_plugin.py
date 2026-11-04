@@ -1407,7 +1407,7 @@ def test_get_unknown_view_raises_bad_input_naming_accepted_set(
 
 
 def test_all_declared_views_dispatch(pathway_store: Store) -> None:
-    """Every one of the 16 views the KindSpec declares must still pass
+    """Every one of the 17 views the KindSpec declares must still pass
     through `get` (not itself get rejected as 'unknown') once the view=
     validation lands. kinetics-sweep (slice 4) was routed but undeclared,
     so get rejected it; manifest is kinetics v2 slice 10, tpd slice 9."""
@@ -1416,10 +1416,10 @@ def test_all_declared_views_dispatch(pathway_store: Store) -> None:
     h.put(id="views_smoke", text=SMOKE)
 
     declared = PathwayHandler.spec.views
-    assert len(declared) == 16
-    assert {"kinetics-sweep", "manifest", "tpd"} <= set(declared)
+    assert len(declared) == 17
+    assert {"kinetics-sweep", "kinetics-summary", "manifest", "tpd"} <= set(declared)
     for view in declared:
-        resp = h.get(id=slug, view=view)
+        resp = h.get(id=None if view == "kinetics-summary" else slug, view=view)
         assert resp.body, f"view={view!r} returned an empty body"
 
 
@@ -1456,6 +1456,13 @@ def test_every_read_leads_with_pw_handle_and_web_path(
     want = f"pw{ref.id} · /refs/pathway/{ref.id}"
 
     for view in (None, *PathwayHandler.spec.views):
+        if view == "kinetics-summary":
+            from precis.errors import BadInput
+
+            with pytest.raises(BadInput, match="population view"):
+                h.get(id=slug, view=view)
+            assert "Kinetics summary:" in h.get(view=view).body
+            continue
         resp = h.get(id=slug, view=view)
         # config/mermaid are verbatim payloads — a leading line would
         # break YAML parse / mermaid paste, so their handle rides as a

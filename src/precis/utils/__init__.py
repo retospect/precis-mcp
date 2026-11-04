@@ -55,7 +55,10 @@ empty-hop decision: link edges alone cannot establish an empty first hop.
   :mod:`~precis.utils.next_block` (the ``Next:`` hint block),
   :mod:`~precis.utils.search_header`, :mod:`~precis.utils.reaction_graph`
   (a missing route barrier makes the whole-path span unavailable; treating
-  a failed NEB as barrierless would fabricate a favorable objective).
+  a failed NEB as barrierless would fabricate a favorable objective),
+  :mod:`~precis.utils.pathway_kinetics_summary` (ten-value axis summaries
+  plus exact remainder counts keep distinct basis hashes within transport
+  limits; axis pagination preserves access to every value and count).
 - *Units, time, env.* :mod:`~precis.utils.units` (ingest-any, SI internally),
   :mod:`~precis.utils.timeutil` (coerce to tz-aware UTC),
   :mod:`~precis.utils.utc_logging`, :mod:`~precis.utils.env`.

@@ -617,6 +617,7 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
     "measures",
     "logbook",
     "pourbaix",
+    "kinetics-summary",
     "status",
     "rubric",
     "served",
@@ -811,7 +812,19 @@ class QuestHandler(NumericRefHandler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
-        "get": ArgsSpec({"budget", "has_fulltext", "limit", "since", "until"}),
+        "get": ArgsSpec(
+            {
+                "budget",
+                "has_fulltext",
+                "limit",
+                "since",
+                "until",
+                "class",
+                "axis",
+                "page_size",
+                "offset",
+            }
+        ),
     }
 
     #: ``edit(id=[...])`` repeats the same edit per id in one transaction
@@ -1279,6 +1292,18 @@ class QuestHandler(NumericRefHandler):
         if view == "pourbaix" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_pourbaix(ref))
+        if view == "kinetics-summary":
+            from precis.utils.pathway_kinetics_summary import kinetics_summary
+
+            if not concrete:
+                raise BadInput(
+                    "quest kinetics-summary needs a concrete quest id",
+                    next="get(kind='quest', id='qu…', view='kinetics-summary')",
+                )
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(
+                body=kinetics_summary(self.store, quest_id=ref.id, args=args)
+            )
         # gr489411: 'status' / 'rubric' are the two names callers reach
         # for when they want the lifecycle line / the measured axes
         # without the whole digest — serve them instead of erroring.
@@ -1314,7 +1339,7 @@ class QuestHandler(NumericRefHandler):
                 options=[*_QUEST_CONCRETE_VIEWS, *EYE_LADDER, *_BASE_VIEWS],
                 next=[
                     "quest views: tree, gaps, dossier, frontier, leaderboard, "
-                    "results, series, measures, logbook, pourbaix, status, "
+                    "results, series, measures, logbook, pourbaix, kinetics-summary, status, "
                     "rubric, served, meta (quest-specific) · "
                     "fisheye ladder (kwd, summary, verbatim, fisheye, "
                     "fisheye+1hop, fisheye+2hop, optionally +recall) · "

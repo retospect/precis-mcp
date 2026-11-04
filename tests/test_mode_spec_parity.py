@@ -332,3 +332,13 @@ def test_memory_delete_options_pass_runtime_validation(
     ref = store.fetch_refs_by_ids([old.id])[old.id]
     assert ref.retired_at is None
     assert "superseded_by" not in ref.meta
+
+
+def test_kinetics_summary_views_and_args_are_declared() -> None:
+    from precis.handlers.quest import _QUEST_CONCRETE_VIEWS, QuestHandler
+    from precis_pathway.handler import PathwayHandler
+
+    assert "kinetics-summary" in PathwayHandler.spec.views
+    assert "kinetics-summary" in _QUEST_CONCRETE_VIEWS
+    for handler in (PathwayHandler, QuestHandler):
+        assert {"axis", "class", "page_size", "offset"} <= handler.ARGS["get"].keys

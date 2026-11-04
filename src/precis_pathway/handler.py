@@ -193,7 +193,9 @@ class PathwayHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with :func:`_point_args`.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
-        "get": ArgsSpec({"U", "pH", "point", "environment"}),
+        "get": ArgsSpec(
+            {"U", "pH", "point", "environment", "axis", "class", "page_size", "offset"}
+        ),
         # kinetics v2 D1 blocks, overlaid onto the YAML body (_env_overlay);
         # 'seeds' is mode='verify' only (the multi-seed dispatch count/list).
         "put": ArgsSpec({"environment", "objective", "manifest", "sweep", "seeds"}),
@@ -253,6 +255,7 @@ class PathwayHandler(Handler):
             "steps",
             "kinetics",
             "kinetics-sweep",
+            "kinetics-summary",
             "tpd",
             "manifest",
             "trust",
@@ -987,6 +990,16 @@ class PathwayHandler(Handler):
         **_kw: Any,
     ) -> Response:
         store = self.hub.live_store
+        if view is not None and view.lower() == "kinetics-summary":
+            from precis.utils.pathway_kinetics_summary import kinetics_summary
+
+            if id is not None:
+                raise BadInput(
+                    "kinetics-summary is a population view; omit the pathway id",
+                    next="get(kind='pathway', view='kinetics-summary') or "
+                    "get(kind='quest', id='qu…', view='kinetics-summary')",
+                )
+            return Response(body=kinetics_summary(store, args=args))
         if id is None:
             # A bare get lists. Search is unsupported on this kind, so until
             # 2026-10-01 an agent that did not already hold a slug had no way

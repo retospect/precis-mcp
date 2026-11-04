@@ -59,6 +59,56 @@ id='<candidate>', view='pathways')` lists every pathway that ran on that
 candidate (`meta.candidate_ref`) with status and a results-keys summary —
 the "which ready pathways of stN carry `che_affine`/`her`" read.
 
+## Count kinetics outcomes across pathways
+
+```python
+get(kind='pathway', view='kinetics-summary')
+get(kind='quest', id='qu123', view='kinetics-summary')
+get(kind='pathway', view='kinetics-summary',
+    args={'class': 'failed_observables=yes', 'page_size': 20, 'offset': 0})
+get(kind='pathway', view='kinetics-summary',
+    args={'axis': 'environment_basis', 'offset': 0})
+```
+
+The first call counts **all live pathways**, not the recent-list slice.
+The quest call counts pathways of live structures directly serving that quest
+(`candidate_ref` or `related-to`), plus pathways directly linked `serves`.
+Shared pathways count once. This view on `kind='pathway'` takes no `id`.
+
+Each table partitions the same population: `kinetics_method` (chain,
+mean-field, kMC, none), `failed_observables`, `failure_class`,
+`bep_flux_share` (0, up to 0.1, up to 0.5, above 0.5, none),
+`kinetics_trusted`, and `environment_basis` (stored hash, displayed at 12 characters).
+Each table shows at most ten values, largest counts first, then full value
+as the tie-breaker. An `other: <n> values, <m> pathways` line accounts for
+the remainder and gives the call to page it. `args={'axis': '<axis>', 'offset': 0}`
+pages that axis's complete value list with exact counts in the same order.
+Every axis includes a `no v2 solve` class for v1-only and uncomputed pathways.
+Missing failed-observable lists are `not recorded`, not `no`.
+
+Copy any count row's entire `axis=value` token into `args={'class': ...}`
+on either call to list matching `pw…` handles and their total. Listings default
+to 20 handles, accept `page_size` 1–100 and nonnegative `offset`, and provide
+the next call. Axis pages use the same pagination arguments; `axis` and
+`class` are mutually exclusive. Basis classes accept full hashes or the
+displayed 12-character prefixes; a prefix matches all bases sharing it,
+while a full stored value selects exactly that value. Counts always group
+by full stored value. Unknown classes refuse with valid values.
+
+Classification uses stored fields only, never warning/reason prose. KMC's
+positive median outranks finite mean-field TOF, then finite chain TOF. Failure
+rows are exclusive: stored diagnosis (poisoned surface names the holding
+species), stored non-positive TOF sign class, non-positive TOF without a sign
+class (`no positive steady state`), failed MF with chain fallback, other failed
+MF, then none/not recorded. Thus a poisoned chain fallback counts in the
+poisoned row. `unresolved slow mode` is omitted: no structured class was found.
+
+`kinetics_trusted` reports an explicit pathway verdict, or `not recorded`.
+Current writers stamp that verdict on jobs; the summary does not borrow a job
+verdict whose correspondence to the current recomputed solve cannot be proven.
+An absent environment hash is also `not recorded`; no config-derived basis or
+default environment is invented.
+
 ## Frame a run without spending compute / sanity-check the network first / preview intermediates
 
 Building the network is cheap (rule-based, no ML). Do it *before* you pay for
