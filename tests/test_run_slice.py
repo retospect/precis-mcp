@@ -1474,6 +1474,124 @@ def test_poll_without_a_message_file_commits_nothing(seams: dict[str, Any]) -> N
     assert not [a for a, _cwd in seams["git"] if a[:1] in (["add"], ["commit"])]
 
 
+_QUOTA_RESULT = {
+    "type": "result",
+    "is_error": True,
+    "result": "You've hit your weekly limit · resets 11am (UTC)",
+    "api_error_status": 429,
+    "api_error": "usage_limit_reached",
+}
+
+
+def _codex_and_sub() -> tuple[Lane, Lane]:
+    codex = Lane(
+        "codex", "codex_exec", "codex", 1, frozenset({"code"}), vendor="openai"
+    )
+    sub = Lane(
+        "claude-sub",
+        "claude_p",
+        "sub",
+        2,
+        frozenset({ANY_CLASS}),
+        vendor="anthropic",
+        models=("claude-test-model",),
+        model_prefix="claude-",
+    )
+    return codex, sub
+
+
+def test_poll_quota_window_parks_without_an_attempt_and_switches_vendor(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr565359 / jo565344: a claude-sub 429 is the lane's window, not the
+    task's verdict: no attempt, lease back, relaunch now on codex."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    assert ctx.meta_set["lane"] == "claude-sub"
+    codex, sub = _codex_and_sub()
+    monkeypatch.setattr(lanes, "LANES", (codex, sub))
+    _finish(handle, 1, json.dumps(_QUOTA_RESULT) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert pctx.status is None and pctx.failure is None
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags
+    assert not any(
+        t.startswith("attempt:") or t.startswith("claimed-by:") for t in tags
+    )
+    assert "pid" not in handle and handle["outage"] == "quota"
+    assert handle["not_before"] <= datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert pctx.meta_set["exclude_vendor"] == "anthropic"
+    assert pctx.meta_set["compute_handle"] is handle
+    assert pctx.meta_set["compute_handle_released"] is False
+    [event] = [t for k, t in pctx.chunks if k == "job_event"]
+    assert "no attempt burned" in event and "not anthropic" in event
+    assert store.comments(42) == []
+
+    # Due now: the next poll resubmits on the other vendor's lane.
+    launches = len(seams["launch"])
+    rctx = _poll_ctx(store, ctx)
+    rctx.meta["exclude_vendor"] = "anthropic"
+    assert run_slice.poll(rctx, handle) is False
+    assert len(seams["launch"]) == launches + 1
+    argv = seams["launch"][-1][0]
+    assert argv[0].endswith("codex") and argv[1] == "exec"
+    assert handle["pid"] == 4242 and "not_before" not in handle
+    assert rctx.meta_set["lane"] == "codex"
+    assert rctx.meta_set["exclude_vendor"] is None
+    assert "claimed-by:lane-codex" in store.tag_strings(42)
+
+
+def test_poll_quota_window_with_no_other_lane_parks_until_the_reset(
+    seams: dict[str, Any],
+) -> None:
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 1, json.dumps(_QUOTA_RESULT) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    due = datetime.strptime(handle["not_before"], "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=UTC
+    )
+    assert due > datetime.now(UTC)  # the parsed 11am (UTC) reset, ahead of now
+    assert pctx.meta_set["exclude_vendor"] is None
+    assert "STATUS:open" in store.tag_strings(42)
+    launches = len(seams["launch"])
+    assert run_slice.poll(_poll_ctx(store, ctx), handle) is False
+    assert len(seams["launch"]) == launches  # still parked
+
+
+def test_poll_plain_error_is_still_a_failed_attempt(seams: dict[str, Any]) -> None:
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 1, json.dumps({"is_error": True, "result": "Tool crashed."}) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "attempt:1" in store.tag_strings(42)
+
+
+def test_submit_skips_the_excluded_vendor(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex, sub = _codex_and_sub()
+    monkeypatch.setattr(lanes, "LANES", (codex, sub))
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _Ctx(store, {"todo_id": 42}, exclude_vendor="openai")
+    handle = run_slice.submit(ctx, None)
+    assert handle is not None and ctx.meta_set["lane"] == "claude-sub"
+    monkeypatch.setattr(lanes, "LANES", (sub,))
+    store.add_todo(43, "t")
+    ctx = _Ctx(store, {"todo_id": 43}, exclude_vendor="anthropic")
+    assert run_slice.submit(ctx, None) is None
+    assert ctx.failure is not None and "no lane free" in ctx.failure
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(43))
+
+
 def test_commit_message_demotes_a_bare_subject(tmp_path: Path) -> None:
     (tmp_path / "scratch").mkdir()
     msg = tmp_path / "scratch" / "commit-msg.txt"

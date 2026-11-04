@@ -608,6 +608,16 @@ def release_todo(store: Any, todo_id: int, lane: str | None) -> int:
     return attempt
 
 
+def unclaim_todo(store: Any, todo_id: int, lane: str | None) -> None:
+    """Give the lease back with no attempt burned: the lane's window failed
+    (a quota or rate notice), not the task (gr565359)."""
+    if lane:
+        store.remove_tag(todo_id, Tag.open(f"claimed-by:lane-{lane}"))
+    store.add_tag(
+        todo_id, Tag.closed("STATUS", "open"), set_by="system", replace_prefix=True
+    )
+
+
 def close_todo(
     store: Any, todo_id: int, lane: str | None, *, tags: tuple[str, ...] = ()
 ) -> None:
@@ -1186,7 +1196,11 @@ def submit(ctx: Any, spec: Any) -> Any:
         # codex CLI rejects.
         pin = params.get("model")
         model_pin = pin.strip() if isinstance(pin, str) and pin.strip() else None
-        lane = _lanes.pick_lane(store, task_class, model=model_pin)
+        # A relaunch after a lane's quota/rate window (gr565359) skips that
+        # vendor outright; the table shrinks, it does not fall back.
+        exclude = str((ctx.meta or {}).get("exclude_vendor") or "")
+        table = tuple(ln for ln in _lanes.LANES if not exclude or ln.vendor != exclude)
+        lane = _lanes.pick_lane(store, task_class, lanes=table, model=model_pin)
         if lane is None:
             if model_pin and not any(
                 ln.enabled and ln.fits(task_class) and ln.accepts_model(model_pin)
@@ -1480,12 +1494,150 @@ def _deny_reason(tree: Path, deny_paths: tuple[str, ...]) -> str | None:
     return "touched deny_write_paths: " + ", ".join(f"`{p}`" for p in hits[:50])
 
 
+#: Failure classes that are the lane's window, not the task's verdict
+#: (gr565359): a Claude quota notice, a 429. The router's classifier
+#: (:mod:`precis.utils.llm.failure`) names them.
+_OUTAGE_CLASSES = frozenset({"quota", "rate"})
+#: Park horizon when the outage names no reset instant.
+OUTAGE_BACKOFF = timedelta(hours=2)
+_NOT_BEFORE_FMT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def _lane_outage(
+    result: str | None, log_text: str
+) -> tuple[str, datetime | None] | None:
+    """``(class, retry_at)`` when the session died of its lane's window —
+    the result wording classifies ``quota``/``rate``, or the CLI's final
+    JSON carries ``api_error_status`` 429 — else ``None``.
+
+    jo565344: ``claude -p`` answered in 644 ms with a 429 and "You've hit
+    your weekly limit · resets 11am (UTC)"; the poll read that as a failed
+    attempt, which with the earlier sandbox miss hit the retry cap."""
+    from precis.utils.llm.failure import classify_text
+
+    text = result or ""
+    status: Any = None
+    tail = log_text.strip().splitlines()[-1].strip() if log_text.strip() else ""
+    if tail.startswith("{"):
+        try:
+            obj = json.loads(tail)
+        except ValueError:
+            obj = None
+        if isinstance(obj, dict):
+            status = obj.get("api_error_status")
+            extra = obj.get("api_error")
+            if isinstance(extra, str) and extra:
+                text = f"{text} {extra}".strip()
+    found = classify_text(text)
+    if found.reason_class in _OUTAGE_CLASSES:
+        return str(found.reason_class), found.retry_at
+    if status == 429:
+        return "rate", None
+    return None
+
+
+def _outage_alternative(
+    store: Any, todo_id: int, params: dict[str, Any], vendor: str
+) -> bool:
+    """Whether another vendor's enabled lane fits this slice right now, so
+    the relaunch need not wait for the window: never for a pinned lane or
+    a generator (its MCP lane is the Claude one)."""
+    if params.get("lane") or not vendor:
+        return False
+    todo = store.get_ref(kind="todo", id=todo_id)
+    if node_kind(todo.meta) == "generator":
+        return False
+    task_class = str((todo.meta or {}).get("task_class") or _DEFAULT_TASK_CLASS)
+    others = tuple(ln for ln in _lanes.LANES if ln.vendor != vendor)
+    return _lanes.pick_lane(store, task_class, lanes=others) is not None
+
+
+def _park_outage(
+    ctx: Any,
+    handle: dict[str, Any],
+    todo_id: int,
+    lane: str | None,
+    cls: str,
+    retry_at: datetime | None,
+) -> bool:
+    """The lane's window closed on the session: hand the lease back with
+    no attempt burned, drop the dead process from the handle and park it
+    with ``not_before`` — now, when another vendor's lane can take the
+    slice (``meta.exclude_vendor`` steers the relaunch there), else the
+    parsed reset (or :data:`OUTAGE_BACKOFF`). The job stays running, as
+    land_slice's deferral does; :func:`_relaunch_when_due` resubmits.
+    Always ``False``."""
+    now = datetime.now(UTC)
+    lane_obj = _lanes.get_lane(str(lane)) if lane else None
+    vendor = lane_obj.vendor if lane_obj is not None else ""
+    params = (ctx.meta or {}).get("params") or {}
+    unclaim_todo(ctx.store, todo_id, str(lane) if lane else None)
+    _revoke_slice_grant(ctx, todo_id, _handle_grant(handle), "aborted")
+    for key in ("pid", "pgid", "boot_id", "start_time", "ps_identity"):
+        handle.pop(key, None)
+    Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
+    switch = _outage_alternative(ctx.store, todo_id, params, vendor)
+    if switch:
+        due = now
+        where = f"another vendor's lane (not {vendor})"
+    else:
+        due = (
+            retry_at
+            if retry_at is not None and retry_at > now
+            else now + OUTAGE_BACKOFF
+        )
+        where = f"lane {lane} once its window resets"
+    handle.update(not_before=due.strftime(_NOT_BEFORE_FMT), outage=cls)
+    ctx.append_chunk(
+        "job_event",
+        f"run_slice: lane {lane} {cls} window closed on td{todo_id}; lease back "
+        f"with no attempt burned; relaunch after {due:%Y-%m-%dT%H:%M}Z on {where}",
+    )
+    deadline = now.timestamp() + max((due - now).total_seconds(), 0.0) + wall_seconds()
+    ctx.set_meta(
+        compute_handle=handle,
+        compute_handle_released=False,
+        deadline=deadline,
+        exclude_vendor=vendor if switch else None,
+    )
+    return False
+
+
+def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
+    """Poll half of a parked outage: ``False`` before ``not_before``; at or
+    after it, run :func:`submit` again (a fresh lane pick, the excluded
+    vendor skipped) and persist the new handle in place. ``True`` only
+    when submit drove the job terminal itself."""
+    try:
+        due = datetime.strptime(str(handle["not_before"]), _NOT_BEFORE_FMT).replace(
+            tzinfo=UTC
+        )
+    except (KeyError, ValueError):
+        due = datetime.now(UTC)  # unreadable marker: do not park forever
+    if datetime.now(UTC) < due:
+        return False
+    fresh = submit(ctx, None)
+    if fresh is None:
+        return True
+    handle.clear()
+    handle.update(fresh)
+    ctx.set_meta(
+        compute_handle=fresh,
+        compute_handle_released=False,
+        deadline=datetime.now(UTC).timestamp() + wall_seconds(),
+        exclude_vendor=None,
+    )
+    return False
+
+
 def poll(ctx: Any, handle: Any) -> bool:
     """Detached poll half: ``False`` while the session runs; once it has
     exited, the handoff, the branch state and the terminal status."""
     if not isinstance(handle, dict):
         ctx.record_failure(f"run_slice: malformed handle {handle!r}")
         return True
+    if handle.get("not_before"):
+        return _relaunch_when_due(ctx, handle)
     exit_code = _read_exit(handle)
     tree = Path(str(handle.get("worktree") or ""))
     vanished = not tree.is_dir()
@@ -1514,6 +1666,11 @@ def poll(ctx: Any, handle: Any) -> bool:
         )
         return True
     result, is_error = adapter.parse_result(log_text, tree, exit_code=exit_code)
+    if is_error and not vanished:
+        outage = _lane_outage(result, log_text)
+        if outage is not None:
+            # The lane's window, not the task: no attempt, no handoff.
+            return _park_outage(ctx, handle, todo_id, lane, *outage)
     # Server-side deny check, before the handoff lands: independent of
     # whether the session honoured its deny rules (Bash writes included).
     denied = _deny_reason(tree, _lane_deny_paths(lane))
