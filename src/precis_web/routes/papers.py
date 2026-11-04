@@ -63,6 +63,7 @@ from precis.utils.authors import (
 )
 from precis.utils.embed_query import embed_query
 from precis.utils.handle_registry import format_handle
+from precis.utils.handle_registry import parse as parse_handle
 from precis.utils.toc_db import build_toc_segments
 from precis_web.corpus import (
     pdf_candidates,
@@ -743,16 +744,18 @@ _DOC_FAMILY: tuple[str, ...] = ("paper", "cfp", "pres", "datasheet")
 def _resolve_paper(
     store: Store, ident: str, *, kinds: tuple[str, ...] = ("paper",)
 ) -> Any | None:
-    """Resolve a path ``ident`` (numeric id *or* cite_key slug) to a ref
+    """Resolve a path ``ident`` (numeric id, handle or cite_key slug) to a ref
     in the document family ``kinds``.
 
     All-digit idents are treated as the numeric ref id (back-compat with
     the old ``/papers/<id>`` URLs + ``?chunk=`` citation deep links); any
-    other ident is a slug, resolved through ``ref_identifiers`` under
-    ``kinds[0]``. Returns ``None`` when nothing live with a kind in
-    ``kinds`` matches. ``kinds`` defaults to paper-only; the ref_id
-    sidebar endpoints pass ``_DOC_FAMILY`` so a ``cfp`` reader reuses
-    them, and the ``/cfp`` detail route passes ``("cfp",)``.
+    other ident is first a slug, resolved through ``ref_identifiers`` under
+    ``kinds[0]``, then a record handle checked for kind. Slug wins because
+    a cite_key like ``ma2020`` also parses as a handle. Returns ``None``
+    when nothing live with a kind in ``kinds`` matches. ``kinds`` defaults
+    to paper-only; the ref_id sidebar endpoints pass ``_DOC_FAMILY`` so a
+    ``cfp`` reader reuses them, and the ``/cfp`` detail route passes
+    ``("cfp",)``.
     """
     if ident.isdigit():
         ref = store.fetch_refs_by_ids([int(ident)], include_deleted=False).get(
@@ -765,6 +768,14 @@ def _resolve_paper(
             if ids
             else None
         )
+        handle = parse_handle(ident) if ref is None else None
+        if handle is not None:
+            kind, is_chunk, ref_id = handle
+            if is_chunk or kind not in kinds:
+                return None
+            ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
+            if ref is None or ref.kind != kind:
+                return None
     if ref is None or ref.kind not in kinds:
         return None
     return ref
@@ -802,15 +813,19 @@ async def detail(
     operator checking or fixing a record wants first. ``?pdf_note=`` is the
     Replace-PDF post's outcome flash, rendered on the Meta tab.
 
-    Addressable by cite_key slug (canonical) or numeric id; a numeric id
-    that owns a slug 301-redirects to the slug URL so links settle on the
-    stable handle while old ``/papers/<id>`` deep links keep working.
+    Addressable by cite_key slug (canonical), numeric id or paper handle;
+    an id or handle that owns a slug 301-redirects to the slug URL so links
+    settle on the stable handle while old ``/papers/<id>`` deep links keep working.
     """
     store = get_store(request)
     ref = _resolve_paper(store, ident)
     if ref is None:
         raise NotFound(f"paper {ident!r} not found")
-    if ident.isdigit() and ref.slug:
+    if (
+        (ident.isdigit() or parse_handle(ident) is not None)
+        and ref.slug
+        and ident != ref.slug
+    ):
         target = f"/papers/{ref.slug}"
         if request.url.query:
             target = f"{target}?{request.url.query}"

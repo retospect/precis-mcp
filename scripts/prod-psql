@@ -10,6 +10,7 @@
 #
 # Usage:
 #   scripts/prod-psql "SELECT count(*) FROM refs;"    # one-shot query
+#   scripts/prod-psql -c "SELECT count(*) FROM refs;" # same one-shot path
 #   echo "SELECT ..." | scripts/prod-psql              # piped SQL (stdin)
 #   scripts/prod-psql -f query.sql                     # SQL from a local file —
 #                                                      # read HERE and sent as
@@ -151,6 +152,7 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 usage: scripts/prod-psql [--ro] "SQL"     # one-shot query (or SQL on stdin)
+       scripts/prod-psql [--ro] -c "SQL"  # alias for the positional SQL
        scripts/prod-psql [--ro] -f FILE   # SQL from a local file
        scripts/prod-psql                  # interactive psql (agent_rw)
        scripts/prod-psql --help           # this text
@@ -179,6 +181,9 @@ fine.
                     checks/-c path as piped SQL — the file is read here;
                     the ssh hop never sees the path. Don't pass inline SQL
                     too. A missing or unreadable file exits 2.
+
+  -c SQL   alias for positional SQL; all guards and the row cap still apply.
+           Supply one SQL argument, without -f or additional inline SQL.
 
   --explain   read-only EXPLAIN: runs "EXPLAIN <sql>" as agent_ro. FOR
               UPDATE/FOR SHARE/SKIP LOCKED tails are stripped (agent_ro
@@ -244,10 +249,18 @@ EOF
 RO=0
 EXPLAIN=0
 FILE=""
+COMMAND=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --ro) RO=1 ;;
         --explain) EXPLAIN=1; RO=1 ;;
+        -c)
+            if [[ $# -lt 2 || -z "$2" || -n "$COMMAND" ]]; then
+                echo "prod-psql: -c needs one SQL argument and may be used only once." >&2
+                usage >&2
+                exit 2
+            fi
+            COMMAND="$2"; shift ;;
         -f|--file)
             if [[ $# -lt 2 || -z "$2" ]]; then
                 echo "prod-psql: $1 needs a FILE path." >&2
@@ -261,6 +274,12 @@ while [[ $# -gt 0 ]]; do
                 exit 2
             fi ;;
         --help|-h) usage; exit 0 ;;
+        -*)
+            # SQL can open with a "-- comment": a token with whitespace is SQL.
+            [[ "$1" =~ [[:space:]] ]] && break
+            echo "prod-psql: unknown option '$1'." >&2
+            usage >&2
+            exit 2 ;;
         *) break ;;
     esac
     shift
@@ -271,6 +290,16 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     # second copy that drifts.
     sed -n '2,/^set -euo pipefail$/p' "$0" | sed -e '$d' -e 's/^#//' -e 's/^ //'
     exit 0
+fi
+
+if [[ -n "$COMMAND" ]]; then
+    if [[ -n "$FILE" || $# -gt 0 ]]; then
+        echo "prod-psql: -c already supplies the SQL — do not pass -f/--file or inline SQL too." >&2
+        usage >&2
+        exit 2
+    fi
+    # Normalize to positional SQL so every execution guard stays shared.
+    set -- "$COMMAND"
 fi
 
 HOST="${PRECIS_PROD_SSH_HOST:-caspar}"

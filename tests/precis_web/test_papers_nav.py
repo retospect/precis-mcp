@@ -55,6 +55,62 @@ def test_detail_numeric_redirect_preserves_query(client) -> None:
     assert resp.headers["location"] == "/papers/smith2024?chunk=3"
 
 
+def test_detail_handle_redirect_preserves_query(client, runtime) -> None:
+    runtime.store.salience_bumps.clear()
+    resp = client.get("/papers/pa10?chunk=3&tab=Jump", follow_redirects=False)
+    assert resp.status_code == 301
+    assert resp.headers["location"] == "/papers/smith2024?chunk=3&tab=Jump"
+    assert runtime.store.salience_bumps == []
+
+
+@pytest.mark.parametrize("ident", ["10", "pa10"])
+def test_detail_id_and_handle_reach_paper(client, ident) -> None:
+    resp = client.get(f"/papers/{ident}")
+    assert resp.status_code == 200
+    assert resp.url.path == "/papers/smith2024"
+    assert "pa10" in resp.text
+
+
+@pytest.mark.parametrize("ident", ["10", "pa10"])
+def test_detail_id_and_handle_without_slug_render(client, runtime, ident) -> None:
+    ref = runtime.store.get_ref(kind="paper", id="smith2024")
+    ref.slug = None
+    resp = client.get(f"/papers/{ident}", follow_redirects=False)
+    assert resp.status_code == 200
+    assert "pa10" in resp.text
+
+
+@pytest.mark.parametrize("ident", ["999999", "pa999999", "gr10", "pc10"])
+def test_detail_unknown_or_wrong_kind_handle_404s(client, ident) -> None:
+    resp = client.get(f"/papers/{ident}", follow_redirects=False)
+    assert resp.status_code == 404
+
+
+def test_detail_handle_rejects_non_paper_record(client, runtime) -> None:
+    ref = runtime.store.get_ref(kind="paper", id="smith2024")
+    ref.kind = "gripe"
+    assert client.get("/papers/pa10", follow_redirects=False).status_code == 404
+
+
+def test_detail_handle_matching_slug_does_not_redirect_to_itself(
+    client, runtime
+) -> None:
+    ref = runtime.store.get_ref(kind="paper", id="smith2024")
+    ref.slug = "pa10"
+    assert client.get("/papers/pa10", follow_redirects=False).status_code == 200
+
+
+@pytest.mark.parametrize("slug", ["ma2020", "gr2021", "pa2020"])
+def test_detail_cite_key_shaped_like_a_handle_stays_a_slug(
+    client, runtime, slug
+) -> None:
+    ref = runtime.store.get_ref(kind="paper", id="smith2024")
+    ref.slug = slug
+    resp = client.get(f"/papers/{slug}", follow_redirects=False)
+    assert resp.status_code == 200
+    assert "pa10" in resp.text
+
+
 def test_detail_by_slug_renders(client) -> None:
     """The slug URL resolves straight through (no redirect) and renders
     the sidebar-nav reader."""
