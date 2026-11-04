@@ -1494,6 +1494,10 @@ class DispatchMixin(RuntimeShape):
         # Classified before dispatch — _invoke_handler pops extent=/ring=
         # from args, and the shape is a property of the caller's spelling.
         shape = read_shape(verb, args)
+        extras = args.get(_EXTRAS_KEY)
+        memory_batch = (
+            verb == "search" and isinstance(extras, dict) and "batch" in extras
+        )
         with self.hub.request_scope(verb=verb):
             try:
                 if verb not in _VERBS:
@@ -1527,19 +1531,26 @@ class DispatchMixin(RuntimeShape):
                 # corpus (the filter is AND/exclusive) — append the
                 # coverage note while the axis sits below the
                 # filter-ready bar. Best-effort: never fails a search.
-                if verb == "search":
+                if verb == "search" and not memory_batch:
                     response = _with_categorizer_filter_notes(self, args, response)
-                body = self._render(response)
+                # Batch children have already rendered their own hints and
+                # filter notes. Appending prose would corrupt the envelope.
+                body = response.body if memory_batch else self._render(response)
                 rendered = body
-                body = fit_result_body(
-                    body,
-                    verb=verb,
-                    kind=args.get("kind"),
-                    context_limited=fold,
-                    targeted_hint=response.result_budget_hint,
-                    read=shape,
-                    outline=response.budget_outline,
-                )
+                if memory_batch:
+                    from precis.runtime.memory_batch import fit_memory_batch_body
+
+                    body = fit_memory_batch_body(body, context_limited=fold)
+                else:
+                    body = fit_result_body(
+                        body,
+                        verb=verb,
+                        kind=args.get("kind"),
+                        context_limited=fold,
+                        targeted_hint=response.result_budget_hint,
+                        read=shape,
+                        outline=response.budget_outline,
+                    )
                 budget_fitted = body != rendered
                 if (
                     verb == "get"
@@ -1868,6 +1879,13 @@ class DispatchMixin(RuntimeShape):
         The note is **prepended** so it leads the complete bounded result
         rather than appearing after all hits.
         """
+        extras = args.get(_EXTRAS_KEY)
+        if verb == "search" and isinstance(extras, dict) and "batch" in extras:
+            from precis.runtime.memory_batch import dispatch_memory_batch
+
+            return dispatch_memory_batch(
+                args, lambda child: self._dispatch_status("search", child)
+            )
         note: str | None = None
         listing_kinds: tuple[list[str] | None] | None = None
         canon_state = None

@@ -78,6 +78,15 @@ a clean graph writes nothing: no reviews, no chunks, no log spam.
    (merge repointing, or the reviewed structural write for a relink —
    gr507641).
 
+**Memory reconciliation.** Memory candidates (including ``dup_pair``) and the
+interactive ``precis-make-memory`` skill share the packaged memory-help policy
+through :mod:`precis.utils.memory_reconcile`. Proposer, consumer and sampled
+reviewers use the exact same section; a policy digest versions only memory
+proposer rejections. This keeps identity, conflict and preservation judgments
+consistent without moving interpretation into the detectors or broadening
+their apply doors. Sampled memory reviews also read bounded body excerpts;
+merge repointing does not synthesize a loser's unique claims into the winner.
+
 **Scheduling.** The ``graph_garden`` job_type (``job_inproc`` executor)
 runs one bounded pass per tick — ``params.pass`` picks the detector
 subset (``merge|split|relink|prune|tag-sweep|siblings|paper-identity|memory|all``,

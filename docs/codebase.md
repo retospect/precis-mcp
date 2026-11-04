@@ -94,6 +94,12 @@ Headless slice jobs delegate vendor launch/output protocols to
 `workers/job_types/_slice_adapters.py`; `run_slice` owns leases, credentials
 and the branch check before handing work to the lander.
 
+Memory capture (`precis-make-memory`) and graph-gardener judgments share the
+packaged memory-help reconciliation policy. The interactive agent resolves new
+claims before writing; the gardener evaluates existing maintenance candidates
+through its reviewed apply paths. Labelled memory search batches reuse ordinary
+search dispatch and preserve each query's results and errors separately.
+
 ## Subsystems (where the code lives)
 
 | Box | Code | One-line |

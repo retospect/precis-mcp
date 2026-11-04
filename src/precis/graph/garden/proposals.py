@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from precis.graph.garden.candidates import GardenCandidate
+from precis.utils.handle_registry import parse as parse_handle
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -77,6 +78,21 @@ class GardenProposal:
     model: str | None
     at: Any
     current: bool
+
+
+def proposal_ref_ids(proposal: GardenProposal) -> list[int]:
+    """Named refs whose own contents support a proposal's review."""
+    ids = [proposal.target_id] if proposal.target_kind == "ref" else []
+    for key in ("winner", "loser", "parent"):
+        val = proposal.payload.get(key)
+        if isinstance(val, int):
+            ids.append(val)
+    if proposal.detector == "dangling_mention":
+        for mention in proposal.evidence.get("mentions", []):
+            successor = parse_handle(str(mention.get("successor") or ""))
+            if successor is not None and not successor[1]:
+                ids.append(successor[2])
+    return list(dict.fromkeys(ids))
 
 
 def _parse_note(note: str | None) -> dict[str, Any] | None:

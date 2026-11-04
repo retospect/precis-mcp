@@ -15,6 +15,14 @@ tool ledger retains the caller's reference envelope, never expanded content.
 Licensed live responses opt out of pagination caching while retaining the
 frame limit. The tool ledger already stores only call metadata, not content.
 
+Labelled memory search batches expand before shared subtree filters resolve.
+Each child uses ordinary dispatch and keeps its own ranking and error envelope;
+shared tags are ANDed with item tags so a batch cannot drop its SPACE scope.
+The eight-item/ten-hit bounds limit context while sequential dispatch retains
+normal request/user scope without sharing a connection across worker threads.
+The aggregate JSON is indivisible: an oversized envelope refuses with a
+smaller-batch recovery instead of passing through the prose truncation fitter.
+
 Read-scope handle redirects recheck the resolved kind against the sandbox
 allowlist before rewriting dispatch arguments: the server's earlier gate
 only saw the caller's kind, which a conversion can change.

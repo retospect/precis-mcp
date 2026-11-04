@@ -13,6 +13,7 @@ answers:
   - do I have to type kΩ / µ / Å, or will ASCII work?
   - how do I exclude everything a draft already cites from a search?
   - how do I search for sources a draft hasn't cited yet?
+  - how do I run several independent memory searches in one call?
 applies-to: search (every kind that supports it)
 status: active
 tags: orientation, verbs, troubleshooting
@@ -693,3 +694,54 @@ hidden by your scope — pass
 `status='*'` or an explicit lifecycle tag to include history. Dormant
 quests stay live, abandoned ones don't; alerts read history via
 `alert-state:` (`status='resolved'`).
+
+## Search several memory questions in one call
+
+`args={'batch': [...]}` runs 1–8 independent memory searches. Results stay
+labelled and ordered; rankings are never fused. Each item requires a unique
+nonempty `key` and a nonempty string `q`. Omit the outer `q`.
+
+```python
+search(
+    kind="memory",
+    tags=["SPACE:repo-dev"],
+    mode="lexical",
+    args={
+        "batch": [
+            {"key": "jane", "q": "Jane"},
+            {"key": "bill", "q": "Bill", "page_size": 3},
+        ],
+    },
+)
+```
+
+An item may also set `scope`, `page_size`, `mode`, `view`, `tags`, `under`,
+or `depth`, directly in that object. Other fields, nested `args`, and nested
+batches are refused. These fields override shared defaults, except `tags`:
+item tags are ANDed with shared tags, preserving the outer SPACE restriction.
+Shared fields use the same list. Batch views are the default, `index`, `ids`,
+or `count`; special browse/spray forms such as `dreamable`, `stubs`, `rulings`,
+`angle` and `n` are refused before searching.
+`scope` retains memory search's `title`/`body` meaning. `under` restricts a
+claim search to the owner's `part-of` subtree when that structure exists.
+
+Each effective `page_size` defaults to 5 and must be at most 10. All item
+shapes are validated before any search runs. Queries then run sequentially
+through ordinary search dispatch, including filter validation and error
+mapping. The response is a JSON envelope with ordered `results` entries:
+`{"key": "jane", "q": "Jane", "is_error": false, "body": "..."}`.
+`body` contains that individual search's usual result text. A valid batch
+envelope succeeds even when an item fails: inspect every `is_error` and
+retain the successful items. Malformed envelopes fail the whole call with
+a recovery instruction. Unknown shared options are refused before searching.
+The complete labelled envelope must fit the response budget. If it is too
+large, the call returns `ResultBudgetExceeded` with a smaller-batch recovery;
+it never truncates JSON or silently drops labels. Child bodies retain ordinary
+single-search response budgeting.
+Use `page_size` for a batch: the deprecated `k`/`limit` aliases and `offset`
+are refused at the tool boundary because their prose acknowledgments would
+corrupt the labelled JSON envelope.
+
+For value updates, search the subject/property ("Bill dog colour") so an
+existing conflicting value can surface. Whole-sentence search for only the
+proposed value can miss it. Reconciliation: `precis-make-memory`.

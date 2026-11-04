@@ -36,12 +36,12 @@ from precis.graph.garden.candidates import (
 )
 from precis.graph.garden.proposals import emit_proposal, key_block, record_rejection
 from precis.graph.garden.proposer import (
-    MEMORY_ACTIONS,
     MEMORY_PROMPT_VERSION,
     PROMPT_VERSION,
     Verdict,
     propose_llm,
 )
+from precis.utils.memory_reconcile import uses_memory_policy
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -142,7 +142,9 @@ def run_garden_tick(
         """Propose one candidate; True when a proposal row was written.
         Sets ``out.paused`` on a window-scoped pause."""
         prompt_version = (
-            MEMORY_PROMPT_VERSION if cand.detector in MEMORY_ACTIONS else PROMPT_VERSION
+            MEMORY_PROMPT_VERSION
+            if uses_memory_policy(cand.detector, cand.evidence, cand.payload)
+            else PROMPT_VERSION
         )
         block = key_block(
             store,

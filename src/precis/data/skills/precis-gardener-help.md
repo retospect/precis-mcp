@@ -11,6 +11,7 @@ answers:
   - how do I turn the gardener on?
   - what is a polysemy finding and when does it trigger a split proposal?
   - why did two sibling taxa get a merge proposal?
+  - does a memory record when it was last gardened?
 applies-to: get/search (kind='taxon'/'concept'/'memory'/'finding'), reviews ledger
 tags: [workflow]
 kinds: [taxon, concept, memory, finding, job]
@@ -27,6 +28,12 @@ payload JSON in `note` (`garden.action`, `garden.evidence`,
 `garden.payload`, `garden.rationale`). A row stays *current* while its
 `content_sha` matches the target now; an edited target makes the
 proposal stale by itself.
+
+Memory judgments share [[precis-memory-help]] §"Memory reconciliation policy"
+with [[precis-make-memory]]. The proposer, consumer and sampled reviewers load
+the exact packaged section, including memory `dup_pair` candidates. Its digest
+versions memory proposer rejections independently of other kinds. Maintenance
+action restrictions and existing audited apply/undo paths still govern.
 
 ## What it scans
 
@@ -170,6 +177,28 @@ args={'days': 30})` reports per kind: live refs, how many were
 considered inside the window on their current sha, the share, and the
 breakdown by reviewing model — the answer to "how much of the graph has
 a reviewer actually looked at, and who".
+
+## When was a memory last gardened?
+
+There is no per-memory `last_gardened_at` column. Distinguish three events:
+
+- **Scanned:** detector windows/cursors live on the run's `meta.garden.cursors`.
+  A clean scan writes no per-node event, so the ledger cannot prove a memory's
+  last scan time.
+- **Reviewed:** `reviews.at` dates a proposal or verdict, with `content_sha`
+  identifying the version judged. A proposal is not a completed review.
+  `revisions.at` and its `trust_acts` record `consider` acts with `expected_sha`;
+  `payload.kg_review.date`, when present, is the review date used by the
+  freshness filter. `freshly_considered` also requires the current content SHA
+  and `trust_confidence='considered'`. This is general review currency, not
+  proof that the gardener visited every detector for that node.
+- **Applied:** an approved garden decision with `garden.applied` records an
+  actual change. A merge decision also names its loser and winner; review the
+  payload to find all involved nodes, rather than assuming `target_id` covers
+  both.
+
+Content changes invalidate content-pinned review currency. An unconditional
+timestamp alone would incorrectly skip a memory edited after its review.
 
 ## The ledger row
 

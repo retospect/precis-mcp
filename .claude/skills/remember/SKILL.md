@@ -25,10 +25,18 @@ recipe; the `put`/`edit` response's `Next:` lines do most of it for you.
 
 ## Write recipe
 
+Free text with several subjects/claims: use
+`get(kind='skill', id='precis-make-memory')` for extraction, labelled batch
+recall and reconciliation. The canonical identity/duplicate/conflict rules are
+`precis-memory-help` §"Memory reconciliation policy"; the gardener loads that
+same section. This recipe supplies repo-dev filing conventions after judgment.
+
 1. **Search first.** `search(kind='memory', tags=['SPACE:repo-dev'],
    q='<the fact>', view='index')`. Narrow to one hub with
    `args={'under': 'me<hub>'}`, to one type with `tags=[…, 'section:gotchas']`.
-2. **Same subject exists → edit it.** Anchored
+2. **Reconcile before writing.** An unchanged claim is a no-op; apply the shared
+   policy to identity uncertainty and conflicting values. **Same claim with a
+   supported update → edit it.** Anchored
    `edit(kind='memory', id='me…', find='<old>', text='<new>')`; a wrong fact
    takes `reason=`. No second node.
 3. **New → put it.**

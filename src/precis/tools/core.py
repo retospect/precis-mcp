@@ -1035,6 +1035,26 @@ def search(
     # fallback only when no kind was given (gr536312).
     _next_kind = kind or "paper"
 
+    # Alias acknowledgments are prose prefixed to an ordinary result.
+    # The labelled batch envelope must remain complete JSON instead.
+    if args is not None and "batch" in args:
+        batch_aliases = [
+            name
+            for name, value in (("k", k), ("limit", limit), ("offset", offset))
+            if value is not None
+        ]
+        if batch_aliases:
+            runtime = _get_runtime()
+            return _validation_error(
+                runtime.render_error(
+                    BadInput(
+                        f"memory search batches do not support {', '.join(batch_aliases)}=",
+                        next="use page_size= (maximum 10 per batch item) and omit "
+                        "k=/limit=/offset= from the batch call",
+                    )
+                )
+            )
+
     # k=/limit= are aliases for page_size= (gr338443, gr530420). Collect
     # whichever of {page_size, k, limit} were actually given a value (all
     # three default to None, so an explicit page_size=10 still counts as

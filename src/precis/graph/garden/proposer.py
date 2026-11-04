@@ -30,6 +30,11 @@ from typing import TYPE_CHECKING, Any
 
 from precis.graph.garden.candidates import GardenCandidate
 from precis.utils.handle_registry import parse as parse_handle
+from precis.utils.memory_reconcile import (
+    memory_policy_version,
+    memory_reconciliation_policy,
+    uses_memory_policy,
+)
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -52,7 +57,7 @@ PROMPT_VERSION = "garden-propose.v2"
 
 #: Memory rules evolve independently: existing detectors must not re-ask
 #: unchanged rejections merely because another detector was introduced.
-MEMORY_PROMPT_VERSION = "garden-propose.memory.v2"
+MEMORY_PROMPT_VERSION = memory_policy_version()
 MEMORY_ACTIONS = {
     "dangling_mention": ("rewrite",),
     "thread_shape": ("supersede", "retire"),
@@ -217,6 +222,8 @@ def _prompt_for(
             )
             + _MEMORY_RULES
         )
+    if uses_memory_policy(candidate.detector, candidate.evidence, candidate.payload):
+        head += "\n" + memory_reconciliation_policy()
     return (
         head
         + "\nCandidate:\n"
