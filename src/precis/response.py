@@ -58,3 +58,9 @@ class Response:
     #: where the count is already in hand — never an extra COUNT query
     #: for the ledger's sake.
     result_count: int | None = None
+
+    #: Fit indivisible content units to the supplied UTF-8 byte budget,
+    #: or raise ResultBudgetExceeded if none fit. Runtime reserves its
+    #: hint/cost suffix first. The callback owns the continuation and
+    #: must use the already-loaded content, without another store read.
+    budget_fit: Callable[[int], str] | None = None

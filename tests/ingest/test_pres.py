@@ -396,6 +396,26 @@ class TestExtractPresPages:
     replaced collapsed a whole deck onto 1-2 slides because the Marker
     path re-derived pages from a TOC decks don't have)."""
 
+    def test_latexit_payload_removed_with_adjacent_prose_preserved(
+        self, tmp_path: Path
+    ):
+        pdf = _make_pdf(
+            [
+                'Real heading\nBefore payload.<latexit sha1_base64="YWJj">\n'
+                "YWJjZA==\n</latexit>After payload.\n"
+                "<latex>keep this formula</latex>",
+            ],
+            tmp_path / "latexit.pdf",
+        )
+        result = extract_pres(pdf)
+        assert len(result.slides) == 1
+        slide = result.slides[0]
+        assert slide.slide_title == "Real heading"
+        assert "Before payload.After payload." in slide.text
+        assert "<latex>keep this formula</latex>" in slide.text
+        assert "latexit" not in slide.text
+        assert "YWJj" not in slide.text
+
     def test_one_slide_per_page(self, tmp_path: Path):
         pytest.importorskip("fitz")
         pdf = _make_pdf(

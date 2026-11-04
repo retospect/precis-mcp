@@ -122,7 +122,17 @@ get(kind="pres", id="2026-06-talk-precis-architecture/full")  # all blocks
 get(
     kind="pres", id="2026-06-talk-precis-architecture~2"
 )  # single block (output shows handle ps<id>; get(id='ps<id>') works too)
+get(kind="pres", id="pr123~2..10")  # inclusive range of stored block positions
 ```
+
+Positions are zero-based. A range ending past the last block returns the
+available blocks; a range wholly outside the deck reports its valid bounds.
+`/full` and range reads stop at a slide boundary when the byte budget binds.
+Follow the footer's exact `next: get(kind='pres', id='pr123~N..M')` call
+until no continuation remains: each slide appears once, including tail
+references. A slide too large to fit whole refuses with a budget remedy.
+LaTeXiT payloads are removed during PDF extraction and when reading old decks;
+surrounding slide text is retained.
 
 ## Check or download the stored PDF
 

@@ -254,6 +254,8 @@ def fit_result_body(
     targeted_hint: str | None,
     read: str = "single",
     outline: str | Callable[[], str | None] | None = None,
+    structured_fit: Callable[[int], str] | None = None,
+    suffix: str = "",
 ) -> str:
     """Fit ``body`` to the budgets that bind this read; return the result.
 
@@ -284,6 +286,14 @@ def fit_result_body(
         cap_name = f"PRECIS_MAX_BODY_BYTES ({frame_cap} bytes)"
     else:
         return body
+    if structured_fit is not None:
+        # Runtime's suffix carries hints and cost receipts. Fit the
+        # handler's indivisible units into the space those leave, keeping
+        # its exact continuation instead of cutting it again by lines.
+        cap = min(cap, frame_cap)
+        if size <= cap:
+            return body
+        return structured_fit(cap - body_bytes(suffix)) + suffix
     if size <= cap:
         return body
 

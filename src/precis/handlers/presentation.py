@@ -6,11 +6,18 @@ per paragraph for prose). Subtype (``slides`` / ``writeup`` /
 ``notes``) is carried as an open tag (``subtype:slides``) so the
 closed-axis vocabulary stays empty (same shape as ``conv``).
 
-Reads: get an overview, get a specific block (``~N``), get the
-whole rendered body (``/full``), search across blocks. The overview
-shows stored PDF metadata; ``pdf_link`` shares the document-family
-signed download renderer in :mod:`precis.handlers._doc_pdf`. Stored tags
-appear on the overview and the dedicated ``tags`` view.
+Reads: get an overview, a block (``~N``), an inclusive range (``~N..M``),
+or the body (``/full``); search across blocks. Full/range reads fit whole
+slides under the byte cap and name the exact remaining range, so citation
+harvesting reaches the tail without gaps or repeats. An indivisible
+over-cap slide refuses with a budget remedy. LaTeXiT payloads are filtered
+on reads as well as PDF extraction because existing body chunks are
+append-only. Runtime can refit the loaded slide snapshot after reserving
+hint bytes; only runtime applies the optional context cap, when folding
+is enabled. The overview shows stored PDF metadata; ``pdf_link`` shares
+the document-family signed download renderer in
+:mod:`precis.handlers._doc_pdf`. Stored tags appear on the overview and
+the dedicated ``tags`` view.
 
 Writes: ``put(id='<slug>', text='<slide body>', pos=N, ...)`` is
 the bridge for both human ingest (one call per slide while
@@ -33,8 +40,19 @@ from __future__ import annotations
 import re
 from typing import Any, ClassVar
 
+from precis._result_budget import (
+    DEFAULT_MAX_BODY_BYTES,
+    _env_cap,
+    body_bytes,
+)
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, NotFound, PrecisError, Unsupported
+from precis.errors import (
+    BadInput,
+    NotFound,
+    PrecisError,
+    ResultBudgetExceeded,
+    Unsupported,
+)
 from precis.handlers._doc_pdf import pdf_overview_line, render_pdf_link
 from precis.handlers._numeric_ref import BATCH_ID_CAP, _id_batch_next
 from precis.handlers._paper_format import (
@@ -51,6 +69,7 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store.types import ChunkInsert
 from precis.utils import handle_registry
+from precis.utils.block_selector import parse_block_selector
 from precis.utils.link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
@@ -61,6 +80,7 @@ from precis.utils.link_tag_ops import (
 )
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
+from precis.utils.pres_text import strip_latexit
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 from precis.utils.title_views import title_md, title_plain
@@ -124,7 +144,9 @@ class PresentationHandler(Handler):
 
         effective_view = path_view or view
         if chunk is not None:
-            return self._render_block(slug, ref.id, chunk)
+            if isinstance(chunk, int):
+                return self._render_block(slug, ref.id, chunk)
+            return self._render_full(slug, ref, pos_range=chunk)
         if effective_view == "full":
             return self._render_full(slug, ref)
         if effective_view in ("bibtex", "ris"):
@@ -624,18 +646,79 @@ class PresentationHandler(Handler):
         body += render_next_section(next_steps)
         return Response(body=body)
 
-    def _render_full(self, slug: str, ref: Any) -> Response:
-        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
-        if not blocks:
-            return Response(body=f"{slug}: no blocks")
+    def _render_full(
+        self,
+        slug: str,
+        ref: Any,
+        *,
+        pos_range: tuple[int, int] | None = None,
+    ) -> Response:
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id, pos_range=pos_range)
         handle = handle_registry.format_handle("pres", ref.id)
-        lines = [f"# {handle} - full", f"_{title_md(ref.title)}_", ""]
+        if not blocks:
+            if pos_range is not None:
+                lo, hi = pos_range
+                all_blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+                bounds = (
+                    f"{ref.slug} has {len(all_blocks)} blocks, "
+                    f"valid: ~{all_blocks[0].ord}..{all_blocks[-1].ord}"
+                    if all_blocks
+                    else f"{ref.slug} has no body blocks"
+                )
+                raise NotFound(
+                    f"no blocks in {ref.slug} for range ~{lo}..{hi} — {bounds}",
+                    next=f"get(kind='pres', id='{handle}/full')",
+                )
+            return Response(body=f"{slug}: no blocks")
+        scope = "full" if pos_range is None else f"~{pos_range[0]}..{pos_range[1]}"
+        header = f"# {handle} - {scope}\n_{title_md(ref.title)}_"
+        sections = []
         for b in blocks:
             label = "slide" if b.chunk_kind == "pres_slide" else "block"
-            lines.append(f"## {label} ~{b.ord}")
-            lines.append(b.text)
-            lines.append("")
-        return Response(body="\n".join(lines).rstrip())
+            sections.append(f"## {label} ~{b.ord}\n{strip_latexit(b.text)}")
+        body = "\n\n".join([header, *sections]).rstrip()
+        total = body_bytes(body)
+
+        def fit(cap: int) -> str:
+            if total <= cap:
+                return body
+            # Runtime may call again after reserving hints and applying
+            # its optional context cap. Reuse the original slide snapshot.
+            head = header
+            fitted: str | None = None
+            for i, section in enumerate(sections[:-1]):
+                head += "\n\n" + section
+                shown = body_bytes(head)
+                next_call = f"get(kind='pres', id='{handle}~{blocks[i + 1].ord}..{blocks[-1].ord}')"
+                candidate = (
+                    head
+                    + f"\n\n… truncated: showing {shown} of {total} bytes"
+                    + f"\nnext: {next_call}"
+                )
+                if body_bytes(candidate) > cap:
+                    # Keep the exact continuation when byte counts would
+                    # crowd out a whole slide (e.g. a required id hint).
+                    candidate = head + f"\n\n… truncated:\nnext: {next_call}"
+                if body_bytes(candidate) <= cap:
+                    fitted = candidate
+                elif shown > cap:
+                    break
+            if fitted is not None:
+                return fitted
+            raise ResultBudgetExceeded(
+                f"pres {handle}: block ~{blocks[0].ord} and continuation do not fit "
+                f"under the {cap}-byte result budget",
+                next=(
+                    "increase PRECIS_MAX_BODY_BYTES (and "
+                    "PRECIS_TOOL_RESULT_CONTEXT_BYTES if set), then retry "
+                    f"get(kind='pres', id='{handle}~{blocks[0].ord}..{blocks[-1].ord}')"
+                ),
+            )
+
+        return Response(
+            body=fit(_env_cap("PRECIS_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)),
+            budget_fit=fit,
+        )
 
     def _render_block(self, slug: str, ref_id: int, pos: int) -> Response:
         blocks = self.store.chunks.list_chunks_for_ref(ref_id, pos_range=(pos, pos))
@@ -647,21 +730,18 @@ class PresentationHandler(Handler):
         b = blocks[0]
         label = "slide" if b.chunk_kind == "pres_slide" else "block"
         chunk_handle = handle_registry.chunk_head_label("pres", b.id, pos, slug)
-        return Response(body=f"# {chunk_handle} ({label})\n{b.text}")
+        return Response(body=f"# {chunk_handle} ({label})\n{strip_latexit(b.text)}")
 
 
-def _parse_pres_id(raw: str) -> tuple[str, int | None, str | None]:
-    """Parse pres ids: ``slug``, ``slug~N``, ``slug/full``."""
+def _parse_pres_id(raw: str) -> tuple[str, int | tuple[int, int] | None, str | None]:
+    """Parse pres ids, sharing paper's single/range selector grammar."""
     if "~" in raw:
         slug, _, sel = raw.partition("~")
-        try:
-            pos = int(sel.split("/", 1)[0])
-        except ValueError as exc:
-            raise BadInput(
-                f"unparseable block selector after ~: {sel!r}",
-                next="use '~N' for a single block",
-            ) from exc
-        return slug, pos, None
+        selector = sel.split("/", 1)[0]
+        lo, hi = parse_block_selector(selector, raw=raw)
+        # Keep ~N's existing single-block heading; ~N..N is a range read.
+        chunk = lo if re.fullmatch(r"-?\d+", selector) else (lo, hi)
+        return slug, chunk, None
     if "/" in raw:
         slug, _, view = raw.partition("/")
         return slug, None, view

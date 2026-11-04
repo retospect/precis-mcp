@@ -23,6 +23,11 @@ normal request/user scope without sharing a connection across worker threads.
 The aggregate JSON is indivisible: an oversized envelope refuses with a
 smaller-batch recovery instead of passing through the prose truncation fitter.
 
+Structured ``Response.budget_fit`` callbacks preserve indivisible units
+such as slides: the final fitter reserves runtime hint/cost bytes before
+asking the handler to fit content. Runtime alone applies the optional
+context cap, respecting ``fold=False`` and explicit part reads.
+
 Read-scope handle redirects recheck the resolved kind against the sandbox
 allowlist before rewriting dispatch arguments: the server's earlier gate
 only saw the caller's kind, which a conversion can change.

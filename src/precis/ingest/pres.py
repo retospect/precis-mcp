@@ -43,6 +43,7 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.identity import make_node_id, make_pdf_sha256
+from precis.utils.pres_text import strip_latexit
 
 log = logging.getLogger(__name__)
 
@@ -254,7 +255,7 @@ def _extract_pres_slides(pdf_path: Path) -> tuple[list[PresSlide], int]:
     doc = fitz.open(str(pdf_path))
     total_pages = doc.page_count
     raw_pages: list[tuple[int, str]] = [
-        (i, _clean_text(doc[i].get_text())) for i in range(total_pages)
+        (i, _clean_text(strip_latexit(doc[i].get_text()))) for i in range(total_pages)
     ]
     doc.close()
 

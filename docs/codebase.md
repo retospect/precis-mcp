@@ -170,6 +170,10 @@ session start).
 
 ## Seams — where changes concentrate
 
+Handlers return `Response`; runtime appends hints and applies result budgets.
+Indivisible content such as slides supplies `Response.budget_fit`, allowing
+the final fitter to reserve runtime suffix bytes before choosing boundaries.
+
 Most work lands at one of these. Each has a convention that bites:
 
 - **Add a kind** → handler in `src/precis/handlers/` + forward migration +

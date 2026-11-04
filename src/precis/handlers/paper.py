@@ -118,6 +118,10 @@ from precis.utils.authors import (
     paper_scholar_link,
 )
 from precis.utils.authors import author_names as _shared_author_names
+from precis.utils.block_selector import (
+    _RANGE_RE,  # noqa: F401 — re-exported for tests
+    parse_block_selector,
+)
 from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.embed_query import embed_query
 from precis.utils.glyph_health import glyph_caveat
@@ -9696,14 +9700,6 @@ class PaperHandler(Handler):
 # selector; the rest of the string is parsed as a path of `view/sub`
 # segments.
 _SLUG_RE = re.compile(r"^([a-z0-9][a-z0-9\-]*)(.*)$")
-_RANGE_RE = re.compile(r"^(\d+)(?:\.\.|-)(\d+)$")
-# Single chunk selector. A negative ord (``-1``) addresses a synthetic
-# card-variant chunk (title/authors/abstract/combined — gr244679's
-# title-match promotion and search's chunk-handle rendering both emit
-# these), so the leading sign is accepted here even though card ords
-# have no "range" grammar (``_RANGE_RE`` stays positive-only — cards
-# aren't a sequence you page through). gr334152.
-_CHUNK_RE = re.compile(r"^(-?\d+)$")
 
 # The one DOI pattern lives in ``precis.store._identifiers_ops``
 # (gr516333 — ``_paper_search`` imports it lazily from there). DOI-form
@@ -10539,25 +10535,7 @@ def _parse_paper_id(
             sel = sel_and_path
             rest_after_sel = ""
 
-        rng = _RANGE_RE.match(sel)
-        if rng:
-            lo, hi = int(rng.group(1)), int(rng.group(2))
-            if lo > hi:
-                raise BadInput(
-                    f"empty chunk range: {raw!r}",
-                    next="ranges run lo..hi inclusive (e.g. '~3..7')",
-                )
-            chunk_range = (lo, hi)
-        else:
-            single = _CHUNK_RE.match(sel)
-            if single:
-                n = int(single.group(1))
-                chunk_range = (n, n)
-            else:
-                raise BadInput(
-                    f"unparseable chunk selector after ~: {sel!r}",
-                    next="use '~N' for a single block or '~N..M' for a range",
-                )
+        chunk_range = parse_block_selector(sel, raw=raw)
 
         if not rest_after_sel:
             return slug, chunk_range, None

@@ -1550,6 +1550,8 @@ class DispatchMixin(RuntimeShape):
                         targeted_hint=response.result_budget_hint,
                         read=shape,
                         outline=response.budget_outline,
+                        structured_fit=response.budget_fit,
+                        suffix=body[len(response.body) :],
                     )
                 budget_fitted = body != rendered
                 if (
