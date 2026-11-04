@@ -70,7 +70,9 @@ quality-of-life and container items.
    triage-pinned model narrows the pick to lanes that run it
    (`Lane.accepts_model`; codex declares none, so a claude id never
    lands there). Nodes minted before the classes (plan 543631) carry a
-   `params.lane` pin instead.
+   `params.lane` pin instead. `gripe-fix-direct` (td564019) drops triage
+   and brief so a codex build needs no Claude step; the gripe text rides
+   the build body.
 1. **backlog/worker-rotation-starves-rescue-passes.md** — the rescue
    starvation shipped (overdue rescue passes age to the front of the
    rotation); left is the one unbounded job pass still inside the wait.

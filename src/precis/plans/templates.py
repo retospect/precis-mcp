@@ -66,14 +66,16 @@ class Template:
     """A registered plan template.
 
     ``required`` names the arguments ``mint`` needs (the handler checks them
-    before the call); ``mint(store, parent_id=None, **args)`` mints the
-    subtree under ``parent_id`` (a new root when ``None``).
+    before the call); ``optional`` the ones it passes through when given;
+    ``mint(store, parent_id=None, **args)`` mints the subtree under
+    ``parent_id`` (a new root when ``None``).
     """
 
     name: str
     required: tuple[str, ...]
     summary: str
     mint: Callable[..., PlanMint]
+    optional: tuple[str, ...] = ()
 
 
 class _Minter:
@@ -309,15 +311,71 @@ def _gripe_id(raw: Any) -> int:
     return int(m.group(1))
 
 
+#: Longest gripe text a direct build's body embeds (the lane may have no
+#: MCP, so the report rides the todo body; a longer one is cut with a note).
+_DIRECT_REPORT_CAP = 12_000
+
+
+def _gripe_report(store: Store, gid: int, handle: str, title: str) -> str:
+    """The gripe's chunks (body and comments, in order) verbatim at mint
+    time, headed by its handle and title: what a lane without the precis
+    MCP gets instead of ``get(kind='gripe')``."""
+    parts = [str(c.text) for c in store.chunks.list_chunks_for_ref(gid) if c.text]
+    text = "\n\n".join(parts).strip()
+    if len(text) > _DIRECT_REPORT_CAP:
+        text = (
+            text[:_DIRECT_REPORT_CAP]
+            + "\n\n[report cut here at mint; the rest is on the gripe]"
+        )
+    return f"## {handle}: {title}\n\n{text}" if text else f"## {handle}: {title}"
+
+
+def _direct_build_body(handle: str, report: str) -> str:
+    return (
+        f"Fix {handle} directly: no triage and no brief ran, and this lane may "
+        "have no precis MCP, so the report is below verbatim as of mint. Find "
+        "the code it names, commit the fix with its test on this branch, and "
+        "touch nothing under the lane's deny paths. The land (land_slice, "
+        "`scripts/ship --quick`) squash-merges onto main and writes "
+        f"'resolved: <sha>' + verify on {handle}; a reviewer reads the land "
+        "afterwards from another lane.\n\n" + report
+    )
+
+
+def mint_gripe_fix_direct(
+    store: Store,
+    parent_id: int | None = None,
+    *,
+    gripe_id: Any,
+    lane: str | None = None,
+) -> PlanMint:
+    """:func:`mint_gripe_fix` with ``direct=True``: the ``gripe-fix-direct``
+    template."""
+    return mint_gripe_fix(store, parent_id, gripe_id=gripe_id, direct=True, lane=lane)
+
+
 def mint_gripe_fix(
-    store: Store, parent_id: int | None = None, *, gripe_id: Any
+    store: Store,
+    parent_id: int | None = None,
+    *,
+    gripe_id: Any,
+    direct: bool = False,
+    lane: str | None = None,
 ) -> PlanMint:
     """triage -> brief -> build -> gate sha-in-prod -> validate, under a phase
     root that is ``related-to`` the gripe (the gripe keeps the ticket state).
 
     A reviewer generator over the build's land is blocked-by the build only:
     the review is non-blocking, so the gate and the validate do not wait on
-    it (dark-factory.md § "Branches")."""
+    it (dark-factory.md § "Branches").
+
+    ``direct`` (the ``gripe-fix-direct`` template, td564019, Reto 2026-11-04:
+    "the codex chain should run indep of claude") drops triage and brief:
+    the build is the first node, its body carries the gripe's text verbatim
+    (the lane may have no MCP), and no Claude step stands between the mint
+    and a vendor-lane build. Review and validate still follow the land.
+    ``lane`` pins the build's lane (``meta.op.params.lane``); unset, the
+    class pick applies (``code`` -> the free vendor lanes first)."""
     gid = _gripe_id(gripe_id)
     gripe = store.get_ref(kind="gripe", id=gid)
     if gripe is None:
@@ -326,9 +384,58 @@ def mint_gripe_fix(
             next="search(kind='gripe', q='...') to find the gripe id",
         )
     handle = handle_registry.format_handle("gripe", gid)
-    label = f"{handle}: {str(gripe.title).strip()[:80]}"
+    title = str(gripe.title).strip()
+    label = f"{handle}: {title[:80]}"
+    build_op: Any = "run_slice"
+    if lane:
+        build_op = {"type": "run_slice", "params": {"lane": str(lane)}}
 
     def build(m: _Minter) -> None:
+        if direct:
+            _build_direct(m)
+            return
+        _build_staged(m)
+
+    def _build_direct(m: _Minter) -> None:
+        m.node("root", f"Fix {label}", _phase())
+        m.node(
+            "build",
+            f"Build the fix for {handle}",
+            _task(build_op),
+            body=_direct_build_body(handle, _gripe_report(store, gid, handle, title)),
+        )
+        _tail(m)
+
+    def _tail(m: _Minter) -> None:
+        m.node(
+            "review",
+            f"Review the {handle} fix after land",
+            _reviewer(m.ids["build"]),
+            body=_reviewer_brief(m.ids["build"]),
+            blocked_by=("build",),
+        )
+        m.node(
+            "gate",
+            f"Wait for the {handle} fix to reach prod",
+            {"gate": {"kind": "sha-in-prod", "args": {"sha": PENDING_SHA}}},
+            blocked_by=("build",),
+            comment=GATE_SHA_NOTE,
+        )
+        m.node(
+            "validate",
+            f"Validate the {handle} fix",
+            _task(task_class=VALIDATE_TASK_CLASS),
+            body=(
+                "Re-run the repro or test the gripe names; an LLM read of the "
+                "report against the landed change otherwise. The fix holds? "
+                "Commit nothing and make `validated: <why>` the first line of "
+                "your final message. It does not? Commit the correction on "
+                "the branch and hand off as a build would."
+            ),
+            blocked_by=("gate",),
+        )
+
+    def _build_staged(m: _Minter) -> None:
         m.node("root", f"Fix {label}", _phase())
         m.node(
             "triage",
@@ -364,7 +471,7 @@ def mint_gripe_fix(
         m.node(
             "build",
             f"Build the fix for {handle}",
-            _task("run_slice"),
+            _task(build_op),
             body=(
                 f"run_slice on the lane triage picked, in its own worktree on "
                 f"`slice/<id>`. Then the land (land_slice, `scripts/ship "
@@ -375,33 +482,7 @@ def mint_gripe_fix(
             ),
             blocked_by=("brief",),
         )
-        m.node(
-            "review",
-            f"Review the {handle} fix after land",
-            _reviewer(m.ids["build"]),
-            body=_reviewer_brief(m.ids["build"]),
-            blocked_by=("build",),
-        )
-        m.node(
-            "gate",
-            f"Wait for the {handle} fix to reach prod",
-            {"gate": {"kind": "sha-in-prod", "args": {"sha": PENDING_SHA}}},
-            blocked_by=("build",),
-            comment=GATE_SHA_NOTE,
-        )
-        m.node(
-            "validate",
-            f"Validate the {handle} fix",
-            _task(task_class=VALIDATE_TASK_CLASS),
-            body=(
-                "Re-run the repro or test the gripe names; an LLM read of the "
-                "report against the landed change otherwise. The fix holds? "
-                "Commit nothing and make `validated: <why>` the first line of "
-                "your final message. It does not? Commit the correction on "
-                "the branch and hand off as a build would."
-            ),
-            blocked_by=("gate",),
-        )
+        _tail(m)
 
     return _run(store, parent_id, build, related_to=gripe.id)
 
@@ -990,6 +1071,16 @@ TEMPLATES: dict[str, Template] = {
             "triage -> brief -> build -> sha-in-prod gate -> validate "
             "(+ a non-blocking review of the land), for one gripe",
             mint_gripe_fix,
+            optional=("lane",),
+        ),
+        Template(
+            "gripe-fix-direct",
+            ("gripe_id",),
+            "build (the gripe's text in the body; no triage, no brief, no "
+            "Claude step before a vendor lane) -> sha-in-prod gate -> validate "
+            "(+ a non-blocking review of the land); 'lane' pins the build",
+            mint_gripe_fix_direct,
+            optional=("lane",),
         ),
         Template(
             "slice-tree",

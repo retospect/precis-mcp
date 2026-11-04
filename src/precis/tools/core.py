@@ -1565,12 +1565,14 @@ def put(
     force: bool | None = None,
     # todo plan mint (put(kind='todo', mode='plan'), see precis-plan-help):
     # template= names the plan template, gripe_id=/section=/board= are its
-    # arguments. Declared at the verb level (the gr262482 pattern) so
-    # strict-schema MCP clients don't strip them; read only under mode='plan'.
+    # arguments, lane= the optional build-lane pin of the gripe-fix forms.
+    # Declared at the verb level (the gr262482 pattern) so strict-schema MCP
+    # clients don't strip them; read only under mode='plan'.
     template: str | None = None,
     gripe_id: int | str | None = None,
     section: str | None = None,
     board: str | None = None,
+    lane: str | None = None,
     # presentation (see precis-pres-help):
     pos: int | None = None,
     meta: dict[str, Any] | None = None,
@@ -1884,6 +1886,7 @@ def put(
                 "gripe_id": gripe_id,
                 "section": section,
                 "board": board,
+                "lane": lane,
                 "pos": pos,
                 "meta": meta,
                 "ref_meta": ref_meta,

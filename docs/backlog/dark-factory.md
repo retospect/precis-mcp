@@ -427,6 +427,13 @@ coordinator turn calls it.
   named repro or test when the gripe names one, an LLM read otherwise)
   → done on the gripe. The gripe keeps the ticket state (gr541800
   ladder); the subtree does the work and is `related-to` the gripe.
+  Optional `lane` pins the build (`meta.op.params.lane`).
+- **gripe-fix-direct(gripe):** the same chain without triage and brief
+  (Reto 2026-11-04, td564019: "the codex chain should run indep of
+  claude"). The build is the first node and its body carries the gripe's
+  text verbatim at mint, so a lane without the precis MCP (codex) can
+  read it; no Claude step stands between the mint and the vendor-lane
+  build. Review, gate and validate follow the land as above.
 - **slice-tree(spec section):** spec-writer generator when the section
   is thin → slicer generator → N tasks each with a declared file set,
   overlapping sets sequenced by blocked-by at mint (gr541684) → review

@@ -747,6 +747,7 @@ class TodoHandler(NumericRefHandler):
         gripe_id: int | str | None = None,
         section: str | None = None,
         board: str | None = None,
+        lane: str | None = None,
         **_kw: Any,
     ) -> Response:
         text, body = mask_secrets(text), mask_secrets(body)
@@ -853,6 +854,7 @@ class TodoHandler(NumericRefHandler):
                     "gripe_id": gripe_id,
                     "section": section,
                     "board": board,
+                    "lane": lane,
                 },
                 parent_id=parent_int,
                 refused={
@@ -1076,6 +1078,13 @@ class TodoHandler(NumericRefHandler):
                 + ", ...})",
             )
         kwargs = {k: template_args[k] for k in tpl.required if k in template_args}
+        kwargs.update(
+            {
+                k: template_args[k]
+                for k in tpl.optional
+                if template_args.get(k) not in (None, "")
+            }
+        )
         missing = [k for k in tpl.required if template_args.get(k) in (None, "")]
         if missing:
             raise BadInput(

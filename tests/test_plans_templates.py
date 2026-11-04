@@ -4,6 +4,7 @@ todo subtrees, ``put(kind='todo', mode='plan')``, and the parented-put
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -86,9 +87,10 @@ def _assert_plan_hygiene(store: Store, mint: PlanMint) -> None:
         }, key
 
 
-def test_registry_has_the_five_templates() -> None:
+def test_registry_has_the_six_templates() -> None:
     assert sorted(TEMPLATES) == [
         "gripe-fix",
+        "gripe-fix-direct",
         "pcb-pipeline",
         "pr-intake",
         "release-pass",
@@ -96,6 +98,54 @@ def test_registry_has_the_five_templates() -> None:
     ]
     assert TEMPLATES["gripe-fix"].required == ("gripe_id",)
     assert TEMPLATES["release-pass"].required == ()
+
+
+def test_gripe_fix_direct_shape(handler: TodoHandler, store: Store) -> None:
+    """td564019 (Reto 2026-11-04: the codex chain runs independent of
+    Claude): no triage, no brief; the build is the first node and carries
+    the gripe's text, so a lane without the precis MCP can read it; review,
+    gate and validate follow the land as in the staged form."""
+    gripe = _gripe(handler)
+    mint = TEMPLATES["gripe-fix-direct"].mint(store, None, gripe_id=gripe)
+    assert set(mint.ids) == {"root", "build", "review", "gate", "validate"}
+    assert _kinds(store, mint) == {
+        "root": "phase",
+        "build": "task",
+        "review": "generator",
+        "gate": "gate",
+        "validate": "task",
+    }
+    assert _blocked_by(store, mint) == {
+        ("review", "build"),
+        ("gate", "build"),
+        ("validate", "gate"),
+    }
+    build = _meta(store, mint.ids["build"])
+    assert build["op"] == "run_slice" and "task_class" not in build
+    body = _body(store, mint.ids["build"])
+    assert f"gr{gripe}" in body and "the widget leaks" in body
+    assert "no triage and no brief" in body
+    assert _meta(store, mint.ids["validate"])["task_class"] == VALIDATE_TASK_CLASS
+    assert _meta(store, mint.ids["review"])["task_class"] == "review"
+    # The staged form is untouched by the split.
+    staged = TEMPLATES["gripe-fix"].mint(store, None, gripe_id=gripe)
+    assert {"triage", "brief"} <= set(staged.ids)
+
+
+def test_gripe_fix_lane_pins_the_build(handler: TodoHandler, store: Store) -> None:
+    """``lane`` rides into the build's ``meta.op.params.lane`` (``run_slice``
+    honours the pin before the class pick) in both forms; the handler passes
+    it through as an optional template arg."""
+    gripe = _gripe(handler)
+    mint = TEMPLATES["gripe-fix-direct"].mint(store, None, gripe_id=gripe, lane="codex")
+    assert _meta(store, mint.ids["build"])["op"] == {
+        "type": "run_slice",
+        "params": {"lane": "codex"},
+    }
+    staged = TEMPLATES["gripe-fix"].mint(store, None, gripe_id=gripe, lane="codex")
+    assert _meta(store, staged.ids["build"])["op"]["params"] == {"lane": "codex"}
+    assert TEMPLATES["gripe-fix-direct"].optional == ("lane",)
+    assert TEMPLATES["gripe-fix"].optional == ("lane",)
 
 
 def test_gripe_fix_shape(handler: TodoHandler, store: Store) -> None:
@@ -421,6 +471,21 @@ def test_put_mode_plan_round_trip(handler: TodoHandler, store: Store) -> None:
     assert _parent_of(store, root) is None
     tree = handler.get(id=root, view="tree").body
     assert "Build the fix" in tree
+
+
+def test_put_mode_plan_direct_passes_lane(handler: TodoHandler, store: Store) -> None:
+    """The handler passes a template's optional args through (``lane``)."""
+    gripe = _gripe(handler)
+    resp = handler.put(
+        mode="plan", template="gripe-fix-direct", gripe_id=gripe, lane="codex"
+    )
+    assert "gripe-fix-direct" in resp.body
+    assert "Triage" not in resp.body
+    root = id_of(resp.body)
+    tree = handler.get(id=root, view="tree").body
+    match = re.search(r"td(\d+) \S+ Build the fix", tree)
+    assert match is not None, tree
+    assert _meta(store, int(match.group(1)))["op"]["params"] == {"lane": "codex"}
 
 
 def test_put_mode_plan_under_parent(handler: TodoHandler, store: Store) -> None:
