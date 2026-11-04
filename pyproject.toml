@@ -371,7 +371,7 @@ dft-ml = ["ase>=3.29.0", "mace-torch>=0.3", "torch-dftd>=0.4"]
 # export excludes autocatpath (--no-emit-package, deploy/playbooks/
 # 03-precis-constraints.yml) and the catalyst installs resolve it from the
 # host wheelhouse (deploy/roles/autocatpath, --find-links).
-catalyst = ["autocatpath>=0.48.0"]
+catalyst = ["autocatpath>=0.49.0"]
 # Catalyst reaction-pathway COMPUTE: pulls autocatpath's `mace` extra (torch +
 # MACE-MP) for in-process NEB/relax on the pinned GPU node (bio's shape, not
 # chem's container). Kept out of `all` — see wrinkle 2 in the shipped
@@ -710,7 +710,7 @@ dev = [
 override-dependencies = ["pillow>=12.3.0", "filelock>=4.2.1"]
 
 [tool.uv.sources]
-autocatpath = { git = "https://github.com/retospect/catpath", rev = "d05c8cd90756fca442e124168a02c1ae9ddda745" }  # v0.48.0 (re-site split adsorbates gr559295, tof_sign gr559294)
+autocatpath = { git = "https://github.com/retospect/catpath", rev = "2788a4569817bf9b9c11c0d4d083fb2b39a0c578" }  # v0.49.0 (per-step sweep records, warm DRC/TRC fix)
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_dft", "src/precis_estimate", "src/precis_se", "src/hexfold", "src/precis_surface", "src/precis_chain", "src/precis_flow", "src/precis_geom", "src/precis_ws", "src/precis_diag"]
