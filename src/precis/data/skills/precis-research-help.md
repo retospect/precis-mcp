@@ -182,3 +182,15 @@ parallel children are:
 
 …rather than "left half of papers" / "right half of papers." Each
 child carries the same depth discipline, applied to its slice.
+
+## Analyze claims and synthesize an answer
+
+| Goal | Skill |
+|---|---|
+| Distinguish claims, definitions, conditions and evidence within sources | [[precis-research-analysis]] |
+| Relate compatible claims into an answer while preserving disputes and inferred steps | [[precis-research-synthesis]] |
+
+These operations can revise each other: a proposed explanation may expose a
+missing distinction or an invalid comparison. Both use the shared research
+claim/evidence mapping in [[precis-relations]]. The corpus-reading loop remains
+[[precis-read-for-question]]; durable-note reconciliation is [[precis-make-memory]].

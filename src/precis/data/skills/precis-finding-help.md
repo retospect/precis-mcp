@@ -159,15 +159,16 @@ that meets one of two grounds:
   shown misattributed or non-standard; state the source and term
   precisely so a reader can check that.
 
-Skip opinions, speculation, and your own synthesis (no single source
-is not a finding). Nothing in the tool enforces a claim class; the
-requirement is `cited_in`.
+Opinions, speculation and your own synthesis do not become ordinary chase
+findings by citing related material. The source must actually state the claim.
+The explicit cross-source hypothesis mode is separate: see
+[[precis-read-for-question]] Step 6.
 
 Different setups need different findings even when the bare number
 is identical: 2.4 kV on Cu / N₂ is not the same finding as 2.4 kV on
 Ag / Ar.
 
-**`cited_in` is mandatory — a finding is not a free-standing note.**
+**`cited_in` is mandatory for an ordinary chase finding.**
 An ordinary chase finding points at the corpus chunk you read the claim
 in. For an unimported web source, create a `STATUS:staged` finding as
 above. If neither source form is available, do *not* retry the same
@@ -177,8 +178,9 @@ draft/memory:
 - source in the corpus → cite it (`cited_in='pc42'`);
 - source not ingested yet → `search(kind='paper', q='…')` to find it,
   or stub it (`put(kind='paper', doi='…')`) and cite the result;
-- your own synthesis with no single source → it is **not** a finding;
-  write it into the draft or record a `memory` instead.
+- your own synthesis with no single source → write the account in a draft or
+  memory, or use the explicit hypothesis workflow when its requirements fit;
+  do not invent a `cited_in` passage for a conclusion the source never stated.
 
 ## The claim's source isn't in the corpus yet — acquisition mode
 
@@ -419,10 +421,12 @@ or took an edge off, the line ends `· withheld 2 · removed 1`;
 `view='judgments'` lists each, newest first, with the judge's reason and
 the two setups it compared.
 
-`put(kind='finding', ...)` is **trimodal**: `supporters=` (no `cited_in`/
+`put(kind='finding', ...)` has distinct modes: `supporters=` (no `cited_in`/
 `wants=`) mints/converges a claim hub; `cited_in=` makes an ordinary
 chase-target finding, as above; `wants=`+`provenance=` mints an
-acquisition-mode finding (above) — mixing modes errors. A hub is
+acquisition-mode finding (above). Explicit `hypothesis=True` is the separate
+conjecture workflow in [[precis-read-for-question]] Step 6; it carries motivation,
+not grounding evidence. Mixing modes errors. A hub is
 citable by its finding handle, `[fi<id>]`, the same handle you'd
 `get(id='fi42')` with; a bare `pub_id` also works as a get id — handy
 when all you hold is the placeholder token from a citation. Full mint

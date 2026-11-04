@@ -35,7 +35,7 @@ and target grammar live in `precis-link-help`.
 |---|---|---|
 | `related-to` (default) | self | Symmetric "see also"; no stronger claim fits. |
 | `cites` | `cited-by` | A references B (paper → paper, memory → paper, etc.). |
-| `supports` | `supported-by` | B is evidence for A. |
+| `supports` | `supported-by` | A provides evidence for B. |
 | `disputes` | (none) | A appears to conflict with B — free to file, never blocks. The open-question edge for claim-graph disagreement (memory-vs-memory too). |
 | `contradicts` | `contradicted-by` | Claim-graph disagreement, **adjudication-derived only** — file `disputes`, not this. Fileable only where the constraint table below allows it. |
 | `derived-from` | `derived-into` | A was produced from B (summary, distillation, chase result). |
@@ -173,7 +173,10 @@ link(kind="memory", id=89, target="pa6", rel="disputes")
 ```
 
 `supports` / `disputes` carry an evidential claim — stronger than
-`cites`. Use `disputes`, never `contradicts`, when the source ref
+`cites`. `supports` points from evidence to the claim it supports;
+`supported-by` reads the inverse. Agreement with an author's conclusion
+alone does not establish independent evidence. Use `disputes`, never
+`contradicts`, when the source ref
 takes a position *against* the target's findings: `contradicts` is
 adjudication-derived (claim-graph disagreement, unbuilt Part 2) and
 not fileable this way — `disputes` is the free, non-blocking
@@ -336,3 +339,36 @@ untouched.
 - [[precis-citation-help]] — verifier workflow for cites
 - [[precis-provenance-help]] — retraction/correction notices
 - [[precis-argument-help]] — entails/qualifies workflow, meta.rule/warrant
+
+## Research claim and evidence links
+
+Analysis and synthesis use the existing claim, evidence and argument graph.
+Identify the refs and passages first, then choose the relationship. Diagram
+letters below stand for actual read handles; they are not handles to mint.
+Record links when the research/capture task calls for persistence; a readable
+account with proposed links can be the whole deliverable.
+
+| What was learned | Existing representation | What it does not establish |
+|---|---|---|
+| Source P asserts claim C | An ordinary sourced `finding` keeps the passage in `cited_in`; another artifact can `cites` P. See [[precis-finding-help]]. | Attribution is not verification. There is no new `asserts` edge. |
+| Evidence E supports claim C | `E → C` with `supports`; inverse `C → E` is `supported-by`. State the passage and why it supports the scoped claim. | A similar sentence or an author's agreement is not independent evidence. |
+| A source is evidence for a scientific claim hub | Use the chunk-grounded taproot attach/Verify workflow in [[precis-taproot-mint-help]] and [[precis-taproot-help]]. Read edge verdicts and caveats. | A generic `supports` link does not supply a verified taproot edge. `establishes` originator status is derived, never guessed from publication order. |
+| A appears to conflict with B | `A → B` with `disputes`, recording the apparently incompatible propositions and setups. | This is an open question, not an adjudicated `contradicts` edge or proof that either claim is false. |
+| Q limits claim C | Put the positive experimental setup in the finding's `scope`. A reusable limiting caveat Q can `qualifies` C. | Scope and limitation are different; do not attach every setup field as a new caveat node. |
+| Synthesis S was produced from A and B | `S → A` and `S → B` with `derived-from`, preserving both premises and their limitations. | Provenance alone does not show that the conclusion follows. |
+| A new conjecture H is motivated by sources | The explicit hypothesis workflow in [[precis-read-for-question]] Step 6 records motivation, a discriminating test and `motivated_by` artifacts. | Motivation is not corroboration; do not manufacture a grounding passage or evidence edge for the conjecture. |
+| A contestable reasoning step yields a conclusion | Use [[precis-argument-help]]: inference `derived-from` its premises, rule and warrant, then `entails` its conclusion when warranted. | The graph records the judgment; it is not a proof checker. A possible transfer can remain a hypothesis. |
+| The interpretation or support is unclear | Keep the precise uncertainty or missing check in the account/question, with the relevant source handles. | There is no `unclear` relation or invented exclusive claim status. |
+
+These are independent facets. A claim may be asserted by an author, have
+support, and have an unresolved dispute at the same time. Preserve source
+assertions separately from the researcher's interpretation. Relations reported
+inside a source (causes, depends on, part of) are themselves claims requiring
+source and scope; co-mention alone does not justify a world-model edge or a
+change to existing graph ownership.
+
+Before a write, check the relation's endpoint kinds and direction above, reuse
+existing claim/source identities, and retain the decisive passage. Follow
+[[precis-link-help]] for chunk targets and machine-writer admission. Read back
+the affected refs and their links. A link or a fluent summary does not promote
+trust, resolve a dispute, or authorize publication.
