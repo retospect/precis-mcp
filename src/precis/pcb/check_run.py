@@ -253,6 +253,10 @@ def geometry(
     courtyard checked against nothing."""
     graph = effective_graph(store, ref_id)
     ir = build_ir(store, ref_id, graph)
+    # The check model needs plane intent even for singleton nets that
+    # topo drops before routing. Keep hydration local to DRC geometry:
+    # other build_ir consumers do not need plane promotion's dirty flags.
+    pcb_session.apply_plane_assignments(ir, store.pcb_planes_list(ref_id))
     footprints = pcb_session.footprints_by_refdes(
         ir,
         store.pcb_footprints_for(ref_id),

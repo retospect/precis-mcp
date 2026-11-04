@@ -3796,6 +3796,32 @@ def check_courtyard_edge_clearance(
 # ── orchestrator ────────────────────────────────────────────────────────
 
 
+def check_single_pin_plane_net(model: dict[str, Any]) -> list[DrcFinding]:
+    """Name singleton plane nets that topo-place omits before fanout.
+
+    The primary pad carries the full IR's membership fact from
+    ``realize.pads_for_ir``; counting rendered pads would misclassify
+    split lands and nets with unplaced members. This is advisory even
+    without copper: a plane assignment alone does not connect the pad,
+    but authored copper may already do so.
+    """
+    return [
+        DrcFinding(
+            rule="single_pin_plane_net",
+            severity="warn",
+            where=f"pad {pad['refdes']}/{pad['pin']} (net {pad['net']})",
+            detail=(
+                f"net {pad['net']} is assigned to a plane but has only one pin, "
+                f"{pad['refdes']}/{pad['pin']}; topo-place skips automatic routing "
+                "and plane fanout for this net. Verify its copper connection."
+            ),
+            objects=({"net": pad["net"], "refdes": pad["refdes"], "pin": pad["pin"]},),
+        )
+        for pad in model.get("pads") or []
+        if pad.get("single_pin_plane_net")
+    ]
+
+
 def check_connectivity(model: dict[str, Any]) -> list[DrcFinding]:
     """Every net's copper must be ONE connected component.
 
@@ -4896,6 +4922,7 @@ def run_geometric_drc(
     findings += check_keepout_copper(model, keepouts)
     findings += check_board_origin(model, outline)
     findings += check_edge_mating(edge_mates, outline=outline)
+    findings += check_single_pin_plane_net(model)
     findings += check_connectivity(model)
     findings += check_pour_fragmented(model)
     findings += check_pour_reaches_pad(model)

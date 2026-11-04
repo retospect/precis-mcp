@@ -425,6 +425,71 @@ def test_topo_rerun_releases_the_previous_slot_binding(
 
 # ── the route meta counts dangling nets apart ──────────────────────────
 
+
+@pytest.mark.parametrize("plane", [False, True])
+def test_stored_topo_singleton_plane_warning_reaches_drc(
+    store: Store, plane: bool
+) -> None:
+    """gr561955: rebuild plane intent from storage after topo skips J1/1."""
+    slug = f"topo-singleton-plane-{int(plane)}"
+    args: dict[str, Any] = {
+        "footprints": [
+            {
+                "name": "P1",
+                "pads": [
+                    {
+                        "number": "1",
+                        "shape": "rect",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "w": 0.5,
+                        "h": 0.5,
+                    }
+                ],
+                "pin_map": {"1": "1"},
+            }
+        ],
+        "components": [
+            {
+                "refdes": "J1",
+                "label": "pad",
+                "footprint": "P1",
+                "x": 10.0,
+                "y": 10.0,
+                "pins": [{"name": "1"}],
+            }
+        ],
+        "nets": [{"name": "GND", "class": "gnd", "current": 0.001}],
+        "connections": [{"net": "GND", "refdes": "J1", "pin": "1"}],
+        "features": [closed_outline(0.0, 0.0, 30.0, 20.0)],
+    }
+    ref_id = _seed(store, slug, args)
+    pcb = PcbHandler(hub=Hub(store=store))
+    if plane:
+        pcb.put(id=slug, args={"op": "plane_net", "layer": "In1.Cu", "net": "GND"})
+    ctx = _FakeCtx(store, params=_topo(ref_id, route=True))
+    _dispatch(ctx)
+    assert not ctx.failures, ctx.failures
+    route = ctx.meta["topo_run"]["route"]
+    assert route["nets"] == route["dangling"] == 1
+    assert route["tracks"] == route["vias"] == 0
+    assert not route["persisted"]  # No copper means no new route rows either.
+
+    ran = check_run.run(store, ref_id, store.pcb_load(ref_id))
+    assert ran is not None
+    findings = [f for f in ran.findings if f.rule == "single_pin_plane_net"]
+    body = pcb.get(id=slug, view="drc", args={"fresh": True}).body
+    if plane:
+        (finding,) = findings
+        assert finding.severity == "warn"
+        assert finding.where == "pad J1/1 (net GND)"
+        assert finding.objects == ({"net": "GND", "refdes": "J1", "pin": "1"},)
+        assert "\twarn\tsingle_pin_plane_net\tpad J1/1 (net GND)" in body, body
+    else:
+        assert findings == []
+        assert "single_pin_plane_net" not in body, body
+
+
 #: ``_CROSSED`` plus a one-member test-point net: stored ``realized``
 #: with the dangling note, but nothing was routed for it.
 _DANGLING: dict[str, Any] = {

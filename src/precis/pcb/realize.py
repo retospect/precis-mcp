@@ -42,6 +42,7 @@ from precis.pcb.ir import (
     FootprintPad,
     PcbIR,
     footprint_pad_set,
+    net_member_counts,
     pin_point,
     plane_layers_of,
     routable_layers,
@@ -1833,10 +1834,17 @@ def pads_for_ir(
     consumer keying off ``layer``/``net``/``shape``/``x``/``y``/``w``
     (``/h``/``poly``)/``synthesized``/``refdes``/``pin`` alone is
     unaffected.
+
+    ``single_pin_plane_net`` marks the primary pad of a singleton net
+    assigned to a plane. Topo-place drops these nets before fanout, so
+    the shared DRC needs this IR fact even when no copper was emitted.
+    Only the primary pad is marked: split lands must not duplicate the
+    diagnostic, and unplaced pins must still count as net members.
     """
     if not layers:
         return []
     geoms = pad_geometry(ir, footprints)
+    member_counts = net_member_counts(ir)
     out: list[dict[str, Any]] = []
     for pid in range(ir.n_pins):
         point = pin_point(ir, pid)
@@ -1911,6 +1919,12 @@ def pads_for_ir(
             "refdes": str(ir.instance_refdes[inst_id]),
             "pin": str(ir.pin_label[pid]),
         }
+        if (
+            net_id != NO_NET
+            and member_counts.get(net_id) == 1
+            and int(ir.net_plane_layers[net_id]) != 0
+        ):
+            pad["single_pin_plane_net"] = True
         # `part_lcsc` (gr341532 scoping fix) -- carried only when the
         # instance is a real catalog part (`PcbIR.instance_part_lcsc`,
         # never an empty string, `None` for an unlinked instance). This is

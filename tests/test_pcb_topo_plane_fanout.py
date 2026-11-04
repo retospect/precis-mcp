@@ -24,6 +24,8 @@ from precis.pcb import drc as pcb_drc
 from precis.pcb import local
 from precis.pcb import realize as pcb_realize
 from precis.pcb import session as pcb_session
+from precis.pcb.topoplace import design_from_ir
+from precis.pcb.topoplace.realise import route_design
 from tests._pcb_outline import closed_outline
 
 _P2: dict[str, Any] = {
@@ -142,3 +144,79 @@ def test_without_a_plane_gnd_routes_as_a_net() -> None:
     stage = local._route_stage(design, ir, fps)
     assert stage.plan.planes == ()
     assert stage.result.pours == ()
+
+
+@pytest.mark.parametrize("members", [1, 2])
+@pytest.mark.parametrize("plane", [False, True])
+def test_single_pin_plane_net_finding(members: int, plane: bool) -> None:
+    """gr561955: dropping a singleton from routing must not hide its plane intent."""
+    batch = _batch(plane=plane)
+    batch["components"] = batch["components"][:members]
+    batch["nets"] = batch["nets"][:1]
+    batch["connections"] = [c for c in batch["connections"] if c["net"] == "GND"][
+        :members
+    ]
+    design = local._design(batch, None)
+    ir, fps, _specs = local._prepare(design)
+    td = design_from_ir(ir, fps, route_planes=True)
+    plan, result = route_design(td, ir, footprints=fps)
+    model = pcb_realize.to_gerber_model(
+        result,
+        ir,
+        layers=design.layer_names,
+        outline=design.outline or [],
+        footprints=fps,
+    )
+    all_findings = pcb_drc.run_geometric_drc(
+        model, capability=design.fab_caps, outline=design.outline
+    )
+    findings = [f for f in all_findings if f.rule == "single_pin_plane_net"]
+    if members == 1 and plane:
+        assert all_findings == findings
+        assert len(findings) == 1
+        finding = findings[0]
+        assert finding.severity == "warn"
+        assert finding.where == "pad R1/1 (net GND)"
+        assert "GND" in finding.detail and "R1/1" in finding.detail
+        assert finding.objects == ({"net": "GND", "refdes": "R1", "pin": "1"},)
+        assert td.net_pins == ()
+        assert plan.planes == ()
+        assert result.tracks == result.vias == result.pours == ()
+    else:
+        assert findings == []
+
+
+def test_single_pin_plane_split_land_emits_one_finding() -> None:
+    batch = _batch(plane=True)
+    batch["components"] = batch["components"][:1]
+    batch["components"][0]["pins"] = [{"name": "1"}]
+    batch["nets"] = batch["nets"][:1]
+    batch["connections"] = batch["connections"][:1]
+    batch["footprints"] = [
+        {
+            **_P2,
+            "pads": [_P2["pads"][0], {**_P2["pads"][1], "number": "1"}],
+            "pin_map": {"1": "1"},
+        }
+    ]
+    design = local._design(batch, None)
+    ir, fps, _specs = local._prepare(design)
+    pads = pcb_realize.pads_for_ir(ir, design.layer_names, fps)
+    assert len([p for p in pads if p["net"] == "GND"]) == 2
+    findings = pcb_drc.check_single_pin_plane_net({"pads": pads})
+    assert len(findings) == 1
+    assert findings[0].objects == ({"net": "GND", "refdes": "R1", "pin": "1"},)
+
+
+def test_unplaced_second_plane_pin_is_not_a_singleton() -> None:
+    batch = _batch(plane=True)
+    batch["components"] = batch["components"][:2]
+    batch["nets"] = batch["nets"][:1]
+    batch["connections"] = batch["connections"][:2]
+    design = local._design(batch, None)
+    ir, fps, _specs = local._prepare(design)
+    ir.inst_x[1] = math.nan
+    ir.inst_y[1] = math.nan
+    pads = pcb_realize.pads_for_ir(ir, design.layer_names, fps)
+    assert len([p for p in pads if p["net"] == "GND"]) == 1
+    assert pcb_drc.check_single_pin_plane_net({"pads": pads}) == []

@@ -965,27 +965,37 @@ def _zones(
             )
         )
     if fixed_copper:
-        # Local import: the DRC shape function's module pulls the full
-        # rule stack; zones are built only when authored copper exists.
-        from precis.pcb.drc import _copper_item_polygon
+        from shapely.geometry import MultiPolygon, Polygon
+
+        from precis.pcb.clearance import body_of, outward_polygon
 
         for row in fixed_copper:
             ctype = str(row.get("ctype") or "")
             if ctype == "via":
                 continue  # already a zone via ir.fixed_vias
-            geom = _copper_item_polygon(dict(row))
-            if geom is None or geom.is_empty or not hasattr(geom, "exterior"):
+            body = body_of(dict(row))
+            if body is None:
                 continue
+            # Inscribed buffer chords cut inside round copper caps. The
+            # mesh ring must enclose the true copper even between vertices
+            # so a taut wire cannot consume the authored clearance.
+            geom = outward_polygon(body, sagitta=0.02)
             layer = str(row.get("layer") or "")
-            zones.append(
-                TopoZone(
-                    kind="fixed_copper",
-                    ring=np.asarray(geom.exterior.coords, dtype=np.float64),
-                    layers=(name_to_idx[layer],) if layer in name_to_idx else (),
-                    net=str(row.get("net") or ""),
-                    name=f"fixed copper {ctype or '?'}",
+            # Disconnected runs belong to one row but remain separate
+            # obstacles; neither discard them nor bridge their empty gap.
+            polygons = geom.geoms if isinstance(geom, MultiPolygon) else (geom,)
+            for polygon in polygons:
+                if polygon.is_empty or not isinstance(polygon, Polygon):
+                    continue
+                zones.append(
+                    TopoZone(
+                        kind="fixed_copper",
+                        ring=np.asarray(polygon.exterior.coords, dtype=np.float64),
+                        layers=(name_to_idx[layer],) if layer in name_to_idx else (),
+                        net=str(row.get("net") or ""),
+                        name=f"fixed copper {ctype or '?'}",
+                    )
                 )
-            )
     return tuple(zones)
 
 

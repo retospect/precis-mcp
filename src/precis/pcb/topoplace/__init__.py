@@ -15,6 +15,10 @@ on a CDT mesh with a layer per wire piece and a via bracket; the
 :class:`~.placer.Ladder` hook is how that richer evaluator enters the
 same anneal (Decision 10's cost ladder).
 
+Authored copper uses outward polygon boundaries as mesh obstacles. Each
+disconnected polygon becomes its own zone with the row's net and layer:
+dropping a multipart row loses copper, while hulling it blocks empty gaps.
+
 **The search.** The pairwise part map (``pairmap.py``) scores every
 net-connected pair: clique strength 1/(k−1) per shared net, and the
 exact facing-row crossing count as an inversion count over 4×4
