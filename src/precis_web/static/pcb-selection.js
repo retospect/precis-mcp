@@ -318,6 +318,20 @@
     }
     return true;
   };
+  const candidatesAt = (x, y) => {
+    const els = svgDoc.elementsFromPoint(x, y);
+    const found = new Map();
+    if (window.PrecisViewport && window.PrecisViewport.overHud(els)) return found;
+    els.forEach((node) => {
+      if (!node.dataset || !node.dataset.pcbObject) return;
+      const layer = node.dataset.pcbLayer;
+      if (layer && svgDoc.getElementById(`layer-${layer}`)?.classList.contains('off')) return;
+      if (window.PrecisViewport &&
+          !window.PrecisViewport.hasVisibleLayer(svgDoc, node.dataset.pcbLayers)) return;
+      found.set(node.dataset.pcbObject, node.dataset.pcbKind);
+    });
+    return found;
+  };
   const bind = () => {
     if (bound && svgDoc === object.contentDocument && matchesRoot()) return;
     if (observer) observer.disconnect();
@@ -332,15 +346,7 @@
       // take the first object when two different ones overlap at the top kind.
       // A point on the pinned legend is the legend's (gr543695): never select
       // the board object painted beneath it.
-      const els = svgDoc.elementsFromPoint(event.clientX, event.clientY);
-      if (window.PrecisViewport && window.PrecisViewport.overHud(els)) return;
-      const found = new Map();
-      els.forEach((node) => {
-        if (!node.dataset || !node.dataset.pcbObject) return;
-        const layer = node.dataset.pcbLayer;
-        if (layer && svgDoc.getElementById(`layer-${layer}`)?.classList.contains('off')) return;
-        found.set(node.dataset.pcbObject, node.dataset.pcbKind);
-      });
+      const found = candidatesAt(event.clientX, event.clientY);
       const kinds = PRIORITY.filter((k) => [...found.values()].includes(k));
       if (!kinds.length) return;
       const top = kinds[kinds.length - 1];

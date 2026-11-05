@@ -13,7 +13,9 @@ segment, fiducial, net) is a :class:`SelectObject` carrying
 * ``hits`` — the shapes the viewer lays over the picture to catch clicks
   (``circle`` / ``rect`` / ``poly`` / ``stroke``), each tagged with the
   ``layer-<key>`` group of :func:`precis.pcb.gerber_view.render_fab_svg` it
-  belongs to (``""`` for an instance body, which spans layers). Hit geometry
+  belongs to. Instance bodies instead carry ``layers`` for their pad copper,
+  mask/paste apertures and anchored silkscreen: the fallback is clickable
+  while any of that artwork is visible. Hit geometry
   is deliberately NOT part of the identity: full polygons would bloat every
   chat context.
 
@@ -205,6 +207,7 @@ def build(
     # -- pads -----------------------------------------------------------
     seen: dict[str, int] = {}
     boxes: dict[int, list[float]] = {}
+    instance_layers: dict[int, set[str]] = {}
     for pad in real_pads:
         refdes = str(pad.get("refdes") or "")
         pin = str(pad.get("pin") or "")
@@ -264,6 +267,11 @@ def build(
             )
         )
         if owner_id is not None:
+            instance_layers.setdefault(owner_id, set()).update(
+                gerber._pad_surface_layers(pad, layers)
+            )
+            if lkey:
+                instance_layers.setdefault(owner_id, set()).add(lkey)
             x0, y0, x1, y1 = _pad_extent(pad)
             box = boxes.setdefault(owner_id, [math.inf, math.inf, -math.inf, -math.inf])
             box[:] = [
@@ -272,11 +280,6 @@ def build(
                 max(box[2], x1),
                 max(box[3], y1),
             ]
-    for iid, (x0, y0, x1, y1) in boxes.items():
-        inst_objs[iid].hits.append(
-            {"shape": "rect", "layer": "", "x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}
-        )
-
     # -- vias -----------------------------------------------------------
     copper = list(model.get("copper") or [])
     vias = sorted(
@@ -359,6 +362,24 @@ def build(
                 width = float(draw.get("width_mm", gerber.DEFAULT_SILK_WIDTH_MM))
                 groups[gkey].hits.append(_stroke_hit(silk_layer, pts, width))
     out["silk"].extend(groups[k] for k in sorted(groups))
+    for group in groups.values():
+        anchor = group.identity["anchor"]
+        if group.hits and anchor["kind"] == "instance":
+            instance_layers.setdefault(anchor["instance_id"], set()).add(
+                group.identity["layer"]
+            )
+    for iid, (x0, y0, x1, y1) in boxes.items():
+        inst_objs[iid].hits.append(
+            {
+                "shape": "rect",
+                "layer": "",
+                "layers": sorted(instance_layers.get(iid, set())),
+                "x": x0,
+                "y": y0,
+                "w": x1 - x0,
+                "h": y1 - y0,
+            }
+        )
 
     # -- outline --------------------------------------------------------
     outline = model.get("outline")

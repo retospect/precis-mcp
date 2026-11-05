@@ -447,6 +447,25 @@ def copper_gerber(model: dict[str, Any], layer: str) -> str:
     return _assemble(f"Copper,L{index + 1},{pos}", apertures, body)
 
 
+def _pad_surface_layers(pad: dict[str, Any], layers: list[str]) -> list[str]:
+    """Mask/paste artwork keys shared by export and instance selection.
+
+    Only outer-layer pads contribute; covered pads have no mask opening,
+    and drilled pads or explicit ``paste: none`` have no stencil aperture.
+    """
+    if not layers:
+        return []
+    result = []
+    for prefix, layer in (("F", layers[0]), ("B", layers[-1])):
+        if pad.get("layer") != layer:
+            continue
+        if pad.get("mask") != "covered":
+            result.append(f"{prefix}_Mask")
+        if not pad.get("drill") and pad.get("paste") != "none":
+            result.append(f"{prefix}_Paste")
+    return result
+
+
 def soldermask_gerber(model: dict[str, Any], side: str) -> str:
     """Top/bottom soldermask openings — pads on the corresponding outer
     copper layer, each expanded by the board's own soldermask expansion.
@@ -469,12 +488,12 @@ def soldermask_gerber(model: dict[str, Any], side: str) -> str:
     openings with a mask dam between every neighbour — see that key's own
     handling below)."""
     layers: list[str] = model["layers"]
-    layer = layers[0] if side == "top" else layers[-1]
+    key = "F_Mask" if side == "top" else "B_Mask"
     expansion = float(model.get("soldermask_expansion_mm", SOLDERMASK_EXPANSION_MM))
     apertures = _ApertureTable()
     body: list[str] = []
     for pad in model.get("pads", []):
-        if pad.get("layer") == layer and pad.get("mask") != "covered":
+        if key in _pad_surface_layers(pad, layers):
             _emit_pad(_expand_pad(pad, expansion), apertures, body)
     for region in model.get("mask_open_regions") or []:
         if region.get("side") != side:
@@ -567,17 +586,12 @@ def solderpaste_gerber(model: dict[str, Any], side: str) -> str:
     the honest default and the reduction belongs with the stencil order.
     """
     layers: list[str] = model["layers"]
-    layer = layers[0] if side == "top" else layers[-1]
+    key = "F_Paste" if side == "top" else "B_Paste"
     apertures = _ApertureTable()
     body: list[str] = []
     for pad in model.get("pads", []):
-        if pad.get("layer") != layer:
-            continue
-        if pad.get("drill"):
-            continue
-        if pad.get("paste") == "none":
-            continue
-        _emit_pad(pad, apertures, body)
+        if key in _pad_surface_layers(pad, layers):
+            _emit_pad(pad, apertures, body)
     return _assemble(
         f"SolderPaste,{'Top' if side == 'top' else 'Bot'}", apertures, body
     )

@@ -10,6 +10,8 @@ import zipfile
 from io import BytesIO
 from typing import Any
 
+import pytest
+
 from precis.pcb import gerber
 
 # ── a small synthetic 2-layer board: two tracks sharing a width (dedup),
@@ -355,6 +357,55 @@ def test_soldermask_opening_is_expanded_pad():
     # 0.8mm pad + 2*0.05mm expansion = 0.9mm aperture
     assert "%ADD10C,0.9000*%" in mask
     assert "D03*" in mask
+
+
+@pytest.mark.parametrize(
+    "side,layer,label", [("top", "F.Cu", "Top"), ("bottom", "B.Cu", "Bot")]
+)
+@pytest.mark.parametrize(
+    "film,diameter", [("Soldermask", "0.9000"), ("SolderPaste", "0.8000")]
+)
+def test_mask_and_paste_keep_unattributed_fab_bytes(
+    side: str, layer: str, label: str, film: str, diameter: str
+) -> None:
+    """Viewer identity must not change the mask or stencil sent to the fab."""
+    model: dict[str, Any] = {
+        "layers": ["F.Cu", "B.Cu"],
+        "pads": [
+            {
+                "layer": layer,
+                "shape": "circle",
+                "x": 2.0,
+                "y": 2.0,
+                "w": 0.8,
+                "net": "VCC",
+                "refdes": "U1",
+                "pin": "3",
+            }
+        ],
+    }
+    writer = (
+        gerber.soldermask_gerber if film == "Soldermask" else gerber.solderpaste_gerber
+    )
+    result = writer(model, side)
+    assert "%TO.C," not in result
+    assert "%TO.P," not in result
+    assert "%TO.N," not in result
+    assert result == (
+        "G04 precis pcb gerber export*\n"
+        "%FSLAX46Y46*%\n"
+        "%MOMM*%\n"
+        f"%TF.FileFunction,{film},{label}*%\n"
+        "%TF.FilePolarity,Positive*%\n"
+        "%TF.GenerationSoftware,precis,pcb-gerber,1.0*%\n"
+        "%TF.Part,Single*%\n"
+        f"%ADD10C,{diameter}*%\n"
+        "G01*\n"
+        "G75*\n"
+        "D10*\n"
+        "X2000000Y2000000D03*\n"
+        "M02*\n"
+    )
 
 
 # ── arcs are real arcs, not polyline approximations ─────────────────

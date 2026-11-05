@@ -482,6 +482,46 @@ def _net_components(model: dict[str, Any]) -> tuple[list[_Prim], _DisjointSet] |
     return prims, dsu
 
 
+def pin_components(
+    model: dict[str, Any], *, nets: set[str] | None = None
+) -> dict[tuple[str, str], int] | None:
+    """Map pad identities to the DRC's copper components for viewer airwires.
+
+    Read the pad row indices retained in primitive groups from the existing
+    extractor; do not infer connectivity again from Gerber flashes. Missing
+    geometry returns ``None``, so a Gerber-only viewer can keep its full MST.
+    Restricting ``nets`` filters before primitive extraction and quadratic
+    touch checks: a pending net must not pay for unrelated routed copper.
+    Component numbers are local to this extraction; only equality matters.
+    """
+    if nets is not None:
+        model = {
+            **model,
+            **{
+                key: [
+                    item
+                    for item in model.get(key) or []
+                    if str(item.get("net", "")) in nets
+                ]
+                for key in ("pads", "copper", "pending_pours")
+            },
+        }
+    built = _net_components(model)
+    if built is None:
+        return None
+    prims, dsu = built
+    pad_start = len(model.get("copper") or [])
+    pads = model.get("pads") or []
+    components: dict[tuple[str, str], int] = {}
+    for i, prim in enumerate(prims):
+        if prim.group < pad_start:
+            continue
+        key = _pad_key(pads[prim.group - pad_start])
+        if key is not None:
+            components[key] = dsu.find(i)
+    return components
+
+
 def connected_pin_pairs(model: dict[str, Any]) -> set[frozenset[tuple[str, str]]]:
     """Every pair of ``(refdes, pin)`` pads ``model["pads"]`` already joins
     through ``model["copper"]`` — the same union-find :func:`net_islands`
@@ -752,4 +792,5 @@ __all__ = [
     "fixed_copper_branches",
     "fixed_copper_pin_terminals",
     "net_islands",
+    "pin_components",
 ]

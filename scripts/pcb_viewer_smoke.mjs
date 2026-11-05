@@ -475,4 +475,76 @@ assert.equal(
   'Select a board object.',
   'a legend click never selects the object beneath');
 
+// gr565256: a whole-instance fallback follows its associated artwork,
+// including artwork on either side. Unrelated visible layers cannot revive it.
+const instanceLayers = ['F_Cu', 'B_Cu', 'F_Silkscreen', 'F_Paste', 'F_Mask'];
+for (const key of [...instanceLayers, 'Edge_Cuts']) {
+  boardDoc.byId[`layer-${key}`] = elem('g');
+}
+selectable.dataset.pcbLayers = instanceLayers.join(' ');
+const partBody = {
+  get dataset() {
+    return { pcbLayers: selectable.dataset.pcbLayers, pcbLayer: selectable.dataset.pcbLayer };
+  },
+  closest: (sel) => (sel === '[data-handle]' ? handleEl : null),
+};
+boardDoc._els = [selectable, partBody];
+const clickSelection = () => fire(boardDoc, 'click', { clientX: 4, clientY: 4 });
+const hoverSelection = () => fire(boardDoc, 'mousemove', { clientX: 4, clientY: 4 });
+const deselectSelection = () => fire(ids['pcb-deselect'], 'click');
+for (const key of instanceLayers) {
+  boardDoc.byId[`layer-${key}`].classList.add('off');
+}
+clickSelection();
+assert.equal(statusEl.textContent, 'Select a board object.', 'all artwork hidden means no hit');
+assert.equal(ids['pcb-chat-context'].value, '', 'hidden fallback cannot attach selection identity');
+hoverSelection();
+assert(!panel.classList.contains('hovering'), 'all artwork hidden means no instance hover');
+for (const key of instanceLayers) {
+  boardDoc.byId[`layer-${key}`].classList.remove('off');
+  hoverSelection();
+  assert(panel.classList.contains('hovering'), `${key} alone keeps the instance hoverable`);
+  clickSelection();
+  assert(statusEl.textContent.startsWith('Selected U1'), `${key} alone keeps the instance selectable`);
+  assert.equal(JSON.parse(ids['pcb-chat-context'].value).selected[0].key, 'inst:1');
+  deselectSelection();
+  boardDoc.byId[`layer-${key}`].classList.add('off');
+}
+selectable.dataset.pcbLayers = 'Missing_Layer';
+clickSelection();
+assert.equal(statusEl.textContent, 'Select a board object.', 'absent artwork is not visible');
+hoverSelection();
+assert(!panel.classList.contains('hovering'), 'absent artwork cannot produce hover');
+// A pad with no paste aperture cannot revive its instance on paste alone.
+selectable.dataset.pcbLayers = 'F_Cu F_Mask F_Silkscreen';
+boardDoc.byId['layer-F_Paste'].classList.remove('off');
+clickSelection();
+assert.equal(statusEl.textContent, 'Select a board object.', 'unassociated paste means no hit');
+hoverSelection();
+assert(!panel.classList.contains('hovering'), 'unassociated paste cannot produce hover');
+boardDoc.byId['layer-F_Paste'].classList.add('off');
+for (const layerList of ['', '  ']) {
+  selectable.dataset.pcbLayers = layerList;
+  clickSelection();
+  assert(statusEl.textContent.startsWith('Selected U1'), 'empty layer list preserves selection');
+  assert.equal(JSON.parse(ids['pcb-chat-context'].value).selected[0].key, 'inst:1');
+  hoverSelection();
+  assert(panel.classList.contains('hovering'), 'empty layer list preserves hover');
+  deselectSelection();
+}
+
+// Existing single-layer targets retain their own visibility rule.
+delete selectable.dataset.pcbLayers;
+selectable.dataset.pcbLayer = 'F_Cu';
+clickSelection();
+assert.equal(statusEl.textContent, 'Select a board object.', 'single-layer hidden target stays filtered');
+hoverSelection();
+assert(!panel.classList.contains('hovering'), 'single-layer hidden target cannot hover');
+boardDoc.byId['layer-F_Cu'].classList.remove('off');
+hoverSelection();
+assert(panel.classList.contains('hovering'), 'single-layer visible target still hovers');
+clickSelection();
+assert(statusEl.textContent.startsWith('Selected U1'), 'single-layer visible target still selects');
+deselectSelection();
+
 console.log('pcb viewer smoke: ok');

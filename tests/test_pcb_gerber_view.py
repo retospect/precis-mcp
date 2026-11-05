@@ -908,10 +908,8 @@ def test_hostile_slug_cannot_break_out_of_the_document_title() -> None:
 #    (docs/backlog/pcb-argue-with-design.md slice 1; precis.pcb.argue) ───
 def test_pad_flash_carries_its_refdes_pin_handle_where_the_gerber_named_it() -> None:
     """A pad the gerber named (``%TO.P``) is clickable as ``REFDES.PIN`` on
-    the copper flash. The mask film's hit target over it carries no handle
-    (the mask gerber names no pin), so the host page's elementsFromPoint
-    walk falls through it to the copper — the handle is on the element
-    that has the evidence, never guessed onto a neighbour."""
+    copper. Mask and paste Gerbers carry no pad identity, so their artwork
+    must not acquire a pad handle."""
     model = _model()
     model["pads"][0]["refdes"] = "U1"
     model["pads"][0]["pin"] = "3"
@@ -919,15 +917,38 @@ def test_pad_flash_carries_its_refdes_pin_handle_where_the_gerber_named_it() -> 
     svg = gerber_view.render_fab_svg(files, title="t")
     cu = re.search(r'<g id="layer-F_Cu"[^>]*>(.*?)</g>', svg, re.DOTALL)
     mask = re.search(r'<g id="layer-F_Mask"[^>]*>(.*?)</g>', svg, re.DOTALL)
-    assert cu is not None and mask is not None
+    paste = re.search(r'<g id="layer-F_Paste"[^>]*>(.*?)</g>', svg, re.DOTALL)
+    assert cu is not None and mask is not None and paste is not None
     assert 'data-handle="U1.3"' in cu.group(1)
     assert "data-handle" not in mask.group(1)
-    # The mask hit target DOES carry a handle when its own gerber says so.
+    assert "data-handle" not in paste.group(1)
+    # A third-party mask without identity still gets no invented handle.
     ap = gerber_view.Aperture("C", (1.0,))
+    unnamed = gerber_view._flash_hit_target(gerber_view.Flash(ap, 2.0, 2.0), "t")
+    assert "data-handle" not in unnamed
     hit = gerber_view._flash_hit_target(
         gerber_view.Flash(ap, 2.0, 2.0, refdes="U1", pin="3"), "t"
     )
     assert 'data-handle="U1.3"' in hit
+
+
+@pytest.mark.parametrize("side", ["F", "B"])
+@pytest.mark.parametrize("surface_layers", [("Mask", "Paste"), ("Mask",), ()])
+def test_part_body_infers_only_present_surface_layers_on_its_copper_side(
+    side: str, surface_layers: tuple[str, ...]
+) -> None:
+    """Anonymous surface art keeps parts selectable, even with no paste pad."""
+    model = _model()
+    model["pads"][0].update(layer=f"{side}.Cu", refdes="U1", pin="3", paste="none")
+    files = gerber.export_fab(model, name="t", allow_synthesized=True)
+    for surface in ("Mask", "Paste"):
+        if surface not in surface_layers:
+            del files[f"t-{side}_{surface}.gbr"]
+    svg = gerber_view.render_fab_svg(files, title="t")
+    parts = _parts_group(svg)
+    expected = " ".join([f"{side}_Cu", *(f"{side}_{key}" for key in surface_layers)])
+    assert 'data-handle="U1"' in parts
+    assert f'data-pcb-layers="{expected}"' in parts
 
 
 def _parts_group(svg: str) -> str:
@@ -976,6 +997,7 @@ def test_a_pad_less_part_gets_a_body_box_from_its_to_c_objects() -> None:
     # the stroke's own extent, widened by half its width (0.1 each side)
     assert (x, y) == pytest.approx((24.9, 4.9))
     assert (x + w, y + h) == pytest.approx((28.1, 8.1))
+    assert 'data-pcb-layers="F_Silkscreen"' in _parts_group(svg)
 
 
 def test_a_padded_part_is_boxed_by_its_pads_not_its_silk() -> None:
@@ -1045,6 +1067,7 @@ def test_part_body_hit_rect_spans_the_parts_pads_under_the_layer_stack() -> None
     x, w = float(mx.group(1)), float(mw.group(1))
     assert x < 2.0 and x + w > 6.0  # spans both pads, each half-pad wider
     assert "part Q4" in parts.group(1) and "mm" in parts.group(1)
+    assert 'data-pcb-layers="F_Cu F_Mask F_Paste"' in rects[0]
     assert svg.index('<g class="parts">') < svg.index('<g id="layer-')
 
 

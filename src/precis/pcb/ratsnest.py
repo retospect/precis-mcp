@@ -68,6 +68,7 @@ def _mst_edges(
     members: list[tuple[str, Point]],
     *,
     bottom: frozenset[str] | None = None,
+    components: dict[str, int] | None = None,
 ) -> list[tuple[str, str, Point, Point]]:
     """Prim's MST over placed members (small N → O(N²) is fine).
 
@@ -83,6 +84,11 @@ def _mst_edges(
     the original pure-Euclidean MST byte-for-byte, so a caller with no side
     context (or a single-side net, where the term is a no-op regardless) is
     unaffected.
+
+    ``components`` contracts already-connected members into one vertex.
+    Adding a member adds its whole copper component; the next minimum edge
+    therefore uses the closest pad pair across two distinct components.
+    Members absent from the map remain individual vertices.
 
     **This weight function is no longer a metric** once ``bottom`` is given
     a non-empty set: ``weight(a, c)`` can exceed ``weight(a, b) +
@@ -102,7 +108,17 @@ def _mst_edges(
             d += MST_VIA_BIAS_MM
         return d
 
-    in_tree = {0}
+    def _component(i: int) -> set[int]:
+        if components is None or members[i][0] not in components:
+            return {i}
+        root = components[members[i][0]]
+        return {
+            j
+            for j, (name, _point) in enumerate(members)
+            if components.get(name) == root
+        }
+
+    in_tree = _component(0)
     edges: list[tuple[str, str, Point, Point]] = []
     while len(in_tree) < len(members):
         best: tuple[float, int, int] | None = None
@@ -116,7 +132,7 @@ def _mst_edges(
         assert best is not None
         _d, i, j = best
         edges.append((members[i][0], members[j][0], members[i][1], members[j][1]))
-        in_tree.add(j)
+        in_tree.update(_component(j))
     return edges
 
 

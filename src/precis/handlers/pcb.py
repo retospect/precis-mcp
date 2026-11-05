@@ -9618,6 +9618,7 @@ class PcbHandler(Handler):
                 title=slug,
                 overlays=self._fab_overlays(ref_id),
                 selection_manifest=selection_manifest,
+                connectivity_model=model,
                 # `feature:outline` on the Edge_Cuts group — only when the
                 # board's outline is a pcb_features row (`model["outline"]`
                 # comes from `_outline_from_features` and nowhere else).

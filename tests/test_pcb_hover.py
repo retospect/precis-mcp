@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import json
 import xml.etree.ElementTree as ET
+from collections.abc import Iterator
 from typing import Any
 
-from precis.pcb import gerber, gerber_view
+import pytest
+
+from precis.pcb import connectivity, gerber, gerber_view
 from precis_web import pcb_hover
 
 _LAYERS = ["F.Cu", "B.Cu"]
@@ -158,6 +161,161 @@ def test_ratsnest_alpha_fades_with_the_unrouted_count() -> None:
     assert a(1) == 1.0 and a(10) == 1.0
     assert a(25) == 0.625
     assert a(40) == 0.25 and a(400) == 0.25
+
+
+def _partly_connected_model() -> dict[str, Any]:
+    """A thin stub and via join two GND pads; the F.Cu pad above B.Cu is orphaned."""
+    model = _model()
+    model["pads"] = [
+        _pad("C1", "2", "GND", 2.0, 2.0),
+        {**_pad("C2", "2", "GND", 10.0, 2.0), "layer": "B.Cu"},
+        {
+            **_pad("C3", "2", "GND", 8.0, 2.0),
+            "shape": "polygon",
+            "poly": [(7.6, 1.6), (8.4, 1.6), (8.4, 2.4), (7.6, 2.4)],
+        },
+    ]
+    model["copper"] = [
+        {
+            "ctype": "track",
+            "layer": "F.Cu",
+            "net": "GND",
+            "width_mm": 0.15,
+            "segments": [{"shape": "line", "start": [2, 2], "end": [2.5, 2]}],
+        },
+        {
+            "ctype": "via",
+            "net": "GND",
+            "x": 2.5,
+            "y": 2.0,
+            "dia_mm": 0.6,
+            "drill_mm": 0.3,
+            "span": _LAYERS,
+        },
+        {
+            "ctype": "track",
+            "layer": "B.Cu",
+            "net": "GND",
+            "width_mm": 0.15,
+            "segments": [{"shape": "line", "start": [2.5, 2], "end": [10, 2]}],
+        },
+    ]
+    return model
+
+
+def _pending_airwires(
+    model: dict[str, Any], connectivity_model: dict[str, Any] | None
+) -> list[ET.Element]:
+    files = gerber.export_fab(model, name="t", allow_synthesized=True)
+    root = ET.fromstring(
+        gerber_view.render_fab_svg(
+            files,
+            selection_manifest={
+                "board_ref_id": 1,
+                "snapshot": "tok",
+                "instances": [],
+                "hover": {"unrouted": ["GND"]},
+            },
+            connectivity_model=connectivity_model,
+        )
+    )
+    return [e for e in root.iter() if e.get("class") == "rs-line"]
+
+
+@pytest.mark.parametrize("shape", ["rect", "polygon"])
+def test_ratsnest_joins_copper_components_at_the_closest_pad_pair(shape: str) -> None:
+    """gr565255: filtering an ordinary pad MST still leaves two orphan links."""
+    model = _partly_connected_model()
+    model["pads"][2]["shape"] = shape
+    lines = _pending_airwires(model, model)
+    assert len(lines) == 1
+    assert lines[0].get("data-pcb-net") == "GND"
+    endpoints = {
+        (float(lines[0].get(f"x{i}", "nan")), float(lines[0].get(f"y{i}", "nan")))
+        for i in (1, 2)
+    }
+    assert endpoints == {(10.0, 2.0), (8.0, 2.0)}
+
+
+def test_fully_connected_pending_net_has_no_airwires() -> None:
+    model = _partly_connected_model()
+    model["pads"][2]["layer"] = "B.Cu"
+    assert _pending_airwires(model, model) == []
+
+
+def test_ratsnest_joins_three_components_with_two_airwires() -> None:
+    model = _partly_connected_model()
+    model["pads"].append(_pad("C4", "2", "GND", 18.0, 2.0))
+    lines = _pending_airwires(model, model)
+    assert len(lines) == 2
+    endpoints = {
+        frozenset(float(line.get(f"x{i}", "nan")) for i in (1, 2)) for line in lines
+    }
+    assert endpoints == {frozenset((10.0, 8.0)), frozenset((10.0, 18.0))}
+
+
+@pytest.mark.parametrize("connectivity_model", [None, {}])
+def test_ratsnest_without_connectivity_keeps_the_full_pad_tree(
+    connectivity_model: dict[str, Any] | None,
+) -> None:
+    lines = _pending_airwires(_partly_connected_model(), connectivity_model)
+    assert len(lines) == 2
+    assert {e.get("data-pcb-net") for e in lines} == {"GND"}
+
+
+def test_ratsnest_keeps_airwires_for_pads_missing_from_connectivity() -> None:
+    model = _partly_connected_model()
+    partial = {**model, "pads": model["pads"][:2]}
+    assert len(_pending_airwires(model, partial)) == 1
+
+
+@pytest.mark.parametrize("pour", [None, "declared", "stored"])
+def test_pending_pin_components_match_unfiltered_connectivity(pour: str | None) -> None:
+    model = _partly_connected_model()
+    if pour == "declared":
+        model["pending_pours"] = [{"net": "GND", "layer": "F.Cu"}]
+    elif pour == "stored":
+        model["copper"].append(
+            {
+                "ctype": "pour",
+                "net": "GND",
+                "layer": "F.Cu",
+                "polygon": model["outline"],
+            }
+        )
+    unrelated = _model()
+    model["pads"] = unrelated["pads"] + model["pads"]
+    model["copper"] = unrelated["copper"] + model["copper"]
+    full = connectivity.pin_components(model)
+    scoped = connectivity.pin_components(model, nets={"GND"})
+    assert full is not None and scoped is not None
+    assert ("J1", "1") in full  # Default extraction still includes routed nets.
+    assert set(scoped) == {("C1", "2"), ("C2", "2"), ("C3", "2")}
+    assert scoped[("C1", "2")] == scoped[("C2", "2")]
+    assert (scoped[("C1", "2")] == scoped[("C3", "2")]) == (pour is not None)
+    for a in scoped:
+        for b in scoped:
+            assert (scoped[a] == scoped[b]) == (full[a] == full[b])
+    assert connectivity.pin_components(model, nets=set()) is None
+
+
+def test_pending_connectivity_does_not_examine_unrelated_routed_segments() -> None:
+    """gr565255: even primitive extraction must skip a large routed net."""
+
+    class UnexaminedSegments(list[dict[str, Any]]):
+        def __iter__(self) -> Iterator[dict[str, Any]]:
+            raise AssertionError("unrelated routed segments were examined")
+
+    model = _partly_connected_model()
+    unrelated = _model()["copper"][0]
+    unrelated["segments"] = UnexaminedSegments(unrelated["segments"] * 5000)
+    connectivity_model = {**model, "copper": [unrelated, *model["copper"]]}
+    components = connectivity.pin_components(connectivity_model, nets={"GND"})
+    assert components is not None
+    assert set(components) == {("C1", "2"), ("C2", "2"), ("C3", "2")}
+    # Export normal artwork; only the viewer's connectivity input contains
+    # the guarded segments, so this exercises render_fab_svg's net scope.
+    assert len(_pending_airwires(model, connectivity_model)) == 1
 
 
 _TABLES: dict[str, list[dict[str, Any]]] = {
@@ -365,3 +523,18 @@ def test_placed_scripts_is_empty_without_a_bound_trace(store: Any) -> None:
     with store.pcb_view_tx() as conn:
         view = pcb_design.capture_view(store, ref, conn=conn)
         assert pcb_hover.placed_scripts(store, view) == {}
+
+
+def test_oversized_pending_net_skips_component_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A huge pending net keeps the full MST instead of stalling the request."""
+
+    def refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("component extraction must be skipped")
+
+    model = _partly_connected_model()
+    scoped = len(_pending_airwires(model, model))
+    monkeypatch.setattr(connectivity, "pin_components", refuse)
+    monkeypatch.setattr(gerber_view, "_RATSNEST_COMPONENT_MAX_COPPER", -1)
+    assert len(_pending_airwires(model, model)) > scoped
