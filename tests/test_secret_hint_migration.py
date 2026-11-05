@@ -30,14 +30,16 @@ pytestmark = pytest.mark.db
 
 
 def test_saved_hint_tail_preserves_legacy_and_permissions(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     if not _pg_available():
         pytest.skip("test PostgreSQL unavailable")
     name = "precis_secret_counts_" + uuid.uuid4().hex
     admin_dsn = _dsn_with_db(_active_dsn(), "postgres")
     dsn = _dsn_with_db(_active_dsn(), name)
-    scratch = ROOT / ".scratch" / name
+    scratch = tmp_path
     prior = scratch / "prior"
     prior.mkdir(parents=True)
     at_tail = scratch / "at_tail"
@@ -140,7 +142,9 @@ def test_saved_hint_tail_preserves_legacy_and_permissions(
 
 
 @pytest.mark.parametrize("snapshot", ["current", "regenerated"])
-def test_current_baseline_final_saved_hint_behavior(snapshot: str) -> None:
+def test_current_baseline_final_saved_hint_behavior(
+    snapshot: str, tmp_path: Path
+) -> None:
     from precis.store import schema_dump
 
     if not _pg_available():
@@ -148,8 +152,7 @@ def test_current_baseline_final_saved_hint_behavior(snapshot: str) -> None:
     name = "precis_counts_baseline_" + uuid.uuid4().hex
     admin_dsn = _dsn_with_db(_active_dsn(), "postgres")
     dsn = _dsn_with_db(_active_dsn(), name)
-    scratch = ROOT / ".scratch" / name
-    scratch.mkdir(parents=True)
+    scratch = tmp_path
     baseline = MIGRATIONS / "baseline/schema.sql"
     if snapshot == "regenerated":
         # The complete canonical artifact must bootstrap without externally
