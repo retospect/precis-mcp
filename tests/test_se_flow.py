@@ -1878,3 +1878,41 @@ def test_flow_workspace_run_to_player(runtime_with_store: Any, store: Any) -> No
         )
     )
     assert payload["mesh"]["outline"] and payload["frames"]["shape"] == [4, 60, 3]
+
+
+def test_drc_keeps_physics_gate_on_lumen_measures() -> None:
+    """A flow:lumen block with an unsupported input measure is refused by
+    drc() exactly as the registered computer refuses it — no computed value."""
+    from precis_se.drc import drc
+    from tests.test_se_flow_nano import _lumen_tree
+
+    tree = _lumen_tree()
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "add_pocket",
+                "block": "t",
+                "name": "flow",
+                "shape": "flow:lumen;alpha=1",
+                "regions": [{"selector": "atoms:t[0-20]"}],
+            }
+        ],
+    )
+    tree.measures.append(
+        MeasureSpec(
+            block="t",
+            name="bt",
+            datum="atoms:t[0-20]",
+            measurand="breakthrough-fraction",
+            unit="ratio",
+            value=0.5,
+            strength="hard",
+        )
+    )
+    tree.measures.append(
+        MeasureSpec(block="t", name="co/wall-rate-constant", value=0.0)
+    )
+    findings = [f for f in drc(tree).findings if f.subject == "t.bt"]
+    assert [f.rule for f in findings] == ["measure_uncomputable"]
+    assert "wall-rate-constant" in findings[0].detail

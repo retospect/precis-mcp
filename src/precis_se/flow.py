@@ -1297,6 +1297,10 @@ def _flow_measure(
         return None, got
     _pocket, spec = got
     if isinstance(spec, LumenSpec):
+        try:
+            _check_tree_physics(tree, measure.block)
+        except BadInput as exc:
+            return None, str(exc)
         return _lumen_measure(tree, node, spec, slug)
     placed = _chamber_placed(None, tree, measure.block, (spec.inlet, spec.outlet))
     if placed is None:
