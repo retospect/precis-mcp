@@ -2,8 +2,9 @@
 id: precis-research-analysis
 family: paper
 title: precis — analyze research claims and their relationships
-summary: distinguish scoped claims, definitions, assumptions and evidence while preserving source relationships and uncertainty
+summary: research differentiation — distinguish scoped claims, definitions, assumptions and evidence while preserving source relationships and uncertainty
 answers:
+  - how does differentiation separate research claims, definitions and assumptions in context?
   - how do I analyze a paper into meaningful claims without losing its context?
   - how do I distinguish what a source asserts from what its evidence supports?
   - do two papers disagree or use different definitions and conditions?
@@ -23,6 +24,9 @@ request alone returns that account and proposed links; persistence follows the
 requested workflow and existing authority. [[precis-read-for-question]] owns
 the question-to-corpus reading loop; [[precis-research-help]] owns its source
 quality bar. Combine the result with [[precis-research-synthesis]].
+
+Differentiation means distinguishing claims, definitions, assumptions and
+evidence while retaining their relationships and source context.
 
 ## Analyze the question and sources
 
@@ -75,8 +79,8 @@ these words are not a new exclusive status or tag axis.
 For requested persistence, search and compare candidate claims before creating
 refs, preserving existing source and scope. [[precis-finding-help]] owns sourced
 findings; [[precis-taproot-mint-help]] owns claim-hub convergence and evidence.
-[[precis-make-memory]] reconciles durable notes. Record which proposed changes
-were actually written, then read their links back.
+[[precis-make-memory]] reconciles durable notes using [[precis-memory-help]].
+Record which proposed changes were actually written, then read their links back.
 
 ## Distinctions that change the result
 

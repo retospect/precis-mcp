@@ -2,8 +2,9 @@
 id: precis-research-synthesis
 family: paper
 title: precis — synthesize research without losing distinctions or provenance
-summary: combine compatible claims into an answer or hypothesis while preserving evidence, disagreements, scope and inferred steps
+summary: research integration — combine compatible claims into an answer or hypothesis while preserving evidence, disagreements, scope and inferred steps
 answers:
+  - how does integration combine research claims into an answer or hypothesis?
   - how do I synthesize findings from several papers into a coherent answer?
   - how do I keep contrary evidence and different conditions visible in a synthesis?
   - what if my conclusion is inferred but no source states it?
@@ -22,6 +23,10 @@ that answers a research question. Start from the sources and structured claims
 produced by [[precis-research-analysis]], or reconstruct the missing analysis.
 A synthesis request alone returns an answer and proposed relationships;
 requested persistence uses the existing evidence and memory workflows.
+
+Integration means combining analyzed claims into an answer or hypothesis while
+keeping source observations distinct from the reasoning and support for that
+account. Return to analysis whenever the combination exposes missing distinctions.
 
 ## Build a coherent answer
 
@@ -75,8 +80,9 @@ The summary provides organization; it need not repeat every claim body.
 
 For requested graph changes, reuse existing claim identities and precise scope.
 [[precis-taproot-mint-help]] owns evidence attachment and claim refinement;
-[[precis-make-memory]] owns reconciliation of durable notes. Keep proposed
-changes distinct from completed writes, and read back written relationships.
+[[precis-make-memory]] owns reconciliation of durable notes using
+[[precis-memory-help]]. Keep proposed changes distinct from completed writes,
+and read back written relationships.
 
 ## A new explanation from two sources
 
