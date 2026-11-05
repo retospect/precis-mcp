@@ -258,6 +258,9 @@ off that gap until it closes.
    transition state and realise it as a backboned scaffold. Blocked
    on Do next 1 and 5; the chemistry thread consumes it and measures
    the barrier. Unparks when the realize loop lands.
+2a. [se-protein-interface-first](../se-protein-interface-first.md) — draft;
+    shares the pocket-first seam, adding required non-repeating contacts
+    and a rigid protein scaffold without folding predictors (Reto, 2026-10-31).
 3. **backlog/se-atomic-round2.md**
 4. **backlog/design-workbench-realize.md** — blocked-by 3 (se-atomic-round2).
 5. **backlog/se-off-the-shelf-fabrication.md**
