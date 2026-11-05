@@ -410,6 +410,53 @@ def test_collapsed_worker_fix_lane_env_is_gated() -> None:
     assert _render_collapsed_worker_fix_env(gateway=False, enabled=True) == {}
 
 
+def _render_collapsed_worker_slice_env(
+    *, gateway: bool, fix_lane: bool, **extra: object
+) -> dict[str, str]:
+    """Render 20b's ``_l_b_slice_env`` (the slice root the heartbeat's
+    ``repo_checkout`` probe reads) for one host/gate combination — same stub
+    idiom as :func:`_render_collapsed_worker_fix_env`."""
+    import yaml
+    from jinja2.nativetypes import NativeEnvironment
+
+    play_src = (
+        _REPO_ROOT / "deploy" / "playbooks" / "20b-precis-worker-collapsed.yml"
+    ).read_text(encoding="utf-8")
+    plays = yaml.safe_load(play_src)
+    expr = plays[0]["vars"]["_l_b_slice_env"]
+
+    env = NativeEnvironment(undefined=jinja2.ChainableUndefined)
+    rendered = env.from_string(expr).render(
+        inventory_hostname="host-a",
+        groups={"gateway": ["host-a"] if gateway else ["host-b"]},
+        precis_fix_lane_enabled=fix_lane,
+        **extra,
+    )
+    assert isinstance(rendered, dict), f"_l_b_slice_env rendered to {type(rendered)}"
+    return rendered
+
+
+def test_collapsed_worker_slice_root_renders_on_the_gateway_unarmed() -> None:
+    """``PRECIS_SLICE_ROOT`` renders on the gateway whether or not the fix
+    lane is armed: the collapsed worker is the gateway's only heartbeating
+    unit, so its ``repo_checkout`` probe (workers/capability_probe.py) is
+    what lets run_slice / land_slice / release_cut place at all. The r222
+    redeploy (2026-11-05) re-rendered the plists from these templates with
+    no slice root and every factory land queued fleet-wide (gripe 570787).
+    Off the gateway the block is empty — there is no checkout to advertise.
+    ``precis_slice_root`` overrides the fix lane's clone path."""
+    expected = {"PRECIS_SLICE_ROOT": "/Users/deploy/precis-fix-repo"}
+    assert _render_collapsed_worker_slice_env(gateway=True, fix_lane=False) == expected
+    assert _render_collapsed_worker_slice_env(gateway=True, fix_lane=True) == expected
+    assert _render_collapsed_worker_slice_env(gateway=False, fix_lane=True) == {}
+    assert _render_collapsed_worker_slice_env(
+        gateway=True, fix_lane=False, precis_fix_repo_dir="/srv/fix-repo"
+    ) == {"PRECIS_SLICE_ROOT": "/srv/fix-repo"}
+    assert _render_collapsed_worker_slice_env(
+        gateway=True, fix_lane=False, precis_slice_root="/srv/slices"
+    ) == {"PRECIS_SLICE_ROOT": "/srv/slices"}
+
+
 def _seed_loop_enabled(service: str, **render_vars: object) -> bool:
     """Render the ``enabled`` expression of one entry of the precis_worker
     role's §L ``service seed`` loop (the task that mirrors a host's arming

@@ -68,6 +68,9 @@ def test_env_has_parity_keys_and_own_identity() -> None:
         "PRECIS_EMBEDDER_URL",
         "PRECIS_DFT_NODE",
         "PRECIS_CLAUDE_BIN",
+        # The checkout run_slice cuts worktrees under; a venv install has none
+        # around its code. Same value as 20b's _l_b_slice_env (gripe 570787).
+        "PRECIS_SLICE_ROOT",
         "precis_shared_env",
         "precis_identity_env",
     ):

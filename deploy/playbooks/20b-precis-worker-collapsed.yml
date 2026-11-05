@@ -395,6 +395,24 @@
           'PRECIS_DIAGNOSE_AUTOPROMOTE': '1',
         } if (precis_fix_lane_enabled | default(false)) else {}
       ) if inventory_hostname in groups['gateway'] else {} }}
+    # ── slice root (dark factory). PRECIS_SLICE_ROOT names the checkout
+    # run_slice cuts `slice-td<id>` worktrees under, AND the heartbeat's
+    # `repo_checkout` probe (capability_probe._probe_repo_checkout) reads it
+    # from THIS unit: the collapsed worker is the gateway's only heartbeating
+    # lane, so its probe is what writes — or, unset, deletes — the host's
+    # resource_slots row that run_slice / land_slice / release_cut place on.
+    # 20g (the lane that executes those jobs) renders the same value. A venv
+    # install has no checkout around its code, so without this the probe
+    # returns 0 and every factory job waits "no host advertises
+    # repo_checkout" (2026-11-05 r222 redeploy, gripe 570787: the plists were
+    # re-rendered from these templates and a hand-set value vanished — this
+    # var, not the plist, is the place to set it). Gateway-only (the checkout
+    # lives there) and NOT gated on precis_fix_lane_enabled: the slice lanes
+    # share the fix lane's clone (precis_fix_repo_dir) but not its arming. ──
+    _l_b_slice_env: >-
+      {{ (
+        {'PRECIS_SLICE_ROOT': precis_slice_root | default(precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo'))}
+      ) if inventory_hostname in groups['gateway'] else {} }}
     # ── tts render (darwin only, gated on topology.yml tts_render — the
     # GPU-node-retirement rehome, 2026-08-29): launchd has no
     # EnvironmentFile, so the same vars roles/tts's tts.env.j2 drops for the
@@ -421,7 +439,7 @@
     _l_b_env: >-
       {{ _l_b_base_env | combine(_l_b_review_env) | combine(_l_b_container_env)
          | combine(_l_b_dream_env) | combine(_l_b_anki_env) | combine(_l_b_gateway_extras_env)
-         | combine(_l_b_fix_env) | combine(_l_b_tts_env) }}
+         | combine(_l_b_fix_env) | combine(_l_b_slice_env) | combine(_l_b_tts_env) }}
     # ── dedicated OA-fetch lane env (header's option-A block) ──
     # The collapsed-unit union minus everything `fetch` never reads, PLUS the
     # shared/identity env verbatim — that is what carried PRECIS_WATCH_INBOX,

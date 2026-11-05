@@ -34,6 +34,17 @@
 # precis_shared_env + precis_identity_env (the same source the catch-all's
 # plist renders), so setting it there turns the tick read-only on both.
 #
+# SLICE ROOT. PRECIS_SLICE_ROOT is the checkout run_slice cuts `slice-td<id>`
+# worktrees under (run_slice.slice_root). The venv install has no checkout
+# around its code, so the lane needs the value explicitly; 20b renders the
+# same one (its `_l_b_slice_env`) because the heartbeat's `repo_checkout`
+# probe runs THERE, and the probe is what lets these jobs place on this host
+# at all. Default: the fix lane's clone (precis_fix_repo_dir); override with
+# precis_slice_root. Set it here, never by hand in the plist — a redeploy
+# re-renders the plist and the hand-set value is gone (2026-11-05 r222,
+# gripe 570787: every run_slice/land_slice queued "no host advertises
+# repo_checkout").
+#
 # NO READINESS GATE (unlike 20e/43). A repeated `--only` has no
 # append-vs-store hazard for job_ssh_node, long-registered in the installed
 # argparse choices. plan_tick is NOT in an older venv's choices, but the
@@ -83,6 +94,7 @@
                  'PRECIS_DAILY_COST_CEILING': (precis_daily_cost_ceiling | default(50.0)) | string,
                  'PRECIS_CLAUDE_P_BILLED': ('1' if (precis_claude_p_billed | default(false)) else '0'),
                  'PRECIS_SUSPENDED_JOB_TYPES': precis_suspended_job_types | default(''),
+                 'PRECIS_SLICE_ROOT': precis_slice_root | default(precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo')),
                  'PRECIS_AUTOCATPATH_KINETICS_SECONDS': precis_autocatpath_kinetics_seconds | string,
                  'PRECIS_EMBEDDER': precis_worker_agent_embedder | default('remote'),
                  'PRECIS_EMBEDDER_URL': precis_worker_agent_embedder_url
