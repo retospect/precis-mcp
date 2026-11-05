@@ -48,6 +48,10 @@ Each pass:
    that deadline kill. A never-completing ``poll`` would otherwise renew the
    lease forever, and the sweeper's own wall-clock retirement (§H piece 6)
    leaves no other termination path for a detached job_type.
+   A ``STATUS:cancel_requested`` row has left this poll set (and is not
+   claimable), so :func:`_cancelling_jobs` + :func:`_cancel_one` drive it
+   to ``STATUS:cancelled`` instead — TERM the group, KILL after a grace —
+   or the detached compute would run unwatched (gr567620).
 0.5. **Reap** detached orphans (gr520866): a terminal job still carrying
    ``meta.compute_handle`` — terminalized by a path that skipped
    ``spec.kill`` (the crash-loop guard, a sweeper transition, a direct
@@ -77,6 +81,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import signal
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -87,6 +92,9 @@ from precis.workers.executors._common import (
     _ERROR_META_CAP,
     MAX_ATTEMPTS,
     claim_executor_jobs,
+)
+from precis.workers.executors._common import (
+    CANCEL_REQUESTED as _CANCEL_REQUESTED,
 )
 from precis.workers.executors._common import (
     CANCELLED as _CANCELLED,
@@ -215,6 +223,13 @@ _ORPHAN_REAP_LIMIT = 25
 
 # Let a terminal poll finish exiting before considering its handle orphaned.
 _ORPHAN_REAP_GRACE_S = 120
+
+#: TERM→KILL grace for a ``STATUS:cancel_requested`` detached job
+#: (gr567620), spread across poll ticks via ``meta.cancel_term_at`` /
+#: ``meta.cancel_kill_at`` — the pass never blocks on the wait. Same 30 s
+#: the in-proc child supervisor gives a group to exit
+#: (``child_compute.DEFAULT_GRACE_S``).
+_CANCEL_KILL_GRACE_S = 30.0
 
 
 def _detached_pgid(handle: Any) -> int | None:
@@ -546,6 +561,27 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
         # False (still running) is a no-op: _poll_one renewed the lease
         # or deferred a contended legacy deadline until the next pass.
 
+    # 0b) Drive STATUS:cancel_requested detached jobs to cancelled
+    # (gr567620): the status left the running poll set and is not
+    # claimable, so without this loop the remote compute runs unwatched.
+    for ref_id, title, meta in _cancelling_jobs(store, node):
+        try:
+            ctx = _build_dispatch_context(store, ref_id, title, meta)
+            terminal = _cancel_one(ctx)
+        except Exception as exc:  # pragma: no cover — defensive
+            failed += 1
+            log.warning(
+                "ssh_node: cancel of job %d raised: %s",
+                ref_id,
+                exc,
+                exc_info=True,
+            )
+            continue
+        if terminal:
+            ok += 1
+        # False (TERM sent, inside the KILL grace) is a no-op until the
+        # next pass re-checks the group.
+
     # 0.5) Reap detached computes left orphaned by terminalization paths
     # that skipped spec.kill (gr520866: the poison-guard fail below, the
     # sweeper's dead-node/off-lane transitions, a direct STATUS tag) —
@@ -737,6 +773,254 @@ def _polling_jobs(
             (_EXECUTOR_NAME, node, _RUNNING),
         ).fetchall()
     return [(int(r[0]), str(r[1]), dict(r[2] or {})) for r in rows]
+
+
+def _cancelling_jobs(
+    store: Store, node: str | None
+) -> list[tuple[int, str, dict[str, Any]]]:
+    """Detached ssh_node jobs in ``STATUS:cancel_requested`` pinned to this
+    host — the cancel sibling of :func:`_polling_jobs` (gr567620).
+
+    ``cancel_requested`` replaced ``running``, so the row left the poll
+    set, and it is not claimable either (``CLAIMABLE`` is queued/yielded)
+    — nothing else drives it. Selected on ``compute_handle`` OR a live
+    ``submit_started_at`` marker so the submit-window edge (a cancel that
+    lands between claim and the handle persist) is still driven; a legacy
+    blocking ``dispatch`` carries neither and stays out, exactly as it
+    stays out of ``_polling_jobs``."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title, r.meta
+              FROM refs r
+             WHERE r.kind = 'job'
+               AND r.retired_at IS NULL
+               AND r.meta->>'executor' = %s
+               AND (r.meta ? 'compute_handle' OR r.meta ? 'submit_started_at')
+               AND (r.meta->'params'->>'target_node') IS NOT DISTINCT FROM %s
+               AND EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = r.ref_id
+                        AND t.namespace = 'STATUS'
+                        AND t.value = %s
+                   )
+             ORDER BY r.ref_id
+            """,
+            (_EXECUTOR_NAME, node, _CANCEL_REQUESTED),
+        ).fetchall()
+    return [(int(r[0]), str(r[1]), dict(r[2] or {})) for r in rows]
+
+
+def _cancel_terminalize(
+    ctx: DispatchContext,
+    *,
+    summary: str,
+    released: bool = False,
+    skip_reason: str | None = None,
+) -> bool:
+    """Write ``STATUS:cancelled`` for a cancel-driven job — the
+    ``_kill_and_terminalize`` write shape minus the failure: event chunk,
+    optional orphan-skip / handle-release stamps, the status, then the
+    plugin's ``release`` hook (leases/grants, never process signals).
+    No failure bubble: a cancel is not a failure (``claude_docker._skip``
+    precedent). Returns ``True`` — the row is terminal."""
+    store, ref_id = ctx.store, ctx.ref_id
+    with store.pool.connection() as conn:
+        _append_chunk(store, ref_id, _JOB_EVENT_KIND, summary, conn=conn)
+        if skip_reason is not None:
+            _set_meta(
+                conn,
+                ref_id,
+                detached_orphan_skipped={
+                    "at": datetime.now(UTC).isoformat(),
+                    "reason": skip_reason,
+                },
+            )
+        if released:
+            _set_meta(conn, ref_id, compute_handle_released=True)
+        _set_status(store, ref_id, _CANCELLED, conn=conn)
+        conn.commit()
+    _release_job(ctx)
+    return True
+
+
+def _cancel_one(ctx: DispatchContext) -> bool:
+    """Drive one ``STATUS:cancel_requested`` detached job toward cancelled.
+
+    First sight (no ``meta.cancel_term_at``): stop the compute — the
+    job_type's ``kill`` hook when it declares one (the plugin's own stop:
+    land_slice/run_slice SIGTERM the process group, run_slice also revokes
+    its grant), else a direct ``SIGTERM`` to a verified ``pgid`` — stamp
+    ``meta.cancel_term_at`` and return ``False``. Later ticks re-validate
+    the handle identity exactly like ``_kill_and_terminalize``: a gone
+    group finalizes at once; a live verified group gets ``SIGKILL`` after
+    ``_CANCEL_KILL_GRACE_S`` (``meta.cancel_kill_at``), and a group still
+    alive one grace after the KILL is cancelled anyway rather than polled
+    forever. An unverifiable handle fails closed — no signal, the skip
+    reason recorded, same as the kill paths. ``spec.poll`` never runs, so
+    a ``land_slice`` cancel never reaches its green-path cleanup: the
+    worktree and branch stay for forensics (gr567620). Returns ``True``
+    once the row is terminal."""
+    store, ref_id, meta = ctx.store, ctx.ref_id, ctx.meta
+    job_type_name = meta.get("job_type")
+    spec = get_job_type(str(job_type_name)) if job_type_name else None
+    handle = meta.get("compute_handle")
+
+    if handle is None:
+        # The submit-intent window (gr191673): no handle was ever
+        # persisted, so there is nothing to signal — a detached compute
+        # may still be out there; say so, cancel anyway.
+        note = (
+            f"submit outcome unknown (submit_started_at="
+            f"{meta.get('submit_started_at')}) — a detached compute may be "
+            "orphaned on the target node"
+            if meta.get("submit_started_at")
+            else "no compute_handle"
+        )
+        return _cancel_terminalize(
+            ctx,
+            summary=f"runner: cancel requested — {note}; cancelled",
+        )
+
+    # A parked handle (``not_before`` — land_slice's deferral) names no
+    # process: nothing to signal, cancel is a status write.
+    if isinstance(handle, dict) and handle.get("not_before"):
+        return _cancel_terminalize(
+            ctx,
+            summary="runner: cancel requested — parked handle names no "
+            "process; cancelled",
+            released=True,
+        )
+
+    process_handle = isinstance(handle, dict)
+    now = time.time()
+    term_at = meta.get("cancel_term_at")
+
+    if term_at is None:
+        # First sight of the cancel: stop the compute, stamp the TERM.
+        # Same fail-closed identity gate as _kill_and_terminalize: every
+        # dict handle must validate the actual pgid before any signal;
+        # non-dict handles are the plugin's own kill protocol.
+        skip_reason = _detached_identity_reason(handle) if process_handle else None
+        if process_handle and skip_reason is None and not _detached_group_alive(handle):
+            skip_reason = "group-unavailable"
+        if skip_reason is not None and skip_reason != "group-unavailable":
+            return _cancel_terminalize(
+                ctx,
+                summary=f"runner: cancel requested — handle unverifiable "
+                f"({skip_reason}); cancelled without signalling",
+                skip_reason=skip_reason,
+            )
+        if skip_reason == "group-unavailable":
+            return _cancel_terminalize(
+                ctx,
+                summary="runner: cancel requested — process group already "
+                "gone; cancelled",
+                released=True,
+            )
+        how = "nothing to signal"
+        if spec is not None and spec.kill is not None:
+            try:
+                spec.kill(ctx, handle)
+                how = f"{spec.name} kill hook"
+            except Exception:  # pragma: no cover — defensive
+                log.warning(
+                    "ssh_node: cancel kill(handle=%r) of job %d raised",
+                    handle,
+                    ref_id,
+                    exc_info=True,
+                )
+        elif process_handle:
+            pgid = _detached_pgid(handle)
+            if pgid is not None:
+                try:
+                    os.killpg(pgid, signal.SIGTERM)
+                    how = f"SIGTERM to process group {pgid}"
+                except OSError:
+                    pass
+        with store.pool.connection() as conn:
+            _set_meta(conn, ref_id, cancel_term_at=now)
+            _append_chunk(
+                store,
+                ref_id,
+                _JOB_EVENT_KIND,
+                f"runner: cancel requested — stop signalled via {how} "
+                f"(handle {handle!r})",
+                conn=conn,
+            )
+            conn.commit()
+        return False
+
+    # TERM already sent on an earlier pass: re-validate, escalate or
+    # finish. An unreadable stamp never parks the cancel forever.
+    try:
+        term_ago = now - float(term_at)
+    except (TypeError, ValueError):
+        term_ago = _CANCEL_KILL_GRACE_S
+
+    if process_handle:
+        reason = _detached_identity_reason(handle)
+        if reason is not None and reason != "group-unavailable":
+            # Identity broke mid-cancel (pid recycled, /proc unreadable):
+            # fail closed — never signal an unverified group.
+            return _cancel_terminalize(
+                ctx,
+                summary=f"runner: cancel requested — handle unverifiable "
+                f"({reason}) after TERM; cancelled without further "
+                "signalling",
+                skip_reason=reason,
+            )
+        if reason == "group-unavailable" or not _detached_group_alive(handle):
+            return _cancel_terminalize(
+                ctx,
+                summary="runner: cancelled — process group gone after TERM",
+                released=True,
+            )
+        if term_ago >= _CANCEL_KILL_GRACE_S:
+            kill_at = meta.get("cancel_kill_at")
+            if kill_at is None:
+                pgid = _detached_pgid(handle)
+                if pgid is not None:
+                    try:
+                        os.killpg(pgid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                with store.pool.connection() as conn:
+                    _set_meta(conn, ref_id, cancel_kill_at=now)
+                    _append_chunk(
+                        store,
+                        ref_id,
+                        _JOB_EVENT_KIND,
+                        f"runner: cancel requested — SIGKILL to process "
+                        f"group {pgid} after {_CANCEL_KILL_GRACE_S:.0f}s "
+                        "grace",
+                        conn=conn,
+                    )
+                    conn.commit()
+                return False
+            try:
+                kill_ago = now - float(kill_at)
+            except (TypeError, ValueError):
+                kill_ago = _CANCEL_KILL_GRACE_S
+            if kill_ago >= _CANCEL_KILL_GRACE_S:
+                return _cancel_terminalize(
+                    ctx,
+                    summary="runner: cancelled — process group survived "
+                    "SIGKILL (uninterruptible?); handle released",
+                    released=True,
+                )
+        return False
+
+    # Opaque handle: the plugin's kill hook was the only lever — once the
+    # TERM grace has passed there is nothing more to wait for.
+    if term_ago >= _CANCEL_KILL_GRACE_S:
+        return _cancel_terminalize(
+            ctx,
+            summary="runner: cancelled — plugin stop did not confirm exit "
+            "within the grace; handle released",
+            released=True,
+        )
+    return False
 
 
 def _legacy_deadline_owned(conn: Any, ctx: DispatchContext, handle: Any) -> bool:

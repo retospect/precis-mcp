@@ -8,6 +8,7 @@ without that plugin installed.
 from __future__ import annotations
 
 import json
+import signal
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -2797,3 +2798,334 @@ def test_seed_kill_refusal_does_not_release_or_reap_handle(
     assert attempted == [(handle, True)]
     assert reaped == []
     assert not _meta(store, rid).get("compute_handle_released", False)
+
+
+# ── gr567620: STATUS:cancel_requested on a running detached job ────
+
+
+def _mk_cancel_job(
+    store: Store,
+    *,
+    compute_handle: Any = None,
+    submit_started_at: float | None = None,
+    target_node: str | None = None,
+    job_type: str = "fake_relax",
+    params: dict[str, Any] | None = None,
+) -> int:
+    """A detached ssh_node job already in ``STATUS:cancel_requested`` —
+    what an agent's ``tag(…, add=['STATUS:cancel_requested'])`` leaves
+    behind on a running submit/poll job."""
+    meta: dict[str, Any] = {
+        "executor": "ssh_node",
+        "job_type": job_type,
+        "params": params
+        if params is not None
+        else ({"target_node": target_node} if target_node is not None else {}),
+    }
+    if compute_handle is not None:
+        meta["compute_handle"] = compute_handle
+    if submit_started_at is not None:
+        meta["submit_started_at"] = submit_started_at
+    ref = store.insert_ref(kind="job", slug=None, title="cancel me", meta=meta)
+    store.add_tag(ref.id, Tag.parse_strict("STATUS:cancel_requested"), set_by="agent")
+    return int(ref.id)
+
+
+def _job_events(store: Store, ref_id: int) -> list[str]:
+    return [
+        c.text
+        for c in store.chunks.list_chunks_for_ref(ref_id)
+        if getattr(c, "chunk_kind", None) == "job_event"
+    ]
+
+
+def _backdate_cancel_meta(store: Store, ref_id: int, **fields: Any) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+            (json.dumps(fields), ref_id),
+        )
+        conn.commit()
+
+
+def test_cancel_requested_terms_kills_then_cancels(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr567620 core: the cancel left the running poll set, so the pass
+    must drive it — plugin kill (TERM) on first sight, SIGKILL to the
+    still-verified group after the grace, then STATUS:cancelled with the
+    handle released. ``poll`` never runs."""
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    polled: list[Any] = []
+    signals: list[tuple[int, int]] = []
+
+    def _poll(ctx: Any, handle: Any) -> bool:
+        polled.append(handle)
+        return False
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: replace(_kill_reap_spec(killed, reaped), poll=_poll),
+    )
+    _fake_detached_identity(monkeypatch)
+    monkeypatch.setattr(
+        ssh_node.os, "killpg", lambda pg, sig: signals.append((pg, sig))
+    )
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    handle = _identity_handle()
+    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spark")
+
+    # Tick 1: the plugin kill hook fires (its TERM), the row waits.
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+    assert result == {"claimed": 0, "ok": 0, "failed": 0}
+    assert killed == [(rid, handle)]
+    assert reaped == []
+    assert _status(store, rid) == "cancel_requested"
+    assert _meta(store, rid)["cancel_term_at"]
+    assert polled == []
+
+    # Tick 2 inside the grace: the group is still alive — nothing new.
+    ssh_node.run_ssh_node_pass(store, limit=2)
+    assert _status(store, rid) == "cancel_requested"
+    assert signals == []
+
+    # Past the grace with the group still verified alive: SIGKILL.
+    _backdate_cancel_meta(
+        store, rid, cancel_term_at=time.time() - ssh_node._CANCEL_KILL_GRACE_S - 1
+    )
+    ssh_node.run_ssh_node_pass(store, limit=2)
+    assert signals == [(4242, signal.SIGKILL)]
+    assert _meta(store, rid)["cancel_kill_at"]
+    assert _status(store, rid) == "cancel_requested"
+
+    # The group is gone: cancelled, handle released, poll never ran.
+    monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: False)
+    ssh_node.run_ssh_node_pass(store, limit=2)
+    assert _status(store, rid) == "cancelled"
+    meta = _meta(store, rid)
+    assert meta["compute_handle_released"] is True
+    assert polled == []
+    events = _job_events(store, rid)
+    assert any("cancel requested" in t for t in events)
+    assert any("SIGKILL" in t for t in events)
+
+
+def test_cancel_requested_without_kill_hook_terms_pgid_directly(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A submit/poll type with no ``kill`` hook still gets its verified
+    process group TERMed by the executor itself."""
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(submit=lambda c, s: None, poll=lambda c, h: False),
+    )
+    _fake_detached_identity(monkeypatch)
+    monkeypatch.setattr(
+        ssh_node.os, "killpg", lambda pg, sig: signals.append((pg, sig))
+    )
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    rid = _mk_cancel_job(store, compute_handle=_identity_handle(), target_node="spark")
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert signals == [(4242, signal.SIGTERM)]
+    assert _status(store, rid) == "cancel_requested"
+    assert _meta(store, rid)["cancel_term_at"]
+
+
+def test_cancel_requested_parked_handle_cancels_without_signaling(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """land_slice's deferral parks a handle with ``not_before`` and no
+    process — a cancel on it is a pure status write."""
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    rid = _mk_cancel_job(store, compute_handle=_parked_handle(), target_node="spark")
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 0, "ok": 1, "failed": 0}
+    assert killed == [] and reaped == []
+    assert _status(store, rid) == "cancelled"
+    assert _meta(store, rid)["compute_handle_released"] is True
+
+
+def test_cancel_requested_unverifiable_handle_fails_closed(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same identity gate as the kill paths: a handle that cannot prove
+    its process group is never signalled — the job still cancels, the
+    skip reason recorded."""
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    monkeypatch.setattr(
+        ssh_node.os, "killpg", lambda pg, sig: signals.append((pg, sig))
+    )
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    handle = _identity_handle()
+    del handle["boot_id"]  # missing-identity
+    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spark")
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert _status(store, rid) == "cancelled"
+    assert killed == [] and signals == []
+    meta = _meta(store, rid)
+    assert meta["detached_orphan_skipped"]["reason"] == "missing-identity"
+    assert not meta.get("compute_handle_released", False)
+
+
+def test_cancel_requested_dead_group_cancels_without_term(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Identity verified but the group already gone: nothing to TERM —
+    cancel immediately."""
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    _fake_detached_identity(monkeypatch)
+    monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: False)
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    rid = _mk_cancel_job(store, compute_handle=_identity_handle(), target_node="spark")
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 0, "ok": 1, "failed": 0}
+    assert killed == []
+    assert _status(store, rid) == "cancelled"
+    assert _meta(store, rid)["compute_handle_released"] is True
+
+
+def test_cancel_requested_opaque_handle_uses_plugin_kill_then_cancels(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-dict handle is the plugin's own kill protocol: the hook
+    fires once, the grace passes (no group to observe), then cancelled."""
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    rid = _mk_cancel_job(store, compute_handle="remote-pid-opaque", target_node="spark")
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+    assert killed == [(rid, "remote-pid-opaque")]
+    assert _status(store, rid) == "cancel_requested"
+
+    _backdate_cancel_meta(
+        store, rid, cancel_term_at=time.time() - ssh_node._CANCEL_KILL_GRACE_S - 1
+    )
+    ssh_node.run_ssh_node_pass(store, limit=2)
+    assert _status(store, rid) == "cancelled"
+    assert _meta(store, rid)["compute_handle_released"] is True
+
+
+def test_cancel_requested_submit_window_without_handle_cancels(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancel that lands between claim and the handle persist (the
+    gr191673 submit window) still reaches cancelled — there is nothing
+    to signal, and the event says a compute may be orphaned."""
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    rid = _mk_cancel_job(store, submit_started_at=time.time(), target_node="spark")
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 0, "ok": 1, "failed": 0}
+    assert killed == []
+    assert _status(store, rid) == "cancelled"
+    assert any("submit outcome unknown" in t for t in _job_events(store, rid))
+
+
+def test_cancel_requested_land_slice_keeps_worktree_for_forensics(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr567620's land_slice ask: the cancel never runs ``poll`` — its
+    green path owns ``_cleanup`` (worktree remove + branch -D), so the
+    branch and worktree stay."""
+    from precis.workers.job_types import land_slice
+
+    signals: list[tuple[int, int]] = []
+    cleanups: list[Any] = []
+
+    def _cleanup_spy(*a: Any) -> list[Any]:
+        cleanups.append(a)
+        return []
+
+    monkeypatch.setattr(
+        ssh_node.os, "killpg", lambda pg, sig: signals.append((pg, sig))
+    )
+    monkeypatch.setattr(land_slice, "_cleanup", _cleanup_spy)
+    _fake_detached_identity(monkeypatch)
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    handle = {
+        **_identity_handle(),
+        "worktree": "/tmp/slice-td42",
+        "subject": "feat(x): y (td42)",
+        "flag": "--checked",
+        "log": "/tmp/slice-td42/scratch/land_slice.log",
+        "exit_file": "/tmp/slice-td42/scratch/land_slice.exit",
+    }
+    rid = _mk_cancel_job(
+        store,
+        compute_handle=handle,
+        target_node="spark",
+        job_type="land_slice",
+        params={
+            "todo_id": 42,
+            "worktree": "/tmp/slice-td42",
+            "branch": "slice/42",
+            "target_node": "spark",
+        },
+    )
+    # No get_job_type patch: the real land_slice SPEC resolves.
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+    # land_slice.kill SIGTERMs the group through run_slice._signal_group.
+    assert signals == [(4242, signal.SIGTERM)]
+    assert _status(store, rid) == "cancel_requested"
+
+    _backdate_cancel_meta(
+        store, rid, cancel_term_at=time.time() - ssh_node._CANCEL_KILL_GRACE_S - 1
+    )
+    ssh_node.run_ssh_node_pass(store, limit=2)
+    assert signals[-1] == (4242, signal.SIGKILL)
+
+    monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: False)
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert _status(store, rid) == "cancelled"
+    assert cleanups == []  # poll's green path never ran
+
+
+def test_cancelling_jobs_respects_node_pin(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cancel drive is pinned like the poll set: a job targeting
+    another node is not this host's to cancel."""
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    rid = _mk_cancel_job(
+        store, compute_handle=_identity_handle(), target_node="other-node"
+    )
+    assert ssh_node._cancelling_jobs(store, "spark") == []
+    assert [row[0] for row in ssh_node._cancelling_jobs(store, "other-node")] == [rid]
