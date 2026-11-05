@@ -1697,9 +1697,14 @@ def test_unknown_prefix_bare_token_stays_plain() -> None:
 def test_bare_handle_not_a_whole_word_stays_plain() -> None:
     out = str(
         linkify_refs(
-            "paths x/gr12, foo-gr55 and gr123-x",
+            "paths x/gr12, foo-gr55 and gr123-x; some5 gr123-bilayer dc12~gr12",
             markdown=True,
-            handles=_RESOLVED_HANDLES,
+            handles={
+                "me5": ("memory", False, 5),
+                "gr12": ("gripe", False, 12),
+                "gr55": ("gripe", False, 55),
+                "gr123": ("gripe", False, 123),
+            },
         )
     )
     assert "href=" not in out
@@ -1733,9 +1738,8 @@ def test_bare_handle_html_context_escapes_safely() -> None:
 
 
 # --- gr553317 review: an UNCONSUMED handle token must keep the gap whole ---
-# Consuming a match splits the text around it into separate ``_md_inline``
-# gaps, so a token that never links must never leave the gap — whether it
-# is unresolved or sits inside a code/math/emphasis span.
+# Unresolved handles and literal code/math remain in the prose, preserving
+# their Markdown delimiters without creating links.
 
 
 def test_unresolved_handle_in_code_span_renders_code() -> None:
@@ -1766,8 +1770,7 @@ def test_empty_handles_map_behaves_like_none() -> None:
 
 
 def test_unresolved_handle_inside_emphasis_keeps_strong() -> None:
-    # ``sp2`` is unresolved AND inside ``**…**`` — either reason leaves it
-    # in the gap, so the emphasis renders.
+    # ``sp2`` is unresolved, so it stays literal while emphasis renders.
     out = str(
         linkify_refs("**the sp2 carbon**", markdown=True, handles=_RESOLVED_HANDLES)
     )
@@ -1785,14 +1788,83 @@ def test_handle_shaped_token_inside_math_stays_in_formula() -> None:
     assert "href=" not in out
 
 
-def test_resolved_handle_inside_emphasis_stays_plain() -> None:
-    # Skip-in-emphasis policy: a RESOLVED handle inside ``**…**`` keeps
-    # the <strong> and renders as plain text — linking it would split the
-    # delimiter pair ``_md_inline`` must see whole.
+def test_resolved_handle_inside_emphasis_links() -> None:
+    # gr564569: preserve the whole emphasis pair around the generated anchor.
     handles = {"gr5": ("gripe", False, 5)}
     out = str(linkify_refs("**see gr5 now**", markdown=True, handles=handles))
-    assert "<strong>see gr5 now</strong>" in out
-    assert 'href="/r/gripe/5"' not in out
+    assert out.startswith("<strong>see ") and out.endswith(" now</strong>")
+    assert out.count('href="/r/gripe/5"') == 1
+    assert 'hx-get="/preview/gripe/5"' in out
+    assert ">Gripe 5</a>" in out
+    assert "**" not in out
+
+
+def test_bare_handle_in_bold_links() -> None:
+    out = str(linkify_refs("**gr553317**", markdown=True, handles=_RESOLVED_HANDLES))
+    assert out.startswith("<strong>") and out.endswith("</strong>")
+    assert out.count('href="/r/gripe/553317"') == 1
+    assert "**" not in out
+
+
+def test_bare_handle_in_italic_links() -> None:
+    out = str(linkify_refs("*me5*", markdown=True, handles=_RESOLVED_HANDLES))
+    assert out.startswith("<em>") and out.endswith("</em>")
+    assert out.count('href="/r/memory/5"') == 1
+    assert "*" not in out
+
+
+def test_bold_handle_beside_prose_links() -> None:
+    out = str(
+        linkify_refs(
+            "before **gr553317** beside me5 after",
+            markdown=True,
+            handles=_RESOLVED_HANDLES,
+        )
+    )
+    bold = re.search(r"<strong>(.*?)</strong>", out)
+    assert bold is not None
+    assert 'href="/r/gripe/553317"' in bold.group(1)
+    assert 'href="/r/memory/5"' not in bold.group(1)
+    assert out.count('href="/r/memory/5"') == 1
+    assert out.startswith("before <strong>") and out.endswith(" after")
+    assert "</strong> beside " in out
+
+
+def test_code_span_inside_bold_stays_unlinked() -> None:
+    out = str(
+        linkify_refs(
+            "**literal `gr553317` beside me5**",
+            markdown=True,
+            handles=_RESOLVED_HANDLES,
+        )
+    )
+    assert out.startswith("<strong>literal ") and out.endswith("</strong>")
+    assert "<code" in out and ">gr553317</code>" in out
+    assert 'href="/r/gripe/553317"' not in out
+    assert out.count('href="/r/memory/5"') == 1
+
+
+def test_bare_handle_in_existing_link_label_stays_unlinked() -> None:
+    out = str(linkify_refs("[gr553317](me5)", markdown=True, handles=_RESOLVED_HANDLES))
+    assert out.count("<a ") == 1
+    assert 'href="/r/memory/5"' in out
+    assert ">gr553317</a>" in out
+    assert 'href="/r/gripe/553317"' not in out
+
+
+def test_bare_handle_preserves_adjacent_italic_word_guard() -> None:
+    out = str(linkify_refs("me5*word*", markdown=True, handles=_RESOLVED_HANDLES))
+    assert out.count('href="/r/memory/5"') == 1
+    assert out.endswith("*word*")
+    assert "<em>" not in out
+
+
+def test_link_before_subscript_math_keeps_the_link() -> None:
+    # Review: the math repair must not take the sentinel as a formula base.
+    out = str(linkify_refs("paper:smith24$_{2}$", markdown=True))
+    assert "\x00" not in out
+    assert out.count("<a ") == 1
+    assert "paper/smith24" in out
 
 
 def test_resolved_handle_inside_math_stays_plain() -> None:

@@ -1101,9 +1101,9 @@ def linkify_refs(
     `` `ab12` `` / ``**the sp2 carbon**`` / ``$x_{ab12}$`` keep their
     markdown rendering. ``None``/empty disables bare-handle autolinking
     entirely — every other surface keeps plain text (gripe 553317 is a
-    web-reader change only). A resolved handle inside a code/math/
-    emphasis span stays literal there too — linking it would split the
-    delimiter pair ``_md_inline`` must see whole.
+    web-reader change only). Code/math spans stay literal. In bold and
+    italic spans, anchors are stashed until Markdown has paired the
+    surrounding delimiters, preserving both emphasis and links.
 
     ``canonical_handles`` sends resolved bare record handles directly to
     their reader URL. The default retains the usual ``/r`` redirect.
@@ -1186,12 +1186,9 @@ _COMBINED_PATTERN = re.compile(
 
 #: The same alternation plus the bare universal handle (``gr553317``)
 #: LAST — used only when a render supplies a non-empty ``handles`` map.
-#: A handle-shaped token that is consumed but never linked still splits
-#: the gap text into pieces ``_md_inline`` can't pair delimiters across
-#: (`` `ff00` `` would render literal backticks instead of ``<code>``,
-#: ``**the sp2 carbon**`` literal asterisks), so without resolved handles
-#: the alternative stays out of the pattern entirely and a handle-shaped
-#: word is just prose. Every earlier shape is either bracketed (consumed
+#: Without resolved handles the alternative stays out of the pattern
+#: entirely and a handle-shaped word is just prose, including inside
+#: code and emphasis. Every earlier shape is either bracketed (consumed
 #: whole, so a handle inside a link never reaches this) or carries a
 #: colon/slash/cite-key shape the handle grammar doesn't touch.
 #: Deliberately AFTER ``bare_paper`` so a ``me05~3``-shaped cite_key
@@ -1382,8 +1379,9 @@ def _linkify_prose_core(
     Walking the matches by hand (rather than ``re.sub``) lets us escape
     the inter-match gaps — ``re.sub`` would copy them through verbatim.
 
-    ``markdown`` renders the bold/code subset over the escaped gaps (the
-    draft reader). ``compact`` collapses bare ``§``/``¶`` refs to a 1-char
+    ``markdown`` renders the bold/code subset over escaped prose with
+    anchors stashed, so emphasis can span links without parsing their HTML.
+    ``compact`` collapses bare ``§``/``¶`` refs to a 1-char
     superscript sigil so they don't break reading flow. Called per-block
     by :func:`_linkify_prose` (the block-level list-transform wrapper) —
     this function itself never sees a multi-block split, only either the
@@ -1391,20 +1389,8 @@ def _linkify_prose_core(
     if not prose:
         return ""
 
-    # Spans a bare-handle autolink must not fire inside (gripe 553317):
-    # the regions ``_md_inline`` pairs delimiters across — fenced code
-    # blocks and inline `` `…` `` spans, ``$…$`` math (plus its
-    # empty-base repair, e.g. ``C$_{60}$``) and ``**``/``*`` emphasis —
-    # scanned on the raw prose so a handle an author quoted as code, or
-    # one sitting inside a formula or a bold/italic run, stays literal.
-    # Chosen policy: skip linking there — consuming the token would split
-    # the gap and ``_md_inline`` could no longer pair the delimiters, so
-    # a resolved handle inside emphasis renders plain inside the
-    # ``<strong>``/``<em>`` (the emphasis survives; the link is dropped).
-    # Only computed when autolinking can match at all (``handles`` given
-    # — the handle alternative isn't in the pattern otherwise) and
-    # ``_md_inline`` will run (``markdown``); the merged span list is
-    # bisected per match.
+    # Code and math are literal contexts; emphasis is not. Scan the raw
+    # prose before replacing links, and bisect the merged spans per match.
     protected: list[tuple[int, int]] = []
     protected_starts: list[int] = []
     if handles and markdown:
@@ -1413,8 +1399,6 @@ def _linkify_prose_core(
             _MD_EMPTY_BASE_MATH,
             _MD_MATH,
             _CODE_SPAN_RE,
-            _MD_BOLD,
-            _MD_ITALIC,
         ):
             raw_spans.extend((m.start(), m.end()) for m in rx.finditer(prose))
         raw_spans.sort()
@@ -1429,10 +1413,6 @@ def _linkify_prose_core(
     def _in_protected(pos: int) -> bool:
         i = bisect.bisect_right(protected_starts, pos) - 1
         return i >= 0 and pos < protected[i][1]
-
-    def _gap(text: str) -> str:
-        e = escape(text)
-        return _md_inline(e) if markdown else e
 
     def _dispatch(m: re.Match[str]) -> str:
         # Draft bracket forms — checked first; their groups
@@ -1508,6 +1488,8 @@ def _linkify_prose_core(
     # without a resolved map a handle-shaped word can't even match.
     pattern = _COMBINED_PATTERN_HANDLE if handles else _COMBINED_PATTERN
     out: list[str] = []
+    anchors: list[str] = []
+    anchor_prefix = f"\x00link{uuid.uuid4().hex}:" if markdown else ""
     last = 0
     for m in pattern.finditer(prose):
         if (
@@ -1518,17 +1500,33 @@ def _linkify_prose_core(
                 or _in_protected(m.start())
             )
         ):
-            # Leave the token in the gap: an unresolved handle-shaped
-            # word, or a handle inside a code/math/emphasis span, must
-            # not split the text ``_md_inline`` pairs delimiters across —
-            # consuming it would render `` `ff00` `` as literal backticks
-            # or ``**the sp2 carbon**`` as literal asterisks.
+            # Unresolved handles and code/math stay in the escaped prose.
             continue
-        out.append(_gap(prose[last : m.start()]))
-        out.append(_dispatch(m))
+        out.append(escape(prose[last : m.start()]))
+        rendered = _dispatch(m)
+        if markdown:
+            # Keep Markdown away from generated HTML, without splitting
+            # emphasis pairs. Preserve the match's boundary character classes:
+            # gr5*word* must not gain italics because gr5 became a sentinel.
+            # The word stand-in sits outside _MD_EMPTY_BASE_MATH's ASCII
+            # base, so a following ``$_{2}$`` can't swallow the sentinel.
+            left = "æ" if re.match(r"\w", m.group(0)[0]) else ":"
+            right = "æ" if re.match(r"\w", m.group(0)[-1]) else ":"
+            out.append(f"{left}{anchor_prefix}{len(anchors)}\x00{right}")
+            anchors.append(rendered)
+        else:
+            out.append(rendered)
         last = m.end()
-    out.append(_gap(prose[last:]))
-    return "".join(out)
+    out.append(escape(prose[last:]))
+    html = "".join(out)
+    if markdown:
+        html = _md_inline(html)
+        html = re.sub(
+            rf"[æ:]{re.escape(anchor_prefix)}(\d+)\x00[æ:]",
+            lambda m: anchors[int(m.group(1))],
+            html,
+        )
+    return html
 
 
 _CHIP_CLS = (
