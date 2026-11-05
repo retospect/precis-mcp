@@ -25,7 +25,8 @@ Each fire:
   (the dedup and triage passes get their turn first), with no live todo
   ``related-to`` them (a chain, hand-minted or ours, already exists), none
   of the hold tags (``fix:reto``, ``reto:ask``, ``disagreement``,
-  ``flood``, ``hold:no-dispatch``), and **filed by a Claude Code client
+  ``flood``, ``hold:no-dispatch``, ``hold:no-autoclose``), and **filed by a
+  Claude Code client
   or a human account** — BUILDER's condition (2026-11-04): the gripe
   text rides the build body verbatim and lands on main with no triage in
   front, so a reader-intake or worker-filed gripe never reaches a lane by
@@ -65,13 +66,17 @@ _MAX_PER_TICK = 2
 _MIN_AGE_MINUTES = 60
 #: Task class the chain's build carries (templates leave it unset → code).
 _BUILD_TASK_CLASS = "code"
-#: Tags that keep a gripe out of the lane by this door.
+#: Tags that keep a gripe out of the lane by this door. ``hold:no-autoclose``
+#: marks Reto's never-close gripes (me547530): a land would write
+#: ``resolved:`` on one, so they never enter a chain by this door (BUILDER
+#: 2026-11-05).
 HOLD_TAGS: tuple[str, ...] = (
     "fix:reto",
     "reto:ask",
     "disagreement",
     "flood",
     "hold:no-dispatch",
+    "hold:no-autoclose",
 )
 #: STATUS values a gripe may carry to be dispatched.
 _DISPATCH_STATUSES: tuple[str, ...] = ("open", "triaged")

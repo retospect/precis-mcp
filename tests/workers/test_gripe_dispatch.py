@@ -125,6 +125,7 @@ def test_candidates_filter_and_order(store: Store, two_lanes: Any) -> None:
     _gripe(store, "no provenance", meta={}, prio=1)
     _gripe(store, "not code", tags=("fix:docs",))
     _gripe(store, "held", tags=("fix:code", "hold:no-dispatch"))
+    _gripe(store, "never-close", tags=("fix:code", "hold:no-autoclose"))
     _gripe(store, "reto's", tags=("fix:code", "fix:reto"))
     _gripe(store, "disputed", tags=("fix:code", "disagreement"))
     _gripe(store, "closed", status="done")

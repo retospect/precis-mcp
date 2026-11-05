@@ -271,8 +271,9 @@ the hottest `prio` then the oldest among gripes that are `open` or
 `triaged`, tagged `fix:code`, older than an hour, with no live todo
 `related-to` them, and filed by a Claude Code session or a human
 account (`meta.filed_by`). Reader-intake and worker-filed gripes never
-enter a lane this way. Keep a gripe out with any of `fix:reto`,
-`reto:ask`, `disagreement`, `flood`, or:
+enter a lane this way, nor does a never-close gripe (`hold:no-autoclose`:
+a land would write `resolved:` on it). Keep a gripe out with any of
+`fix:reto`, `reto:ask`, `disagreement`, `flood`, or:
 
 ```python
 tag(kind="gripe", id=564261, add=["hold:no-dispatch"])
