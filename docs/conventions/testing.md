@@ -199,6 +199,16 @@ caused it. Windows is not supported or tested: its nightly leg was dropped
 the `tests/test_posix_only_guards.py` walk remain until a separate cleanup
 removes them.
 
+The nightly coverage job caps xdist at four workers: six workers lost the
+runner around 40 minutes at 30–31% on two runs, consistent with memory
+pressure but without an OOM diagnostic (gr564777). It logs memory snapshots
+and test names to verify that inference. macOS splits the complete suite
+across two shards per Python version within the 90-minute job budget
+(td568389): the unsharded run expired at 67% after 72 minutes of tests plus
+13 minutes of setup. The full shape is 27 jobs; one 12-job gate beside it
+uses 39 of 40 slots. Named test output, durations, JUnit and hang-stack
+artifacts expose failures and the slow tail.
+
 **Pending main runs are replaced (gr479090).** Main's group never cancels a
 *running* run (`cancel-in-progress` is false), but GitHub keeps at most one
 *pending* run per group: a push that queues behind a running run replaces the

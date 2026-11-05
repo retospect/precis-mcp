@@ -93,18 +93,18 @@ def test_job_budget_fits_the_cap() -> None:
     # plan + lint + 10 shards = 12 jobs for every gate/release run.
     gate = 2 + _PLAN.SHARDS
     assert gate == 12
-    # plan + lint + coverage-db + test-other (macOS x 2 Pythons; the Windows
-    # leg was dropped 2026-10-17) + test-linux (2 Pythons x 10 shards) = 25.
-    nightly = 1 + 1 + 1 + 2 + 2 * _PLAN.SHARDS
-    assert nightly == 25
+    # plan + lint + coverage-db + test-other (2 Pythons x 2 macOS shards)
+    # + test-linux (2 Pythons x 10 shards) = 27.
+    nightly = 1 + 1 + 1 + 2 * 2 + 2 * _PLAN.SHARDS
+    assert nightly == 27
     # A main push runs the lint_only lane = plan + lint only; grounded by
     # test-linux's `if` skipping lint_only rather than a bare literal.
     assert "needs.plan.outputs.lint_only != 'true'" in WORKFLOW
     main_push = 2
     # release (12) + two harness gates (24) + a main lint run (2) = 38.
     assert gate + 2 * gate + main_push == 38 <= CAP
-    # nightly (25) + one gate (12) = 37.
-    assert nightly + gate == 37 <= CAP
+    # nightly (27) + one gate (12) = 39.
+    assert nightly + gate == 39 <= CAP
     # Three gates at once is the max; a fourth queues.
     assert 3 * gate <= CAP < 4 * gate
 
