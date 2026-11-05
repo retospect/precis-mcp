@@ -147,6 +147,20 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         optional=True,
     ),
     SecretSpec(
+        name="ZACROS_LICENSE",
+        purpose="Zacros 4 academic licence for the catpath zacros KMC "
+        "backend (kinetics v2 validation case C and the TPD cases). The "
+        "binary runs on one node outside the agent image; the Zacros "
+        "runbook writes this licence there. Never in the image or the repo.",
+        get_url="https://zacros.org/software/obtain-zacros",
+        get_blurb="Paste the licence UCL Business issued (file content or key "
+        "string, multiline is fine). Presence-only: no probe can verify it "
+        "without the binary.",
+        cost="free — academic licence",
+        probe_group=None,
+        optional=True,
+    ),
+    SecretSpec(
         name="OPENAI_API_KEY",
         purpose="OpenAI Platform fallback for the planned Codex lane; "
         "presence-only, separate from a ChatGPT subscription.",
