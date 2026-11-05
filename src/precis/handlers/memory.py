@@ -48,6 +48,9 @@ Semantics (`precis-memory-help`):
                                      shared with ``precis memory index --q``;
                                      ``view='count'`` forwards to the
                                      generic search like no view
+    - search(view='reads')         — paged lifetime read/size inventory;
+                                     one SELECT, no read-counter updates
+                                     (:mod:`precis.handlers._memory_reads`)
     - search(tags=['ruling'], view='rulings')
                                    — ruling nodes grouped by status
                                      (``utils.memory_rulings``; gr548835);
@@ -3107,6 +3110,10 @@ class MemoryHandler(NumericRefHandler):
         under: str | int | None = None,
         depth: int | str | None = None,
         status: str | None = None,
+        sort: str | None = None,
+        space: str | None = None,
+        min_chars: int | None = None,
+        min_reads: int | None = None,
         **kw: Any,
     ) -> Response:
         """Memory search. An unscoped query whose hits cluster in one hub or
@@ -3126,6 +3133,47 @@ class MemoryHandler(NumericRefHandler):
                 "group_by= only applies to view='count'",
                 next="search(kind='memory', view='count', args={'group_by': 'tag:SPACE'})",
             )
+        if view == "reads":
+            from precis.handlers._memory_reads import render_reads
+
+            unapplied = {
+                "q": fold_match_all_q(q),
+                "mode": mode,
+                "scope": scope,
+                "status": status,
+                **kw,
+            }
+            rejected = [
+                name
+                for name, value in unapplied.items()
+                if value is not None
+                and value != ""
+                and not (name == "q" and isinstance(value, str) and not value.strip())
+            ]
+            if rejected:
+                raise BadInput(
+                    f"{', '.join(rejected)}= is not applied by view='reads'",
+                    next="search(kind='memory', view='reads', args={'space': 'repo-dev'})",
+                )
+            return render_reads(
+                self.store,
+                sort=sort,
+                space=space,
+                min_chars=min_chars,
+                min_reads=min_reads,
+                page=page,
+                page_size=page_size,
+                tags=tags,
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
+            )
+        if any(value is not None for value in (space, min_chars, min_reads)):
+            raise BadInput(
+                "space=/min_chars=/min_reads= require view='reads'",
+                next="search(kind='memory', view='reads')",
+            )
+        if sort is not None:
+            kw["sort"] = sort
         if view == "rulings":
             return self._rulings_view(
                 q=q,

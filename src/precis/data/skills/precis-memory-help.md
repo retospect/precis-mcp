@@ -276,8 +276,37 @@ hit keeps a slot even with no word match, recently touched nodes rank a
 little higher, and when no gotcha made the page the best matching
 `section:gotchas` node is added as one extra line. Shell form: `precis memory
 index --q "<task>" --k 5`. Besides `index`, `count` and the default,
-memory search takes `view='rulings'` (see Rulings below); any other
+memory search takes `view='reads'` and `view='rulings'` (below); any other
 `view=` is refused.
+
+## Rank memories by reads or body size
+
+```python
+search(kind='memory', view='reads')
+search(kind='memory', view='reads', args={'sort': 'size', 'space': 'repo-dev', 'min_chars': 4000})
+search(kind='memory', view='reads', args={'sort': 'score', 'min_reads': 10, 'page': 2, 'page_size': 25})
+search(kind='memory', view='reads', args={'space': 'untagged'})
+```
+
+All live memories participate, across every space, including memories without
+an active SPACE tag and rulings omitted from recall. Each row shows handle,
+title, SPACE tag (or `untagged`), `n_agent`, `n_human`, `first_read_at`,
+`last_read_at` (latest agent or human read, UTC), and `body_chars` (characters
+in live body chunks). Unread memories have zero counters and `-` timestamps.
+Counters are **lifetime totals, not a time window**; listing and rendering
+rows never increment them.
+
+`sort='reads'` (default) ranks agent + human reads; `size` ranks body characters;
+`score` ranks reads × body characters. All descend, with ascending handle id
+breaking ties. `space` accepts a value such as `repo-dev`, its `SPACE:repo-dev`
+spelling, or `untagged` for no active SPACE tag. Omit it for every space.
+`min_chars` and `min_reads` are inclusive nonnegative integer filters.
+Ordinary `tags=` filters also apply. `page` starts at 1; `page_size` defaults
+to 10, maximum 100. Follow the printed next call to keep filters while paging.
+An oversized page refuses with a smaller-page restart call; no partial page
+is returned. A single oversized row requires a larger result byte budget.
+Omit `q=`: nonblank text queries, `mode=`, `scope=`, `status=` and date windows
+are refused on this inventory view (`q='*'` means all).
 
 ## Read a memory I have the id for
 ## Open a memory by id

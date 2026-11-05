@@ -946,6 +946,11 @@ def search(
     # Any of the three routes to the cross-kind primitive — combine with
     # ``kind='paper,patent'`` (or omit kind for every source kind).
     sort: str | None = None,
+    # Memory read inventory (view='reads'): lifetime counter/size thresholds
+    # and a SPACE value; 'untagged' selects memories without an active SPACE.
+    space: str | None = None,
+    min_chars: int | None = None,
+    min_reads: int | None = None,
     since: str | None = None,
     until: str | None = None,
     # material range filter (see precis-material-help): search(kind='material',
@@ -1228,14 +1233,20 @@ def search(
             "folder": folder,
         },
     )
-    sorts = _accepted_sorts(kind, browse)
+    memory_reads = (kind or "").strip().lower() in {"memory", "me"} and view == "reads"
+    sorts = (
+        {"reads", "size", "score"} if memory_reads else _accepted_sorts(kind, browse)
+    )
     if sort is not None and sort.strip().lower() not in sorts:
         runtime = _get_runtime()
         # Name the kind's actual accepted set — the generic paper-only
         # recipe was wrong advice for kinds with handler-owned sorts
         # (cfp's 'deadline'/'opens_on'; gr484229-era mining).
         next_call = (
-            f"sort= accepts {sorted(sorts)} for this call — e.g. "
+            "search(kind='memory', view='reads', args={'sort': 'reads'}) "
+            "— sort accepts reads, size or score"
+            if memory_reads
+            else f"sort= accepts {sorted(sorts)} for this call — e.g. "
             f"search(kind={kind!r}, sort='prio')"
             if browse
             else f"sort= accepts {sorted(sorts)} for kind={kind!r} — e.g. "
@@ -1368,6 +1379,12 @@ def search(
     # so a plain search never trips the source-search interception path.
     if sort is not None:
         payload["sort"] = sort
+    if space is not None:
+        payload["space"] = space
+    if min_chars is not None:
+        payload["min_chars"] = min_chars
+    if min_reads is not None:
+        payload["min_reads"] = min_reads
     if since is not None:
         payload["since"] = since
     if until is not None:

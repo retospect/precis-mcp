@@ -356,6 +356,32 @@ there is no page 2.
 tail. An explicit `page_size=` shows the full bounded set; `mode='verbatim'`
 is never trimmed.
 
+## Rank memory reads and body size (view='reads')
+
+```python
+search(kind='memory', view='reads')
+search(kind='memory', view='reads', args={'sort': 'score', 'space': 'repo-dev', 'min_reads': 10, 'min_chars': 4000, 'page': 1, 'page_size': 25})
+search(kind='memory', view='reads', args={'sort': 'size', 'space': 'untagged'})
+```
+
+This inventory includes every live memory across all spaces, untagged memories
+included. Rows show handle, title, SPACE tag or `untagged`, `n_agent`, `n_human`,
+`first_read_at`, `last_read_at` (UTC), and `body_chars`. Counters are lifetime
+totals, not a time window; neither the listing nor its row rendering counts
+as a read. Unread rows show zeros and `-` timestamps.
+
+Sort descending by `reads` (agent + human, default), `size` (live body
+characters), or `score` (reads × body characters); equal values sort by
+ascending ref id. `space` accepts `repo-dev` or `SPACE:repo-dev`, or `untagged`
+for no active SPACE tag. Omit it for all spaces; `tags=` also narrows.
+`min_chars`/`min_reads` are inclusive nonnegative integers. Unlike ranked
+text search, this view paginates: `args={'page': 2, 'page_size': 25}` or the
+printed next call. Page numbering starts at 1; page size defaults to 10 and
+is at most 100. Omit `q=` (blank and `'*'` also work); text queries,
+`mode=`, `scope=`, `status=` and date windows are refused.
+Oversized pages refuse with a smaller-page restart call, preserving filters;
+one oversized row requires a larger result byte budget.
+
 ## Why are some memory hits omitted?
 ## Weak memory matches leave the default result
 ## The `weak match(es) omitted` line

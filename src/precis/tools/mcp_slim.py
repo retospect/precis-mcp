@@ -161,10 +161,10 @@ def _removed_search_arg_error(
             )
         )
     if "page" in supplied:
-        # The memory index listing (view='index', no q) is a bounded
-        # enumeration — args={'page': N} pages it (gr538490). Ranked
+        # Memory index and reads listings are bounded enumerations —
+        # args={'page': N} pages them (gr538490, gr563563). Ranked
         # search and every other kind still refuse.
-        if _index_listing_call(kind, kwargs, args):
+        if _memory_listing_call(kind, kwargs, args):
             if "page" in kwargs:
                 args["page"] = kwargs.pop("page")
         else:
@@ -186,17 +186,19 @@ def _removed_search_arg_error(
     return None
 
 
-def _index_listing_call(
+def _memory_listing_call(
     kind: Any, kwargs: dict[str, Any], args: dict[str, Any]
 ) -> bool:
-    """True when this call routes to memory's q-less ``view='index'``
-    listing — the one search surface that takes ``args={'page': N}``
-    (gr538490). ``q='*'`` folds to no-q, so it exempts too; a real query
-    stays on the no-paginate refusal."""
+    """True for memory's q-less ``index`` and ``reads`` listings.
+
+    These bounded inventories take ``args={'page': N}`` (gr538490,
+    gr563563). ``q='*'`` folds to no-q, so it exempts too; a real query
+    stays on the no-paginate refusal.
+    """
     if not (isinstance(kind, str) and kind.strip().lower() == "memory"):
         return False
     view = kwargs.get("view") or args.get("view")
-    if view != "index":
+    if view not in ("index", "reads"):
         return False
     q = kwargs.get("q") or args.get("q")
     return not (isinstance(q, str) and q.strip() and q.strip() != "*")

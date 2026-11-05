@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Iterator
+from inspect import signature
 from typing import Any
 
 import pytest
@@ -43,6 +44,19 @@ from precis.handlers.memory import MemoryHandler
 from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.tools import core as tools_core
+
+
+def test_memory_reads_filters_are_declared_on_handler_and_tool() -> None:
+    """Inventory args stay visible to strict MCP schemas (gr563563)."""
+    from precis.handlers.memory import MemoryHandler
+    from precis.tools.core import search
+
+    for verb in (MemoryHandler.search, search):
+        parameters = signature(verb).parameters
+        for name in ("space", "min_chars", "min_reads"):
+            assert name in parameters
+            assert parameters[name].default is None
+
 
 # (kind, verb) -> the exact value that kind's KindSpec should declare.
 # Absence from this table means "expect None" (no mode= concept) for

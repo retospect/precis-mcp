@@ -852,6 +852,15 @@ class SearchMixin(RuntimeShape):
         """
         if verb != "search" or not self._is_source_search_request(args):
             return False
+        # The memory inventory owns its sort vocabulary and rejects date
+        # windows; source routing must not turn a bad inventory option into
+        # an unrelated ranked search.
+        if (
+            kind is not None
+            and self._expand_kind_code(str(kind)) == "memory"
+            and args.get("view") == "reads"
+        ):
+            return False
         from precis.utils.browse_sort import numeric_browse
 
         if numeric_browse(kind, args):
