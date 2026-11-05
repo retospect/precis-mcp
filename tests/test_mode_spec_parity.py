@@ -384,3 +384,11 @@ def test_paper_stub_authors_reach_dispatch_without_a_new_mode(
     paper = full_hub.handlers["paper"]
     assert "authors" in paper.ARGS_KEYS["put"]
     assert paper.spec.modes == ("fetch-si",)
+
+
+def test_pathway_objective_is_a_declared_read_view() -> None:
+    """gr559655: the stored-point read must pass declared-view validation."""
+    from precis_pathway.handler import PathwayHandler
+
+    assert "objective" in PathwayHandler.spec.views
+    assert "objective" not in (PathwayHandler.spec.modes or ())

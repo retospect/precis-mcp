@@ -109,6 +109,18 @@ verdict whose correspondence to the current recomputed solve cannot be proven.
 An absent environment hash is also `not recorded`; no config-derived basis or
 default environment is invented.
 
+## Stored environment objectives
+
+`get(kind='pathway', id='pw123', view='objective')` reads the five bottleneck
+terms (`m_th`, `m_kin`, `m_HER`, `s`, `r`), physical/trust mask `M` and
+`J=min(terms)` at the stored run and sweep points. All terms are eV; the
+matched kinetic record's T supplies kT. The rate floor is the lower bound
+of the stored config's `objective.subject_to.tof` (or `tof_mf`) box.
+Absent data, including an absent floor or trust diagnostics, stays `None`
+with a reason. A failed mask gives `J=-inf`; unmasked terms remain visible.
+CHE varies U only; kinetics remain at the run U. This read does not search,
+re-solve, stamp a quest or claim a new optimum.
+
 ## Frame a run without spending compute / sanity-check the network first / preview intermediates
 
 Building the network is cheap (rule-based, no ML). Do it *before* you pay for
@@ -339,7 +351,7 @@ computed** — no new relax/NEB, closed-form optima, no search.
   `<key>_untrusted_value`). `meta.results` still holds the engine's
   verbatim value — read `view='warnings'` before quoting it.
 - engine >= 0.6.0 also carries `meta.results.score` (the four-axis
-  scorecard) — `selectivity_margin_eV` > 0 means side products are
+  scorecard) — `results.score.selectivity.margin_eV` > 0 means side products are
   kinetically disfavored at the worst branch point, `trap.margin_eV` > 0
   means the worst off-route state can't outcompete the best route's span
   — alongside the raw `results.traps` (per-state cheapest escape vs the

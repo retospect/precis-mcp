@@ -191,10 +191,15 @@ def test_views_and_modes_are_declared() -> None:
         "measure_modes",
     )
     # kinetics-sweep (slice 4) was routed but undeclared, so get refused it
-    assert {"kinetics-sweep", "kinetics-summary", "manifest", "tpd", "optimum"} <= set(
-        spec.views
-    )
-    assert len(spec.views) == 18
+    assert {
+        "kinetics-sweep",
+        "kinetics-summary",
+        "manifest",
+        "tpd",
+        "optimum",
+        "objective",
+    } <= set(spec.views)
+    assert len(spec.views) == 19
 
 
 def test_executors_exclude_every_llm_executor() -> None:

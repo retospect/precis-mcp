@@ -19,6 +19,15 @@ owner-agnostic — reusable by any rolling-context rewrite). The perpetual loop 
 
 Package-level invariants (detail lives on the named module):
 
+- **Environment objectives preserve missing evidence.**
+  ``environment_optimizer`` evaluates one stored point without solving or
+  stamping: the five eV terms, physical/trust mask and bottleneck J. Rates
+  and selectivity use the matched kinetics record's T for kT; no T/p
+  interpolation or U-dependent kinetics is claimed. Failed masks yield
+  -infinity, unknown masks/terms stay unavailable with reasons. The
+  log-rate term is unavailable for zero TOF, but its raw zero still fails
+  a positive rate floor, so M=0 and J=-infinity.
+  The pathway plugin's ``optimum`` read supplies staircase/map/bulk evidence.
 - **The discovery agent owns all chemistry.** ``catalyst_seed.PARAM_SPACE``
   is coverage-count + buildability only, never a chemistry menu; code never
   fabricates a dispatch or picks chemistry (``tick``).

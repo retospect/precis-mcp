@@ -257,6 +257,7 @@ class PathwayHandler(Handler):
             "kinetics-sweep",
             "kinetics-summary",
             "optimum",
+            "objective",
             "tpd",
             "manifest",
             "trust",
@@ -1222,6 +1223,10 @@ class PathwayHandler(Handler):
             from .manifest import manifest_text
 
             return Response(body=manifest_text(meta))
+        if v == "objective":
+            from .objective import objective_text
+
+            return Response(body=objective_text(store, ref))
         if v == "compare":
             return Response(body=self._compare(store, ref, meta, U=U))
         if v == "staircase":
