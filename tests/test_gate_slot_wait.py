@@ -203,7 +203,12 @@ def test_no_eta_without_history(repo: Path, tmp_path: Path) -> None:
 
 # --- gr567623: access failures refuse, they do not queue forever ----------
 
+# chmod-based denial tests cannot fail under root — mode bits are ignored
+# (gr569771). getattr keeps the decorator safe where geteuid is absent.
+_IS_ROOT = getattr(os, "geteuid", lambda: -1)() == 0
 
+
+@pytest.mark.skipif(_IS_ROOT, reason="root ignores mode bits — 0555 denies nothing")
 def test_unwritable_common_dir_refuses_at_registration(
     repo: Path, tmp_path: Path
 ) -> None:
@@ -227,6 +232,7 @@ def test_unwritable_common_dir_refuses_at_registration(
     assert not done.exists() or not done.read_text(encoding="utf-8")
 
 
+@pytest.mark.skipif(_IS_ROOT, reason="root ignores mode bits — 0555 denies nothing")
 def test_unwritable_queue_dir_refuses_at_ticket(repo: Path, tmp_path: Path) -> None:
     """Queue dir exists but refuses the ticket write — same refusal, at
     the registration step."""

@@ -313,6 +313,21 @@ if [[ "${1:-}" == "--await" ]]; then
     exit 124
 fi
 
+# gr569771: PRECIS_TEST_RUN_ID arrives via the environment from the --bg
+# supervisor — exported, so every child would inherit it and a nested
+# scripts/test would write THIS run's .exit receipt with its own rc,
+# corrupting what --await reads. Keep the value for cleanup() but drop the
+# export attribute so children never see it.
+if [[ -n "${PRECIS_TEST_RUN_ID:-}" ]]; then
+    export -n PRECIS_TEST_RUN_ID
+fi
+# The in-flight `( compose run … ) &` subshell's pid, recorded to a file by
+# run_pytest and --typecheck so cleanup() can signal the whole tree when an
+# exit beats `wait` (a trapped TERM). A file, not a variable: the --impacted
+# path runs run_pytest inside a pipeline subshell whose assignments never
+# reach this shell's cleanup.
+RUN_BG_PID_FILE="${TMPDIR:-/tmp}/precis-test-bg-$$.pid"
+
 # --impacted / -i : testmon impact-selection mode (see header). Strip the
 # sentinel before the rest is forwarded to pytest.
 # --fast / -f : the fast set — `-m 'not db and not slow'`: skips every test that
@@ -590,6 +605,21 @@ agent_db_teardown() {
         -p "$COMPOSE_PROJECT" --profile dev down -v >>"${RUN_LOG:-/dev/null}" 2>&1 || true
     return 0
 }
+# _signal_tree <pid> [sig] — signal a pid and every descendant, children
+# first (gr569771): run_pytest's `( compose run … ) &` subshell holds the
+# compose client, the awk filters and tee; a bare kill of the subshell
+# would orphan them and leave the container running after scripts/test is
+# gone. pgrep -P walks the tree; with no pgrep the pid itself still gets
+# the signal.
+_signal_tree() {
+    local pid="$1" sig="${2:-TERM}" k
+    local kids
+    kids="$(pgrep -P "$pid" 2>/dev/null)" || kids=""
+    for k in $kids; do
+        _signal_tree "$k" "$sig"
+    done
+    kill -s "$sig" "$pid" 2>/dev/null || true
+}
 cleanup() {
     # Capture the real exit status up front and re-raise it at the end: the
     # best-effort teardown below must never change what the caller sees.
@@ -605,15 +635,21 @@ cleanup() {
         _incomplete=1
         rc=1
     fi
-    # --bg receipt (gr567623): the detached supervisor can be killed, and a
-    # run that finishes anyway must still leave its .exit — the run itself
-    # knows its real status, so it writes the receipt here. The supervisor's
-    # post-wait write stays as the fallback for a run that dies without
-    # cleanup (SIGKILL); both write the same rc on every path that reaches
-    # this far, and the normalization above keeps rc==0 honest.
-    if [[ "${PRECIS_TEST_RUN_ID:-}" =~ ^[A-Za-z0-9._-]+$ ]]; then
-        printf '%s\n' "$rc" \
-            >"${TMPDIR:-/tmp}/precis-test-runs/${PRECIS_TEST_RUN_ID}.exit" 2>/dev/null || true
+    # An exit that beats run_pytest's `wait` — a trapped TERM/INT/HUP — must
+    # not orphan the `( compose run … ) &` subshell: signal the recorded pid
+    # and its whole tree so the container does not outlive the run
+    # (gr569771). No-op on every path where the child already reaped.
+    if [[ -n "${RUN_BG_PID_FILE:-}" && -s "${RUN_BG_PID_FILE}" ]]; then
+        local _bg_pid _sig
+        _bg_pid="$(cat "$RUN_BG_PID_FILE" 2>/dev/null || true)"
+        _sig=TERM
+        if [[ -n "${RUN_INTERRUPTED:-}" ]]; then
+            _sig="${RUN_INTERRUPTED#SIG}"
+        fi
+        if [[ "$_bg_pid" =~ ^[0-9]+$ ]]; then
+            _signal_tree "$_bg_pid" "$_sig"
+        fi
+        rm -f "$RUN_BG_PID_FILE"
     fi
     # --coverage: fingerprint the measured bytes alongside the DB so the
     # python `tests` view can verify the DB against its index. Best-effort,
@@ -697,6 +733,21 @@ cleanup() {
                     "$_verdict" "$((SECONDS - RUN_T0))" "$RUN_LOG"
             fi
         fi
+    fi
+    # --bg receipt (gr567623): the detached supervisor can be killed, and a
+    # run that finishes anyway must still leave its .exit — the run itself
+    # knows its real status, so it writes the receipt here. Written LAST
+    # (gr569771): --await polls .exit every 5 s and tails the log on sight,
+    # so the receipt may only exist once the verdict footer, the log writes
+    # and the compose-down teardown above have all run — earlier it let
+    # --await return while teardown still ran and a chained next run raced
+    # the test-db project down. The supervisor's post-wait write stays as
+    # the fallback for a run that dies without cleanup (SIGKILL); both write
+    # the same rc on every path that reaches this far, and the
+    # normalization above keeps rc==0 honest.
+    if [[ "${PRECIS_TEST_RUN_ID:-}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        printf '%s\n' "$rc" \
+            >"${TMPDIR:-/tmp}/precis-test-runs/${PRECIS_TEST_RUN_ID}.exit" 2>/dev/null || true
     fi
     exit "$rc"
 }
@@ -818,7 +869,9 @@ if [[ "${1:-}" == "--typecheck" ]]; then
                 -v "${WORKTREE}":/app precis-dev \
                 bash -lc 'uv run --no-sync mypy "$@"' _ "${MYPY_ARGS[@]}"
         ) &
+        printf '%s\n' "$!" >"$RUN_BG_PID_FILE" 2>/dev/null || true
         wait $! || rc=$?
+        rm -f "$RUN_BG_PID_FILE"
         [[ "$rc" == 137 ]] || break
         gate_oom_note "$rc" "the mypy container"
         echo "scripts/test: retrying --typecheck once — a lone 137 is usually a sibling OOM spike" >&2
@@ -1233,7 +1286,9 @@ run_pytest() {
         "${COV_ARGS[@]+"${COV_ARGS[@]}"}" "$@" \
         2>"$ERR_FIFO" | _out_filter | tee -a "$RUN_LOG"
     ) &
+    printf '%s\n' "$!" >"$RUN_BG_PID_FILE" 2>/dev/null || true
     wait $! || rc=$?
+    rm -f "$RUN_BG_PID_FILE"
     wait "$ERR_FILTER_PID" 2>/dev/null || true
     ERR_FILTER_PID=""
     rm -f "$ERR_FIFO"

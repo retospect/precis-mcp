@@ -1222,8 +1222,12 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
 
 _CODEX_NOTE = (
     "\n\nYou have NO precis MCP access in this session (approval=never refuses "
-    "it). Do not try MCP tools; use the repo, scripts/ and git only. Post to "
-    'the board with scripts/board post {win} "<120 chars>". Use '
+    "it), and your sandbox writes only inside this tree — scripts/board, "
+    "scripts/fleet panes, gh and git add/commit all fail; do not call them "
+    "(read-only git status/diff/log is fine). Do not try MCP tools; use the "
+    "repo, scripts/ and git only. Report status with one line in "
+    ".claude/purpose plus details in scratch/handoff.txt — the coordinator "
+    "relays status, fetches CI logs and commits. Use "
     "UV_CACHE_DIR=/tmp/codex-uv-{name} for every uv/scripts call; never put a "
     "cache inside the tree. Do not run scripts/test; write tests and run "
     "ruff, the coordinator runs the tests.\n"

@@ -1491,6 +1491,13 @@ def test_launch_codex_tier_w_uses_the_tier_flags_verbatim(
     tree = Path(env["FLEET_WORKTREES"]) / "castor-s2"
     brief = (tree / "scratch" / "codex-brief.md").read_text(encoding="utf-8")
     assert brief.startswith("# batch castor-s2") and "NO precis MCP access" in brief
+    # gr567689: a tier-W codex sandbox cannot write the board log — the note
+    # routes status through .claude/purpose + scratch/handoff.txt instead.
+    # (The appended builder footer still names scripts/board post — that
+    # text is authority-gated and unchanged.)
+    assert "Post to the board with" not in brief
+    assert "sandbox writes only inside this tree" in brief
+    assert "scratch/handoff.txt" in brief
     locked = subprocess.run(
         ["git", "worktree", "list", "--porcelain"],
         cwd=env["CWD"],

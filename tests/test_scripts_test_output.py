@@ -57,6 +57,8 @@ _FAKE_DOCKER = r"""#!/usr/bin/env bash
 #                     run` pops the first; overrides FAKE_RUN_RC
 #   FAKE_RUN_SLEEP    seconds `compose run` sleeps before answering —
 #                     keeps a run in-flight so a test can signal it
+#   FAKE_DOWN_SLEEP   seconds `compose down` sleeps — holds agent-*
+#                     teardown open so receipt ordering is observable
 #   FAKE_UP_STDOUT    file whose contents `compose up` prints to stdout
 #   FAKE_UP_RC        exit status of `compose up` (default 0)
 # A plain `docker run ... df` is the free-disk preflight probe: it answers
@@ -103,7 +105,10 @@ case "${args[0]:-}" in
         fi
         exit "${FAKE_RUN_RC:-0}"
         ;;
-      down) echo "down|$proj" >> "$FAKE_DOCKER_LOG" ;;
+      down)
+        echo "down|$proj" >> "$FAKE_DOCKER_LOG"
+        [ -n "${FAKE_DOWN_SLEEP:-}" ] && sleep "$FAKE_DOWN_SLEEP"
+        ;;
     esac
     exit 0
     ;;
@@ -123,9 +128,9 @@ _SCRUB_PREFIXES = (
 )
 
 
-def _stage(tmp_path: Path) -> Path:
+def _stage(tmp_path: Path, name: str = "outtest") -> Path:
     """A throwaway repo directory holding the real script."""
-    tree = tmp_path / "outtest"
+    tree = tmp_path / name
     (tree / "scripts" / "lib").mkdir(parents=True)
     (tree / "docker" / "dev").mkdir(parents=True)
     shutil.copy2(REPO / "scripts" / "test", tree / "scripts" / "test")
@@ -142,10 +147,12 @@ def _stage(tmp_path: Path) -> Path:
 
 
 def _setup(
-    tmp_path: Path, extra_env: dict[str, str] | None = None
+    tmp_path: Path,
+    extra_env: dict[str, str] | None = None,
+    name: str = "outtest",
 ) -> tuple[Path, dict[str, str], Path]:
     """Stage tree + fake docker; return (tree, env, docker log path)."""
-    tree = _stage(tmp_path)
+    tree = _stage(tmp_path, name)
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir(exist_ok=True)
     docker = fakebin / "docker"
@@ -521,6 +528,10 @@ def _popen_run(
     )
 
 
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: -1)() == 0,
+    reason="root ignores mode bits — chmod 0555 denies nothing (gr569771)",
+)
 def test_gate_queue_denial_fails_fast_not_pass(tmp_path: Path) -> None:
     """gr567623 verbatim: a sandbox denying writes to the shared git dir
     left gate-slot spinning at 'position 1 of 0, all slots free' for 752s
@@ -605,14 +616,14 @@ def test_sigterm_during_pytest_reports_interrupted(tmp_path: Path) -> None:
 
 
 def _bg_roundtrip(
-    tmp_path: Path, extra_env: dict[str, str]
+    tmp_path: Path, extra_env: dict[str, str], name: str = "outtest"
 ) -> tuple[Path, Path, dict[str, str]]:
     """Start ``--bg``; return (run-artifact base path, tree, env).
 
     The .pid file is the last artifact the supervisor writes before the
     run starts, so waiting on it means the run is genuinely in-flight.
     """
-    tree, env, _ = _setup(tmp_path, extra_env)
+    tree, env, _ = _setup(tmp_path, extra_env, name)
     proc = subprocess.run(
         ["bash", str(tree / "scripts" / "test"), "--bg", "-n0", "tests/x.py"],
         cwd=tree,
@@ -696,3 +707,50 @@ def test_bg_sigtermed_supervisor_forwards_and_receipts(tmp_path: Path) -> None:
     ap = _await(tree, env, run_id)
     assert ap.returncode == 143, ap.stdout + ap.stderr
     assert "finished — exit 143" in ap.stdout
+
+
+_VERDICT_PREFIXES = (
+    "scripts/test: PASS",
+    "scripts/test: FAIL",
+    "scripts/test: INTERRUPTED",
+    "scripts/test: INCOMPLETE",
+    "scripts/test: NO-TESTS",
+)
+
+
+def _last_log_line_is_verdict(log: Path) -> bool:
+    """The verdict footer is the run log's last line — nothing prints
+    after it (gr513886), so at .exit's first sight it must be there."""
+    try:
+        lines = log.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+    except OSError:
+        return False
+    return bool(lines) and lines[-1].startswith(_VERDICT_PREFIXES)
+
+
+def test_bg_exit_receipt_written_after_the_footer(tmp_path: Path) -> None:
+    """gr569771: --await polls .exit every 5 s and tails the log on sight,
+    so the receipt may exist only once the verdict footer, the log writes
+    and the compose-down teardown have all run — written earlier it let
+    --await return while teardown still ran and a chained run raced the
+    test-db ``down``. An agent-* tree's teardown runs ``compose down``;
+    FAKE_DOWN_SLEEP holds it open so the ordering is observable: at the
+    first sight of .exit the footer must already be the log's last line."""
+    base, tree, env = _bg_roundtrip(
+        tmp_path, {"FAKE_DOWN_SLEEP": "8"}, name="agent-receipt"
+    )
+    run_id = base.name
+    log = base.with_suffix(".log")
+    exitf = base.with_suffix(".exit")
+    deadline = time.monotonic() + 90
+    footer_seen = False
+    while time.monotonic() < deadline:
+        if exitf.exists():
+            footer_seen = _last_log_line_is_verdict(log)
+            break
+        time.sleep(0.1)
+    assert exitf.exists(), "the detached run never wrote .exit"
+    assert footer_seen, ".exit existed before the verdict footer reached the run log"
+    ap = _await(tree, env, run_id)
+    assert ap.returncode == 0, ap.stdout + ap.stderr
+    assert "finished — exit 0" in ap.stdout
