@@ -164,8 +164,22 @@ put(
 
 You can still pass an explicit `footprint`/`height_mm`/`courtyard` to override.
 Real pad geometry (the pin-name→pad map used by the DSN exporter) is fetched
-lazily from `easyeda2kicad` and cached; until that runs the exporter falls back
-to placeholder pads (clearly labelled).
+lazily from `easyeda2kicad` and cached. Placeholder pads (synthesized when no
+real footprint is cached) are **not fabricable**: the export marks them "do not
+fabricate". Treat them as a gate failure (next section), not a fallback.
+
+## Footprint gate — applies to every part
+
+Use existing JLCPCB parts with the footprint JLCPCB/EasyEDA provides. A part
+with no real footprint (only placeholder/synthesized pads) is **rejected
+whenever an alternative exists**; if none does, accept it only with the risk
+stated in the component's `note`. Before binding, confirm with
+`get(kind='part', id='C…', view='footprint')` that real pad geometry comes
+back.
+
+**No unbound parts.** A design component with no LCSC part is a finding, not a
+default. Every part on a board that will be fabricated gets a C-number, or is
+explicitly consigned (ladder rung 6 below).
 
 ## Two rules the ranking can't apply for you
 
@@ -186,6 +200,18 @@ distinct SKUs means fewer Extended-part loading fees, one set of known
 characteristics (tolerance, tempco, ESR) instead of several, and a reorder that
 doesn't re-litigate part choices. When a family member is missing a value you
 need, take the family's next value up before you leave the family.
+
+## Passives: E-series
+
+Pick the **coarsest E-series that meets the function**: E6, then E12, then
+E24. E96 only when the function needs it, i.e. a divider or threshold whose
+tolerance window E24 cannot meet. Coarse series mean fewer distinct SKUs and
+deeper stock.
+
+For divider and threshold chains, check **every threshold with the rounded
+values at worst-case tolerance corners** by hand (resistor tolerance, plus
+reference/feedback-pin tolerance). An automatic tolerance engine
+(backlog item `pcb-tolerance-selection`) is planned, not built.
 
 ## When the part you want isn't well stocked
 
@@ -242,8 +268,10 @@ lifecycle (open → decided → superseded; rejects kept):
 
 ## Policy in one line
 
-**Fits the spec + Basic + same family + high-turnover + cheapest** — in that
-priority. Fit is a gate; family keeps the BOM consolidated; turnover makes it
+**Fits the spec + real footprint + Basic + same family + high-turnover +
+cheapest** — in that priority. Fit and footprint are gates; passive values come
+from the coarsest E-series that works; no component is left without a C-number
+(or a stated consign). Family keeps the BOM consolidated; turnover makes it
 unlikely you picked a part about to vanish; the JLCPCB order is the final
 availability gate.
 
