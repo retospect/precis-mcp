@@ -11,6 +11,14 @@ line; ``args={'from': '<IANA zone>'}`` says which zone a *naive* input
 (no offset) is in — the default is UTC, matching the house convention
 that timestamps are UTC unless labelled otherwise.
 
+``resolve_window`` is the shared deterministic window parser: ISO dates
+and date ranges, a fixed fuzzy-phrase table, then exact instants widened
+to their containing UTC day. Bounds are since-inclusive / until-exclusive,
+always UTC; dates and calendar periods use the supplied source zone before
+conversion. Elapsed-day phrases use the UTC clock. ``source`` and ``widened``
+keep the interpretation visible. The handler renders only new window-shaped
+queries this way, preserving existing point output, including bare dates.
+
 Deliberately stdlib-only (:mod:`datetime`, :mod:`zoneinfo`,
 :mod:`email.utils`): a natural-language date library would widen what
 the kind accepts but make the accepted grammar depend on a third-party
@@ -27,6 +35,7 @@ import calendar
 import os
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -43,6 +52,29 @@ Clock = Callable[[], datetime]
 _NEXT_NOW = "get(kind='time')"
 _NEXT_PARSE = "get(kind='time', q='2026-10-09T14:30:00Z')"
 _NEXT_CONVERT = "get(kind='time', q='now', args={'to': 'Asia/Tokyo'})"
+_NEXT_WINDOW = (
+    "search(kind='memory', view='count', args={'since': '2026-10-01T00:00:00Z', "
+    "'until': '2026-10-15T00:00:00Z'})"
+)
+_WINDOW_DAYS = {
+    "recently": (14, 0),
+    "about a month ago": (90, 30),
+    "around a month ago": (90, 30),
+    "a few months ago": (180, 60),
+}
+_WINDOW_CALENDAR = {"last week", "last month", "last year"}
+_ISO_WINDOW_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_WINDOW_RANGE_RE = re.compile(r"[\d\s-]*\.\.[\d\s.-]*")
+
+
+@dataclass(frozen=True)
+class TimeWindow:
+    """A UTC interval ``[since, until)`` with its source interpretation."""
+
+    since: datetime
+    until: datetime
+    source: str
+    widened: bool
 
 
 class TimeHandler(Handler):
@@ -63,6 +95,9 @@ class TimeHandler(Handler):
             "seconds. q=<timestamp or expression> parses it instead: ISO "
             "8601, RFC 2822, epoch seconds/millis, or 'now' / 'today' / "
             "'tomorrow' / 'in 3 hours' / '2 days ago' / 'next monday'. "
+            "Date ranges (2026-10-01..2026-10-15), 'recently', 'last week', "
+            "'last month', 'about a month ago', 'around a month ago', "
+            "'a few months ago' and 'last year' return UTC windows. "
             "args={'to': 'Asia/Tokyo'} converts to an IANA zone; "
             "args={'format': '%Y-%m-%d'} renders with strftime; "
             "args={'from': 'Europe/Zurich'} fixes the zone of a naive input "
@@ -104,9 +139,28 @@ class TimeHandler(Handler):
         now = self._clock().astimezone(UTC).replace(microsecond=0)
         source_zone = _zone_arg(args.get("from"), "from") or UTC
         expr = _coerce_expr(id, q)
-        instant = (
-            now if expr is None else parse_instant(expr, now=now, zone=source_zone)
-        )
+        if expr is not None and (
+            expr.lower() in _WINDOW_DAYS
+            or expr.lower() in _WINDOW_CALENDAR
+            or _WINDOW_RANGE_RE.fullmatch(expr)
+        ):
+            if args.get("to") is not None or args.get("format") is not None:
+                source_arg = (
+                    f", args={{'from': {args['from']!r}}}" if "from" in args else ""
+                )
+                raise BadInput(
+                    "time windows render UTC bounds; to/format apply to point queries",
+                    next=f"get(kind='time', q={expr!r}{source_arg})",
+                )
+            return Response(
+                body=_render_window(resolve_window(expr, now=now, zone=source_zone))
+            )
+        try:
+            instant = (
+                now if expr is None else parse_instant(expr, now=now, zone=source_zone)
+            )
+        except BadInput as e:
+            raise _window_error(expr or "", e.cause) from e
         instant = instant.astimezone(UTC)
 
         lines = [
@@ -213,6 +267,76 @@ def _strptime_formats() -> tuple[str, ...]:
 
 
 _STRPTIME_FORMATS = _strptime_formats()
+
+
+def _window_error(expr: str, detail: str) -> BadInput:
+    return BadInput(
+        f"could not resolve time window {expr!r}: {detail}. Accepted: ISO 8601 "
+        "date (2026-10-01), date range (2026-10-01..2026-10-15, until exclusive), "
+        "recently / last week / last month / about a month ago / around a month ago / "
+        "a few months ago / last year; or exact points: ISO 8601 timestamps, "
+        "RFC 2822, epoch seconds or millis, now / today / tomorrow / yesterday / "
+        "in 3 hours / 2 days ago / next monday / friday 17:00 / tomorrow 9am / "
+        "9 Oct 2026 14:30.",
+        next=_NEXT_WINDOW,
+    )
+
+
+def resolve_window(expr: str, *, now: datetime, zone: tzinfo) -> TimeWindow:
+    """Resolve a phrase to UTC bounds without consulting a clock or model.
+
+    Date ranges use an exclusive right endpoint; a single date spans its
+    whole source-zone day. Calendar windows are exact (not widened), while
+    fuzzy elapsed-day phrases and exact points expanded to UTC days carry
+    ``widened=True``. ``source`` preserves the supplied phrase verbatim.
+    A naive injected clock is UTC, never the host's local time.
+    """
+    text = expr.strip()
+    low = text.lower()
+    now = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
+    widened = False
+    try:
+        if ".." in text:
+            parts = text.split("..")
+            if len(parts) != 2 or any(
+                _ISO_WINDOW_DATE_RE.fullmatch(part.strip()) is None for part in parts
+            ):
+                raise ValueError("a range needs two ISO dates")
+            since, until = (
+                datetime.combine(date.fromisoformat(part.strip()), time(), zone)
+                for part in parts
+            )
+        elif _ISO_WINDOW_DATE_RE.fullmatch(text):
+            since = datetime.combine(date.fromisoformat(text), time(), zone)
+            until = since + timedelta(days=1)
+        elif low in _WINDOW_DAYS:
+            older, newer = _WINDOW_DAYS[low]
+            since, until = now - timedelta(days=older), now - timedelta(days=newer)
+            widened = True
+        elif low in _WINDOW_CALENDAR:
+            local_now = now.astimezone(zone)
+            midnight = datetime.combine(local_now.date(), time(), zone)
+            if low == "last week":
+                until = midnight - timedelta(days=midnight.weekday())
+                since = until - timedelta(days=7)
+            elif low == "last month":
+                until = midnight.replace(day=1)
+                since = _add_months(until, -1)
+            else:
+                until = midnight.replace(month=1, day=1)
+                since = until.replace(year=until.year - 1)
+        else:
+            instant = parse_instant(text, now=now, zone=zone).astimezone(UTC)
+            since = instant.replace(hour=0, minute=0, second=0, microsecond=0)
+            until = since + timedelta(days=1)
+            widened = True
+        since, until = since.astimezone(UTC), until.astimezone(UTC)
+        if since >= until:
+            raise ValueError("since must precede the exclusive until bound")
+    except (ValueError, OverflowError, OSError) as e:
+        detail = e.cause if isinstance(e, BadInput) else str(e)
+        raise _window_error(expr, detail) from e
+    return TimeWindow(since=since, until=until, source=expr, widened=widened)
 
 
 def parse_instant(expr: str, *, now: datetime, zone: tzinfo) -> datetime:
@@ -452,6 +576,15 @@ def _zone_label(tz: tzinfo, at: datetime) -> str:
 
 
 # ── rendering ───────────────────────────────────────────────────────
+
+
+def _render_window(window: TimeWindow) -> str:
+    since, until = _iso_utc(window.since), _iso_utc(window.until)
+    widening = ", widened" if window.widened else ""
+    return (
+        f"window: {since} … {until} (from {window.source!r}{widening})\n"
+        f"since={since!r}, until={until!r} (until exclusive)"
+    )
 
 
 def _coerce_expr(id: str | int | None, q: str | None) -> str | None:
