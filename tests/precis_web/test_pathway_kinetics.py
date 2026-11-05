@@ -149,6 +149,7 @@ def test_verdict_rate_control_bands() -> None:
     assert any("Rate control sits on NO*->NOH*" in x for x in strong)
     ill = kinetics_verdict(_record(drc={"X_RC": {"s1": 5.0}}))
     assert any("UNUSABLE" in x for x in ill["lines"])
+    assert not any("Rate control sits on" in x for x in ill["lines"])
     shared = kinetics_verdict(_record(drc={"X_RC": {"s1": 0.3, "s2": 0.25}}))
     assert any("Rate control is shared" in x for x in shared["lines"])
     brake = kinetics_verdict(_record())["lines"]
@@ -638,6 +639,105 @@ def test_rate_control_names_its_solve() -> None:
     assert out["ml"]["trc_source"] == "chain"
 
 
+@pytest.mark.parametrize(
+    ("source", "label"),
+    [
+        (None, "source was not recorded; the values are unreliable"),
+        ("mf", "mean-field estimate"),
+        ("chain", "chain estimate"),
+    ],
+)
+def test_rate_control_display_uses_only_recorded_source(tmp_path, source, label):
+    import copy
+
+    v2 = {**_v2_record(), "drc": {"A->B": 1.0}}
+    if source is not None:
+        v2["drc_source"] = source
+    results = {"kinetics_v2": v2}
+    before = copy.deepcopy(results)
+    payload = kinetics_payload(results)
+    assert payload is not None
+    ml = payload["ml"]
+    assert ml["drc_source_recorded"] == source
+    assert label in ml["drc_note"]
+    assert any(label in line for line in ml["verdict"]["lines"])
+    assert label in _panel_probe(tmp_path, payload)["html"]
+    assert results == before
+
+
+def test_rate_control_display_does_not_inherit_v1_source(tmp_path):
+    payload = kinetics_payload(
+        {
+            "kinetics": _record(drc_source="chain"),
+            "kinetics_v2": {**_v2_record(), "drc": {"A->B": 1.0}},
+        }
+    )
+    assert payload is not None
+    assert payload["ml"]["drc_source_recorded"] is None
+    assert "source was not recorded" in _panel_probe(tmp_path, payload)["html"]
+
+
+def test_rate_control_zero_values_do_not_name_a_top_step(tmp_path):
+    payload = kinetics_payload(
+        {"kinetics_v2": {**_v2_record(), "drc": {"A->B": 0, "B->C": 0.0}}}
+    )
+    assert payload is not None
+    lines = payload["ml"]["verdict"]["lines"]
+    assert any("No usable rate control" in line for line in lines)
+    assert not any(
+        "Rate control sits on" in line or "Rate control is shared" in line
+        for line in lines
+    )
+    assert "No usable rate control" in _panel_probe(tmp_path, payload)["html"]
+
+
+@needs_node
+@pytest.mark.parametrize("field", ["drc", "trc"])
+@pytest.mark.parametrize(
+    ("values", "source", "drc_usable", "trc_usable"),
+    [
+        ({"control step": 0, "missing": None}, None, False, False),
+        ({"control step": 150.995}, None, False, True),
+        ({"control step": 150.995, "balance": -149.995}, "mf", False, True),
+        ({"NO@fcc": -0.7}, "mf", False, True),
+        ({"control step": 1.0}, "mf", True, True),
+        ({"control step": 0.99995}, "chain", True, True),
+        ({"control step": 1.0}, None, True, True),
+        ({"control step": 0.95}, "mf", True, True),
+        ({"control step": 1.05}, "mf", True, True),
+        ({"control step": 1.0, "missing": None}, "mf", False, False),
+        ({}, "mf", False, False),
+    ],
+)
+def test_control_bars_require_usable_values(
+    tmp_path, field, values, source, drc_usable, trc_usable
+):
+    usable = drc_usable if field == "drc" else trc_usable
+    payload = kinetics_payload(
+        {"kinetics_v2": {"tof_mf": 1e-3, field: values, field + "_source": source}}
+    )
+    assert payload is not None
+    html = _panel_probe(tmp_path, payload)["html"]
+    section_id = "rate-control" if field == "drc" else "thermodynamic-control"
+    section = html.split(f"<h3 id='kinetics-{section_id}'>", 1)[1].split("<h3", 1)[0]
+    assert ("class='kbar'" in section) is usable
+    if usable:
+        label = {"mf": "mean-field estimate", "chain": "chain estimate"}.get(
+            source, "source was not recorded; the values are unreliable"
+        )
+        assert label in section
+        if field == "trc" and values == {"NO@fcc": -0.7}:
+            assert "Strongest thermodynamic brake:" in html
+            assert "NO@fcc" in section
+    else:
+        assert "No usable rate control" in section
+        assert "control step" not in section
+        assert "Rate control sits on" not in html
+        assert "Strongest thermodynamic brake:" not in html
+    markup = _verdict_markup(html)
+    assert any(link.get("href") == f"#kinetics-{section_id}" for link in markup.links)
+
+
 # ── gr549759: the solve status flags a TOF inside solver noise ───────────
 
 
@@ -996,14 +1096,26 @@ def test_rate_control_number_sits_on_the_coloured_fill(tmp_path: Path) -> None:
 
 
 @needs_node
+@pytest.mark.parametrize(
+    ("field", "key", "value", "balance"),
+    [
+        ("drc", "X_RC", -1.5, {"a->b": 2.0, "b->c": 0.5}),
+        ("thermodynamic_drc", "X_TRC", -249.94, {"a->b": 0.5}),
+    ],
+)
 def test_out_of_range_bar_clamps_but_keeps_the_true_number(
     tmp_path: Path,
+    field: str,
+    key: str,
+    value: float,
+    balance: dict[str, float],
 ) -> None:
     """|X| beyond the 220 px scale used to draw the same full-width bar as
     everything else; now the fill clamps, the caption says the scale is
-    relative, the section flags itself, and the printed number stays true."""
+    relative, the section flags itself, and the printed number stays true.
+    X_RC stays within its magnitude guard; X_TRC has no such restriction."""
     out = kinetics_payload(
-        {"kinetics": _record(drc={"X_RC": {"NO*->NOH*": -249.94, "a->b": 0.5}})}
+        {"kinetics": _record(**{field: {key: {"NO*->NOH*": value, **balance}}})}
     )
     assert out is not None
     html = _render_panel(tmp_path, out)
@@ -1015,9 +1127,10 @@ def test_out_of_range_bar_clamps_but_keeps_the_true_number(
     )
     assert m is not None
     assert int(m.group(1)) <= 220  # the bar is clamped …
-    assert m.group(2) == "-249.94"  # … the number is not
+    assert m.group(2) == f"{value:+.2f}"  # … the number is not
     assert "scaled to the largest shown" in html
-    assert "unusual X_RC values" in html
+    # The warning starts above 2.0; X_RC at the guard boundary still scales.
+    assert (f"unusual {key} values" in html) is (key == "X_TRC")
     # a small value still draws SOMETHING: the fill floors at the number's
     # width rather than vanishing (min-width 0 + the kval chip)
     assert "floored at the number's width" in html
@@ -1160,7 +1273,7 @@ def test_verdict_entity_links_use_longest_literal_and_first_adjacent_path(
     payload = kinetics_payload(
         {
             "kinetics": _record(
-                drc={"X_RC": {step: 0.8}},
+                drc={"X_RC": {step: 1.0}},
                 thermodynamic_drc={"X_TRC": {"unknown@fcc": -0.7}},
             )
         }
@@ -1286,7 +1399,7 @@ def test_verdict_hostile_names_are_literal_escaped_links(tmp_path: Path) -> None
         {
             "kinetics": _record(
                 coverages={state: 0.9},
-                drc={"X_RC": {step: 0.8}},
+                drc={"X_RC": {step: 1.0}},
                 thermodynamic_drc={"X_TRC": {}},
                 transitions=[{"name": step, "from": state, "to": "B", "kind": "step"}],
             )
@@ -1365,7 +1478,7 @@ def test_verdict_v2_step_keys_link_without_transition_rows(
     tmp_path: Path, step: str
 ) -> None:
     payload = kinetics_payload(
-        {"kinetics_v2": {**_v2_record(), "drc": {step: 0.8}, "trc": {}}}
+        {"kinetics_v2": {**_v2_record(), "drc": {step: 1.0}, "trc": {}}}
     )
     assert payload is not None and payload["ml"]["transitions"] == []
     path = ["NO@fcc~landing", "NOH@fcc~landing", "NH3"]

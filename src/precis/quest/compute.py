@@ -2352,7 +2352,11 @@ _AUTOCATPATH_KINETICS_KEYS: tuple[str, ...] = (
 #: excluded-step warning) — never measures on their own, but drive the
 #: pop-into-``{key}_untrusted_value`` gate below, same shape as
 #: ``barrier_trusted``/``_pathway_quality``.
-_AUTOCATPATH_KINETICS_CONTEXT_KEYS: tuple[str, ...] = ("kinetics_note", "drc_top")
+_AUTOCATPATH_KINETICS_CONTEXT_KEYS: tuple[str, ...] = (
+    "kinetics_note",
+    "drc_top",
+    "drc_note",
+)
 
 #: Suffix a gated-out kinetics measure is stashed under on an untrusted
 #: solve — aliased from the frontier's own constant (the read side of the
@@ -2404,6 +2408,7 @@ _KINETICS_GATED_STASH_KEYS: tuple[str, ...] = (
     "kinetics_trusted",
     "kinetics_note",
     "drc_top",
+    "drc_note",
 )
 
 #: Per-run verdicts, flags and counters a stashed job must never stamp
@@ -2546,6 +2551,10 @@ def _autocatpath_measures_from_job(meta: dict[str, Any]) -> dict[str, Any]:
         ctx = src.get(k)
         if isinstance(ctx, str) and ctx:
             out[k] = ctx
+    # Harvest merges meta shallowly: a result with no usable top must clear the
+    # previous run's, or the frontier names it beside "No usable rate control".
+    if "drc_note" in out and "drc_top" not in out:
+        out["drc_top"] = None
     return out
 
 

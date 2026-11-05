@@ -2,13 +2,19 @@
 
 A pathway ref stores the raw ``kinetics.solve`` record under
 ``meta.results.kinetics`` (folded in by ``precis_pathway.runner.run_kinetics``).
-The page shows the same panel the catpath run report shows, so this module is
-a port of the engine's report-side pair — the payload trim and the rule-based
-plain-language verdict (``autocatpath/report.py``, ``_kinetics_payload`` /
-``_kinetics_verdict``). The thresholds and sentence templates here must track
-the engine's: when catpath's panel changes, re-sync this module and the
-companion renderer ``static/pathway-kinetics.js`` rather than letting the two
-surfaces describe the same record differently.
+The panel ports the engine's report-side pair — the payload trim and
+rule-based verdict (``autocatpath/report.py``, ``_kinetics_payload`` /
+``_kinetics_verdict``). ``kinetics_verdict`` stays verbatim: its thresholds
+and sentence templates must track the engine's, pinned by the engine golden
+parity gate. When catpath's panel changes, re-sync the port and companion
+renderer ``static/pathway-kinetics.js``.
+
+``stored_kinetics_verdict`` gates a copy before calling that port and adds
+source notes from the same record's explicit stamps. Stored X_RC requires
+complete finite values, the engine sum tolerance and the verdict's existing
+magnitude guard; X_TRC needs complete finite values but has no sum rule.
+The payload uses the same predicates to gate bars. No reader recomputes or
+modifies stored data.
 
 Same division of labour as the report: verdict in Python so the thresholds
 are unit-testable, payload a TRIM not a transform (the page never
@@ -24,6 +30,12 @@ from __future__ import annotations
 import math
 import re
 from typing import Any
+
+from precis.utils.pathway_rate_control import (
+    rate_control_note,
+    usable_rate_control,
+    usable_thermodynamic_rate_control,
+)
 
 #: TOF below which the sign is numerical noise, not a direction: one turnover
 #: per site per ~three years. Under it the verdict says "does not turn over"
@@ -250,6 +262,29 @@ def kinetics_verdict(d: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def stored_kinetics_verdict(d: dict[str, Any]) -> dict[str, Any]:
+    """Gate stored control on a copy, preserving the verbatim engine port."""
+    gated = dict(d)
+    drc = _dict(d.get("drc"))
+    trc = _dict(d.get("thermodynamic_drc"))
+    if not usable_rate_control(drc.get("X_RC")):
+        gated["drc"] = {key: value for key, value in drc.items() if key != "X_RC"}
+    if not usable_thermodynamic_rate_control(trc.get("X_TRC")):
+        gated["thermodynamic_drc"] = {
+            key: value for key, value in trc.items() if key != "X_TRC"
+        }
+    verdict = kinetics_verdict(gated)
+    verdict["lines"].extend(
+        [
+            rate_control_note(d.get("drc_source"), drc.get("X_RC")),
+            rate_control_note(
+                d.get("trc_source"), trc.get("X_TRC"), thermodynamic=True
+            ),
+        ]
+    )
+    return verdict
+
+
 def _v2_tof(v2: dict[str, Any]) -> float | None:
     """The D8 ranked TOF off the record — KMC median (finite, > 0), then
     MF, then chain. Mirrors ``precis_pathway._dispatch_common._ranked_tof``:
@@ -448,8 +483,9 @@ def _v2_overlay(v2: dict[str, Any], product: Any) -> dict[str, Any]:
     the log-space uncertainty band inverts to a linear sensitivity band;
     ``selectivity``'s per-product map reduces to the target's share; the
     resolved environment fills ``conditions``. Only non-empty values are
-    emitted — a record field that is absent or ``null`` never erases the
-    v1 block's answer."""
+    emitted, except that an explicit empty control map replaces v1 values:
+    an unusable new map must not resurrect an older control claim. A field
+    that is absent or ``null`` never erases the v1 block's answer."""
     out: dict[str, Any] = {}
     tof = _v2_tof(v2)
     if tof is not None:
@@ -465,12 +501,14 @@ def _v2_overlay(v2: dict[str, Any], product: Any) -> dict[str, Any]:
     share = _fin(v2.get("bep_flux_share"))
     if math.isfinite(share):
         out["tier"] = "dft" if share == 0.0 else "ml"
-    drc = _dict(v2.get("drc"))
-    if drc:
+    drc = v2.get("drc")
+    if isinstance(drc, dict):
         out["drc"] = {"X_RC": drc}
-    trc = _dict(v2.get("trc"))
-    if trc:
+        out["drc_source"] = v2.get("drc_source")
+    trc = v2.get("trc")
+    if isinstance(trc, dict):
         out["thermodynamic_drc"] = {"X_TRC": trc}
+        out["trc_source"] = v2.get("trc_source")
     flat: dict[str, Any] = {}
     for cls, table in _dict(v2.get("coverages")).items():
         if isinstance(table, dict):
@@ -576,16 +614,18 @@ def kinetics_payload(
     Beyond the trim the payload also derives display metadata the stored
     record lacks: coverages re-ordered by θ and grouped back into their
     site classes (gr549757 — jsonb destroys the engine's sort), the
-    rate-control bars' solve provenance (``drc_source``/``trc_source``,
-    gr549763), and a vacancy-stripped coverage dict for the verdict so an
-    empty site can't win the MARI slot (gr549757 — the ported
-    ``kinetics_verdict`` itself stays verbatim for the parity gate).
+    rate-control bars' recorded provenance (``drc_source_recorded`` and
+    ``drc_note``). The older inferred ``drc_source`` field remains for
+    compatibility but never licenses a display label. A vacancy-stripped
+    coverage dict feeds the verdict so an
+    empty site can't win the MARI slot (gr549757).
     """
     rec = results.get("kinetics")
     d = dict(rec) if isinstance(rec, dict) else {}
     v2 = results.get("kinetics_v2")
     drc_source: str | None = None
     trc_source: str | None = None
+    drc_record = d
     classes: list[dict[str, Any]] = []
     if isinstance(v2, dict):
         # the record's flat ``drc``/``trc`` are the MF solve's values when it
@@ -616,6 +656,12 @@ def kinetics_payload(
 
         drc_source = _rc_source("drc", v1_drc)
         trc_source = _rc_source("trc", v1_trc)
+        if isinstance(v2.get("drc"), dict):
+            drc_record = v2
+        if drc_record.get("drc_source") in ("mf", "chain"):
+            drc_source = drc_record["drc_source"]
+        if v2.get("trc_source") in ("mf", "chain") and _dict(v2.get("trc")):
+            trc_source = v2["trc_source"]
         # the v2 coverage table is per site class — each class's states sum
         # to ~1 independently, so the page groups by class rather than
         # pretending the flattened dict sums to 1 (gr549757)
@@ -661,15 +707,21 @@ def kinetics_payload(
             key=lambda kv: -kv[1],
         )
     ]
-    # the verdict is a hand-port of the engine's report function (a golden
-    # parity test pins it verbatim) — the vacancy fix therefore lives at
-    # this call boundary: an empty site (*, or *@class under the v2 flat
+    # The vacancy fix lives at this call boundary: an empty site
+    # (*, or *@class under the v2 flat
     # naming) is not an intermediate and must not win the MARI slot
     # (gr549757)
     d_verdict = {
         **d,
         "coverages": {k: v for k, v in cov.items() if str(k).split("@", 1)[0] != "*"},
     }
+    drc_values = _dict(_dict(d.get("drc")).get("X_RC"))
+    recorded_source = drc_record.get("drc_source")
+    drc_note = rate_control_note(recorded_source, drc_values)
+    trc_values = _dict(_dict(d.get("thermodynamic_drc")).get("X_TRC"))
+    recorded_trc_source = d.get("trc_source")
+    trc_note = rate_control_note(recorded_trc_source, trc_values, thermodynamic=True)
+    verdict = stored_kinetics_verdict(d_verdict)
     sens = _dict(d.get("sensitivity"))
     br = _dict(d.get("tof_bracket")) or None
     warns = _strlist(d.get("warnings"))
@@ -708,8 +760,14 @@ def kinetics_payload(
             "n_coverages": len(cov_sorted),
             "drc": _dict(_dict(d.get("drc")).get("X_RC")),
             "drc_source": drc_source,
+            "drc_source_recorded": recorded_source,
+            "drc_note": drc_note,
+            "drc_usable": usable_rate_control(drc_values),
             "trc": _dict(_dict(d.get("thermodynamic_drc")).get("X_TRC")),
             "trc_source": trc_source,
+            "trc_source_recorded": recorded_trc_source,
+            "trc_note": trc_note,
+            "trc_usable": usable_thermodynamic_rate_control(trc_values),
             "sensitivity": {
                 k: sens.get(k) for k in ("tof", "n_samples", "controlling")
             },
@@ -751,7 +809,7 @@ def kinetics_payload(
                 for t in (trans if isinstance(trans, list) else [])
                 if isinstance(t, dict)
             ],
-            "verdict": kinetics_verdict(d_verdict),
+            "verdict": verdict,
             "v2_solve": d.get("v2_solve"),
         }
     }

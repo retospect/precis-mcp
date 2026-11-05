@@ -311,8 +311,9 @@
   const verdictSection = text => {
     if (/^(Product-inhibited:|The surface is saturated|No single intermediate)/.test(text))
       return "kinetics-coverages";
-    if (/^Rate control/.test(text)) return "kinetics-rate-control";
-    if (/^Strongest thermodynamic brake:/.test(text)) return "kinetics-thermodynamic-control";
+    if (/^(Strongest thermodynamic brake:|Thermodynamic rate control|No usable rate control \(X_TRC\))/.test(text))
+      return "kinetics-thermodynamic-control";
+    if (/^(Rate control|No usable rate control)/.test(text)) return "kinetics-rate-control";
     if (/^(Not determined:|The TOF lies between)/.test(text)) return "kinetics-steps";
     if (/^Not fully selective:/.test(text)) return "kinetics-production-" + tier;
     return "kinetics-tof";
@@ -696,18 +697,22 @@
     (src ? " &middot; " + esc2(src) : "") + "</div>";
   h += "<h3 id='kinetics-rate-control'>Degree of rate control " + term("X_RC") + " (" + tierName +
        ")</h3>" +
-       legend([["#2b6cb0", "positive: lowering this step's barrier speeds the cycle"],
+       "<div class='caption'>" + esc2(base.drc_note ||
+         "No usable rate control.") + "</div>";
+  if (base.drc_usable) h += legend([["#2b6cb0", "positive: lowering this step's barrier speeds the cycle"],
                ["#a33", "negative: making the step faster slows the cycle"]],
-              srcName(base.drc_source)) +
+              srcName(base.drc_source_recorded)) +
        bars(base.drc, "#2b6cb0", "#a33", "X_RC",
-            srcName(base.drc_source));
+            srcName(base.drc_source_recorded));
   h += "<h3 id='kinetics-thermodynamic-control'>Thermodynamic rate control " + term("X_TRC") + " (" + tierName +
        "; negative = poison)</h3>" +
-       legend([["#2f855a", "positive: binding this state harder speeds the cycle"],
+       "<div class='caption'>" + esc2(base.trc_note ||
+         "No usable rate control (X_TRC).") + "</div>";
+  if (base.trc_usable) h += legend([["#2f855a", "positive: binding this state harder speeds the cycle"],
                ["#a33", "negative: a poison — stabilising it slows the cycle"]],
-              srcName(base.trc_source)) +
+              srcName(base.trc_source_recorded)) +
        bars(base.trc, "#2f855a", "#a33", "X_TRC",
-            srcName(base.trc_source));
+            srcName(base.trc_source_recorded));
   // coverages (gr549757): largest first, every state above the display
   // threshold shown, hidden states counted. The v2 record's table is per
   // site class -- each class sums to ~1 on its own, so multi-class records

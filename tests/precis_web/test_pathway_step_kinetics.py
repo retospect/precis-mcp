@@ -44,7 +44,8 @@ def _v1() -> dict[str, Any]:
         "conditions": {"temperature": 400.0, "pressures": {"NH3": 0.1}},
         "product": "NH3",
         "selectivity": 0.75,
-        "drc": {"X_RC": {"A->NH3": 0.8}},
+        "drc": {"X_RC": {"A->NH3": 0.8, "balance": 0.2}},
+        "drc_source": "chain",
         "transitions": [
             {
                 "name": "A->NH3",
@@ -95,7 +96,9 @@ def test_v1_transition_join_strips_history_and_preserves_zero() -> None:
     }
     for key, value in expected.items():
         assert quantities[key]["value"] == pytest.approx(value)
-        assert quantities[key]["solve"] == "v1 chain"
+        assert quantities[key]["solve"] == (
+            "Rate control: chain estimate." if key == "X_RC" else "v1 chain"
+        )
         assert quantities[key]["environment"]["T"] == 400.0
     assert "z_i" not in quantities
     assert desorption["step_kinetics"]["product"] == "NH3"
@@ -126,7 +129,8 @@ def test_v2_only_has_diagnostics_without_inventing_chain_rates() -> None:
             "kinetics_v2": {
                 "environment": {"T": 450.0, "p_total": 2.0},
                 "tof_mf": 0.01,
-                "drc": {"A->NH3": 0.4},
+                "drc": {"A->NH3": 0.4, "balance": 0.6},
+                "drc_source": "mf",
                 "reversibility": {"A->NH3": 0.25},
                 "selectivity": {"NH3": 0.6},
             }
@@ -136,7 +140,9 @@ def test_v2_only_has_diagnostics_without_inventing_chain_rates() -> None:
     assert quantities["X_RC"]["value"] == 0.4
     assert quantities["z_i"]["value"] == 0.25
     for key in ("X_RC", "z_i"):
-        assert quantities[key]["solve"].startswith("v2 mean-field")
+        assert quantities[key]["solve"].startswith(
+            "Rate control: mean-field estimate." if key == "X_RC" else "v2 mean-field"
+        )
         assert quantities[key]["environment"]["T"] == 450.0
     for key in ("k_f", "k_b", "net_rate", "ea_forward", "ea_reverse"):
         assert key not in quantities
@@ -157,14 +163,18 @@ def test_mixed_solves_keep_their_own_environment() -> None:
             "kinetics_v2": {
                 "environment": {"T": 500.0},
                 "tof_mf": 0.2,
-                "drc": {"A->NH3": 0.4},
+                "drc": {"A->NH3": 0.4, "balance": 0.6},
+                "drc_source": "mf",
             },
         }
     )[0]
     quantities = reaction["step_kinetics"]["quantities"]
     assert quantities["k_f"]["solve"] == "v1 chain"
     assert quantities["k_f"]["environment"]["T"] == 400.0
-    assert quantities["X_RC"]["solve"] == "v2 mean-field, under audit (gr564356)"
+    assert (
+        quantities["X_RC"]["solve"]
+        == "Rate control: mean-field estimate. Under audit (gr564356)."
+    )
     assert quantities["X_RC"]["environment"]["T"] == 500.0
 
 
@@ -202,12 +212,13 @@ def test_failed_mean_field_diagnostics_keep_chain_provenance() -> None:
                 "environment": {"T": 400.0},
                 "tof_mf": None,
                 "mf_status": {"ok": False},
-                "drc": {"A->NH3": 0.8},
+                "drc": {"A->NH3": 0.8, "balance": 0.2},
+                "drc_source": "chain",
                 "reversibility": {"A->NH3": 0.25},
             },
         }
     )[0]["step_kinetics"]["quantities"]
-    assert quantities["X_RC"]["solve"] == "v1 chain"
+    assert quantities["X_RC"]["solve"] == "Rate control: chain estimate."
     assert quantities["z_i"]["solve"] == "v1 chain"
     assert quantities["X_RC"]["value"] == 0.8
     assert quantities["z_i"]["value"] == 0.25
@@ -222,10 +233,12 @@ def test_v2_only_observable_failure_keeps_per_quantity_provenance(
         "environment": {"T": 450.0, "p_total": 2.0},
         "tof_mf": 1.0,
         "mf_status": {"ok": True},
-        "drc": {"A->NH3": 0.8},
+        "drc": {"A->NH3": 0.8, "balance": 0.2},
+        "drc_source": "mf",
         "reversibility": {"A->NH3": 0.25},
         "selectivity": {"NH3": 0.6},
     }
+    record["drc_source"] = "chain" if failed == "drc" else "mf"
     status = record["mf_status"] if nested else record
     status["failed_observables"] = [
         {"name": failed, "reason": "observable time budget spent"}
@@ -241,9 +254,14 @@ def test_v2_only_observable_failure_keeps_per_quantity_provenance(
         ("selectivity", "selectivity", 0.6),
     ):
         assert quantities[key]["value"] == value
-        assert quantities[key]["solve"].startswith(
-            "v1 chain" if name == failed else "v2 mean-field"
-        )
+        expected_solve = "v1 chain" if name == failed else "v2 mean-field"
+        if key == "X_RC":
+            expected_solve = (
+                "Rate control: chain estimate."
+                if name == failed
+                else "Rate control: mean-field estimate."
+            )
+        assert quantities[key]["solve"].startswith(expected_solve)
         assert quantities[key]["environment"] == record["environment"]
 
 
@@ -254,36 +272,39 @@ def test_equal_drc_values_are_not_evidence_of_chain_fallback() -> None:
             "kinetics_v2": {
                 "tof_mf": 1.0,
                 "mf_status": {"ok": True, "failed_observables": []},
-                "drc": {"A->NH3": 0.8},
+                "drc": {"A->NH3": 0.8, "balance": 0.2},
+                "drc_source": "mf",
             },
         }
     )[0]
     assert (
         reaction["step_kinetics"]["quantities"]["X_RC"]["solve"]
-        == "v2 mean-field, under audit (gr564356)"
+        == "Rate control: mean-field estimate. Under audit (gr564356)."
     )
 
 
 @pytest.mark.parametrize("turnover", [-0.1, 0.0, None, float("nan"), float("inf")])
-def test_successful_solve_without_positive_turnover_has_chain_drc(
+def test_turnover_does_not_establish_unrecorded_control_source(
     turnover: float | None,
 ) -> None:
     link: dict[str, Any] = {"source": "A", "target": "B"}
     attach_step_kinetics(
         [link],
         {
-            "kinetics": {"drc": {"X_RC": {"A->B": 0.8}}},
+            "kinetics": {"drc": {"X_RC": {"A->B": 0.8, "balance": 0.2}}},
             "kinetics_v2": {
                 "tof_mf": turnover,
                 "mf_status": {"ok": True},
-                "drc": {"A->B": 0.8},
+                "drc": {"A->B": 0.8, "balance": 0.2},
                 "reversibility": {"A->B": 0.25},
             },
         },
     )
     quantities = link["step_kinetics"]["quantities"]
     assert quantities["X_RC"]["value"] == pytest.approx(0.8)
-    assert quantities["X_RC"]["solve"] == "v1 chain"
+    assert quantities["X_RC"]["solve"] == (
+        "Rate control source was not recorded; the values are unreliable."
+    )
     if turnover is not None and math.isfinite(turnover):
         assert quantities["z_i"]["solve"] == "v2 mean-field"
 
@@ -412,6 +433,61 @@ console.log(JSON.stringify({
     assert got["hidden"] == ""
     assert "v1 chain" in got["hover"]
     assert "400" in got["hover"]
+
+
+@needs_node
+@pytest.mark.parametrize(
+    ("values", "source", "expected"),
+    [
+        ({"A->NH3": 1.0, "missing": None}, "mf", "No usable rate control."),
+        ({"A->NH3": 150.995}, None, "No usable rate control."),
+        ({"A->NH3": 1.0}, None, "source was not recorded"),
+        ({"A->NH3": 1.0}, "mf", "mean-field estimate"),
+        ({"A->NH3": 0.99995}, "chain", "chain estimate"),
+    ],
+)
+def test_step_control_label_and_hover_follow_recorded_rule(
+    tmp_path, values, source, expected
+):
+    link = _links({"kinetics_v2": {"drc": values, "drc_source": source}})[0]
+    got = _node_json(
+        tmp_path,
+        _step_kinetics_script()
+        + "\nconst link = "
+        + json.dumps(link)
+        + "; console.log(JSON.stringify({label: PWStepKinetics.label(link, "
+        + "{kinetics:true, kin_source:false, kin_X_RC:true}), "
+        + "hover: PWStepKinetics.text(link)}));",
+    )
+    assert expected in got["label"] and expected in got["hover"]
+    if expected == "No usable rate control.":
+        assert "X_RC=" not in got["label"]
+        assert "X_RC=" not in got["hover"]
+
+
+@needs_node
+@pytest.mark.parametrize("source", ["mf", "chain", None])
+def test_step_control_missing_from_usable_map_is_explicitly_absent(
+    tmp_path: Path, source: str | None
+) -> None:
+    link: dict[str, Any] = {"source": "C", "target": "D"}
+    attach_step_kinetics(
+        [link], {"kinetics_v2": {"drc": {"A->B": 1}, "drc_source": source}}
+    )
+    assert "X_RC" not in link["step_kinetics"]["quantities"]
+    got = _node_json(
+        tmp_path,
+        _step_kinetics_script()
+        + "\nconst link = "
+        + json.dumps(link)
+        + "; console.log(JSON.stringify({label: PWStepKinetics.label(link, "
+        + "{kinetics:true, kin_source:false, kin_X_RC:true}), "
+        + "hover: PWStepKinetics.text(link)}));",
+    )
+    for text in (got["label"], got["hover"]):
+        assert "X_RC=absent" in text
+        assert link["step_kinetics"]["drc_note"] in text
+        assert "No usable rate control" not in text
 
 
 @needs_node

@@ -447,7 +447,8 @@ def test_kinetics_job_reports_kmc_points(monkeypatch):
     events = [c.args[1] for c in ctx.append_chunk.call_args_list]
     n = len(payload["kmc_points"])
     assert f"autocatpath_kinetics: lattice KMC at {n} of {n} kmc_points" in events
-    stamped = ctx.set_meta.call_args.args[0]
+    ctx.set_meta.assert_called_once_with(**ctx.set_meta.call_args.kwargs)
+    stamped = ctx.set_meta.call_args.kwargs
     assert stamped["n_kmc_points"] == n
     assert (
         stamped["optimum_T"] == payload["optimum"]["T"]
@@ -522,6 +523,129 @@ def test_finalize_rejects_a_degraded_resolved_record():
         "kinetics_sweep",
         "kinetics_v2",
     ]
+
+
+@pytest.mark.parametrize("tof", [None, float("nan"), float("inf")])
+def test_degraded_job_keeps_bounded_plain_json_diagnostics(tof: float | None) -> None:
+    from precis_pathway import kinetics_job
+
+    store = _MetaStore({"results": _stored_results()})
+    ctx = _finalize_ctx(store, store.ref.id)
+    job_meta: dict[str, Any] = {}
+
+    def set_meta(**fields: Any) -> None:
+        # Match DispatchContext's keyword-only seam; a permissive mock would
+        # miss a positional dictionary that never reaches the real job.
+        json.dumps(fields, allow_nan=False)
+        job_meta.update(fields)
+
+    ctx.set_meta = set_meta
+    status = {
+        "ok": False,
+        "stage": "steady_state",
+        "reason": "Newton did not converge",
+        "state_err": float("nan"),
+    }
+    rejected = {"tof_mf": tof, "mf_status": status, "engine_version": "0.50.0"}
+    assert not kinetics_job._finalize(
+        ctx, store.ref.id, {}, store.ref, {"kinetics_v2": rejected}
+    )
+    assert store.ref.meta["results"]["kinetics_v2"] == _stored_results()["kinetics_v2"]
+    diagnostics = job_meta["kinetics_v2_rejected"]
+    assert diagnostics == {
+        "mf_status": {**status, "state_err": None},
+        "engine_version": "0.50.0",
+    }
+    ctx.record_failure.assert_called_once()
+    failure = ctx.record_failure.call_args.args[0]
+    assert "no finite tof_mf; stored record kept" in failure
+    assert "Newton did not converge" in failure and "0.50.0" in failure
+    assert "mf_status" in failure and "engine_version" in failure
+    assert len(json.dumps(diagnostics, allow_nan=False)) < 8192
+
+
+def test_rejected_job_diagnostics_cap_large_status_and_engine() -> None:
+    from precis_pathway.kinetics_job import _rejected_diagnostics
+
+    record = {
+        "mf_status": {"reason": '\u2603\n"' * 10000},
+        "engine_version": "\u2603" * 10000,
+    }
+    diagnostics = _rejected_diagnostics(record)
+    encoded = json.dumps(diagnostics, allow_nan=False)
+    assert len(encoded.encode("utf-8")) < 8192
+    assert json.loads(encoded) == diagnostics
+    assert diagnostics["mf_status"]["truncated"] is True
+    assert len(diagnostics["engine_version"]) == 128
+    assert _rejected_diagnostics({}) == {"mf_status": None, "engine_version": None}
+
+
+@pytest.mark.parametrize("version", ["0.50.0", None, ""])
+def test_recompute_manifest_uses_record_engine_or_stored_fallback(
+    monkeypatch: pytest.MonkeyPatch, version: str | None
+) -> None:
+    from precis_pathway import kinetics_job
+    from precis_pathway import manifest as vm
+
+    store = _MetaStore(
+        {
+            "results": _stored_results(),
+            "autocatpath_version": "0.39.0",
+            "config_snapshot_yaml": "name: stored\n",
+        }
+    )
+    ctx = _finalize_ctx(store, store.ref.id)
+    expected = version or "0.39.0"
+
+    def build(**kw: Any) -> dict[str, Any]:
+        assert kw["autocatpath_version"] == expected
+        return {
+            "manifest_id": "new-manifest",
+            "code": {
+                "autocatpath_version": kw["autocatpath_version"],
+            },
+        }
+
+    monkeypatch.setattr(vm, "build_safely", build)
+    record: dict[str, Any] = {"tof_mf": 2.0}
+    if version is not None:
+        record["engine_version"] = version
+    assert kinetics_job._finalize(
+        ctx, store.ref.id, {}, store.ref, {"kinetics_v2": record}
+    )
+    meta = store.ref.meta
+    assert meta["validation_manifest"]["code"]["autocatpath_version"] == expected
+    assert meta["results"]["kinetics_v2"]["manifest_id"] == "new-manifest"
+    assert meta["autocatpath_version"] == "0.39.0"
+
+
+def test_rejected_engine_does_not_restamp_kept_record_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis_pathway import kinetics_job
+    from precis_pathway import manifest as vm
+
+    stored = _stored_results()
+    stored["kinetics_v2"]["engine_version"] = "0.49.0"
+    store = _MetaStore(
+        {
+            "results": stored,
+            "autocatpath_version": "0.39.0",
+            "config_snapshot_yaml": "name: stored\n",
+        }
+    )
+    build = MagicMock(return_value=None)
+    monkeypatch.setattr(vm, "build_safely", build)
+    ctx = _finalize_ctx(store, store.ref.id)
+    assert not kinetics_job._finalize(
+        ctx,
+        store.ref.id,
+        {},
+        store.ref,
+        {"kinetics_v2": {"tof_mf": None, "engine_version": "0.50.0"}},
+    )
+    assert build.call_args.kwargs["autocatpath_version"] == "0.49.0"
+    assert store.ref.meta["results"]["kinetics_v2"] == stored["kinetics_v2"]
 
 
 def test_finalize_judges_each_record_key_separately():
@@ -871,7 +995,9 @@ def test_kinetics_scalars_v1_only_is_unchanged():
     assert out["tof"] == 2.0 and out["kinetics_method"] == "chain"
     assert out["log_tof_p5"] == pytest.approx(0.0)
     assert out["log_tof_p95"] == pytest.approx(math.log10(4.0))
-    assert out["drc_top"] == "s1" and out["environment_basis"] == "ab" * 32
+    assert "drc_top" not in out  # sum 0.9 fails the engine sum rule
+    assert out["drc_note"] == "No usable rate control."
+    assert out["environment_basis"] == "ab" * 32
     # and a missing-v1 error string still reports the engine's reason
     err = _kinetics_scalars({"kinetics_error": "engine 0.13.0 lacks kinetics"})
     assert err == {
@@ -1678,7 +1804,8 @@ def test_poll_does_not_call_the_first_grid_row_an_optimum(monkeypatch) -> None:
     sweep = store.ref.meta["results"]["kinetics_sweep"]
     assert sweep["optimum"] is None
     assert any("no optimum" in w for w in sweep["warnings"])
-    assert "optimum_T" not in ctx.set_meta.call_args.args[0]
+    assert not ctx.set_meta.call_args.args
+    assert "optimum_T" not in ctx.set_meta.call_args.kwargs
 
 
 def test_poll_persists_a_nan_as_null(monkeypatch) -> None:

@@ -30,10 +30,14 @@ const PWStepKinetics = (() => {
   }
   function quantity(data, key, label, unit, provenance) {
     const q = (data.quantities || {})[key];
+    if (key === 'X_RC' && !q) {
+      const note = data.drc_note || 'No usable rate control.';
+      return note === 'No usable rate control.' ? note : label + '=absent — ' + note;
+    }
     const value = q && Number.isFinite(q.value) ? num(q.value) + (unit ? ' ' + unit : '') : 'absent';
     const product = key === 'selectivity' && data.product ? ' (' + data.product + ')' : '';
-    return label + product + '=' + value + (q && provenance
-      ? ' — ' + q.solve + '; ' + environment(q.environment) : '');
+    return label + product + '=' + value + (q && (provenance || key === 'X_RC')
+      ? ' — ' + q.solve + (provenance ? '; ' + environment(q.environment) : '') : '');
   }
   function text(link) {
     const data = (link || {}).step_kinetics || {};

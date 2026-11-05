@@ -5683,6 +5683,41 @@ class TestAutocatpathHarvest:
         assert c.flags["kinetics_trusted"] is True
         assert c.flags["drc_top"] == "NO->N+O"
 
+    @pytest.mark.parametrize("nested", [False, True])
+    def test_harvest_keeps_unrecorded_drc_source_note(
+        self, store: Any, nested: bool
+    ) -> None:
+        from precis_pathway._dispatch_common import _kinetics_scalars
+
+        summary = _kinetics_scalars({"kinetics_v2": {"tof_mf": 1, "drc": {"A->B": 1}}})
+        note = "Rate control source was not recorded; the values are unreliable."
+        assert summary["drc_top"] == "A->B"
+        assert summary["drc_note"] == note
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._autocatpath_job(store, sid, {"result": summary} if nested else summary)
+
+        step = compute_mod.harvest_measures(store, qid)
+
+        assert step.results_harvested == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["drc_top"] == "A->B"
+        assert meta["drc_note"] == note
+        candidate = _cand(store, sid)
+        assert candidate.flags["drc_top"] == "A->B"
+        assert candidate.flags["drc_note"] == note
+        assert "drc_note" not in candidate.measures
+        assert "drc_top" not in candidate.measures
+
+    def test_harvest_clears_a_previous_top_when_control_is_unusable(self) -> None:
+        from precis_pathway._dispatch_common import _kinetics_scalars
+
+        summary = _kinetics_scalars({"kinetics_v2": {"tof_mf": 1, "drc": {"C->D": 0}}})
+        assert "drc_top" not in summary
+        measures = compute_mod._autocatpath_measures_from_job(summary)
+        assert measures["drc_note"] == "No usable rate control."
+        assert "drc_top" in measures and measures["drc_top"] is None
+
     def test_kinetics_untrusted_stashes_tof_as_untrusted_value(
         self, store: Any
     ) -> None:
@@ -6357,6 +6392,7 @@ class TestStructNebHarvest:
                     "kinetics_trusted": True,
                     "kinetics_note": "clean solve",
                     "drc_top": "R->A",
+                    "drc_note": "Rate control: chain estimate.",
                 },
                 "pathway_ref": pw,
             },
@@ -6380,6 +6416,7 @@ class TestStructNebHarvest:
         assert meta["kinetics_trusted_untrusted_value"] is True
         assert meta["kinetics_note_untrusted_value"] == "clean solve"
         assert meta["drc_top_untrusted_value"] == "R->A"
+        assert meta["drc_note_untrusted_value"] == "Rate control: chain estimate."
         for k in (
             "span",
             "U_L",
@@ -6394,6 +6431,7 @@ class TestStructNebHarvest:
             "kinetics_trusted",
             "kinetics_note",
             "drc_top",
+            "drc_note",
             "barrier_absurd",
             "barrier_seed_blocker",
         ):

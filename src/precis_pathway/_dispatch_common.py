@@ -17,6 +17,12 @@ import math
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
+from precis.utils.pathway_rate_control import (
+    finite_rate_control,
+    rate_control_note,
+    usable_rate_control,
+)
+
 from .tof_sign import pareto_keeps, tof_sign, tof_sign_label
 
 if TYPE_CHECKING:
@@ -366,18 +372,17 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
     # kinetics v2 slice 4 (D8): the record's flat ``drc`` (step -> X_RC,
     # records.py — the MF map when it ran, else the chain's) supplies
     # drc_top; the v1 block's nested ``drc.X_RC`` is the fallback.
-    drc_mf = v2.get("drc")
-    if isinstance(drc_mf, dict):
-        finite_mf = {k: v for k, v in drc_mf.items() if _finite_num(v) is not None}
-        if finite_mf:
-            out["drc_top"] = max(finite_mf, key=lambda k: abs(finite_mf[k]))
-    if "drc_top" not in out:
+    drc_record = v2
+    drc_values = v2.get("drc")
+    if not isinstance(drc_values, dict):
         drc = kin.get("drc")
-        x_rc = drc.get("X_RC") if isinstance(drc, dict) else None
-        if isinstance(x_rc, dict):
-            finite_x_rc = {k: v for k, v in x_rc.items() if _finite_num(v) is not None}
-            if finite_x_rc:
-                out["drc_top"] = max(finite_x_rc, key=lambda k: abs(finite_x_rc[k]))
+        drc_values = drc.get("X_RC") if isinstance(drc, dict) else None
+        drc_record = kin
+    out["drc_source"] = drc_record.get("drc_source")
+    out["drc_note"] = rate_control_note(out["drc_source"], drc_values)
+    if usable_rate_control(drc_values):
+        finite_drc = finite_rate_control(drc_values)
+        out["drc_top"] = max(finite_drc, key=lambda k: abs(finite_drc[k]))
 
     # kinetics v2 slice 5 (D8): the ranked tof's model — a lattice-KMC TOF
     # on the record outranks the MF one; its interval and

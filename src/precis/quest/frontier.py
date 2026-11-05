@@ -1531,7 +1531,7 @@ def _candidate_from_structure(
     # `atom_cost`) are display-only naming context, never a measure.
     if "kinetics_trusted" in meta:
         flags["kinetics_trusted"] = bool(meta.get("kinetics_trusted"))
-    for k in ("kinetics_note", "drc_top", "atom_cost_dearest"):
+    for k in ("kinetics_note", "drc_top", "drc_note", "atom_cost_dearest"):
         if k in meta:
             flags[k] = meta.get(k)
     # Selectivity/poisoning naming context (catpath >= 0.5.2 harvests —

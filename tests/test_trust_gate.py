@@ -836,6 +836,43 @@ def test_trust_toon_missing_engine_stamp_is_notrun() -> None:
     assert "engine:stale" not in body
 
 
+@pytest.mark.parametrize("version", ["0.50.0", None, "", 50])
+def test_kinetics_staleness_prefers_record_version(version: Any) -> None:
+    meta = {
+        "autocatpath_version": "0.39.0",
+        "results": {"kinetics_v2": {"engine_version": version}},
+    }
+    engine = trust_gate.kinetics_engine_version(meta)
+    assert engine == ("0.50.0" if version == "0.50.0" else "0.39.0")
+    assert trust_gate.engine_version_stale(engine, "0.50.0") is (version != "0.50.0")
+    assert trust_gate.kinetics_engine_version({}) is None
+
+
+def test_record_engine_recognizes_new_engine_version_stamp() -> None:
+    assert (
+        trust_gate.record_engine(
+            {
+                "engine_version": "0.50.0",
+                "autocatpath_version": "0.39.0",
+            }
+        )
+        == "0.50.0"
+    )
+
+
+def test_kinetics_recompute_does_not_refresh_barrier_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.quest import compute as compute_mod
+
+    monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.50.0")
+    records = _records([0, 1], hi_states=(), with_detachment=False)
+    meta = _meta(_results(records, [0, 1]))
+    meta["results"]["kinetics_v2"] = {"engine_version": "0.50.0", "tof_mf": 1.0}
+    body = trust_toon(meta, pw_handle="pw1")
+    assert "verdict: BLOCKED" in body and "blocked_by: engine:stale" in body
+
+
 def _ident(
     state: str, seed: int, e_ev: float, *, engine: str | None = None
 ) -> dict[str, Any]:

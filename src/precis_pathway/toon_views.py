@@ -20,6 +20,12 @@ from precis.format import toon
 from precis.utils import pathway_conditions
 from precis.utils import reaction_graph as analysis
 from precis.utils.handle_registry import try_format
+from precis.utils.pathway_rate_control import (
+    finite_rate_control,
+    rate_control_note,
+    rate_control_source_note,
+    usable_rate_control,
+)
 
 from .tof_sign import tof_sign, tof_sign_detail, tof_sign_label
 
@@ -986,8 +992,8 @@ def _v2_status_lines(v2: dict[str, Any], product: str | None) -> list[str]:
 def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
     """Microkinetics digest for a computed pathway (Simulation step deep-links,
     docs/backlog/quest-dossier-dialectic.md): Eyring rates + residence times +
-    the rate-limiting step, so a dossier can cite ``pw<id>~<label>`` and argue
-    "the slow step is [...], τ ≈ ...".
+    the largest electronic barrier, so a dossier can cite ``pw<id>~<label>``.
+    A barrier maximum alone cannot establish rate control of the solved cycle.
 
     Honest v1 only: no steady-state coverages, no degree-of-rate-control — both
     need a full microkinetic solve (site balance, reverse rates) this view does
@@ -1002,6 +1008,9 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
     profile/span's T (:func:`precis.utils.pathway_conditions.profile_conditions`),
     else the ``300.0`` default — the caller never overrides it today.
     """
+    from precis.quest.compute import _autocatpath_current_version
+    from precis.utils import trust_gate
+
     env = pathway_conditions.kinetics_environment(meta.get("results") or {})
     resolved_t = env.get("T") if env else None
     if resolved_t is None:
@@ -1036,6 +1045,15 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
     results = meta.get("results") or {}
     v2_rec = results.get("kinetics_v2")
     lines = []
+    engine = trust_gate.kinetics_engine_version(meta)
+    current_engine = _autocatpath_current_version()
+    if engine and current_engine:
+        status = (
+            "stale"
+            if trust_gate.engine_version_stale(engine, current_engine)
+            else "current"
+        )
+        lines.append(f"kinetics engine {engine} ({status}; current {current_engine})")
     if isinstance(v2_rec, dict):
         lines += [
             *_v2_status_lines(v2_rec, results.get("target") or target),
@@ -1072,6 +1090,14 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
     if isinstance(v2, dict):
         merged = dict(kin) if isinstance(kin, dict) else {}
         merged.update({k: val for k, val in v2.items() if val is not None})
+        if isinstance(v2.get("drc"), dict):
+            # A v1 source stamp cannot establish provenance for v2 values.
+            merged["drc_source"] = v2.get("drc_source")
+        else:
+            # Nor can v2 provenance label sensitivities inherited from v1.
+            merged["drc_source"] = (
+                kin.get("drc_source") if isinstance(kin, dict) else None
+            )
         kin = merged
     if isinstance(kin, dict):
         lines += [
@@ -1208,13 +1234,26 @@ def kinetics_sweep_text(meta: dict[str, Any]) -> str:
         "",
     ]
     if optimum and optimum.get("value") is not None:
+        optimum_drc = optimum.get("drc")
+        # Optimum.as_dict stores only drc_top, so its sum cannot be checked.
+        has_drc_map = isinstance(optimum_drc, dict)
+        top = ""
+        if optimum.get("drc_top"):
+            if not has_drc_map:
+                top = f"; drc_top {optimum['drc_top']} (sum check not stored)"
+            elif usable_rate_control(optimum_drc):
+                top = f"; drc_top {optimum['drc_top']}"
         lines.append(
             f"Optimum: T = {_num_str(optimum.get('T'))} K, "
             f"p_total = {_num_str(optimum.get('p_total'))} bar "
             f"({optimum.get('objective', 'objective')} = "
-            f"{_num_str(optimum.get('value'))})"
-            + (f"; drc_top {optimum['drc_top']}" if optimum.get("drc_top") else "")
+            f"{_num_str(optimum.get('value'))})" + top
         )
+        source = optimum.get("drc_source", sweep.get("drc_source"))
+        if has_drc_map:
+            lines.append(rate_control_note(source, optimum_drc))
+        elif top:
+            lines.append(rate_control_source_note(source))
     comp = sweep.get("competing") or {}
     comp_points = comp.get("points") or []
     pair = comp.get("pair") or []
@@ -1372,6 +1411,22 @@ def _solve_lines(kin: dict[str, Any], product: str | None = None) -> list[str]:
             "Reversibility z = r⁻/r⁺ per transition (steady-state chain solve):",
             toon.dump(rows, schema=["transition", "z_rev/fwd"]),
         ]
+    drc = kin.get("drc")
+    if isinstance(drc, dict) and isinstance(drc.get("X_RC"), dict):
+        drc = drc["X_RC"]
+    if isinstance(drc, dict):
+        out += ["", rate_control_note(kin.get("drc_source"), drc)]
+        if usable_rate_control(drc):
+            finite_drc = finite_rate_control(drc)
+            out.append(
+                toon.dump(
+                    [
+                        {"transition": name, "X_RC": _num_str(value)}
+                        for name, value in finite_drc.items()
+                    ],
+                    schema=["transition", "X_RC"],
+                )
+            )
     return out
 
 

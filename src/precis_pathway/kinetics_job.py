@@ -22,6 +22,11 @@ computes, in this order:
 From engine 0.38 (slice 10, D10) the persist step restamps
 ``meta.validation_manifest``/``meta.manifest_id`` on the ref and
 ``manifest_id`` on the job's own meta and the D8 record.
+The manifest names the accepted kinetics record's ``engine_version`` when
+available; the original pathway stamp remains the fallback for older records.
+A degraded solve still fails and keeps the previous good record. Its bounded
+``mf_status`` and engine stamp also ride on the failed job, so the job reader
+can explain the rejection without opening the pathway's rejected payload.
 
 **Detached submit/poll (non-blocking).** The compute runs as a detached
 child (:func:`precis_pathway.runner.submit_kinetics_job_detached`), exactly
@@ -658,6 +663,27 @@ def _degraded_keys(stored: dict[str, Any], results: dict[str, Any]) -> dict[str,
     return out
 
 
+def _rejected_diagnostics(record: Any) -> dict[str, Any]:
+    """A plain JSON diagnostic, under 8 KiB even for escaped Unicode text.
+
+    Preserve ordinary status objects verbatim (apart from non-finite floats).
+    An oversized status becomes a labelled preview; never put an arbitrary
+    solver payload or an invalid, sliced JSON document into job metadata.
+    """
+    from precis_pathway.persist import _json_finite
+
+    record = record if isinstance(record, dict) else {}
+    status = _json_finite(record.get("mf_status"))
+    encoded = json.dumps(status, allow_nan=False, ensure_ascii=True)
+    if len(encoded) > 4096:
+        status = {"truncated": True, "preview": encoded[:512]}
+    engine = record.get("engine_version")
+    return {
+        "mf_status": status,
+        "engine_version": engine[:128] if isinstance(engine, str) else None,
+    }
+
+
 def _load(ctx: Any) -> tuple[int, dict[str, Any], Any, dict[str, Any]] | None:
     """Parse params and read the pathway; ``None`` after recording the
     failure. Returns ``(pathway_ref_id, config, ref, inputs)``."""
@@ -735,6 +761,7 @@ def _finalize(
     # — and stamp wholesale (persist.py:129).
     manifest_id: str | None = None
     degraded: dict[str, str] = {}
+    diagnostics: dict[str, Any] | None = None
     try:
         cur = dict(
             (ctx.store.get_ref(kind="pathway", id=pathway_ref_id) or ref).meta or {}
@@ -742,6 +769,7 @@ def _finalize(
         # slice 10 (D10): the manifest is built from the STORED effective
         # config + snapshot — the same inputs the aggregate stamped from, so
         # the id agrees — and folded into the refreshed D8 record.
+        from precis.utils.trust_gate import kinetics_engine_version
         from precis_pathway import manifest as vm
         from precis_pathway.persist import _json_finite
 
@@ -752,6 +780,16 @@ def _finalize(
         # rejected output is kept under ``<key>_rejected`` with the
         # reason; the stored key stands.
         degraded = _degraded_keys(res_meta, results)
+        if "kinetics_v2" in degraded:
+            diagnostics = _rejected_diagnostics(results.get("kinetics_v2"))
+            try:
+                ctx.set_meta(kinetics_v2_rejected=diagnostics)
+            except Exception:
+                # The failure event below still carries the diagnostics if
+                # this optional metadata write is unavailable.
+                log.warning(
+                    "autocatpath_kinetics: diagnostic stamp failed", exc_info=True
+                )
         accepted = {
             k: results[k] for k in _OUTPUT_KEYS if k in results and k not in degraded
         }
@@ -769,11 +807,15 @@ def _finalize(
             manifest_config = dict(cur.get("config") or config)
             if "environment" in config:
                 manifest_config["environment"] = config["environment"]
+            manifest_results = {**res_meta, **accepted}
             manifest = vm.build_safely(
                 config=manifest_config,
                 config_snapshot_yaml=str(cur["config_snapshot_yaml"]),
-                results={**(cur.get("results") or {}), **accepted},
-                autocatpath_version=str(cur.get("autocatpath_version") or ""),
+                results=manifest_results,
+                autocatpath_version=kinetics_engine_version(
+                    {**cur, "results": manifest_results}
+                )
+                or "",
                 seed_weights={
                     i: {ml.get("weights_sha256")}
                     for i, ml in enumerate(stored_mlip)
@@ -852,6 +894,11 @@ def _finalize(
         why = next(iter(sweep.get("warnings") or []), "no reason given")
         errors.append(f"sweep solved no point: {why}")
     errors.extend(degraded[k] for k in sorted(degraded))
+    if diagnostics is not None:
+        errors.append(
+            "rejected kinetics diagnostics: "
+            + json.dumps(diagnostics, allow_nan=False, ensure_ascii=True)
+        )
     if errors:
         # the errors are saved above for the record; the job itself failed
         ctx.record_failure("autocatpath_kinetics: " + "; ".join(errors))
@@ -876,7 +923,7 @@ def _finalize(
         stamp = {**scalars, "n_sweep_points": n_pts}
         if manifest_id:
             stamp["manifest_id"] = manifest_id
-        ctx.set_meta(stamp)
+        ctx.set_meta(**stamp)
     except Exception:
         log.warning("autocatpath_kinetics: scalar stamp failed", exc_info=True)
     return True

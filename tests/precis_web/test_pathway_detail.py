@@ -4167,7 +4167,7 @@ def _kinetics_page_links(
                 "target": "NH3",
                 "kinetics": _record(
                     coverages={"NH2+H": 0.9},
-                    drc={"X_RC": {"NO@N -> N+O": 0.8}},
+                    drc={"X_RC": {"NO@N -> N+O": 1.0}},
                     thermodynamic_drc={"X_TRC": {}},
                     transitions=[
                         {
@@ -4344,7 +4344,7 @@ def test_pathway_kinetics_shared_leaf_link_restores_the_selected_route(
                     product="D",
                     coverages={},
                     thermodynamic_drc={"X_TRC": {}},
-                    drc={"X_RC": {"C -> D": 0.8}},
+                    drc={"X_RC": {"C -> D": 1.0}},
                     transitions=[
                         {"name": "C -> D", "from": "C", "to": "D", "kind": "step"}
                     ],

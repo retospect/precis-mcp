@@ -268,3 +268,14 @@ def test_corpus_reaches_every_tone() -> None:
     parity assertions while exercising only the happy path."""
     tones = {kinetics_verdict(dict(r))["tone"] for r in CASES.values()}
     assert tones == {"ok", "warn", "dead"}
+
+
+def test_control_tolerance_matches_engine_parameter() -> None:
+    """The engine defines sum_tol as a parameter, not a module constant."""
+    import inspect
+
+    from precis.utils.pathway_rate_control import RATE_CONTROL_SUM_TOL
+
+    kinetics = needs_engine("autocatpath.kinetics")
+    parameter = inspect.signature(kinetics.degree_of_rate_control).parameters["sum_tol"]
+    assert parameter.default == RATE_CONTROL_SUM_TOL

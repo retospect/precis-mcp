@@ -101,14 +101,29 @@ _DEFAULT_ENDPOINT_TOL_EV = 0.05
 
 
 def record_engine(rec: dict[str, Any]) -> str | None:
-    """The engine version a trust record was minted under — ``engine`` or
-    ``autocatpath_version``, whichever the writer stamped; ``None`` when
+    """The engine version a record was minted under — ``engine_version``,
+    ``engine`` or ``autocatpath_version``, whichever the writer stamped; ``None`` when
     unstamped (every record predating a stamp)."""
-    for key in ("engine", "autocatpath_version"):
+    for key in ("engine_version", "engine", "autocatpath_version"):
         v = rec.get(key)
         if isinstance(v, str) and v:
             return v
     return None
+
+
+def kinetics_engine_version(meta: Mapping[str, Any]) -> str | None:
+    """The kinetics solve's engine, falling back to the original run stamp.
+
+    Recomputing kinetics does not refresh barrier/seed/network evidence;
+    those readers must keep using the pathway's ``autocatpath_version``.
+    """
+    results = meta.get("results")
+    v2 = results.get("kinetics_v2") if isinstance(results, Mapping) else None
+    version = v2.get("engine_version") if isinstance(v2, Mapping) else None
+    if isinstance(version, str) and version:
+        return version
+    version = meta.get("autocatpath_version")
+    return version if isinstance(version, str) and version else None
 
 
 def engine_version_stale(reported: Any, floor: Any) -> bool:

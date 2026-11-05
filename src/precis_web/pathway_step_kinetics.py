@@ -3,6 +3,8 @@
 Re-derive the engine's physical-name join here, without importing its runtime.
 Keep provenance per quantity: a v2 headline does not turn the accompanying
 chain rates into mean-field rates. Ambiguous physical joins stay absent.
+X_RC uses the shared complete-map sum rule and its recorded source, never
+an inference from turnover or mean-field solve status.
 Arrhenius fits use aggregate turnover at fixed pressure and composition:
 sweeps do not store per-step rates, so their fitted parameters are apparent
 whole-network values and require at least three positive-rate temperatures.
@@ -14,6 +16,7 @@ import json
 import math
 from typing import Any
 
+from precis.utils.pathway_rate_control import rate_control_note, usable_rate_control
 from precis_web.pathway_kinetics import _mf_reading
 
 _KB = 8.617333262145e-5  # eV/K
@@ -138,16 +141,16 @@ def attach_step_kinetics(links: list[dict[str, Any]], results: dict[str, Any]) -
     v2 = _mapping(results.get("kinetics_v2"))
     env1, env2 = _environment(v1), _environment(v2)
     chain_drc = _mapping(_mapping(v1.get("drc")).get("X_RC"))
+    drc_is_v2 = isinstance(v2.get("drc"), dict)
+    drc = _mapping(v2.get("drc")) if drc_is_v2 else chain_drc
+    drc_source = (v2 if drc_is_v2 else v1).get("drc_source")
+    drc_usable = usable_rate_control(drc)
+    drc_note = rate_control_note(drc_source, drc)
     failure, _, failed_observables, _, _ = _mf_reading(v2)
     mf_failed = failure is not None or (
         "tof_mf" in v2 and _number(v2["tof_mf"]) is None
     )
     failed = {item["name"] for item in failed_observables}
-    # mf_drc returns no values without positive turnover; solve stores the
-    # chain DRC instead, even when mf_status reports success.
-    turnover = _number(v2.get("tof_mf"))
-    if turnover is None or turnover <= 0:
-        failed.add("drc")
     listed = v2.get("failed_observables")
     if isinstance(listed, list):
         failed.update(
@@ -184,17 +187,16 @@ def attach_step_kinetics(links: list[dict[str, Any]], results: dict[str, Any]) -
             forward = max(barrier, dg, 0.0)
             add("ea_forward", forward, "v1 chain", env1)
             add("ea_reverse", forward - dg, "v1 chain", env1)
-        drc = _mapping(v2.get("drc"))
-        drc_solve = v2_solve("drc") if drc else "v1 chain"
-        add(
-            "X_RC",
-            _named(drc or chain_drc, name),
-            # gr564356: warm re-solves can store X_RC near 1 on a fast step.
-            f"{drc_solve}, under audit (gr564356)"
-            if drc_solve == "v2 mean-field"
-            else drc_solve,
-            env2 if drc else env1,
-        )
+        if drc_usable:
+            add(
+                "X_RC",
+                _named(drc, name),
+                # gr564356: warm re-solves can store X_RC near 1 on a fast step.
+                f"{drc_note} Under audit (gr564356)."
+                if drc_source == "mf"
+                else drc_note,
+                env2 if drc_is_v2 else env1,
+            )
         rev = _mapping(v2.get("reversibility"))
         add(
             "z_i",
@@ -229,6 +231,7 @@ def attach_step_kinetics(links: list[dict[str, Any]], results: dict[str, Any]) -
             if source == "bep"
             else None,
             "quantities": quantities,
+            "drc_note": drc_note,
             "product": product,
             "arrhenius": arrhenius,
         }
