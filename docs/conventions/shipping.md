@@ -169,8 +169,10 @@ to wait on a gate (gr515152): no polling subagents, no log-tail loops in
 the main loop.
 
 Wait on a backgrounded `scripts/ship` run itself with `scripts/ship
---await [--timeout S]` from the same worktree: every run records its
-pid/log/verdict in a per-worktree state file, so no log arg is needed.
+--await [--timeout S]` from the same worktree: the run that owns the
+per-worktree ship lock records its pid/log/verdict in a per-worktree
+state file, so no log arg is needed — a sibling ship refused by that
+lock never touches the record (gr541681, gr564499).
 It exits with the run's own code after printing `SHIP_STATUS` and the
 first `✖` block; `124` + the log path on timeout (default 1200 s), `2`
 when no ship is recorded (gr541681).

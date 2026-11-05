@@ -451,11 +451,34 @@ fi
 # commit; PRECIS_SHIP_STATE_FILE overrides it (tests). In quiet mode this
 # record is first written by the outer wrapper (no log yet), then rewritten
 # by the re-exec'd inner run with its own pid and the real transcript path
-# (PRECIS_SHIP_LOG); both finish records agree, so the double write is
-# harmless.
+# (PRECIS_SHIP_LOG). Only the run that owns the per-worktree ship lock may
+# write it (gr564499): a sibling ship refused at acquire — or one dying in
+# sanity checks while another run holds the lock — must not stamp its pid
+# or verdict over the active run's record, or --await reports the refused
+# run's error while the real ship is still going.
+# shellcheck source=scripts/lib/lock-holder.sh
+source "${WORKTREE}/scripts/lib/lock-holder.sh"
+# shellcheck source=scripts/lib/ship-lock.sh
+source "${WORKTREE}/scripts/lib/ship-lock.sh"
 SHIP_STATE="${PRECIS_SHIP_STATE_FILE:-${TMPDIR:-/tmp}/precis-ship-state-$(printf '%s' "$WORKTREE" | cksum | awk '{print $1}')}"
 _ship_state_field() { grep "^$1=" "$SHIP_STATE" 2>/dev/null | tail -1 | cut -d= -f2- || true; }
+# The live pid holding this worktree's ship lock, if any — the record's
+# rightful owner. Empty on no lock, a stale (dead) holder, or git failure.
+_ship_state_lock_holder_pid() {
+    local dir pid
+    dir="$(ship_worktree_lockdir "$WORKTREE" 2>/dev/null)" || return 0
+    [[ -d "$dir" ]] || return 0
+    pid="$(lock_holder_pid "$dir")"
+    lock_pid_alive "$pid" && printf '%s\n' "$pid"
+    return 0
+}
 _ship_state_start() {
+    # A live foreign holder means this invocation is the refused sibling:
+    # leave the active run's record alone. The post-acquire call re-runs
+    # this once THIS run holds the lock (holder pid == $$, not foreign).
+    local _hpid
+    _hpid="$(_ship_state_lock_holder_pid)"
+    [[ -n "$_hpid" && "$_hpid" != "$$" ]] && return 0
     {
         printf 'pid=%s\n' "$$"
         printf 'log=%s\n' "${PRECIS_SHIP_LOG:-}"
@@ -468,6 +491,12 @@ _ship_state_finish() {
     # Runs inside an EXIT trap — it must never die and mask the real rc.
     local _rc="${1:-1}" _tok
     [[ -f "$SHIP_STATE" ]] || return 0
+    # Only the pid that owns the running record may close it: the quiet
+    # wrapper's pid differs from the inner run's, and a refused sibling or
+    # an earlier-exited twin must not overwrite the active run's verdict
+    # (gr564499). The lock holder's own finish always matches — it claimed
+    # the record with its pid at acquire.
+    [[ "$(_ship_state_field pid)" == "$$" ]] || return 0
     if [[ "$_rc" == "0" ]]; then
         _tok="shipped"
     elif [[ -n "$(git diff --name-only --diff-filter=U 2>/dev/null || true)" ]] \
@@ -724,12 +753,15 @@ rm -f "$_msg_err"
 # incident and why this REFUSES rather than waits, unlike the repo-wide
 # squash lock taken around the final section only (§3). Armed immediately on success; the
 # EXIT cleanup trap (§3, _ship_exit_cleanup) replaces this one and releases it, since a
-# script can only hold one EXIT trap at a time.
-# shellcheck source=scripts/lib/lock-holder.sh
-source "${WORKTREE}/scripts/lib/lock-holder.sh"
-# shellcheck source=scripts/lib/ship-lock.sh
-source "${WORKTREE}/scripts/lib/ship-lock.sh"
+# script can only hold one EXIT trap at a time. (lock-holder.sh and
+# ship-lock.sh are sourced earlier, with the --await state block — the
+# state's squatter check needs them before flag parsing.)
 acquire_worktree_ship_lock "$WORKTREE" || exit 1
+# Claim the --await record now that this run owns the worktree lock
+# (gr564499): the early write is skipped for a sibling that found a live
+# holder, and a same-instant twin can have stamped its pid last — the lock
+# holder is the run --await must follow.
+_ship_state_start
 trap '_rc=$?; _release_worktree_ship_lock; _ship_state_finish "$_rc"' EXIT
 
 # A lock lost BEFORE this run (a nested `claude -p`, a killed background task)

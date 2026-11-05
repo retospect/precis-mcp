@@ -34,6 +34,17 @@
 
 SHIP_WORKTREE_LOCKDIR=""
 
+# ship_worktree_lockdir <worktree-dir> — the per-worktree ship lock path,
+# keyed off `git rev-parse --absolute-git-dir` (unique PER LINKED WORKTREE,
+# unlike --git-common-dir). Shared by acquire_worktree_ship_lock and by
+# scripts/ship's --await state guard, which must recognise a live holder
+# without acquiring (gr564499).
+ship_worktree_lockdir() {
+    local gitdir
+    gitdir="$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null)" || return 1
+    printf '%s/precis-ship-worktree.lock.d\n' "$gitdir"
+}
+
 # _release_worktree_ship_lock — idempotent; removes the lock dir only if this
 # process is still the recorded holder (a sibling that stole the lock after
 # some pathological delay must not have its fresh lock deleted by our late
@@ -56,10 +67,9 @@ _release_worktree_ship_lock() {
 # stderr and returns 1. Never loops or waits — requires lock_holder_* from
 # lock-holder.sh to already be sourced.
 acquire_worktree_ship_lock() {
-    local worktree="$1" gitdir holder holder_pid holder_started reason
-    gitdir="$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null)" \
+    local worktree="$1" holder holder_pid holder_started reason
+    SHIP_WORKTREE_LOCKDIR="$(ship_worktree_lockdir "$worktree")" \
         || { printf '\n\033[31m✖ could not resolve --absolute-git-dir for %s — refusing to ship without the worktree lock.\033[0m\n' "$worktree" >&2; return 1; }
-    SHIP_WORKTREE_LOCKDIR="${gitdir}/precis-ship-worktree.lock.d"
 
     if ! mkdir "$SHIP_WORKTREE_LOCKDIR" 2>/dev/null; then
         # lock_steal re-judges the exact dir it removes: a steal that loses

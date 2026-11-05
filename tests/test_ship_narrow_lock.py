@@ -348,6 +348,47 @@ def test_lock_dir_absent_while_lint_runs(rig: Rig) -> None:
     assert not rig.lockdir().exists()  # released after the ship, too
 
 
+def test_await_follows_the_lock_holder_not_a_refused_sibling(rig: Rig) -> None:
+    """gr564499: a second scripts/ship in the same worktree is refused by
+    the per-worktree lock — it must not write the --await state record, or
+    --await reports the refused run's error while the real ship runs."""
+    wt = rig.worktree("await-own", {"ao.txt": "ao\n"})
+    state = rig.root / "ship.state"
+    pa, la = rig.ship(wt, "--quick", hold=True, PRECIS_SHIP_STATE_FILE=str(state))
+    rig.wait_lint_started(wt)
+    # The squatter: same worktree, refused at the per-worktree lock.
+    pb, lb = rig.ship(wt, "--quick", sleep=1, PRECIS_SHIP_STATE_FILE=str(state))
+    assert pb.wait(timeout=120) != 0
+    # --await must still be waiting on the ACTIVE run: 124 = still running
+    # at --timeout, not the refused sibling's done/error record.
+    await_env = {**os.environ, "PRECIS_SHIP_STATE_FILE": str(state)}
+    proc = subprocess.run(
+        [_BASH, "scripts/ship", "--await", "--timeout", "8"],
+        cwd=wt,
+        env=await_env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+    assert proc.returncode == 124, proc.stdout + proc.stderr
+    assert "status=running" in state.read_text(encoding="utf-8")
+    rig.release()
+    _finish(pa, la)
+    # And once the real run lands, --await returns ITS verdict.
+    proc = subprocess.run(
+        [_BASH, "scripts/ship", "--await", "--timeout", "8"],
+        cwd=wt,
+        env=await_env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "SHIP_STATUS: shipped" in proc.stdout
+
+
 def test_quick_lost_race_forward_merges_and_lands(rig: Rig) -> None:
     wt = rig.worktree("q", {"q.txt": "q\n"})
     p, log = rig.ship(wt, "--quick", hold=True)

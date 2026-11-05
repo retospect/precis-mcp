@@ -532,6 +532,10 @@ def ship_repo(tmp_path: Path) -> Path:
     _write_ship_prelude(repo)
     for name in ("git-network.sh", "git_network.py"):
         shutil.copy2(DEPLOY_SRC.parent / "lib" / name, lib_dir / name)
+    # The prelude sources these for the --await state record's squatter
+    # check (gr564499); function defs only, safe standalone.
+    for name in ("lock-holder.sh", "ship-lock.sh"):
+        shutil.copy2(SHIP_SRC.parent / "lib" / name, lib_dir / name)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "add ship prelude + deploy-state lib")
     return repo
