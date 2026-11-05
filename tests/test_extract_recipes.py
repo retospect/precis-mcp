@@ -1476,6 +1476,68 @@ class TestCorrectionRows:
     """gr506762 subset-3 (mx2224-2228): a row or series whose label
     marks a correction, difference or delta is not a reading."""
 
+    @pytest.mark.parametrize("label_axis", ["row", "series"])
+    @pytest.mark.parametrize(
+        "label",
+        [
+            "ΔE_r",
+            "ΔG_r",
+            "ΔEr",
+            "ΔGr",
+            "ΔEr, forward",
+            "ΔGr (reverse)",
+            r"$\Delta E_{r}$",
+            r"$\Delta G_{\mathrm{r}}$",
+            "ΔE<sub>r</sub>",
+            "ΔG<sub>r</sub>",
+        ],
+    )
+    def test_reaction_energy_labels_write(self, label: str, label_axis: str) -> None:
+        header = f"{label} (eV)" if label_axis == "series" else "reaction energy (eV)"
+        subject = label if label_axis == "row" else "CO"
+        text = f"| Species | {header} |\n|---|---|\n| {subject} | -2.09 |"
+        parsed = parse_table(9, text)
+        assert parsed is not None
+        entry = _entry(28, "reaction-energy", "reaction energy", "eV")
+        runs, drops = expand_recipe(
+            parsed,
+            _one_series("reaction-energy", "eV"),
+            chunk_id=9,
+            caption=None,
+            vocab={**VOCAB, 28: entry},
+            paper=500,
+            chunk_text=text,
+        )
+        assert drops == []
+        assert len(runs) == 1
+        assert runs[0].output.value_num == -2.09
+
+    @pytest.mark.parametrize("label_axis", ["row", "series"])
+    @pytest.mark.parametrize(
+        "label",
+        [
+            "ΔZPE",
+            "ΔE_corr",
+            "Δ(ZPE)",
+            "Δ",
+            "correction",
+            "difference",
+            "ΔError",
+            "ΔGradient",
+        ],
+    )
+    def test_reaction_exemption_preserves_correction_labels(
+        self, label: str, label_axis: str
+    ) -> None:
+        header = label if label_axis == "series" else "E_ads (eV)"
+        subject = label if label_axis == "row" else "CO"
+        text = f"| Species | {header} |\n|---|---|\n| {subject} | 0.08 |"
+        runs, drops = _expand(
+            text, _one_series("adsorption-energy", "eV"), caption=None
+        )
+        assert runs == []
+        assert [d["reason"] for d in drops] == ["correction_row"]
+
     def test_delta_labelled_data_row_drops(self) -> None:
         text = (
             "| Species | E_ads (eV) |\n|---|---|\n"

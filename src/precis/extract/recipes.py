@@ -781,12 +781,14 @@ def _count_label(label: str) -> str | None:
 #: (folded: ``ΔEads`` …) is the measurand's own symbol, the barrier
 #: symbols ``ΔE‡``/``ΔG‡``/``ΔH‡``/``ΔS‡``/``ΔE_a`` (folded: ``ΔE‡``
 #: …, ``ΔEa``) are genuine barriers not corrections (subset-5,
-#: pa4750's ΔE‡ column read as a delta row), and ``zpe``
-#: counts only as the term itself — a ``ZPE-corrected`` or
+#: pa4750's ΔE‡ column read as a delta row). Reaction energies
+#: ``ΔE_r``/``ΔG_r`` (folded: ``ΔEr``/``ΔGr``) likewise name the
+#: measurand itself, with a non-letter boundary to exclude longer words.
+#: ``zpe`` counts only as the term itself — a ``ZPE-corrected`` or
 #: ``corrected for ZPE`` energy IS the corrected measurand.
 _CORRECTION_RE = re.compile(
     r"[Δδ](?!\s*(?:[EGHS]\s*(?:ads|des)(?:orption)?\b"
-    r"|[EGHS]\s*‡|Ea(?![A-Za-z])))"
+    r"|[EGHS]\s*‡|Ea(?![A-Za-z])|[EG]\s*r(?![A-Za-z])))"
     r"|(?<![A-Za-z0-9])(?:correction|delta|difference|diff|error)"
     r"(?![A-Za-z0-9])"
     r"|(?<![A-Za-z0-9])(?<!corrected )(?<!corrected for )zpe"
