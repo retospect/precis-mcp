@@ -35,13 +35,20 @@ stays in ``ref_events`` as a ``title_changed`` row, the way every
 retitle does. Dry-run by default, listing each change as
 ``id: old → new``; ``--apply`` writes. Hand-run only — nothing wires it
 to a cadence or hook.
+
+``verify-report <archive.zip> --record <meta.json> --output-dir <reports>``
+checks archive integrity and renders recorded D10 attempts into a new JSON
+file. It opens no store and launches no compute. Missing host stamps remain
+unavailable; scientific support remains with the evidence/review gates.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections import Counter
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from precis.cli._common import resolve_dsn
@@ -115,6 +122,24 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     rt.add_argument(
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
+    vr = psub.add_parser(
+        "verify-report",
+        help="Check archive hashes and render recorded D10 evidence without compute.",
+    )
+    vr.add_argument("archive", type=Path, help="Zip containing MANIFEST.sha256.")
+    vr.add_argument(
+        "--record",
+        required=True,
+        type=Path,
+        help="Frozen pathway meta JSON snapshot containing the manifest and revalidation records.",
+    )
+    vr.add_argument(
+        "--output-dir",
+        required=True,
+        type=Path,
+        help="Directory for a new verification JSON report; existing records are preserved.",
+    )
+    vr.add_argument("--envelope-id", default=None, help="Opaque run-envelope identity.")
     return p
 
 
@@ -124,6 +149,29 @@ def run(args: argparse.Namespace) -> None:
         _reingest_structures(args)
     elif args.pathway_cmd == "retitle":
         _retitle(args)
+    elif args.pathway_cmd == "verify-report":
+        _verify_report(args)
+
+
+def _verify_report(args: argparse.Namespace) -> None:
+    """Offline projection: no store, worker dispatch or engine is opened."""
+    from .verification import append_report, build_report
+
+    with args.record.open(encoding="utf-8") as fh:
+        meta = json.load(fh)
+    if not isinstance(meta, dict):
+        raise SystemExit(
+            "pathway verify-report: --record must contain a pathway meta object"
+        )
+    report = build_report(args.archive, meta, envelope_id=args.envelope_id)
+    path = append_report(report, args.output_dir)
+    print(path)
+    if any(
+        row["status"] == "failed"
+        or (row["scope"] == "integrity" and row["status"] != "passed")
+        for row in report["checks"]
+    ):
+        raise SystemExit(1)
 
 
 def _open_store(args: argparse.Namespace) -> Store:

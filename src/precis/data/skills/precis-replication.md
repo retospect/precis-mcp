@@ -9,9 +9,9 @@ answers:
   - when can I call a result replicated?
 flavor: runbook
 status: active
-applies-to: search/get (kind='paper','web'); put (kind='plan','todo','finding','memory')
+applies-to: search/get (kind='paper','web','pathway','job'); put (kind='plan','todo','finding','memory','job','pathway')
 tags: workflow, external-sources
-kinds: paper, web, plan, todo, finding, memory
+kinds: paper, web, plan, todo, finding, memory, job, pathway
 ---
 
 # precis-replication — plan a replication check for a paper's claim
@@ -48,11 +48,19 @@ detail is usable because it seemed plausible.
 
 ## Choose plan-only or dispatch execution
 
-Precis has no execution sandbox — decide before writing anything down:
+Choose the route before dispatching:
 
-- **Plan only** (default) — persist the plan; a human runs it.
-- **Dispatch** — mint a todo an operator or worker can pick up
-  (`meta.executor` for automated dispatch — `precis-minter-help`).
+- **Plan only** (default) — persist the recipe and its acceptance checks.
+- **Sandbox execution** — `sandbox_run` supports `mode='script'` for a
+  Python script with PyPI dependencies, `mode='build'` for a coding task,
+  and `mode='run'` for a prior build's harvested artifact. It needs an
+  enabled sandbox host and a wall-time budget; submission is not proof
+  that execution started. See [[precis-job-observe-help]].
+- **Pathway revalidation** — explicitly request the stored manifest's
+  CPU replay; the job checks the lock and engine, runs the available CPU
+  legs and judges recorded observables against the manifest's tolerances.
+- **Operator execution** — mint a todo with the recipe when no supported
+  execution route is available; see [[precis-minter-help]].
 
 ```python
 put(
@@ -65,10 +73,45 @@ put(
 put(kind="todo", text="run replication check for <slug>", parent_id=<todo-id>)
 ```
 
+## Request execution explicitly
+
+```python
+# A prepared script; runs offline after its dependencies and inputs are staged.
+put(kind="job", parent_id=<todo-id>, job_type="sandbox_run", params={
+    "mode": "script", "code_ref": "<script-ref>", "deps": ["<pinned-pypi-requirement>"],
+    "inputs": ["<dataset-ref>"], "target_node": "<enabled-sandbox-host>",
+    "resources": {"wall_seconds": 600},
+})
+
+# A pathway with a stored validation manifest; reads launch no compute.
+get(kind="pathway", id="<pathway-handle>", view="manifest")
+put(kind="pathway", id="<pathway-handle>", mode="revalidate",
+    args={"manifest": "<manifest-id>"})
+get(kind="pathway", id="<pathway-handle>", view="manifest")
+```
+
+Preserve `reproduced_partial(energies)` and `complete: false`: CPU replay
+does not rerun relax/NEB energies. Missing TPD records, unstamped engine
+commits and missing weights remain named limitations; a CPU replay does
+not check MLIP weights. An incompatible lock refuses execution.
+
 ## Never call it replicated until the checks actually passed
 
-Report success only once the *planned* checks ran and passed — not
-once the plan is written, and not because the code looks right.
+Report each check's scope and evidence separately:
+
+| Check | What a pass establishes |
+|---|---|
+| File integrity | Archived bytes match the recorded hashes |
+| Execution | The named computation ran with the recorded outcome |
+| Numerical agreement | Compared observables met the stated tolerance on the named platforms |
+| Claim support | The cited evidence and existing review gates support the scoped claim |
+
+A hash match or successful execution never establishes scientific validity.
+Report replication only for planned checks that ran and passed; retain
+failed, not-run and unavailable checks, tolerance differences and provenance
+caveats. Reading an archived report launches no compute. Keep verification
+records as append-only evidence beside the frozen run; do not rewrite it to
+match a replay or use replay success to promote claim support.
 
 ## Log progress on the plan, not a changelog
 
@@ -77,8 +120,8 @@ put(kind="memory", text="replication attempt 1: dataset unavailable, blocked on 
 edit(kind="plan", id="pe<node-id>", status="done")
 ```
 
-The plan node is the record of what happened — no separate log
-artifact.
+Keep planning progress on the plan; retain the execution jobs and verification
+reports as evidence linked from it.
 
 ## File a finding for every mismatch
 
@@ -103,3 +146,4 @@ own plan or notes.
 - [[precis-web-help]] — fetch the paper's code repo
 - [[precis-todo-tree-help]] — dispatch execution as a todo
 - [[precis-minter-help]] — meta.executor for automated dispatch
+- [[precis-job-observe-help]] — sandbox execution and compute routes

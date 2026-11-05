@@ -358,6 +358,29 @@ def test_a_drifted_rerun_is_not_reported_reproduced(stored, solve, lock) -> None
     assert row["delta"] == pytest.approx(0.0414, abs=1e-3) and row["tolerance"] == 0.01
 
 
+@pytest.mark.parametrize("scale, status", [(1.0, "passed"), (1.1, "failed")])
+def test_portable_report_preserves_engine_tolerance_judgments(
+    stored, solve, lock, scale: float, status: str
+) -> None:
+    """The report projects the real D10 judge, without a second tolerance policy."""
+    from precis_pathway.verification import recorded_checks
+
+    entry = revalidate(
+        stored, stored["manifest_id"], rerun=_rerun(solve, scale), lock=lock
+    )
+    meta = {**stored, "revalidation": {stored["manifest_id"]: [entry]}}
+    rows = recorded_checks(meta)
+    row = next(r for r in rows if r["check"] == "tof_chain")
+    assert row["status"] == status
+    assert row["tolerance"]["value"] == pytest.approx(0.01)
+    assert row["platform"]["column"] == engine_manifest.SAME_PLATFORM
+    assert next(r for r in rows if r["check"] == "energies")["status"] == "not-run"
+    assert (
+        next(r for r in rows if r["scope"] == "claim_support")["status"]
+        == "unavailable"
+    )
+
+
 def test_cross_platform_rerun_uses_the_manifest_cross_column(
     stored, solve, lock
 ) -> None:
