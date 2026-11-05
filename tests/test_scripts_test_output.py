@@ -23,8 +23,10 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -53,6 +55,8 @@ _FAKE_DOCKER = r"""#!/usr/bin/env bash
 #   FAKE_RUN_RC       exit status of `compose run` (default 0)
 #   FAKE_RUN_RC_FILE  file of exit statuses, one per line — each `compose
 #                     run` pops the first; overrides FAKE_RUN_RC
+#   FAKE_RUN_SLEEP    seconds `compose run` sleeps before answering —
+#                     keeps a run in-flight so a test can signal it
 #   FAKE_UP_STDOUT    file whose contents `compose up` prints to stdout
 #   FAKE_UP_RC        exit status of `compose up` (default 0)
 # A plain `docker run ... df` is the free-disk preflight probe: it answers
@@ -88,6 +92,7 @@ case "${args[0]:-}" in
       run)
         echo "run|$proj|${args[*]}" >> "$FAKE_DOCKER_LOG"
         echo "env|COMPOSE_PROGRESS=${COMPOSE_PROGRESS:-}" >> "$FAKE_DOCKER_LOG"
+        [ -n "${FAKE_RUN_SLEEP:-}" ] && sleep "$FAKE_RUN_SLEEP"
         [ -n "${FAKE_RUN_STDOUT:-}" ] && cat "$FAKE_RUN_STDOUT"
         [ -n "${FAKE_RUN_STDERR:-}" ] && cat "$FAKE_RUN_STDERR" >&2
         if [ -n "${FAKE_RUN_RC_FILE:-}" ] && [ -s "$FAKE_RUN_RC_FILE" ]; then
@@ -136,13 +141,10 @@ def _stage(tmp_path: Path) -> Path:
     return tree
 
 
-def _run(
-    tmp_path: Path,
-    *,
-    args: tuple[str, ...] = ("-n0", "tests/x.py"),
-    extra_env: dict[str, str] | None = None,
-) -> tuple[int, str, list[str], str]:
-    """Run staged scripts/test; return (rc, stdout, docker log, stderr)."""
+def _setup(
+    tmp_path: Path, extra_env: dict[str, str] | None = None
+) -> tuple[Path, dict[str, str], Path]:
+    """Stage tree + fake docker; return (tree, env, docker log path)."""
     tree = _stage(tmp_path)
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir(exist_ok=True)
@@ -157,6 +159,17 @@ def _run(
     env["TMPDIR"] = str(tmp_path)
     env.pop("FAKE_RUN_RC_FILE", None)
     env.update(extra_env or {})
+    return tree, env, log
+
+
+def _run(
+    tmp_path: Path,
+    *,
+    args: tuple[str, ...] = ("-n0", "tests/x.py"),
+    extra_env: dict[str, str] | None = None,
+) -> tuple[int, str, list[str], str]:
+    """Run staged scripts/test; return (rc, stdout, docker log, stderr)."""
+    tree, env, log = _setup(tmp_path, extra_env)
     proc = subprocess.run(
         ["bash", str(tree / "scripts" / "test"), *args],
         cwd=tree,
@@ -474,3 +487,212 @@ def test_db_up_failure_tails_the_run_log(tmp_path: Path) -> None:
     assert "late7" in stderr and "late3" in stderr
     assert "early1" not in stderr and "early2" not in stderr
     assert "in the run log" in stderr
+
+
+# --- gr567623: honest failure — never PASS without pytest ------------------
+
+
+def _wait_for_file_text(path: Path, needle: str, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if needle in path.read_text(encoding="utf-8", errors="replace"):
+                return True
+        except OSError:
+            pass
+        time.sleep(0.2)
+    return False
+
+
+def _popen_run(
+    tree: Path,
+    env: dict[str, str],
+    args: tuple[str, ...],
+    err_path: Path,
+) -> subprocess.Popen:
+    return subprocess.Popen(
+        ["bash", str(tree / "scripts" / "test"), *args],
+        cwd=tree,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=err_path.open("w", encoding="utf-8"),
+        text=True,
+        encoding="utf-8",
+    )
+
+
+def test_gate_queue_denial_fails_fast_not_pass(tmp_path: Path) -> None:
+    """gr567623 verbatim: a sandbox denying writes to the shared git dir
+    left gate-slot spinning at 'position 1 of 0, all slots free' for 752s
+    and the footer still said PASS. Registration failure must refuse in
+    seconds naming the path, the operation and the permission needed."""
+    tree, env, _ = _setup(tmp_path)
+    gitdir = tree / ".git"
+    gitdir.chmod(0o555)
+    try:
+        proc = subprocess.run(
+            ["bash", str(tree / "scripts" / "test"), "-n0", "tests/x.py"],
+            cwd=tree,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            check=False,
+        )
+    finally:
+        gitdir.chmod(0o755)
+    assert proc.returncode != 0
+    assert "precis-gate-queue.d" in proc.stderr
+    assert "cannot create the gate-queue dir" in proc.stderr
+    assert "write access" in proc.stderr
+    assert "PASS" not in proc.stdout
+    assert "FAIL" in proc.stdout
+
+
+def test_sigterm_in_gate_queue_reports_interrupted(tmp_path: Path) -> None:
+    """Terminated while queued for a gate slot — before pytest ever ran —
+    must say INTERRUPTED, not PASS (the incident's false footer)."""
+    tree, env, _ = _setup(tmp_path, {"PRECIS_GATE_SLOTS": "1"})
+    holder = subprocess.Popen(["sleep", "60"])
+    try:
+        slot = tree / ".git" / "precis-gate-slot-0.lock.d"
+        slot.mkdir()
+        (slot / "holder").write_text(
+            f"{tree} pid={holder.pid} host=localhost\n", encoding="utf-8"
+        )
+        err_path = tmp_path / "run.err"
+        proc = _popen_run(tree, env, ("-n0", "tests/x.py"), err_path)
+        try:
+            assert _wait_for_file_text(err_path, "gate slot", timeout=30), (
+                f"run never reached the gate queue: "
+                f"{err_path.read_text(encoding='utf-8', errors='replace')}"
+            )
+            proc.send_signal(signal.SIGTERM)
+            out, _ = proc.communicate(timeout=30)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+    assert proc.returncode == 143, out
+    assert "INTERRUPTED (SIGTERM)" in out
+    assert "PASS" not in out
+
+
+def test_sigterm_during_pytest_reports_interrupted(tmp_path: Path) -> None:
+    """Terminated mid-pytest: the trapped signal interrupts the wait at
+    once — INTERRUPTED, no PASS, and the run does not sit out the
+    container's remaining sleep first."""
+    tree, env, docker_log = _setup(tmp_path, {"FAKE_RUN_SLEEP": "30"})
+    err_path = tmp_path / "run.err"
+    proc = _popen_run(tree, env, ("-n0", "tests/x.py"), err_path)
+    try:
+        assert _wait_for_file_text(docker_log, "run|", timeout=30), (
+            "compose run never started"
+        )
+        proc.send_signal(signal.SIGTERM)
+        out, _ = proc.communicate(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+    assert proc.returncode == 143, out
+    assert "INTERRUPTED (SIGTERM)" in out
+    assert "PASS" not in out
+
+
+def _bg_roundtrip(
+    tmp_path: Path, extra_env: dict[str, str]
+) -> tuple[Path, Path, dict[str, str]]:
+    """Start ``--bg``; return (run-artifact base path, tree, env).
+
+    The .pid file is the last artifact the supervisor writes before the
+    run starts, so waiting on it means the run is genuinely in-flight.
+    """
+    tree, env, _ = _setup(tmp_path, extra_env)
+    proc = subprocess.run(
+        ["bash", str(tree / "scripts" / "test"), "--bg", "-n0", "tests/x.py"],
+        cwd=tree,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    runs = tmp_path / "precis-test-runs"
+    deadline = time.monotonic() + 15
+    pidfs: list[Path] = []
+    while time.monotonic() < deadline and not pidfs:
+        pidfs = list(runs.glob("*.pid"))
+        if not pidfs:
+            time.sleep(0.2)
+    assert len(pidfs) == 1, f"expected one detached run, got {pidfs}"
+    return pidfs[0].with_suffix(""), tree, env
+
+
+def _await(tree: Path, env: dict[str, str], run_id: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", str(tree / "scripts" / "test"), "--await", run_id],
+        cwd=tree,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+
+
+def test_bg_await_roundtrip(tmp_path: Path) -> None:
+    """A detached run still receipts normally: .exit lands and --await
+    returns the run's real code."""
+    base, tree, env = _bg_roundtrip(tmp_path, {})
+    run_id = base.name
+    ap = _await(tree, env, run_id)
+    assert ap.returncode == 0, ap.stdout + ap.stderr
+    assert "finished — exit 0" in ap.stdout
+
+
+def test_bg_sigkilled_supervisor_child_still_receipts(tmp_path: Path) -> None:
+    """gr567623: SIGKILL the supervisor mid-run — the run itself writes
+    .exit in cleanup, so --await still gets the real exit code instead of
+    polling a corpse until its budget."""
+    base, tree, env = _bg_roundtrip(tmp_path, {"FAKE_RUN_SLEEP": "5"})
+    run_id = base.name
+    pidf = base.with_suffix(".pid")
+    assert _wait_for_file_text(pidf, " ", timeout=15), "no .pid receipt"
+    _run_pid, sup_pid = pidf.read_text(encoding="utf-8").split()[:2]
+    os.kill(int(sup_pid), signal.SIGKILL)
+    exitf = base.with_suffix(".exit")
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and not exitf.exists():
+        time.sleep(0.2)
+    assert exitf.exists(), "run died without an exit receipt"
+    assert exitf.read_text(encoding="utf-8").strip() == "0"
+    ap = _await(tree, env, run_id)
+    assert ap.returncode == 0, ap.stdout + ap.stderr
+
+
+def test_bg_sigtermed_supervisor_forwards_and_receipts(tmp_path: Path) -> None:
+    """SIGTERM the supervisor: it forwards to the run, the run's own
+    cleanup writes the INTERRUPTED receipt (143), and --await returns it."""
+    base, tree, env = _bg_roundtrip(tmp_path, {"FAKE_RUN_SLEEP": "30"})
+    run_id = base.name
+    pidf = base.with_suffix(".pid")
+    assert _wait_for_file_text(pidf, " ", timeout=15), "no .pid receipt"
+    _run_pid, sup_pid = pidf.read_text(encoding="utf-8").split()[:2]
+    os.kill(int(sup_pid), signal.SIGTERM)
+    exitf = base.with_suffix(".exit")
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and not exitf.exists():
+        time.sleep(0.2)
+    assert exitf.exists(), "no exit receipt after supervisor SIGTERM"
+    assert exitf.read_text(encoding="utf-8").strip() == "143"
+    ap = _await(tree, env, run_id)
+    assert ap.returncode == 143, ap.stdout + ap.stderr
+    assert "finished — exit 143" in ap.stdout

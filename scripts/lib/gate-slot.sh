@@ -204,6 +204,18 @@ _gate_eta_hint() { # <common> <slots>
         "$(_gate_fmt_secs "$med")" "$(_gate_fmt_secs $((med / $2)))"
 }
 
+# gr567623: the queue ticket and every slot lock live in the shared git
+# common dir. A sandbox that denies writes there used to degrade silently —
+# `mkdir -p`/`touch`/`mkdir` all failed under `|| true`, the waiter fell back
+# to "always eligible", every slot mkdir failed identically, and the run
+# spun at "position 1 of 0, all slots free" until someone killed it. Access
+# failures now refuse immediately (rc 2) naming the path, the operation and
+# the permission needed; only genuine contention reaches the wait loop.
+_gate_access_fail() { # <operation> <path> <detail>
+    echo "gate slot: cannot $1 — $2${3:+: $3}" >&2
+    echo "gate slot: needs write access to ${GATE_SLOT_COMMON:-the shared git dir} — the queue ticket and slot locks live there; allow writes under it and re-run" >&2
+}
+
 _gate_queue_prune() { # <qdir> <max_age_min>
     local qdir="$1" max="$2" t base rest pid host me
     me="$(lock_holder_hostname)"
@@ -237,7 +249,14 @@ gate_slot_acquire() {
     GATE_SLOT_COMMON="$common"
     host="$(lock_holder_hostname)"
     local qdir="${common}/precis-gate-queue.d"
-    mkdir -p "$qdir" 2>/dev/null || true
+    local _gerr _access_misses=0 _slot_present
+    # Registration is the first write the semaphore needs; when the shared
+    # git dir refuses it the wait below can never succeed, so refuse now
+    # instead of spinning (gr567623).
+    if ! _gerr="$(mkdir -p "$qdir" 2>&1)"; then
+        _gate_access_fail "create the gate-queue dir" "$qdir" "$_gerr"
+        return 2
+    fi
     # Arrival ticket: epoch-seconds first so a lexical sort is chronological,
     # pid to break within-second ties. Written once, on first entry; removed on
     # a successful acquire and by gate_slot_release on an abandoned wait.
@@ -245,14 +264,19 @@ gate_slot_acquire() {
     # sibling beating a 40-min waiter, a ~2400s gap.
     GATE_SLOT_TICKET="${qdir}/$(date +%s)-$$-${host}"
     name="${GATE_SLOT_TICKET##*/}"
-    : >"$GATE_SLOT_TICKET" 2>/dev/null || true
+    if ! _gerr="$(touch "$GATE_SLOT_TICKET" 2>&1)"; then
+        _gate_access_fail "register a queue ticket" "$GATE_SLOT_TICKET" "$_gerr"
+        GATE_SLOT_TICKET=""
+        return 2
+    fi
     while :; do
         _gate_queue_prune "$qdir" 45
         # Rank = how many live tickets sit ahead of ours (oldest first); depth =
         # total waiting. Only the oldest `slots` waiters enter the mkdir race,
         # so a freed slot goes to the longest-queued job. If our own ticket is
-        # missing (an unwritable queue dir), fall back to always-eligible rather
-        # than starve ourselves.
+        # missing (pruned underneath us), fall back to always-eligible rather
+        # than starve ourselves — registration failure itself already refused
+        # above, so a missing ticket here is not an access problem.
         my_rank=0
         depth=0
         seen_self=0
@@ -295,6 +319,31 @@ gate_slot_acquire() {
                     return 0
                 fi
             done
+            # gr567623: we were eligible and EVERY slot mkdir failed while no
+            # slot dir exists — the fs is refusing creation (sandbox or
+            # permissions), not contention; waiting cannot succeed. Two
+            # consecutive all-clear scans rule out a slot released between our
+            # mkdir and this check.
+            _slot_present=0
+            for ((i = 0; i < slots; i++)); do
+                if [[ -d "${common}/precis-gate-slot-${i}.lock.d" ]]; then
+                    _slot_present=1
+                    break
+                fi
+            done
+            if [[ "$_slot_present" == 0 ]]; then
+                _access_misses=$((_access_misses + 1))
+            else
+                _access_misses=0
+            fi
+            if ((_access_misses >= 2)); then
+                _gate_access_fail "create a gate-slot lock" \
+                    "${common}/precis-gate-slot-*.lock.d" \
+                    "every mkdir failed while all ${slots} slots showed free"
+                rm -f "$GATE_SLOT_TICKET" 2>/dev/null || true
+                GATE_SLOT_TICKET=""
+                return 2
+            fi
         fi
         if [[ "$waited" == 0 ]]; then
             echo "waiting for a gate slot (${slots} concurrent gate containers max — shared-VM OOM guard, gr202193)" >&2

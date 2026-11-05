@@ -199,3 +199,66 @@ def test_no_eta_without_history(repo: Path, tmp_path: Path) -> None:
     finally:
         holder.terminate()
         holder.wait(timeout=10)
+
+
+# --- gr567623: access failures refuse, they do not queue forever ----------
+
+
+def test_unwritable_common_dir_refuses_at_registration(
+    repo: Path, tmp_path: Path
+) -> None:
+    """The incident verbatim: writes to the shared git dir denied → the
+    queue dir can't be created → refuse in seconds naming the path, the
+    operation and the permission — not 'position 1 of 0' forever."""
+    gitdir = repo / ".git"
+    gitdir.chmod(0o555)
+    try:
+        done = tmp_path / "done"
+        err = tmp_path / "acquire.err"
+        proc = _start_acquire(repo, done, err, slots=1)
+        rc = proc.wait(timeout=30)
+    finally:
+        gitdir.chmod(0o755)
+    text = err.read_text(encoding="utf-8")
+    assert rc == 2, f"expected the access refusal, got rc={rc}: {text}"
+    assert "precis-gate-queue.d" in text
+    assert "cannot create the gate-queue dir" in text
+    assert "write access" in text
+    assert not done.exists() or not done.read_text(encoding="utf-8")
+
+
+def test_unwritable_queue_dir_refuses_at_ticket(repo: Path, tmp_path: Path) -> None:
+    """Queue dir exists but refuses the ticket write — same refusal, at
+    the registration step."""
+    qdir = repo / ".git" / "precis-gate-queue.d"
+    qdir.mkdir()
+    qdir.chmod(0o555)
+    try:
+        done = tmp_path / "done"
+        err = tmp_path / "acquire.err"
+        proc = _start_acquire(repo, done, err, slots=1)
+        rc = proc.wait(timeout=30)
+    finally:
+        qdir.chmod(0o755)
+    text = err.read_text(encoding="utf-8")
+    assert rc == 2, f"expected the access refusal, got rc={rc}: {text}"
+    assert "precis-gate-queue.d" in text
+    assert "register a queue ticket" in text
+    assert "write access" in text
+
+
+def test_uncreatable_slot_lock_refuses(repo: Path, tmp_path: Path) -> None:
+    """Every slot mkdir fails while no slot dir exists — the fs is
+    refusing creation, not contention. Two all-free scans then refuse
+    rc 2 instead of spinning 'all slots free'."""
+    blocker = repo / ".git" / "precis-gate-slot-0.lock.d"
+    blocker.write_text("not a lock dir\n", encoding="utf-8")
+    done = tmp_path / "done"
+    err = tmp_path / "acquire.err"
+    proc = _start_acquire(repo, done, err, slots=1)
+    rc = proc.wait(timeout=30)
+    text = err.read_text(encoding="utf-8")
+    assert rc == 2, f"expected the access refusal, got rc={rc}: {text}"
+    assert "cannot create a gate-slot lock" in text
+    assert "precis-gate-slot-" in text
+    assert "write access" in text

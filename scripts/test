@@ -217,11 +217,13 @@ if [[ "${1:-}" == "--bg" ]]; then
     RUN_ID="$(date -u +%Y%m%d-%H%M%S)-$$"
     python3 - "$0" "${RUNS_DIR}/${RUN_ID}" "$@" <<'PY'
 import os
+import signal
 import subprocess
 import sys
 
 script, base = sys.argv[1:3]
 args = sys.argv[3:]
+run_id = os.path.basename(base)
 if os.fork() == 0:
     os.setsid()
     # Detach from the caller's stdio: the forked child inherits the
@@ -230,16 +232,40 @@ if os.fork() == 0:
     devnull = os.open(os.devnull, os.O_RDWR)
     for fd in (0, 1, 2):
         os.dup2(devnull, fd)
+    proc = None
+
+    def _forward_term(signum, frame):
+        # gr567623: a killed supervisor must not orphan the receipt — pass
+        # the signal to the run so its own cleanup still writes .exit, then
+        # keep waiting; the exit file records the run's real code either way.
+        if proc is not None:
+            try:
+                proc.send_signal(signum)
+            except Exception:
+                pass
+
     with open(f"{base}.log", "wb") as out:
+        env = dict(os.environ)
+        env["PRECIS_TEST_RUN_ID"] = run_id
         try:
-            rc = subprocess.call(
+            proc = subprocess.Popen(
                 [script, *args],
                 stdin=subprocess.DEVNULL,
                 stdout=out,
                 stderr=subprocess.STDOUT,
+                env=env,
             )
+            # "<run pid> <supervisor pid>" — --await's only liveness signal
+            # when no .exit ever lands (both sides SIGKILLed).
+            with open(f"{base}.pid", "w", encoding="utf-8") as pf:
+                pf.write(f"{proc.pid} {os.getpid()}\n")
+            for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                signal.signal(_sig, _forward_term)
+            rc = proc.wait()
         except Exception:
             rc = 127
+    if rc < 0:
+        rc = 128 - rc  # signal death -> the shell's 128+n convention
     with open(f"{base}.exit", "w", encoding="utf-8") as f:
         f.write(f"{rc}\n")
     os._exit(0)
@@ -252,6 +278,7 @@ if [[ "${1:-}" == "--await" ]]; then
     RUN_ID="${2:?usage: scripts/test --await <run-id>}"
     LOG="${RUNS_DIR}/${RUN_ID}.log"
     EXITF="${RUNS_DIR}/${RUN_ID}.exit"
+    PIDF="${RUNS_DIR}/${RUN_ID}.pid"
     [[ -f "$LOG" ]] || { echo "ERR: no such test run ${RUN_ID} (no log at ${LOG})" >&2; exit 1; }
     BUDGET="${PRECIS_TEST_AWAIT_BUDGET:-480}"
     START=$SECONDS
@@ -262,6 +289,21 @@ if [[ "${1:-}" == "--await" ]]; then
             tail -n 40 "$LOG"
             echo "test run ${RUN_ID} finished — exit ${rc:-1}"
             exit "${rc:-1}"
+        fi
+        # gr567623: a SIGKILLed supervisor leaves no .exit; the .pid file
+        # ("<run pid> <supervisor pid>") is the only liveness left. BOTH
+        # dead with no receipt means the run is gone — reporting "still
+        # running" would poll a corpse until the budget. Own-user pids, so
+        # kill -0's ESRCH is a reliable dead signal (EPERM can't occur).
+        if [[ -f "$PIDF" ]]; then
+            read -r _run_pid _sup_pid <"$PIDF" 2>/dev/null || true
+            if [[ -n "${_run_pid:-}" && -n "${_sup_pid:-}" ]] \
+                && ! kill -0 "$_run_pid" 2>/dev/null \
+                && ! kill -0 "$_sup_pid" 2>/dev/null; then
+                echo "test run ${RUN_ID} died without an exit receipt — the run and its supervisor are both gone:" >&2
+                tail -n 10 "$LOG" >&2
+                exit 1
+            fi
         fi
         sleep 5
     done
@@ -552,6 +594,27 @@ cleanup() {
     # Capture the real exit status up front and re-raise it at the end: the
     # best-effort teardown below must never change what the caller sees.
     local rc=$?
+    # gr567623: a bare rc==0 with no completion marker is the one value an
+    # untrapped signal death can fake ($? inside an EXIT trap is the last
+    # completed command's status, not 128+n). The run did not finish on
+    # purpose — normalize it to a failure so neither the verdict nor the
+    # --bg .exit receipt below can report success for it.
+    local _incomplete=0
+    if [[ "$rc" == 0 && -z "${RUN_INTERRUPTED:-}" \
+        && "${RUN_COMPLETED:-0}" != 1 && "${SELECTED_DONE:-0}" != 1 ]]; then
+        _incomplete=1
+        rc=1
+    fi
+    # --bg receipt (gr567623): the detached supervisor can be killed, and a
+    # run that finishes anyway must still leave its .exit — the run itself
+    # knows its real status, so it writes the receipt here. The supervisor's
+    # post-wait write stays as the fallback for a run that dies without
+    # cleanup (SIGKILL); both write the same rc on every path that reaches
+    # this far, and the normalization above keeps rc==0 honest.
+    if [[ "${PRECIS_TEST_RUN_ID:-}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        printf '%s\n' "$rc" \
+            >"${TMPDIR:-/tmp}/precis-test-runs/${PRECIS_TEST_RUN_ID}.exit" 2>/dev/null || true
+    fi
     # --coverage: fingerprint the measured bytes alongside the DB so the
     # python `tests` view can verify the DB against its index. Best-effort,
     # host-side (stdlib only); a failed write just means the view reports
@@ -587,13 +650,35 @@ cleanup() {
     # run's transcript has no reader — delete the log and drop its path
     # (they piled up in TMPDIR on every run otherwise). A red run keeps
     # the log, names it, and prunes kept logs older than a day.
+    #
+    # gr567623: PASS requires pytest to have actually run AND the run to
+    # have reached a deliberate end — $? inside this trap is the last
+    # completed command's status on a signal death, so rc==0 alone once
+    # printed "PASS — no pytest summary" for a run killed in the gate
+    # queue. INTERRUPTED names the trapped signal; INCOMPLETE/NO-TESTS
+    # cover the remaining rc==0-without-pytest shapes honestly.
     if [[ -n "${RUN_LOG:-}" ]]; then
         local _verdict _counts
-        _verdict="PASS"
-        [[ "$rc" == 0 ]] || _verdict="FAIL (rc ${rc})"
+        if [[ -n "${RUN_INTERRUPTED:-}" ]]; then
+            _verdict="INTERRUPTED (${RUN_INTERRUPTED})"
+        elif [[ "$_incomplete" == 1 ]]; then
+            if [[ "${PYTEST_RAN:-0}" == 1 ]]; then
+                _verdict="INCOMPLETE — pytest ran but the run ended early"
+            else
+                _verdict="INCOMPLETE — the run ended before pytest"
+            fi
+        elif [[ "$rc" != 0 ]]; then
+            _verdict="FAIL (rc ${rc})"
+        elif [[ "${PYTEST_RAN:-0}" == 1 ]]; then
+            _verdict="PASS"
+        elif [[ "${SELECTED_DONE:-0}" == 1 ]]; then
+            _verdict="NO-TESTS — the selection ran nothing"
+        else
+            _verdict="INCOMPLETE — the run ended before pytest"
+        fi
         _counts="$(grep -E '[0-9]+ (passed|failed|skipped|xfailed|xpassed|deselected|errors?|warnings?|tests? collected)|no tests ran' "$RUN_LOG" 2>/dev/null \
             | tail -1 | sed -e 's/^=\+[[:space:]]*//' -e 's/[[:space:]]*=\+[[:space:]]*$//' || true)"
-        if [[ "$rc" == 0 ]]; then
+        if [[ "$_verdict" == "PASS" ]]; then
             rm -f "$RUN_LOG"
             if [[ -n "$_counts" ]]; then
                 printf 'scripts/test: %s — %s | %ss\n' \
@@ -616,6 +701,22 @@ cleanup() {
     exit "$rc"
 }
 trap cleanup EXIT
+# gr567623: an untrapped fatal signal dies by signal — prompt, but the EXIT
+# trap's $? is then the last completed command's status (usually 0), which
+# printed "PASS — no pytest summary" for a run killed mid-queue. Trap the
+# catchable fatal signals and leave a marker cleanup() reports as
+# INTERRUPTED; the exit status stays the shell's 128+n convention. Long
+# waits below are `wait`-driven precisely so these traps fire promptly —
+# bash defers a trapped signal until a foreground EXTERNAL command ends.
+RUN_INTERRUPTED=""
+PYTEST_RAN=0
+RUN_COMPLETED=0
+SELECTED_DONE=0
+trap 'RUN_INTERRUPTED=SIGINT; exit 130' INT
+trap 'RUN_INTERRUPTED=SIGTERM; exit 143' TERM
+trap 'RUN_INTERRUPTED=SIGHUP; exit 129' HUP
+trap 'RUN_INTERRUPTED=SIGQUIT; exit 131' QUIT
+trap 'RUN_INTERRUPTED=SIGPIPE; exit 141' PIPE
 # COMPOSE_PROGRESS=quiet (gr515155, gr549329): compose otherwise prints
 # its "Container … Creating/Created/Started" lifecycle lines above every
 # result, which the terse-output contract promises away. Errors still
@@ -710,14 +811,20 @@ if [[ "${1:-}" == "--typecheck" ]]; then
     rc=0
     for _tc_attempt in 1 2; do
         rc=0
-        compose run --rm --no-deps "${GIT_DIR_MOUNT[@]+"${GIT_DIR_MOUNT[@]}"}" \
-            -v "${WORKTREE}":/app precis-dev \
-            bash -lc 'uv run --no-sync mypy "$@"' _ "${MYPY_ARGS[@]}" || rc=$?
+        # Backgrounded + `wait` like run_pytest: a trapped signal interrupts
+        # `wait` at once instead of deferring until mypy finishes (gr567623).
+        (
+            compose run --rm --no-deps "${GIT_DIR_MOUNT[@]+"${GIT_DIR_MOUNT[@]}"}" \
+                -v "${WORKTREE}":/app precis-dev \
+                bash -lc 'uv run --no-sync mypy "$@"' _ "${MYPY_ARGS[@]}"
+        ) &
+        wait $! || rc=$?
         [[ "$rc" == 137 ]] || break
         gate_oom_note "$rc" "the mypy container"
         echo "scripts/test: retrying --typecheck once — a lone 137 is usually a sibling OOM spike" >&2
     done
     gate_oom_note "$rc" "the mypy container"
+    RUN_COMPLETED=1
     exit "$rc"
 fi
 
@@ -768,7 +875,8 @@ fi
 TEST_DB_ENV=()
 if [[ "$FAST" == "1" || "$COLLECT_ONLY" == "1" ]]; then
     :  # no DB tests selected — don't pay for Postgres
-elif hb_start "test db up" && run_marker_write && compose up -d --wait precis-test-db >>"$RUN_LOG" 2>&1; then
+elif hb_start "test db up" && run_marker_write \
+    && { compose up -d --wait precis-test-db >>"$RUN_LOG" 2>&1 & wait $!; }; then
     TEST_DB_ENV=(-e "PRECIS_TEST_PG_URL=postgresql://postgres@precis-test-db:5432/precis_test")
 else
     echo "WARNING: precis-test-db didn't start — falling back to the container's default test DB" >&2
@@ -1075,6 +1183,9 @@ done < <(compgen -e)
 # else runs plain (the gr471933 fallback); remaining args are the caller's.
 run_pytest() {
     local mode="$1"; shift
+    # cleanup()'s verdict trusts this: PASS is only honest once pytest has
+    # actually run (gr567623).
+    PYTEST_RAN=1
     local -a tm_args=()
     if [[ "$mode" == "testmon" ]]; then
         tm_args=("${TESTMON_ARGS[@]+"${TESTMON_ARGS[@]}"}")
@@ -1098,7 +1209,13 @@ run_pytest() {
     mkfifo "$ERR_FIFO"
     _err_filter >&2 <"$ERR_FIFO" &
     ERR_FILTER_PID=$!
-    compose run --rm --no-deps -e UV_LINK_MODE=copy -e UV_WITH="$UV_WITH" \
+    # The pipeline runs in a background subshell waited on with `wait` — a
+    # trapped signal interrupts `wait` immediately, where a foreground
+    # external would defer the trap until pytest finished (gr567623). The
+    # subshell's status is the pipeline's (pipefail is inherited), so rc is
+    # unchanged; on a signal the trap exits before rc is read.
+    (
+        compose run --rm --no-deps -e UV_LINK_MODE=copy -e UV_WITH="$UV_WITH" \
         -e PRECIS_STRICT_LOCK_CHECK="${PRECIS_STRICT_LOCK_CHECK:-}" \
         -e PRECIS_TEST_AUTOBRIDGE="$AUTOBRIDGE" \
         -e PRECIS_AUTO_N="$AUTO_N" \
@@ -1114,7 +1231,9 @@ run_pytest() {
         "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "${TESTMON_MARKER_ARGS[@]+"${TESTMON_MARKER_ARGS[@]}"}" \
         "${RANDOM_ARGS[@]+"${RANDOM_ARGS[@]}"}" \
         "${COV_ARGS[@]+"${COV_ARGS[@]}"}" "$@" \
-        2>"$ERR_FIFO" | _out_filter | tee -a "$RUN_LOG" || rc=$?
+        2>"$ERR_FIFO" | _out_filter | tee -a "$RUN_LOG"
+    ) &
+    wait $! || rc=$?
     wait "$ERR_FILTER_PID" 2>/dev/null || true
     ERR_FILTER_PID=""
     rm -f "$ERR_FIFO"
@@ -1139,7 +1258,11 @@ if [[ "$SELECTED" == 1 ]]; then
         hb_stop
     fi
     # No map → the static list was the whole selection; a map → testmon run below.
-    [[ "$IMPACTED" == 1 ]] || exit 0
+    if [[ "$IMPACTED" != 1 ]]; then
+        RUN_COMPLETED=1
+        SELECTED_DONE=1
+        exit 0
+    fi
 fi
 
 hb_start "pytest"
@@ -1149,6 +1272,10 @@ if [[ -n "$TESTMON_LOG" ]]; then
     # above). set +e/-e brackets the pipeline: `pipefail` makes a nonzero
     # pytest exit fail the whole statement, which would otherwise trip
     # `set -e` before PYTEST_RC is read.
+    # PYTEST_RAN is set HERE, not only inside run_pytest: this call sits in
+    # a pipeline, so the function runs in a subshell and its flag would be
+    # lost — cleanup()'s PASS verdict reads it in this shell (gr567623).
+    PYTEST_RAN=1
     set +e
     run_pytest testmon "$@" 2>&1 | tee "$TESTMON_LOG"
     PYTEST_RC=${PIPESTATUS[0]}
@@ -1175,8 +1302,11 @@ if [[ -n "$TESTMON_LOG" ]]; then
             echo "testmon crashed and no test paths were given; run the fallback yourself: scripts/test <test files>   (or plain, no impact selection: scripts/test)" >&2
         fi
     fi
+    RUN_COMPLETED=1
     exit "$GUARD_RC"
 else
+    PYTEST_RAN=1
     run_pytest testmon "$@"
 fi
 hb_stop
+RUN_COMPLETED=1
