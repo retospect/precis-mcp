@@ -1188,9 +1188,11 @@ def _ratsnest_els(
 ) -> list[str]:
     """Straight airwires for the nets the router has not realized: the MST
     (:func:`precis.pcb.ratsnest._mst_edges`) over each net's pad positions as
-    the gerber drew them (one point per refdes.pin), in board mm. Known copper
-    components are contracted before joining the remaining islands; without
-    connectivity the full pad MST is retained. Each wire is
+    the gerber drew them (every distinct position per refdes.pin), in board mm.
+    Repeated pads of one pin keep their shared identity so the component MST
+    can choose the closest physical pad, not merely the first one in the art.
+    Known copper components are contracted before joining the remaining
+    islands; without connectivity the full pad MST is retained. Each wire is
     a thin dashed line (``rs-line``, opacity density-scaled by
     :func:`_ratsnest_alpha`) plus a wide invisible one (``rs-hit``) so it is
     hoverable — the page's isolate CSS dims ``rs-line`` only, never the hit
@@ -1209,13 +1211,15 @@ def _ratsnest_els(
         if components is not None
         else None
     )
-    pads: dict[str, dict[str, tuple[float, float]]] = {}
+    pads: dict[str, dict[str, set[tuple[float, float]]]] = {}
     for key, art in sorted(arts.items()):
         if not key.endswith("_Cu"):
             continue
         for f in art.flashes:
             if f.net in nets and f.refdes and f.pin:
-                pads.setdefault(f.net, {}).setdefault(f"{f.refdes}.{f.pin}", (f.x, f.y))
+                pads.setdefault(f.net, {}).setdefault(f"{f.refdes}.{f.pin}", set()).add(
+                    (f.x, f.y)
+                )
         for region in art.regions:
             if (
                 region.solid
@@ -1229,13 +1233,17 @@ def _ratsnest_els(
                 xs, ys = zip(*region.ring, strict=True)
                 centre = ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
                 pads.setdefault(region.net, {}).setdefault(
-                    f"{region.refdes}.{region.pin}", centre
-                )
+                    f"{region.refdes}.{region.pin}", set()
+                ).add(centre)
     alpha = _ratsnest_alpha(len(nets))
     out = [f'<g id="ratsnest" class="ratsnest" data-pcb-unrouted="{len(nets)}">']
     for net in sorted(pads):
         hl = net in highlight
-        members = sorted(pads[net].items())
+        members = [
+            (pin, point)
+            for pin, points in sorted(pads[net].items())
+            for point in sorted(points)
+        ]
         for _a, _b, p1, p2 in _mst_edges(members, components=member_components):
             if clip is not None and not _seg_hits_rect(
                 p1[0], p1[1], p2[0], p2[1], clip

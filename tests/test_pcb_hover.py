@@ -6,6 +6,7 @@ nets get a toggleable ratsnest, and the facts block joins catalogue rows with
 from __future__ import annotations
 
 import json
+import math
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from typing import Any
@@ -235,6 +236,30 @@ def test_ratsnest_joins_copper_components_at_the_closest_pad_pair(shape: str) ->
         for i in (1, 2)
     }
     assert endpoints == {(10.0, 2.0), (8.0, 2.0)}
+
+
+@pytest.mark.parametrize("shape", ["rect", "polygon"])
+def test_ratsnest_uses_closest_duplicate_pin_pad(shape: str) -> None:
+    """gr565562: keeping only J1.1's first pad makes a 10 mm airwire, not 1 mm."""
+    model = _model()
+    model["copper"] = []
+    model["pads"] = [
+        _pad("J1", "1", "GND", 0.0, 2.0),
+        {
+            **_pad("J1", "1", "GND", 9.0, 2.0),
+            "shape": shape,
+            "poly": [(8.7, 1.6), (9.3, 1.6), (9.3, 2.4), (8.7, 2.4)],
+        },
+        _pad("J2", "1", "GND", 10.0, 2.0),
+    ]
+    lines = _pending_airwires(model, model)
+    assert len(lines) == 1
+    assert lines[0].get("data-pcb-net") == "GND"
+    start = (float(lines[0].get("x1", "nan")), float(lines[0].get("y1", "nan")))
+    end = (float(lines[0].get("x2", "nan")), float(lines[0].get("y2", "nan")))
+    assert start == pytest.approx((9.0, 2.0))
+    assert end == pytest.approx((10.0, 2.0))
+    assert math.dist(start, end) == pytest.approx(1.0)
 
 
 def test_fully_connected_pending_net_has_no_airwires() -> None:
