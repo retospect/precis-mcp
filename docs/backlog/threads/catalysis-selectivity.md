@@ -9,7 +9,7 @@ design-review: yes
 ## Resume
 
 - **Next:** a thread session is being brought up (2026-10-26). catpath v0.41.0 (catpath main 8e4b119; local suite 1201 passed, 3 skipped) runs ledger → CHE electrochemical layer → `kin.solve` with NEB→BEP rated sources → steady state, TOF, X_RC, paired-draw ratio band, per-route U_L. Open work: (1) real-potential validation on spark, UMA backend only: on B3 (full-stack ammonia/Ru), test 3 of 7; C and A×3 to come, no ETA; B1 and B2 failed on both backends, cause unknown; zero validation passes so far. (2) gr517976 (test_draws) on catpath branch `fix/gr517976-draws-tests`: test 1 passing; next multi-seed test 2, full suite, land, close. (3) SPSO slice 8: Part A landed (6a81453eb); Part B stage 1 scans queued, detail under Settled history.
-- **Blocked by:** item 25 (no re-runs, incl. the NH₃ neb-tier re-run of pw455722's candidate): Reto, 2026-10-26, "lift 25 after validation" — lifts once the 7-test UMA validation on spark is green; holds until then. Two scoped exceptions for SPSO slice 8 (Reto 2026-10-30 and 2026-10-31; scope and ids under Settled history). The restale pause (`fidelity_restale_cap` 0 on qu164903) stays. Item 23 (no Pd-hydride NEB pilot, Reto 2026-10-02) stays held until SPSO slice 8 has run (Reto 2026-10-29). td470248 is done. Pending: B1/B2 diagnosis, run separately off spark by the catpath coordinator.
+- **Blocked by:** item 25 (no re-runs, incl. the NH₃ neb-tier re-run of pw455722's candidate): Reto, 2026-10-26, "lift 25 after validation" — lifts once the 7-test UMA validation on spark is green; holds until then. Two scoped exceptions for SPSO slice 8 (Reto 2026-10-30 and 2026-10-31; scope and ids under Settled history). The restale pause (`fidelity_restale_cap` 0 on qu164903) stays. Item 23 (no Pd-hydride NEB pilot, Reto 2026-10-02) stays held until SPSO slice 8 has run (Reto 2026-10-29). td470248 is done. Pending: B1/B2 diagnosis, run separately off spark by the catpath coordinator. Open (2026-11-05): the global lift versus a scoped verify-tier exception for st549459 (Horizon 10), Reto's call.
 - **Unblocks:** A ranking against a complete competing network.
 - **Acceptance:** NO→NH₃ answered over a U/pH window on the complete network ([Status](#thread-context)); validation passes on real-potential cases; validation green lifts item 25; no re-run before. Engine-version checks must match the released engine.
 - **Worktree:** `catalysis-selectivity`
@@ -131,9 +131,12 @@ the dated detail is in `git log` and the owning items):**
    The hold was prose only. The restale pass (on prod since
    2026-10-24) can re-run stale stamps under it, so Reto ruled
    2026-10-29 to pause it on qu164903 (`fidelity_restale_cap=0`) until
-   the lift. Not yet set: that key is outside the quest edit allowlist,
-   so it is a direct `refs.meta` update Reto runs; whether
-   the tier ladder is on cannot be read over the MCP. Seed
+   the lift. Set: cap 0 read back on 2026-11-03 (`view='meta'`); the key
+   is in the quest edit allowlist, so the lift is
+   `edit(kind='quest', id=164903, meta={'fidelity_restale_cap': 2})`.
+   The ladder is on (`fidelity_levels: true`, `view='raw'`), so cap 0
+   holds every automatic re-mint: restale (2 per tick), promote
+   screening→neb (2), neb→verify (3) and the repair re-dispatches. Seed
    jobs on spark were running for this quest on 2026-10-29 and cannot be
    attributed to restale. At the lift, restore the cap (default 2) in the
    same step as the first re-run.
@@ -334,7 +337,9 @@ the dated detail is in `git log` and the owning items):**
    later that day) plus gr559354 (catpath transient θ(t)) and gr559355.
    Reto's six decisions are recorded in the file (2026-11-03). Ranked
    here, not in Do next: slices 1–4 are stored-data display Reto reads
-   results through, and nothing in them touches the engine.
+   results through, and nothing in them touches the engine. Slice 6
+   (gr559351, the environment box) is in build on worktree `envbox`
+   (td567073) as of 2026-11-05.
 10. **backlog/slab-environment-optimizer.md** (Reto 2026-11-03; draft,
    prio high) — the inner loop of Horizon 3 widened to the whole
    environment and run by the quest per slab: three goals as Pareto
@@ -343,6 +348,14 @@ the dated detail is in `git log` and the owning items):**
    sampler over the box), `env_best`/`env_pareto`/`env_next` stamped on
    the candidate, `env_next` minted through the compute cart under the
    quest's caps. Kinetics gain a U axis only with kinetics v2 slice 8.
+   First map on the Ge slab (jo560022, 2026-11-03, spark, 60 s): st549459
+   rests as NO+H* at 0.78 ML at −0.30 V_RHE, H* at 1.00 ML below −0.533 V,
+   one model, so the Ge barely moves the clean-Pd map. pw549461's
+   clean-slab staircase now reads "coads mismatch": the mask M(e) is 0 for
+   that pathway at the operating point. The run that would fix it is a
+   verify-tier re-run on st549459 (co-adsorbed template), a pathway mint
+   under item 25. Reto has not ruled between the global lift and a scoped
+   exception for that run (2026-11-05).
 
 ## Parked
 
