@@ -30,6 +30,8 @@ Semantics (`precis-memory-help`):
     - link(id=N, target='kind:id') — cross-link memory N to another ref
     - delete(id=N)                 — soft-delete memory N
     - get(id=N)                    — read title + body + tags
+    - get(id=N, view='processing') — current-revision processing evidence;
+                                     check before testing recall
     - get(id='/recent')            — list recent memories
     - get(id=N, view='fisheye'|'fisheye+1hop'|'fisheye+2hop'[+recall])
                                    — the walk: link rings via
@@ -102,6 +104,7 @@ import logging
 import os
 import re
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast
@@ -183,6 +186,13 @@ from precis.utils.secret_scan import mask_secrets
 _SECTION_HEAD_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.M)
 
 log = logging.getLogger(__name__)
+
+# Batch editing keeps only each child's first receipt line. Collect advisory
+# ids call-locally so its outer receipt retains one processing hint, without
+# repeating the status queries or sharing mutable state between requests.
+_PROCESSING_HINT_IDS: ContextVar[list[int] | None] = ContextVar(
+    "memory_processing_hint_ids", default=None
+)
 
 #: Derived tag the attribution gate maintains (a number next to a citation
 #: that the cited text does not carry). See :mod:`precis.handlers._attribution`.
@@ -607,6 +617,16 @@ class MemoryHandler(NumericRefHandler):
         # (links/log/raw) fall through to NumericRefHandler.get unchanged
         # — same dispatch shape as QuestHandler.get's view='tree'.
         concrete = id is not None and not (isinstance(id, str) and id.startswith("/"))
+        if view == "processing":
+            if not concrete or isinstance(id, list):
+                raise BadInput(
+                    "view='processing' requires one memory id",
+                    next="get(kind='memory', id=N, view='processing')",
+                )
+            from precis.handlers._memory_processing import processing_report
+
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(body=processing_report(self.store, ref.id).render())
         if view == "members" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return self._render_members(ref, offset=offset, depth=depth)
@@ -621,7 +641,7 @@ class MemoryHandler(NumericRefHandler):
             resp = super().get(id=id, view=canon, q=q, since=since, **_kw)
             return interpreted(resp, [f"view={view!r} read as {shown}"])
         if concrete and view is not None and view not in _BASE_VIEWS:
-            legal = ["argument", "members", *EYE_LADDER, *_BASE_VIEWS]
+            legal = ["argument", "members", "processing", *EYE_LADDER, *_BASE_VIEWS]
             close = difflib.get_close_matches(view, legal, n=1)
             raise Unsupported(
                 f"unknown view {view!r} for kind='memory'",
@@ -630,7 +650,8 @@ class MemoryHandler(NumericRefHandler):
                     (f"did you mean {close[0]!r}? " if close else "")
                     + "view='argument' (kind:lemma/kind:inference proof tree) "
                     f"· {'|'.join(EYE_LADDER)}, optionally +recall (the eye) "
-                    "· members (paged part-of listing) · links, log, raw (generic)"
+                    "· members (paged part-of listing) · processing (before recall) "
+                    "· links, log, raw (generic)"
                 ),
             )
         resp = super().get(id=id, view=view, q=q, since=since, **_kw)
@@ -1140,10 +1161,13 @@ class MemoryHandler(NumericRefHandler):
         if tags:
             self.tag(id=n, add=tags)
         body = out.body if added else f"already linked, nothing added: {out.body}"
-        return Response(
-            body=body
-            + f"\nlinked via link(); next time use link(kind='memory', id={n}, "
-            "target=..., rel=...)"
+        return self._with_processing_hint(
+            n,
+            Response(
+                body=body
+                + f"\nlinked via link(); next time use link(kind='memory', id={n}, "
+                "target=..., rel=...)"
+            ),
         )
 
     def _create(self, **kw: Any) -> Response:
@@ -1291,7 +1315,8 @@ class MemoryHandler(NumericRefHandler):
         agentlog.touch_from_env(self.store, chunk_ids=[b.id for b in body_blocks])
         ack = self._with_first_line_nudge(self._render_create_ack(ref.id), title)
         ack = self._facts_note(ack, facts_deferred)
-        return self._with_attribution_advisory(ack, misses, shape), int(ref.id)
+        ack = self._with_attribution_advisory(ack, misses, shape)
+        return self._with_processing_hint(ref.id, ack), int(ref.id)
 
     def _put_dry_run(
         self,
@@ -1733,26 +1758,45 @@ class MemoryHandler(NumericRefHandler):
         one transaction — :meth:`_edit_batch` (gr514482).
         """
         if isinstance(id, list):
-            return self._edit_batch(
-                id,
-                mode=mode,
-                text=text,
-                title=title,
-                rule=rule,
-                warrant=warrant,
-                meta=meta,
-                hook=hook,
-                find=find,
-                before=before,
-                after=after,
-                where=where,
-                match=match,
-                nth=nth,
-                ops=ops,
-                dry_run=dry_run,
-                reason=reason,
-                **_kw,
-            )
+            pending_ids: list[int] = []
+            token = _PROCESSING_HINT_IDS.set(pending_ids)
+            try:
+                resp = self._edit_batch(
+                    id,
+                    mode=mode,
+                    text=text,
+                    title=title,
+                    rule=rule,
+                    warrant=warrant,
+                    meta=meta,
+                    hook=hook,
+                    find=find,
+                    before=before,
+                    after=after,
+                    where=where,
+                    match=match,
+                    nth=nth,
+                    ops=ops,
+                    dry_run=dry_run,
+                    reason=reason,
+                    **_kw,
+                )
+            finally:
+                _PROCESSING_HINT_IDS.reset(token)
+            pending_ids = [
+                ref_id
+                for ref_id in dict.fromkeys(pending_ids)
+                if self._processing_hint_reason(ref_id) is not None
+            ]
+            if pending_ids:
+                handles = ", ".join(f"me{n}" for n in pending_ids)
+                resp = replace(
+                    resp,
+                    body=resp.body + f"\nCheck processing for {handles}: "
+                    f"get(kind='memory', id={pending_ids[0]}, view='processing') "
+                    "before testing recall; check each listed memory.",
+                )
+            return resp
         if id is None:
             raise BadInput(
                 "edit(kind='memory') requires id=",
@@ -2038,10 +2082,13 @@ class MemoryHandler(NumericRefHandler):
         dry_mode: Any,
         resp: Response,
     ) -> Response:
-        """After an edit that wrote ``meta.status``: drop the backfill's
+        """Add processing evidence guidance; after a ``meta.status`` edit, drop the backfill's
         duplicate ``status:<value>`` tag so tag and meta cannot disagree, and
         say so in the ack. Skipped on a dry run."""
-        if dry_mode is not None or "status" not in meta_clean:
+        if dry_mode is not None:
+            return resp
+        resp = self._with_processing_hint(ref_id, resp)
+        if "status" not in meta_clean:
             return resp
         dropped = drop_legacy_status_tags(self.store, ref_id)
         if not dropped:
@@ -2051,6 +2098,39 @@ class MemoryHandler(NumericRefHandler):
             body=resp.body
             + f"\ndropped tag(s) {dropped} — ruling status now lives in meta.status",
         )
+
+    def _with_processing_hint(self, ref_id: int, resp: Response) -> Response:
+        """One advisory line after a successful write; never undo its receipt.
+
+        Status reads use a separate pool connection. Batch edits only collect
+        ids here; the outer edit checks them after the transaction commits so
+        the read sees the writes and waits for no connection while holding locks.
+        """
+        if (pending_ids := _PROCESSING_HINT_IDS.get()) is not None:
+            pending_ids.append(ref_id)
+            return resp
+        reason = self._processing_hint_reason(ref_id)
+        if reason is None:
+            return resp
+        return replace(
+            resp,
+            body=resp.body + f"\n{reason}: get(kind='memory', id={ref_id}, "
+            "view='processing') before testing recall.",
+        )
+
+    def _processing_hint_reason(self, ref_id: int) -> str | None:
+        """Read committed status; an unavailable advisory never fails a write."""
+        from precis.handlers._memory_processing import processing_report
+
+        try:
+            if not processing_report(self.store, ref_id).outstanding:
+                return None
+            return "processing outstanding"
+        except Exception:
+            log.warning(
+                "memory processing receipt unavailable for %s", ref_id, exc_info=True
+            )
+            return "processing status unavailable"
 
     def _thread_lead_hint(
         self, ref_id: int, old_body: str | None, new_body: str

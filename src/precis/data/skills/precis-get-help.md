@@ -53,6 +53,14 @@ to another.
 
 ## Render a ref with its neighbourhood and recall
 
+For a newly written or edited memory, check
+`get(kind='memory', id=N, view='processing')` **before testing recall**.
+It reports current-revision keywords, body and title/hook embeddings under the
+active embedder, summaries and applicable categorization, with outstanding age
+and recorded failure guidance. Claims alone cannot prove that work is running;
+the view reports the coarser `pending` state when necessary. See
+`precis-memory-help` for eligibility and categorization freshness limits.
+
 `extent=` (every kind) selects the fisheye ladder's rung — `fisheye`,
 `fisheye+1hop`, `fisheye+2hop`, optionally `+recall` (adds up to 8
 nearest same-kind + finding refs by embedding — inside the focus's

@@ -88,7 +88,10 @@ transcript, not landed history (those live in `git log` and the docs).
    the ready-to-run `part-of`, `qualifies` and type-tag calls the node
    still needs, plus a prefilled copy of step 4. No lines means the node
    is in place.
-4. **Round-trip check.** `search(kind='memory', q='<the question you
+4. **Check processing before testing recall.** Read
+   `get(kind='memory', id=N, view='processing')` first. Wait for current
+   body and title/hook embeddings before judging recall quality. Then
+   `search(kind='memory', q='<the question you
    will ask next time>', view='index')`. If the new `me<N>` is not
    listed, rewrite `title=` / `meta.hook` with those task words — the
    index view applies a hard 0.42 recall cut, so a memory without them
@@ -111,6 +114,34 @@ appear as recall. Repo-dev nodes take
 `tags=['SPACE:repo-dev', 'section:threads|runbooks|gotchas|workflow|reference']`
 and `meta={'hook': 'one line — status + resume point'}` (writable meta
 keys: `hook`, `type`).
+
+## Check processing before testing recall
+
+```python
+get(kind='memory', id=N, view='processing')
+```
+
+Check this view after a put/edit and before testing recall. It reports current
+body keywords, embeddings for both the body and title/hook card under the
+active embedder, RAKE and LLM summaries, and applicable categorization.
+Successful write receipts point here while work is outstanding. A short body
+may be ineligible for keywords or LLM summary; `meta.no_index` disables chunk
+processing. These are distinct from a pending eligible artifact.
+
+The view names the current chunk IDs and text fingerprints, compares stored
+artifact hashes, and reports the oldest outstanding item's age plus recorded
+artifact/claim timestamps. An edit's old body artifacts do not count. Artifact
+creation times are first insertion times, not last completion times.
+
+`pending` includes queued/running/backoff where the database cannot distinguish
+them. Keywords have no durable claim, failure or completion timestamp. Failed
+embedding/summary rows include the recorded error and an operator next step.
+Dream move categorization has only ref tags, no input revision: an older
+marker is stale; even a newer marker cannot certify current-body completion.
+A matching-version marker can prevent reclassification after an edit; the
+view explains when operator review is needed. Worker switches outside the
+stored evidence are not inferred. This view reads evidence; it schedules or
+retries nothing. It requires one memory id.
 
 ## Save a thought
 ## Capture a note
