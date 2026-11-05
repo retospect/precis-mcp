@@ -37,42 +37,27 @@ def test_addressed_default_on():
 
     cfg = SlackConfig()
     assert cfg.respond_only_when_addressed is True
-    assert cfg.address_names == ("asa",)
 
 
 def _addressed(text: str, **overrides) -> bool:
-    kwargs = dict(
-        text=text,
-        own_user_id="U0ASA",
-        address_names=("asa",),
-        is_dm=False,
-        parent_user_id=None,
-        thread_engaged=False,
-    )
+    kwargs = dict(text=text, own_user_id="U0ASA", is_dm=False)
     kwargs.update(overrides)
     return bot._is_addressed(**kwargs)
 
 
 def test_addressed_by_mention():
     assert _addressed("hey <@U0ASA> what do you think?")
+    assert _addressed("hey <@U0ASA|asa> what do you think?")
     assert not _addressed("hey <@U0ROCKY> what do you think?")
 
 
-def test_addressed_by_name_word_boundary():
-    assert _addressed("Asa, log that for me")
-    assert _addressed("thanks asa!")
-    assert not _addressed("the casa is nice")
-    assert not _addressed("NASA launched today")
+def test_bare_name_is_not_a_hail():
+    assert not _addressed("Asa, log that for me")
+    assert not _addressed("thanks asa!")
 
 
-def test_addressed_in_dm_and_engaged_thread():
+def test_addressed_in_dm():
     assert _addressed("anything at all", is_dm=True)
-    assert _addressed("follow-up without a mention", thread_engaged=True)
-
-
-def test_addressed_reply_on_asas_own_thread_root():
-    assert _addressed("re: your note", parent_user_id="U0ASA")
-    assert not _addressed("re: rocky's note", parent_user_id="U0ROCKY")
 
 
 def test_not_addressed_plain_channel_chatter():
@@ -149,19 +134,35 @@ def test_gate_unaddressed_captures_but_stays_quiet(monkeypatch):
     assert client.posted == []  # no placeholder, no reply
 
 
-def test_gate_addressed_replies_and_engages_thread(monkeypatch):
+def test_gate_hail_replies_once_and_follow_ups_need_a_fresh_hail(monkeypatch):
     import asyncio
 
     instance, captures = _make_bot(monkeypatch)
     client = _FakeClient()
-    asyncio.run(instance._handle_message(_event("asa, what do you think?"), client))
+    asyncio.run(instance._handle_message(_event("<@U0ASA> what do you think?"), client))
     assert len(client.posted) == 1  # placeholder
     assert client.updated and client.updated[0]["text"] == "hi!"
     assert len(captures) == 2  # observed turn + asa's reply
-    # Follow-up in the same thread needs no re-mention.
+    # A follow-up in the same thread is captured, not answered.
     asyncio.run(
         instance._handle_message(
             _event("and a follow-up", ts="2.0", thread_ts="1.0"), client
+        )
+    )
+    assert len(client.posted) == 1
+    assert len(captures) == 3
+    # A reply on a thread rooted on asa's own message is no hail either.
+    asyncio.run(
+        instance._handle_message(
+            _event("re: your note", ts="3.0", thread_ts="1.0", parent_user_id="U0ASA"),
+            client,
+        )
+    )
+    assert len(client.posted) == 1
+    # A fresh hail in the thread gets a reply.
+    asyncio.run(
+        instance._handle_message(
+            _event("<@U0ASA> one more?", ts="4.0", thread_ts="1.0"), client
         )
     )
     assert len(client.posted) == 2
@@ -259,7 +260,9 @@ def test_error_result_posts_neutral_status_and_logs_detail(monkeypatch, caplog):
     monkeypatch.setattr(bot, "_dispatch_warm", lambda req: err)
     client = _FakeClient()
     with caplog.at_level(logging.ERROR, logger="asa_slack.bot"):
-        asyncio.run(instance._handle_message(_event("asa, what do you think?"), client))
+        asyncio.run(
+            instance._handle_message(_event("<@U0ASA> what do you think?"), client)
+        )
     assert client.updated
     body = client.updated[0]["text"]
     assert body == "(sorry — something went wrong; logged)"

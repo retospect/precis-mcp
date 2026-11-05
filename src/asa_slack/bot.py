@@ -21,10 +21,11 @@ Flow per inbound message (human or bot, any channel the app is in):
   2. capture the observed turn -> precis put(kind='conv', ...) — every
      message asa sees is captured, not just the ones that trigger a reply
   2b. addressed-only gate (``slack.respond_only_when_addressed``, default
-     on): reply only to a DM, an @-mention, asa's name in the text, or a
-     follow-up in a thread asa already replied in — otherwise stop here
-     (captured, no reply). Operator directive: on shared channels asa
-     listens by default and only talks when spoken to.
+     on): reply only to a real ``<@asa>`` hail or a DM — otherwise stop
+     here (captured, no reply). The bare name and a follow-up in a thread
+     asa is already in do not count: every turn needs its own hail.
+     Operator directive: asa is advisory on shared channels, it listens
+     and only talks when hailed.
   2c. rewrite asa's own ``<@U…>`` mention to ``@asa`` in the model-facing
      text — the wire form is an opaque id the model can't map to itself
      (gr518352). Every other user's ``<@U…>`` stays verbatim, so a reply
@@ -91,30 +92,14 @@ _IGNORED_SUBTYPES = frozenset(
 )
 
 
-def _is_addressed(
-    *,
-    text: str,
-    own_user_id: str,
-    address_names: tuple[str, ...],
-    is_dm: bool,
-    parent_user_id: str | None,
-    thread_engaged: bool,
-) -> bool:
-    """Was this message spoken *to* asa (vs. merely near it)?
+def _is_addressed(*, text: str, own_user_id: str, is_dm: bool) -> bool:
+    """Was this message a hail of asa (vs. merely near it)?
 
-    True for a DM, an explicit ``<@asa>`` mention, any of
-    ``address_names`` on a word boundary, a reply in a thread rooted on
-    asa's own message, or a thread asa has already replied in.
+    True for a DM or a real ``<@asa>`` mention (legacy ``<@U…|name>``
+    included). Saying the name, or replying in a thread asa is in, is
+    talk about or around asa, not a request for it to act.
     """
-    if is_dm or thread_engaged:
-        return True
-    if own_user_id and (f"<@{own_user_id}>" in text or parent_user_id == own_user_id):
-        return True
-    return any(
-        re.search(rf"\b{re.escape(name)}\b", text, re.IGNORECASE)
-        for name in address_names
-        if name
-    )
+    return is_dm or own_user_id in _SLACK_MENTION.findall(text)
 
 
 def _dispatch_warm(req: LlmRequest) -> LlmResult:
@@ -167,10 +152,6 @@ class AsaSlack:
         self._identity_cache: dict[str, Identity] = {}
         self._channel_name_cache: dict[str, str] = {}
         self._thread_locks: dict[str, asyncio.Lock] = {}
-        # Thread slugs asa has replied in — follow-ups there don't need a
-        # re-mention. In-memory only: after a restart a thread needs one
-        # fresh mention to re-engage.
-        self._engaged_threads: set[str] = set()
         self._team_id: str = ""
         self._team_name: str = ""
         self._own_user_id: str = ""
@@ -227,10 +208,7 @@ class AsaSlack:
         respond = not self._cfg.slack.respond_only_when_addressed or _is_addressed(
             text=text,
             own_user_id=self._own_user_id,
-            address_names=self._cfg.slack.address_names,
             is_dm=is_dm,
-            parent_user_id=event.get("parent_user_id"),
-            thread_engaged=slug in self._engaged_threads,
         )
 
         # The gate reads the wire form; the model sees @asa for self.
@@ -345,7 +323,6 @@ class AsaSlack:
         if not respond:
             log.info("asa-slack: listening only, not addressed (slug=%s)", slug)
             return
-        self._engaged_threads.add(slug)
 
         # 2. Placeholder — always in-thread, never the channel root.
         try:
