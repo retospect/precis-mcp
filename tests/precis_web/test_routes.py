@@ -4300,6 +4300,227 @@ def test_console_run_bad_arg_no_dispatch(client, runtime) -> None:
     assert runtime.calls == []  # nothing dispatched
 
 
+@pytest.mark.parametrize("method", ["post", "get"])
+@pytest.mark.parametrize(
+    ("argument", "example", "key", "expected"),
+    [
+        pytest.param(
+            "args={'under': 'me474318'})",
+            'args=\'{"under":"me1"}\'',
+            "args",
+            {"under": "me1"},
+            id="reported-trailing-parenthesis",
+        ),
+        pytest.param(
+            "page_size=invalid", "page_size=10", "page_size", 10, id="integer"
+        ),
+        pytest.param("good=invalid", "good=true", "good", True, id="boolean"),
+        pytest.param(
+            "tags='[\"unfinished\"'",
+            "tags='[\"example\"]'",
+            "tags",
+            ["example"],
+            id="malformed-json-list",
+        ),
+        pytest.param(
+            "args='[\"me1\"]'",
+            'args=\'{"under":"me1"}\'',
+            "args",
+            {"under": "me1"},
+            id="non-object-json",
+        ),
+        pytest.param(
+            "args=\"('me1',)\"",
+            'args=\'{"under":"me1"}\'',
+            "args",
+            {"under": "me1"},
+            id="non-dict-python-literal",
+        ),
+        pytest.param(
+            "args=\"dict(under='me1')\"",
+            'args=\'{"under":"me1"}\'',
+            "args",
+            {"under": "me1"},
+            id="python-call-is-not-a-literal",
+        ),
+        pytest.param(
+            'args=\'{"under":"me1"}',
+            'args=\'{"under":"me1"}\'',
+            "args",
+            {"under": "me1"},
+            id="unterminated-shell-quote",
+        ),
+    ],
+)
+def test_console_conversion_error_is_inline_with_working_example(
+    client,
+    runtime,
+    method: str,
+    argument: str,
+    example: str,
+    key: str,
+    expected: object,
+) -> None:
+    """gr564214: conversion errors must not escape either execution route."""
+    from html import unescape
+
+    from precis_web.routes.console import _parse_args
+
+    request_data = {"verb": "search", "args_text": f"kind=memory q=spark {argument}"}
+    if method == "post":
+        resp = client.post("/console/run", data=request_data)
+    else:
+        resp = client.get("/console", params=request_data)
+
+    assert resp.status_code == 200
+    rendered = unescape(resp.text)
+    assert "[input error]" in rendered
+    assert f"Example: {example}" in rendered
+    assert not runtime.calls
+    assert _parse_args("search", f"kind=memory q=spark {example}")[key] == expected
+
+
+@pytest.mark.parametrize("method", ["post", "get"])
+@pytest.mark.parametrize(
+    "argument",
+    [
+        pytest.param("args={'under': 'me1'}", id="python-dict"),
+        pytest.param('args=\'{"under":"me1"}\'', id="quoted-json-object"),
+    ],
+)
+def test_console_dict_argument_dispatches(
+    client, runtime, method: str, argument: str
+) -> None:
+    request_data = {"verb": "search", "args_text": f"kind=memory q=spark {argument}"}
+    if method == "post":
+        resp = client.post("/console/run", data=request_data)
+    else:
+        resp = client.get("/console", params=request_data)
+
+    assert resp.status_code == 200
+    assert runtime.calls == [
+        ("search", {"kind": "memory", "q": "spark", "args": {"under": "me1"}})
+    ]
+    assert "[search] ok" in resp.text
+
+
+@pytest.mark.parametrize("method", ["post", "get"])
+@pytest.mark.parametrize(
+    ("args_text", "expected"),
+    [
+        pytest.param(
+            r"kind=memory q=spark args={\"under\":\"me1\"}",
+            {"kind": "memory", "q": "spark", "args": {"under": "me1"}},
+            id="legacy-escaped-json",
+        ),
+        pytest.param(
+            "kind=memory q=two\u00a0words",
+            {"kind": "memory", "q": "two\u00a0words"},
+            id="legacy-non-breaking-space",
+        ),
+        pytest.param(
+            "args={'under': 'me1'}",
+            {"args": {"under": "me1"}},
+            id="dict-only",
+        ),
+        pytest.param(
+            "args={'under': 'me1', 'depth': 1} q=spark",
+            {"args": {"under": "me1", "depth": 1}, "q": "spark"},
+            id="dict-with-following-query",
+        ),
+        pytest.param(
+            'q="x args={1}"',
+            {"q": "x args={1}"},
+            id="dict-text-inside-query",
+        ),
+    ],
+)
+def test_console_shell_compatibility_and_dict_rescue_dispatch(
+    client, runtime, method: str, args_text: str, expected: dict[str, object]
+) -> None:
+    request_data = {"verb": "search", "args_text": args_text}
+    if method == "post":
+        resp = client.post("/console/run", data=request_data)
+    else:
+        resp = client.get("/console", params=request_data)
+
+    assert resp.status_code == 200
+    assert runtime.calls == [("search", expected)]
+    assert "[search] ok" in resp.text
+
+
+@pytest.mark.parametrize(
+    "args_text",
+    [
+        "args={'under': 'me1'})",
+        "args={'under': 'me1'} novalue",
+        "args={'under': 'me1'} page_size=invalid",
+        "args={'under': 'me1'",
+        "args={1}",
+        "args={'under': dict(value='me1')}",
+    ],
+)
+def test_console_failed_dict_rescue_preserves_first_error(args_text: str) -> None:
+    from precis_web.routes.console import _parse_args
+
+    with pytest.raises(ValueError, match="Invalid JSON for parameter 'args'") as exc:
+        _parse_args("search", args_text)
+    assert 'Example: args=\'{"under":"me1"}\'' in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("args_text", "expected"),
+    [
+        pytest.param(
+            "args={'filter': {'tags': ['one', 'two']}} q=spark",
+            {"args": {"filter": {"tags": ["one", "two"]}}, "q": "spark"},
+            id="nested-dict-and-list",
+        ),
+        pytest.param(
+            "args={'note': 'two words } { here'} q=spark",
+            {"args": {"note": "two words } { here"}, "q": "spark"},
+            id="spaces-and-braces-in-dict-string",
+        ),
+        pytest.param(
+            r"args={'note': 'author\'s words'} q=spark",
+            {"args": {"note": "author's words"}, "q": "spark"},
+            id="escaped-apostrophe-in-dict-string",
+        ),
+        pytest.param(
+            'q="two words {inside}" page_size=2',
+            {"q": "two words {inside}", "page_size": 2},
+            id="shell-quoted-value",
+        ),
+        pytest.param(
+            r"q=two\ words page_size=2",
+            {"q": "two words", "page_size": 2},
+            id="shell-escaped-whitespace",
+        ),
+        pytest.param(
+            "kind=memory q={ page_size=2",
+            {"kind": "memory", "q": "{", "page_size": 2},
+            id="bare-brace-in-string-argument",
+        ),
+        pytest.param(
+            '"kind=memory" "q"=spark',
+            {"kind": "memory", "q": "spark"},
+            id="quoted-key-and-whole-token",
+        ),
+        pytest.param(
+            "kind=memory, args={'under': 'me1'}, , q=\"one,two\"",
+            {"kind": "memory", "args": {"under": "me1"}, "q": "one,two"},
+            id="comma-separated-arguments",
+        ),
+    ],
+)
+def test_console_argument_grouping_preserves_values(
+    args_text: str, expected: dict[str, object]
+) -> None:
+    from precis_web.routes.console import _parse_args
+
+    assert _parse_args("search", args_text) == expected
+
+
 def test_console_quick_online_get(client, runtime) -> None:
     """Online mode → ``get(kind=..., id=<query>)`` for the picked service."""
     resp = client.post(

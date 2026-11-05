@@ -26,9 +26,12 @@ query.
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import json
 import re
 import shlex
+from argparse import ArgumentTypeError
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Form, Request
@@ -36,7 +39,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis.format import render_agent_table
 from precis.tools import TOOL_REGISTRY, get_tool_names
-from precis.tools.cli_adapter import convert_value
+from precis.tools.cli_adapter import _annotation_is, convert_value
 from precis.utils.handle_registry import format_handle
 from precis.utils.search_header import format_search_headline
 from precis_web.deps import await_dispatch, get_runtime, get_store, templates
@@ -409,6 +412,68 @@ def _smart_resolve(query: str) -> str | None:
     return None
 
 
+def _dict_arg_span(
+    args_text: str, dict_params: set[str]
+) -> tuple[str, int, int] | None:
+    """Find one bare dict argument, keeping quoted braces inside its span."""
+    candidates = {
+        match.start(): match
+        for match in re.finditer(r"(?<![^\s,])(\w+)=\{", args_text)
+        if match[1] in dict_params
+    }
+    quote = ""
+    escaped = False
+    for i, char in enumerate(args_text):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif i in candidates:
+            match = candidates[i]
+            break
+    else:
+        return None
+
+    depth = 0
+    for i in range(match.end() - 1, len(args_text)):
+        char = args_text[i]
+        if escaped:
+            escaped = False
+        elif quote:
+            if char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if not depth:
+                return match[1], match.start(), i + 1
+    return None
+
+
+def _arg_example(key: str, param: dict[str, Any]) -> str:
+    """Return an argument the operator can paste back into the console."""
+    annotation = str(param["annotation"])
+    if _annotation_is(annotation, "dict[str, Any]"):
+        return f'{key}=\'{{"under":"me1"}}\''
+    if param["is_list"]:
+        return f"{key}='[\"example\"]'"
+    if _annotation_is(annotation, "int"):
+        return f"{key}=10"
+    if _annotation_is(annotation, "bool"):
+        return f"{key}=true"
+    return f"{key}=example"
+
+
 def _parse_args(verb: str, args_text: str) -> dict[str, Any]:
     """Turn ``key=value`` tokens into a typed payload for ``verb``.
 
@@ -420,26 +485,83 @@ def _parse_args(verb: str, args_text: str) -> dict[str, Any]:
     lone ``,``) so both styles parse the same; a comma *inside* a quoted
     value survives untouched.
 
-    Raises ``ValueError`` on a malformed token or an unknown arg —
-    surfaced to the user as an inline message rather than a 500.
+    The original shell parser runs first so existing quoting, escaping and
+    whitespace keep their meaning. Only a failed parse may rescue one bare
+    dict literal: decode JSON or ``ast.literal_eval``, then require the rest
+    of the input to pass the same shell parser. Failed rescue preserves the
+    original error, including stray call punctuation.
+
+    All conversion failures become ``ValueError`` with a copyable example,
+    shared by form execution and deep links; the CLI converter keeps its
+    own ``ArgumentTypeError`` contract.
     """
     if verb not in TOOL_REGISTRY:
         raise ValueError(f"unknown verb {verb!r}")
     params = TOOL_REGISTRY[verb]["parameters"]
-    payload: dict[str, Any] = {}
-    for tok in shlex.split(args_text or ""):
-        tok = tok.strip(",")
-        if not tok:
-            continue
-        if "=" not in tok:
-            raise ValueError(f"expected key=value, got {tok!r}")
-        key, _, raw = tok.partition("=")
-        key = key.strip()
-        if key not in params:
-            allowed = ", ".join(params.keys())
-            raise ValueError(f"unknown arg {key!r} for {verb} (allowed: {allowed})")
-        payload[key] = convert_value(raw, params[key])
-    return payload
+    dict_params = {
+        key
+        for key, param in params.items()
+        if _annotation_is(str(param["annotation"]), "dict[str, Any]")
+    }
+
+    def parse_shell(text: str) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        example = "kind=memory q=spark"
+        try:
+            tokens = shlex.split(text or "")
+        except ValueError as exc:
+            # A lexical failure occurs before tokens are available. Offer
+            # the last named argument's example for an unfinished quote.
+            keys = re.findall(r"(?<![^\s,])(\w+)=", text)
+            if keys and keys[-1] in params:
+                example = _arg_example(keys[-1], params[keys[-1]])
+            raise ValueError(f"{exc}. Example: {example}") from None
+        try:
+            for tok in tokens:
+                tok = tok.strip(",")
+                if not tok:
+                    continue
+                if "=" not in tok:
+                    raise ValueError(f"expected key=value, got {tok!r}")
+                key, _, raw = tok.partition("=")
+                key = key.strip()
+                if key not in params:
+                    allowed = ", ".join(params.keys())
+                    raise ValueError(
+                        f"unknown arg {key!r} for {verb} (allowed: {allowed})"
+                    )
+                example = _arg_example(key, params[key])
+                payload[key] = convert_value(raw, params[key])
+        except (
+            ArgumentTypeError,
+            ValueError,
+            SyntaxError,
+            TypeError,
+            RecursionError,
+        ) as exc:
+            raise ValueError(f"{exc}. Example: {example}") from None
+        return payload
+
+    try:
+        return parse_shell(args_text)
+    except ValueError as first_error:
+        span = _dict_arg_span(args_text or "", dict_params)
+        if span is None:
+            raise
+        key, start, end = span
+        raw = args_text[start + len(key) + 1 : end]
+        try:
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError:
+                value = ast.literal_eval(raw)
+            if not isinstance(value, dict):
+                raise ValueError("expected a dict / JSON object")
+            payload = parse_shell(args_text[:start] + args_text[end:])
+        except (ValueError, SyntaxError, TypeError, RecursionError):
+            raise first_error from None
+        payload[key] = value
+        return payload
 
 
 def _quick_context(request: Request, **overrides: Any) -> dict[str, Any]:
