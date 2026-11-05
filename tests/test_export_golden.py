@@ -322,12 +322,15 @@ _REF = SimpleNamespace(
 @pytest.fixture
 def golden_env(monkeypatch: pytest.MonkeyPatch) -> Any:
     """The fake store (typed ``Any``: it stands in for ``Store``)."""
-    from precis.export import sources
+    from precis.export import audience, sources
     from precis.render import figure as render_figure
     from precis.store import si_links
     from precis.taproot import cite as taproot_cite
     from precis.utils import figure_source
 
+    monkeypatch.setattr(
+        audience, "web_base_url", lambda _store: "https://precis.example.test"
+    )
     monkeypatch.setattr(
         si_links,
         "supplement_parent",

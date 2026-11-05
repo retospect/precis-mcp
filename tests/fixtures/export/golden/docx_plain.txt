@@ -38,7 +38,9 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </Relationship>
 <Relationship Id="rId12" Target="https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL_INST:353UOL_VU1&amp;search_scope=MyInst_and_CI&amp;lang=en&amp;sortby=rank&amp;tab=TAB1&amp;query=any,contains,2101.00002" TargetMode="External" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink">
 </Relationship>
-<Relationship Id="rId13" Target="media/image1.png" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image">
+<Relationship Id="rId13" Target="https://precis.example.test/r/structure/12" TargetMode="External" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink">
+</Relationship>
+<Relationship Id="rId14" Target="media/image1.png" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image">
 </Relationship>
 </Relationships>
 == word/document.xml ==
@@ -912,9 +914,17 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:r>
 <w:t xml:space="preserve">.1/x and </w:t>
 </w:r>
+<w:hyperlink r:id="rId13">
 <w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+</w:rPr>
 <w:t>st12</w:t>
 </w:r>
+</w:hyperlink>
 <w:r>
 <w:t xml:space="preserve"> and </w:t>
 </w:r>
@@ -977,7 +987,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </pic:cNvPicPr>
 </pic:nvPicPr>
 <pic:blipFill>
-<a:blip r:embed="rId13">
+<a:blip r:embed="rId14">
 </a:blip>
 <a:stretch>
 <a:fillRect>

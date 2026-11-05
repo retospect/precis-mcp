@@ -9,6 +9,8 @@ Subcommands:
   (biber + makeglossaries run automatically). ``--include-sources`` bundles
   every cited paper/datasheet PDF the host holds and appends them as a
   ``pdfpages`` appendix (see ``precis.export.sources``).
+  ``--audience external`` replaces internal record links with supplement
+  references and writes ``supplement.zip`` next to the document.
 * ``precis draft papers <slug> [--out FILE]`` — zip the draft's cited
   paper/datasheet PDFs + a manifest.txt bibliography.
 
@@ -43,6 +45,12 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         ),
     )
     ex.add_argument("slug", help="Draft slug or numeric ref id.")
+    ex.add_argument(
+        "--audience",
+        choices=("dev", "external"),
+        default="dev",
+        help="Reader audience: dev / collaborators (default), or external with a data supplement.",
+    )
     ex.add_argument(
         "--out",
         default=None,
@@ -326,6 +334,7 @@ def _run_export(args: argparse.Namespace) -> None:
             store,
             ref,
             target_dir=out,
+            audience=args.audience,
             include_sources=args.include_sources,
             doi_links=not args.no_doi_links,
             library_links=not args.no_library_links,
@@ -346,6 +355,10 @@ def _run_export(args: argparse.Namespace) -> None:
 
     for w in result.warnings:
         print(f"draft export: {w}", file=sys.stderr)
+    if args.audience == "external":
+        print(
+            f"draft export: data supplement {out / 'supplement.zip'}", file=sys.stderr
+        )
     print(
         f"draft export: wrote {result.main_tex}, {result.bib} "
         f"({len(result.cited_slugs)} citation(s), "

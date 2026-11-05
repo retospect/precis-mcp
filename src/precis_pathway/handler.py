@@ -287,6 +287,12 @@ class PathwayHandler(Handler):
             raise InitError(f"autocatpath pipeline unavailable: {e}") from e
         _ = hub
 
+    def seed_geometry(self, pathway_ref_id: int) -> tuple[dict[str, str], str]:
+        """Expose stored seed evidence through the kind boundary for exports."""
+        from .ingest import seed_geometry
+
+        return seed_geometry(self.hub.live_store, pathway_ref_id)
+
     # -- put -------------------------------------------------------------
     def put(
         self,

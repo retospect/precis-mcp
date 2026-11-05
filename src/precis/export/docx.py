@@ -185,6 +185,7 @@ class _Ctx:
     # than the Store the export_docx() path always threads through here.
     store: Any
     known_handles: set[str]
+    audience: Any = None
     abbrevs: dict[str, str] = field(default_factory=dict)  # short → long
     cited: list[str] = field(default_factory=list)  # paper slug order = ref number
     warnings: list[str] = field(default_factory=list)
@@ -437,6 +438,7 @@ def export_docx(
     withheld_figures: frozenset[str] = frozenset(),
     claim_appendix: bool = True,
     record_override: bool = False,
+    audience: str = "dev",
 ) -> DocxResult:
     """Render a draft into ``target_path`` as a ``.docx``. Returns the
     path plus the cited slugs and any resolution warnings.
@@ -460,14 +462,23 @@ def export_docx(
     ``record_override=True`` writes the ``ref_events`` ``export_override``
     audit row when the export folded finding(s) via an author's override
     (gr491602 — the export itself is a read; only explicit write ops pass
-    it)."""
+    it).
+
+    ``audience='dev'`` links record handles to the configured application.
+    ``external`` emits descriptive Word footnotes, a Data Supplement table
+    and ``supplement.zip`` beside the document; private prose URLs refuse."""
     from docx import Document
 
     from precis.export import guard_exportable, guard_no_secrets
+    from precis.export.audience import for_export, guard_artifacts, guard_audience
+    from precis.export.supplement import write_supplement
 
     progress.report("reading the draft")
     guard_exportable(ref)
     guard_no_secrets(store, ref)
+    guard_audience(store, ref, audience)
+    if audience == "external":
+        library_links = False
     target_path = Path(target_path)
     ws = Workspace.from_meta(getattr(ref, "meta", None))
     if doc_type is None:
@@ -482,6 +493,7 @@ def export_docx(
     )
     ctx = _Ctx(
         store=RefLookupMemo(store),
+        audience=for_export(store, audience, chunks=chunks),
         known_handles=handles,
         xref=nums.labels,
         numbered_headings=nums.numbered_headings,
@@ -559,6 +571,8 @@ def export_docx(
 
     progress.report("saving .docx")
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    if audience == "external":
+        write_supplement(ctx.audience.entries, target_path.parent / "supplement.zip")
     doc.save(str(target_path))
 
     # The JSON sidecar (data-package durability tier 3), written next to
@@ -570,6 +584,15 @@ def export_docx(
             f"{target_path.stem}.{_DATA_PACKAGE_SIDECAR_NAME}"
         )
         data_package_path.write_text(sidecar_json(ctx.data_package), encoding="utf-8")
+
+    if audience == "external":
+        guard_artifacts(
+            store,
+            ref,
+            [target_path, target_path.parent / "supplement.zip"],
+            cited=list(ctx.cited),
+            entries=ctx.audience.entries,
+        )
 
     return DocxResult(
         path=target_path,
@@ -713,6 +736,10 @@ def _render_inline(text: str, ctx: _Ctx, paragraph: Any) -> None:
     markdown/sub-sup/math run formatting."""
     text = _SCRIPT_ONLY_MATH_SPAN.sub(_script_only_to_html, text)
     text = preprocess_draft_inline(text)
+    if ctx.audience is not None:
+        from precis.export.audience import preserve_records
+
+        text = preserve_records(text)
     text = strip_provenance_handles(text, title_for=lambda h: _bare_handle_text(h, ctx))
     pin_lint.warn_export(ctx, text)
     # A new chunk/caption/cell never continues the previous one's cite run:
@@ -1125,6 +1152,20 @@ def _render_trust_mark(ctx: _Ctx, finding_ref_id: int, paragraph: Any) -> None:
 def _render_target(
     tgt: str, surface: str | None, ctx: _Ctx, paragraph: Any, *, pin: str | None = None
 ) -> None:
+    if ctx.audience is not None:
+        record = ctx.audience.reference(tgt, surface)
+        if record is not None:
+            ctx.cite_run.interrupt()
+            _flush_cites(ctx, paragraph)
+            if record.url:
+                _add_hyperlink(paragraph, record.url, record.text)
+            else:
+                from precis.export._footnotes import add_footnote
+
+                paragraph.add_run(record.text)
+                add_footnote(paragraph, record.footnote)
+            if not record.citation:
+                return
     if tgt.startswith("§"):  # a citation — keep the consecutive-cite run
         cm = DRAFT_CITE_PATTERN.fullmatch(tgt)
         if cm is not None:
@@ -1445,7 +1486,17 @@ class DocxRenderer:
         """The title page: the title (the seeded chunk's text, else the ref
         title), the byline and the date."""
         text = chunk.text if chunk is not None else (self.doc_title or "")
-        sink.add_heading(text, level=0)
+        from precis.export.audience import has_record_handles
+
+        if self.ctx.audience is not None and has_record_handles(text, self.ctx.store):
+            paragraph = sink.add_heading("", level=0)
+            self.ctx.in_heading = True
+            try:
+                _render_inline(text, self.ctx, paragraph)
+            finally:
+                self.ctx.in_heading = False
+        else:
+            sink.add_heading(text, level=0)
         _render_byline(sink, self.byline)
         _render_date(sink)
 
@@ -1574,6 +1625,8 @@ class DocxRenderer:
             _append_unverified_claims(sink, ctx)
         elif name == "data_package":
             _append_data_package(sink, ctx.data_package)
+            if ctx.audience is not None and ctx.audience.name == "external":
+                _append_supplement(sink, ctx.audience.entries)
         elif name == "references":
             _append_references(sink, ctx)
         elif name == "acronyms":
@@ -2028,6 +2081,19 @@ def _append_published_claims(doc: Any, ctx: _Ctx) -> None:
         cells[1].paragraphs[0].add_run(merged_cite_numbers(nums) if nums else "")
         cells[2].paragraphs[0].add_run(", ".join(ctx.claim_sections.get(e.fid, [])))
         cells[3].paragraphs[0].add_run(f"{e.trusty_uri} — {e.status_text}")
+
+
+def _append_supplement(doc: Any, entries: list[Any]) -> None:
+    """Format the numbered record table alongside the figure data package."""
+    doc.add_heading("Data Supplement", level=1)
+    table = doc.add_table(rows=1, cols=3)
+    for cell, text in zip(table.rows[0].cells, ("Entry", "Kind", "Description")):
+        cell.text = text
+    for entry in entries:
+        for cell, text in zip(
+            table.add_row().cells, (entry.number, entry.kind, entry.description)
+        ):
+            cell.text = text
 
 
 def _append_data_package(doc: Any, entries: list[DataPackageFigure]) -> None:

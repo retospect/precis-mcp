@@ -33,6 +33,11 @@ _PARAMS_SCHEMA: dict[str, Any] = {
     "properties": {
         "draft": {"type": "string"},
         "format": {"type": "string"},  # reserved; only 'pdf' today
+        "audience": {
+            "type": "string",
+            "enum": ["dev", "external"],
+            "pattern": r"\A(?:dev|external)\Z",
+        },
         # Bundle cited paper/datasheet PDFs into a pdfpages appendix so the
         # compiled PDF is self-contained (report + its sources).
         "include_sources": {"type": "boolean"},
@@ -133,6 +138,17 @@ def _resolve_doc_type(ctx: Any) -> str:
         return ws.doc_type if ws else ""
     except Exception:  # pragma: no cover — genre is a nicety, never fatal
         return ""
+
+
+def _resolve_audience_out_dir(ctx: Any, slug: str, audience: str) -> tuple[Path, bool]:
+    """External builds cannot overwrite or compile a collaborator build's files."""
+    out, in_workspace = _resolve_out_dir(ctx, slug)
+    if audience == "external":
+        root = out.resolve()
+        out = (root / "external").resolve()
+        if root not in out.parents:
+            raise ValueError("external export directory escapes the export root")
+    return out, in_workspace
 
 
 def _dispatch(ctx: Any, spec: Any) -> None:
@@ -275,7 +291,9 @@ def _dispatch(ctx: Any, spec: Any) -> None:
 
         retraction_override = draft_retraction_report(ctx.store, ref).retracted
     try:
-        out_dir, in_workspace = _resolve_out_dir(ctx, slug)
+        out_dir, in_workspace = _resolve_audience_out_dir(
+            ctx, slug, str(params.get("audience") or "dev")
+        )
     except ValueError as exc:
         ctx.record_failure(f"draft_export: {exc}")
         return
@@ -288,6 +306,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             ctx.store,
             ref,
             target_dir=out_dir,
+            audience=str(params.get("audience") or "dev"),
             include_sources=include_sources,
             doc_type=doc_type,
             retraction_override=retraction_override,
@@ -306,6 +325,10 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
     for w in result.warnings:
         ctx.append_chunk("job_event", f"warn: {w}")
+    if params.get("audience") == "external":
+        supplement = out_dir / "supplement.zip"
+        ctx.set_meta(supplement=str(supplement))
+        ctx.append_chunk("job_event", f"data supplement: {supplement}")
     if result.poster_profile is not None:
         ctx.append_chunk(
             "job_event", f"poster branding profile → {result.poster_profile.name}"

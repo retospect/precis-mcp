@@ -46,6 +46,7 @@ Pull the same lists any time without exporting:
 precis draft export <slug> [--out DIR]   # → main.tex + refs.bib + preamble.tex
 precis draft export <slug> --pdf          # …and run latexmk to produce main.pdf
 precis draft export <slug> [--no-doi-links] [--no-library-links]
+precis draft export <slug> --audience external [--pdf]
 precis draft remarkable <slug> [--folder /Precis] [--dry-run]
 ```
 
@@ -72,8 +73,9 @@ becomes a `\newacronym`, first use full and later `\gls{…}`, with a
 page-number list in the glossary. PDF and Word define the same
 occurrence: headings print the bare short and never define it, URLs and
 DOIs are left alone, `CNB-based` counts as a use, and `et al.`/`e.g.` do
-not capitalise the next word. `[me<id>]`/cross-draft `[dc<id>]` links
-render to nothing (provenance only). The byline becomes an `authblk`
+not capitalise the next word. Record handles follow the audience choice
+below; draft chunk cross-references retain their section/figure numbers.
+The byline becomes an `authblk`
 block under `\maketitle` (ROR hyperlinked). You never write `\cite{}`
 (or the byline) yourself. Citations must resolve (`[fi<id>]` → a hub
 with held originator papers; legacy `[pc<id>]` → a chunk of a held
@@ -89,6 +91,34 @@ biblatex style — `numeric-comp` (default), `chem-rsc` (alias `rsc`),
   `job_summary`/`meta.pdf`; no TeX toolchain → a friendly error instead.
 - **Word/.docx** — toolchain-free and **synchronous**, with render-time
   acronym first-use expansion + an auto acronyms list.
+
+## Audience and data supplement
+
+The export dialog offers **dev / collaborators** (default) and **external**.
+The same choice is `--audience dev|external` on the CLI and
+`params={'draft': '<slug>', 'audience': 'external'}` on the existing
+`draft_export` job. Omitting it keeps collaborator behavior.
+
+Collaborator exports link record handles such as `[pw12]`, `[st34]`,
+`[gr56]` and `[qu78]` to the web application using its configured
+`PRECIS_WEB_BASE_URL`. Paper citations and draft cross-references keep
+their normal bibliography and section/figure semantics.
+
+External exports replace record handles with supplement numbers and
+descriptive footnotes, without application links. S1 contains pathways,
+S2 structures, S3 datasets/jobs; other kinds get subsequent groups in
+first-mention order. Entries within a group follow first mention and
+repeated references reuse their number. The document has a Data Supplement
+table. One `supplement.zip` sits beside the PDF/Word document; the web
+download bundles the two files together.
+
+Pathway entries include a deterministic stored-field description,
+manifest/stamps, configuration snapshot, results/kinetics JSON, extxyz
+structures and a profile figure. Missing stored fields are marked
+`absent`; they do not block export and no model invents them. Stored seed
+geometry takes precedence over current linked structures; a fallback is
+labelled. An external export refuses literal application/private URLs in
+prose, naming the chunks to edit. Remove those URLs or select dev.
 
 ## reMarkable sends and snapshots
 

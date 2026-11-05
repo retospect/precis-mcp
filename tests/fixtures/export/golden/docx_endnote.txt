@@ -30,7 +30,9 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </Relationship>
 <Relationship Id="rId2" Target="numbering.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering">
 </Relationship>
-<Relationship Id="rId9" Target="media/image1.png" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image">
+<Relationship Id="rId9" Target="https://precis.example.test/r/structure/12" TargetMode="External" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink">
+</Relationship>
+<Relationship Id="rId10" Target="media/image1.png" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image">
 </Relationship>
 </Relationships>
 == word/document.xml ==
@@ -743,9 +745,17 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:r>
 <w:t xml:space="preserve">.1/x and </w:t>
 </w:r>
+<w:hyperlink r:id="rId9">
 <w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+</w:rPr>
 <w:t>st12</w:t>
 </w:r>
+</w:hyperlink>
 <w:r>
 <w:t xml:space="preserve"> and </w:t>
 </w:r>
@@ -823,7 +833,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </pic:cNvPicPr>
 </pic:nvPicPr>
 <pic:blipFill>
-<a:blip r:embed="rId9">
+<a:blip r:embed="rId10">
 </a:blip>
 <a:stretch>
 <a:fillRect>

@@ -7,6 +7,9 @@ functions render it as nothing. The punctuation around it survived, leaving
 chunk text before the inline walk and removes the handle together with the
 debris it would leave. Citation brackets, pinned (``>``/``+``/``~``) and
 display forms are never touched.
+
+Audience-aware exports protect record handles with display forms before this
+legacy cleanup; their links or supplement references are rendered afterwards.
 """
 
 from __future__ import annotations

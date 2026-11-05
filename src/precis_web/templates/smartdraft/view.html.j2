@@ -1052,6 +1052,7 @@
       <div x-show="tool === 'export'" x-cloak class="space-y-1.5 p-2 text-xs"
            x-data="{
              withSources: false,
+             audience: 'dev',
              overrideRetraction: false,
              placeholderFigures: false,
              submissionCopy: false,
@@ -1176,6 +1177,7 @@
              },
              exportQuery(extra) {
                const p = new URLSearchParams();
+               p.set('audience', this.audience);
                if (this.withSources) p.set('sources', '1');
                if (this.overrideRetraction) p.set('ignore_retractions', '1');
                if (this.placeholderFigures) p.set('placeholder_figures', '1');
@@ -1188,6 +1190,14 @@
              }
            }"
            x-init="loadRetraction()">
+        <label class="flex items-center gap-1 text-fg-subtle">
+          <span>audience</span>
+          <select x-model="audience" class="rounded border border-line bg-surface text-fg">
+            <option value="dev">dev / collaborators</option>
+            <option value="external">external</option>
+          </select>
+        </label>
+        <p x-show="audience === 'external'" x-cloak class="text-fg-faint">Includes a data supplement alongside the document.</p>
         <label class="flex items-center gap-1 text-fg-subtle"
                title="include the referenced papers & datasheets in the export">
           <input type="checkbox" x-model="withSources" class="h-3 w-3"><span>+ sources</span>
@@ -1279,7 +1289,7 @@
              class="text-fg-subtle underline hover:text-fg"
              @click.prevent="startExport('docx')"
              title="EndNote Cite While You Write fields (travelling library); Word without EndNote still shows the [n] text"
-             x-text="withSources ? 'download .docx+zip' : 'download .docx'">download .docx</a>
+             x-text="withSources || audience === 'external' ? 'download .docx+zip' : 'download .docx'">download .docx</a>
           <a :href="'/drafts/{{ ident }}/export.docx' + exportQuery({citations: 'plain'})"
              class="text-fg-faint underline hover:text-fg"
              @click.prevent="startExport('docx', {citations: 'plain'})"
@@ -1288,6 +1298,7 @@
              @click.prevent="startExport('pdf')"
              class="text-fg-subtle underline hover:text-fg">download PDF</a>
           <form method="post" action="/drafts/{{ ident }}/export.pdf" class="inline">
+            <input type="hidden" name="audience" :value="audience">
             <input type="hidden" name="sources" :value="withSources ? '1' : ''">
             <input type="hidden" name="ignore_retractions" :value="overrideRetraction ? '1' : ''">
             <input type="hidden" name="placeholder_figures" :value="placeholderFigures ? '1' : ''">

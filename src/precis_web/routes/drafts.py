@@ -84,6 +84,7 @@ import base64
 import difflib
 import logging
 import re
+import shutil
 import tempfile
 import threading
 from collections import OrderedDict
@@ -102,6 +103,7 @@ from fastapi.responses import (
     Response,
 )
 from markupsafe import Markup
+from starlette.background import BackgroundTask
 
 from precis import settings
 from precis.draft.scaffolds import DOC_TYPE_BRIEF as _DOC_TYPE_BRIEF
@@ -1522,6 +1524,11 @@ async def export_docx_route(request: Request, ident: str) -> Response:
     if ref is None:
         return RedirectResponse(url="/drafts", status_code=303)
 
+    audience = request.query_params.get("audience", "dev")
+    blocked = await _audience_blocked_response(request, store, ref, audience)
+    if blocked is not None:
+        return blocked
+
     ignore_retractions = _flag(request, "ignore_retractions")
     placeholder_figures = _flag(request, "placeholder_figures")
     # Off the event loop: the gate walks render the draft body and resolve
@@ -1564,18 +1571,30 @@ async def export_docx_route(request: Request, ident: str) -> Response:
     name = f"{ref.slug or ref.id}-{_export_stamp()}"
     work = Path(tempfile.mkdtemp(prefix="precis-docx-"))
     out = work / f"{name}.docx"
-    docx_result = await asyncio.to_thread(
-        export_docx,
-        store,
-        ref,
-        target_path=out,
-        citations=citations,
-        withheld_figures=pf.withheld_handles,
-        doi_links=links,
-        library_links=links,
-        claim_appendix=_claims_wanted(request),
-    )
+    try:
+        docx_result = await asyncio.to_thread(
+            export_docx,
+            store,
+            ref,
+            target_path=out,
+            citations=citations,
+            withheld_figures=pf.withheld_handles,
+            doi_links=links,
+            library_links=links,
+            claim_appendix=_claims_wanted(request),
+            audience=audience,
+        )
+    except BadInput as exc:
+        return _export_input_blocked_response(request, exc)
     if not with_sources:
+        if audience == "external":
+            zip_path = work / f"{name}-bundle.zip"
+            await asyncio.to_thread(
+                _bundle_supplement, zip_path, work / "supplement.zip", report=out
+            )
+            return FileResponse(
+                zip_path, filename=zip_path.name, media_type="application/zip"
+            )
         return FileResponse(out, filename=f"{name}.docx", media_type=_DOCX_MEDIA)
 
     from precis.export.sources import build_sources_zip
@@ -1590,6 +1609,8 @@ async def export_docx_route(request: Request, ident: str) -> Response:
         report_path=out,
         retraction_override=retraction_override,
     )
+    if audience == "external":
+        await asyncio.to_thread(_bundle_supplement, zip_path, work / "supplement.zip")
     return FileResponse(
         zip_path, filename=f"{name}-bundle.zip", media_type="application/zip"
     )
@@ -1641,6 +1662,10 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
     if ref is None:
         return RedirectResponse(url="/drafts", status_code=303)
     form = await request.form()
+    audience = str(form.get("audience") or "dev")
+    blocked = await _audience_blocked_response(request, store, ref, audience)
+    if blocked is not None:
+        return blocked
     with_sources = str(form.get("sources") or "") in ("1", "true", "yes", "on")
     ignore_retractions = str(form.get("ignore_retractions") or "") in (
         "1",
@@ -1685,6 +1710,9 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
     if with_sources:
         params["include_sources"] = True
         idem = f"draft_export:{slug}:sources"
+    if audience == "external":
+        params["audience"] = audience
+        idem += ":external"
     if retraction_override_used:
         params["ignore_retractions"] = True
     # Thread the figure waiver through to the job so its identical clearance
@@ -2130,6 +2158,50 @@ def _claims_wanted(request: Request) -> bool:
     return request.query_params.get("claims") not in ("0", "false", "no")
 
 
+async def _audience_blocked_response(
+    request: Request, store: Any, ref: Any, audience: str
+) -> Response | None:
+    """Apply the audience guard before rendering or serving a cached PDF."""
+    from precis.export.audience import guard_audience
+
+    try:
+        await asyncio.to_thread(guard_audience, store, ref, audience)
+    except BadInput as exc:
+        return _export_input_blocked_response(request, exc)
+    return None
+
+
+def _export_input_blocked_response(request: Request, exc: BadInput) -> Response:
+    """Keep late supplement validation refusals as actionable export errors."""
+    return templates.TemplateResponse(
+        request,
+        "error.html.j2",
+        {
+            "active_tab": "drafts",
+            "title": "Export blocked",
+            "status": 422,
+            "detail": str(exc),
+        },
+        status_code=422,
+    )
+
+
+def _bundle_supplement(
+    target: Path,
+    supplement: Path,
+    *,
+    report: Path | None = None,
+    report_name: str | None = None,
+) -> None:
+    """Deliver one supplement ZIP beside the document, including source bundles."""
+    from zipfile import ZIP_DEFLATED, ZipFile
+
+    with ZipFile(target, "w" if report is not None else "a", ZIP_DEFLATED) as bundle:
+        if report is not None:
+            bundle.write(report, report_name or report.name)
+        bundle.write(supplement, "supplement.zip")
+
+
 def _pdf_cache_dir(
     ref_id: int,
     version: int | str,
@@ -2138,6 +2210,8 @@ def _pdf_cache_dir(
     withheld: frozenset[str] = frozenset(),
     links: bool = True,
     claims: bool = True,
+    audience: str = "dev",
+    base_url: str = "",
 ) -> Path:
     """Per-(draft, version) build dir for the compiled PDF. Lives under
     the system temp so it survives within a deploy and is cheap to
@@ -2155,7 +2229,10 @@ def _pdf_cache_dir(
     grant may not bump the version token.
 
     ``links=False`` (the ``?links=0`` submission copy, no inline doi /
-    library runs) adds ``-nolinks`` so the two variants cache apart."""
+    library runs) adds ``-nolinks`` so the two variants cache apart.
+    The record-link revision invalidates builds from before audience support;
+    builds also include a digest of the configured URL, so moving the web
+    application updates both collaborator links and the external host guard."""
     import hashlib
     import tempfile
 
@@ -2163,18 +2240,24 @@ def _pdf_cache_dir(
     if withheld:
         digest = hashlib.sha1(",".join(sorted(withheld)).encode("utf-8")).hexdigest()
         tag = f"{tag}-wh{digest[:8]}"
+    tag = f"{tag}-records-v2"
+    digest = hashlib.sha256(base_url.encode("utf-8")).hexdigest()
+    tag = f"{tag}-web{digest[:12]}"
     if not links:
         tag = f"{tag}-nolinks"
     if not claims:
         tag = f"{tag}-noclaims"
+    if audience == "external":
+        tag = f"{tag}-external"
     return Path(tempfile.gettempdir()) / "precis-draft-pdf" / str(ref_id) / tag
 
 
 @router.get("/drafts/{ident}/pdf")
 async def pdf(request: Request, ident: str) -> Response:
     """Compile the draft to PDF on demand and serve it, cached by the
-    draft's version token. First request for a version exports the LaTeX
-    project + runs ``latexmk``; later requests serve the cached file.
+    draft's version token for dev exports. External exports always use a
+    fresh build directory: changes to supplement dependencies need not bump
+    the draft version or the referenced record's timestamp.
 
     Degrades cleanly: with no ``latexmk`` on the host (``--pdf`` is a
     no-op in such builds) it returns a friendly 503 rather than a 500;
@@ -2200,6 +2283,11 @@ async def pdf(request: Request, ident: str) -> Response:
             },
             status_code=404,
         )
+
+    audience = request.query_params.get("audience", "dev")
+    blocked = await _audience_blocked_response(request, store, ref, audience)
+    if blocked is not None:
+        return blocked
 
     # Draft-level export gate — the same shared preflight the ``.docx`` and
     # PDF-job routes run, applied here too so the most-pressed export control
@@ -2237,77 +2325,112 @@ async def pdf(request: Request, ident: str) -> Response:
     with_sources = request.query_params.get("sources") in ("1", "true", "yes")
     links = _links_wanted(request)
     claims = _claims_wanted(request)
-    cache_token = _pdf_cache_token(store, ref)
-    cache_dir = _pdf_cache_dir(
-        ref.id,
-        cache_token,
-        sources=with_sources,
-        withheld=pf.withheld_handles,
-        links=links,
-        claims=claims,
-    )
-    pdf_path = cache_dir / "main.pdf"
-    suffix = "-with-sources" if with_sources else ""
-    # A cast draft downloads as its human stem (``morning_brief_<date>.pdf``),
-    # matching the mp3 on the feed; other drafts keep their slug plus a UTC
-    # stamp so successive exports stay distinguishable.
-    from precis.reading.cast_common import export_basename_for_meta
+    from precis.export.audience import web_base_url
 
-    base = export_basename_for_meta(getattr(ref, "meta", None)) or (
-        f"{ref.slug or ref.id}-{_export_stamp()}"
-    )
-    filename = f"{base}{suffix}.pdf"
-
-    if not pdf_path.exists():
-        if not have_latexmk():
-            return templates.TemplateResponse(
-                request,
-                "error.html.j2",
-                {
-                    "active_tab": "drafts",
-                    "title": "PDF unavailable",
-                    "status": 503,
-                    "detail": (
-                        "latexmk is not installed on this host, so the draft "
-                        "can't be compiled to PDF here. Run `precis draft export "
-                        f"{ref.slug or ref.id} --pdf` on a host with a TeX "
-                        "toolchain, or install mactex/TeX Live on the web host."
-                    ),
-                },
-                status_code=503,
-            )
-        progress.report("exporting LaTeX project")
-        # Off the event loop, like the gate walks above — the LaTeX build
-        # plus a latexmk pass is minutes, not milliseconds.
-        await asyncio.to_thread(
-            export_draft,
-            store,
-            ref,
-            target_dir=cache_dir,
-            include_sources=with_sources,
-            withheld_figures=pf.withheld_handles,
-            doi_links=links,
-            library_links=links,
-            claim_appendix=claims,
+    if audience == "external":
+        cache_dir = Path(tempfile.mkdtemp(prefix="precis-draft-external-"))
+    else:
+        base_url = await asyncio.to_thread(web_base_url, store)
+        cache_dir = _pdf_cache_dir(
+            ref.id,
+            _pdf_cache_token(store, ref),
+            sources=with_sources,
+            withheld=pf.withheld_handles,
+            links=links,
+            claims=claims,
+            audience=audience,
+            base_url=base_url,
         )
-        progress.report("compiling PDF (latexmk)")
-        result = await asyncio.to_thread(compile_pdf, cache_dir)
-        if not result.ok:
-            return templates.TemplateResponse(
-                request,
-                "error.html.j2",
-                {
-                    "active_tab": "drafts",
-                    "title": "PDF compile failed",
-                    "status": 500,
-                    "detail": (
-                        "latexmk could not build this draft. Last lines of "
-                        f"the log:\n\n{result.log_tail}"
-                    ),
-                },
-                status_code=500,
+    handed_off = False
+    try:
+        pdf_path = cache_dir / "main.pdf"
+        suffix = "-with-sources" if with_sources else ""
+        # A cast draft downloads as its human stem (``morning_brief_<date>.pdf``),
+        # matching the mp3 on the feed; other drafts keep their slug plus a UTC
+        # stamp so successive exports stay distinguishable.
+        from precis.reading.cast_common import export_basename_for_meta
+
+        base = export_basename_for_meta(getattr(ref, "meta", None)) or (
+            f"{ref.slug or ref.id}-{_export_stamp()}"
+        )
+        filename = f"{base}{suffix}.pdf"
+
+        if audience == "external" or not pdf_path.exists():
+            if not have_latexmk():
+                return templates.TemplateResponse(
+                    request,
+                    "error.html.j2",
+                    {
+                        "active_tab": "drafts",
+                        "title": "PDF unavailable",
+                        "status": 503,
+                        "detail": (
+                            "latexmk is not installed on this host, so the draft "
+                            "can't be compiled to PDF here. Run `precis draft export "
+                            f"{ref.slug or ref.id} --pdf` on a host with a TeX "
+                            "toolchain, or install mactex/TeX Live on the web host."
+                        ),
+                    },
+                    status_code=503,
+                )
+            progress.report("exporting LaTeX project")
+            # Off the event loop, like the gate walks above — the LaTeX build
+            # plus a latexmk pass is minutes, not milliseconds.
+            try:
+                await asyncio.to_thread(
+                    export_draft,
+                    store,
+                    ref,
+                    target_dir=cache_dir,
+                    include_sources=with_sources,
+                    withheld_figures=pf.withheld_handles,
+                    doi_links=links,
+                    library_links=links,
+                    claim_appendix=claims,
+                    audience=audience,
+                )
+            except BadInput as exc:
+                return _export_input_blocked_response(request, exc)
+            progress.report("compiling PDF (latexmk)")
+            result = await asyncio.to_thread(compile_pdf, cache_dir)
+            if not result.ok:
+                return templates.TemplateResponse(
+                    request,
+                    "error.html.j2",
+                    {
+                        "active_tab": "drafts",
+                        "title": "PDF compile failed",
+                        "status": 500,
+                        "detail": (
+                            "latexmk could not build this draft. Last lines of "
+                            f"the log:\n\n{result.log_tail}"
+                        ),
+                    },
+                    status_code=500,
+                )
+        if audience == "external":
+            zip_path = cache_dir / "external-bundle.zip"
+            await asyncio.to_thread(
+                _bundle_supplement,
+                zip_path,
+                cache_dir / "supplement.zip",
+                report=pdf_path,
+                report_name=filename,
             )
-    return FileResponse(pdf_path, media_type="application/pdf", filename=filename)
+            response = FileResponse(
+                zip_path,
+                media_type="application/zip",
+                filename=f"{base}{suffix}-bundle.zip",
+                background=BackgroundTask(shutil.rmtree, cache_dir, ignore_errors=True),
+            )
+            # Background jobs retain this response without sending it; their
+            # download route creates a fresh response and TTL expiry cleans up.
+            handed_off = True
+            return response
+        return FileResponse(pdf_path, media_type="application/pdf", filename=filename)
+    finally:
+        if audience == "external" and not handed_off:
+            shutil.rmtree(cache_dir, ignore_errors=True)
 
 
 @router.post("/drafts/{ident}/export/start")

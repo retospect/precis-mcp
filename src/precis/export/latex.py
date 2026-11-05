@@ -600,6 +600,8 @@ class RenderResult:
     """The assembled body plus what it referenced."""
 
     body: str
+    supplement: list[Any] = field(default_factory=list)
+    title_tex: str | None = None
     cited_slugs: list[str] = field(default_factory=list)
     acronyms: dict[str, str] = field(default_factory=dict)  # short → long
     acronym_keys: dict[str, str] = field(default_factory=dict)  # short → gls key
@@ -844,6 +846,9 @@ class _Ctx:
     # the Store render_body/build_bib need — to resolve a paper handle
     # (pc/pa) → cite_key
     store: Any = None
+    audience: Any = None
+    moving_arg: bool = False
+    supplement_notes: list[str] = field(default_factory=list)
     legacy_to_dc: dict[str, str] = field(default_factory=dict)  # ¶base58 → dc
     cited: list[str] = field(default_factory=list)
     #: finding ref id -> cite keys its cite sites emitted (only keys already
@@ -1299,6 +1304,26 @@ def _render_target(
     # ``[st12]``) renders as plain text (real grounding, not a bibliography
     # entry); a record handle for a thought (``[me5]``) is provenance-only
     # → dropped.
+    if ctx.audience is not None:
+        record = ctx.audience.reference(tgt, surface)
+        if record is not None:
+            if record.url:
+                return _tex_url(record.url, record.text)
+            note = _tex(record.footnote)
+            if ctx.moving_arg:
+                ctx.supplement_notes.append(f"{_tex(record.text)}: {note}")
+                rendered_record = _tex(record.text) + r"\protect\footnotemark{}"
+            else:
+                rendered_record = _tex(record.text) + f"\\footnote{{{note}}}\x02"
+            if record.citation:
+                if ctx.patent_mode:
+                    return rendered_record + _inline_source_cite(
+                        tgt, "paper", surface, ctx
+                    )
+                slug, via_si = _handle_cite(tgt, ctx)
+                if slug:
+                    rendered_record += _cite(slug, ctx, si=via_si)
+            return rendered_record
     parsed = handle_registry.parse(tgt)
     if parsed is not None:
         kind, is_chunk, _pk = parsed
@@ -2174,6 +2199,10 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
     LaTeX-escape + markdownify the gaps between them. Single pass, mirrors
     the web linkifier so the two never diverge."""
     text = preprocess_draft_inline(text)
+    if ctx.audience is not None:
+        from precis.export.audience import preserve_records
+
+        text = preserve_records(text)
     text = strip_provenance_handles(
         text, title_for=lambda h: record_title(h, ctx.store)
     )
@@ -2238,6 +2267,7 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
         out.append(
             f"\\noindent\\textbf{{{_render_inline(caption, ctx)}}}\\par\\nopagebreak"
         )
+    rendered_header = " & ".join(_render_inline(h, ctx) for h in header) + r" \\"
     rendered_rows: list[str] = []
     for row in rows:
         cells = [_render_inline(row[j], ctx) if j < len(row) else "" for j in range(n)]
@@ -2255,7 +2285,7 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
         out.append("\\begin{center}")
         out.append(f"\\begin{{tabular}}{{{colspec}}}")
         out.append("\\toprule")
-        out.append(" & ".join(_render_inline(h, ctx) for h in header) + r" \\")
+        out.append(rendered_header)
         out.append("\\midrule")
         out.extend(rendered_rows)
         out.append("\\bottomrule")
@@ -2265,7 +2295,7 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
         return out
     out.append(f"\\begin{{longtable}}{{{colspec}}}")
     out.append("\\toprule")
-    out.append(" & ".join(_render_inline(h, ctx) for h in header) + r" \\")
+    out.append(rendered_header)
     out.append("\\midrule\\endhead")
     out.append("\\bottomrule\\endlastfoot")
     out.extend(rendered_rows)
@@ -2295,6 +2325,7 @@ def render_body(
     doi_links: bool = True,
     library_links: bool = True,
     withheld_figures: frozenset[str] = frozenset(),
+    audience: str = "dev",
 ) -> RenderResult:
     """Render the whole draft body to LaTeX (no preamble/title chrome).
 
@@ -2312,6 +2343,11 @@ def render_body(
     itself rides on the bib entry, :func:`build_bib`) — no effect in
     patent/footnote mode, which never emit ``\\cite`` at all."""
     from precis.export._ref_cache import RefLookupMemo
+    from precis.export.audience import for_export, guard_audience
+
+    guard_audience(store, ref, audience)
+    if audience == "external":
+        library_links = False
 
     chunks = store.drafts.reading_order(ref.id)
     back_matter = _back_matter_handles(chunks)
@@ -2341,6 +2377,7 @@ def render_body(
         # refs thousands of times. Standalone callers (the retraction
         # walk, source collection) get the same collapse as export_docx.
         store=RefLookupMemo(store),
+        audience=for_export(store, audience, chunks=chunks),
         legacy_to_dc=walker.legacy_map(chunks),
         doc_type=doc_type,
         footnote_refs=footnote_refs,
@@ -2351,11 +2388,14 @@ def render_body(
         withheld_figures=withheld_figures,
         paragraph_handles=walker.named_headings(chunks, depth_of, back_matter),
     )
+    title_tex = _render_document_title(ref, ctx)
     lines = _render_chunk_lines(
         chunks, ctx, depth_of=depth_of, title_dc=title_dc, back_matter=back_matter
     )
     return RenderResult(
         body="\n".join(lines).strip() + "\n",
+        supplement=ctx.audience.entries,
+        title_tex=title_tex,
         cited_slugs=ctx.cited,
         acronyms=abbrevs,
         acronym_keys=ctx.keymap,
@@ -2365,6 +2405,23 @@ def render_body(
         data_package=ctx.data_package,
         claim_cites=ctx.claim_cites,
     )
+
+
+def _render_document_title(ref: Any, ctx: _Ctx, *, thanks: bool = True) -> str | None:
+    """Render record references in the title before body numbering begins."""
+    from precis.export.audience import has_record_handles
+
+    title = (
+        getattr(ref, "title", None) or getattr(ref, "slug", None) or "Untitled"
+    ).split("\n", 1)[0]
+    if not has_record_handles(title, ctx.store):
+        return None
+    ctx.in_heading = True
+    try:
+        rendered = _render_inline(title, ctx)
+    finally:
+        ctx.in_heading = False
+    return rendered.replace(r"\footnote{", r"\thanks{") if thanks else rendered
 
 
 def _render_chunk_lines(
@@ -2386,6 +2443,10 @@ def _render_chunk_lines(
     ``longtable``). The walk and every decision in it are the walker's
     (:func:`walker.walk_body`); :class:`LatexRenderer` formats."""
     lines: list[str] = []
+
+    def flush_notes(_n: int) -> None:
+        lines.extend(_flush_supplement_notes(ctx))
+
     walker.walk_body(
         chunks,
         LatexRenderer(ctx),
@@ -2394,7 +2455,20 @@ def _render_chunk_lines(
         depth_of=depth_of,
         back_matter=back_matter,
         equation_of=_standalone_equation,
+        on_chunk=flush_notes,
     )
+    lines.extend(_flush_supplement_notes(ctx))
+    return lines
+
+
+def _flush_supplement_notes(ctx: _Ctx) -> list[str]:
+    """Place moving-argument notes after their chunk, preserving each marker."""
+    count = len(ctx.supplement_notes)
+    lines = [
+        f"\\footnotetext[\\numexpr\\value{{footnote}}-{count - i - 1}\\relax]{{{note}}}"
+        for i, note in enumerate(ctx.supplement_notes)
+    ]
+    ctx.supplement_notes.clear()
     return lines
 
 
@@ -2406,10 +2480,12 @@ def _render_moving_arg(text: str, ctx: _Ctx, *, heading: bool = False) -> str:
     in the end bibliography. ``heading``: abbreviations print bare and are
     not defined there (:attr:`_Ctx.in_heading`)."""
     footnotes, ctx.footnote_refs, ctx.in_heading = ctx.footnote_refs, False, heading
+    moving, ctx.moving_arg = ctx.moving_arg, True
     try:
         return _render_inline(text, ctx)
     finally:
         ctx.footnote_refs, ctx.in_heading = footnotes, False
+        ctx.moving_arg = moving
 
 
 def _render_figure(c: Any, ctx: _Ctx, label: str) -> list[str]:
@@ -3157,6 +3233,21 @@ def build_data_package_section(entries: list[DataPackageFigure]) -> str:
     return "\n".join(lines).rstrip()
 
 
+def build_supplement_section(entries: list[Any]) -> str:
+    """Format the shared supplement entries without assigning numbers here."""
+    rows = [
+        r"\section*{Data Supplement}",
+        r"\begin{longtable}{p{0.10\linewidth}p{0.16\linewidth}p{0.64\linewidth}}",
+        r"Entry & Kind & Description \\ \hline",
+    ]
+    rows.extend(
+        f"{_tex(e.number)} & {_tex(e.kind)} & {_tex(e.description)} \\\\"
+        for e in entries
+    )
+    rows.append(r"\end{longtable}")
+    return "\n".join(rows) + "\n"
+
+
 def assemble_document(
     *,
     title: str,
@@ -3171,6 +3262,7 @@ def assemble_document(
     data_package_section: str = "",
     extra_preamble: str = "",
     bib_style: str = _BIB_STYLE_DEFAULT,
+    title_tex: str | None = None,
 ) -> str:
     """Assemble the full ``main.tex`` around the checked-in preamble.
 
@@ -3220,7 +3312,7 @@ def assemble_document(
         parts += ["", "% ── acronyms (auto-generated from defined terms) ──", acronyms]
     parts += [
         "",
-        f"\\title{{{_encode_unicode(_latex_escape(title))}}}",
+        f"\\title{{{title_tex if title_tex is not None else _tex(title)}}}",
         author_block,
         "\\date{\\today}",
         "",
@@ -3275,6 +3367,7 @@ def _export_poster(
     library_links: bool,
     withheld_figures: frozenset[str],
     record_override: bool = False,
+    audience: str = "dev",
 ) -> ExportResult:
     """Render a ``doc_type='poster'`` draft into a compilable A0 project:
     the packaged ``poster.tex`` with the resolved branding profile
@@ -3292,7 +3385,9 @@ def _export_poster(
     failed profile check — the export fails before anything compiles.
     """
     from precis import profiles
+    from precis.export.audience import for_export, guard_artifacts
     from precis.export.poster_profile import ALLOWED_FONTS, resolve_and_validate
+    from precis.export.supplement import write_supplement
 
     profile = resolve_and_validate(
         getattr(ref, "meta", None),
@@ -3317,6 +3412,7 @@ def _export_poster(
         abbrevs=abbrevs,
         known_handles={c.dc for c in chunks},
         store=store,
+        audience=for_export(store, audience, chunks=chunks),
         legacy_to_dc=walker.legacy_map(chunks),
         doc_type=_POSTER_DOC_TYPE,
         doi_links=doi_links,
@@ -3327,21 +3423,23 @@ def _export_poster(
         poster=True,
     )
 
+    document_title = _render_document_title(ref, ctx, thanks=False)
     sections = _poster_sections(chunks, depth_of, title_dc)
-    bodies: list[tuple[str, int | None, list[str]]] = [
-        (
-            title,
-            hint,
-            _render_chunk_lines(
-                members,
-                ctx,
-                depth_of=depth_of,
-                title_dc=title_dc,
-                back_matter=back_matter,
-            ),
+    bodies: list[tuple[str, int | None, list[str]]] = []
+    title_markup: list[tuple[str, str, str]] = []
+    for title, hint, members in sections:
+        title_tex = _render_moving_arg(title, ctx, heading=True)
+        title_markup.append(
+            (title_tex, "\n".join(_flush_supplement_notes(ctx)), _heading_glsadd(ctx))
         )
-        for title, hint, members in sections
-    ]
+        lines = _render_chunk_lines(
+            members,
+            ctx,
+            depth_of=depth_of,
+            title_dc=title_dc,
+            back_matter=back_matter,
+        )
+        bodies.append((title, hint, lines))
     if ctx.cited:
         # \printbibliography lands inside a references-titled block when
         # the draft scaffolded one, else as an extra block on column 3.
@@ -3353,16 +3451,34 @@ def _export_poster(
                     lines.append("\\printbibliography")
     columns: list[list[str]] = [[] for _ in range(_POSTER_COLUMNS)]
     counts = [0] * _POSTER_COLUMNS
-    for title, hint, lines in bodies:
+    for i, (title, hint, lines) in enumerate(bodies):
         col = _poster_column_index(hint, counts)
         counts[col] += 1
         block_lines = "\n".join(lines).strip()
-        title_tex = _render_moving_arg(title, ctx, heading=True)
+        if i < len(title_markup):
+            title_tex, title_notes, title_terms = title_markup[i]
+        else:
+            title_tex = _render_moving_arg(title, ctx, heading=True)
+            title_notes = "\n".join(_flush_supplement_notes(ctx))
+            title_terms = _heading_glsadd(ctx)
         block = (
-            f"\\begin{{block}}{{{title_tex}}}{_heading_glsadd(ctx)}\n"
-            f"{block_lines}\n\\end{{block}}"
+            f"\\begin{{block}}{{{title_tex}}}{title_terms}\n"
+            f"{title_notes}{block_lines}\n\\end{{block}}"
         )
         columns[col].append(block)
+
+    if audience == "external":
+        entries = ctx.audience.entries
+        rows = [r"\begin{tabular}{llp{0.65\linewidth}}"]
+        rows.extend(
+            f"{_tex(e.number)} & {_tex(e.kind)} & {_tex(e.description)} \\\\"
+            for e in entries
+        )
+        rows.append(r"\end{tabular}")
+        columns[-1].append(
+            "\\begin{block}{Data supplement}\n" + "\n".join(rows) + "\n\\end{block}"
+        )
+        write_supplement(entries, target_dir / "supplement.zip")
 
     # Logo strip + profile sidecar.
     logo_runs: list[str] = []
@@ -3399,7 +3515,9 @@ def _export_poster(
         inject.append("\\addbibresource{refs.bib}")
         if doi_links or library_links:
             inject.append(_CITE_LINK_PREAMBLE)
-    inject.append(f"\\renewcommand{{\\PosterTitle}}{{{_tex(title)}}}")
+    inject.append(
+        f"\\renewcommand{{\\PosterTitle}}{{{document_title if document_title is not None else _tex(title)}}}"
+    )
     inject.append(f"\\renewcommand{{\\PosterAuthors}}{{{_tex(authors)}}}")
     inject.append(f"\\renewcommand{{\\PosterAffiliations}}{{{_tex(affiliations)}}}")
     for name, col_blocks in zip(_POSTER_COLUMN_SLOTS, columns):
@@ -3449,6 +3567,15 @@ def _export_poster(
     bib_path.write_text(bib_text, encoding="utf-8")
     latexmkrc_path.write_text(_template_text("latexmkrc"), encoding="utf-8")
 
+    if audience == "external":
+        guard_artifacts(
+            store,
+            ref,
+            [main_path, bib_path, target_dir / "supplement.zip"],
+            cited=ctx.cited,
+            entries=ctx.audience.entries,
+        )
+
     return ExportResult(
         main_tex=main_path,
         bib=bib_path,
@@ -3476,6 +3603,7 @@ def export_draft(
     withheld_figures: frozenset[str] = frozenset(),
     claim_appendix: bool = True,
     record_override: bool = False,
+    audience: str = "dev",
 ) -> ExportResult:
     """Render a draft into a compilable LaTeX project under
     ``target_dir``: ``main.tex`` + ``refs.bib`` + a copy of the
@@ -3508,9 +3636,16 @@ def export_draft(
     ``record_override=True`` writes the ``ref_events`` ``export_override``
     audit row when the export folded finding(s) via an author's override
     (gr491602 — the export itself is a read; only the explicit write ops —
-    the ``draft_export``/``remarkable_send`` jobs and the CLI — pass it)."""
+    the ``draft_export``/``remarkable_send`` jobs and the CLI — pass it).
+
+    ``audience='dev'`` links record handles to the configured application.
+    ``external`` instead numbers them in a Data Supplement, adds descriptive
+    footnotes and writes ``supplement.zip`` beside the project. Private URLs
+    in prose refuse the export; missing stored evidence is recorded as absent."""
     from precis.export import guard_exportable, guard_no_secrets
     from precis.export._ref_cache import RefLookupMemo
+    from precis.export.audience import guard_artifacts, guard_audience
+    from precis.export.supplement import write_supplement
 
     # Same per-export memo the docx path applies (gr493192): render, bib
     # and the sources appendix re-read a handful of refs at every marker,
@@ -3520,6 +3655,9 @@ def export_draft(
     progress.report("reading the draft")
     guard_exportable(ref)
     guard_no_secrets(store, ref)
+    guard_audience(store, ref, audience)
+    if audience == "external":
+        library_links = False
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3538,6 +3676,7 @@ def export_draft(
             library_links=library_links,
             withheld_figures=withheld_figures,
             record_override=record_override,
+            audience=audience,
         )
     patent_mode = doc_type == _PATENT_DOC_TYPE
     if not (bib_style or "").strip():
@@ -3556,6 +3695,7 @@ def export_draft(
         doi_links=doi_links,
         library_links=library_links,
         withheld_figures=withheld_figures,
+        audience=audience,
     )
     if style_warning and not patent_mode:
         rendered.warnings.append(style_warning)
@@ -3611,8 +3751,12 @@ def export_draft(
         else ""
     )
     data_package_tex = build_data_package_section(rendered.data_package)
+    if audience == "external":
+        data_package_tex += build_supplement_section(rendered.supplement)
+        write_supplement(rendered.supplement, target_dir / "supplement.zip")
     main_tex = assemble_document(
         title=title,
+        title_tex=rendered.title_tex,
         author_block=author_block,
         body=rendered.body,
         acronyms=acronyms_tex,
@@ -3663,6 +3807,15 @@ def export_draft(
     # The .latexmkrc makes a bare `latexmk -pdf main.tex` run biber +
     # makeglossaries, so the project is self-contained / reproducible.
     latexmkrc_path.write_text(_template_text("latexmkrc"), encoding="utf-8")
+
+    if audience == "external":
+        guard_artifacts(
+            mstore,
+            ref,
+            [main_path, bib_path, preamble_path, target_dir / "supplement.zip"],
+            cited=rendered.cited_slugs,
+            entries=rendered.supplement,
+        )
 
     return ExportResult(
         main_tex=main_path,

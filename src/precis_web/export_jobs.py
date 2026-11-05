@@ -118,12 +118,12 @@ def _purge_locked(now: float) -> None:
 
 
 def _drop_locked(token: str) -> None:
-    """Forget a job and delete the scratch dir the docx route made for it."""
+    """Forget a job and delete its Word or external PDF scratch directory."""
     job = _JOBS.pop(token)
     path = getattr(job.response, "path", None)
     if path is not None:
         work = Path(path).parent
-        if work.name.startswith("precis-docx-"):
+        if work.name.startswith(("precis-docx-", "precis-draft-external-")):
             shutil.rmtree(work, ignore_errors=True)
 
 
