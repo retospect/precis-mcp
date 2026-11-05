@@ -56,6 +56,25 @@ class TestRenderLinksSection:
         section = render_links_section(store, ref)
         assert "cited by" in section
 
+    def test_sub_kb_endpoint_row_still_names_a_size(self, store: Store) -> None:
+        """gr568219: a memory under 1 kB used to render a blank size cell
+        next to sized gripe rows — every row now reports raw bytes."""
+        from precis.store.types import ChunkInsert
+
+        a = _mk_ref(store, "memory", "subject note")
+        b = _mk_ref(store, "memory", "tiny target note")
+        body = "short body, well under a kilobyte"
+        store.chunks.insert_chunks(
+            b,
+            [ChunkInsert(ord=0, text=body, meta={"chunk_kind": "memory_body"})],
+        )
+        store.add_link(src_ref_id=a, dst_ref_id=b, relation="related-to")
+        ref = store.get_ref(kind="memory", id=a)
+        assert ref is not None
+        section = render_links_section(store, ref)
+        n_bytes = len(body.encode("utf-8"))
+        assert f"{n_bytes}B" in section
+
     def test_chunk_level_endpoints_render_pc_and_dc_handles(self, store: Store) -> None:
         """A chunk-grounded edge renders the *chunk* handle (``pc<id>`` /
         ``dc<id>``), not the coarse record handle — the granular address

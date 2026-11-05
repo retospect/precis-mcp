@@ -413,6 +413,25 @@ def test_unified_diff_respects_n_context() -> None:
     assert "line7" not in diff
 
 
+def test_unified_diff_no_trailing_newline_keeps_lines_apart() -> None:
+    """gr568376: a body without a trailing newline must not glue the last
+    ``-`` and ``+`` lines together — each gets the standard marker."""
+    diff = format_unified_diff("head\nold tail", "head\nnew tail", file_label="x")
+    assert "-old tail\n" in diff
+    assert "+new tail\n" in diff
+    assert "-old tail+new tail" not in diff
+    assert diff.count("\\ No newline at end of file") == 2
+
+
+def test_unified_diff_added_trailing_newline_shows_marker_once() -> None:
+    """pre lacks the final newline, post has it — the marker lands only
+    on the ``-`` side."""
+    diff = format_unified_diff("same\nlast", "same\nlast\n", file_label="x")
+    assert "-last\n\\ No newline at end of file\n" in diff
+    assert "+last\n" in diff
+    assert diff.count("\\ No newline at end of file") == 1
+
+
 # ---------------------------------------------------------------------------
 # classify_diff_hunks — within vs outside edited spans
 # ---------------------------------------------------------------------------

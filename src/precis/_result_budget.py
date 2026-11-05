@@ -122,6 +122,19 @@ def size_cell(n_bytes: int) -> str:
     return f"{max(1, round(n_bytes / 1024))}kB"
 
 
+def row_size_cell(n_bytes: int) -> str:
+    """``size_cell`` with a byte floor — for fetchable-row listings.
+
+    ``size_cell`` blanks sub-kB bodies because in a steering column (toc,
+    outline, ring) the number only earns its place when it changes the
+    choice. A listing row — a links table, a search hit — instead reads a
+    blank as missing data, so sub-kB rows report raw bytes (``830B``)
+    and every row names a size (gr568219: most memories sit under 1 kB
+    and rendered sizeless next to sized gripe rows).
+    """
+    return size_cell(n_bytes) or f"{n_bytes}B"
+
+
 def read_shape(verb: str, args: dict[str, Any]) -> str:
     """Classify a verb call into the fit policy's four read shapes.
 

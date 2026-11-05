@@ -28,7 +28,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from precis import profiles
-from precis._result_budget import size_cell
+from precis._result_budget import row_size_cell
 from precis.handlers._capped_section import DEFAULT_CHILD_ROW_CAP, render_capped_section
 from precis.response import Response
 from precis.utils import handle_registry
@@ -265,7 +265,10 @@ def render_links_section(
                     "related to": f"{rel_marker} {target}".strip(),
                     "keywords": teaser,
                     "how to get": get_call,
-                    "size": size_cell(n_bytes),
+                    # Every row names a size — sub-kB bodies report raw
+                    # bytes, so a small memory doesn't render sizeless
+                    # next to a sized gripe (gr568219).
+                    "size": row_size_cell(n_bytes),
                 }
             )
 

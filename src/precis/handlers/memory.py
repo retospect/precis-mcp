@@ -128,7 +128,7 @@ from psycopg import Connection
 from psycopg.errors import DeadlockDetected, LockNotAvailable
 from psycopg.pq import TransactionStatus
 
-from precis._result_budget import result_context_cap, size_cell
+from precis._result_budget import result_context_cap, row_size_cell, size_cell
 from precis.errors import (
     BadInput,
     Gone,
@@ -891,7 +891,7 @@ class MemoryHandler(NumericRefHandler):
                 cut_hooks=True,
                 filename=True,
                 fallback_hook=firsts.get(r.id, ""),
-                size=size_cell(sizes.get(r.id, 0)),
+                size=row_size_cell(sizes.get(r.id, 0)),
             )
             cost = len(line.encode("utf-8")) + 1
             if lines and used + cost > budget:
@@ -1883,8 +1883,10 @@ class MemoryHandler(NumericRefHandler):
           previous op's result, and the batch lands in a single
           transaction — a bad op refuses the whole call with ``ops[i]``
           naming the failing one and nothing written. Top-level
-          find=/text=/title=/rule=/warrant= are refused alongside ``ops=``;
-          ``meta=``, ``reason=`` and ``dry_run=`` ride along.
+          find=/text= and the anchor args are refused alongside ``ops=``
+          (they belong inside each op dict); ``title=``, ``rule=``,
+          ``warrant=``, ``meta=``, ``reason=`` and ``dry_run=`` apply to
+          the whole call.
 
         The anchored pair takes the file kinds' vocabulary — ``before=`` /
         ``after=`` anchors, ``match='unique'|'first'|'all'|'nth'`` + ``nth=``,
@@ -2032,8 +2034,8 @@ class MemoryHandler(NumericRefHandler):
                     "dict carries its own 'op': 'find-replace'|'insert'|"
                     "'append' (default 'find-replace')",
                     next=(
-                        f"edit(kind='memory', id={id}, ops=[{{'find': 'old', "
-                        "'text': 'new'}}, ...])"
+                        f"edit(kind='memory', id={id}, "
+                        "args={'ops': [{'find': 'old', 'text': 'new'}, ...]})"
                     ),
                 )
             mixed = [
@@ -2041,9 +2043,6 @@ class MemoryHandler(NumericRefHandler):
                 for name, val in (
                     ("find", find),
                     ("text", text),
-                    ("title", new_title),
-                    ("rule", rule_clean),
-                    ("warrant", warrant_clean),
                     ("before", before or None),
                     ("after", after or None),
                     ("where", where),
@@ -2054,14 +2053,25 @@ class MemoryHandler(NumericRefHandler):
             ]
             if mixed:
                 raise BadInput(
-                    f"{'/'.join(mixed)}= is a single-edit argument — with "
-                    "ops= it belongs inside each op dict",
+                    f"{'/'.join(mixed)}= is a per-op argument — with ops= "
+                    "each op dict carries its own find/text/before/after/"
+                    "where/match/nth; title=/rule=/warrant=/hook= still "
+                    "apply to the whole call",
                     next=(
-                        f"edit(kind='memory', id={id}, ops=[{{'find': 'old', "
-                        "'text': 'new'}}, ...]) — meta=, reason= and "
-                        "dry_run= may ride along at top level"
+                        f"edit(kind='memory', id={id}, "
+                        "args={'ops': [{'find': 'old', 'text': 'new'}, ...]})"
                     ),
                 )
+            # ``title=`` / ``rule=`` / ``warrant=`` are ref-level, not
+            # per-span — they ride the batch's one transaction the way they
+            # ride an anchored edit's (gr506768; gr568375 — the skill
+            # promised this and the refusal broke it). ``hook=`` already
+            # merged into ``meta_clean`` above.
+            ops_meta = dict(meta_clean)
+            if rule_clean is not None:
+                ops_meta["rule"] = rule_clean
+            if warrant_clean is not None:
+                ops_meta["warrant"] = warrant_clean
             return self._after_status_write(
                 self._coerce_id(id),
                 meta_clean,
@@ -2070,7 +2080,8 @@ class MemoryHandler(NumericRefHandler):
                     ref_id=self._coerce_id(id),
                     ops=ops,
                     dry_mode=dry_mode,
-                    meta_patch=meta_clean,
+                    meta_patch=ops_meta,
+                    new_title=new_title,
                     reason=reason,
                 ),
             )
@@ -2883,6 +2894,7 @@ class MemoryHandler(NumericRefHandler):
         ops: Any,
         dry_mode: str | None,
         meta_patch: dict[str, Any],
+        new_title: str | None = None,
         reason: str | None = None,
     ) -> Response:
         """``ops=[{find, text, ...}]`` — several anchored edits in one call.
@@ -2898,6 +2910,8 @@ class MemoryHandler(NumericRefHandler):
         :func:`retry_locked` like every body write). Any bad op refuses
         the whole call with ``ops[i]`` naming the failing index — nothing
         is written, so a batch can't leave a half-applied body.
+        ``new_title`` retitles in the same transaction, the way an
+        anchored edit's ``title=`` does (gr568375).
         """
         if not isinstance(ops, list) or not ops:
             raise BadInput(
@@ -2962,7 +2976,7 @@ class MemoryHandler(NumericRefHandler):
                 ),
             )
         shape = self._shape_for_edit(
-            ref, new_body, old_body=old_body, new_title=None, meta_patch=meta_patch
+            ref, new_body, old_body=old_body, new_title=new_title, meta_patch=meta_patch
         )
         if dry_mode is not None:
             preview_link_effects(self.store, ref.id, new_body)
@@ -2978,6 +2992,8 @@ class MemoryHandler(NumericRefHandler):
             else:
                 diff = format_unified_diff(old_body, new_body, file_label=label)
                 body = diff.rstrip("\n") or "(no diff - pre and post are identical)"
+            if new_title is not None:
+                body += f"\n(title would become {new_title!r})"
             return self._with_shape_advisory(
                 Response(body="\n".join([*header, "", body])), shape, dry_run=True
             )
@@ -2991,7 +3007,7 @@ class MemoryHandler(NumericRefHandler):
             lambda: self._write_body(
                 ref.id,
                 new_body,
-                new_title=None,
+                new_title=new_title,
                 meta_patch=meta_patch,
                 expected_body=old_body,
                 exact_body=exact_body,
@@ -3008,7 +3024,12 @@ class MemoryHandler(NumericRefHandler):
             f"({len(old_body.split())} → {len(new_body.split())} words, "
             f"{len(ops)} ops). view='log' for the full diff."
         )
-        if derived_title:
+        if new_title is not None:
+            ack += f" title now: {new_title!r}."
+            nudge = self._first_line_nudge(new_title)
+            if nudge:
+                ack += f"\n\nhint: {nudge}"
+        elif derived_title:
             ack += f" title re-derived: {derived_title[0]!r}."
         lead = self._thread_lead_hint(
             ref.id, self._display_body(ref, old_body), new_body
@@ -3348,7 +3369,7 @@ class MemoryHandler(NumericRefHandler):
                     "body_words": str(body_words.get(r.id, 0)),
                     "links": str(link_counts.get(r.id, 0)),
                     "age": str(age_days),
-                    "size": size_cell(sizes.get(r.id, 0)),
+                    "size": row_size_cell(sizes.get(r.id, 0)),
                 }
             )
         schema = ["kind", "id", "summary", "body_words", "links", "age", "size"]
@@ -3674,7 +3695,7 @@ class MemoryHandler(NumericRefHandler):
                     cut_hooks=False,
                     filename=True,
                     fallback_hook=first,
-                    size=size_cell(len(body_text.encode("utf-8"))),
+                    size=row_size_cell(len(body_text.encode("utf-8"))),
                 )
             )
         return Response(body="\n".join(lines))
@@ -3778,7 +3799,7 @@ class MemoryHandler(NumericRefHandler):
                 cut_hooks=False,
                 filename=True,
                 fallback_hook=first,
-                size=size_cell(len(body_text.encode("utf-8"))),
+                size=row_size_cell(len(body_text.encode("utf-8"))),
             )
             cost = len(line.encode("utf-8")) + 1
             if cur and (len(cur) >= page_size or used + cost > budget):

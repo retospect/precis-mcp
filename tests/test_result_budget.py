@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from precis._result_budget import fit_result_body, size_cell
+from precis._result_budget import fit_result_body, row_size_cell, size_cell
 from precis.errors import BadInput
 from precis.runtime import PrecisRuntime
 from precis.store.store import Store
@@ -210,6 +210,15 @@ def test_size_cell_threshold() -> None:
     assert size_cell(1024) == "1kB"
     assert size_cell(8192) == "8kB"
     assert size_cell(8700) == "9kB" or size_cell(8700) == "8kB"
+
+
+def test_row_size_cell_reports_sub_kb_bytes() -> None:
+    """Fetchable rows name a size at every scale — 830B, not blank (gr568219)."""
+    assert row_size_cell(500) == "500B"
+    assert row_size_cell(830) == "830B"
+    assert row_size_cell(1023) == "1023B"
+    assert row_size_cell(1024) == "1kB"
+    assert row_size_cell(8192) == "8kB"
 
 
 # ── dispatch-level: memory section reads + search/list fitting ──────

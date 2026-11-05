@@ -391,6 +391,14 @@ def test_search_no_match(handler: MemoryHandler) -> None:
     assert "no memory entries match" in r.body
 
 
+def test_tag_listing_names_size_for_sub_kb_memory(handler: MemoryHandler) -> None:
+    """gr568219: every listing row names a size — a sub-kB body reports
+    raw bytes instead of the blank cell ``size_cell`` gives under 1 kB."""
+    handler.put(text="nitrate reduction on copper", tags=["sizetest"])
+    r = handler.search(tags=["sizetest"])
+    assert re.search(r"\b\d+B\b", r.body)
+
+
 def test_search_requires_q(handler: MemoryHandler) -> None:
     with pytest.raises(BadInput):
         handler.search()
@@ -1149,6 +1157,25 @@ def test_dry_run_full_mode(handler: MemoryHandler, store: Store) -> None:
     assert _body(handler, store, mid) == _BODY
 
 
+def test_dry_run_diff_separates_last_lines_without_trailing_newline(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr568376: a body with no trailing newline must not glue the last
+    ``-`` and ``+`` diff lines together."""
+    mid = _make(handler, "head\nold tail")
+    out = handler.edit(
+        id=mid,
+        mode="find-replace",
+        find="old tail",
+        text="new tail",
+        dry_run=True,
+    )
+    assert "-old tail\n" in out.body
+    assert "+new tail" in out.body
+    assert "-old tail+new tail" not in out.body
+    assert _body(handler, store, mid) == "head\nold tail"
+
+
 def test_dry_run_on_replace_mode_is_rejected(handler: MemoryHandler) -> None:
     mid = _make(handler)
     with pytest.raises(BadInput, match="dry_run"):
@@ -1679,15 +1706,55 @@ def test_ops_reject_top_level_single_edit_args(
     for kw in (
         {"find": "beta"},
         {"text": "x"},
-        {"title": "t"},
-        {"rule": "r"},
-        {"warrant": "w"},
+        {"before": "alpha"},
+        {"after": "gamma"},
         {"where": "after"},
         {"nth": 1},
         {"match": "all"},
     ):
-        with pytest.raises(BadInput, match="single-edit"):
+        with pytest.raises(BadInput, match="per-op"):
             handler.edit(id=mid, ops=[{"find": "beta", "text": "BETA"}], **kw)
+    assert _body(handler, store, mid) == _BODY
+
+
+def test_ops_accepts_ref_level_args_in_one_transaction(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr568375: title=/rule=/warrant=/hook= are ref-level — they ride the
+    ops batch's one write the way they ride an anchored edit's."""
+    mid = _make(handler)
+    out = handler.edit(
+        id=mid,
+        ops=[{"find": "beta", "text": "BETA"}],
+        title="retitled header",
+        rule="the step",
+        warrant="because",
+        hook="one-line index",
+    )
+    assert "title now: 'retitled header'" in out.body
+    assert _body(handler, store, mid) == _BODY.replace("beta", "BETA")
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None
+    assert ref.title == "retitled header"
+    assert ref.meta["rule"] == "the step"
+    assert ref.meta["warrant"] == "because"
+    assert ref.meta["hook"] == "one-line index"
+
+
+def test_ops_ref_level_args_dry_run_previews_title(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = _make(handler)
+    out = handler.edit(
+        id=mid,
+        ops=[{"find": "beta", "text": "BETA"}],
+        title="retitled header",
+        dry_run=True,
+    )
+    assert "DRY RUN" in out.body
+    assert "(title would become 'retitled header')" in out.body
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.title == "anchored"
     assert _body(handler, store, mid) == _BODY
 
 
@@ -2174,12 +2241,16 @@ def test_search_view_index_renders_handle_filename_and_hook(
     )
     out = handler.search(q="quokka", tags=["SPACE:repo-dev"], view="index").body
     lines = out.splitlines()
-    assert (
-        f"- Quokka stall (me{a}, quokka_stall.md) — restart the quokka scheduler"
-        in lines
+    # Every row names a size — sub-kB bodies report raw bytes (gr568219).
+    line_a = next(ln for ln in lines if f"me{a}" in ln)
+    assert line_a.startswith(
+        f"- Quokka stall (me{a}, quokka_stall.md) — restart the quokka scheduler · "
     )
+    assert re.search(r"· \d+B$", line_a)
     # no hook, no mirror filename: first body line stands in for the hook
-    assert f"- Quokka native (me{b}) — Native quokka note" in lines
+    line_b = next(ln for ln in lines if f"me{b}" in ln)
+    assert line_b.startswith(f"- Quokka native (me{b}) — Native quokka note · ")
+    assert re.search(r"· \d+B$", line_b)
     assert all(ln.startswith("- ") for ln in lines)
 
 

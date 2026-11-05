@@ -535,7 +535,10 @@ def format_unified_diff(
     Standard ``difflib.unified_diff`` output with the ``--- a/<label>``
     / ``+++ b/<label>`` headers most diff viewers and models expect.
     Uses ``keepends=True`` so trailing-newline differences show up
-    correctly.
+    correctly; a source line with no trailing newline gets the standard
+    ``\\ No newline at end of file`` marker — without it difflib emits
+    the bare ``-``/``+`` text and the next diff line concatenates onto it
+    (gr568376).
 
     When ``pre == post`` returns the empty string (no diff is the
     diff). Callers should treat that as a no-op signal.
@@ -547,10 +550,13 @@ def format_unified_diff(
         tofile=f"b/{file_label}",
         n=n_context,
     )
-    out = "".join(diff)
-    # `unified_diff` may emit a final no-newline marker which is
-    # already standard; nothing to fix up.
-    return out
+    out: list[str] = []
+    for line in diff:
+        if line.endswith("\n"):
+            out.append(line)
+        else:
+            out.append(f"{line}\n\\ No newline at end of file\n")
+    return "".join(out)
 
 
 def classify_diff_hunks(
