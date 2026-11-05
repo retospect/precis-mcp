@@ -58,6 +58,73 @@ def test_memory_reads_filters_are_declared_on_handler_and_tool() -> None:
             assert parameters[name].default is None
 
 
+def test_memory_process_arguments_reach_the_dispatch_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def capture(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
+        assert verb == "put"
+        captured.update(payload)
+        return "queued"
+
+    monkeypatch.setattr(tools_core, "_dispatch", capture)
+    for verb in (MemoryHandler.put, tools_core.put):
+        parameters = signature(verb).parameters
+        for name in ("stages", "action", "wait_s"):
+            assert name in parameters
+            assert parameters[name].default is None
+    tools_core.put(
+        kind="memory",
+        id=42,
+        mode="process",
+        stages=["embeddings"],
+        action="promote",
+        wait_s=0,
+    )
+    assert captured["mode"] == "process"
+    assert captured["stages"] == ["embeddings"]
+    assert captured["action"] == "promote"
+    assert captured["wait_s"] == 0
+
+
+@pytest.mark.parametrize("via_slim", [False, True])
+def test_memory_process_survives_runtime_defaults_and_args(
+    runtime_with_store: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    via_slim: bool,
+) -> None:
+    from precis.tools.mcp_slim import make_slim_verb
+    from tests.conftest import id_of
+
+    runtime = runtime_with_store
+    handler = MemoryHandler(hub=runtime.hub)
+    ref_id = id_of(
+        handler.put(text="Processing fixture body", title="Parity memory").body
+    )
+    runtime.default_tags_resolved = ("processing-session-default",)
+    monkeypatch.setattr(tools_core, "_runtime", runtime)
+    verb = make_slim_verb("put", tools_core.put) if via_slim else tools_core.put
+    result = verb(
+        kind="memory",
+        id=ref_id,
+        mode="process",
+        args={"stages": ["embeddings"], "action": "promote", "wait_s": 0},
+    )
+    assert isinstance(result, str), result
+    assert "[error:" not in result
+    assert "embeddings: queued" in result
+    with runtime.live_store.pool.connection() as conn:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM ref_tags rt JOIN tags t USING(tag_id) "
+                "WHERE rt.ref_id=%s AND t.value='processing-session-default'",
+                (ref_id,),
+            ).fetchone()
+            is None
+        )
+
+
 # (kind, verb) -> the exact value that kind's KindSpec should declare.
 # Absence from this table means "expect None" (no mode= concept) for
 # that (kind, verb) pair. An entry of `()` means "recognises mode= but
@@ -109,6 +176,7 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     #    axis at all. This is the canonical `()` (not None) example the
     #    gr343755 sentinel split exists for ---------------------------
     ("message", "put"): (),
+    ("memory", "put"): ("process",),
     # -- put: paper's sole mode queues an SI discovery+fetch for an
     #    existing paper (put(id=<slug>, mode='fetch-si')); any other value
     #    is BadInput (si-attachments build 1) -------------------------

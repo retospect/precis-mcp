@@ -3882,6 +3882,10 @@ class DispatchMixin(RuntimeShape):
         spec = handler.spec
         if not getattr(spec, "note_like", False):
             return
+        # Processing an existing memory schedules derived work; it is not
+        # a note write and must not acquire the session's creation tags.
+        if verb == "put" and spec.kind == "memory" and args.get("mode") == "process":
+            return
 
         from precis import default_tags as _dt
         from precis.hints import Hint

@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from precis.store import Store
+from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim, block
 from precis.taproot.hub import mint_hub
 from precis.workers.embed import (
@@ -81,6 +82,36 @@ def test_nudge_queues_one_small_urgent_job_per_burst(store: Store) -> None:
     assert status == "queued"
     assert meta["executor"] == "job_inproc"
     assert meta["params"] == {"limit": NUDGE_LIMIT}
+
+
+@pytest.mark.parametrize(
+    ("job_meta", "expect_nudge"),
+    [
+        pytest.param({}, False, id="missing-params"),
+        pytest.param({"params": None}, False, id="null-params"),
+        pytest.param({"params": {}}, False, id="bulk"),
+        pytest.param({"params": {"memory_target": {}}}, True, id="empty-target"),
+        pytest.param({"params": {"memory_target": None}}, True, id="null-target"),
+    ],
+)
+def test_nudge_coalesces_only_with_queued_bulk_jobs(
+    store: Store, job_meta: dict[str, Any], expect_nudge: bool
+) -> None:
+    """A memory-only job cannot pick up the finding that prompted a nudge."""
+    queued = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="Existing embed work",
+        meta={"job_type": "embed_batch", **job_meta},
+    )
+    store.add_tag(queued.id, Tag.closed("STATUS", "queued"), set_by="system")
+
+    with store.tx() as conn:
+        nudged = nudge_fresh_embed(store, conn=conn, reason="fresh finding")
+        assert nudge_fresh_embed(store, conn=conn, reason="same burst") is None
+
+    assert (nudged is not None) is expect_nudge
+    assert len(_nudge_jobs(store)) == int(expect_nudge)
 
 
 def test_nudge_failure_never_breaks_the_write(

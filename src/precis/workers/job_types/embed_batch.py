@@ -23,6 +23,10 @@ Minted by the ``materialize`` scheduler cadence
 (``PRECIS_MATERIALIZE_EMBED=0`` is the opt-out) — but nothing stops an
 operator or another job_type from ``put(kind='job', job_type=
 'embed_batch', executor='job_inproc', ...)`` directly.
+
+``params.memory_target`` opts into one revision-pinned memory work order
+(:mod:`precis.workers.memory_embed`). Ordinary jobs retain their claim order;
+targeted jobs never fall back to draining unrelated chunks.
 """
 
 from __future__ import annotations
@@ -37,6 +41,11 @@ from precis.utils.db_retry import retry_locked
 from precis.workers.embed import EmbedHandler, resolve_embedder, unembedded_chunk_count
 from precis.workers.executors.job_inproc import renew_own_lease
 from precis.workers.job_types import JobTypeSpec
+from precis.workers.memory_embed import (
+    MEMORY_TARGET_SCHEMA,
+    TargetedMemoryEmbedHandler,
+    parse_memory_target,
+)
 
 if TYPE_CHECKING:
     from precis.workers.executors._context import DispatchContext
@@ -48,6 +57,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
     "properties": {
         "limit": {"type": "integer", "minimum": 1},
         "embedder": {"type": "string"},
+        "memory_target": MEMORY_TARGET_SCHEMA,
     },
     "additionalProperties": False,
 }
@@ -91,6 +101,15 @@ _EMPTY_CLAIM_ATTEMPTS = 3
 
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> dict[str, int] | None:
     params = dict(ctx.meta.get("params") or {})
+    target = None
+    if "memory_target" in params:
+        try:
+            target = parse_memory_target(params["memory_target"])
+            if "embedder" in params:
+                raise ValueError("memory_target uses the configured embedder route")
+        except ValueError as exc:
+            ctx.record_failure(f"embed_batch: {exc}", failure_class="infra")
+            return None
     limit = int(params.get("limit", _DEFAULT_LIMIT))
     if limit <= 0:
         ctx.record_failure(
@@ -144,7 +163,26 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> dict[str, int] | None:
             )
             return None
 
-    handler = EmbedHandler(embedder)
+    handler: EmbedHandler
+    if target is not None:
+        try:
+            if embedder.model != target["embedder"]:
+                ctx.record_failure(
+                    "embed_batch: configured embedder model differs from memory_target; "
+                    "inspect worker configuration and memory processing before retrying",
+                    failure_class="infra",
+                )
+                return None
+        except EmbedderUnavailable:
+            ctx.record_failure(
+                "embed_batch: configured embedder unavailable; inspect worker then retry",
+                failure_class="infra",
+            )
+            return None
+        handler = TargetedMemoryEmbedHandler(embedder, target)
+        limit = min(limit, len(target["chunks"]))
+    else:
+        handler = EmbedHandler(embedder)
     processed = ok_total = failed_total = 0
 
     while processed < limit:
@@ -228,6 +266,23 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> dict[str, int] | None:
         ok_total += sum(1 for p in results if not isinstance(p, Exception))
         failed_total += sum(1 for p in results if isinstance(p, Exception))
         processed += len(rows)
+
+    if isinstance(handler, TargetedMemoryEmbedHandler):
+        with ctx.store.pool.connection() as conn:
+            reason = handler.outstanding_reason(conn)
+        if reason is not None:
+            if handler.stale_revision:
+                ctx.append_chunk("job_summary", f"embed_batch: cancelled — {reason}")
+                ctx.set_status("cancelled")
+                return None
+            ctx.record_failure(f"embed_batch: {reason}", failure_class="infra")
+            return None
+        ctx.append_chunk(
+            "job_summary",
+            f"memory me{handler.target['ref_id']}: selected revision embeddings ready "
+            f"({ok_total} written; {len(handler.target['chunks'])} verified)",
+        )
+        return {"embedded": ok_total, "failed": failed_total}
 
     with ctx.store.pool.connection() as conn:
         remaining = unembedded_chunk_count(conn)

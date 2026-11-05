@@ -1485,6 +1485,9 @@ def put(
     # See ``search`` for the Optional-required pattern (round-2 picky N-1).
     kind: str | None = None,
     mode: str | None = None,
+    stages: list[str] | None = None,
+    action: str | None = None,
+    wait_s: float | None = None,
     id: str | int | None = None,
     # str is the documented contract every handler parses against; dict/
     # list is ALSO accepted because some MCP client bridges auto-parse a
@@ -1904,6 +1907,9 @@ def put(
                 "id": id,
                 "text": text,
                 "mode": mode,
+                "stages": stages,
+                "action": action,
+                "wait_s": wait_s,
                 # Rides the same channel as get()'s args=; dispatch pops it and
                 # forwards it unflattened to handlers declaring `args: dict`.
                 # None is falsy there, so the no-args case is a clean no-op.

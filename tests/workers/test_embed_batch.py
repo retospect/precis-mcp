@@ -16,9 +16,10 @@ from typing import Any
 import pytest
 
 from precis.embedder import EmbedderUnavailable, MockEmbedder
-from precis.store import Store
+from precis.store import Store, Tag
 from precis.workers.embed import EmbedHandler
 from precis.workers.job_types import embed_batch
+from precis.workers.materialize import _in_failed_cooldown
 from tests.workers._helpers import make_mock_bge_m3, seed_chunks
 
 pytestmark = pytest.mark.db
@@ -40,22 +41,34 @@ class _FakeCtx:
             kind="job",
             slug=None,
             title="embed_batch test",
-            meta={"executor": "job_inproc", "job_type": "embed_batch"},
+            meta={
+                "executor": "job_inproc",
+                "job_type": "embed_batch",
+                "params": params or {},
+            },
         )
         self.ref_id = int(ref.id)
         self.title = "embed_batch test"
         self.meta: dict[str, Any] = {"params": params or {}}
         self.failures: list[tuple[str, str | None]] = []
         self.summaries: list[tuple[str, str]] = []
+        self.statuses: list[str] = []
 
     def record_failure(self, reason: str, *, failure_class: str | None = None) -> None:
         self.failures.append((reason, failure_class))
+        self.set_status("failed")
 
     def append_chunk(self, kind: str, text: str) -> None:
         self.summaries.append((kind, text))
 
-    def set_status(self, value: str) -> None:  # pragma: no cover — unused here
-        pass
+    def set_status(self, value: str) -> None:
+        self.statuses.append(value)
+        self.store.add_tag(
+            self.ref_id,
+            Tag.closed("STATUS", value),
+            set_by="system",
+            replace_prefix=True,
+        )
 
     def set_meta(self, **_kw: Any) -> None:  # pragma: no cover — unused here
         pass
@@ -242,6 +255,8 @@ def test_embedder_unavailable_fails_infra_and_releases_claims(
     reason, failure_class = ctx.failures[0]
     assert failure_class == "infra"
     assert "unreachable" in reason
+    assert ctx.statuses == ["failed"]
+    assert _in_failed_cooldown(store, "embed_batch")
     assert _embedding_count(store) == 0
     # The claims were released — the chunks are immediately re-claimable,
     # not stuck holding a lease until the cooldown.

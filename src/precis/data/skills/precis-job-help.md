@@ -130,8 +130,50 @@ next section.
 
 | `job_type`          | Executor        | What it does                                  |
 |---------------------|-----------------|-----------------------------------------------|
-| `embed_batch`       | `job_inproc`    | Bounded work order draining the derived embed queue — minted by the `materialize` cadence above the backlog high-water mark |
+| `embed_batch`       | `job_inproc`    | Bounded embedding work; memory `mode='process'` creates a request pinned to the selected current body/header revision |
 | `derived_drain`     | `job_inproc`    | Bounded work order draining a SMALL-tier derived LLM queue (summarize/classify) — cloud-only lane |
+
+## Process one memory before testing recall
+
+```python
+# After the memory put/edit:
+get(kind='memory', id=N, view='processing')
+put(kind='memory', id=N, mode='process',
+    args={'stages': ['embeddings'], 'action': 'promote', 'wait_s': 5})
+get(kind='job', id=J)  # returned handle
+get(kind='memory', id=N, view='processing')
+# Test only after current body/header embeddings are ready.
+search(kind='memory', q='<future recall question>', view='index')
+```
+
+Use the memory write to create the embedding request; a generic queue-drain
+job does not attest that a selected memory was processed. One memory, at most
+32 current body/header chunks, priority 1 without preemption; `wait_s` is
+0–10 seconds. The receipt pins chunk IDs, fingerprints and embedder, reuses
+active work, and reports `queued`, `running`, or artifact-backed `ready`.
+Job success alone is insufficient. Edits require a request for the new revision.
+
+`action='retry'` handles recorded failures; `action='recompute'` explicitly
+invalidates completed embeddings. A repeated completed recompute reuses its
+receipt for that revision. Exact calls and refusal recovery:
+[[precis-memory-help]].
+
+## Choose memory enrichment stages
+
+Omitted `stages` requests all stages; each gets its own outcome. Names match
+the processing view; `embeddings` also accepts `embed:<active embedder>`.
+
+| Stage | Selected-memory control |
+|---|---|
+| `embeddings` | Supported for current body and title/hook card through an inspectable worker job. |
+| `keywords` | Refused: the pending-work pass has no selected-memory queue control; it needs current body embeddings first. |
+| `summary/summarize:rake-lemma` | Refused: the pending-work pass has no selected-memory queue control. |
+| `summary/llm_summarize` | Refused: the drain cannot target this revision; reader salience also changes recall and is not a processing control. |
+| `categorization` | Refused when applicable: dream move processing has no revision-attested job receipt. |
+
+Ineligible stages report `not applicable`. For a refused stage, inspect the
+processing view and ask the worker operator for targeted support. Default
+scheduling, fairness, service priorities and model routes are unchanged.
 
 ## Dark-factory job types — the lanes that run slices and plans
 

@@ -100,6 +100,13 @@ claims before writing; the gardener evaluates existing maintenance candidates
 through its reviewed apply paths. Labelled memory search batches reuse ordinary
 search dispatch and preserve each query's results and errors separately.
 
+Explicit memory processing pins current body/header chunks in a bounded
+`embed_batch` job (`handlers/_memory_process.py::process_memory`). Its
+opt-in worker claim path shares chunk leases with bulk embedding; default
+queue order and model routes stay unchanged. Readiness requires matching
+artifacts. Other enrichment stages refuse targeted requests where the worker
+cannot provide a revision-specific receipt.
+
 ## Subsystems (where the code lives)
 
 | Box | Code | One-line |

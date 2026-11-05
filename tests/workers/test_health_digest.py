@@ -2713,6 +2713,88 @@ def test_diagnose_embed_all_nominal_when_nothing_explains_it(store) -> None:
     assert "all stages nominal" in result
 
 
+def _seed_diagnosis_embed_job(
+    store, status: str, *, targeted: bool = False, error: str | None = None
+) -> int:
+    from precis.store.types import ChunkInsert
+
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="embed diagnosis test",
+        meta={
+            "job_type": "embed_batch",
+            "params": {"memory_target": {}} if targeted else {},
+        },
+    )
+    store.add_tag(
+        ref.id, Tag.closed("STATUS", status), set_by="system", replace_prefix=True
+    )
+    if error is not None:
+        store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=0, text=error, meta={"chunk_kind": "job_event"})],
+        )
+    return int(ref.id)
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "succeeded", "failed"])
+def test_diagnose_embed_targeted_jobs_do_not_hide_silent_materializer(
+    store, status: str
+) -> None:
+    """Targeted-only activity cannot establish that bulk work was minted."""
+    _seed_diagnosis_embed_job(store, status, targeted=True)
+
+    with store.pool.connection() as conn:
+        result = _diagnose_embed_pipeline(conn)
+
+    assert "materializer silent" in result
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "failed"])
+def test_diagnose_embed_targeted_jobs_do_not_implicate_bulk_lane(
+    store, status: str
+) -> None:
+    """A targeted queue, run or failure cannot explain stale corpus backlog."""
+    # A recent cancelled bulk job passes the minting check but supplies no
+    # success that could accidentally mask a counted targeted run/failure.
+    _seed_diagnosis_embed_job(store, "cancelled")
+    _seed_diagnosis_embed_job(store, status, targeted=True)
+
+    with store.pool.connection() as conn:
+        result = _diagnose_embed_pipeline(conn)
+
+    assert "all stages nominal" in result
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_diagnose_embed_targeted_outcome_does_not_mask_bulk_failure(
+    store, status: str
+) -> None:
+    """Target success cannot clear bulk failure; target error cannot replace it."""
+    bulk_id = _seed_diagnosis_embed_job(store, "failed", error="bulk embed failed")
+    # Make the targeted status deterministically newer, exercising the
+    # failure-detail query's ordering as well as the status counts.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags rt SET created_at = now() - interval '1 hour' "
+            "FROM tags t WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s "
+            "AND t.namespace = 'STATUS'",
+            (bulk_id,),
+        )
+        conn.commit()
+    _seed_diagnosis_embed_job(
+        store, status, targeted=True, error="target memory revision changed"
+    )
+
+    with store.pool.connection() as conn:
+        result = _diagnose_embed_pipeline(conn)
+
+    assert "jobs claimed but failing" in result
+    assert "bulk embed failed" in result
+    assert "target memory revision changed" not in result
+
+
 # ── router ↔ digest render: routed findings prefix louder ────────────────
 
 

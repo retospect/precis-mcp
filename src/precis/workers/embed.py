@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from psycopg import Connection
 
 from precis.embedder import Embedder, EmbedderUnavailable, make_embedder
+from precis.workers._embed_jobs import targeted_embed_job_sql
 from precis.workers.base import ClaimedChunk, WorkerHandler
 
 if TYPE_CHECKING:
@@ -681,8 +682,9 @@ _NUDGE_BUCKET_S = 10
 def nudge_fresh_embed(store: Store, *, conn: Connection, reason: str) -> int | None:
     """Queue a small high-priority ``embed_batch`` so a just-written hub chunk
     is embedded within seconds. Returns the new job's ref id, or ``None``
-    when an ``embed_batch`` is already queued (it claims the ``finding`` tier
-    first) or the nudge failed.
+    when a bulk ``embed_batch`` is already queued (it claims the ``finding``
+    tier first) or the nudge failed. A targeted memory job cannot claim the
+    finding and therefore cannot coalesce this nudge.
 
     Runs on the caller's ``conn`` inside a savepoint, so the job commits with
     the hub. A failure is logged and swallowed: the materializer's age trigger
@@ -694,10 +696,11 @@ def nudge_fresh_embed(store: Store, *, conn: Connection, reason: str) -> int | N
     try:
         with conn.transaction():
             queued = conn.execute(
-                """
+                f"""
                 SELECT 1 FROM refs r
                  WHERE r.kind = 'job' AND r.retired_at IS NULL
                    AND r.meta->>'job_type' = 'embed_batch'
+                   AND NOT {targeted_embed_job_sql()}
                    AND (r.meta->>'idem_key' = %s
                         OR EXISTS (
                              SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)

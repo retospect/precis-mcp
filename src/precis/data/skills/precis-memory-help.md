@@ -89,8 +89,10 @@ transcript, not landed history (those live in `git log` and the docs).
    still needs, plus a prefilled copy of step 4. No lines means the node
    is in place.
 4. **Check processing before testing recall.** Read
-   `get(kind='memory', id=N, view='processing')` first. Wait for current
-   body and title/hook embeddings before judging recall quality. Then
+   `get(kind='memory', id=N, view='processing')` first. Use the "Process a
+   selected memory now" call below to promote pending embeddings; inspect
+   its job and processing view until current body and title/hook embeddings
+   are ready before judging recall quality. Then
    `search(kind='memory', q='<the question you
    will ask next time>', view='index')`. If the new `me<N>` is not
    listed, rewrite `title=` / `meta.hook` with those task words — the
@@ -142,6 +144,62 @@ A matching-version marker can prevent reclassification after an edit; the
 view explains when operator review is needed. Worker switches outside the
 stored evidence are not inferred. This view reads evidence; it schedules or
 retries nothing. It requires one memory id.
+
+## Process a selected memory now
+
+```python
+# After writing or editing the memory, inspect the current revision.
+get(kind='memory', id=N, view='processing')
+put(kind='memory', id=N, mode='process',
+    args={'stages': ['embeddings'], 'action': 'promote', 'wait_s': 5})
+# Use the job handle returned by process, then recheck current artifacts.
+get(kind='job', id=J)
+get(kind='memory', id=N, view='processing')
+# Only after current body and title/hook embeddings are ready:
+search(kind='memory', q='<the question you will ask next time>', view='index')
+```
+
+One memory per call, at most 32 current body/header chunks. `embeddings`
+includes both the body and title/hook card; `embed:<active embedder>` from
+the processing view is accepted too. Omitted `stages` requests every stage
+and reports refusals or inapplicability separately. Only embeddings support
+this write; see [[precis-job-help]] for the stage map.
+
+`promote` queues pending work at priority 1 in the existing worker job lane;
+it does not preempt running work or invalidate completed results. Processing
+runs in a worker. The request pins current chunk IDs, content fingerprints
+and the active embedder; an edit makes the old request stale instead of
+redirecting it onto the new revision. Request the current revision again.
+
+`wait_s` is 0–10 seconds, default 0. `queued` or `running` means the work is
+not ready; `pending` means evidence cannot certify execution. `ready` requires
+matching body/header artifacts, even if the job already succeeded. A refusal
+names the obstacle and next step: missing/stale header, absent embedder,
+indexing disabled, too many chunks, or an existing claim requiring inspection.
+
+## Retry or deliberately recompute memory embeddings
+
+```python
+# Recorded failed work; completed embeddings are preserved.
+put(kind='memory', id=N, mode='process',
+    args={'stages': ['embeddings'], 'action': 'retry', 'wait_s': 5})
+# Deliberately replace completed embeddings of the current revision.
+put(kind='memory', id=N, mode='process',
+    args={'stages': ['embeddings'], 'action': 'recompute', 'wait_s': 5})
+```
+
+`retry` requires a recorded failure; `promote` refuses failed work.
+`recompute` requires completed output and no failed artifacts; it explicitly
+invalidates the selected revision's body/header embeddings before queueing.
+Use `retry` for failures, including a failed recompute attempt.
+
+Repeated requests reuse active work across actions, except that `recompute`
+refuses an active promote or retry. Wait for that job to finish, then request
+recompute again; those active jobs preserve already-complete artifacts.
+A completed recompute receipt is also reused for the same revision: replaying
+that call cannot erase its result again. Inspect the returned job and processing view before testing
+recall; a queued receipt never claims completion. Existing chunk claims are
+left for their worker/operator to resolve.
 
 ## Save a thought
 ## Capture a note

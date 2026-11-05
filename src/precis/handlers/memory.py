@@ -448,6 +448,7 @@ class MemoryHandler(NumericRefHandler):
         supports_search=True,
         supports_search_hits=True,
         supports_put=True,
+        modes=("process",),
         # In-place rewrite via edit(mode='replace', text='...') (broad-pass
         # finding #5), or an anchored find-replace / insert. Same id, links stay attached, audit trail lands
         # in ref_events as a ``body_replaced`` row (view='log').
@@ -1080,6 +1081,9 @@ class MemoryHandler(NumericRefHandler):
         warrant: str | None = None,
         meta: dict[str, Any] | None = None,
         dry_run: bool | str = False,
+        stages: list[str] | None = None,
+        action: str | None = None,
+        wait_s: float | None = None,
         **_kw: Any,
     ) -> Response:
         """Create a memory. ``text=`` is the body prose, ``title=`` the short
@@ -1104,7 +1108,49 @@ class MemoryHandler(NumericRefHandler):
 
         ``meta={'hook': '...'}`` sets the memory's one-line index text
         (``refs.meta.hook``); ``type`` (user/feedback/project/reference) is the other writable key.
+
+        ``mode='process'`` schedules bounded current-revision embeddings;
+        request/replay and refusal contracts live in :mod:`._memory_process`.
         """
+        if mode == "process":
+            from precis.handlers._memory_process import process_memory
+
+            if id is None or isinstance(id, (list, bool)):
+                raise BadInput(
+                    "mode='process' requires exactly one memory id",
+                    next="put(kind='memory', id=N, mode='process', args={'stages': ['embeddings']})",
+                )
+            extras = (
+                text,
+                title,
+                tags,
+                untags,
+                link,
+                unlink,
+                rel,
+                auto_refresh_days,
+                rule,
+                warrant,
+                meta,
+            )
+            if (
+                any(value is not None for value in extras)
+                or normalize_dry_run(dry_run) is not None
+                or _kw
+            ):
+                raise BadInput(
+                    "mode='process' accepts only id, stages, action and wait_s",
+                    next=f"put(kind='memory', id={id!r}, mode='process', args={{'stages': ['embeddings']}})",
+                )
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return process_memory(
+                self.store, ref.id, stages=stages, action=action, wait_s=wait_s
+            )
+        if any(value is not None for value in (stages, action, wait_s)):
+            raise BadInput(
+                "stages, action and wait_s require mode='process'",
+                next="put(kind='memory', id=N, mode='process', args={'stages': ['embeddings']})",
+            )
         dry = normalize_dry_run(dry_run) is not None
         if id is not None and dry:
             raise BadInput(

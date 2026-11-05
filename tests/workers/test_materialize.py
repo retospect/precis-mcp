@@ -27,6 +27,7 @@ from precis.store import Store
 from precis.store.types import Tag
 from precis.workers import materialize as m
 from tests.workers._helpers import seed_chunk, seed_ref
+from tests.workers.test_memory_embed import _memory
 
 pytestmark = pytest.mark.db
 
@@ -386,7 +387,115 @@ def test_drained_then_still_above_remints(
     assert _queued_job_count(store, "fake_batch") == 8  # 4 old + 4 new
 
 
+@pytest.mark.parametrize("status", ["queued", "running"])
+@pytest.mark.parametrize(
+    ("job_meta", "expected"),
+    [
+        pytest.param({}, 1, id="missing-params"),
+        pytest.param({"params": None}, 1, id="null-params"),
+        pytest.param({"params": {}}, 1, id="bulk"),
+        pytest.param({"params": {"memory_target": {}}}, 0, id="empty-target"),
+        pytest.param({"params": {"memory_target": None}}, 0, id="null-target"),
+    ],
+)
+def test_live_embed_jobs_count_only_bulk_capacity(
+    store: Store, status: str, job_meta: dict[str, Any], expected: int
+) -> None:
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="Embed capacity",
+        meta={"job_type": "embed_batch", **job_meta},
+    )
+    store.add_tag(job.id, Tag.closed("STATUS", status), set_by="system")
+
+    assert m._live_jobs(store, "embed_batch") == expected
+    assert m._live_jobs(store, "embed_batch", statuses=(status,)) == expected
+
+
+def test_target_key_does_not_change_other_job_type_live_counts(store: Store) -> None:
+    _seed_job(store, "fake_batch", params={"memory_target": {}})
+
+    assert m._live_jobs(store, "fake_batch") == 1
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_targeted_memory_job_does_not_cover_paper_backlog(
+    store: Store, status: str
+) -> None:
+    """gr563701: two memory chunks cannot cover 1,000 pending paper chunks."""
+    paper_id = seed_ref(store)
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text) "
+            "SELECT %s, 'system', n, 'paragraph', 'Pending paper paragraph ' || n "
+            "FROM generate_series(0, 999) AS n",
+            (paper_id,),
+        )
+    target = _memory(store)
+    assert len(target["chunks"]) == 2
+    _seed_job(
+        store,
+        "embed_batch",
+        status,
+        params={"memory_target": target, "limit": 2},
+    )
+    source = next(src for src in m._BACKLOG_SOURCES if src.job_type == "embed_batch")
+
+    assert m._materialize_one(store, source) == 1
+    assert _queued_job_count(store, "embed_batch") == 2
+    assert m._live_jobs(store, "embed_batch") == 1
+    assert m._materialize_one(store, source) == 0
+
+
+def test_targeted_jobs_do_not_fill_bulk_live_cap(
+    store: Store, caplog: pytest.LogCaptureFixture
+) -> None:
+    for _ in range(m._DEFAULT_MAX_JOBS):
+        _seed_job(store, "embed_batch", params={"memory_target": {}, "limit": 2})
+    _seed_job(store, "embed_batch")
+    source = _fake_source({"n": 10_000}, job_type="embed_batch")
+
+    with caplog.at_level("WARNING", logger="precis.workers.materialize"):
+        minted = m._materialize_one(store, source)
+
+    assert minted == m._DEFAULT_MAX_JOBS - 1
+    assert m._live_jobs(store, "embed_batch") == m._DEFAULT_MAX_JOBS
+    warning = next(r for r in caplog.records if "not draining" in r.message)
+    assert "live_jobs=1" in warning.message
+
+
 # ── failed-job cooldown ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("bulk_status", [None, "failed", "succeeded"])
+@pytest.mark.parametrize("target_status", ["failed", "cancelled", "succeeded"])
+def test_targeted_jobs_neither_start_nor_clear_bulk_embed_cooldown(
+    store: Store, bulk_status: str | None, target_status: str
+) -> None:
+    if bulk_status is not None:
+        bulk = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="Bulk embedding",
+            meta={"job_type": "embed_batch"},
+        )
+        store.add_tag(bulk.id, Tag.closed("STATUS", bulk_status), set_by="system")
+        with store.tx() as conn:
+            conn.execute(
+                "UPDATE ref_tags SET created_at = now() - interval '1 minute' "
+                "WHERE ref_id = %s",
+                (bulk.id,),
+            )
+    target = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="Targeted embedding",
+        meta={"job_type": "embed_batch", "params": {"memory_target": {}}},
+    )
+    store.add_tag(target.id, Tag.closed("STATUS", target_status), set_by="system")
+
+    assert m._in_failed_cooldown(store, "embed_batch") is (bulk_status == "failed")
 
 
 def test_failed_job_cooldown_suppresses_remint(
@@ -898,7 +1007,13 @@ def test_backlog_warning_reports_live_jobs_count(
 # synthetic-source sections above which pin policy without a corpus.
 
 
-def _seed_job(store: Store, job_type: str, status: str = "queued") -> None:
+def _seed_job(
+    store: Store,
+    job_type: str,
+    status: str = "queued",
+    *,
+    params: dict[str, Any] | None = None,
+) -> None:
     """Insert one job ref at ``status`` directly (no idem_key, so it can't
     interfere with a same-tick mint's dedupe)."""
     with store.pool.connection() as conn:
@@ -906,7 +1021,11 @@ def _seed_job(store: Store, job_type: str, status: str = "queued") -> None:
             kind="job",
             slug=None,
             title=f"seed {job_type}",
-            meta={"job_type": job_type, "executor": "job_inproc", "params": {}},
+            meta={
+                "job_type": job_type,
+                "executor": "job_inproc",
+                "params": params or {},
+            },
             prio=m._MINT_PRIO,
             conn=conn,
         )
@@ -974,6 +1093,27 @@ def test_age_trigger_mints_nothing_while_embed_batch_live(store: Store) -> None:
 
     assert result.claimed == 0
     assert _queued_job_count(store, "embed_batch") == 1  # only the seed
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_age_trigger_mints_despite_targeted_memory_job(
+    store: Store, status: str
+) -> None:
+    _seed_chunk_aged(store, minutes=120)
+    target = _memory(store)
+    _seed_job(
+        store,
+        "embed_batch",
+        status,
+        params={"memory_target": target, "limit": len(target["chunks"])},
+    )
+
+    result = m.run_materialize_pass(store)
+
+    assert (result.claimed, result.ok, result.failed) == (1, 1, 0)
+    assert _queued_job_count(store, "embed_batch") == 2
+    assert m._live_jobs(store, "embed_batch") == 1
+    assert m.run_materialize_pass(store).claimed == 0
 
 
 def test_age_trigger_ignores_skip_kind_chunks(store: Store) -> None:

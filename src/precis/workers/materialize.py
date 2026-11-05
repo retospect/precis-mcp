@@ -12,6 +12,10 @@ for the backlog not already covered by in-flight jobs — the old
 batches). Churn still coalesces: each job is bounded at
 ``params.limit`` chunks.
 
+Targeted memory embed jobs cover only their pinned revision. The shared
+``_embed_jobs.targeted_embed_job_sql`` predicate excludes them from bulk
+live counts (capacity, age triggers and warnings) and failure cooldowns.
+
 **ON by default (§F cycle b cutover).** :func:`run_materialize_pass` is
 active unless ``PRECIS_MATERIALIZE_EMBED=0`` (or any non-truthy token) —
 the standing ``embed`` pass has lost its rotation slot in
@@ -53,6 +57,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from precis.utils.env import env_int
+from precis.workers._embed_jobs import targeted_embed_job_sql
 from precis.workers.runner import BatchResult
 
 if TYPE_CHECKING:
@@ -353,7 +358,7 @@ def _live_jobs(
     statuses: tuple[str, ...] = ("queued", "running"),
     lease_host: str | None = None,
 ) -> int:
-    """Count of ``job_type`` jobs currently in ``statuses`` (default
+    """Count of bulk ``job_type`` jobs currently in ``statuses`` (default
     ``queued``/``running``, any host) — "a bounded batch and no more until it
     drains". ``params_pass`` narrows to one ``meta.params.pass`` so two SMALL
     sources sharing the ``derived_drain`` job_type count their OWN live jobs,
@@ -379,6 +384,7 @@ def _live_jobs(
             SELECT count(*) FROM refs r
              WHERE r.kind = 'job' AND r.retired_at IS NULL
                AND r.meta->>'job_type' = %s
+               AND NOT {targeted_embed_job_sql()}
                {pass_clause}
                {host_clause}
                AND EXISTS (
@@ -419,6 +425,7 @@ def _in_failed_cooldown(
     :data:`_FAILED_COOLDOWN_MINUTES` — no mint-fail loop. ``params_pass``
     narrows to one ``meta.params.pass`` (same reason as :func:`_live_jobs`) so a
     failed summarize drain doesn't put classify's band into cooldown too.
+    Targeted memory jobs neither start nor clear the bulk embed cooldown.
 
     Keyed on ``ref_tags.created_at`` for the CURRENT ``STATUS:`` tag row,
     not ``refs.updated_at`` — ``set_status``'s ``replace_prefix=True``
@@ -443,6 +450,7 @@ def _in_failed_cooldown(
              WHERE r.kind = 'job' AND r.retired_at IS NULL
                AND r.meta->>'job_type' = %s
                {pass_clause}
+               AND NOT {targeted_embed_job_sql()}
                AND t.namespace = 'STATUS'
                AND t.value = ANY(%s)
              ORDER BY rt.created_at DESC

@@ -125,6 +125,7 @@ from precis.alerts import (
 # imported here.
 from precis.nanopub.stale import candidate_stale_reason
 from precis.store import Store
+from precis.workers._embed_jobs import targeted_embed_job_sql
 from precis.workers.registry import SERVICES, ServiceKind, ServiceSpec
 from precis.workers.runner import BatchResult
 from precis.workers.scheduler import CADENCES
@@ -651,10 +652,13 @@ def _diagnose_embed_pipeline(conn: Any) -> str:
 
 
 def _diagnose_embed_pipeline_inner(conn: Any) -> str:
+    # This diagnoses corpus backlog, so targeted memory work cannot establish
+    # materializer activity or bulk progress (including its terminal outcomes).
     # Stage 1 — materializer minting?
     minted_row = conn.execute(
         "SELECT count(*) FROM refs WHERE kind = 'job' AND retired_at IS NULL "
         "AND meta->>'job_type' = %(jt)s "
+        f"AND NOT {targeted_embed_job_sql('meta')} "
         "AND created_at > now() - (%(w)s || ' hours')::interval",
         {"jt": _DIAGNOSE_JOB_TYPE, "w": _DIAGNOSE_WINDOW_HOURS},
     ).fetchone()
@@ -685,11 +689,12 @@ def _diagnose_embed_pipeline_inner(conn: Any) -> str:
 
     # Stage 2 — jobs claimable? (jobs ARE minting — is a slot advertised?)
     queued_row = conn.execute(
-        """
+        f"""
         SELECT count(*), min(r.created_at)
           FROM refs r
          WHERE r.kind = 'job' AND r.retired_at IS NULL
            AND r.meta->>'job_type' = %(jt)s
+           AND NOT {targeted_embed_job_sql()}
            AND EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                   WHERE rt.ref_id = r.ref_id
@@ -727,7 +732,7 @@ def _diagnose_embed_pipeline_inner(conn: Any) -> str:
 
     # Stage 3 — jobs succeeding?
     status_row = conn.execute(
-        """
+        f"""
         SELECT
             count(*) FILTER (WHERE t.value = 'running')::int,
             count(*) FILTER (
@@ -743,6 +748,7 @@ def _diagnose_embed_pipeline_inner(conn: Any) -> str:
           JOIN tags t ON t.tag_id = rt.tag_id
          WHERE r.kind = 'job' AND r.retired_at IS NULL
            AND r.meta->>'job_type' = %(jt)s
+           AND NOT {targeted_embed_job_sql()}
            AND t.namespace = 'STATUS'
         """,
         {"jt": _DIAGNOSE_JOB_TYPE, "w": _DIAGNOSE_WINDOW_HOURS},
@@ -755,7 +761,7 @@ def _diagnose_embed_pipeline_inner(conn: Any) -> str:
 
     if failed_n > 0 and succeeded_n == 0:
         err_row = conn.execute(
-            """
+            f"""
             SELECT c.text
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
@@ -764,6 +770,7 @@ def _diagnose_embed_pipeline_inner(conn: Any) -> str:
                      ON c.ref_id = r.ref_id AND c.chunk_kind = 'job_event'
              WHERE r.kind = 'job' AND r.retired_at IS NULL
                AND r.meta->>'job_type' = %(jt)s
+               AND NOT {targeted_embed_job_sql()}
                AND t.namespace = 'STATUS' AND t.value = 'failed'
                AND rt.created_at > now() - (%(w)s || ' hours')::interval
              ORDER BY rt.created_at DESC, c.ord DESC
