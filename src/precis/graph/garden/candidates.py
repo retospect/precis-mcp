@@ -38,7 +38,8 @@ as ``not_checked`` rather than silently weakening the evidence to lexical only.
 The opt-in memory-review pass compares sources against recorded pre-touch
 content. Git supplies file-backed section/symbol/skill snapshots; stored
 entities need revision or STATUS-event evidence. Missing history is unknown,
-not a stale claim, and these signals have no apply path.
+not a stale claim. These signals have no apply-time re-check: their proposals
+stay pending outside consumer review, and direct memory apply refuses them.
 """
 
 from __future__ import annotations
@@ -870,7 +871,18 @@ def dangling_mention_candidates(
                     target_kind="ref",
                     target_id=rid,
                     title=f"me{rid} mentions retired handles",
-                    evidence={"mentions": evidence, "content_sha": sha},
+                    evidence={
+                        "mentions": evidence,
+                        "content_sha": sha,
+                        "supporting_shas": _memory_supporting_shas(
+                            store,
+                            [
+                                info["successor"]
+                                for info in evidence
+                                if info["successor"]
+                            ],
+                        ),
+                    },
                     payload={
                         "base_sha": sha,
                         "ops": ops,
@@ -886,6 +898,22 @@ def dangling_mention_candidates(
     if next_cursors is not None:
         next_cursors[key] = nxt
     return out
+
+
+def _memory_supporting_shas(store: Store, handles: list[str]) -> dict[str, str]:
+    """Pin supporting content before review, including an explicit empty map.
+
+    Apply compares fresh detector evidence under dependency locks. A missing
+    map on an older proposal therefore fails closed instead of claiming that
+    its reviewer saw the supporting content that exists now.
+    """
+    ids = {
+        handle: parsed[2]
+        for handle in handles
+        if (parsed := parse_handle(handle)) is not None and not parsed[1]
+    }
+    shas = _ref_shas(store, list(ids.values()))
+    return {handle: shas[rid] for handle, rid in ids.items() if rid in shas}
 
 
 def _thread_bodies(store: Store, ids: list[int]) -> list[tuple[int, str, str]]:
@@ -1024,6 +1052,10 @@ def thread_shape_candidates(
                     "reason": "missing_left" if left is None else "terminal_work",
                     "left": left,
                     "terminal_work": closed,
+                    "supporting_shas": {
+                        **_memory_supporting_shas(store, list(closed)),
+                        **({f"me{ancestor[0]}": ancestor[2]} if ancestor else {}),
+                    },
                     "content_sha": sha,
                     "ancestor_left": ancestor[1] if ancestor else None,
                     "sha_on_prod": "not_checked",

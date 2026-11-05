@@ -15,6 +15,41 @@ through ``precis garden apply`` or the consumer (step 5), never by a
 detector or the proposer. A pass over
 a clean graph writes nothing: no reviews, no chunks, no log spam.
 
+Memory proposals pin supporting ref content as well as the edited body;
+unpinned legacy proposals close before paid review. Stale memory evidence closes
+the old proposal with a retryable rejection so unchanged target content cannot block
+a fresh review. A proposal must match the fresh detector's action, checked
+before paid review and again at apply, so supersede cannot degrade to retire.
+Deterministic refusals close the key; unexpected deterministic apply failures
+hold the proposal so they cannot buy another review each tick. Operational
+database failures (including deadlocks and lock timeouts) leave it pending.
+Memory approvals are saved separately before apply, survive rollback, and
+are reused on bounded later-tick attempts after the same evidence checks.
+If saving the approval itself fails, no apply occurs; a later tick may pay
+again, at most once per proposal per tick within the shared review limit.
+Hold-write failures count as errors without aborting the remaining tick.
+The CLI shows hold reasons; rejecting an apply-error hold reopens its key.
+Unresolved
+rewrite text stays pending without review. Applied find/span pairs must match
+fresh detector ops, and link removals are refused, because model
+payload overrides cannot expand the detector's edit scope. Undo writes a
+terminal rejection on the restored content so the next tick cannot reapply it.
+Supersede and retire have no undo and require stronger preservation evidence.
+Supersede checks incoming and outgoing part-of migrations
+before writing and refuses edges that close a containment cycle. A direct
+parent remains a valid successor: migration drops the collapsed self-loop.
+Memory rewrite remaps changed header anchors and undo restores their saved
+chunk identities because replacing a
+card cascades incoming and outgoing links. The reversal snapshot includes
+incoming header links; an unrestorable chunk anchor refuses the transaction.
+Undo retains unchanged links, including legacy version-zero edges that strict
+trust mode cannot recreate exactly. Replacements of those legacy edges refuse
+before writing; unknown-origin stamped links use a create-time import act.
+Review stamps keep token-safe model names readable and encode other names as
+``hex-`` plus UTF-8 hex (including names starting with that reserved prefix),
+so namespaced model IDs retain their identity within the fixed stamp grammar.
+Review rows and trust acts retain the original model string.
+
 **Pipeline** (:mod:`precis.graph.garden.runner`):
 
 1. Detectors (:mod:`precis.graph.garden.candidates`) — deterministic
@@ -36,13 +71,16 @@ a clean graph writes nothing: no reviews, no chunks, no log spam.
    live memory bodies joined to retired refs, since mention edges only
    target live refs and disappear after retirement. Rewrite proposals pin
    the content SHA and spans, with tombstone/edge successors as evidence.
-   Unresolved replacement text stays null for review; DREAMs are excluded.
+   Unresolved replacement text stays null and outside consumer review;
+   DREAMs are excluded.
    Tombstone successors must resolve to a live ref within 16 cycle-checked
    hops, using the tombstone reader's resolver so converted kinds retain
    their redirect. Each memory carries at most 20 matches, marked when capped,
    to bound the judge's evidence. Memory detectors have their own action sets
    and prompt version so their rules cannot reopen existing v2 rejections.
-   These proposals have no apply or auto-apply path.
+   These rewrites can use the reviewed memory door behind the default-off
+   ``PRECIS_GARDEN_MEMORY_APPLY`` consumer gate; no-model successor rewrites
+   remain deferred to gr564554.
    ``thread_shape`` covers tagged thread children too: missing ``Left:``
    or terminal todo/gripe work proposes supersede by the nearest live
    ancestor with a current ``Left:``, else retire. A supersede proposal
@@ -77,6 +115,12 @@ a clean graph writes nothing: no reviews, no chunks, no log spam.
    proposals, and an approve applies through the undoable door
    (merge repointing, or the reviewed structural write for a relink —
    gr507641).
+   With ``PRECIS_GARDEN_MEMORY_APPLY`` enabled, memory rewrite/supersede/retire
+   proposals from ``dangling_mention``, ``anchor_rot`` and ``thread_shape``
+   share this review budget. Eligibility and apply-time re-checks use one
+   detector registry so proposals that cannot apply do not spend a review.
+   The six ``memory-review`` detectors stay pending without consumer review
+   or state changes. ``qualify`` and ``ask`` remain outside that consumer.
 
 **Memory reconciliation.** Memory candidates (including ``dup_pair``) and the
 interactive ``precis-make-memory`` skill share the packaged memory-help policy

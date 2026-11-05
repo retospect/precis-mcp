@@ -60,6 +60,16 @@ GARDEN_ACTOR = "graph-garden"
 #: readable.
 GARDEN_VERSION = "garden.v1"
 
+#: Shared with the consumer so reviewer evidence needs no consumer import.
+MEMORY_APPLY_ACTIONS = frozenset({"rewrite", "supersede", "retire"})
+
+#: Candidate re-checks shared by consumer eligibility and the memory apply door.
+MEMORY_APPLY_DETECTORS = {
+    "dangling_mention": "dangling_mention_candidates",
+    "anchor_rot": "anchor_rot_candidates",
+    "thread_shape": "thread_shape_candidates",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class GardenProposal:
@@ -87,7 +97,21 @@ def proposal_ref_ids(proposal: GardenProposal) -> list[int]:
         val = proposal.payload.get(key)
         if isinstance(val, int):
             ids.append(val)
-    if proposal.detector == "dangling_mention":
+    if proposal.action in MEMORY_APPLY_ACTIONS:
+        successors = [proposal.payload.get("successor")]
+        successors.extend(
+            mention.get("successor")
+            for mention in proposal.evidence.get("mentions", [])
+            if isinstance(mention, dict)
+        )
+        for successor in successors:
+            if isinstance(successor, int):
+                ids.append(successor)
+            elif isinstance(successor, str):
+                parsed = parse_handle(successor)
+                if parsed is not None and not parsed[1]:
+                    ids.append(parsed[2])
+    elif proposal.detector == "dangling_mention":
         for mention in proposal.evidence.get("mentions", []):
             successor = parse_handle(str(mention.get("successor") or ""))
             if successor is not None and not successor[1]:
@@ -124,7 +148,9 @@ def key_block(
     while the target is unchanged — its ``content_sha`` still matches the
     target's sha now (gr504843: the same unchanged candidate came back
     every tick). An edit to the target, or an ``approved`` verdict,
-    re-opens the slot. No actor filter: the terminal verdict belongs to
+    re-opens the slot. A retryable rejection closes the old proposal but
+    re-opens the key: stale supporting evidence needs a fresh review even
+    when the target's content is unchanged. No actor filter: the verdict belongs to
     whoever resolved it, not to graph-garden.
 
     A proposer rejection (:func:`record_rejection`) blocks only a caller
@@ -137,7 +163,7 @@ def key_block(
             continue
         if rev.verdict == "proposed":
             return "pending"
-        if rev.verdict == "rejected" and rev.current:
+        if rev.verdict == "rejected" and rev.current and not g.get("retryable"):
             if g.get("proposer_reject") and g.get("prompt") != prompt_version:
                 return None
             return "rejected"

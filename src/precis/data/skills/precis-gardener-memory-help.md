@@ -35,7 +35,7 @@ entries alongside verified failures, never rot evidence. A body with only
 unverifiable anchors produces no proposal. DREAMs and retired bodies are
 excluded. The evaluator distinguishes rename, removal and already-recorded
 history; a live SHA proves existence, not that the surrounding claim is
-current. Rewrites remain proposal-only, with no apply path.
+current. The reviewed rewrite door re-verifies the evidence before applying.
 
 ## Restated memory claims
 
@@ -123,3 +123,60 @@ and its source evidence; missing-history entries accompany verified changes
 in `not_checked`. Unverifiable-only bodies produce no proposal. The evaluator
 compares the claim with the new text and rejects unchanged meaning or dated
 history. Both detectors propose rewrites only; neither adds an apply path.
+
+## Reviewed memory actions
+
+`PRECIS_GARDEN_MEMORY_APPLY` defaults **off**. While off, the consumer
+leaves `rewrite`, `supersede` and `retire` proposals pending without a
+reviewer call, write or row-state change. Enabling the flag admits only
+`dangling_mention`, `anchor_rot` and `thread_shape` to the existing bounded
+Opus review pass; it does not bypass review. The sampled reviewer and
+Fable cross-check remain non-terminal. The no-model
+`dangling_mention` auto-apply is deferred to gr564554.
+
+Before a memory action applies, its door checks that the proposal is
+still pending and current, the node's pinned SHA holds, and the detector
+predicate still holds. Its action must match the fresh candidate's action:
+a proposer cannot replace a supersede with a retire. Mismatches close as
+non-retryable `apply_refused` before paid review, with the same check at apply.
+A `trust_origin='human'` or currently `considered`
+node is held for a human (`garden_review`, `held='human'`), including
+when protection changed after review.
+
+Unresolved rewrite ops (`text=null`) stay pending without a reviewer call.
+Legacy proposals lacking supporting ref SHA pins close before review so a
+fresh detector run can replace them. Stale evidence permits a fresh proposal;
+deterministic apply refusals close the unchanged key. Operational database
+errors, including deadlocks and lock timeouts, leave proposals pending and
+reuse the saved approval on a later tick within the shared review budget.
+If saving approval itself fails, nothing applies; a later tick may pay again,
+at most once per proposal per tick. Other unexpected apply errors hold the
+proposal for a human. `precis garden proposals` shows the hold reason;
+after fixing an `apply_error`, `precis garden reject <review_id>` reopens
+the unchanged key for a fresh proposal. Failed hold writes count as errors
+without aborting the rest of the tick.
+
+The six `memory-review` detectors remain proposal-only: even with the gate
+on, the consumer leaves them pending, unreviewed and unchanged because
+they have no apply-time detector checks. `qualify` and `ask` stay outside
+consumer review.
+
+An approved rewrite applies anchored edits with
+`reason='garden:<detector>:<proposal id>'`, recording the
+`kg-review:<model>:<UTC date>:fixed` trust stamp in the same transaction.
+Its `meta.garden_rewrite` records the proposal, prior SHA and body chunk,
+body bytes, outgoing links and incoming chunk links. Each applied `find` and
+`span` must match a freshly detected op; the model supplies replacement text.
+Mention synchronization cannot silently drop provenance or route links:
+link removals are refused because no rewrite detector justifies them.
+`precis garden undo <rewrite_id>` restores the prior body byte-for-byte and
+the saved links, then rejects the key on the restored content so the next
+tick cannot apply it again.
+
+An approved supersede writes the winner → loser `supersedes` edge,
+retires the loser and stamps `meta.superseded_by` so ordinary `get`
+redirects to the survivor. Retire uses the existing memory delete door.
+Neither action has undo. Both require review that still-true claims and needed
+figures are already preserved elsewhere; a payload instruction to preserve them later is not
+enough. Applied rows remain `approved` plus `garden.applied`, with no
+new verdict or table.

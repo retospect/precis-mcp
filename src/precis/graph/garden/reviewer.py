@@ -16,9 +16,9 @@ shape) so Opus's verdicts get an independent check:
   :mod:`precis.graph.garden.proposals` does not see it and the proposal
   stays open for a human.
 - It must NOT call ``resolve_proposal``: a terminal ``approved`` row
-  echoing the garden key would retire the key and read as applied for
-  a merge. Merge stays the only auto-apply path; the reviewer is an
-  opinion, not a bar.
+  echoing the garden key would close the proposal as applied.
+  The consumer owns merge/relink apply and opt-in memory
+  rewrite/supersede/retire apply; sampled reviews remain opinions only.
 
 The agreement rates per detector — the share of sampled proposals the
 Opus reviewer approved (proposer–Opus agreement) and, on the paired
@@ -44,6 +44,8 @@ from typing import TYPE_CHECKING, Any
 from precis.graph.garden.proposals import (
     GARDEN_ACTOR,
     GARDEN_VERSION,
+    MEMORY_APPLY_ACTIONS,
+    MEMORY_APPLY_DETECTORS,
     GardenProposal,
     _parse_note,
     proposal_ref_ids,
@@ -112,7 +114,7 @@ proposals (refs = typed nodes, links = typed edges, tags = closed
 namespaces).
 
 You are given ONE pending maintenance proposal — a cheaper proposer
-already accepted it and a human would carry it out. Give your verdict on
+already accepted it and {executor} would carry it out. Give your verdict on
 the proposal itself: does the evidence support the action? You are a
 bar, not a cheerleader — false accepts hide a noisy detector.
 
@@ -128,7 +130,13 @@ when unsure, reject.
 def _prompt_for(
     proposal: GardenProposal, excerpts: dict[str, str] | None = None
 ) -> str:
-    head = _PROMPT_HEAD
+    consumer_action = (
+        proposal.action in MEMORY_APPLY_ACTIONS
+        and proposal.detector in MEMORY_APPLY_DETECTORS
+    )
+    head = _PROMPT_HEAD.replace(
+        "{executor}", "a human or a gated consumer" if consumer_action else "a human"
+    )
     if uses_memory_policy(proposal.detector, proposal.evidence, proposal.payload):
         head += "\n" + memory_reconciliation_policy()
     return (
@@ -138,6 +146,7 @@ def _prompt_for(
             if uses_memory_policy(
                 proposal.detector, proposal.evidence, proposal.payload
             )
+            or proposal.action in MEMORY_APPLY_ACTIONS
             else ""
         )
         + "\nProposal:\n"
@@ -182,6 +191,7 @@ def _routed_verdict(
     excerpts = (
         ref_excerpts(store, proposal_ref_ids(proposal))
         if uses_memory_policy(proposal.detector, proposal.evidence, proposal.payload)
+        or proposal.action in MEMORY_APPLY_ACTIONS
         else None
     )
     result = route(

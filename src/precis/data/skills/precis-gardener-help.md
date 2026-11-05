@@ -1,7 +1,7 @@
 ---
 id: precis-gardener-help
 family: memory
-title: precis — the graph gardener (proposals-only graph upkeep)
+title: precis — the graph gardener (reviewed graph upkeep)
 summary: scheduled, bounded maintenance over graph nodes/edges/tags that files review-ledger proposals; a consumer step prunes dangling edges and has Opus apply or reject merges
 answers:
   - what is the graph_garden job and what does it change?
@@ -20,9 +20,9 @@ status: active
 
 # precis-gardener-help — the graph gardener
 
-`graph_garden` is a job_type that keeps the knowledge graph honest —
-proposals only. It never merges, splits, prunes, relinks or retags on
-its own. Every accepted candidate lands as one row in the reviews
+`graph_garden` is a job_type for graph maintenance. Its detectors and
+proposer emit proposals; its consumer applies the supported actions
+described below. Every accepted candidate lands as one row in the reviews
 ledger: `verdict='proposed'`, `actor='graph-garden'`, the machine
 payload JSON in `note` (`garden.action`, `garden.evidence`,
 `garden.payload`, `garden.rationale`). A row stays *current* while its
@@ -59,20 +59,19 @@ siblings|paper-identity|memory|memory-review`, one name or a list, default `all`
   handles, even when no mention edge remains. A `rewrite` proposal pins
   the target SHA, exact spans, retire dates and any successor. Null
   replacement text needs evaluation; it is never a deletion instruction.
-  DREAM memories are excluded. Proposals stay pending for review: there
-  is no rewrite apply or auto-apply door. `thread_shape` scans tagged
+  DREAM memories are excluded. `thread_shape` scans tagged
   thread children as well as roots: a missing `Left:` line or a terminal
   todo/gripe on that line proposes `supersede` by the nearest ancestor
   thread with a current `Left:`, otherwise `retire`. Needed figures must
   be folded into the ancestor's `Earlier:` line before superseding; all
   retirement requires preservation review. Section hubs are excluded.
-  These actions are proposal-only. SHA ancestry on `origin/prod` is not
-  checked: there is no general ancestry oracle in the DB.
+  SHA ancestry on `origin/prod` is not checked: there is no general ancestry
+  oracle in the DB.
 
 The independent opt-in `memory-review` pass runs `entity_claim_stale`,
 `negative_undated`, `restated_claim`, `review_due`, `source_drift` and
 `title_shape`; `all` and `memory` exclude it. Memory anchor, review, source
-and entity checks: [[precis-gardener-memory-help]].
+and entity checks and reviewed memory apply: [[precis-gardener-memory-help]].
 
 ## Structural scans
 

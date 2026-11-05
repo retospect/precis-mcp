@@ -172,7 +172,8 @@ where to look, the standard above says what to write.
 | structure, example | rewrite handle | rewrite / replace | replace with the live equivalent | replace with a live example |
 | restatement | point at the successor | keep the newer truth once | this node is now the only copy: keep it, say so | keep it, say so |
 
-The first column is the no-model auto-apply; every other cell is the
+The first column's proposed no-model auto-apply is deferred to gr564554;
+this cut requires review for every memory action. Every other cell is the
 evaluator writing the current truth in. A handle inside a dated history
 line is a record, not a claim, and is left alone.
 Forward rule for the skills: the role is the relation — evidence is
@@ -183,6 +184,10 @@ see-also only — so a future dangling edge resolves by its relation.
 
 - The consumer's Opus review covers `rewrite`, `supersede` and `retire`
   like merge/relink today, with the Fable cross-check sample unchanged.
+  `PRECIS_GARDEN_MEMORY_APPLY` defaults off: no reviewer call, apply or
+  row-state change for these actions; their proposals stay pending. The
+  gate is read at each consumer invocation, independently of the live
+  memory detector pass.
 - **apply_rewrite** (new door in `graph/garden/apply.py`): an anchored
   memory edit with the pinned sha as `base_sha`, `reason='garden:<detector>:<proposal>'`,
   the `kg-review:<model>:<date>:fixed` trust stamp, and a reversal record
@@ -190,6 +195,10 @@ see-also only — so a future dangling edge resolves by its relation.
   `precis garden undo <rewrite_id>` replays the prior body. Apply-time
   re-verification: the proposal is current, the anchor still fails /
   the entity still says what the evidence said, the node sha is unchanged.
+  The reversal record snapshots outgoing links before mention sync can
+  prune them. Provenance and route links survive shortening unless the
+  proposal explicitly removes a link with a stated reason; undo restores
+  the outgoing snapshot exactly as well as the prior body bytes.
 - **apply_supersede**: `supersedes` edge, retire the loser, write
   `meta.superseded_by` on the tombstone so `get` redirects exactly as a
   garden merge does. **apply_retire**: through
@@ -197,13 +206,9 @@ see-also only — so a future dangling edge resolves by its relation.
 - **Human protection**: a node with `trust_origin='human'` or a current
   `considered` stamp is held (`garden_review` row, `held=human`), never
   applied by the consumer.
-- **One mechanical auto-apply**, in the spirit of auto-prune:
-  `dangling_mention` whose retired ref carries a **duplicate** successor
-  (a merge-made redirect, or a `supersedes` edge to a node with the same
-  normalised title) rewrites the handle text without a model call,
-  recorded like a prune (`garden.applied='mention'`, the before/after
-  span in the row). An agent-written `supersedes` with different content
-  goes to the evaluator, which checks the span is still supported.
+
+The no-model `dangling_mention` auto-apply is out of this cut (gr564554).
+No memory action applies without review.
 
 ### 4b. Compaction before any retire
 
@@ -281,8 +286,9 @@ third, the entity normal form last. `blocked-by` edges carry the order.
 2. gr560758 — `anchor_rot` detector (medium).
 3. gr560759 — `thread_shape` detector (small).
 4. gr560760 — `rewrite`/`supersede`/`retire` actions, `apply_rewrite`
-   with undo, consumer review extended, human hold, the successor-handle
-   auto-apply (medium; blocks 6 and 11).
+   with body/link undo, consumer review extended behind the default-off
+   memory apply gate, human hold (medium; blocks 6 and 11).
+   Successor-handle auto-apply is deferred to gr564554.
 6. gr560762 — evaluator memory-body mode and the per-type checklist
    (medium; after 4; blocks 7, 8, 9, 12).
 7. gr560763 — `review_due`, `title_shape`, `negative_undated` detectors
@@ -332,8 +338,9 @@ table are not clickable).
   byte-for-byte; apply refuses on a sha mismatch, on a human-origin node,
   and on a stale proposal; the `kg-review` stamp lands in the same
   transaction.
-- The superseded-handle auto-apply never runs a model and records the
-  before/after span.
+- While `PRECIS_GARDEN_MEMORY_APPLY` is off, memory proposals stay pending
+  without review spend or state changes. When on, every applied memory
+  action has a review; no-model successor rewrites belong to gr564554.
 - `precis garden stats` reports pending, sampled and the Opus agreement
   rate per new detector; a detector below 0.8 agreement over its first 50
   verdicts stays proposal-only (no auto-apply widening) until its prompt

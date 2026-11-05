@@ -8,7 +8,7 @@ acts:
 * ``precis garden proposals`` — the pending-proposal read view: every
   garden proposal still awaiting a verdict, newest first, flagged
   ``stale`` when the target has drifted past the sha the proposal was
-  written against.
+  written against. Consumer holds show their reason and follow-up.
 * ``precis garden apply <review_id>`` — the explicit apply door.
   v1 supports ``action=merge`` proposals only: the loser's links
   repoint onto the winner, the loser retires as an alias, and the
@@ -31,15 +31,18 @@ acts:
   plus pending counts. Reporting only, no gate.
 
 Non-merge proposals get ``precis garden reject <review_id>`` to retire
-them from the queue without an apply.
+them from the queue without an apply. Rejecting an ``apply_error`` hold
+reopens its key for a fresh proposal after the error is fixed.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
+from typing import Any
 
 from precis.cli._common import bind_process_store, resolve_dsn
 from precis.errors import BadInput, NotFound
@@ -59,7 +62,16 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     prop = gp.add_parser("proposals", help="List pending graph-gardener proposals.")
     prop.add_argument(
         "--action",
-        choices=["merge", "split", "relink", "prune", "tag"],
+        choices=[
+            "merge",
+            "split",
+            "relink",
+            "prune",
+            "tag",
+            "rewrite",
+            "supersede",
+            "retire",
+        ],
         default=None,
         help="Show only proposals of one action kind.",
     )
@@ -79,7 +91,7 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         ),
         (
             "undo",
-            "Undo an applied merge or relink by its recorded id.",
+            "Undo an applied merge, relink or memory rewrite by its recorded id.",
             "apply_id",
         ),
     ):
@@ -132,6 +144,33 @@ def _actor(args: argparse.Namespace) -> str:
     return args.by or os.environ.get("USER") or "human"
 
 
+def _proposal_holds(store: Store, review_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """Read consumer holds for these proposals without casting arbitrary notes."""
+    from precis.graph.garden.consumer import CONSUMER_ACTOR
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT p.review_id, h.note FROM reviews p JOIN reviews h "
+            "ON h.target_kind = p.target_kind AND h.target_id = p.target_id "
+            "WHERE p.review_id = ANY(%s) AND h.actor = %s AND h.note LIKE %s "
+            "ORDER BY h.review_id DESC",
+            (review_ids, CONSUMER_ACTOR, '%"garden_review"%'),
+        ).fetchall()
+    holds: dict[int, dict[str, Any]] = {}
+    for review_id, note in rows:
+        try:
+            hold = json.loads(note).get("garden_review")
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if (
+            isinstance(hold, dict)
+            and hold.get("proposal") == review_id
+            and hold.get("held")
+        ):
+            holds.setdefault(review_id, hold)
+    return holds
+
+
 def _proposals(args: argparse.Namespace, store: Store) -> None:
     from precis.graph.garden.proposals import pending_proposals
 
@@ -139,12 +178,17 @@ def _proposals(args: argparse.Namespace, store: Store) -> None:
     if not rows:
         print("no pending garden proposals")
         return
+    holds = _proposal_holds(store, [p.review_id for p in rows])
     for p in rows:
         stale = "" if p.current else "  [stale: target changed]"
         print(
             f"review {p.review_id}: {p.action} {p.target_kind}:{p.target_id}"
             f"{stale}\n    {p.title} — {p.rationale}"
         )
+        if hold := holds.get(p.review_id):
+            print(f"    held: {hold['held']} — {hold.get('why', '')}")
+            if hold.get("apply"):
+                print(f"    next: {hold['apply']}")
         for k, v in sorted(p.evidence.items()):
             print(f"    {k}: {v}")
         if p.payload:
@@ -192,8 +236,15 @@ def _apply(args: argparse.Namespace, store: Store) -> None:
 def _reject(args: argparse.Namespace, store: Store) -> None:
     from precis.graph.garden.proposals import resolve_proposal
 
+    review_id = int(args.review_id)
+    hold = _proposal_holds(store, [review_id]).get(review_id, {})
+    extra = (
+        {"reason": "apply_error", "retryable": True}
+        if hold.get("held") == "apply_error"
+        else None
+    )
     row = resolve_proposal(
-        store, int(args.review_id), actor=_actor(args), verdict="rejected"
+        store, review_id, actor=_actor(args), verdict="rejected", extra=extra
     )
     if row is None:
         print(
@@ -201,13 +252,21 @@ def _reject(args: argparse.Namespace, store: Store) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
-    print(f"rejected proposal {args.review_id}")
+    suffix = " — retryable after the apply error is fixed" if extra else ""
+    print(f"rejected proposal {args.review_id}{suffix}")
 
 
 def _undo(args: argparse.Namespace, store: Store) -> None:
-    from precis.graph.garden.apply import undo_merge, undo_relink
+    from precis.graph.garden.apply import undo_merge, undo_relink, undo_rewrite
 
     apply_id = args.apply_id
+    if apply_id.startswith("garden-rewrite:"):
+        counts = undo_rewrite(store, apply_id, actor=_actor(args))
+        print(
+            f"undid {apply_id}: prior body restored, "
+            f"{counts['links_restored']} link(s) restored"
+        )
+        return
     if apply_id.startswith("garden-relink:"):
         counts = undo_relink(store, apply_id, actor=_actor(args))
         print(f"undid {apply_id}: {counts['links_deleted']} link(s) deleted")

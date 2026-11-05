@@ -1,7 +1,7 @@
-"""The apply door — explicit, human-invoked, never called by a pass.
+"""Reviewed apply doors — called explicitly or by the proposal consumer.
 
 This module exists so an *accepted* proposal can be applied cleanly and
-undone — the gardener itself never calls it. Two shapes are supported:
+undone — detectors and proposers never call it. Structural actions:
 merges repoint every link off the loser onto the winner, fold the
 loser's name into the winner's aliases, and retire the loser with
 ``meta.superseded_by`` set; relinks (gr507641) write the structural edge
@@ -9,6 +9,18 @@ an approved proposal names — child → parent, ``specialises`` or another
 of the gated structural relations. Split/prune/tag proposals are for a
 human to carry out by hand today; the apply surface is deliberately
 narrower than the proposal space.
+
+Memory rewrites, supersedes and retirements re-run their detector under
+the target lock. The consumer enables these only with
+``PRECIS_GARDEN_MEMORY_APPLY`` (default off); human-origin and currently
+considered targets are held. Rewrites use the pinned ``base_sha`` and
+anchored memory edit door in one ``Store.atomic`` transaction with the
+approval, reversal record and ``kg-review`` trust act. The record includes
+body bytes because the old chunk is deleted, and outgoing link rows because
+mention sync can otherwise erase provenance/route edges. Undo restores
+that snapshot and refuses to overwrite intervening work. Supersede and
+retire both use the existing memory delete door; supersede also leaves
+the tombstone redirect and a winner-to-loser ``supersedes`` edge.
 
 Reversibility is the contract. Every repointed edge is recorded —
 original endpoints, chunks, relation, meta — on the loser's
@@ -36,14 +48,18 @@ primary link) refuses — the merge itself never moves them. The sanctioned
 move is the canonical_unit-safe re-point
 (``store.repoint_measurand_measures``, migration 0234's
 ``precis.allow_measurand_repoint`` door): run it first, then this.
+Memory rewrite and undo likewise refuse links anchoring measures: deleting
+and reinserting an edge would otherwise clear its measure FK permanently.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+import re
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -58,6 +74,7 @@ from precis.store._links_ops import (
 )
 from precis.store.revision_context import (
     TrustAct,
+    apply_revision_context,
     revision_context,
     trust_door,
 )
@@ -1090,15 +1107,858 @@ def undo_relink(store: Store, relink_id: str, *, actor: str) -> dict[str, int]:
     return {"links_deleted": deleted}
 
 
+# ── reviewed memory actions ──────────────────────────────────────────────
+
+
+@dataclass(slots=True)
+class RewriteRecord:
+    """Undo data on ``refs.meta.garden_rewrite``.
+
+    Body chunks are deleted by the memory edit door, so the old chunk id
+    alone cannot replay the bytes. Keep its text and outgoing links too.
+    Incoming chunk links also need preservation across the chunk cascade.
+    """
+
+    rewrite_id: str
+    proposal: int
+    target: int
+    prior_sha: str
+    prior_body_chunk_id: int
+    prior_body: str
+    prior_title: str
+    prior_body_ord: int
+    links: list[dict[str, Any]]
+    prior_header: dict[str, Any] | None = None
+    applied_sha: str = ""
+    applied_body_chunk_id: int = 0
+    applied_links: list[dict[str, Any]] = field(default_factory=list)
+    previous: dict[str, Any] | None = None
+
+
+def memory_human_hold(store: Store, ref_id: int) -> bool:
+    """Human origin or a currently considered stamp forbids machine edits.
+
+    Unlike the detector's age window, a considered stamp never ages out of
+    this protection. Semantic writes already demote it through trust guards.
+    """
+    state = store.trust_state("ref", ref_id)
+    return state is not None and (
+        state.origin == "human" or state.confidence == "considered"
+    )
+
+
+def _memory_successor(payload: dict[str, Any]) -> int | None:
+    from precis.utils.handle_registry import parse
+
+    value = payload.get("successor")
+    if isinstance(value, int):
+        return value
+    parsed = parse(str(value or ""))
+    return parsed[2] if parsed and parsed[:2] == ("memory", False) else None
+
+
+def _memory_dependency_ids(conn: Any, target: int, garden: dict[str, Any]) -> set[int]:
+    """Collect named evidence refs and routes before locking and rechecking.
+
+    A tombstone restore or successor edit must wait for the rewrite just as
+    an endpoint edit waits for a merge. Thread evidence also reads ancestor
+    routes and terminal work refs; lock those refs and their part-of edges.
+    """
+    from precis.utils.handle_registry import parse
+
+    evidence = garden.get("evidence") or {}
+    payload = garden.get("payload") or {}
+    ids = {target}
+    handles = [payload.get("successor"), *evidence.get("terminal_work", {})]
+    for mention in evidence.get("mentions", []):
+        handles.extend([mention.get("retired_ref"), mention.get("successor")])
+    for value in handles:
+        if isinstance(value, int):
+            ids.add(value)
+        elif isinstance(value, str) and (parsed := parse(value)) and not parsed[1]:
+            ids.add(parsed[2])
+    if garden.get("detector") == "thread_shape":
+        rows = conn.execute(
+            "WITH RECURSIVE parents(id) AS (SELECT %s::bigint UNION "
+            "SELECT l.dst_ref_id FROM links l JOIN parents p ON p.id = l.src_ref_id "
+            "WHERE l.relation = 'part-of') SELECT id FROM parents",
+            (target,),
+        ).fetchall()
+        ids.update(int(row[0]) for row in rows)
+    # A tombstone can redirect through intermediate refs. Match the detector's
+    # bounded chain rather than only locking the final live successor.
+    frontier = set(ids)
+    for _ in range(16):
+        rows = conn.execute(
+            "SELECT meta->>'superseded_by' FROM refs WHERE ref_id = ANY(%s)",
+            (sorted(frontier),),
+        ).fetchall()
+        following = set()
+        for (raw,) in rows:
+            if not raw:
+                continue
+            value = str(raw)
+            if value.isascii() and value.isdigit() and len(value) <= 19:
+                rid = int(value)
+            else:
+                parsed = parse(value)
+                if parsed is None or parsed[1]:
+                    continue
+                rid = parsed[2]
+            if 0 < rid <= 9223372036854775807 and rid not in ids:
+                following.add(rid)
+        if not following:
+            break
+        ids.update(following)
+        frontier = following
+    return ids
+
+
+def _checked_memory_proposal(
+    store: Store, conn: Any, review_id: int, action: str
+) -> tuple[int, dict[str, Any], tuple[Any, ...]]:
+    """Lock, pin and re-run the same detector on exactly this memory.
+
+    ``Store.atomic`` pins detector/handler checkouts to the apply transaction.
+    Unknown detectors fail closed until they have an apply-time predicate.
+    Evidence changes (including successor or main SHA drift) need a new review.
+    """
+    from precis.graph.garden import candidates
+    from precis.graph.garden.proposals import GARDEN_ACTOR, MEMORY_APPLY_DETECTORS
+
+    prop = conn.execute(
+        "SELECT target_kind, target_id, note, content_sha FROM reviews "
+        "WHERE review_id = %s AND actor = %s AND verdict = 'proposed' FOR UPDATE",
+        (review_id, GARDEN_ACTOR),
+    ).fetchone()
+    if prop is None:
+        raise NotFound(f"no pending garden proposal review_id={review_id}")
+    garden = (json.loads(prop[2] or "{}") or {}).get("garden") or {}
+    if prop[0] != "ref" or garden.get("action") != action or not garden.get("key"):
+        raise BadInput(f"review {review_id} is not a memory {action} proposal")
+    target = int(prop[1])
+    payload = garden.get("payload") or {}
+    successor = _memory_successor(payload) if action == "supersede" else None
+    if action == "supersede" and (successor is None or successor == target):
+        raise BadInput("supersede requires a distinct live memory successor")
+    ids = sorted(_memory_dependency_ids(conn, target, garden))
+    rows = conn.execute(
+        "SELECT ref_id, kind, retired_at FROM refs WHERE ref_id = ANY(%s) "
+        "ORDER BY ref_id FOR UPDATE",
+        (ids,),
+    ).fetchall()
+    live = {int(r[0]) for r in rows if r[1] == "memory" and r[2] is None}
+    if target not in live or (successor is not None and successor not in live):
+        raise MergeRefused("target_gone", "the memory or its successor is not live")
+    conn.execute(
+        "SELECT link_id FROM links WHERE src_ref_id = ANY(%s) "
+        "AND relation IN ('part-of', 'supersedes') ORDER BY link_id FOR UPDATE",
+        (ids,),
+    ).fetchall()
+    # Read SHA after the lock, not in the snapshot that waited for the lock.
+    sha = conn.execute("SELECT precis_target_sha('ref', %s)", (target,)).fetchone()[0]
+    if not sha or prop[3] != sha:
+        raise MergeRefused("stale", "the proposal no longer matches the target")
+    if payload.get("base_sha") != sha:
+        raise MergeRefused("apply_refused", "base_sha does not match the pinned target")
+    if memory_human_hold(store, target):
+        raise MergeRefused("human", "human-origin or considered memory needs a human")
+    decided = conn.execute(
+        "SELECT 1 FROM reviews WHERE note LIKE %s AND note ~ %s LIMIT 1",
+        ('%"resolves"%', f'"resolves": {review_id}[^0-9]'),
+    ).fetchone()
+    newer = conn.execute(
+        "SELECT note FROM reviews WHERE review_id > %s "
+        "AND target_kind = 'ref' AND target_id = %s AND note LIKE %s",
+        (review_id, target, '%"garden"%'),
+    ).fetchall()
+    replaced = False
+    for (note,) in newer:
+        try:
+            replaced |= (json.loads(note).get("garden") or {}).get("key") == garden[
+                "key"
+            ]
+        except (TypeError, ValueError, AttributeError):
+            continue
+    if decided is not None or replaced:
+        raise MergeRefused("stale", "the proposal has already been decided or replaced")
+    detector = str(garden.get("detector") or "")
+    recheck = MEMORY_APPLY_DETECTORS.get(detector)
+    if recheck is None:
+        raise MergeRefused("apply_refused", f"no memory re-check for {detector!r}")
+    detect = getattr(candidates, recheck)
+    fresh = detect(
+        store, scan_cap=1, limit=1, cursors={f"{detector}:memory": target - 1}
+    )
+    if fresh and fresh[0].target_id == target and fresh[0].action != action:
+        raise MergeRefused(
+            "apply_refused",
+            "the proposal action differs from the fresh detector action",
+        )
+    if (
+        not fresh
+        or fresh[0].target_id != target
+        or fresh[0].evidence != garden.get("evidence")
+    ):
+        raise MergeRefused("stale", "the detector predicate or its evidence changed")
+    for key in ("shas", "successor", "main_sha"):
+        if fresh[0].payload.get(key) != payload.get(key):
+            raise MergeRefused(
+                "apply_refused",
+                f"the proposal's {key} differs from fresh detector evidence",
+            )
+    if action == "rewrite":
+        _check_rewrite_scope(payload, fresh[0].payload)
+    bodies = conn.execute(
+        "SELECT chunk_id, text, ord FROM chunks WHERE ref_id = %s "
+        "AND chunk_kind = 'memory_body' AND retired_at IS NULL AND ord >= 0 "
+        "ORDER BY ord, chunk_id",
+        (target,),
+    ).fetchall()
+    if len(bodies) != 1:
+        raise MergeRefused("apply_refused", "memory apply requires one live body chunk")
+    return target, garden, bodies[0]
+
+
+def _check_rewrite_scope(payload: dict[str, Any], fresh: dict[str, Any]) -> None:
+    """Models supply replacement text only; fresh detector spans own scope.
+
+    The current rewrite detectors justify no link removal, so a removal list
+    cannot erase provenance even when it invents a plausible reason.
+    """
+    ops = payload.get("ops")
+    if not isinstance(ops, list) or not ops:
+        raise BadInput("rewrite requires nonempty anchored ops")
+    fresh_ops = fresh.get("ops", [])
+    for op in ops:
+        if not isinstance(op, dict) or not any(
+            op.get("find") == allowed.get("find")
+            and op.get("span") == allowed.get("span")
+            for allowed in fresh_ops
+        ):
+            raise BadInput(
+                "rewrite scope rule: every find and span must match a fresh detector op; "
+                "the model may supply only replacement text"
+            )
+    removals = payload.get("remove_links", [])
+    if not isinstance(removals, list):
+        raise BadInput("remove_links must be an empty list")
+    if removals:
+        raise BadInput(
+            "remove_links scope rule: memory rewrite detectors do not support removals"
+        )
+
+
+def _rewrite_ops(body: str, raw_ops: Any) -> list[dict[str, Any]]:
+    """Translate detector spans (Python string offsets) to anchored ops.
+
+    Right-to-left order keeps repeated handles at their pinned positions.
+    Unresolved replacement text is a refusal, never an instruction to delete.
+    """
+    from precis.utils.edit_resolve import EditOp, find_candidates
+
+    if not isinstance(raw_ops, list) or not raw_ops:
+        raise BadInput("rewrite requires nonempty anchored ops")
+    located: list[tuple[int, int, str, str]] = []
+    for op in raw_ops:
+        if not isinstance(op, dict):
+            raise BadInput("rewrite ops must be objects")
+        find, text = op.get("find"), op.get("text")
+        if not isinstance(find, str) or not find or not isinstance(text, str):
+            raise BadInput("rewrite requires resolved find/text strings")
+        matches = find_candidates(body, EditOp(op="edit", find=find, text=text))
+        span = op.get("span")
+        if span is None:
+            if len(matches) != 1:
+                raise BadInput("rewrite anchor must be unique or carry its pinned span")
+            start, end = matches[0].start, matches[0].end
+        elif (
+            isinstance(span, list)
+            and len(span) == 2
+            and all(isinstance(i, int) for i in span)
+        ):
+            start, end = span
+        else:
+            raise BadInput("rewrite span must be [start, end]")
+        if not 0 <= start < end <= len(body) or body[start:end] != find:
+            raise BadInput("the pinned rewrite span does not match the body")
+        located.append((start, end, find, text))
+    located.sort(reverse=True)
+    if any(left[1] > right[0] for right, left in pairwise(located)):
+        raise BadInput("rewrite spans overlap")
+    return [
+        {
+            "find": find,
+            "text": text,
+            "match": "nth",
+            "nth": 1
+            + sum(
+                match.start < start
+                for match in find_candidates(
+                    body, EditOp(op="edit", find=find, text=text)
+                )
+            ),
+        }
+        for start, _end, find, text in located
+    ]
+
+
+def _memory_links(conn: Any, target: int, body_chunk: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT to_jsonb(l) FROM links l WHERE src_ref_id = %s "
+        "OR dst_chunk_id = %s OR dst_chunk_id IN "
+        "(SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = -1) "
+        "ORDER BY link_id FOR UPDATE",
+        (target, body_chunk, target),
+    ).fetchall()
+    return [dict(row[0]) for row in rows]
+
+
+def _guard_memory_link_measures(conn: Any, links: list[dict[str, Any]]) -> None:
+    """A delete/reinsert cannot restore ON DELETE SET NULL measure anchors."""
+    if conn.execute(
+        "SELECT 1 FROM measures WHERE primary_link_id = ANY(%s) LIMIT 1",
+        ([link["link_id"] for link in links],),
+    ).fetchone():
+        raise MergeRefused(
+            "apply_refused",
+            "memory links anchor measures; resolve them before rewriting",
+        )
+
+
+def _memory_header(conn: Any, target: int) -> dict[str, Any] | None:
+    rows = conn.execute(
+        "SELECT to_jsonb(c) FROM chunks c WHERE ref_id = %s AND ord = -1",
+        (target,),
+    ).fetchall()
+    if len(rows) > 1:
+        raise MergeRefused("apply_refused", "memory header mapping is ambiguous")
+    return dict(rows[0][0]) if rows else None
+
+
+def _guard_legacy_memory_links(links: list[dict[str, Any]]) -> None:
+    """A version-zero edge can survive in place, but strict INSERT stamps v1."""
+    if any(
+        link["trust_write_version"] == 0
+        and (
+            link["src_chunk_id"] is not None
+            or link["dst_chunk_id"] is not None
+            or link["relation"] == "mentions"
+        )
+        for link in links
+    ):
+        raise MergeRefused(
+            "apply_refused", "legacy memory links must be stamped before replacement"
+        )
+
+
+def _restore_memory_link(
+    store: Store, conn: Any, link: dict[str, Any], *, actor: str
+) -> None:
+    """Replay an existing edge, including its id and trust, through trust acts.
+
+    Like merge undo, this restores a prior edge rather than admitting a new
+    machine relation. Trust columns cannot be assigned by SQL: reconstruct
+    the recorded origin/confidence through the existing import/consider doors.
+    """
+    existing = conn.execute(
+        "SELECT to_jsonb(l) FROM links l WHERE link_id = %s", (link["link_id"],)
+    ).fetchone()
+    if existing is not None and existing[0] == link:
+        return
+    if link["trust_write_version"] == 0:
+        raise MergeRefused(
+            "apply_refused", "a legacy memory link cannot be recreated exactly"
+        )
+    chunk_ids = {
+        link[key] for key in ("src_chunk_id", "dst_chunk_id") if link[key] is not None
+    }
+    if chunk_ids:
+        present = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE chunk_id = ANY(%s)",
+            (list(chunk_ids),),
+        ).fetchall()
+        if chunk_ids != {row[0] for row in present}:
+            raise MergeRefused(
+                "apply_refused", "a memory link's original chunk cannot be restored"
+            )
+    conn.execute(
+        "DELETE FROM links WHERE link_id = %(link_id)s OR "
+        "(src_ref_id = %(src_ref_id)s AND src_chunk_id IS NOT DISTINCT FROM "
+        "%(src_chunk_id)s AND dst_ref_id = %(dst_ref_id)s AND dst_chunk_id "
+        "IS NOT DISTINCT FROM %(dst_chunk_id)s AND relation = %(relation)s)",
+        link,
+    )
+    origin = str(link["trust_origin"])
+    # The import act must bind to INSERT: strict mode refuses an unstamped
+    # unknown-origin row before a subsequent targeted act can restore it.
+    import_act = (
+        TrustAct(
+            action="legacy-import",
+            target_kind="link",
+            create_match=str(link["relation"]),
+            origin="unknown",
+            confidence="unknown",
+            reason="garden rewrite restores the recorded link origin",
+        )
+        if origin == "unknown"
+        else None
+    )
+    with revision_context(
+        trust_origin="generated" if origin == "unknown" else origin,
+        trust_act=import_act,
+        actor=actor,
+        trust_actor_type="agent",
+    ):
+        apply_revision_context(conn, clear=True)
+        if import_act is not None:
+            conn.execute("SELECT set_config('precis.trust_act_bound', '', true)")
+        conn.execute(
+            "INSERT INTO links (link_id, src_ref_id, src_chunk_id, dst_ref_id, "
+            "dst_chunk_id, relation, set_by, meta, created_at) VALUES "
+            "(%(link_id)s, %(src_ref_id)s, %(src_chunk_id)s, %(dst_ref_id)s, "
+            "%(dst_chunk_id)s, %(relation)s, %(set_by)s, %(meta)s, %(created_at)s)",
+            {**link, "meta": Jsonb(link["meta"])},
+        )
+        if import_act is not None:
+            conn.execute("SELECT set_config('precis.trust_act_bound', '', true)")
+    apply_revision_context(conn, clear=True)
+    lid = int(link["link_id"])
+    state = store.trust_state("link", lid, conn=conn)
+    assert state is not None
+    if state.version == 0:
+        store.record_trust_act(
+            TrustAct(
+                action="legacy-import",
+                target_kind="link",
+                target_id=lid,
+                expected_sha=state.sha,
+                origin=origin,
+                confidence="unknown",
+                reason="garden rewrite restores the recorded link origin",
+            ),
+            actor=actor,
+            actor_type="agent",
+        )
+    confidence = str(link["trust_confidence"])
+    state = store.trust_state("link", lid, conn=conn)
+    assert state is not None
+    if state.confidence != confidence:
+        store.record_trust_act(
+            TrustAct(
+                action="consider" if confidence == "considered" else "demote",
+                target_kind="link",
+                target_id=lid,
+                expected_sha=state.sha,
+                confidence=None if confidence == "considered" else confidence,
+                reason="garden rewrite restores the recorded link confidence",
+            ),
+            actor=actor,
+            actor_type="agent",
+        )
+    apply_revision_context(conn, clear=True)
+
+
+def _resolve_memory_apply(
+    store: Store,
+    conn: Any,
+    review_id: int,
+    *,
+    actor: str,
+    model: str | None,
+    garden: dict[str, Any],
+    applied: str,
+    verdict_extra: dict[str, Any] | None,
+) -> None:
+    from precis.graph.garden.proposals import resolve_proposal
+
+    resolved = resolve_proposal(
+        store,
+        review_id,
+        actor=actor,
+        verdict="approved",
+        model=model,
+        extra={
+            **(verdict_extra or {}),
+            "action": garden["action"],
+            "detector": garden["detector"],
+            "evidence": garden["evidence"],
+            "outcome": "applied",
+            "applied": applied,
+        },
+        conn=conn,
+    )
+    if resolved is None:
+        raise MergeRefused("stale", "the proposal has already been decided")
+
+
+def _review_model_token(model: str | None) -> str:
+    """Keep safe model names readable; reserve hex- for reversible UTF-8 encoding."""
+    name = model or "unknown"
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) and not name.startswith(
+        "hex-"
+    ):
+        return name
+    return "hex-" + name.encode("utf-8").hex()
+
+
+@trust_door("generated")
+def apply_rewrite(
+    store: Store,
+    review_id: int,
+    *,
+    actor: str,
+    model: str | None = None,
+    verdict_extra: dict[str, Any] | None = None,
+) -> RewriteRecord:
+    """Apply a reviewed anchored memory rewrite and its trust stamp atomically.
+
+    All outgoing edges survive mention synchronization. A shorter
+    body dropping a handle must not silently erase provenance or recall routes.
+    """
+    from precis.dispatch import Hub
+    from precis.handlers.memory import _derive_title
+    from precis.store._chunks_ops import header_card_text
+    from precis.utils.edit_resolve import EditOp, apply_edit
+
+    with store.atomic() as conn:
+        target, garden, body = _checked_memory_proposal(
+            store, conn, review_id, "rewrite"
+        )
+        payload = garden["payload"]
+        ops = _rewrite_ops(str(body[1]), payload.get("ops"))
+        links = _memory_links(conn, target, int(body[0]))
+        _guard_memory_link_measures(conn, links)
+        header = _memory_header(conn, target)
+        _guard_legacy_memory_links(links)
+        ref = store.get_ref(kind="memory", id=target)
+        assert ref is not None
+        if header is not None and ref.title == _derive_title(str(body[1])):
+            rewritten = str(body[1])
+            for op in ops:
+                rewritten = apply_edit(rewritten, EditOp(op="edit", **op)).new_buffer
+            if not header_card_text(_derive_title(rewritten), ref.meta.get("hook")):
+                raise MergeRefused(
+                    "apply_refused", "the rewrite would remove the header anchor"
+                )
+        rec = RewriteRecord(
+            rewrite_id=f"garden-rewrite:{target}:{review_id}",
+            proposal=review_id,
+            target=target,
+            prior_sha=payload["base_sha"],
+            prior_body_chunk_id=int(body[0]),
+            prior_body=str(body[1]),
+            prior_title=ref.title,
+            prior_body_ord=int(body[2]),
+            links=links,
+            prior_header=header,
+            previous=(ref.meta or {}).get("garden_rewrite"),
+        )
+        _resolve_memory_apply(
+            store,
+            conn,
+            review_id,
+            actor=actor,
+            model=model,
+            garden=garden,
+            applied=rec.rewrite_id,
+            verdict_extra=verdict_extra,
+        )
+        reason = f"garden:{garden['detector']}:{review_id}"
+        with revision_context(reason, actor=actor, model=""):
+            # The full base_sha was checked under the ref lock above. The
+            # handler's anchors and expected_body guard run on this same conn.
+            Hub(store=store).sibling("memory").edit(id=target, ops=ops, reason=reason)
+        new_body = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND chunk_kind = 'memory_body'",
+            (target,),
+        ).fetchone()
+        if new_body is None:
+            raise MergeRefused("apply_refused", "the rewritten memory body is missing")
+        rec.applied_body_chunk_id = int(new_body[0])
+        chunk_map = {rec.prior_body_chunk_id: rec.applied_body_chunk_id}
+        if header is not None:
+            new_header = _memory_header(conn, target)
+            if new_header is None:
+                raise MergeRefused("apply_refused", "the rewritten header is missing")
+            chunk_map[header["chunk_id"]] = new_header["chunk_id"]
+        for link in links:
+            restored = dict(link)
+            for key in ("src_chunk_id", "dst_chunk_id"):
+                restored[key] = chunk_map.get(restored[key], restored[key])
+            _restore_memory_link(store, conn, restored, actor=actor)
+        rec.applied_links = _memory_links(conn, target, rec.applied_body_chunk_id)
+        state = store.trust_state("ref", target, conn=conn)
+        assert state is not None and state.sha is not None
+        rec.applied_sha = state.sha
+        store.stamp_ref_meta(target, {"garden_rewrite": asdict(rec)}, conn=conn)
+        store.record_trust_act(
+            TrustAct(
+                action="consider",
+                target_kind="ref",
+                target_id=target,
+                expected_sha=state.sha,
+                reason=(
+                    f"kg-review:{_review_model_token(model)}:"
+                    f"{datetime.now(UTC):%Y-%m-%d}:fixed"
+                ),
+            ),
+            actor=actor,
+            actor_type="agent",
+            model=model,
+        )
+    return rec
+
+
+@trust_door("generated")
+def undo_rewrite(store: Store, rewrite_id: str, *, actor: str) -> dict[str, int]:
+    """Restore the snapshot and reject its key so the next tick cannot replay it."""
+    from precis.dispatch import Hub
+    from precis.graph.garden.proposals import GARDEN_VERSION
+
+    with store.atomic() as conn:
+        row = conn.execute(
+            "SELECT ref_id, meta->'garden_rewrite', title FROM refs "
+            "WHERE meta->'garden_rewrite'->>'rewrite_id' = %s "
+            "AND retired_at IS NULL FOR UPDATE",
+            (rewrite_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFound(f"no rewrite record for rewrite_id={rewrite_id!r}")
+        target, rec = int(row[0]), row[1]
+        state = store.trust_state("ref", target, conn=conn)
+        links = _memory_links(conn, target, rec["applied_body_chunk_id"])
+        _guard_memory_link_measures(conn, links)
+        if (
+            state is None
+            or state.sha != rec["applied_sha"]
+            or links != rec["applied_links"]
+        ):
+            raise MergeRefused("stale", "memory or links changed after the rewrite")
+        # Keep identical edges, including legacy v0 links that strict mode
+        # cannot reinsert with the same trust version. Chunk replacements
+        # below only cascade edges whose anchors changed during apply.
+        prior_links = {link["link_id"]: link for link in rec["links"]}
+        deleted = store.delete_links(
+            [l["link_id"] for l in links if prior_links.get(l["link_id"]) != l],
+            conn=conn,
+        )
+        reason = f"garden:undo:{rewrite_id}"
+        with revision_context(reason, actor=actor):
+            apply_revision_context(conn, clear=True)
+            store.chunks.replace_body_chunk(
+                target,
+                rec["prior_body"],
+                chunk_kind="memory_body",
+                source=actor,
+                reason=reason,
+                conn=conn,
+            )
+            # Reinsert the saved identity too: chunk-addressed links in the
+            # snapshot must point at the original chunk, not a missing FK.
+            conn.execute(
+                "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = 'memory_body'",
+                (target,),
+            )
+            conn.execute(
+                "INSERT INTO chunks (chunk_id, ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, %s, %s, 'memory_body', %s)",
+                (
+                    rec["prior_body_chunk_id"],
+                    target,
+                    rec["prior_body_ord"],
+                    rec["prior_body"],
+                ),
+            )
+            if row[2] != rec["prior_title"]:
+                store.chunks.set_ref_title(
+                    target, rec["prior_title"], source=actor, conn=conn
+                )
+                header = rec.get("prior_header")
+                if header is None:
+                    store.chunks.sync_header_card(target, conn=conn)
+                else:
+                    # Replay the saved identity, just as for the body. A
+                    # newly synthesized card would strand the original links.
+                    conn.execute(
+                        "DELETE FROM chunks WHERE ref_id = %s AND ord = -1",
+                        (target,),
+                    )
+                    conn.execute(
+                        "INSERT INTO chunks (chunk_id, ref_id, ord, chunk_kind, "
+                        "text, meta, set_by, created_at) VALUES "
+                        "(%(chunk_id)s, %(ref_id)s, %(ord)s, %(chunk_kind)s, "
+                        "%(text)s, %(meta)s, %(set_by)s, %(created_at)s)",
+                        {**header, "meta": Jsonb(header["meta"])},
+                    )
+            for link in rec["links"]:
+                _restore_memory_link(store, conn, link, actor=actor)
+            # Replay exact bytes rather than running them through a new
+            # secret-mask pass, then recompute the same derived audit tags as
+            # the memory edit door against the restored body and routes.
+            handler = Hub(store=store).sibling("memory")
+            handler._apply_attribution_tag(
+                target,
+                handler._attribution_misses(rec["prior_body"], reject=False),
+                conn=conn,
+            )
+            handler._apply_shape_tags(
+                target, handler._shape_after_write(target, None, conn=conn), conn=conn
+            )
+            if rec.get("previous") is None:
+                conn.execute(
+                    "UPDATE refs SET meta = meta - 'garden_rewrite' WHERE ref_id = %s",
+                    (target,),
+                )
+            else:
+                store.stamp_ref_meta(
+                    target, {"garden_rewrite": rec["previous"]}, conn=conn
+                )
+        proposal = conn.execute(
+            "SELECT note FROM reviews WHERE review_id = %s",
+            (rec["proposal"],),
+        ).fetchone()
+        if proposal is not None:
+            garden = (json.loads(proposal[0] or "{}") or {}).get("garden") or {}
+            if garden.get("key"):
+                store.record_target_review(
+                    "ref",
+                    target,
+                    actor=actor,
+                    verdict="rejected",
+                    version=GARDEN_VERSION,
+                    note=json.dumps(
+                        {
+                            "garden": {
+                                "v": 1,
+                                "key": garden["key"],
+                                "resolves": rec["proposal"],
+                                "undone": rewrite_id,
+                                "reason": "undone",
+                            }
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    conn=conn,
+                )
+    return {"links_restored": len(rec["links"]), "links_deleted": deleted}
+
+
+@trust_door("generated")
+def apply_supersede(
+    store: Store,
+    review_id: int,
+    *,
+    actor: str,
+    model: str | None = None,
+    verdict_extra: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    """Record the successor and retire through the existing memory delete door."""
+    from precis.dispatch import Hub
+
+    with store.atomic() as conn:
+        target, garden, _body = _checked_memory_proposal(
+            store, conn, review_id, "supersede"
+        )
+        successor = _memory_successor(garden["payload"])
+        assert successor is not None
+        # Delete migrates both endpoints. A direct target/successor edge
+        # collapses to a self-loop and is dropped; every other migrated
+        # edge closes a cycle only if its destination reaches its source.
+        cycle = conn.execute(
+            "WITH RECURSIVE paths(id, goal) AS ("
+            "SELECT dst_ref_id, %(successor)s::bigint FROM links "
+            "WHERE relation = 'part-of' AND src_ref_id = %(target)s "
+            "AND dst_ref_id != %(successor)s "
+            "UNION SELECT %(successor)s::bigint, src_ref_id FROM links "
+            "WHERE relation = 'part-of' AND dst_ref_id = %(target)s "
+            "AND src_ref_id != %(successor)s "
+            "UNION SELECT l.dst_ref_id, p.goal FROM links l "
+            "JOIN paths p ON p.id = l.src_ref_id WHERE l.relation = 'part-of') "
+            "SELECT 1 FROM paths WHERE id = goal LIMIT 1",
+            {"target": target, "successor": successor},
+        ).fetchone()
+        if cycle is not None:
+            raise MergeRefused(
+                "apply_refused",
+                "migrating the memory's part-of links would close a cycle",
+            )
+        _resolve_memory_apply(
+            store,
+            conn,
+            review_id,
+            actor=actor,
+            model=model,
+            garden=garden,
+            applied="supersede",
+            verdict_extra=verdict_extra,
+        )
+        reason = f"garden:{garden['detector']}:{review_id}"
+        with revision_context(reason, actor=actor):
+            apply_revision_context(conn, clear=True)
+            Hub(store=store).sibling("memory").delete(
+                id=target, reason=reason, superseded_by=f"me{successor}"
+            )
+            # Delete migrates existing edges. Write the tombstone trail after
+            # that migration so it remains winner → loser, not a self-loop.
+            store.add_link(
+                src_ref_id=successor,
+                dst_ref_id=target,
+                relation="supersedes",
+                set_by="agent",
+                meta={"garden_supersede": {"proposal": review_id}},
+                conn=conn,
+            )
+    return {"target": target, "successor": successor}
+
+
+@trust_door("generated")
+def apply_retire(
+    store: Store,
+    review_id: int,
+    *,
+    actor: str,
+    model: str | None = None,
+    verdict_extra: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    """Apply a reviewed retirement through the memory delete door, atomically."""
+    from precis.dispatch import Hub
+
+    with store.atomic() as conn:
+        target, garden, _body = _checked_memory_proposal(
+            store, conn, review_id, "retire"
+        )
+        _resolve_memory_apply(
+            store,
+            conn,
+            review_id,
+            actor=actor,
+            model=model,
+            garden=garden,
+            applied="retire",
+            verdict_extra=verdict_extra,
+        )
+        reason = f"garden:{garden['detector']}:{review_id}"
+        with revision_context(reason, actor=actor):
+            Hub(store=store).sibling("memory").delete(id=target, reason=reason)
+    return {"target": target}
+
+
 __all__ = [
     "META_MERGE",
     "META_PRIOR_REF",
     "MergeRecord",
     "MergeRefused",
     "RelinkRecord",
+    "RewriteRecord",
     "apply_merge",
     "apply_relink",
+    "apply_retire",
+    "apply_rewrite",
     "apply_structural",
+    "apply_supersede",
     "undo_merge",
     "undo_relink",
+    "undo_rewrite",
 ]
