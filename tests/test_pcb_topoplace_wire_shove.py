@@ -1547,9 +1547,7 @@ def test_small_shove_enabled_builds_have_identical_copper_and_order():
         n_nets=3,
     )
     mesh = build_mesh(d, d.pose0)
-    a, b = (
-        wm.build_wires(mesh, d, 4, (_NOVIA,) * 3, negotiate=1) for _ in range(2)
-    )
+    a, b = (wm.build_wires(mesh, d, 4, (_NOVIA,) * 3, negotiate=1) for _ in range(2))
     # The old adopted swap guarded nets 0 and 1. Exercise the shove even when
     # the shared final guard safely refuses every candidate in this fixture.
     assert a.shove_grows > 0 and a.shove_rounds and a.shove_rounds[0]

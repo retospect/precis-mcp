@@ -122,6 +122,18 @@ _FAILING: dict[tuple[str, str], tuple[list[str], str]] = {
     # td569540 re-measure: local-61/shuf1's VSTOR negotiated back to
     # clean (the row still xfails on GND[37]); shuf3's cluster failure
     # moved — OK_HYST routes now, VSTOR is the stranded one.
+    # r2 re-measure (touched-set + stall escape): VSTOR did not heal on
+    # shuf3, and the negotiation's redistributed equilibria strand
+    # VBAT_UV on shuf1 and RF2+VSTOR on shuf2 — honest unreachable
+    # nets, no crossings or withdrawals.
+    ("local-61", "shuf1"): (
+        ["VBAT_UV"],
+        "unreachable+stranded+no-via branch ['VBAT_UV']",
+    ),
+    ("local-61", "shuf2"): (
+        ["RF2", "VSTOR"],
+        "unreachable+stranded ['RF2', 'VSTOR']",
+    ),
     ("local-61", "shuf3"): (
         ["VSTOR"],
         "unreachable+stranded+no-via branch ['VSTOR']",

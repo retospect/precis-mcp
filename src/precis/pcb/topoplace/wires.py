@@ -59,7 +59,6 @@ import functools
 import heapq
 import itertools
 import math
-import os
 import random
 import types
 from collections import Counter
@@ -145,13 +144,19 @@ TRI_OCC_MM = 1.0
 #: Negotiated congestion with history (td569540, the PathFinder stage of
 #: the route-then-shove model): ``build_wires`` runs ``_NEGOTIATE_ITERS``
 #: passes over the net set instead of one. Every pass re-grows the nets
-#: that failed or sit on an oversubscribed resource against an occupancy
-#: that holds the other nets' CURRENT wires (each re-grown net's previous
-#: wires are ripped out first — ``_Occupancy.rebuild``); a net whose
-#: wires satisfy every resource keeps them (selective re-route).
-#: Passes 1..K-1 soften today's legality into priced resources — an
-#: (edge, layer) corridor past its slot capacity, a (tri, layer) past
-#: ``_NEG_TRI_CAP`` corridors, a same-layer chord crossing — at
+#: that failed or sit on an oversubscribed resource on ANY axis the
+#: search prices — an (edge, layer) corridor past its cut, a (tri,
+#: layer) past ``_NEG_TRI_CAP``, a same-layer chord crossing — against
+#: an occupancy that holds the other nets' CURRENT wires (each re-grown
+#: net's previous wires are ripped out first — ``_Occupancy.rebuild``);
+#: a net whose wires satisfy every resource keeps them (selective
+#: re-route). Two conditions keep the variant honest (spec-owner ruling
+#: 2026-11-05): a pass entered while the overuse total has not fallen
+#: for two consecutive passes re-grows EVERY net in order once — the
+#: stall escape, so a clean net parked on a contested resource cannot
+#: hold it for ever — and a final pass entered with conflicts standing
+#: does the same.
+#: Passes 1..K-1 soften today's legality into priced resources at
 #: ``base × (1 + p_k × present_overuse) + h``; pass K restores hard
 #: legality and ``_Shove`` repairs as before. ``p_k`` ramps from
 #: ``_NEG_P0`` by ``_NEG_PRAMP`` per pass; ``h`` accumulates
@@ -159,6 +164,10 @@ TRI_OCC_MM = 1.0
 #: pass's end. The pass with the best ``(failed nets, crossings, vias,
 #: length)`` ledger that stays corridor-legal is emitted.
 _NEGOTIATE_ITERS = 10
+#: ``negotiate`` beyond this refuses: ``_NEG_P0 × _NEG_PRAMP**99`` is
+#: already ~1e14, so every soft price is indistinguishable from inf
+#: long before float64 overflows (~2,000 passes).
+_NEG_ITERS_MAX = 100
 _NEG_P0 = 0.5
 _NEG_PRAMP = 1.4
 _NEG_H_EDGE = 0.4  # mm per slot over capacity per pass
@@ -166,12 +175,6 @@ _NEG_H_TRI = 0.15  # mm per corridor over _NEG_TRI_CAP per pass
 _NEG_H_CROSS = 0.8  # mm per residual same-layer crossing per pass
 _NEG_CROSS_MM = 2.0  # base mm price of one chord crossing at p = 0
 _NEG_TRI_CAP = 2.0  # corridors a (tri, layer) holds before overuse
-
-#: Later-pass grow order: ``"span"`` reuses ``_net_order``; ``"failed"``
-#: puts last pass's failed or oversubscribed nets first, then span.
-_NEG_ORDER = "failed"
-
-_NEG_DEBUG = bool(os.environ.get("PRECIS_NEG_DEBUG"))
 
 #: Step-cost gate: a step through a triangle touching an edge this long
 #: is priced by the portal (point-to-segment) metric, not the
@@ -5760,10 +5763,12 @@ def _neg_touch(
     collisions: Sequence[tuple[int, int, int]],
 ) -> set[int]:
     """Last pass's nets that failed or still sit on an oversubscribed
-    resource — the ``"failed"`` grow order's priority set (td569540):
-    stranded, crossing or colliding nets first, then the nets whose
-    wires hold an over-capacity ``(edge, layer)`` slot or a crossed
-    ``(tri, layer)`` chord resource."""
+    resource — the grow order's priority set (td569540): stranded,
+    crossing or colliding nets first, then every net occupying a
+    resource over capacity on ANY axis the search prices: an
+    over-capacity ``(edge, layer)`` slot, a ``(tri, layer)`` past
+    ``_NEG_TRI_CAP`` corridors, a crossed ``(tri, layer)`` chord
+    resource."""
     coll = {c[0] for c in collisions}
     out: set[int] = set()
     for k, bl in builts.items():
@@ -5776,6 +5781,12 @@ def _neg_touch(
             br = b.branch
             lays = br.layers
             if lays is None or len(lays) != len(br.edges) + 1:
+                # no per-edge layers: the corridor counts on every
+                # layer, so an over-cap tri it crowds anywhere touches
+                for t_ in br.tris:
+                    if float(occupancy.tri_used[int(t_), :].max()) > _NEG_TRI_CAP:
+                        hit = True
+                        break
                 continue
             for i, e in enumerate(br.edges):
                 if (
@@ -5787,7 +5798,10 @@ def _neg_touch(
             if hit:
                 break
             for i, t_ in enumerate(br.tris):
-                if occupancy.cross_used[int(t_), int(lays[i])] > 0:
+                if (
+                    occupancy.cross_used[int(t_), int(lays[i])] > 0
+                    or occupancy.tri_used[int(t_), int(lays[i])] > _NEG_TRI_CAP
+                ):
                     hit = True
                     break
             if hit:
@@ -5795,6 +5809,30 @@ def _neg_touch(
         if hit:
             out.add(k)
     return out
+
+
+def _neg_grow_set(
+    touch: set[int],
+    partners: Mapping[int, list[int]],
+    *,
+    final: bool,
+    stall: bool,
+) -> set[int] | None:
+    """The next pass's grow set (td569540): the nets last pass left on
+    a conflict — failed or holding an oversubscribed resource — plus
+    the partners recorded against them; ``None`` re-grows EVERY net in
+    order. The stall escape returns ``None`` (overuse flat two passes
+    running: a clean net parked on a resource the conflicted ones need
+    never yields to price alone) and so does a final pass entered with
+    conflicts standing. An empty touch set returns ``None`` too — the
+    detection missed something, so a full pass runs rather than stale
+    prices."""
+    if stall or (final and touch):
+        return None
+    grow = set(touch)
+    for kk in touch:
+        grow.update(partners.get(kk, ()))
+    return grow or None
 
 
 #: S2 (topo-route-shove): after the order loop, a shove phase —
@@ -6713,7 +6751,15 @@ def build_wires(
     crossing-resolution tie-breaks into shove validation and selection.
     ``negotiate`` is the negotiated-congestion pass count (td569540):
     ``1`` is the single hard pass; more runs soft priced passes before
-    the final hard one and emits the best ledger."""
+    the final hard one and emits the best ledger. Above
+    ``_NEG_ITERS_MAX`` it refuses — the 1.4x present-factor ramp is
+    float-saturated long before that many passes."""
+    if int(negotiate) > _NEG_ITERS_MAX:
+        raise ValueError(
+            f"negotiate={negotiate} exceeds _NEG_ITERS_MAX={_NEG_ITERS_MAX}: "
+            "the present-factor ramp is float-saturated long before that "
+            "many passes — clamp the count"
+        )
     pose_a = np.asarray(d.pose0 if pose is None else pose)
     ctx = _make_ctx(mesh, d, n_layers, pose_a)
     pin_vids = frozenset(int(v) for v in mesh.pin_vertex)
@@ -6807,6 +6853,8 @@ def build_wires(
     hist_t = np.zeros((len(mesh.tris), n_layers))
     hist_c = np.zeros((len(mesh.tris), n_layers))
     p_fac = _NEG_P0
+    prev_over = math.inf  # last pass's overuse total — the stall signal
+    stall_n = 0  # consecutive passes the overuse total did not fall
     prev_keys: dict[int, tuple[int, int]] = {}
     prev_touch: set[int] = set()
     prev_unreach: list[Unreachable] = []
@@ -6826,7 +6874,7 @@ def build_wires(
     spans = [_span_of(k) for k in range(len(d.net_pins))]
     for it in range(n_iters):
         soft = n_iters > 1 and it < n_iters - 1
-        if it == 0 or _NEG_ORDER != "failed":
+        if it == 0:
             order = route_order
         else:
             # last pass's failed or oversubscribed nets grow first,
@@ -6846,18 +6894,22 @@ def build_wires(
             negotiated = []
         else:
             # selective re-route (td569540): a net whose wires satisfy
-            # every resource — no failure, no crossing, no over-capacity
-            # slot, no crossed chord — keeps them; re-growing it against
-            # an unchanged neighbourhood can only replay the same
-            # search. The nets that failed or sit on oversubscription,
-            # plus the partners recorded against them, pay the grow.
-            # An empty touch set means the detection missed something —
-            # fall back to a full pass rather than emit stale prices.
-            grow_set = set(prev_touch)
-            for kk in prev_touch:
-                grow_set.update(prev_partners.get(kk, ()))
-            if not grow_set:
-                grow_set = None
+            # every resource keeps them; re-growing it against an
+            # unchanged neighbourhood can only replay the same search.
+            # _neg_grow_set decides — touched nets plus partners, or
+            # every net once (the stall escape, a conflicted final
+            # pass, or an empty touch set). The escape fires once then
+            # rearms on two fresh flat passes.
+            escape = stall_n >= 2
+            if escape:
+                stall_n = 0
+            grow_set = _neg_grow_set(
+                prev_touch,
+                prev_partners,
+                final=it == n_iters - 1,
+                stall=escape,
+            )
+            if grow_set is None:
                 unreachable = []
                 collisions = []
                 extra = {}
@@ -7240,25 +7292,6 @@ def build_wires(
             )
             for kk in order
         )
-        if _NEG_DEBUG:
-            fails = sorted(
-                {
-                    *(u.net for u in unreachable),
-                    *(
-                        kk
-                        for kk in order
-                        if keys.get(kk, (1, 0))[0] > 1
-                        or keys.get(kk, (1, 0))[1] > 0
-                        or kk in coll_nets
-                    ),
-                }
-            )
-            print(
-                f"NEG it{it} soft={soft} legal={legal} xfree={cross_free} "
-                f"metric={metric_it} fails={fails} "
-                f"unreach={[u.net for u in unreachable]} coll={collisions}",
-                flush=True,
-            )
         if (
             legal
             and (not soft or cross_free)
@@ -7283,12 +7316,16 @@ def build_wires(
             hist_e += _NEG_H_EDGE * over_e
             hist_t += _NEG_H_TRI * over_t
             hist_c += _NEG_H_CROSS * over_c
-            if float(over_e.sum() + over_t.sum() + over_c.sum()) <= 1e-9 and not any(
-                keys.get(kk, (0, 0))[1] for kk in keys
-            ):
+            over_total = float(over_e.sum() + over_t.sum() + over_c.sum())
+            if over_total <= 1e-9 and not any(keys.get(kk, (0, 0))[1] for kk in keys):
                 # converged: nothing oversubscribed, nothing crossing —
                 # this pass is legal and cannot improve (td569540)
                 break
+            # the stall signal (td569540 ruling): the total not falling
+            # two passes running means negotiation is frozen — the next
+            # pass re-grows every net once
+            stall_n = stall_n + 1 if over_total >= prev_over - 1e-9 else 0
+            prev_over = over_total
             p_fac *= _NEG_PRAMP
             prev_keys = keys
             prev_touch = _neg_touch(occupancy, builts, keys, collisions)
