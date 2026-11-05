@@ -17,9 +17,10 @@ Every minted todo
 - is sequenced by ``blocked-by`` links (``src`` is the blocked node).
 
 The whole subtree is minted in one transaction. A loop's ``body``
-('release-fix', 'pcb-fix') names the iteration the tick re-mints; it is a
-key of :data:`BODIES`, not of :data:`TEMPLATES`. :func:`mint_body` mints one
-iteration under the loop todo, tagged with the loop's own ``plan:<root>``.
+('release-fix', 'pcb-fix', 'route-fix') names the iteration the tick
+re-mints; it is a key of :data:`BODIES`, not of :data:`TEMPLATES`.
+:func:`mint_body` mints one iteration under the loop todo, tagged with the
+loop's own ``plan:<root>``.
 """
 
 from __future__ import annotations
@@ -1068,6 +1069,116 @@ def mint_pcb_pipeline(
     return _run(store, parent_id, build)
 
 
+# -- route-loop --------------------------------------------------------------
+
+
+#: Iterations a ``route-loop`` runs before it parks: each one measures the
+#: example boards, builds the next fix slices and reviews their lands.
+_ROUTE_LOOP_MAX = 6
+#: The loop body a ``route-loop`` re-mints (a key of :data:`BODIES`).
+ROUTE_FIX_BODY = "route-fix"
+#: What every ``route-fix`` iteration measures: the examples route gate,
+#: every row (``scripts/test`` alone skips the ``slow`` nano rows).
+ROUTE_GATE_TEST = "tests/test_pcb_examples_route.py"
+ROUTE_GATE_CMD = f'scripts/test {ROUTE_GATE_TEST} -m "slow or not slow"'
+#: The comment a route-fix slicer posts on the loop todo once every board
+#: routes fully at DRC 0; the loop's ``answer`` until reads it there.
+ROUTE_ANSWER = "answer: all example boards route fully at DRC 0 at <sha>"
+_ROUTE_NO_OP = "no-op: all example boards route fully at DRC 0"
+_TODO_ID_RE = re.compile(r"(?:td|todo:)?(\d+)", re.IGNORECASE)
+
+
+def _todo_ids(store: Store, raw: Any, *, arg: str) -> list[int]:
+    """Live todo ids named by ``raw`` (``'td1, td2'``, a list, or one id)."""
+    if raw in (None, ""):
+        return []
+    items = list(raw) if isinstance(raw, (list, tuple)) else str(raw).split(",")
+    out: list[int] = []
+    for item in items:
+        spelled = str(item).strip()
+        m = _TODO_ID_RE.fullmatch(spelled)
+        if m is None:
+            raise BadInput(
+                f"{arg}={raw!r}: {spelled!r} is not a todo id",
+                next=f"args={{'template': 'route-loop', '{arg}': 'td123, td456'}}",
+            )
+        tid = int(m.group(1))
+        if store.get_ref(kind="todo", id=tid) is None:
+            raise BadInput(
+                f"{arg}={raw!r}: todo {tid} not found",
+                next=f"name live todo ids in {arg}",
+            )
+        out.append(tid)
+    return out
+
+
+def _iterations(raw: Any) -> int:
+    if raw in (None, ""):
+        return _ROUTE_LOOP_MAX
+    try:
+        cap = int(raw)
+    except (TypeError, ValueError):
+        cap = 0
+    if cap <= 0:
+        raise BadInput(
+            f"iterations={raw!r} must be an integer > 0",
+            next="args={'template': 'route-loop', 'iterations': 6}",
+        )
+    return cap
+
+
+def mint_route_loop(
+    store: Store,
+    parent_id: int | None = None,
+    *,
+    iterations: Any = None,
+    after: Any = None,
+    context: Any = None,
+) -> PlanMint:
+    """phase -> loop until an ``answer:`` is the newest comment on the loop
+    todo (body ``route-fix``, max ``iterations``, default 6).
+
+    Every iteration (:func:`mint_route_fix`) measures the example boards
+    with :data:`ROUTE_GATE_CMD`, mints the next fix slices from the failing
+    nets and reviews their lands; its slicer posts :data:`ROUTE_ANSWER` on
+    the loop todo once every board routes fully at DRC 0, and the loop's
+    ``answer`` until closes it (``gates.evaluate`` reads a loop's until on
+    the loop todo itself).
+
+    No first iteration is minted here: the tick mints iteration 1 once the
+    loop is unblocked and childless, so a loop minted ahead of its
+    prerequisites does not fire early (me570353: a premature job eats a
+    retry). ``after`` names the todos the loop waits for (``blocked-by``
+    links, ``'td1, td2'``). ``context`` becomes the loop todo's body and
+    rides verbatim into every iteration's slicer brief: the design
+    pointers, lane pins and rulings a fresh session has no memory of."""
+    cap = _iterations(iterations)
+    waits = _todo_ids(store, after, arg="after")
+    ctx = str(context or "").strip()
+
+    def build(m: _Minter) -> None:
+        m.node("root", "Route every example board fully at DRC 0", _phase())
+        loop = m.node(
+            "loop",
+            "Example boards · measured, sliced, built and reviewed until every "
+            "board routes fully at DRC 0 · loop",
+            {
+                "loop": {
+                    "max": cap,
+                    "until": {"kind": "answer"},
+                    "body": ROUTE_FIX_BODY,
+                }
+            },
+            body=ctx or None,
+        )
+        for tid in waits:
+            m.store.add_link(
+                src_ref_id=loop, dst_ref_id=tid, relation="blocked-by", conn=m.conn
+            )
+
+    return _run(store, parent_id, build)
+
+
 TEMPLATES: dict[str, Template] = {
     t.name: t
     for t in (
@@ -1115,6 +1226,16 @@ TEMPLATES: dict[str, Template] = {
             ("board",),
             "place+route -> drc/review loop until the DRC is clean",
             mint_pcb_pipeline,
+        ),
+        Template(
+            "route-loop",
+            (),
+            "measure the example boards -> slicer mints the next fix slices -> "
+            "review their lands; loop until the slicer answers that every board "
+            "routes fully at DRC 0 (max 'iterations'; waits for 'after'; "
+            "'context' rides into every slicer brief)",
+            mint_route_loop,
+            optional=("iterations", "after", "context"),
         ),
     )
 }
@@ -1281,11 +1402,113 @@ def mint_pcb_fix(
     return _run_body(store, loop_todo_id, root, build)
 
 
+def _todo_body(store: Store, todo_id: int) -> str:
+    """The todo's details body (its ``todo_body`` chunks), or ``''``."""
+    return "\n".join(
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(todo_id)
+        if c.chunk_kind == TODO_BODY_KIND and c.text
+    ).strip()
+
+
+def _route_measure_body(
+    loop_id: int, iteration: int | None, cap: Any, context: str
+) -> str:
+    """The route-fix slicer's brief: measure, then answer or slice."""
+    which = f"iteration {iteration} of {cap}" if iteration else "an iteration"
+    text = (
+        "Measure the example boards on origin/main and mint the next router fix "
+        f"slices: {which} of the loop td{loop_id}, which closes when an "
+        f"`answer:` comment is the newest on td{loop_id}.\n\n"
+        f"Step 0. Read the newest comment on td{loop_id}. If it starts `answer:` "
+        "(every board already routes fully at DRC 0), run nothing and make "
+        f"`{_ROUTE_NO_OP}` the first line of your final message.\n\n"
+        f"Step 1, measure. Run `{ROUTE_GATE_CMD}` (the nano rows take about 30 "
+        "minutes each at effort 20000; the file runs under two hours; your wall "
+        "cap is four). Record per board: routable, routed, failed, drc_errors, "
+        "seconds and the cause (the assertion text carries failed= and "
+        "unrouted= net names; a LocalError names the corridor). A strict XPASS "
+        "means that board is complete and its xfail row is stale. Post the "
+        f"table as one `measure: <origin/main sha>` comment on td{loop_id}, one "
+        "line per board.\n\n"
+        "Step 2. If every board is complete and no xfail row is left: post "
+        f"`{ROUTE_ANSWER}` on td{loop_id} (it must be the newest comment there) "
+        f"and make `{_ROUTE_NO_OP}` the first line of your final message.\n\n"
+        "Step 3. Otherwise mint child todos under this todo (args parent_id = "
+        "this todo's id), each a code slice a builder in a fresh worktree "
+        "executes from the body alone. Group the failing nets by cause (pins "
+        "walled off at the pad; copper withdrawn by the short or connectivity "
+        "guard; CorridorOverflow before routing; via sites refused; unresolved "
+        "crossings) and read each cause's code path before writing: "
+        "src/precis/pcb/topoplace/wires.py (build_wires, _Corridor, "
+        "_ViaPlanter, _Shove), realise.py (_route_pass, _guarded_branches, "
+        "plan_route, assign_layers), shove.py, mesh.py, crossings.py, "
+        "copper_index.py. Each child body names: the goal; the boards and nets "
+        "it targets with today's numbers; the mechanism to change with every "
+        "entry point as module::function; the file set; acceptance in one "
+        f"place: a unit test for the mechanism; `{ROUTE_GATE_CMD}` with no "
+        "board worse and the targeted rows improved by a stated number or "
+        "flipped from xfail to a plain pass in the same commit (docstring table "
+        "updated); `scripts/test --typecheck` clean; "
+        "tests/test_pcb_topoplace_invariant.py left alone (its ledger rows skip "
+        'on the slice host); encoding="utf-8" on text IO; one commit '
+        "`type(scope): what (td<child>)` via `git commit -F`. A stale xfail row "
+        "is flipped by the fix child that completes the board; a board that "
+        "XPASSes with nothing left to fix gets one child that flips its row "
+        "and updates the table. Sequence children whose file sets overlap with "
+        "blocked-by links (edges, never prose). Mint at most four children. "
+        "Set a child's meta.op only as the design context below says (the "
+        "closing section's model pin is for children that need the precis MCP, "
+        "and none here does).\n\n"
+        "Commit nothing yourself."
+    )
+    if context:
+        text += f"\n\nDesign context (the body of td{loop_id}, verbatim):\n\n{context}"
+    return text
+
+
+def mint_route_fix(
+    store: Store, loop_todo_id: int, *, iteration: int | None = None, **_ctx: Any
+) -> PlanMint:
+    """measure (slicer generator: runs the examples gate, posts the
+    ``measure:`` table on the loop todo, mints the next fix slices or the
+    ``answer:`` that closes the loop) -> review (reviewer generator over the
+    slicer's children). The loop todo's body is the design context every
+    iteration's slicer gets verbatim (:func:`mint_route_loop`)."""
+    loop, root = _loop_context(store, loop_todo_id)
+    suffix = _iteration_suffix(iteration)
+    context = _todo_body(store, loop_todo_id)
+
+    def build(m: _Minter) -> None:
+        measure = m.node(
+            "measure",
+            "Example boards · measured on origin/main, stale rows flipped, next "
+            f"fix slices minted{suffix} · slicer",
+            _generate("slicer", ROUTE_GATE_TEST),
+            body=_route_measure_body(loop_todo_id, iteration, loop.get("max"), context),
+        )
+        m.node(
+            "review",
+            "Fix slices · landed diffs read against their briefs, one verdict "
+            f"posted{suffix} · reviewer",
+            _reviewer(measure),
+            body=(
+                _reviewer_brief(measure, slices=True)
+                + f"\n\nNo child todo under td{measure} (the boards were complete, "
+                "or nothing has landed)? Post `review: LAND`."
+            ),
+            blocked_by=("measure",),
+        )
+
+    return _run_body(store, loop_todo_id, root, build)
+
+
 #: Loop body name -> minter ``(store, loop_todo_id, **ctx) -> PlanMint``. The
 #: tick passes ``iteration=<n>``; a body ignores context it does not use.
 BODIES: dict[str, Callable[..., PlanMint]] = {
     "release-fix": mint_release_fix,
     "pcb-fix": mint_pcb_fix,
+    ROUTE_FIX_BODY: mint_route_fix,
 }
 
 

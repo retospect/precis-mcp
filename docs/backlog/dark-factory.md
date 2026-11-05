@@ -448,6 +448,16 @@ coordinator turn calls it.
   report minting fix tasks → loop until drc-clean, max N. The
   workbench ops that are not job_types yet become ones; nothing else
   changes for the PCB code.
+- **route-loop(iterations, after, context):** phase → loop (`answer`
+  until read on the loop todo itself, body `route-fix`, max 6). Each
+  iteration: a slicer generator runs the examples route gate
+  (`tests/test_pcb_examples_route.py`, every row), posts the `measure:`
+  table on the loop todo and mints the next fix slices from the failing
+  nets, or the `answer:` that closes the loop; then a reviewer generator
+  reads their lands. No first iteration at mint: the tick mints it once
+  the loop is unblocked (`after`: the todos it waits for) and childless,
+  so a loop minted ahead of its prerequisites never fires early. The
+  loop todo's body (`context`) rides verbatim into every slicer brief.
 
 ### The dispatcher tick
 

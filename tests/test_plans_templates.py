@@ -87,13 +87,14 @@ def _assert_plan_hygiene(store: Store, mint: PlanMint) -> None:
         }, key
 
 
-def test_registry_has_the_six_templates() -> None:
+def test_registry_has_the_seven_templates() -> None:
     assert sorted(TEMPLATES) == [
         "gripe-fix",
         "gripe-fix-direct",
         "pcb-pipeline",
         "pr-intake",
         "release-pass",
+        "route-loop",
         "slice-tree",
     ]
     assert TEMPLATES["gripe-fix"].required == ("gripe_id",)
@@ -457,6 +458,70 @@ def test_pcb_pipeline_refuses_unknown_board(store: Store, board: str) -> None:
         TEMPLATES["pcb-pipeline"].mint(store, None, board=board)
     assert "names no pcb design" in exc.value.cause
     assert exc.value.next and "search(kind='pcb'" in exc.value.next
+
+
+def _external_blockers(store: Store, todo_id: int) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT dst_ref_id FROM links WHERE relation = 'blocked-by' "
+            "AND src_ref_id = %s ORDER BY dst_ref_id",
+            (todo_id,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _child_count(store: Store, todo_id: int) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'todo' AND parent_id = %s",
+            (todo_id,),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_route_loop_shape(handler: TodoHandler, store: Store) -> None:
+    """A loop whose until is an ``answer`` on the loop todo itself, minted
+    childless: the tick mints iteration 1 once ``after`` has closed, so a
+    loop minted ahead of its prerequisites never fires early (me570353).
+    ``context`` is the loop's body, the slicer brief's design section."""
+    before = id_of(
+        handler.put(text="Land the search first.", meta={"rotation_root": True}).body
+    )
+    mint = TEMPLATES["route-loop"].mint(
+        store,
+        None,
+        iterations=3,
+        after=f"td{before}",
+        context="Spec hub: me1. Pin every code child to lane claude-sub.",
+    )
+    assert set(mint.ids) == {"root", "loop"}
+    assert _kinds(store, mint) == {"root": "phase", "loop": "loop"}
+    assert _meta(store, mint.ids["loop"])["loop"] == {
+        "max": 3,
+        "until": {"kind": "answer"},
+        "body": "route-fix",
+    }
+    assert _body(store, mint.ids["loop"]).startswith("Spec hub: me1.")
+    # The only blocked-by edge leaves the plan: the loop waits for `after`.
+    assert _external_blockers(store, mint.ids["loop"]) == [before]
+    assert _external_blockers(store, mint.ids["root"]) == []
+    assert _child_count(store, mint.ids["loop"]) == 0
+    _assert_plan_hygiene(store, mint)
+
+
+def test_route_loop_defaults_and_refusals(store: Store) -> None:
+    mint = TEMPLATES["route-loop"].mint(store, None)
+    assert _meta(store, mint.ids["loop"])["loop"]["max"] == 6
+    assert _body(store, mint.ids["loop"]) == ""
+    assert _external_blockers(store, mint.ids["loop"]) == []
+    assert TEMPLATES["route-loop"].optional == ("iterations", "after", "context")
+    with pytest.raises(BadInput, match="iterations"):
+        TEMPLATES["route-loop"].mint(store, None, iterations=0)
+    with pytest.raises(BadInput, match="not a todo id"):
+        TEMPLATES["route-loop"].mint(store, None, after="soon")
+    with pytest.raises(BadInput, match="not found"):
+        TEMPLATES["route-loop"].mint(store, None, after="td999999999")
 
 
 def test_template_mints_under_a_parent(handler: TodoHandler, store: Store) -> None:

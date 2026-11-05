@@ -696,6 +696,86 @@ def test_pcb_fix_body_refuses_a_loop_naming_no_board(store: Store) -> None:
         T.mint_body(store, loop, "pcb-fix")
 
 
+def _body_text(store: Store, todo_id: int) -> str:
+    return "\n".join(
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(todo_id)
+        if c.chunk_kind == "todo_body"
+    )
+
+
+def test_route_fix_body_shape(store: Store) -> None:
+    """measure (slicer over the examples gate) -> review (reviewer over the
+    slicer's children); the loop todo's body rides into the slicer brief."""
+    mint = T.TEMPLATES["route-loop"].mint(store, None, context="Spec hub: me1.")
+    loop = mint.ids["loop"]
+    body = T.mint_body(store, loop, "route-fix", iteration=2)
+    assert set(body.ids) == {"measure", "review"}
+    assert body.root_id == loop
+    measure = _meta(store, body.ids["measure"])
+    assert measure["generate"] == {
+        "role": "slicer",
+        "from": "tests/test_pcb_examples_route.py",
+    }
+    assert measure["task_class"] == "slicer"
+    review = _meta(store, body.ids["review"])
+    assert review["generate"] == {
+        "role": "reviewer",
+        "from": f"td{body.ids['measure']}",
+    }
+    assert review["task_class"] == "review"
+    for todo_id in body.ids.values():
+        ref = store.get_ref(kind="todo", id=todo_id)
+        assert ref is not None and ref.parent_id == loop
+        assert "iteration 2" in str(ref.title)
+        assert f"plan:{mint.root_id}" in _open_tags(store, todo_id)
+    text = _body_text(store, body.ids["measure"])
+    assert f"td{loop}" in text and "`measure: <origin/main sha>`" in text
+    assert T.ROUTE_ANSWER in text and T.ROUTE_GATE_CMD in text
+    assert "iteration 2 of 6" in text
+    assert text.rstrip().endswith("Spec hub: me1.")
+    assert "review: LAND" in _body_text(store, body.ids["review"])
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT src_ref_id, dst_ref_id FROM links WHERE relation = 'blocked-by' "
+            "AND src_ref_id = ANY(%s)",
+            (list(body.ids.values()),),
+        ).fetchall()
+    assert {(int(s), int(d)) for s, d in rows} == {
+        (body.ids["review"], body.ids["measure"])
+    }
+
+
+def test_childless_route_loop_mints_its_first_iteration_once_unblocked(
+    store: Store,
+) -> None:
+    """me570353: minted childless behind ``after``, the loop fires nothing;
+    the pass after the prerequisite closes mints iteration 1, and the next
+    pass mints nothing more while that iteration is open."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Prerequisite", {"auto_close": True})
+        m.node("stage", "Land the search", {"op": "run_slice"}, body="Build it.")
+
+    pre = T._run(store, None, build)
+    mint = T.TEMPLATES["route-loop"].mint(store, None, after=f"td{pre.ids['stage']}")
+    loop = mint.ids["loop"]
+
+    res = pd.run_pass(store)
+    assert res.loops_minted == 0
+    assert _children(store, loop) == []
+
+    _finish_live_jobs(store)  # the prerequisite's task lands
+    res = pd.run_pass(store)
+    assert res.loops_minted == 1
+    assert len(_children(store, loop)) == 2
+    assert _meta(store, loop)["loop"]["count"] == 1
+    assert _status(store, loop) == "open"
+
+    assert pd.run_pass(store).loops_minted == 0
+    assert len(_children(store, loop)) == 2
+
+
 def test_pcb_pipeline_until_is_a_live_drc_clean_gate(store: Store) -> None:
     from precis.plans.gates import evaluate
 
