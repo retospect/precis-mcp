@@ -189,6 +189,11 @@ in `args=`) ride any mode's transaction too — a retitle pairs with a span
 fix in one call. `title` alone (no body arg) is the retitle door; a
 metadata-only `edit(id=…, args={'title': …, 'hook': …})` corrects the
 header and one-line index text in any mode — no `find=`/`text=` needed.
+Retitling preserves the displayed body. Replacing the complete displayed
+body with `find=` writes the replacement exactly, including when paired
+with `args={'title': ...}`; a hidden legacy title line is not retained.
+The generated `referenced entities` footer is not editable body text.
+Use `get(kind='memory', id='me42~body')` for body-only anchors.
 An edit that would empty the body is refused. Always
 name `mode=`: `text=` with the default `find-replace` and no `find=` is
 refused, never taken as a whole-body overwrite.

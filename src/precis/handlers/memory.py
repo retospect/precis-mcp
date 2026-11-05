@@ -102,11 +102,19 @@ dated history is reported but exempt. The capped receipt anchors edits on
 sentences, since replacing a handle alone cannot correct an obsolete claim.
 Successors are full handles, including file-backed ``md:path~section``;
 the runtime follows those addresses while retired view preserves the record.
+
+Retitles preserve the legacy echo decision in fingerprinted ref metadata.
+Rows retitled before this fix without a stamp still show their old prefix.
+Full replacements store exact prose, including a lead equal to the new header. Complete
+displayed-body anchors replace the hidden prefix too, while explicit stored
+title anchors remain compatible. Raw snapshots still guard concurrent writes
+and populate audit history; generated entity footers never enter edit buffers.
 """
 
 from __future__ import annotations
 
 import difflib
+import hashlib
 import logging
 import os
 import re
@@ -157,6 +165,7 @@ from precis.utils import handle_registry, search_trace
 from precis.utils.db_retry import retry_locked
 from precis.utils.edit_resolve import (
     EditOp,
+    EditResult,
     apply_edit,
     format_unified_diff,
     normalize_dry_run,
@@ -893,7 +902,7 @@ class MemoryHandler(NumericRefHandler):
         handle = handle_registry.try_format(self.kind, ref.id) or str(ref.id)
         sections = self._body_sections(body)
         if sel == "body":
-            text = self._strip_title_echo(body, ref.title or "").strip()
+            text = self._display_body(ref, body)
             return Response(
                 body=f"# memory {ref.id}~body\n\n{text}"
                 + render_next_section(
@@ -2050,11 +2059,29 @@ class MemoryHandler(NumericRefHandler):
             # in the prose changed.
             def _patch_meta() -> None:
                 with self.store.tx() as conn:
-                    conn.execute(
-                        "SELECT ref_id FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+                    row = conn.execute(
+                        "SELECT title, meta FROM refs WHERE ref_id = %s "
+                        "FOR NO KEY UPDATE",
                         (ref.id,),
-                    )
-                    self.store.update_ref(ref.id, meta_patch=meta_patch, conn=conn)
+                    ).fetchone()
+                    patch = dict(meta_patch)
+                    if new_title is not None and row is not None:
+                        current = replace(ref, title=row[0], meta=row[1] or {})
+                        raw = next(
+                            (
+                                chunk.text
+                                for chunk in self.store.chunks.list_chunks_for_ref(
+                                    ref.id, conn=conn
+                                )
+                                if chunk.chunk_kind == _BODY_KIND
+                            ),
+                            current.title or "",
+                        )
+                        patch["_memory_body_display"] = self._body_display_policy(
+                            raw,
+                            self._body_echo_title(raw, current.title, current.meta),
+                        )
+                    self.store.update_ref(ref.id, meta_patch=patch, conn=conn)
                     if new_title is not None:
                         self.store.chunks.set_ref_title(
                             ref.id, new_title, source="agent", conn=conn
@@ -2113,7 +2140,9 @@ class MemoryHandler(NumericRefHandler):
         body += " view='log' for the full diff."
         if nudge:
             body += f"\n\nhint: {nudge}"
-        lead = self._thread_lead_hint(ref.id, old_body, text)
+        lead = self._thread_lead_hint(
+            ref.id, self._display_body(ref, old_body or ""), text
+        )
         if lead:
             body += f"\n\nhint: {lead}"
         body += render_next_section(link_hints(self, ref.id))
@@ -2214,15 +2243,21 @@ class MemoryHandler(NumericRefHandler):
                 (ln.strip() for ln in (text or "").splitlines() if ln.strip()), ""
             )
 
-        lead = first(new_body)
-        if not lead or lead != first(old_body):
-            return None
         tags = self.store.ref_tags_bulk([ref_id]).get(ref_id, [])
         if "section:threads" not in {v for _ns, v in tags}:
             return None
+        # The write already committed; a concurrent retirement must not turn
+        # its optional receipt hint into a failed edit acknowledgement.
+        ref = self.store.get_ref(kind=self.kind, id=ref_id)
+        if ref is None:
+            return None
+        displayed = self._display_body(ref, new_body)
+        lead = first(displayed)
+        if not lead or lead != first(old_body):
+            return None
         shown = lead if len(lead) <= 120 else lead[:119].rstrip() + "…"
         anchor = lead if len(lead) <= 120 else lead[:60]
-        if new_body.count(anchor) == 1:
+        if displayed.count(anchor) == 1:
             action = (
                 f"edit(kind='memory', id={ref_id}, mode='find-replace', "
                 f"find={anchor!r}, text='Left: …')"
@@ -2273,6 +2308,7 @@ class MemoryHandler(NumericRefHandler):
         new_title: str | None,
         meta_patch: dict[str, Any],
         expected_body: str | None = None,
+        exact_body: bool = False,
         misses: list[UngroundedNumber] | None = None,
         shape: ShapeAudit | None = None,
         shape_out: list[ShapeAudit | None] | None = None,
@@ -2304,13 +2340,15 @@ class MemoryHandler(NumericRefHandler):
         same way ``put`` does, so a lead-line edit doesn't leave a stale
         header. A hand-set title (one that never was the derivation) is
         left alone; the re-derived value goes to ``derived_title_out``
-        for the caller's ack.
+        for the caller's ack. Replacing the complete visible body leaves
+        its hidden title alone: dropping that prefix for display is not
+        an authored first-line edit.
         """
 
         def _do() -> str | None:
             with self.store.tx() as conn:
                 row = conn.execute(
-                    "SELECT title, retired_at FROM refs "
+                    "SELECT title, retired_at, meta FROM refs "
                     "WHERE ref_id = %s AND kind = 'memory' FOR NO KEY UPDATE",
                     (ref_id,),
                 ).fetchone()
@@ -2343,9 +2381,13 @@ class MemoryHandler(NumericRefHandler):
                             "anchored edit against the current body"
                         ),
                     )
+                current_meta = row[2] or {}
+                echo_title = self._body_echo_title(previous, row[0] or "", current_meta)
+                had_echo = self._strip_title_echo(previous, echo_title) != previous
                 applied_title = new_title
                 if (
                     applied_title is None
+                    and not (exact_body and had_echo)
                     and old_body is not None
                     and (row[0] or "") == _derive_title(old_body)
                 ):
@@ -2357,8 +2399,29 @@ class MemoryHandler(NumericRefHandler):
                             # assign, never append (same rule as
                             # ``deferred_out``).
                             derived_title_out[:] = [derived]
-                if meta_patch:
-                    self.store.update_ref(ref_id, meta_patch=meta_patch, conn=conn)
+                patch = dict(meta_patch)
+                policy = current_meta.get("_memory_body_display")
+                stamped = policy == self._body_display_policy(previous, echo_title)
+                echo_survives = had_echo and (
+                    self._strip_title_echo(new_text, echo_title) != new_text
+                )
+                if exact_body or expected_body is None:
+                    # A whole displayed-body rewrite is authored prose, even
+                    # when its first line matches the header.
+                    patch["_memory_body_display"] = self._body_display_policy(
+                        new_text, ""
+                    )
+                elif new_title is not None or (
+                    stamped and (not had_echo or echo_survives)
+                ):
+                    # Retitles preserve the locked row's old display decision.
+                    # Ordinary edits only carry a live stamp forward; an empty
+                    # echo also stays explicit when authored prose is edited.
+                    patch["_memory_body_display"] = self._body_display_policy(
+                        new_text, echo_title if echo_survives else ""
+                    )
+                if patch:
+                    self.store.update_ref(ref_id, meta_patch=patch, conn=conn)
                 if applied_title is not None:
                     self.store.chunks.set_ref_title(
                         ref_id, applied_title, source="agent", conn=conn
@@ -2507,7 +2570,7 @@ class MemoryHandler(NumericRefHandler):
             region_label=label,
         )
         old_body = self._body_text(ref)
-        result = apply_edit(old_body, op)
+        result, exact_body = self._apply_body_edit(ref, old_body, op)
         new_body = result.new_buffer
         if not new_body.strip():
             raise BadInput(
@@ -2548,6 +2611,7 @@ class MemoryHandler(NumericRefHandler):
             new_title=new_title,
             meta_patch=meta_patch,
             expected_body=old_body,
+            exact_body=exact_body,
             misses=misses,
             shape=shape,
             shape_out=final_shape,
@@ -2577,7 +2641,9 @@ class MemoryHandler(NumericRefHandler):
                 ack += f"\n\nhint: {nudge}"
         elif derived_title:
             ack += f" title re-derived: {derived_title[0]!r}."
-        lead = self._thread_lead_hint(ref.id, old_body, new_body)
+        lead = self._thread_lead_hint(
+            ref.id, self._display_body(ref, old_body), new_body
+        )
         if lead:
             ack += f"\n\nhint: {lead}"
         ack += render_next_section(link_hints(self, ref.id))
@@ -2691,7 +2757,9 @@ class MemoryHandler(NumericRefHandler):
             ack += f" title now: {new_title!r}."
         elif derived_title:
             ack += f" title re-derived: {derived_title[0]!r}."
-        lead = self._thread_lead_hint(ref.id, old_body, new_body)
+        lead = self._thread_lead_hint(
+            ref.id, self._display_body(ref, old_body), new_body
+        )
         if lead:
             ack += f"\n\nhint: {lead}"
         ack += render_next_section(link_hints(self, ref.id))
@@ -2736,6 +2804,8 @@ class MemoryHandler(NumericRefHandler):
         label = f"{self.kind} {ref.id}"
         old_body = self._body_text(ref)
         new_body = old_body
+        echo_title = self._body_echo_title(old_body, ref.title, ref.meta)
+        exact_body = False
         spans: list[tuple[int, int]] = []
         for i, raw in enumerate(ops):
             if not isinstance(raw, dict):
@@ -2760,9 +2830,17 @@ class MemoryHandler(NumericRefHandler):
                 if op_kind == "append":
                     new_body, span = self._op_append(raw, new_body)
                 else:
-                    new_body, span = self._op_anchored(
-                        raw, new_body, op_kind=op_kind, label=label
+                    new_body, span, projected = self._op_anchored(
+                        raw,
+                        new_body,
+                        op_kind=op_kind,
+                        label=label,
+                        ref=ref,
+                        echo_title=echo_title,
                     )
+                    if projected:
+                        exact_body = True
+                        echo_title = ""
             except BadInput as exc:
                 raise BadInput(
                     f"ops[{i}]: {exc.cause}", next=exc.next, options=exc.options
@@ -2808,6 +2886,7 @@ class MemoryHandler(NumericRefHandler):
                 new_title=None,
                 meta_patch=meta_patch,
                 expected_body=old_body,
+                exact_body=exact_body,
                 misses=misses,
                 shape=shape,
                 shape_out=final_shape,
@@ -2823,7 +2902,9 @@ class MemoryHandler(NumericRefHandler):
         )
         if derived_title:
             ack += f" title re-derived: {derived_title[0]!r}."
-        lead = self._thread_lead_hint(ref.id, old_body, new_body)
+        lead = self._thread_lead_hint(
+            ref.id, self._display_body(ref, old_body), new_body
+        )
         if lead:
             ack += f"\n\nhint: {lead}"
         ack += render_next_section(link_hints(self, ref.id))
@@ -2863,14 +2944,16 @@ class MemoryHandler(NumericRefHandler):
         span = ((buffer.count("\n") + 1, new_buffer.count("\n") + 1),)
         return new_buffer, span
 
-    @staticmethod
     def _op_anchored(
+        self,
         raw: dict[str, Any],
         buffer: str,
         *,
         op_kind: str,
         label: str,
-    ) -> tuple[str, tuple[tuple[int, int], ...]]:
+        ref: Ref,
+        echo_title: str,
+    ) -> tuple[str, tuple[tuple[int, int], ...], bool]:
         """One ``'find-replace'``/``'insert'`` dict through ``apply_edit``."""
         find = raw.get("find")
         if not isinstance(find, str) or not find:
@@ -2923,8 +3006,10 @@ class MemoryHandler(NumericRefHandler):
             nth=nth,
             region_label=label,
         )
-        result = apply_edit(buffer, op)
-        return result.new_buffer, result.edited_spans
+        result, exact_body = self._apply_body_edit(
+            ref, buffer, op, echo_title=echo_title
+        )
+        return result.new_buffer, result.edited_spans, exact_body
 
     # ── tag: refuse author add/remove of the system-set STALE: axis ──
 
@@ -2976,6 +3061,79 @@ class MemoryHandler(NumericRefHandler):
                 return block.text
         return ref.title or ""
 
+    @staticmethod
+    def _body_display_policy(body: str, echo_title: str) -> dict[str, str]:
+        return {
+            "sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+            "echo_title": echo_title,
+        }
+
+    def _body_echo_title(
+        self,
+        body: str,
+        title: str,
+        meta: dict[str, Any],
+    ) -> str:
+        """Use a matching display stamp, otherwise today's title-echo rule.
+
+        The fingerprint keeps an external body replacement from inheriting
+        an obsolete decision. Only the supplied body, title and metadata
+        participate; reads neither query history nor repair stored data.
+        """
+        policy = meta.get("_memory_body_display")
+        if (
+            isinstance(policy, dict)
+            and policy.get("sha256") == self._body_display_policy(body, "")["sha256"]
+            and isinstance(policy.get("echo_title"), str)
+        ):
+            return str(policy["echo_title"])
+
+        return title
+
+    def _display_body(self, ref: Ref, raw_body: str) -> str:
+        echo_title = self._body_echo_title(raw_body, ref.title or "", ref.meta or {})
+        return self._strip_title_echo(raw_body, echo_title)
+
+    def _apply_body_edit(
+        self,
+        ref: Ref,
+        buffer: str,
+        op: EditOp,
+        *,
+        echo_title: str | None = None,
+    ) -> tuple[EditResult, bool]:
+        """Resolve prose only; a complete visible-body match replaces its echo.
+
+        Explicit legacy title anchors still address the raw chunk. A writer
+        matching the complete displayed body instead replaces the whole
+        authored body, so its invisible prefix cannot survive the rewrite.
+        A delete is not a rewrite: it stays on the raw buffer.
+        Generated headers and entity footers never enter either buffer.
+        """
+        if op.find not in buffer:
+            raise BadInput(
+                f"anchor not found in memory {ref.id} body; generated headers "
+                "and referenced entities footers are not editable",
+                next=(
+                    f"get(kind='memory', id='me{ref.id}~body'), then retry "
+                    "with an anchor from the body prose"
+                ),
+            )
+        if echo_title is None:
+            echo_title = self._body_echo_title(buffer, ref.title or "", ref.meta or {})
+        visible = self._strip_title_echo(buffer, echo_title)
+        exact_body = bool(
+            op.op == "edit"
+            and op.text
+            and visible
+            and op.find == visible
+            and op.match == "unique"
+            and op.nth is None
+            and not op.before
+            and not op.after
+        )
+        return apply_edit(visible if exact_body else buffer, op), exact_body
+
     def _hit_text(self, ref: Ref, block: Any) -> str:
         """Search-hit text: the body prose, even when the best-ranked chunk
         was the title+hook header card (so a card hit still shows a snippet)."""
@@ -2984,14 +3142,16 @@ class MemoryHandler(NumericRefHandler):
         return str(block.text or "")
 
     def _strip_title_echo(self, body: str, title: str) -> str:
-        """Drop the body's leading line when it only repeats ``refs.title``.
+        """Drop a leading line identified as a legacy title echo.
 
         ``_derive_title`` copies the first non-empty body line into the
         title, so digest-style bodies (``# Heading`` opener) and
         single-line memories would otherwise print the same text twice —
         once in the ``# memory <id>: <title>`` header, once as the body's
-        first line (gr504805). The stored chunks are untouched; this is
-        display-only.
+        first line (gr504805). The caller supplies the stable echo title
+        from matching metadata or the current header. An empty echo title
+        preserves explicitly rewritten prose, even when it repeats the
+        header. Stored chunks are untouched; this is display-only.
         """
         if not title:
             return body
@@ -3019,7 +3179,7 @@ class MemoryHandler(NumericRefHandler):
             header += f": {title}"
         out = [header]
         raw_body = self._body_text(ref)
-        body = self._strip_title_echo(raw_body, title)
+        body = self._display_body(ref, raw_body)
         if body:
             out += ["", body]
         handles = entity_handles(raw_body)
