@@ -150,6 +150,9 @@ Env — every knob is documented here, and only here (gr514431):
         it a subagent worktree (basename agent-*) tears its compose project
         down at exit.
   PRECIS_TEST_AWAIT_BUDGET=<s>    --await's per-call wait cap (default 480).
+  PRECIS_TEST_NPROC=<n>           default xdist worker count when no -nN is
+        passed (default 6). The slice lander sets 3 so a static-wide
+        --checked selection cannot OOM a worker on melchior (gr567471).
   UV_WITH="--with dep …"          extra uv packages for this run — the
         escape hatch for a dep the baked image lacks (--impacted uses it
         for pytest-testmon + pytest-timeout).
@@ -805,7 +808,16 @@ for a in "$@"; do
     [[ "$a" == "-p" ]] && _prev_p=1
     [[ "$a" == "-pno:xdist" ]] && NO_XDIST=1
 done
-NPROC=(-n6)
+# Default worker count: PRECIS_TEST_NPROC (a non-negative integer) else 6.
+# The slice lander caps it so a static-wide --checked selection cannot OOM
+# an xdist worker (gr567471); a caller's -nN still wins below.
+DEFAULT_NPROC=6
+if [[ "${PRECIS_TEST_NPROC:-}" =~ ^[0-9]+$ ]]; then
+    DEFAULT_NPROC="$PRECIS_TEST_NPROC"
+elif [[ -n "${PRECIS_TEST_NPROC:-}" ]]; then
+    echo "WARNING: PRECIS_TEST_NPROC='${PRECIS_TEST_NPROC}' is not a non-negative integer; using -n${DEFAULT_NPROC}" >&2
+fi
+NPROC=(-n"$DEFAULT_NPROC")
 if [[ "$CALLER_N" == 1 || "$NO_XDIST" == 1 ]]; then
     NPROC=()
 elif [[ "$SERIAL" == 1 || "$COLLECT_ONLY" == 1 ]]; then
@@ -1114,15 +1126,16 @@ run_pytest() {
 }
 
 # --selected: the static half (contract + map + corpus-coupled + direct
-# importers when no map) runs first as a normal -n6 run; when a testmon map
-# exists the impacted half falls through to the captured --testmon run below.
+# importers when no map) runs first as a normal default-count run (-n6, or
+# PRECIS_TEST_NPROC); when a testmon map exists the impacted half falls
+# through to the captured --testmon run below.
 if [[ "$SELECTED" == 1 ]]; then
     echo "checked selection: ${#SEL_ARGS[@]} static targets$([[ "$IMPACTED" == 1 ]] && echo ' + testmon set')"
     if [[ ${#SEL_ARGS[@]} -gt 0 ]]; then
         SEL_MARK=(-m "not slow")
         for a in "$@"; do [[ "$a" == -m* ]] && SEL_MARK=(); done
         hb_start "pytest"
-        run_pytest plain -n6 "${SEL_MARK[@]+"${SEL_MARK[@]}"}" "${SEL_ARGS[@]+"${SEL_ARGS[@]}"}" "$@" || exit $?
+        run_pytest plain -n"$DEFAULT_NPROC" "${SEL_MARK[@]+"${SEL_MARK[@]}"}" "${SEL_ARGS[@]+"${SEL_ARGS[@]}"}" "$@" || exit $?
         hb_stop
     fi
     # No map → the static list was the whole selection; a map → testmon run below.

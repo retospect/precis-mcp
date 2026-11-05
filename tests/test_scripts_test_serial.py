@@ -127,3 +127,49 @@ def test_no_xdist_suppresses_injected_n6(tmp_path: Path) -> None:
     line = _run_line(log)
     assert " -n6 " not in f" {line} "
     assert " no:xdist " in f" {line} "
+
+
+# --- PRECIS_TEST_NPROC: the default worker count (gr567471) --------------
+
+
+def test_default_nproc_env_replaces_n6(tmp_path: Path) -> None:
+    """``PRECIS_TEST_NPROC`` is the default worker count when the caller
+    passes no ``-nN``: the slice lander sets 3 so a static-wide --checked
+    selection cannot OOM an xdist worker. A directory selection keeps the
+    default (no auto -n0 count pass)."""
+    rc, log, stderr = _scripts_test_run(
+        tmp_path,
+        args=("tests",),
+        files=("tests/x.py",),
+        extra_env={"PRECIS_TEST_NPROC": "3"},
+    )
+    assert rc == 0, stderr
+    line = _run_line(log)
+    assert " -n3 " in f" {line} "
+    assert " -n6 " not in f" {line} "
+
+
+def test_default_nproc_env_garbage_keeps_n6_and_warns(tmp_path: Path) -> None:
+    rc, log, stderr = _scripts_test_run(
+        tmp_path,
+        args=("tests",),
+        files=("tests/x.py",),
+        extra_env={"PRECIS_TEST_NPROC": "lots"},
+    )
+    assert rc == 0, stderr
+    line = _run_line(log)
+    assert " -n6 " in f" {line} "
+    assert "PRECIS_TEST_NPROC='lots'" in stderr
+
+
+def test_caller_n_beats_default_nproc_env(tmp_path: Path) -> None:
+    rc, log, stderr = _scripts_test_run(
+        tmp_path,
+        args=("-n2", "tests/x.py"),
+        files=("tests/x.py",),
+        extra_env={"PRECIS_TEST_NPROC": "3"},
+    )
+    assert rc == 0, stderr
+    line = _run_line(log)
+    assert " -n2 " in f" {line} "
+    assert " -n3 " not in f" {line} "

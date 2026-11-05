@@ -349,6 +349,9 @@ def test_submit_launches_ship_with_the_slice_subject(seams: dict[str, Any]) -> N
     assert argv == [str(tree / "scripts" / "ship"), "--checked", SUBJECT]
     assert kw["cwd"] == tree
     assert kw["env"]["PRECIS_SHIP_VERBOSE"] == "1"
+    # the checked run's xdist workers are capped (gr567471: a static-wide
+    # selection at -n6 OOM-killed a worker on melchior twice)
+    assert kw["env"]["PRECIS_TEST_NPROC"] == str(land_slice.DEFAULT_TEST_NPROC)
     # ship's uv steps run on the worker's Python line, never the newest
     # interpreter on the host (jo551780: Homebrew 3.15, no rdkit wheel)
     assert kw["env"]["UV_PYTHON"] == land_slice.ship_python()
@@ -1513,3 +1516,24 @@ def test_plain_slice_land_touches_no_pr(pr_seams: dict[str, Any]) -> None:
     pctx = _Ctx(store, _params(pr_seams))
     assert land_slice.poll(pctx, handle) is True
     assert pr_seams["gh"] == [] and pctx.meta_set["closed_pr"] is None
+
+
+# --- the checked run's xdist worker cap (gr567471) ------------------------
+
+
+def test_test_nproc_default_and_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PRECIS_LAND_TEST_NPROC", raising=False)
+    assert land_slice.test_nproc() == str(land_slice.DEFAULT_TEST_NPROC)
+    monkeypatch.setenv("PRECIS_LAND_TEST_NPROC", "2")
+    assert land_slice.test_nproc() == "2"
+    monkeypatch.setenv("PRECIS_LAND_TEST_NPROC", "0")
+    assert land_slice.test_nproc() == "0"
+
+
+def test_test_nproc_rejects_garbage_and_negatives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRECIS_LAND_TEST_NPROC", "many")
+    assert land_slice.test_nproc() == str(land_slice.DEFAULT_TEST_NPROC)
+    monkeypatch.setenv("PRECIS_LAND_TEST_NPROC", "-4")
+    assert land_slice.test_nproc() == str(land_slice.DEFAULT_TEST_NPROC)

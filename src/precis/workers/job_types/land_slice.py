@@ -15,7 +15,10 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   list made to carry ``(td<id>)`` so ``scripts/lib/land_notify.py`` moves
   the todo, capped at 72 bytes) and launches ``scripts/ship --checked
   "<subject>"`` detached in the worktree (``PRECIS_SHIP_BIN`` overrides the
-  path; ``PRECIS_SHIP_VERBOSE=1`` so the log holds the whole transcript).
+  path; ``PRECIS_SHIP_VERBOSE=1`` so the log holds the whole transcript;
+  ``PRECIS_TEST_NPROC`` caps the checked run's xdist workers at
+  :func:`test_nproc` — ``PRECIS_LAND_TEST_NPROC``, default 3 — because a
+  static-wide selection on melchior OOM-killed a worker twice, gr567471).
 * :func:`poll` waits for ship's exit. Green: the landed sha (ship's
   ``shipped — landed on main:`` line, else ``git rev-parse origin/main``)
   goes on the job (``meta.landed_sha``); a ``landed: <sha>`` comment and
@@ -235,6 +238,25 @@ def ship_bin(tree: Path) -> str:
     """``PRECIS_SHIP_BIN`` (the test seam), else the worktree's own
     ``scripts/ship``."""
     return os.environ.get("PRECIS_SHIP_BIN") or str(tree / "scripts" / "ship")
+
+
+#: xdist workers for the lander's ``--checked`` pytest when
+#: ``PRECIS_LAND_TEST_NPROC`` is unset: half of scripts/test's default six.
+#: A 5k–8k static-wide selection OOM-killed a worker at -n6 on melchior
+#: twice (gr567471, Reto 2026-11-05 "ship it").
+DEFAULT_TEST_NPROC = 3
+
+
+def test_nproc() -> str:
+    """The ``PRECIS_TEST_NPROC`` value the lander hands scripts/test:
+    ``PRECIS_LAND_TEST_NPROC`` when it is a non-negative integer, else
+    :data:`DEFAULT_TEST_NPROC`. A string, because it rides an env dict."""
+    raw = os.environ.get("PRECIS_LAND_TEST_NPROC", "")
+    try:
+        n = int(raw)
+    except ValueError:
+        return str(DEFAULT_TEST_NPROC)
+    return str(n if n >= 0 else DEFAULT_TEST_NPROC)
 
 
 # ── Seams (tests monkeypatch these) ────────────────────────────────
@@ -910,6 +932,8 @@ def _launch_ship(
                 **_factory_git.git_auth_env(),
                 "PRECIS_SHIP_VERBOSE": "1",
                 "UV_PYTHON": ship_python(),
+                # Cap the checked run's xdist workers (gr567471).
+                "PRECIS_TEST_NPROC": test_nproc(),
             },
         )
     except Exception as exc:
