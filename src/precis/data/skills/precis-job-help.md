@@ -558,9 +558,9 @@ put(kind='job', mode='setting',
 ```
 
 The key must name a real job_type / executor and the value the family
-type. Writes are operator-only: only `PRECIS_SOURCE` `cli` or
-`web:owner` may set or unset — every worker source
-(`precis-worker*`, `asa-*`, calls inside a background pass) is denied.
+type. Writes are CLI-only: only the `cli` source may set or unset.
+Web sources, every worker source (`precis-worker*`, `asa-*`), and calls
+inside a background pass are denied.
 Read the live overrides next to their code defaults with
 `get(kind='job', id='/claim')` ([[precis-job-observe-help]]).
 

@@ -426,11 +426,11 @@ def _fmt_interval(seconds: int) -> str:
 #: each write to ``worker_logs`` (the ``precis limits`` precedent).
 _CLAIM_MAX_RUNNING_MAX = 64
 
-#: The only call sources allowed to write a ``claim.*`` override — an
+#: Only the CLI may write a ``claim.*`` override — an
 #: explicit allowlist, NOT the ``is_owner`` gradient: the deployed worker
 #: lanes run ``PRECIS_SOURCE=precis-worker*``, which ``is_owner``'s
 #: forward-compatible "unknown → owner" default would wave through.
-_CLAIM_SETTING_SOURCES: frozenset[str] = frozenset({"cli", "web:owner"})
+_CLAIM_SETTING_SOURCES: frozenset[str] = frozenset({"cli"})
 
 _CLAIM_SETTING_NEXT = (
     "put(kind='job', mode='setting', args={'key': "
@@ -3525,9 +3525,9 @@ class JobHandler(NumericRefHandler):
         type (max_running int 0..64 — ``0`` suspends the type; slicing
         bool; slice_s positive seconds). ``reason=`` is required: the
         change (who, when, old → new, why) lands in ``worker_logs``, the
-        same audit row ``precis limits set`` writes. Operator-only —
+        same audit row ``precis limits set`` writes. CLI-only —
         :data:`_CLAIM_SETTING_SOURCES` is an explicit allowlist
-        (``cli`` / ``web:owner``); every worker source
+        (``cli``); web sources, every worker source
         (``precis-worker*``, ``asa-*``) and every call inside a
         background pass is :class:`Denied`.
         """
@@ -3546,7 +3546,7 @@ class JobHandler(NumericRefHandler):
             raise Denied(
                 f"claim.* overrides are operator knobs — source {source!r} "
                 "may not write them",
-                next="run from an allowed source (cli / web:owner)",
+                next="run from the CLI (source cli)",
             )
         if not isinstance(key, str) or not key.strip():
             raise BadInput(

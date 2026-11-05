@@ -159,12 +159,12 @@ def test_setting_kwargs_refused_on_other_modes(jobs: JobHandler) -> None:
 
 @pytest.mark.parametrize(
     "source",
-    ["asa-worker", "precis-worker-agent", "precis-worker-drain-x", "mcp"],
+    ["asa-worker", "precis-worker-agent", "precis-worker-drain-x", "mcp", "web:owner"],
 )
-def test_worker_source_denied(
+def test_disallowed_source_denied(
     jobs: JobHandler, store: Store, monkeypatch: pytest.MonkeyPatch, source: str
 ) -> None:
-    """Every source outside the ``cli`` / ``web:owner`` allowlist is
+    """Every source outside the ``cli`` allowlist is
     Denied — the deployed ``precis-worker*`` lanes included (``is_owner``
     would wave them through)."""
     monkeypatch.setenv("PRECIS_SOURCE", source)
@@ -173,7 +173,7 @@ def test_worker_source_denied(
     assert store.get_setting("claim.max_running.derived_drain") is None
 
 
-@pytest.mark.parametrize("source", ["cli", "web:owner"])
+@pytest.mark.parametrize("source", ["cli"])
 def test_allowed_sources_may_write(
     jobs: JobHandler, store: Store, monkeypatch: pytest.MonkeyPatch, source: str
 ) -> None:
