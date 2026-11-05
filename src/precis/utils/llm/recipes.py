@@ -1,7 +1,12 @@
 """Cached demand metadata, independent of routing and request hashes.
 
-Recipes share the route logger's boot-time store binding. A missing database or
-table yields an empty cache so telemetry cannot prevent an LLM call.
+Recipes share the route logger's boot-time store binding and are cached for
+``_TTL`` seconds (300); a missing database or table yields an empty cache so
+telemetry cannot prevent an LLM call. A request's task kind, consequence and
+privacy ride along without touching routing, blob policy or request hashes;
+``route_log.record_call`` stamps every writer, including agent-cost records.
+The scheduler's six-hour ``recipe_gap`` scan reports unknown sources with
+daily deduplication instead of writing gripes from the router.
 """
 
 from __future__ import annotations

@@ -5,7 +5,6 @@ every routed call goes through :func:`route` (or :func:`dispatch_async`
 for streaming) to a narrow :class:`LlmProvider` port picked from a
 :class:`Transport`-keyed registry. ``claude -p`` is just two adapters among
 peers — Anthropic is a swappable leaf, and every agentic + judge call site
-(dream, reviewers, cad/structure propose, web ask, the ``claude_p`` judges)
 is folded through the seam.
 
 Public surface:
@@ -44,7 +43,7 @@ Resolution, per dispatch (in order)
    :mod:`~precis.utils.llm.operations`' opt-in allow-list
    (``LLM_OPERATIONS``: ``reading_brief`` / ``meditation`` / ``briefing`` /
    ``plan_tick`` / …) has its tier + model owned by the registry default + a
-   live ``llm.op.<source>`` override (``llm_summarize`` is registered too).
+   live ``llm.op.<source>`` override.
    ``chase:verify`` uses the BIG capability tier; its per-operation chain
    selects castor's local gpt-oss rung, with the endpoint resolved from the
    model card rather than embedded in code.
@@ -146,7 +145,7 @@ other 4xx stays ``error``. A claude wall-clock timeout counts as
 unavailability via ``ClaudeProcessError.timed_out``. Every transport
 carries a wall-clock timeout (claude 600 s; local/openai 120 s; a SMALL
 local judge is capped at 30 s so a flapping loopback fails fast into the
-failover ladder instead of stranding a whole batch).
+failover ladder).
 
 Gen-params: per-tier ``(thinking, temperature)`` defaults (``SMALL`` =
 thinking off + temp 0.0 — a reasoning model on that rung otherwise burns
@@ -164,10 +163,9 @@ no row ⇒ byte-identical to env-only routing. Two call sites whose
 ``sandbox_run``/``claude_docker`` — read :func:`resolve_backend` and skip
 clean under ``backend=openai`` instead of folding through :func:`route`.
 
-``local_first.run`` adds an opt-in acceptance seam for selected operations
-(``operations.LOCAL_FIRST_OPS``); no product call site uses it yet. Mode
-switches, budgets, escalation and parking are in the
-:mod:`~precis.utils.llm.local_first` docstring.
+``local_first.run`` is an opt-in acceptance seam
+(``operations.LOCAL_FIRST_OPS``), unused by product call sites; its knobs are
+in :mod:`~precis.utils.llm.local_first`.
 
 The ``llm`` model catalog (ships dark) layers on this seam — facts/writer in
 :mod:`precis.llm_catalog`, handler in :mod:`precis.handlers.llm`:
@@ -182,12 +180,8 @@ The ``llm`` model catalog (ships dark) layers on this seam — facts/writer in
   judges *capability needed*, never picks a model), ``choose_model`` chains
   the two.
 
-Demand metadata (``recipes``) shares the route logger's bound store and uses a
-300-second cache; outages yield an empty cache. Requests carry task kind,
-consequence and privacy without affecting routing, blob policy or request hashes.
-``route_log.record_call`` stamps every writer, including agent-cost records;
-the scheduler's six-hour ``recipe_gap`` scan reports unknown sources with daily
-deduplication rather than writing gripes from the router.
+Demand metadata — task kind, consequence, privacy; never a routing input — is
+:mod:`~precis.utils.llm.recipes`.
 
 Invariant: empty catalog / nothing-fits ⇒ ``resolve_model(tier_floor)``,
 byte-identical to routing without a catalog.

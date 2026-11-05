@@ -350,6 +350,11 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # the same shape as struct_runs.final_geometry; read whole.
         "struct_neb_images.positions",
         "summarizers.config",
+        # 0278: a source's declared demand bag (window, tools, modality, …)
+        # whose key set is open per task kind; read whole into
+        # recipes.Recipe.requirement by the router's demand lookup, never
+        # queried by key.
+        "task_recipes.requirement",
         "tool_calls.arg_sample",
         "tool_calls.input_keys",
         "worker_logs.payload",
