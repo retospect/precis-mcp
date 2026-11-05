@@ -3,6 +3,10 @@
 Numeric-id ref kind. Subclasses :class:`NumericRefHandler` — the shared
 CRUD shape lives in one place across memory / todo / gripe / anki / conv.
 
+Fisheye batches live in ``eye`` because the dispatcher routes ``extent=``
+there before ``get``. They reuse scalar eyes and the plain batch ID policy,
+keeping each memory's own context and whole blocks in caller order.
+
 Storage (migration 0050): a memory's **prose lives in a ``memory_body``
 chunk**, and ``refs.title`` holds a short **title** — the header. This is
 the ``gripe_body`` shape: the body chunk is embedded + keyworded by the
@@ -134,7 +138,11 @@ from precis.handlers._eye import EYE_LADDER, is_eye_view
 from precis.handlers._interpret import interpreted
 from precis.handlers._memory_shape import ShapeAudit, audit_shape
 from precis.handlers._mode_help import require_mode
-from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
+from precis.handlers._numeric_ref import (
+    _BASE_VIEWS,
+    BATCH_VIEW_PAGE_CHARS,
+    NumericRefHandler,
+)
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.handlers.plaintext import _require_find_and_text
 from precis.protocol import KindSpec
@@ -670,6 +678,8 @@ class MemoryHandler(NumericRefHandler):
         """Eye render; on a ``section:index`` hub the over-cap trailer also
         names the paged member listing (``view='members'``) as the way to
         read every member in cap-sized chunks (gr538449/gr538490)."""
+        if isinstance(id, list):
+            return self._eye_batch(id, extent=extent, q=q, ring=ring)
         ref = self._resolve_live_ref(self._coerce_id(id))
         resp = super().eye(id=int(ref.id), extent=extent, q=q, ring=ring)
         from precis.utils.eye_render import _is_hub
@@ -678,6 +688,59 @@ class MemoryHandler(NumericRefHandler):
             hint = f"get(kind='memory', id={ref.id}, view='members')"
             resp = replace(resp, result_budget_hint=resp.result_budget_hint or hint)
         return resp
+
+    def _eye_batch(
+        self,
+        ids: list[Any],
+        *,
+        extent: Any,
+        q: str | None,
+        ring: Any,
+    ) -> Response:
+        """Bounded scalar eyes, with plain batch validation and missing-ID blocks."""
+        ref_ids = self._coerce_ids(ids)
+        header = f"# {len(ref_ids)} memory (batch, extent={extent!r})\n\n"
+        block_budget = BATCH_VIEW_PAGE_CHARS - len(header)
+        selectors = f", q={q!r}" if q is not None else ""
+        if ring is not None:
+            selectors += f", args={{'ring': {ring!r}}}"
+        blocks: list[str] = []
+        used = len(header)
+        for rid in ref_ids:
+            try:
+                resp = self.eye(id=rid, extent=extent, q=q, ring=ring)
+                block = resp.body
+                if len(block) > block_budget:
+                    # The scalar read, not a hub's members hint: the cut text
+                    # can be the body, which view='members' does not show.
+                    whole_read = (
+                        f"get(kind='memory', id={rid}, extent={extent!r}{selectors})"
+                    )
+                    trailer = f"… cut — full read: {whole_read}"
+                    lines: list[str] = []
+                    size = len(trailer)
+                    for line in block.splitlines():
+                        size += len(line) + 1
+                        if size > block_budget:
+                            break
+                        lines.append(line)
+                    block = "\n".join([*lines, trailer])
+            except NotFound:
+                block = f"me{rid}  not found"
+            except Gone:
+                block = f"me{rid}  deleted"
+            if blocks and used + len(block) > BATCH_VIEW_PAGE_CHARS:
+                break
+            blocks.append(block)
+            used += len(block) + 2
+        body = header + "\n\n".join(blocks)
+        rest = ref_ids[len(blocks) :]
+        if rest:
+            body += (
+                f"\n\n{len(rest)} more — next: get(kind='memory', "
+                f"id={rest!r}, extent={extent!r}{selectors})"
+            )
+        return Response(body=body, result_count=len(blocks))
 
     def _render_members(
         self,

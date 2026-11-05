@@ -32,7 +32,10 @@ it from search/get output.
 ## Drop a complaint about precis behaviour
 
 ```python
-put(kind="gripe", text="paper slug NotFound does not surface near-match options")
+put(kind="gripe", text="paper lookup hides near matches",
+    body="Command: get(kind='paper', id='near-match-slug')\n"
+         "Expected: NotFound with near-match options. Actual: no options.",
+    tags=["dogfood", "topic:paper"])
 # → created gripe id=42 (STATUS:open)
 ```
 
@@ -60,8 +63,10 @@ search(kind="gripe", args={"project": "catpath"})
 search(kind="gripe", args={"project": "precis"})
 ```
 
-Half-sentence is fine — articulation can wait. Don't pre-classify,
-don't articulate the fix. A title is optional: `title=` is accepted and
+File each pain point with the exact command, expected result, and actual
+result; no diagnosis or proposed fix is needed. Dogfooding reports add
+`tags=['dogfood', 'topic:<area>']`. A read-only agent reports `FRICTION`
+with those details to its coordinator, who files it. A title is optional: `title=` is accepted and
 becomes the first line of the body (the title is just the first line). The system tags it
 `STATUS:open` automatically.
 
@@ -83,15 +88,15 @@ full text).
 `edit(kind='gripe', id=N, args={'title': '…'})` changes it.
 <!-- /write -->
 
-The cost of a wrong gripe is one `delete` call. File freely. (Quests file
+File freely: no duplicate search and no filing cap. The gripe-fix thread
+deduplicates during triage. Quests file
 their own too — a tick's `needs` lands as a `quest:<id>` +
 `needs-tool:<tool>`-tagged gripe linked `blocks` → the quest; a repeat
-sighting becomes a comment, so comment on the existing one rather than
-re-filing.)
+sighting becomes a comment automatically.
 
 Well-formed-but-useless results are friction too — empty labels,
-placeholder text, an unhelpful default view. One line naming the call
-you ran is enough.
+placeholder text, an unhelpful default view. Record the exact command,
+expected result, and actual result.
 
 <!-- write -->
 Misled by a skill? Every skill ends with a ready-made line: add
@@ -160,8 +165,8 @@ search(kind="gripe", q="near-match suggestions")
 search(kind="gripe", q="HNSW duplicates")
 ```
 
-Search before you file. Duplicates are OK but the existing thread
-often has the context you'd otherwise rediscover. Body text and
+Search to investigate existing context or deduplicate during triage;
+filers do not search for duplicates. Body text and
 every comment chunk are searchable — and `get(kind='gripe', id=N,
 q='…')` finds the matching passages inside one gripe (find-in-ref,
 `precis-get-help`).

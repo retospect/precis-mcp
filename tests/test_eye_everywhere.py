@@ -147,6 +147,220 @@ class TestTheDoor:
         assert err and "[error:BadInput]" in out and "unknown ring kind" in out
 
 
+class TestMemoryBatchEye:
+    def test_each_handle_keeps_its_context_and_scalar_body_in_caller_order(
+        self, runtime_with_store: Any, store: Any
+    ) -> None:
+        focuses = [_ref(store, "memory", title) for title in ("First", "Second")]
+        for focus in focuses:
+            neighbor = _ref(store, "memory", f"Neighbor of {focus.title}")
+            store.add_link(
+                src_ref_id=focus.id, dst_ref_id=neighbor.id, relation="related-to"
+            )
+            store.chunks.insert_chunks(
+                focus.id, [ChunkInsert(ord=0, text=f"Body of {focus.title}.")]
+            )
+        ids = [f"me{focus.id}" for focus in reversed(focuses)]
+        singles = []
+        for ident in ids:
+            body, err = _get(
+                runtime_with_store, kind="memory", id=ident, extent="fisheye+1hop"
+            )
+            assert not err
+            singles.append(body)
+        batch, err = _get(
+            runtime_with_store, kind="memory", id=ids, extent="fisheye+1hop"
+        )
+        assert not err
+        chip = re.compile(r"  \[created [^\]]*\]")
+        assert chip.sub("", batch).split("\n\n", 1)[1] == "\n\n".join(
+            chip.sub("", body) for body in singles
+        )
+        assert "Neighbor of First" in batch and "Neighbor of Second" in batch
+
+    @pytest.mark.parametrize("selector", ["extent", "view"])
+    @pytest.mark.parametrize(
+        "rung",
+        list(EYE_LADDER) + [f"{rung}+recall" for rung in EYE_LADDER] + ["+recall"],
+    )
+    def test_all_rungs_accept_a_memory_list(
+        self, runtime_with_store: Any, store: Any, selector: str, rung: str
+    ) -> None:
+        first = _ref(store, "memory", "Batch rung first")
+        second = _ref(store, "memory", "Batch rung second")
+        out, err = _get(
+            runtime_with_store,
+            kind="memory",
+            id=[f"me{second.id}", f"me{first.id}"],
+            **{selector: rung},
+        )
+        assert not err, out
+        assert out.index(f"me{second.id}") < out.index(f"me{first.id}")
+
+    def test_missing_and_deleted_ids_are_blocks_between_live_eyes(
+        self, runtime_with_store: Any, store: Any
+    ) -> None:
+        first = _ref(store, "memory", "Live before")
+        deleted = _ref(store, "memory", "Deleted batch member")
+        last = _ref(store, "memory", "Live after")
+        store.retire_ref(deleted.id)
+        missing = last.id + 100_000
+        out, err = _get(
+            runtime_with_store,
+            kind="memory",
+            id=[first.id, missing, deleted.id, last.id],
+            extent="fisheye+1hop",
+        )
+        assert not err
+        markers = [
+            f"me{first.id} [memory] Live before",
+            f"me{missing}  not found",
+            f"me{deleted.id}  deleted",
+            f"me{last.id} [memory] Live after",
+        ]
+        positions = [out.index(marker) for marker in markers]
+        assert positions == sorted(positions)
+
+    @pytest.mark.parametrize("invalid", ["empty", "over-cap", "malformed"])
+    def test_list_validation_matches_plain_get_and_refuses_the_entire_call(
+        self, runtime_with_store: Any, store: Any, invalid: str
+    ) -> None:
+        from precis.handlers._numeric_ref import BATCH_ID_CAP
+
+        focus = _ref(store, "memory", "Must not render on invalid batch")
+        ids = {
+            "empty": [],
+            "over-cap": [focus.id] * (BATCH_ID_CAP + 1),
+            "malformed": [focus.id, "not-a-memory-id"],
+        }[invalid]
+        plain, plain_err = _get(runtime_with_store, kind="memory", id=ids)
+        eye, eye_err = _get(
+            runtime_with_store, kind="memory", id=ids, extent="fisheye+1hop"
+        )
+        assert plain_err and eye_err
+        assert "[error:BadInput]" in eye
+        assert eye == plain
+        assert "Must not render on invalid batch" not in eye
+
+    def test_large_eyes_page_whole_blocks_and_keep_query_and_ring(
+        self, runtime_with_store: Any, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import precis.handlers._eye as eye_mod
+        import precis.handlers.memory as memory_mod
+
+        focuses = [_ref(store, "memory", f"Page {i}") for i in range(3)]
+        ids = [focus.id for focus in focuses]
+        ring = {"kinds": "memory"}
+        calls: list[tuple[str, Any, Any, Any]] = []
+
+        def render(
+            store: Any, handle: str, extent: Any, *, q: Any = None, ring: Any = None
+        ) -> str:
+            calls.append((handle, extent, q, ring))
+            return f"BEGIN {handle}\n" + "x" * 150 + f"\nEND {handle}"
+
+        monkeypatch.setattr(eye_mod, "render_eye", render)
+        monkeypatch.setattr(memory_mod, "BATCH_VIEW_PAGE_CHARS", 250)
+        out, err = _get(
+            runtime_with_store,
+            kind="memory",
+            id=ids,
+            view="fisheye+1hop+recall",
+            q="Notes & links",
+            ring=ring,
+        )
+        assert not err
+        assert f"BEGIN me{ids[0]}\n" in out and f"\nEND me{ids[0]}" in out
+        assert f"BEGIN me{ids[1]}" not in out and f"BEGIN me{ids[2]}" not in out
+        assert (
+            f"2 more — next: get(kind='memory', id={ids[1:]!r}, "
+            "extent='fisheye+1hop+recall', q='Notes & links', "
+            "args={'ring': {'kinds': 'memory'}})"
+        ) in out
+        assert calls
+        assert all(
+            (extent, q, filt) == ("fisheye+1hop+recall", "Notes & links", ring)
+            for _, extent, q, filt in calls
+        )
+
+    @pytest.mark.parametrize("is_hub", [True, False])
+    def test_oversized_first_eye_keeps_whole_read_and_batch_continuation(
+        self,
+        runtime_with_store: Any,
+        store: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        is_hub: bool,
+    ) -> None:
+        import precis.handlers._eye as eye_mod
+        from precis.handlers._numeric_ref import BATCH_VIEW_PAGE_CHARS
+        from precis.handlers.memory import MemoryHandler
+
+        first = _ref(store, "memory", "Oversized first eye")
+        second = _ref(store, "memory", "Ordinary second eye")
+        if is_hub:
+            store.add_tag(first.id, Tag.parse("section:index"), set_by="agent")
+        oversized = f"BEGIN me{first.id}\n" + "whole line " * 7 + "\n"
+        oversized += ("member detail " * 6 + "\n") * 1000
+        assert len(oversized) > BATCH_VIEW_PAGE_CHARS
+
+        def render(
+            store: Any, handle: str, extent: Any, *, q: Any = None, ring: Any = None
+        ) -> str:
+            if handle == f"me{first.id}":
+                return oversized
+            return f"BEGIN {handle}\n" + "ordinary detail\n" * 20
+
+        monkeypatch.setattr(eye_mod, "render_eye", render)
+        handler = MemoryHandler(hub=runtime_with_store.hub)
+        scalar = handler.eye(
+            id=first.id,
+            extent="fisheye+1hop",
+            q="Notes & links",
+            ring={"kinds": "memory"},
+        )
+        assert scalar.body == oversized
+        selectors = ", q='Notes & links', args={'ring': {'kinds': 'memory'}}"
+        members = f"get(kind='memory', id={first.id}, view='members')"
+        whole_read = (
+            f"get(kind='memory', id={first.id}, extent='fisheye+1hop'{selectors})"
+        )
+        assert scalar.result_budget_hint == (members if is_hub else None)
+        out, err = _get(
+            runtime_with_store,
+            kind="memory",
+            id=[first.id, second.id],
+            extent="fisheye+1hop",
+            q="Notes & links",
+            ring={"kinds": "memory"},
+        )
+        assert not err, out
+        continuation = (
+            f"\n\n1 more — next: get(kind='memory', id={[second.id]!r}, "
+            f"extent='fisheye+1hop'{selectors})"
+        )
+        assert out.endswith(continuation)
+        assert len(out) <= BATCH_VIEW_PAGE_CHARS + len(continuation)
+        block = out.removesuffix(continuation).split("\n\n", 1)[1]
+        lines = block.splitlines()
+        assert lines[-1] == f"… cut — full read: {whole_read}"
+        assert lines[:-1] == oversized.splitlines()[: len(lines) - 1]
+        assert f"BEGIN me{second.id}" not in out
+
+    def test_other_numeric_kind_eye_refusal_describes_view_specific_support(
+        self, runtime_with_store: Any, store: Any
+    ) -> None:
+        finding = _ref(store, "finding", "Finding remains scalar")
+        out, err = _get(
+            runtime_with_store,
+            kind="finding",
+            id=[finding.id],
+            extent="fisheye+1hop",
+        )
+        assert err and "[error:BadInput]" in out
+        assert "plain get(kind='finding', id=[...]) accepts a list" in out
+        assert "not every view or operation does" in out
+
+
 class TestPerKind:
     def test_taxon_eye_groups_its_hierarchy_under_taxonomy(
         self, runtime_with_store: Any, store: Any

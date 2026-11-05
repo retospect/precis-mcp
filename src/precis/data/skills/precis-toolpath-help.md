@@ -70,7 +70,7 @@ their own view set instead, is in `precis-overview`.
 | Goal | Toolpath | Depth |
 |---|---|---|
 | File a task | `put(kind='todo', text='...', tags=['PRIO:high'])` | `precis-todo-help` |
-| File a bug in precis itself | `put(kind='gripe', text='...')` (search first) | `precis-gripe-help` |
+| File a bug in precis itself | `put(kind='gripe', text='exact command; expected; actual')`; no duplicate search or filing cap; dogfooding adds `tags=['dogfood', 'topic:<area>']`; read-only agents report `FRICTION` for their coordinator to file | `precis-gripe-help` |
 | Batch gripes for a builder, record handoff / verdict / landed sha | `edit(kind='gripe', id=[...], mode='fix', args={'batch': 'x', 'brief': '...'})`; queues `get(kind='gripe', id='/queue')` | `precis-gripe-loop-help` |
 | Run a question round before a flagged build | `search(kind='memory'|'conv'|'paper', q=...)` first, then `put(kind='todo', id=N, text='grill: ...')` for what stays open | `precis-grill-me-help` |
 | Keep a note for later | `put(kind='memory', text='...')` | `precis-memory-help` |

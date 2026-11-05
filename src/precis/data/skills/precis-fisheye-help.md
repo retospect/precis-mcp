@@ -194,6 +194,12 @@ a `— tree —` ring (parent, peers, children from `parent_id`) at
 
 ## Memory rings
 
+Memory eyes accept `id=[...]` (up to 50) at every fisheye rung, including
+`fisheye+1hop+recall`. Focuses render in caller order with duplicate IDs
+collapsed; each uses the same extent, ring, and `q=` with its own context.
+Missing or deleted IDs get per-ID blocks; malformed IDs refuse the batch.
+Results keep whole focus blocks and name unread IDs for continuation.
+
 On a **memory** focus the same rings read: `part-of` to its hub (or
 summary node) under `Parts:` on both ends — and on the `section:index`
 hub itself every member lists under `contains:`, one line each,

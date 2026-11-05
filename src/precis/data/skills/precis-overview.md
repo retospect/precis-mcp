@@ -341,6 +341,6 @@ Corpus-pipeline services documenting against this skill:
 - [[precis-taproot-mint-help]] — author/mint/sharpen/merge a claim hub
 - [[precis-taproot-backfill-help]] — batch-convert [pc]/[pa] cites into hub cites
 - [[precis-notation-canon]] — how to spell numbers/units in a claim sentence (blocks at approve)
-- [[precis-gripe-help]] — hit a bug / tool friction? file a gripe (search existing first)
+- [[precis-gripe-help]] — hit a bug / tool friction? file freely; triage deduplicates
 - [[precis-audio-help]] — narrate a draft to audio: voice score + pronunciation lexicon
 - [[precis-lab-help]] — in-silico lab: chain route/protein/structure/literature toward a research goal

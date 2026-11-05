@@ -3674,9 +3674,9 @@ class NumericRefHandler(Handler):
                 f"{cls._sense()} id= takes one integer or handle, "
                 f"got {type(id).__name__}",
                 next=(
-                    "pass one call per ref here; id=[...] is accepted only by "
-                    f"get, tag, link{' and edit' if cls.spec.supports_edit else ''} "
-                    f"on {cls.kind}"
+                    "pass one call per ref for this view or operation; "
+                    f"plain get(kind={cls.kind!r}, id=[...]) accepts a list, "
+                    "but not every view or operation does"
                     if cls.batch_ids
                     else "pass one call per ref (id= is not a list)"
                 ),
