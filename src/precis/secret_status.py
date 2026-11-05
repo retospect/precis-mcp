@@ -190,6 +190,15 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         used_by_job_types=("devin_task",),
     ),
     SecretSpec(
+        name="PRECIS_DEVIN_ORG_ID",
+        purpose="Devin organization id, non-secret config",
+        get_url="https://app.devin.ai/settings/api",
+        get_blurb="Copy the organization id shown at the top of Settings > "
+        "Devin API in the Devin app and paste it here alongside DEVIN_API_TOKEN.",
+        cost="free",
+        optional=True,
+    ),
+    SecretSpec(
         name="PERPLEXITY_API_KEY",
         purpose="Backs the perplexity-research / perplexity-reasoning kinds.",
         get_url="https://www.perplexity.ai/settings/api",

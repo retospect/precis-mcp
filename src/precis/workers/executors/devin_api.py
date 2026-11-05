@@ -18,7 +18,8 @@ token resolved fresh per call from ``DEVIN_API_TOKEN``
 plaintext never lands on the job row, a chunk, or a log line). No
 reverse-engineered proxies, no CLI login reuse — Reto 2026-10-31 ruling
 on the gripe. The org id is non-secret config: ``PRECIS_DEVIN_ORG_ID``
-env, else the ``devin.org_id`` ``app_state`` row.
+env, else the ``devin.org_id`` ``app_state`` row, then the vault entry
+``PRECIS_DEVIN_ORG_ID`` so operators can configure it on ``/secrets``.
 
 **Not a router rung.** Devin sessions are tasks, not completions — this
 executor never touches the ``llm.op`` chains. It is in
@@ -287,14 +288,19 @@ def devin_exec_enabled(store: Store, *, conn: Any = None) -> bool:
 
 def _resolve_org(store: Store) -> str | None:
     """The org id — ``PRECIS_DEVIN_ORG_ID`` env, else the
-    ``devin.org_id`` app_state row. Non-secret config."""
+    ``devin.org_id`` app_state row, then the vault. Non-secret config."""
+    from precis import secrets as _secrets
+
     env = os.environ.get(_ORG_ENV)
     if env and env.strip():
         return env.strip()
     try:
         raw = store.get_setting(_ORG_SETTING_KEY)
     except Exception:
-        return None
+        raw = None
+    if raw and raw.strip():
+        return raw.strip()
+    raw = _secrets.get_secret(_ORG_ENV)
     return raw.strip() if raw and raw.strip() else None
 
 
@@ -757,7 +763,9 @@ def run_devin_api_pass(
     org_id = _resolve_org(store)
     if not token or not org_id:
         log.warning(
-            "devin_api: missing %s or org id (%s env / %s setting) — "
+            "devin_api: missing configuration — set %s and %s on /secrets "
+            "or in the environment (org id also accepts the %s setting). "
+            "Copy the org id from Settings > Devin API in the Devin app; "
             "jobs stay queued until configured",
             _SECRET_NAME,
             _ORG_ENV,
