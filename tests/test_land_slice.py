@@ -350,7 +350,10 @@ def test_submit_launches_ship_with_the_slice_subject(seams: dict[str, Any]) -> N
     assert kw["cwd"] == tree
     assert kw["env"]["PRECIS_SHIP_VERBOSE"] == "1"
     # the checked run's xdist workers are capped (gr567471: a static-wide
-    # selection at -n6 OOM-killed a worker on melchior twice)
+    # selection at -n6 OOM-killed a worker on melchior twice). PRECIS_GATE_N
+    # is what ship's checked gate expands into `pytest -n`; PRECIS_TEST_NPROC
+    # is scripts/test's name for the same count.
+    assert kw["env"]["PRECIS_GATE_N"] == str(land_slice.DEFAULT_TEST_NPROC)
     assert kw["env"]["PRECIS_TEST_NPROC"] == str(land_slice.DEFAULT_TEST_NPROC)
     # ship's uv steps run on the worker's Python line, never the newest
     # interpreter on the host (jo551780: Homebrew 3.15, no rdkit wheel)

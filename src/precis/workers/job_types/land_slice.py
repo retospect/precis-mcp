@@ -16,9 +16,11 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   the todo, capped at 72 bytes) and launches ``scripts/ship --checked
   "<subject>"`` detached in the worktree (``PRECIS_SHIP_BIN`` overrides the
   path; ``PRECIS_SHIP_VERBOSE=1`` so the log holds the whole transcript;
-  ``PRECIS_TEST_NPROC`` caps the checked run's xdist workers at
+  ``PRECIS_GATE_N`` caps the checked gate's xdist workers at
   :func:`test_nproc` — ``PRECIS_LAND_TEST_NPROC``, default 3 — because a
-  static-wide selection on melchior OOM-killed a worker twice, gr567471).
+  static-wide selection on melchior OOM-killed a worker twice, gr567471;
+  ``PRECIS_TEST_NPROC`` carries the same count to any ``scripts/test``
+  run inside the ship).
 * :func:`poll` waits for ship's exit. Green: the landed sha (ship's
   ``shipped — landed on main:`` line, else ``git rev-parse origin/main``)
   goes on the job (``meta.landed_sha``); a ``landed: <sha>`` comment and
@@ -248,9 +250,11 @@ DEFAULT_TEST_NPROC = 3
 
 
 def test_nproc() -> str:
-    """The ``PRECIS_TEST_NPROC`` value the lander hands scripts/test:
-    ``PRECIS_LAND_TEST_NPROC`` when it is a non-negative integer, else
-    :data:`DEFAULT_TEST_NPROC`. A string, because it rides an env dict."""
+    """The xdist worker count the lander hands the ship, as ``PRECIS_GATE_N``
+    (what ``scripts/ship --checked`` expands into its ``pytest -n``) and
+    ``PRECIS_TEST_NPROC`` (what ``scripts/test`` reads): ``PRECIS_LAND_TEST_NPROC``
+    when it is a non-negative integer, else :data:`DEFAULT_TEST_NPROC`. A
+    string, because it rides an env dict."""
     raw = os.environ.get("PRECIS_LAND_TEST_NPROC", "")
     try:
         n = int(raw)
@@ -932,7 +936,10 @@ def _launch_ship(
                 **_factory_git.git_auth_env(),
                 "PRECIS_SHIP_VERBOSE": "1",
                 "UV_PYTHON": ship_python(),
-                # Cap the checked run's xdist workers (gr567471).
+                # Cap the checked run's xdist workers (gr567471): ship's
+                # checked gate runs `pytest -n ${PRECIS_GATE_N:-6}` itself,
+                # not scripts/test, so both names carry the count.
+                "PRECIS_GATE_N": test_nproc(),
                 "PRECIS_TEST_NPROC": test_nproc(),
             },
         )
