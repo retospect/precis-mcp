@@ -370,6 +370,13 @@ def test_pathway_environment_displays_matching_sweep_rate(
 
 @needs_node
 @pytest.mark.parametrize(
+    "linked",
+    [
+        {"T": 350},
+        {"T": 298.15, "electrochemical": {"U_vs_SHE": -0.3, "pH": 2}},
+    ],
+)
+@pytest.mark.parametrize(
     ("template", "function"),
     [
         ("refs/pathway_detail.html.j2", "pwQueryString"),
@@ -377,9 +384,14 @@ def test_pathway_environment_displays_matching_sweep_rate(
     ],
 )
 def test_environment_url_preserves_missing_coordinates_until_edited(
-    tmp_path: Path, template: str, function: str
+    tmp_path: Path, template: str, function: str, linked: dict[str, Any]
 ) -> None:
     from precis_pathway.environment import Environment
+    from precis_web.pathway_environment import linked_environment
+
+    environment = linked_environment({"env": json.dumps(linked)})
+    assert environment is not None
+    linked = environment.to_dict()
 
     text = (
         Path(__file__).resolve().parents[2] / "src/precis_web/templates" / template
@@ -389,8 +401,8 @@ def test_environment_url_preserves_missing_coordinates_until_edited(
     source = match.group(0)
     observed = _node_json(
         tmp_path,
-        """
-const linkedEnvironment = {T:350}, V = {environment:linkedEnvironment};
+        f"const linkedEnvironment = {json.dumps(linked)}, V = {{environment:linkedEnvironment}};"
+        + """
 const currentU = -0.5, phInput = {value:'7'}, selected = null, selectedPath = null;
 const uEl = {value:'-0.5', dataset:{default:'0'}}, phEl = {value:'7', dataset:{default:'0'}};
 const resetT = {checked:true}, near = (a,b) => Math.abs(a-b) < 1e-9;
@@ -407,16 +419,78 @@ const changedU = read();
 environmentUDirty = false;
 environmentPhDirty = true;
 const changedPh = read();
-console.log(JSON.stringify([original, changedU, changedPh]));
+environmentUDirty = true;
+const changedBoth = read();
+console.log(JSON.stringify([original, changedU, changedPh, changedBoth, linkedEnvironment]));
 """,
     )
     assert (
-        Environment.from_url(observed[0]).basis
-        == Environment.from_dict({"T": 350}).basis
+        Environment.from_url(observed[0]).basis == Environment.from_dict(linked).basis
     )
-    assert Environment.from_url(observed[1]).electrochemical == {"U_vs_RHE": -0.5}
-    assert Environment.from_url(observed[2]).electrochemical == {"pH": 7}
-    assert all("u" not in params and "ph" not in params for params in observed)
+    original_ec = linked.get("electrochemical", {})
+    expected_u = {**original_ec, "U_vs_RHE": -0.5}
+    assert Environment.from_url(observed[1]).electrochemical == expected_u
+    assert Environment.from_url(observed[2]).electrochemical == {
+        **original_ec,
+        "pH": 7,
+    }
+    assert Environment.from_url(observed[3]).electrochemical == {
+        **expected_u,
+        "pH": 7,
+    }
+    assert observed[4] == linked
+    assert all("u" not in params and "ph" not in params for params in observed[:4])
+
+
+@needs_node
+@pytest.mark.parametrize("temperature", [298.15, 596.3])
+def test_pathway_she_link_normalizes_record_and_initializes_rhe(
+    client, runtime, tmp_path: Path, temperature: float
+) -> None:
+    from precis_pathway.environment import Environment
+
+    _seed_pathway(
+        runtime.store, meta={"graph": _GRAPH3_NH, "results": {}}, body_text=None
+    )
+    environment = Environment.from_dict(
+        {"T": temperature, "electrochemical": {"U_vs_SHE": -0.3, "pH": 7}}
+    )
+    response = client.get(f"/refs/pathway/171696?{environment.to_url()}")
+    assert response.status_code == 200
+    data = re.search(r"  const V = \{.*?\n  \};", response.text, re.S)
+    init = re.search(
+        r"  function applyUrlSelection\(\) \{.*?\n  \}", response.text, re.S
+    )
+    assert data is not None and init is not None
+    observed = _node_json(
+        tmp_path,
+        data.group(0)
+        + """
+const window = {location: {search: ''}};
+const uSlider = {}, phInput = {};
+let currentU = -0.5, uNote = 'default: fixed', selectedPath = null, layerSelection;
+const pwReadLayers = () => ({});
+let filterState;
+const PathwayFilters = {read: () => ({})};
+const showLinkNote = text => { throw new Error(text); };
+"""
+        + init.group(0)
+        + """
+applyUrlSelection();
+console.log(JSON.stringify({u: currentU, slider: uSlider.value, ph: phInput.value,
+  environment: V.environment, note: uNote}));
+""",
+    )
+    assert observed["u"] == pytest.approx(environment.u_rhe)
+    assert observed["u"] == pytest.approx(0.1141, abs=0.0001)
+    assert float(observed["slider"]) == pytest.approx(environment.u_rhe)
+    assert observed["ph"] == "7"
+    assert observed["note"] == ""
+    assert observed["environment"] == {
+        "T": temperature,
+        "electrochemical": {"U_vs_RHE": environment.u_rhe, "pH": 7},
+    }
+    assert environment.electrochemical == {"U_vs_SHE": -0.3, "pH": 7}
 
 
 def test_pathway_environment_link_reports_missing_result(client, runtime) -> None:

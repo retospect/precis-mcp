@@ -16,10 +16,9 @@ potential (`results.score.selectivity`: per branch point, side climb −
 on-route climb; catpath `viz.py`), and `P_side` for kinetics. What is
 missing is the lever: at a fork between a proton-coupled step (shifts by
 eU under CHE) and a chemical step (does not), the winner depends on U,
-so the objective is a window, not a point. pH is asked for too, but under
-pure CHE on the RHE scale pH drops out of every PCET step; it moves the
-answer only through three named routes (below). A bare pH slider would
-be a no-op.
+so the objective is a window, not a point. The window must consume the
+explicit environment terms from `src/precis_pathway/ph_terms.py` and
+`src/precis_pathway/staircase_routes.py::_at_environment`.
 
 ## In scope
 
@@ -32,20 +31,9 @@ be a no-op.
 2. **Kinetic half** once barriers exist: the same per-fork comparison on
    Ea (U-independent under CHE), reported beside the thermodynamic
    margin; the window is where both hold.
-3. **pH routes, each a named term:**
-   - **fixed-SHE operation** — report the window on SHE at a chosen pH
-     (`U_SHE = U_RHE − 0.0592·pH`), for a cell run at a fixed electrode
-     potential;
-   - **product protonation** — NH₃ ⇌ NH₄⁺ (pKa 9.25), NH₂OH ⇌ NH₃OH⁺
-     (pKa ~6): the desorption step's free energy gains
-     −kT·ln(1 + 10^(pKa−pH)), so the final desorption competes
-     differently by pH;
-   - **HER competition** — H* + H⁺ + e⁻ → H₂ as a competing branch at
-     every supply step; the window must also beat HER (needs the H*
-     energy the network already computes).
-4. **Surfaces.** `view='analysis'` prints the window; the explorer
+3. **Surfaces.** `view='analysis'` prints the window; the explorer
    shades the U window on the slider and adds a pH input that moves only
-   the three routes above; the scalars are harvested onto quest
+   the named environment terms; the scalars are harvested onto quest
    candidates under the existing trust gate.
 
 ## Explicitly NOT in scope
@@ -63,8 +51,6 @@ be a no-op.
   matches the hand-computed crossing potential to 1 mV.
 - On a graph where no U makes the target win every fork, the window is
   reported empty with the losing fork named.
-- Changing pH changes nothing on the RHE scale except the protonation
-  and HER terms (test asserts the PCET-only fork is pH-invariant).
 - pw455722 re-run (complete network) prints the window and the worst
   fork at `U_sel`.
 
@@ -78,8 +64,6 @@ same scalars in `results`; precis computes them if absent.
 
 ## Open questions / decisions log
 
-- HER needs a defined H₂ desorption reference per slab; confirm the
-  network's H* energy is the one CHE uses before relying on it.
 - **Measured 2026-10-02 (R2, catalysis-selectivity design note §11):**
   replaying catpath's `viz.score_report` on 213 neb-tier candidates with
   barriers stripped, the thermo-only branch-point margin ranks unlike the

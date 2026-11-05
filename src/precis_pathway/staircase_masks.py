@@ -118,6 +118,7 @@ class Rung:
     sigma: float | None = None
     bep: tuple[float, float] | None = None
     barrier_ea: float | None = None
+    terms: tuple[tuple[str, float], ...] = ()
 
     def __post_init__(self) -> None:
         if self.kind not in RUNG_KINDS:

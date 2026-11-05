@@ -6,7 +6,9 @@ is affine in the CHE potential, ``delta_g(U) = delta_g0 + n_e * U_RHE``
 with ``n_e`` proton-electron pairs **consumed** (positive for a
 reduction), so a reduction rung gets easier at more negative U and
 ``U_L = -max(delta_g0 / n_e)`` over the route's electrochemical steps.
-Every rung is pH-flat on the RHE scale.
+PCET rungs are pH-flat on the RHE scale. An explicit environment with pH
+adds the product-reservoir and HER terms in ``ph_terms``; absent pH keeps
+the legacy projection and text. Point reads never change stored scores.
 
 The input is a stored pathway's ``meta.results`` — the engine's
 ``results.json`` (autocatpath ≥ 0.25.0, ``pipeline._che_affine`` /
@@ -45,11 +47,18 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from . import reset_contour
+from .ph_terms import (
+    HER_REFERENCE,
+    product_protonation,
+    protonation_terms,
+    released_products,
+)
 from .staircase_masks import PREFAC_V, Route, Rung, pcet_route, u_limiting, u_she
 
 if TYPE_CHECKING:
     from precis.store.store import Store
 
+    from .environment import Environment
     from .staircase_states import PointStates
 
 #: Name the HER competitor route gets (``kind="her"`` already labels each
@@ -89,6 +98,7 @@ class StaircaseRoutes:
     scale: str | None = None
     T: float | None = None
     pH: float | None = None
+    environment: Environment | None = None
 
 
 def _num(x: Any) -> float | None:
@@ -191,7 +201,10 @@ def _pcet_with_sigma(results: dict[str, Any], route: Route) -> Route:
 
 
 def routes_from_results(
-    results: dict[str, Any] | None, *, engine_version: str | None = None
+    results: dict[str, Any] | None,
+    *,
+    engine_version: str | None = None,
+    environment: Environment | None = None,
 ) -> StaircaseRoutes:
     """``meta.results`` → typed staircase. Never invents values: whatever
     the engine did not record lands in ``missing``, and the footing is
@@ -302,7 +315,7 @@ def routes_from_results(
                 "her block absent though H2 is a side product "
                 "(network.her on; engine recorded no HER edges)"
             )
-    return StaircaseRoutes(
+    staircase = StaircaseRoutes(
         routes=routes,
         pcet_routes=pcet_routes,
         her=her_route,
@@ -314,9 +327,112 @@ def routes_from_results(
         T=T,
         pH=ph,
     )
+    if environment is not None and "pH" in environment.electrochemical:
+        return _at_environment(staircase, r, environment)
+    return staircase
 
 
-def routes_for_pathway(store: Store, pathway_ref: Any) -> StaircaseRoutes:
+def _at_environment(
+    sr: StaircaseRoutes, results: dict[str, Any], environment: Environment
+) -> StaircaseRoutes:
+    """Price explicit point terms before masks read the rungs.
+
+    The standard CHE HER reference uses the measured descriptor rather than
+    borrowing a default or a different slab's energy. Stored engine route
+    optima are not re-solved and cannot describe a protonated route.
+    """
+    ec = environment.electrochemical
+    fixed_shift = (environment.u_rhe or 0.0) - ec.get("U_vs_SHE", 0.0)
+    missing = list(sr.missing)
+
+    def at_point(rung: Rung, products: tuple[str, ...] = ()) -> Rung:
+        terms = list(protonation_terms(products, environment, results))
+        dg0 = rung.delta_g0 + sum(value for _, value in terms)
+        for product in products:
+            if product_protonation(product, environment) is None:
+                missing.append(
+                    f"product_protonation {product}: no pKa in "
+                    "PRODUCT_PKA; no term applied"
+                )
+        if "U_vs_SHE" in ec and rung.n_e:
+            terms.append(("fixed_SHE", rung.n_e * fixed_shift))
+        return replace(rung, delta_g0=dg0, terms=tuple(terms))
+
+    routes = []
+    pcets = []
+    stats = {}
+    releases: dict[str, dict[str, tuple[str, ...]]] = {}
+    che = results.get("che_affine")
+    per_route = che.get("per_route") or [] if isinstance(che, dict) else []
+    for pr in per_route:
+        if not isinstance(pr, dict):
+            continue
+        nodes = str(pr.get("route") or "").split(" -> ")
+        by_edge = {}
+        for j, step in enumerate(pr.get("steps") or []):
+            if isinstance(step, dict) and j + 1 < len(nodes):
+                a, b = nodes[j : j + 2]
+                by_edge[str(step.get("edge") or f"{a}->{b}")] = released_products(a, b)
+        releases[str(pr.get("route") or "")] = by_edge
+    for route in sr.routes:
+        by_edge = releases.get(route.name, {})
+        corrected = replace(
+            route,
+            rungs=tuple(
+                at_point(rung, by_edge.get(rung.name, ())) for rung in route.rungs
+            ),
+        )
+        pcet = _pcet_with_sigma(results, corrected)
+        routes.append(corrected)
+        pcets.append(pcet)
+        changed = any(
+            name == "product_protonation"
+            for rung in corrected.rungs
+            for name, _ in rung.terms
+        )
+        stats[route.name] = {
+            **sr.route_stats[route.name],
+            "U_L": u_limiting(pcet),
+            **({"U_opt": None, "span_at_UL": None} if changed else {}),
+        }
+    her_record = results.get("her")
+    descriptor = (
+        _num(her_record.get("dG_H_star")) if isinstance(her_record, dict) else None
+    )
+    her = None
+    her_stats = None
+    if descriptor is None:
+        missing.append("HER_competitor unavailable: no measured her.dG_H_star")
+    else:
+        her = Route(
+            name=HER_ROUTE_NAME,
+            rungs=(
+                at_point(Rung("Volmer", descriptor, 1, kind="her")),
+                at_point(Rung("Heyrovsky", -descriptor, 1, kind="her")),
+            ),
+        )
+        her_stats = {
+            "U_L_her": u_limiting(her),
+            "dG_H_star": descriptor,
+            "product": "H2",
+            "leaf": "*~h2",
+        }
+    return replace(
+        sr,
+        routes=routes,
+        pcet_routes=pcets,
+        route_stats=stats,
+        her=her,
+        her_stats=her_stats,
+        missing=missing,
+        environment=environment,
+        pH=float(ec["pH"]),
+    )
+
+
+def routes_for_pathway(
+    store: Store, pathway_ref: Any, *, environment: Environment | None = None
+) -> StaircaseRoutes:
     """The stored staircase for a pathway ref (``Ref`` or id/slug).
     Reads ``meta.results`` + ``meta.autocatpath_version``; a missing or
     uncomputed pathway comes back as an empty object with the reason in
@@ -342,7 +458,11 @@ def routes_for_pathway(store: Store, pathway_ref: Any) -> StaircaseRoutes:
                 "no stored results"
             ],
         )
-    return routes_from_results(results, engine_version=meta.get("autocatpath_version"))
+    return routes_from_results(
+        results,
+        engine_version=meta.get("autocatpath_version"),
+        environment=environment,
+    )
 
 
 # ── text render (the view='staircase' / web-panel contract) ─────────────
@@ -375,11 +495,18 @@ def render_staircase(
     each rung line gains its state (a split rung shows its PCET
     parent's), and a point block names the worst rung and the window."""
     u = float(u_rhe)
+    if sr.environment is not None and sr.environment.u_rhe is not None:
+        u = sr.environment.u_rhe
     ph_v = ph if ph is not None else sr.pH
     lines = [f"# reaction staircase — {title or 'pathway'}", ""]
     she = (
         f"  (= {u_she(u, ph_v):+.3f} V vs SHE at pH {ph_v:g}, "
-        f"{PREFAC_V:.3f} V/pH — display only, every rung is pH-flat on RHE)"
+        f"{PREFAC_V:.3f} V/pH — "
+        + (
+            "PCET is pH-flat on RHE; named environment terms below)"
+            if sr.environment is not None
+            else "display only, every rung is pH-flat on RHE)"
+        )
         if ph_v is not None
         else ""
     )
@@ -387,6 +514,16 @@ def render_staircase(
         f"U_RHE {u:+.3f} V{she}; ΔG(U) = ΔG0 + n_e·U, n_e = proton-electron "
         "pairs consumed — a reduction rung eases at more negative U."
     )
+    if sr.environment is not None:
+        lines.append(
+            f"pH terms: kT uses T {sr.environment.T:g} K; CHE only, "
+            "no solvation, field or potential-dependent barrier term."
+        )
+        if "U_vs_SHE" in sr.environment.electrochemical:
+            lines.append(
+                f"fixed_SHE: U_SHE {sr.environment.electrochemical['U_vs_SHE']:+.3f} V; "
+                f"U_RHE {u:+.3f} V; per-rung energy terms below."
+            )
     f = sr.footing or {}
     corr = f.get("corrections")
     corr_txt = "unrecorded" if "corrections" not in f or corr is None else repr(corr)
@@ -468,6 +605,8 @@ def render_staircase(
                 f"ΔG0 {rung.delta_g0:+.3f}  ΔG(U) {dg:+.3f} eV{sig}"
                 + (f"  [{st.state}]" if st is not None else "")
             )
+            for name, value in rung.terms:
+                lines.append(f"    term {name}: {value:+.6f} eV")
         assert best is not None
         lines.append(
             f"  limiting rung at U = {u:+.2f} V: {best[0].name} (ΔG {best[1]:+.3f} eV)"
@@ -502,6 +641,8 @@ def render_staircase(
     if sr.her is not None:
         lines.append("")
         her_g = float(sr.her.limiting_g(u))
+        if sr.environment is not None:
+            lines.append(f"HER_competitor: {HER_REFERENCE}")
         stats = sr.her_stats or {}
         lines.append(
             f"HER competitor ({stats.get('product') or 'H2'}): "
@@ -519,6 +660,10 @@ def render_staircase(
                 f"  {rung.name:<28} her            n_e {rung.n_e:>2}  "
                 f"ΔG0 {rung.delta_g0:+.3f}  ΔG(U) {dg:+.3f} eV"
             )
+            if sr.environment is not None:
+                lines.append(f"    term HER_competitor ({rung.name}): {dg:+.6f} eV")
+            for name, value in rung.terms:
+                lines.append(f"    term {name}: {value:+.6f} eV")
         for i, route in enumerate(sr.routes):
             if not route.rungs:
                 continue

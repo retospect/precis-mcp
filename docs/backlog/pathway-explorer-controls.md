@@ -80,7 +80,7 @@ and the state is visible on the control:
 
 | state | meaning | examples |
 |---|---|---|
-| **closed form** | re-renders now from stored energies | U_RHE on the profile (`n_H·eU`, `reaction_graph.at_potential`) and on the staircase (`ΔG0 + n_e·U`); pH as the SHE label and, once `pathway-selectivity-u-ph-window` ships, the protonation and HER terms; a gas pressure on adsorption/desorption steps (`±kT·ln(p/p°)` per gas molecule exchanged) |
+| **closed form** | re-renders now from stored energies | U_RHE on the profile (`n_H·eU`, `reaction_graph.at_potential`) and on the staircase (`ΔG0 + n_e·U`); expose the pH terms from `src/precis_pathway/ph_terms.py` and the fixed-SHE conversion from `src/precis_pathway/environment.py::Environment.u_rhe`; a gas pressure on adsorption/desorption steps (`±kT·ln(p/p°)` per gas molecule exchanged) |
 | **stored / interpolated** | a stored solve covers this point or brackets it, within the cutoffs below | T and p_total inside a stored `kinetics_sweep` box (46 quest pathways carry one since gr543723 comment 42; this pathway does not); interpolation is Arrhenius in 1/T and log-linear in p between grid points, and the control says "interpolated between 350 K and 400 K" |
 | **not computed** | greyed, with a "low confidence — request computation at this point" button that mints the cart item with the environment filled in (Reto 2026-11-03, decision 3) | T outside the box or on a pathway without modes; any kinetic number at U ≠ run U (kinetics has no U dependence — CHE is thermodynamic post-processing, `electrochem-kinetics-beyond-che.md`, kinetics-engine-v2 slice 8); the resting state without a coverage scan |
 
@@ -341,8 +341,6 @@ is the slab's.
    methods note (medium).
 4. gr559349 — visual-filter box: barrier and turnover sliders, DAG
    traversal, cut glyphs, route-picker marks (large).
-5. gr559664 — slice 5a: the pH mechanism (protonation, fixed-SHE, HER at pH)
-   as closed-form terms on the record (medium; split 2026-11-03).
 6. gr559351 — the environment box: tab strip, sliders in their honesty
    states, snaps, shared slider state (large).
    6a. gr559663 — the embeddable map endpoint (small; split

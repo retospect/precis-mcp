@@ -1138,6 +1138,42 @@ def test_pourbaix_states_reads_shared_environment_encoding(
     assert view["lookup"]["environment_basis"] == environment.basis
 
 
+@pytest.mark.parametrize("temperature", [298.15, 596.3])
+def test_pourbaix_she_environment_resolves_states_and_first_paint(
+    pb_client: TestClient, runtime_with_store, temperature: float
+) -> None:
+    from precis_pathway.environment import Environment
+
+    sid, _pw = _linked(runtime_with_store)
+    record = {"T": temperature, "electrochemical": {"U_vs_SHE": -0.3, "pH": 7}}
+    environment = Environment.from_dict(record)
+    response = pb_client.get(f"/pourbaix/st{sid}/states?" + environment.to_url())
+    assert response.status_code == 200
+    body = response.json()
+    assert body["u_rhe"] == pytest.approx(0.1141, abs=0.001)
+    assert body["ph"] == pytest.approx(7)
+    normalized = {
+        "T": temperature,
+        "electrochemical": {"U_vs_RHE": environment.u_rhe, "pH": 7},
+    }
+    assert body["environment_view"]["record"] == normalized
+    equivalent = pb_client.get(
+        f"/pourbaix/st{sid}/states", params={"U": environment.u_rhe, "pH": 7}
+    )
+    assert equivalent.status_code == 200
+    assert {
+        k: v for k, v in body.items() if k != "environment_view"
+    } == equivalent.json()
+
+    page = pb_client.get(f"/pourbaix/st{sid}?" + environment.to_url())
+    assert page.status_code == 200
+    assert float(_attr(_input_tag(page.text, "pbx-u"), "value")) == pytest.approx(
+        0.1141, abs=0.001
+    )
+    assert float(_attr(_input_tag(page.text, "pbx-ph"), "value")) == pytest.approx(7)
+    assert environment.to_dict() == record
+
+
 def test_pourbaix_link_state_round_trips_u_ph_and_reset(
     pb_client: TestClient, runtime_with_store
 ) -> None:

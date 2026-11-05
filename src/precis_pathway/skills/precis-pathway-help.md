@@ -222,9 +222,9 @@ from their recorded rows; requests naming electrochemical conditions return
 T and pressures must be positive, pH is 0–14,
 ion concentration is positive, and all numbers must be finite.
 
-`analysis` and `staircase` retain the CHE potential lever; their stored
-thermodynamic energies are not repriced in T, gas pressures, pH or salt by
-this lookup. Do not combine `environment` with `U`, `pH` or `point` args.
+`analysis` and `staircase` apply the named pH terms below when the record
+includes pH. Other stored thermodynamic energies retain their T/gas/salt
+footing. Do not combine `environment` with `U`, `pH` or `point` args.
 
 Pathway and Pourbaix links share `?env=<URL-encoded JSON D1 block>`;
 `precis_pathway.environment.Environment.to_url` writes it. The old `u/ph`
@@ -233,6 +233,43 @@ defaults and clamps are unchanged. Quest `operating_conditions.U_RHE`
 projects to `electrochemical.U_vs_RHE`; windows specify a domain, not a
 point. Older pathways project their stored legacy conditions without a
 backfill; absent electrochemical coordinates remain unknown.
+
+## Closed-form pH terms on analysis and staircase reads
+
+```python
+get(kind="pathway", id="no-nh3-pd", view="analysis", args={"environment": {
+    "T": 298.15, "electrochemical": {"U_vs_SHE": -0.3, "pH": 7}
+}})
+```
+
+The same record works with `view="staircase"`. Choose one potential scale:
+`U_vs_RHE`, or `U_vs_SHE` together with pH. The existing conversion uses
+the 298.15 K Nernst prefactor (approximately 0.0592 V/pH). Omitting U uses
+the pathway's recorded operating potential, else 0 V_RHE. For analysis,
+`config.environment` takes precedence over legacy operating fields. A graph
+without `n_H` stays at its stored footing when U is omitted, applies the
+potential-independent pH terms, and reports that it did not re-lever.
+
+- `product_protonation`: NH3 and NH2OH desorption gains
+  `−kT ln(1 + 10^(pKa−pH))`, with pKa 9.25 and 6 respectively and T
+  from this record. A recorded `speciation.species[product].dG` is removed
+  first and named separately, so the product is not protonated twice.
+  Other products report no table entry and no term.
+- `fixed_SHE`: `U_RHE = U_SHE + 0.0592 pH`; each electrochemical rung
+  names its `n_e × (U_RHE − U_SHE)` energy contribution in eV. At fixed
+  RHE the PCET-only fork remains pH invariant.
+- `HER_competitor`: measured `her.dG_H_star` gives Volmer `dG_H* + U_RHE`
+  and Heyrovsky `−dG_H* + U_RHE`. H2 uses the standard CHE equilibrium
+  reference, zero overall free energy at 0 V_RHE. No measured H* means
+  unavailable, never a default energy. Each competitor rung prints eV.
+
+This is CHE post-processing: no solvation, field, potential-dependent
+barrier, or H2 pressure correction. Stored barriers and ranking scalars
+are unchanged. Protonated routes do not reuse stored U_opt/span_at_UL.
+No pH in the record preserves the existing output. Legacy staircase
+`args={"U": -0.3, "pH": 7}` or `args={"point": "-0.3,7"}` uses the same
+terms at the stored CHE temperature; analysis uses the environment form.
+The web environment controls are a separate feature.
 
 ## Measure the modes a stored pathway lacks
 
@@ -444,7 +481,7 @@ table at a potential (rows sorted by `SPAN` at U; see the potential lever).
 - `view='staircase'` — the reaction staircase from the engine's affine CHE
   export (`che_affine`, engine ≥ 0.25.0): per scored route every rung's
   ΔG(U) = ΔG0 + n_e·U (n_e = proton-electron pairs **consumed** — reductions
-  ease at more negative U; pH-flat on RHE), the limiting rung at U,
+  ease at more negative U; PCET is pH-flat on RHE), the limiting rung at U,
   per-route U_L/U_opt/span_at_UL — U_L and the window verdict read each
   H* adsorption + hydrogenation pair as one PCET rung (the engine's
   split U_L shown beside it), a U-flat chemical rung counts as

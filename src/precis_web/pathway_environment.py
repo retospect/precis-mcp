@@ -2,7 +2,8 @@
 
 Only the canonical ``env`` parameter opts into strict record validation.
 Historical ``u``/``ph`` links retain each page's existing defaults and
-clamps. The same record travels between pages without starting a solve.
+clamps. Web pages use RHE only, resolving SHE links once on entry to the
+same point via ``Environment.u_rhe`` while retaining pH.
 """
 
 from __future__ import annotations
@@ -17,7 +18,13 @@ def linked_environment(params: Mapping[str, str]) -> Environment | None:
     """Decode a full environment link; leave legacy links to their reader."""
     if "env" not in params:
         return None
-    return Environment.from_url(params)
+    environment = Environment.from_url(params)
+    if "U_vs_SHE" in environment.electrochemical:
+        block = environment.to_dict()
+        block["electrochemical"]["U_vs_RHE"] = environment.u_rhe
+        del block["electrochemical"]["U_vs_SHE"]
+        environment = Environment.from_dict(block)
+    return environment
 
 
 def environment_context(

@@ -500,7 +500,9 @@ band — viable but not guaranteed (dashed); each in its route's colour">
       const env = JSON.parse(JSON.stringify(linkedEnvironment));
       if (environmentUDirty || environmentPhDirty) {
         env.electrochemical = env.electrochemical || {};
-        if (environmentUDirty) env.electrochemical.U_vs_RHE = u;
+        if (environmentUDirty) {
+          env.electrochemical.U_vs_RHE = u;
+        }
         if (environmentPhDirty) env.electrochemical.pH = ph;
       }
       out.push(['env', JSON.stringify(env)]);

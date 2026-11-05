@@ -815,7 +815,9 @@ async def pourbaix_states(request: Request, handle: str) -> JSONResponse:
     ):
         raw: Any = params.get(key)
         if environment is not None:
-            raw = ec.get("U_vs_RHE" if key == "U" else key, raw)
+            coordinate = environment.u_rhe if key == "U" else ec.get(key)
+            if coordinate is not None:
+                raw = coordinate
         try:
             val = default if raw is None else float(raw)
         except ValueError:
@@ -882,7 +884,9 @@ async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
     u_def, ph_def = _u_default(store, kind, ref), _ph_default(ref)
     u0, ph0, reset_on, link_ignored = _link_state(request.query_params, u_def, ph_def)
     if environment is not None:
-        u0 = environment.electrochemical.get("U_vs_RHE", u0)
+        u_rhe = environment.u_rhe
+        if u_rhe is not None:
+            u0 = u_rhe
         ph0 = environment.electrochemical.get("pH", ph0)
     surfaces: list[dict[str, Any]] = []
     compare = False

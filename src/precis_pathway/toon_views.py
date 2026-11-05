@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.format import toon
 from precis.utils import pathway_conditions
@@ -22,6 +22,9 @@ from precis.utils import reaction_graph as analysis
 from precis.utils.handle_registry import try_format
 
 from .tof_sign import tof_sign, tof_sign_detail, tof_sign_label
+
+if TYPE_CHECKING:
+    from .environment import Environment
 
 # Drill-down hint appended once a table actually carries a structure handle —
 # see gripe 161576 (structure_refs was written by ingest.py but never surfaced
@@ -696,7 +699,12 @@ def potential_line(U: float) -> str:
     )
 
 
-def analysis_text(meta: dict[str, Any], *, U: float | None = None) -> str:
+def analysis_text(
+    meta: dict[str, Any],
+    *,
+    U: float | None = None,
+    environment: Environment | None = None,
+) -> str:
     """The analysis headline + tables; ``U`` (V vs RHE) re-levers the graph
     first (:func:`analysis.at_potential`) so span and the most endergonic
     route step are read at that potential."""
@@ -706,10 +714,29 @@ def analysis_text(meta: dict[str, Any], *, U: float | None = None) -> str:
     n = r.get("n_samples", "?")
     models = ",".join(r.get("models", [])) or r.get("backend", "?")
 
+    with_ph = environment is not None and "pH" in environment.electrochemical
+    if environment is not None and environment.u_rhe is not None:
+        U = environment.u_rhe
+    if with_ph and U is None:
+        from .environment import ph_analysis_potential
+
+        U = ph_analysis_potential(meta)
     head = [f"{root} → {target}  ({models}, {n} samples)"]
     if U is not None:
         graph = analysis.at_potential(graph, U)
         head.append(potential_line(U))
+    elif with_ph:
+        head.append(
+            "Potential not re-levered: graph has no n_H; using stored footing "
+            "with potential-independent pH terms."
+        )
+    if with_ph and environment is not None:
+        from .ph_terms import protonate_graph
+
+        graph = protonate_graph(graph, environment, r)
+        for edge, name, value in graph.get("ph_terms", []):
+            head.append(f"graph term {name} ({edge}): {value:+.6f} eV")
+        head.extend(graph.get("ph_notes", []))
     head.append("")
     rl = analysis.rate_limiting(graph, root, target)
     span = analysis.energetic_span(graph, root, target)
@@ -771,6 +798,13 @@ def analysis_text(meta: dict[str, Any], *, U: float | None = None) -> str:
             "selectivity (first steps out of root, lowest entry wins):",
             toon.dump(srows, schema=["entry_step", "entry_Ea", "role"]),
         ]
+    if with_ph:
+        from .staircase_routes import render_staircase, routes_from_results
+
+        sr = routes_from_results(
+            r, engine_version=meta.get("autocatpath_version"), environment=environment
+        )
+        head.extend(["", render_staircase(sr, r, u_rhe=U if U is not None else 0.0)])
     return "\n".join(head)
 
 

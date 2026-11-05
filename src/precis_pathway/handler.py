@@ -40,6 +40,7 @@ from precis.utils.text import slugify
 if TYPE_CHECKING:
     from precis.store import Store
 
+    from .environment import Environment
     from .types import NetworkTopology, PathwayArtifact
 
 from .persist import BODY_KIND, pathway_title, persist_result, quest_minted_slug
@@ -1075,12 +1076,12 @@ class PathwayHandler(Handler):
     ) -> Response:
         """Read-only environment selection; never borrow an off-point solve.
 
-        CHE remains the existing U-only thermodynamic lever. T, reservoir and
-        salt changes select stored kinetics, not freshly repriced graph energies.
+        CHE uses named pH terms when pH is supplied. T sets their kT;
+        reservoir and salt changes otherwise select stored kinetics.
         Bracketed results expose their corners, without claiming an interpolated
         rate; computation remains behind the explicit recompute door.
         """
-        from .environment import Environment, lookup_environment
+        from .environment import Environment, lookup_environment, ph_analysis_potential
 
         if view not in ("analysis", "staircase", "kinetics"):
             raise BadInput(
@@ -1130,7 +1131,9 @@ class PathwayHandler(Handler):
                 results.pop(other, None)
             return Response(body=header + kinetics_text({**meta, "results": results}))
         ec = env.electrochemical
-        u, ph = ec.get("U_vs_RHE"), ec.get("pH")
+        u, ph = env.u_rhe, ec.get("pH")
+        if ph is not None and u is None and view == "analysis":
+            u = ph_analysis_potential(meta)
         args: dict[str, Any] = {}
         if view == "staircase" and ph is not None:
             args["pH"] = ph
@@ -1142,13 +1145,21 @@ class PathwayHandler(Handler):
             args=args,
             U=u,
             pH=ph if view == "staircase" else None,
+            environment=env,
         )
+        model_note = (
+            "Thermodynamics uses stored T/gas energies with the CHE U lever; "
+            "pH and ion concentration do not reprice these energies.\n"
+        )
+        if ph is not None:
+            model_note = (
+                "Thermodynamics uses stored energies plus named CHE pH terms; "
+                "T sets protonation kT. Gas pressures and ion concentration "
+                "do not reprice these energies.\n"
+            )
         return replace(
             response,
-            body=header
-            + "Thermodynamics uses stored T/gas energies with the CHE U lever; "
-            "pH and ion concentration do not reprice these energies.\n"
-            + (response.body or ""),
+            body=header + model_note + (response.body or ""),
         )
 
     def _get_view(
@@ -1161,6 +1172,7 @@ class PathwayHandler(Handler):
         args: dict[str, Any] | None,
         U: float | None,
         pH: float | None,
+        environment: Environment | None = None,
     ) -> Response:
         """The per-view dispatch behind :meth:`get` — resolved ref in,
         the view's body out. ``get`` wraps it in the ``pw<id> ·
@@ -1240,6 +1252,7 @@ class PathwayHandler(Handler):
                     U=U,
                     pH=pH,
                     picked=isinstance(args, dict) and ("pH" in args or "point" in args),
+                    environment=environment,
                 )
             )
 
@@ -1283,7 +1296,7 @@ class PathwayHandler(Handler):
         if v == "analysis" or (v == "" and U is not None):
             from .toon_views import analysis_text
 
-            return Response(body=analysis_text(meta, U=U))
+            return Response(body=analysis_text(meta, U=U, environment=environment))
         if v == "steps":
             from .toon_views import steps_toon
 
@@ -1554,6 +1567,7 @@ class PathwayHandler(Handler):
         U: float | None,
         pH: float | None = None,
         picked: bool = False,
+        environment: Environment | None = None,
     ) -> str:
         """`view='staircase'` — the reaction staircase from the engine's
         affine CHE export, re-tilted at ``U`` (default: the pathway's
@@ -1571,13 +1585,38 @@ class PathwayHandler(Handler):
         from precis.quest import pourbaix_map
         from precis.quest import staircase as sq
 
+        from .environment import Environment, stored_potential
         from .staircase_routes import render_staircase, routes_for_pathway
         from .staircase_states import pathway_coads, point_states
 
-        results = meta.get("results") if isinstance(meta.get("results"), dict) else {}
-        u = U if U is not None else sq.pathway_operating_u(meta.get("config"), results)
-        sr = routes_for_pathway(store, ref)
+        raw_results = meta.get("results")
+        results = raw_results if isinstance(raw_results, dict) else {}
+        if U is not None:
+            u = U
+        elif pH is not None or (
+            environment is not None and "pH" in environment.electrochemical
+        ):
+            u = stored_potential(meta)
+        else:
+            # Reads without requested pH retain the legacy operating point.
+            u = sq.pathway_operating_u(meta.get("config"), results)
         cfg = meta.get("config") or {}
+        if environment is None and pH is not None:
+            # Legacy "optimal" is resolved above before validating the point.
+            point_cfg = dict(cfg)
+            for section, key in (
+                ("conditions", "potential_U"),
+                ("electrochemistry", "U_vs_RHE"),
+            ):
+                point_cfg[section] = dict(cfg.get(section) or {})
+                point_cfg[section].pop(key, None)
+            block = Environment.from_config(point_cfg).to_dict()
+            block["T"] = (results.get("che_affine") or {}).get("T") or block["T"]
+            block["electrochemical"] = {"U_vs_RHE": u, "pH": pH}
+            environment = Environment.from_dict(block)
+        if environment is not None and environment.u_rhe is not None:
+            u = environment.u_rhe
+        sr = routes_for_pathway(store, ref, environment=environment)
         ph = sr.pH
         for c in (
             (cfg.get("conditions") or {}).get("pH"),

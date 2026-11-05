@@ -2136,7 +2136,9 @@
       const env = JSON.parse(JSON.stringify(V.environment));
       if (environmentUDirty || environmentPhDirty) {
         env.electrochemical = env.electrochemical || {};
-        if (environmentUDirty) env.electrochemical.U_vs_RHE = currentU;
+        if (environmentUDirty) {
+          env.electrochemical.U_vs_RHE = currentU;
+        }
         if (environmentPhDirty && phInput) env.electrochemical.pH = parseFloat(phInput.value);
       }
       qs.set('env', JSON.stringify(env));

@@ -10,6 +10,7 @@ from urllib.parse import parse_qsl, urlsplit
 import pytest
 
 from precis_pathway.environment import Environment
+from precis_web.pathway_environment import linked_environment
 from tests._node import needs_node
 
 _TEMPLATE = (
@@ -48,18 +49,22 @@ console.log(JSON.stringify([address, carry.href, pathway.href]));
 
 
 @needs_node
-@pytest.mark.parametrize("canonical", [False, True])
+@pytest.mark.parametrize("potential_key", [None, "U_vs_RHE", "U_vs_SHE"])
 def test_slider_links_remove_all_old_coordinate_aliases(
-    tmp_path: Path, canonical: bool
+    tmp_path: Path, potential_key: str | None
 ) -> None:
     template = _TEMPLATE.read_text(encoding="utf-8")
     start = template.index("  function bankParams()")
     end = template.index("  // ── slice 4", start)
     linked = (
-        {"T": 350, "electrochemical": {"U_vs_RHE": -0.1, "pH": 2}}
-        if canonical
+        {"T": 350, "electrochemical": {potential_key: -0.1, "pH": 2}}
+        if potential_key
         else None
     )
+    if linked is not None:
+        environment = linked_environment({"env": json.dumps(linked)})
+        assert environment is not None
+        linked = environment.to_dict()
     script = tmp_path / "pourbaix_links.js"
     script.write_text(
         _HARNESS.replace("LINKED_ENVIRONMENT", json.dumps(linked)).replace(
@@ -81,7 +86,7 @@ def test_slider_links_remove_all_old_coordinate_aliases(
         assert "U" not in params
         assert "pH" not in params
         assert params["keep"] == "yes"
-        if canonical:
+        if potential_key:
             assert "u" not in params
             assert "ph" not in params
         restored = Environment.from_url(params)

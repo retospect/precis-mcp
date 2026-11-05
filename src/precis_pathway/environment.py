@@ -34,7 +34,7 @@ from precis.errors import BadInput
 from precis.quest.environment_basis import basis_tuple, environment_basis
 
 _NEXT = "get(kind='skill', id='precis-pathway-help')"
-_EC_COORDINATES = {"U_vs_RHE", "pH", "ion_conc_M"}
+_EC_COORDINATES = {"U_vs_RHE", "U_vs_SHE", "pH", "ion_conc_M"}
 _EC_KEYS = _EC_COORDINATES | {"provider", "sigma_uC_cm2", "U_pzc", "cation"}
 
 
@@ -84,7 +84,14 @@ class Environment:
                     ec[key] = value
             if ec.get("provider") not in (None, "che"):
                 raise _refuse("electrochemical.provider must be che or null")
-            if ec.get("provider") == "che" and "U_vs_RHE" not in ec:
+            if "U_vs_SHE" in ec:
+                if "U_vs_RHE" in ec:
+                    raise _refuse("give U_vs_SHE or U_vs_RHE, not both")
+                if "pH" not in ec:
+                    raise _refuse("U_vs_SHE needs pH for the RHE conversion")
+            if ec.get("provider") == "che" and not (
+                {"U_vs_RHE", "U_vs_SHE"} & ec.keys()
+            ):
                 raise _refuse("electrochemical.provider che needs finite U_vs_RHE")
             if "pH" in ec and not 0 <= ec["pH"] <= 14:
                 raise _refuse("pH must be between 0 and 14")
@@ -228,6 +235,8 @@ class Environment:
                 if params.get(alias) is not None:
                     try:
                         ec[key] = float(params[alias])
+                        if key == "U_vs_RHE":
+                            ec.pop("U_vs_SHE", None)
                     except (TypeError, ValueError):
                         raise _refuse(f"{alias} must be a finite number") from None
                     break
@@ -250,6 +259,20 @@ class Environment:
     @property
     def electrochemical(self) -> dict[str, Any]:
         return dict(self._block.get("electrochemical") or {})
+
+    @property
+    def u_rhe(self) -> float | None:
+        """Resolve the stated electrode scale; preserve it in the record.
+
+        The read model reuses the standard-temperature SHE/RHE convention
+        of the Pourbaix views. T controls the protonation term separately.
+        """
+        from .surface_pourbaix import u_rhe
+
+        ec = self.electrochemical
+        if "U_vs_SHE" in ec:
+            return u_rhe(ec["U_vs_SHE"], ec["pH"])
+        return float(ec["U_vs_RHE"]) if "U_vs_RHE" in ec else None
 
     @property
     def p_total(self) -> float:
@@ -284,6 +307,41 @@ class Environment:
             elif a != b:
                 return False
         return True
+
+
+def ph_analysis_potential(meta: Mapping[str, Any]) -> float | None:
+    """Default an omitted analysis U only when the graph can be re-levered.
+
+    A pre-CHE graph can still receive potential-independent pH terms at
+    its stored footing.
+    """
+    from precis.utils.reaction_graph import has_potential_lever
+
+    if not has_potential_lever(meta.get("graph") or {}):
+        return None
+    return stored_potential(meta)
+
+
+def stored_potential(meta: Mapping[str, Any]) -> float:
+    """Resolve the stored potential for graph and affine staircase reads.
+
+    D1 records own the stored potential, including its electrode scale;
+    the legacy operating-point helper remains the fallback.
+    """
+    from precis.quest.staircase import pathway_operating_u
+
+    config = meta.get("config") or {}
+    try:
+        u = Environment.from_config(config).u_rhe
+    except BadInput:
+        if config.get("environment") is not None:
+            raise
+        # Legacy "optimal" is resolved by the operating-point helper,
+        # not by the numeric D1 environment projection.
+        u = None
+    return (
+        u if u is not None else pathway_operating_u(config, meta.get("results") or {})
+    )
 
 
 def _stored_point(meta: Mapping[str, Any], record: Mapping[str, Any]) -> Environment:
