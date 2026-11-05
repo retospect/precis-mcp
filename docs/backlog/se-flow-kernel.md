@@ -678,9 +678,8 @@ commit carrying this line; `git log` has the sha.*
      `iters_per_temp 3`, cfdtest's iteration count), the example's best
      cost lies within the spread of cfdtest `anneal` over 5 seeds, and
      is strictly below the initial cost.
-     Fixture pending: `../cfdtest` is not on the build machine, so these
-     two items need its frozen numbers for cost parity total, breakthrough
-     fraction and anneal spread over 5 seeds, in a repo fixture.
+     Frozen numbers (cost parity total, breakthrough fraction, anneal
+     spread over 5 seeds) are in `tests/fixtures/flow/cfdtest_reference.json`.
    - **Determinism.** The same seed gives the same best hole set.
    - **Params.** `Space.validate` refuses a constraint violation naming
      the parameter; `build` on equal `Params` gives equal shape shas and
