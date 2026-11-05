@@ -59,13 +59,15 @@ PROMPT_VERSION = "garden-propose.v2"
 #: unchanged rejections merely because another detector was introduced.
 MEMORY_PROMPT_VERSION = memory_policy_version()
 MEMORY_ACTIONS = {
-    "dangling_mention": ("rewrite",),
-    "thread_shape": ("supersede", "retire"),
     "anchor_rot": ("rewrite",),
+    "dangling_mention": ("rewrite",),
+    "entity_claim_stale": ("rewrite",),
+    "negative_undated": ("rewrite", "qualify", "ask"),
     "restated_claim": ("rewrite",),
     "review_due": ("rewrite", "qualify", "supersede", "retire", "ask"),
+    "source_drift": ("rewrite",),
+    "thread_shape": ("supersede", "retire"),
     "title_shape": ("rewrite",),
-    "negative_undated": ("rewrite", "qualify", "ask"),
 }
 _LEGACY_ACTIONS = ("merge", "split", "relink", "prune", "tag")
 
@@ -105,6 +107,17 @@ per unit mass under unit cost) is a relink, not a merge: reject.
 """
 
 _MEMORY_RULES = """
+source_drift and entity_claim_stale are proposal-only change signals, not
+proof that a memory is false. Compare the quoted claim/context with the new
+section/entity excerpt and recorded old/new SHA, role or STATUS evidence.
+Accept only when that evidence supports a concrete current-truth rewrite;
+reject unchanged meaning, dated history, or an unsupported replacement.
+not_checked means unverifiable and must never support a finding. Some
+entity kinds lack prior SHA/role/STATUS history; a timestamp alone is not
+evidence of changed meaning. Preserve base_sha, evidence_sha, source SHA
+pins and spans. text=null is unresolved, never an instruction to delete.
+These detectors have no apply path; never refine to merge or prune.
+
 anchor_rot reports missing repo anchors at main_sha, not false claims.
 Decide whether the anchor was renamed, removed, or already described as
 removed/history by the body. A resolving commit proves only that the commit

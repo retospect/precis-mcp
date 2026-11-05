@@ -73,9 +73,11 @@ def test_restated_claim_is_separate_opt_in_pass() -> None:
 
     assert "memory-review" in PARAMS_SCHEMA["properties"]["pass"]["anyOf"][0]["enum"]
     assert cand.detectors_for(("memory-review",)) == [
+        "entity_claim_stale",
         "negative_undated",
         "restated_claim",
         "review_due",
+        "source_drift",
         "title_shape",
     ]
     for passes in (("all",), ("memory",), ("all", "memory")):
@@ -248,9 +250,11 @@ def test_unavailable_embedder_reports_not_checked_without_lexical_fallback(
     ]
     assert run.not_checked == {"restated_claim": "embedder_unavailable"}
     assert run.cursors == {
+        "entity_claim_stale:memory": 0,
         "negative_undated:memory": 0,
         "review_due:memory": 0,
         "review_due:priority": 0,
+        "source_drift:memory": 0,
         "title_shape:memory": 0,
     }
     outcome = run_garden_tick(
@@ -323,9 +327,11 @@ def test_detector_deadline_does_not_save_partial_cursor(
     run = cand.run_detectors(store, passes=("memory-review",), detector_deadline_s=0)
     assert run.skipped == ["restated_claim"]
     assert run.cursors == {
+        "entity_claim_stale:memory": 0,
         "negative_undated:memory": 0,
         "review_due:memory": 0,
         "review_due:priority": 0,
+        "source_drift:memory": 0,
         "title_shape:memory": 0,
     }
 

@@ -2,10 +2,11 @@
 id: precis-gardener-memory-help
 family: memory
 title: precis — the graph gardener's memory detectors
-summary: opt-in memory anchor, restated-claim, review-debt, title and undated-absence checks that file review-ledger proposals
+summary: opt-in memory anchor, restated-claim, review-debt, title, undated-absence, source-drift and entity-state checks that file review-ledger proposals
 answers:
   - how does the gardener check memory anchors?
   - how does the gardener detect restated memory claims?
+  - how does the gardener detect changed memory sources and entity state?
   - what do the memory and memory-review passes check?
   - can the gardener apply a memory rewrite proposal?
 applies-to: get/search (kind='memory'/'job'), reviews ledger
@@ -63,8 +64,9 @@ the same window. This is a bounded scan, not every sentence pair in a large hub.
 ## Memory review checks
 
 `memory-review` is a separate opt-in pass: neither `all` nor `memory`
-runs it. Alongside `restated_claim`, three read-only detectors pin evidence
-to the memory's content SHA and emit proposals only; DREAMs remain
+runs it. Alongside `restated_claim` and the source/entity checks below,
+three read-only detectors pin evidence to the memory's content SHA and
+emit proposals only; DREAMs remain
 duplicate/merge-only.
 
 - `review_due` sweeps expired, never-reviewed, SHA-changed,
@@ -96,3 +98,28 @@ limits cannot skip lower-ID memories. `scan_cap` bounds inspected IDs
 across those priority walks. Its version/expiry/type checks supersede the
 generic `considered_days` skip. These candidates have distinct proposal
 keys and use the memory prompt version; the legacy prompt is unchanged.
+
+## Memory source and entity checks
+
+The opt-in `memory-review` pass also runs `source_drift` and
+`entity_claim_stale`; neither `all` nor `memory` includes them.
+`source_drift` compares a `Source:` line or `cites` edge's
+`docs/... § heading` section before the memory's last touch with committed
+main. Evidence carries both section-content SHAs, the two commit pins,
+and an excerpt of the new section, including its child blocks.
+
+`entity_claim_stale` checks entity handles in state sentences (`is retired`,
+`is the only`, `runs`, `has no`, `is live`). It compares recorded content,
+machine role or STATUS changes after the memory touch. Markdown sections,
+Python symbols and file-backed skill contracts use committed Git history.
+Stored entities need recorded history: many kinds do not retain revisions,
+and a newer timestamp alone does not establish a change. A missing prior
+SHA, role or STATUS is `not_checked`, never evidence of staleness.
+
+Each memory checks at most 20 matches; the separate `source_drift:memory`
+and `entity_claim_stale:memory` cursors, limits and dispatcher deadline
+bound the scan. DREAMs are excluded. A candidate pins `base_sha`
+and its source evidence; missing-history entries accompany verified changes
+in `not_checked`. Unverifiable-only bodies produce no proposal. The evaluator
+compares the claim with the new text and rejects unchanged meaning or dated
+history. Both detectors propose rewrites only; neither adds an apply path.

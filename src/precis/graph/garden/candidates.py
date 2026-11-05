@@ -34,10 +34,17 @@ stopping at nested hubs so a shared root cannot make unrelated hubs peers.
 Sentence vectors are ephemeral default-embedder reads, never stored embeddings.
 Both semantic and lexical legs require a working embedder; outages are reported
 as ``not_checked`` rather than silently weakening the evidence to lexical only.
+
+The opt-in memory-review pass compares sources against recorded pre-touch
+content. Git supplies file-backed section/symbol/skill snapshots; stored
+entities need revision or STATUS-event evidence. Missing history is unknown,
+not a stale claim, and these signals have no apply path.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 import time
@@ -52,6 +59,8 @@ import numpy as np
 from psycopg.errors import QueryCanceled
 
 from precis.graph.garden._anchors import AnchorResolver
+from precis.graph.garden._drift_refs import ref_change
+from precis.graph.garden._drift_repo import RepoDriftResolver
 from precis.reading.concepts import normalize_name
 from precis.store._mappers import _coerce_vector
 from precis.taxonomy.nodes import dimension_clash
@@ -188,9 +197,11 @@ _DETECTOR_BY_PASS = {
     "paper-identity": ("paper_identity",),
     "memory": ("dangling_mention", "thread_shape", "anchor_rot"),
     "memory-review": (
+        "entity_claim_stale",
         "negative_undated",
         "restated_claim",
         "review_due",
+        "source_drift",
         "title_shape",
     ),
 }
@@ -247,6 +258,8 @@ class GardenCandidate:
                     str(v or "none") for v in generation
                 )
             return f"{key}:{self.detector}"
+        if self.detector in {"source_drift", "entity_claim_stale"}:
+            return f"{key}:{self.detector}:{self.payload['evidence_sha']}"
         return key
 
 
@@ -1766,6 +1779,353 @@ def restated_claim_candidates(
     return out
 
 
+DRIFT_MATCH_CAP = 20
+DRIFT_MEMORY_EXCERPT_CAP = 1200
+_DRIFT_SECTION = re.compile(
+    r"(?P<path>docs/(?:[\w.-]+/)*[\w.-]+\.(?:md|markdown))"
+    r"(?:`?[ \t]*§[ \t]*`?(?P<heading>[^`\n;]+)|[~#](?P<slug>[\w-]+))"
+)
+_SOURCE_LINE = re.compile(r"(?im)^[ \t]*(?:\*\*)?Source:(?:\*\*)?[^\n]*")
+_ENTITY_HANDLE = re.compile(
+    r"\b(?:mh[0-9]{1,19}|sk[0-9]{1,19}|md[0-9]{1,19}|"
+    r"gr[0-9]{1,19}|td[0-9]{1,19}|ma_[\w-]+|precis-[\w-]+)\b"
+)
+_STATE_VERB = re.compile(
+    r"\b(?:is\s+(?:permanently\s+)?(?:retired|the\s+only|live|open|closed|done)"
+    r"|runs|has\s+no)\b",
+    re.IGNORECASE,
+)
+_SENTENCE_END = re.compile(r"[.!?](?=\s|$)|\n[ \t]*\n|\n(?=[ \t]*(?:[-*+]|\d+[.)])\s)")
+
+
+def _drift_bodies(store: Store, ids: list[int]) -> list[tuple[int, str, str, datetime]]:
+    """Pin text, SHA and last touch together; chunk edits need not touch refs."""
+    if not ids:
+        return []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT r.ref_id, coalesce(b.body, ''), "
+            "precis_target_sha('ref', r.ref_id), "
+            "greatest(r.updated_at, b.at, (SELECT max(v.at) FROM revisions v "
+            "WHERE v.target_kind = 'ref' AND v.target_id = r.ref_id)) "
+            "FROM refs r LEFT JOIN LATERAL ("
+            "SELECT string_agg(c.text, E'\\n' ORDER BY c.ord, c.chunk_id) AS body, "
+            "max(c.created_at) AS at FROM chunks c WHERE c.ref_id = r.ref_id "
+            "AND c.chunk_kind = 'memory_body' AND c.ord >= 0 "
+            "AND c.retired_at IS NULL) b ON true "
+            "WHERE r.ref_id = ANY(%s) AND r.kind = 'memory' "
+            "AND r.retired_at IS NULL AND NOT EXISTS ("
+            "SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = r.ref_id AND t.namespace = 'DREAM') "
+            "ORDER BY r.ref_id",
+            (ids,),
+        ).fetchall()
+    return [(int(rid), str(body), str(sha), at) for rid, body, sha, at in rows]
+
+
+def _cited_sections(store: Store, rid: int, body: str) -> Iterator[dict[str, Any]]:
+    """Read explicit section addresses on outgoing cites edges, bounded per node.
+
+    source_handle is the established link provenance field. A chunk cite can
+    instead supply the document address on its ref and a section_path heading.
+    No title similarity or inferred source is a citation.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT l.link_id, l.meta->>'source_handle', r.title, "
+            "(SELECT i.id_value FROM ref_identifiers i WHERE i.ref_id = r.ref_id "
+            "AND i.id_kind = 'cite_key' LIMIT 1), c.section_path "
+            "FROM links l JOIN refs r ON r.ref_id = l.dst_ref_id "
+            "LEFT JOIN chunks c ON c.chunk_id = l.dst_chunk_id "
+            "WHERE l.src_ref_id = %s AND l.relation = 'cites' "
+            "ORDER BY l.link_id LIMIT %s",
+            (rid, DRIFT_MATCH_CAP + 1),
+        ).fetchall()
+    for link_id, source, title, slug, section_path in rows:
+        pointers = [source, title, slug]
+        if section_path:
+            pointers.extend(
+                f"{address} § {section_path[-1]}"
+                for address in (title, slug)
+                if address
+            )
+        for pointer in pointers:
+            if not pointer:
+                continue
+            for match in _DRIFT_SECTION.finditer(pointer):
+                yield {
+                    "anchor": match.group(),
+                    "path": match["path"],
+                    "heading": match["heading"] or "#" + match["slug"],
+                    "link_id": int(link_id),
+                    "cites_capped": len(rows) > DRIFT_MATCH_CAP,
+                    # No anchor line locates the claim; extend ref_excerpts' prefix.
+                    "memory_excerpt": (body[600:] or body)[-DRIFT_MEMORY_EXCERPT_CAP:],
+                }
+
+
+def _source_sections(store: Store, rid: int, body: str) -> Iterator[dict[str, Any]]:
+    for line in _SOURCE_LINE.finditer(body):
+        # The supported claim may be beyond the proposer's leading body excerpt.
+        preceding = body[: line.start()].rstrip()[-DRIFT_MEMORY_EXCERPT_CAP:]
+        memory_excerpt = re.split(r"\n[ \t]*\n", preceding)[-1]
+        for match in _DRIFT_SECTION.finditer(line.group()):
+            yield {
+                "anchor": match.group(),
+                "path": match["path"],
+                "heading": match["heading"] or "#" + match["slug"],
+                "span": [line.start() + match.start(), line.start() + match.end()],
+                "context": line.group(),
+                "memory_excerpt": memory_excerpt,
+            }
+    yield from _cited_sections(store, rid, body)
+
+
+def _state_sentences(body: str) -> Iterator[tuple[int, str]]:
+    """Join soft line breaks, preserving offsets and paragraph/list boundaries."""
+    start = 0
+    for end in _SENTENCE_END.finditer(body):
+        if end.group() == "." and re.search(
+            r"(?:^|[ \t])\d+$", body[start : end.start()]
+        ):
+            continue
+        yield start, body[start : end.end()].replace("\n", " ")
+        start = end.end()
+    if start < len(body):
+        yield start, body[start:].replace("\n", " ")
+
+
+def _state_entities(body: str) -> Iterator[dict[str, Any]]:
+    """Only handles/explicit repo anchors inside the same state-verb sentence."""
+    for offset, text in _state_sentences(body):
+        if not _STATE_VERB.search(text):
+            continue
+        for match in _ENTITY_HANDLE.finditer(text):
+            yield {
+                "anchor": match.group(),
+                "kind": "ref",
+                "target": match.group(),
+                "span": [
+                    offset + match.start(),
+                    offset + match.end(),
+                ],
+                "context": text[max(0, match.start() - 300) : match.end() + 300],
+            }
+        for match in _MEMORY_ANCHOR.finditer(text):
+            kind, target, detail = _anchor_lookup(match)
+            if kind not in {"section", "python"}:
+                continue
+            # Bare dotted prose is too ambiguous for a claim subject. Code
+            # spans and explicit file::symbol anchors are intentional handles.
+            if kind == "python" and not (
+                match["python_path"]
+                or match["dotted"]
+                or match.group().startswith("main::")
+            ):
+                continue
+            yield {
+                "anchor": match.group(),
+                "kind": kind,
+                "target": target,
+                "detail": detail,
+                "span": [
+                    offset + match.start(),
+                    offset + match.end(),
+                ],
+                "context": text[max(0, match.start() - 300) : match.end() + 300],
+            }
+        for match in _DRIFT_SECTION.finditer(text):
+            if not match["slug"] or "~" not in match.group():
+                continue  # Other section spellings were handled above.
+            yield {
+                "anchor": match.group(),
+                "kind": "section",
+                "target": match["path"],
+                "detail": "#" + match["slug"],
+                "span": [
+                    offset + match.start(),
+                    offset + match.end(),
+                ],
+                "context": text[max(0, match.start() - 300) : match.end() + 300],
+            }
+
+
+def _drift_candidates(
+    store: Store,
+    detector: str,
+    *,
+    scan_cap: int,
+    limit: int,
+    cursors: dict[str, int] | None,
+    next_cursors: dict[str, int] | None,
+) -> list[GardenCandidate]:
+    if limit <= 0 or scan_cap <= 0:
+        return []
+    key = f"{detector}:memory"
+    window, nxt = _scan_window(
+        store, "memory", after=(cursors or {}).get(key, 0), size=scan_cap
+    )
+    resolver: RepoDriftResolver | None = None
+    out: list[GardenCandidate] = []
+    for rid, body, sha, touched in _drift_bodies(store, window):
+        matches = list(
+            islice(
+                _source_sections(store, rid, body)
+                if detector == "source_drift"
+                else _state_entities(body),
+                DRIFT_MATCH_CAP + 1,
+            )
+        )
+        changes: list[dict[str, Any]] = []
+        unchecked: list[dict[str, Any]] = []
+        for match in matches[:DRIFT_MATCH_CAP]:
+            if match.get("kind") == "ref":
+                result = ref_change(store, match["target"], touched)
+                if result["status"] == "not_checked":
+                    slug = result.get("slug") if result.get("kind") == "skill" else None
+                    if re.fullmatch(r"precis-[\w-]+", match["target"]):
+                        slug = match["target"]
+                    if isinstance(slug, str) and re.fullmatch(r"[\w-]+", slug):
+                        resolver = resolver or RepoDriftResolver()
+                        result = {
+                            **result,
+                            "kind": "skill",
+                            "slug": slug,
+                            **resolver.document(
+                                f"src/precis/data/skills/{slug}.md", touched
+                            ),
+                        }
+                        if result["status"] != "not_checked":
+                            result.pop("reason", None)
+                            result["basis"] = "committed_skill_document"
+            else:
+                resolver = resolver or RepoDriftResolver()
+                if detector == "source_drift":
+                    result = resolver.section(match["path"], match["heading"], touched)
+                elif match["kind"] == "section":
+                    result = resolver.section(match["target"], match["detail"], touched)
+                else:
+                    result = resolver.python(match["target"], match["detail"], touched)
+            if result["status"] == "changed":
+                changes.append({**match, **result})
+                unchecked.extend(
+                    {**match, "reason": reason}
+                    for reason in result.get("not_checked", [])
+                )
+            elif result["status"] == "not_checked":
+                unchecked.append({**match, **result})
+        if changes:
+            # Commit IDs locate evidence; only claim/source content identifies
+            # the question, so unrelated commits cannot reopen its review.
+            judged_changes = [
+                {
+                    key: change[key]
+                    for key in (
+                        "path",
+                        "heading",
+                        "kind",
+                        "target",
+                        "detail",
+                        "ref_id",
+                        "old_sha",
+                        "new_sha",
+                        "changes",
+                    )
+                    if key in change
+                }
+                for change in changes
+            ]
+            evidence_sha = hashlib.sha256(
+                json.dumps(
+                    {"memory_sha": sha, "changes": judged_changes}, sort_keys=True
+                ).encode("utf-8")
+            ).hexdigest()
+            out.append(
+                GardenCandidate(
+                    detector=detector,
+                    action="rewrite",
+                    target_kind="ref",
+                    target_id=rid,
+                    title=f"me{rid} cites changed sources"
+                    if detector == "source_drift"
+                    else f"me{rid} states claims about changed entities",
+                    evidence={
+                        "changes": changes,
+                        "content_sha": sha,
+                        "memory_touched_at": touched.isoformat(),
+                    },
+                    payload={
+                        "base_sha": sha,
+                        "evidence_sha": evidence_sha,
+                        "ops": [
+                            {"find": m["anchor"], "text": None, "span": m["span"]}
+                            for m in changes
+                            if "span" in m
+                        ],
+                        "not_checked": unchecked,
+                        "matches_capped": len(matches) > DRIFT_MATCH_CAP
+                        or any(m.get("cites_capped") for m in matches),
+                        "match_cap": DRIFT_MATCH_CAP,
+                    },
+                )
+            )
+        if len(out) >= limit:
+            nxt = rid
+            break
+    if next_cursors is not None:
+        next_cursors[key] = nxt
+    return out
+
+
+def source_drift_candidates(
+    store: Store,
+    *,
+    scan_cap: int = 2000,
+    limit: int = 50,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
+) -> list[GardenCandidate]:
+    """Compare cited section chunks before memory touch with pinned main.
+
+    Source lines and cites edges name docs sections; both section hashes and
+    new text go to the evaluator, which decides whether the claim agrees.
+    The dispatcher enforces the deadline. Only verified changes are findings;
+    missing baselines accompany them as not_checked, never standalone drift.
+    """
+    return _drift_candidates(
+        store,
+        "source_drift",
+        scan_cap=scan_cap,
+        limit=limit,
+        cursors=cursors,
+        next_cursors=next_cursors,
+    )
+
+
+def entity_claim_stale_candidates(
+    store: Store,
+    *,
+    scan_cap: int = 2000,
+    limit: int = 50,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
+) -> list[GardenCandidate]:
+    """Bound state-sentence entity checks to recorded post-touch changes.
+
+    Content, STATUS and machine-role evidence remain distinct. Repo sections,
+    symbols and file-backed skills use committed snapshots; DB refs require
+    recorded history. No model, writes or apply; the dispatcher owns deadlines.
+    """
+    return _drift_candidates(
+        store,
+        "entity_claim_stale",
+        scan_cap=scan_cap,
+        limit=limit,
+        cursors=cursors,
+        next_cursors=next_cursors,
+    )
+
+
 def _kind_count(store: Store, kind: str) -> int:
     return store.count_refs(kind=kind)
 
@@ -3012,21 +3372,25 @@ def run_detectors(
                 next_cursors=nxt,
             )
         elif det in {
-            "dangling_mention",
-            "thread_shape",
             "anchor_rot",
-            "review_due",
-            "title_shape",
+            "dangling_mention",
+            "entity_claim_stale",
             "negative_undated",
+            "review_due",
+            "source_drift",
+            "thread_shape",
+            "title_shape",
         }:
             fn = partial(
                 {
-                    "dangling_mention": dangling_mention_candidates,
-                    "thread_shape": thread_shape_candidates,
                     "anchor_rot": anchor_rot_candidates,
-                    "review_due": review_due_candidates,
-                    "title_shape": title_shape_candidates,
+                    "dangling_mention": dangling_mention_candidates,
+                    "entity_claim_stale": entity_claim_stale_candidates,
                     "negative_undated": negative_undated_candidates,
+                    "review_due": review_due_candidates,
+                    "source_drift": source_drift_candidates,
+                    "thread_shape": thread_shape_candidates,
+                    "title_shape": title_shape_candidates,
                 }[det],
                 store,
                 scan_cap=scan_cap,
@@ -3124,6 +3488,7 @@ __all__ = [
     "dup_pair_qualifies",
     "dup_window_size",
     "duplicate_candidates",
+    "entity_claim_stale_candidates",
     "freshly_considered",
     "memory_expiry_shape",
     "negative_undated_candidates",
@@ -3136,6 +3501,7 @@ __all__ = [
     "run_detectors",
     "short_sibling_pair",
     "sibling_confusion_candidates",
+    "source_drift_candidates",
     "stale_candidates",
     "thread_shape_candidates",
     "title_shape_candidates",

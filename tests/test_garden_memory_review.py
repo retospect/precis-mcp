@@ -110,9 +110,11 @@ def test_memory_review_requires_explicit_opt_in() -> None:
 
     assert "memory-review" in PARAMS_SCHEMA["properties"]["pass"]["anyOf"][0]["enum"]
     assert cand.detectors_for(("memory-review",)) == [
+        "entity_claim_stale",
         "negative_undated",
         "restated_claim",
         "review_due",
+        "source_drift",
         "title_shape",
     ]
     for detector in DETECTORS:

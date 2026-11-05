@@ -69,9 +69,10 @@ siblings|paper-identity|memory|memory-review`, one name or a list, default `all`
   These actions are proposal-only. SHA ancestry on `origin/prod` is not
   checked: there is no general ancestry oracle in the DB.
 
-The independent opt-in `memory-review` pass runs `restated_claim`, `review_due`,
-`title_shape` and `negative_undated`; `all` and `memory` exclude it.
-Memory anchor and review checks: [[precis-gardener-memory-help]].
+The independent opt-in `memory-review` pass runs `entity_claim_stale`,
+`negative_undated`, `restated_claim`, `review_due`, `source_drift` and
+`title_shape`; `all` and `memory` exclude it. Memory anchor, review, source
+and entity checks: [[precis-gardener-memory-help]].
 
 ## Structural scans
 
@@ -132,10 +133,11 @@ only: a paper merge is a human decision.
 ## Scan windows and budget
 
 **Scan windows.** The wide scans (merge, tag-sweep, redundant_link,
-paper-identity, memory) read one window per kind per run, starting past a
+paper-identity, memory, memory-review) resume from saved windows, starting past a
 cursor saved on the run's `meta.garden.cursors` (`dup_pair:<kind>`,
 `untagged:<kind>`, `redundant_link`, `paper_identity`,
-`dangling_mention:memory`, `thread_shape:memory`, `anchor_rot:memory`). The next run
+`dangling_mention:memory`, `thread_shape:memory`, `anchor_rot:memory`, plus
+each memory-review detector's own cursor keys). The next run
 starts where the last stopped and wraps at the end, so successive runs
 cover every kind; a run over fewer kinds carries the other cursors
 forward. The merge window shrinks as a kind grows (each window ref is
