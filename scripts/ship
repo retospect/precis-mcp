@@ -2165,8 +2165,18 @@ _squash_and_rebase() {
 $(printf '%s\n' "$MSG" | ship_mint_trailers "" "$CO_AUTHOR" "$BRANCH_ATTRS")" \
             || die "could not squash ${BRANCH} onto its merge-base."
     fi
-    git rebase -q origin/main \
-        || die "rebase conflict onto origin/main — resolve in ${WORKTREE}, then 'git add -A && GIT_EDITOR=true git rebase --continue' and re-run scripts/ship (or 'git rebase --abort' to back out)."
+    local rb_out rb_rc=0
+    rb_out="$(git rebase -q origin/main 2>&1)" || rb_rc=$?
+    [[ -n "$rb_out" ]] && printf '%s\n' "$rb_out" >&2
+    if (( rb_rc != 0 )); then
+        # A lock failure is not a conflict (gr565818, me564176): name git's own
+        # error and leave the lock for a human or scripts/reap-index-locks,
+        # which removes it only once no process owns it.
+        if printf '%s\n' "$rb_out" | grep -Eq "Unable to create .*\.lock|\.lock': File exists|could not detach HEAD"; then
+            die "git could not sync onto origin/main — a lock file blocks it, not a conflict (git said: $(printf '%s' "$rb_out" | tr '\n' ' ')). Check no git process owns it, then 'scripts/reap-index-locks --apply' (or remove the named lock) and re-run scripts/ship."
+        fi
+        die "rebase conflict onto origin/main — resolve in ${WORKTREE}, then 'git add -A && GIT_EDITOR=true git rebase --continue' and re-run scripts/ship (or 'git rebase --abort' to back out)."
+    fi
 }
 
 # True unless the pid is certainly gone (EPERM counts as live).

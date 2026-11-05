@@ -183,3 +183,20 @@ def test_sync_local_main_consumes_the_entire_worktree_list(
     assert proc.returncode == 0, proc.stderr
     assert "local main" in proc.stdout
     assert "abc1234" in proc.stdout
+
+
+def test_index_lock_is_reported_as_a_lock_not_a_conflict(rig: Rig) -> None:
+    # gr565818: a stale index.lock made `git rebase` fail "could not detach
+    # HEAD" and ship called it a rebase conflict, hiding the real error.
+    wt = rig.worktree("l", {"l1.txt": "1\n"})
+    rig.race({"racer.txt": "r\n"})
+    gitdir = Path(rig.g(wt, "rev-parse", "--absolute-git-dir"))
+    (gitdir / "index.lock").write_bytes(b"")
+    p, log = rig.ship(wt, "--quick", sleep=1)
+    rc = p.wait(timeout=120)
+    out = log.read_text(encoding="utf-8")
+    assert rc != 0, out
+    assert "rebase conflict" not in out, out
+    assert "index.lock" in out, out
+    assert "a lock file blocks it" in out, out
+    assert (gitdir / "index.lock").exists()  # never auto-removed
