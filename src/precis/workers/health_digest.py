@@ -2111,13 +2111,50 @@ def _garden_check(store: Store) -> CheckResult:
     )
 
 
+def _service_off_cadences(store: Store) -> dict[str, str]:
+    """``cadence name → service`` for ``service=``-gated cadences whose
+    service resolves OFF on every host — gr567427's deliberate-off
+    carve-out, the lease-clock analogue of pass-dead-on-host's
+    ``prio = 0`` skip.
+
+    ``run_scheduler_pass`` gates the claim on
+    ``ServiceConfigResolver.enabled(service, default_on=False)`` — dark
+    until a ``service_config`` row lights it, resolved per host with an
+    exact-host row beating ``'*'``. Fleet-wide off is therefore "no row
+    for the service carries ``prio > 0``": every exact-host row is 0 or
+    absent AND the ``'*'`` row is 0 or absent, so no host's resolved
+    prio clears the gate and the seeded lease going stale is expected,
+    not a finding. Same ``service_config`` source of truth pass-dead
+    reads; a read failure returns empty — fail toward alerting, never
+    toward silence.
+    """
+    gated = {cad.name: cad.service for cad in CADENCES if cad.service is not None}
+    if not gated:
+        return {}
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT service, host, prio FROM service_config "
+                "WHERE service = ANY(%s)",
+                (sorted(set(gated.values())),),
+            ).fetchall()
+    except Exception:
+        log.warning("health_digest: service_config read failed", exc_info=True)
+        return {}
+    lit = {str(service) for service, _host, prio in rows if int(prio) > 0}
+    return {name: svc for name, svc in gated.items() if svc not in lit}
+
+
 def _cadence_staleness_checks(store: Store) -> list[CheckResult]:
     """Every ``scheduler_leases`` row overdue past ``interval_s + margin``,
     plus (gr194430) every registry cadence with **no** lease row at all,
     plus :func:`_garden_check` for the recurring-driven ``graph_garden``
     job (no lease row — it's not a scheduler cadence). Lease rows whose
     name is no longer in :data:`CADENCES` are skipped — a retired
-    cadence's residue can't be "stopped", it just can't fire.
+    cadence's residue can't be "stopped", it just can't fire. Cadences
+    whose ``service`` gate is dark fleet-wide
+    (:func:`_service_off_cadences`) are skipped the same way — a
+    deliberate off state, not a stopped cadence (gr567427).
 
     Zero per-cadence config — a cadence added to ``workers/scheduler.py``
     is watched the moment it seeds its first lease row, no digest edit.
@@ -2165,9 +2202,14 @@ def _cadence_staleness_checks(store: Store) -> list[CheckResult]:
                 _WARN,
             )
         ]
+    off = _service_off_cadences(store)
     seeded = {lease.name for lease in leases}
     for cad in CADENCES:
-        if cad.name in seeded or cad.name in _CADENCE_NEVER_SEEDED_EXEMPT:
+        if (
+            cad.name in seeded
+            or cad.name in _CADENCE_NEVER_SEEDED_EXEMPT
+            or cad.name in off
+        ):
             continue
         out.append(
             CheckResult(
@@ -2189,6 +2231,23 @@ def _cadence_staleness_checks(store: Store) -> list[CheckResult]:
             # residue, not a stopped cadence (e.g. graph_garden's
             # retired cadence mint — nothing can fire it anymore, so
             # "stopped firing" would flap forever).
+            continue
+        if lease.name in off:
+            # Deliberately dark: the service gate resolves prio 0 on
+            # every host, so no claim is expected and lease staleness is
+            # the off state, not a fault (gr567427). The ok row keeps the
+            # snapshot honest about why nothing is judged.
+            out.append(
+                CheckResult(
+                    "cadence",
+                    lease.name,
+                    "ok",
+                    f"{lease.name}: {off[lease.name]} dark in "
+                    "service_config on every host — deliberately off, "
+                    "lease staleness not expected",
+                    _WARN,
+                )
+            )
             continue
         margin_s = max(lease.interval_s, _CADENCE_MARGIN_FLOOR_S)
         next_fire = lease.next_fire_at

@@ -103,7 +103,11 @@ Derived groups name their check after the thing they watch:
   `interval + margin` (≥15 min floor); fingerprint `watchdog:cadence/{cadence}`.
   Its never-seeded half flags a registered cadence with **no** lease row
   on any host — fingerprint `<cadence>/never-seeded` — the eligibility
-  gate may be false fleet-wide.
+  gate may be false fleet-wide. A `service=`-gated cadence whose
+  `service_config` rows carry no `prio > 0` anywhere (dark until lit —
+  prio 0 rows or no rows at all) is deliberately off: both halves skip
+  it, the same carve-out `pass-dead-on-host` gives disabled services
+  (gr567427).
 - `coherence` — `<service>`: a registered PASS that resolves enabled
   somewhere but logged nothing in its window — 24h for rotation passes,
   `max(24h, 1.5 × cadence interval)` for scheduler-cadence-fired ones —

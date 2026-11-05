@@ -315,6 +315,104 @@ def test_cadence_with_fresh_lease_is_not_flagged_never_seeded(
     assert hit.status == "ok"
 
 
+# ── service-gated dark cadences (gr567427) ──────────────────────────────
+
+
+def _service_cadence(name: str, service: str) -> Cadence:
+    return Cadence(name=name, interval_s=60, run=lambda s, b: None, service=service)
+
+
+def test_service_gated_cadence_dimmed_everywhere_is_not_stale(
+    store, monkeypatch
+) -> None:
+    """gr567427: a ``service=``-gated cadence whose ``service_config``
+    resolves prio 0 on every host is deliberately off — the seeded lease
+    going stale is expected, the pass-dead-on-host carve-out applied to
+    the lease clock."""
+    monkeypatch.setattr(
+        health_digest, "CADENCES", (_service_cadence("c-dimmed", "c_dimmed"),)
+    )
+    set_service_prio(store, "*", "c_dimmed", 0)
+    _seed_lease(store, "c-dimmed", interval_s=60, overdue_s=100000)
+    results = _cadence_staleness_checks(store)
+    hit = next(r for r in results if r.name == "c-dimmed")
+    assert hit.status == "ok"
+    assert "deliberately off" in hit.detail
+
+
+def test_service_gated_cadence_never_lit_is_not_stale(store, monkeypatch) -> None:
+    """No ``service_config`` row at all reads dark too — dark-until-lit is
+    the gate's designed off state (gr567427's exact shape: the lane was
+    deliberately off and no row ever lit it)."""
+    monkeypatch.setattr(
+        health_digest, "CADENCES", (_service_cadence("c-unlit", "c_unlit"),)
+    )
+    _seed_lease(store, "c-unlit", interval_s=60, overdue_s=100000)
+    results = _cadence_staleness_checks(store)
+    hit = next(r for r in results if r.name == "c-unlit")
+    assert hit.status == "ok"
+
+
+def test_service_gated_cadence_lit_still_alerts(store, monkeypatch) -> None:
+    """Lit somewhere (``*`` prio > 0) but the lease overdue — a genuinely
+    stopped cadence still raises."""
+    monkeypatch.setattr(
+        health_digest, "CADENCES", (_service_cadence("c-lit", "c_lit"),)
+    )
+    set_service_prio(store, "*", "c_lit", 5)
+    _seed_lease(store, "c-lit", interval_s=60, overdue_s=100000)
+    results = _cadence_staleness_checks(store)
+    hit = next(r for r in results if r.name == "c-lit")
+    assert hit.status == "stale"
+
+
+def test_service_gated_cadence_host_lit_still_alerts(store, monkeypatch) -> None:
+    """An exact-host ``prio > 0`` row lights that host even with ``*``
+    dimmed — the cadence is expected to fire somewhere, so staleness is
+    a finding."""
+    monkeypatch.setattr(
+        health_digest,
+        "CADENCES",
+        (_service_cadence("c-hostlit", "c_hostlit"),),
+    )
+    set_service_prio(store, "*", "c_hostlit", 0)
+    set_service_prio(store, "melchior", "c_hostlit", 5)
+    _seed_lease(store, "c-hostlit", interval_s=60, overdue_s=100000)
+    results = _cadence_staleness_checks(store)
+    hit = next(r for r in results if r.name == "c-hostlit")
+    assert hit.status == "stale"
+
+
+def test_service_gated_dark_cadence_not_flagged_never_seeded(
+    store, monkeypatch
+) -> None:
+    """A dark service-gated cadence with no lease row is not a
+    never-seeded finding either — nothing is expected of it."""
+    monkeypatch.setattr(
+        health_digest,
+        "CADENCES",
+        (_service_cadence("c-dark-noseed", "c_dark_noseed"),),
+    )
+    results = _cadence_staleness_checks(store)
+    assert not any(r.name == "c-dark-noseed/never-seeded" for r in results)
+
+
+def test_service_gated_lit_cadence_still_flagged_never_seeded(
+    store, monkeypatch
+) -> None:
+    """Lit somewhere but never seeded — the gr194430 finding still
+    applies: enabled, yet no host ever won a claim."""
+    monkeypatch.setattr(
+        health_digest,
+        "CADENCES",
+        (_service_cadence("c-lit-noseed", "c_lit_noseed"),),
+    )
+    set_service_prio(store, "*", "c_lit_noseed", 5)
+    results = _cadence_staleness_checks(store)
+    hit = next(r for r in results if r.name == "c-lit-noseed/never-seeded")
+    assert hit.status == "stale"
+
+
 # ── graph_garden: recurring-driven staleness (not a scheduler cadence) ──
 
 
