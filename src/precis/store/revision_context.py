@@ -35,6 +35,13 @@ Inside a :func:`precis.store.pool.pin_connection` scope the pool re-sends the
 active context on every checkout, so a nested context does not leak into the
 outer writes that follow it. :func:`trust_producer` converts a shared write
 door without overriding a caller that is already converted.
+
+**Writer (migration 0279, docs/backlog/write-attribution.md).** ``writer`` is
+the attribution stamp (``precis.writer``, JSON in the shape of
+``meta.filed_by``) that lands on ``revisions.writer``. It is not ``model``:
+a model on a generated context routes a link through the machine-edge gate,
+so naming who wrote something must not set it. Nested contexts merge the
+dicts key by key.
 """
 
 from __future__ import annotations
@@ -48,7 +55,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from datetime import date
-from typing import Literal, ParamSpec, TypeVar, get_args
+from typing import Any, Literal, ParamSpec, TypeVar, get_args
 
 import psycopg
 from psycopg import Connection
@@ -201,6 +208,7 @@ class RevisionContext:
     trust_actor_type: str | None = None
     trust_act: TrustAct | None = None
     trust_run: str | None = None
+    writer: dict[str, Any] | None = None
 
 
 _current: ContextVar[RevisionContext | None] = ContextVar(
@@ -243,6 +251,7 @@ def revision_context(
     trust_actor_type: str | None = None,
     trust_act: TrustAct | None = None,
     trust_run: str | None = None,
+    writer: dict[str, Any] | None = None,
 ) -> Iterator[RevisionContext]:
     """Attach ``reason`` / ``actor`` / ``model`` (and the trust producer)
     to every write in the block.
@@ -279,6 +288,7 @@ def revision_context(
         ),
         trust_act=trust_act if trust_act is not None else outer.trust_act,
         trust_run=trust_run if trust_run is not None else outer.trust_run,
+        writer={**(outer.writer or {}), **writer} if writer else outer.writer,
     )
     token = _current.set(ctx)
     try:
@@ -391,7 +401,8 @@ def apply_revision_context(conn: Connection, *, clear: bool = False) -> None:
         "set_config('precis.trust_origin', %s, true), "
         "set_config('precis.trust_actor_type', %s, true), "
         "set_config('precis.trust_act', %s, true), "
-        "set_config('precis.trust_run', %s, true)",
+        "set_config('precis.trust_run', %s, true), "
+        "set_config('precis.writer', %s, true)",
         (
             ctx.reason or "",
             ctx.actor or "",
@@ -401,5 +412,6 @@ def apply_revision_context(conn: Connection, *, clear: bool = False) -> None:
             ctx.trust_actor_type or "",
             ctx.trust_act.to_json() if ctx.trust_act is not None else "",
             ctx.trust_run or "",
+            json.dumps(ctx.writer, sort_keys=True) if ctx.writer else "",
         ),
     )

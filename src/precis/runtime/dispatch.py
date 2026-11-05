@@ -55,6 +55,7 @@ from precis.errors import (
     Unsupported,
     Upstream,
 )
+from precis.filing_origin import writer_stamp
 from precis.protocol import (
     _ALL_VERBS,
     TOLERATES_EXTRA_KWARGS_ATTR,
@@ -77,11 +78,15 @@ from precis.runtime.canon import (
 from precis.runtime.canon import resolve as resolve_canon
 from precis.runtime.trust_verb import (
     TRUST_VERBS,
+    WRITER_NUDGE,
+    WRITER_VERBS,
     create_receipt,
     edit_trust,
     pop_trust_payload,
+    pop_writer_payload,
     producer_kwargs,
     trust_line,
+    written_line,
 )
 from precis.runtime.under_facet import UNDER_NEXT
 from precis.store._review_ops import trust_refusal
@@ -98,6 +103,7 @@ from precis.utils.canon import unbind as canon_unbind
 from precis.utils.match_all import fold_match_all_q
 
 if TYPE_CHECKING:
+    from precis.store import Store
     from precis.store.types import ResolvedHandle
 
 log = logging.getLogger(__name__)
@@ -375,7 +381,13 @@ _WRITE_VERBS = frozenset({"put", "edit", "delete", "tag", "link"})
 
 
 def _write_context(
-    verb: str, kind: str, reason: str | None, *, trust: dict[str, Any] | None = None
+    verb: str,
+    kind: str,
+    reason: str | None,
+    *,
+    trust: dict[str, Any] | None = None,
+    store: Store | None = None,
+    claim: dict[str, str] | None = None,
 ) -> contextlib.AbstractContextManager[object]:
     """The revision context a write verb runs in (local-mesh-upkeep §2b).
 
@@ -385,6 +397,9 @@ def _write_context(
     actor (a stdio server run for one speaker, :mod:`precis.acting_user`),
     else ``agent``. ``trust`` is the producer part
     (:func:`precis.runtime.trust_verb.producer_kwargs`, migration 0214).
+    Writer: an enclosing context's, else the stamp for this call
+    (:func:`precis.filing_origin.writer_stamp`, migration 0279), which
+    ``claim`` (the caller's ``args={'writer': ...}``) adds to.
     """
     if verb not in _WRITE_VERBS:
         return contextlib.nullcontext()
@@ -394,7 +409,17 @@ def _write_context(
     actor = None
     if outer is None or outer.actor is None:
         actor = current_background_actor() or process_actor() or "agent"
-    return revision_context(reason, actor=actor, **(trust or {}))
+    writer = None
+    if store is not None and (outer is None or not outer.writer):
+        who = actor or (outer.actor if outer is not None else None)
+        human_ingress = outer is not None and outer.trust_origin == "human"
+        writer = writer_stamp(
+            store.pool,
+            actor=who,
+            payload=claim,
+            direct_human=who if human_ingress else None,
+        )
+    return revision_context(reason, actor=actor, writer=writer, **(trust or {}))
 
 
 def _explicit_param_names(func: Any) -> frozenset[str]:
@@ -3385,19 +3410,26 @@ class DispatchMixin(RuntimeShape):
         trust_payload = (
             pop_trust_payload(args, _EXTRAS_KEY) if verb in TRUST_VERBS else None
         )
+        writer_claim = (
+            pop_writer_payload(args, _EXTRAS_KEY) if verb in WRITER_VERBS else None
+        )
         if verb == "edit" and args.get("mode") == "trust":
             outer = current_revision_context()
-            return edit_trust(
-                self.store,
-                kind=kind,
-                ident=args.get("id"),
-                payload=trust_payload,
-                outer=outer,
-                actor=(outer.actor if outer is not None else None)
-                or current_background_actor()
-                or process_actor()
-                or "agent",
-            )
+            act_reason = (trust_payload or {}).get("reason")
+            with _write_context(
+                verb, kind, act_reason, store=self.store, claim=writer_claim
+            ):
+                return edit_trust(
+                    self.store,
+                    kind=kind,
+                    ident=args.get("id"),
+                    payload=trust_payload,
+                    outer=outer,
+                    actor=(outer.actor if outer is not None else None)
+                    or current_background_actor()
+                    or process_actor()
+                    or "agent",
+                )
 
         # The resolved-facets marker (``uncited=``/``under=`` origins
         # recorded for ``next=`` hint rendering) is dispatch-internal —
@@ -3604,8 +3636,11 @@ class DispatchMixin(RuntimeShape):
                 )
                 if verb in _WRITE_VERBS
                 else None,
+                store=self.store if verb in _WRITE_VERBS else None,
+                claim=writer_claim,
             ) as wctx:
                 response = method(**clean)
+            response = self._nudge_writer(kind, verb, wctx, response)
             act = getattr(wctx, "trust_act", None)
             if act is not None and act.target_id is None:
                 response = replace(
@@ -3676,6 +3711,7 @@ class DispatchMixin(RuntimeShape):
             return response
         try:
             line = trust_line(store, kind, ident)
+            written = written_line(store, kind, ident) if line is not None else None
         except Exception:
             log.debug("trust line for %s %r failed", kind, ident, exc_info=True)
             return response
@@ -3687,7 +3723,28 @@ class DispatchMixin(RuntimeShape):
 
         if was_shown(line):
             return response
-        return replace(response, body=f"{response.body.rstrip()}\n\n{line}")
+        # The trust line stays last: the web lifts it off the end of the body.
+        lead = f"{written}\n\n" if written else ""
+        return replace(response, body=f"{response.body.rstrip()}\n\n{lead}{line}")
+
+    @staticmethod
+    def _nudge_writer(kind: str, verb: str, wctx: Any, response: Response) -> Response:
+        """Tell an MCP session with no known model how to name itself, once
+        per session, on a memory write (write-attribution)."""
+        writer = getattr(wctx, "writer", None)
+        if (
+            kind != "memory"
+            or verb not in TRUST_VERBS
+            or not writer
+            or "session_id" not in writer
+            or "model" in writer
+        ):
+            return response
+        from precis.utils.hint_ledger import was_shown
+
+        if was_shown(WRITER_NUDGE):
+            return response
+        return replace(response, body=f"{response.body.rstrip()}\n{WRITER_NUDGE}")
 
     def _stamp_recalled(self, kind: str, ident: Any) -> None:
         """Record an agent read of one ref's own view (``refs.last_recalled_at``).

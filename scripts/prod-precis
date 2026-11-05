@@ -91,6 +91,9 @@ if [[ -z "${PRECIS_LLM_BASE_URL+x}" && -r "$HOME/.secrets/pw/PRECIS_LLM_BASE_URL
     export PRECIS_LLM_BASE_URL="$(cat "$HOME/.secrets/pw/PRECIS_LLM_BASE_URL")"
 fi
 export PRECIS_EMBEDDER=remote PRECIS_EMBEDDER_URL=http://127.0.0.1:8181
+# Names the process on tool_calls.source and revisions.writer: CLI writes have
+# no MCP session, so they were untraceable. A caller may set its own label.
+export PRECIS_CURRENT_SOURCE="${PRECIS_CURRENT_SOURCE:-prod-precis:${1:-}}"
 cd "$root"
 # --extra paper: a plain `uv sync` worktree lacks the [paper] extra
 # (rapidfuzz/marker/fitz), so every ingest-side subcommand

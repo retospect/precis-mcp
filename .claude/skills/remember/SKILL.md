@@ -17,6 +17,7 @@ description: "Use when you learned something durable for repo-dev memory (a gotc
 - No landed history or children lists; use the graph's links.
 - No plan label (slice/round/R-number/leg/wave) without its handle on the same line.
 - No bare commit sha older than 30 days; cite a live `path/file.py::Symbol` instead.
+- Name yourself on every write: `args={'writer': {'model': '<your model id>'}}`; add `'human': 'reto'` when the content is what Reto told you.
 
 The graph shape (root me474312 → subject hubs → nodes, `part-of` edges, one
 type tag, gotchas `qualifies` threads) is described in the root node and in

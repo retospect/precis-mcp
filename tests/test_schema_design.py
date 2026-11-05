@@ -188,6 +188,9 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # append-only audit list read whole per target, its ``payload``
         # echoing the open act; the stamp itself is real columns on refs/links.
         "revisions.trust_acts",
+        # 0279: the writer stamp, the open shape of meta.filed_by (labelled
+        # claims, keys absent when unknown), read whole per revision.
+        "revisions.writer",
         "llm_call_log.features",
         # 0237: a keyword rule's retarget in the ``llm.op.*`` override grammar
         # — one of {"tier": s} | {"model": s} | {"chain": [rung…]} — read whole

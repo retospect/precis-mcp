@@ -1630,6 +1630,16 @@ def _resolve_memory_apply(
         raise MergeRefused("stale", "the proposal has already been decided")
 
 
+def _garden_writer(model: str | None) -> dict[str, str]:
+    """The ``revisions.writer`` stamp of a gardener memory write; ``model`` is
+    the reviewer that approved it, kept off ``model=`` (see the machine-edge
+    gate note in :func:`apply_structural`)."""
+    stamp = {"source": "garden"}
+    if model:
+        stamp.update(model=model, model_source="caller")
+    return stamp
+
+
 def _review_model_token(model: str | None) -> str:
     """Keep safe model names readable; reserve hex- for reversible UTF-8 encoding."""
     name = model or "unknown"
@@ -1703,7 +1713,9 @@ def apply_rewrite(
             verdict_extra=verdict_extra,
         )
         reason = f"garden:{garden['detector']}:{review_id}"
-        with revision_context(reason, actor=actor, model=""):
+        with revision_context(
+            reason, actor=actor, model="", writer=_garden_writer(model)
+        ):
             # The full base_sha was checked under the ref lock above. The
             # handler's anchors and expected_body guard run on this same conn.
             Hub(store=store).sibling("memory").edit(id=target, ops=ops, reason=reason)
@@ -2187,7 +2199,7 @@ def apply_supersede(
             verdict_extra=verdict_extra,
         )
         reason = f"garden:{garden['detector']}:{review_id}"
-        with revision_context(reason, actor=actor):
+        with revision_context(reason, actor=actor, writer=_garden_writer(model)):
             apply_revision_context(conn, clear=True)
             Hub(store=store).sibling("memory").delete(
                 id=target, reason=reason, superseded_by=f"me{successor}"
@@ -2236,7 +2248,7 @@ def apply_retire(
             verdict_extra=verdict_extra,
         )
         reason = f"garden:{garden['detector']}:{review_id}"
-        with revision_context(reason, actor=actor):
+        with revision_context(reason, actor=actor, writer=_garden_writer(model)):
             Hub(store=store).sibling("memory").delete(
                 id=target, reason=reason, superseded_by=rec["successor_handle"]
             )

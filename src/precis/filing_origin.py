@@ -73,11 +73,18 @@ def agentlog_model(
 
 
 def current_filed_by(
-    pool: ConnectionPool, *, conn: Connection | None = None
+    pool: ConnectionPool,
+    *,
+    conn: Connection | None = None,
+    actor: str | None = None,
 ) -> dict[str, Any]:
-    """Capture known fields only; no session means no invented client or model."""
+    """Capture known fields only; no session means no invented client or model.
+
+    The active context's ``writer`` stamp wins, so a creation records the same
+    attribution as its revision. ``actor`` names the writer before its context
+    is entered."""
     readers: dict[str, Callable[[], Any]] = {
-        "actor": _actor,
+        "actor": (lambda: actor) if actor else _actor,
         "client": tool_ledger.current_client,
         "session_id": tool_ledger._session_id,
         "source": agentlog.current_source_from_env,
@@ -94,7 +101,49 @@ def current_filed_by(
         recorded = agentlog_model(pool, run_id, conn=conn)
         if recorded:
             origin.update(model=recorded, model_source="agentlog")
+    context = current_revision_context()
+    if context is not None and context.writer:
+        origin.update(context.writer)
     return origin
+
+
+def writer_stamp(
+    pool: ConnectionPool,
+    *,
+    actor: str | None,
+    payload: dict[str, str] | None = None,
+    direct_human: str | None = None,
+) -> dict[str, Any]:
+    """The ``revisions.writer`` stamp for one verb write.
+
+    A model the caller states is a claim (``model_source='self'``), used only
+    when nothing better is known. ``direct_human`` is the authenticated person
+    at a human ingress; a ``human`` in the payload is an agent saying the
+    content is that person's direct input."""
+    origin = current_filed_by(pool, actor=actor)
+    claim = payload or {}
+    if claim.get("model") and "model" not in origin:
+        origin.update(model=claim["model"], model_source="self")
+    if direct_human:
+        origin.update(human=direct_human, human_via="direct")
+    elif claim.get("human"):
+        origin.update(human=claim["human"], human_via="mediated")
+    return origin
+
+
+def writer_label(writer: dict[str, Any]) -> str:
+    """One stamp as a reader sees it: ``claude-opus-5-5 (self), gardener`` or
+    ``human reto via claude-opus-5-5 (self)``."""
+    who = str(writer.get("model") or writer.get("actor") or "unknown")
+    if writer.get("model") and writer.get("model_source") == "self":
+        who += " (self)"
+    human = writer.get("human")
+    if human:
+        if writer.get("human_via") == "direct":
+            return f"human {human}"
+        who = f"human {human} via {who}"
+    process = writer.get("source") or str(writer.get("client") or "").split("/")[0]
+    return f"{who}, {process}" if process else who
 
 
 def stamp_meta(

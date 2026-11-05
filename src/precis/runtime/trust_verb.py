@@ -27,10 +27,12 @@ unconverted (unknown/unknown version 0) until they declare one.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from precis.errors import BadInput, NotFound
+from precis.filing_origin import writer_label
 from precis.response import Response
 from precis.store.revision_context import (
     KG_REVIEW_PREFIX,
@@ -47,6 +49,24 @@ _PAYLOAD_KEYS = frozenset(
 
 #: Verbs that accept the payload.
 TRUST_VERBS = frozenset({"put", "edit"})
+
+#: Verbs that accept ``args={'writer': {...}}``: the ones with an ``args=``
+#: that change a ref's content or lifecycle.
+WRITER_VERBS = frozenset({"put", "edit", "delete"})
+
+#: A model id as clients name it (``claude-opus-5-5``, ``openai/gpt-oss-120b``,
+#: ``us.anthropic.claude-sonnet-5-5[1m]``); a person as a short label.
+_WRITER_PATTERNS = {
+    "model": re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}"),
+    "human": re.compile(r"[\w][\w .:@-]{0,63}"),
+}
+
+#: The once-per-session ack line on a memory write with no known model.
+WRITER_NUDGE = (
+    "writer: model unknown — pass args={'writer': {'model': '<your model id>'}} "
+    "on memory writes; add 'human': '<who>' when the content is a person's "
+    "direct input (precis-memory-help)"
+)
 
 
 def pop_trust_payload(args: dict[str, Any], extras_key: str) -> dict[str, Any] | None:
@@ -103,6 +123,49 @@ def pop_trust_payload(args: dict[str, Any], extras_key: str) -> dict[str, Any] |
             "(reviewer model, UTC review date, ok|fixed)",
         )
     return payload
+
+
+def pop_writer_payload(args: dict[str, Any], extras_key: str) -> dict[str, str] | None:
+    """Remove and validate ``args={'writer': {...}}`` before the handler's
+    kwargs gate sees it. The values are labelled claims, not proof."""
+    extras = args.get(extras_key)
+    if not isinstance(extras, dict) or "writer" not in extras:
+        return None
+    payload = extras.pop("writer")
+    if not extras:
+        args.pop(extras_key)
+    if not isinstance(payload, dict):
+        raise BadInput(
+            "args={'writer': ...} is a dict: {'model': '<your model id>'} and/or "
+            "{'human': '<who said it>'}"
+        )
+    unknown = sorted(set(payload) - set(_WRITER_PATTERNS))
+    if unknown:
+        raise BadInput(
+            f"writer payload keys {unknown!r} not accepted",
+            options=sorted(_WRITER_PATTERNS),
+        )
+    for key, value in payload.items():
+        if not isinstance(value, str) or not _WRITER_PATTERNS[key].fullmatch(value):
+            raise BadInput(
+                f"writer {key} {value!r} is not a plain label",
+                next="args={'writer': {'model': 'claude-opus-5-5', 'human': 'reto'}}",
+            )
+    return payload
+
+
+def written_line(store: Any, kind: str, ident: Any) -> str | None:
+    """``written: <first>`` or ``written: <first> · last: <last>`` for one
+    ref, or None when no revision carries a stamp."""
+    try:
+        ref_id = _target_ref_id(store, kind, ident)
+    except (NotFound, ValueError):
+        return None
+    stamps = store.first_last_writer("ref", ref_id)
+    if stamps is None:
+        return None
+    first, last = (writer_label(stamp) for stamp in stamps)
+    return f"written: {first}" if first == last else f"written: {first} · last: {last}"
 
 
 def producer_kwargs(

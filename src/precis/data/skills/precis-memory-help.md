@@ -5,6 +5,7 @@ title: precis — capture notes, decisions, ideas, questions
 summary: scratchpad for notes, decisions, ideas, questions — open tags, no enforced sub-kind
 answers:
   - how do I jot down a quick note before I forget it?
+  - how do I record which model or person wrote a memory?
   - how do I record a decision I just made, with its rationale?
   - how do I flag an open question to come back to later?
   - how do I recall what I already know before starting a task?
@@ -223,6 +224,27 @@ Omit it and the first body line supplies a title, truncated at 80 chars:
 that fallback cap is not the card's authoring limit and can cut a claim
 short. Retrieval keys: `precis-firstline-help`. `tags=` and `link=` on
 create save a follow-up call.
+
+## Record which model or person wrote a memory
+## Say that this memory is what a person told me
+
+Every write records its process (client, session, job) on its revision.
+Your model and any human source are yours to state:
+
+```python
+put(
+    kind="memory",
+    text="...",
+    args={"writer": {"model": "claude-opus-5-5", "human": "reto"}},
+)
+```
+
+`put`, `edit` and `delete` take it. Give `model` every time, as your exact
+model id. Give `human` only when the content is that person's direct input
+rather than your own thought; it reads `human reto via claude-opus-5-5`.
+Both are labelled claims (`model_source='self'`), not proof. A model the
+run or client already records wins over yours. `written:` above the trust
+line on a bare `get` shows the first and last writer.
 
 ## Edit a memory in place
 ## Rewrite a memory body without losing its id or links

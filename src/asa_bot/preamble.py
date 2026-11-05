@@ -399,7 +399,9 @@ def _render_inner_life(inner_state: str, inner_thoughts: str, dreams: str) -> st
                 "`precis put(kind='memory', text='I...', "
                 "tags=['internal-thought', 'user:asa'])`. "
                 "Older fragments aren't shown here — find them with "
-                "`precis search(kind='memory', tags=['internal-thought'])`.*"
+                "`precis search(kind='memory', tags=['internal-thought'])`. "
+                "When you record what someone told you rather than your own "
+                "thought, add `args={'writer': {'human': '<their handle>'}}`.*"
             ),
         )
     )

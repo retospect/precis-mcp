@@ -101,6 +101,7 @@ class Revision:
     new_sha: str | None
     prev_state: dict[str, Any]
     trust_acts: list[dict[str, Any]] = field(default_factory=list)
+    writer: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,12 +296,32 @@ class ReviewsMixin:
         with self._review_conn(conn) as c:
             rows = c.execute(
                 "SELECT revision_id, target_kind, target_id, at, event, actor, "
-                "       model, reason, prev_sha, new_sha, prev_state, trust_acts "
+                "       model, reason, prev_sha, new_sha, prev_state, trust_acts, "
+                "       writer "
                 "  FROM revisions WHERE target_kind = %s AND target_id = %s "
                 " ORDER BY at, revision_id",
                 (target_kind, target_id),
             ).fetchall()
         return [Revision(*r) for r in rows]
+
+    def first_last_writer(
+        self, target_kind: str, target_id: int
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """The oldest and newest ``revisions.writer`` stamps on the target
+        (migration 0279), or None when no revision carries one."""
+        with self._review_conn(None) as c:
+            rows = c.execute(
+                "(SELECT writer FROM revisions "
+                "  WHERE target_kind = %(k)s AND target_id = %(i)s "
+                "    AND writer IS NOT NULL ORDER BY at, revision_id LIMIT 1) "
+                "UNION ALL "
+                "(SELECT writer FROM revisions "
+                "  WHERE target_kind = %(k)s AND target_id = %(i)s "
+                "    AND writer IS NOT NULL "
+                "  ORDER BY at DESC, revision_id DESC LIMIT 1)",
+                {"k": target_kind, "i": target_id},
+            ).fetchall()
+        return (rows[0][0], rows[-1][0]) if rows else None
 
     def state_at(
         self,
