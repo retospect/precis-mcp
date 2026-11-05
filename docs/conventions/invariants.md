@@ -69,6 +69,15 @@ test that needs the *shape* of paper text builds it at runtime. Enforced by
 `paper-text-gate: allow — <reason>` or, where the format allows no comments,
 an entry in `tests/data/paper_text_allowlist.json` (one reason per entry).
 
+## Never hide the original error
+
+Scripts, tools and handlers preserve the underlying tool's original error text,
+exit code and command. Wrappers may add context; redact secrets, never the error.
+Do not suppress failures with `>/dev/null 2>&1` or capture output then return
+`None` without reporting it. Example: `scripts/round::_git` reports failed
+network calls through `scripts/lib/git_network.py::report_failure`. This is
+about the operator; `mcp-authoring.md` rule 8 decides what an MCP agent sees.
+
 ## SQL and layering gotchas
 
 - **Double `%` in psycopg SQL.** A literal `%` in a parameterised query is a
