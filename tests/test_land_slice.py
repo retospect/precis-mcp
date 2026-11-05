@@ -364,6 +364,12 @@ def test_submit_launches_ship_with_the_slice_subject(seams: dict[str, Any]) -> N
     assert handle["subject"] == SUBJECT and handle["pid"] == 5151
     assert handle["log"] == str(tree / "scratch" / "land_slice.log")
     assert ctx.meta_set["land_subject"] == SUBJECT
+    # the launch event names the cap, because ship never echoes the resolved
+    # `-n` (jo570059's log could not confirm whether the cap applied)
+    launch_events = [t for k, t in ctx.chunks if k == "job_event" and " pid 5151 " in t]
+    assert launch_events and launch_events[-1].endswith(
+        f"(gate_n={land_slice.DEFAULT_TEST_NPROC})"
+    )
     assert (["log", "--reverse", "--format=%s", "origin/main..HEAD"], tree) in seams[
         "git"
     ]

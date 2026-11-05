@@ -858,7 +858,8 @@ def submit(ctx: Any, spec: Any) -> Any:
         return handle  # parked before launch; the deferral event says why
     ctx.append_chunk(
         "job_event",
-        f"land_slice: scripts/ship {flag} {subject!r} pid {handle['pid']} in {tree}",
+        f"land_slice: scripts/ship {flag} {subject!r} pid {handle['pid']} in {tree} "
+        f"(gate_n={test_nproc()})",
     )
     return handle
 
