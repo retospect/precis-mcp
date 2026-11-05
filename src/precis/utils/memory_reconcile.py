@@ -3,6 +3,10 @@
 The packaged skill section is the source of truth. Reusing the skill include
 resolver keeps interactive guidance and machine prompts identical; a digest
 lets memory-only proposer rejections reopen when that policy changes.
+
+The detector set stays explicit to avoid a proposer → memory_reconcile →
+proposer initialization cycle. Regression coverage follows MEMORY_ACTIONS so
+new memory detectors cannot silently omit the policy.
 """
 
 from __future__ import annotations
@@ -17,7 +21,19 @@ from precis.ingest.skill_template import DocResolver
 
 _SKILL = "precis-memory-help"
 _SECTION = "memory-reconciliation-policy"
-_MEMORY_DETECTORS = frozenset({"dangling_mention", "thread_shape", "anchor_rot"})
+_MEMORY_DETECTORS = frozenset(
+    {
+        "anchor_rot",
+        "dangling_mention",
+        "entity_claim_stale",
+        "negative_undated",
+        "restated_claim",
+        "review_due",
+        "source_drift",
+        "thread_shape",
+        "title_shape",
+    }
+)
 
 
 @cache

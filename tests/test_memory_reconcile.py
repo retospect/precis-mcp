@@ -206,6 +206,30 @@ def test_memory_maintenance_judges_share_policy(detector: str, action: str) -> N
     assert reviewer._prompt_for(proposal).count(policy) == 1
 
 
+@pytest.mark.parametrize("detector", proposer.MEMORY_ACTIONS)
+def test_all_memory_actions_receive_policy_without_kind(detector: str) -> None:
+    assert memory_reconcile.uses_memory_policy(detector, {}, {})
+    candidate = GardenCandidate(
+        detector=detector,
+        action=proposer.MEMORY_ACTIONS[detector][0],
+        target_kind="ref",
+        target_id=1,
+        evidence={},
+        payload={"evidence_sha": "test"},
+    )
+    proposal = _proposal(candidate)
+    policy = memory_reconcile.memory_reconciliation_policy()
+    assert proposer._prompt_for(candidate).count(policy) == 1
+    assert consumer._prompt_for(proposal, {}).count(policy) == 1
+    assert reviewer._prompt_for(proposal).count(policy) == 1
+
+
+def test_non_memory_detector_without_memory_kind_does_not_use_policy() -> None:
+    assert not memory_reconcile.uses_memory_policy(
+        "dup_pair", {"kind": "taxon"}, {"kind": "taxon"}
+    )
+
+
 def test_memory_policy_update_reopens_memory_duplicates_only(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
