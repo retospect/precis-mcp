@@ -275,6 +275,36 @@ def test_delete_rejects_other_kind(store: Store) -> None:
     assert store.events_for(other.id, event="retired") == []
 
 
+def test_meta_view_dumps_ref_meta(store) -> None:
+    """gr563572: callers guessed ``view='meta'`` for the ingest-written
+    meta keys (``source_pdf`` & co.) the overview doesn't surface."""
+    h = PresentationHandler(hub=Hub(store=store))
+    slug = _mk_deck(h)
+    h.edit(id=slug, venue="CASTEP Workshop, Durham", date="2001-12-06")
+
+    out = h.get(id=slug, view="meta")
+
+    assert "CASTEP Workshop, Durham" in out.body
+    assert '"venue"' in out.body
+
+
+def test_unknown_view_lists_accepted_options(store) -> None:
+    """gr563572: the refusal names every accepted view — ``pdf_link``,
+    ``tags`` and ``meta`` included — not a bare 'try X/Y/Z'."""
+    from precis.errors import Unsupported
+
+    h = PresentationHandler(hub=Hub(store=store))
+    slug = _mk_deck(h)
+
+    with pytest.raises(Unsupported) as exc:
+        h.get(id=slug, view="frobnicate")
+
+    options = exc.value.options or []
+    for view in ("pdf_link", "tags", "meta", "full", "bibtex"):
+        assert view in options
+    assert "view=" in str(exc.value.next)
+
+
 def test_delete_rejects_missing_or_already_retired_pres(store: Store) -> None:
     handler = PresentationHandler(hub=Hub(store=store))
     with pytest.raises(NotFound):

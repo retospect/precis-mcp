@@ -146,6 +146,81 @@ def test_delete_args_keys_declared() -> None:
     assert TodoHandler.ARGS_KEYS["delete"] == frozenset({"comment", "restore"})
 
 
+# ── todo get comment selectors (gr567276) ─────────────────────────
+
+
+def _todo_with_notes(todo: TodoHandler, n: int = 5) -> int:
+    rid = _new(todo)
+    for i in range(1, n + 1):
+        todo.put(id=rid, text=f"note-{i}")
+    return rid
+
+
+def test_todo_comments_view_last_shows_newest_k(todo: TodoHandler) -> None:
+    """``args={'last': K}`` — the spelling prod callers reached for —
+    reads the newest K comments inside ``view='comments'``."""
+    rid = _todo_with_notes(todo)
+    out = todo.get(id=rid, view="comments", last=2).body
+    assert "note-5" in out and "note-4" in out
+    assert "note-3" not in out
+    assert "newest 2 of 5" in out
+
+
+def test_todo_bare_get_comment_selector_reads_as_comments_view(
+    todo: TodoHandler,
+) -> None:
+    """A bare get with a comment selector has one reading —
+    ``view='comments'`` — so it runs and names the reading."""
+    rid = _todo_with_notes(todo)
+    out = todo.get(id=rid, comment=2).body
+    assert "read as view='comments'" in out
+    assert "note-2" in out and "note-5" not in out
+
+
+def test_todo_comments_view_window_and_single(todo: TodoHandler) -> None:
+    rid = _todo_with_notes(todo)
+    out = todo.get(id=rid, view="comments", comments="2-3").body
+    assert "note-2" in out and "note-3" in out
+    assert "note-4" not in out
+    one = todo.get(id=rid, view="comments", comments=1).body
+    assert "note-5" in one and "note-4" not in one
+
+
+def test_todo_comment_selector_on_other_view_refuses(todo: TodoHandler) -> None:
+    rid = _todo_with_notes(todo)
+    with pytest.raises(BadInput, match="view='comments'") as exc:
+        todo.get(id=rid, view="body", last=1)
+    assert "args={'comments': 5}" in str(exc.value.next)
+
+
+def test_todo_comment_selector_bad_values_refuse(todo: TodoHandler) -> None:
+    rid = _todo_with_notes(todo)
+    with pytest.raises(BadInput, match="no comment 99"):
+        todo.get(id=rid, view="comments", comment=99)
+    with pytest.raises(BadInput, match="not both"):
+        todo.get(id=rid, view="comments", comment=1, last=2)
+    with pytest.raises(BadInput, match=">= 1"):
+        todo.get(id=rid, view="comments", last=0)
+
+
+def test_todo_get_args_last_flows_through_dispatch(
+    runtime_with_store: Any,
+) -> None:
+    """The prod failure was ``args={'last': 2}`` rejected at the args
+    gate — it now flattens onto ``get`` like every accepted kwarg."""
+    rt = runtime_with_store
+    h = rt.hub.handler_for("todo")
+    h.put(text="dispatch fixture.")
+    rid = h.store.list_refs(kind="todo", limit=1)[0].id
+    for i in range(3):
+        h.put(id=rid, text=f"dnote-{i}")
+    body, is_error = rt.dispatch_with_status(
+        "get", {"kind": "todo", "id": rid, "__extras__": {"last": 2}}
+    )
+    assert not is_error, body
+    assert "dnote-2" in body and "dnote-1" in body and "dnote-0" not in body
+
+
 # ── todo details-body find-replace / insert (gr478556) ───────────────
 
 

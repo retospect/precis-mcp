@@ -45,6 +45,11 @@ Views via ``view='<name>'`` on search / get (the canonical surface):
                               |'active'|'doing'|'done'|'work'|'asks')
     get(kind='todo', id=N, view='tree'|'comments'|'body')
 
+``view='comments'`` is selectable: ``args={'comment': K}`` reads one
+comment, ``args={'comments': K}`` the newest K, ``args={'comments':
+'A-B'`` an ord window, ``args={'last': K}`` the newest K; on a bare get
+the same selectors read as ``view='comments'`` (gr567276).
+
 ``view='work'`` (dark-factory step 1) is the cross-kind hierarchy: quest →
 the roots that ``serves`` it → subtrees, with lease and fleet agents per
 row. The eye (``extent='fisheye+1hop'``) on a todo appends the tree ring
@@ -486,11 +491,25 @@ class TodoHandler(NumericRefHandler):
         id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
+        # ``args={'comment': K}`` / ``{'comments': K|'A-B'}`` /
+        # ``{'last': K}`` — the timeline selectors inside
+        # ``view='comments'``; on a bare get they read as
+        # ``view='comments'`` (gr567276 — same contract as gripe).
+        comment: int | str | None = None,
+        comments: int | str | None = None,
+        last: int | None = None,
         **_kw: Any,
     ) -> Response:
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
         if isinstance(id, list):
+            if comment is not None or comments is not None or last is not None:
+                raise BadInput(
+                    "args={'comment'|'comments'|'last'} select inside one "
+                    "todo's timeline — pass a single id=",
+                    next="get(kind='todo', id=<N>, view='comments', "
+                    "args={'comments': 5})",
+                )
             return super().get(id=id, view=view, q=q, **_kw)
         readings: list[str] = []
         single = id is not None and not (isinstance(id, str) and id.startswith("/"))
@@ -499,6 +518,28 @@ class TodoHandler(NumericRefHandler):
             shown = f"view={canon!r}" if canon is not None else "the default view"
             readings.append(f"view={view!r} read as {shown}")
             view = canon
+        if comment is not None or comments is not None or last is not None:
+            # The selectors only mean something inside the timeline
+            # read — anywhere else they would be a silent drop
+            # (mcp-authoring rule 6). On a *bare* get they have exactly
+            # one reading — view='comments' — so run it and name the
+            # reading (the interpreted convention gr494831; prod kept
+            # re-issuing the refused call, gr567276).
+            if view is None:
+                view = "comments"
+                readings.append(
+                    "args={'comment': K} / {'comments': K} / {'last': K} "
+                    "on a bare get read as view='comments'"
+                )
+            elif view != "comments":
+                raise BadInput(
+                    "args={'comment': K} / {'comments': K} / {'last': K} "
+                    "select inside view='comments'",
+                    next=(
+                        f"get(kind='todo', id={id}, view='comments', "
+                        "args={'comments': 5})"
+                    ),
+                )
         # Tree view is special: needs a numeric id, dispatches before
         # the base class can complain about unknown views.
         if view == "tree":
@@ -511,7 +552,14 @@ class TodoHandler(NumericRefHandler):
             return views.render_tree(self.store, ref_id)
         if view == "comments":
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(body=self._render_comments(ref, full=True))
+            return interpreted(
+                Response(
+                    body=self._render_comments_view(
+                        ref, comment=comment, comments=comments, last=last
+                    )
+                ),
+                readings,
+            )
         if view == "body":
             # gr554136: the bounded body-only read — title + the
             # untruncated todo_body, no comments/links/ancestry — the
@@ -1844,13 +1892,45 @@ class TodoHandler(NumericRefHandler):
 
     # ── comments: render + hide ───────────────────────────────────
 
-    def _render_comments(self, ref: Ref, *, full: bool) -> str:
+    def _render_comments(self, ref: Ref) -> str:
         comments = [
             b
             for b in self.store.chunks.list_chunks_for_ref(ref.id)
             if b.chunk_kind == _COMMENT_KIND
         ]
-        return tl.render_comments(ref, comments, kind=self.kind, full=full)
+        return tl.render_comments(ref, comments, kind=self.kind)
+
+    def _render_comments_view(
+        self,
+        ref: Ref,
+        *,
+        comment: int | str | None = None,
+        comments: int | str | None = None,
+        last: int | None = None,
+    ) -> str:
+        """``view='comments'`` — the selectable, whole-comment-paged read.
+
+        No selectors: every comment oldest first under the shared page
+        budget, with the ``args={...}`` spellings in the footer. With
+        selectors (``comment`` / ``comments`` / ``last``): the matching
+        window only (gr567276).
+        """
+        chunks = [
+            b
+            for b in self.store.chunks.list_chunks_for_ref(ref.id)
+            if b.chunk_kind == _COMMENT_KIND
+        ]
+        only, last_n, lo, hi = tl.parse_comment_selectors(
+            kind=self.kind,
+            ref_id=ref.id,
+            ords=sorted(c.ord for c in chunks),
+            comment=comment,
+            comments=comments,
+            last=last,
+        )
+        return tl.render_comment_view(
+            ref, chunks, kind=self.kind, last=last_n, only=only, lo=lo, hi=hi
+        )
 
     # ── tag: gradient guard + STATUS:done event emission ──────────
 
@@ -2274,7 +2354,7 @@ class TodoHandler(NumericRefHandler):
 
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         out = self._card_lines(ref, tags)
-        comments = self._render_comments(ref, full=False)
+        comments = self._render_comments(ref)
         if comments:
             out.append("")
             out.append(comments)

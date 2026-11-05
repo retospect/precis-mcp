@@ -396,6 +396,35 @@ def test_get_unknown_symbol_raises(handler: PythonHandler) -> None:
         handler.get(id="r::pkg.m.NoSuchSymbol")
 
 
+def test_get_unknown_symbol_suggests_close_match(handler: PythonHandler) -> None:
+    """gr563571: a wrong module path used to dead-end on a bare search
+    hint — the NotFound names the corrected qualname in id form."""
+    with pytest.raises(NotFound) as exc:
+        handler.get(id="r::pkg.WRONG.Greeter.greet")
+    text = str(exc.value)
+    assert "did you mean" in text
+    assert "get(kind='python', id='r::pkg.m.Greeter.greet')" in text
+    assert "search(kind='python'" in text
+
+
+def test_get_unknown_symbol_fuzzy_leaf_match(handler: PythonHandler) -> None:
+    """A misspelt leaf still surfaces the same-leaf-adjacent candidate."""
+    with pytest.raises(NotFound) as exc:
+        handler.get(id="r::pkg.m.Greeter.greett")
+    assert "id='r::pkg.m.Greeter.greet'" in str(exc.value)
+
+
+def test_get_unknown_symbol_no_match_keeps_search_fallback(
+    handler: PythonHandler,
+) -> None:
+    """A qualname with no near neighbour still gets the search next."""
+    with pytest.raises(NotFound) as exc:
+        handler.get(id="r::pkg.m.ZZZZQQQ")
+    text = str(exc.value)
+    assert "did you mean" not in text
+    assert "search(kind='python'" in text
+
+
 def test_get_block_selector_resolves_local_symbol(handler: PythonHandler) -> None:
     """`~Greeter.greet` on a file resolves to the symbol's drill-down view."""
     out = handler.get(id="r/pkg/m.py~Greeter.greet")
@@ -439,6 +468,19 @@ def test_search_finds_symbol_by_name(handler: PythonHandler) -> None:
 def test_search_no_match(handler: PythonHandler) -> None:
     out = handler.search(q="zzzfrobnicate-nothing")
     assert "no python symbols match" in out.body
+
+
+def test_search_view_refuses_with_get_directions(handler: PythonHandler) -> None:
+    """gr567275: ``view=`` reached search from callers who wanted the
+    repo/symbol views — the refusal names ``mode=`` here and the
+    ``get(kind='python', …, view=…)`` calls that own views."""
+    with pytest.raises(BadInput) as exc:
+        handler.search(q="greet", scope="r", view="index")
+    text = str(exc.value)
+    assert "takes no view='index'" in text
+    assert "view= is a get() arg" in text
+    nxt = str(exc.value.next)
+    assert "view='toc'" in nxt and "view='outline'" in nxt
 
 
 def test_search_no_match_includes_recovery_next_section(

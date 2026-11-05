@@ -288,6 +288,70 @@ def _parse_id(raw: str) -> _ParsedId:
     )
 
 
+def _close_symbol_matches(
+    idx: RepoIndex, qualname: str, *, limit: int = 3
+) -> list[str]:
+    """Candidate qualnames for a symbol miss, best first.
+
+    The common miss is a wrong module path (``precis.store.migrator``
+    for ``precis.store.migrate``, gr563571): the leaf still matches, so
+    pool on leaf-name equality and rank survivors by full-qualname
+    similarity. No leaf hit → fuzzy leaf names; still nothing → ``[]``
+    and the caller keeps only its search fallback.
+    """
+    leaf = qualname.rsplit(".", 1)[-1]
+    by_leaf: dict[str, list[str]] = {}
+    for mod in idx.modules.values():
+        for s in mod.symbols:
+            by_leaf.setdefault(s.qualname.rsplit(".", 1)[-1], []).append(s.qualname)
+    pool = by_leaf.get(leaf)
+    if not pool:
+        near_leaves = difflib.get_close_matches(
+            leaf, list(by_leaf), n=limit, cutoff=0.8
+        )
+        pool = [q for name in near_leaves for q in by_leaf[name]]
+    if not pool:
+        return []
+    pool.sort(
+        key=lambda q: difflib.SequenceMatcher(None, qualname, q).ratio(),
+        reverse=True,
+    )
+    return pool[:limit]
+
+
+def _symbol_not_found(
+    alias: str, qualname: str, idx: RepoIndex, *, fallback_next: str
+) -> NotFound:
+    """NotFound for a missing ``<alias>::<qualname>`` — names close matches.
+
+    gr563571: a wrong module path used to dead-end on a bare search
+    hint; the corrected qualname in ``<alias>::<qualname>`` id form is
+    the copy-pasteable next step.
+    """
+    close = _close_symbol_matches(idx, qualname)
+    nexts: list[str] = []
+    if close:
+        nexts.append(
+            "did you mean "
+            + ", ".join(f"get(kind='python', id='{alias}::{q}')" for q in close)
+        )
+    nexts.append(fallback_next)
+    return NotFound(
+        f"symbol {qualname!r} not found in repo {alias!r}",
+        next=nexts,
+    )
+
+
+def _lookup_symbol(
+    idx: RepoIndex, alias: str, qualname: str, *, fallback_next: str
+) -> Symbol:
+    """``idx.symbol`` or a :func:`_symbol_not_found` raise."""
+    sym = idx.symbol(qualname)
+    if sym is None:
+        raise _symbol_not_found(alias, qualname, idx, fallback_next=fallback_next)
+    return sym
+
+
 # ---------------------------------------------------------------------------
 # Handler
 # ---------------------------------------------------------------------------
@@ -688,14 +752,14 @@ class PythonHandler(Handler):
                 next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
             )
         if parsed.qualname is not None:
-            sym = idx.symbol(parsed.qualname)
-            if sym is None:
-                raise NotFound(
-                    f"symbol {parsed.qualname!r} not found in repo {parsed.alias!r}",
-                    next=f"search(kind='python', "
-                    f"q='{parsed.qualname.split('.')[-1]}', "
-                    f"scope={parsed.alias!r})",
-                )
+            sym = _lookup_symbol(
+                idx,
+                parsed.alias,
+                parsed.qualname,
+                fallback_next=f"search(kind='python', "
+                f"q='{parsed.qualname.split('.')[-1]}', "
+                f"scope={parsed.alias!r})",
+            )
         elif parsed.file is not None:
             mod = idx.file(parsed.file)
             if mod is None:
@@ -751,9 +815,14 @@ class PythonHandler(Handler):
         expected_root: str | None = None,
         page_size: int = 10,
         mode: str | None = None,
+        view: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Hybrid (lexical + semantic) search across symbols.
+
+        ``view`` is accepted only to refuse it well (gr567275): search
+        results have no view enum — ``mode=`` shapes the match and
+        ``get(kind='python', ...)`` owns the view reads.
 
         Default mode fuses the lexical score with embedding similarity of
         each symbol's qualname + signature + first docstring paragraph
@@ -787,6 +856,18 @@ class PythonHandler(Handler):
         - alias/path (`'myrepo/src/precis/registry.py'`) — restrict to
           one file
         """
+        if view is not None:
+            raise BadInput(
+                f"search(kind='python') takes no view={view!r} — view= is a "
+                "get() arg; mode= is the search-side selector",
+                next=[
+                    "drop view= and re-issue — mode='pattern'|'lexical'|"
+                    "'semantic'|'literal' shapes what matches",
+                    "the repo index/map: get(kind='python', id='<alias>', view='toc')",
+                    "one symbol's view: get(kind='python', id='<alias>::"
+                    "<qualname>', view='outline'|'source'|'callers'|...)",
+                ],
+            )
         q = fold_match_all_q(q)
         if q is None or not q.strip():
             raise BadInput(
@@ -1889,12 +1970,13 @@ class PythonHandler(Handler):
                     next=f"edit the symbol itself: "
                     f"id='{parsed.alias}::{parsed.qualname}'",
                 )
-            sym = idx.symbol(parsed.qualname)
-            if sym is None:
-                raise NotFound(
-                    f"symbol {parsed.qualname!r} not found in repo {parsed.alias!r}",
-                    next=f"search(kind='python', q='{parsed.qualname.split('.')[-1]}')",
-                )
+            sym = _lookup_symbol(
+                idx,
+                parsed.alias,
+                parsed.qualname,
+                fallback_next=f"search(kind='python', "
+                f"q='{parsed.qualname.split('.')[-1]}')",
+            )
             mod = idx.file(sym.file)
             assert mod is not None
             return root / sym.file, mod, (sym.start_line, sym.end_line)
@@ -1936,14 +2018,18 @@ class PythonHandler(Handler):
                 (parsed.start_line, end_line),
             )
         if parsed.block_selector is not None:
-            sym = _resolve_block_selector(mod, parsed.block_selector)
-            if sym is None:
+            block_sym = _resolve_block_selector(mod, parsed.block_selector)
+            if block_sym is None:
                 raise NotFound(
                     f"no symbol {parsed.block_selector!r} in {parsed.file}",
                     next=f"get(kind='python', id='{parsed.alias}/{parsed.file}', "
                     f"view='outline')",
                 )
-            return root / parsed.file, mod, (sym.start_line, sym.end_line)
+            return (
+                root / parsed.file,
+                mod,
+                (block_sym.start_line, block_sym.end_line),
+            )
 
         # No selector → whole-file replace.
         return root / parsed.file, mod, None
@@ -2326,12 +2412,12 @@ class PythonHandler(Handler):
                 f"not {parsed.alias!r}",
                 next="get(kind='python', id='ws-<slug>::<qualname>', view='placed')",
             )
-        sym = idx.symbol(parsed.qualname)
-        if sym is None:
-            raise NotFound(
-                f"symbol {parsed.qualname!r} not found in repo {parsed.alias!r}",
-                next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
-            )
+        sym = _lookup_symbol(
+            idx,
+            parsed.alias,
+            parsed.qualname,
+            fallback_next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
+        )
         if sym.kind == "module":
             raise BadInput(
                 f"view='placed' takes a function or class symbol, not "
@@ -2425,12 +2511,12 @@ class PythonHandler(Handler):
         """Note the addressed file/symbol so the detail block lists its hash."""
         mod = None
         if parsed.qualname is not None:
-            sym = idx.symbol(parsed.qualname)
-            if sym is None:
-                raise NotFound(
-                    f"symbol {parsed.qualname!r} not found in repo {parsed.alias!r}",
-                    next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
-                )
+            sym = _lookup_symbol(
+                idx,
+                parsed.alias,
+                parsed.qualname,
+                fallback_next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
+            )
             mod = idx.file(sym.file)
         elif parsed.file is not None:
             mod = idx.file(parsed.file)
@@ -2498,22 +2584,24 @@ class PythonHandler(Handler):
                 next=f"get(kind='python', id='{parsed.alias}::<full qualname>', "
                 "view='params')",
             )
-        raise NotFound(
-            f"symbol {qn!r} not found in repo {parsed.alias!r}",
-            next=f"search(kind='python', q='{qn.split('.')[-1]}', "
+        raise _symbol_not_found(
+            parsed.alias,
+            qn,
+            idx,
+            fallback_next=f"search(kind='python', q='{qn.split('.')[-1]}', "
             f"scope={parsed.alias!r})",
         )
 
     def _render_symbol(
         self, alias: str, qualname: str, idx, view: str | None
     ) -> Response:
-        sym = idx.symbol(qualname)
-        if sym is None:
-            raise NotFound(
-                f"symbol {qualname!r} not found in repo {alias!r}",
-                next=f"search(kind='python', q='{qualname.split('.')[-1]}', "
-                f"scope={alias!r})",
-            )
+        sym = _lookup_symbol(
+            idx,
+            alias,
+            qualname,
+            fallback_next=f"search(kind='python', q='{qualname.split('.')[-1]}', "
+            f"scope={alias!r})",
+        )
 
         mod = idx.file(sym.file)
         assert mod is not None
@@ -2579,13 +2667,13 @@ class PythonHandler(Handler):
                 f"args={{'max_results': {ptests.DEFAULT_LIMIT}}})",
             )
         if parsed.qualname is not None:
-            sym = idx.symbol(parsed.qualname)
-            if sym is None:
-                raise NotFound(
-                    f"symbol {parsed.qualname!r} not found in repo {parsed.alias!r}",
-                    next=f"search(kind='python', "
-                    f"q='{parsed.qualname.split('.')[-1]}', scope={parsed.alias!r})",
-                )
+            sym = _lookup_symbol(
+                idx,
+                parsed.alias,
+                parsed.qualname,
+                fallback_next=f"search(kind='python', "
+                f"q='{parsed.qualname.split('.')[-1]}', scope={parsed.alias!r})",
+            )
         elif parsed.file is not None:
             mod = idx.file(parsed.file)
             if mod is None:
@@ -2664,13 +2752,13 @@ class PythonHandler(Handler):
                     next=f"get(kind='python', id='{parsed.alias}::"
                     f"{parsed.qualname}', view='impact')",
                 )
-            sym = idx.symbol(parsed.qualname)
-            if sym is None:
-                raise NotFound(
-                    f"symbol {parsed.qualname!r} not found in repo {parsed.alias!r}",
-                    next=f"search(kind='python', "
-                    f"q='{parsed.qualname.split('.')[-1]}', scope={parsed.alias!r})",
-                )
+            sym = _lookup_symbol(
+                idx,
+                parsed.alias,
+                parsed.qualname,
+                fallback_next=f"search(kind='python', "
+                f"q='{parsed.qualname.split('.')[-1]}', scope={parsed.alias!r})",
+            )
             mod = idx.file(sym.file)
             assert mod is not None
             note_file(idx, mod)
@@ -2735,13 +2823,13 @@ class PythonHandler(Handler):
             )
         qn = parsed.qualname
         if view == "callers":
-            sym = idx.symbol(qn)
-            if sym is None:
-                raise NotFound(
-                    f"symbol {qn!r} not found in repo {parsed.alias!r}",
-                    next=f"search(kind='python', q='{qn.split('.')[-1]}', "
-                    f"scope={parsed.alias!r})",
-                )
+            sym = _lookup_symbol(
+                idx,
+                parsed.alias,
+                qn,
+                fallback_next=f"search(kind='python', q='{qn.split('.')[-1]}', "
+                f"scope={parsed.alias!r})",
+            )
             return Response(body=reverse.render_callers(parsed.alias, sym, idx))
         mod = idx.module(qn)
         if mod is None:

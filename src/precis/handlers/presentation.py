@@ -16,8 +16,8 @@ append-only. Runtime can refit the loaded slide snapshot after reserving
 hint bytes; only runtime applies the optional context cap, when folding
 is enabled. The overview shows stored PDF metadata; ``pdf_link`` shares
 the document-family signed download renderer in
-:mod:`precis.handlers._doc_pdf`. Stored tags appear on the overview and
-the dedicated ``tags`` view.
+:mod:`precis.handlers._doc_pdf`, ``meta`` dumps the ref's full ``meta``
+JSON, and ``tags`` lists the stored tags.
 
 Writes: ``put(id='<slug>', text='<slide body>', pos=N, ...)`` is
 the bridge for both human ingest (one call per slide while
@@ -130,7 +130,7 @@ class PresentationHandler(Handler):
         # renders every slide; ``bibtex`` / ``ris`` export the deck's
         # attribution for citing slides; ``links`` is the F8 graph view
         # (OPEN-ITEMS.md 🕸️ graph-completeness audit item 1).
-        return ["full", "bibtex", "ris", "links", "pdf_link", "tags"]
+        return ["full", "bibtex", "ris", "links", "pdf_link", "tags", "meta"]
 
     # ── get ─────────────────────────────────────────────────────────
 
@@ -158,6 +158,8 @@ class PresentationHandler(Handler):
             return Response(body=_format_pres_citation(ref, style=effective_view))
         if effective_view == "pdf_link":
             return render_pdf_link(self.store, ref)
+        if effective_view == "meta":
+            return self._render_meta(ref)
         if effective_view == "tags":
             handle = handle_registry.format_handle("pres", ref.id)
             return Response(body=f"# {handle} — tags\n{self._tags_line(ref.id)}")
@@ -170,7 +172,12 @@ class PresentationHandler(Handler):
         if effective_view is not None:
             raise Unsupported(
                 f"unknown pres view {effective_view!r}",
-                next="try '/full', '/bibtex', or '~N'",
+                options=self.accepted_views(id=slug),
+                next=(
+                    "view= for kind='pres' accepts: "
+                    f"{self.accepted_views(id=slug)}; omit view= for the "
+                    "overview, '~N' for one block, '/full' for the body"
+                ),
             )
         return self._render_overview(slug, ref)
 
@@ -644,6 +651,22 @@ class PresentationHandler(Handler):
     def _tags_line(self, ref_id: int) -> str:
         tags = ", ".join(str(tag) for tag in self.store.tags_for(ref_id))
         return f"tags: {tags or '(none)'}"
+
+    def _render_meta(self, ref: Any) -> Response:
+        """``view='meta'`` — the ref's full ``meta`` dict as JSON.
+
+        The overview surfaces only the attribution keys (authors /
+        venue / date); ingest-written keys like ``source_pdf`` /
+        ``slide_count`` / ``pdf_sha256`` live nowhere else readable
+        (gr563572 — callers guessed ``view='meta'`` for exactly this).
+        """
+        import json
+
+        handle = handle_registry.format_handle("pres", ref.id)
+        body = f"# {handle} — meta\n" + json.dumps(
+            ref.meta or {}, indent=2, sort_keys=True, default=str
+        )
+        return Response(body=body)
 
     def _render_list(self) -> Response:
         return render_slug_ref_list(

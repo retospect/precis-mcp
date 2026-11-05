@@ -330,6 +330,117 @@ def render_comment_view(
     return "\n\n".join(parts)
 
 
+def parse_comment_selectors(
+    *,
+    kind: str,
+    ref_id: int,
+    ords: list[int],
+    comment: Any = None,
+    comments: Any = None,
+    last: Any = None,
+) -> tuple[int | None, int | None, int | None, int | None]:
+    """Validate comment selectors → ``(only, last, lo, hi)``.
+
+    The ``view='comments'`` selector spellings (gr567276 — todo callers
+    reached for ``last``/``comment`` and got a bare args refusal):
+    ``comment`` is one comment number, ``comments`` a newest-K count or
+    an ``'A-B'`` ord window, ``last`` a newest-K count. ``ords`` is the
+    ref's sorted comment numbers, used to refuse a number that does
+    not exist instead of rendering an empty page.
+    """
+    view_call = f"get(kind={kind!r}, id={ref_id}, view='comments'"
+    if comment is not None and (comments is not None or last is not None):
+        raise BadInput(
+            "pass args={'comment': K} or args={'comments': K}/"
+            "args={'last': K}, not both",
+            next=f"{view_call}, args={{'comments': 5}})",
+        )
+    if comments is not None and last is not None:
+        raise BadInput(
+            "pass args={'comments': K} or args={'last': K}, not both — "
+            "they spell the same newest-K read",
+            next=f"{view_call}, args={{'comments': 5}})",
+        )
+    if comment is not None:
+        try:
+            number = int(comment)
+        except (TypeError, ValueError):
+            raise BadInput(
+                f"args['comment'] must be a comment number, got {comment!r}",
+                next=(
+                    f"comments on {kind} {ref_id}: {ords}"
+                    if ords
+                    else f"{kind} {ref_id} has no comments"
+                ),
+            ) from None
+        if number not in ords:
+            if not ords:
+                raise BadInput(
+                    f"{kind} {ref_id} has no comments (0 comments); "
+                    "stop requesting comment numbers",
+                    next=f"get(kind={kind!r}, id={ref_id}, view='full')",
+                )
+            raise BadInput(
+                f"{kind} {ref_id} has no comment {number}"
+                f" — it has {len(ords)} comments, valid: {ords[0]}..{ords[-1]}",
+                next=f"{view_call}, args={{'comment': {ords[-1]}}})",
+            )
+        return number, None, None, None
+    if comments is not None:
+        text = str(comments).strip()
+        lo_s, sep, hi_s = text.partition("-")
+        if sep and lo_s.isdigit() and (hi_s.isdigit() or hi_s == ""):
+            lo, hi = int(lo_s), int(hi_s) if hi_s else None
+            if lo < 1 or (hi is not None and hi < lo):
+                raise BadInput(
+                    "args['comments'] range must be 'A-B' with "
+                    f"1 <= A <= B, got {comments!r}",
+                    next=(
+                        f"comments on {kind} {ref_id}: {ords}"
+                        if ords
+                        else f"{kind} {ref_id} has no comments"
+                    ),
+                )
+            if not any(o >= lo and (hi is None or o <= hi) for o in ords):
+                raise BadInput(
+                    f"{kind} {ref_id} has no comments in range {text!r}",
+                    next=(
+                        f"comments on {kind} {ref_id}: {ords}"
+                        if ords
+                        else f"{kind} {ref_id} has no comments"
+                    ),
+                )
+            return None, None, lo, hi
+        try:
+            count = int(text)
+        except (TypeError, ValueError):
+            raise BadInput(
+                f"args['comments'] must be a count or 'A-B' range, got {comments!r}",
+                next=f"{view_call}, args={{'comments': 5}})",
+            ) from None
+        if count < 1:
+            raise BadInput(
+                f"args['comments'] must be >= 1, got {count}",
+                next=f"{view_call}, args={{'comments': 5}})",
+            )
+        return None, count, None, None
+    if last is not None:
+        try:
+            count = int(last)
+        except (TypeError, ValueError):
+            raise BadInput(
+                f"args['last'] must be a count, got {last!r}",
+                next=f"{view_call}, args={{'last': 5}})",
+            ) from None
+        if count < 1:
+            raise BadInput(
+                f"args['last'] must be >= 1, got {count}",
+                next=f"{view_call}, args={{'last': 5}})",
+            )
+        return None, count, None, None
+    return None, None, None, None
+
+
 def _insert_next(
     store: Any,
     ref_id: int,
