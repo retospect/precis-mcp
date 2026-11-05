@@ -8,11 +8,13 @@ that tmux only ever gets an argument list.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
 
@@ -65,6 +67,12 @@ elif cmd == "capture-pane":
     if not os.path.exists(p):
         sys.exit(1)
     sys.stdout.write(open(p, encoding="utf-8").read())
+elif cmd == "display-message":
+    t = target()
+    p = os.path.join(d, "facts-" + t)
+    sys.stdout.write(
+        open(p, encoding="utf-8").read() if os.path.exists(p) else "unknown\\t0\\n"
+    )
 elif cmd == "new-window" and "--" in argv:
     sys.exit(subprocess.run(argv[argv.index("--") + 1:]).returncode)
 """
@@ -1798,3 +1806,507 @@ def test_live_session_marker_matches_inflight() -> None:
     assert m._live_session(f"claude agent x (pid {os.getpid()})") == (
         f"live#{os.getpid()}"
     )
+
+
+# ── event-watch (td570414) ─────────────────────────────────────────
+#: A Devin pane dead on its quota banner, still on the default model
+#: (shape: tests/fixtures/panes/devin-quota.txt).
+DEVIN_QUOTA = (
+    "⏺ earlier output\n"
+    "▲ Quota exhausted\n"
+    "Your weekly usage quota has been exhausted.\n"
+    "──────────────── (bypass permissions on) ─\n"
+    "SWE-2                                     Context: 143k / 262k tokens (55%)\n"
+    "❭ \n"
+)
+#: The same pane after the model switch — no reflex left to run.
+DEVIN_QUOTA_HIGH = DEVIN_QUOTA.replace("SWE-2", "SWE-2 High")
+#: Quota banner with text parked in the input box: the send is refused.
+DEVIN_QUOTA_UNSENT = DEVIN_QUOTA.replace("❭ \n", "❭ half typed\n")
+#: A builder that hit its handoff ceiling and wrote DONE-HANDOFF.
+EW_HANDOFF = (
+    "⏺ wrote scratch/handoff.md\n⏺ DONE-HANDOFF\n────\n❯ \n────\n  92% ctx · opus\n"
+)
+#: An unhandled error — no reflex applies to a Traceback on a claude pane.
+EW_ERR = (
+    "⏺ blew up\nTraceback (most recent call last):\n────\n❯ \n────\n  40% ctx · opus\n"
+)
+_EW = (
+    "event-watch",
+    "--interval",
+    "0",
+    "--wait",
+    "0",
+    "--poll",
+    "0",
+    "--pause",
+    "0",
+    "--digest-sec",
+    "0",
+)
+
+
+def _ew_log(env: dict[str, str]) -> str:
+    p = Path(env["FLEET_STATE"]) / "event-watch.log"
+    return p.read_text(encoding="utf-8") if p.exists() else ""
+
+
+def _sent_texts(env: dict[str, str]) -> list[str]:
+    """Texts typed into boxes, in order (paste buffers and -l sends)."""
+    out = []
+    for c in _tmux_calls(env):
+        if c[0] == "set-buffer" or (c[0] == "send-keys" and "-l" in c):
+            out.append(c[-1])
+    return out
+
+
+def test_event_watch_quota_switches_model_and_resumes(env: dict[str, str]) -> None:
+    """The quota reflex fires once, logs, and prints nothing."""
+    _windows(env, {"devin-q": DEVIN_QUOTA})
+    proc = _run(env, *_EW, "q", "--ticks", "1")
+    assert proc.stdout == "", proc.stdout + proc.stderr
+    texts = _sent_texts(env)
+    assert texts[0] == "/model swe-2-high"
+    assert "Resume your batch" in texts[1]
+    log = _ew_log(env)
+    assert "quota" in log and "swe-2-high" in log
+    # Marker written: a second poll neither resends nor prints.
+    n = len(_sent_texts(env))
+    assert _run(env, *_EW, "q", "--ticks", "1").stdout == ""
+    assert len(_sent_texts(env)) == n
+
+
+def test_event_watch_quota_on_high_is_printed_not_sent(env: dict[str, str]) -> None:
+    """Already on swe-2-high: the reflex has nothing to do — the pane's
+    error becomes a coordinator event instead of a send."""
+    _windows(env, {"devin-q": DEVIN_QUOTA_HIGH})
+    out = _run(env, *_EW, "q", "--ticks", "2").stdout
+    lines = [ln for ln in out.splitlines() if ln]
+    assert len(lines) == 1 and "devin-q" in lines[0] and "swe-2-high" in lines[0]
+    assert "/model" not in _sent_texts(env)
+    assert _run(env, *_EW, "q", "--ticks", "1").stdout == ""
+
+
+def test_event_watch_quota_reflex_failure_prints(env: dict[str, str]) -> None:
+    """A reflex that cannot deliver is itself a judgment event."""
+    _windows(env, {"devin-q": DEVIN_QUOTA_UNSENT})
+    out = _run(env, *_EW, "q", "--ticks", "1").stdout
+    lines = [ln for ln in out.splitlines() if ln]
+    assert len(lines) == 1 and "reflex failed" in lines[0]
+    assert "quota" in lines[0]
+    assert "refused" in _ew_log(env)
+
+
+def test_event_watch_done_handoff_resumes_once(env: dict[str, str]) -> None:
+    """Bare DONE-HANDOFF → handoff-wait's /clear + resume, silent."""
+    _windows(env, {"claude-h": EW_HANDOFF})
+    proc = _run(env, *_EW, "h", "--ticks", "1")
+    assert proc.stdout == "", proc.stdout + proc.stderr
+    texts = _sent_texts(env)
+    assert texts[0] == "/clear"
+    assert "Resume your batch" in texts[1]
+    assert "handoff" in _ew_log(env)
+    # The marker suppresses a re-fire while the scrollback line persists.
+    n = len(_sent_texts(env))
+    assert _run(env, *_EW, "h", "--ticks", "1").stdout == ""
+    assert len(_sent_texts(env)) == n
+
+
+def test_event_watch_compacts_an_idle_hot_pane(env: dict[str, str]) -> None:
+    """ctx-guard's /compact as a reflex: once per episode, re-armed below
+    half the trigger, never printed."""
+    _windows(env, {"devin-c": DEVIN_CTX76})
+    proc = _run(env, *_EW, "c", "--ticks", "1")
+    assert proc.stdout == "", proc.stdout + proc.stderr
+    assert "/compact" in _sent_texts(env)
+    marker = Path(env["FLEET_STATE"]) / "event-watch" / "compact-c"
+    assert marker.exists()
+    n = len(_sent_texts(env))
+    assert _run(env, *_EW, "c", "--ticks", "1").stdout == ""
+    assert len(_sent_texts(env)) == n
+    # Below re-arm the marker clears; the next episode fires again.
+    d = Path(env["FAKE_TMUX_DIR"])
+    (d / "pane-devin-c.txt").write_text(DEVIN_COOL, encoding="utf-8")
+    assert _run(env, *_EW, "c", "--ticks", "1").stdout == ""
+    assert not marker.exists()
+    (d / "pane-devin-c.txt").write_text(DEVIN_CTX76, encoding="utf-8")
+    assert _run(env, *_EW, "c", "--ticks", "1").stdout == ""
+    assert marker.exists()
+
+
+def test_event_watch_never_compacts_a_busy_pane(env: dict[str, str]) -> None:
+    """gr515153: never /compact mid-turn — a busy pane is left alone."""
+    _windows(env, {"claude-c": CLAUDE_BUSY_TOK240})
+    proc = _run(env, *_EW, "c", "--ticks", "1")
+    assert proc.stdout == ""
+    assert "/compact" not in _sent_texts(env)
+
+
+def test_event_watch_prompt_gone_done_each_print_once(env: dict[str, str]) -> None:
+    _windows(env, {"claude-p": PROMPT, "devin-d": IDLE})
+    d = Path(env["FAKE_TMUX_DIR"])
+    (d / "facts-devin-d").write_text("zsh\t1\n", encoding="utf-8")  # dead
+    out = _run(env, *_EW, "p", "d", "ghost", "--ticks", "1").stdout
+    lines = out.splitlines()
+    assert any("claude-p" in ln and "prompt" in ln for ln in lines)
+    assert any(ln.endswith("ghost gone") for ln in lines)
+    assert any("devin-d" in ln and "done" in ln for ln in lines)
+    # No repeats on the next run — each terminal event prints once.
+    assert _run(env, *_EW, "p", "d", "ghost", "--ticks", "1").stdout == ""
+
+
+def test_event_watch_frozen_prints_once(env: dict[str, str]) -> None:
+    _windows(env, {"claude-z": IDLE})
+    assert _run(env, *_EW, "z", "--ticks", "1").stdout == ""
+    # Backdate the tail-age marker past the frozen threshold.
+    tfile = Path(env["FLEET_STATE"]) / "event-watch" / "z.t"
+    tfile.write_text("0", encoding="utf-8")
+    out = _run(env, *_EW, "z", "--ticks", "1").stdout
+    assert "claude-z" in out and "frozen" in out
+    assert _run(env, *_EW, "z", "--ticks", "1").stdout == ""
+
+
+def test_event_watch_error_prints_after_settle_once(env: dict[str, str]) -> None:
+    """An unhandled error must hold --settle polls, then prints once."""
+    _windows(env, {"claude-e": EW_ERR})
+    assert _run(env, *_EW, "e", "--ticks", "1").stdout == ""
+    out = _run(env, *_EW, "e", "--ticks", "2").stdout
+    lines = [ln for ln in out.splitlines() if ln]
+    assert len(lines) == 1 and "claude-e" in lines[0] and "error" in lines[0]
+    assert _run(env, *_EW, "e", "--ticks", "1").stdout == ""
+
+
+def test_event_watch_board_alerts_for_watched_trees_only(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    board = tmp_path / "board.log"
+    board.write_text(
+        "2026-11-05T01:00:00Z\twatch1\tdone watch1 at abc1234: shipped\n"
+        "2026-11-05T01:01:00Z\tother\tdone other at def5678: shipped\n"
+        "2026-11-05T01:02:00Z\twatch1\twaiting on the gate\n"
+        "2026-11-05T01:03:00Z\twatch2\tred gate red: flake\n"
+        "2026-11-05T01:04:00Z\twatch2\tblocked parked until ruling\n",
+        encoding="utf-8",
+    )
+    env = {**env, "PRECIS_BOARD": str(board)}
+    _windows(env, {"claude-watch1": IDLE, "devin-watch2": IDLE})
+    # First run only seeds the byte cursor at EOF — the lines above are
+    # history and print nothing.
+    assert _run(env, *_EW, "watch1", "watch2", "--ticks", "1").stdout == ""
+    with board.open("a", encoding="utf-8") as fh:
+        fh.write(
+            "2026-11-05T01:00:00Z\twatch1\tdone watch1 at abc1234: shipped\n"
+            "2026-11-05T01:01:00Z\tother\tdone other at def5678: shipped\n"
+            "2026-11-05T01:02:00Z\twatch1\twaiting on the gate\n"
+            "2026-11-05T01:03:00Z\twatch2\tred gate red: flake\n"
+            "2026-11-05T01:04:00Z\twatch2\tblocked parked until ruling\n"
+        )
+    out = _run(env, *_EW, "watch1", "watch2", "--ticks", "1").stdout
+    assert "board: done watch1 at abc1234" in out
+    assert "board: red gate red" in out and "board: blocked parked" in out
+    assert "other" not in out and "waiting" not in out
+    # The reader cursor advanced: nothing is re-printed.
+    assert _run(env, *_EW, "watch1", "watch2", "--ticks", "1").stdout == ""
+
+
+def test_event_watch_board_held_lines_survive_a_restart(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """r1: a board line held when the watcher died is re-queued from
+    board.pending on the next run — printed once, then dropped."""
+    board = tmp_path / "board.log"
+    board.write_text("", encoding="utf-8")
+    env = {**env, "PRECIS_BOARD": str(board)}
+    _windows(env, {"claude-w1": IDLE})
+    pend = Path(env["FLEET_STATE"]) / "event-watch" / "board.pending"
+    pend.parent.mkdir(parents=True, exist_ok=True)
+    # A line that was queued but never printed when the last run died.
+    pend.write_text(
+        "2026-11-05T01:00:00Z\tw1\tdone w1 at abc1234: shipped\n",
+        encoding="utf-8",
+    )
+    out = _run(env, *_EW, "w1", "--ticks", "1").stdout
+    lines = [ln for ln in out.splitlines() if ln]
+    assert lines == [ln for ln in lines if "board: done w1 at abc1234" in ln]
+    assert "done w1 at abc1234" not in pend.read_text(encoding="utf-8")
+    # And it does not print a second time.
+    assert _run(env, *_EW, "w1", "--ticks", "1").stdout == ""
+
+
+def test_event_watch_board_first_run_does_not_replay_history(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """r1: the board cursor seeds at EOF — the first run sees no history."""
+    board = tmp_path / "board.log"
+    board.write_text(
+        "2026-11-05T01:00:00Z\tw1\tdone w1 at old0000: ancient\n",
+        encoding="utf-8",
+    )
+    env = {**env, "PRECIS_BOARD": str(board)}
+    _windows(env, {"claude-w1": IDLE})
+    assert _run(env, *_EW, "w1", "--ticks", "1").stdout == ""
+    with board.open("a", encoding="utf-8") as fh:
+        fh.write("2026-11-05T02:00:00Z\tw1\tred gate red now\n")
+    out = _run(env, *_EW, "w1", "--ticks", "1").stdout
+    assert "board: red gate red now" in out and "ancient" not in out
+
+
+def test_event_watch_board_holds_a_line_until_its_window_exists(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """r1: an alert line for a tree with no window is held pending and
+    prints once the window appears — never dropped."""
+    board = tmp_path / "board.log"
+    board.write_text("", encoding="utf-8")
+    env = {**env, "PRECIS_BOARD": str(board)}
+    _windows(env, {"claude-other": IDLE})
+    # Seed, then a done line arrives for a tree with no window yet. The
+    # stamp is fresh — a stale one is a never-match and ages out.
+    assert _run(env, *_EW, "--ticks", "1").stdout == ""
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    board.write_text(
+        f"{now}\tnewt\tdone newt at abc1234: shipped\n",
+        encoding="utf-8",
+    )
+    assert _run(env, *_EW, "--ticks", "1").stdout == ""
+    _windows(env, {"claude-other": IDLE, "devin-newt": IDLE})
+    out = _run(env, *_EW, "--ticks", "1").stdout
+    assert "board: done newt at abc1234" in out
+
+
+def test_event_watch_idle_resets_the_error_dedup(env: dict[str, str]) -> None:
+    """r1: a recovered pane can report a new episode — the idle poll
+    between two error runs resets the marker, so each prints."""
+    _windows(env, {"claude-e": ""})
+    _seq(env, "claude-e", IDLE, EW_ERR, EW_ERR, IDLE, EW_ERR, EW_ERR)
+    out = _run(env, *_EW, "e", "--ticks", "6").stdout
+    lines = [ln for ln in out.splitlines() if ln]
+    assert len(lines) == 2 and all("error" in ln for ln in lines)
+
+
+def test_event_watch_quota_still_errors_after_a_switch(
+    env: dict[str, str],
+) -> None:
+    """r1: a fresh quota marker only caps resends — an error that has not
+    cleared still counts toward --settle and prints."""
+    _windows(env, {"devin-q": DEVIN_QUOTA})
+    assert _run(env, *_EW, "q", "--ticks", "1").stdout == ""  # reflex sent
+    n = len(_sent_texts(env))
+    out = _run(env, *_EW, "q", "--ticks", "2").stdout
+    lines = [ln for ln in out.splitlines() if ln]
+    assert len(lines) == 1 and "error" in lines[0] and "quota" in lines[0]
+    assert len(_sent_texts(env)) == n  # nothing resent either
+
+
+def test_event_watch_quota_retries_the_resume_line(env: dict[str, str]) -> None:
+    """r1: /model sent, resume refused — the marker records the stage and
+    the next poll retries the resume, not the /model."""
+    clean = "⏺ ok\nSWE-2    Context: 20k / 262k tokens (8%)\n❭ \n"
+    _windows(env, {"devin-q": ""})
+    _seq(
+        env,
+        "devin-q",
+        DEVIN_QUOTA,
+        DEVIN_QUOTA,
+        clean,
+        DEVIN_QUOTA_UNSENT,
+        DEVIN_QUOTA,
+        clean,
+        clean,
+    )
+    out = _run(env, *_EW, "q", "--ticks", "1").stdout
+    assert "reflex failed" in out
+    assert _sent_texts(env) == ["/model swe-2-high"]
+    out = _run(env, *_EW, "q", "--ticks", "1").stdout
+    texts = _sent_texts(env)
+    assert texts.count("/model swe-2-high") == 1
+    assert any("Resume your batch" in t for t in texts)
+
+
+def test_event_watch_refusal_logs_once_per_reason(env: dict[str, str]) -> None:
+    """r1: a refused reflex retried every poll logs once per distinct
+    reason, not once per poll."""
+    hot_unsent = DEVIN_CTX76.replace("❭ \n", "❭ half typed\n")
+    _windows(env, {"devin-c": ""})
+    _seq(env, "devin-c", hot_unsent, hot_unsent, hot_unsent)
+    out = _run(env, *_EW, "c", "--ticks", "3").stdout
+    assert "reflex failed" in out
+    assert _ew_log(env).count("compact") == 1
+
+
+def test_event_watch_log_rotates_at_the_cap(env: dict[str, str]) -> None:
+    st = Path(env["FLEET_STATE"])
+    st.mkdir(parents=True, exist_ok=True)
+    (st / "event-watch.log").write_text("x" * 600_000, encoding="utf-8")
+    hot_unsent = DEVIN_CTX76.replace("❭ \n", "❭ half typed\n")
+    _windows(env, {"devin-c": ""})
+    _seq(env, "devin-c", hot_unsent, hot_unsent)
+    _run(env, *_EW, "c", "--ticks", "1")
+    assert (st / "event-watch.log.1").exists()
+    assert len(_ew_log(env)) < 600_000
+
+
+def test_event_watch_calm_drops_a_held_error_line(env: dict[str, str]) -> None:
+    """r1: an error that flapped back before the digest window let it
+    print is dropped, like stuck-watch's held lines."""
+    _windows(env, {"claude-e": ""})
+    _seq(env, "claude-e", EW_ERR, EW_ERR, IDLE)
+    out = _run(env, *_EW, "e", "--ticks", "3", "--digest-sec", "300").stdout
+    assert out == ""
+
+
+def test_event_watch_window_gone_between_list_and_capture(
+    env: dict[str, str],
+) -> None:
+    """r1: a window listed this poll but gone at capture reports gone."""
+    _windows(env, {"claude-v": IDLE})
+    (Path(env["FAKE_TMUX_DIR"]) / "pane-claude-v.txt").unlink()
+    out = _run(env, *_EW, "v", "--ticks", "1").stdout
+    assert "claude-v" in out and "gone" in out
+
+
+def test_event_watch_compact_uses_the_token_trigger_when_set(
+    env: dict[str, str],
+) -> None:
+    """r1: with --tokens the token figure alone decides; the % trigger
+    applies only when --tokens is absent (ctx-guard's rule)."""
+    hot_tok = "⏺ ok\nSWE-2    Context: 200k / 262k tokens (8%)\n❭ \n"
+    _windows(env, {"devin-c": hot_tok})
+    # 8% under the ceiling: no compact without --tokens.
+    assert _run(env, *_EW, "c", "--ticks", "1").stdout == ""
+    assert "/compact" not in _sent_texts(env)
+    # 200k over the token threshold: compact even at 8%.
+    out = _run(env, *_EW, "c", "--ticks", "1", "--tokens", "120k")
+    assert out.stdout == "" and "/compact" in _sent_texts(env)
+
+
+def test_event_watch_board_clear_rereads_from_the_top(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """r2: a truncated board (scripts/board clear) resets the byte cursor
+    to 0 — every new line after it is seen."""
+    board = tmp_path / "board.log"
+    board.write_text(
+        "2026-11-05T01:00:00Z\tw1\tdone w1 at aaa0000: old\n" * 10,
+        encoding="utf-8",
+    )
+    env = {**env, "PRECIS_BOARD": str(board)}
+    _windows(env, {"claude-w1": IDLE})
+    _run(env, *_EW, "w1", "--ticks", "1")  # seeds the cursor at EOF
+    board.write_text(  # smaller than before: a truncation
+        "2026-11-05T02:00:00Z\tw1\tdone w1 at b1: one\n"
+        "2026-11-05T02:01:00Z\tw1\tred r2 two\n"
+        "2026-11-05T02:02:00Z\tw1\tblocked b3 three\n",
+        encoding="utf-8",
+    )
+    out = _run(env, *_EW, "w1", "--ticks", "1").stdout
+    assert "one" in out and "two" in out and "three" in out
+
+
+def test_event_watch_explicit_names_ignore_other_seen_trees(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """r2: with NAMES only those posters match — a done line from a
+    window the watcher saw but did not name is not ours."""
+    board = tmp_path / "board.log"
+    board.write_text("", encoding="utf-8")
+    env = {**env, "PRECIS_BOARD": str(board)}
+    _windows(env, {"claude-foo": IDLE, "claude-bar": IDLE})
+    assert _run(env, *_EW, "foo", "--ticks", "1").stdout == ""
+    board.write_text(
+        "2026-11-05T02:00:00Z\tbar\tdone bar at abc1234: shipped\n",
+        encoding="utf-8",
+    )
+    out = _run(env, *_EW, "foo", "--ticks", "1").stdout
+    assert "board:" not in out
+
+
+def test_event_watch_board_queued_twice_prints_once(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """r2: a kill between pending-save and pos-write re-reads the same
+    bytes — the line is already pending and still prints exactly once."""
+    line = "2026-11-05T01:00:00Z\tw1\tdone w1 at abc1234: shipped\n"
+    board = tmp_path / "board.log"
+    board.write_text(line, encoding="utf-8")
+    env = {**env, "PRECIS_BOARD": str(board)}
+    _windows(env, {"claude-w1": IDLE})
+    st = Path(env["FLEET_STATE"]) / "event-watch"
+    st.mkdir(parents=True, exist_ok=True)
+    # The between state: pending holds the line, pos is still behind it.
+    (st / "board.pos").write_text("0", encoding="utf-8")
+    (st / "board.pending").write_text(line, encoding="utf-8")
+    out = _run(env, *_EW, "w1", "--ticks", "1").stdout
+    assert len([ln for ln in out.splitlines() if "abc1234" in ln]) == 1
+    assert _run(env, *_EW, "w1", "--ticks", "1").stdout == ""
+
+
+def test_event_watch_pending_ages_out_and_logs(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """r2: a held line whose poster never surfaces is dropped at 30 min,
+    with a note on the reflex log."""
+    board = tmp_path / "board.log"
+    board.write_text("", encoding="utf-8")
+    env = {**env, "PRECIS_BOARD": str(board)}
+    _windows(env, {"claude-w1": IDLE})
+    pend = Path(env["FLEET_STATE"]) / "event-watch" / "board.pending"
+    pend.parent.mkdir(parents=True, exist_ok=True)
+    pend.write_text(
+        "2020-01-01T00:00:00Z\tghost\tdone ghost at abc1234: shipped\n",
+        encoding="utf-8",
+    )
+    assert _run(env, *_EW, "--ticks", "1").stdout == ""
+    assert "ghost" not in pend.read_text(encoding="utf-8")
+    assert "aged out" in _ew_log(env)
+
+
+def test_event_watch_pending_caps_at_200(env: dict[str, str], tmp_path: Path) -> None:
+    """r2: held lines are capped at 200 — the oldest drop first, logged."""
+    board = tmp_path / "board.log"
+    board.write_text("", encoding="utf-8")
+    env = {**env, "PRECIS_BOARD": str(board)}
+    _windows(env, {"claude-w1": IDLE})
+    pend = Path(env["FLEET_STATE"]) / "event-watch" / "board.pending"
+    pend.parent.mkdir(parents=True, exist_ok=True)
+    pend.write_text(
+        "".join(
+            f"2099-01-01T00:00:00Z\tghost-{i}\tdone x at {i}\n" for i in range(210)
+        ),
+        encoding="utf-8",
+    )
+    _run(env, *_EW, "--ticks", "1")
+    kept = pend.read_text(encoding="utf-8").splitlines()
+    assert len(kept) == 200
+    assert kept[0].split("\t")[1] == "ghost-10"
+    assert "over cap" in _ew_log(env)
+
+
+def test_event_watch_second_watcher_refuses(env: dict[str, str]) -> None:
+    """r2: one watcher per state dir — a second exits with a message."""
+    _windows(env, {"claude-w1": IDLE})
+    lock = Path(env["FLEET_STATE"]) / "event-watch.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        proc = _run(env, *_EW, "w1", "--ticks", "1")
+        assert proc.returncode != 0
+        assert "another watcher" in proc.stderr + proc.stdout
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    assert _run(env, *_EW, "w1", "--ticks", "1").returncode == 0
+
+
+def test_event_watch_quota_send_poll_does_not_count(env: dict[str, str]) -> None:
+    """r2: the poll that sent the reflex is not counted — 'uncleared
+    after 2 polls' means two polls after the send."""
+    _windows(env, {"devin-q": DEVIN_QUOTA})
+    # Poll 1 sends the reflex (count 0); poll 2 is the first counted one.
+    assert _run(env, *_EW, "q", "--ticks", "2").stdout == ""
+    assert "/model swe-2-high" in _sent_texts(env)
+    # Two counted polls in a run — the uncleared error prints on the
+    # second (the count is in-memory per watcher).
+    out = _run(env, *_EW, "q", "--ticks", "2").stdout
+    assert "error" in out and "quota" in out

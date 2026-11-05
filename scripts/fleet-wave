@@ -30,6 +30,12 @@ The thread-session fleet (one window per roadmap thread) is
     fleet-wave stuck-watch [NAME...]    emit on prompt / quiet / done / gone
                                         (done carries the finish line, so it
                                         also covers watch-done); batched
+    fleet-wave event-watch [NAME...]    board + pane events: the script runs
+                                        reflexes for routine cases (quota →
+                                        /model swe-2-high, DONE-HANDOFF →
+                                        /clear + resume, idle hot pane →
+                                        /compact) and prints only what needs
+                                        the coordinator's judgment
     fleet-wave ctx-guard [NAME...]      send the WIP+handoff instruction once
                                         when a pane's ctx hits --ceiling
                                         (default 70%), re-arm below --rearm;
@@ -103,6 +109,27 @@ full context (gr515152: 70% of GRIPE_FIX's Opus calls). So
 must hold ``--settle`` polls, a quiet pane repeats every ``--requiet-min``
 (not every ten minutes), and non-urgent lines wait up to ``--digest-sec``
 to leave in one write; only a permission prompt flushes at once.
+
+``event-watch`` (td570414) is the reflexed form: where ``stuck-watch``
+reports every changed state for the coordinator to act on, ``event-watch``
+handles the routine ones itself and logs them to
+``$FLEET_STATE/event-watch.log`` — a devin pane dead on a quota-exhausted
+banner gets ``/model swe-2-high`` plus the resume line (once per pane per
+``--cooldown-min``, default 30; a pane already on swe-2-high is printed
+for judgment instead), a bare DONE-HANDOFF gets handoff-wait's ``/clear``
++ resume, and an idle pane over the ctx threshold (``--ceiling`` % or
+``--tokens`` tokens — ctx-guard's rules: never mid-turn, never under a
+live subagent task) gets ``/compact``. Only judgment events print: board
+done/red/blocked/wedged lines from the watched trees (the watcher's own
+``board.pos`` byte cursor — seeded at EOF on the first run, no history
+replay — plus ``board.pending`` for alert lines not yet printed or from
+a tree whose window is not up yet; a line leaves pending only by
+printing), a permission ``prompt``, an ``error`` the reflexes did not
+clear within ``--settle`` polls, ``frozen``, ``gone``, a dead agent
+(``done``) and a reflex that failed; lines batch up to ``--digest-sec``
+(default 30 s). ``--triage`` is the reserved hook for a cheap-model first
+pass (e.g. haiku) that would vet borderline lines before they print —
+not implemented.
 
 Launch tiers are authority v2's R and W (.claude/fleet/authority.md);
 ``readonly`` and ``qland`` are aliases for R and W. Launch creates the
@@ -185,6 +212,7 @@ Configuration (env, or the matching flag before the subcommand):
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import itertools
 import os
@@ -206,12 +234,17 @@ from fleet_panes import (
     ANSI_RE,
     BUSY_RE,
     LAUNCH_PERMISSION_MODE,
+    PaneReport,
     compacting,
     ctx_percent,
     ctx_tokens,
+    detect_agent,
+    devin_model,
     dialog_command,
     dialog_type,
     nonempty_tail,
+    pane_report,
+    quota_banner,
     unsent_input,
 )
 
@@ -307,6 +340,23 @@ class Fleet:
 
     def wave_windows(self) -> list[str]:
         return [w for w in self.windows() if w.startswith(PREFIXES)]
+
+    def pane_facts(self, win: str) -> tuple[str, bool]:
+        """``(pane_current_command, pane_dead)`` for a window.
+
+        ``("", False)`` when tmux cannot say — the caller then treats the
+        pane as alive and falls back to the window name for the agent.
+        """
+        out = self.tmux(
+            "display-message",
+            "-p",
+            "-t",
+            self.target(win),
+            "#{pane_current_command}\t#{pane_dead}",
+            check=False,
+        )
+        cmd, _, dead = out.partition("\t")
+        return cmd.strip(), dead.strip() == "1"
 
 
 def git(*argv: str, cwd: Path | None = None) -> str:
@@ -1549,9 +1599,7 @@ def cmd_stuck_watch(f: Fleet, a: argparse.Namespace) -> int:
         names = a.names or [w.split("-", 1)[1] for w in f.wave_windows()]
         for name in names:
             win = f.resolve(name)
-            key, text = _stuck_state(
-                f, name, win, a.quiet_min * 60, a.requiet_min * 60
-            )
+            key, text = _stuck_state(f, name, win, a.quiet_min * 60, a.requiet_min * 60)
             sfile = st_dir / f"{name}.st"
             old = sfile.read_text(encoding="utf-8") if sfile.exists() else ""
             if key == old:
@@ -1694,9 +1742,7 @@ def cmd_ctx_guard(f: Fleet, a: argparse.Namespace) -> int:
                     outcome = f"sent {what}, UNVERIFIED ({note})"
                 else:
                     outcome = f"send refused ({note})"
-                level = (
-                    f"{fill / 1000:g}k tokens" if a.tokens else f"{fill}%"
-                )
+                level = f"{fill / 1000:g}k tokens" if a.tokens else f"{fill}%"
                 # A refusal retries every poll; say it once per distinct
                 # reason, not once per minute (gr515152).
                 if rc in (0, 4) or said.get(name) != outcome:
@@ -1712,6 +1758,623 @@ def cmd_ctx_guard(f: Fleet, a: argparse.Namespace) -> int:
                     "HANDOFF — send-line refuses new instructions",
                     flush=True,
                 )
+    return 0
+
+
+# --- event-watch (td570414) ---------------------------------------------------
+#
+# The reflexed watcher: routine pane events are handled by the script and
+# logged to $FLEET_STATE/event-watch.log; only what needs the
+# coordinator's judgment reaches stdout (and a Monitor wake-up).
+
+#: Board states that always need judgment. Routine ones (landed, green,
+#: waiting) stay silent — the coordinator already reads the board each
+#: sweep. ``wedged`` rides with ``red``: a wedged builder is never routine.
+_EW_ALERT_STATES = frozenset({"done", "red", "blocked", "wedged"})
+
+#: Lines hashed for the frozen detector (same tail shape as
+#: scripts/fleet-panes' FROZEN check).
+_EW_TAIL_LINES = 12
+
+
+def _resolve_in(wins: list[str], name: str) -> str | None:
+    """``Fleet.resolve`` against an already-fetched window list."""
+    if name in wins:
+        return name
+    return next((p + name for p in PREFIXES if p + name in wins), None)
+
+
+#: The reflex log is rotated once past this size (one .1 generation).
+_EW_LOG_MAX = 512_000
+
+
+def _ew_log(
+    f: Fleet,
+    said: dict[tuple[str, str], str],
+    name: str,
+    reflex: str,
+    detail: str,
+) -> None:
+    """One reflex action on the event-watch log — never on stdout, and
+    only when the reason changed: a refused reflex retries every poll
+    (ctx-guard's once-per-distinct-reason rule)."""
+    if said.get((name, reflex)) == detail:
+        return
+    said[(name, reflex)] = detail
+    path = f.state / "event-watch.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if path.stat().st_size > _EW_LOG_MAX:
+            path.replace(path.with_name("event-watch.log.1"))
+    except OSError:
+        pass
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(f"{utc_stamp()}\t{name}\t{reflex}\t{_tsv(detail)}\n")
+
+
+def _ew_mark_fresh(path: Path, cool_s: float) -> bool:
+    """True while a per-pane reflex marker is younger than ``cool_s``."""
+    try:
+        stamp = path.read_text(encoding="utf-8").split()[-1]
+        return time.time() - float(stamp) < cool_s
+    except (OSError, ValueError, IndexError):
+        return False
+
+
+def _ew_mark_write(path: Path, stage: str) -> None:
+    path.write_text(f"{stage} {int(time.time())}\n", encoding="utf-8")
+
+
+def _ew_emit(
+    name: str,
+    win: str | None,
+    st_dir: Path,
+    digest: _Digest,
+    key: str,
+    text: str,
+    *,
+    urgent: bool = False,
+) -> None:
+    """Queue the pane's line for the batch. The ``<name>.st`` marker
+    dedupes an unchanged event across polls and across restarts — the
+    commit lands only once the line is actually out."""
+    stfile = st_dir / f"{name}.st"
+    old = stfile.read_text(encoding="utf-8").strip() if stfile.exists() else ""
+    if key == old:
+        return
+    digest.add(
+        name,
+        f"{utc_stamp()} {win or name} {text}",
+        urgent,
+        lambda s=stfile, k=key: s.write_text(k + "\n", encoding="utf-8"),
+    )
+
+
+def _ew_calm(name: str, st_dir: Path, digest: _Digest) -> None:
+    """No event this poll: drop a held line whose state flapped back
+    before it printed (stuck-watch's rule) and reset the dedup key so the
+    next episode fires."""
+    digest.drop(name)
+    stfile = st_dir / f"{name}.st"
+    if stfile.exists():
+        stfile.write_text("ok\n", encoding="utf-8")
+
+
+# --- event-watch board source -------------------------------------------------
+# The watcher's own byte cursor plus a pending file — `board read --new`
+# advances on read, which loses held lines on a restart inside the digest
+# window.
+
+
+def _ew_board_path(f: Fleet) -> Path:
+    """The board log — PRECIS_BOARD (tests), else the shared
+    ``.claude/fleet/board.log`` of the main checkout, resolved the way
+    scripts/board resolves it."""
+    override = os.environ.get("PRECIS_BOARD", "").strip()
+    return Path(override) if override else f.main / ".claude" / "fleet" / "board.log"
+
+
+def _ew_board_new(f: Fleet, st_dir: Path) -> tuple[list[str], int | None]:
+    """New whole board lines plus the offset they end at — ``board.pos``
+    is the caller's to write *after* ``board.pending`` is saved, so a
+    kill between the two cannot lose a line (None = board unreadable,
+    nothing to write).
+
+    The cursor is seeded at EOF on the first run (no history replay),
+    reset to 0 on truncation (``scripts/board clear`` — board's own rule)
+    and skipped to the next newline when it lands mid-line.
+    """
+    path = _ew_board_path(f)
+    posfile = st_dir / "board.pos"
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return [], None
+    try:
+        pos = int(posfile.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        pos = size
+    if pos > size:
+        pos = 0
+    with path.open("rb") as fh:
+        if pos:
+            fh.seek(pos - 1)
+            if fh.read(1) != b"\n":  # mid-line offset: skip to the next \n
+                fh.seek(pos)
+                nl = fh.read().find(b"\n")
+                pos = size if nl < 0 else pos + nl + 1
+        fh.seek(pos)
+        data = fh.read()
+    cut = data.rfind(b"\n") + 1  # a partial tail line waits for next poll
+    return data[:cut].decode("utf-8", "replace").splitlines(), pos + cut
+
+
+#: Held board lines age out after this many seconds or past this many
+#: lines, whichever comes first — a poster that never surfaces is not
+#: hoarded forever.
+_EW_PENDING_AGE = 30 * 60
+_EW_PENDING_MAX = 200
+
+
+def _ew_pending_prune(
+    f: Fleet,
+    said: dict[tuple[str, str], str],
+    keep: list[str],
+) -> list[str]:
+    """Drop held lines that will never match — older than their own
+    timestamp plus ``_EW_PENDING_AGE``, or the oldest past the
+    ``_EW_PENDING_MAX`` cap. Each drop is one line on the reflex log."""
+    now = time.time()
+    out = []
+    for ln in keep:
+        try:
+            ts = datetime.fromisoformat(
+                ln.partition("\t")[0].replace("Z", "+00:00")
+            ).timestamp()
+            old = now - ts > _EW_PENDING_AGE
+        except ValueError:
+            old = False
+        if old:
+            _ew_log(f, said, "board", "pending", f"aged out: {ln[:80]}")
+        else:
+            out.append(ln)
+    for ln in out[:-_EW_PENDING_MAX] if len(out) > _EW_PENDING_MAX else []:
+        _ew_log(f, said, "board", "pending", f"over cap: {ln[:80]}")
+    return out[-_EW_PENDING_MAX:]
+
+
+def _ew_pending(st_dir: Path) -> list[str]:
+    try:
+        return [
+            ln
+            for ln in (st_dir / "board.pending")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if ln.strip()
+        ]
+    except OSError:
+        return []
+
+
+def _ew_pending_save(st_dir: Path, lines: list[str]) -> None:
+    (st_dir / "board.pending").write_text(
+        "".join(ln + "\n" for ln in lines), encoding="utf-8"
+    )
+
+
+def _ew_pending_drop(st_dir: Path, line: str) -> None:
+    """The digest commit for a board line: it leaves pending only by
+    actually printing."""
+    _ew_pending_save(st_dir, [ln for ln in _ew_pending(st_dir) if ln != line])
+
+
+def _ew_seen(st_dir: Path, bare: set[str]) -> set[str]:
+    """Bare names a board poster can mean — every wave window seen while
+    this watcher runs (a window that died keeps its board lines watched:
+    its done/red is exactly what must not drop)."""
+    path = st_dir / "seen.txt"
+    try:
+        seen = set(path.read_text(encoding="utf-8").split())
+    except OSError:
+        seen = set()
+    if bare - seen:
+        seen |= bare
+        path.write_text(" ".join(sorted(seen)) + "\n", encoding="utf-8")
+    return seen
+
+
+def _ew_bare(poster: str) -> str:
+    """A board poster's wave name: ``claude-x``/``devin-x``/``codex-x``
+    strip to the bare tree name."""
+    for p in PREFIXES:
+        if poster.startswith(p):
+            return poster[len(p) :]
+    return poster
+
+
+def _ew_board_poll(
+    f: Fleet,
+    st_dir: Path,
+    watched: list[str],
+    auto: bool,
+    bare_wins: set[str],
+    digest: _Digest,
+    said: dict[tuple[str, str], str],
+) -> None:
+    """One board pass: consume new lines, queue alert lines from watched
+    trees for the batch, hold the rest pending.
+
+    With explicit NAMES only those posters match; auto mode matches every
+    window the watcher has ever seen. Pending is saved before ``pos`` so
+    a kill between the two re-reads the same bytes — deduped here — and
+    a line still prints exactly once.
+    """
+    lines, new_pos = _ew_board_new(f, st_dir)
+    known = _ew_seen(st_dir, bare_wins) if auto else set(watched)
+    queue, keep, seen_ln = [], [], set()
+    for ln in _ew_pending(st_dir) + lines:
+        if ln in seen_ln:
+            continue
+        seen_ln.add(ln)
+        _, _, rest = ln.partition("\t")
+        poster, _, text = rest.partition("\t")
+        words = text.split()
+        if not (words and words[0] in _EW_ALERT_STATES):
+            continue  # a routine line is consumed for good
+        if _ew_bare(poster) in known:
+            queue.append((poster, text, ln))
+        elif auto:
+            # Maybe a tree whose window is not up yet — hold it.
+            keep.append(ln)
+    # Pending = unprinted alert lines: the held queue plus what could not
+    # be attributed. A printed line is dropped by its digest commit.
+    keep = _ew_pending_prune(f, said, keep)
+    _ew_pending_save(st_dir, keep + [ln for _, _, ln in queue])
+    if new_pos is not None:
+        (st_dir / "board.pos").write_text(str(new_pos), encoding="utf-8")
+    for poster, text, ln in queue:
+        digest.add(
+            f"board:{ln}",
+            f"{utc_stamp()} {poster} board: {text}",
+            False,
+            lambda ln=ln: _ew_pending_drop(st_dir, ln),
+        )
+
+
+def _ew_tail_age(name: str, pane: str, st_dir: Path) -> int:
+    """Seconds since the pane's 12-line tail last changed (the
+    fleet-panes frozen detector, kept per watcher under
+    ``$FLEET_STATE/event-watch/``)."""
+    tail = [ln for ln in pane.splitlines() if ln.strip()][-_EW_TAIL_LINES:]
+    digest = hashlib.sha256("\n".join(tail).encode("utf-8")).hexdigest()[:12]
+    hfile, tfile = st_dir / f"{name}.hash", st_dir / f"{name}.t"
+    now = int(time.time())
+    try:
+        prev = hfile.read_text(encoding="utf-8")
+    except OSError:
+        prev = ""
+    if prev != digest:
+        hfile.write_text(digest, encoding="utf-8")
+        tfile.write_text(str(now), encoding="utf-8")
+        return 0
+    try:
+        return max(0, now - int(tfile.read_text(encoding="utf-8").strip()))
+    except (OSError, ValueError):
+        return 0
+
+
+def _ew_send(f: Fleet, win: str, text: str, a: argparse.Namespace) -> tuple[int, str]:
+    """A reflex's send: send-line's machinery (compaction wait, dialog and
+    unsent-input refusal, Enter retry) without its printing."""
+    return _send_text(f, win, text, wait=a.wait, poll=a.poll, retries=2, pause=a.pause)
+
+
+def _ew_error(
+    f: Fleet,
+    a: argparse.Namespace,
+    name: str,
+    win: str,
+    agent: str,
+    plain: str,
+    rep: PaneReport,
+    st_dir: Path,
+    digest: _Digest,
+    err_n: dict[str, int],
+    cool_s: float,
+    said: dict[tuple[str, str], str],
+) -> None:
+    """An error pane: the devin quota reflex where it applies, else count
+    polls and print once the reflexes have failed to clear it.
+
+    A fresh marker only caps resends — it does not hide the error: the
+    count keeps running and the pane still prints at ``--settle`` when
+    the banner has not cleared. The marker records the stage (``model``
+    = /model landed, ``done`` = resume landed) so a refused resume is
+    retried on the next poll instead of re-sending /model.
+    """
+    if agent == "devin" and quota_banner(plain):
+        marker = st_dir / f"quota-{name}"
+        fresh = _ew_mark_fresh(marker, cool_s)
+        stage = ""
+        if fresh:
+            stage = marker.read_text(encoding="utf-8").split()[0]
+        on_high = devin_model(plain) == "swe-2-high"
+        if not on_high:
+            if fresh and stage == "model":
+                owed = [a.resume]  # /model landed; the resume is still owed
+            elif fresh:
+                owed = []  # episode complete; only the cap is in force
+            else:
+                owed = ["/model swe-2-high", a.resume]
+            for text in owed:
+                rc, note = _ew_send(f, win, text, a)
+                if rc not in (0, 4):
+                    _ew_log(f, said, name, "quota", f"send refused ({note})")
+                    _ew_emit(
+                        name,
+                        win,
+                        st_dir,
+                        digest,
+                        f"reflex-fail:quota:{note}",
+                        f"reflex failed: quota send refused ({note})",
+                        urgent=True,
+                    )
+                    return
+                stage = "model" if text.startswith("/") else "done"
+                _ew_mark_write(marker, stage)
+                _ew_log(
+                    f,
+                    said,
+                    name,
+                    "quota",
+                    f"sent {text if text.startswith('/') else 'resume'}",
+                )
+                time.sleep(a.pause)
+            if owed:
+                # The send poll does not count — "uncleared within
+                # --settle polls" means --settle polls after the send.
+                return
+        detail = (
+            "quota exhausted (already swe-2-high)"
+            if on_high
+            else "quota exhausted (model switch sent)"
+            if fresh
+            else "quota exhausted"
+        )
+    else:
+        detail = (rep.last or "error").strip()
+    err_n[name] = err_n.get(name, 0) + 1
+    if err_n[name] >= a.settle:
+        _ew_emit(name, win, st_dir, digest, "error", f"error: {detail[:90]}")
+
+
+def _ew_handoff(
+    f: Fleet,
+    a: argparse.Namespace,
+    name: str,
+    win: str,
+    st_dir: Path,
+    cool_s: float,
+    said: dict[tuple[str, str], str],
+) -> str:
+    """``sent`` / ``cooldown`` / a failure note — the handoff-wait reflex.
+
+    A bare DONE-HANDOFF gets ``/clear`` + the resume line through
+    send-line's machinery. The marker caps it at once per pane per
+    cooldown — the scrollback line outlives the episode, and a fresh
+    DONE-HANDOFF needs a full context refill after the /clear anyway.
+    """
+    marker = st_dir / f"handoff-{name}"
+    if _ew_mark_fresh(marker, cool_s):
+        return "cooldown"
+    for text in ("/clear", a.resume):
+        rc, note = _ew_send(f, win, text, a)
+        if rc not in (0, 4):
+            _ew_log(f, said, name, "handoff", f"send refused ({note})")
+            return note
+        time.sleep(a.pause)
+    _ew_mark_write(marker, "done")
+    _ew_log(f, said, name, "handoff", "sent /clear + resume")
+    return "sent"
+
+
+def _ew_compact(
+    f: Fleet,
+    a: argparse.Namespace,
+    name: str,
+    win: str,
+    rep: PaneReport,
+    plain: str,
+    st_dir: Path,
+    digest: _Digest,
+    said: dict[tuple[str, str], str],
+) -> bool:
+    """ctx-guard's /compact as a reflex: once per episode on an idle pane
+    over the ctx threshold, never mid-turn, never under a live subagent
+    task, re-armed below half the trigger. ctx-guard's own trigger: the
+    token figure when ``--tokens`` is set, else the ceiling %; a pane
+    printing no figure in that unit is left alone.
+
+    True when a reflex-failure line was queued for the coordinator.
+    """
+    fill = ctx_tokens(plain) if a.tokens else rep.ctx
+    if fill is None:
+        return False
+    trigger = a.tokens or a.ceiling
+    marker = st_dir / f"compact-{name}"
+    if fill < trigger // 2:
+        marker.unlink(missing_ok=True)
+        return False
+    if fill < trigger or marker.exists():
+        return False
+    tree = f.worktrees / name
+    if tree.is_dir() and _active_subagent_task(tree):
+        # /compact under a live subagent loses its result.
+        return False
+    rc, note = _ew_send(f, win, "/compact", a)
+    if rc in (0, 4):
+        marker.write_text(f"{fill} {utc_stamp()}\n", encoding="utf-8")
+        level = f"{fill / 1000:g}k tokens" if a.tokens else f"{fill}%"
+        _ew_log(f, said, name, "compact", f"sent /compact at {level}")
+        return False
+    _ew_log(f, said, name, "compact", f"send refused ({note})")
+    _ew_emit(
+        name,
+        win,
+        st_dir,
+        digest,
+        f"reflex-fail:compact:{note}",
+        f"reflex failed: compact send refused ({note})",
+        urgent=True,
+    )
+    return True
+
+
+def _ew_pane(
+    f: Fleet,
+    a: argparse.Namespace,
+    name: str,
+    win: str | None,
+    st_dir: Path,
+    digest: _Digest,
+    err_n: dict[str, int],
+    said: dict[tuple[str, str], str],
+) -> None:
+    """One watched pane per poll: run the routine reflexes silently, then
+    queue the one line (if any) that needs the coordinator."""
+    pane = f.capture(win) if win else None
+    if pane is None:
+        _ew_emit(name, win, st_dir, digest, "gone", "gone")
+        return
+    plain = ANSI_RE.sub("", pane)
+    assert win is not None
+    cmd, dead = f.pane_facts(win)
+    agent = detect_agent(cmd, win)
+    age = _ew_tail_age(name, plain, st_dir)
+    rep = pane_report(
+        agent, plain, command_running=not dead, frozen=age >= a.frozen_min * 60
+    )
+    cool_s = a.cooldown_min * 60
+    if rep.dialog:
+        _ew_emit(
+            name,
+            win,
+            st_dir,
+            digest,
+            f"prompt:{rep.dialog}:{rep.command}",
+            f"prompt ({rep.dialog}) {rep.command[:80]}",
+            urgent=True,
+        )
+        return
+    if rep.state == "error":
+        _ew_error(
+            f, a, name, win, agent, plain, rep, st_dir, digest, err_n, cool_s, said
+        )
+        return
+    err_n.pop(name, None)
+    if rep.state == "done":
+        _ew_emit(name, win, st_dir, digest, "done", "done: agent exited")
+        return
+    tail = "\n".join(nonempty_tail(plain, 15))
+    handoff_cool = False
+    if _HANDOFF_RE.search(tail) and not BUSY_RE.search(tail):
+        r = _ew_handoff(f, a, name, win, st_dir, cool_s, said)
+        if r == "sent":
+            _ew_calm(name, st_dir, digest)
+            return
+        if r == "cooldown":
+            handoff_cool = True  # resumed already; still judge a wedge
+        else:
+            _ew_emit(
+                name,
+                win,
+                st_dir,
+                digest,
+                f"reflex-fail:handoff:{r}",
+                f"reflex failed: handoff send refused ({r})",
+                urgent=True,
+            )
+            return
+    if rep.state == "frozen":
+        _ew_emit(name, win, st_dir, digest, "frozen", f"frozen {age // 60}m")
+        return
+    if rep.state == "idle" and not handoff_cool:
+        if _ew_compact(f, a, name, win, rep, plain, st_dir, digest, said):
+            return  # a failed reflex is already queued for the coordinator
+    _ew_calm(name, st_dir, digest)
+
+
+def cmd_event_watch(f: Fleet, a: argparse.Namespace) -> int:
+    """Routine reflexes on the script, judgment events on stdout.
+
+    Sources: unread board lines from the watched trees (the watcher's own
+    ``board.pos`` byte cursor plus a ``board.pending`` file for alert
+    lines not yet printed — the cursor seeds at EOF on the first run and
+    a line leaves pending only by printing) and a ``fleet_panes``
+    classification every ``--interval`` s — no LLM anywhere.
+
+    Reflexes, each logged to ``$FLEET_STATE/event-watch.log`` and never
+    printed:
+
+    - a devin ``error`` on a quota-exhausted banner → ``/model
+      swe-2-high`` + the resume line, once per pane per ``--cooldown-min``
+      (a pane already on swe-2-high becomes an ordinary error event);
+    - a bare DONE-HANDOFF → ``/clear`` + the resume line, the same
+      once-per rule (handoff-wait's move);
+    - an idle pane over the ctx threshold → ``/compact`` (ctx-guard's
+      rules and trigger: the token figure when ``--tokens`` is set, else
+      the ceiling %; never mid-turn, never under a live subagent task,
+      re-armed below half the trigger).
+
+    Printed — the Monitor lines that wake the coordinator — only: board
+    done/red/blocked/wedged lines from the watched trees, a permission
+    ``prompt``, an ``error`` the reflexes did not clear within
+    ``--settle`` polls, ``frozen``, ``gone``, a dead agent (``done``) and
+    a reflex that failed. Non-urgent lines batch up to ``--digest-sec``
+    (default 30 s); a prompt or a failed reflex flushes at once.
+    ``--triage`` is the hook point for a cheap-model first pass (e.g.
+    haiku) vetting borderline lines before they print — not implemented.
+    """
+    a.resume = a.resume or _RESUME_TEXT
+    a.tokens = _token_amount(a.tokens) if a.tokens else None
+    st_dir = f.state / "event-watch"
+    st_dir.mkdir(parents=True, exist_ok=True)
+    # One watcher per state dir: the lock is held for the whole run.
+    lock_fd = os.open(f.state / "event-watch.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(lock_fd)
+        print(
+            "event-watch: another watcher already holds "
+            f"{f.state}/event-watch.lock",
+            file=sys.stderr,
+        )
+        return 1
+    digest = _Digest(a.digest_sec)
+    err_n: dict[str, int] = {}
+    said: dict[tuple[str, str], str] = {}
+    for k, _ in enumerate(_ticks(a)):
+        if k:
+            time.sleep(a.interval)
+        wins = f.windows()
+        wave = [w for w in wins if w.startswith(PREFIXES)]
+        watched = a.names or [w.split("-", 1)[1] for w in wave]
+        _ew_board_poll(
+            f,
+            st_dir,
+            watched,
+            auto=not a.names,
+            bare_wins={w.split("-", 1)[1] for w in wave},
+            digest=digest,
+            said=said,
+        )
+        for name in watched:
+            _ew_pane(f, a, name, _resolve_in(wins, name), st_dir, digest, err_n, said)
+        # --triage hook point: a cheap model would vet held lines here
+        # before the flush prints them.
+        digest.flush()
+    digest.flush(final=True)
     return 0
 
 
@@ -2036,6 +2699,71 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--ticks", type=int, default=0, help="stop after N polls")
     s.add_argument("--pause", type=float, default=5.0, help=argparse.SUPPRESS)
     s.set_defaults(fn=cmd_handoff_wait)
+
+    s = sub.add_parser(
+        "event-watch",
+        help="board + pane events: the script handles routine ones "
+        "(quota→/model, DONE-HANDOFF→resume, idle→/compact) and prints "
+        "only what needs the coordinator's judgment",
+    )
+    s.add_argument("names", nargs="*", help="wave names; default: every wave window")
+    s.add_argument("--interval", type=float, default=20.0, help="seconds between polls")
+    s.add_argument("--ticks", type=int, default=0, help="stop after N polls")
+    s.add_argument(
+        "--digest-sec",
+        type=float,
+        default=30.0,
+        help="hold non-urgent lines up to this long and print them in one "
+        "write (a prompt or failed reflex flushes at once; default 30)",
+    )
+    s.add_argument(
+        "--settle",
+        type=int,
+        default=2,
+        help="polls an unhandled error must hold before it prints (default 2)",
+    )
+    s.add_argument(
+        "--frozen-min",
+        type=int,
+        default=int(os.environ.get("FLEET_PANES_FROZEN_MIN", "25")),
+        help="minutes an unchanged pane tail counts as frozen "
+        "(default 25, env FLEET_PANES_FROZEN_MIN)",
+    )
+    s.add_argument(
+        "--cooldown-min",
+        type=float,
+        default=30.0,
+        help="per-pane cap on the quota and handoff reflexes (default 30)",
+    )
+    s.add_argument(
+        "--ceiling",
+        type=int,
+        default=70,
+        help="ctx %% at or above which an idle pane is compacted (default 70)",
+    )
+    s.add_argument(
+        "--tokens",
+        nargs="?",
+        const="120k",
+        default=os.environ.get("FLEET_COMPACT_TOKENS") or None,
+        metavar="N",
+        help="compact an idle pane whose printed context exceeds N tokens "
+        "(k/M suffixes; bare --tokens is 120k, env FLEET_COMPACT_TOKENS; "
+        "when set it replaces --ceiling — a pane printing no token "
+        "figure is left alone)",
+    )
+    s.add_argument("--resume", default="", help="the resume line (default built in)")
+    s.add_argument(
+        "--triage",
+        default="",
+        metavar="MODEL",
+        help="reserved: a cheap-model first pass over borderline lines "
+        "(e.g. haiku); not implemented",
+    )
+    s.add_argument("--wait", type=float, default=30.0, help=argparse.SUPPRESS)
+    s.add_argument("--poll", type=float, default=2.0, help=argparse.SUPPRESS)
+    s.add_argument("--pause", type=float, default=1.0, help=argparse.SUPPRESS)
+    s.set_defaults(fn=cmd_event_watch)
 
     s = sub.add_parser("cites", help="unlanded branch commits naming gr<ID>")
     s.add_argument("ids", nargs="+")

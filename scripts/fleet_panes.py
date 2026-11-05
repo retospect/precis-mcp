@@ -222,6 +222,35 @@ def compacting(pane: str) -> bool:
     return any(COMPACT_RE.search(ln) for ln in nonempty_tail(pane, 15))
 
 
+# --- agent banners -------------------------------------------------------------
+
+#: An agent's quota-exhausted banner. Devin shows "▲ Quota exhausted /
+#: Your weekly usage quota has been exhausted." (fixture devin-quota.txt).
+QUOTA_RE = re.compile(
+    r"quota\b[^\n]{0,40}exhausted|usage quota has been exhausted", re.I
+)
+
+
+def quota_banner(pane: str) -> bool:
+    """True when the pane tail carries a quota-exhausted banner."""
+    return bool(QUOTA_RE.search("\n".join(nonempty_tail(pane, 15))))
+
+
+#: Devin's status footer leads with the model ("SWE-2 High   Context: …").
+_DEVIN_MODEL_RE = re.compile(r"^\s*(SWE-[\w.]+(?:[ -]High)?)", re.I)
+
+
+def devin_model(pane: str) -> str:
+    """Devin's footer model normalised to an id (``SWE-2 High`` →
+    ``swe-2-high``); ``""`` when no footer line is in the tail. Only the
+    last lines are searched — a scrollback mention is not the model."""
+    for ln in reversed(nonempty_tail(pane, 10)):
+        m = _DEVIN_MODEL_RE.match(ln)
+        if m:
+            return re.sub(r"[ -]+", "-", m.group(1).lower())
+    return ""
+
+
 # --- chrome ------------------------------------------------------------------
 # Lines dropped by `read` and ignored for "last meaningful line". Agent text
 # (⏺/• blocks, diffs, the spinner) stays.
