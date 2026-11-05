@@ -675,16 +675,38 @@ def _review_targets(plan: _Plan, n: _Node) -> list[_Node]:
     return kids or [target]
 
 
-def _builder_vendor(plan: _Plan, n: _Node) -> str | None:
-    """The vendor of the lane the newest reviewed job ran on, if known."""
+def _builder_vendors(plan: _Plan, n: _Node) -> tuple[str, ...]:
+    """The vendors whose lanes ran a build job on the reviewed nodes, oldest
+    job first (so ``[0]`` is the original builder's), each once.
+
+    Every one of them is excluded from the review, not only the newest
+    job's: td565332 (2026-11-05) read the newest job — sonnet's lint repair
+    on top of codex's eight-file fix — as anthropic, and the "other vendor"
+    pick sent the review to codex, which then reviewed its own build.
+
+    Only jobs that left commits on the branch count (``run_slice.poll``
+    stamps ``meta.branch_commits``): a claude-sub attempt that died with no
+    commit before a codex build is not a builder, and counting it would make
+    codex the "original builder"'s alternative and review its own work
+    (BUILDER 2026-11-05). When no job carries the stamp (jobs before the
+    field, or a reviewed node whose land came another way) every laned job
+    counts."""
+    laned: list[tuple[int, str, bool]] = []
     for target in _review_targets(plan, n):
-        laned = [j for j in plan.jobs(target) if j.meta.get("lane")]
-        if not laned:
-            continue
-        lane = _lanes.get_lane(str(laned[-1].meta["lane"]))
-        if lane is not None and lane.vendor:
-            return lane.vendor
-    return None
+        for j in plan.jobs(target):
+            lane_name = j.meta.get("lane")
+            if not lane_name:
+                continue
+            lane = _lanes.get_lane(str(lane_name))
+            if lane is None or not lane.vendor:
+                continue
+            laned.append((j.id, lane.vendor, bool(j.meta.get("branch_commits"))))
+    builders = [row for row in laned if row[2]] or laned
+    out: list[str] = []
+    for _id, vendor, _committed in sorted(builders):
+        if vendor not in out:
+            out.append(vendor)
+    return tuple(out)
 
 
 def _comments(store: Any, todo_id: int) -> list[Any]:
@@ -1326,25 +1348,48 @@ def _effective_prio(plan: _Plan, n: _Node) -> int:
 def _review_lane(
     plan: _Plan, w: _Writer, res: PassResult, n: _Node
 ) -> tuple[bool, str | None]:
-    """``(go, lane name)`` for a reviewer's ``run_slice``: the review lane
-    excluding the builder's vendor; ``go=False`` when every fit lane is full."""
-    vendor = _builder_vendor(plan, n)
-    lane = _lanes.pick_lane(
-        w.store, _templates.REVIEW_TASK_CLASS, exclude_vendor=vendor
-    )
-    if lane is None:
-        res.notes.append(
-            f"td{n.id}: review not dispatched — every lane fit for "
-            f"{_templates.REVIEW_TASK_CLASS!r} is at its cap"
-        )
-        return False, None
-    if vendor and lane.vendor == vendor:
-        res.notes.append(
-            f"td{n.id}: review on lane {lane.name} shares the builder's vendor "
-            f"{vendor!r} (no other vendor's lane is enabled; the cross-vendor "
-            "rule holds once one is)"
-        )
-    return True, lane.name
+    """``(go, lane name)`` for a reviewer's ``run_slice``: a lane of a vendor
+    that did not build what it reviews; ``go=False`` when every fit lane is
+    full.
+
+    Three steps, each a pick over a table shrunk by hand (never
+    ``exclude_vendor``, whose own fallback could hand back an excluded
+    vendor): every vendor that built on the node is out; if that leaves no
+    enabled fit lane, only the original builder's vendor is out (a codex
+    build repaired by sonnet is reviewed by claude-sub, not by codex); only
+    when even that leaves nothing does the full table apply, with the note.
+    Codex-built fixes get a Claude review (Reto's yes to 27b357ee5, via
+    BUILDER 2026-11-05)."""
+    cls = _templates.REVIEW_TASK_CLASS
+    vendors = _builder_vendors(plan, n)
+    steps: list[tuple[frozenset[str], str]] = [
+        (frozenset(vendors), "every build vendor"),
+        (frozenset(vendors[:1]), "the original builder's vendor"),
+        (frozenset(), ""),
+    ]
+    for excluded, label in steps:
+        table = tuple(ln for ln in _lanes.LANES if ln.vendor not in excluded)
+        if not any(ln.enabled and ln.fits(cls) for ln in table):
+            continue  # nothing of another vendor is enabled: next step
+        lane = _lanes.pick_lane(w.store, cls, lanes=table)
+        if lane is None:
+            # Fit lanes of the allowed vendors exist but are full: wait,
+            # do not bypass the rule.
+            res.notes.append(
+                f"td{n.id}: review not dispatched — every lane fit for {cls!r} "
+                f"outside {label or 'the table'} is at its cap"
+            )
+            return False, None
+        if vendors and lane.vendor == vendors[0]:
+            # Step three only: the original builder's own vendor reviews.
+            res.notes.append(
+                f"td{n.id}: review on lane {lane.name} shares the builder's vendor "
+                f"{lane.vendor!r} (no other vendor's lane is enabled; the "
+                "cross-vendor rule holds once one is)"
+            )
+        return True, lane.name
+    res.notes.append(f"td{n.id}: review not dispatched — no enabled lane fits {cls!r}")
+    return False, None
 
 
 def _step_dispatch(plan: _Plan, w: _Writer, res: PassResult) -> None:

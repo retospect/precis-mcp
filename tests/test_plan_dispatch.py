@@ -965,8 +965,18 @@ def _review_plan(store: Store) -> T.PlanMint:
 
 
 def _job(
-    store: Store, todo: int, *, status: str = "succeeded", lane: str | None = None
+    store: Store,
+    todo: int,
+    *,
+    status: str = "succeeded",
+    lane: str | None = None,
+    commits: list[str] | None = None,
 ) -> int:
+    extra: dict[str, Any] = {}
+    if lane:
+        extra["lane"] = lane
+    if commits is not None:
+        extra["branch_commits"] = commits  # run_slice.poll's stamp
     with store.tx() as conn:
         ref = mint_background_job(
             store,
@@ -977,7 +987,7 @@ def _job(
             params={"todo_id": todo},
             parent_id=todo,
             status=status,
-            meta_extra={"lane": lane} if lane else None,
+            meta_extra=extra or None,
         )
     return int(ref.id)
 
@@ -1249,6 +1259,66 @@ def test_dispatch_orders_by_prio_across_roots(store: Store) -> None:
     order = [n.split(":")[0] for n in res.notes if "would dispatch" in n]
     # The prio-1 root's task (inherited prio) goes before the older prio-5 one.
     assert order == [f"td{newer.ids['task']}", f"td{older.ids['task']}"]
+
+
+def test_review_excludes_every_build_vendor_then_the_original_builder(
+    store: Store,
+) -> None:
+    """td565332 (2026-11-05): codex built the fix, a sonnet retry repaired the
+    lint; reading only the newest job sent the review to codex, which then
+    reviewed its own build. With both enabled vendors on the branch the
+    review goes to the lane that is not the original builder's."""
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, status="failed", lane="codex")
+    _job(store, build, lane="claude-sub")
+    _todo_comment(store, build, "landed: abc1234 — the fix")
+    _mark_done(store, build)
+    plan = pd._load(store)
+    node = plan.nodes[review]
+    assert pd._builder_vendors(plan, node) == ("openai", "anthropic")
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    ((_job_id, meta),) = _jobs_under(store, review)
+    assert meta["params"]["lane"] == "claude-sub"
+    assert not any("shares the builder's vendor" in n for n in res.notes)
+
+
+def test_review_counts_only_jobs_that_left_commits(store: Store) -> None:
+    """BUILDER 2026-11-05: a claude-sub attempt that died with no commit,
+    then a codex build — counting the dead attempt would make anthropic the
+    "original builder" and codex would review its own work. Only committing
+    jobs are builders; the review goes to claude-sub."""
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, status="failed", lane="claude-sub", commits=[])
+    _job(store, build, lane="codex", commits=["abc1234 fix(x): the fix"])
+    _todo_comment(store, build, "landed: abc1234 — the fix")
+    _mark_done(store, build)
+    plan = pd._load(store)
+    assert pd._builder_vendors(plan, plan.nodes[review]) == ("openai",)
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    ((_job_id, meta),) = _jobs_under(store, review)
+    assert meta["params"]["lane"] == "claude-sub"
+    assert not any("shares the builder's vendor" in n for n in res.notes)
+
+
+def test_review_shares_a_vendor_only_when_nothing_else_is_enabled(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sub = L.Lane("claude-sub", "claude_p", "s", 2, frozenset({"*"}), vendor="anthropic")
+    monkeypatch.setattr(L, "LANES", (sub,))
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    _todo_comment(store, build, "landed: abc1234 — the fix")
+    _mark_done(store, build)
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    ((_job_id, meta),) = _jobs_under(store, review)
+    assert meta["params"]["lane"] == "claude-sub"
+    assert any("shares the builder's vendor 'anthropic'" in n for n in res.notes)
 
 
 def test_pick_lane_excludes_the_builder_vendor() -> None:
