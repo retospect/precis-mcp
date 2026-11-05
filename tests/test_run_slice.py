@@ -1625,6 +1625,77 @@ def test_poll_quota_window_with_no_other_lane_parks_until_the_reset(
     assert len(seams["launch"]) == launches  # still parked
 
 
+def test_poll_quota_window_leaves_a_ladder_pin_for_another_vendor(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """jo565689: the retry ladder pinned claude-sub (lane + model in the
+    job's params only); the weekly 429 then parked until the reset although
+    codex was free. A ladder pin is the dispatcher's: the park leaves it and
+    the relaunch picks another vendor's lane, the rung's model dropped."""
+    codex, sub = _codex_and_sub()
+    monkeypatch.setattr(lanes, "LANES", (codex, sub))
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams, lane="claude-sub", model="claude-test-model")
+    assert handle is not None and ctx.meta_set["lane"] == "claude-sub"
+    _finish(handle, 1, json.dumps(_QUOTA_RESULT) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert pctx.meta_set["exclude_vendor"] == "anthropic"
+    assert handle["not_before"] <= datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert handle["outage_parks"] == 1
+
+    launches = len(seams["launch"])
+    rctx = _poll_ctx(store, ctx)
+    rctx.meta["exclude_vendor"] = "anthropic"
+    assert run_slice.poll(rctx, handle) is False
+    assert len(seams["launch"]) == launches + 1
+    argv = seams["launch"][-1][0]
+    assert argv[0].endswith("codex") and argv[1] == "exec"
+    assert "-m" not in argv  # the rung's claude model went with its lane
+    assert rctx.meta_set["lane"] == "codex"
+    assert handle["outage_parks"] == 1  # the counter survives the relaunch
+    assert any("picking another vendor's lane" in t for k, t in rctx.chunks)
+
+
+def test_poll_quota_window_honours_the_todo_s_own_lane_pin(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex, sub = _codex_and_sub()
+    monkeypatch.setattr(lanes, "LANES", (codex, sub))
+    store = _Store()
+    store.add_todo(
+        42, "t", meta={"op": {"type": "run_slice", "params": {"lane": "claude-sub"}}}
+    )
+    ctx, handle = _submit(store, seams, lane="claude-sub")
+    _finish(handle, 1, json.dumps(_QUOTA_RESULT) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert pctx.meta_set["exclude_vendor"] is None
+    due = datetime.strptime(handle["not_before"], "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=UTC
+    )
+    assert due > datetime.now(UTC)  # waits for the pinned lane's reset
+
+
+def test_poll_quota_window_past_the_park_cap_is_a_failed_attempt(
+    seams: dict[str, Any],
+) -> None:
+    """BUILDER on 5ce9e5d69: a park burns no attempt, so a lane that keeps
+    hitting its window could re-park without limit. Past the cap the window
+    counts as a failed attempt, so the retry cap and the ask still fire."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    handle["outage_parks"] = run_slice.OUTAGE_PARK_CAP
+    _finish(handle, 1, json.dumps(_QUOTA_RESULT) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "attempt:1" in store.tag_strings(42)
+    assert any("counting it as a failed attempt" in t for k, t in pctx.chunks)
+
+
 def test_poll_plain_error_is_still_a_failed_attempt(seams: dict[str, Any]) -> None:
     store = _Store()
     store.add_todo(42, "t")

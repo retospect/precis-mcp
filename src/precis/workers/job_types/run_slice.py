@@ -1249,7 +1249,21 @@ def submit(ctx: Any, spec: Any) -> Any:
     todo = store.get_ref(kind="todo", id=todo_id)
 
     task_class = str((todo.meta or {}).get("task_class") or _DEFAULT_TASK_CLASS)
-    if params.get("lane"):
+    # A relaunch after a lane's quota/rate window (gr565359) skips that
+    # vendor outright; the table shrinks, it does not fall back.
+    exclude = str((ctx.meta or {}).get("exclude_vendor") or "")
+    pinned = _lanes.get_lane(str(params["lane"])) if params.get("lane") else None
+    left_pin = pinned is not None and bool(exclude) and pinned.vendor == exclude
+    if left_pin:
+        # The ladder's pin (plan_dispatch._escalate) on the vendor whose
+        # window closed: the park chose to leave it, so this launch picks
+        # by class; the rung's model belongs to that lane and goes with it.
+        ctx.append_chunk(
+            "job_event",
+            f"run_slice: pinned lane {params['lane']!r} is vendor {exclude!r}, "
+            "whose window closed; picking another vendor's lane",
+        )
+    if params.get("lane") and not left_pin:
         lane = _lanes.get_lane(str(params["lane"]))
         if lane is None or not lane.enabled:
             ctx.record_failure(
@@ -1272,11 +1286,8 @@ def submit(ctx: Any, spec: Any) -> Any:
         # (``Lane.accepts_model``): before this a build carrying a claude id
         # (td543634) was codex-fit and would have launched with a model the
         # codex CLI rejects.
-        pin = params.get("model")
+        pin = None if left_pin else params.get("model")
         model_pin = pin.strip() if isinstance(pin, str) and pin.strip() else None
-        # A relaunch after a lane's quota/rate window (gr565359) skips that
-        # vendor outright; the table shrinks, it does not fall back.
-        exclude = str((ctx.meta or {}).get("exclude_vendor") or "")
         table = tuple(ln for ln in _lanes.LANES if not exclude or ln.vendor != exclude)
         lane = _lanes.pick_lane(store, task_class, lanes=table, model=model_pin)
         if lane is None:
@@ -1321,7 +1332,9 @@ def submit(ctx: Any, spec: Any) -> Any:
             "meta.task_class off 'code' or pin an MCP lane via params.lane"
         )
         return None
-    model = resolve_model(params, lane)
+    model = resolve_model(
+        {k: v for k, v in params.items() if k != "model"} if left_pin else params, lane
+    )
     effort = str(params.get("effort") or _DEFAULT_EFFORT)
     ctx.set_meta(lane=lane.name, adapter=adapter.name, model=model, effort=effort)
     _claim_todo(store, todo_id, lane.name)
@@ -1582,7 +1595,23 @@ def _deny_reason(tree: Path, deny_paths: tuple[str, ...]) -> str | None:
 _OUTAGE_CLASSES = frozenset({"quota", "rate"})
 #: Park horizon when the outage names no reset instant.
 OUTAGE_BACKOFF = timedelta(hours=2)
+#: Quota/rate parks one job may take before the next window closing counts
+#: as a failed attempt (BUILDER on 5ce9e5d69: an unbounded park never
+#: reaches the retry cap or the ask).
+OUTAGE_PARK_CAP = 3
 _NOT_BEFORE_FMT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def _todo_pins_lane(store: Any, todo_id: int) -> bool:
+    """True when the todo's own ``meta.op.params.lane`` pins the lane (a
+    human's or the triage's pin). A lane only in the job's params is the
+    ladder's (``plan_dispatch._escalate``) and may be left on an outage."""
+    todo = store.get_ref(kind="todo", id=todo_id)
+    op = (getattr(todo, "meta", None) or {}).get("op")
+    if not isinstance(op, dict):
+        return False
+    p = op.get("params")
+    return isinstance(p, dict) and bool(p.get("lane"))
 
 
 def _lane_outage(
@@ -1622,9 +1651,13 @@ def _outage_alternative(
     store: Any, todo_id: int, params: dict[str, Any], vendor: str
 ) -> bool:
     """Whether another vendor's enabled lane fits this slice right now, so
-    the relaunch need not wait for the window: never for a pinned lane or
-    a generator (its MCP lane is the Claude one)."""
-    if params.get("lane") or not vendor:
+    the relaunch need not wait for the window: never for a lane the todo
+    itself pins or a generator (its MCP lane is the Claude one). A lane
+    pinned only in the job's params is the retry ladder's pick
+    (jo565689: the climb to claude-sub met the weekly 429 and waited for
+    the reset although codex was free); the park leaves it."""
+    del params
+    if not vendor or _todo_pins_lane(store, todo_id):
         return False
     todo = store.get_ref(kind="todo", id=todo_id)
     if node_kind(todo.meta) == "generator":
@@ -1669,11 +1702,15 @@ def _park_outage(
             else now + OUTAGE_BACKOFF
         )
         where = f"lane {lane} once its window resets"
-    handle.update(not_before=due.strftime(_NOT_BEFORE_FMT), outage=cls)
+    parks = int(handle.get("outage_parks") or 0) + 1
+    handle.update(
+        not_before=due.strftime(_NOT_BEFORE_FMT), outage=cls, outage_parks=parks
+    )
     ctx.append_chunk(
         "job_event",
         f"run_slice: lane {lane} {cls} window closed on td{todo_id}; lease back "
-        f"with no attempt burned; relaunch after {due:%Y-%m-%dT%H:%M}Z on {where}",
+        f"with no attempt burned; relaunch after {due:%Y-%m-%dT%H:%M}Z on {where} "
+        f"(park {parks}/{OUTAGE_PARK_CAP})",
     )
     deadline = now.timestamp() + max((due - now).total_seconds(), 0.0) + wall_seconds()
     ctx.set_meta(
@@ -1701,10 +1738,13 @@ def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
     fresh = submit(ctx, None)
     if fresh is None:
         return True
+    parks = handle.get("outage_parks")
     handle.clear()
     handle.update(fresh)
+    if parks:
+        handle["outage_parks"] = parks  # the cap counts across relaunches
     ctx.set_meta(
-        compute_handle=fresh,
+        compute_handle=handle,
         compute_handle_released=False,
         deadline=datetime.now(UTC).timestamp() + wall_seconds(),
         exclude_vendor=None,
@@ -1751,8 +1791,18 @@ def poll(ctx: Any, handle: Any) -> bool:
     if is_error and not vanished:
         outage = _lane_outage(result, log_text)
         if outage is not None:
-            # The lane's window, not the task: no attempt, no handoff.
-            return _park_outage(ctx, handle, todo_id, lane, *outage)
+            parks = int(handle.get("outage_parks") or 0)
+            if parks < OUTAGE_PARK_CAP:
+                # The lane's window, not the task: no attempt, no handoff.
+                return _park_outage(ctx, handle, todo_id, lane, *outage)
+            # Parked and relaunched OUTAGE_PARK_CAP times already: this
+            # window counts as a failed attempt, so the retry cap and the
+            # ask can still fire.
+            ctx.append_chunk(
+                "job_event",
+                f"run_slice: lane {lane} {outage[0]} window closed again after "
+                f"{parks} parks on td{todo_id}; counting it as a failed attempt",
+            )
     # Server-side deny check, before the handoff lands: independent of
     # whether the session honoured its deny rules (Bash writes included).
     denied = _deny_reason(tree, _lane_deny_paths(lane))
