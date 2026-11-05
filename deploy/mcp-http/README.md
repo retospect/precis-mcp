@@ -88,14 +88,18 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
   (script/pid/ppid/cwd) so the container records who created it, and
   `precis-status` shows the mounted host paths as `src_host`/`main_host`.
 - Before deleting a checkout on this host (a strays/second-copy cleanup),
-  run `--status` and check its `checkouts:` lines: they name the
+  run `precis-mcp-http-ensure.sh --check-path <path>` — exit 0 means a
+  canonical-checkout marker or a container mount still references it (the
+  manual version: `--status` and its `checkouts:` lines, which name the
   `main-checkout` marker, the resolved repo, and every live backend's
-  `/src` + `/main` host mounts — never delete a path on that list without
-  correcting the marker first. On 2026-10-25 a cleanup removed the
-  marker's checkout while containers still mounted it; the pre-guard
-  script then fell back to a nonexistent default and crash-looped a
-  standby backend. The guard now refuses instead, but the deleted path
-  still leaves every run refusing until the marker is corrected.
+  `/src` + `/main` host mounts, or `docker inspect` of the backends).
+  Never delete a path on that list without correcting the marker first.
+  `scripts/fleet-cleanup` runs the same probe itself. On 2026-10-25 a
+  cleanup removed the marker's checkout while containers still mounted it;
+  the pre-guard script then fell back to a nonexistent default and
+  crash-looped a standby backend. The guard now refuses instead, but the
+  deleted path still leaves every run refusing until the marker is
+  corrected.
 - `slice-tokens/` is the per-slice bearer registry (gr543694): `run_slice`
   on this host mints one grant file per slice session at submit (named
   `td<todo>j<job>`, so a resubmit never overwrites a live grant), deletes

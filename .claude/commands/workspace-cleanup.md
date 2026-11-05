@@ -33,7 +33,11 @@ Live census at invocation:
    branchless branches. A no leaves the whole list untouched. Per-list
    means per-list — never cherry-pick entries out of a list silently,
    and never touch the live-lock, dirty, clean+unmerged or unique
-   buckets this way.
+   buckets this way. Before each `git worktree remove`, run
+   `deploy/mcp-http/precis-mcp-http-ensure.sh --check-path <path>`: exit 0
+   means a canonical-checkout marker or a container mount still references
+   the path, so leave it alone and say so (gr516960: a strays cleanup once
+   deleted the recorded checkout out from under the live backends).
 
 3. **Judge what the report can't.** `locked (holder live)`, `dirty`
    (real tracked changes), `clean+unmerged` worktrees and `unique`
