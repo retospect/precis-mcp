@@ -92,45 +92,48 @@ _GND_MISSING = {
 #: rest are no-via branches and unresolved crossings. A row that starts
 #: passing must lose its entry (and a board's ``_GND_MISSING`` its pads).
 _FAILING: dict[tuple[str, str], tuple[list[str], str]] = {
+    # td569540 re-measure: negotiated congestion left the same three nets
+    # unreachable on every order, but the failure is honest now —
+    # stranded comps the search cannot link, no guarded/severed
+    # withdrawals and no live crossings (the pre-negotiation rows also
+    # severed VBAT_OV/VSTOR downstream).
     ("local-66", "prod"): (
         ["DEC1", "VBAT_OV", "VSTOR"],
-        "unreachable ['DEC1', 'VBAT_OV', 'VSTOR']; severed ['VBAT_OV', 'VSTOR']",
+        "unreachable+stranded ['DEC1', 'VBAT_OV', 'VSTOR']",
     ),
     ("local-66", "rev"): (
         ["DEC1", "VBAT_OV", "VSTOR"],
-        "unreachable ['DEC1', 'VBAT_OV', 'VSTOR']; severed ['VBAT_OV', 'VSTOR']",
+        "unreachable+stranded ['DEC1', 'VBAT_OV', 'VSTOR']",
     ),
     ("local-66", "shuf1"): (
         ["DEC1", "VBAT_OV", "VSTOR"],
-        "unreachable ['DEC1', 'VBAT_OV', 'VSTOR']; severed ['VBAT_OV', 'VSTOR']",
+        "unreachable+stranded ['DEC1', 'VBAT_OV', 'VSTOR']",
     ),
     ("local-66", "shuf2"): (
         ["DEC1", "VBAT_OV", "VSTOR"],
-        "unreachable ['DEC1', 'VBAT_OV', 'VSTOR']; severed ['VBAT_OV', 'VSTOR']",
+        "unreachable+stranded ['DEC1', 'VBAT_OV', 'VSTOR']",
     ),
     ("local-66", "shuf3"): (
         ["DEC1", "VBAT_OV", "VSTOR"],
-        "unreachable ['DEC1', 'VBAT_OV', 'VSTOR']; severed ['VBAT_OV', 'VSTOR']",
+        "unreachable+stranded ['DEC1', 'VBAT_OV', 'VSTOR']",
     ),
     # Base-state failures the board's gnd-missing xfail masked until the
     # G2d escapes cleared it (same nets fail on the pre-G2d code).
-    ("local-61", "shuf1"): (
-        ["VSTOR"],
-        "no-via branch",
-    ),
+    # td569540 re-measure: local-61/shuf1's VSTOR negotiated back to
+    # clean (the row still xfails on GND[37]); shuf3's cluster failure
+    # moved — OK_HYST routes now, VSTOR is the stranded one.
     ("local-61", "shuf3"): (
-        ["OK_HYST"],
-        "unreachable+severed ['OK_HYST'] — the RF_FEED/OK_HYST/OK_PROG/"
-        "XC1/XC2 crossing cluster collapsed to one chord-blocked refusal "
-        "under S1's honest crossing failure",
+        ["VSTOR"],
+        "unreachable+stranded+no-via branch ['VSTOR']",
     ),
     ("x2", "rev"): (
         ["VBAT_UV"],
-        "no-via branch",
+        "unreachable+stranded+no-via branches ['VBAT_UV']",
     ),
     ("x2", "shuf1"): (
-        ["OK_HYST", "VBAT_UV"],
-        "guarded + severed + live crossing",
+        ["VBAT_UV"],
+        "unreachable+stranded+no-via branch ['VBAT_UV'] — OK_HYST routes "
+        "under negotiation now; VBAT_UV's remaining refusal is honest",
     ),
 }
 

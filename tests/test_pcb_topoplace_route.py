@@ -536,7 +536,7 @@ def test_build_wires_example_a_branches() -> None:
 
     d = example_a()
     mesh = build_mesh(d, d.pose0)
-    w = build_wires(mesh, d, 2)
+    w = build_wires(mesh, d, 2, negotiate=1)
     pw = all_pin_world(d, d.pose0)
     assert len(w.branches) == len(d.net_pins) == 3
     for k, pins in enumerate(d.net_pins):
@@ -735,7 +735,7 @@ def test_build_wires_order_and_routing_rule() -> None:
     n_layers = 4
     d, _inst, _nets = synth_design(seed=0, n_parts=40, pad_mm=0.5)
     mesh = build_mesh(d, d.pose0)
-    w = build_wires(mesh, d, n_layers, shove=False)
+    w = build_wires(mesh, d, n_layers, negotiate=1, shove=False)
     assert len(w.order) == len(mesh.edges)
     for e, ids in enumerate(w.order):
         # a branch may cross e twice (wrapping both endpoints); its k-th
@@ -1361,7 +1361,7 @@ def test_corridor_overflow_refused_cut_is_report_data_not_a_stop() -> None:
 
     d = _channel_wall_design(3)
     mesh = build_mesh(d, d.pose0)
-    w = build_wires(mesh, d, 2)
+    w = build_wires(mesh, d, 2, negotiate=1)
     # G2h: the third net's negotiation is refused (its cut is net 0's
     # only way too), so it is named unreachable — and its unrouted
     # demand still lands on the cut, tagged refused (the board routes:
@@ -1405,7 +1405,7 @@ def test_corridor_cut_names_its_demanding_nets() -> None:
     from precis.pcb.topoplace.wires import CorridorOverflow, build_wires
 
     d = _channel_wall_design(6)
-    w = build_wires(build_mesh(d, d.pose0), d, 2)
+    w = build_wires(build_mesh(d, d.pose0), d, 2, negotiate=1)
     assert w.overflow
     cut = max(w.overflow, key=lambda c: c.demand)
     # the wall has no gap but the channel (the fixture closes both ends),
@@ -1536,7 +1536,9 @@ def test_edge_clearance_mm_widens_the_outline_cover() -> None:
     assert not any(open_bar)  # under the 0.4 mm bar every one is closed
 
 
-def test_power_net_routes_at_routing_width_not_widen_target() -> None:
+def test_power_net_routes_at_routing_width_not_widen_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """gr520904 follow-up (Reto's widen ruling): a rail's
     ``est_current_a`` resolves to an IPC-2221 width (~2.8 mm at 5 A) —
     that is the post-route ``widen_power`` TARGET, never a routing
@@ -1544,11 +1546,21 @@ def test_power_net_routes_at_routing_width_not_widen_target() -> None:
     corridor cut and the A* occupancy price the width the track is BORN
     at: a channel that fits the routing width does not refuse the rail,
     and its copper is emitted thin."""
+    import functools
     from types import SimpleNamespace
 
     from precis.pcb.capabilities import capability_for
     from precis.pcb.session import clearance_net_rules, route_net_rules
+    from precis.pcb.topoplace import wires as wires_mod
     from precis.pcb.topoplace.realise import route_design
+
+    # the control's refused negotiation is the single-pass semantics this
+    # test pins — negotiated congestion would reroute N2 instead
+    monkeypatch.setattr(
+        wires_mod,
+        "build_wires",
+        functools.partial(wires_mod.build_wires, negotiate=1),
+    )
 
     caps = capability_for("4layer")
     # three rails across the wall's one 3.4 mm channel: a point survives
@@ -1769,7 +1781,7 @@ def test_build_wires_corridor_adjacency() -> None:
     mesh = build_mesh(d, d.pose0)
     # Exercise raw corridor construction; rescue does not change adjacency's
     # contract and has a separate count budget on these synthetic boards.
-    w = build_wires(mesh, d, 4, shove=False)
+    w = build_wires(mesh, d, 4, negotiate=1, shove=False)
     for b in w.branches:
         assert len(b.tris) == len(b.edges) + 1
         va = int(mesh.pin_vertex[b.pin_a])
@@ -1902,7 +1914,7 @@ def test_build_wires_tie_order_consistent() -> None:
     n_layers = 4
     d, _inst, _nets = synth_design(seed=0, n_parts=40, pad_mm=0.5)
     mesh = build_mesh(d, d.pose0)
-    w = build_wires(mesh, d, n_layers, shove=False)
+    w = build_wires(mesh, d, n_layers, negotiate=1, shove=False)
     cent = [mesh.verts[mesh.tris[t]].mean(axis=0) for t in range(len(mesh.tris))]
     obst = np.asarray(mesh.verts, dtype=float)[
         np.asarray(sorted(obstacle_vertices(mesh, d, n_layers)), dtype=int)
@@ -2096,7 +2108,7 @@ def test_build_wires_tie_order_consistent() -> None:
     # shove off: the residual pin was measured in the no-shove regime
     # (the 83/180 half-routed board above) and one shove-on n=100
     # build sits at ~150 s against the 300 s per-test ceiling.
-    w100 = build_wires(build_mesh(d100, d100.pose0), d100, 4, shove=False)
+    w100 = build_wires(build_mesh(d100, d100.pose0), d100, 4, negotiate=1, shove=False)
     # G2h review-3: the residual now measures ties on a HALF-routed
     # board — HEAD routes 83/180 synth nets (1 kept negotiation of
     # 102 tried), where base crammed all 180. Measured 7, the pin
@@ -2165,10 +2177,10 @@ def test_build_wires_rate_printed() -> None:
 
     def wire_wall() -> float:
         t0 = time.monotonic()
-        build_wires(mesh, d, 4, shove=False)
+        build_wires(mesh, d, 4, negotiate=1, shove=False)
         return time.monotonic() - t0
 
-    w = build_wires(mesh, d, 4, shove=False)
+    w = build_wires(mesh, d, 4, negotiate=1, shove=False)
     dt = min(wire_wall(), wire_wall())
     rate = 1.0 / dt
     print(
@@ -2185,7 +2197,7 @@ def test_build_wires_rate_printed() -> None:
     def timed(pad_mm: float) -> float:
         dd, _i2, _n2 = synth_design(seed=0, n_parts=100, pad_mm=pad_mm)
         t0c = time.process_time()
-        build_wires(build_mesh(dd, dd.pose0), dd, 4, shove=False)
+        build_wires(build_mesh(dd, dd.pose0), dd, 4, negotiate=1, shove=False)
         return time.process_time() - t0c
 
     ringless: list[float] = []
@@ -2221,7 +2233,10 @@ def test_build_wires_deterministic(monkeypatch) -> None:
     # ceiling (the grow count, not the clock, bounds the phase — the
     # shove's determinism is gated on the real boards' failed_strict
     # reruns instead).
-    a, b = build_wires(mesh, d, 2, shove=False), build_wires(mesh, d, 2, shove=False)
+    a, b = (
+        build_wires(mesh, d, 2, negotiate=1, shove=False),
+        build_wires(mesh, d, 2, negotiate=1, shove=False),
+    )
     assert a.branches == b.branches
     assert a.order == b.order
     assert a.net_layers == b.net_layers
@@ -2355,7 +2370,7 @@ def test_build_wires_crosses_a_two_owner_edge_on_the_surviving_layer() -> None:
     ctx = _make_ctx(mesh, d, 2)
     two_owner = {e for e in ctx.pad_contrib if e in ctx.zone_contrib}
     assert two_owner
-    w = build_wires(mesh, d, 2)
+    w = build_wires(mesh, d, 2, negotiate=1)
     a = next(b for b in w.branches if d.net_name[b.net] == "A")
     assert set(a.edges) & two_owner
     assert not w.unreachable

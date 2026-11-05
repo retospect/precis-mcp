@@ -1254,7 +1254,9 @@ def test_order_loop_retry_checks_guard_before_replacing_a_partner(
     monkeypatch.setattr(wm, "_grow_net", grow)
     monkeypatch.setattr(wm, "_witness_crossings", crossings)
     monkeypatch.setattr(wm._Shove, "_preserves_guard", preserves)
-    result = wm.build_wires(shove.mesh, shove.d, 4, (_RULE,) * 3, shove=False)
+    result = wm.build_wires(
+        shove.mesh, shove.d, 4, (_RULE,) * 3, shove=False, negotiate=1
+    )
     if disconnected:
         assert grown.count(2) == 2, "a disconnected partner cannot trigger retry_k"
         assert checked == [], (
@@ -1305,7 +1307,9 @@ def test_order_loop_partner_ties_keep_earlier_ledger_owner(cell, monkeypatch, cl
     monkeypatch.setattr(wm, "_witness_crossings", crossings)
     monkeypatch.setattr(wm._Occupancy, "nets_on", lambda *_a: Counter({1: 1, 0: 1}))
     monkeypatch.setattr(wm._Shove, "_preserves_guard", lambda *_a: True)
-    result = wm.build_wires(shove.mesh, shove.d, 4, (_RULE,) * 3, shove=False)
+    result = wm.build_wires(
+        shove.mesh, shove.d, 4, (_RULE,) * 3, shove=False, negotiate=1
+    )
     assert result.negotiated == ((2, 1, True),)
 
 
@@ -1543,7 +1547,9 @@ def test_small_shove_enabled_builds_have_identical_copper_and_order():
         n_nets=3,
     )
     mesh = build_mesh(d, d.pose0)
-    a, b = (wm.build_wires(mesh, d, 4, (_NOVIA,) * 3) for _ in range(2))
+    a, b = (
+        wm.build_wires(mesh, d, 4, (_NOVIA,) * 3, negotiate=1) for _ in range(2)
+    )
     # The old adopted swap guarded nets 0 and 1. Exercise the shove even when
     # the shared final guard safely refuses every candidate in this fixture.
     assert a.shove_grows > 0 and a.shove_rounds and a.shove_rounds[0]

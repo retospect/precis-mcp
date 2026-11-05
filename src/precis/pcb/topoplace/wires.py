@@ -59,6 +59,7 @@ import functools
 import heapq
 import itertools
 import math
+import os
 import random
 import types
 from collections import Counter
@@ -74,6 +75,7 @@ from shapely.ops import nearest_points
 from precis.errors import BadInput
 from precis.pcb.clearance import FAB_QUANTUM_MM
 from precis.pcb.geom import segments_cross
+from precis.pcb.rules import JLC_VIA_HOLE_TO_HOLE_MM
 from precis.pcb.topoplace import proxy as topo_proxy
 from precis.pcb.topoplace.copper_index import (
     ANY_NET,
@@ -139,6 +141,37 @@ OCC_LAYER_COST = 0.25
 #: Parallel wires in one channel share the triangle too and pay it as
 #: ordinary congestion, the same reading ``occ`` gives edges.
 TRI_OCC_MM = 1.0
+
+#: Negotiated congestion with history (td569540, the PathFinder stage of
+#: the route-then-shove model): ``build_wires`` runs ``_NEGOTIATE_ITERS``
+#: passes over the net set instead of one. Every pass re-grows the nets
+#: that failed or sit on an oversubscribed resource against an occupancy
+#: that holds the other nets' CURRENT wires (each re-grown net's previous
+#: wires are ripped out first — ``_Occupancy.rebuild``); a net whose
+#: wires satisfy every resource keeps them (selective re-route).
+#: Passes 1..K-1 soften today's legality into priced resources — an
+#: (edge, layer) corridor past its slot capacity, a (tri, layer) past
+#: ``_NEG_TRI_CAP`` corridors, a same-layer chord crossing — at
+#: ``base × (1 + p_k × present_overuse) + h``; pass K restores hard
+#: legality and ``_Shove`` repairs as before. ``p_k`` ramps from
+#: ``_NEG_P0`` by ``_NEG_PRAMP`` per pass; ``h`` accumulates
+#: ``_NEG_H_* × overuse`` on every resource still oversubscribed at a
+#: pass's end. The pass with the best ``(failed nets, crossings, vias,
+#: length)`` ledger that stays corridor-legal is emitted.
+_NEGOTIATE_ITERS = 10
+_NEG_P0 = 0.5
+_NEG_PRAMP = 1.4
+_NEG_H_EDGE = 0.4  # mm per slot over capacity per pass
+_NEG_H_TRI = 0.15  # mm per corridor over _NEG_TRI_CAP per pass
+_NEG_H_CROSS = 0.8  # mm per residual same-layer crossing per pass
+_NEG_CROSS_MM = 2.0  # base mm price of one chord crossing at p = 0
+_NEG_TRI_CAP = 2.0  # corridors a (tri, layer) holds before overuse
+
+#: Later-pass grow order: ``"span"`` reuses ``_net_order``; ``"failed"``
+#: puts last pass's failed or oversubscribed nets first, then span.
+_NEG_ORDER = "failed"
+
+_NEG_DEBUG = bool(os.environ.get("PRECIS_NEG_DEBUG"))
 
 #: Step-cost gate: a step through a triangle touching an edge this long
 #: is priced by the portal (point-to-segment) metric, not the
@@ -927,6 +960,28 @@ def _funnel(
     return path
 
 
+def _chord_crossed(chord: tuple[float, float, float, float], p: _V2, q: _V2) -> bool:
+    """One stored chord ``(px, py, qx, qy)`` vs the step ``p→q`` — the
+    same side/touch tests :func:`_chord_ok` applies, per chord, for the
+    negotiated passes that PRICE crossings instead of forbidding them."""
+    px, py, qx, qy = chord
+    dx, dy = qx - px, qy - py
+    dd = dx * dx + dy * dy
+    if dd <= 1e-18:
+        return False
+    dead = 1e-9 * math.sqrt(dd)
+    sa = _area2((px, py), (qx, qy), p)
+    sb = _area2((px, py), (qx, qy), q)
+    if (sa > dead and sb < -dead) or (sa < -dead and sb > dead):
+        return True
+    for s, (x, y) in ((sa, p), (sb, q)):
+        if abs(s) <= dead:
+            u = ((x - px) * dx + (y - py) * dy) / dd
+            if 1e-6 < u < 1.0 - 1e-6:
+                return True
+    return False
+
+
 def _chord_ok(cs: Iterable[tuple[float, float, float, float]], p: _V2, q: _V2) -> bool:
     """Both ends of the step ``p→q`` on the same side of every chord in
     ``cs`` — a point on the chord's line is a touch, never a crossing
@@ -936,22 +991,15 @@ def _chord_ok(cs: Iterable[tuple[float, float, float, float]], p: _V2, q: _V2) -
     sits on the earlier wire itself — a crossing, not a touch (a chord
     lying along a mesh edge is recorded under the triangle across the
     edge too, so it blocks a crossing of that edge)."""
-    for px, py, qx, qy in cs:
-        dx, dy = qx - px, qy - py
-        dd = dx * dx + dy * dy
-        if dd <= 1e-18:
-            continue
-        dead = 1e-9 * math.sqrt(dd)
-        sa = _area2((px, py), (qx, qy), p)
-        sb = _area2((px, py), (qx, qy), q)
-        if (sa > dead and sb < -dead) or (sa < -dead and sb > dead):
-            return False
-        for s, (x, y) in ((sa, p), (sb, q)):
-            if abs(s) <= dead:
-                u = ((x - px) * dx + (y - py) * dy) / dd
-                if 1e-6 < u < 1.0 - 1e-6:
-                    return False
-    return True
+    return not any(_chord_crossed(c, p, q) for c in cs)
+
+
+def _chords_crossed_n(
+    cs: Iterable[tuple[float, float, float, float]], p: _V2, q: _V2
+) -> int:
+    """How many chords the step ``p→q`` crosses — the negotiated
+    passes' present-overuse count for the chord resource."""
+    return sum(1 for c in cs if _chord_crossed(c, p, q))
 
 
 def _taut_pts(
@@ -3515,6 +3563,21 @@ def layer_dp(
 
 
 @dataclass(slots=True)
+class _NegCost:
+    """One negotiated pass's pricing state (td569540): ``soft`` makes
+    capacity closures and chord crossings priced resources instead of
+    walls (the final pass is hard); ``p`` the ramped present factor;
+    ``edge_hist``/``tri_hist``/``chord_hist`` the accumulated
+    ``(E, L)``/``(T, L)`` history tables every net's view reads."""
+
+    soft: bool
+    p: float
+    edge_hist: np.ndarray
+    tri_hist: np.ndarray
+    chord_hist: np.ndarray
+
+
+@dataclass(slots=True)
 class _OccView:
     """What the earlier nets left, as one net's search sees it (G2e):
     ``closed[e]`` the layers closed on ``e`` for this net (slots used up,
@@ -3523,7 +3586,9 @@ class _OccView:
     ``tri_used[t, l]`` how many earlier corridors hold tri ``t`` on layer
     ``l`` (the crossing signal — priced, not closed), ``dyn`` the
     dynamic index of those wires plus every planted via — stage C of
-    the plant test (G2g)."""
+    the plant test (G2g). The ``neg_*`` fields carry the negotiated
+    pass's tables (:class:`_NegCost`); all ``None``/``False`` is the
+    single-pass behaviour."""
 
     closed: np.ndarray
     occupied: np.ndarray
@@ -3534,6 +3599,17 @@ class _OccView:
     chords: dict[tuple[int, int], list[tuple[float, float, float, float]]] | None = None
     #: (edge, layer) -> earlier wires' crossing parameters, sorted.
     splits: dict[tuple[int, int], list[float]] | None = None
+    #: negotiated pass: crossings/capacity priced, not forbidden.
+    neg_soft: bool = False
+    neg_p: float = 0.0
+    #: (E, L) demand beyond capacity this net would add, per (edge,
+    #: layer) — filled by ``view`` only on soft passes.
+    neg_edge_over: np.ndarray | None = None
+    neg_edge_hist: np.ndarray | None = None
+    neg_tri_hist: np.ndarray | None = None
+    neg_chord_hist: np.ndarray | None = None
+    #: (T, L) same-layer crossings the committed wires still carry.
+    neg_tri_cross: np.ndarray | None = None
 
 
 def _net_tree(
@@ -3635,6 +3711,19 @@ def _net_tree(
     # be made. ``None`` splits/chords = the unsplit legacy view.
     splits_v = ov.splits if ov is not None and ov.splits is not None else {}
     chords_v = ov.chords if ov is not None else None
+    # negotiated pass (td569540): ``neg_soft`` prices capacity closures
+    # and chord crossings instead of forbidding them; the history
+    # tables price persisted oversubscription on every pass.
+    neg_soft = bool(ov is not None and ov.neg_soft)
+    neg_p = float(ov.neg_p) if ov is not None else 0.0
+    neg_any = ov is not None and (
+        neg_soft
+        or ov.neg_edge_over is not None
+        or ov.neg_edge_hist is not None
+        or ov.neg_tri_hist is not None
+        or ov.neg_chord_hist is not None
+        or ov.neg_tri_cross is not None
+    )
     ivmax = (
         1 + max((len(v) for v in splits_v.values()), default=0)
         if chords_v is not None
@@ -3671,6 +3760,8 @@ def _net_tree(
         return edge_xy(mesh, e, (lo + hi) * 0.5)
 
     def step_ok(tri: int, ly: int, p: _V2, q: _V2) -> bool:
+        if neg_soft:
+            return True
         return chords_v is None or _chord_ok(chords_v.get((tri, ly), ()), p, q)
 
     # one plant test per (edge, interval) per attempt: the point the
@@ -3693,12 +3784,12 @@ def _net_tree(
     # layers the net sees alike — open on the same edges, usable by the
     # same pins (the inners of a board with no drilled pad in the way) —
     # are one state: the search keeps the first of each kind
-    kinds: set[tuple[bytes, bytes, bytes, tuple[int, ...]]] = set()
+    kinds: set[tuple] = set()
     cand_list: list[int] = []
     for ly in range(n_layers):
         if not cand_mask >> ly & 1:
             continue
-        kind = (
+        kind: tuple = (
             ((open_ >> ly) & 1).astype(np.uint8).tobytes(),
             ov.occupied[:, ly].tobytes() if ov is not None else b"",
             ov.tri_used[:, ly].tobytes()
@@ -3706,6 +3797,26 @@ def _net_tree(
             else b"",
             tuple(pl >> ly & 1 for pl in pin_lay),
         )
+        if neg_any and ov is not None:
+            # layers alike on the negotiated tables too — a cheaper
+            # history layer must not hide behind a dearer twin (td569540)
+            kind += (
+                ov.neg_edge_over[:, ly].tobytes()
+                if ov.neg_edge_over is not None
+                else b"",
+                ov.neg_edge_hist[:, ly].tobytes()
+                if ov.neg_edge_hist is not None
+                else b"",
+                ov.neg_tri_hist[:, ly].tobytes()
+                if ov.neg_tri_hist is not None
+                else b"",
+                ov.neg_chord_hist[:, ly].tobytes()
+                if ov.neg_chord_hist is not None
+                else b"",
+                ov.neg_tri_cross[:, ly].tobytes()
+                if ov.neg_tri_cross is not None
+                else b"",
+            )
         if kind not in kinds:
             kinds.add(kind)
             cand_list.append(ly)
@@ -3732,6 +3843,80 @@ def _net_tree(
         if ov is not None and ov.tri_used is not None
         else {}
     )
+    # negotiated tables (td569540), memoryviews over EVERY layer — the
+    # goal gate can reach a layer the kind dedup folded away:
+    #   muln  = mul × (1 + p × edge overuse)
+    #   eadd  = edge history, mm per crossing
+    #   tmul  = tri_used × (1 + p × tri overuse past _NEG_TRI_CAP)
+    #   tadd  = tri history, mm per entry
+    #   chadd = chord history, mm per crossing
+    #   tcr   = committed crossings per (tri, layer) — chord overuse base
+    muln: dict[int, memoryview] = {}
+    eadd: dict[int, memoryview] = {}
+    tmul: dict[int, memoryview] = {}
+    tadd: dict[int, memoryview] = {}
+    chadd: dict[int, memoryview] = {}
+    tcr: dict[int, memoryview] = {}
+    if neg_any and ov is not None:
+        z_e = np.zeros(len(ctx.board))
+        z_t = np.zeros(len(mesh.tris))
+        for ly in range(n_layers):
+            base = (
+                occ * (1.0 + OCC_LAYER_COST * ov.occupied[:, ly])
+                if ov is not None
+                else occ
+            )
+            if ov.neg_edge_over is not None:
+                base = base * (1.0 + neg_p * ov.neg_edge_over[:, ly])
+            muln[ly] = memoryview(np.ascontiguousarray(base, dtype=float))
+            eadd[ly] = memoryview(
+                np.ascontiguousarray(
+                    ov.neg_edge_hist[:, ly] if ov.neg_edge_hist is not None else z_e,
+                    dtype=float,
+                )
+            )
+            tu = ov.tri_used[:, ly] if ov.tri_used is not None else z_t
+            tmul[ly] = memoryview(
+                np.ascontiguousarray(
+                    tu * (1.0 + neg_p * np.maximum(0.0, tu + 1.0 - _NEG_TRI_CAP)),
+                    dtype=float,
+                )
+            )
+            tadd[ly] = memoryview(
+                np.ascontiguousarray(
+                    ov.neg_tri_hist[:, ly] if ov.neg_tri_hist is not None else z_t,
+                    dtype=float,
+                )
+            )
+            chadd[ly] = memoryview(
+                np.ascontiguousarray(
+                    ov.neg_chord_hist[:, ly] if ov.neg_chord_hist is not None else z_t,
+                    dtype=float,
+                )
+            )
+            tcr[ly] = memoryview(
+                np.ascontiguousarray(
+                    ov.neg_tri_cross[:, ly] if ov.neg_tri_cross is not None else z_t,
+                    dtype=float,
+                )
+            )
+
+    def chord_cost(tri: int, ly: int, p: _V2, q: _V2) -> float:
+        """The priced chord crossings of step ``p→q`` inside ``tri`` on
+        layer ``ly`` — soft passes only: each crossed chord costs the
+        base price scaled by the present factor over this tri-layer's
+        committed crossings, plus its accumulated history (td569540)."""
+        if not neg_soft or chords_v is None:
+            return 0.0
+        cs = chords_v.get((tri, ly))
+        if not cs:
+            return 0.0
+        nc = _chords_crossed_n(cs, p, q)
+        if not nc:
+            return 0.0
+        return nc * (
+            _NEG_CROSS_MM * (1.0 + neg_p * (tcr[ly][tri] + nc)) + chadd[ly][tri]
+        )
 
     # A* heuristic: distance from each pin to the NEAREST POINT of each
     # crossed edge (segment distance, not midpoint — round-4 finding 4:
@@ -3848,17 +4033,22 @@ def _net_tree(
                         if not open_[e0] >> ly & 1:
                             continue
                         for iv in range(len(ivs(e0, ly))):
-                            if not step_ok(t0, ly, vj, mid(e0, ly, iv)):
+                            q_ = mid(e0, ly, iv)
+                            if not step_ok(t0, ly, vj, q_):
                                 continue
-                            push_state(
-                                e0,
-                                iv,
-                                t2,
-                                seg * mul[ly][e0]
-                                + (TRI_OCC_MM * tovm[ly][t2] if tovm else 0.0),
-                                j,
-                                ly,
-                            )
+                            if neg_any:
+                                cst = (
+                                    seg * muln[ly][e0]
+                                    + eadd[ly][e0]
+                                    + TRI_OCC_MM * tmul[ly][t2]
+                                    + tadd[ly][t2]
+                                    + chord_cost(t0, ly, vj, q_)
+                                )
+                            else:
+                                cst = seg * mul[ly][e0] + (
+                                    TRI_OCC_MM * tovm[ly][t2] if tovm else 0.0
+                                )
+                            push_state(e0, iv, t2, cst, j, ly)
 
         def push_goals(
             j: int,
@@ -3903,11 +4093,15 @@ def _net_tree(
                         m0 = pin_lay[j2] & -pin_lay[j2]
                         ly2 = m0.bit_length() - 1
                         iv2 = interval_at(e, ly2, via[2])
-                        if not step_ok(t, ly2, mid(e, ly2, iv2), vpos[j2]):
+                        qp = mid(e, ly2, iv2)
+                        if not step_ok(t, ly2, qp, vpos[j2]):
                             continue
-                        extra = VIA_COST_MM
-                    elif not step_ok(t, ly, mid(e, ly, iv), vpos[j2]):
-                        continue
+                        extra = VIA_COST_MM + chord_cost(t, ly2, qp, vpos[j2])
+                    else:
+                        qp = mid(e, ly, iv)
+                        if not step_ok(t, ly, qp, vpos[j2]):
+                            continue
+                        extra = chord_cost(t, ly, qp, vpos[j2])
                     total = g + extra + float(pin_dist[e, j2])
                     heapq.heappush(heap, (total, 1, j2, st, total))
                 if fit[e]:
@@ -3940,14 +4134,25 @@ def _net_tree(
                     if t2 < 0 or not open_[e2] >> ly & 1:
                         continue
                     for iv2 in range(len(ivs(e2, ly))):
-                        if not step_ok(t, ly, mid_e, mid(e2, ly, iv2)):
+                        q_ = mid(e2, ly, iv2)
+                        if not step_ok(t, ly, mid_e, q_):
                             continue
                         nxt = ((e2 * nl + ly) * ivmax + iv2) * span + t2
-                        nd = (
-                            g
-                            + wstep * mul[ly][e2]
-                            + (TRI_OCC_MM * tovm[ly][t2] if tovm else 0.0)
-                        )
+                        if neg_any:
+                            nd = (
+                                g
+                                + wstep * muln[ly][e2]
+                                + eadd[ly][e2]
+                                + TRI_OCC_MM * tmul[ly][t2]
+                                + tadd[ly][t2]
+                                + chord_cost(t, ly, mid_e, q_)
+                            )
+                        else:
+                            nd = (
+                                g
+                                + wstep * mul[ly][e2]
+                                + (TRI_OCC_MM * tovm[ly][t2] if tovm else 0.0)
+                            )
                         if nd < dist.get(nxt, INF) - 1e-12:
                             prev[nxt] = st
                             src[nxt] = src[st]
@@ -4721,6 +4926,10 @@ class _Occupancy:
         # the crossing signal the layered search prices (G2g): crossing
         # a wire on its layer inside a triangle it routes through
         self.tri_used = np.zeros((len(mesh.tris), n_layers))
+        # negotiated passes: same-layer chord crossings the committed
+        # wires still carry per (tri, layer) — the chord resource's
+        # present overuse (td569540)
+        self.cross_used = np.zeros((len(mesh.tris), n_layers))
         # G2h: every earlier wire's chord inside each corridor triangle
         # per layer, and the crossing parameters splitting each edge —
         # the search's legality, not a price
@@ -4778,14 +4987,18 @@ class _Occupancy:
             new.add(k, built)
         return new
 
-    def view(self, k: int) -> _OccView:
+    def view(self, k: int, neg: _NegCost | None = None) -> _OccView:
         """Net ``k``'s view: a layer closes on an edge it has no slot
         left on, unless the edge only bounds the net's own pads. A
         planted via closes EVERY layer of every edge its barrel plus the
-        net's track stand-off covers (G2g), the hop edge included."""
+        net's track stand-off covers (G2g), the hop edge included.
+        ``neg`` (td569540): on a soft pass the slot closures become a
+        priced ``neg_edge_over`` table instead — only the via reach
+        stays a wall — and the history tables ride the view."""
         c = self.corridor
         over = (self.used > 1e-9) & (self.used + c.weight[k] > self.cap + 1e-9)
         bits = (over * (1 << np.arange(self.n_layers))).sum(axis=1).astype(np.int64)
+        exempt: list[int] = []
         for e in np.flatnonzero(bits):
             # only a true channel closes: an edge two pads bound. An edge
             # along one pad's side is a sliver of its own free stretch,
@@ -4795,18 +5008,41 @@ class _Occupancy:
                 or len(c.edge_pads.get(int(e), ())) < 2
             ):
                 bits[e] = 0
+                exempt.append(int(e))
         t_k, c_k = c.rules_used[k]
-        bits[self.via_close < t_k / 2.0 + c_k + FAB_QUANTUM_MM] |= (
+        via_bits = np.zeros(len(bits), dtype=np.int64)
+        via_bits[self.via_close < t_k / 2.0 + c_k + FAB_QUANTUM_MM] |= (
             1 << self.n_layers
         ) - 1
-        bits[self.via_clear < t_k / 2.0 + FAB_QUANTUM_MM] |= (1 << self.n_layers) - 1
+        via_bits[self.via_clear < t_k / 2.0 + FAB_QUANTUM_MM] |= (
+            1 << self.n_layers
+        ) - 1
+        edge_over = None
+        if neg is not None and neg.soft:
+            # demand beyond capacity this net's wire would add — the
+            # same (used, weight, cap) reading the hard closure uses,
+            # kept as a magnitude for the present factor (td569540)
+            edge_over = np.where(
+                self.used > 1e-9,
+                np.maximum(0.0, self.used + c.weight[k] - self.cap),
+                0.0,
+            )
+            if exempt:
+                edge_over[exempt] = 0.0
         return _OccView(
-            closed=bits,
+            closed=via_bits if neg is not None and neg.soft else bits | via_bits,
             occupied=self.used > 1e-9,
             dyn=self.dyn_index(),
             tri_used=self.tri_used,
             chords=self.chords,
             splits=self.splits,
+            neg_soft=neg is not None and neg.soft,
+            neg_p=neg.p if neg is not None else 0.0,
+            neg_edge_over=edge_over,
+            neg_edge_hist=neg.edge_hist if neg is not None else None,
+            neg_tri_hist=neg.tri_hist if neg is not None else None,
+            neg_chord_hist=neg.chord_hist if neg is not None else None,
+            neg_tri_cross=self.cross_used if neg is not None else None,
         )
 
     def dyn_index(
@@ -4982,7 +5218,18 @@ class _Occupancy:
                 else edge_xy(self.mesh, int(b.edges[i]), float(b.t[i]))
             )
             if math.hypot(q_[0] - p_[0], q_[1] - p_[1]) > 1e-9:
-                self.chords.setdefault((int(tr), int(lays[i])), []).append((*p_, *q_))
+                cs_key = (int(tr), int(lays[i]))
+                cs = self.chords.get(cs_key)
+                if cs:
+                    # negotiated passes price this (tri, layer)'s chord
+                    # crossings by how many the committed wires carry —
+                    # count the new chord's crossings of the earlier ones
+                    # (the mirrored record below is the same physical
+                    # segment and is not counted twice)
+                    self.cross_used[int(tr), int(lays[i])] += sum(
+                        1 for c in cs if _chord_crossed(c, p_, q_)
+                    )
+                self.chords.setdefault(cs_key, []).append((*p_, *q_))
                 # a chord lying along one of the tri's own edges (every
                 # fan spoke through a wrapped vertex leaves along the
                 # spoke) is invisible to a step ending on that edge in
@@ -5093,6 +5340,8 @@ def _relayer_branch(
     off the emit (reverting a stalled chain measured worse)."""
     r_site = rule[2] / 2.0
     clearance = rule[1]
+    drill_k = float(rule[3] if len(rule) > 3 and rule[3] else rule[2] * 0.5)
+    hh_r = max(0.0, drill_k + JLC_VIA_HOLE_TO_HOLE_MM - r_site - clearance)
     while True:
         lays = branch.layers
         on_layer = [
@@ -5152,6 +5401,8 @@ def _relayer_branch(
             if pt is None:
                 return branch, edges2, hits
             hops.append((c, pt[0], pt[1], pt[2]))
+            if dyn is not None:
+                dyn.add_disc(pt[0], pt[1], hh_r, net=ANY_NET)
         rebuilt, re2 = _build_branch(
             ctx,
             mesh,
@@ -5218,6 +5469,13 @@ def _replant_branch(
     r_site = rule[2] / 2.0
     clearance = rule[1]
     dyn = occupancy.dyn_index(extra=own_vias)
+    # the committed sibling hops must also hold the fab's same-net
+    # hole-to-hole wall — ``dyn_index``'s discs carry barrel reach
+    # only, which collapses under near-zero rules (see ``_grow_net``)
+    drill_k = float(rule[3] if len(rule) > 3 and rule[3] else rule[2] * 0.5)
+    hh_r = max(0.0, drill_k + JLC_VIA_HOLE_TO_HOLE_MM - r_site - clearance)
+    for x, y, _r in own_vias:
+        dyn.add_disc(x, y, hh_r, net=ANY_NET)
     bnd_old = _bounds_of(occupancy, edges2, branch.t, branch.layers)
     plantable = [
         occupancy.planter.point(
@@ -5262,6 +5520,7 @@ def _replant_branch(
             return None
         hops.append((c, pt[0], pt[1], pt[2]))
         dyn.add_disc(pt[0], pt[1], r_site, net=ANY_NET)
+        dyn.add_disc(pt[0], pt[1], hh_r, net=ANY_NET)
     rebuilt, re2 = _build_branch(
         ctx,
         mesh,
@@ -5327,6 +5586,19 @@ def _grow_net(
     )
     open_v = masks.open & ~view.closed
     clearance_k = rule[1]
+    # Same-net via pairs owe the fab's drill-wall spacing — the emit
+    # guard's JLC hole-to-hole rule — which the barrel+clearance term
+    # in ``_colliding`` only covers while vias are full-sized: under
+    # near-zero rules both shrink to ~0 and coincident hops slipped
+    # through to be withdrawn downstream (x2 rev VBAT_UV/DEC3). The
+    # rule tuple carries no drill, so estimate it at the house
+    # proportion (drill ≈ dia/2 — JLC 0.6/0.3); where vias are
+    # real-sized the barrel term still dominates and nothing changes.
+    drill_k = float(rule[3] if len(rule) > 3 and rule[3] else rule[2] * 0.5)
+    hh_need = drill_k + JLC_VIA_HOLE_TO_HOLE_MM
+    hh_disc_r = max(
+        0.0, drill_k + JLC_VIA_HOLE_TO_HOLE_MM - rule[2] / 2.0 - clearance_k
+    )
     cand_mask = _cand_mask(_net_layers(d, k, n_layers), n_layers)
     built: list[_Built] = []
     cross: list[tuple[int, int, int, int, int]] = []
@@ -5342,13 +5614,16 @@ def _grow_net(
     def _colliding(b: WirePath) -> set[int]:
         """``b``'s via indices closer than drill-to-drill clearance to
         an earlier via — the net's own ``placed`` plus ``b``'s own
-        earlier ones, in via order."""
+        earlier ones, in via order. The reach is the larger of the
+        barrel+clearance term and the fab's hole-to-hole wall: at
+        near-zero rules the barrel term collapses and only the wall
+        still separates two drills (``hh_need``)."""
         seen = [(x, y, r) for x, y, r, _bi in placed]
         out: set[int] = set()
         for vi, v in enumerate(b.vias):
             if any(
                 math.dist((v.x, v.y), (px, py))
-                < pr + v.r_site_mm + clearance_k + FAB_QUANTUM_MM
+                < max(pr + v.r_site_mm + clearance_k, hh_need) + FAB_QUANTUM_MM
                 for px, py, pr in seen
             ):
                 out.add(vi)
@@ -5372,7 +5647,10 @@ def _grow_net(
             rule[2],
             rule[3] if len(rule) > 3 else 0.0,
             bounds=bounds,
-            chords=view.chords,
+            # soft negotiated passes priced the crossings the search
+            # took — the retrack must not reject them back to the
+            # two-pointer corridor (td569540); hard passes unchanged
+            chords=None if view.neg_soft else view.chords,
             standoff_mm=rule[0] / 2.0 + rule[1] + FAB_QUANTUM_MM,
         )
         if edges2:
@@ -5444,6 +5722,12 @@ def _grow_net(
         for v in branch.vias:
             placed.append((v.x, v.y, v.r_site_mm, len(built)))
             dyn_own.add_disc(v.x, v.y, v.r_site_mm, net=ANY_NET)
+            # the same-net hole-to-hole wall as a second disc: the
+            # barrel disc above collapses under near-zero rules, and
+            # without this reach a sibling hop's replant re-sites onto
+            # the standing drill (``hh_disc_r`` solves the index's
+            # ``r_q + r_b + max(c_q, c_b)`` form for the pair rule)
+            dyn_own.add_disc(v.x, v.y, hh_disc_r, net=ANY_NET)
         built.append(_Built(branch, edges2))
     return _NetAttempt(found, comps, masks, built, cross, collisions)
 
@@ -5467,6 +5751,50 @@ def _net_order(mesh: TopoMesh, d: TopoDesign, n_layers: int) -> list[int]:
         return (len(cand) > 1, span, k)
 
     return sorted(range(len(d.net_pins)), key=key)
+
+
+def _neg_touch(
+    occupancy: _Occupancy,
+    builts: Mapping[int, list[_Built]],
+    keys: Mapping[int, tuple[int, int]],
+    collisions: Sequence[tuple[int, int, int]],
+) -> set[int]:
+    """Last pass's nets that failed or still sit on an oversubscribed
+    resource — the ``"failed"`` grow order's priority set (td569540):
+    stranded, crossing or colliding nets first, then the nets whose
+    wires hold an over-capacity ``(edge, layer)`` slot or a crossed
+    ``(tri, layer)`` chord resource."""
+    coll = {c[0] for c in collisions}
+    out: set[int] = set()
+    for k, bl in builts.items():
+        comps_n, cross_n = keys.get(k, (1, 0))
+        if comps_n > 1 or cross_n or k in coll:
+            out.add(k)
+            continue
+        hit = False
+        for b in bl:
+            br = b.branch
+            lays = br.layers
+            if lays is None or len(lays) != len(br.edges) + 1:
+                continue
+            for i, e in enumerate(br.edges):
+                if (
+                    occupancy.used[int(e), int(lays[i])]
+                    > occupancy.cap[int(e), int(lays[i])] + 1e-9
+                ):
+                    hit = True
+                    break
+            if hit:
+                break
+            for i, t_ in enumerate(br.tris):
+                if occupancy.cross_used[int(t_), int(lays[i])] > 0:
+                    hit = True
+                    break
+            if hit:
+                break
+        if hit:
+            out.add(k)
+    return out
 
 
 #: S2 (topo-route-shove): after the order loop, a shove phase —
@@ -6362,6 +6690,7 @@ def build_wires(
     shove: bool = True,
     net_clearance_by_name: Mapping[str, float] | None = None,
     masks: BoardMasks | None = None,
+    negotiate: int = _NEGOTIATE_ITERS,
 ) -> Wires:
     """Every net's wire tree on the mesh — spec §2's wires. Returns a
     :class:`Wires`; a component of a net no path can link to the net's
@@ -6381,7 +6710,10 @@ def build_wires(
     ``net_clearance_by_name`` also covers frozen-copper nets without a
     routed tree (a plane or singleton); their rules cannot be recovered
     from the per-routed-net tuples. ``masks`` carries the final planner's
-    crossing-resolution tie-breaks into shove validation and selection."""
+    crossing-resolution tie-breaks into shove validation and selection.
+    ``negotiate`` is the negotiated-congestion pass count (td569540):
+    ``1`` is the single hard pass; more runs soft priced passes before
+    the final hard one and emits the best ledger."""
     pose_a = np.asarray(d.pose0 if pose is None else pose)
     ctx = _make_ctx(mesh, d, n_layers, pose_a)
     pin_vids = frozenset(int(v) for v in mesh.pin_vertex)
@@ -6470,310 +6802,514 @@ def build_wires(
         )
         return shv._preserves_guard(before, after, {k, j})
 
-    for k in route_order:
-        pins_arr = d.net_pins[k]
-        cand = _net_layers(d, k, n_layers)
-        net_layers[k] = cand
-        trace_mm, clearance_mm = rules_used[k]
-        cand_mask = _cand_mask(cand, n_layers)
-        occ = corridor.occ(used)
+    n_iters = max(1, int(negotiate))
+    hist_e = np.zeros((n_e, n_layers))
+    hist_t = np.zeros((len(mesh.tris), n_layers))
+    hist_c = np.zeros((len(mesh.tris), n_layers))
+    p_fac = _NEG_P0
+    prev_keys: dict[int, tuple[int, int]] = {}
+    prev_touch: set[int] = set()
+    prev_unreach: list[Unreachable] = []
+    prev_coll: list[tuple[int, int, int]] = []
+    prev_extra: dict[int, list[tuple[int, list[int]]]] = {}
+    prev_partners: dict[int, list[int]] = {}
+    prev_neg: list[tuple[int, int, bool]] = []
+    best_it: tuple | None = None
 
-        def attempt(
-            v: _OccView,
-            k: int = k,
-            occ: np.ndarray = occ,
-            occupancy: _Occupancy = occupancy,
-        ) -> _NetAttempt:
-            return _grow_net(
-                ctx,
-                mesh,
-                d,
-                n_layers,
-                k,
-                (*rules_used[k], via_dia[k], via_drill[k]),
-                occ,
-                pin_vids,
-                occupancy,
-                v,
-            )
+    def _span_of(k: int) -> float:
+        pvs = [int(mesh.pin_vertex[p]) for p in d.net_pins[k]]
+        if not pvs:
+            return 0.0
+        vv = mesh.verts[np.asarray(pvs, dtype=int)]
+        return float(np.hypot(*(vv.max(axis=0) - vv.min(axis=0))))
 
-        view = occupancy.view(k)
-        best = attempt(view)
-        blocked_by: tuple[int, ...] = ()
-        comps, net_masks = best.comps, best.masks
-        pins_l: list[int] = []
-        regions: list[set[int]] = []
-        main_i = 0
-        if len(comps) > 1:
-            # no way under the earlier wires' chords and closures: ONE
-            # earlier net may be re-grown once to make room (G2h). The
-            # probe drops only the chord legality — a path under it was
-            # chord-blocked (the wires it still crosses are the
-            # partners); a probe that still fails is closure-blocked and
-            # the cut the regions share names them.
-            pins_l = [int(p) for p in pins_arr]
-            regions = [
-                _flood_region(ctx, mesh, [pins_l[j] for j in comp], net_masks.base_pass)
-                for comp in comps
-            ]
-            main_i = max(
-                range(len(comps)),
-                key=lambda ci: (len(regions[ci]), len(comps[ci])),
+    spans = [_span_of(k) for k in range(len(d.net_pins))]
+    for it in range(n_iters):
+        soft = n_iters > 1 and it < n_iters - 1
+        if it == 0 or _NEG_ORDER != "failed":
+            order = route_order
+        else:
+            # last pass's failed or oversubscribed nets grow first,
+            # then span — the contested resources go to the nets that
+            # need them most (td569540)
+            order = sorted(
+                range(len(d.net_pins)),
+                key=lambda kk: (0 if kk in prev_touch else 1, spans[kk], kk),
             )
-            probe = attempt(dataclasses.replace(view, chords=None, splits=None))
-            wall_built: list[_Built] = []
-            cut: set[int] = set()
-            need: dict[int, set[int]] = {}
-            if len(probe.comps) == 1:
-                probe.cross = _witness_crossings(occupancy, probe.built)
-                partners = [
-                    n
-                    for n, _c in Counter(
-                        int(occupancy.lines[j][0].net)
-                        for _i, _lo, j, _s0, _s1 in probe.cross
-                    ).most_common()
-                ]
-                wall_built = probe.built
+        keys = dict(prev_keys)
+        if it == 0:
+            grow_set: set[int] | None = None
+            unreachable = []
+            collisions = []
+            extra = {}
+            partners_of = {}
+            negotiated = []
+        else:
+            # selective re-route (td569540): a net whose wires satisfy
+            # every resource — no failure, no crossing, no over-capacity
+            # slot, no crossed chord — keeps them; re-growing it against
+            # an unchanged neighbourhood can only replay the same
+            # search. The nets that failed or sit on oversubscription,
+            # plus the partners recorded against them, pay the grow.
+            # An empty touch set means the detection missed something —
+            # fall back to a full pass rather than emit stale prices.
+            grow_set = set(prev_touch)
+            for kk in prev_touch:
+                grow_set.update(prev_partners.get(kk, ()))
+            if not grow_set:
+                grow_set = None
+                unreachable = []
+                collisions = []
+                extra = {}
+                partners_of = {}
+                negotiated = []
             else:
-                # the probe fails too — closures, not chords, wall it:
-                # flood each comp's reach over the (tri, layer) states
-                # the effective passability leaves; the need to wall for
-                # the negotiation is the comp's blocked boundary that an
-                # earlier wire crosses on this net's layers — the
-                # consumed channel — and it names the partner to ask.
-                # The boundary keeps the layer: the capacity a refused
-                # negotiation names is the slots on the layers the net
-                # could actually be on there (``corridor.cut``'s extra).
-                open_v = net_masks.open & ~view.closed
-                cand_l = [ly for ly in range(n_layers) if cand_mask >> ly & 1]
-                wire_edges: set[int] = set()
-                for _b, _ln, _g, lays in occupancy.lines:
-                    if not lays:
-                        continue
-                    for i, e_ in enumerate(_b.edges):
-                        if cand_mask >> int(lays[i]) & 1:
-                            wire_edges.add(int(e_))
-                boundary: set[tuple[int, int]] = set()
-                for ci, comp in enumerate(comps):
-                    if ci == main_i:
-                        continue
-                    reg = _flood_states(
-                        ctx,
-                        mesh,
-                        [pins_l[j2] for j2 in comp],
-                        [
-                            _pin_layers(d, pins_l[j2], n_layers, cand_mask)
-                            for j2 in comp
-                        ],
-                        open_v,
-                        net_masks.fit,
-                        cand_l,
-                    )
-                    for t, ly in reg:
-                        for e in (int(x) for x in mesh.tri_edges[t]):
-                            t2 = int(mesh.edge_tris[e, 0])
-                            t2 = int(mesh.edge_tris[e, 1]) if t2 == t else t2
-                            if (t2, ly) not in reg:
-                                boundary.add((e, ly))
-                for e, ly in boundary:
-                    if e in wire_edges:
-                        need.setdefault(e, set()).add(ly)
-                cut |= set(need)
-                partners = [
-                    n for n, _c in occupancy.nets_on(cut, cand_mask).most_common()
+                unreachable = [u for u in prev_unreach if u.net not in grow_set]
+                collisions = [c for c in prev_coll if c[0] not in grow_set]
+                extra = {
+                    e: [r for r in rows if r[0] not in grow_set]
+                    for e, rows in prev_extra.items()
+                }
+                extra = {e: rows for e, rows in extra.items() if rows}
+                partners_of = {
+                    kk: v for kk, v in prev_partners.items() if kk not in grow_set
+                }
+                negotiated = [
+                    t for t in prev_neg if t[0] not in grow_set and t[1] not in grow_set
                 ]
-            partners_of[k] = partners
-            j = partners[0] if partners and partners[0] in builts else None
-            kept = False
-            if j is not None:
-                blocked_by = (j,)
-                kept_pairs = [
-                    (kk, bb) for kk, bl in builts.items() if kk != j for bb in bl
-                ]
-                occ_j = occupancy.rebuild([*kept_pairs, *[(k, b) for b in wall_built]])
-                view_j = occ_j.view(j)
-                if cut:
-                    cut_closed = np.zeros(n_e, dtype=np.int64)
-                    cut_closed[sorted(cut)] = cand_mask
-                    view_j = dataclasses.replace(
-                        view_j, closed=view_j.closed | cut_closed
-                    )
-                used_j = corridor.used_of(
-                    b.branch for _kk, bl in builts.items() if _kk != j for b in bl
-                )
-                retry_j = _grow_net(
+        neg_cost = (
+            _NegCost(
+                soft=soft,
+                p=p_fac,
+                edge_hist=hist_e,
+                tri_hist=hist_t,
+                chord_hist=hist_c,
+            )
+            if n_iters > 1
+            else None
+        )
+        for k in order:
+            if grow_set is not None and k not in grow_set:
+                continue
+            # rip the net's previous wires out before re-growing: the
+            # occupancy below holds every OTHER net's current wires
+            builts.pop(k, None)
+            kept_it = [(j, b) for j in route_order for b in builts.get(j, ())]
+            occupancy = occupancy.rebuild(kept_it)
+            used = corridor.used_of(b.branch for _jj, b in kept_it)
+            pins_arr = d.net_pins[k]
+            cand = _net_layers(d, k, n_layers)
+            net_layers[k] = cand
+            trace_mm, clearance_mm = rules_used[k]
+            cand_mask = _cand_mask(cand, n_layers)
+            occ = corridor.occ(used)
+
+            def attempt(
+                v: _OccView,
+                k: int = k,
+                occ: np.ndarray = occ,
+                occupancy: _Occupancy = occupancy,
+            ) -> _NetAttempt:
+                return _grow_net(
                     ctx,
                     mesh,
                     d,
                     n_layers,
-                    j,
-                    (*rules_used[j], via_dia[j], via_drill[j]),
-                    corridor.occ(used_j),
+                    k,
+                    (*rules_used[k], via_dia[k], via_drill[k]),
+                    occ,
                     pin_vids,
-                    occ_j,
-                    view_j,
+                    occupancy,
+                    v,
                 )
-                # Keep the order loop's connected-partner requirement.
-                # Its prefix guard cannot know which existing offence later
-                # ordinary grows would heal: retaining a disconnected partner
-                # here can prevent that healing on an untouched net. Broader
-                # failed-partner rescue belongs to the complete-state shove.
-                fail_j = 1 if keys[j][0] > 1 or keys[j][1] else 0
-                if len(retry_j.comps) == 1 and (
-                    not _wit_stats(occ_j, retry_j)[0] or fail_j
-                ):
-                    occ_k = occupancy.rebuild(
-                        [*kept_pairs, *[(j, b) for b in retry_j.built]]
+
+            view = occupancy.view(k, neg=neg_cost)
+            best = attempt(view)
+            blocked_by: tuple[int, ...] = ()
+            comps, net_masks = best.comps, best.masks
+            pins_l: list[int] = []
+            regions: list[set[int]] = []
+            main_i = 0
+            if len(comps) > 1:
+                # no way under the earlier wires' chords and closures: ONE
+                # earlier net may be re-grown once to make room (G2h). The
+                # probe drops only the chord legality — a path under it was
+                # chord-blocked (the wires it still crosses are the
+                # partners); a probe that still fails is closure-blocked and
+                # the cut the regions share names them.
+                pins_l = [int(p) for p in pins_arr]
+                regions = [
+                    _flood_region(
+                        ctx, mesh, [pins_l[j] for j in comp], net_masks.base_pass
                     )
-                    used_k = corridor.used_of(
-                        itertools.chain(
-                            (
-                                b.branch
-                                for _kk, bl in builts.items()
-                                if _kk != j
-                                for b in bl
-                            ),
-                            (b.branch for b in retry_j.built),
+                    for comp in comps
+                ]
+                main_i = max(
+                    range(len(comps)),
+                    key=lambda ci: (len(regions[ci]), len(comps[ci])),
+                )
+                probe = attempt(dataclasses.replace(view, chords=None, splits=None))
+                wall_built: list[_Built] = []
+                cut: set[int] = set()
+                need: dict[int, set[int]] = {}
+                if len(probe.comps) == 1:
+                    probe.cross = _witness_crossings(occupancy, probe.built)
+                    partners = [
+                        n
+                        for n, _c in Counter(
+                            int(occupancy.lines[j][0].net)
+                            for _i, _lo, j, _s0, _s1 in probe.cross
+                        ).most_common()
+                    ]
+                    wall_built = probe.built
+                else:
+                    # the probe fails too — closures, not chords, wall it:
+                    # flood each comp's reach over the (tri, layer) states
+                    # the effective passability leaves; the need to wall for
+                    # the negotiation is the comp's blocked boundary that an
+                    # earlier wire crosses on this net's layers — the
+                    # consumed channel — and it names the partner to ask.
+                    # The boundary keeps the layer: the capacity a refused
+                    # negotiation names is the slots on the layers the net
+                    # could actually be on there (``corridor.cut``'s extra).
+                    open_v = net_masks.open & ~view.closed
+                    cand_l = [ly for ly in range(n_layers) if cand_mask >> ly & 1]
+                    wire_edges: set[int] = set()
+                    for _b, _ln, _g, lays in occupancy.lines:
+                        if not lays:
+                            continue
+                        for i, e_ in enumerate(_b.edges):
+                            if cand_mask >> int(lays[i]) & 1:
+                                wire_edges.add(int(e_))
+                    boundary: set[tuple[int, int]] = set()
+                    for ci, comp in enumerate(comps):
+                        if ci == main_i:
+                            continue
+                        reg = _flood_states(
+                            ctx,
+                            mesh,
+                            [pins_l[j2] for j2 in comp],
+                            [
+                                _pin_layers(d, pins_l[j2], n_layers, cand_mask)
+                                for j2 in comp
+                            ],
+                            open_v,
+                            net_masks.fit,
+                            cand_l,
                         )
+                        for t, ly in reg:
+                            for e in (int(x) for x in mesh.tri_edges[t]):
+                                t2 = int(mesh.edge_tris[e, 0])
+                                t2 = int(mesh.edge_tris[e, 1]) if t2 == t else t2
+                                if (t2, ly) not in reg:
+                                    boundary.add((e, ly))
+                    for e, ly in boundary:
+                        if e in wire_edges:
+                            need.setdefault(e, set()).add(ly)
+                    cut |= set(need)
+                    partners = [
+                        n for n, _c in occupancy.nets_on(cut, cand_mask).most_common()
+                    ]
+                partners_of[k] = partners
+                j = partners[0] if partners and partners[0] in builts else None
+                kept = False
+                if j is not None:
+                    blocked_by = (j,)
+                # Soft negotiated passes skip the one-shot partner swap:
+                # rip-up/reroute IS the negotiation there — the partners
+                # join next pass's grow set through partners_of and yield
+                # by price, not by a guarded swap whose emit-shape check
+                # costs a full plan per try (td569540). The final hard
+                # pass keeps the G2h negotiation exactly as before.
+                if j is not None and not view.neg_soft:
+                    kept_pairs = [
+                        (kk, bb) for kk, bl in builts.items() if kk != j for bb in bl
+                    ]
+                    occ_j = occupancy.rebuild(
+                        [*kept_pairs, *[(k, b) for b in wall_built]]
                     )
-                    retry_k = _grow_net(
+                    view_j = occ_j.view(j, neg=neg_cost)
+                    if cut:
+                        cut_closed = np.zeros(n_e, dtype=np.int64)
+                        cut_closed[sorted(cut)] = cand_mask
+                        view_j = dataclasses.replace(
+                            view_j, closed=view_j.closed | cut_closed
+                        )
+                    used_j = corridor.used_of(
+                        b.branch for _kk, bl in builts.items() if _kk != j for b in bl
+                    )
+                    retry_j = _grow_net(
                         ctx,
                         mesh,
                         d,
                         n_layers,
-                        k,
-                        (*rules_used[k], via_dia[k], via_drill[k]),
-                        corridor.occ(used_k),
+                        j,
+                        (*rules_used[j], via_dia[j], via_drill[j]),
+                        corridor.occ(used_j),
                         pin_vids,
-                        occ_k,
-                        occ_k.view(k),
+                        occ_j,
+                        view_j,
                     )
-                    # Judge both attempts in the complete proposed cell.
-                    # In particular j must see k, which is not yet in occ_k.
-                    occ_after = occ_k.rebuild(
-                        [
-                            *kept_pairs,
-                            *((j, b) for b in retry_j.built),
-                            *((k, b) for b in retry_k.built),
-                        ]
-                    )
-                    wit_k = _wit_stats(occ_after, retry_k)
-                    wit_j = _wit_stats(occ_after, retry_j)
-                    if (
-                        len(retry_k.comps) == 1
-                        and not wit_k[1]
-                        and _accept_stats(
-                            _sum_stats(
-                                (
-                                    _wit_stats(occupancy, best),
-                                    _key_stats(keys, builts, j),
-                                )
-                            ),
-                            _sum_stats((wit_k, wit_j)),
-                            {k} | ({j} if fail_j else set()),
-                            ({k} if wit_k[0] else set()) | ({j} if wit_j[0] else set()),
-                        )
-                        and _preserves_other_nets(occupancy, occ_after, builts, {k, j})
-                        and preserves_retry(k, j, best, retry_k, retry_j, occ_after)
+                    # Keep the order loop's connected-partner requirement.
+                    # Its prefix guard cannot know which existing offence later
+                    # ordinary grows would heal: retaining a disconnected partner
+                    # here can prevent that healing on an untouched net. Broader
+                    # failed-partner rescue belongs to the complete-state shove.
+                    fail_j = 1 if keys[j][0] > 1 or keys[j][1] else 0
+                    if len(retry_j.comps) == 1 and (
+                        not _wit_stats(occ_j, retry_j)[0] or fail_j
                     ):
-                        builts[j] = retry_j.built
-                        keys[j] = (len(retry_j.comps), wit_j[1])
-                        occupancy, used, best = occ_k, used_k, retry_k
-                        # j is replaced wholesale: its earlier
-                        # collisions and Unreachable rows go with it —
-                        # a retry_j that fails under the tie-break is
-                        # named again from its own attempt (S2)
-                        collisions[:] = [c for c in collisions if c[0] != j]
-                        collisions.extend(retry_j.collisions)
-                        unreachable[:] = [u for u in unreachable if u.net != j]
-                        cross_j = _witness_crossings(occ_after, retry_j.built)
-                        blocked_j = tuple(
-                            n
-                            for n, _c in sorted(
-                                Counter(
-                                    int(occ_after.lines[x][0].net)
-                                    for _i, _lo, x, _s0, _s1 in cross_j
-                                ).items(),
-                                key=lambda kv: (-kv[1], kv[0]),
+                        occ_k = occupancy.rebuild(
+                            [*kept_pairs, *[(j, b) for b in retry_j.built]]
+                        )
+                        used_k = corridor.used_of(
+                            itertools.chain(
+                                (
+                                    b.branch
+                                    for _kk, bl in builts.items()
+                                    if _kk != j
+                                    for b in bl
+                                ),
+                                (b.branch for b in retry_j.built),
                             )
                         )
-                        if blocked_j:
-                            partners_of[j] = list(blocked_j)
-                        elif not wit_j[0]:
-                            partners_of.pop(j, None)
-                        if len(retry_j.comps) > 1:
-                            blocked_j = blocked_j or (k,)
-                            unreachable += _unreachable_rows(
-                                ctx,
-                                mesh,
-                                d,
-                                j,
-                                n_layers,
-                                retry_j.comps,
-                                retry_j.masks,
-                                rules_used[j][0] / 2.0
-                                + rules_used[j][1]
-                                + FAB_QUANTUM_MM,
-                                blocked_j,
+                        retry_k = _grow_net(
+                            ctx,
+                            mesh,
+                            d,
+                            n_layers,
+                            k,
+                            (*rules_used[k], via_dia[k], via_drill[k]),
+                            corridor.occ(used_k),
+                            pin_vids,
+                            occ_k,
+                            occ_k.view(k, neg=neg_cost),
+                        )
+                        # Judge both attempts in the complete proposed cell.
+                        # In particular j must see k, which is not yet in occ_k.
+                        occ_after = occ_k.rebuild(
+                            [
+                                *kept_pairs,
+                                *((j, b) for b in retry_j.built),
+                                *((k, b) for b in retry_k.built),
+                            ]
+                        )
+                        wit_k = _wit_stats(occ_after, retry_k)
+                        wit_j = _wit_stats(occ_after, retry_j)
+                        if (
+                            len(retry_k.comps) == 1
+                            and not wit_k[1]
+                            and _accept_stats(
+                                _sum_stats(
+                                    (
+                                        _wit_stats(occupancy, best),
+                                        _key_stats(keys, builts, j),
+                                    )
+                                ),
+                                _sum_stats((wit_k, wit_j)),
+                                {k} | ({j} if fail_j else set()),
+                                ({k} if wit_k[0] else set())
+                                | ({j} if wit_j[0] else set()),
                             )
-                            partners_of[j] = list(blocked_j)
-                        kept = True
-                negotiated.append((k, j, kept))
-            if not kept and len(probe.comps) == 1:
-                if not probe.cross:
-                    # The chord/split gate is conservative: adopt a
-                    # connected probe only after its physical witness
-                    # check above, including unrepairable bigons.
-                    best = probe
-                else:
-                    # the crossing the chords forbid is the later net's own
-                    # failure (S1): the earlier wires stand untouched, the
-                    # stranded comps name the crossing partners below — the
-                    # chord-free probe is a witness, never adopted copper
-                    blocked_by = tuple(partners)
-            elif not kept and cut:
-                # the probe failed too: closures wall the net, a
-                # capacity fact — feed its demand on the cut into the
-                # corridor cut so the refusal names the channel, its
-                # owners and every demanding net (G2h review-2 A)
-                for e in cut:
-                    extra.setdefault(e, []).append((k, sorted(need[e])))
-            comps, net_masks = best.comps, best.masks
-        collisions.extend(best.collisions)
-        cross_k = _witness_crossings(occupancy, best.built)
-        keys[k] = (len(best.comps), len(cross_k))
-        builts[k] = best.built
-        if cross_k:
-            # a first-attempt taut crossing is a strict failure too —
-            # the shove takes it with the nets it crosses as partners
-            partners_of[k] = [
-                n
-                for n, _c in sorted(
-                    Counter(
-                        int(occupancy.lines[j][0].net)
-                        for _i, _lo, j, _s0, _s1 in cross_k
-                    ).items(),
-                    key=lambda kv: (-kv[1], kv[0]),
+                            and _preserves_other_nets(
+                                occupancy, occ_after, builts, {k, j}
+                            )
+                            and preserves_retry(k, j, best, retry_k, retry_j, occ_after)
+                        ):
+                            builts[j] = retry_j.built
+                            keys[j] = (len(retry_j.comps), wit_j[1])
+                            occupancy, used, best = occ_k, used_k, retry_k
+                            # j is replaced wholesale: its earlier
+                            # collisions and Unreachable rows go with it —
+                            # a retry_j that fails under the tie-break is
+                            # named again from its own attempt (S2)
+                            collisions[:] = [c for c in collisions if c[0] != j]
+                            collisions.extend(retry_j.collisions)
+                            unreachable[:] = [u for u in unreachable if u.net != j]
+                            cross_j = _witness_crossings(occ_after, retry_j.built)
+                            blocked_j = tuple(
+                                n
+                                for n, _c in sorted(
+                                    Counter(
+                                        int(occ_after.lines[x][0].net)
+                                        for _i, _lo, x, _s0, _s1 in cross_j
+                                    ).items(),
+                                    key=lambda kv: (-kv[1], kv[0]),
+                                )
+                            )
+                            if blocked_j:
+                                partners_of[j] = list(blocked_j)
+                            elif not wit_j[0]:
+                                partners_of.pop(j, None)
+                            if len(retry_j.comps) > 1:
+                                blocked_j = blocked_j or (k,)
+                                unreachable += _unreachable_rows(
+                                    ctx,
+                                    mesh,
+                                    d,
+                                    j,
+                                    n_layers,
+                                    retry_j.comps,
+                                    retry_j.masks,
+                                    rules_used[j][0] / 2.0
+                                    + rules_used[j][1]
+                                    + FAB_QUANTUM_MM,
+                                    blocked_j,
+                                )
+                                partners_of[j] = list(blocked_j)
+                            kept = True
+                    negotiated.append((k, j, kept))
+                if not kept and len(probe.comps) == 1:
+                    if not probe.cross or view.neg_soft:
+                        # The chord/split gate is conservative: adopt a
+                        # connected probe only after its physical witness
+                        # check above, including unrepairable bigons. A
+                        # soft negotiated pass adopts it WITH the
+                        # crossings — they are priced resources this
+                        # iteration, the history pass makes them yield
+                        # (td569540).
+                        best = probe
+                    else:
+                        # the crossing the chords forbid is the later net's own
+                        # failure (S1): the earlier wires stand untouched, the
+                        # stranded comps name the crossing partners below — the
+                        # chord-free probe is a witness, never adopted copper
+                        blocked_by = tuple(partners)
+                elif not kept and cut:
+                    # the probe failed too: closures wall the net, a
+                    # capacity fact — feed its demand on the cut into the
+                    # corridor cut so the refusal names the channel, its
+                    # owners and every demanding net (G2h review-2 A)
+                    for e in cut:
+                        extra.setdefault(e, []).append((k, sorted(need[e])))
+                comps, net_masks = best.comps, best.masks
+            collisions.extend(best.collisions)
+            cross_k = _witness_crossings(occupancy, best.built)
+            keys[k] = (len(best.comps), len(cross_k))
+            builts[k] = best.built
+            if cross_k:
+                # a first-attempt taut crossing is a strict failure too —
+                # the shove takes it with the nets it crosses as partners
+                partners_of[k] = [
+                    n
+                    for n, _c in sorted(
+                        Counter(
+                            int(occupancy.lines[j][0].net)
+                            for _i, _lo, j, _s0, _s1 in cross_k
+                        ).items(),
+                        key=lambda kv: (-kv[1], kv[0]),
+                    )
+                ]
+            if len(comps) > 1:
+                unreachable += _unreachable_rows(
+                    ctx,
+                    mesh,
+                    d,
+                    k,
+                    n_layers,
+                    comps,
+                    net_masks,
+                    trace_mm / 2.0 + clearance_mm + FAB_QUANTUM_MM,
+                    blocked_by,
                 )
-            ]
-        for built in best.built:
-            # occupancy the next nets' A* prices (gr520904) — the
-            # RETRACKED corridor is what capacity sees, so used counts
-            # it, not the search edges.
-            corridor.add(used, k, built.edges)
-            occupancy.add(k, built)
-        if len(comps) > 1:
-            unreachable += _unreachable_rows(
-                ctx,
-                mesh,
-                d,
-                k,
-                n_layers,
-                comps,
-                net_masks,
-                trace_mm / 2.0 + clearance_mm + FAB_QUANTUM_MM,
-                blocked_by,
+        # canonical ledger order — rebuilds and the emit read it
+        builts = {j: builts[j] for j in route_order if j in builts}
+        all_pairs = [(j, b) for j in route_order for b in builts.get(j, ())]
+        occupancy = occupancy.rebuild(all_pairs)
+        used = corridor.used_of(b.branch for _jj, b in all_pairs)
+        branches_it = [b.branch for bl in builts.values() for b in bl]
+        ord_it, _ord_pos_it, _res_it = _order(ctx, mesh, tuple(branches_it))
+        cuts_it = corridor.cut(branches_it, ord_it, extra=extra)
+        legal = all(c.refused for c in cuts_it)
+        # td569540: a soft pass's priced crossings are negotiable
+        # intermediate state, never emittable copper — a soft ledger is
+        # a best candidate only when it carries none. The hard pass is
+        # always eligible: its crossings are the honest named failures
+        # _Shove and the plan already handle.
+        cross_free = not any(v[1] for v in keys.values())
+        coll_nets = {c[0] for c in collisions}
+        metric_it = _sum_stats(
+            _wire_stats(
+                int(
+                    keys.get(kk, (1, 0))[0] > 1
+                    or keys.get(kk, (1, 0))[1] > 0
+                    or kk in coll_nets
+                ),
+                keys.get(kk, (1, 0))[1],
+                builts.get(kk, ()),
             )
+            for kk in order
+        )
+        if _NEG_DEBUG:
+            fails = sorted(
+                {
+                    *(u.net for u in unreachable),
+                    *(
+                        kk
+                        for kk in order
+                        if keys.get(kk, (1, 0))[0] > 1
+                        or keys.get(kk, (1, 0))[1] > 0
+                        or kk in coll_nets
+                    ),
+                }
+            )
+            print(
+                f"NEG it{it} soft={soft} legal={legal} xfree={cross_free} "
+                f"metric={metric_it} fails={fails} "
+                f"unreach={[u.net for u in unreachable]} coll={collisions}",
+                flush=True,
+            )
+        if (
+            legal
+            and (not soft or cross_free)
+            and (best_it is None or metric_it < best_it[0])
+        ):
+            best_it = (
+                metric_it,
+                {j: list(bl) for j, bl in builts.items()},
+                dict(keys),
+                list(unreachable),
+                list(collisions),
+                {e: list(rows) for e, rows in extra.items()},
+                dict(partners_of),
+                list(negotiated),
+                occupancy,
+                used,
+            )
+        if soft:
+            over_e = np.maximum(0.0, occupancy.used - occupancy.cap)
+            over_t = np.maximum(0.0, occupancy.tri_used - _NEG_TRI_CAP)
+            over_c = occupancy.cross_used
+            hist_e += _NEG_H_EDGE * over_e
+            hist_t += _NEG_H_TRI * over_t
+            hist_c += _NEG_H_CROSS * over_c
+            if float(over_e.sum() + over_t.sum() + over_c.sum()) <= 1e-9 and not any(
+                keys.get(kk, (0, 0))[1] for kk in keys
+            ):
+                # converged: nothing oversubscribed, nothing crossing —
+                # this pass is legal and cannot improve (td569540)
+                break
+            p_fac *= _NEG_PRAMP
+            prev_keys = keys
+            prev_touch = _neg_touch(occupancy, builts, keys, collisions)
+            prev_unreach = unreachable
+            prev_coll = collisions
+            prev_extra = extra
+            prev_partners = partners_of
+            prev_neg = negotiated
+    if best_it is not None:
+        (
+            _metric_best,
+            builts,
+            keys,
+            unreachable,
+            collisions,
+            extra,
+            partners_of,
+            negotiated,
+            occupancy,
+            used,
+        ) = best_it
     # S2: the shove phase — bounded rounds of pinned swaps over the
     # still-failing set, grow-count budgeted, deterministic.
     shove_grows = 0
@@ -6797,11 +7333,11 @@ def build_wires(
         negotiated = st.negotiated
         shove_grows, shove_rounds = shv.grows, tuple(shv.round_yield)
     branches = [b.branch for bl in builts.values() for b in bl]
-    order, order_pos, residual = _order(ctx, mesh, tuple(branches))
-    overflow = corridor.cut(branches, order, extra=extra)
+    emit_order, order_pos, residual = _order(ctx, mesh, tuple(branches))
+    overflow = corridor.cut(branches, emit_order, extra=extra)
     return Wires(
         branches=tuple(branches),
-        order=order,
+        order=emit_order,
         order_pos=order_pos,
         capacity_mm=capacity_mm,
         net_layers=tuple(net_layers),
