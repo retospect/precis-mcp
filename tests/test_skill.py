@@ -22,11 +22,13 @@ Split into per-concern files (gr515135):
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
-from precis.handlers.skill import SkillHandler
+from precis.handlers.skill import _REPO_DEV_SKILLS, SkillHandler
 
 
 @pytest.fixture
@@ -195,6 +197,58 @@ def test_missing_skill_notfound_names_deploy_gap(skill: SkillHandler) -> None:
     hints = excinfo.value.next
     hints = hints if isinstance(hints, list) else [hints or ""]
     assert any("not yet deployed" in h for h in hints)
+
+
+def _next_hints(err: NotFound) -> list[str]:
+    nxt = err.next
+    return nxt if isinstance(nxt, list) else [nxt or ""]
+
+
+def test_repo_dev_skill_notfound_names_the_file(skill: SkillHandler) -> None:
+    """gr563570 — ``bug`` is a repo-dev skill
+    (``.claude/skills/bug/SKILL.md``), not a product skill; the NotFound
+    recurred ~13×/day, mostly codex clients. The refusal now says so and
+    names the file, ahead of the unchanged search/deploy hints."""
+    with pytest.raises(NotFound) as excinfo:
+        skill.get(id="bug")
+    hints = _next_hints(excinfo.value)
+    assert any(
+        "repo-dev skill" in h and ".claude/skills/bug/SKILL.md" in h for h in hints
+    )
+    assert any("search(kind='skill'" in h for h in hints)
+    assert any("not yet deployed" in h for h in hints)
+    # The selector views land on the same refusal.
+    for sid in ("bug/toc", "bug~0"):
+        with pytest.raises(NotFound) as excinfo:
+            skill.get(id=sid)
+        hints = _next_hints(excinfo.value)
+        assert any(".claude/skills/bug/SKILL.md" in h for h in hints), sid
+    # find-in-ref too.
+    with pytest.raises(NotFound) as excinfo:
+        skill.get(id="bug", q="anything")
+    hints = _next_hints(excinfo.value)
+    assert any(".claude/skills/bug/SKILL.md" in h for h in hints)
+
+
+def test_repo_dev_skills_constant_matches_checkout() -> None:
+    """``_REPO_DEV_SKILLS`` names exactly the repo's ``.claude/skills``
+    dirs — the fallback for deployments with no repo mount; a new
+    repo-dev skill must land here or its hint rots."""
+    root = Path(__file__).resolve().parents[1]
+    dirs = {
+        p.name
+        for p in (root / ".claude" / "skills").iterdir()
+        if p.is_dir() and (p / "SKILL.md").is_file()
+    }
+    assert dirs == set(_REPO_DEV_SKILLS)
+
+
+def test_non_repo_dev_slug_gets_no_file_hint(skill: SkillHandler) -> None:
+    """An ordinary unknown slug keeps the plain catalogue hints."""
+    with pytest.raises(NotFound) as excinfo:
+        skill.get(id="nonexistent-skill")
+    hints = _next_hints(excinfo.value)
+    assert not any("repo-dev skill" in h for h in hints)
 
 
 def test_invalid_slug_raises(skill: SkillHandler) -> None:

@@ -1,7 +1,9 @@
 """AST-based Python code indexer.
 
 Pure logic; deps are stdlib plus ``docstring_parser`` (param docs).
-Walks a repo, parses every `.py` file with `ast`, and produces a
+Walks a repo — skipping cruft dirs, ``CACHEDIR.TAG`` caches and
+``.gitignore``-excluded paths, the same source selection git applies —
+and parses every remaining `.py` file with `ast`, producing a
 queryable in-memory index of modules, classes, functions, methods,
 line ranges, signatures, docstrings, and per-param records
 (`Symbol.params` — signature merged with Google / Sphinx / NumPy

@@ -346,6 +346,67 @@ def test_walk_skips_cruft_dirs(tmp_path: Path) -> None:
     assert qualnames == {"pkg", "pkg.real"}
 
 
+def test_walk_skips_cachedir_tag(tmp_path: Path) -> None:
+    """A dir carrying `CACHEDIR.TAG` is a cache — never descended (gr568214)."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/real.py", "x = 1\n")
+    _write(
+        tmp_path,
+        "uv-cache/CACHEDIR.TAG",
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    )
+    _write(tmp_path, "uv-cache/lib/site-packages/gen.py", "x = 1\n")
+
+    idx = index_repo(tmp_path)
+    assert set(idx.modules) == {"pkg", "pkg.real"}
+
+
+def test_walk_skips_gitignored_dirs(tmp_path: Path) -> None:
+    """`.gitignore` rules prune the walk the way they prune `git status`."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/real.py", "x = 1\n")
+    _write(tmp_path, "pkg/kept.py", "x = 1\n")
+    _write(tmp_path, ".gitignore", "scratch/\n*.generated.py\n")
+    _write(tmp_path, "scratch/gen.py", "x = 1\n")
+    _write(tmp_path, "pkg/tool.generated.py", "x = 1\n")
+
+    idx = index_repo(tmp_path)
+    assert set(idx.modules) == {"pkg", "pkg.real", "pkg.kept"}
+
+
+def test_walk_honours_star_gitignore(tmp_path: Path) -> None:
+    """A `.gitignore` containing `*` — the cache-dir convention — empties
+    its own directory without touching siblings (gr568214)."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/real.py", "x = 1\n")
+    _write(tmp_path, "uv-cache/.gitignore", "*\n")
+    _write(tmp_path, "uv-cache/lib/gen.py", "x = 1\n")
+
+    idx = index_repo(tmp_path)
+    assert set(idx.modules) == {"pkg", "pkg.real"}
+
+
+def test_deep_ast_file_skips_with_reason(tmp_path: Path) -> None:
+    """A file whose AST defeats the parser degrades per-file: the module
+    stays addressable with `parse_error` set, source kept, and siblings
+    still index — never a walk-aborting RecursionError (gr568214)."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/ok.py", "x = 1\n")
+    # A left-leaning BinOp chain parses but recurses without bound in the
+    # symbol visitor — the pathological-depth case from the gripe.
+    _write(tmp_path, "pkg/deep.py", "x = " + "+".join(["1"] * 1000) + "\n")
+
+    idx = index_repo(tmp_path)
+    assert "pkg.ok" in idx.modules
+    mod = idx.module("pkg.deep")
+    assert mod is not None
+    assert mod.parse_error is not None
+    assert "RecursionError" in mod.parse_error
+    assert len(mod.symbols) == 1
+    assert mod.symbols[0].kind == "module"
+    assert mod.source is not None and "1+1" in mod.source
+
+
 def test_repo_index_lookups(tmp_path: Path) -> None:
     """`module()`, `file()`, `symbol()`, `symbols_in()` all work."""
     _write(tmp_path, "pkg/__init__.py", "")

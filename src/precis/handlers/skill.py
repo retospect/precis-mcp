@@ -302,6 +302,31 @@ _SKILL_SLUG_ALIASES: dict[str, str] = {
 }
 
 
+#: Repo-dev skill directory names under ``.claude/skills/`` — harness
+#: skills for developing this repo, not product skills, so a NotFound
+#: for one should name the file to read instead of the catalogue
+#: (gr563570). Test-guarded against the checkout's ``.claude/skills``
+#: dirs; at runtime the handler unions this with the live dirs of the
+#: configured worktrees' checkouts, so a deployment without a repo
+#: mount still hints the common ones.
+_REPO_DEV_SKILLS = frozenset(
+    {
+        "backup-restore-drill",
+        "boss-design",
+        "bug",
+        "coder-chain",
+        "differentiation",
+        "docs-triage",
+        "flow",
+        "gripe-fleet",
+        "quiet-output",
+        "reconsolidate",
+        "remember",
+        "se-design",
+    }
+)
+
+
 def _slug_with_aliases(slug: str) -> str:
     """Return ``slug`` with any registered aliases noted inline."""
     aliases = _SKILL_ALIASES_INLINE.get(slug)
@@ -820,17 +845,21 @@ class SkillHandler(Handler):
             # Synthesized skills have no file body; scan what get renders.
             text = self.get(id=slug).body
         if text is None:
+            next_lines: list[str] = []
+            if (repo_dev := self._repo_dev_skill_next(slug)) is not None:
+                next_lines.append(repo_dev)
+            next_lines += [
+                "search(kind='skill', q='<what you want to do>')",
+                (
+                    "skills ship with the server build — a slug merged "
+                    "on main but not yet deployed raises this same "
+                    "error; get(kind='skill', id='precis-status') shows "
+                    "the running build"
+                ),
+            ]
             raise NotFound(
                 f"skill {slug!r} not found",
-                next=[
-                    "search(kind='skill', q='<what you want to do>')",
-                    (
-                        "skills ship with the server build — a slug merged "
-                        "on main but not yet deployed raises this same "
-                        "error; get(kind='skill', id='precis-status') shows "
-                        "the running build"
-                    ),
-                ],
+                next=next_lines,
             )
         # Same filter the whole-skill serve applies (gr512233): a
         # read-scope find must not quote a fenced write recipe, and
@@ -1039,23 +1068,27 @@ class SkillHandler(Handler):
             # capability whose *slug* the caller could never have
             # guessed, which is exactly the failing case.
             close = difflib.get_close_matches(slug, sorted(available), n=5, cutoff=0.5)
+            next_lines: list[str] = []
+            if (repo_dev := self._repo_dev_skill_next(slug)) is not None:
+                next_lines.append(repo_dev)
+            next_lines += [
+                (
+                    "search(kind='skill', q='<what you want to do>') — "
+                    "it ranks on each skill's summary and its 'answers' "
+                    "list, so describe the goal rather than guessing a "
+                    "slug; get(kind='skill', id='toc') lists every skill"
+                ),
+                (
+                    "skills ship with the server build — a slug merged "
+                    "on main but not yet deployed raises this same "
+                    "error; get(kind='skill', id='precis-status') shows "
+                    "the running build"
+                ),
+            ]
             raise NotFound(
                 f"skill {slug!r} not found",
                 options=close or None,
-                next=[
-                    (
-                        "search(kind='skill', q='<what you want to do>') — "
-                        "it ranks on each skill's summary and its 'answers' "
-                        "list, so describe the goal rather than guessing a "
-                        "slug; get(kind='skill', id='toc') lists every skill"
-                    ),
-                    (
-                        "skills ship with the server build — a slug merged "
-                        "on main but not yet deployed raises this same "
-                        "error; get(kind='skill', id='precis-status') shows "
-                        "the running build"
-                    ),
-                ],
+                next=next_lines,
             )
         if served_via_alias is not None:
             # gr524267: the requested id is a registered alias — name
@@ -1289,6 +1322,42 @@ class SkillHandler(Handler):
                 next="get(kind='skill') reads the shipped corpus",
             ) from exc
         return corpus
+
+    def _repo_dev_skill_names(self) -> frozenset[str]:
+        """Directory names under ``.claude/skills/`` across the checkouts
+        this server can see — the main checkout plus every registered
+        worktree — unioned with :data:`_REPO_DEV_SKILLS` so a deployment
+        without a repo mount still names the common ones (gr563570)."""
+        names = set(_REPO_DEV_SKILLS)
+        wts = self.worktrees
+        if wts is not None:
+            listing, _gone = wts.listing()
+            checkouts = [wts.main, *(wt.path for wt in listing.values())]
+            for checkout in checkouts:
+                skills_dir = checkout / ".claude" / "skills"
+                try:
+                    names.update(
+                        entry.name
+                        for entry in skills_dir.iterdir()
+                        if entry.is_dir() and (entry / "SKILL.md").is_file()
+                    )
+                except OSError:
+                    continue
+        return frozenset(names)
+
+    def _repo_dev_skill_next(self, slug: str) -> str | None:
+        """A `next` line naming the repo-dev skill's file, or None.
+
+        Repo-dev skills (``.claude/skills/<name>/SKILL.md``) configure
+        the agent harness, not the product — a NotFound for one should
+        point at the file instead of the skill catalogue (gr563570:
+        ~13 calls/day, mostly codex clients asking for ``bug``)."""
+        if slug not in self._repo_dev_skill_names():
+            return None
+        return (
+            f"'{slug}' is a repo-dev skill, not a product skill — "
+            f"read .claude/skills/{slug}/SKILL.md in the repo checkout"
+        )
 
     def _render_worktree_index(self, alias: str) -> Response:
         """A bare ``wt-<tree>`` id: the tree's skill slugs, sorted."""
@@ -2135,9 +2204,13 @@ class SkillHandler(Handler):
         display = f"{root}/{slug}" if root else slug
         text = _load_skill(slug, corpus=corpus)
         if text is None:
+            next_lines: list[str] = []
+            if (repo_dev := self._repo_dev_skill_next(slug)) is not None:
+                next_lines.append(repo_dev)
+            next_lines.append("get(kind='skill') for the catalogue")
             raise NotFound(
                 f"skill {display!r} not found",
-                next="get(kind='skill') for the catalogue",
+                next=next_lines,
             )
         # gr512233: chunks run on the scope-filtered body — read keeps
         # a fenced section's heading and replaces its body with the
@@ -2236,9 +2309,13 @@ class SkillHandler(Handler):
         slug = str(ref)
         text = _load_skill(slug, corpus=corpus)
         if text is None:
+            next_lines: list[str] = []
+            if (repo_dev := self._repo_dev_skill_next(slug)) is not None:
+                next_lines.append(repo_dev)
+            next_lines.append("get(kind='skill', id='toc') lists every skill slug")
             raise NotFound(
                 f"skill {slug!r} not found",
-                next="get(kind='skill', id='toc') lists every skill slug",
+                next=next_lines,
             )
         # gr512233: the toc lists the scope-filtered body. Under read
         # the embedding alignment below then mismatches (the index is

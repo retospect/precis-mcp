@@ -118,3 +118,21 @@ def test_tilde_placeholder_error_names_digits(env) -> None:
     h = _make(env)
     with pytest.raises(BadInput, match="~<n>"):
         h.get(id="precis-overview~N")
+
+
+def test_repo_dev_skill_hint_sees_live_checkout_dirs(tmp_path: Path) -> None:
+    """gr563570 — a ``.claude/skills`` dir present only on a configured
+    checkout still earns the repo-dev hint; the build-time constant is
+    the floor for mount-less deployments, not the ceiling."""
+    main = tmp_path / "main"
+    (main / ".git").mkdir(parents=True)
+    dev_skill = main / ".claude" / "skills" / "tree-only-dev"
+    dev_skill.mkdir(parents=True)
+    (dev_skill / "SKILL.md").write_text("# tree-only-dev\n", encoding="utf-8")
+    reg = WorktreeRegistry("wt", main)
+    h = SkillHandler(hub=Hub(), worktrees=reg)
+    with pytest.raises(NotFound) as excinfo:
+        h.get(id="tree-only-dev")
+    nxt = excinfo.value.next
+    hints = nxt if isinstance(nxt, list) else [nxt or ""]
+    assert any(".claude/skills/tree-only-dev/SKILL.md" in hnt for hnt in hints)

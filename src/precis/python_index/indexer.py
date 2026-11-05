@@ -15,9 +15,11 @@ the package boundary; everything below it becomes the dotted qualname.
     tests/test_foo.py             with tests/__init__.py         →  tests.test_foo
 
 The walk skips a fixed set of cruft directories (`.git`, `.venv`,
-`__pycache__`, `node_modules`, etc.) and any directory whose name
-starts with `.`. Real `.gitignore` parsing is a future hook (would
-require `pathspec`); the conservative skip list is enough for v1.
+`__pycache__`, `node_modules`, etc.), any directory whose name
+starts with `.`, directories marked as caches by a `CACHEDIR.TAG`
+signature file, and anything a `.gitignore` in the tree excludes —
+the same source-selection policy git itself applies, so dependency
+caches and scratch trees never enter the index (gr568214).
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from precis.python_index import gitignore
 from precis.python_index.docparams import merge_params
 from precis.python_index.types import (
     CallEdge,
@@ -41,9 +44,9 @@ from precis.python_index.types import (
 log = logging.getLogger(__name__)
 
 
-# Directories that are never code under management. Matched by name only.
-# `.gitignore`-aware walking is a future enhancement (would pull in
-# `pathspec`); the conservative skip set covers the 99% case.
+# Directories that are never code under management. Matched by name only;
+# `.gitignore` rules and `CACHEDIR.TAG` markers are handled by the walk
+# itself (`_walk_python_dir`, `gitignore.py`).
 _SKIP_DIRS = frozenset(
     {
         "__pycache__",
@@ -155,6 +158,31 @@ def index_module_bytes(
         tree = ast.parse(source, filename=filename)
     except SyntaxError as e:
         # Graceful degrade: keep the module addressable, no inner symbols.
+        return _stub_module(
+            qualname=qualname,
+            file=rel,
+            sha=sha,
+            bytes_sha=bytes_sha,
+            indexed_at=indexed_at,
+            total_lines=total_lines,
+            source=source,
+            parse_error=f"{type(e).__name__}: {e}",
+        )
+    except RecursionError as e:
+        # Pathological nesting can exhaust the parser's own recursion
+        # before a tree exists (gr568214) — same degrade, source kept.
+        return _stub_module(
+            qualname=qualname,
+            file=rel,
+            sha=sha,
+            bytes_sha=bytes_sha,
+            indexed_at=indexed_at,
+            total_lines=total_lines,
+            source=source,
+            parse_error=f"{type(e).__name__}: {e}",
+        )
+
+    try:
         module_sym = Symbol(
             qualname=qualname,
             kind="module",
@@ -163,44 +191,36 @@ def index_module_bytes(
             end_line=total_lines,
             parent=None,
             signature=None,
-            docstring=None,
+            docstring=ast.get_docstring(tree),
         )
-        return ModuleIndex(
+
+        # Pass 1 — imports. Walked first so the call pass can resolve names.
+        imports = _collect_imports(tree, module_qualname=qualname)
+
+        # Pass 2 — symbols + calls. The visitor walks function bodies looking
+        # for ast.Call sites, resolving each through `local_names` (imports
+        # ∪ top-level defs) plus `self`/`cls` for class context.
+        visitor = _SymbolVisitor(
+            module_qualname=qualname,
+            file_relative=rel,
+            imports=imports,
+            top_level_names=_collect_top_level_names(tree, module_qualname=qualname),
+            scan_lambdas="lambda" in source,
+        )
+        visitor.visit(tree)
+    except RecursionError as e:
+        # An AST deep enough to parse can still exhaust the visitor's
+        # recursion — degrade this file, keep indexing its siblings.
+        return _stub_module(
             qualname=qualname,
             file=rel,
-            sha256=sha,
-            bytes_sha256=bytes_sha,
+            sha=sha,
+            bytes_sha=bytes_sha,
             indexed_at=indexed_at,
+            total_lines=total_lines,
             source=source,
-            symbols=(module_sym,),
             parse_error=f"{type(e).__name__}: {e}",
         )
-
-    module_sym = Symbol(
-        qualname=qualname,
-        kind="module",
-        file=rel,
-        start_line=1,
-        end_line=total_lines,
-        parent=None,
-        signature=None,
-        docstring=ast.get_docstring(tree),
-    )
-
-    # Pass 1 — imports. Walked first so the call pass can resolve names.
-    imports = _collect_imports(tree, module_qualname=qualname)
-
-    # Pass 2 — symbols + calls. The visitor walks function bodies looking
-    # for ast.Call sites, resolving each through `local_names` (imports
-    # ∪ top-level defs) plus `self`/`cls` for class context.
-    visitor = _SymbolVisitor(
-        module_qualname=qualname,
-        file_relative=rel,
-        imports=imports,
-        top_level_names=_collect_top_level_names(tree, module_qualname=qualname),
-        scan_lambdas="lambda" in source,
-    )
-    visitor.visit(tree)
 
     return ModuleIndex(
         qualname=qualname,
@@ -213,6 +233,45 @@ def index_module_bytes(
         imports=imports,
         calls=tuple(visitor.calls),
         local_imports=tuple(visitor.local_imports),
+    )
+
+
+def _stub_module(
+    *,
+    qualname: str,
+    file: str,
+    sha: str,
+    bytes_sha: str,
+    indexed_at: str,
+    total_lines: int,
+    parse_error: str,
+    source: str | None = None,
+) -> ModuleIndex:
+    """The one-symbol degrade for a file ``ast.parse`` could not read.
+
+    The module stays addressable (`kind='module'`, whole-file span) with
+    ``parse_error`` carrying why it yielded no inner symbols — a SyntaxError
+    or a RecursionError from pathological nesting (gr568214).
+    """
+    module_sym = Symbol(
+        qualname=qualname,
+        kind="module",
+        file=file,
+        start_line=1,
+        end_line=total_lines,
+        parent=None,
+        signature=None,
+        docstring=None,
+    )
+    return ModuleIndex(
+        qualname=qualname,
+        file=file,
+        sha256=sha,
+        bytes_sha256=bytes_sha,
+        indexed_at=indexed_at,
+        source=source,
+        symbols=(module_sym,),
+        parse_error=parse_error,
     )
 
 
@@ -744,25 +803,42 @@ def _resolve_attribute(
 
 
 def _walk_python_files(root: Path) -> Iterable[Path]:
-    """Yield every `.py` file under `root`, depth-first, sorted within
-    each directory for stable output order. Skips `_SKIP_DIRS` and any
-    directory whose name starts with `.`.
+    """Yield every indexable `.py` file under `root`, depth-first, sorted
+    within each directory for stable output order.
+
+    A directory is skipped when it is in `_SKIP_DIRS`, starts with `.`,
+    carries a `CACHEDIR.TAG` signature, or is excluded by the
+    `.gitignore` rules governing it (`gitignore.py`) — the same source
+    selection `git status` applies, so dependency caches and scratch
+    trees never enter the index (gr568214).
 
     Symlinks are never followed: `root` is a sandbox boundary, and a
     symlinked directory can loop the walk or escape it entirely.
     """
     if not root.is_dir():
         return
-    entries = sorted(root.iterdir(), key=lambda p: p.name)
-    for entry in entries:
+    yield from _walk_python_dir(root, ())
+
+
+def _walk_python_dir(directory: Path, rulesets: gitignore.Rulesets) -> Iterable[Path]:
+    """Yield indexable `.py` files under `directory`, descending only
+    into directories the accumulated `.gitignore` rules keep."""
+    local = gitignore.read_rules(directory / ".gitignore")
+    scoped = (*rulesets, (directory, local)) if local else rulesets
+    for entry in sorted(directory.iterdir(), key=lambda p: p.name):
         if entry.is_symlink():
             continue
         if entry.is_dir():
             if entry.name in _SKIP_DIRS or entry.name.startswith("."):
                 continue
-            yield from _walk_python_files(entry)
+            if gitignore.is_ignored(scoped, entry, is_dir=True):
+                continue
+            if (entry / "CACHEDIR.TAG").is_file():
+                continue
+            yield from _walk_python_dir(entry, scoped)
         elif entry.is_file() and entry.suffix == ".py":
-            yield entry
+            if not gitignore.is_ignored(scoped, entry, is_dir=False):
+                yield entry
 
 
 def _qualname_for_file(path: Path) -> str:
