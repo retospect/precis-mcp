@@ -27,7 +27,7 @@ import logging
 import time
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 import pytest
@@ -1308,6 +1308,112 @@ class TestPublisherUrls:
     def test_prefix_boundary_not_a_substring_match(self) -> None:
         # ``10.11860`` must NOT match the ``10.1186`` Springer prefix.
         assert _publisher_pdf_urls("10.11860/abc") == []
+
+
+class TestTryAcl:
+    @pytest.mark.parametrize("doi", [None, "10.1234/x", "10.18653/v1/../../other"])
+    def test_no_match_is_silent(
+        self, doi: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        download = Mock()
+        monkeypatch.setattr(fetch_oa, "_download_pdf", download)
+        inbox = tmp_path / "inbox"
+        assert fetch_oa._try_acl(_stub(doi=doi), inbox_dir=inbox) is None
+        download.assert_not_called()
+        assert not inbox.exists()
+
+    @pytest.mark.parametrize("email", ["", "a@b.c"])
+    def test_acl_lands_before_openalex(
+        self, email: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = Mock(spec=Store)
+        stub = _stub(doi="10.18653/v1/2023.acl-long.1")
+        # The existing arXiv metadata preflight is separate from the PDF legs.
+        monkeypatch.setattr(fetch_oa, "_resolve_arxiv_id", lambda *a, **kw: None)
+        for name in ("_try_unpaywall", "_try_crossref"):
+            monkeypatch.setattr(fetch_oa, name, lambda *a, **kw: None)
+        openalex = Mock()
+        monkeypatch.setattr(fetch_oa, "_try_openalex", openalex)
+        download = Mock(
+            side_effect=lambda url, target, **kw: _write_synthetic_pdf(target)
+        )
+        monkeypatch.setattr(fetch_oa, "_download_pdf", download)
+
+        path = fetch_oa._run_cascade(
+            store, stub, tmp_path, email=email, api_key="", wiley_token="", core_key=""
+        )
+
+        assert path is not None and path.is_file()
+        download.assert_called_once()
+        assert download.call_args.args == (
+            "https://aclanthology.org/2023.acl-long.1.pdf",
+            path,
+        )
+        assert download.call_args.kwargs["deadline"] is not None
+        assert "service" not in download.call_args.kwargs
+        assert fetch_oa._PROVIDER_KEYS[fetch_oa._SOURCE_ACL] is None
+        openalex.assert_not_called()
+        store.append_event.assert_called_once()
+        event = store.append_event.call_args.kwargs
+        assert event["source"] == "fetcher:acl"
+        assert event["event"] == "fetch_ok"
+        assert event["payload"]["host_type"] == "acl_anthology"
+        assert event["payload"]["size_bytes"] == 1024
+        sidecar = read_sidecar(path)
+        assert sidecar is not None and sidecar.source == "fetcher:acl"
+
+    def test_non_acl_cascade_emits_no_acl_event(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = Mock(spec=Store)
+        monkeypatch.setattr(fetch_oa, "_resolve_arxiv_id", lambda *a, **kw: None)
+        for name in ("_try_openalex", "_try_europepmc", "_try_s2"):
+            monkeypatch.setattr(fetch_oa, name, lambda *a, **kw: None)
+        download = Mock()
+        monkeypatch.setattr(fetch_oa, "_download_pdf", download)
+        assert (
+            fetch_oa._run_cascade(
+                store,
+                _stub(),
+                tmp_path,
+                email="",
+                api_key="",
+                wiley_token="",
+                core_key="",
+            )
+            is None
+        )
+        store.append_event.assert_not_called()
+        download.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("error", "event"),
+        [
+            (ValueError("response is not a PDF"), "fetch_failed"),
+            (RateLimited("host:aclanthology.org"), "rate_limited"),
+            (
+                fetch_oa.VendorUnavailable(
+                    "pdf:aclanthology.org", "parked", cooldown=True
+                ),
+                "circuit_open",
+            ),
+        ],
+    )
+    def test_download_failure_and_refusal_events(
+        self,
+        error: Exception,
+        event: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(fetch_oa, "_download_pdf", Mock(side_effect=error))
+        outcome = fetch_oa._try_acl(
+            _stub(doi="10.18653/v1/2023.acl-long.1"), inbox_dir=tmp_path
+        )
+        assert outcome is not None and outcome.event == event
+        assert outcome.payload["urls"] == [
+            "https://aclanthology.org/2023.acl-long.1.pdf"
+        ]
 
 
 class TestTryPublisher:

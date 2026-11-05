@@ -1,7 +1,7 @@
 """run_oa_fetch_pass — sibling worker that fetches OA PDFs.
 
 Closes the chase↔stub loop: chase creates stub refs (identifiers known,
-``pdf_sha256 IS NULL``); this worker cascades through **ten OA sources**
+``pdf_sha256 IS NULL``); this worker cascades through **eleven OA sources**
 per stub, by DOI/arXiv/S2 id unless noted. No gate listed = free, no key:
 
 1. **Publisher pattern** — deterministic DOI→PDF for known-endpoint
@@ -13,13 +13,14 @@ per stub, by DOI/arXiv/S2 id unless noted. No gate listed = free, no key:
 4. **Unpaywall** — 30+-source aggregator; TOS needs an email param.
 5. **Crossref** — publisher TDM PDF links; needs polite ``mailto`` (=
    the Unpaywall email).
-6. **OpenAlex** — OA ``pdf_url`` locations; ``mailto`` optional,
+6. **ACL Anthology** — deterministic DOI→PDF for Anthology IDs.
+7. **OpenAlex** — OA ``pdf_url`` locations; ``mailto`` optional,
    different coverage to Unpaywall.
-7. **Europe PMC** — biomedical OA full text, DOI→PMCID.
-8. **CORE** — green-OA repository copies; key-gated
+8. **Europe PMC** — biomedical OA full text, DOI→PMCID.
+9. **CORE** — green-OA repository copies; key-gated
    (``PRECIS_CORE_API_KEY``), the net for paywalled publishers.
-9. **arXiv** — direct PDF by arXiv ID.
-10. **Semantic Scholar** — ``openAccessPdf`` field, low-volume no-key.
+10. **arXiv** — direct PDF by arXiv ID.
+11. **Semantic Scholar** — ``openAccessPdf`` field, low-volume no-key.
 
 Deterministic/key-gated legs run first (sidestep aggregators' common
 landing-page-as-OA miss on fresh DOIs); identifier-less legs silently
@@ -149,6 +150,7 @@ _SOURCE_ELSEVIER_XML = "fetcher:elsevier_xml"
 _SOURCE_WILEY = "fetcher:wiley"
 _SOURCE_UNPAYWALL = "fetcher:unpaywall"
 _SOURCE_CROSSREF = "fetcher:crossref"
+_SOURCE_ACL = "fetcher:acl"
 _SOURCE_OPENALEX = "fetcher:openalex"
 _SOURCE_EUROPEPMC = "fetcher:europepmc"
 _SOURCE_CORE = "fetcher:core"
@@ -330,6 +332,7 @@ _GATE_FAIL_EVENTS = frozenset({"api_error", "fetch_failed", "rate_limited"})
 #: sibling's provider (the JATS leg queries the same Europe PMC API; the
 #: arXiv legs hit the same host). ``fetcher:publisher`` has no key: its
 #: hosts vary per DOI, so a dead Springer tells us nothing about PLOS.
+#: ACL likewise uses the downloader's existing host pacing, without a key.
 _PROVIDER_KEYS: dict[str, str | None] = {
     _SOURCE_PUBLISHER: None,
     _SOURCE_ELSEVIER: "elsevier",
@@ -337,6 +340,7 @@ _PROVIDER_KEYS: dict[str, str | None] = {
     _SOURCE_WILEY: "wiley",
     _SOURCE_UNPAYWALL: "unpaywall",
     _SOURCE_CROSSREF: "crossref",
+    _SOURCE_ACL: None,
     _SOURCE_OPENALEX: "openalex",
     _SOURCE_OPENALEX_CONTENT: "openalex-content",
     _SOURCE_EUROPEPMC: "europepmc",
@@ -1601,6 +1605,53 @@ def check_openalex_balance(store: Store, *, api_key: str) -> int | None:
 
 
 # ── Per-stub logic ─────────────────────────────────────────────────
+
+
+def _try_acl(
+    stub: StubRef,
+    *,
+    inbox_dir: Path,
+    deadline: float | None = None,
+) -> FetchOutcome | None:
+    """Fetch an Anthology DOI directly, silently skipping unmatched IDs.
+
+    No provider key is needed: ``_download_pdf`` applies the existing
+    host pacing, retry and SSRF guards. Refusals retain their deferral
+    events so a locally refused request never counts as a provider miss.
+    """
+    from precis.ingest.acl_anthology import anthology_id_from_doi, pdf_url
+
+    if not stub.doi or (anthology_id := anthology_id_from_doi(stub.doi)) is None:
+        return None
+
+    t0 = time.perf_counter()
+    url = pdf_url(anthology_id)
+    filename = _stub_filename(stub) + ".pdf"
+    target = inbox_dir / filename
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        size_bytes = _download_pdf(url, target, deadline=deadline)
+    except Exception as exc:
+        return FetchOutcome(
+            event=_own_refusal_event(exc) or "fetch_failed",
+            payload={
+                "doi": stub.doi,
+                "urls": [url],
+                "error": f"{url}: {mask_secrets(str(exc)[:120], warn=False)}"[:200],
+            },
+            duration_ms=_ms(t0),
+        )
+    return FetchOutcome(
+        event="fetch_ok",
+        payload={
+            "doi": stub.doi,
+            "url": url,
+            "size_bytes": size_bytes,
+            "host_type": "acl_anthology",
+            "filename": filename,
+        },
+        duration_ms=_ms(t0),
+    )
 
 
 def _try_publisher(
@@ -3648,13 +3699,14 @@ def _run_cascade(
     3. ``wiley``     — Wiley TDM API by DOI, token-gated.
     4. ``unpaywall`` — OA aggregator by DOI.
     5. ``crossref``  — publisher TDM PDF links by DOI.
-    6. ``openalex``  — OA aggregator (different PDF coverage to UPW).
-    7. ``europepmc`` — biomedical OA full-text PDF.
-    8. ``core``      — green-OA repository copies, key-gated.
-    9. ``arxiv``     — deterministic preprint PDF; after the published
+    6. ``acl``       — deterministic ACL Anthology DOI→PDF, keyless.
+    7. ``openalex``  — OA aggregator (different PDF coverage to UPW).
+    8. ``europepmc`` — biomedical OA full-text PDF.
+    9. ``core``      — green-OA repository copies, key-gated.
+    10. ``arxiv``    — deterministic preprint PDF; after the published
        sources so a version of record is preferred over the preprint.
-    10. ``s2``       — Semantic Scholar openAccessPdf, last resort (free).
-    11. ``openalex_content`` — paid OpenAlex cache (PDF/TEI), publisher-
+    11. ``s2``       — Semantic Scholar openAccessPdf, last resort (free).
+    12. ``openalex_content`` — paid OpenAlex cache (PDF/TEI), publisher-
         agnostic; clears the MDPI-Akamai / Cloudflare 403 wall. Gated by
         ``PRECIS_OPENALEX_CONTENT_KEY`` alone (the key is the spend opt-in), and
         last so it only spends after every free leg fails. A low-balance alert
@@ -3734,6 +3786,12 @@ def _run_cascade(
                 ),
             )
         )
+    providers.append(
+        (
+            _SOURCE_ACL,
+            lambda dl: _try_acl(stub, inbox_dir=inbox_dir, deadline=dl),
+        )
+    )
     providers.append(
         (
             _SOURCE_OPENALEX,
