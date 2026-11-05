@@ -24,8 +24,8 @@ link `served-by` decision nodes; decisions link `derived-from` the facts
 and chunks they rest on; every node is anchored to refdes/net handles.
 
 Owner skills named per step below own their verb detail — this skill is
-the router. Still landing (later slices of the same item): consigned BOM
-lines and the budget `publish` helper.
+the router. Still landing (a later slice of the same item): the budget
+`publish` helper (step 6's `est_current_a` hand-off).
 
 ## The flow — eleven steps, each artifact homed
 
@@ -157,6 +157,36 @@ Three copies, one editable:
 - **Queryable** — the pcb design: `get(kind='pcb', id=<slug>, view='bom')`.
 - **Published** — a draft table regenerated from `view='bom'`, never
   hand-edited.
+
+### Consigned and non-assembled parts
+
+A part JLC won't assemble (no C-number, sourced outside the fab — a
+supercap at JLC stock 0, hand-fit cells) carries a **`supply`** record on
+its board-script line, so it stays off the JLCPCB BOM without being lost:
+
+```python
+b.part("C9", footprint="RADIAL", pins=["1", "2"],
+       consign=Consign(mpn="DMT334R2S474M3DTA0", mfr="Murata",
+                       vendor="Digi-Key", lead_time_days=21))
+```
+
+`Consign` (from the `pcb` builder module) emits the batch part key
+`supply: {mode, mpn, mfr?, vendor?, lead_time_days?, as_of?}`; batch put
+takes the same dict directly. `mode` is `consign` (default), `lcsc` (the
+implicit default when a C-number is set — no record needed) or
+`non-assembled` (off the BOM, not ordered through this flow). Its effects:
+
+- `view='bom'` / `bom.csv` leaves the consigned/non-assembled line out —
+  the JLCPCB BOM keeps only assembled parts.
+- the fab package (`view='fab'`) writes a second **`<slug>-consigned.csv`**
+  (MPN, manufacturer, qty, designators, vendor, lead time) next to the
+  BOM/CPL, and its summary reads `consign: N line(s), longest lead X d`
+  rather than flagging the part "non-assemblable".
+- `view='availability'` shows the lead time in place of catalog stock and
+  does not count a declared `supply` as a missing-LCSC line.
+
+Placing a consigned-parts order with JLC is still refused (open question
+Q3); this only shapes the exports.
 
 ## Decisive facts (step 5)
 

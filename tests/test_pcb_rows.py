@@ -271,6 +271,36 @@ def test_pad_vendor_shape_spellings_map_to_canonical() -> None:
         )
 
 
+def test_normalize_supply_validates_the_procurement_record() -> None:
+    """gr519925: a component ``supply`` record — the consign side of
+    ``Board.part(consign=…)``. consign/non-assembled need an ``mpn``; the
+    optional fields are typed; an unknown mode refuses."""
+    s = pcb_rows.normalize_supply(
+        {
+            "mode": "consign",
+            "mpn": " DMT334R2S474M3DTA0 ",
+            "mfr": "Murata",
+            "lead_time_days": 21,
+        },
+        "C9",
+    )
+    assert s == {
+        "mode": "consign",
+        "mpn": "DMT334R2S474M3DTA0",
+        "mfr": "Murata",
+        "lead_time_days": 21,
+    }
+    # mode defaults to consign and then requires an mpn.
+    with pytest.raises(ValueError, match="needs a non-empty string 'mpn'"):
+        pcb_rows.normalize_supply({}, "C9")
+    with pytest.raises(ValueError, match="mode 'bogus' is not one of"):
+        pcb_rows.normalize_supply({"mode": "bogus", "mpn": "X"}, "C9")
+    with pytest.raises(ValueError, match="lead_time_days"):
+        pcb_rows.normalize_supply(
+            {"mode": "consign", "mpn": "X", "lead_time_days": -1}, "C9"
+        )
+
+
 def test_export_footprint_row_is_the_authoring_document() -> None:
     """gr536876: ``export_footprint_row`` turns a stored cache row —
     vendor shape tokens, NULL ``pin_map``, unrounded vendor floats,

@@ -77,6 +77,9 @@ from precis.pcb.rows import (
     normalize_supplies as _normalize_supplies,
 )
 from precis.pcb.rows import (
+    normalize_supply as _normalize_supply,
+)
+from precis.pcb.rows import (
     rot_deg as _rot_deg,
 )
 from precis.pcb.snapshot import ALIASES as _SNAPSHOT_ALIASES
@@ -1217,6 +1220,15 @@ class PcbMixin:
                         c["supplies"], refdes, declared_names or None
                     ),
                 }
+            if c.get("supply") is not None:
+                try:
+                    c = {**c, "supply": _normalize_supply(c["supply"], refdes)}
+                except ValueError as e:
+                    raise BadInput(
+                        str(e),
+                        next="supply: {mode:'consign', mpn:'…', mfr?, "
+                        "vendor?, lead_time_days?, as_of?}",
+                    ) from e
             if c.get("polarized") is not None and not isinstance(
                 c.get("polarized"), bool
             ):
@@ -3121,6 +3133,9 @@ class PcbMixin:
                 "pattern_instance",
                 "edge_mate",
                 "frame",
+                # gr519925 — the procurement record (consigned/non-assembled
+                # sourcing). `pcb_load` hoists it back; the exporters read it.
+                "supply",
             )
             if c.get(k) is not None
         }
@@ -3659,6 +3674,10 @@ class PcbMixin:
                             # (`op='pad'` writes it) — view='pinout' and
                             # view='footprints' read it hoisted.
                             "pad_overrides",
+                            # gr519925: the procurement record — the
+                            # exporters (bom/consigned/fab/availability) read
+                            # it off the export model's instance dict.
+                            "supply",
                         )
                         if k in (r[13] or {})
                     },
@@ -7083,7 +7102,13 @@ class PcbMixin:
                 "       count(i.instance_id), "
                 "       p.mfr_part, p.basic, p.stock, p.price, p.params, "
                 "       p.refreshed_at, "
-                "       a.discontinued, a.ewma_stock, a.restock_count "
+                "       a.discontinued, a.ewma_stock, a.restock_count, "
+                # gr519925 — the procurement record off any instance of this
+                # component (consign is per part-type, so the first wins).
+                "       (SELECT i2.meta -> 'supply' FROM pcb_instances i2 "
+                "         WHERE i2.component_id = c.component_id "
+                "           AND i2.retired_at IS NULL "
+                "           AND (i2.meta ? 'supply') LIMIT 1) "
                 "FROM pcb_components c "
                 "JOIN pcb_instances i ON i.component_id = c.component_id "
                 "                    AND i.retired_at IS NULL "
@@ -7113,6 +7138,7 @@ class PcbMixin:
                 "discontinued": bool(r[11]) if r[11] is not None else False,
                 "ewma_stock": r[12],
                 "restock_count": r[13],
+                "supply": r[14],
             }
             for r in rows
         ]

@@ -109,6 +109,60 @@ def normalize_supplies(
     return out
 
 
+#: The sourcing modes a component ``supply`` record may declare
+#: (precis-pcb-design-flow-help, gr519925). ``lcsc`` is the implicit
+#: default when a C-number is set and needs no record; ``consign`` and
+#: ``non-assembled`` are the ones a board authors.
+SUPPLY_MODES = ("lcsc", "consign", "non-assembled")
+
+
+def normalize_supply(raw: Any, component: str) -> dict[str, Any]:
+    """Validate a component's ``supply`` record — the procurement side of
+    ``Board.part(consign=…)`` (precis-pcb-design-flow-help, gr519925):
+    ``{"mode", "mpn", optional "mfr", optional "vendor", optional
+    "lead_time_days", optional "as_of"}``. Returns the normalized dict the
+    instance ``meta`` stores and the exporters read.
+
+    A ``consign``/``non-assembled`` part carries no LCSC number, so ``mpn``
+    is required there; the ``lcsc`` mode (the default) needs none."""
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"component {component}: supply must be an object "
+            f"{{mode, mpn, …}}; got {type(raw).__name__}"
+        )
+    mode = raw.get("mode") or "consign"
+    if mode not in SUPPLY_MODES:
+        raise ValueError(
+            f"component {component}: supply mode {mode!r} is not one of {SUPPLY_MODES}"
+        )
+    out: dict[str, Any] = {"mode": mode}
+    mpn = raw.get("mpn")
+    if mode != "lcsc" and (not isinstance(mpn, str) or not mpn.strip()):
+        raise ValueError(
+            f"component {component}: supply mode {mode!r} needs a non-empty "
+            "string 'mpn' (the part has no LCSC number to order by)"
+        )
+    if mpn is not None:
+        out["mpn"] = str(mpn).strip()
+    for k in ("mfr", "vendor", "as_of"):
+        v = raw.get(k)
+        if v is not None:
+            if not isinstance(v, str) or not v.strip():
+                raise ValueError(
+                    f"component {component}: supply {k!r} must be a non-empty string"
+                )
+            out[k] = v.strip()
+    lead = raw.get("lead_time_days")
+    if lead is not None:
+        if isinstance(lead, bool) or not isinstance(lead, int) or lead < 0:
+            raise ValueError(
+                f"component {component}: supply 'lead_time_days' must be a "
+                "non-negative integer"
+            )
+        out["lead_time_days"] = int(lead)
+    return out
+
+
 def normalize_client_of(
     raw: Any, component: str, pin: str, declared: set[str] | None = None
 ) -> dict[str, Any]:

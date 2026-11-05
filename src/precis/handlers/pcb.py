@@ -6449,18 +6449,27 @@ class PcbHandler(Handler):
         export_model = self._export_model(ref_id)
         bom = pcb_export.bom_csv(export_model)
         cpl = pcb_export.cpl_csv(export_model)
+        clines = pcb_export.consigned_lines(export_model)
 
         out_dir = self._export_dir(slug, args)
         stem = pcb_epro_write.safe_stem(slug)
+        files: list[tuple[str, bytes | None, str | None]] = [
+            (f"{stem}-fab.zip", blob, None),
+            (f"{stem}-bom.csv", None, bom),
+            (f"{stem}-cpl.csv", None, cpl),
+        ]
+        # The consigned sheet (gr519925) joins the package only when the
+        # board sources a part outside JLC assembly — a rigid all-LCSC board
+        # gets none, the same discipline the flex fab layers follow.
+        if clines:
+            files.append(
+                (f"{stem}-consigned.csv", None, pcb_export.consigned_csv(export_model))
+            )
         written = []
-        for fname, text in (
-            (f"{stem}-fab.zip", None),
-            (f"{stem}-bom.csv", bom),
-            (f"{stem}-cpl.csv", cpl),
-        ):
+        for fname, blob_text, text in files:
             path = out_dir / fname
             if text is None:
-                path.write_bytes(blob)
+                path.write_bytes(blob_text or b"")
             else:
                 path.write_text(text, encoding="utf-8")
             written.append(f"{path}  ({path.stat().st_size:,} bytes)")
@@ -6470,6 +6479,10 @@ class PcbHandler(Handler):
             export_model, "cpl"
         ):
             warns.append(w)
+        if clines:
+            longest = max((g["lead_time_days"] or 0) for g in clines)
+            noun = "line" if len(clines) == 1 else "lines"
+            warns.append(f"consign: {len(clines)} {noun}, longest lead {longest} d")
         seen: set[str] = set()
         unique_warns: list[str] = []
         for w in warns:
@@ -8065,6 +8078,34 @@ class PcbHandler(Handler):
                 else pcb_catalog.min_unit_price(r.get("price"))
             )
             refdes = r["refdes"]
+            # gr519925 — a part sourced outside JLC has no catalog stock to
+            # sweep; report its lead time (consign) rather than EOL noise.
+            supply = r.get("supply") if isinstance(r.get("supply"), dict) else None
+            mode = str(supply.get("mode") or "consign") if supply else None
+            if supply is not None and mode in ("consign", "non-assembled"):
+                lead = supply.get("lead_time_days")
+                lifecycle = (
+                    "non-assembled"
+                    if mode == "non-assembled"
+                    else (f"consign (lead {lead} d)" if lead is not None else "consign")
+                )
+                table.append(
+                    {
+                        "refdes": ",".join(refdes[:6])
+                        + ("…" if len(refdes) > 6 else ""),
+                        "qty": r["qty"],
+                        "lcsc": lcsc or "—",
+                        "mfr_part": str(supply.get("mpn"))
+                        if supply.get("mpn")
+                        else (r["mfr_part"] or "—"),
+                        "lib": "consign",
+                        "stock": "—",
+                        "$ea": "—",
+                        "lifecycle": lifecycle,
+                        "fetched": "—",
+                    }
+                )
+                continue
             table.append(
                 {
                     "refdes": ",".join(refdes[:6]) + ("…" if len(refdes) > 6 else ""),
@@ -8082,7 +8123,11 @@ class PcbHandler(Handler):
                     "fetched": _age(r["refreshed_at"]),
                 }
             )
-        n_uncatalogued = sum(1 for r in rows if r["part_lcsc"] is None)
+        n_uncatalogued = sum(
+            1
+            for r in rows
+            if r["part_lcsc"] is None and not isinstance(r.get("supply"), dict)
+        )
         if n_uncatalogued:
             head += f"\n{n_uncatalogued} line(s) have no LCSC number (not orderable at JLCPCB)"
         return Response(

@@ -128,6 +128,101 @@ def test_unplaced_and_missing_lcsc():
     assert export.missing_lcsc(m) == ["J1"]
 
 
+# ── consigned / supply (gr519925) ────────────────────────────────────
+def _consign_model():
+    return {
+        "instances": [
+            {
+                "refdes": "U1",
+                "label": "ESP32-C3",
+                "part_lcsc": "C2838500",
+                "footprint": "QFN-32",
+                "x": 1.0,
+                "y": 1.0,
+                "rot": 0.0,
+                "pins": ["VDD"],
+            },
+            {
+                "refdes": "C9",
+                "label": "0.33F supercap",
+                "part_lcsc": None,
+                "footprint": "RADIAL",
+                "x": 2.0,
+                "y": 2.0,
+                "rot": 0.0,
+                "pins": ["1", "2"],
+                "supply": {
+                    "mode": "consign",
+                    "mpn": "DMT334R2S474M3DTA0",
+                    "mfr": "Murata",
+                    "vendor": "Digi-Key",
+                    "lead_time_days": 21,
+                },
+            },
+        ],
+        "nets": [],
+    }
+
+
+def test_consigned_part_is_off_the_jlc_bom_and_on_the_consigned_sheet():
+    m = _consign_model()
+    bom = export.bom_csv(m)
+    # the consigned part is NOT in the JLCPCB BOM; the assembled part stays.
+    assert "DMT334" not in bom and ",C9," not in bom
+    assert "C2838500" in bom
+    consigned = export.consigned_csv(m)
+    lines = consigned.strip().splitlines()
+    assert lines[0] == "MPN,Manufacturer,Qty,Designators,Vendor,Lead time (days)"
+    row = next(ln for ln in lines[1:] if "DMT334R2S474M3DTA0" in ln)
+    assert "Murata" in row and "C9" in row and "Digi-Key" in row
+    assert row.endswith(",21")
+
+
+def test_a_declared_supply_is_not_a_missing_lcsc_warning():
+    # the consigned part declares its sourcing, so it is intentional —
+    # never a "part(s) without an LCSC number" surprise.
+    assert export.missing_lcsc(_consign_model()) == []
+
+
+def test_consigned_lines_group_by_mpn_and_keep_the_longest_lead():
+    m = {
+        "instances": [
+            {
+                "refdes": "C9",
+                "part_lcsc": None,
+                "x": 0,
+                "y": 0,
+                "supply": {"mode": "consign", "mpn": "CAP-A", "lead_time_days": 14},
+            },
+            {
+                "refdes": "C10",
+                "part_lcsc": None,
+                "x": 1,
+                "y": 1,
+                "supply": {"mode": "consign", "mpn": "CAP-A", "lead_time_days": 30},
+            },
+            {
+                "refdes": "X1",
+                "part_lcsc": None,
+                "x": 2,
+                "y": 2,
+                "supply": {"mode": "non-assembled", "mpn": "NA-1"},
+            },
+        ],
+        "nets": [],
+    }
+    lines = export.consigned_lines(m)
+    # one consigned MPN (non-assembled is off the BOM but is not consigned).
+    assert len(lines) == 1
+    g = lines[0]
+    assert g["mpn"] == "CAP-A" and g["qty"] == 2
+    assert g["refs"] == ["C9", "C10"]
+    assert g["lead_time_days"] == 30
+    # both off-JLC parts stay out of the JLC BOM and out of the warning.
+    assert "CAP-A" not in export.bom_csv(m) and "NA-1" not in export.bom_csv(m)
+    assert export.missing_lcsc(m) == []
+
+
 def test_a_board_feature_is_left_out_of_bom_and_cpl_but_an_unsourced_part_is_not():
     """An instance whose authored pads are all non-solderable (an EWOD
     electrode array) is etched copper: no pick-and-place line, no BOM row,

@@ -191,6 +191,102 @@ def test_environment_meta_script_roundtrip_reaches_board(store) -> None:
     _roundtrip(readback)
 
 
+def test_consign_flows_from_builder_through_store_to_the_exporters(store) -> None:
+    """gr519925: ``Board.part(consign=Consign(...))`` → the component row's
+    ``supply`` key → instance ``meta`` → the export model → off the JLCPCB
+    BOM and onto the consigned sheet."""
+    from precis.pcb import export as pcb_export
+    from precis_geom.pcb import Consign, Footprint
+
+    # U1 is an ordinary cached LCSC part; C9 is consigned with an authored
+    # (design-local) footprint — a consigned part has no catalog row, so its
+    # real pads can only come from the board, not the LCSC cache.
+    store.part_footprint_put(
+        "C2838500",
+        {
+            "pads": [
+                {
+                    "number": "1",
+                    "shape": "RECT",
+                    "x": -1.0,
+                    "y": 0.0,
+                    "w": 0.3,
+                    "h": 0.6,
+                    "rot": 0.0,
+                    "layer": "F.Cu",
+                    "drill": None,
+                }
+            ],
+            "pin_map": {"1": {"name": "VDD", "tags": ["power"]}},
+        },
+    )
+    radial = Footprint(
+        "RADIAL",
+        pads=[
+            {
+                "number": n,
+                "shape": "RECT",
+                "x": x,
+                "y": 0.0,
+                "w": 1.5,
+                "h": 1.5,
+                "rot": 0.0,
+                "layer": "F.Cu",
+                "drill": None,
+            }
+            for n, x in (("1", -2.5), ("2", 2.5))
+        ],
+        pin_map={"1": {"name": "1", "tags": []}, "2": {"name": "2", "tags": []}},
+    )
+    b = Board("consign-script")
+    b.part("U1", lcsc="C2838500", footprint="QFN-32", pins=["VDD"])
+    b.part(
+        "C9",
+        footprint=radial,
+        label="0.33F supercap",
+        pins=["1", "2"],
+        consign=Consign(
+            mpn="DMT334R2S474M3DTA0",
+            mfr="Murata",
+            vendor="Digi-Key",
+            lead_time_days=21,
+        ),
+    )
+    batch = b.to_batch()
+    rows = {c["refdes"]: c for c in batch["components"]}
+    assert rows["C9"]["supply"] == {
+        "mode": "consign",
+        "mpn": "DMT334R2S474M3DTA0",
+        "mfr": "Murata",
+        "vendor": "Digi-Key",
+        "lead_time_days": 21,
+    }
+    assert "supply" not in rows["U1"]  # a plain LCSC part carries none
+    # from_batch is the lossless inverse — the supply survives.
+    rebuilt = {c["refdes"]: c for c in Board.from_batch(batch).to_batch()["components"]}
+    assert rebuilt["C9"]["supply"] == rows["C9"]["supply"]
+
+    ref, _, _ = store.pcb_apply(
+        slug="consign-script",
+        title="Consign script",
+        components=batch["components"],
+        nets=batch.get("nets", []),
+        connections=batch.get("connections", []),
+        footprints=batch.get("footprints", []),
+        meta=batch.get("meta", {}),
+    )
+    load = store.pcb_load(ref.id)
+    c9 = next(i for i in load["instances"] if i["refdes"] == "C9")
+    assert c9["supply"]["mpn"] == "DMT334R2S474M3DTA0"
+    model = pcb_export.export_model(load, store.pcb_graph(ref.id))
+    bom = pcb_export.bom_csv(model)
+    assert ",C9," not in bom and "DMT334" not in bom
+    assert "C2838500" in bom
+    lines = pcb_export.consigned_lines(model)
+    assert len(lines) == 1 and lines[0]["lead_time_days"] == 21
+    assert pcb_export.missing_lcsc(model) == []
+
+
 def test_footprints_share_one_pads_binding() -> None:
     text = _roundtrip(_tiny_batch())
     pads_vars = {

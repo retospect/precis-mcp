@@ -572,3 +572,76 @@ def test_export_dir_refuses_inside_corpus_but_outside_pcb(
     slug = _seed(pcb)
     with pytest.raises(BadInput, match="outside the export root"):
         pcb.get(id=slug, view="bom", args={"dir": str(corpus / "elsewhere")})
+
+
+def test_fab_view_consigned_part_is_sidecar_not_bom_and_not_unassemblable(
+    pcb, tmp_path
+):
+    """gr519925 end to end: a consigned part (authored local footprint with
+    real pads, no LCSC number, ``supply`` record) leaves the JLC BOM, lands
+    in ``{stem}-consigned.csv``, adds the ``consign:`` warning line, and is
+    not counted among the parts without an LCSC number."""
+    mpn = "DMT334R2S474M3DTA0"
+    design = _DESIGN | {
+        "footprints": [
+            {
+                "name": "cons_0603",
+                "pads": [
+                    {
+                        "pin": "1",
+                        "shape": "rect",
+                        "x": -0.8,
+                        "y": 0.0,
+                        "w": 0.8,
+                        "h": 0.9,
+                    },
+                    {
+                        "pin": "2",
+                        "shape": "rect",
+                        "x": 0.8,
+                        "y": 0.0,
+                        "w": 0.8,
+                        "h": 0.9,
+                    },
+                ],
+            }
+        ],
+        "components": [
+            *cast(list[dict[str, Any]], _DESIGN["components"]),
+            {
+                "refdes": "C9",
+                "label": "consigned cap",
+                "footprint": "cons_0603",
+                "x": 15.0,
+                "y": 15.0,
+                "pins": [{"name": "1"}, {"name": "2"}],
+                "supply": {
+                    "mode": "consign",
+                    "mpn": mpn,
+                    "lead_time_days": 21,
+                },
+            },
+        ],
+    }
+    pcb.put(id="fabtest", args=design)
+    for lcsc, fp in (
+        ("C2838500", _QFN_FOOTPRINT),
+        ("C1525", _CAP_FOOTPRINT),
+        ("CTHT1", _THT_FOOTPRINT),
+    ):
+        pcb.store.part_footprint_put(lcsc, fp)
+
+    resp = pcb.get(id="fabtest", view="fab", args={"dir": str(tmp_path)})
+
+    assert "consign: 1 line, longest lead 21 d" in resp.body
+    assert "without an LCSC number" not in resp.body
+
+    consigned = (tmp_path / "fabtest-consigned.csv").read_text(encoding="utf-8")
+    assert (
+        consigned.splitlines()[0]
+        == "MPN,Manufacturer,Qty,Designators,Vendor,Lead time (days)"
+    )
+    assert mpn in consigned and "C9" in consigned
+
+    bom = (tmp_path / "fabtest-bom.csv").read_text(encoding="utf-8")
+    assert "C9" not in bom and mpn not in bom

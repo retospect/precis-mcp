@@ -58,14 +58,42 @@ preview can't be sent to a fab by mistake. `view='fab'` and `op='order'`
 never accept the flag; the real fix is `op='footprint'` with the part's
 LCSC number (see [[precis-pcb-check-help]]).
 
-**Silkscreen is generated, not authored.** Each part gets one closed
-outline drawn two silk line widths clear of its own pads. Close
-neighbours bend their outlines toward each other but keep two line widths
-apart, or share one wall. An edge-mated part whose outline would cross
-the board edge gets one clean gap at the edge. A routed via on an
-outline breaks it there (silk never prints on copper). The refdes label
-goes **outside** the outline, two line widths clear of every outline and
-never on a pad, via or other label.
+`view='dsn'` writes the Specctra `.dsn` an external autorouter
+(EasyEDA/KiCad/Freerouting) reads — the manual escape hatch.
+`bom`/`cpl` warn
+about unplaced or non-assemblable (no-LCSC) parts. An instance that is
+etched copper rather than a part (a footprint whose pads are all `role:
+'electrode'` or `'probe'`, such as an EWOD electrode array) is left out of
+both: there is nothing to place or buy.
+
+A part that declares a `supply` record (`consign`/`non-assembled`, below)
+is deliberately off the JLCPCB BOM, so it is **not** flagged as a surprise
+"no-LCSC" part. Author it on the board script with
+`b.part(..., consign=Consign(mpn=…, mfr=…, vendor=…, lead_time_days=…))`
+(or the batch part key `supply: {mode, mpn, mfr?, vendor?, lead_time_days?,
+as_of?}`); the consigned ones land on `{slug}-consigned.csv` in the fab
+package. Shape and the rest of the design flow:
+[[precis-pcb-design-flow-help]] §Consigned and non-assembled parts.
+
+`view='bom'` also ends its **response** with a `## Consolidation` nudge
+(the written CSV is untouched): same-package parts of one jlcparts class
+differing only in a free parametric (`parts.params` — Resistance,
+Capacitance) get a "one value?" line proposing the house-set or plurality
+member with a one-sentence LLM verdict and its cited inputs; a
+`kept-distinct:<label>:<label>[:<reason>]` tag on the design suppresses a
+pair and prints the reason (pcb component types aren't refs, so the
+link-door `rel='kept-distinct'` is the component kind's form). See
+[[precis-component-help]] for the attribute-role model.
+
+## Silkscreen — generated, not authored
+
+Each part gets one closed outline drawn two silk line widths clear of
+its own pads. Close neighbours bend their outlines toward each other but
+keep two line widths apart, or share one wall. An edge-mated part whose
+outline would cross the board edge gets one clean gap at the edge. A
+routed via on an outline breaks it there (silk never prints on copper).
+The refdes label goes **outside** the outline, two line widths clear of
+every outline and never on a pad, via or other label.
 Spots are tried in this fixed order, in board orientation (a side spot is
 centred on that side of the outline; a corner spot sits just past that
 side, flush with the outline's left or right edge):
@@ -85,24 +113,6 @@ invisible, so a part with no clear outside spot drops its label and DRC
 reports `silk_missing`. To move one label by hand, set a per-part spot:
 `put(kind='pcb', id='<slug>', args={'op':'move','refdes':'U1','label_spot':'top-right'})`
 (any of the eight names above; `null` clears it).
-
-`view='dsn'` writes the Specctra `.dsn` an external autorouter
-(EasyEDA/KiCad/Freerouting) reads — the manual escape hatch.
-`bom`/`cpl` warn
-about unplaced or non-assemblable (no-LCSC) parts. An instance that is
-etched copper rather than a part (a footprint whose pads are all `role:
-'electrode'` or `'probe'`, such as an EWOD electrode array) is left out of
-both: there is nothing to place or buy.
-
-`view='bom'` also ends its **response** with a `## Consolidation` nudge
-(the written CSV is untouched): same-package parts of one jlcparts class
-differing only in a free parametric (`parts.params` — Resistance,
-Capacitance) get a "one value?" line proposing the house-set or plurality
-member with a one-sentence LLM verdict and its cited inputs; a
-`kept-distinct:<label>:<label>[:<reason>]` tag on the design suppresses a
-pair and prints the reason (pcb component types aren't refs, so the
-link-door `rel='kept-distinct'` is the component kind's form). See
-[[precis-component-help]] for the attribute-role model.
 
 ## Non-copper fab layers — coverlay, stiffener, adhesive, bend zone
 
@@ -199,7 +209,11 @@ part was folded into a successor — strongest EOL tell), `alts`, `no-buy`,
 vendor listing — the `lossNumber` field), `dropped-from-dump`, `stock 0` —
 or `ok`. A line with no
 LCSC number lists as such; a C-number absent from the catalog says `not in
-catalog` (or `absent from jlcpcb.com` when the live check just ran).
+catalog` (or `absent from jlcpcb.com` when the live check just ran). A line
+with a `supply` record (consigned/non-assembled) has no catalog stock to
+sweep: it shows `consign` for `lib`/`stock` and its lead time
+(`consign (lead X d)` / `non-assembled`) under `lifecycle`, and is not
+counted among the "no LCSC number" lines.
 
 Rows whose catalog data is older than ~6h — or missing — get one **bounded**
 live refresh from the JLCPCB Open API on the way out (≤12 C-numbers per
@@ -214,7 +228,11 @@ part-kind side.
 
 `view='fab'` (args `{dir}` — under the export root only) writes `{slug}-fab.zip`, `{slug}-bom.csv`,
 `{slug}-cpl.csv` — the zip is the order upload; BOM/CPL attach by hand at
-jlcpcb.com checkout (the order API has no PCBA endpoints).
+jlcpcb.com checkout (the order API has no PCBA endpoints). When the board
+sources a part outside JLC assembly (a `supply` record, below), a fourth
+file `{slug}-consigned.csv` (MPN, manufacturer, qty, designators, vendor,
+lead time) joins the package and the summary reads `consign: N line(s),
+longest lead X d`.
 
 `put(args={'op':'order'})` builds the JLCPCB order payload — layers/size
 from the board; `qty`, `thickness_mm`, `pcb_param={...}` (JLC's int craft

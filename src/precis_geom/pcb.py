@@ -834,6 +834,7 @@ class Part:
         part_meta: dict[str, Any] | None = None,
         supplies: Any = None,
         pin_swap_groups: Any = None,
+        consign: Consign | dict[str, Any] | None = None,
         site: str | None = None,
     ) -> None:
         """Create the part — normally via :meth:`Board.part`, not directly.
@@ -853,6 +854,9 @@ class Part:
             supplies (Any): Authored ``supplies`` declaration list,
                 carried verbatim.
             pin_swap_groups (Any): Authored swap groups, carried verbatim.
+            consign (Consign | dict | None): Procurement record for a part
+                sourced outside JLCPCB assembly, emitted as the ``supply``
+                row key.
             site (str | None): ``file:line`` the part was declared on —
                 computed from the calling script frame when omitted.
         """
@@ -877,6 +881,14 @@ class Part:
         #: role-annotation method.
         self.supply_blocks = supplies
         self.pin_swap_groups = pin_swap_groups
+        #: The procurement record (``consign=``) — a :class:`Consign` or a
+        #: raw ``supply`` dict, carried verbatim as the component row's
+        #: ``supply`` key (precis-pcb-design-flow-help).
+        self.supply: dict[str, Any] | None = (
+            consign.to_dict()
+            if isinstance(consign, Consign)
+            else (dict(consign) if consign is not None else None)
+        )
         self._pins: dict[str, Pin] = {}
         self._pin_order: list[str] = []
         self._declared_pins: set[str] = set()
@@ -1286,6 +1298,8 @@ class Part:
             d["supplies"] = copy.deepcopy(self.supply_blocks)
         if self.pin_swap_groups is not None:
             d["pin_swap_groups"] = copy.deepcopy(self.pin_swap_groups)
+        if self.supply is not None:
+            d["supply"] = copy.deepcopy(self.supply)
         if self.maker is not None:
             d["frame"] = self.maker
         return d
@@ -1786,6 +1800,37 @@ class CatalogPart:
     error: str | None = None
 
 
+@dataclass
+class Consign:
+    """The procurement side of ``Board.part(consign=…)`` — a part whose
+    sourcing lies outside JLCPCB assembly (precis-pcb-design-flow-help,
+    gr519925). A consigned part carries no LCSC catalog number: it is
+    shipped to the fab (or hand-fitted) and lands in the design's
+    ``consigned.csv`` rather than the JLCPCB BOM. ``mode='non-assembled'``
+    marks a part no one assembles through this flow — left off the JLCPCB
+    BOM, and not consigned either.
+
+    Emitted verbatim as the component row's ``supply`` key; the store puts
+    it on the instance ``meta`` and the exporters read it back."""
+
+    mpn: str
+    mfr: str | None = None
+    vendor: str | None = None
+    lead_time_days: int | None = None
+    as_of: str | None = None
+    mode: str = "consign"
+
+    def to_dict(self) -> dict[str, Any]:
+        """The ``supply`` batch value — ``mode``/``mpn`` always, the rest
+        only when set, so the row stays minimal."""
+        d: dict[str, Any] = {"mode": self.mode, "mpn": self.mpn}
+        for k in ("mfr", "vendor", "lead_time_days", "as_of"):
+            v = getattr(self, k)
+            if v is not None:
+                d[k] = v
+        return d
+
+
 def catalog_part(lcsc: str, cache: str | Path, *, sha256: str) -> CatalogPart:
     """Load a pinned local catalog reference while preserving component fields.
 
@@ -2246,6 +2291,7 @@ class Board:
         part_meta: dict[str, Any] | None = None,
         supplies: Any = None,
         pin_swap_groups: Any = None,
+        consign: Consign | dict[str, Any] | None = None,
     ) -> Part:
         """``part=`` is a catalog-ref (gr514215): a :class:`CatalogPart`
         from :meth:`catalog`/``pcb.catalog``, or an lcsc string — read
@@ -2281,6 +2327,10 @@ class Board:
                 carried verbatim.
             pin_swap_groups (Any): Authored swap groups, carried
                 verbatim.
+            consign (Consign | dict | None): Procurement record for a
+                part sourced outside JLCPCB assembly — a :class:`Consign`
+                or a raw ``supply`` dict. Emitted as the row's ``supply``
+                key (precis-pcb-design-flow-help).
         """
         if isinstance(part, str):
             part = self.catalog(part)
@@ -2330,6 +2380,7 @@ class Board:
             part_meta=part_meta,
             supplies=supplies,
             pin_swap_groups=pin_swap_groups,
+            consign=consign,
         )
         p._catalog = part if isinstance(part, CatalogPart) else None
         for entry in pins:
@@ -4237,6 +4288,7 @@ class Board:
                 part_meta=copy.deepcopy(row.get("part_meta")),
                 supplies=copy.deepcopy(row.get("supplies")),
                 pin_swap_groups=copy.deepcopy(row.get("pin_swap_groups")),
+                consign=copy.deepcopy(row.get("supply")),
                 site=ps.get("site") or "?:0",
             )
             p.maker = row.get("frame")

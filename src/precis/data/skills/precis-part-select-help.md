@@ -242,12 +242,14 @@ ladder — the top rungs cost nothing, the bottom ones cost board area.
 5. **Accept the thin-stock part** — deliberately, with the risk stated in
    the component's `note`, not by default.
 6. **Consign.** The part has no C-number and won't get one — you source it
-   outside JLC. Its home is a `component` ref (mpn/manufacturer, meta
-   `supply: 'consign'`, supplier links), which is also how its datasheet
-   gets pulled — `put(kind='datasheet', args={'mfr_part': …,
-   'manufacturer': …, 'url': …})` ([[precis-datasheet-help]]). Typed
-   consigned BOM lines are a later slice of the design-flow item;
-   [[precis-pcb-design-flow-help]] names the shape.
+   outside JLC. On the board script its line carries a `supply` record —
+   `b.part(..., consign=Consign(mpn=…, mfr=…, lead_time_days=…))` — so it
+   stays off the JLCPCB BOM and lands on the design's `consigned.csv`
+   instead; [[precis-pcb-design-flow-help]] §Consigned and non-assembled
+   parts gives the shape and effects, [[precis-pcb-fab-help]] the export.
+   Its datasheet still pulls by MPN — `put(kind='datasheet',
+   args={'mfr_part': …, 'manufacturer': …, 'url': …})`
+   ([[precis-datasheet-help]]).
 
 **"Well stocked" is a ratio, not a number.** Compare stock against
 *this build*: qty × per-board count, with a healthy multiple. 5 000 units is

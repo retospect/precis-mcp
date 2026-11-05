@@ -7,7 +7,12 @@ none needs a binary.
 Targets, in fab order:
 
 - :func:`bom_csv`   — the JLCPCB **BOM** (``Comment,Designator,Footprint,
-  LCSC Part #``), one row per distinct part, designators grouped.
+  LCSC Part #``), one row per distinct part, designators grouped. A part
+  with a ``consign``/``non-assembled`` ``supply`` record is left off (it is
+  not JLC-assembled).
+- :func:`consigned_csv` — the **consigned-parts sheet** (``MPN,
+  Manufacturer,Qty,Designators,Vendor,Lead time (days)``), one row per
+  consigned MPN — the parts sourced outside JLCPCB assembly (gr519925).
 - :func:`cpl_csv`   — the JLCPCB **CPL / pick-and-place**
   (``Designator,Mid X,Mid Y,Layer,Rotation``). Carries the one real
   coordinate-frame conversion in the system (:func:`jlc_rotation`) — our
@@ -147,6 +152,86 @@ def excluded_features(model: dict[str, Any]) -> list[str]:
     )
 
 
+# ─────────────────────────────────────────────────────────────────────
+# supply / consignment (gr519925 — precis-pcb-design-flow-help)
+# ─────────────────────────────────────────────────────────────────────
+def _supply(i: dict[str, Any]) -> dict[str, Any] | None:
+    """An instance's procurement record (``meta['supply']``, hoisted onto
+    the export model's instance dict), or ``None`` when the part sources
+    the default LCSC way."""
+    s = i.get("supply")
+    return s if isinstance(s, dict) else None
+
+
+def _supply_mode(i: dict[str, Any]) -> str | None:
+    """The declared sourcing mode (``consign``/``non-assembled``/``lcsc``),
+    or ``None`` when the part declares no ``supply`` record at all — the
+    difference between an intentional off-JLC part and an unbound one."""
+    s = _supply(i)
+    return str(s.get("mode") or "consign") if s else None
+
+
+def _off_jlc(i: dict[str, Any]) -> bool:
+    """The part is deliberately kept off the JLCPCB assembly BOM — consigned
+    or declared non-assembled."""
+    return _supply_mode(i) in ("consign", "non-assembled")
+
+
+def consigned_lines(model: dict[str, Any]) -> list[dict[str, Any]]:
+    """One row per consigned MPN (``supply.mode == 'consign'``), designators
+    grouped and the longest lead time kept — the shape ``consigned_csv`` and
+    the fab summary both read. Non-assembled parts are NOT consigned and are
+    left out (they are nobody's order)."""
+    groups: dict[str, dict[str, Any]] = {}
+    for i in _assembled(model):
+        if _supply_mode(i) != "consign":
+            continue
+        s = _supply(i) or {}
+        mpn = str(s.get("mpn") or "")
+        g = groups.setdefault(
+            mpn,
+            {"mpn": mpn, "mfr": "", "vendor": "", "lead_time_days": None, "refs": []},
+        )
+        g["refs"].append(i["refdes"])
+        for k in ("mfr", "vendor"):
+            if not g[k] and s.get(k):
+                g[k] = str(s[k])
+        lead = s.get("lead_time_days")
+        if lead is not None:
+            g["lead_time_days"] = (
+                lead if g["lead_time_days"] is None else max(g["lead_time_days"], lead)
+            )
+    out = []
+    for g in groups.values():
+        g["refs"] = sorted(g["refs"], key=_natural_key)
+        g["qty"] = len(g["refs"])
+        out.append(g)
+    return sorted(out, key=lambda g: _natural_key(g["refs"][0]))
+
+
+def consigned_csv(model: dict[str, Any]) -> str:
+    """The consigned-parts sheet: MPN, Manufacturer, Qty, Designators,
+    Vendor, Lead time (days). One row per MPN — the parts the board sources
+    outside JLCPCB assembly, kept out of the JLCPCB BOM."""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(
+        ["MPN", "Manufacturer", "Qty", "Designators", "Vendor", "Lead time (days)"]
+    )
+    for g in consigned_lines(model):
+        w.writerow(
+            [
+                g["mpn"],
+                g["mfr"],
+                g["qty"],
+                ",".join(g["refs"]),
+                g["vendor"],
+                "" if g["lead_time_days"] is None else g["lead_time_days"],
+            ]
+        )
+    return buf.getvalue()
+
+
 def csv_preview(content: str, limit: int = 40) -> str:
     """The first ``limit`` lines of an exported CSV for the response body.
     A cut is always announced with the count left out: a preview that stops
@@ -177,9 +262,13 @@ def bom_csv(model: dict[str, Any]) -> str:
     designators comma-joined. Parts with no LCSC number are still listed
     (LCSC blank) — they cannot be JLCPCB-assembled and the caller should flag
     them. Board features (:func:`board_feature_refdes`) are not parts and
-    are not listed."""
+    are not listed. A part with a ``consign``/``non-assembled`` ``supply``
+    record is deliberately off the JLCPCB BOM too (:func:`consigned_csv`
+    carries the consigned ones)."""
     groups: dict[tuple[str, str, str], list[str]] = {}
     for i in _assembled(model):
+        if _off_jlc(i):
+            continue
         key = (
             str(i.get("label") or ""),
             str(i.get("footprint") or ""),
@@ -253,9 +342,15 @@ def unplaced(model: dict[str, Any]) -> list[str]:
 
 
 def missing_lcsc(model: dict[str, Any]) -> list[str]:
-    """Refdes of PARTS with no LCSC number (cannot be JLCPCB-assembled) —
-    a board feature is not a part, so it is never named here."""
-    return [i["refdes"] for i in _assembled(model) if not i.get("part_lcsc")]
+    """Refdes of PARTS with no LCSC number *and* no declared sourcing —
+    an unbound part the caller should flag. A board feature is not a part,
+    and a part with a ``supply`` record (consigned/non-assembled) is an
+    intentional off-JLC part, so neither is named here (gr519925)."""
+    return [
+        i["refdes"]
+        for i in _assembled(model)
+        if not i.get("part_lcsc") and not _supply(i)
+    ]
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -508,6 +603,8 @@ __all__ = [
     "board_bbox",
     "board_feature_refdes",
     "bom_csv",
+    "consigned_csv",
+    "consigned_lines",
     "cpl_csv",
     "csv_preview",
     "excluded_features",
