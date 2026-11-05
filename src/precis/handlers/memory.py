@@ -147,6 +147,10 @@ from precis.handlers._attribution import (
 )
 from precis.handlers._eye import EYE_LADDER, is_eye_view
 from precis.handlers._interpret import interpreted
+from precis.handlers._memory_link_receipt import (
+    link_effect_receipt,
+    preview_link_effects,
+)
 from precis.handlers._memory_shape import ShapeAudit, audit_shape
 from precis.handlers._memory_smells import render_memory_smells, render_smell_rollup
 from precis.handlers._mode_help import require_mode
@@ -1788,6 +1792,7 @@ class MemoryHandler(NumericRefHandler):
 
     # ── edit: in-place body rewrite (+ optional title) ──────────────
 
+    @link_effect_receipt
     def edit(
         self,
         *,
@@ -2638,6 +2643,7 @@ class MemoryHandler(NumericRefHandler):
             ref, new_body, old_body=old_body, new_title=new_title, meta_patch=meta_patch
         )
         if dry_mode is not None:
+            preview_link_effects(self.store, ref.id, new_body)
             header = render_dry_run_header(
                 region_label=label,
                 edited_spans=result.edited_spans,
@@ -2768,6 +2774,7 @@ class MemoryHandler(NumericRefHandler):
             ref, new_body, old_body=old_body, new_title=new_title, meta_patch=meta_patch
         )
         if dry_mode is not None:
+            preview_link_effects(self.store, ref.id, new_body)
             start = old_body.count("\n") + 1
             end = new_body.count("\n") + 1
             header = render_dry_run_header(
@@ -2912,6 +2919,7 @@ class MemoryHandler(NumericRefHandler):
             ref, new_body, old_body=old_body, new_title=None, meta_patch=meta_patch
         )
         if dry_mode is not None:
+            preview_link_effects(self.store, ref.id, new_body)
             header = render_dry_run_header(
                 region_label=label,
                 edited_spans=tuple(spans),

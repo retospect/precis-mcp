@@ -553,7 +553,8 @@ choices between two memories:
   state** → edit the node you have: an anchored
   `edit(mode='find-replace', find='old', text='new')` for one span, or
   `edit(mode='replace', text='…')` to rewrite the whole body. The id and
-  its links stay; the old body stays readable in `view='log'`.
+  its explicit links stay; generated mention links follow the new prose.
+  The old body stays readable in `view='log'`.
 - **Replaced by a different node** → `link(rel='supersedes')` from the
   new node to the old, then dry-run the delete, fix the listed nodes,
   and retire. A successor can be any kind; pass its full handle as
@@ -576,6 +577,34 @@ live claims refuse retirement unless `args={'force': True}` is explicit;
 dated history mentions are listed but exempt. A retired handle redirects
 to its successor; `view='retired'` reads the tombstone. Full recipe:
 [[precis-delete-help]].
+
+## Compact or split a memory without losing its context
+
+Before compacting or splitting, read the full body and
+`get(kind='memory', id=N, view='links')`. Review each edge's disposition:
+keep it on this node, link it from the appropriate child, or deliberately
+drop it. Preserve evidence and provenance links even when the shortened
+body no longer names their handles. A body edit re-syncs generated
+`related-to` mention edges; an explicit edge survives that sync.
+
+Preview an anchored rewrite with `dry_run=True` (or `ops=[...]` plus
+`dry_run=True`). The receipt's `Links:` section lists net additions and
+removals by relation and handle, labels generated versus explicit/provenance
+edges, and gives a `link(...)` restoration call for each removal. Unchanged
+links produce no section. Whole-body `mode='replace'` has no dry-run;
+preview the equivalent whole-body anchored replacement before applying it.
+Preview never mints a part ref: if a part has no live handle yet, it names
+the pending mention separately because apply may create that link.
+
+Review the link effects before applying. After the edit, read back both
+the full body and `view='links'` (or `view='fisheye+1hop'` for neighbour
+context), and compare with the dispositions you chose. For a split, do
+this on the parent and every child: a child gets its `part-of` edge and
+the evidence/scope edges its claim needs. Finish any explicit relinking
+before retiring a source node. A restoration call restores the recorded
+edge and its metadata; a generated edge will still follow later body
+edits. A retired target must be live again before its restoration call
+can succeed. Receipts do not block edits or provide undo/reviewed apply.
 
 ## Sticky memories — show up every turn until you unpin them
 

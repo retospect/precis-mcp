@@ -3502,21 +3502,21 @@ class NumericRefHandler(Handler):
         explicit part mentions deferred past this write's facts cap —
         the caller folds it into its reply note.
         """
+        from precis.handlers._memory_link_receipt import MentionSync
         from precis.utils import mentions
 
         try:
-            if replace:
-                for link in self.store.links_for(
-                    ref_id, direction="out", relation="related-to"
-                ):
-                    if (link.meta or {}).get("auto") == "mention":
-                        self.store.remove_link(
-                            src_ref_id=ref_id,
-                            dst_ref_id=link.dst_ref_id,
-                            dst_pos=link.dst_ord,
-                            relation="related-to",
-                            conn=conn,
-                        )
+            sync = MentionSync(self.store, ref_id, replace_links=replace)
+            for link in sync.removals:
+                removed = self.store.remove_link(
+                    src_ref_id=ref_id,
+                    dst_ref_id=link.dst_ref_id,
+                    dst_pos=link.dst_ord,
+                    relation="related-to",
+                    conn=conn,
+                )
+                if removed:
+                    sync.removed(link)
             # Mint the lazy part ref for every C-number the text names so
             # the resolve pass below can see it (the resolver itself never
             # mints — its read-side users stay pure). An uncatalogued
@@ -3532,10 +3532,8 @@ class NumericRefHandler(Handler):
                         mint_part(lcsc)
                     except NotFound:
                         continue
-            for tgt in mentions.resolve_link_targets(
-                self.store, text, exclude_ref_id=ref_id
-            ):
-                self.store.add_link(
+            for tgt in sync.resolve(text):
+                added_link = self.store.add_link(
                     src_ref_id=ref_id,
                     dst_ref_id=tgt.dst_ref_id,
                     dst_pos=tgt.dst_pos,
@@ -3544,6 +3542,8 @@ class NumericRefHandler(Handler):
                     meta={"auto": "mention"},
                     conn=conn,
                 )
+                if sync.collecting:
+                    sync.added(added_link)
             # Linking a part queues its datasheet pull (gr520243); only
             # an explicit ``part:C…`` mention may also queue the BIG-tier
             # facts read, under the per-write and daily spend caps —
