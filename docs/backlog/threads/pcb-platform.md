@@ -56,6 +56,7 @@ current evidence and local intake gate remain in memory me562868.
    superseded by **backlog/topo-route-geometry-truth.md**. G4 changes what
    stored boards mean: a re-put of a script with `b.plane()` now pours
    that net in the next job instead of routing it as a tree.
+   Examples gate: `tests/test_pcb_examples_route.py` requires every routable net and DRC 0.
 3. **backlog/source-bundles.md** — `draft/normal`, filed 2026-10-29 from
    gr520323 (Reto 2026-10-26): a design owns an immutable, hash-keyed
    source snapshot via the signed upload door. Unblocks the 36 KB inline
