@@ -171,6 +171,12 @@ def test_devin_queued() -> None:
     assert rep.state == "working" and rep.queued == 2
 
 
+def test_devin_quota_banner_is_error() -> None:
+    m = _lib()
+    rep = m.pane_report("devin", _fix("devin-quota.txt"))
+    assert rep.state == "error"
+
+
 def test_codex_states() -> None:
     m = _lib()
     idle = m.pane_report("codex", _fix("codex-idle.txt"))

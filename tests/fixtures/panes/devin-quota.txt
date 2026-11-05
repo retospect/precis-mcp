@@ -1,0 +1,10 @@
+ │ $ scripts/test tests/test_fleet_panes.py
+ │ 12 passed in 4.1s
+ └ Exited with code 0
+
+▲ Quota exhausted
+Your weekly usage quota has been exhausted.
+
+──────────────────────────────────────────────── (bypass permissions on) ─
+SWE-2 High                                     Context: 143k / 262k tokens (55%)
+❭ 

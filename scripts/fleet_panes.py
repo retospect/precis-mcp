@@ -38,7 +38,7 @@ PROMPT_CHARS = "❯❭›"
 BUSY_RE = re.compile(r"… \(\d+|esc (twice )?to interrupt|• Working \(\d")
 ERROR_RE = re.compile(
     r"usage limit|rate limit|API Error|overloaded|Traceback|permission denied"
-    r"|Connection refused|context window|unknown command",
+    r"|Connection refused|context window|unknown command|quota.*exhausted",
     re.I,
 )
 #: Codex request_user_input modal (fleet-report sampled it live 2026-10-09).

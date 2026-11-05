@@ -70,17 +70,22 @@ write verbs are deferred tools: load them with ToolSearch
 `select:mcp__precis__put,mcp__precis__edit,mcp__precis__tag,mcp__precis__link`
 first (gr504489). Hook wiring claims are checked against
 `docs/reference/hooks.md` (gr515488). The footer is appended at launch; do
-not restate its rules. The content rules (length budget vs per-item rule,
+not restate its rules. Repro-first: commit 1 is a test that reproduces the
+gripe and FAILS on origin/main, commit 2 is the fix; the reviewer runs the
+new test against origin/main to confirm it fails there. A gripe that
+cannot be tested in CI — a CI workflow, infra, docs — states why in its
+brief. The content rules (length budget vs per-item rule,
 name the allowed functions, what a cap measures) are in
 `precis-gripe-loop-help`.
 
 ## Steps (verbatim from the authority-gated text; 1–2 moved to the product skill)
 
-3. **Pick the tier** (`.claude/fleet/authority.md` v2). `R` (default; alias
-   `readonly`): builders commit, nothing lands from their session; the
-   release owner lands the tree with `scripts/fleet-wave land <tree>`
-   (step 6), never by cherry-picking or pinning the commit into another
-   branch.
+3. **Pick the tier** (`.claude/fleet/authority.md` v2). `R` (the default
+   for gripe waves; alias `readonly`): builders commit and stop — nothing
+   lands from their session; a `reviewer` agent reads the branch, and the
+   coordinator lands a LAND verdict with `scripts/fleet-wave land <tree>
+   --quick` (`--remote` for harness diffs; step 6), never by
+   cherry-picking or pinning the commit into another branch.
    `W` (alias `qland`): builders land their own slice with
    `scripts/ship --checked`/`--remote`. Launch applies the tier's
    permissions to the new tree (`scripts/fleet-authority apply`) and appends
@@ -115,9 +120,10 @@ name the allowed functions, what a cap measures) are in
    with `scripts/fleet-wave send-line WIN TEXT`. It refuses a window with a
    dialog open or unsent text in its input box. A tier-R builder's work
    lands from the coordinator tree with `scripts/fleet-wave land <tree>
-   [--checked|--remote] [-m MSG]` (default `--checked`; `--remote` for a
-   harness diff): it runs that tree's own `scripts/ship` with the tree as
-   cwd, so the builder's branch is the one that lands. Run it in the
+   [--checked|--quick|--remote] [-m MSG]` (default `--checked`; `--quick`
+   is lint only, no pytest — the lane a LAND verdict takes; `--remote`
+   for a harness diff): it runs that tree's own `scripts/ship` with the
+   tree as cwd, so the builder's branch is the one that lands. Run it in the
    background; it prints the log path under `$FLEET_STATE/land/` and ship's
    exit code. It refuses a tree whose session is still live (let the builder
    exit first), a live subagent task, and any run outside
@@ -145,6 +151,12 @@ name the allowed functions, what a cap measures) are in
    `--force`, so a dirty tree is kept and reported), deletes the branch
    (`-d`; `-D` only for a proved squash-land) only if the removal
    succeeded, and logs each drop to `$FLEET_STATE/dropped-branches.log`.
+
+A `FIX` verdict routes by what it found: mechanical findings go back to
+the same builder; correctness or design findings — or a second `FIX` on
+the item — go one model tier up on a fresh builder from the same branch:
+swe-2-flash-high → swe-2-high → Sonnet `coder` agent → Opus, keyed on the
+todo's `attempt:<n>` tag.
 
 ## Pane reads — `scripts/fleet panes`
 

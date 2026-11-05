@@ -1695,6 +1695,23 @@ def test_land_remote_message_and_exit_code_pass_through(
     assert proc.stdout.splitlines()[-1] == "exit: 7"
 
 
+def test_land_quick_runs_ship_quick(env: dict[str, str], tmp_path: Path) -> None:
+    _ship_tree(env, "b7")
+    proc = _run(_land_env(env, tmp_path), "land", "b7", "--quick")
+    assert proc.returncode == 0, proc.stderr
+    call = _ship_call(tmp_path)
+    assert call is not None
+    assert call["argv"] == ["--quick"]
+
+
+def test_land_modes_are_mutually_exclusive(env: dict[str, str], tmp_path: Path) -> None:
+    _ship_tree(env, "b8")
+    lenv = _land_env(env, tmp_path)
+    for pair in (("--checked", "--quick"), ("--quick", "--remote")):
+        proc = _run(lenv, "land", "b8", *pair)
+        assert proc.returncode == 2 and "not allowed with" in proc.stderr, pair
+
+
 def test_land_refuses_outside_the_coordinator_tree(
     env: dict[str, str], tmp_path: Path
 ) -> None:
