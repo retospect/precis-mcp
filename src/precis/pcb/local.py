@@ -819,6 +819,10 @@ class _RouteStage:
     rows: dict[str, dict[str, Any]]
     drc_errors: int
     design: Any = field(repr=False, default=None)
+    #: The pose the route actually built its copper at — ``pose`` or a
+    #: legalise corridor-overflow shove deeper (cleanup-66); ``None``
+    #: only when the stage raised before routing.
+    pose: Any = field(repr=False, default=None)
 
 
 def _route_stage(
@@ -884,6 +888,7 @@ def _route_stage(
     _min_via = design.fab_caps.jlc_min.get("via_diameter_mm")
     _min_drill = design.fab_caps.jlc_min.get("drill_mm")
     _min_ring = design.fab_caps.jlc_min.get("annular_ring_mm")
+    pose_sink: list[Any] = []
     plan, rres = _tprealise.route_design(
         td_route,
         ir,
@@ -898,19 +903,23 @@ def _route_stage(
         footprints=footprints,
         fixed_copper=design.fixed_copper,
         hole_clearance_mm=hole_fab_clearance_mm(design.fab_caps),
+        pose_sink=pose_sink,
     )
-    if pose is not None:
-        # The oracle measures the PLACED board — write the routed pose
-        # into the local ir (``poses`` on the returned objects already
-        # captured it for the caller).
-        for i in range(len(td_route.parts)):
-            x, y, rot_q, side = (float(v) for v in pose[i])
-            if not (math.isfinite(x) and math.isfinite(y)):
-                continue
-            ir.inst_x[i] = x
-            ir.inst_y[i] = y
-            ir.inst_rot[i] = rot_q * 90.0
-            ir.inst_bottom[i] = side >= 0.5
+    # The pose the copper was actually built at — ``pose`` (or the
+    # authored pose0) unless a corridor-overflow legalise shove recovered
+    # the route deeper. Written into ``ir`` so the widen oracle and the
+    # final error count measure the board being routed (gr541685).
+    eff_pose = (
+        pose_sink[-1] if pose_sink else (pose if pose is not None else td_route.pose0)
+    )
+    for i in range(len(td_route.parts)):
+        x, y, rot_q, side = (float(v) for v in eff_pose[i])
+        if not (math.isfinite(x) and math.isfinite(y)):
+            continue
+        ir.inst_x[i] = x
+        ir.inst_y[i] = y
+        ir.inst_rot[i] = rot_q * 90.0
+        ir.inst_bottom[i] = side >= 0.5
     layers = design.layer_names
     keepouts = pcb_session.keepouts_from_features(design.features)
     # The widen oracle's own map — the FULL clearance resolution
@@ -966,6 +975,7 @@ def _route_stage(
         rows=rows,
         drc_errors=len(_drc_findings(rres)),
         design=td_route,
+        pose=eff_pose,
     )
 
 
@@ -1121,6 +1131,19 @@ def route(
             name: {"status": r["status"], "note": r.get("note")}
             for name, r in stage.rows.items()
         }
+        route_poses = placement.poses
+        if stage.pose is not None:
+            # a corridor-overflow legalise shove may have moved parts
+            # past the handed-over placement — report where the routed
+            # copper actually sits (x, y, rot-deg like placement.poses)
+            route_poses = {
+                str(refdes): (
+                    float(stage.pose[i, 0]),
+                    float(stage.pose[i, 1]),
+                    float(stage.pose[i, 2]) * 90.0,
+                )
+                for i, refdes in enumerate(stage.design.parts)
+            }
         return _local_route(
             slug=placement.slug,
             plan=stage.plan,
@@ -1130,7 +1153,7 @@ def route(
                 stage.rows, layer_names=placement.design.layer_names
             ),
             drc_errors=stage.drc_errors,
-            poses=placement.poses,
+            poses=route_poses,
             design=placement.design,
             ir=placement.ir,
             footprints=placement.footprints,
@@ -1425,6 +1448,19 @@ def topo_place(
         )
         plan, rres = stage.plan, stage.result
         route_pair = (plan, rres)
+        if stage.pose is not None:
+            # the route may have legalise-shoved parts past the winning
+            # pose (corridor-overflow recovery) — the run's pose map
+            # reports where the copper actually sits
+            poses = {
+                str(refdes): (
+                    float(stage.pose[i, 0]),
+                    float(stage.pose[i, 1]),
+                    float(stage.pose[i, 2]) * 90.0,
+                    float(stage.pose[i, 3]),
+                )
+                for i, refdes in enumerate(td.parts)
+            }
         route_json = {
             "nets": {
                 name: {"status": r["status"], "note": r.get("note")}
