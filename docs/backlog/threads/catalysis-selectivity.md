@@ -264,47 +264,19 @@ the dated detail is in `git log` and the owning items):**
    ported from the CatMAP/CatmapInterface.jl stack, plus a CatMAP parity
    export. Ranked last: Do-next 5–6 define the window and the decisive
    edges it would make U-dependent, and Horizon 1 supplies the barriers.
-5a. **backlog/kinetics-engine-v2.md** (revised 2026-10-19 per Reto's
-   review; open: Q4 `adsorbate_mode`, Q6 ladder vs rung, Q9 σ-shift,
-   and the Zacros academic licence Reto submits) — the kinetic core
-   Horizon 5 shifts: split input/output partial-pressure environment
-   block with p_total and a coverage/selectivity objective, one
-   free-energy ledger with detailed balance by construction, BEP as a
-   rated source with staged correlated uncertainty, site-balance MKM,
-   rejection-free KMC (no diffusion in v1) with MCAMC as the primary
-   accelerator, TPD validation and `tpd_corrected` offsets, a
-   validation manifest with re-validate. Ranked with Horizon 5 because
-   it owns the environment block and the ΔG/TS provider seam that
-   Horizon 5 and the electrochemical-interface spec plug into; slices
-   1–4 and 10 need no KMC and no U. Slice 1 (environment block, refuse,
-   Q/K, reversibility, basis fold) shipped on catpath v0.32.0; slice 2
-   (VacuumProvider + rate-builder seam, core checks, `kinetics_v2`
-   record, `adsorbate_mode=hindered` + derived corrections stamp) is on
-   catpath v0.33.0 (1398d07, one commit — squashed per review; engine
-   committed and tagged locally, NOT pushed pending the engine review).
-   Review round 2 fixed: the equilibrium-flux check now runs in log
-   space (pw455722's boundary equilibrium at ~1e29 bar is where it
-   earns its keep, and a check that cannot run is reported, never
-   stamped passed); barrier_identity verifies the rate-path-stored
-   energies against the rate-implied barriers, so a clipped reverse
-   barrier fails naming the step; the v2 record is a results_json
-   SIBLING of the v1 block (byte-compatible). Precis glue lifts the
-   sibling `kinetics_v2` key onto the pathway meta at review-ready.
-   The slice-9 literature dataset (D11 TPD/adsorption reference) is
-   landed at `tests/fixtures/kinetics/` (`tpd_reference.json` +
-   provenance snapshot + README). Slice 5 (lattice KMC core behind the
-   pluggable `KmcBackend` seam, `zacros` writer/reader, `kmc_points` in
-   the sweep with `correlation_effect`) is catpath v0.36.0; slice 6
-   (per-site MCAMC `bkl`/`mcamc_s2`/`mcamc_bfs` behind the pluggable
-   accelerator seam, channel-scaling fallback, `kmc.compare`; the
-   `Acceleration` record gates KMC trust in `_kinetics_scalars`) is
-   catpath v0.37.0; slice 10 (validation manifest, `autocatpath_revalidate`,
-   `view='manifest'`) is catpath v0.38.0; slice 9 (TPD validation,
-   `tpd_corrected` offsets, `view='tpd'`, the TPD revalidation leg) is
-   catpath v0.39.0. Its CO/Pd(111) beta = 2 and 5 K/s rows are derived
-   (provisional, Reto to confirm — spec §Decisions); pa186444's
-   heating-rate series is plotted only, so it cannot replace them.
-   Slices 7 (waits on a ruling) and 8 remain.
+5a. **backlog/kinetics-engine-v2.md** — transferred to graph memory on
+   2026-11-05 (Reto's ruling me568168): the spec is the root me568528
+   with its section, ruling and gotcha nodes; open work is the plan todo
+   td568706 under the kinetics programme root td568263; the file is a
+   stub. State, read from the graph rather than restated here: engine
+   slices 1–6 and 8–10 are built (catpath v0.32.0 to v0.40.0); slice 7
+   (lateral interactions and diffusion) is the open slice, ordered after
+   the first licensed Zacros run on validation case C (ruling me568384);
+   Q4, Q6 and Q9 were ruled 2026-10-21; the Zacros academic licence key
+   is in hand (me568261); the derived CO/Pd(111) TPD rows were kept by
+   Reto on 2026-10-24. Holds 25 and 23 are the ruling nodes me568380 and
+   me568381; the recompute policy is me568382; the transfer campaign node
+   is me568399.
 5b. **backlog/catpath-repro-bundle.md** (Reto, 2026-10-19: draft) — one
    Zenodo-publishable zip per finished compound (seeds, lock, weights
    hashes, outputs, offline viewer, `verify.py`). Slices 1-2 need nothing
