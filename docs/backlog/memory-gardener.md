@@ -284,7 +284,7 @@ third, the entity normal form last. `blocked-by` edges carry the order.
    with undo, consumer review extended, human hold, the successor-handle
    auto-apply (medium; blocks 6 and 11).
 6. gr560762 — evaluator memory-body mode and the per-type checklist
-   (medium; after 4; blocks 7, 8, 9).
+   (medium; after 4; blocks 7, 8, 9, 12).
 7. gr560763 — `review_due`, `title_shape`, `negative_undated` detectors
    (medium; after 6).
 8. gr560764 — remaining: the `kg-review` ok stamp and `reviewed:` line
@@ -374,14 +374,18 @@ runs until the `graph_garden` service row is lit for it.
   dated case" (3 of 3 false alarms in the sample came from this).
 - Open: age thresholds for `review_due` per type (defaults above are a
   first guess; tune from `precis garden stats`).
-- Pending Reto's yes (his question 2026-11-03): an expiry on operational
-  memories. `meta.expires` set at put time, by the writer or defaulted by
+- Decided by Reto (gr560763 comments 2–3): an expiry on operational
+  memories, defaulted by
   shape (threads 14 d as the sweep already does; handoff, resume and
   "state as of" nodes 14 d; incident and campaign write-ups 90 d; rulings
   at `review_by`; reference/gotchas/runbooks none; DREAM never). Expired
   is never an auto-delete: the node goes first in `review_due` and the
   evaluator's default is extract-then-retire, or re-arm when the node is
-  still live state. Recorded on gr560763.
+  still live state. Incident write-ups should fade to a dated cause,
+  verified fix and open uncertainty; never invent a fix. The detectors
+  compute defaults on read in the separate opt-in `memory-review` pass.
+  Put-side `meta.expires` defaults and acknowledgement printing remain
+  open work; the detector slice does not implement them.
 - 2026-11-03: a node like me477662 (workflow, part-of a reference node,
   one qualifies edge, no `Left:`) is reachable by nothing that retires:
   the sweep keys on threads, the prune detector wants unlinked and

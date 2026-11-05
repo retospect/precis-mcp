@@ -69,7 +69,9 @@ siblings|paper-identity|memory|memory-review`, one name or a list, default `all`
   These actions are proposal-only. SHA ancestry on `origin/prod` is not
   checked: there is no general ancestry oracle in the DB.
 
-Memory anchor checks and restated claims: [[precis-gardener-memory-help]].
+The independent opt-in `memory-review` pass runs `restated_claim`, `review_due`,
+`title_shape` and `negative_undated`; `all` and `memory` exclude it.
+Memory anchor and review checks: [[precis-gardener-memory-help]].
 
 ## Structural scans
 

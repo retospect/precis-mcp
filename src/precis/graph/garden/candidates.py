@@ -5,6 +5,12 @@ Python scoring, returning :class:`GardenCandidate` rows the proposer turns
 into review-ledger proposals (or drops). No LLM calls, no writes — a
 candidate is evidence, never a verdict.
 
+The opt-in ``memory-review`` pass adds review debt, title shape and undated
+absence signals. Expiry defaults are computed on read, using updated_at
+plus the title/section shape's lifetime; put-side metadata and acknowledgements
+are outside this pass. Incident suggestions retain only a verified dated
+cause, fix and open uncertainty. No expiry authorizes retirement.
+
 Bounds: each detector takes ``limit`` (max candidates emitted) and the
 wide scans also take ``scan_cap`` (max refs inspected per kind per run).
 The wide scans are windowed per kind past a saved cursor
@@ -37,6 +43,7 @@ import re
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from itertools import islice
 from typing import TYPE_CHECKING, Any
@@ -180,7 +187,12 @@ _DETECTOR_BY_PASS = {
     "siblings": ("sibling_confusion",),
     "paper-identity": ("paper_identity",),
     "memory": ("dangling_mention", "thread_shape", "anchor_rot"),
-    "memory-review": ("restated_claim",),
+    "memory-review": (
+        "negative_undated",
+        "restated_claim",
+        "review_due",
+        "title_shape",
+    ),
 }
 
 #: Passes ``all`` skips. Memory detectors spend proposer calls, so a job
@@ -218,6 +230,23 @@ class GardenCandidate:
             # A mention rewrite is a different question on the same body;
             # repo movement can also change an anchor verdict without an edit.
             return f"{key}:anchor_rot:{self.payload.get('main_sha') or 'unavailable'}"
+        if self.detector in {"review_due", "title_shape", "negative_undated"}:
+            # Independent questions about the same unchanged body must not
+            # suppress one another's proposals or rejections.
+            if self.detector == "review_due":
+                # No-change today must not suppress later expiry or another
+                # review cycle on content that has not been edited.
+                generation = (
+                    self.evidence.get("reason"),
+                    self.evidence.get("reviewed_at"),
+                    self.evidence.get("expires"),
+                    self.evidence.get("review_by"),
+                    self.evidence.get("review_state"),
+                )
+                return f"{key}:review_due:" + ":".join(
+                    str(v or "none") for v in generation
+                )
+            return f"{key}:{self.detector}"
         return key
 
 
@@ -1001,6 +1030,418 @@ def thread_shape_candidates(
                             else "Review and preserve still-needed facts before retirement."
                         ),
                     },
+                },
+            )
+        )
+        if len(out) >= limit:
+            nxt = rid
+            break
+    if next_cursors is not None:
+        next_cursors[key] = nxt
+    return out
+
+
+MEMORY_REVIEW_MATCH_CAP = 20
+_REVIEW_REASONS = ("expired", "never_reviewed", "sha_changed", "version_bumped", "aged")
+_DATE = re.compile(
+    r"\b(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{4}|"
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|"
+    r"Dec(?:ember)?)\s+\d{1,2},?\s+\d{4}|"
+    r"\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|"
+    r"Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|"
+    r"Nov(?:ember)?|Dec(?:ember)?)\s+\d{4})(?!\d)",
+    re.IGNORECASE,
+)
+_SNAPSHOT_TITLE = re.compile(
+    r"\b(?:handoff|resume|state\s+(?:on|as\s+of)|as\s+of)\b", re.I
+)
+_CAMPAIGN_RANGE_TITLE = re.compile(
+    r"\bwaves?\s+\d+\s*[-–—]\s*\d+\b|"
+    r"\b\d{4}-\d{2}-\d{2}\s*(?:[-–—]|to|through)\s*(?:\d{4}-)?\d{2}-\d{2}\b",
+    re.I,
+)
+_ABSENCE = re.compile(
+    r"\b(?:no\s+[`*_\"']*\w+|none|not\s+yet|does\s+not\s+exist)\b", re.I
+)
+_ABSENCE_WORDS = frozenset({"none", "not", "yet", "does", "exist", "exists"})
+_PATH_TITLE = re.compile(
+    r"(?:^|\s)(?:[~./\\]|[A-Za-z]:[\\/])?"
+    r"[\w.~-]+(?:[/\\][\w.~-]+)+(?:::[\w.]+|#[\w-]+)?|^\S+\.(?:md|py|sh|json|ya?ml|txt)$"
+)
+
+
+def memory_expiry_shape(title: str, sections: frozenset[str]) -> tuple[str, int | None]:
+    """Classify expiry from section tags and title alone (gr560763).
+
+    An operational title overrides a standing section: a handoff filed as
+    reference still expires. Incident/campaign write-ups keep 90 days;
+    ordinary reference, gotchas and runbooks have no default expiry.
+    DREAM exclusion belongs to the reader, before this helper is called.
+    """
+    if "threads" in sections:
+        return "thread", 14
+    if sections & {"handoff", "resume"} or _SNAPSHOT_TITLE.search(title):
+        return "snapshot", 14
+    if sections & {"incident", "incidents"} or re.search(
+        r"\b(?:incident|post[- ]?mortem)\b", title, re.I
+    ):
+        return "incident", 90
+    if (
+        sections & {"campaign", "campaigns"}
+        or re.search(r"\bcampaign\b", title, re.I)
+        or _CAMPAIGN_RANGE_TITLE.search(title)
+    ):
+        return "campaign", 90
+    return "standing", None
+
+
+def _review_date(raw: Any) -> datetime | None:
+    """Parse metadata/stamp dates without turning malformed input into a finding."""
+    if not isinstance(raw, (str, datetime)):
+        return None
+    try:
+        value = datetime.fromisoformat(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return None
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class _ReviewMemory:
+    ref_id: int
+    title: str
+    body: str
+    sha: str
+    meta: dict[str, Any]
+    sections: frozenset[str]
+    updated_at: datetime
+    review: dict[str, Any] | None
+    confidence: str
+
+
+def _memory_review_rows(store: Store, ids: list[int]) -> list[_ReviewMemory]:
+    """Read content, tags and best kg-review stamp in one DB snapshot.
+
+    Prefer a stamp for the current SHA and checklist over a later stale
+    stamp. The ledger has no versioned writer yet: an unversioned stamp
+    remains evidence of a review, but cannot close this checklist version.
+    """
+    from precis.graph.garden.proposer import MEMORY_PROMPT_VERSION
+
+    if not ids:
+        return []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT r.ref_id, r.title, coalesce((SELECT string_agg(c.text, E'\\n' "
+            "ORDER BY c.ord, c.chunk_id) FROM chunks c WHERE c.ref_id = r.ref_id "
+            "AND c.chunk_kind = 'memory_body' AND c.ord >= 0 "
+            "AND c.retired_at IS NULL), ''), precis_target_sha('ref', r.ref_id), "
+            "r.meta, ARRAY(SELECT substring(t.value FROM 9) "
+            "FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN' "
+            "AND starts_with(t.value, 'section:')), "
+            "r.updated_at, stamp.act, r.trust_confidence "
+            "FROM refs r LEFT JOIN LATERAL ("
+            "SELECT a AS act FROM revisions rev "
+            "CROSS JOIN LATERAL jsonb_array_elements(rev.trust_acts) a "
+            "WHERE rev.target_kind = 'ref' AND rev.target_id = r.ref_id "
+            "AND a->>'action' = 'consider' "
+            "AND a->'payload'->'kg_review'->>'verdict' IN ('ok', 'fixed') "
+            "ORDER BY (a->>'expected_sha' = precis_target_sha('ref', r.ref_id)) "
+            "DESC NULLS LAST, (a->'payload'->>'prompt_version' = %s) DESC NULLS LAST, "
+            "a->'payload'->'kg_review'->>'date' DESC NULLS LAST, "
+            "rev.revision_id DESC LIMIT 1) stamp ON true "
+            "WHERE r.ref_id = ANY(%s) AND r.kind = 'memory' "
+            "AND r.retired_at IS NULL AND NOT EXISTS ("
+            "SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = r.ref_id AND t.namespace = 'DREAM') ORDER BY r.ref_id",
+            (MEMORY_PROMPT_VERSION, ids),
+        ).fetchall()
+    return [
+        _ReviewMemory(
+            int(rid),
+            title,
+            body,
+            sha,
+            meta,
+            frozenset(sections),
+            updated,
+            review,
+            confidence,
+        )
+        for rid, title, body, sha, meta, sections, updated, review, confidence in rows
+    ]
+
+
+def _review_due_candidate(row: _ReviewMemory, now: datetime) -> GardenCandidate | None:
+    from precis.graph.garden.proposer import MEMORY_PROMPT_VERSION
+
+    shape, days = memory_expiry_shape(row.title, row.sections)
+    unchecked: list[str] = []
+    expires: datetime | None = None
+    if "expires" in row.meta:
+        expires = _review_date(row.meta["expires"])
+        if row.meta["expires"] is not None and expires is None:
+            unchecked.append("meta.expires")
+    elif days is not None:
+        expires = row.updated_at + timedelta(days=days)
+    review_by = _review_date(row.meta.get("review_by"))
+    if row.meta.get("review_by") is not None and review_by is None:
+        unchecked.append("meta.review_by")
+    review = row.review
+    payload: dict[str, Any] = review.get("payload", {}) if review else {}
+    reviewed_at = _review_date(payload.get("kg_review", {}).get("date"))
+    age_days = (
+        30
+        if row.sections & {"reference", "gotchas"}
+        else 60
+        if "runbooks" in row.sections
+        else None
+    )
+    if row.sections & {"threads", "workflow", "rulings"}:
+        age_days = None
+    if expires is not None and expires <= now:
+        reason = "expired"
+    elif review is None:
+        reason = "never_reviewed"
+    elif review.get("expected_sha") != row.sha:
+        reason = "sha_changed"
+    elif row.confidence != "considered":
+        # A demote invalidates the review without changing content. Treat it
+        # as missing a usable review, retaining the historical stamp and
+        # explicit invalidation state in the evidence.
+        reason = "never_reviewed"
+    elif payload.get("prompt_version") != MEMORY_PROMPT_VERSION:
+        reason = "version_bumped"
+    elif reviewed_at is None:
+        # A malformed stamp is not a current review. Do not claim it aged.
+        reason = "never_reviewed"
+        unchecked.append("kg_review.date")
+    elif (
+        row.sections & {"workflow", "rulings"}
+        and review_by is not None
+        and reviewed_at < review_by <= now
+    ) or (age_days is not None and reviewed_at + timedelta(days=age_days) <= now):
+        reason = "aged"
+    else:
+        return None
+    suggested = (
+        "After verifying the incident, condense it to a dated cause, verified fix "
+        "and open uncertainty; never invent a fix."
+        if shape == "incident"
+        else "Review current truth; preserve still-needed facts before proposing "
+        "retirement, or re-arm expiry when this is still live state."
+    )
+    return GardenCandidate(
+        detector="review_due",
+        action="rewrite",
+        target_kind="ref",
+        target_id=row.ref_id,
+        title=f"me{row.ref_id} is due for memory review ({reason})",
+        evidence={
+            "reason": reason,
+            "shape": shape,
+            "content_sha": row.sha,
+            "expires": expires.isoformat() if expires else None,
+            "expiry_source": "meta.expires" if "expires" in row.meta else "shape",
+            "review_by": review_by.isoformat() if review_by else None,
+            "reviewed_at": reviewed_at.isoformat() if reviewed_at else None,
+            "review_sha": review.get("expected_sha") if review else None,
+            "review_prompt_version": payload.get("prompt_version"),
+            "review_state": "invalidated"
+            if review and row.confidence != "considered"
+            else "recorded"
+            if review
+            else "missing",
+            "prompt_version": MEMORY_PROMPT_VERSION,
+            "checked_at": now.isoformat(),
+        },
+        payload={
+            "base_sha": row.sha,
+            "suggested_action": suggested,
+            "not_checked": [*unchecked, "current_truth"],
+            "requires_compaction": reason == "expired",
+            "match_cap": MEMORY_REVIEW_MATCH_CAP,
+            "matches_capped": False,
+        },
+    )
+
+
+def review_due_candidates(
+    store: Store,
+    *,
+    scan_cap: int = 2000,
+    limit: int = 50,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
+    now: datetime | None = None,
+) -> list[GardenCandidate]:
+    """Review debt, ordered expired/never/SHA/version/age, without writes.
+
+    A priority cursor sweeps each reason before the next; the ref cursor
+    resumes within that priority. Sorting a ref window then advancing to
+    the largest emitted ID would silently skip lower-priority, lower-ID
+    memories when limit fills. At most scan_cap IDs are inspected across
+    all priorities in a call; a full sweep resets both cursors. As with
+    the other memory detectors, run_detectors supplies the deadline.
+    Expiry is computed here only: no put acknowledgement or meta write.
+    """
+    if limit <= 0 or scan_cap <= 0:
+        return []
+    key, priority_key = "review_due:memory", "review_due:priority"
+    saved: dict[str, int] = cursors or {}
+    after = saved.get(key, 0)
+    priority = saved.get(priority_key, 0) % len(_REVIEW_REASONS)
+    remaining = scan_cap
+    checked_at = now or datetime.now(UTC)
+    out: list[GardenCandidate] = []
+    while remaining > 0:
+        window, nxt = _scan_window(store, "memory", after=after, size=remaining)
+        remaining -= len(window)
+        for row in _memory_review_rows(store, window):
+            candidate = _review_due_candidate(row, checked_at)
+            if (
+                candidate is None
+                or candidate.evidence["reason"] != _REVIEW_REASONS[priority]
+            ):
+                continue
+            out.append(candidate)
+            if len(out) >= limit:
+                nxt = row.ref_id
+                break
+        after = nxt
+        if len(out) >= limit or nxt:
+            break
+        priority += 1
+        if priority == len(_REVIEW_REASONS):
+            priority = 0
+            break
+    if next_cursors is not None:
+        next_cursors[key] = after
+        next_cursors[priority_key] = priority
+    return out
+
+
+def title_shape_candidates(
+    store: Store,
+    *,
+    scan_cap: int = 2000,
+    limit: int = 50,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
+) -> list[GardenCandidate]:
+    """Bounded title smells, pinned to the same snapshot as the target SHA.
+
+    Four possible reasons bound each candidate; title-only evidence does
+    not authorize inventing the body's conclusion. Dispatcher deadline.
+    """
+    if limit <= 0 or scan_cap <= 0:
+        return []
+    key = "title_shape:memory"
+    window, nxt = _scan_window(
+        store, "memory", after=(cursors or {}).get(key, 0), size=scan_cap
+    )
+    out: list[GardenCandidate] = []
+    for row in _memory_review_rows(store, window):
+        reasons: list[str] = []
+        if re.fullmatch(r"[a-z0-9_]+", row.title):
+            reasons.append("slug")
+        if _PATH_TITLE.fullmatch(row.title.strip("` ")):
+            reasons.append("path_like")
+        if len(row.title.split()) > 16:
+            reasons.append("too_many_words")
+        if "threads" in row.sections and (
+            _DATE.search(row.title) or _CAMPAIGN_RANGE_TITLE.search(row.title)
+        ):
+            reasons.append("dated_snapshot")
+        if not reasons:
+            continue
+        out.append(
+            GardenCandidate(
+                detector="title_shape",
+                action="rewrite",
+                target_kind="ref",
+                target_id=row.ref_id,
+                title=f"me{row.ref_id} has a title-shape smell",
+                evidence={
+                    "title": row.title,
+                    "reasons": reasons,
+                    "content_sha": row.sha,
+                },
+                payload={
+                    "base_sha": row.sha,
+                    "new_title": None,
+                    "match_cap": 4,
+                    "matches_capped": False,
+                },
+            )
+        )
+        if len(out) >= limit:
+            nxt = row.ref_id
+            break
+    if next_cursors is not None:
+        next_cursors[key] = nxt
+    return out
+
+
+def negative_undated_candidates(
+    store: Store,
+    *,
+    scan_cap: int = 2000,
+    limit: int = 50,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
+) -> list[GardenCandidate]:
+    """Absence claims without a date on that line; not proof of falsity.
+
+    The grep brief is a deterministic content-word proxy for the line's
+    nouns, not a semantic parser or a claimed repo search. Dispatcher
+    deadline and a per-body match cap bound the evidence.
+    """
+    if limit <= 0 or scan_cap <= 0:
+        return []
+    key = "negative_undated:memory"
+    window, nxt = _scan_window(
+        store, "memory", after=(cursors or {}).get(key, 0), size=scan_cap
+    )
+    out: list[GardenCandidate] = []
+    for rid, body, sha in _memory_bodies(store, window):
+        lines: list[dict[str, Any]] = []
+        offset = 0
+        capped = False
+        for number, raw in enumerate(body.splitlines(keepends=True), 1):
+            line = raw.rstrip("\r\n")
+            start = offset
+            offset += len(raw)
+            if not _ABSENCE.search(line) or _DATE.search(line):
+                continue
+            if len(lines) == MEMORY_REVIEW_MATCH_CAP:
+                capped = True
+                break
+            lines.append(
+                {
+                    "line": line,
+                    "line_number": number,
+                    "span": [start, start + len(line)],
+                    "grep_brief": sorted(content_words(line) - _ABSENCE_WORDS),
+                }
+            )
+        if not lines:
+            continue
+        out.append(
+            GardenCandidate(
+                detector="negative_undated",
+                action="rewrite",
+                target_kind="ref",
+                target_id=rid,
+                title=f"me{rid} asserts absence without a line date",
+                evidence={"lines": lines, "content_sha": sha},
+                payload={
+                    "base_sha": sha,
+                    "not_checked": ["absence_claims"],
+                    "match_cap": MEMORY_REVIEW_MATCH_CAP,
+                    "matches_capped": capped,
                 },
             )
         )
@@ -2570,12 +3011,22 @@ def run_detectors(
                 cursors=saved,
                 next_cursors=nxt,
             )
-        elif det in {"dangling_mention", "thread_shape", "anchor_rot"}:
+        elif det in {
+            "dangling_mention",
+            "thread_shape",
+            "anchor_rot",
+            "review_due",
+            "title_shape",
+            "negative_undated",
+        }:
             fn = partial(
                 {
                     "dangling_mention": dangling_mention_candidates,
                     "thread_shape": thread_shape_candidates,
                     "anchor_rot": anchor_rot_candidates,
+                    "review_due": review_due_candidates,
+                    "title_shape": title_shape_candidates,
+                    "negative_undated": negative_undated_candidates,
                 }[det],
                 store,
                 scan_cap=scan_cap,
@@ -2632,7 +3083,14 @@ def run_detectors(
             [c.target_id for c in out.candidates if c.target_kind == "link"],
             days=considered_days,
         )
-        kept = [c for c in out.candidates if (c.target_kind, c.target_id) not in fresh]
+        # review_due already checks the SHA, checklist version, explicit
+        # expiry and type-specific age. The legacy 30-day skip knows neither
+        # version nor expiry and would hide valid review debt.
+        kept = [
+            c
+            for c in out.candidates
+            if c.detector == "review_due" or (c.target_kind, c.target_id) not in fresh
+        ]
         out.skipped_considered = len(out.candidates) - len(kept)
         out.candidates = kept
     return out
@@ -2646,6 +3104,7 @@ __all__ = [
     "DUP_VECTOR_CHUNK",
     "GARDEN_KINDS",
     "HISTORY_KINDS",
+    "MEMORY_REVIEW_MATCH_CAP",
     "PAPER_MIN_TITLE_CHARS",
     "PASS_CHOICES",
     "PROVENANCE_RELATIONS",
@@ -2666,15 +3125,19 @@ __all__ = [
     "dup_window_size",
     "duplicate_candidates",
     "freshly_considered",
+    "memory_expiry_shape",
+    "negative_undated_candidates",
     "orphan_taxon_candidates",
     "paper_identity_candidates",
     "polysemy_candidates",
     "redundant_link_candidates",
     "restated_claim_candidates",
+    "review_due_candidates",
     "run_detectors",
     "short_sibling_pair",
     "sibling_confusion_candidates",
     "stale_candidates",
     "thread_shape_candidates",
+    "title_shape_candidates",
     "untagged_candidates",
 ]

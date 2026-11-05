@@ -2,7 +2,7 @@
 id: precis-gardener-memory-help
 family: memory
 title: precis — the graph gardener's memory detectors
-summary: opt-in memory anchor checks and restated-claim detection that file review-ledger proposals
+summary: opt-in memory anchor, restated-claim, review-debt, title and undated-absence checks that file review-ledger proposals
 answers:
   - how does the gardener check memory anchors?
   - how does the gardener detect restated memory claims?
@@ -59,3 +59,40 @@ The `rewrite` replaces only the redundant sentence with `See me<keeper>.`;
 surrounding facts remain. These proposals have no apply or auto-apply path.
 Windows resume by hub and memory; a filled proposal limit resumes pairs in
 the same window. This is a bounded scan, not every sentence pair in a large hub.
+
+## Memory review checks
+
+`memory-review` is a separate opt-in pass: neither `all` nor `memory`
+runs it. Alongside `restated_claim`, three read-only detectors pin evidence
+to the memory's content SHA and emit proposals only; DREAMs remain
+duplicate/merge-only.
+
+- `review_due` sweeps expired, never-reviewed, SHA-changed,
+  checklist-version-changed, then aged memories. A current review needs
+  a `kg-review` trust act with matching `expected_sha` and
+  `payload.prompt_version = MEMORY_PROMPT_VERSION`; unversioned stamps
+  need review; demotion invalidates a stamp. Reference/gotchas age after
+  30 days, runbooks after 60; workflow/rulings use `meta.review_by`
+  until reviewed on or after that date. Threads have no age review.
+- Expiry defaults use section tags plus title, computed at read time
+  from `updated_at`: threads/handoff/resume/"state on"/"as of" get 14
+  days; incident/campaign/date-range/"waves N-M" write-ups get 90.
+  Ordinary reference/gotchas/runbooks have no expiry. `meta.expires`
+  overrides the default (null disables it); malformed dates are
+  `not_checked`. **Put-side expiry metadata and ack printing are not
+  implemented by this pass.** Expiry never deletes or retires. Incident
+  candidates suggest condensing to a dated cause, verified fix and open
+  uncertainty after verification, never inventing a fix.
+- `title_shape` flags slug/path titles, titles over sixteen words, and
+  dated snapshots on thread nodes. A replacement must state the body's
+  supported conclusion; no title is invented during detection.
+- `negative_undated` flags absence wording without a date on that line.
+  Up to 20 lines carry SHA-pinned spans and content terms as a grep brief.
+  No search has verified the claim: `not_checked` records that limit.
+
+Each detector has its own cursor and the normal deadline. `review_due`
+also saves a priority cursor, walking each reason before the next so
+limits cannot skip lower-ID memories. `scan_cap` bounds inspected IDs
+across those priority walks. Its version/expiry/type checks supersede the
+generic `considered_days` skip. These candidates have distinct proposal
+keys and use the memory prompt version; the legacy prompt is unchanged.

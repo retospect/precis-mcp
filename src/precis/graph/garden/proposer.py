@@ -63,6 +63,9 @@ MEMORY_ACTIONS = {
     "thread_shape": ("supersede", "retire"),
     "anchor_rot": ("rewrite",),
     "restated_claim": ("rewrite",),
+    "review_due": ("rewrite", "qualify", "supersede", "retire", "ask"),
+    "title_shape": ("rewrite",),
+    "negative_undated": ("rewrite", "qualify", "ask"),
 }
 _LEGACY_ACTIONS = ("merge", "split", "relink", "prune", "tag")
 
@@ -136,6 +139,24 @@ Replace only the redundant sentence with a pointer to that keeper's live me
 handle; retain surrounding facts. Preserve both SHA pins, both evidence spans
 and the anchored rewrite ops. Reject if ownership or equivalence is unclear.
 This is proposal-only: never merge, retire, apply, or treat not_checked as proof.
+
+review_due is review debt, not proof of an incorrect claim. Expiry is a
+read-time default or explicit meta.expires, never a deletion instruction.
+Verify current truth before proposing a rewrite; preserve still-needed
+facts before suggesting retirement, or re-arm expiry for live state.
+For incident shapes, once verified, suggest a dated cause, verified fix
+and open uncertainty; never invent a fix. An unavailable source stays
+not_checked and cannot justify a finding. Reject when no change is
+supported; ask only when resolution needs a human. Preserve base_sha.
+
+title_shape proposes a title stating the body's supported conclusion,
+about twelve words. new_title=null is unresolved, not an empty title.
+negative_undated reports undated absence wording, never proves the claim
+false. Its line spans and grep_brief name what needs verification; no repo
+search has been performed. A date on another line does not date the claim.
+Only propose a supported correction or qualification, with a live anchor
+and date; otherwise reject or ask. Preserve base_sha and evidence spans.
+All three detectors are proposal-only, with no apply or auto-apply path.
 """
 
 

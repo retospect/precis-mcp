@@ -72,7 +72,12 @@ def test_restated_claim_is_separate_opt_in_pass() -> None:
     from precis.workers.job_types.graph_garden import PARAMS_SCHEMA
 
     assert "memory-review" in PARAMS_SCHEMA["properties"]["pass"]["anyOf"][0]["enum"]
-    assert cand.detectors_for(("memory-review",)) == ["restated_claim"]
+    assert cand.detectors_for(("memory-review",)) == [
+        "negative_undated",
+        "restated_claim",
+        "review_due",
+        "title_shape",
+    ]
     for passes in (("all",), ("memory",), ("all", "memory")):
         assert "restated_claim" not in cand.detectors_for(passes)
     assert "restated_claim" in cand.detectors_for(("all", "memory-review"))
@@ -214,8 +219,8 @@ def test_unavailable_embedder_reports_not_checked_without_lexical_fallback(
     failure: str,
 ) -> None:
     hub = _memory(store, "Hub", section="index")
-    _memory(store, CLAIM, hub=hub)
-    _memory(store, CLAIM, hub=hub)
+    a = _memory(store, CLAIM, hub=hub)
+    b = _memory(store, CLAIM, hub=hub)
     if failure == "unavailable":
 
         def unavailable(texts: list[str]) -> list[list[float]]:
@@ -233,12 +238,31 @@ def test_unavailable_embedder_reports_not_checked_without_lexical_fallback(
             type(embedder), "is_production", property(lambda self: False)
         )
     run = cand.run_detectors(store, passes=("memory-review",), considered_days=0)
-    assert run.candidates == []
+    assert [(c.detector, c.target_id) for c in run.candidates] == [
+        ("review_due", rid) for rid in (hub, a, b)
+    ]
+    assert [c.payload["not_checked"] for c in run.candidates] == [
+        ["current_truth"],
+        ["current_truth"],
+        ["current_truth"],
+    ]
     assert run.not_checked == {"restated_claim": "embedder_unavailable"}
-    assert run.cursors == {}
-    outcome = run_garden_tick(store, passes=("memory-review",), considered_days=0)
+    assert run.cursors == {
+        "negative_undated:memory": 0,
+        "review_due:memory": 0,
+        "review_due:priority": 0,
+        "title_shape:memory": 0,
+    }
+    outcome = run_garden_tick(
+        store,
+        passes=("memory-review",),
+        considered_days=0,
+        propose=lambda *_: Verdict(accept=False, rationale="fixture review debt only"),
+    )
     assert outcome.not_checked == run.not_checked
-    assert outcome.candidates == outcome.proposals == 0
+    assert outcome.cursors == run.cursors
+    assert outcome.candidates == 3
+    assert outcome.proposals == 0
 
 
 def test_limit_resumes_pairs_and_then_advances_hub(
@@ -298,7 +322,12 @@ def test_detector_deadline_does_not_save_partial_cursor(
     monkeypatch.setattr(cand, "restated_claim_candidates", cancelled)
     run = cand.run_detectors(store, passes=("memory-review",), detector_deadline_s=0)
     assert run.skipped == ["restated_claim"]
-    assert run.cursors == {}
+    assert run.cursors == {
+        "negative_undated:memory": 0,
+        "review_due:memory": 0,
+        "review_due:priority": 0,
+        "title_shape:memory": 0,
+    }
 
 
 def test_embed_deadline_reports_not_checked(
@@ -347,8 +376,15 @@ def test_tick_records_rewrite_without_opening_consumer_apply(
         considered_days=0,
         propose=lambda *_: Verdict(accept=True, rationale="fixture same claim"),
     )
-    assert outcome.candidates == outcome.proposals == 1
-    (proposal,) = pending_proposals(store, action="rewrite")
+    assert outcome.candidates == outcome.proposals == 4
+    proposals = pending_proposals(store, action="rewrite")
+    assert {(p.detector, p.target_id) for p in proposals} == {
+        ("restated_claim", b),
+        ("review_due", hub),
+        ("review_due", a),
+        ("review_due", b),
+    }
+    (proposal,) = [p for p in proposals if p.detector == "restated_claim"]
     assert proposal.detector == "restated_claim"
     assert not _reviewable(proposal)
     assert proposal.payload["shas"] == {str(rid): sha for rid, _, sha in before}
