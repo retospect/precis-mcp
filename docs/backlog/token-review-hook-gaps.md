@@ -39,8 +39,10 @@ Open gaps from the token-review passes (2026-07 .. 2026-10-02). Shipped:
     context, ~50% of weighted spend in main-loop cache reads alone. The
     gripe-fix orchestrator `e19078a0` ran 17,254 turns over 12 days with 73
     context drops and a 755k peak; fan-out (1,001 subagents) was 38% of its
-    cost, the re-read context the rest (gr515153). A recycle/handoff at
-    ~150k and moving relay/census polling off the Opus loop is the lever.
+    cost, the re-read context the rest (gr515153). The standing rule is
+    compact at 120k (me538288); it is not holding in the long-lived
+    coordinators. Enforcing it and moving relay/census polling off the
+    Opus loop is the lever.
   - (g) **zsh glob abort**: 834 `no matches found` results, 444 retried on
     the next call. The hook already detects the unquoted glob but only
     annotates; the command still runs and fails. Deny pre-run with the
