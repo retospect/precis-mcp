@@ -51,6 +51,37 @@ cohort*, which is what every batch pass does.
 > slice → `nanopub-mcp-surface-gaps.md` §0) with corpus-audit GROUP BYs the
 > rest. `mcp-tool-ledger.md` will make future detours continuously visible.
 
+### Re-measured 2026-11-05 — surface-review pass #3 (14 d window)
+
+Local (1,559 transcripts) + prod ledger (153k calls), 10-22..11-05; 2,329
+Bash detour calls, 2.7 MB; card samples only (~20 of n per card). **Schema
+discoverability: still the top detour by sessions** — `information_schema`
+102 queries / 60 sessions although `schema.md` is current (149 tables), plus
+~12 sampled "column does not exist" guesses whose answer lives elsewhere
+(`chunks.embedding` → `chunk_embeddings`, `worker_logs.handler` → `pass`,
+`refs.tags` → `ref_tags`). Agents *with* a checkout still ran psql, so
+"cluster agents have no checkout" is not the whole cause; the MCP-served
+form (`get(kind='schema', id='<table>')`) is the fix, and `scripts/prod-psql`
+could name `schema.md` on a "column does not exist". **`worker_logs`** 85
+queries / 17 sessions: `/logs` lists rows but cannot group — the ask is
+`group_by=host,pass` with count, `max(ts)` and error count. **New shape,
+embedding coverage:** ~6 sessions joined `chunk_embeddings` to ask which
+refs/memories are embedded (gr563669 covers memory; nothing covers paper).
+**Gripe-corpus reads were ~40% of the `refs` sample** though batch
+`get(id=[…], view='full')` and `search(status='open')` answer them — a
+task-template gap in the gripe-fix coordinator briefs, not a capability gap.
+**Chains:** `put|todo → tag|todo` 106 (todo `put` refuses `id=` + `tags=`,
+gripe accepts it); `get|skill → get|skill` 102 and `search|skill → get|skill`
+104 (section walks one `slug~N` per call; `id=[…]` on skill is unparseable;
+gr568475, gr568491); `link|memory → link|memory` 98 (fan-in `id=[…]` exists
+since 2026-10-14 and is not adopted; no multi-target form). **Renders:**
+`get|skill` 3,510 calls / 14 MB with p95 at the 24 kB cap; gripe comment acks
+carry a ~230 B fixed hint on ~8k calls. **Job render** does not say why a job
+is not running (2 of 36 random cards polled `get job` three times, then went
+looking for node-pinning skills) — plausible, n=2. The `detour_census`
+"other" bucket (792) is mostly classifier noise (`< file.sql`, prod-psql
+introspection, external curl).
+
 ### Re-measured 2026-10-16 — surface-review pass #2 (6 h window)
 
 Local + Devin + prod ledger, 08:31–14:31Z, ledger figures after dropping the

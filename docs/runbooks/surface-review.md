@@ -79,9 +79,10 @@ disagrees with the alert.
 `/surface-review [window]` runs this. By hand:
 
 0. **Read the known set first.** Open gripes —
-   `search(kind='gripe', tags=['STATUS:open'])`, with **no `q=`**: adding one
-   turns a complete enumeration into a ranked filter and the count silently
-   drops. Plus the surface-family items in `docs/backlog/INDEX.md`
+   `search(kind='gripe', status='open', page_size=100)`, with **no `q=`**:
+   adding one turns a complete enumeration into a ranked filter and the count
+   silently drops. (`tags=['STATUS:open']` is the literal untriaged cohort,
+   which auto-triage keeps empty — it returned 0 of 120 on 2026-11-05.) Plus the surface-family items in `docs/backlog/INDEX.md`
    (`mcp-surface-economy`, `capability-discovery-on-a-sprawling-surface`,
    `vocab-compaction`, `token-review-hook-gaps`, `llm-prompt-surface-audit`,
    `mcp-verb-schema-diet.md`, `tick-tool-lists-and-discovery-reflex`). Every
@@ -122,6 +123,9 @@ disagrees with the alert.
      `git merge-base --is-ancestor <fix_sha> <deployed_sha>`). If every real
      occurrence predates the fix's deploy, it is **already fixed** — a stale
      artifact, not new work. Do not file it.
+     Check against `origin/main` after a `git fetch`, not the working tree:
+     the 2026-11-05 pass ran in a tree 455 commits behind and filed a gripe
+     for a bug main had fixed the day before.
 5. **File.** Default is to **append measured evidence to the existing item**
    — a section on the backlog file, or a comment via
    `put(kind='gripe', id=N, text=…)` (there is no `edit(kind='gripe')`). Mint
@@ -140,8 +144,19 @@ Miner caveats, to discount before trusting a card:
   the ledger's day-bucket pseudo-session, and need same-verb/same-id to count
   as narrowing. `read_then_unused` saturates near 100% (it emits
   `PROXY-SATURATED`).
-- The asa bots' 30 s `get(kind='gripe', id='/open')` liveness ping is dropped
-  by the miner but still counted by other ledger consumers (gr492453).
+- The asa bots' 30 s liveness ping (`get(kind='gripe', id=[1])`, formerly
+  `id='/open'`) is dropped by the miner but still counted by other ledger
+  consumers (gr492453). If `get|gripe` tops `render_obesity` at p50 ≈ 33 B,
+  the probe changed shape again — check `_LEDGER_EXCLUDE_PROBES`.
+- The scoreboard's token line over-counts: `usage` repeats on every content
+  block of an assistant message, so output and cache-read read 2–3× high
+  until `stats.py` de-duplicates per message. The "precis share of
+  tool-result bytes" denominator also includes `llmlog` bytes; local-only it
+  was 15.3%, not 5.6%, on 2026-11-05.
+- Ledger-sourced cards (`hard_error`, `spin`) carry no payload — judge those
+  signatures from `tool_calls.arg_sample` / `error_head`, not the card.
+- A card's occurrence dates decide whether it is work: on 2026-11-05 the two
+  largest error signatures were both fixed on main before the window closed.
 - Known detector false positives: `skill_taught_wrong` counts a legitimate
   NotFound and blames the last-read skill; `session_digest` drops assistant
   text; `exec_class zero` counts empty-capture rows.

@@ -568,12 +568,14 @@ def _sql_ts_literal(since: datetime) -> str:
 
 
 #: The asa bots' liveness probe (``asa_bot.precis_client.ping``: a
-#: ``get(kind='gripe', id='/open')`` every 30 s per bot) is not agent use.
-#: Left in, it was 1,434 of 2,486 ledger rows in a 6 h window and the whole
-#: ``render_obesity get|gripe`` signal (surface-review 2026-10-16).
+#: ``get(kind='gripe', id=[1])`` every 30 s per bot; ``id='/open'`` before
+#: gr492453) is not agent use. Left in, it was 1,434 of 2,486 ledger rows in
+#: a 6 h window (surface-review 2026-10-16) and, after the probe changed
+#: shape under a filter that knew only ``/open``, 80,188 of ~90k
+#: ``get|gripe`` rows in 14 d (surface-review 2026-11-05).
 _LEDGER_EXCLUDE_PROBES = (
     "NOT (coalesce(client, '') LIKE 'asa-bot/%' AND verb = 'get' "
-    "AND kind = 'gripe' AND arg_sample->>'id' = '/open')"
+    "AND kind = 'gripe' AND arg_sample->>'id' IN ('/open', '[1]'))"
 )
 
 

@@ -24,9 +24,12 @@ reference at the edges, do not duplicate a finding into two logs.
 The territory is already well-populated — this pass's job is to put
 *measurements* on existing items, not to mint more of them.
 
-- `search(kind='gripe', tags=['STATUS:open'])` — **no `q=`**. Adding one
-  turns a complete enumeration into a ranked filter and the count silently
-  drops.
+- First `git fetch origin main` and rebase: every "is it unfixed?" check
+  below reads this tree, and a stale tree files fixed bugs.
+- `search(kind='gripe', status='open', page_size=100)` — **no `q=`**. Adding
+  one turns a complete enumeration into a ranked filter and the count
+  silently drops. Not `tags=['STATUS:open']`: that is the literal untriaged
+  cohort, which auto-triage keeps empty.
 - `docs/backlog/INDEX.md`, the surface family: `mcp-surface-economy`,
   `capability-discovery-on-a-sprawling-surface`, `vocab-compaction`,
   `token-review-hook-gaps`, `llm-prompt-surface-audit`,
