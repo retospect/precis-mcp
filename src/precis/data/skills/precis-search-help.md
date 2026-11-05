@@ -432,6 +432,12 @@ Closed-vocab axes (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`) are kind-gated;
 open tags (`topic:`, `project:`, `pinned`, ...) are universal. See
 `precis-tags` for the axis matrix.
 
+Prefix an entry with `!` to **exclude** refs carrying that tag —
+`tags=['!card:experiment']` drops every ref tagged `card:experiment`.
+Negations compose with the positive entries and `q=`: positives AND,
+negations subtract (`tags=['topic:x', '!PRIO:high']` = `topic:x` refs
+that aren't high-priority). A bare `'!'` is refused with a next step.
+
 ### Enumerating a tag ≠ searching within it — a counting trap
 
 `tags=` alone is a **bounded recency listing**: `search(kind='gripe',

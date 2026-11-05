@@ -62,6 +62,29 @@ def _parse_tag_string(s: str) -> list[tuple[str, str]]:
     return [("OPEN", s), ("FLAG", s)]
 
 
+def split_tag_polarity(
+    tags: list[str] | None,
+) -> tuple[list[str], list[str]]:
+    """Split canonical filter tags into ``(positive, negated)``.
+
+    ``Tag.normalize_filter`` emits ``'!<tag>'`` for a negated entry
+    (gr568354); SQL callers get the split inside :func:`build_tag_filter`,
+    and bespoke consumers (Python post-filters, array-contains
+    predicates) call this to apply the same polarity. Negated entries
+    come back *without* the ``!`` — they name the tag to exclude.
+    """
+    pos: list[str] = []
+    neg: list[str] = []
+    for t in tags or []:
+        if t.startswith("!"):
+            body = t[1:].strip()
+            if body:
+                neg.append(body)
+        else:
+            pos.append(t)
+    return pos, neg
+
+
 def build_tag_filter(
     tags: list[str] | None,
     *,
@@ -77,7 +100,10 @@ def build_tag_filter(
                      ``PREFIX:value`` form — the runtime is
                      responsible for validating via
                      :meth:`precis.store.Tag.parse_strict` before
-                     calling this helper.
+                     calling this helper. A leading ``!`` negates the
+                     tag (gr568354): ``'!card:experiment'`` excludes
+                     refs carrying that tag, composing with the
+                     positive entries and ``q=``.
         ref_alias:   The SQL alias used for ``refs`` in the outer
                      query (typically ``r``). The fragment references
                      ``{ref_alias}.ref_id``.
@@ -95,68 +121,108 @@ def build_tag_filter(
         value, namespace, value, ..., N).
 
     Semantics:
-        AND across all tags — a ref must carry **every** tag in
-        ``tags`` to pass. The ``HAVING COUNT(*) = N`` clause
-        enforces this without requiring N self-joins.
+        AND across all tags — a ref must carry **every** positive tag
+        in ``tags`` to pass, and **no** negated (``!``-prefixed) tag.
+        The ``HAVING COUNT(*) = N`` clause enforces the positive AND
+        without requiring N self-joins; negations collapse into a
+        single ``NOT IN`` over the union of the negated tag tuples —
+        "carries none of these" is ``NOT (carries A OR carries B)``,
+        which is exactly per-tag exclusion ANDed together.
     """
     if not tags:
         return "", []
 
-    # Each input tag expands to one or more (namespace, value) rows.
-    # Bare tags expand into both OPEN and FLAG; closed-prefix tags
-    # stay single. We collect all rows for the IN-tuple, then count
-    # *distinct values* in the HAVING so a bare tag still counts once
-    # whether it landed in the open or the flag namespace.
-    flat: list[tuple[str, str]] = []
-    distinct_count = 0
-    for s in tags:
-        rows = _parse_tag_string(s)
-        flat.extend(rows)
-        distinct_count += 1
-    tuple_placeholders = ", ".join(["(%s, %s)"] * len(flat))
+    positive, negated = split_tag_polarity(tags)
 
-    if block_level:
-        # Chunk-level: filter refs whose chunks collectively carry
-        # all N tags. AND semantics across distinct tags, but the
-        # tags don't have to be on the same chunk.
-        # Chunk-level tags don't carry expires_at in v1 (migration 0010
-        # added the column only on ref_tags) — no expiry filter needed.
-        fragment = (
-            f"{ref_alias}.ref_id IN ("
-            f"  SELECT c.ref_id "
-            f"  FROM chunks c "
-            f"  JOIN chunk_tags ct ON ct.chunk_id = c.chunk_id "
-            f"  JOIN tags t ON t.tag_id = ct.tag_id "
-            f"  WHERE (t.namespace, t.value) IN ({tuple_placeholders}) "
-            f"  GROUP BY c.ref_id "
-            f"  HAVING COUNT(DISTINCT t.value) = %s"
-            f")"
-        )
-    else:
-        # Ref-level tags can carry TTL via ref_tags.expires_at (migration
-        # 0009). Exclude expired tags from the filter — agents that pin a
-        # memory with ttl_days=30 expect the memory to drop out of
-        # ``tags=['sticky:thread']`` filters once the TTL passes. Expired
-        # rows stay in the table for audit; the runtime just doesn't see
-        # them through this verb.
-        fragment = (
-            f"{ref_alias}.ref_id IN ("
-            f"  SELECT rt.ref_id "
-            f"  FROM ref_tags rt "
-            f"  JOIN tags t ON t.tag_id = rt.tag_id "
-            f"  WHERE (t.namespace, t.value) IN ({tuple_placeholders}) "
-            f"    AND (rt.expires_at IS NULL OR rt.expires_at > now()) "
-            f"  GROUP BY rt.ref_id "
-            f"  HAVING COUNT(DISTINCT t.value) = %s"
-            f")"
-        )
-
+    parts: list[str] = []
     params: list[Any] = []
-    for ns, val in flat:
-        params.append(ns)
-        params.append(val)
-    params.append(distinct_count)
-    return fragment, params
+
+    if positive:
+        # Each input tag expands to one or more (namespace, value) rows.
+        # Bare tags expand into both OPEN and FLAG; closed-prefix tags
+        # stay single. We collect all rows for the IN-tuple, then count
+        # *distinct values* in the HAVING so a bare tag still counts once
+        # whether it landed in the open or the flag namespace.
+        flat: list[tuple[str, str]] = []
+        for s in positive:
+            flat.extend(_parse_tag_string(s))
+        tuple_placeholders = ", ".join(["(%s, %s)"] * len(flat))
+
+        if block_level:
+            # Chunk-level: filter refs whose chunks collectively carry
+            # all N tags. AND semantics across distinct tags, but the
+            # tags don't have to be on the same chunk.
+            # Chunk-level tags don't carry expires_at in v1 (migration 0010
+            # added the column only on ref_tags) — no expiry filter needed.
+            parts.append(
+                f"{ref_alias}.ref_id IN ("
+                f"  SELECT c.ref_id "
+                f"  FROM chunks c "
+                f"  JOIN chunk_tags ct ON ct.chunk_id = c.chunk_id "
+                f"  JOIN tags t ON t.tag_id = ct.tag_id "
+                f"  WHERE (t.namespace, t.value) IN ({tuple_placeholders}) "
+                f"  GROUP BY c.ref_id "
+                f"  HAVING COUNT(DISTINCT t.value) = %s"
+                f")"
+            )
+        else:
+            # Ref-level tags can carry TTL via ref_tags.expires_at (migration
+            # 0009). Exclude expired tags from the filter — agents that pin a
+            # memory with ttl_days=30 expect the memory to drop out of
+            # ``tags=['sticky:thread']`` filters once the TTL passes. Expired
+            # rows stay in the table for audit; the runtime just doesn't see
+            # them through this verb.
+            parts.append(
+                f"{ref_alias}.ref_id IN ("
+                f"  SELECT rt.ref_id "
+                f"  FROM ref_tags rt "
+                f"  JOIN tags t ON t.tag_id = rt.tag_id "
+                f"  WHERE (t.namespace, t.value) IN ({tuple_placeholders}) "
+                f"    AND (rt.expires_at IS NULL OR rt.expires_at > now()) "
+                f"  GROUP BY rt.ref_id "
+                f"  HAVING COUNT(DISTINCT t.value) = %s"
+                f")"
+            )
+        for ns, val in flat:
+            params.append(ns)
+            params.append(val)
+        params.append(len(positive))
+
+    if negated:
+        # ``NOT IN`` over the union of the negated (namespace, value)
+        # tuples: a ref carrying *any* excluded tag drops out. No
+        # HAVING — one matching tag row is enough. Same expiry rule as
+        # the positive leg: an expired tag attachment doesn't count as
+        # "carrying" the tag, so it can't exclude either.
+        flat = []
+        for s in negated:
+            flat.extend(_parse_tag_string(s))
+        tuple_placeholders = ", ".join(["(%s, %s)"] * len(flat))
+        if block_level:
+            parts.append(
+                f"{ref_alias}.ref_id NOT IN ("
+                f"  SELECT c.ref_id "
+                f"  FROM chunks c "
+                f"  JOIN chunk_tags ct ON ct.chunk_id = c.chunk_id "
+                f"  JOIN tags t ON t.tag_id = ct.tag_id "
+                f"  WHERE (t.namespace, t.value) IN ({tuple_placeholders})"
+                f")"
+            )
+        else:
+            parts.append(
+                f"{ref_alias}.ref_id NOT IN ("
+                f"  SELECT rt.ref_id "
+                f"  FROM ref_tags rt "
+                f"  JOIN tags t ON t.tag_id = rt.tag_id "
+                f"  WHERE (t.namespace, t.value) IN ({tuple_placeholders}) "
+                f"    AND (rt.expires_at IS NULL OR rt.expires_at > now())"
+                f")"
+            )
+        for ns, val in flat:
+            params.append(ns)
+            params.append(val)
+
+    return " AND ".join(parts), params
 
 
 #: Canonical control tag for fenced, speculative dream output
@@ -305,5 +371,6 @@ __all__ = [
     "is_wiki_tag",
     "refuted_fence",
     "speculative_fence",
+    "split_tag_polarity",
     "wiki_fence",
 ]

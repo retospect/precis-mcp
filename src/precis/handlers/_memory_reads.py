@@ -16,6 +16,7 @@ from precis.errors import BadInput
 from precis.format import render_agent_table
 from precis.response import Response
 from precis.store import Store, Tag
+from precis.store._tag_filter import split_tag_polarity
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 
@@ -89,8 +90,16 @@ def render_reads(
         params.append(space)
     normalized = Tag.normalize_filter(tags, kind="memory")
     if normalized:
-        where.append("tag_values @> %s::text[]")
-        params.append(normalized)
+        # ``'!<tag>'`` entries (gr568354) exclude: the row must carry
+        # every positive tag and none of the negated ones — same split
+        # ``build_tag_filter`` applies on the SQL search paths.
+        positive, negated = split_tag_polarity(normalized)
+        if positive:
+            where.append("tag_values @> %s::text[]")
+            params.append(positive)
+        for tag in negated:
+            where.append("NOT (tag_values @> %s::text[])")
+            params.append([tag])
     if include_ref_ids is not None:
         where.append("ref_id = ANY(%s::bigint[])")
         params.append(include_ref_ids)

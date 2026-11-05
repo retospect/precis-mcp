@@ -19,6 +19,7 @@ from precis.format import render_agent_table
 from precis.graph.garden.smells import RECENT_DAYS, MemorySmell, memory_smells
 from precis.response import Response
 from precis.store import Tag
+from precis.store._tag_filter import split_tag_polarity
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 
@@ -90,6 +91,10 @@ def render_smell_rollup(
     )
     tag_map = store.ref_tags_bulk(sorted({p.ref_id for p in proposals}))
     wanted: list[str] = Tag.normalize_filter(tags, kind="memory") or []
+    # ``'!<tag>'`` entries (gr568354) exclude — every positive tag must
+    # be present and no negated one, the same polarity split
+    # ``build_tag_filter`` applies on the SQL search paths.
+    wanted_pos, wanted_neg = split_tag_polarity(wanted)
     groups: dict[tuple[str, str], list[MemorySmell]] = defaultdict(list)
     for p in proposals:
         node_tags: list[tuple[str, str]] = tag_map.get(p.ref_id, [])
@@ -97,7 +102,9 @@ def render_smell_rollup(
             value if namespace in ("OPEN", "FLAG") else f"{namespace}:{value}"
             for namespace, value in node_tags
         }
-        if not all(tag in tag_strings for tag in wanted):
+        if not all(tag in tag_strings for tag in wanted_pos) or any(
+            tag in tag_strings for tag in wanted_neg
+        ):
             continue
         types = sorted(t for t in tag_strings if t.startswith("section:"))
         groups[(p.detector, ",".join(types) or "(untyped)")].append(p)

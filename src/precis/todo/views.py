@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from precis._result_budget import size_cell
 from precis.errors import BadInput, NotFound
 from precis.response import Response
+from precis.store._tag_filter import build_tag_filter
 from precis.store._todo_sql import (  # noqa: F401  (re-export)
     _DOABLE_EXCLUSION_TAGS,
     _doable_exclusion_clause,
@@ -922,6 +923,7 @@ def render_doable(
     *,
     under: int | None = None,
     limit: int = 20,
+    tags: list[str] | None = None,
 ) -> Response:
     """Flat list of doable leaves with inline ancestry.
 
@@ -929,8 +931,11 @@ def render_doable(
     no live blocked-by edges, no ``waiting-for:`` or ``ask-user``
     tag, no paused ancestor. Ordering follows the plan: least-picked
     strategic first, then per-leaf priority, then sibling order.
+    ``tags`` (already canonicalised by the handler) narrows the leaf
+    set through the shared tag filter — positive entries AND,
+    ``'!<tag>'`` entries exclude (gr568264).
     """
-    leaves = _fetch_doable(store, under=under, limit=limit)
+    leaves = _fetch_doable(store, under=under, limit=limit, tags=tags)
     if not leaves:
         body = "no doable leaves"
         body += render_next_section(
@@ -984,6 +989,7 @@ def _fetch_doable(
     *,
     under: int | None,
     limit: int,
+    tags: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return doable leaves (with ancestry chain) ordered per the plan."""
     # Quest reweighting (slice 2): a strategic root that `serves` an active
@@ -1011,6 +1017,10 @@ def _fetch_doable(
             ")"
         )
         under_params = (under,)
+    # gr568264: the caller's tags= applies to the leaf itself — a leaf
+    # must carry every positive tag and none of the ``'!'`` exclusions.
+    tag_fragment, tag_params = build_tag_filter(tags, ref_alias="r")
+    tag_clause = f"AND {tag_fragment}" if tag_fragment else ""
     exclusion_clause = _doable_exclusion_clause()
     sql = f"""
         WITH RECURSIVE
@@ -1113,6 +1123,7 @@ def _fetch_doable(
            -- tick's to evaluate, never a leaf to work (gr559623).
            AND NOT {plan_control_node_sql("r")}
            {under_clause}
+           {tag_clause}
          ORDER BY prio ASC,
                   ((picks_7d + 1) / (1 + COALESCE(sv.w, 0))) ASC,
                   r.ref_id ASC
@@ -1120,7 +1131,8 @@ def _fetch_doable(
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            sql, (weight_sids, weight_vals) + under_params + (limit,)
+            sql,
+            (weight_sids, weight_vals) + under_params + tuple(tag_params) + (limit,),
         ).fetchall()
     out: list[dict[str, Any]] = []
     for ref_id, title, _strategic_id, _picks, _prio in rows:

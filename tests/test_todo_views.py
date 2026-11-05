@@ -255,6 +255,58 @@ def test_doable_under_via_search_verb(
     assert "B1 leaf." not in body
 
 
+def test_doable_honours_tags(handler: TodoHandler) -> None:
+    """gr568264: view='doable' applies tags= to the leaf set instead of
+    accepting and dropping it."""
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
+    root_id = _id_of(root.body)
+    tagged = handler.put(text="Tagged leaf.", parent_id=root_id, tags=["spec:alpha"])
+    untagged = handler.put(text="Untagged leaf.", parent_id=root_id)
+    tagged_id = _id_of(tagged.body)
+    untagged_id = _id_of(untagged.body)
+    out = handler.search(view="doable", tags=["spec:alpha"])
+    assert "Tagged leaf." in out.body
+    assert f"td{tagged_id}" in out.body
+    assert "Untagged leaf." not in out.body
+    assert f"td{untagged_id}" not in out.body
+
+
+def test_doable_tags_negation(handler: TodoHandler) -> None:
+    """gr568354 grammar reaches the doable view: '!tag' excludes."""
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
+    root_id = _id_of(root.body)
+    handler.put(text="Tagged leaf.", parent_id=root_id, tags=["spec:alpha"])
+    handler.put(text="Untagged leaf.", parent_id=root_id)
+    out = handler.search(view="doable", tags=["!spec:alpha"])
+    assert "Untagged leaf." in out.body
+    assert "Tagged leaf." not in out.body
+
+
+def test_doable_tags_compose_with_under(handler: TodoHandler) -> None:
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
+    root_id = _id_of(root.body)
+    handler.put(text="Tagged leaf.", parent_id=root_id, tags=["spec:alpha"])
+    handler.put(text="Untagged leaf.", parent_id=root_id)
+    out = handler.search(view="doable", args={"under": root_id}, tags=["spec:alpha"])
+    assert "Tagged leaf." in out.body
+    assert "Untagged leaf." not in out.body
+
+
+def test_doable_tags_no_match(handler: TodoHandler) -> None:
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
+    root_id = _id_of(root.body)
+    handler.put(text="A leaf.", parent_id=root_id)
+    out = handler.search(view="doable", tags=["spec:no-such"])
+    assert "no doable leaves" in out.body
+
+
+def test_doable_tags_bare_bang_refused(handler: TodoHandler) -> None:
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="negates exactly one tag"):
+        handler.search(view="doable", tags=["!"])
+
+
 # ── view='waiting' ────────────────────────────────────────────────
 
 

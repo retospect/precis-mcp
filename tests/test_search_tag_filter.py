@@ -91,6 +91,43 @@ class TestBuildTagFilter:
         # v2 references ref.ref_id (column renamed).
         assert "ref.ref_id IN" in frag
 
+    def test_negated_tag_emits_not_in(self) -> None:
+        """gr568354: ``'!tag'`` excludes refs carrying the tag."""
+        frag, params = build_tag_filter(["!STATUS:done"])
+        assert "NOT IN" in frag
+        assert "ref_tags" in frag
+        # No HAVING — one matching tag row is enough to exclude.
+        assert "HAVING" not in frag
+        assert params == ["STATUS", "done"]
+
+    def test_negated_plus_positive_ANDs(self) -> None:
+        frag, params = build_tag_filter(["topic:x", "!PRIO:high"])
+        assert " IN (" in frag
+        assert " NOT IN (" in frag
+        # Positive leg: 'topic:x' is an open tag → OPEN+FLAG rows of the
+        # whole 'topic:x' value, + count; negated leg: one (PRIO, high).
+        assert params == [
+            "OPEN",
+            "topic:x",
+            "FLAG",
+            "topic:x",
+            1,
+            "PRIO",
+            "high",
+        ]
+
+    def test_negated_block_level_uses_chunk_tags(self) -> None:
+        frag, _ = build_tag_filter(["!scratch"], block_level=True)
+        assert "NOT IN" in frag
+        assert "chunk_tags" in frag
+
+    def test_negated_only_skips_positive_leg(self) -> None:
+        frag, params = build_tag_filter(["!a", "!b"])
+        # One NOT IN over the union of both negated tags' tuples.
+        assert frag.count("NOT IN") == 1
+        assert "HAVING" not in frag
+        assert params == ["OPEN", "a", "FLAG", "a", "OPEN", "b", "FLAG", "b"]
+
 
 # ── store-level: ref-search filter ──────────────────────────────────
 
@@ -146,6 +183,30 @@ class TestListRefsTagFilter:
         _seed_two_memories(store)
         refs = store.list_refs(kind="memory", tags=["topic-nonexistent"])
         assert refs == []
+
+    def test_negated_tag_alone(self, store: Store) -> None:
+        """gr568354: ``'!tag'`` excludes refs carrying the tag."""
+        a, b = _seed_two_memories(store)
+        refs = store.list_refs(kind="memory", tags=["!topic-nox-reduction"])
+        assert {r.id for r in refs} == {a}
+        refs = store.list_refs(kind="memory", tags=["!PRIO:high"])
+        assert {r.id for r in refs} == {b}
+
+    def test_negated_plus_positive(self, store: Store) -> None:
+        """Positive AND still applies; the negation then removes
+        carriers of the excluded tag (a carries both topic-co2 and
+        PRIO:high, so it drops out)."""
+        _seed_two_memories(store)
+        refs = store.list_refs(kind="memory", tags=["topic-co2-capture", "!PRIO:high"])
+        assert refs == []
+        # The same positive tag without the negation still matches.
+        refs = store.list_refs(kind="memory", tags=["topic-co2-capture"])
+        assert len(refs) == 1
+
+    def test_negated_tag_not_present_keeps_all(self, store: Store) -> None:
+        a, b = _seed_two_memories(store)
+        refs = store.list_refs(kind="memory", tags=["!topic-no-such"])
+        assert {a, b} <= {r.id for r in refs}
 
 
 class TestCountRefsTagFilter:
@@ -326,6 +387,14 @@ class TestMemorySearchTags:
         with pytest.raises(BadInput, match="axis not allowed on kind 'memory'"):
             h.search(q="precis", tags=["STATUS:open"])
 
+    def test_negated_status_axis_rejected_on_memory(self, store: Store) -> None:
+        """``'!STATUS:…'`` gets the same per-kind axis enforcement as
+        the positive spelling — a negation can't smuggle a disallowed
+        axis past the boundary."""
+        h = MemoryHandler(hub=Hub(store=store))
+        with pytest.raises(BadInput, match="axis not allowed on kind 'memory'"):
+            h.search(q="precis", tags=["!STATUS:open"])
+
     def test_invalid_status_value_rejected_on_kind_with_status(
         self, store: Store
     ) -> None:
@@ -336,6 +405,49 @@ class TestMemorySearchTags:
         h = TodoHandler(hub=Hub(store=store))
         with pytest.raises(BadInput, match="invalid STATUS value"):
             h.search(q="x", tags=["STATUS:bogus"])  # 'bogus' not in vocab
+
+
+class TestNegatedTagSearch:
+    """gr568354: ``tags=['!<tag>']`` excludes refs carrying the tag —
+    alone, beside a positive tag, and beside ``q=``."""
+
+    def test_exclusion_alone(self, store: Store) -> None:
+        _seed_two_memories(store)
+        h = MemoryHandler(hub=Hub(store=store))
+        # Queryless: the recency listing honours the negation —
+        # a ("precis on co2") stays, b ("precis on nox", tagged
+        # topic-nox-reduction) drops out.
+        out = h.search(tags=["!topic-nox-reduction"])
+        assert "precis on co2" in out.body
+        assert "precis on nox" not in out.body
+
+    def test_exclusion_plus_positive_tag(self, store: Store) -> None:
+        _seed_two_memories(store)
+        h = MemoryHandler(hub=Hub(store=store))
+        # topic-co2-capture narrows to a; a does not carry
+        # topic-nox-reduction, so the negation leaves it.
+        out = h.search(tags=["topic-co2-capture", "!topic-nox-reduction"])
+        assert "precis on co2" in out.body
+        # A negation naming the positive tag itself empties the result.
+        out = h.search(tags=["topic-co2-capture", "!topic-co2-capture"])
+        assert "no memory entries" in out.body
+
+    def test_exclusion_plus_q(self, store: Store) -> None:
+        _seed_two_memories(store)
+        h = MemoryHandler(hub=Hub(store=store))
+        out = h.search(q="precis", tags=["!topic-co2-capture"])
+        assert "precis on nox" in out.body
+        assert "precis on co2" not in out.body
+
+    def test_bare_bang_refused(self, store: Store) -> None:
+        h = MemoryHandler(hub=Hub(store=store))
+        with pytest.raises(BadInput, match="negates exactly one tag"):
+            h.search(q="x", tags=["!"])
+
+    def test_double_bang_refused(self, store: Store) -> None:
+        h = MemoryHandler(hub=Hub(store=store))
+        with pytest.raises(BadInput, match="negates exactly one tag"):
+            h.search(q="x", tags=["!!topic-x"])
 
 
 # ── perf hygiene: ref-level filter doesn't match block-tagged rows ──
@@ -385,3 +497,32 @@ class TestBareFlagDedup:
     def test_bare_flag_alone_still_raises(self) -> None:
         with pytest.raises(BadInput):
             Tag.normalize_filter(["speculative"])
+
+
+class TestNegatedFilterNormalization:
+    """gr568354: ``normalize_filter`` canonicalises ``'!<tag>'`` to
+    ``'!<canonical>'`` and refuses a bare/empty negation."""
+
+    def test_negated_closed_tag(self) -> None:
+        assert Tag.normalize_filter(["!STATUS:open"]) == ["!STATUS:open"]
+
+    def test_negated_open_tag(self) -> None:
+        assert Tag.normalize_filter(["!topic-x"]) == ["!topic-x"]
+
+    def test_negated_mixed_with_positive(self) -> None:
+        assert Tag.normalize_filter(["STATUS:open", "!PRIO:high"]) == [
+            "STATUS:open",
+            "!PRIO:high",
+        ]
+
+    def test_bare_bang_raises(self) -> None:
+        with pytest.raises(BadInput, match="negates exactly one tag"):
+            Tag.normalize_filter(["!"])
+
+    def test_double_bang_raises(self) -> None:
+        with pytest.raises(BadInput, match="negates exactly one tag"):
+            Tag.normalize_filter(["!!topic-x"])
+
+    def test_negated_invalid_value_still_validated(self) -> None:
+        with pytest.raises(BadInput):
+            Tag.normalize_filter(["!STATUS:bogus"])

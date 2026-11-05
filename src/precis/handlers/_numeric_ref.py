@@ -355,6 +355,23 @@ def _hidden_excluded_label(kind: str, exclude_tags: list[str]) -> str | None:
     return "closed or parked"
 
 
+def _tag_names_axis(t: str, axis: str) -> bool:
+    """A raw ``tags=`` entry naming ``axis``, either polarity.
+
+    ``'STATUS:open'`` pins the axis and ``'!STATUS:open'`` (gr568354)
+    excludes on it — both engage the axis, so both suppress the
+    implicit status default the same way a positive pin does. The
+    ``!`` check strips one prefix and tolerates ``'! STATUS:x'``;
+    ``parse_strict``'s whitespace guard rejects that spelling later
+    anyway, so the leniency here only widens default-suppression,
+    never accepts a bad tag.
+    """
+    s = t.strip()
+    if s.startswith("!"):
+        s = s[1:].lstrip()
+    return s.startswith(f"{axis}:")
+
+
 def _extract_summary(body: str) -> tuple[str, int]:
     """Return ``(summary, remaining_words)`` for the list-view TOON row.
 
@@ -1146,8 +1163,8 @@ class NumericRefHandler(Handler):
             not (q and q.strip()) and self.kind in _BROWSE_TERMINALS and link is None
         )
         explicit_state = status is not None or any(
-            t.strip().startswith("STATUS:")
-            or (self.kind == "alert" and t.strip().startswith("alert-state:"))
+            _tag_names_axis(t, "STATUS")
+            or (self.kind == "alert" and _tag_names_axis(t, "alert-state"))
             for t in (tags or [])
         )
         excluded = (
@@ -1519,12 +1536,12 @@ class NumericRefHandler(Handler):
                     next="search(kind='alert', status='*')",
                 )
             alert_tags = [
-                t for t in (tags or []) if not t.strip().startswith("alert-state:")
+                t for t in (tags or []) if not _tag_names_axis(t, "alert-state")
             ]
             alert_tags.append(f"alert-state:{state}")
             return alert_tags, "", []
         effective: list[str] = list(tags) if tags else []
-        has_status_tag = any(t.strip().startswith("STATUS:") for t in effective)
+        has_status_tag = any(_tag_names_axis(t, "STATUS") for t in effective)
         explicit = status is not None
         resolved = (status if explicit else self.default_search_status) or ""
         resolved = resolved.strip()
@@ -1585,10 +1602,10 @@ class NumericRefHandler(Handler):
         if resolved and resolved != "*" and (explicit or not has_status_tag):
             # Explicit status wins outright: drop any caller STATUS: tag so
             # two conflicting closed-axis values can't AND to zero rows.
+            # ``_tag_names_axis`` sees both polarities — a '!STATUS:x'
+            # exclusion is a STATUS constraint too (gr568354).
             if explicit and has_status_tag:
-                effective = [
-                    t for t in effective if not t.strip().startswith("STATUS:")
-                ]
+                effective = [t for t in effective if not _tag_names_axis(t, "STATUS")]
             if (
                 resolved in self.live_status_spellings
                 and self.kind in _BROWSE_TERMINALS

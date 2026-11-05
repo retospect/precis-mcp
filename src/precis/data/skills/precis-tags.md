@@ -103,6 +103,12 @@ search(kind="memory", q="kwargs vs modes", tags=["confidence-strong"])
 `tags=` runs the same canonical-form validation as `tag(add=)` — an
 `urgent` filter raises the bare-flag-collision error.
 
+Prefix an entry with `!` to exclude instead of require —
+`tags=['topic:x', '!PRIO:high']` matches `topic:x` refs that are not
+high-priority, and `tags=['!card:experiment']` alone lists everything
+*without* that tag. Negations compose with the positive entries (AND)
+and with `q=`; a bare `'!'` is refused.
+
 ## List every tag in use
 ## Browse the tag vocabulary
 ## What tags exist across the corpus?

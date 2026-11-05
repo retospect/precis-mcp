@@ -1180,8 +1180,16 @@ class SearchMixin(RuntimeShape):
                 # One status kind: its own rules (alert-state, aliases, '*').
                 tags, _note, status_excluded = only._apply_status_default(status, tags)
             elif status.strip().lower() not in ("*", "any", "all"):
+                # Drop caller STATUS: constraints of either polarity —
+                # '!STATUS:x' is a STATUS constraint too (gr568354).
                 tags = [
-                    t for t in (tags or []) if not str(t).strip().startswith("STATUS:")
+                    t
+                    for t in (tags or [])
+                    if not str(t)
+                    .strip()
+                    .removeprefix("!")
+                    .lstrip()
+                    .startswith("STATUS:")
                 ]
                 tags.append(f"STATUS:{status.strip().lower()}")
             if tags:
@@ -2254,7 +2262,10 @@ class SearchMixin(RuntimeShape):
         """
         if self.hub.store is None or not required_tag_strings:
             return hits
-        required = set(required_tag_strings)
+        # ``'!<tag>'`` entries (gr568354) exclude rather than require —
+        # same split the SQL path applies in ``build_tag_filter``.
+        required = {t for t in required_tag_strings if not t.startswith("!")}
+        excluded = {t[1:] for t in required_tag_strings if t.startswith("!")}
         kept: list[SearchHit] = []
         for hit in hits:
             ref_id = hit.ref_id
@@ -2270,6 +2281,6 @@ class SearchMixin(RuntimeShape):
                 continue
             tags_have = self.hub.store.tags_for(ref_id)
             have_strings = {str(t) for t in tags_have}
-            if required.issubset(have_strings):
+            if required.issubset(have_strings) and excluded.isdisjoint(have_strings):
                 kept.append(hit)
         return kept

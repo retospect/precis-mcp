@@ -236,11 +236,20 @@ class TodoView(StrEnum):
     ASKS = "asks"
 
 
-def _view_doable(store: Store, args: dict[str, Any] | None, page_size: int) -> Response:
+def _view_doable(
+    store: Store,
+    args: dict[str, Any] | None,
+    page_size: int,
+    *,
+    tags: list[str] | None = None,
+) -> Response:
     """``view='doable'`` — the one tree view that reads ``args`` / paging.
 
     Pulled out of the dispatch table so the table stays a flat
     ``name → renderer`` map; the arg-less views are one-line lambdas.
+    ``tags=`` filters the leaf set through the shared tag filter
+    (gr568264): positive entries AND, ``'!<tag>'`` entries exclude —
+    same grammar as every other ``search`` tag filter.
     """
     under = None
     if args is not None and "under" in args:
@@ -252,7 +261,14 @@ def _view_doable(store: Store, args: dict[str, Any] | None, page_size: int) -> R
                 f"under must be an integer, got {under_raw!r}",
                 next="search(kind='todo', view='doable', under=N)",
             ) from exc
-    return views.render_doable(store, under=under, limit=page_size or 20)
+    normalized_tags = Tag.normalize_filter(
+        tags,
+        kind="todo",
+        axis_in_use=lambda prefix: prefix in store.tag_namespaces(),
+    )
+    return views.render_doable(
+        store, under=under, limit=page_size or 20, tags=normalized_tags
+    )
 
 
 #: Dispatch table: view → renderer ``(store, args, page_size) -> Response``.
@@ -722,6 +738,11 @@ class TodoHandler(NumericRefHandler):
                     options=available,
                     next=f"views available: {available}; see precis-todo-tree-help",
                 ) from None
+            if view_enum is TodoView.DOABLE:
+                # gr568264: doable is the one tree view that honours
+                # tags= — the table's 3-arg signature has no channel
+                # for it, so it dispatches here with the raw tags.
+                return _view_doable(self.store, args, page_size, tags=tags)
             return _TREE_SEARCH_VIEWS[view_enum](self.store, args, page_size)
         return super().search(q=q, tags=tags, page_size=page_size, **_kw)
 

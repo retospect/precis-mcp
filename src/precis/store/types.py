@@ -1083,6 +1083,13 @@ class Tag:
         ``BadInput`` shape as ``put``), then converted back to its
         canonical string form via ``__str__`` for the SQL layer.
 
+        A leading ``!`` negates the entry (gr568354): ``'!card:x'``
+        excludes refs carrying ``card:x`` and composes with the
+        positive entries (AND) and ``q=``. The ``!`` is re-emitted on
+        the canonical string — ``'!STATUS:open'`` — so downstream
+        consumers split polarity without re-parsing; a bare ``'!'`` or
+        ``'!!x'`` raises ``BadInput``.
+
         ``kind=`` is forwarded to ``parse_strict`` for per-kind axis
         enforcement. Callers that filter across kinds should pass
         ``kind=None`` to keep the global vocabulary.
@@ -1111,7 +1118,31 @@ class Tag:
         out: list[str] = []
         for t in tags:
             s = t.strip()
-            prefix, _, value = s.partition(":")
+            # gr568354: a leading ``!`` negates the tag — ``'!card:x'``
+            # excludes refs carrying ``card:x`` and composes with the
+            # positive entries (AND) and ``q=``. The ``!`` is filter
+            # syntax only: it is re-emitted on the canonical string so
+            # :func:`build_tag_filter` and the Python post-filters can
+            # split polarity without re-parsing.
+            negated = s.startswith("!")
+            if negated:
+                body = s[1:]
+                if not body.strip() or body.lstrip().startswith("!"):
+                    raise BadInput(
+                        f"invalid tag filter {t!r} — '!' negates exactly one tag",
+                        next=(
+                            "tags=['!<tag>'] excludes refs carrying <tag> "
+                            "(e.g. tags=['!card:experiment']); a bare '!' "
+                            "filters nothing"
+                        ),
+                    )
+            else:
+                body = t
+            # The axis-in-use probe reads the stripped spelling for a
+            # negated entry (``s`` still carries the ``!``); positive
+            # entries keep the historical ``s`` probe.
+            probe = body.strip() if negated else s
+            prefix, _, value = probe.partition(":")
             if (
                 prefix
                 and prefix.isupper()
@@ -1123,9 +1154,10 @@ class Tag:
                 # In-use but unregistered axis: pass the canonical
                 # ``PREFIX:value`` form through verbatim —
                 # :func:`build_tag_filter` parses it identically.
-                out.append(f"{prefix}:{value}")
-                continue
-            out.append(str(cls.parse_strict(t, kind=kind)))
+                canon = f"{prefix}:{value}"
+            else:
+                canon = str(cls.parse_strict(body, kind=kind))
+            out.append(f"!{canon}" if negated else canon)
         return out
 
     def __str__(self) -> str:
