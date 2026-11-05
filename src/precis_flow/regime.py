@@ -49,6 +49,13 @@ Additional physics register their line builder and input names through
 registration cannot change an already computed card. ``species`` remains
 a named attribute for existing callers; every group participates in
 ``lines``, ``ok`` and ``failures``.
+
+Wall slip (slice 5) rides on :attr:`RegimeCard.slip` when ``slip_length``
+is supplied. It is informational (``b/h0``), but it raises the ``knudsen``
+line's continuum bound from ``0.01`` to ``KN_SLIP_MAX = 0.1`` — the
+Navier/Maxwell slip boundary condition carries the continuum kernel
+through the slip regime, so a gas micro-gap with ``0.01 < Kn ≤ 0.1``
+routes ``continuum`` instead of refusing as transition.
 """
 
 from __future__ import annotations
@@ -62,9 +69,13 @@ G0 = 9.80665  # standard gravity, m/s^2
 #: Knudsen-number bounds (the spec's card): the continuum kernel holds at
 #: ``Kn <= KN_CONTINUUM_MAX``, the free-molecular propagator takes over at
 #: ``Kn >= KN_FREE_MIN``; between them is the transition regime — DSMC,
-#: out of scope here (se-multiphysics.md slice 5 later moves the lower
-#: bound to 0.1).
+#: out of scope here. With wall slip modelled (se-multiphysics.md slice 5,
+#: ``slip_length`` supplied), the continuum bound moves up to
+#: ``KN_SLIP_MAX``: the Navier/Maxwell slip boundary condition carries the
+#: kernel through the slip regime. :meth:`RegimeCard.route` reads the
+#: knudsen line's own threshold, so it follows whichever bound was set.
 KN_CONTINUUM_MAX = 0.01
+KN_SLIP_MAX = 0.1
 KN_FREE_MIN = 10.0
 
 
@@ -166,6 +177,11 @@ class RegimeCard:
     #: Other registered groups, in registration order. Species keeps its
     #: historical field above, avoiding a second copy of its lines here.
     groups: tuple[tuple[str, tuple[RegimeLine, ...]], ...] = ()
+    #: Optional wall-slip line (se-multiphysics.md slice 5): present only
+    #: when ``slip_length`` was supplied. Informational — it reports the
+    #: reduced slip length ``b/h0`` and records that the continuum bound was
+    #: raised to ``KN_SLIP_MAX``; the gate itself stays on the knudsen line.
+    slip: RegimeLine | None = None
 
     @property
     def lines(self) -> tuple[RegimeLine, ...]:
@@ -178,6 +194,7 @@ class RegimeCard:
             self.knudsen,
             *self.species,
             *(line for _name, lines in self.groups for line in lines),
+            *((self.slip,) if self.slip is not None else ()),
         )
 
     @property
@@ -200,15 +217,16 @@ class RegimeCard:
         checks and do not gate a free-molecular case (a lumen is never
         "thin"). ``'continuum'`` only when every applicable line holds.
         Otherwise raises :class:`ValueError` naming the out-of-scope
-        regime: transition (DSMC) for ``0.01 < Kn < 10``, else the
-        card's failing lines."""
+        regime: transition (DSMC) for ``kn.threshold < Kn < 10`` (the
+        threshold is ``KN_SLIP_MAX`` once slip is modelled, else
+        ``KN_CONTINUUM_MAX``), else the card's failing lines."""
         kn = self.knudsen
         if kn.applicable and kn.value >= KN_FREE_MIN:
             return "knudsen"
-        if kn.applicable and kn.value > KN_CONTINUUM_MAX:
+        if kn.applicable and kn.value > kn.threshold:
             raise ValueError(
                 f"Kn = {kn.value:.3g} is the transition regime "
-                f"({KN_CONTINUUM_MAX:g} < Kn < {KN_FREE_MIN:g}) — neither "
+                f"({kn.threshold:g} < Kn < {KN_FREE_MIN:g}) — neither "
                 "the continuum kernel nor the nano propagator holds; "
                 "DSMC is out of scope"
             )
@@ -237,6 +255,7 @@ class RegimeCard:
         n_walls: int = 2,
         apparent_order: float | None = None,
         species_solver: str | None = None,
+        slip_length: float | None = None,
         **physics_inputs: Any,
     ) -> RegimeCard:
         """Compute the card for a physical case (SI units throughout).
@@ -254,6 +273,11 @@ class RegimeCard:
         line stays a route note and never blocks ``ok``; ``'eulerian'``
         gates on ``Pe·ε ≤ 0.1``; ``'lagrangian'`` is valid for any
         ``Pe·ε``.
+
+        Wall slip (se-multiphysics.md slice 5): ``slip_length`` (m, the
+        Navier slip length; for a gas the Maxwell value ``b ≈ λ``) raises
+        the knudsen continuum bound to ``KN_SLIP_MAX`` and emits the
+        informational ``slip`` line ``b/h0``.
 
         Additional keyword inputs must be declared by a registered
         :class:`RegimeGroup`; misspellings refuse instead of disappearing.
@@ -277,6 +301,9 @@ class RegimeCard:
             raise ValueError("state exactly one of dp or u0")
         if u0 <= 0:
             raise ValueError("u0 must be positive")
+        if slip_length is not None and slip_length < 0:
+            raise ValueError("slip_length must be >= 0")
+        slip_on = slip_length is not None and slip_length > 0
 
         thinness = _line(
             "thinness",
@@ -328,18 +355,23 @@ class RegimeCard:
         else:
             peclet = _skipped("peclet", 10.0, "diffusion dominates the tracer")
 
+        kn_max = KN_SLIP_MAX if slip_on else KN_CONTINUUM_MAX
         if mean_free_path is not None:
             kn = mean_free_path / h0
             knudsen = _line(
                 "knudsen",
                 kn,
-                0.01,
-                kn <= 0.01,
-                "free-molecular: the nano propagator, not this kernel",
+                kn_max,
+                kn <= kn_max,
+                "free-molecular: the nano propagator, not this kernel"
+                if not slip_on
+                else "beyond the slip regime: DSMC / the nano propagator",
             )
         else:
             knudsen = _skipped(
-                "knudsen", 0.01, "free-molecular: the nano propagator, not this kernel"
+                "knudsen",
+                kn_max,
+                "free-molecular: the nano propagator, not this kernel",
             )
 
         inputs = {
@@ -364,6 +396,22 @@ class RegimeCard:
             for name, group in REGIME_GROUPS.items()
         }
 
+        slip: RegimeLine | None = None
+        if slip_length is not None:
+            b_star = slip_length / h0
+            slip = RegimeLine(
+                name="slip",
+                value=b_star,
+                threshold=float("nan"),
+                ok=True,
+                holds_when="informational (Navier slip b/h0)",
+                otherwise=(
+                    f"wall slip b/h0 = {b_star:g}: flux factor on h³/12μ; the "
+                    f"continuum kernel holds with slip to Kn ≤ {KN_SLIP_MAX:g} "
+                    "(Maxwell b ≈ λ for gas, full accommodation)"
+                ),
+            )
+
         return cls(
             L=L,
             h0=h0,
@@ -376,6 +424,7 @@ class RegimeCard:
             knudsen=knudsen,
             species=groups.pop("species", ()),
             groups=tuple(groups.items()),
+            slip=slip,
         )
 
 

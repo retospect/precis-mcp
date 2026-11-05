@@ -30,12 +30,22 @@ class Ports:
 
 @dataclass(frozen=True)
 class Domain:
-    """A thin chamber in reduced units, ready for :func:`precis_flow.solve`."""
+    """A thin chamber in reduced units, ready for :func:`precis_flow.solve`.
+
+    Optional wall slip (se-multiphysics.md slice 5) enters as the per-cell
+    reduced Navier slip lengths ``slip_floor_star = b1/h0`` and
+    ``slip_lid_star = b2/h0`` on the gap's two walls. ``None`` (the default)
+    is the no-slip wall; :attr:`slip_factor` is then the all-ones field and
+    the solve is bit-for-bit the slice-1 cubic-gap law. A supplied field must
+    be ``>= 0`` on every inside cell.
+    """
 
     mask: np.ndarray  # (ny, nx) bool: cell centre inside the chamber footprint
     h_star: np.ndarray  # (ny, nx) float: local gap / h0; 0 outside, >0 inside
     ports: Ports
     z_plane_star: float = 0.99  # breakthrough plane, absolute reduced height
+    slip_floor_star: np.ndarray | None = None  # (ny, nx) b1/h0; None = no slip
+    slip_lid_star: np.ndarray | None = None  # (ny, nx) b2/h0; None = no slip
 
     def __post_init__(self) -> None:
         mask = np.asarray(self.mask, dtype=bool)
@@ -46,6 +56,16 @@ class Domain:
             raise ValueError("h_star must have the mask's shape")
         if np.any(h[mask] <= 0.0):
             raise ValueError("h_star must be > 0 on every inside cell")
+        for name in ("slip_floor_star", "slip_lid_star"):
+            raw = getattr(self, name)
+            if raw is None:
+                continue
+            b = np.asarray(raw, dtype=float)
+            if b.shape != mask.shape:
+                raise ValueError(f"{name} must have the mask's shape")
+            if not np.all(np.isfinite(b[mask])) or np.any(b[mask] < 0.0):
+                raise ValueError(f"{name} must be finite and >= 0 on inside cells")
+            object.__setattr__(self, name, np.where(mask, b, 0.0))
         inlet = np.asarray(self.ports.inlet, dtype=bool)
         outlet = np.asarray(self.ports.outlet, dtype=bool)
         if inlet.shape != mask.shape or outlet.shape != mask.shape:
@@ -83,6 +103,32 @@ class Domain:
     def width_star(self) -> float:
         """Reduced lateral width ``W/L = ny/nx``."""
         return self.ny / self.nx
+
+    @property
+    def slip_factor(self) -> np.ndarray:
+        """Per-cell Navier-slip flux factor on ``h*^3/12μ`` (slice 5).
+
+        ``F = (h² + 4h(b1+b2) + 12 b1 b2) / (h (h + b1 + b2))`` in reduced
+        units (``h = h*``, ``b = b/h0``) — the depth-averaged Poiseuille flux
+        enhancement for slip lengths ``b1`` (floor) and ``b2`` (lid). Reduces
+        to ``1`` where both slip lengths are zero (the no-slip wall) and to
+        the leading ``1 + 6b/h`` for equal small slip. ``1`` outside the mask.
+        """
+        if self.slip_floor_star is None and self.slip_lid_star is None:
+            return np.ones(self.shape)
+        ny, nx = self.shape
+        b1 = (
+            self.slip_floor_star
+            if self.slip_floor_star is not None
+            else np.zeros((ny, nx))
+        )
+        b2 = (
+            self.slip_lid_star if self.slip_lid_star is not None else np.zeros((ny, nx))
+        )
+        h = self.h_star
+        denom = h * (h + b1 + b2)
+        num = h * h + 4.0 * h * (b1 + b2) + 12.0 * b1 * b2
+        return np.where(denom > 0.0, num / np.where(denom > 0.0, denom, 1.0), 1.0)
 
     @property
     def xc_star(self) -> np.ndarray:

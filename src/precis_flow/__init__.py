@@ -54,6 +54,9 @@ API
 ---
 
 - :class:`Domain` — ``(mask, h_star, ports)``; the discretised shape.
+  Optional ``slip_floor_star``/``slip_lid_star`` (reduced Navier slip
+  ``b/h0`` per wall, se-multiphysics.md slice 5) scale the flow through
+  ``Domain.slip_factor``; ``None`` is the no-slip wall.
 - :func:`solve` — ``Domain -> Field(U*, p*, R*)``.
 - :class:`Seed` / :func:`trace` — ``(field, seed, n, d_v_star, seed_rng,
   record_frames=0, profile='plug'|'parabolic') -> Paths(breakthrough,
@@ -61,7 +64,9 @@ API
   (Q4): ``'plug'`` (default) advects at the depth-averaged speed and
   reproduces cfdtest; ``'parabolic'`` applies the Hele-Shaw gap shear
   ``6 psi (1 - psi)`` that spreads a tracer pulse.
-- :class:`RegimeCard` — ``from_physical(...)`` -> the six verdict lines;
+- :class:`RegimeCard` — ``from_physical(...)`` -> the six verdict lines
+  (plus the optional species group and, when ``slip_length`` is given, a
+  ``slip`` line that raises the knudsen continuum bound to 0.1);
   ``card.route`` picks the solver: ``'continuum'`` here, ``'knudsen'``
   the slice-3 propagator, a refusal naming DSMC in the transition band.
 - :class:`Lumen` / :class:`CylinderLumen` / :class:`AtomWall` /

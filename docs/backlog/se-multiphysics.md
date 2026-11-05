@@ -443,6 +443,20 @@ Tests in `tests/test_precis_flow_species.py` (kernel) and
    `b` on both walls, the slip part is a plug, so the Taylor coefficient
    falls by `(1 + 6b/h)⁻²` at the same mean velocity; unequal slip passes
    the asymmetric profile through `shear_velocity`/`profile`.
+   **Landed (kernel core), 2026-10-26** — the Navier flux factor
+   `(h² + 4h(b₁+b₂) + 12 b₁b₂)/(h(h+b₁+b₂))` on the reduced pressure
+   transmissivity (`Domain.slip_floor_star`/`slip_lid_star` →
+   `Domain.slip_factor`, scaling `h*³` and `U*` in `flow.solve`), and the
+   slip-aware regime card (`from_physical(slip_length=)` raises the
+   knudsen continuum bound 0.01→0.1 via `KN_SLIP_MAX`; `route()` reads the
+   knudsen line's own threshold; an informational `slip` line reports
+   `b/h0`). No-slip walls are bit-for-bit the slice-1 solve. **Still open:**
+   the se surface — a `slip-length` patch measurand (needs the core seed
+   migration, release owner) and the token/computer wiring in
+   `precis_se/flow.py`; and the species-side Taylor reduction (the
+   `(1+6b/h)⁻²` equal-slip shortcut and the slip-shifted tracer profile;
+   the general path already rides the existing `shear_velocity`/`profile`
+   args of `species.transport`).
 6. **Compliant walls.** Wall material `E, ν, t`; the closure is named by
    `t/W` (wall thickness over channel width):
    - thick PDMS (`t ≫ W`): Winkler `K_w ≈ E/(c₁ W)`, `c₁` a stated

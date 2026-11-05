@@ -2,7 +2,9 @@
 
 Solves ``div*(T* grad* p*) = 0`` with ``T* = h*^3`` (cubic gap law), Dirichlet
 ports (``p* = 1`` inlet, ``p* = 0`` outlet), and natural no-flux walls (faces
-to outside cells carry zero transmissivity). The scale choice
+to outside cells carry zero transmissivity). Navier wall slip
+(se-multiphysics.md slice 5) multiplies ``T*`` by the per-cell
+:attr:`Domain.slip_factor` — the all-ones field for no-slip walls. The scale choice
 ``U0 = h0^2 dp / (12 mu L)`` absorbs the viscous constant, so the reduced
 velocity is exactly
 
@@ -119,16 +121,20 @@ def solve(domain: Domain, *, t_factor: np.ndarray | None = None) -> Field:
         if not np.all(np.isfinite(t_factor[inside]) & (t_factor[inside] > 0)):
             raise ValueError("solve: t_factor must be finite and > 0 inside")
 
-    t_field = np.where(inside, h**3, 0.0)
+    # Wall slip (slice 5) scales the cubic-gap transmissivity and the
+    # depth-averaged velocity by the Navier flux factor; it is the all-ones
+    # field for no-slip walls, so an un-slipped Domain is unchanged.
+    fslip = domain.slip_factor
+    t_field = np.where(inside, h**3 * fslip, 0.0)
     if t_factor is not None:
         t_field = np.where(inside, t_field * t_factor, 0.0)
     p = fv.elliptic(domain, t_field, [(inlet, 1.0), (outlet, 0.0)])
 
-    # Depth-averaged reduced velocity U* = -h*^2 grad* p*.
+    # Depth-averaged reduced velocity U* = -h*^2 F_slip grad* p*.
     p_for_grad = np.where(inside, np.nan_to_num(p, nan=0.0), 0.0)
     dpdx = _masked_gradient(p_for_grad, inside, dx, axis=1)
     dpdy = _masked_gradient(p_for_grad, inside, dx, axis=0)
-    coef = np.where(inside, h**2, 0.0)
+    coef = np.where(inside, h**2 * fslip, 0.0)
     if t_factor is not None:
         coef = np.where(inside, coef * t_factor, 0.0)
     ux = -coef * dpdx

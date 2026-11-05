@@ -11,6 +11,7 @@ import ast
 import inspect
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -461,6 +462,131 @@ def test_unsupplied_lines_are_not_applicable_not_failures():
     assert not card.stokes.applicable
     assert not card.knudsen.applicable
     assert card.failures == ()
+
+
+# --- wall slip (se-multiphysics.md slice 5) ---------------------------------
+
+
+def _slip_rect(b_floor: float, b_lid: float, nx: int = NX, ny: int = NY) -> Domain:
+    """Uniform rectangle with uniform reduced slip ``b/h0`` on each wall."""
+    mask = np.ones((ny, nx), dtype=bool)
+    inlet = np.zeros((ny, nx), dtype=bool)
+    inlet[:, 0] = True
+    outlet = np.zeros((ny, nx), dtype=bool)
+    outlet[:, -1] = True
+    return Domain(
+        mask=mask,
+        h_star=np.ones((ny, nx)),
+        ports=Ports(inlet=inlet, outlet=outlet),
+        slip_floor_star=np.full((ny, nx), b_floor),
+        slip_lid_star=np.full((ny, nx), b_lid),
+    )
+
+
+def test_no_slip_factor_is_unity_and_solve_unchanged():
+    d = _rect_domain()
+    assert np.allclose(d.slip_factor, 1.0)
+    # Explicit zero-slip fields reproduce the no-slip solve to round-off.
+    z = _slip_rect(0.0, 0.0)
+    assert np.allclose(z.slip_factor, 1.0)
+    assert np.isclose(solve(z).r_star, solve(d).r_star, rtol=1e-12)
+
+
+def test_slip_flux_factor_matches_closed_form():
+    # Equal slip b/h0 = 0.1 both walls on h* = 1:
+    # F = (1 + 8b + 12b²)/(1 + 2b) = 1.92/1.2 = 1.6.
+    d = _slip_rect(0.1, 0.1)
+    assert np.allclose(d.slip_factor[d.mask], 1.6)
+
+
+def test_slip_scales_resistance_and_velocity_by_factor():
+    # A uniform factor scales every face transmissivity equally, so R* → R*/F
+    # exactly and the depth-averaged velocity → U*·F.
+    base = solve(_rect_domain())
+    slipped = solve(_slip_rect(0.1, 0.1))
+    f = 1.6
+    assert np.isclose(slipped.r_star, base.r_star / f, rtol=1e-10)
+    interior = (slice(None), slice(1, NX - 1))
+    assert np.allclose(slipped.ux_star[interior], base.ux_star[interior] * f, rtol=1e-8)
+    # The pressure field is unchanged by a uniform transmissivity scaling.
+    assert np.allclose(
+        np.nan_to_num(slipped.p_star), np.nan_to_num(base.p_star), atol=1e-9
+    )
+
+
+def test_asymmetric_slip_uses_both_wall_lengths():
+    # b1 = 0.2, b2 = 0 on h* = 1: F = (1 + 0.8 + 0)/(1 + 0.2) = 1.5.
+    d = _slip_rect(0.2, 0.0)
+    assert np.allclose(d.slip_factor[d.mask], 1.5)
+
+
+def test_negative_slip_length_rejected():
+    mask = np.ones((NY, NX), dtype=bool)
+    inlet = np.zeros((NY, NX), dtype=bool)
+    inlet[:, 0] = True
+    outlet = np.zeros((NY, NX), dtype=bool)
+    outlet[:, -1] = True
+    bad = np.ones((NY, NX))
+    bad[0, 0] = -0.1
+    try:
+        Domain(
+            mask=mask,
+            h_star=np.ones((NY, NX)),
+            ports=Ports(inlet=inlet, outlet=outlet),
+            slip_floor_star=bad,
+        )
+    except ValueError as e:
+        assert "slip_floor_star" in str(e)
+    else:  # pragma: no cover - the constructor must reject it
+        raise AssertionError("negative slip length was accepted")
+
+
+def test_slip_raises_knudsen_continuum_bound():
+    # Kn = 0.05 is the transition regime without slip, continuum with it.
+    kw: dict[str, Any] = dict(
+        L=1e-4, h0=1e-6, mu=1.8e-5, rho=1.2, u0=1e-3, mean_free_path=5e-8
+    )
+    dry = RegimeCard.from_physical(**kw)
+    assert np.isclose(dry.knudsen.value, 0.05)
+    assert dry.knudsen.threshold == 0.01
+    assert not dry.knudsen.ok
+    try:
+        _ = dry.route
+    except ValueError as e:
+        assert "transition" in str(e)
+    else:  # pragma: no cover
+        raise AssertionError("no-slip Kn=0.05 should refuse as transition")
+
+    wet = RegimeCard.from_physical(**kw, slip_length=1e-7)
+    assert wet.knudsen.threshold == 0.1
+    assert wet.knudsen.ok
+    assert wet.route == "continuum"
+
+
+def test_slip_line_reports_reduced_length_and_is_informational():
+    card = RegimeCard.from_physical(
+        L=1e-4, h0=1e-6, mu=1.8e-5, rho=1.2, u0=1e-3, slip_length=2e-7
+    )
+    assert card.slip is not None
+    assert np.isclose(card.slip.value, 0.2)  # b/h0 = 2e-7/1e-6
+    assert card.slip.ok  # informational, never gates
+    assert card.slip in card.lines
+    # No slip_length → no slip line.
+    assert (
+        RegimeCard.from_physical(L=1e-4, h0=1e-6, mu=1.8e-5, rho=1.2, u0=1e-3).slip
+        is None
+    )
+
+
+def test_card_negative_slip_length_rejected():
+    try:
+        RegimeCard.from_physical(
+            L=1e-4, h0=1e-6, mu=1.8e-5, rho=1.2, u0=1e-3, slip_length=-1e-7
+        )
+    except ValueError as e:
+        assert "slip_length" in str(e)
+    else:  # pragma: no cover
+        raise AssertionError("negative slip_length was accepted")
 
 
 # --- kernel boundary (mirrors test_precis_chain_import_boundary.py) ---------
