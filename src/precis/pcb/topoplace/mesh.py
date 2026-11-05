@@ -55,8 +55,12 @@ from typing import Any
 
 import numpy as np
 from scipy.spatial import Delaunay, QhullError
+from shapely import STRtree
+from shapely.geometry import Point, Polygon
+from shapely.ops import nearest_points, unary_union
 
 from precis.errors import BadInput
+from precis.pcb.clearance import FAB_QUANTUM_MM, outward_circle
 from precis.pcb.topoplace.design import TopoDesign
 from precis.pcb.topoplace.proxy import zone_world_circle, zone_world_ring
 
@@ -68,6 +72,11 @@ _EPS = 1e-9
 #: a correctness argument: the loop below either converges in a few
 #: rounds or the cavity path is unreachable through flips.
 _MAX_FLIPS = 10000
+#: Added to every grown ring so a strict ``<`` clearance test passes for
+#: a wire pivoting exactly on a ring vertex.
+_GROW_MARGIN = 1e-6
+#: How far outside a foreign grown ring a moved pin anchor must sit.
+_ANCHOR_MARGIN = 1e-3
 
 
 class MeshConflictError(BadInput):
@@ -178,6 +187,49 @@ class TopoMesh:
     #: (part, zone index, area_mm²) — a part's courtyard over a keepout,
     #: mounting hole or fixed copper zone.
     zone_conflicts: tuple[tuple[int, int, float], ...] = ()
+    #: Every pad's constrained polygon (:func:`world_pads`), or ``None``
+    #: on a hand-built mesh that never constrained any — the wire
+    #: builder then places them from the design and pose itself.
+    pads: tuple[MeshPad, ...] | None = None
+    #: The polygon the mesh constrained for each :attr:`TopoDesign.zones`
+    #: entry (``None`` for a label keepout or a degenerate ring), same
+    #: indexing — the wire builder closes zone INTERIORS from it. On a
+    #: grown mesh (G2f) this is the zone GROWN by its stand-off, not the
+    #: authored ring.
+    zone_polys: tuple[Polygon | None, ...] | None = None
+    #: The rule the rings were grown for (G2f): the finest net rule's
+    #: track width and clearance; both 0 on an ungrown mesh.
+    trace_mm: float = 0.0
+    clearance_mm: float = 0.0
+
+    @property
+    def pad_grow_mm(self) -> float:
+        """How far a pad ring stands off its copper: ``trace/2 +
+        clearance``, the centreline's configuration space."""
+        grow = self.trace_mm / 2.0 + self.clearance_mm
+        return grow + FAB_QUANTUM_MM if grow > 0.0 else 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class MeshPad:
+    """One pad as the mesh holds it: ``poly`` the clearance envelope, ``ring``
+    the open polygon the CDT constrains. Ungrown (``grow_mm`` 0) that is
+    the copper itself, except a round land, whose ring is the
+    circumscribing octagon so the wall never sits inside the copper;
+    grown it is the copper offset by the centreline's clearance
+    (:func:`world_pads`), and nothing may read it as copper. ``pin`` is
+    the owning pin id, ``-1`` for an unpinned land (foreign to every
+    net); ``side`` is ``TopoDesign.pin_side``'s encoding (0 top, 1
+    bottom, 2 drilled); ``rect`` marks an axis-aligned rectangle, whose
+    bounding box IS the copper (the gap rule's slab clip is exact
+    there)."""
+
+    pin: int
+    part: int
+    side: int
+    poly: Polygon
+    ring: np.ndarray
+    rect: bool
 
 
 # Vertex rows the hot predicates accept — a plain list indexes ~10x
@@ -200,19 +252,44 @@ def _proper_cross(verts: _Verts, u: int, v: int, p: int, q: int) -> bool:
     never count)."""
     if u in (p, q) or v in (p, q):
         return False
-    d1, d2 = _orient(verts, u, v, p), _orient(verts, u, v, q)
-    d3, d4 = _orient(verts, p, q, u), _orient(verts, p, q, v)
-    return ((d1 > _EPS and d2 < -_EPS) or (d1 < -_EPS and d2 > _EPS)) and (
-        (d3 > _EPS and d4 < -_EPS) or (d3 < -_EPS and d4 > _EPS)
+    # inlined and early-exiting (the hot predicate of constraint recovery).
+    # orient is twice an area: the vertex rounding moves it by len · 1e-9,
+    # so the "on the line" band grows with the segment (see _on_segment)
+    ux, uy = verts[u]
+    vx, vy = verts[v]
+    px, py = verts[p]
+    qx, qy = verts[q]
+    dx, dy = vx - ux, vy - uy
+    d1 = dx * (py - uy) - dy * (px - ux)
+    d2 = dx * (qy - uy) - dy * (qx - ux)
+    e1 = _EPS * max(1.0, (dx * dx + dy * dy) ** 0.5)
+    if not ((d1 > e1 and d2 < -e1) or (d1 < -e1 and d2 > e1)):
+        return False
+    ex, ey = qx - px, qy - py
+    d3 = ex * (uy - py) - ey * (ux - px)
+    d4 = ex * (vy - py) - ey * (vx - px)
+    e2 = _EPS * max(1.0, (ex * ex + ey * ey) ** 0.5)
+    return (d3 > e2 and d4 < -e2) or (d3 < -e2 and d4 > e2)
+
+
+def _slack(verts: _Verts, a: int, b: int) -> float:
+    """The collinearity band of segment (a, b): ``_EPS`` per mm of length,
+    never below ``_EPS``."""
+    return _EPS * max(
+        1.0, math.hypot(verts[b][0] - verts[a][0], verts[b][1] - verts[a][1])
     )
 
 
 def _on_segment(verts: _Verts, a: int, w: int, b: int) -> bool:
-    """``w`` collinear with (a, b) and strictly between them."""
-    if abs(_orient(verts, a, b, w)) > _EPS:
-        return False
+    """``w`` collinear with (a, b) and strictly between them. The
+    collinearity slack grows with the edge: ``orient`` is twice an area,
+    so the 1e-9 mm vertex rounding moves it by ``len · 1e-9`` — a flat
+    sliver on a 2 mm boundary edge read as 1.2e-9 against the bare bound
+    and hid a T-junction."""
     ax, ay = verts[a]
     bx, by = verts[b]
+    if abs(_orient(verts, a, b, w)) > _slack(verts, a, b):
+        return False
     wx, wy = verts[w]
     dot = (wx - ax) * (bx - ax) + (wy - ay) * (by - ay)
     return _EPS < dot < (bx - ax) ** 2 + (by - ay) ** 2 - _EPS
@@ -278,12 +355,38 @@ class _Soup:
         ``None`` when the walk hits a degenerate exit — caller falls back
         to the full scan. Assumes no vertex lies on the open segment
         (``recover`` splits those first)."""
+        # ``_proper_cross`` with the (a, b) side hoisted — the same
+        # arithmetic in the same order, the constraint's direction and
+        # collinearity band computed once per walk instead of once per
+        # edge tested.
+        ux, uy = verts[a]
+        vx, vy = verts[b]
+        dx, dy = vx - ux, vy - uy
+        e1 = _EPS * max(1.0, (dx * dx + dy * dy) ** 0.5)
+
+        def cross(u: int, v: int) -> bool:
+            if u in (a, b) or v in (a, b):
+                return False
+            px, py = verts[u]
+            qx, qy = verts[v]
+            d1 = dx * (py - uy) - dy * (px - ux)
+            d2 = dx * (qy - uy) - dy * (qx - ux)
+            if not ((d1 > e1 and d2 < -e1) or (d1 < -e1 and d2 > e1)):
+                return False
+            ex, ey = qx - px, qy - py
+            d3 = ex * (uy - py) - ey * (ux - px)
+            d4 = ex * (vy - py) - ey * (vx - px)
+            e2 = _EPS * max(1.0, (ex * ex + ey * ey) ** 0.5)
+            return (d3 > e2 and d4 < -e2) or (d3 < -e2 and d4 > e2)
+
+        tris = self.tris
+        edge_tris = self.edge_tris
         start = None
         for tid in self.vertex_tris.get(a, ()):
-            tri = self.tris[tid]
+            tri = tris[tid]
             x, y = (v for v in tri if v != a)
-            if _proper_cross(verts, a, b, x, y):
-                start = (tid, self._ekey(x, y))
+            if cross(x, y):
+                start = (tid, (x, y) if x < y else (y, x))
                 break
         if start is None:
             return []
@@ -297,22 +400,26 @@ class _Soup:
         seen: set[tuple[int, tuple[int, int]]] = set()
         while True:
             out.append(e)
-            nxt = [t for t in self.edge_tris.get(e, ()) if t != tid]
-            if not nxt:
+            nxt = -1
+            for t in edge_tris.get(e, ()):
+                if t != tid:
+                    nxt = t
+                    break
+            if nxt < 0:
                 return None  # walked off the hull — degenerate
-            tid = nxt[0]
+            tid = nxt
             state = (tid, e)
             if state in seen:
                 return None
             seen.add(state)
-            tri = self.tris[tid]
+            tri = tris[tid]
             if b in tri:
                 return out
             exit_e = None
             for k in range(3):
                 u, v = tri[k], tri[(k + 1) % 3]
-                ek = self._ekey(u, v)
-                if ek != e and _proper_cross(verts, a, b, u, v):
+                ek = (u, v) if u < v else (v, u)
+                if ek != e and cross(u, v):
                     exit_e = ek
                     break
             if exit_e is None:
@@ -340,13 +447,22 @@ class _Soup:
         return True
 
     def t_junction(
-        self, verts: _Verts, a: int, b: int
+        self, verts: _Verts, a: int, b: int, *, fan_only: bool = False
     ) -> tuple[tuple[int, int], int] | None:
         """An endpoint of (a, b) lying strictly on an existing edge —
         the T-junction the proper-crossing walk cannot see (an ear-clip
         sliver leaves its pruned collinear vertex exactly ON an edge,
         so a later constraint ending there finds a fan with no proper
-        exit). Returns ``((p, q), w)`` or ``None``."""
+        exit). Returns ``((p, q), w)`` or ``None``. ``fan_only`` looks
+        only at the edges opposite the endpoint in its own fan — where a
+        zero-area sliver puts them — instead of scanning every edge."""
+        if fan_only:
+            for w in (a, b):
+                for tid in self.vertex_tris.get(w, ()):
+                    p, q = (v for v in self.tris[tid] if v != w)
+                    if _on_segment(verts, p, w, q):
+                        return self._ekey(p, q), w
+            return None
         for p, q in self.edge_tris:
             if a not in (p, q) and _on_segment(verts, p, a, q):
                 return (p, q), a
@@ -530,6 +646,139 @@ def _place(pts: np.ndarray, row: np.ndarray) -> np.ndarray:
     return np.column_stack([x + rx, y + ry])
 
 
+def _disc_pad(cx: float, cy: float, radius: float) -> tuple[Polygon, np.ndarray, bool]:
+    """A round land: its clearance envelope, and the octagon the CDT holds
+    (eight ring vertices, not sixty-four)."""
+    pt = Point(cx, cy)
+    octagon = pt.buffer(radius / math.cos(math.pi / 8.0), quad_segs=2)
+    return (
+        outward_circle(cx, cy, radius),
+        np.asarray(octagon.exterior.coords)[:-1],
+        False,
+    )
+
+
+def world_pads(
+    d: TopoDesign, pose: np.ndarray, grow_mm: float = 0.0
+) -> tuple[MeshPad, ...]:
+    """Every pad at ``pose`` — each pin's land, then the non-primary
+    lands (``pad_extra_*``) — in the shape the DRC flashes
+    (:func:`precis.pcb.connectivity._pad_primitives`'s convention: a
+    ``'circle'`` encloses its disk, a ``'polygon'`` uses its authored
+    ring, a ring-less polygon the circumscribed disk, everything else
+    the ``*_wh`` rectangle). Never the ``pin_wh`` bounding box of a
+    polygon land: a comb's gaps are free space.
+
+    ``grow_mm`` > 0 makes each pad's CDT ``ring`` the copper grown by
+    that much (mitred, plus :data:`_GROW_MARGIN`): the configuration
+    space of a centreline whose copper must clear the pad, so a taut
+    wire pivots on ring vertices at exactly the clearance (G2f).
+    ``poly`` stays the ungrown clearance envelope. Connectivity uses
+    exact disc bodies in ``realise._pad_bodies`` instead."""
+    pose = np.asarray(pose, dtype=np.float64)
+    out: list[MeshPad] = []
+    grow = grow_mm + _GROW_MARGIN if grow_mm > 0.0 else 0.0
+
+    def add(
+        part: int,
+        px: float,
+        py: float,
+        hw: float,
+        hh: float,
+        pin: int,
+        side: int,
+        shape: str,
+        poly_pts: Any,
+    ) -> None:
+        # (a pin with no pad size has no polygon: the wire builder keeps
+        # the pin vertex's fan boundary as its wall, see guard_pad_rects)
+        if not 0 <= part < len(pose) or hw <= _EPS or hh <= _EPS:
+            return
+        row = pose[part]
+        if not np.isfinite(row[:2]).all():
+            return
+        # an SMD pad sits on the face the POSE puts its part on (a flipped
+        # part moves its pads to the other outer layer); drilled stays drilled
+        if side != 2:
+            side = int(row[3] >= 0.5)
+        rect = False
+        if shape == "circle" or (shape == "polygon" and not _has_ring(poly_pts)):
+            cx, cy = _place(np.asarray([[px, py]], dtype=np.float64), row)[0]
+            radius = min(hw, hh) if shape == "circle" else math.hypot(hw, hh)
+            # The CDT ring grows; the clearance body encloses the ungrown disk.
+            poly, ring, rect = _disc_pad(float(cx), float(cy), radius + grow)
+            if grow > 0.0:
+                poly = outward_circle(float(cx), float(cy), radius)
+        elif _has_ring(poly_pts):
+            pts = np.asarray(poly_pts, dtype=np.float64) + np.asarray([px, py])
+            poly = Polygon(_place(pts, row))
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+                if poly.geom_type == "MultiPolygon":
+                    poly = max(poly.geoms, key=lambda g: g.area)
+            if poly.is_empty or poly.geom_type != "Polygon":
+                return
+            ring = np.asarray(poly.exterior.coords)[:-1]
+            if grow > 0.0:
+                ring = _grown_ring(ring, grow)
+        else:
+            corners = np.asarray(
+                [
+                    [px - hw, py - hh],
+                    [px + hw, py - hh],
+                    [px + hw, py + hh],
+                    [px - hw, py + hh],
+                ]
+            )
+            ring = _place(corners, row)
+            poly, rect = Polygon(ring), True
+            if grow > 0.0:
+                ring = _grown_ring(ring, grow)
+        if poly.is_empty or poly.area <= 0.0:
+            return
+        out.append(MeshPad(pin, part, side, poly, ring, rect))
+
+    for p in range(len(d.pin_xy)):
+        add(
+            int(d.pin_part[p]),
+            float(d.pin_xy[p, 0]),
+            float(d.pin_xy[p, 1]),
+            float(d.pin_wh[p, 0]) / 2.0 if len(d.pin_wh) > p else 0.0,
+            float(d.pin_wh[p, 1]) / 2.0 if len(d.pin_wh) > p else 0.0,
+            p,
+            int(d.pin_side[p]),
+            str(d.pin_shape[p]) if p < len(d.pin_shape) else "",
+            d.pin_poly[p] if p < len(d.pin_poly) else None,
+        )
+    for k in range(len(d.pad_extra_xy)):
+        add(
+            int(d.pad_extra_part[k]),
+            float(d.pad_extra_xy[k, 0]),
+            float(d.pad_extra_xy[k, 1]),
+            float(d.pad_extra_wh[k, 0]) / 2.0,
+            float(d.pad_extra_wh[k, 1]) / 2.0,
+            int(d.pad_extra_pin[k]),
+            int(d.pad_extra_side[k]),
+            str(d.pad_extra_shape[k]) if k < len(d.pad_extra_shape) else "",
+            d.pad_extra_poly[k] if k < len(d.pad_extra_poly) else None,
+        )
+    return tuple(out)
+
+
+def _grown_ring(ring: np.ndarray, grow: float) -> np.ndarray:
+    """``ring`` offset outwards by ``grow``, corners mitred (the mitre
+    sits beyond the round offset, so the ring always contains it). Only
+    the exterior is kept: a gap the offset closes is wall."""
+    g = Polygon(ring).buffer(grow, join_style="mitre", mitre_limit=2.0)
+    if g.is_empty or g.geom_type != "Polygon":
+        return ring
+    return np.asarray(g.exterior.coords)[:-1]
+
+
+def _has_ring(poly_pts: Any) -> bool:
+    return poly_pts is not None and len(poly_pts) >= 3
+
+
 def _fallback_outline(d: TopoDesign) -> np.ndarray:
     """The placer's domain square as a closed ring — used when the
     design carries no board outline (synthetic designs)."""
@@ -702,7 +951,6 @@ def _conflict_data(
     taz case) is no conflict. Part-part conflicts and outline escapes
     stay on the courtyard rings — the house margin IS between-parts
     breathing room."""
-    from shapely.geometry import Point, Polygon
 
     def _poly(ring: np.ndarray | None) -> Polygon | None:
         if ring is None or len(ring) < 4:
@@ -790,7 +1038,61 @@ def _conflict_data(
     )
 
 
-def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
+class _ForeignRings:
+    """The grown pad rings a pin's wire may not enter: every pad of
+    another net (or no net) on a layer the pin's own pad shares. A pin
+    whose anchor falls inside one is unreachable — its fan would sit in a
+    wall — so the anchor moves onto its own copper outside the union."""
+
+    def __init__(self, d: TopoDesign, pads: tuple[MeshPad, ...]) -> None:
+        self._net: dict[int, int] = {}
+        for k, pins in enumerate(d.net_pins):
+            for p in pins:
+                self._net[int(p)] = k
+        self._pads = pads
+        self._rings = [Polygon(p.ring) for p in pads]
+        self._tree = STRtree(self._rings)
+
+    @staticmethod
+    def _layers(side: int) -> int:
+        return 0b111 if side == 2 else (1 << side)
+
+    def _foreign(self, pin: int, pad: MeshPad, other: MeshPad) -> bool:
+        if not self._layers(pad.side) & self._layers(other.side):
+            return False
+        if other.pin < 0:
+            return True
+        k = self._net.get(pin)
+        return k is None or self._net.get(other.pin) != k
+
+    def anchor(self, pin: int, pad: MeshPad, x: float, y: float) -> tuple[float, float]:
+        pt = Point(x, y)
+        near = [
+            self._rings[int(i)]
+            for i in self._tree.query(pad.poly.buffer(1e-3))
+            if self._pads[int(i)].pin != pin
+            and self._foreign(pin, pad, self._pads[int(i)])
+        ]
+        if not any(r.contains(pt) for r in near):
+            return x, y
+        wall = unary_union(near).buffer(_ANCHOR_MARGIN)
+        for own in (pad.poly.buffer(-0.02), pad.poly):
+            if own.is_empty:
+                continue
+            free = own.difference(wall)
+            if not free.is_empty:
+                got = nearest_points(free, pt)[0]
+                return got.x, got.y
+        return x, y
+
+
+def build_mesh(
+    d: TopoDesign,
+    pose: np.ndarray,
+    *,
+    trace_mm: float = 0.0,
+    clearance_mm: float = 0.0,
+) -> TopoMesh:
     """The CDT over pad centres + pad-outline corners + courtyard
     corners + outline corners at ``pose`` — spec Decision 1/2, with
     round-3 seam R3-1's pad polygons so a pad's wall is the pad itself.
@@ -802,7 +1104,21 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
     :attr:`TopoDesign.outline`, or the placer's domain square when it is
     empty. Triangles outside the outline are dropped — footprint
     interiors stay triangulated (the spec's no-holes Euler invariant).
+
+    ``trace_mm`` and ``clearance_mm`` (the finest net rule) put every
+    constraint ring where a centreline keeps its copper clear (G2f): a pad
+    or fixed copper grown by ``trace/2 + clearance``, a keepout by
+    ``trace/2``, and inside the outline a board-owned ring at
+    ``max(clearance, edge clearance) + trace/2``. A taut wire then pivots
+    on ring vertices at exactly its clearance. A gap under the
+    requirement leaves overlapping rings, which split where they cross,
+    so nothing passes it. A pin anchor that falls inside a foreign grown
+    ring moves to the nearest point of its own copper outside it. The
+    real outline still decides which triangles are dropped.
     """
+    pad_grow_mm = trace_mm / 2.0 + clearance_mm
+    if pad_grow_mm > 0.0:
+        pad_grow_mm += FAB_QUANTUM_MM
     pose = np.asarray(pose, dtype=np.float64)
     n = len(d.parts)
     if pose.shape[0] != n:
@@ -832,9 +1148,32 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
 
     pin_vertex = np.full(len(d.pin_xy), -1, dtype=np.int32)
     pad_vertex: dict[tuple[int, int], int] = {}
+    pads = world_pads(d, pose, pad_grow_mm)
+    primary: dict[int, MeshPad] = {}
+    for pad in pads:
+        if pad.pin >= 0 and not pad.rect:
+            primary.setdefault(pad.pin, pad)
+    any_pad: dict[int, MeshPad] = {}
+    for pad in pads:
+        if pad.pin >= 0:
+            any_pad.setdefault(pad.pin, pad)
+    foreign = _ForeignRings(d, pads) if pad_grow_mm > 0.0 else None
     for pin in range(len(d.pin_xy)):
         part = int(d.pin_part[pin])
         wx, wy = _place(d.pin_xy[pin : pin + 1], pose[part])[0]
+        pinned = primary.get(pin)
+        if pinned is not None and not pinned.poly.buffer(1e-9).contains(Point(wx, wy)):
+            # a polygon land whose reference point is off its copper (a
+            # comb's centre lies in a finger gap): the vertex — and so the
+            # wire's end — moves onto the copper, to the nearest point of
+            # the polygon eroded by a hair so it sits inside the ring
+            core = pinned.poly.buffer(-0.02)
+            core = pinned.poly if core.is_empty else core
+            near = nearest_points(core, Point(wx, wy))[0]
+            wx, wy = near.x, near.y
+        own_pad = pinned or any_pad.get(pin)
+        if foreign is not None and own_pad is not None:
+            wx, wy = foreign.anchor(pin, own_pad, wx, wy)
         vid = add_vert(float(wx), float(wy))
         pin_vertex[pin] = vid
         pad_vertex[(part, pin)] = vid
@@ -870,33 +1209,14 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
         bpts = np.asarray(body, dtype=np.float64).reshape(-1, 2)
         world_bodies[part] = _place(bpts, pose[part]) if len(bpts) >= 4 else wpts
 
-    # Pad outline corners (round-3 seam R3-1): each pad's ``pin_wh``
-    # rectangle becomes a constrained ring owned by its part. Without
-    # it a pad's wall is wherever its CDT fan's skinny triangles reach
-    # — a column of close pads leaves no fan-boundary edge a wire may
-    # cross, so a pin with open copper beside it still reports caged.
-    # With the ring constrained the pad vertex's fan is contained by
-    # the pad polygon itself, and the wall is the pad.
-    for pin in range(len(d.pin_xy)):
-        if len(d.pin_wh) <= pin:
-            continue
-        pw, ph = float(d.pin_wh[pin, 0]), float(d.pin_wh[pin, 1])
-        if pw <= _EPS or ph <= _EPS:
-            continue
-        part = int(d.pin_part[pin])
-        cx, cy = float(d.pin_xy[pin, 0]), float(d.pin_xy[pin, 1])
-        wpts = _place(
-            np.asarray(
-                [
-                    [cx - pw / 2, cy - ph / 2],
-                    [cx + pw / 2, cy - ph / 2],
-                    [cx + pw / 2, cy + ph / 2],
-                    [cx - pw / 2, cy + ph / 2],
-                ]
-            ),
-            pose[part],
-        )
-        vids = _ring_vids(wpts, add_vert)
+    # Pad polygons (round-3 seam R3-1, G2a): every pad — each pin's
+    # land in its real shape and the non-primary lands (``pad_extra_*``,
+    # which have no pin vertex) — becomes a constrained ring owned by
+    # its part. With the ring in the CDT no triangle outside it overlaps
+    # the pad, so the wire builder closes exactly the edges on or inside
+    # it (the wall is the pad, not whatever its fan's triangles reach).
+    for pad in pads:
+        vids = _ring_vids(pad.ring, add_vert)
         m = len(vids)
         segs = [
             (vids[i], vids[(i + 1) % m])
@@ -904,7 +1224,7 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
             if vids[i] != vids[(i + 1) % m]
         ]
         if segs:
-            ring_segs.append((part, segs))
+            ring_segs.append((pad.part, segs))
 
     # Non-part constrained regions (keepouts, mounting holes, fixed
     # copper) — world-frame already; owner ``n + zone_index``.
@@ -914,6 +1234,7 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
     # reads these zones itself (realise.py's keepout list) — excluding
     # them here keeps the wire corridors open (taz-leaf widen fixtures
     # showed a 2 mm label box otherwise eating a rail's corridor).
+    zone_polys: list[Polygon | None] = [None] * len(d.zones)
     for z, zone in enumerate(d.zones):
         if zone.kind == "label_keepout":
             continue
@@ -922,6 +1243,21 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
         )
         if len(zpts) < 4:
             continue
+        zg = Polygon(zpts)
+        zg = zg if zg.is_valid else zg.buffer(0)
+        if pad_grow_mm > 0.0:
+            # a copper zone owes clearance as well as the track's half
+            # width, a keepout only the half width
+            zr = (
+                trace_mm / 2.0
+                + (clearance_mm if zone.kind in ("fixed_copper", "fixed_via") else 0.0)
+                + FAB_QUANTUM_MM
+            )
+            gz = zg.buffer(zr + _GROW_MARGIN, join_style="mitre", mitre_limit=2.0)
+            if not gz.is_empty and gz.geom_type == "Polygon":
+                zg = gz
+                zpts = np.asarray(gz.exterior.coords)
+        zone_polys[z] = zg
         vids = _ring_vids(zpts, add_vert)
         m = len(vids)
         segs = [
@@ -943,6 +1279,33 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
     ]
     if osegs:
         ring_segs.append((OWNER_BOARD, osegs))
+    if pad_grow_mm > 0.0 and len(outline) >= 3:
+        # The outline ring stays put (it drops the triangles outside, and
+        # a pad may hang over it). Inside it a second board-owned ring
+        # stands off by the edge clearance plus the track's half width:
+        # nothing crosses it, so a centreline never sits closer to the
+        # board edge than its copper may.
+        inset = Polygon(outline).buffer(
+            -(
+                max(clearance_mm, float(d.edge_clearance_mm or 0.0))
+                + trace_mm / 2.0
+                + FAB_QUANTUM_MM
+                + _GROW_MARGIN
+            ),
+            join_style="mitre",
+            mitre_limit=2.0,
+        )
+        for part_ in getattr(inset, "geoms", (inset,)):
+            if part_.is_empty or part_.geom_type != "Polygon":
+                continue
+            ivids = _ring_vids(np.asarray(part_.exterior.coords), add_vert)
+            isegs = [
+                (ivids[i], ivids[(i + 1) % len(ivids)])
+                for i in range(len(ivids))
+                if ivids[i] != ivids[(i + 1) % len(ivids)]
+            ]
+            if isegs:
+                ring_segs.append((OWNER_BOARD, isegs))
 
     constraints = _split_ring_crossings(
         np.asarray(verts, dtype=np.float64).tolist(), ring_segs, add_vert
@@ -985,6 +1348,20 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
     constrained_pairs: dict[tuple[int, int], int] = {}
     second_owner: dict[tuple[int, int], int] = {}
 
+    def split_edge(p: int, q: int, w: int) -> None:
+        """Split soup edge (p, q) at the vertex ``w`` on it; a constrained
+        edge hands its owners to both halves."""
+        pk = soup._ekey(p, q)
+        own = constrained_pairs.pop(pk, None)
+        own2 = second_owner.pop(pk, None)
+        soup.split_at_vertex(pk, w)
+        if own is not None:
+            constrained_pairs[soup._ekey(p, w)] = own
+            constrained_pairs[soup._ekey(w, q)] = own
+            if own2 is not None:
+                second_owner[soup._ekey(p, w)] = own2
+                second_owner[soup._ekey(w, q)] = own2
+
     def recover(a: int, b: int, owner: int) -> None:
         """Recover segment (a, b) — already-split at on-segment verts by
         the caller — then mark its whole chain constrained."""
@@ -995,7 +1372,7 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
         # per-recover linear scan was the second build-time cost.
         ab = varr[b] - varr[a]
         orient = ab[0] * (varr[:, 1] - varr[a][1]) - ab[1] * (varr[:, 0] - varr[a][0])
-        cand = np.flatnonzero(np.abs(orient) <= _EPS)
+        cand = np.flatnonzero(np.abs(orient) <= _EPS * max(1.0, float(np.hypot(*ab))))
         cand = cand[(cand != a) & (cand != b)]
         if len(cand):
             dot = (varr[cand] - varr[a]) @ ab
@@ -1008,9 +1385,30 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
             recover(hit, b, owner)
             return
         stall = 0
+
+        def split_t_junction(fan_only: bool = False) -> bool:
+            """Split the soup edge an endpoint of (a, b) rests on, if
+            any, at that endpoint — a constrained edge hands its owners
+            to both halves."""
+            tj = soup.t_junction(vlist, a, b, fan_only=fan_only)
+            if tj is None:
+                return False
+            split_edge(*tj[0], tj[1])
+            return True
+
         for _ in range(_MAX_FLIPS):
             crossed = soup.crossed_walk(vlist, a, b)
-            if crossed is None:
+            if crossed is None or (
+                not crossed and soup._ekey(a, b) not in soup.edge_tris
+            ):
+                # Degenerate start or exit: besides a proper crossing the
+                # walk can meet an endpoint resting on a zero-area
+                # sliver's long edge (a comb's finger tips are a
+                # collinear row), or a fan with no proper exit though
+                # the segment is absent — resolve that T-junction, else
+                # trust the full scan.
+                if split_t_junction(fan_only=True):
+                    continue
                 crossed = soup.crossed(vlist, a, b)
             if not crossed:
                 if soup._ekey(a, b) in soup.edge_tris:
@@ -1022,23 +1420,11 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
                 # make this routine). Split the blocker at the endpoint,
                 # carrying a constrained edge's owners onto both halves,
                 # and resume the walk.
-                tj = soup.t_junction(vlist, a, b)
-                if tj is None:
+                if not (split_t_junction(fan_only=True) or split_t_junction()):
                     raise MeshConflictError(
                         f"recovered edge ({a},{b}) of {_owner_label(owner)} "
                         "vanished — bug"
                     )
-                (p, q), w = tj
-                pk = soup._ekey(p, q)
-                own = constrained_pairs.pop(pk, None)
-                own2 = second_owner.pop(pk, None)
-                soup.split_at_vertex(pk, w)
-                if own is not None:
-                    constrained_pairs[soup._ekey(p, w)] = own
-                    constrained_pairs[soup._ekey(w, q)] = own
-                    if own2 is not None:
-                        second_owner[soup._ekey(p, w)] = own2
-                        second_owner[soup._ekey(w, q)] = own2
                 continue
             wall = next((e for e in crossed if e in constrained_pairs), None)
             if wall is not None:
@@ -1082,27 +1468,68 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
     for u, v, owner in constraints:
         recover(u, v, owner)
 
+    # Flat slivers: recovery leaves zero-area triangles — a long chord
+    # spanning collinear vertices (a comb's finger tips) with the vertex
+    # between as its apex. Split each chord at its apex so the mesh holds
+    # no free chord over a vertex; the sliver drops out.
+    todo = list(soup.tris)
+    # A split normally removes its sliver, but the halves can leave a new
+    # one on the next collinear vertex of a row, so a triple does come
+    # back (measured: up to 4 times on the real boards) while the sliver
+    # walks the row. A triple back more often than the mesh has vertices
+    # is not walking: the split cannot take the vertex off the edge and
+    # would requeue it forever.
+    splits: dict[tuple[int, int, int], int] = {}
+    max_repeat = max(len(vlist), 64)
+    while todo:
+        tid = todo.pop()
+        tri = soup.tris.get(tid)
+        if tri is None:
+            continue
+        for k in range(3):
+            p, w, q = tri[k - 1], tri[k], tri[(k + 1) % 3]
+            if _on_segment(vlist, p, w, q):
+                split_key = (min(p, q), max(p, q), w)
+                splits[split_key] = splits.get(split_key, 0) + 1
+                if splits[split_key] > max_repeat:
+                    raise MeshConflictError(
+                        f"flat sliver on edge ({p},{q}) at vertex {w} survived "
+                        f"{max_repeat} splits — collinear vertices the mesh "
+                        "cannot separate"
+                    )
+                split_edge(p, q, w)
+                # the halves may still span further collinear vertices
+                todo += [t for v in (p, q, w) for t in soup.vertex_tris.get(v, ())]
+                break
+
     # Drop triangles outside the outline (concave boards); footprint
     # interiors stay — a courtyard is a constrained ring, not a hole.
     inside_poly = [(float(varr[v][0]), float(varr[v][1])) for v in ovids]
-    from precis.pcb.geom import point_in_polygon
 
     trows = np.asarray(list(soup.tris.values()))
     cents = varr[trows].mean(axis=1)
-    kept = [
-        tri
-        for tri, c in zip(trows, cents)
-        if point_in_polygon((float(c[0]), float(c[1])), inside_poly)
-    ]
+    # the batch form of geom.point_in_polygon — the same ray-cast edge
+    # rule and arithmetic order, vectorized over every centroid at once
+    inside = np.zeros(len(cents), dtype=bool)
+    for i in range(len(inside_poly)):
+        x1, y1 = inside_poly[i]
+        x2, y2 = inside_poly[(i + 1) % len(inside_poly)]
+        straddles = (y1 > cents[:, 1]) != (y2 > cents[:, 1])
+        if not straddles.any():
+            continue
+        with np.errstate(divide="ignore", invalid="ignore"):
+            x_at_y = (x2 - x1) * (cents[:, 1] - y1) / (y2 - y1) + x1
+        inside ^= straddles & (cents[:, 0] < x_at_y)
+    kept = [tri for tri, ok in zip(trows, inside) if ok]
     tris = np.asarray(
         [t if _orient(vlist, *t) > 0 else (t[0], t[2], t[1]) for t in kept],
         dtype=np.int32,
     ).reshape(-1, 3)
 
     ekey: dict[tuple[int, int], list[int]] = {}
-    for tid, tri in enumerate(tris):
+    for tid, tv in enumerate(tris):
         for k in range(3):
-            u, v = int(tri[k]), int(tri[(k + 1) % 3])
+            u, v = int(tv[k]), int(tv[(k + 1) % 3])
             ekey.setdefault((u, v) if u < v else (v, u), []).append(tid)
     edges = np.asarray(sorted(ekey), dtype=np.int32)
     edge_id = {e: i for i, e in enumerate(sorted(ekey))}
@@ -1111,13 +1538,13 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
             [
                 edge_id[
                     (
-                        min(tri[k], tri[(k + 1) % 3]),
-                        max(tri[k], tri[(k + 1) % 3]),
+                        min(tv[k], tv[(k + 1) % 3]),
+                        max(tv[k], tv[(k + 1) % 3]),
                     )
                 ]
                 for k in range(3)
             ]
-            for tri in tris
+            for tv in tris
         ],
         dtype=np.int32,
     )
@@ -1182,4 +1609,8 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
         conflicts=conflicts,
         outline_conflicts=outline_conflicts,
         zone_conflicts=zone_conflicts,
+        pads=pads,
+        zone_polys=tuple(zone_polys),
+        trace_mm=trace_mm,
+        clearance_mm=clearance_mm,
     )

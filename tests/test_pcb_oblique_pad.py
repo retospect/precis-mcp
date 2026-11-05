@@ -80,7 +80,7 @@ def _collisions(ir: Any, footprints: dict[str, Any], via: dict[str, Any]) -> lis
 def test_oblique_rect_pad_is_the_rotated_corners():
     ir, footprints = _ir_and_footprints()
     pad = _u0_pad(ir, footprints)
-    assert pad["shape"] == "polygon"
+    assert pad["shape"] == "rect"
     # Clockwise-from-north rotation (padplace._rotate_cw), computed here
     # independently of the production helper.
     c, s = math.cos(math.radians(_ROT)), math.sin(math.radians(_ROT))
@@ -89,14 +89,14 @@ def test_oblique_rect_pad_is_the_rotated_corners():
         for x in (-_W / 2, _W / 2)
         for y in (-_H / 2, _H / 2)
     }
-    got = {(round(x, 3), round(y, 3)) for x, y in pad["poly"]}
+    body = pcb_drc._copper_item_polygon({**pad, "ctype": "pad"})
+    assert body is not None
+    got = {(round(x, 3), round(y, 3)) for x, y in body.exterior.coords}
     assert got == expected
     # Not the unrotated rect's corners.
     assert (2.0, 0.5) not in got
-    # w/h are the ring's bbox (the polygon pad's informational extent).
-    bbox = (_W + _H) * math.sqrt(0.5)  # 45 degrees: both extents are equal
-    assert pad["w"] == pytest.approx(bbox, abs=1e-3)
-    assert pad["h"] == pytest.approx(bbox, abs=1e-3)
+    # Native dimensions stay in pad axes; geometry carries the rotation.
+    assert (pad["w"], pad["h"]) == pytest.approx((_W, _H))
 
 
 def test_axis_aligned_pad_is_untouched():
@@ -136,11 +136,13 @@ def test_copper_on_the_true_corner_the_unrotated_rect_misses_fails():
     assert _collisions(ir, footprints, _via(cx, cy)) != []
 
 
-def test_oblique_obround_is_a_rotated_stadium_polygon():
+def test_oblique_obround_is_a_rotated_native_stadium():
     ir, footprints = _ir_and_footprints("OVAL")
     pad = _u0_pad(ir, footprints)
-    assert pad["shape"] == "polygon"
-    ring = pad["poly"]
+    assert pad["shape"] == "obround"
+    body = pcb_drc._copper_item_polygon({**pad, "ctype": "pad"})
+    assert body is not None
+    ring = list(body.exterior.coords)
     # Every vertex lies on the stadium: within r of the long-axis segment,
     # and the extreme vertices reach the cap tips (2.0 from centre).
     c, s = math.cos(math.radians(_ROT)), math.sin(math.radians(_ROT))
@@ -154,7 +156,7 @@ def test_oblique_obround_is_a_rotated_stadium_polygon():
     assert max(math.hypot(x, y) for x, y in ring) == pytest.approx(_W / 2, abs=1e-3)
 
 
-def test_drc_polygon_branch_measures_the_ring():
+def test_drc_measures_the_rotated_native_land():
     ir, footprints = _ir_and_footprints()
     pad = _u0_pad(ir, footprints)
     geom = pcb_drc._copper_item_polygon({**pad, "ctype": "pad"})
@@ -173,13 +175,10 @@ def test_findings_wrapper_agrees():
 
 
 def test_annular_ring_judges_the_true_land_not_the_rotated_bbox() -> None:
-    """The polygon pad's w/h are its rotated bbox (~2.5 mm at 45° for a
-    4x1 land); the ring rule must keep reading the 1 mm narrow side, or an
-    oblique drilled pad passes a ring it does not have."""
+    """The native 4x1 land retains its narrow side for the ring rule."""
     ir, footprints = _ir_and_footprints()
     pad = _u0_pad(ir, footprints)
-    assert pad["land_min_mm"] == pytest.approx(1.0)
-    assert min(pad["w"], pad["h"]) > 2.0
+    assert min(pad["w"], pad["h"]) == pytest.approx(1.0)
     drilled = {**pad, "drill": 0.9}  # true ring 0.05 mm; bbox ring > 0.5 mm
     model: dict[str, Any] = {
         "layers": ["F.Cu", "B.Cu"],

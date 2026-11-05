@@ -1,5 +1,5 @@
 """Unit tests for scripts/coderef's structural retrieval verbs — deps, callers
-(alias refs), imports, importers. The script has no ``.py`` extension (it's an
+(alias refs), imports, importers, outline. The script has no ``.py`` extension (it's an
 executable, not a package module), so it's loaded by path — same convention as
 ``tests/test_worktree_path_guard.py``.
 """
@@ -281,6 +281,138 @@ class TestFind:
         rc = coderef.main(["coderef", "find", "target_func"])
         assert rc == 0
         assert "pkg.mod::target_func" in capsys.readouterr().out
+
+
+class TestOutline:
+    def test_module_imports_and_definition_tree_without_executing_source(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        (tmp_path / "a.py").write_text(
+            "raise RuntimeError('must not execute')\n"
+            "import unavailable_module as dependency\n"
+            "if TYPE_CHECKING:\n"
+            "    from typing import (\n"
+            "        Any as Value,\n"
+            "    )\n"
+            "class Widget(Base, metaclass=Factory):\n"
+            "    import class_local\n"
+            "    @decorate\n"
+            "    async def run(self, item: int = 3) -> str:\n"
+            "        import function_local\n"
+            "        def helper(value, /, *, enabled=True):\n"
+            "            import nested_local\n"
+            "            return 'hidden body'\n"
+            "        return helper(item)\n",
+            encoding="utf-8",
+        )
+        out = _run(capsys, coderef.cmd_outline, tmp_path, "a.py")
+        assert "import unavailable_module as dependency" in out
+        assert "from typing import (\n            Any as Value,\n        )" in out
+        assert "a.py::Widget  L7-L15  class Widget(Base, metaclass=Factory):" in out
+        assert (
+            "a.py::Widget.run  L9-L15  async def run(self, item: int=3) -> str:"
+        ) in out
+        assert "a.py::Widget.run.helper  L12-L14" in out
+        assert "def helper(value, /, *, enabled=True):" in out
+        assert "class_local" not in out
+        assert "function_local" not in out
+        assert "nested_local" not in out
+        assert "hidden body" not in out
+        assert "must not execute" not in out
+
+    @pytest.mark.parametrize("symbol", ["Container.run", "run", "Container::run"])
+    def test_symbol_source_is_exact_including_decorators_and_local_imports(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], symbol: str
+    ) -> None:
+        selected = (
+            "    @trace(\n"
+            "        'keep spacing',\n"
+            "    )\n"
+            "    @other\n"
+            "    async def run(self, value: str = 'unchanged') -> str:\n"
+            "        from local_only import helper  # preserve comment\n"
+            "        def nested():\n"
+            "            import nested_only\n"
+            "            return helper(value)\n"
+            "        return nested()\n"
+        )
+        (tmp_path / "a.py").write_text(
+            "import outside_only\nclass Container:\n"
+            + selected
+            + "\ndef sibling():\n    return 'outside source'\n",
+            encoding="utf-8",
+        )
+        out = _run(capsys, coderef.cmd_outline, tmp_path, "a.py", "--symbol", symbol)
+        assert out == selected
+
+    def test_nested_decorated_class_can_be_selected_by_suffix(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        selected = "    @decorate\n    class Inner:\n        import local_only\n"
+        (tmp_path / "a.py").write_text(
+            "def outer():\n" + selected + "    return Inner\n", encoding="utf-8"
+        )
+        out = _run(capsys, coderef.cmd_outline, tmp_path, "a.py", "--symbol", "Inner")
+        assert out == selected
+
+    def test_ambiguous_suffix_lists_qualified_choices(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        (tmp_path / "a.py").write_text(
+            "class First:\n    def run(self):\n        pass\n"
+            "class Second:\n    def run(self):\n        pass\n",
+            encoding="utf-8",
+        )
+        rc = coderef.cmd_outline(tmp_path, ["a.py", "--symbol", "run"])
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "ambiguous — qualify: First.run, Second.run" in out
+        assert "next: scripts/coderef outline a.py" in out
+
+    @pytest.mark.parametrize(
+        ("source", "tokens", "message"),
+        [
+            (None, ["missing.py"], "check the file path/encoding"),
+            ("def broken(:\n", ["a.py"], "fix the syntax, then retry outline"),
+            ("CONSTANT = 1\n", ["a.py", "--symbol", "CONSTANT"], "symbol not found"),
+            (None, ["../outside.py"], "inside this checkout"),
+        ],
+    )
+    def test_read_and_symbol_errors_have_next_steps(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        source: str | None,
+        tokens: list[str],
+        message: str,
+    ) -> None:
+        if source is not None:
+            (tmp_path / "a.py").write_text(source, encoding="utf-8")
+        assert coderef.cmd_outline(tmp_path, tokens) == 1
+        assert message in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        "tokens", [[], ["a.py", "--symbol"], ["a.py", "--unknown", "run"]]
+    )
+    def test_invalid_arguments_print_usage(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], tokens: list[str]
+    ) -> None:
+        assert coderef.cmd_outline(tmp_path, tokens) == 2
+        assert (
+            "usage: coderef outline <file.py> [--symbol Qual]"
+            in capsys.readouterr().out
+        )
+
+    def test_dispatches_through_main(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        (tmp_path / "a.py").write_text("def run(): pass\n", encoding="utf-8")
+        monkeypatch.setattr(coderef, "repo_root", lambda: tmp_path)
+        assert coderef.main(["coderef", "outline", "a.py"]) == 0
+        assert "a.py::run  L1-L1  def run():" in capsys.readouterr().out
 
 
 class TestGrimpVerbs:

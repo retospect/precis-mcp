@@ -111,6 +111,35 @@ def test_take_fast_forwards_agent_into_branch(
     assert record.read_text(encoding="utf-8") == f"worktree-agent-x {tip}\n"
 
 
+def test_take_preserves_synchronized_agent_merge_history(
+    repo: tuple[Path, Path, dict[str, str]],
+) -> None:
+    primary, feat, env = repo
+    agent = _agent(primary, env, "agent-preserve")
+    agent_branch = "worktree-agent-preserve"
+
+    _g(agent, env, "switch", "--detach", "main")
+    _g(agent, env, "switch", "-c", f"{agent_branch}-side")
+    _commit(agent, env, "side.txt")
+    _g(agent, env, "switch", agent_branch)
+    _g(agent, env, "merge", "--no-ff", "-q", f"{agent_branch}-side")
+
+    _commit(feat, env, "coordinator.txt")
+    _g(agent, env, "merge", "--no-ff", "-q", "feat")
+    expected_tip = _g(agent, env, "rev-parse", "HEAD")
+    assert len(_g(agent, env, "rev-list", "--merges", expected_tip).splitlines()) == 2
+
+    r = _take(feat, env, "agent-preserve")
+
+    assert r.returncode == 0, r.stderr
+    assert _g(feat, env, "rev-parse", "HEAD") == expected_tip
+    assert _g(feat, env, "rev-parse", agent_branch) == expected_tip
+    assert len(_g(feat, env, "rev-list", "--merges", "HEAD").splitlines()) == 2
+    record = Path(_g(feat, env, "rev-parse", "--git-path", "taken-agents"))
+    record = record if record.is_absolute() else feat / record
+    assert record.read_text(encoding="utf-8") == f"{agent_branch} {expected_tip}\n"
+
+
 def test_merged_caller_branch_warns(
     repo: tuple[Path, Path, dict[str, str]],
 ) -> None:

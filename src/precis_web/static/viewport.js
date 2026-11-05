@@ -109,16 +109,6 @@
     return false;
   };
 
-  // Whole-object fallbacks follow their artwork. Missing/empty layer metadata
-  // preserves legacy hits; a recorded layer must exist and be visible.
-  const hasVisibleLayer = (doc, layerList) => {
-    const layers = (layerList || '').split(/\s+/).filter(Boolean);
-    return !layers.length || layers.some((key) => {
-      const group = doc.getElementById(`layer-${key}`);
-      return group && !group.classList.contains('off');
-    });
-  };
-
   function Controller(svg, target) {
     this.svg = svg;
     this.target = target || svg;
@@ -408,5 +398,5 @@
     if (opts.active) activate(entry);
   }
 
-  return {attach, Controller, overHud, hasVisibleLayer, _parseBox: parseBox, _zoomAt: zoomAt, _toBox: toBox, _classifyWheel: classifyWheel, _VP_KEYS: VP_KEYS};
+  return {attach, Controller, overHud, _parseBox: parseBox, _zoomAt: zoomAt, _toBox: toBox, _classifyWheel: classifyWheel, _VP_KEYS: VP_KEYS};
 });

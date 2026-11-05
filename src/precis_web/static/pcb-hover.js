@@ -22,10 +22,6 @@
   document.body.appendChild(tip);
   const IDLE = 'x — y — mm';
 
-  const layerOff = (key) => {
-    const g = key && svgDoc.getElementById(`layer-${key}`);
-    return !!(g && g.classList.contains('off'));
-  };
   const catalogue = () => {
     const meta = svgDoc.getElementById('pcb-objects');
     try { return new Map(JSON.parse(meta.textContent).map((o) => [o.key, o])); }
@@ -41,10 +37,8 @@
     for (const n of els) {
       const d = n.dataset;
       if (!d) continue;
-      const layer = n.closest && n.closest('.layer');
-      if (layer && layer.classList.contains('off')) continue;
+      if (!window.PcbFacts.layerVisible(svgDoc, n)) continue;
       if (d.pcbObject) {
-        if (layerOff(d.pcbLayer)) continue;
         if (d.pcbKind === 'via' || d.pcbKind === 'silk') found[d.pcbKind] = found[d.pcbKind] || objects.get(d.pcbObject);
         continue;
       }

@@ -30,6 +30,9 @@ which straddles any fixed rounding key) and pass within :data:`TOL_MM`,
 the 0.5 um the writer's round-trip tests hold.
 
 Board fiducials are compared as ``FID<n>`` free pads (position, count).
+Pad verdicts compare the physical copper boundary (including board-frame
+angle and custom vertices), cutter diameter, hole centre and slot endpoints.
+Equal bounding boxes do not establish that a fabrication shape survived.
 
 Not compared: silk strokes and designator text, holes, the cached pour
 fill, and via spans (``VIA`` has no span field; the export already warns
@@ -286,6 +289,54 @@ def _got_pads(design: epro.Design, layers: list[str]) -> list[dict[str, Any]]:
     return _dedupe(out)
 
 
+def _pad_geometry_matches(
+    want: dict[str, Any], got: dict[str, Any], at: Callable[[Any, Any], _XY]
+) -> bool:
+    """Compare physical boundaries in one frame, then the drilled geometry.
+
+    Reuse DRC's copper body so a rotated rectangle or an asymmetric polygon
+    has the same meaning here as in the fabrication check. Hausdorff distance
+    tolerates quantisation and ring start/winding changes, while detecting
+    equal-size shapes with different angles or vertices.
+    """
+    from precis.pcb.drc import _copper_item_polygon
+
+    shifted = {**got, "ctype": "pad"}
+    shifted["x"], shifted["y"] = at(got["x"], got["y"])
+    if got.get("poly"):
+        shifted["poly"] = [at(x, y) for x, y in got["poly"]]
+    want_body = _copper_item_polygon({**want, "ctype": "pad"})
+    got_body = _copper_item_polygon(shifted)
+    if want_body is None or got_body is None:
+        return False
+    if want_body.boundary.hausdorff_distance(got_body.boundary) >= TOL_MM:
+        return False
+    if float(want.get("drill") or 0.0) > 0.0:
+        want_hole = (
+            float(want.get("drill_x", want["x"])),
+            float(want.get("drill_y", want["y"])),
+        )
+        got_hole = at(got.get("drill_x", got["x"]), got.get("drill_y", got["y"]))
+        if _dist(want_hole, got_hole) >= TOL_MM:
+            return False
+    want_slot, got_slot = want.get("slot"), got.get("slot")
+    if bool(want_slot) != bool(got_slot):
+        return False
+    if want_slot and got_slot:
+        w = [(float(x), float(y)) for x, y in want_slot]
+        g = [at(x, y) for x, y in got_slot]
+        if len(w) != 2 or len(g) != 2:
+            return False
+        # Endpoint order carries no machining meaning.
+        error = min(
+            max(_dist(w[0], g[0]), _dist(w[1], g[1])),
+            max(_dist(w[0], g[1]), _dist(w[1], g[0])),
+        )
+        if error >= TOL_MM:
+            return False
+    return True
+
+
 def _check_pads(
     v: Verdict,
     model: dict[str, Any],
@@ -324,13 +375,11 @@ def _check_pads(
         tag = f"{r}.{w.get('pin')}"
         if str(w.get("net") or "") != str(g.get("net") or ""):
             nets.append(f"{tag} {w.get('net') or '-'} -> {g.get('net') or '-'}")
-        size_w = sorted((float(w["w"]), float(w.get("h", w["w"]))))
-        size_g = sorted((float(g["w"]), float(g.get("h", g["w"]))))
         drill_w, drill_g = float(w.get("drill") or 0.0), float(g.get("drill") or 0.0)
         if (
             w.get("shape") != g.get("shape")
-            or max(abs(a - b) for a, b in zip(size_w, size_g, strict=True)) >= TOL_MM
             or abs(drill_w - drill_g) >= TOL_MM
+            or not _pad_geometry_matches(w, g, at)
         ):
             shapes.append(tag)
     extra = [f"{g['refdes']}.{g.get('pin')}" for b in pool.values() for g in b]

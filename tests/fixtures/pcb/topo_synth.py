@@ -10,6 +10,14 @@ corner parts are fixed so the mover's lock path is exercised too.
 ``autoplace_args()`` returns the ``instances``/``nets`` rows
 :func:`precis.pcb.place.autoplace` already consumes, from the SAME
 seed draw, so an equal-eval comparison is one board, not two.
+
+RULING (G2h review-3): this is a timing/determinism fixture, NOT a
+routability invariant. The net draw never excludes an already-netted
+pin, so a pin lands in 2-10 nets — a physical short by construction —
+and every pin is top-only: the honest chord model REFUSES what the
+earlier model crammed (180/180 nets "routed" at base, 83/180 at G2h).
+Tests may pin residual/timing numbers against it but must not assert
+a routed-net count.
 """
 
 from __future__ import annotations

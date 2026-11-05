@@ -13,11 +13,10 @@ segment, fiducial, net) is a :class:`SelectObject` carrying
 * ``hits`` — the shapes the viewer lays over the picture to catch clicks
   (``circle`` / ``rect`` / ``poly`` / ``stroke``), each tagged with the
   ``layer-<key>`` group of :func:`precis.pcb.gerber_view.render_fab_svg` it
-  belongs to. Instance bodies instead carry ``layers`` for their pad copper,
-  mask/paste apertures and anchored silkscreen: the fallback is clickable
-  while any of that artwork is visible. Hit geometry
-  is deliberately NOT part of the identity: full polygons would bloat every
-  chat context.
+  belongs to. Instance bodies repeat their pad bounds on each represented
+  copper or silkscreen layer so hiding all their artwork hides the fallback.
+  Hit geometry is deliberately NOT part of the identity: full polygons
+  would bloat every chat context.
 
 Keys never use SQL-returned list positions (copper/silk order is not
 guaranteed): vias sort before collisions get ordinals; the only ordinal keys
@@ -33,7 +32,11 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from shapely.geometry import LineString, Point, Polygon, box
+
 from precis.pcb import gerber, gerber_view
+from precis.pcb.clearance import body_of
+from precis.pcb.padplace import pad_world_rot
 
 #: Rendering/priority order of the kinds, bottom to top. The viewer paints its
 #: hit overlay in this order and the client picks the LAST kind present under
@@ -116,12 +119,37 @@ def _draw_points(draw: dict[str, Any]) -> list[tuple[float, float]]:
 
 
 def _pad_hit(pad: dict[str, Any], layer: str) -> dict[str, Any]:
+    """Native land as a viewer primitive, using the placed clearance body.
+
+    Stadiums stay round-cap strokes rather than inscribed polygons, so
+    selection covers the same curved land visible in the emitted film.
+    """
     x, y = float(pad["x"]), float(pad["y"])
     if pad.get("shape") == "polygon" and pad.get("poly"):
         return _poly_hit(layer, pad["poly"])
     w = float(pad.get("w") or 0.0)
     if pad.get("shape", "circle") == "circle":
         return {"shape": "circle", "layer": layer, "cx": x, "cy": y, "r": w / 2}
+    body = body_of({**pad, "ctype": "pad"})
+    if body is not None:
+        core = body.core
+        if isinstance(core, Point):
+            return {"shape": "circle", "layer": layer, "cx": x, "cy": y, "r": body.r}
+        if isinstance(core, LineString):
+            return _stroke_hit(layer, list(core.coords), body.r * 2)
+        if isinstance(core, Polygon):
+            if not core.equals(box(*core.bounds)):
+                return _poly_hit(layer, list(core.exterior.coords[:-1]))
+            if pad_world_rot(pad) % 180.0:
+                x0, y0, x1, y1 = body.bounds()
+                return {
+                    "shape": "rect",
+                    "layer": layer,
+                    "x": x0,
+                    "y": y0,
+                    "w": x1 - x0,
+                    "h": y1 - y0,
+                }
     h = float(pad.get("h", w))
     return {
         "shape": "rect",
@@ -134,10 +162,9 @@ def _pad_hit(pad: dict[str, Any], layer: str) -> dict[str, Any]:
 
 
 def _pad_extent(pad: dict[str, Any]) -> tuple[float, float, float, float]:
-    if pad.get("shape") == "polygon" and pad.get("poly"):
-        xs = [float(p[0]) for p in pad["poly"]]
-        ys = [float(p[1]) for p in pad["poly"]]
-        return min(xs), min(ys), max(xs), max(ys)
+    body = body_of({**pad, "ctype": "pad"})
+    if body is not None:
+        return body.bounds()
     x, y = float(pad["x"]), float(pad["y"])
     w = float(pad.get("w") or 0.0)
     h = w if pad.get("shape", "circle") == "circle" else float(pad.get("h", w))
@@ -207,7 +234,7 @@ def build(
     # -- pads -----------------------------------------------------------
     seen: dict[str, int] = {}
     boxes: dict[int, list[float]] = {}
-    instance_layers: dict[int, set[str]] = {}
+    inst_layers: dict[int, set[str]] = {}
     for pad in real_pads:
         refdes = str(pad.get("refdes") or "")
         pin = str(pad.get("pin") or "")
@@ -267,11 +294,8 @@ def build(
             )
         )
         if owner_id is not None:
-            instance_layers.setdefault(owner_id, set()).update(
-                gerber._pad_surface_layers(pad, layers)
-            )
             if lkey:
-                instance_layers.setdefault(owner_id, set()).add(lkey)
+                inst_layers.setdefault(owner_id, set()).add(lkey)
             x0, y0, x1, y1 = _pad_extent(pad)
             box = boxes.setdefault(owner_id, [math.inf, math.inf, -math.inf, -math.inf])
             box[:] = [
@@ -362,23 +386,23 @@ def build(
                 width = float(draw.get("width_mm", gerber.DEFAULT_SILK_WIDTH_MM))
                 groups[gkey].hits.append(_stroke_hit(silk_layer, pts, width))
     out["silk"].extend(groups[k] for k in sorted(groups))
-    for group in groups.values():
+    for group in out["silk"]:
         anchor = group.identity["anchor"]
         if group.hits and anchor["kind"] == "instance":
-            instance_layers.setdefault(anchor["instance_id"], set()).add(
+            inst_layers.setdefault(anchor["instance_id"], set()).add(
                 group.identity["layer"]
             )
     for iid, (x0, y0, x1, y1) in boxes.items():
-        inst_objs[iid].hits.append(
+        inst_objs[iid].hits.extend(
             {
                 "shape": "rect",
-                "layer": "",
-                "layers": sorted(instance_layers.get(iid, set())),
+                "layer": layer,
                 "x": x0,
                 "y": y0,
                 "w": x1 - x0,
                 "h": y1 - y0,
             }
+            for layer in sorted(inst_layers.get(iid, set()))
         )
 
     # -- outline --------------------------------------------------------

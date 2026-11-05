@@ -37,6 +37,9 @@ output largely as-is once it exists::
         {"layer": "F.Cu", "net": "3V3",
          "shape": "circle"|"rect"|"obround"|"polygon",
          "x": .., "y": .., "w": .., "h": ..,   # h ignored for "circle";
+         # Oblique rect/obround pads retain authored w/h and CW board angle
+         # in oblique_world_rot (fallback oblique_rot): regions/strokes
+         # preserve the rotation without a rotated aperture extension.
          # w/h are an informational bbox only for "polygon" (the real
          # shape is "poly" below) -- kept so a courtyard/DRC bbox
          # fallback still has something to read.
@@ -111,6 +114,9 @@ import zipfile
 from typing import Any
 
 from shapely.geometry import Polygon as _ShapelyPolygon
+
+from precis.pcb.padplace import pad_world_rot
+from precis.pcb.pose import rotate_cw
 
 # RS-274X format spec: 4 integer digits, 6 decimal digits, leading zeros
 # omitted, absolute coordinates — %FSLAX46Y46*%. Every coordinate is an
@@ -244,14 +250,48 @@ def _emit_flash(
 
 
 def _emit_pad(pad: dict[str, Any], apertures: _ApertureTable, body: list[str]) -> None:
-    """One pad, either an aperture flash (circle/rect/obround,
-    :func:`_emit_flash`) or, for a ``shape: "polygon"`` pad (authored
-    copper — pcb-ewod-multitile Slice 1), a ``G36``/``G37`` region fill
-    off its ``poly`` vertex ring — region fill over an aperture macro
-    per the backlog's own open-questions call (simplest, and the writer
-    already owns this primitive for pours/silk regions)."""
+    """Flash axis-aligned lands; preserve oblique rectangles as regions
+    and obrounds as round strokes. Polygon pads use their world vertex
+    ring. Regions avoid a second aperture-macro implementation, and strokes
+    retain exact circular obround ends without polygonization. All films
+    use this path, so mask and paste keep the copper's orientation."""
     if _is_polygon_pad(pad):
         _emit_region_ring([(float(p[0]), float(p[1])) for p in pad["poly"]], body)
+        return
+    shape = pad.get("shape", "circle")
+    rot = pad_world_rot(pad)
+    if shape in ("rect", "obround") and rot % 180.0:
+        x, y = float(pad["x"]), float(pad["y"])
+        w, h = float(pad["w"]), float(pad.get("h", pad["w"]))
+
+        def world(px: float, py: float) -> tuple[float, float]:
+            rx, ry = rotate_cw(px, py, rot)
+            return x + rx, y + ry
+
+        if shape == "rect":
+            _emit_region_ring(
+                [
+                    world(px, py)
+                    for px, py in (
+                        (-w / 2, -h / 2),
+                        (w / 2, -h / 2),
+                        (w / 2, h / 2),
+                        (-w / 2, h / 2),
+                    )
+                ],
+                body,
+            )
+        elif w == h:
+            _emit_flash({**pad, "shape": "circle"}, apertures, body)
+        else:
+            # An obround is exactly a round-aperture stroke, including
+            # its end caps. No polygon approximation or aperture rotation.
+            dx, dy = ((w - h) / 2, 0.0) if w > h else (0.0, (h - w) / 2)
+            _emit_stroke(
+                _polyline_draw([world(-dx, -dy), world(dx, dy)], width_mm=min(w, h)),
+                apertures,
+                body,
+            )
         return
     _emit_flash(pad, apertures, body)
 
@@ -447,25 +487,6 @@ def copper_gerber(model: dict[str, Any], layer: str) -> str:
     return _assemble(f"Copper,L{index + 1},{pos}", apertures, body)
 
 
-def _pad_surface_layers(pad: dict[str, Any], layers: list[str]) -> list[str]:
-    """Mask/paste artwork keys shared by export and instance selection.
-
-    Only outer-layer pads contribute; covered pads have no mask opening,
-    and drilled pads or explicit ``paste: none`` have no stencil aperture.
-    """
-    if not layers:
-        return []
-    result = []
-    for prefix, layer in (("F", layers[0]), ("B", layers[-1])):
-        if pad.get("layer") != layer:
-            continue
-        if pad.get("mask") != "covered":
-            result.append(f"{prefix}_Mask")
-        if not pad.get("drill") and pad.get("paste") != "none":
-            result.append(f"{prefix}_Paste")
-    return result
-
-
 def soldermask_gerber(model: dict[str, Any], side: str) -> str:
     """Top/bottom soldermask openings — pads on the corresponding outer
     copper layer, each expanded by the board's own soldermask expansion.
@@ -488,12 +509,12 @@ def soldermask_gerber(model: dict[str, Any], side: str) -> str:
     openings with a mask dam between every neighbour — see that key's own
     handling below)."""
     layers: list[str] = model["layers"]
-    key = "F_Mask" if side == "top" else "B_Mask"
+    layer = layers[0] if side == "top" else layers[-1]
     expansion = float(model.get("soldermask_expansion_mm", SOLDERMASK_EXPANSION_MM))
     apertures = _ApertureTable()
     body: list[str] = []
     for pad in model.get("pads", []):
-        if key in _pad_surface_layers(pad, layers):
+        if pad.get("layer") == layer and pad.get("mask") != "covered":
             _emit_pad(_expand_pad(pad, expansion), apertures, body)
     for region in model.get("mask_open_regions") or []:
         if region.get("side") != side:
@@ -586,12 +607,17 @@ def solderpaste_gerber(model: dict[str, Any], side: str) -> str:
     the honest default and the reduction belongs with the stencil order.
     """
     layers: list[str] = model["layers"]
-    key = "F_Paste" if side == "top" else "B_Paste"
+    layer = layers[0] if side == "top" else layers[-1]
     apertures = _ApertureTable()
     body: list[str] = []
     for pad in model.get("pads", []):
-        if key in _pad_surface_layers(pad, layers):
-            _emit_pad(pad, apertures, body)
+        if pad.get("layer") != layer:
+            continue
+        if pad.get("drill"):
+            continue
+        if pad.get("paste") == "none":
+            continue
+        _emit_pad(pad, apertures, body)
     return _assemble(
         f"SolderPaste,{'Top' if side == 'top' else 'Bot'}", apertures, body
     )

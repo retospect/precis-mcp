@@ -8,9 +8,11 @@ reference mesh stays valid. This module lands that engine ahead of
 ``corridor.py``: the corridor driver (demand > capacity per mesh edge
 per layer) needs slice-2b's ``wires.py`` edge sequences, which are still
 in flight; the driver wired here is the other hard placement constraint
-the same LP solves — same-side courtyard overlaps and part-on-zone
-intrusions, each linearised as a separation requirement along its
-minimum-translation axis (exact under pure translation: a convex ring's
+the same LP solves — same-side courtyard pairs short of
+``SilkRoom.pair_req_mm`` (topo-silk-spacing: the silk-outline gap, not
+mere non-overlap) and part-on-zone intrusions, each linearised as a
+separation requirement along its minimum-translation axis (exact under
+pure translation: a convex ring's
 projection shifts by n·δ). :func:`~.legalize.legalize_pose` stays the
 exact mop-up behind it for anything the linearisation declines
 (``placer.topo_place`` runs shove → legalize).
@@ -62,6 +64,7 @@ from scipy.sparse import vstack as sparse_vstack
 from shapely.geometry import Point, Polygon
 from shapely.ops import nearest_points
 
+from precis.pcb.clearance import FAB_QUANTUM_MM
 from precis.pcb.rules import NetRules
 from precis.pcb.topoplace.contain import (
     board_polygon,
@@ -78,6 +81,7 @@ from precis.pcb.topoplace.legalize import (
     _pin_net_names,
     _via_zone_exempt,
     _zone_blocks_part,
+    legalize_pose,
 )
 from precis.pcb.topoplace.mesh import MeshConflictError, TopoMesh, build_mesh
 from precis.pcb.topoplace.proxy import (
@@ -85,6 +89,8 @@ from precis.pcb.topoplace.proxy import (
     _body_geom,
     _ring_geom,
     local_to_world,
+    one_body_pairs,
+    rigid_pairs,
     through_hole_parts,
     zone_world_circle,
     zone_world_ring,
@@ -144,6 +150,10 @@ class ShoveResult:
     min_tri_area_mm2: float = math.inf
     reason: str = ""
     remaining: tuple[tuple[int, int, float], ...] = field(default_factory=tuple)
+    #: Exempt-but-reported tight pairs — ``(a, b, shortfall_mm,
+    #: reason)`` rows; ``"fixed-fixed"`` authored adjacency is the only
+    #: reason so far and never counts against ``resolved``.
+    noted: tuple[tuple[int, int, float, str], ...] = field(default_factory=tuple)
     mesh_errors: int = 0
     mesh_error: str = ""
 
@@ -546,10 +556,16 @@ def shove_pose(
 
     lo = d.outline.min(axis=0) if len(d.outline) >= 3 else pose[:, :2].min(axis=0)
     hi = d.outline.max(axis=0) if len(d.outline) >= 3 else pose[:, :2].max(axis=0)
-    cx_lo, cx_hi = _legal_xy(d, np.asarray(lo, float), np.asarray(hi, float))
+    cx_lo, cx_hi = _legal_xy(
+        d,
+        np.asarray(lo, float) + FAB_QUANTUM_MM,
+        np.asarray(hi, float) - FAB_QUANTUM_MM,
+    )
     # the box above is the outline's BBOX — the polygon itself holds
     # every step (a concave outline's bbox is partly off the board)
     board = board_polygon(d)
+    if board is not None:
+        board = board.buffer(-FAB_QUANTUM_MM)
 
     n_zones = sum(1 for z in d.zones if len(z.ring) >= 4)
     part_nets = [_part_nets(d, i) for i in range(n)] if n_zones else []
@@ -630,6 +646,9 @@ def shove_pose(
         # n̂·(δ_b − δ_a) ≥ s ⇔ n̂·δ_a − n̂·δ_b ≤ −s. Zone vs part: n̂
         # pushes the part off the (immovable) zone — n̂·δ_i ≥ s ⇔
         # −n̂·δ_i ≤ −s. Fixed parts contribute no variable and drop out.
+        req = float(d.silk.pair_req_mm) + FAB_QUANTUM_MM
+        pair_rigid = rigid_pairs(d)
+        pair_gap_free = one_body_pairs(d)
         wants: list[tuple[list[tuple[int, np.ndarray]], float]] = []
         lenses: list[Any] = []  # conflict intersections — guard-exempt tris
         for i in range(n):
@@ -641,22 +660,57 @@ def shove_pose(
                 gj = geoms[j]
                 if gj is None or (sides[i] != sides[j] and not (th[i] or th[j])):
                     continue
+                pair = (i, j)
+                if pair in pair_rigid:
+                    continue  # authored rigid shape — no pair rule at all
+                # a hard-measure pair is exempt from the gap only —
+                # courtyards may touch, never overlap (round-3 ruling)
+                ri = 0.0 if pair in pair_gap_free else req
                 bx0, by0, bx1, by1 = gj.bounds
-                if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
-                    continue
-                if float(gi.intersection(gj).area) <= _EPS:
+                if x1 + ri < bx0 or bx1 + ri < x0 or y1 + ri < by0 or by1 + ri < y0:
                     continue
                 if var_of[i] < 0 and var_of[j] < 0:
-                    continue  # both fixed — the final mesh reports it
+                    continue  # both fixed — authored adjacency, ``noted`` keeps it
                 if len(d.group_of) and 0 <= int(d.group_of[i]) == int(d.group_of[j]):
                     continue  # rigid mates share one variable — authored shape
+                dist = float(gi.distance(gj))
+                if dist > _EPS:
+                    # Separated but under the pair requirement — the LP
+                    # demands the shortfall along the shortest-gap axis.
+                    short = ri - dist
+                    if short <= _EPS:
+                        continue
+                    pa, pb = nearest_points(gi, gj)
+                    axis = np.asarray([pb.x - pa.x, pb.y - pa.y], dtype=np.float64)
+                    axis = axis / float(np.hypot(*axis))
+                    wants.append(([(i, axis), (j, -axis)], -(short + _CLR_MM)))
+                    continue
+                if float(gi.intersection(gj).area) <= _EPS:
+                    # Touching but not overlapping — still short of the
+                    # requirement; centroid direction gives the push. A
+                    # gap-exempt pair (ri 0) is legal right here.
+                    if ri <= _EPS:
+                        continue
+                    ax_c = np.asarray(gj.centroid.coords[0]) - np.asarray(
+                        gi.centroid.coords[0]
+                    )
+                    ax_len = float(np.hypot(*ax_c))
+                    if ax_len <= 1e-9:
+                        continue
+                    wants.append(
+                        (
+                            [(i, ax_c / ax_len), (j, -ax_c / ax_len)],
+                            -(ri + _CLR_MM),
+                        )
+                    )
+                    continue
                 vec, depth = _mtv(
                     np.asarray(gi.exterior.coords),
                     np.asarray(gj.exterior.coords),
                 )
                 if depth > 0.0:
                     axis = vec / depth
-                    wants.append(([(i, axis), (j, -axis)], -(depth + _CLR_MM)))
+                    wants.append(([(i, axis), (j, -axis)], -(depth + ri + _CLR_MM)))
                     lenses.append(gi.intersection(gj))
             if zone_geoms:
                 for z_i, zg in zone_geoms:
@@ -665,7 +719,8 @@ def shove_pose(
                         continue
                     if not _zone_blocks_part(z, bool(sides[i]), bool(th[i]), n_layers):
                         continue
-                    bx0, by0, bx1, by1 = zg.bounds
+                    barrier = zg.buffer(FAB_QUANTUM_MM)
+                    bx0, by0, bx1, by1 = barrier.bounds
                     if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
                         continue
                     gi_z = body_geoms[i] if z.kind == "mounting_hole" else gi
@@ -684,9 +739,9 @@ def shove_pose(
                         # (the taz case) is not a violation.
                         cpt = Point(circ[0], circ[1])
                         dist = float(gi_z.distance(cpt))
-                        if dist >= circ[2]:
+                        if dist >= circ[2] + FAB_QUANTUM_MM:
                             continue
-                    elif float(gi_z.intersection(zg).area) <= _EPS:
+                    elif float(gi_z.distance(zg)) >= FAB_QUANTUM_MM:
                         continue
                     if z.kind == "fixed_via":
                         if pin_names is None:
@@ -697,7 +752,7 @@ def shove_pose(
                             d, pose[i], i, z, zg, pin_names, pads_of[i]
                         ):
                             continue
-                    elif z.net and z.net in part_nets[i]:
+                    elif z.kind == "fixed_copper" and z.net and z.net in part_nets[i]:
                         continue
                     if var_of[i] < 0:
                         continue
@@ -706,7 +761,7 @@ def shove_pose(
                         # centre by the penetration depth. A centre
                         # inside the body has no "away" — the ring's
                         # polygon MTV gives the direction then.
-                        depth = circ[2] - dist
+                        depth = circ[2] + FAB_QUANTUM_MM - dist
                         if dist > _EPS:
                             near = nearest_points(gi_z, cpt)[0]
                             axis = (
@@ -721,7 +776,7 @@ def shove_pose(
                         wants.append(([(i, -axis)], -(depth + _CLR_MM)))
                         continue
                     vec, depth = _mtv(
-                        np.asarray(zg.exterior.coords),
+                        np.asarray(barrier.exterior.coords),
                         np.asarray(gi_z.exterior.coords),
                     )
                     if depth > 0.0:
@@ -899,39 +954,16 @@ def shove_pose(
     # Final report from a fresh mesh at the shoved pose — pair, zone and
     # outline residuals land on ``remaining`` in legalize's encoding.
     remaining: list[tuple[int, int, float]] = []
+    noted: tuple[tuple[int, int, float, str], ...] = ()
     end_built = False
     try:
-        end = build_mesh(d, pose)
+        build_mesh(d, pose)
         end_built = True
-        for cf in end.conflicts:
-            if cf.same_side:
-                remaining.append((int(cf.a), int(cf.b), float(cf.area_mm2)))
-        sides = pose[:, 3] >= 0.5
-        th = through_hole_parts(d)
-        pads_fin: dict[int, list[tuple[int, Any]]] = {}
-        for part, z_i, area in end.zone_conflicts:
-            z = d.zones[z_i]
-            if z.part == part:
-                continue
-            if not _zone_blocks_part(z, bool(sides[part]), bool(th[part]), n_layers):
-                continue
-            if z.kind == "fixed_via":
-                if pin_names is None:
-                    pin_names = _pin_net_names(d)
-                zg = Polygon(
-                    np.asarray(zone_world_ring(d, z, pose), dtype=np.float64)[:-1]
-                )
-                if part not in pads_fin:
-                    pads_fin[part] = _pad_polys(d, pose[part], part)
-                if _via_zone_exempt(
-                    d, pose[part], part, z, zg, pin_names, pads_fin[part]
-                ):
-                    continue
-            elif z.net and part_nets and z.net in part_nets[part]:
-                continue
-            remaining.append((int(part), n + int(z_i), float(area)))
-        for part, area in end.outline_conflicts:
-            remaining.append((int(part), -1, float(area)))
+        # Audit with the same reserved pair/zone/outline checks as legalize.
+        # Zero rounds reports the exact pose without moving any part.
+        audit = legalize_pose(d, pose, rounds=0)
+        remaining.extend(audit.remaining)
+        noted = audit.noted
     except MeshConflictError as exc:
         mesh_errors += 1
         mesh_error = mesh_error or str(exc)
@@ -947,6 +979,7 @@ def shove_pose(
         min_tri_area_mm2=min_tri_area,
         reason=reason,
         remaining=tuple(sorted(remaining)),
+        noted=noted,
         mesh_errors=mesh_errors,
         mesh_error=mesh_error,
     )

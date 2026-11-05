@@ -6,7 +6,7 @@ rotate clockwise, translate) — deliberately not the production
 ``precis.pcb.pose`` helper, so a drift in the seam is caught, not echoed.
 Each production path that maps footprint-local geometry to world is checked
 against it: fab pads/drills (``padplace``), IR pins, ``pads_for_ir`` (pad
-centres, polygon rings, oblique rings), the router's polygon claim, the DRC
+centres, polygon rings, analytic oblique lands), the router's polygon claim, the DRC
 copper polygon, and the courtyard.
 """
 
@@ -202,8 +202,36 @@ def test_every_footprint_element_follows_the_reference_matrix(x, y, rot, bottom)
             f"DRC copper polygon missing vertex {w}"
         )
 
-    assert by_pin["2"]["shape"] == "polygon", "oblique pad should be a ring"
-    _ring_close([tuple(v) for v in by_pin["2"]["poly"]], obl_ring, "oblique ring")
+    oblique = by_pin["2"]
+    assert oblique["shape"] == "rect", "retain the native analytic rectangle"
+    assert "poly" not in oblique
+    assert (oblique["w"], oblique["h"]) == pytest.approx((_OBL["w"], _OBL["h"]))
+    assert oblique["pad_rot_deg"] == pytest.approx(_OBL["rot"])
+    expected_angle = (rot - _OBL["rot"] if bottom else rot + _OBL["rot"]) % 360.0
+    assert oblique["oblique_world_rot"] == pytest.approx(expected_angle)
+    assert oblique["layer"] == ("B.Cu" if bottom else "F.Cu")
+
+    # Reconstruct the physical corners from emitted analytic fields alone;
+    # the expected ring above uses the raw footprint and independent matrix.
+    angle = math.radians(oblique["oblique_world_rot"])
+    half_w, half_h = oblique["w"] / 2.0, oblique["h"] / 2.0
+    actual_ring = [
+        (
+            oblique["x"] + u * math.cos(angle) + v * math.sin(angle),
+            oblique["y"] - u * math.sin(angle) + v * math.cos(angle),
+        )
+        for u, v in (
+            (-half_w, -half_h),
+            (half_w, -half_h),
+            (half_w, half_h),
+            (-half_w, half_h),
+        )
+    ]
+    if bottom:
+        # The authored ring is mirrored; the analytic rectangle has no
+        # winding. Align its canonical corners with that reflected order.
+        actual_ring = [actual_ring[i] for i in (1, 0, 3, 2)]
+    _ring_close(actual_ring, obl_ring, "analytic oblique rectangle")
 
     # 2b. Footprint holes: build_ir derives one MountingHole per instance
     # hole at the instance's pose, owned by the part.

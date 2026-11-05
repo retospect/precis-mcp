@@ -43,7 +43,11 @@ RUN_SCHEMA = "precis.topo-run/4"
 #: output changes for equal inputs (the route job's ``CODE_VERSION``
 #: convention — a stored run must name the code that made it).
 #: 2 — the shove LP runs before legalize (gr515107, phase 3a).
-CODE_VERSION = 2
+#: 3 — revalidate verdicts after corrected pad, hole and silk geometry.
+#: 4 — offset drill/slot contacts and siting; analytic pad ring verdicts.
+#: 5 — native analytic fabrication lands and single drill quantization.
+#: 6 — native pad pours, slot caps and analytic electrical contact.
+CODE_VERSION = 6
 
 _JSON_FILES = ("manifest.json", "elites.json", "pairs.json", "pins.json")
 _TEXT_FILES = ("summary.txt", "placement.svg")
@@ -123,6 +127,7 @@ def manifest(
                     "rounds": int(result.legalize.rounds),
                     "moved_mm": round(float(result.legalize.moved_mm), 4),
                     "remaining": len(result.legalize.remaining),
+                    "noted": len(getattr(result.legalize, "noted", ())),
                 }
                 if result.legalize is not None
                 else None
@@ -133,6 +138,7 @@ def manifest(
                     "rounds": int(result.shove.rounds),
                     "moved_mm": round(float(result.shove.moved_mm), 4),
                     "remaining": len(result.shove.remaining),
+                    "noted": len(getattr(result.shove, "noted", ())),
                     "reason": str(result.shove.reason),
                     "mesh_errors": int(result.shove.mesh_errors),
                     "mesh_error": str(result.shove.mesh_error),

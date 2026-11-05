@@ -598,7 +598,7 @@ def test_check_annular_ring_slotted_pad_measures_the_lateral_ring():
     # The taz15-blank shape: pad 1.6x1.1, a 0.6mm cutter swept 0.5mm
     # end-centre to end-centre along the pad's SHORT axis — the slot
     # stadium reaches both pad ends (end ring 0.000mm by design) while
-    # the lateral ring is a generous (1.6-0.6)/2 = 0.5mm. Quiet.
+    # the lateral copper at the curved cap still clears the floor. Quiet.
     open_slot = {
         "net": "GND",
         "shape": "obround",
@@ -626,7 +626,9 @@ def test_check_annular_ring_slotted_pad_measures_the_lateral_ring():
         "slot": [[-0.45, 10.0], [0.45, 10.0]],
     }
     # Same obround shape as the first, but the cutter is too wide for
-    # the copper beside it: (1.6-1.4)/2 = 0.1mm < jlc_min.
+    # the copper beside it. At the slot end-centre, the land's actual cap
+    # leaves 0.25 + sqrt(0.55**2 - 0.2**2) - 0.7 = 0.062348mm.
+    # Its enclosing rectangle would incorrectly report 0.1mm.
     too_wide = {
         "net": "GND",
         "shape": "obround",
@@ -643,7 +645,8 @@ def test_check_annular_ring_slotted_pad_measures_the_lateral_ring():
     assert len(findings) == 1
     assert findings[0].severity == "error"
     assert findings[0].objects[0]["x"] == 10.0
-    assert findings[0].margin_mm == pytest.approx(0.1 - jlc_min, abs=1e-4)
+    cap_ring = 0.25 + math.sqrt(0.55**2 - 0.2**2) - 0.7
+    assert findings[0].margin_mm == pytest.approx(cap_ring - jlc_min, abs=1e-10)
 
 
 def test_check_annular_ring_fires_on_a_drilled_pad_hole():
@@ -2042,6 +2045,92 @@ def test_courtyard_overlap_grades_on_the_land_hulls_when_the_offset_is_known():
     u2_only = [p for p in pads if p["refdes"] == "U2"]
     findings = drc.check_courtyard_overlap(hole_pair, clearance_mm=0.4, pads=u2_only)
     assert [f.severity for f in findings] == ["error"]
+
+
+def test_courtyard_overlap_with_a_modelled_body_grades_on_occupied_area():
+    """Round-2 ruling (Reto 2026-11-02): "No parts can be inside another
+    part's courtyard." Once a body is MODELLED, the over-approximation
+    argument stops applying to that pair: the courtyard overlap is
+    graded against the zero-clearance occupied unions (pads + authored
+    body), and an occupied region inside the other's courtyard is a
+    proven collision — an ERROR, not a warn. A pair whose overlap lives
+    only in the two routing margins keeps the warn. Pairs with no
+    modelled body keep the legacy land-hull grading; one authored rigid
+    assembly is exempt outright (the placer's ``rigid_pairs`` ruling —
+    a hard-measure carry is NOT one of these and may never overlap)."""
+    # 2x2 courtyards at 0 and 1.5: overlap is the band x in [0.5, 1.0].
+    pair = [("U1", _square(0.0, 0.0)), ("U2", _square(1.5, 0.0))]
+
+    # Both occupied regions reach into the band — U1's body by 0.1mm,
+    # U2's pads by 0.1mm: each part physically inside the other's
+    # courtyard. With either side bodied, that is the proven collision.
+    bodies_touch = [
+        ("U1", _square(0.0, 0.0, half=0.6)),
+        ("U2", _square(1.5, 0.0, half=0.6)),
+    ]
+    findings = drc.check_courtyard_overlap(
+        pair, clearance_mm=0.4, bodies=bodies_touch, bodied={"U1"}
+    )
+    assert [f.severity for f in findings] == ["error"]
+    assert "occupied area sits inside" in findings[0].detail
+
+    # The occupied unions clear by 0.6mm — the overlap is entirely the
+    # two 0.4mm routing margins, so the pair stays a warn naming the
+    # REAL occupied gap, not the hull's.
+    bodies_clear = [
+        ("U1", _square(0.0, 0.0, half=0.4)),
+        ("U2", _square(1.5, 0.0, half=0.5)),
+    ]
+    findings = drc.check_courtyard_overlap(
+        pair, clearance_mm=0.4, bodies=bodies_clear, bodied={"U1"}
+    )
+    assert [f.severity for f in findings] == ["warn"]
+    assert "occupied areas (pads and bodies) clear by 0.600mm" in findings[0].detail
+
+    # Bodied on the OTHER side grades identically — the flag names
+    # whose union carries a real body, not which seat it sits in.
+    findings = drc.check_courtyard_overlap(
+        pair, clearance_mm=0.4, bodies=bodies_touch, bodied={"U2"}
+    )
+    assert [f.severity for f in findings] == ["error"]
+
+    # Both inputs are needed: ``bodied`` alone has nothing to measure,
+    # ``bodies`` alone says nothing about whose union carries a body —
+    # either missing, the pair keeps the land-hull warn it had before.
+    for kw in ({"bodied": {"U1"}}, {"bodies": bodies_touch}):
+        findings = drc.check_courtyard_overlap(pair, clearance_mm=0.4, **kw)
+        assert [f.severity for f in findings] == ["warn"]
+        assert "clear by 0.300mm" in findings[0].detail
+
+    # A bodied pair with no occupied geometry for one side (a refdes
+    # absent from ``bodies``) cannot be body-graded — legacy path too.
+    findings = drc.check_courtyard_overlap(
+        pair, clearance_mm=0.4, bodies=bodies_touch[:1], bodied={"U1"}
+    )
+    assert [f.severity for f in findings] == ["warn"]
+    assert "clear by 0.300mm" in findings[0].detail
+
+    # No body in the pair at all: same warn, even with bodies supplied.
+    findings = drc.check_courtyard_overlap(
+        pair, clearance_mm=0.4, bodies=bodies_touch, bodied=set()
+    )
+    assert [f.severity for f in findings] == ["warn"]
+    assert "clear by 0.300mm" in findings[0].detail
+
+    # One authored rigid assembly: the shape is authored, no pair rule
+    # applies at all — skipped, not downgraded (and unordered: the pair
+    # reads the same either way it was authored).
+    for rigid in ([("U1", "U2")], [("U2", "U1")]):
+        assert (
+            drc.check_courtyard_overlap(
+                pair,
+                clearance_mm=0.4,
+                bodies=bodies_touch,
+                bodied={"U1"},
+                rigid_pairs=rigid,
+            )
+            == []
+        )
 
 
 def test_run_placement_drc_threads_the_courtyard_offset():

@@ -305,15 +305,35 @@ def test_instance_hit_is_the_pad_bbox_and_identity_is_the_given_one() -> None:
     objects = selectables.build(_model(), **_rows(), identities=given)
     inst = next(o for o in objects if o.identity["key"] == "instance:1")
     assert inst.identity == given[0]
-    (hit,) = inst.hits
-    assert hit["layer"] == "" and hit["shape"] == "rect"
-    assert hit["layers"] == ["F_Cu", "F_Mask", "F_Paste", "F_Silkscreen"]
-    assert (hit["x"], hit["y"], hit["w"], hit["h"]) == pytest.approx(
-        (1.7, 1.6, 1.6, 0.8)
-    )
+    assert {hit["layer"] for hit in inst.hits} == {"F_Cu", "F_Silkscreen"}
+    for hit in inst.hits:
+        assert hit["shape"] == "rect"
+        assert (hit["x"], hit["y"], hit["w"], hit["h"]) == pytest.approx(
+            (1.7, 1.6, 1.6, 0.8)
+        )
 
 
-def test_instance_layers_follow_its_artwork_without_other_parts_or_empty_silk() -> None:
+def test_instance_fallback_layers_follow_bottom_and_through_hole_artwork() -> None:
+    """gr565256: no layerless fallback survives hiding all represented art."""
+    model = _model()
+    model["pads"][2]["layer"] = "B.Cu"
+    model["pads"].extend({**model["pads"][3], "layer": layer} for layer in _LAYERS[1:])
+    model["silkscreen"]["bottom"].append(_draw("outline", "R2", 20.0))
+    got = _build(model)
+    assert {h["layer"] for h in got["instance:2"].hits} == {
+        "B_Cu",
+        "B_Silkscreen",
+    }
+    assert {h["layer"] for h in got["instance:3"].hits} == {
+        "F_Cu",
+        "In1_Cu",
+        "B_Cu",
+    }
+
+
+def test_instance_hit_layers_ignore_other_parts_and_refdes_only_silk() -> None:
+    """gr565256: silk drawn for another part, or a bare refdes label, must not
+    keep an instance selectable once its own artwork layers are hidden."""
     model = _model()
     model["pads"][1]["layer"] = "B.Cu"
     model["pads"][2]["layer"] = "B.Cu"
@@ -321,87 +341,14 @@ def test_instance_layers_follow_its_artwork_without_other_parts_or_empty_silk() 
         [_draw("outline", "R2", 20.0), {"role": "refdes", "refdes": "R1"}]
     )
     got = _build(model)
-    assert got["instance:1"].hits[0]["layers"] == [
+    assert {h["layer"] for h in got["instance:1"].hits} == {
         "B_Cu",
-        "B_Mask",
-        "B_Paste",
         "F_Cu",
-        "F_Mask",
-        "F_Paste",
         "F_Silkscreen",
-    ]
-    assert got["instance:2"].hits[0]["layers"] == [
-        "B_Cu",
-        "B_Mask",
-        "B_Paste",
-        "B_Silkscreen",
-    ]
-    assert got["instance:3"].hits[0]["layers"] == ["F_Cu", "F_Mask", "F_Paste"]
+    }
+    assert {h["layer"] for h in got["instance:2"].hits} == {"B_Cu", "B_Silkscreen"}
+    assert {h["layer"] for h in got["instance:3"].hits} == {"F_Cu"}
     assert got["pad:1:1#2"].hits[0]["layer"] == "B_Cu"
-    assert "layers" not in got["pad:1:1#2"].hits[0]
-
-
-@pytest.mark.parametrize(
-    ("layer", "flags", "expected"),
-    [
-        ("F.Cu", {}, ["F_Cu", "F_Mask", "F_Paste"]),
-        ("B.Cu", {}, ["B_Cu", "B_Mask", "B_Paste"]),
-        ("In1.Cu", {}, ["In1_Cu"]),
-        ("F.Cu", {"paste": "none"}, ["F_Cu", "F_Mask"]),
-        ("B.Cu", {"paste": "none"}, ["B_Cu", "B_Mask"]),
-        ("F.Cu", {"mask": "covered"}, ["F_Cu", "F_Paste"]),
-        ("B.Cu", {"mask": "covered"}, ["B_Cu", "B_Paste"]),
-        ("F.Cu", {"paste": "none", "mask": "covered"}, ["F_Cu"]),
-        ("F.Cu", {"drill": 0.3}, ["F_Cu", "F_Mask"]),
-        ("B.Cu", {"drill": 0.3}, ["B_Cu", "B_Mask"]),
-    ],
-)
-@pytest.mark.parametrize("polygon", [False, True])
-def test_instance_surface_layers_match_exported_part_body(
-    layer: str, flags: dict[str, Any], expected: list[str], polygon: bool
-) -> None:
-    model = _model()
-    pad = dict(model["pads"][2 if polygon else 0])
-    pad.update(layer=layer, refdes="R1", **flags)
-    model["pads"] = [pad]
-    model["silkscreen"] = {}
-    assert _build(model)["instance:1"].hits[0]["layers"] == expected
-
-    # Exercise the actual Gerber round trip: both flashes and regions must
-    # retain refdes for the legacy part-body fallback, not just the catalogue.
-    files = gerber.export_fab(model, name="t", allow_synthesized=True)
-    root = ET.fromstring(gerber_view.render_fab_svg(files, connectivity_model=model))
-    parts = next(e for e in root.iter() if e.get("class") == "parts")
-    body = next(e for e in parts if e.get("data-handle") == "R1")
-    assert body.get("data-pcb-layers") == " ".join(expected)
-
-    root = ET.fromstring(gerber_view.render_fab_svg(files))
-    parts = next(e for e in root.iter() if e.get("class") == "parts")
-    body = next(e for e in parts if e.get("data-handle") == "R1")
-    # Without the model, mask and paste membership still falls back to side.
-    side = layer.split(".")[0]
-    by_side = [f"{side}_Cu", f"{side}_Mask", f"{side}_Paste"]
-    assert body.get("data-pcb-layers") == " ".join(
-        by_side if layer in ("F.Cu", "B.Cu") else expected
-    )
-
-
-def test_part_body_without_paste_does_not_hit_visible_paste_layer() -> None:
-    model = _model()
-    model["silkscreen"] = {}
-    for pad in model["pads"]:
-        if pad.get("refdes") == "R1":
-            pad["paste"] = "none"
-    files = gerber.export_fab(model, name="t", allow_synthesized=True)
-    root = ET.fromstring(gerber_view.render_fab_svg(files, connectivity_model=model))
-    parts = next(e for e in root.iter() if e.get("class") == "parts")
-    bodies = {e.get("data-handle"): e for e in parts}
-    layers = set(bodies["R1"].get("data-pcb-layers", "").split())
-    assert layers == {"F_Cu", "F_Mask"}
-    # Other parts still have paste, but with R1's copper and mask hidden,
-    # the visible paste layer must not keep its invisible body hoverable.
-    assert "F_Paste" in bodies["R2"].get("data-pcb-layers", "").split()
-    assert not layers.intersection({"F_Paste"})
 
 
 def test_json_safe_and_overlay_renders_objects_in_priority_order() -> None:
@@ -422,10 +369,7 @@ def test_json_safe_and_overlay_renders_objects_in_priority_order() -> None:
     order = [selectables.KIND_ORDER.index(k) for k in kinds]
     assert order == sorted(order)
     root = ET.fromstring(svg)
-    instance_hit = next(
-        e for e in root.iter() if e.get("data-pcb-object") == "instance:1"
-    )
-    assert instance_hit.get("data-pcb-layers") == "F_Cu F_Mask F_Paste F_Silkscreen"
+    # gr565256: every hit rect names the single layer whose visibility gates it.
     pad_hit = next(e for e in root.iter() if e.get("data-pcb-object") == "pad:1:1")
     assert pad_hit.get("data-pcb-layer") == "F_Cu"
     assert pad_hit.get("data-pcb-layers") is None

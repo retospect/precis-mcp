@@ -59,7 +59,7 @@ already applies to copper.
    this board's capability row, plus two line widths of clear board where
    there is room (:func:`outline_offsets_mm`) — so the outline cannot
    overlap its own pads by construction. Its final shape is settled for
-   the whole board at once (:func:`part_outlines`): it bends in toward,
+   the whole board at once (:func:`part_outlines`): it shrinks in toward,
    never across, a close neighbour and the board edge, and an edge-mated
    part's outline gets one clean gap at the edge (gr495393/gr495293).
 3. a **pin-1 marker** — a **dot** beside pin 1
@@ -308,9 +308,15 @@ from precis.pcb.geom import (
     dist_point_to_segment,
     point_in_polygon,
 )
-from precis.pcb.gerber import DEFAULT_SILK_WIDTH_MM, SOLDERMASK_EXPANSION_MM
+from precis.pcb.gerber import (
+    DEFAULT_SILK_WIDTH_MM,
+    SOLDERMASK_EXPANSION_MM,
+    _expand_pad,
+)
 from precis.pcb.ir import COURTYARD_MITRE_LIMIT, PcbIR, instance_courtyard_polygon
 from precis.pcb.landpattern import place_points
+from precis.pcb.padplace import pad_world_rot
+from precis.pcb.pose import rotate_cw
 
 Point = tuple[float, float]
 
@@ -482,11 +488,17 @@ def refdes_label_slot_mm(
     furniture off courtyards (``handlers/pcb.py::_board_furniture``) must
     leave at least this much, else a part with nothing free on its other
     sides loses its label (``silk_missing``) — ewod-dogfood-6's bottom
-    sink sat 1.385 mm from a furniture rect against a ~1.75 mm need."""
+    sink sat 1.385 mm from a furniture rect against a ~1.75 mm need.
+
+    The offset term is the JLC-MIN legal clearance plus half the stroke
+    (:func:`vendor_ink_clear_mm`), the same figure
+    :func:`outline_offsets_mm` now returns — the two-stroke breathing
+    room it used to carry moved to placement (Reto 2026-11-03)."""
     return (
         height_mm
-        + 2.0 * clearance_mm
-        + OUTLINE_GAP_STROKES * stroke_width_mm
+        + clearance_mm
+        + vendor_ink_clear_mm(None)
+        + stroke_width_mm / 2.0
         + _label_gap_mm(stroke_width_mm)
     )
 
@@ -667,15 +679,34 @@ def _polygon_overlaps_circle(poly: list[Point], center: Point, radius: float) ->
 
 
 def _pad_rect_polygon(pad: dict[str, Any]) -> list[Point]:
+    """Board-frame vertices, retaining custom rings and oblique land axes."""
+    if pad.get("poly"):
+        return [(float(p[0]), float(p[1])) for p in pad["poly"]]
     x, y = float(pad["x"]), float(pad["y"])
     w = float(pad["w"])
     h = float(pad.get("h", pad["w"]))
+    rot = pad_world_rot(pad)
     return [
-        (x - w / 2, y - h / 2),
-        (x + w / 2, y - h / 2),
-        (x + w / 2, y + h / 2),
-        (x - w / 2, y + h / 2),
+        (x + rx, y + ry)
+        for rx, ry in (
+            rotate_cw(px, py, rot)
+            for px, py in (
+                (-w / 2, -h / 2),
+                (w / 2, -h / 2),
+                (w / 2, h / 2),
+                (-w / 2, h / 2),
+            )
+        )
     ]
+
+
+def _obstacle_bounds(pad: dict[str, Any]) -> tuple[float, float, float, float]:
+    """Conservative bounds from the same placed outline as the exact test."""
+    if pad.get("poly") or pad_world_rot(pad):
+        return _bbox(_pad_rect_polygon(pad))
+    x, y = float(pad["x"]), float(pad["y"])
+    hw, hh = float(pad["w"]) / 2.0, float(pad.get("h", pad["w"])) / 2.0
+    return x - hw, y - hh, x + hw, y + hh
 
 
 def _mask_opening(pad: dict[str, Any], expansion_mm: float) -> dict[str, Any]:
@@ -699,11 +730,8 @@ def _mask_opening(pad: dict[str, Any], expansion_mm: float) -> dict[str, Any]:
     rectangle."""
     if expansion_mm <= 0.0:
         return pad
-    out = dict(pad)
-    out["w"] = float(pad["w"]) + 2.0 * expansion_mm
-    if "h" in pad:
-        out["h"] = float(pad["h"]) + 2.0 * expansion_mm
-    return out
+    # Share the film writer's polygon offset, including mitred corners.
+    return _expand_pad(pad, expansion_mm)
 
 
 def soldermask_expansion_mm(capability: CapabilityRow | None) -> float:
@@ -738,10 +766,33 @@ def _mask_openings(
     return [_mask_opening(pad, expansion_mm) for pad in pads]
 
 
+def _obround_axis(pad: dict[str, Any]) -> tuple[Point, Point, float]:
+    """A stadium's centre segment and radius for analytic overlap tests.
+
+    Buffered contours are inscribed approximations: using their chords
+    as predicates can clear a stroke that still touches the actual cap.
+    """
+    x, y = float(pad["x"]), float(pad["y"])
+    w, h = float(pad["w"]), float(pad.get("h", pad["w"]))
+    half = abs(w - h) / 2.0
+    ends = ((-half, 0.0), (half, 0.0)) if w >= h else ((0.0, -half), (0.0, half))
+    a, b = [
+        (x + rx, y + ry)
+        for rx, ry in (rotate_cw(px, py, pad_world_rot(pad)) for px, py in ends)
+    ]
+    return a, b, min(w, h) / 2.0
+
+
 def _box_overlaps_pad(box: list[Point], pad: dict[str, Any]) -> bool:
     if str(pad.get("shape") or "circle") == "circle":
         cx, cy = float(pad["x"]), float(pad["y"])
         return _polygon_overlaps_circle(box, (cx, cy), float(pad["w"]) / 2.0)
+    if pad.get("shape") == "obround":
+        a, b, radius = _obround_axis(pad)
+        axis = _ShapelyLineString([a, b]) if a != b else _ShapelyPoint(*a)
+        return bool(_ShapelyPolygon(box).distance(axis) <= radius)
+    if pad.get("shape") == "polygon":
+        return bool(_ShapelyPolygon(box).intersects(_obstacle_geom(pad)))
     return convex_polygons_overlap(box, _pad_rect_polygon(pad))
 
 
@@ -959,10 +1010,8 @@ def _near_obstacles(
         return obstacles.near(x0, y0, x1, y1)
     out = []
     for pad in obstacles:
-        px, py = float(pad["x"]), float(pad["y"])
-        hw = float(pad["w"]) / 2.0
-        hh = float(pad.get("h", pad["w"])) / 2.0
-        if px + hw >= x0 and px - hw <= x1 and py + hh >= y0 and py - hh <= y1:
+        px0, py0, px1, py1 = _obstacle_bounds(pad)
+        if px1 >= x0 and px0 <= x1 and py1 >= y0 and py0 <= y1:
             out.append(pad)
     return out
 
@@ -985,15 +1034,11 @@ class _SideObstacles(list[dict[str, Any]]):
             self._insert(i, item)
 
     def _insert(self, i: int, item: dict[str, Any]) -> None:
-        x, y = float(item["x"]), float(item["y"])
-        hw = float(item["w"]) / 2.0
-        hh = float(item.get("h", item["w"])) / 2.0
-        for ix in range(
-            math.floor((x - hw) / self._pitch), math.floor((x + hw) / self._pitch) + 1
-        ):
+        x0, y0, x1, y1 = _obstacle_bounds(item)
+        for ix in range(math.floor(x0 / self._pitch), math.floor(x1 / self._pitch) + 1):
             for iy in range(
-                math.floor((y - hh) / self._pitch),
-                math.floor((y + hh) / self._pitch) + 1,
+                math.floor(y0 / self._pitch),
+                math.floor(y1 / self._pitch) + 1,
             ):
                 self._cells.setdefault((ix, iy), []).append(i)
 
@@ -1018,10 +1063,8 @@ class _SideObstacles(list[dict[str, Any]]):
         out = []
         for i in sorted(hits):
             pad = self[i]
-            px, py = float(pad["x"]), float(pad["y"])
-            hw = float(pad["w"]) / 2.0
-            hh = float(pad.get("h", pad["w"])) / 2.0
-            if px + hw >= x0 and px - hw <= x1 and py + hh >= y0 and py - hh <= y1:
+            px0, py0, px1, py1 = _obstacle_bounds(pad)
+            if px1 >= x0 and px0 <= x1 and py1 >= y0 and py0 <= y1:
                 out.append(pad)
         return out
 
@@ -1400,6 +1443,45 @@ def _pin1_dot_candidates(
 DEFAULT_SOLDERMASK_EXPANSION_MM = SOLDERMASK_EXPANSION_MM
 DEFAULT_SILK_TO_MASK_CLEARANCE_MM = 0.15
 
+#: JLC's published MINIMUM soldermask expansion and silk-to-mask
+#: clearance — the tier the vendor-silk cut and the outline offset are
+#: priced at (Reto 2026-11-03: legal silk clearance = 0.05 + 0.15 =
+#: 0.20 mm ink edge to copper; the wider house-default tier used to pad
+#: the rings' breathing room, which placement now owns instead).
+DEFAULT_MIN_SOLDERMASK_EXPANSION_MM = 0.05
+DEFAULT_MIN_SILK_TO_MASK_CLEARANCE_MM = 0.15
+
+
+def _jlc_min_value(
+    capability: CapabilityRow | None, field: str, *, fallback: float
+) -> float:
+    """``capability.jlc_min[field]``, or ``fallback`` — the JLC-minimum
+    tier answer where :func:`~precis.pcb.capabilities.design_value`
+    deliberately reads ``house_default`` first."""
+    if capability is not None:
+        value = (capability.jlc_min or {}).get(field)
+        if value is not None:
+            return float(value)
+    return fallback
+
+
+def vendor_ink_clear_mm(capability: CapabilityRow | None) -> float:
+    """Ink edge to copper the vendor footprint silk cut owes any pad or
+    via, mm — JLC's MIN tier soldermask expansion plus silk-to-mask
+    clearance (0.05 + 0.15 = 0.20 mm, Reto 2026-11-03). This is also the
+    offset the remaining precis-drawn rings grow to via
+    :func:`outline_offsets_mm` (the breathing room moved to placement).
+    Public for the placer-side figures that price the same bar."""
+    return _jlc_min_value(
+        capability,
+        "soldermask_expansion_mm",
+        fallback=DEFAULT_MIN_SOLDERMASK_EXPANSION_MM,
+    ) + _jlc_min_value(
+        capability,
+        "silk_to_mask_clearance_mm",
+        fallback=DEFAULT_MIN_SILK_TO_MASK_CLEARANCE_MM,
+    )
+
 
 def silk_clearance_mm(
     capability: CapabilityRow | None, *, stroke_width_mm: float
@@ -1501,17 +1583,17 @@ def outline_offsets_mm(
     """``(floor, target)``: how far a part outline's CENTRELINE sits from
     its own pads' copper.
 
-    ``target`` is :func:`silk_clearance_mm` plus :data:`OUTLINE_GAP_STROKES`
-    stroke widths: the fab chain's legal clearance with two line widths of
-    clear board on top, where the outline has room for it. ``floor`` is how
-    far in the outline may yield to a neighbouring part or the board edge:
-    never inside the legal clearance, and never with less than two line
-    widths of clear board between its ink and a pad's copper. At JLC
-    4-layer house-default figures both floor terms are 0.375 mm and the
-    target is 0.675 mm."""
-    legal = silk_clearance_mm(capability, stroke_width_mm=stroke_width_mm)
-    gap = OUTLINE_GAP_STROKES * stroke_width_mm
-    return max(legal, gap + stroke_width_mm / 2.0), legal + gap
+    Both are the legal silk clearance at the JLC MIN tier plus half the
+    drawn stroke — :func:`vendor_ink_clear_mm` (0.20 mm ink edge to
+    copper at JLC's published minimums) + ``stroke_width_mm / 2``
+    (Reto 2026-11-03: the :data:`OUTLINE_GAP_STROKES` breathing room was
+    dropped from ``target``; the two-stroke spacing between rings is
+    kept by PLACEMENT via :func:`outline_pair_separation_mm`, not by
+    shrinking). ``floor`` equals ``target``: a ring that cannot keep the
+    legal clearance opens its facing stretch rather than squeeze
+    underneath it. 0.275 mm at JLC figures and the 0.15 mm pen."""
+    legal = vendor_ink_clear_mm(capability) + stroke_width_mm / 2.0
+    return legal, legal
 
 
 def outline_pair_separation_mm(
@@ -1523,25 +1605,28 @@ def outline_pair_separation_mm(
     grown by the ``target`` offset (:func:`outline_offsets_mm`), and two
     rings keep :data:`OUTLINE_GAP_STROKES` stroke widths between them
     (gr495393, Reto 2026-10-17: "the white lines are at least 2 white line
-    widths apart"). 1.80 mm with a real JLC 4-layer house-default
-    capability row (legal 0.375 = 0.05 + 0.25 + 0.075); 1.60 mm under
-    this module's no-capability fallbacks (silk-to-mask 0.15).
+    widths apart"). 1.00 mm both with a real JLC 4-layer capability row
+    and under this module's no-capability fallbacks — the JLC-min legal
+    clearance (0.05 + 0.15 = 0.20 mm ink edge to copper) is the same at
+    every tier, so ``target`` 0.275 prices 2·0.275 + 3·0.15.
 
     This is the PLACEMENT-side statement of the same rule
-    :func:`part_outlines` enforces draw-side (bend in, share one wall, or
-    drop): a placer holding every same-side pair at or beyond this
-    separation guarantees un-squished outlines and room for a refdes label
-    at the first ladder ring, instead of discovering the squeeze after the
-    silk pass. Consumers measuring on the placer's courtyard polygons
-    (already inflated by ``ir.COURTYARD_CLEARANCE_MM``) subtract twice
-    that clearance — one formula here, the inflation arithmetic at the
-    consumer, same convention ``courtyard_overlap_pair_term`` documents."""
+    :func:`part_outlines` enforces draw-side (open the facing stretch
+    when the rings would squeeze): a placer holding every same-side
+    pair at or
+    beyond this separation guarantees un-squished outlines and room for a
+    refdes label at the first ladder ring, instead of discovering the
+    squeeze after the silk pass. Consumers measuring on the placer's
+    courtyard polygons (already inflated by ``ir.COURTYARD_CLEARANCE_MM``)
+    subtract twice that clearance — one formula here, the inflation
+    arithmetic at the consumer, same convention
+    ``courtyard_overlap_pair_term`` documents."""
     _, target = outline_offsets_mm(capability, stroke_width_mm=stroke_width_mm)
     # One (1 + OUTLINE_GAP_STROKES) stroke term, not OUTLINE_GAP_STROKES:
     # ``part_outlines`` draws two full rings only when the hull gap reaches
-    # 2*reach = 2*target + spacing (centreline to centreline). Priced with
-    # the shorter 2*target + 2*sw, the rings would sit one stroke width
-    # apart ink-to-ink and still merge into a shared wall.
+    # 2*target + spacing (centreline to centreline). Priced with the
+    # shorter 2*target + 2*sw, the rings would sit one stroke width apart
+    # ink-to-ink — inside the ruled outline-to-outline spacing.
     return 2.0 * target + (1.0 + OUTLINE_GAP_STROKES) * stroke_width_mm
 
 
@@ -1561,9 +1646,9 @@ class PartOutline:
     runs: list[list[Point]]
     #: The ring the refdes label's spots key off: the un-settled
     #: ``hull.buffer(target)`` the drawn ``ring`` starts from, before the
-    #: neighbour cell, shared walls, the board edge and the via bends
-    #: settle it. Identical for identical parts however their drawn
-    #: outlines then bent (the aligned-group sharing depends on that),
+    #: neighbour cell and the board edge settle it. Identical for
+    #: identical parts however their drawn outlines then shrunk (the
+    #: aligned-group sharing depends on that),
     #: and carrying the same decimate growth
     #: (:data:`precis.pcb.ir.COURTYARD_SIMPLIFY_MM`) the drawn ring does —
     #: keying the spots off the exact analytic offset priced every named
@@ -1579,20 +1664,50 @@ class PartOutline:
     #: Length of ring buried inside those earlier outlines (mm).
     buried_mm: float = 0.0
     #: Refdes of the neighbours this ring shares a coincident wall
-    #: segment with (gr496366 comment 5): the split between the two hulls,
-    #: drawn identically by both, never crossed by either.
+    #: segment with. Always empty since the shared-wall draw was removed
+    #: (Reto 2026-11-02: "end these weird shared outlines") — two parts
+    #: shrink or open on the facing side, never merge — but kept on the
+    #: dataclass for the review gauges that count it.
     shared: tuple[str, ...] = ()
-    #: Length of ring left open where the shared wall would sit inside
-    #: the pad-clearance floor (mm) — the pair is packed tighter than two
-    #: floors, so no legal line exists there and the facing sides stay
-    #  open rather than invade.
+    #: Length of ring left open where the facing side would sit inside
+    #: the pad-clearance floor (mm) — a pair packed tighter than two
+    #: floors plus the outline spacing has no legal line there, so the
+    #: facing sides stay open rather than invade or coincide.
     floor_open_mm: float = 0.0
-    #: The routed vias this ring was redrawn around instead of printing on
-    #: them (:func:`_bend_around_vias`), each named by
-    #: :func:`_obstacle_label`.
-    bent_around: tuple[str, ...] = ()
-    #: Those of them the ring bulged out round, each ``(via label, x, y)``.
-    bulged: tuple[tuple[str, float, float], ...] = ()
+    #: The routed vias sitting within this ring's silk clearance: the ring
+    #: opens a straight gap at each instead of printing on them, both ends
+    #: cut square at the legal clearance (Reto 2026-11-02: "a weird jiggly
+    #: silkscreen outline is not allowed" — a ring never detours round a
+    #: via). Each named by :func:`_obstacle_label`.
+    via_gaps: tuple[str, ...] = ()
+    #: Length of ring left open at those vias (mm). Counts AGAINST the
+    #: kept fraction in :func:`build_silk` — it is lost outline, not a
+    #: designed gap like the edge or floor openings (Fable 2026-11-02).
+    via_open_mm: float = 0.0
+    #: Extra run pieces the via gaps split the ring into; counted toward
+    #: :data:`_COURTYARD_MAX_PIECES`.
+    via_pieces: int = 0
+    #: True when ``runs`` are the vendor footprint's OWN silk strokes —
+    #: cut only, never moved or redrawn (Reto 2026-11-03): no precis
+    #: ring, no Voronoi split, no shrink for those parts. ``ring`` and
+    #: ``key_ring`` are then the convex hull of the placed strokes, the
+    #: extent the refdes spots and the pin-1 body test key off.
+    vendor: bool = False
+    #: Total vendor stroke length submitted before any cut (mm) — the
+    #: ``designed_mm`` a vendor part's kept fraction is measured against
+    #: (there is no ring to measure).
+    vendor_mm: float = 0.0
+    #: Per-run drawn stroke width, parallel to ``runs`` — a vendor
+    #: footprint's strokes carry their own widths. ``()`` for precis
+    #: rings, which all draw at the board's silk width.
+    run_widths: tuple[float, ...] = ()
+    #: Vendor-silk fragments a cut left below the min-run floor (mm).
+    #: Booked apart from ``edge_open_mm``: only ink removed for sitting
+    #: outside the board's silk edge margin is an edge drop; a fragment
+    #: inside the margin that no longer reads as a stroke is debris of
+    #: the cut that produced it (review-1 finding 2 — a 0.5mm bracket
+    #: line wholly inside the board must never report an edge cut).
+    drop_open_mm: float = 0.0
 
 
 def _polyline_length(points: Sequence[Point]) -> float:
@@ -1653,13 +1768,19 @@ def _clip_runs(
 #: 0.8 mm gap — far below a silk stroke.
 _CELL_SAMPLE_MM = 0.1
 
-#: The slack the sub-floor wall cut leaves under ``floor``, mm
-#: (:func:`part_outlines`): a ring stretch on the split is left open only
-#: when it sits at least this far INSIDE the pad-clearance floor — wide
-#: enough that the floor ring itself (computed as the floor buffer's own
-#: boundary, so its sampled distance lands exactly on it) is never in
-#: doubt, and a wall's sub-floor stretch is still cut whole.
-_WALL_FLOOR_EPS_MM = 0.01
+#: The vendor-silk fallback bar (Reto 2026-11-03): a part that keeps
+#: less than this fraction of its submitted vendor stroke length after
+#: the ink-clearance cuts — wholly cut included — draws the minimal
+#: precis ring instead (never both).
+_VENDOR_MIN_KEPT_FRACTION = 0.5
+
+#: The slack the sub-floor cut leaves under ``floor``, mm
+#: (:func:`part_outlines`): a ring stretch is left open only when it sits
+#: at least this far INSIDE the pad-clearance floor — wide enough that
+#: the floor ring itself (computed as the floor buffer's own boundary,
+#: so its sampled distance lands exactly on it) is never in doubt, and a
+#: shrunk ring's sub-floor stretch is still cut whole.
+_FLOOR_EPS_MM = 0.01
 
 
 def _hull_cells(hulls: list[tuple[int, Any]], *, margin_mm: float) -> dict[int, Any]:
@@ -1728,272 +1849,144 @@ def _via_to_silk_mm(capability: CapabilityRow | None) -> float:
     )
 
 
-@dataclass(slots=True)
-class _BendRing:
-    """One outline's working state for :func:`_bend_around_vias`."""
+def _via_gap_cut(
+    vias: list[dict[str, Any]],
+    line: Any,
+    legal_mm: float,
+) -> tuple[Any, list[str]]:
+    """``(cut geometry, via labels)`` for the vias inside ``line``'s legal
+    clearance: each touching via contributes its clearance disk — via
+    radius plus ``legal_mm`` — so the ring opens a straight break at that
+    spot, both ends cut square at the legal clearance off the annulus
+    (Reto 2026-11-02: the outline never detours round a via, supersedes
+    gr495393 option A's dent/bulge redraw). A via farther off the ring,
+    one wholly inside the courtyard but off the centreline, and one whose
+    disk meets only a stretch the earlier cuts already opened, neither
+    touches nor is named."""
+    disks = []
+    labels = []
+    for via in vias:
+        centre = _ShapelyPoint(float(via["x"]), float(via["y"]))
+        reach = float(via["w"]) / 2.0 + legal_mm
+        # GEOS's chorded buffer boundary sags inside the true circle by
+        # ``r * (1 - cos(pi / 32))`` (8 quad segs) — the cut margin is a
+        # hair over that sag, proportional to the via's clearance reach,
+        # or the gap ends land inside the clearance the cut exists to
+        # keep.
+        sag = reach * (1.0 - math.cos(math.pi / 32.0)) * 1.1
+        disk = centre.buffer(reach + sag)
+        # Name the via only when its disk actually removes drawn length —
+        # a tangent touch or a stretch an earlier cut already opened
+        # leaves no gap of its own (Fable 2026-11-02: no "leaves open
+        # 0.00mm" notes).
+        if line.intersection(disk).length > 1e-9:
+            disks.append(disk)
+            labels.append(_obstacle_label(via))
+    if not disks:
+        return None, []
+    return _shapely_unary_union(disks), labels
 
-    inst: int
-    side: str
-    refdes: str
-    poly: Any
-    bent: list[str]
-    #: The bulges kept, each ``(via label, x, y)``: what
-    #: :func:`build_silk` may veto when one costs a label.
-    bulged: list[tuple[str, float, float]]
+
+#: Chord steps per 10 degrees of arc when a vendor arc or circle is
+#: polyline-approximated for drawing.
+_ARC_STEP_DEG = 10.0
+_CIRCLE_SEGMENTS = 16
 
 
-def _bend_around_vias(
-    rings: list[_BendRing],
-    obstacles_by_side: dict[str, list[dict[str, Any]]],
-    *,
-    inside: Any,
-    floor_zones: dict[str, Any],
-    spacing_mm: float,
-    stroke_width_mm: float,
-    via_to_silk_mm: float,
-    bulge_veto: frozenset[tuple[str, str]] | None = frozenset(),
-) -> None:
-    """Move each outline off the routed vias it would print on, in place
-    (gr495393 option A, Reto's ruling 2026-10-18: silk yields, the router
-    and the placer are untouched).
+def _arc_points(g: dict[str, Any]) -> list[Point]:
+    """One EasyEDA ``arc`` graphic as a polyline — the decoder's
+    ``start``/``end``/``radius_mm``/``cw``/``large_arc`` form. Both
+    candidate centres are tried and the one whose swept span matches
+    ``large_arc`` wins, so flag-reading subtleties cannot flip the arc.
+    A degenerate chord draws straight."""
+    sx, sy = float(g["start"][0]), float(g["start"][1])
+    ex, ey = float(g["end"][0]), float(g["end"][1])
+    r = float(g["radius_mm"])
+    dx, dy = ex - sx, ey - sy
+    chord = math.hypot(dx, dy)
+    if r <= 0.0 or chord < 1e-9 or chord > 2.0 * r + 1e-6:
+        return [(sx, sy), (ex, ey)]
+    half = chord / 2.0
+    q = math.sqrt(max(r * r - half * half, 0.0))
+    mx, my = (sx + ex) / 2.0, (sy + ey) / 2.0
+    nx, ny = -dy / chord, dx / chord
+    cw = bool(g.get("cw"))
+    large = bool(g.get("large_arc"))
+    for sign in (1.0, -1.0):
+        cx, cy = mx + sign * q * nx, my + sign * q * ny
+        a0 = math.atan2(sy - cy, sx - cx)
+        a1 = math.atan2(ey - cy, ex - cx)
+        span = (a0 - a1) % (2.0 * math.pi) if cw else (a1 - a0) % (2.0 * math.pi)
+        if (span > math.pi) != large:
+            continue
+        steps = max(2, math.ceil(math.degrees(span) / _ARC_STEP_DEG))
+        sweep = -span if cw else span
+        return [
+            (
+                cx + r * math.cos(a0 + sweep * i / steps),
+                cy + r * math.sin(a0 + sweep * i / steps),
+            )
+            for i in range(steps + 1)
+        ]
+    return [(sx, sy), (ex, ey)]
 
-    A via TOUCHES an outline when the ring's centreline is within the via's
-    radius plus half a stroke plus ``via_to_silk_mm``: the legal clearance.
-    For each touching via, the ring is redrawn around it as a circular arc,
-    one of two ways:
 
-    - **dent**: the disk is cut out of the outline, so the via sits outside
-      it. This is the move for a via under the part's own body between its
-      pads (J2 on usbc-attiny-dogfood-b), where the ring can't grow outward
-      without running into the neighbour on the far side.
-    - **bulge**: the disk is added, so the outline encloses the via. This is
-      the move for a via just outside the part.
-
-    Dents run first across the whole board, then bulges, then each mode
-    retries whatever is still touching. A neighbour that dents first leaves
-    room for the bulge on its other side. Each move tries the largest radius
-    first: via radius plus the legal clearance plus ``OUTLINE_GAP_STROKES``
-    widths, plus the outline spacing; then without the spacing; then the
-    legal clearance alone. A move is kept only if the redrawn ring
-
-    - clears the via by the legal clearance,
-    - hits no pad, fiducial or other furniture (each widened by the
-      silk-to-mask clearance) that the old ring did not already hit, and
-      brings no other via inside its legal clearance,
-    - still encloses every one of the part's own pads,
-    - stays inside the board's silk edge margin, and
-    - keeps its new stretch out of every other same-side outline and at
-      least ``spacing_mm`` off its ring.
-
-    A kept move is then checked once more against ``floor_zones``
-    (:func:`part_outlines`' pad-clearance floor union): a legal dent can
-    leave its new stretch inside the floor, where the floor pass opens it
-    — the via then buys a SECOND gap and the outline comes out in
-    fragments (gr495393: J2 on dogfood-b dented round its under-body via
-    into the floor and split in two). A move that adds floor-open falls
-    back to whatever the OTHER mode's legal radii leave least inside the
-    floor — there a bulge keeps the ring one line.
-
-    ``bulge_veto`` names the ``(refdes, via label)`` bulges not to try;
-    ``None`` tries no bulge at all. :func:`build_silk` sets it to give a
-    label back the room a bulge took (gr495393 option c).
-
-    A via that no move clears stays where it is: :func:`build_silk` cuts
-    the outline around it, as before, and the census reason names the via
-    (no DRC rule: the ruling 2026-10-18 kept these cuts silent, as they
-    were)."""
-    half = stroke_width_mm / 2.0
-    legal = half + via_to_silk_mm
-    radii = (
-        legal + OUTLINE_GAP_STROKES * stroke_width_mm + spacing_mm,
-        legal + OUTLINE_GAP_STROKES * stroke_width_mm,
-        legal + 1e-3,
-    )
-    for side in ("top", "bottom"):
-        side_obs = obstacles_by_side.get(side, [])
-        ctx = _BendSide(
-            rings=[r for r in rings if r.side == side],
-            vias=[o for o in side_obs if o.get("obstacle") == "via"],
-            hard=[
-                _mask_opening(o, via_to_silk_mm)
-                for o in side_obs
-                if o.get("obstacle") != "via"
-            ],
-            legal_mm=legal,
-            spacing_mm=spacing_mm,
-            stroke_width_mm=stroke_width_mm,
-            inside=inside,
-            below=floor_zones.get(side),
+def _circle_points(cx: float, cy: float, r: float) -> list[Point]:
+    return [
+        (
+            cx + r * math.cos(2.0 * math.pi * i / _CIRCLE_SEGMENTS),
+            cy + r * math.sin(2.0 * math.pi * i / _CIRCLE_SEGMENTS),
         )
-        if not ctx.rings or not ctx.vias:
-            continue
-        for mode, natural in (
-            ("dent", True),
-            ("bulge", True),
-            ("dent", False),
-            ("bulge", False),
-        ):
-            for ring in ctx.rings:
-                for k in range(len(ctx.vias)):
-                    if not ctx.touching(ring.poly, k):
-                        continue
-                    under = bool(ring.poly.covers(ctx.centre(k)))
-                    if natural and under != (mode == "dent"):
-                        continue
-                    if mode == "bulge" and _bulge_vetoed(
-                        bulge_veto, ring.refdes, ctx.vias[k]
-                    ):
-                        continue
-                    _settle_bend(
-                        ctx, ring, k, mode=mode, radii=radii, bulge_veto=bulge_veto
-                    )
-
-
-def _bulge_vetoed(
-    bulge_veto: frozenset[tuple[str, str]] | None, refdes: str, via: dict[str, Any]
-) -> bool:
-    """Whether ``bulge_veto`` rules a bulge out for this (refdes, via):
-    ``None`` rules every bulge out, a set the ones it names."""
-    return bulge_veto is None or (refdes, _obstacle_label(via)) in bulge_veto
-
-
-#: How much floor-open a bend candidate must save to displace the move
-#: already taken, mm of centreline (:func:`_settle_bend`).
-_BEND_OPEN_EPS_MM = 1e-6
-
-
-def _settle_bend(
-    ctx: _BendSide,
-    ring: _BendRing,
-    k: int,
-    *,
-    mode: str,
-    radii: tuple[float, ...],
-    bulge_veto: frozenset[tuple[str, str]] | None,
-) -> bool:
-    """Commit ``ring``'s redraw around via ``k``; return whether it cleared.
-
-    The first legal ``mode`` radius is taken, as before — unless it lands
-    the ring inside ``ctx.below`` (the pad-clearance floor), a stretch the
-    floor pass opens anyway: the via then buys a second gap where another
-    move would have added none (gr495393). In that case every legal move
-    of the OTHER mode is tried and the one leaving the least ring inside
-    the floor wins — the outline stays continuous, trimmed only where a
-    pad, the board edge or the floor itself forces it."""
-    moved = None
-    for extra in radii:
-        moved = _bend_move(ctx, ring, k, mode=mode, extra_mm=extra)
-        if moved is not None:
-            break
-    if moved is None:
-        return False
-    best_mode, best = mode, moved
-    if ctx.below is not None:
-        old_open = ctx.below.intersection(ring.poly.exterior).length
-        open_mm = ctx.below.intersection(moved.exterior).length
-        if open_mm > old_open + _BEND_OPEN_EPS_MM:
-            alt = "bulge" if mode == "dent" else "dent"
-            if alt != "bulge" or not _bulge_vetoed(
-                bulge_veto, ring.refdes, ctx.vias[k]
-            ):
-                for extra in radii:
-                    cand = _bend_move(ctx, ring, k, mode=alt, extra_mm=extra)
-                    if cand is None:
-                        continue
-                    cand_open = ctx.below.intersection(cand.exterior).length
-                    if cand_open < open_mm - _BEND_OPEN_EPS_MM:
-                        open_mm, best_mode, best = cand_open, alt, cand
-    ring.poly = best
-    label = _obstacle_label(ctx.vias[k])
-    ring.bent.append(label)
-    if best_mode == "bulge":
-        ring.bulged.append((label, float(ctx.centre(k).x), float(ctx.centre(k).y)))
-    return True
-
-
-@dataclass(slots=True)
-class _BendSide:
-    """One board side's state for :func:`_bend_around_vias`: its outlines,
-    the vias that reach it, and the copper and furniture a bent ring must
-    not newly hit (widened by the silk-to-mask clearance)."""
-
-    rings: list[_BendRing]
-    vias: list[dict[str, Any]]
-    hard: list[dict[str, Any]]
-    legal_mm: float
-    spacing_mm: float
-    stroke_width_mm: float
-    inside: Any
-    #: This side's pad-clearance floor union (:func:`part_outlines`'
-    #: ``subfloor``): where a redrawn stretch lands in it, the floor pass
-    #: opens it — the measure :func:`_settle_bend` minimises.
-    below: Any
-
-    def centre(self, k: int) -> Any:
-        return _ShapelyPoint(float(self.vias[k]["x"]), float(self.vias[k]["y"]))
-
-    def radius(self, k: int) -> float:
-        return float(self.vias[k]["w"]) / 2.0
-
-    def touching(self, poly: Any, k: int) -> bool:
-        reach = self.radius(k) + self.legal_mm - 1e-9
-        return bool(poly.exterior.distance(self.centre(k)) < reach)
-
-
-def _bend_move(
-    ctx: _BendSide, ring: _BendRing, k: int, *, mode: str, extra_mm: float
-) -> Any:
-    """``ring`` redrawn around via ``k`` as one dent or bulge of radius
-    via radius + ``extra_mm`` — the polygon, or ``None`` unless every
-    check in :func:`_bend_around_vias` passes. Does not commit:
-    :func:`_settle_bend` picks between the modes' answers."""
-    centre, r = ctx.centre(k), ctx.radius(k)
-    old = ring.poly
-    old_line = old.exterior
-    disk = centre.buffer(r + extra_mm, quad_segs=8)
-    moved = old.difference(disk) if mode == "dent" else old.union(disk)
-    if moved.is_empty or moved.geom_type != "Polygon":
-        return None
-    moved = _shapely_orient(_ShapelyPolygon(moved.exterior), 1.0)
-    line = moved.exterior
-    if line.distance(centre) < r + ctx.legal_mm - 1e-6:
-        return None
-    changed = line.difference(old_line.buffer(1e-4))
-    if changed.is_empty:
-        return None
-    if ctx.inside is not None and not ctx.inside.buffer(1e-6).covers(changed):
-        return None
-    own = [
-        p
-        for p in ctx.hard
-        if "obstacle" not in p and str(p.get("refdes")) == ring.refdes
+        for i in range(_CIRCLE_SEGMENTS + 1)
     ]
-    if not all(moved.covers(_ShapelyPoint(float(p["x"]), float(p["y"]))) for p in own):
-        return None
-    pts = [(float(x), float(y)) for x, y in line.coords]
-    old_pts = [(float(x), float(y)) for x, y in old_line.coords]
-    width = ctx.stroke_width_mm
-    for o in _near_obstacles(ctx.hard, pts, 2.0 * width):
-        if (
-            _stroke_hits(pts, [o], width) is not None
-            and _stroke_hits(old_pts, [o], width) is None
-        ):
-            return None
-    for j in range(len(ctx.vias)):
-        if j != k and ctx.touching(moved, j) and not ctx.touching(old, j):
-            return None
-    far = changed.difference(old_line.buffer(ctx.spacing_mm))
-    for other in ctx.rings:
-        if other is ring:
+
+
+def footprint_silk_strokes(
+    graphics: Any, *, fallback_width_mm: float = DEFAULT_SILK_WIDTH_MM
+) -> list[tuple[list[Point], float]]:
+    """``[(points, width_mm)]`` per silk-layer stroke of a footprint's
+    decoded ``graphics[]``, footprint-local mm — the vendor's own
+    outline ink (Reto 2026-11-03): polylines, polygons, arcs and circles
+    on an ``F.SilkS``/``B.SilkS`` layer. ``text`` and filled ``region``
+    graphics are not line ink and stay out (they remain inspectable via
+    ``view='footprint'``)."""
+    out: list[tuple[list[Point], float]] = []
+    for g in graphics or ():
+        if not isinstance(g, dict) or not str(g.get("layer") or "").endswith("SilkS"):
             continue
-        if other.poly.buffer(-1e-6).intersects(changed):
-            return None
-        if (
-            not far.is_empty
-            and far.distance(other.poly.exterior) < ctx.spacing_mm - 1e-6
-        ):
-            return None
-    return moved
+        kind = str(g.get("kind") or "")
+        pts: list[Point] = []
+        if kind in ("line", "polyline", "polygon"):
+            pts = [
+                (float(p[0]), float(p[1]))
+                for p in (g.get("points") or [])
+                if len(p) == 2
+            ]
+            if kind == "polygon" and len(pts) > 2 and pts[0] != pts[-1]:
+                pts = [*pts, pts[0]]
+        elif kind == "arc":
+            pts = _arc_points(g)
+        elif kind == "circle":
+            c = g.get("center") or (0.0, 0.0)
+            r = float(g.get("radius_mm") or 0.0)
+            if r > 0.0:
+                pts = _circle_points(float(c[0]), float(c[1]), r)
+        if len(pts) >= 2:
+            out.append((pts, float(g.get("width_mm") or 0.0) or fallback_width_mm))
+    return out
+
+
+def _obstacle_geom(o: dict[str, Any]) -> Any:
+    """One seed obstacle's physical land, shared with copper DRC."""
+    if str(o.get("shape") or "circle") == "circle":
+        return _ShapelyPoint(float(o["x"]), float(o["y"])).buffer(float(o["w"]) / 2.0)
+    if o.get("shape") == "obround":
+        # DRC imports SilkPlacement; defer this import until both modules
+        # are loaded, and keep stadium construction in its one owner.
+        from precis.pcb.drc import _copper_item_polygon
+
+        return _copper_item_polygon({**o, "ctype": "pad"})
+    return _ShapelyPolygon(_pad_rect_polygon(o))
 
 
 def part_outlines(
@@ -2004,7 +1997,6 @@ def part_outlines(
     instance_sides: dict[str, str] | None = None,
     outline: Sequence[Sequence[float]] | None = None,
     obstacles_by_side: dict[str, list[dict[str, Any]]] | None = None,
-    bulge_veto: frozenset[tuple[str, str]] | None = frozenset(),
 ) -> dict[int, PartOutline]:
     """Every placed part's outline, keyed by instance — the ONE place an
     outline's shape is decided, read by :func:`build_silk` (which draws it)
@@ -2024,20 +2016,20 @@ def part_outlines(
     1. Grow the part's own pad hull to the ``target`` offset
        (:func:`outline_offsets_mm`): two line widths of clear board beyond
        the legal silk clearance.
-    2. Where a neighbour on the same side is close, the two share ONE
-       line on the split between them (gr496366 comment 5, Reto
-       2026-10-19: "just overlap the lines, don;t invade the neighbour.
-       So two things adjacent share one line if they are as close as
-       possibel"). Silk adds no spacing of its own: each part keeps to
-       its own side of the line equidistant from the two hulls (their
-       Voronoi split, :func:`_hull_cells`) and is EXTENDED to it where its
-       target ring would otherwise sit less than the outline spacing
+    2. Where a neighbour on the same side is close, each ring keeps to
+       its own side of the Voronoi split between the two hulls
+       (:func:`_hull_cells`), and every later part's ring keeps the
+       full outline spacing off each earlier part's settled region
        (``1 + OUTLINE_GAP_STROKES`` stroke widths centreline to
-       centreline) off the neighbour's — so the two rings coincide as one
-       shared segment rather than print as two nearly-touching lines.
-       Neither ring ever crosses the split, and where the split itself
-       sits inside ``floor`` (a pair packed tighter than two floors) the
-       facing stretch is left open — the clearance floor still applies
+       centreline). Two rings that cannot keep the spacing apart
+       shrink locally toward ``floor`` on the facing side — never
+       merge into one coincident wall (Reto 2026-11-02, on the routed
+       taz-leaf 2x board: "move parts apart and end these weird shared
+       outlines"; supersedes gr496366 comment 5's shared line).
+       Neither ring ever crosses the split, and where even the shrunk
+       ring lands inside ``floor`` (a pair packed tighter than two
+       floors plus the spacing) the facing stretch is left open —
+       the clearance floor still applies
        (``PartOutline.floor_open_mm``). A later outline running inside an
        earlier one's area still leaves that stretch out
        (``PartOutline.meets``), now a guard for degenerate splits rather
@@ -2050,16 +2042,17 @@ def part_outlines(
        silk_edge_clearance error per segment (gr495293).
 
     5. Given ``obstacles_by_side`` (:func:`build_silk`'s seed obstacle
-       lists: pads, the vias reaching each side, furniture), redraw each ring
-       around the routed vias it would print on (:func:`_bend_around_vias`,
-       gr495393 option A), skipping the bulges ``bulge_veto`` names. The
-       router never sees this: the :func:`outline_via_keepouts` call
-       passes no obstacles.
+       lists: pads, the vias reaching each side, furniture), each ring
+       opens a straight gap at every routed via inside its silk clearance
+       (:func:`_via_gap_cut`, both ends square at the legal clearance) —
+       never a detour round it (Reto 2026-11-02: "a weird jiggly
+       silkscreen outline is not allowed"; supersedes gr495393 option A's
+       dent/bulge redraw). The router never sees this: the
+       :func:`outline_via_keepouts` call passes no obstacles.
 
     Other silk — refdes labels, pin-1 marks, title block — yields to these
     rings, never the other way round. Copper the outline still lands on
-    (a via no bend clears, a foreign pad inside ``floor``) is
-    :func:`build_silk`'s to clip.
+    (a foreign pad inside ``floor``) is :func:`build_silk`'s to clip.
 
     ``instance_sides`` is refdes -> ``'top'``/``'bottom'`` as
     :func:`build_silk` takes it; ``None`` reads the IR's own
@@ -2109,29 +2102,198 @@ def part_outlines(
     hulls.sort(key=lambda h: _refdes_sort_key(str(ir.instance_refdes[h[0]])))
 
     inside = None
+    board = None
     if outline is not None and len(outline) >= 3:
         board = _ShapelyPolygon([(float(p[0]), float(p[1])) for p in outline]).buffer(0)
         inside = board.buffer(
             -(_silk_edge_margin_mm(capability) + stroke_width_mm / 2.0), join_style=2
         )
 
-    # A crowded pair shares ONE line on the split between their hulls
-    # (gr496366 comment 5, Reto 2026-10-19: "just overlap the lines, don;t
-    # invade the neighbour. So two things adjacent share one line if they
-    # are as close as possibel"). Silk adds no spacing: the outlines are
-    # either far enough apart to keep ``spacing`` between them, or they
-    # are the same segment. ``reach`` is how far onto the gap the merged
-    # pair's wall reaches: the target offset plus half ``spacing``, so the
-    # trigger "the two target rings can't hold the spacing" and the wall
-    # fill agree on one number.
-    reach = target + spacing / 2.0
-    reach_limit = 2.0 * reach
+    # Vendor-silk cut figures (Reto 2026-11-03): ink edge may approach
+    # copper only to the JLC-MIN legal bar ``ink_clear`` (0.20 mm). Pad
+    # obstacles are already mask openings (copper + ``expansion_mm``), so
+    # the centreline keep-out off a pad is ``ink_clear - expansion_mm``
+    # plus half the STROKE'S own width; a via's annulus is bare copper,
+    # so it keeps the full ``ink_clear`` plus half the stroke.
+    ink_clear = vendor_ink_clear_mm(capability)
+    min_width = _jlc_min_value(capability, "silk_width_mm", fallback=0.0)
+    expansion_mm = soldermask_expansion_mm(capability)
+    pad_gap = max(0.0, ink_clear - expansion_mm)
+    edge_margin_mm = _silk_edge_margin_mm(capability)
+    inside_of: dict[float, Any] = {}
+    min_run = stroke_width_mm * _CLIP_MIN_RUN_STROKES
+
+    # Parts whose footprint carries its own silk graphics draw THAT silk
+    # as their outline, transformed by the pose — no precis ring, no
+    # Voronoi split, no shrink (Reto 2026-11-03). Their pad hulls stay in
+    # ``hulls``: a ring part's floor and sub-floor cuts still owe them
+    # copper clearance. The cut is resolved HERE, before the ring
+    # machinery, because a part that keeps under half its submitted
+    # stroke length falls back to the minimal precis ring (same ruling —
+    # never both), and the fallback must join ``ring_parts`` before the
+    # cells are split.
+    #
+    # Two clip rules (review-1 finding 2): same-width strokes merge into
+    # runs before clipping — a JLC outline ships as bracket segments +
+    # corner arcs (four ~0.5mm pieces) the min-run floor would otherwise
+    # erase piecemeal — and the floor applies only to fragments a cut
+    # produced: an unclipped stroke draws however short it is.
+    # ``edge_open`` books only ink removed for sitting outside the board
+    # edge margin; fragments a cut left under ``min_run`` book as
+    # ``drop_open`` instead (a wholly-internal short stroke is NOT an
+    # edge cut — the U2/X2 misdiagnosis).
+    vendor: dict[int, dict[str, Any]] = {}
+    vendor_side: dict[int, str] = {}
+    for inst, side, _hull in hulls:
+        gfx = ir.inst_silk_graphics[inst] if inst < len(ir.inst_silk_graphics) else ()
+        strokes = footprint_silk_strokes(gfx, fallback_width_mm=stroke_width_mm)
+        if not strokes:
+            continue
+        cx, cy = float(ir.inst_x[inst]), float(ir.inst_y[inst])
+        rot = float(ir.inst_rot[inst])
+        placed = [
+            (
+                _place(
+                    pts,
+                    cx=cx,
+                    cy=cy,
+                    rot=0.0 if math.isnan(rot) else rot,
+                    mirror=side == "bottom",
+                ),
+                w,
+            )
+            for pts, w in strokes
+        ]
+        designed = sum(_polyline_length(pts) for pts, _w in placed)
+        pieces: list[tuple[list[Point], float]] = []
+        for w, grp in itertools.groupby(
+            sorted(placed, key=lambda pw: pw[1]), key=lambda pw: pw[1]
+        ):
+            # Count thin ink in ``designed`` above, but never as surviving
+            # artwork. Match check_silk_printability's numerical tolerance;
+            # filtering before the denominator would turn a tiny legal tail
+            # into 100% retained artwork and suppress the ring fallback.
+            if w < min_width - 1e-9:
+                continue
+            u = _shapely_unary_union([_ShapelyLineString(list(pts)) for pts, _w in grp])
+            # linemerge joins the disconnected same-width strokes into
+            # the runs they were drawn as; a single line is returned as
+            # is (shapely refuses it as a linemerge input).
+            if u.geom_type != "LineString":
+                u = _shapely_linemerge(u)
+            pieces += [
+                ([(float(x), float(y)) for x, y in g.coords], w)
+                for g in getattr(u, "geoms", [u])
+                if g.geom_type == "LineString" and len(g.coords) >= 2
+            ]
+        edge_open = drop_open = via_open = 0.0
+        cut_labels: list[str] = []
+        if board is not None:
+            kept: list[tuple[list[Point], float]] = []
+            for pts, w in pieces:
+                keep = inside_of.get(w)
+                if keep is None:
+                    keep = board.buffer(-(edge_margin_mm + w / 2.0), join_style=2)
+                    inside_of[w] = keep
+                line = _ShapelyLineString(pts)
+                if keep.covers(line):
+                    kept.append((pts, w))
+                    continue
+                inner = line.intersection(keep)
+                edge_open += line.length - inner.length
+                for g in getattr(inner, "geoms", [inner]):
+                    if g.geom_type != "LineString":
+                        continue
+                    if g.length >= min_run:
+                        kept.append(([(float(x), float(y)) for x, y in g.coords], w))
+                    else:
+                        drop_open += g.length
+            pieces = kept
+        side_obs = (obstacles_by_side or {}).get(side) or []
+        if side_obs and pieces:
+            zones_of: dict[float, list[tuple[Any, dict[str, Any]]]] = {}
+            kept2: list[tuple[list[Point], float]] = []
+            for pts, w in pieces:
+                disks = zones_of.get(w)
+                if disks is None:
+                    disks = []
+                    for o in side_obs:
+                        geom = _obstacle_geom(o)
+                        reach = w / 2.0 + (
+                            ink_clear
+                            if str(o.get("obstacle") or "") == "via"
+                            else pad_gap
+                        )
+                        disks.append(
+                            (
+                                geom.buffer(
+                                    reach
+                                    + reach * (1.0 - math.cos(math.pi / 32.0)) * 1.1
+                                ),
+                                o,
+                            )
+                        )
+                    zones_of[w] = disks
+                line_w = _ShapelyLineString(pts)
+                cut_geom = None
+                for geom, o in disks:
+                    if line_w.intersection(geom).length > 1e-9:
+                        cut_geom = (
+                            geom
+                            if cut_geom is None
+                            else _shapely_unary_union([cut_geom, geom])
+                        )
+                        lbl = _obstacle_label(o)
+                        if lbl not in cut_labels:
+                            cut_labels.append(lbl)
+                if cut_geom is None:
+                    kept2.append((pts, w))
+                    continue
+                via_open += line_w.intersection(cut_geom).length
+                for r in _clip_runs([pts], cut=cut_geom, min_run_mm=0.0):
+                    rl = _polyline_length(r)
+                    if rl >= min_run:
+                        kept2.append((r, w))
+                    else:
+                        drop_open += rl
+            pieces = kept2
+        kept_mm = sum(_polyline_length(r) for r, _w in pieces)
+        # Reto 2026-11-03: under half the submitted stroke length kept —
+        # wholly cut included — falls back to the minimal precis ring
+        # (ruling-3 target); never both.
+        if designed <= 0.0 or kept_mm < designed * _VENDOR_MIN_KEPT_FRACTION:
+            continue
+        vendor[inst] = {
+            "strokes": placed,
+            "pieces": pieces,
+            "designed": designed,
+            "edge_open": edge_open,
+            "drop_open": drop_open,
+            "via_open": via_open,
+            "labels": cut_labels,
+        }
+        vendor_side[inst] = side
+    ring_parts = [
+        (inst, side, hull) for inst, side, hull in hulls if inst not in vendor
+    ]
+
+    # A crowded pair NEVER shares a wall: each ring keeps to its own side
+    # of the split between their hulls and a further ``spacing`` off the
+    # earlier part's settled ring, so two rings that cannot keep
+    # ``spacing`` apart shrink toward
+    # ``floor`` on the facing side instead of merging into one coincident
+    # line (Reto 2026-11-02: "move parts apart and end these weird shared
+    # outlines"). ``cell_margin`` only bounds how far the Voronoi cells
+    # must reach — the contested zone is where the two target rings would
+    # sit less than ``spacing`` apart, i.e. a hull gap under
+    # 2*target + spacing.
+    cell_margin = 2.0 * target + spacing
     cells: dict[int, Any] = {}
     for side_name in ("top", "bottom"):
         cells.update(
             _hull_cells(
-                [(inst, hull) for inst, side, hull in hulls if side == side_name],
-                margin_mm=reach_limit,
+                [(inst, hull) for inst, side, hull in ring_parts if side == side_name],
+                margin_mm=cell_margin,
             )
         )
     # The sampled Voronoi cells OVERLAP where two hulls sit close (the
@@ -2139,95 +2301,150 @@ def part_outlines(
     # each part gets an EXCLUSIVE cell: its own minus the cells of
     # earlier-refdes same-side neighbours. The contested strip goes to the
     # earlier part — arbitrary but deterministic (gr498680) — and makes
-    # the frontier between any pair a single line, `own ∩ other`, which
-    # is the wall both rings then share. Subtracting raw would slit a
-    # ring through the part's own body (the wander reaches inside its
-    # hull), so the floor zone is protected: nothing inside ``base`` is
-    # ever subtracted.
+    # the frontier between any pair a single line, `own ∩ other`, off
+    # which both rings then sit ``spacing`` apart. Subtracting raw would
+    # slit a ring through the part's own body (the wander reaches inside
+    # its hull), so the floor zone is protected: nothing inside ``base``
+    # is ever subtracted.
     exclusive: dict[int, Any] = {}
-    for pos, (inst, side, hull) in enumerate(hulls):
+    for pos, (inst, side, hull) in enumerate(ring_parts):
         cell = cells.get(inst)
         if cell is None:
             continue
         lowers = [
             cells[other]
-            for other, other_side, _h in hulls[:pos]
+            for other, other_side, _h in ring_parts[:pos]
             if other_side == side and other in cells
         ]
         if not lowers:
             exclusive[inst] = cell
+        else:
+            protected = hull.buffer(
+                floor, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT
+            )
+            rest = _shapely_unary_union(lowers).difference(protected)
+            exclusive[inst] = cell.difference(rest) if not rest.is_empty else cell
+        # The sampled cell frontier staircases around the true bisector —
+        # it is only accurate to the boundary-sample spacing, so detail
+        # finer than that is noise: straighten it, or a shrunk facing side
+        # draws as a jiggly staircase (Reto 2026-11-02: "a weird jiggly
+        # silkscreen outline is not allowed"). Genuine bisector kinks are
+        # an order coarser and survive. Done HERE, on the exclusive cell,
+        # not in ``_hull_cells`` — the raw cells must still partition the
+        # margin exactly for the strip assignment above.
+        exclusive[inst] = exclusive[inst].simplify(
+            _CELL_SAMPLE_MM, preserve_topology=True
+        )
+    # Each cell was simplified on its own, so a shared frontier drifted
+    # in opposite directions on the two sides and the rings settled
+    # ``spacing / 2`` off DIFFERENT lines — a pair could land well inside
+    # the outline spacing (Fable 2026-11-02: 0.4125 mm on the dogfood
+    # U1-U2 pair against the 0.45 mm rule, no margin allowed). Re-cut
+    # every later part against the EARLIER parts' already-simplified
+    # cells: where the two cells touch, the later one's boundary IS the
+    # earlier one's line, both rings yield off the identical frontier,
+    # and the pair keeps exactly ``spacing``. The contested strip still
+    # belongs to the earlier part. Only the part's own BODY is protected
+    # here, not its floor zone as in the raw cut above: on a close pair
+    # the drifted frontier sits inside the floor buffer, and masking it
+    # would shield exactly the overlap this pass exists to remove. The
+    # hull alone still stops a cut from slitting the cell through the
+    # part's body.
+    for pos, (inst, side, hull) in enumerate(ring_parts):
+        cell = exclusive.get(inst)
+        if cell is None:
             continue
-        protected = hull.buffer(floor, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT)
-        rest = _shapely_unary_union(lowers).difference(protected)
-        exclusive[inst] = cell.difference(rest) if not rest.is_empty else cell
+        lowers = [
+            exclusive[other]
+            for other, other_side, _h in ring_parts[:pos]
+            if other_side == side and other in exclusive
+        ]
+        if not lowers:
+            continue
+        rest = _shapely_unary_union(lowers).difference(hull)
+        if not rest.is_empty:
+            exclusive[inst] = cell.difference(rest)
 
-    rings: dict[int, tuple[str, list[Point]]] = {}
-    key_rings: dict[int, list[Point]] = {}
-    shared_with: dict[int, tuple[str, ...]] = {}
-    for inst, side, hull in hulls:
+    # First every part's UNCONSTRAINED region: its own offset shape kept
+    # to its own cell and the board edge, with no neighbour spacing
+    # applied. It is the superset every yield is measured against — a
+    # ring that keeps ``spacing`` off a neighbour's unconstrained region
+    # can never land inside ``spacing`` of its drawn ring, which is a
+    # subset of it. The spacing rule is then exact and symmetric —
+    # unlike yielding ``spacing / 2`` off the whole cell frontier,
+    # which also clears the frontier's ends and bends and chamfers
+    # corners no neighbour's ring ever comes near (Fable 2026-11-02:
+    # x2-spaced R10/R11 must be plain 5-vertex rectangles).
+    pre: dict[int, Any] = {}
+    grown_of: dict[int, Any] = {}
+    for inst, side, hull in ring_parts:
         grown = hull.buffer(target, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT)
         base = hull.buffer(floor, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT)
-        region = grown if inside is None else grown.intersection(inside)
-        x0, y0, x1, y1 = hull.bounds
-        own_cell = exclusive.get(inst)
+        grown_of[inst] = grown
+        allowed = own_cell = exclusive.get(inst)
         if own_cell is not None:
-            # Never past the split ("don't invade the neighbour"): the
-            # ring keeps to its own exclusive cell.
-            region = region.intersection(own_cell)
-        walls: list[Any] = []
-        shared: list[str] = []
-        for other, other_side, other_hull in hulls:
-            if other == inst or other_side != side or other not in cells:
-                continue
-            ox0, oy0, ox1, oy1 = other_hull.bounds
-            if (
-                ox0 > x1 + reach_limit
-                or ox1 < x0 - reach_limit
-                or oy0 > y1 + reach_limit
-                or oy1 < y0 - reach_limit
-            ):
-                continue
-            gap = hull.distance(other_hull)
-            if gap >= reach_limit:
-                continue
-            if own_cell is None:
-                continue
-            other_cell = exclusive.get(other)
-            if other_cell is None:
-                continue
-            edge = own_cell.intersection(other_cell)
-            if edge.is_empty or edge.length <= 1e-6:
-                continue
-            # ...and EXTENDS to the shared frontier: the strip from the
-            # ring's own reach out to it fills in the same wall segment
-            # the neighbour's ring is being given, so the two coincide.
-            # Bounded by EITHER hull's reach so both parts draw the same
-            # span — with only the nearer hull's reach the two walls
-            # could leave a sliver of boundary undrawn on one side.
-            wall = edge.buffer(spacing / 2.0).intersection(
-                hull.buffer(reach).union(other_hull.buffer(reach))
-            )
-            if inside is not None:
-                wall = wall.intersection(inside)
-            wall = own_cell.intersection(wall)
-            if not wall.is_empty:
-                walls.append(wall)
-                shared.append(str(ir.instance_refdes[other]))
-        if walls:
-            region = region.union(_shapely_unary_union(walls))
-        # The floor-offset ring still applies where the part's own cell
-        # allows it: never inside the pad-clearance floor off its own
-        # pads, and never across the split.
-        region = region.union(base if own_cell is None else base.intersection(own_cell))
-        poly = max(
+            # ``hull`` unions back in so a cell dipping inside the
+            # part's own body cannot slit the ring through it.
+            allowed = own_cell.union(hull)
+        region = grown if inside is None else grown.intersection(inside)
+        if allowed is not None:
+            region = region.intersection(allowed)
+        region = region.union(base if allowed is None else base.intersection(allowed))
+        pre[inst] = max(
             getattr(region, "geoms", [region]),
             key=lambda g: g.intersection(base).area,
         )
+
+    rings: dict[int, tuple[str, list[Point]]] = {}
+    key_rings: dict[int, list[Point]] = {}
+    # ``sag``: GEOS's chorded buffer boundary dips inside the true circle
+    # by ``r * (1 - cos(pi / 32))`` (8 quad segs); a hair over that keeps
+    # the keep-out at ``spacing``. Round join — mitre spikes on a
+    # many-vertex region shatter the yield into slivers.
+    sag = spacing * (1.0 - math.cos(math.pi / 32.0)) * 1.1
+    for inst, side, hull in ring_parts:
+        region = pre[inst]
+        own_cell = exclusive.get(inst)
+        if own_cell is not None:
+            others = [
+                pre[o]
+                for o, other_side, _h in ring_parts
+                if o != inst and other_side == side and o in pre
+            ]
+            others = [rg for rg in others if rg.distance(region) < spacing + sag]
+            if others:
+                # The ring yields ``spacing / 2`` off the frontier ONLY
+                # where a neighbour's ring could actually reach — the
+                # stretch of cell boundary within ``spacing`` of another
+                # part's unconstrained region. Both sides yield there,
+                # so the pair keeps exactly ``spacing``. Everywhere else
+                # the ring is free up to its own cell's edge — a corner
+                # the frontier merely passes near keeps its square shape
+                # instead of a chamfer for nobody. ``core`` carries
+                # GEOS's inward chord sag, which only ever pulls the
+                # yield a hair deeper. It also carries the part of the
+                # hull the split does NOT cover — for a pair packed
+                # tighter than the cells can split, the body is the only
+                # territory the ring has left; the sub-floor cut opens
+                # whatever of it can't print. Hull inside the cell is
+                # deliberately absent: admitting it inside ``danger``
+                # would let the ring dip to its own hull surface within
+                # ``spacing`` of a neighbour's ring.
+                danger = _shapely_unary_union(
+                    [rg.buffer(spacing + sag) for rg in others]
+                )
+                core = own_cell.buffer(-spacing / 2.0).union(hull)
+                region = region.difference(danger.difference(core))
+        poly = max(
+            getattr(region, "geoms", [region]),
+            key=lambda g: g.intersection(hull).area,
+        )
+        grown = grown_of[inst]
         exterior = _shapely_orient(_ShapelyPolygon(poly.exterior), 1.0).exterior
         rings[inst] = (side, [(float(x), float(y)) for x, y in exterior.coords])
         # The ring the label spots key off (gr537483): ``grown``, the
-        # un-settled target-offset ring, BEFORE the cell, walls, edge and
-        # bends reshape it — identical for identical parts whatever their
+        # un-settled target-offset ring, BEFORE the cell and the edge
+        # reshape it — identical for identical parts whatever their
         # drawn outlines became, and grown by the same decimate slack the
         # drawn ring carries, so the gap check can never disagree with
         # the candidate anchors about where the outline sits.
@@ -2237,70 +2454,122 @@ def part_outlines(
                 _ShapelyPolygon(grown.exterior), 1.0
             ).exterior.coords
         ]
-        if shared:
-            shared_with[inst] = tuple(sorted(shared, key=_refdes_sort_key))
+
+    # Vendor-silk parts' ``ring``/``key_ring``: the convex hull of their
+    # placed strokes — the extent the refdes spots, pin-1 body test and
+    # later outlines' overlap cut key off. There is no drawn ring to
+    # carry; the strokes below ARE the outline.
+    vendor_ring: dict[int, list[Point]] = {}
+    for inst, v in vendor.items():
+        strokes = v["strokes"]
+        all_pts = [p for pts, _w in strokes for p in pts]
+        hull_g = _ShapelyMultiPoint(all_pts).convex_hull
+        if hull_g.geom_type != "Polygon":
+            hull_g = hull_g.buffer(max(stroke_width_mm / 2.0, 0.05))
+        vendor_ring[inst] = [
+            (float(x), float(y))
+            for x, y in _shapely_orient(
+                _ShapelyPolygon(hull_g.exterior), 1.0
+            ).exterior.coords
+        ]
+        key_rings[inst] = vendor_ring[inst]
 
     # One union per side: anywhere within ``floor`` of a same-side pad
-    # hull. A shared-wall stretch landing in it cannot print — the line
-    # would sit inside someone's pad clearance — so it is left open on
-    # both rings at once. The via bend needs it too: a redraw landing in
-    # it buys a second gap where the other mode adds none (gr495393).
+    # hull. A ring stretch landing in it cannot print — the line would
+    # sit inside someone's pad clearance — so it is left open there
+    # (``floor_open_mm``): what opens a too-close pair's facing sides.
     subfloor: dict[str, Any] = {}
     for side_name in ("top", "bottom"):
         zones = [
-            hull.buffer(floor - _WALL_FLOOR_EPS_MM)
+            hull.buffer(floor - _FLOOR_EPS_MM)
             for _inst, s, hull in hulls
             if s == side_name
         ]
         if zones:
             subfloor[side_name] = _shapely_unary_union(zones)
-    bent: dict[int, tuple[str, ...]] = {}
-    bulged: dict[int, tuple[tuple[str, float, float], ...]] = {}
-    if obstacles_by_side:
-        work = [
-            _BendRing(
-                inst=inst,
-                side=side,
-                refdes=str(ir.instance_refdes[inst]),
-                poly=_ShapelyPolygon(ring),
-                bent=[],
-                bulged=[],
-            )
-            for inst, (side, ring) in sorted(
-                rings.items(),
-                key=lambda kv: _refdes_sort_key(str(ir.instance_refdes[kv[0]])),
-            )
+    # The via obstacles each side's rings answer to, and the legal
+    # clearance a via is owed (half a stroke plus ``via_to_silk_mm``) —
+    # what a touching via's gap is cut at.
+    via_legal = stroke_width_mm / 2.0 + _via_to_silk_mm(capability)
+    side_vias: dict[str, list[dict[str, Any]]] = {
+        side_name: [
+            o
+            for o in (obstacles_by_side or {}).get(side_name, [])
+            if o.get("obstacle") == "via"
         ]
-        _bend_around_vias(
-            work,
-            obstacles_by_side,
-            inside=inside,
-            floor_zones=subfloor,
-            spacing_mm=spacing,
-            stroke_width_mm=stroke_width_mm,
-            via_to_silk_mm=_via_to_silk_mm(capability),
-            bulge_veto=bulge_veto,
-        )
-        for w in work:
-            if w.bent:
-                rings[w.inst] = (
-                    w.side,
-                    [(float(x), float(y)) for x, y in w.poly.exterior.coords],
-                )
-                bent[w.inst] = tuple(w.bent)
-                bulged[w.inst] = tuple(w.bulged)
-
+        for side_name in ("top", "bottom")
+    }
     # Draw order is natural refdes order, as everywhere in this module. A
     # later outline that runs INSIDE an earlier one leaves out that
-    # stretch — with every ring already clipped to its own cell this can
-    # only fire on degenerate splits, but it stays as the guard. A shared
-    # midline wall is not cut: both rings run exactly along the same
-    # split, so each stays one closed line and the wall prints as one.
-    min_run = stroke_width_mm * _CLIP_MIN_RUN_STROKES
-    order = sorted(rings, key=lambda i: _refdes_sort_key(str(ir.instance_refdes[i])))
+    # stretch — with every ring already clipped to its own shrunk cell
+    # this can only fire on degenerate splits, but it stays as the guard.
+    order = sorted(
+        [*rings, *vendor],
+        key=lambda i: _refdes_sort_key(str(ir.instance_refdes[i])),
+    )
     drawn: list[tuple[int, str, Any]] = []
     out: dict[int, PartOutline] = {}
     for inst in order:
+        if inst in vendor:
+            # Vendor silk: CUT only, never moved or redrawn — the
+            # edge-margin, pad-copper and via cuts all ran in the
+            # detection pass above (the kept fraction there is the
+            # ring-fallback test). Only the earlier-drawn-outline
+            # overlap cut remains, same as the ring path.
+            v = vendor[inst]
+            side = vendor_side[inst]
+            ring = vendor_ring[inst]
+            designed = v["designed"]
+            pieces = list(v["pieces"])
+            edge_open = v["edge_open"]
+            drop_open = v["drop_open"]
+            line = (
+                _shapely_unary_union([_ShapelyLineString(r) for r, _w in pieces])
+                if pieces
+                else _ShapelyLineString(ring)
+            )
+            area = _ShapelyPolygon(ring).buffer(0)
+            over = [
+                (other, other_area)
+                for other, other_side, other_area in drawn
+                if other_side == side
+                and other_area.distance(line) <= 1.5 * stroke_width_mm
+                and line.intersection(other_area.buffer(-stroke_width_mm)).length
+                > stroke_width_mm
+            ]
+            buried = 0.0
+            if over:
+                earlier = _shapely_unary_union([a for _o, a in over])
+                buried = line.intersection(earlier.buffer(-stroke_width_mm)).length
+                meets_cut = earlier.buffer(1.5 * stroke_width_mm)
+                kept3: list[tuple[list[Point], float]] = []
+                for pts, w in pieces:
+                    for r in _clip_runs([pts], cut=meets_cut, min_run_mm=0.0):
+                        rl = _polyline_length(r)
+                        if rl >= min_run:
+                            kept3.append((r, w))
+                        else:
+                            drop_open += rl
+                pieces = kept3
+            drawn.append((inst, side, area))
+            out[inst] = PartOutline(
+                side=side,
+                ring=ring,
+                runs=[p for p, _w in pieces],
+                key_ring=key_rings[inst],
+                edge_cut=edge_open > 1e-9,
+                edge_open_mm=edge_open,
+                buried_mm=buried,
+                meets=tuple(str(ir.instance_refdes[o]) for o, _a in over),
+                via_gaps=tuple(v["labels"]),
+                via_open_mm=v["via_open"],
+                via_pieces=0,
+                vendor=True,
+                vendor_mm=designed,
+                run_widths=tuple(w for _p, w in pieces),
+                drop_open_mm=drop_open,
+            )
+            continue
         side, ring = rings[inst]
         line = _ShapelyLineString(ring)
         runs, edge_cut, edge_open = [ring], False, 0.0
@@ -2308,15 +2577,15 @@ def part_outlines(
             runs = _clip_runs(runs, keep=inside, min_run_mm=min_run)
             edge_cut = True
             edge_open = line.length - sum(_polyline_length(r) for r in runs)
-        # The pad-clearance floor still applies to a shared wall: where
-        # the split itself is closer than ``floor`` to EITHER part's pad
-        # hull (a pair packed tighter than two floors), no line can print
+        # The pad-clearance floor applies to the shrunk ring too: where a
+        # drawn stretch would sit closer than ``floor`` to ANY same-side
+        # pad hull (a pair packed tighter than two floors plus the
+        # spacing, whose shrunk ring landed inside it), no line can print
         # there at all, so the facing stretch is left open rather than
         # invading the neighbour or breaking clearance. Checked against
         # EVERY same-side hull, not just this part's own — the sampled
-        # split can wiggle off the true midline onto one side, and the
-        # same stretch has to come off both rings for the wall to stay
-        # coincident.
+        # split can wiggle off the true midline onto one side, and both
+        # facing sides have to open for the pair to stay symmetric.
         below = subfloor.get(side)
         floor_open = 0.0
         if below is not None and below.intersects(line):
@@ -2325,6 +2594,24 @@ def part_outlines(
                 _polyline_length(r) for r in clipped
             )
             runs = clipped
+        # A routed via inside the ring's silk clearance opens a straight
+        # gap, both ends square at the legal clearance — never a dent or
+        # bulge detouring round it (:func:`_via_gap_cut`).
+        via_open = 0.0
+        via_pieces = 0
+        gap_labels: list[str] = []
+        if side_vias.get(side) and runs:
+            drawn_line = _shapely_unary_union([_ShapelyLineString(r) for r in runs])
+            cut, gap_labels = _via_gap_cut(side_vias[side], drawn_line, via_legal)
+            if cut is not None:
+                clipped = _clip_runs(runs, cut=cut, min_run_mm=min_run)
+                via_open = sum(_polyline_length(r) for r in runs) - sum(
+                    _polyline_length(r) for r in clipped
+                )
+                # pieces PRODUCED, the unit clip_pieces counts and the
+                # cap documents (not the extra pieces over the uncut runs)
+                via_pieces = len(clipped) if via_open > 0.0 else 0
+                runs = clipped
         area = _ShapelyPolygon(ring).buffer(0)
         over = [
             (other, other_area)
@@ -2353,10 +2640,10 @@ def part_outlines(
             edge_open_mm=edge_open,
             buried_mm=buried,
             meets=tuple(str(ir.instance_refdes[o]) for o, _a in over),
-            shared=shared_with.get(inst, ()),
             floor_open_mm=floor_open,
-            bent_around=bent.get(inst, ()),
-            bulged=bulged.get(inst, ()),
+            via_gaps=tuple(gap_labels),
+            via_open_mm=via_open,
+            via_pieces=via_pieces,
         )
     return out
 
@@ -2473,6 +2760,9 @@ def _circle_overlaps_pad(center: Point, radius: float, pad: dict[str, Any]) -> b
         pcx, pcy = float(pad["x"]), float(pad["y"])
         pr = float(pad["w"]) / 2.0
         return math.hypot(center[0] - pcx, center[1] - pcy) <= radius + pr
+    if pad.get("shape") == "obround":
+        a, b, pr = _obround_axis(pad)
+        return dist_point_to_segment(center, a, b) <= radius + pr
     return _polygon_overlaps_circle(_pad_rect_polygon(pad), center, radius)
 
 
@@ -2541,10 +2831,9 @@ def world_courtyard_rings(ir: PcbIR) -> list[list[Point]]:
     """Every PLACED instance's courtyard polygon in board coordinates —
     the per-part "thicket" pieces a fiducial must stay out of. A pinless
     placed instance (mounting hole) contributes nothing: it has no land
-    pattern and a fiducial beside a mounting hole is fine. Bottom-side
-    mirroring is ignored on purpose: a mirror flips a ring about its own
-    centre, and the fiducial standoff test that consumes these rings
-    carries millimetres of its own slack."""
+    pattern and a fiducial beside a mounting hole is fine. Bottom rings
+    mirror about the instance origin before rotation, matching placement
+    DRC even for an asymmetric land pattern far from that origin."""
     pins_of_inst: dict[int, list[int]] = {}
     for pid in range(ir.n_pins):
         pins_of_inst.setdefault(int(ir.pin_instance[pid]), []).append(pid)
@@ -2565,7 +2854,7 @@ def world_courtyard_rings(ir: PcbIR) -> list[list[Point]]:
                 cx=cx,
                 cy=cy,
                 rot=0.0 if math.isnan(rot) else rot,
-                mirror=False,
+                mirror=bool(ir.inst_bottom[inst]),
             )
         )
     return rings
@@ -4054,15 +4343,6 @@ def build_silk(
     courtyard ring and the corner tick are NOT filtered by this — see
     that same note for why.
 
-    A courtyard ring bulges out round a routed via only where that costs
-    no silk (gr495393 option c, Reto 2026-10-18: "better algo should not
-    require any label missing"). The board is built with every bulge, and
-    again with none; while the bulged build drops an item the no-bulge
-    build kept, the bulges within :data:`_BULGE_VETO_REACH_MM` of the
-    dropped item's part are vetoed (the ring dents or is cut there
-    instead) and the board rebuilt. If the widest reach still loses one,
-    the no-bulge build stands.
-
     ``label_spots`` is the per-instance label override (gr496552: "we
     can move it"), refdes -> a :data:`LABEL_SPOT_ORDER` name; the named
     spot becomes that part's FIRST candidate, ahead of even an aligned
@@ -4073,65 +4353,20 @@ def build_silk(
     sits out of :func:`_aligned_label_groups` — the spot its row shares
     is a tidiness default, and an explicit spot outranks it.
     """
-    common: dict[str, Any] = {
-        "vias": vias,
-        "instance_sides": instance_sides,
-        "reserved": reserved,
-        "height_mm": height_mm,
-        "stroke_width_mm": stroke_width_mm,
-        "capability": capability,
-        "outline": outline,
-        "polarized": polarized,
-        "unpolarized": unpolarized,
-        "label_spots": label_spots,
-    }
-    result, bulges = _build_silk_pass(ir, pads, bulge_veto=frozenset(), **common)
-    if not bulges:
-        return result
-    base, _none = _build_silk_pass(ir, pads, bulge_veto=None, **common)
-    kept = {(c.refdes, c.kind) for c in base.census if c.outcome != "dropped"}
-    centre = {
-        str(ir.instance_refdes[i]): (float(ir.inst_x[i]), float(ir.inst_y[i]))
-        for i in range(ir.n_instances)
-    }
-    veto: set[tuple[str, str]] = set()
-    for reach in _BULGE_VETO_REACH_MM:
-        lost = {
-            c.refdes
-            for c in result.census
-            if c.outcome == "dropped" and (c.refdes, c.kind) in kept
-        }
-        if not lost:
-            return result
-        more = {
-            (refdes, label)
-            for refdes, items in bulges.items()
-            for label, x, y in items
-            if any(
-                math.hypot(x - centre[r][0], y - centre[r][1]) <= reach
-                for r in lost
-                if r in centre
-            )
-        }
-        if more <= veto:
-            continue
-        veto |= more
-        result, bulges = _build_silk_pass(
-            ir, pads, bulge_veto=frozenset(veto), **common
-        )
-        if not bulges:
-            break
-    if not any(
-        c.outcome == "dropped" and (c.refdes, c.kind) in kept for c in result.census
-    ):
-        return result
-    return base
-
-
-#: How far from a part whose silk a bulge cost (mm, part origin to via
-#: centre) :func:`build_silk` vetoes bulges, widening each round: the part's
-#: own neighbourhood first, then its label ladder's reach.
-_BULGE_VETO_REACH_MM = (2.0, 5.0, 10.0)
+    return _build_silk_pass(
+        ir,
+        pads,
+        vias=vias,
+        instance_sides=instance_sides,
+        reserved=reserved,
+        height_mm=height_mm,
+        stroke_width_mm=stroke_width_mm,
+        capability=capability,
+        outline=outline,
+        polarized=polarized,
+        unpolarized=unpolarized,
+        label_spots=label_spots,
+    )
 
 
 def _build_silk_pass(
@@ -4148,10 +4383,8 @@ def _build_silk_pass(
     polarized: frozenset[str] | None,
     unpolarized: frozenset[str] | None,
     label_spots: dict[str, str] | None,
-    bulge_veto: frozenset[tuple[str, str]] | None,
-) -> tuple[SilkResult, dict[str, list[tuple[str, float, float]]]]:
-    """One :func:`build_silk` pass with these bulges vetoed (``None``: no
-    bulges); also returns the bulges kept, by refdes."""
+) -> SilkResult:
+    """The one :func:`build_silk` pass."""
     sides = instance_sides or {}
     polarized_set = polarized or frozenset()
     unpolarized_set = unpolarized or frozenset()
@@ -4271,8 +4504,8 @@ def _build_silk_pass(
     #
     # The rings themselves come from `part_outlines` (gr495393): settled
     # against every other part and the board edge at once, never clipped
-    # by other silk afterwards, and redrawn around the routed vias they
-    # would print on.
+    # by other silk afterwards, and opened in a straight gap at each
+    # routed via they would print on.
     outlines = part_outlines(
         ir,
         capability=capability,
@@ -4280,13 +4513,7 @@ def _build_silk_pass(
         instance_sides=sides,
         outline=outline_ring,
         obstacles_by_side=cast(dict[str, list[dict[str, Any]]], obstacles_by_side),
-        bulge_veto=bulge_veto,
     )
-    bulges = {
-        str(ir.instance_refdes[inst]): list(o.bulged)
-        for inst, o in outlines.items()
-        if o.bulged
-    }
     courtyard_ring: dict[int, tuple[str, list[Point]]] = {
         inst: (o.side, o.ring) for inst, o in outlines.items()
     }
@@ -4410,11 +4637,12 @@ def _build_silk_pass(
         courtyard_kept = False
         box_pts: list[Point] = []
         part_outline = outlines.get(inst)
-        if box_local and part_outline is not None:
+        if part_outline is not None:
             box_pts = part_outline.ring
             hard = seed_obstacles["bottom" if mirror else "top"]
             hit = None
             runs: list[list[Point]] = []
+            run_widths: list[float] = []
             clip_pieces = 0
             kept_mm = 0.0
             # A whole outline is not lost to one via. Break it around
@@ -4422,27 +4650,38 @@ def _build_silk_pass(
             # generator emits, and what the fab would have trimmed to
             # anyway (`_clip_polyline`). Only a courtyard with too little
             # left to read as an outline still drops.
-            for run in part_outline.runs:
-                run_hit = _stroke_hits(run, hard, stroke_width_mm)
+            for rk, run in enumerate(part_outline.runs):
+                w_k = (
+                    part_outline.run_widths[rk]
+                    if rk < len(part_outline.run_widths)
+                    else stroke_width_mm
+                )
+                run_hit = _stroke_hits(run, hard, w_k)
                 if run_hit is None:
                     runs.append(run)
+                    run_widths.append(w_k)
                     kept_mm += _polyline_length(run)
                     continue
                 hit = hit or run_hit
                 pieces, kept, _total = _clip_polyline(
                     run,
                     _near_obstacles(hard, run, 2.0 * stroke_width_mm),
-                    stroke_width_mm,
+                    w_k,
                 )
                 runs += pieces
+                run_widths += [w_k] * len(pieces)
                 clip_pieces += len(pieces)
                 kept_mm += kept
             # What the outline draws on a bare board: the ring less the
-            # designed gaps (board edge, and the below-floor stretch of a
-            # shared wall). The share kept is measured against this, so
-            # an edge connector's gap never counts as loss.
+            # designed gaps (board edge, a too-close pair's below-floor
+            # facing stretch). The share kept is measured against this,
+            # so an edge connector's gap never counts as loss — but a
+            # via's clearance break does: it is lost outline, and enough
+            # of them must fail the kept fraction (Fable 2026-11-02).
             designed_mm = (
-                _polyline_length(box_pts)
+                part_outline.vendor_mm
+                if part_outline.vendor
+                else _polyline_length(box_pts)
                 - part_outline.edge_open_mm
                 - part_outline.floor_open_mm
             )
@@ -4455,10 +4694,33 @@ def _build_silk_pass(
                     + ", ".join(part_outline.meets)
                     + " (drawn first)"
                 )
-            # The piece cap counts what ``_clip_polyline`` PRODUCED — an
-            # outline's designed gaps (edge/shared-wall openings already
-            # broken into ``runs``) are not confetti it made.
-            shattered = clip_pieces > _COURTYARD_MAX_PIECES
+            if part_outline.floor_open_mm >= _polyline_length(box_pts) - 1e-9:
+                causes.append(
+                    "lies wholly inside the pad-clearance floor of "
+                    "a too-close neighbour"
+                )
+            elif not part_outline.runs and part_outline.via_gaps:
+                causes.append(
+                    "lies wholly inside the silk clearance of "
+                    + ", ".join(part_outline.via_gaps)
+                )
+            elif not part_outline.runs and part_outline.drop_open_mm:
+                causes.append(
+                    "every fragment the cut left is under the min-run floor to draw"
+                )
+            elif part_outline.via_gaps:
+                causes.append(
+                    f"lost {part_outline.via_open_mm:.2f}mm of its outline "
+                    "at the silk clearance of " + ", ".join(part_outline.via_gaps)
+                )
+            # The piece cap counts what ``_clip_polyline`` PRODUCED plus
+            # the pieces the via gaps opened — an outline's designed
+            # gaps (edge/floor openings already broken into ``runs``)
+            # are not confetti it made.
+            shattered = (
+                not part_outline.vendor
+                and (clip_pieces + part_outline.via_pieces) > _COURTYARD_MAX_PIECES
+            )
             too_little = (
                 designed_mm <= 0 or kept_mm / designed_mm < _COURTYARD_MIN_KEPT_FRACTION
             )
@@ -4486,16 +4748,22 @@ def _build_silk_pass(
                             )
                             + f", {tail} -- dropped"
                         ),
-                        stroke_width_mm=stroke_width_mm,
+                        stroke_width_mm=min(
+                            part_outline.run_widths, default=stroke_width_mm
+                        )
+                        if part_outline.vendor
+                        else stroke_width_mm,
                     )
                 )
             else:
-                for run in runs:
+                for k, run in enumerate(runs):
                     bucket.append(
-                        _draw(run, stroke_width_mm, role="outline", refdes=refdes)
+                        _draw(run, run_widths[k], role="outline", refdes=refdes)
                     )
                 courtyard_kept = True
                 notes = []
+                if part_outline.vendor:
+                    notes.append("outline is the footprint's own silk graphics")
                 if part_outline.edge_cut:
                     notes.append(
                         "courtyard outline opened at the board edge "
@@ -4510,13 +4778,14 @@ def _build_silk_pass(
                 if part_outline.floor_open_mm:
                     notes.append(
                         "courtyard outline leaves open "
-                        f"{part_outline.floor_open_mm:.2f}mm where the shared "
-                        "line would sit inside the pad-clearance floor"
+                        f"{part_outline.floor_open_mm:.2f}mm where the facing "
+                        "side would sit inside the pad-clearance floor"
                     )
-                if part_outline.bent_around:
+                if part_outline.via_gaps:
                     notes.append(
-                        "courtyard outline bent around "
-                        + ", ".join(part_outline.bent_around)
+                        "courtyard outline leaves open "
+                        f"{part_outline.via_open_mm:.2f}mm at the silk "
+                        "clearance of " + ", ".join(part_outline.via_gaps)
                     )
                 if hit is not None:
                     notes.append(
@@ -4534,7 +4803,11 @@ def _build_silk_pass(
                         side=side_name,
                         outcome="relocated" if notes else "placed",
                         reason="; ".join(notes) or None,
-                        stroke_width_mm=stroke_width_mm,
+                        stroke_width_mm=min(
+                            part_outline.run_widths, default=stroke_width_mm
+                        )
+                        if part_outline.vendor
+                        else stroke_width_mm,
                     )
                 )
 
@@ -4834,9 +5107,8 @@ def _build_silk_pass(
         # never `box_local`: the two differ by the decimate slack the
         # drawn ring carries, which is exactly the skew that priced every
         # named spot out. `_label_blocked` measures the gap against the
-        # settled `ring` — where the two differ (a wall it extended to,
-        # a via it bent around), the blocked spot simply walks on, same
-        # as before.
+        # settled `ring` — where the two differ (a wall it shrank to),
+        # the blocked spot simply walks on, same as before.
         box_board = (
             [(px - cx, py - cy) for px, py in part_outline.key_ring]
             if part_outline is not None
@@ -4986,7 +5258,7 @@ def _build_silk_pass(
         census=tuple(census),
         dropped=dropped,
         relocated=relocated,
-    ), bulges
+    )
 
 
 __all__ = [

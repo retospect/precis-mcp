@@ -321,17 +321,17 @@ def test_margin_label_axis_blocked_when_surrounded() -> None:
 
 def test_margin_edge_axis_flat_even_for_big_rings() -> None:
     """The edge axis is the flat _SILK_EDGE_REQ_MM, not a ring-radius
-    want: a big ring whose courtyard sits 1.0mm off the edge pays 0.25mm
-    — under the retired want its circumradius (> room) priced 0, which
-    is exactly how run 34's R23 hugged the outline for free. Edge-mated
-    parts stay exempt."""
+    want: a big ring whose courtyard sits 0.8mm off the edge pays the
+    requirement's shortfall — under the retired want its circumradius
+    (> room) priced 0, which is exactly how run 34's R23 hugged the
+    outline for free. Edge-mated parts stay exempt."""
     from precis.pcb.topoplace.proxy import _SILK_EDGE_REQ_MM
 
-    d = _margin_label_fixture([("U1", 6.0, 15.0, 5.0)])
+    d = _margin_label_fixture([("U1", 5.8, 15.0, 5.0)])
     w = ObjectiveShares(crossings=0.5, overlap=0.3, margin=0.2)
     proxy = ProxyState(d, d.pose0, w)
-    # ring edge at x=1.0 → distance to the outline is 1.0 exactly.
-    assert proxy._mg_e[0] == pytest.approx(_SILK_EDGE_REQ_MM - 1.0)
+    # ring edge at x=0.8 → distance to the outline is 0.8 exactly.
+    assert proxy._mg_e[0] == pytest.approx(_SILK_EDGE_REQ_MM - 0.8)
 
     dm = _margin_label_fixture([("U1", 6.0, 15.0, 5.0)], edge_mate=(True,))
     pm = ProxyState(dm, dm.pose0, w)
@@ -409,27 +409,412 @@ def test_label_boxes_for_route_keepouts() -> None:
     assert boxes_none == {}
 
 
+def _pair_gap_fixture(
+    poses: list[list[float]], *, capability: str | None = "4layer"
+) -> Any:
+    """Two 0402-class parts on a 30 mm board: 1.0×0.5 mm pad bodies
+    (``part_body``), courtyards the bodies + 0.4 mm. ``poses`` rows are
+    (x, y, rot_q, side)."""
+    from precis.pcb.capabilities import capability_for
+    from precis.pcb.topoplace.design import SilkRoom, TopoDesign
+
+    n = len(poses)
+    body = np.asarray(
+        [[-0.5, -0.25], [0.5, -0.25], [0.5, 0.25], [-0.5, 0.25], [-0.5, -0.25]]
+    )
+    court = np.asarray(
+        [[-0.9, -0.65], [0.9, -0.65], [0.9, 0.65], [-0.9, 0.65], [-0.9, -0.65]]
+    )
+    return TopoDesign(
+        parts=tuple(f"R{i + 1}" for i in range(n)),
+        pin_xy=np.zeros((n, 2)),
+        pin_part=np.arange(n),
+        pin_side=np.zeros(n, dtype=np.int8),
+        pin_label=np.asarray(["1"] * n, dtype=object),
+        pin_net=np.full(n, -1, dtype=np.int32),
+        net_pins=(),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(n, dtype=bool),
+        freedoms=np.full(n, 3, dtype=np.uint8),
+        outline=np.asarray([[0, 0], [30, 0], [30, 30], [0, 30]]),
+        pose0=np.asarray(poses, dtype=float),
+        part_outline=tuple(court.copy() for _ in range(n)),
+        part_body=tuple(body.copy() for _ in range(n)),
+        silk=(
+            SilkRoom.from_capability(capability_for(capability))
+            if capability
+            else SilkRoom.fallback()
+        ),
+    )
+
+
+def test_hard_pair_gap_legalizes_to_silk_separation() -> None:
+    """topo-silk-spacing ruling: two 0402s seeded 0.9 mm apart pad-to-pad
+    (courtyard gap 0.1 mm — inside the 0.20 mm courtyard pair
+    requirement) end at least 1.00 mm pad gap after legalise, the
+    separation two full outlines at the JLC-min 0.275 mm target need to
+    draw without sharing a wall (2·0.275 + 3·0.15 hull-to-hull)."""
+    from precis.pcb.topoplace.legalize import legalize_pose
+    from precis.pcb.topoplace.proxy import _body_geom
+
+    # centres 1.9mm apart: pad gap 1.9 - 1.0 = 0.9mm, courtyard gap 0.1mm
+    d = _pair_gap_fixture([[10.0, 15.0, 0.0, 0.0], [11.9, 15.0, 0.0, 0.0]])
+    res = legalize_pose(d, d.pose0)
+    assert res.resolved, res.remaining
+    ga = _body_geom(d, res.pose[0], 0)
+    gb = _body_geom(d, res.pose[1], 1)
+    assert float(ga.distance(gb)) >= 1.00 - 1e-3
+
+
+def test_hard_pair_gap_exempts_one_body_pairs() -> None:
+    """The named exemption has two classes (round-3 ruling): rigid-group
+    members share one authored body — a tight (even overlapping) pose
+    stands untouched. The ends of a hard upper-distance measure — the
+    crystal-load-cap carry — are exempt from the GAP only: courtyards
+    may touch but never overlap, so a tight disjoint pose stands while
+    an overlapping one separates just to a touch, not to
+    ``pair_req_mm``."""
+    import dataclasses
+
+    from precis.pcb.topoplace.design import TopoMeasure
+    from precis.pcb.topoplace.legalize import legalize_pose
+    from precis.pcb.topoplace.proxy import _ring_geom
+
+    d = _pair_gap_fixture([[10.0, 15.0, 0.0, 0.0], [10.8, 15.0, 0.0, 0.0]])
+    grouped = dataclasses.replace(
+        d,
+        group_of=np.asarray([0, 0], dtype=np.int32),
+        group_members=((0, 1),),
+    )
+    res = legalize_pose(grouped, grouped.pose0)
+    np.testing.assert_allclose(res.pose, grouped.pose0)
+    assert res.resolved
+
+    spec = TopoMeasure(ia=0, ib=1, bound="upper", goal_mm=2.0, weight=1.0, hard=True)
+    # a hard near() measure exempts the GAP: 2.0mm centres sit the
+    # courtyards 0.2mm apart — under pair_req, allowed
+    d2 = _pair_gap_fixture([[10.0, 15.0, 0.0, 0.0], [12.0, 15.0, 0.0, 0.0]])
+    measured = dataclasses.replace(d2, measures=(spec,))
+    res2 = legalize_pose(measured, measured.pose0)
+    np.testing.assert_allclose(res2.pose, measured.pose0)
+    assert res2.resolved
+
+    # but the carry is no licence to nest: an overlapping authored pose
+    # separates to a TOUCH (its own requirement is 0 — the overlap is
+    # the only thing pushed out)
+    measured_overlap = dataclasses.replace(d, measures=(spec,))
+    res3 = legalize_pose(measured_overlap, measured_overlap.pose0)
+    assert res3.resolved, res3.remaining
+    ra, rb = _ring_geom(d, res3.pose[0], 0), _ring_geom(d, res3.pose[1], 1)
+    assert ra is not None and rb is not None
+    assert float(ra.intersection(rb).area) == pytest.approx(0.0, abs=1e-9)
+    assert float(ra.distance(rb)) < float(d.silk.pair_req_mm) - 0.1
+
+
+def test_hard_pair_gap_fixed_fixed_reports_not_fails() -> None:
+    """Round-2 ruling: a pair with BOTH ends authored ``fixed`` is
+    adjacency the placer may not move — exempt from the hard gap like a
+    one-body pair but REPORTED (``noted`` rows carry reason
+    ``fixed-fixed``; ``pair_gap_flagged`` surfaces it for the info
+    lines) and never a ``pcb.placement-gap`` failure. A pair with a
+    movable side still resolves or fails."""
+    import dataclasses
+
+    from precis.pcb.topoplace.legalize import legalize_pose
+    from precis.pcb.topoplace.proxy import pair_gap_flagged, pair_gap_violations
+
+    d = _pair_gap_fixture([[10.0, 15.0, 0.0, 0.0], [10.8, 15.0, 0.0, 0.0]])
+    locked = dataclasses.replace(d, fixed=np.asarray([True, True]))
+    res = legalize_pose(locked, locked.pose0)
+    np.testing.assert_allclose(res.pose, locked.pose0)  # nothing may move
+    assert res.resolved, res.remaining
+    assert res.noted and res.noted[0][:2] == (0, 1)
+    assert res.noted[0][3] == "fixed-fixed"
+    assert not pair_gap_violations(locked, res.pose)
+    flagged = pair_gap_flagged(locked, res.pose)
+    assert flagged == ((0, 1, res.noted[0][2]),)
+
+    # one movable side → the hard gap still applies and resolves
+    half = dataclasses.replace(d, fixed=np.asarray([True, False]))
+    res2 = legalize_pose(half, half.pose0)
+    np.testing.assert_allclose(res2.pose[0], half.pose0[0])  # fixed stays
+    assert res2.resolved, res2.remaining
+    assert not pair_gap_violations(half, res2.pose)
+
+
+def test_legalize_moves_a_part_off_anothers_body() -> None:
+    """Reto 2026-11-02: "No parts can be inside another part's
+    courtyard." A catalog footprint's authored courtyard is the part's
+    BODY — a small part seeded in the gap between a wide part's
+    far-apart lands (the taz-leaf L1-inside-PV1 case, synthetic) is a
+    collision the legalizer must move it out of, not an open spot."""
+    from precis.pcb import DEFAULT_STACKUP
+    from precis.pcb.ir import from_graph
+    from precis.pcb.session import apply_real_pin_offsets
+    from precis.pcb.topoplace.design import design_from_ir
+    from precis.pcb.topoplace.legalize import legalize_pose
+    from precis.pcb.topoplace.proxy import _ring_geom
+
+    graph = {
+        "instances": [
+            {
+                "refdes": "PV1",
+                "part_lcsc": "C5358484",
+                "x": 50.0,
+                "y": 50.0,
+                "fixed": "both",
+            },
+            {"refdes": "L1", "x": 50.0, "y": 52.0},
+        ],
+        "nets": [
+            {
+                "name": "IN",
+                "members": [
+                    {"refdes": "PV1", "pin": "1"},
+                    {"refdes": "L1", "pin": "1"},
+                ],
+            },
+            {
+                "name": "OUT",
+                "members": [
+                    {"refdes": "PV1", "pin": "2"},
+                    {"refdes": "L1", "pin": "2"},
+                ],
+            },
+        ],
+    }
+    fp = {
+        "pads": [
+            {"number": "1", "shape": "RECT", "x": -10.7, "y": 0.0, "w": 3.0, "h": 8.0},
+            {"number": "2", "shape": "RECT", "x": 10.7, "y": 0.0, "w": 3.0, "h": 8.0},
+        ],
+        "pin_map": {},
+        "courtyard": {"bbox": [-12.2, -4.064, 12.2, 4.064]},
+    }
+    ir = from_graph(
+        graph,
+        stackup=DEFAULT_STACKUP,
+        outline=[[0.0, 0.0], [90.0, 0.0], [90.0, 90.0], [0.0, 90.0]],
+    )
+    apply_real_pin_offsets(ir, {"PV1": fp}, footprint_sources={"PV1": "catalog"})
+    d = design_from_ir(ir, {"PV1": fp})
+    res = legalize_pose(d, d.pose0)
+    assert res.resolved, res.remaining
+    np.testing.assert_allclose(res.pose[0], d.pose0[0])  # the fixed part stays
+    pv, l1 = _ring_geom(d, res.pose[0], 0), _ring_geom(d, res.pose[1], 1)
+    assert pv is not None and l1 is not None
+    assert float(pv.intersection(l1).area) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_legalize_escapes_a_seesaw_by_relocating_the_wedged_part() -> None:
+    """taz-leaf x1: a movable part wedged between two FIXED rings whose
+    exclusion zones overlap seesaws — the sweep re-picks the same worst
+    pair every round, pushes it ~0.4mm alternately, and burns the whole
+    round budget while other violating pairs wait (the C5/PV1/L2
+    sandwich). The pose-revisit detector must break the loop
+    structurally: the wedged part teleports to the nearest legal spot
+    and the call resolves, instead of returning 2000 rounds of
+    oscillation."""
+    import dataclasses
+
+    from precis.pcb.topoplace.legalize import legalize_pose
+    from precis.pcb.topoplace.proxy import _ring_geom
+
+    # R2 fixed at (15,17), R3 fixed at (15,13): a movable R1 at (15,15)
+    # needs |dy| >= 2.3 from each (0.65 ring + 1.0 req + 0.65 ring) —
+    # no feasible point between them, so every push resolves one pair
+    # and violates the other.
+    d = _pair_gap_fixture(
+        [[15.0, 15.0, 0.0, 0.0], [15.0, 17.0, 0.0, 0.0], [15.0, 13.0, 0.0, 0.0]]
+    )
+    wedged = dataclasses.replace(d, fixed=np.asarray([False, True, True]))
+    res = legalize_pose(wedged, wedged.pose0)
+    assert res.resolved, res.remaining
+    np.testing.assert_allclose(res.pose[1], wedged.pose0[1])  # fixed stays
+    np.testing.assert_allclose(res.pose[2], wedged.pose0[2])
+    g1 = _ring_geom(wedged, res.pose[0], 0)
+    g2 = _ring_geom(wedged, res.pose[1], 1)
+    g3 = _ring_geom(wedged, res.pose[2], 2)
+    assert g1 is not None and g2 is not None and g3 is not None
+    req = float(wedged.silk.pair_req_mm)
+    assert float(g1.distance(g2)) >= req - 1e-3
+    assert float(g1.distance(g3)) >= req - 1e-3
+
+
+def test_legalize_names_the_pair_when_no_legal_spot_exists() -> None:
+    """The other half of the seesaw ruling: when the board has NO free
+    spot the wedged part can take, the pair is set aside (so every
+    OTHER violating pair still gets fixed) and lands on ``remaining``
+    by name — an honest failure the ``pcb.placement-gap`` gate reports,
+    never a silently half-swept pose."""
+    import dataclasses
+
+    from precis.pcb.topoplace.legalize import legalize_pose
+
+    # Same sandwich on a 6mm board, the fixed pair given board-spanning
+    # rings (the 0.20mm courtyard requirement no longer lets two plain
+    # 0402 rings wall off a whole board): the only unclaimed y-band is
+    # 0.8mm — narrower than the mover's 1.3mm courtyard — so every grid
+    # candidate sits inside a fixed ring's exclusion zone.
+    wall = np.asarray(
+        [[-3.0, -1.2], [3.0, -1.2], [3.0, 1.2], [-3.0, 1.2], [-3.0, -1.2]]
+    )
+    d = _pair_gap_fixture(
+        [[3.0, 3.0, 0.0, 0.0], [3.0, 4.8, 0.0, 0.0], [3.0, 1.2, 0.0, 0.0]]
+    )
+    tiny = dataclasses.replace(
+        d,
+        part_outline=(d.part_outline[0], wall, wall.copy()),
+        fixed=np.asarray([False, True, True]),
+        outline=np.asarray([[0, 0], [6, 0], [6, 6], [0, 6]]),
+    )
+    res = legalize_pose(tiny, tiny.pose0)
+    assert not res.resolved
+    assert any(a == 0 and b in (1, 2) for a, b, _s in res.remaining)
+
+
+def test_legalize_escape_stays_in_the_neighbourhood_or_names_it() -> None:
+    """Round-3 ruling: the escape teleport is bounded to
+    ``_ESCAPE_SPOT_DIAMETERS`` courtyard diameters — a legal spot past
+    that is a different region of the board, and the named failure on
+    ``remaining`` is worth more than the cross-board jump. R1 wedged
+    between two board-wide fixed walls whose exclusion zones meet
+    (under the 0.20mm courtyard requirement a 2.2mm grid of plain rings
+    no longer walls anything off): every candidate within reach is
+    inside a wall's keep-out, so the seesaw ends in NAMED pairs, not a
+    teleport — and promptly, not after the full round budget."""
+    import dataclasses
+
+    from precis.pcb.topoplace.legalize import legalize_pose
+
+    wall = np.asarray(
+        [[-4.0, -2.0], [4.0, -2.0], [4.0, 2.0], [-4.0, 2.0], [-4.0, -2.0]]
+    )
+    d = _pair_gap_fixture(
+        [[4.0, 4.0, 0.0, 0.0], [4.0, 6.0, 0.0, 0.0], [4.0, 2.0, 0.0, 0.0]]
+    )
+    boxed = dataclasses.replace(
+        d,
+        part_outline=(d.part_outline[0], wall, wall.copy()),
+        fixed=np.asarray([False, True, True]),
+        outline=np.asarray([[0, 0], [8, 0], [8, 8], [0, 8]]),
+    )
+    res = legalize_pose(boxed, boxed.pose0)
+    assert not res.resolved
+    assert any(a == 0 and b in (1, 2) for a, b, _s in res.remaining)
+    assert res.rounds < 500, "each wedged pair is set aside, not fought forever"
+
+
+def test_legalize_escape_radius_scales_with_the_obstacle() -> None:
+    """Round-4 ruling: the escape radius is 3 × the LARGER ring side of
+    the pair, not only the mover's — a part wedged against a wide
+    authored body (the x1 BT1/PV1 case) may look past that body. R1
+    seesaws between two fixed 20x8 rings; every legal spot is >10mm
+    away — inside 3 x the obstacle's side, outside 3 x the mover's
+    1.8mm ring. The escape teleports it out and resolves; a mover-only
+    radius would have set the pair aside."""
+    import dataclasses
+
+    from precis.pcb.topoplace.legalize import legalize_pose
+
+    big = np.asarray(
+        [[-10.0, -4.0], [10.0, -4.0], [10.0, 4.0], [-10.0, 4.0], [-10.0, -4.0]]
+    )
+    d = _pair_gap_fixture(
+        [[15.0, 12.7, 0.0, 0.0], [15.0, 8.0, 0.0, 0.0], [15.0, 17.0, 0.0, 0.0]]
+    )
+    wedged = dataclasses.replace(
+        d,
+        part_outline=(d.part_outline[0], big, big.copy()),
+        fixed=np.asarray([False, True, True]),
+    )
+    res = legalize_pose(wedged, wedged.pose0)
+    assert res.resolved, res.remaining
+    np.testing.assert_allclose(res.pose[1], wedged.pose0[1])  # fixed stays
+    np.testing.assert_allclose(res.pose[2], wedged.pose0[2])
+    moved = float(np.hypot(*(res.pose[0, :2] - wedged.pose0[0, :2])))
+    assert moved > 3.0 * 1.8, "reached past the mover's own 3 diameters"
+
+
+def test_legalize_escape_keeps_a_hard_near_measure() -> None:
+    """Round-3 ruling: a part carried by a hard dist-upper measure (the
+    decap/crystal near its IC) may only escape to a spot that KEEPS the
+    measure — a relocation that breaks it is no escape. Same fixed-ring
+    sandwich as the seesaw test, plus a fixed anchor R4: at goal 15 the
+    legal spots below the sandwich stay inside the bound, so the wedged
+    part teleports and resolves; at goal 2.5 no reachable spot keeps
+    the measure, so the fight is set aside and named."""
+    import dataclasses
+
+    from precis.pcb.topoplace.design import TopoMeasure
+    from precis.pcb.topoplace.legalize import legalize_pose
+
+    def measure(goal: float) -> TopoMeasure:
+        return TopoMeasure(
+            ia=0, ib=3, bound="upper", goal_mm=goal, weight=1.0, hard=True
+        )
+
+    # The sandwich is 1.4mm each way now (was 2.0): under the 0.20mm
+    # courtyard requirement the old 0.7mm gaps were already legal and
+    # the mover simply stood — 0.1mm gaps keep the seesaw.
+    d = _pair_gap_fixture(
+        [
+            [15.0, 15.0, 0.0, 0.0],
+            [15.0, 16.4, 0.0, 0.0],
+            [15.0, 13.6, 0.0, 0.0],
+            [15.0, 24.0, 0.0, 0.0],
+        ]
+    )
+    kept = dataclasses.replace(
+        d,
+        fixed=np.asarray([False, True, True, True]),
+        measures=(measure(15.0),),
+    )
+    res = legalize_pose(kept, kept.pose0)
+    assert res.resolved, res.remaining
+    np.testing.assert_allclose(res.pose[1], kept.pose0[1])  # fixed stays
+    np.testing.assert_allclose(res.pose[2], kept.pose0[2])
+    np.testing.assert_allclose(res.pose[3], kept.pose0[3])
+    moved = float(np.hypot(*(res.pose[0, :2] - kept.pose0[0, :2])))
+    assert moved > 1.0, "the escape teleported, not nudged"
+    assert float(np.hypot(*(res.pose[0, :2] - res.pose[3, :2]))) <= 15.0 + 1e-6
+
+    broken = dataclasses.replace(
+        d,
+        fixed=np.asarray([False, True, True, True]),
+        measures=(measure(2.5),),
+    )
+    res2 = legalize_pose(broken, broken.pose0)
+    assert not res2.resolved
+    assert any(a == 0 and b in (1, 2) for a, b, _s in res2.remaining)
+
+
 def test_silkroom_resolves_from_capability_not_fallback() -> None:
-    """The capability threading's whole point: the real 4-layer row's
-    target (0.675) prices a 1.00 mm pair ask, a 0.775 mm label gap and
-    a 1.35 mm edge ask — NOT the module fallbacks (0.80 / 0.675 /
-    1.25) — so the anneal stops packing parts into shared-wall
-    distances the draw cannot label (taz-leaf runs 34-37: 26-32 of 50
-    labels walked). The fallback path stays available for capability-
-    less designs."""
+    """The capability threading's whole point: the draw-side figures the
+    placer prices come off the capability row through the SAME functions
+    the silk pass draws with — under the 2026-11-03 vendor-silk ruling
+    the ring target is the JLC-MIN legal clearance (0.20 ink + half the
+    0.15 pen), identical at every tier, so pair ask 0.20 mm, label gap
+    0.45/0.525 mm and edge ask 0.95 mm coincide with the fallbacks by
+    design; the capability still answers where the tiers differ
+    (``via_to_silk_mm`` 0.25 vs the 0.15 fallback). The fallback path
+    stays available for capability-less designs."""
     from precis.pcb.capabilities import capability_for
     from precis.pcb.topoplace.design import SilkRoom
 
     silk = SilkRoom.from_capability(capability_for("4layer"))
-    assert silk.pair_req_mm == pytest.approx(1.0, abs=1e-9)
-    assert silk.label_anchor_mm == pytest.approx(0.725, abs=1e-9)
-    assert silk.label_clear_mm == pytest.approx(0.8, abs=1e-9)
-    assert silk.edge_req_mm == pytest.approx(1.35, abs=1e-9)
+    assert silk.pair_req_mm == pytest.approx(0.2, abs=1e-9)
+    assert silk.label_anchor_mm == pytest.approx(0.45, abs=1e-9)
+    assert silk.label_clear_mm == pytest.approx(0.525, abs=1e-9)
+    assert silk.edge_req_mm == pytest.approx(0.95, abs=1e-9)
+    assert silk.via_to_silk_mm == pytest.approx(0.25, abs=1e-9)
     fallback = SilkRoom.fallback()
-    assert fallback.pair_req_mm == pytest.approx(0.8, abs=1e-9)
-    assert fallback.label_anchor_mm == pytest.approx(0.625, abs=1e-9)
-    assert fallback.label_clear_mm == pytest.approx(0.7, abs=1e-9)
-    assert fallback.edge_req_mm == pytest.approx(1.25, abs=1e-9)
+    assert fallback.pair_req_mm == pytest.approx(0.2, abs=1e-9)
+    assert fallback.label_anchor_mm == pytest.approx(0.45, abs=1e-9)
+    assert fallback.label_clear_mm == pytest.approx(0.525, abs=1e-9)
+    assert fallback.edge_req_mm == pytest.approx(0.95, abs=1e-9)
+    assert fallback.via_to_silk_mm == pytest.approx(0.15, abs=1e-9)
     assert SilkRoom.from_capability(None) == fallback
     # the design field defaults to the fallback (hand-built synthetics)
     d = _margin_label_fixture([("U1", 15.0, 15.0, 0.9)])
@@ -518,9 +903,12 @@ def test_settle_measures_never_moves_a_fixed_mover_or_the_ic() -> None:
 
 
 def test_settle_measures_moves_a_blocker_off_the_only_spots() -> None:
-    """Three parts wall off U1's east pad: no free spot is within 2 mm of
-    it, so the settle nudges a blocker clear and lands the decap there —
-    every ring still disjoint."""
+    """A blocker sits on every legal spot within reach of U1's east pad:
+    the only candidate rings overlap it or sit inside its silk room, so
+    the settle nudges the blocker clear (a full ``pair_req_mm`` retreat
+    — a partial one would leave the pair a named failure) and lands the
+    decap — every non-exempt pair at the hard courtyard gap after, the
+    measure-bound C1/U1 pair merely disjoint."""
     import dataclasses
     import itertools
 
@@ -528,13 +916,18 @@ def test_settle_measures_moves_a_blocker_off_the_only_spots() -> None:
     from precis.pcb.topoplace.design import TopoMeasure
     from precis.pcb.topoplace.proxy import _measure_violation, _ring_geom
 
+    # Every candidate within 2mm of the pad either overlaps U1 (the
+    # measure pair may touch, never overlap — round-3 ruling) or sits
+    # on B1's ring / inside its silk room; B1 itself is legal (0.4mm
+    # courtyard gap to U1 ≥ the 0.20mm pair_req). B1's ring is bigger
+    # than a decap's (1.5mm half): under the shrunk pair_req a plain
+    # 0.6mm ring left corner routes around it that the 2mm window could
+    # still reach, and the blocker never had to move.
     d = _margin_label_fixture(
         [
             ("U1", 15.0, 15.0, 2.6),
             ("C1", 26.0, 15.0, 0.6),
-            ("B1", 18.5, 15.0, 0.6),
-            ("B2", 18.5, 16.4, 0.6),
-            ("B3", 18.5, 13.6, 0.6),
+            ("B1", 19.5, 15.0, 1.5),
         ]
     )
     spec = TopoMeasure(
@@ -550,7 +943,70 @@ def test_settle_measures_moves_a_blocker_off_the_only_spots() -> None:
     d = dataclasses.replace(d, measures=(spec,))
     pose = settle_measures(d, d.pose0)
     assert _measure_violation(spec, pose[1], pose[0]) == 0.0
-    assert not np.array_equal(pose[2:], d.pose0[2:])  # a blocker moved
+    assert not np.array_equal(pose[1], d.pose0[1])  # the decap landed
+    assert not np.array_equal(pose[2], d.pose0[2])  # the blocker moved
+    from precis.pcb.topoplace.proxy import one_body_pairs
+
+    exempt = one_body_pairs(d)
+    rings = [_ring_geom(d, pose[k], k) for k in range(len(d.parts))]
+    for a, b in itertools.combinations(range(len(d.parts)), 2):
+        ra, rb = rings[a], rings[b]
+        assert ra is not None and rb is not None
+        assert float(ra.intersection(rb).area) == pytest.approx(0.0, abs=1e-9)
+        if (a, b) in exempt:
+            continue  # gap-free, never overlap
+        assert float(ra.distance(rb)) >= d.silk.pair_req_mm - 1e-9
+
+
+def test_settle_measures_carries_a_crystals_load_caps() -> None:
+    """B1 follow-up (taz-leaf X2/C1/C2): the crystal's hard bound to the
+    IC pad is 8.5 mm off a 4 mm limit while its two load caps sit within
+    their own 2 mm bounds of its pin. Moving the crystal alone breaks
+    both cap bounds, so it used to stay put; now it carries its caps —
+    one rigid translation — and every bound is met with disjoint rings."""
+    import dataclasses
+    import itertools
+
+    from precis.pcb.topoplace import settle_measures
+    from precis.pcb.topoplace.design import TopoMeasure
+    from precis.pcb.topoplace.proxy import _measure_violation, _ring_geom
+
+    d = _margin_label_fixture(
+        [
+            ("U1", 15.0, 15.0, 2.6),
+            ("X2", 26.0, 15.0, 0.6),
+            ("C1", 26.0, 16.8, 0.4),
+            ("C2", 26.0, 13.2, 0.4),
+        ]
+    )
+
+    def near(a: int, b: int, goal: float, pt_b: tuple[float, float]) -> TopoMeasure:
+        return TopoMeasure(
+            ia=a,
+            ib=b,
+            bound="upper",
+            goal_mm=goal,
+            weight=1.0,
+            hard=True,
+            pts_a=((0.0, 0.0),),
+            pts_b=(pt_b,),
+        )
+
+    specs = (
+        near(1, 0, 4.0, (2.5, 0.0)),
+        near(2, 1, 2.0, (0.0, 0.0)),
+        near(3, 1, 2.0, (0.0, 0.0)),
+    )
+    d = dataclasses.replace(d, measures=specs)
+    assert _measure_violation(specs[0], d.pose0[1], d.pose0[0]) > 4.0
+    pose = settle_measures(d, d.pose0)
+    for s in specs:
+        assert _measure_violation(s, pose[s.ia], pose[s.ib]) == 0.0, s
+    np.testing.assert_array_equal(pose[0], d.pose0[0])
+    shift = pose[1, :2] - d.pose0[1, :2]
+    assert np.hypot(*shift) > 4.0
+    for k in (2, 3):
+        np.testing.assert_allclose(pose[k, :2] - d.pose0[k, :2], shift)
     rings = [_ring_geom(d, pose[k], k) for k in range(len(d.parts))]
     for a, b in itertools.combinations(rings, 2):
         assert a is not None and b is not None
@@ -749,12 +1205,17 @@ def test_topo_place_event_reports_restarts() -> None:
 
 
 def test_settle_pose_zero_move_pass_exits_immediately() -> None:
-    """example_a's authored pose is legal: one violation-free shove (0
-    rounds) plus one no-movement legalize sweep and the loop is done —
-    its normal exit is the fixed point, nowhere near the cap."""
+    """A pair-clean pose: one violation-free shove (0 rounds) plus one
+    no-movement legalize sweep and the loop is done — its normal exit
+    is the fixed point, nowhere near the cap. example_a's authored
+    A2/C2 sit 0.2 mm courtyard-to-courtyard — under the hard silk pair
+    gap (topo-silk-spacing) the first settle legitimately separates
+    them, so the clean seed is the settle's own output."""
     d = example_a()
-    pose, shoved, legal = placer._settle_pose(d, d.pose0)
-    np.testing.assert_array_equal(pose, d.pose0)
+    settled, _s0, l0 = placer._settle_pose(d, d.pose0)
+    assert l0.resolved
+    pose, shoved, legal = placer._settle_pose(d, settled)
+    np.testing.assert_array_equal(pose, settled)
     assert shoved.rounds == 0 and shoved.moved_mm == 0.0
     assert legal.rounds == 1 and legal.resolved
 
@@ -1198,7 +1659,17 @@ def test_ungrouped_run_matches_main_golden_pose_bytewise() -> None:
     stayed NaN and ``_settle_pose`` crashed inside shapely on this very
     board). Expected captured from origin/main's ``topo_place`` on this
     design: synth seed 0, 8 parts / 4 nets / 1 fixed (part 0's pose0 xy
-    blanked), effort 2000, placer seed 7."""
+    blanked), effort 2000, placer seed 7. Re-captured 2026-11-02 under
+    the hard silk pair gap (topo-silk-spacing): the pre-rule pose left
+    parts 5/6 inside ``pair_req_mm``, which the legaliser now separates
+    — the pre-settle rows are unchanged bytewise. Re-captured again
+    2026-11-03 under the vendor-silk ruling (JLC-min ring target 0.275,
+    courtyard pair_req 1.00 → 0.20): the same-side pair 5/6 settles
+    closer — rows 5/6 shifted, the rest is unchanged bytewise, and the
+    remaining ring overlaps are all cross-side pairs the gap rule
+    exempts. Re-captured 2026-11-04 with the fabrication reserve: only
+    row 6 changes, by at most 0.000225 mm, to keep export rounding room;
+    the other seven rows remain bytewise identical."""
     d, _inst, _nets = synth_design(seed=0, n_parts=8, n_nets=4, n_multinet=0, n_fixed=1)
     d.pose0[0, :2] = np.nan
     res = topo_place(d, objective=W, effort=2000, seed=7)
@@ -1210,7 +1681,7 @@ def test_ungrouped_run_matches_main_golden_pose_bytewise() -> None:
             [1.0528827910690437, 74.77661530325685, 0.0, 0.0],
             [59.92735564922514, 10.684827235968266, 1.0, 0.0],
             [1.083642436802397, 74.82382768731681, 2.0, 1.0],
-            [1.9086012340484362, 73.02282868814692, 1.0, 1.0],
+            [2.0025166849133806, 72.82260385452521, 1.0, 1.0],
             [60.33448286642105, 11.092021830309974, 0.0, 1.0],
         ]
     )
@@ -1229,3 +1700,91 @@ def test_all_fixed_design_short_circuits_the_anneal() -> None:
     assert result.restarts == 0
     assert result.best_pose is not None
     assert len(result.best_pose) == 10
+
+
+def test_margin_edge_axis_prices_vendor_silk_extent_not_the_ring() -> None:
+    """Reto 2026-11-03 ruling 4: the margin edge axis measures a part's
+    OWN silk extent (the vendor footprint's ink hull) against the silk
+    edge margin — so a part whose vendor silk reaches past its courtyard
+    still keeps everything inside the board. A ring-outlined part keeps
+    the courtyard-ring + edge_req pricing."""
+    from precis.pcb import DEFAULT_STACKUP
+    from precis.pcb.ir import from_graph
+    from precis.pcb.topoplace.design import design_from_ir
+
+    graph = {
+        "instances": [
+            {"refdes": "L1", "x": 10.0, "y": 8.0},
+        ],
+        "nets": [
+            {
+                "name": "N0",
+                "members": [{"refdes": "L1", "pin": "1"}],
+            },
+            {
+                "name": "N1",
+                "members": [{"refdes": "L1", "pin": "2"}],
+            },
+        ],
+    }
+    # Pads tight around the origin; a vendor silk rectangle reaching far
+    # -x past the courtyard — the ink edge is what the edge margin cuts.
+    fp = {
+        "pads": [
+            {"number": "1", "shape": "rect", "x": -0.5, "y": 0.0, "w": 0.6, "h": 1.0},
+            {"number": "2", "shape": "rect", "x": 0.5, "y": 0.0, "w": 0.6, "h": 1.0},
+        ],
+        "pin_map": {},
+        "graphics": [
+            {
+                "kind": "polyline",
+                "layer": "F.SilkS",
+                "width_mm": 0.12,
+                "points": [
+                    [-4.0, -1.5],
+                    [4.0, -1.5],
+                    [4.0, 1.5],
+                    [-4.0, 1.5],
+                    [-4.0, -1.5],
+                ],
+            }
+        ],
+    }
+    ir = from_graph(
+        graph,
+        stackup=DEFAULT_STACKUP,
+        outline=[[0.0, 0.0], [30.0, 0.0], [30.0, 30.0], [0.0, 30.0]],
+    )
+    d = design_from_ir(ir, {"L1": fp})
+    assert len(d.part_silk) == 1 and len(d.part_silk[0]) >= 4
+    # The ink extent spans x in [-4.06, 4.06] part-local; at pose0
+    # (10,8) the -x ink edge sits 10 - 4.06 = 5.94 off the cut edge —
+    # inside the 0.6 silk edge margin, so the edge axis reads 0 against
+    # the EXTENT. Against the courtyard ring + edge_req it would also
+    # pass here; the discrimination test is a part at the edge.
+    from precis.pcb.topoplace.proxy import margin_total
+
+    pose = d.pose0.copy()
+    pose[0, 0] = 5.0  # ink -x edge now 5.0 - 4.06 = 0.94 — still legal
+    assert margin_total(d, pose) == pytest.approx(0.0, abs=1e-9)
+    pose[0, 0] = 4.0  # ink -x edge 4.0 - 4.06 < 0.6 margin -> shortfall
+    assert margin_total(d, pose) > 0.0
+
+
+def test_design_from_ir_part_silk_empty_without_graphics() -> None:
+    """A footprint with no silk graphics contributes no extent — the
+    edge axis then prices the courtyard ring as before."""
+    from precis.pcb import DEFAULT_STACKUP
+    from precis.pcb.ir import from_graph
+    from precis.pcb.topoplace.design import design_from_ir
+
+    graph = {
+        "instances": [{"refdes": "R1", "x": 10.0, "y": 10.0}],
+        "nets": [
+            {"name": "N0", "members": [{"refdes": "R1", "pin": "1"}]},
+            {"name": "N1", "members": [{"refdes": "R1", "pin": "2"}]},
+        ],
+    }
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    d = design_from_ir(ir, {"R1": {"pads": [], "pin_map": {}, "graphics": []}})
+    assert len(d.part_silk) == 1 and len(d.part_silk[0]) == 0

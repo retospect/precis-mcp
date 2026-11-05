@@ -892,6 +892,15 @@ def _region_mask_shape(region: Region) -> str:
     return f'<path d="{_path_d(region.ring, close=True)}" fill="#000"/>'
 
 
+def _stroke_mask_shape(stroke: Stroke) -> str:
+    """A round-aperture opening, retaining its exact circular end caps."""
+    return (
+        f'<path d="{_path_d(stroke.points)}" fill="none" stroke="#000" '
+        f'stroke-width="{stroke.width:.4f}" stroke-linecap="round" '
+        'stroke-linejoin="round"/>'
+    )
+
+
 def _mask_film_els(
     art: LayerArt | None,
     layer: str,
@@ -905,7 +914,9 @@ def _mask_film_els(
     ``art.flashes`` (a per-pad swelled opening,
     :func:`precis.pcb.gerber.soldermask_gerber`'s per-pad path) AND
     ``art.regions`` (a field-wide ``mask_open`` region, the SAME
-    function's other path — pcb-ewod-multitile Slice 1: before this, a
+    function's other path), and ``art.strokes`` (native oblique stadium
+    pads emitted with round apertures). Dropping any of those forms leaves
+    a solid preview film over a valid emitted opening. Before this, a
     region-shaped opening parsed correctly into ``art.regions`` but this
     renderer read only ``art.flashes``, so the film showed solid with no
     cutout at all — an absence that looks like "no opening authored",
@@ -914,7 +925,8 @@ def _mask_film_els(
     semantics mask trick :func:`_region_els` already uses."""
     flash_openings = art.flashes if art is not None else []
     region_openings = art.regions if art is not None else []
-    if not flash_openings and not region_openings:
+    stroke_openings = art.strokes if art is not None else []
+    if not flash_openings and not region_openings and not stroke_openings:
         return [
             f'<path d="{_path_d(film_ring, close=True)}" '
             f'fill="{colour}" fill-opacity="0.55"/>'
@@ -922,6 +934,7 @@ def _mask_film_els(
     mask_id = f"masklayer-mask-{layer}"
     mask_shapes = "".join(_flash_mask_shape(f) for f in flash_openings)
     mask_shapes += "".join(_region_mask_shape(r) for r in region_openings)
+    mask_shapes += "".join(_stroke_mask_shape(s) for s in stroke_openings)
     out = [
         f'<mask id="{mask_id}" maskUnits="userSpaceOnUse" '
         f'x="-1e6" y="-1e6" width="2e6" height="2e6">'
@@ -1048,28 +1061,19 @@ def _region_els(
     return out
 
 
-def _part_body_els(
-    arts: dict[str, LayerArt],
-    surface_layers: dict[str, set[str]] | None = None,
-) -> list[str]:
+def _part_body_els(arts: dict[str, LayerArt]) -> list[str]:
     """One almost-invisible rect per refdes — the "part body" click target
     of pcb-argue-with-design.md's handle grammar (``data-handle="U1"``).
     Painted UNDER the layer stack, so pads, tracks and the mask film keep
     first claim on a click; the host page walks ``elementsFromPoint`` down
-    to it when nothing above carries a handle. The target records its artwork
-    layers so this fallback stops matching when all of that artwork is hidden.
-    Mask and paste carry no refdes, so ``surface_layers`` supplies their exact
-    per-refdes keys from the board model. Without a model, each outer copper
-    side contributes its mask and paste keys when present in ``arts``. Only
-    this no-model fallback may over-include layers, such as paste for a pad
-    with no stencil aperture. Silkscreen membership comes from the artwork.
+    to it when nothing above carries a handle.
 
     A part's box is the extent of its ``%TO.P`` pads when it has any —
     the pads' extent is the body a user means when they click "the chip".
     A part with NO pinned pads is boxed from its ``%TO.C`` objects
     instead (``gerber._emit_object_attrs`` writes the component refdes on
-    every object the model names — copper pads AND silk
-    courtyard/pin-1/refdes draws — so a pad-less mounting hole, fiducial or logo is still
+    every object the model names — copper pads AND silk courtyard/pin-1/
+    refdes draws — so a pad-less mounting hole, fiducial or logo is still
     labelled): Reto ruled ``%TO.C`` in on 2026-10-21, overriding the
     earlier no-``%TO.C`` call (5d36040ce), because fab and assembly staff
     open the export in their own Gerber viewers and need the labels.
@@ -1085,12 +1089,19 @@ def _part_body_els(
         box[2] = max(box[2], ext[2])
         box[3] = max(box[3], ext[3])
 
+    def record_layer(refdes: str, key: str) -> None:
+        # Mask/paste openings alone do not make a hidden part visible.
+        # The body is outside the layer groups, so pointer consumers need
+        # the union of its actual copper/silk/doc artwork layers.
+        if not key.endswith(("_Mask", "_Paste")):
+            part_layers.setdefault(refdes, set()).add(key)
+
     for key, art in arts.items():
         is_copper = key.endswith("_Cu")
         for f in art.flashes:
             if not f.refdes:
                 continue
-            part_layers.setdefault(f.refdes, set()).add(key)
+            record_layer(f.refdes, key)
             w = f.aperture.sizes[0]
             h = f.aperture.sizes[1] if len(f.aperture.sizes) > 1 else w
             ext = (f.x - w / 2, f.y - h / 2, f.x + w / 2, f.y + h / 2)
@@ -1100,7 +1111,7 @@ def _part_body_els(
         for s in art.strokes:
             if not s.refdes:
                 continue
-            part_layers.setdefault(s.refdes, set()).add(key)
+            record_layer(s.refdes, key)
             xs = [p[0] for p in s.points]
             ys = [p[1] for p in s.points]
             half = s.width / 2
@@ -1115,7 +1126,7 @@ def _part_body_els(
         for r in art.regions:
             if not r.refdes:
                 continue
-            part_layers.setdefault(r.refdes, set()).add(key)
+            record_layer(r.refdes, key)
             xs = [p[0] for p in r.ring]
             ys = [p[1] for p in r.ring]
             ext = (min(xs), min(ys), max(xs), max(ys))
@@ -1127,23 +1138,15 @@ def _part_body_els(
         return []
     out = ['<g class="parts">']
     for refdes in sorted(boxes):
+        layers = part_layers.get(refdes)
+        if not layers:
+            continue
         x0, y0, x1, y1 = boxes[refdes]
-        if surface_layers is not None:
-            part_layers[refdes].update(
-                key for key in surface_layers.get(refdes, ()) if key in arts
-            )
-        else:
-            for side in ("F", "B"):
-                if f"{side}_Cu" in part_layers[refdes]:
-                    part_layers[refdes].update(
-                        key for key in (f"{side}_Mask", f"{side}_Paste") if key in arts
-                    )
-        layers = esc(" ".join(sorted(part_layers[refdes])), quote=True)
         title = _title("Parts", _pt((x0 + x1) / 2, (y0 + y1) / 2), f"part {refdes}")
         out.append(
             f'<rect x="{x0:.4f}" y="{y0:.4f}" width="{x1 - x0:.4f}" '
             f'height="{y1 - y0:.4f}" fill="#fff" fill-opacity="0.01"'
-            f' data-pcb-layers="{layers}"'
+            f' data-pcb-layers="{esc(" ".join(sorted(layers)), quote=True)}"'
             f"{_handle_attr(refdes)}><title>{title}</title></rect>"
         )
     out.append("</g>")
@@ -1178,21 +1181,72 @@ def _pending_copper_count(model: dict[str, Any], nets: set[str]) -> int:
     )
 
 
+def _ratsnest_edges(
+    pads: dict[tuple[str, str], set[tuple[float, float]]],
+    connected: set[frozenset[tuple[str, str]]],
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """Prim's tree over copper components, with shortest pad-to-pad edges.
+
+    Contract proven pin pairs BEFORE building the tree: filtering a pad
+    MST afterwards can leave redundant edges between the same components.
+    Multiple physical lands of one pin are internally bonded, matching
+    connectivity's policy; every land remains an available endpoint.
+    """
+    parent = {pin: pin for pin in pads}
+
+    def root(pin: tuple[str, str]) -> tuple[str, str]:
+        while parent[pin] != pin:
+            parent[pin] = parent[parent[pin]]
+            pin = parent[pin]
+        return pin
+
+    for pair in connected:
+        a, b = sorted(pair)
+        if a in pads and b in pads:
+            ra, rb = sorted((root(a), root(b)))
+            parent[rb] = ra
+    by_root: dict[tuple[str, str], set[tuple[float, float]]] = {}
+    for pin in sorted(pads):
+        by_root.setdefault(root(pin), set()).update(pads[pin])
+    groups = [sorted(points) for _pin, points in sorted(by_root.items())]
+    if len(groups) < 2:
+        return []
+
+    # Only the nearest tree edge for each remaining component is retained:
+    # quadratic distance work, without a quadratic complete-edge list.
+    remaining = set(range(1, len(groups)))
+    best: dict[int, tuple[float, tuple[float, float], tuple[float, float]]] = {}
+    edges: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    joined = 0
+    while remaining:
+        for target in sorted(remaining):
+            candidate = min(
+                ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2, a, b)
+                for a in groups[joined]
+                for b in groups[target]
+            )
+            if target not in best or candidate < best[target]:
+                best[target] = candidate
+        joined = min(remaining, key=lambda target: (best[target], target))
+        _distance, start, end = best[joined]
+        edges.append((start, end))
+        remaining.remove(joined)
+    return edges
+
+
 def _ratsnest_els(
     arts: dict[str, LayerArt],
     nets: set[str],
     *,
     clip: tuple[float, float, float, float] | None = None,
     highlight: frozenset[str] = frozenset(),
-    components: dict[tuple[str, str], int] | None = None,
+    connectivity_model: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Straight airwires for the nets the router has not realized: the MST
-    (:func:`precis.pcb.ratsnest._mst_edges`) over each net's pad positions as
-    the gerber drew them (every distinct position per refdes.pin), in board mm.
-    Repeated pads of one pin keep their shared identity so the component MST
-    can choose the closest physical pad, not merely the first one in the art.
-    Known copper components are contracted before joining the remaining
-    islands; without connectivity the full pad MST is retained. Each wire is
+    """Straight airwires between disconnected components of pending nets.
+    Pad positions come from the full gerber art, in board mm; proven pin
+    connections come from the SAME model exported to that fab set, through
+    :func:`precis.pcb.connectivity.connected_pin_pairs`. Without that model,
+    every pin conservatively remains separate. Each wire is
     a thin dashed line (``rs-line``, opacity density-scaled by
     :func:`_ratsnest_alpha`) plus a wide invisible one (``rs-hit``) so it is
     hoverable — the page's isolate CSS dims ``rs-line`` only, never the hit
@@ -1204,47 +1258,43 @@ def _ratsnest_els(
     leaving the region still shows the net continues off-frame. A wire on
     a ``highlight`` net draws solid gold at full opacity instead of the
     density-scaled red."""
-    from precis.pcb.ratsnest import _mst_edges
+    from precis.pcb.connectivity import connected_pin_pairs
 
-    member_components = (
-        {f"{refdes}.{pin}": root for (refdes, pin), root in components.items()}
-        if components is not None
-        else None
+    # The extractor is quadratic per net and layer and this runs on the
+    # board.svg request path: past the bound keep the full MST (extra
+    # airwires on a huge pending net, not a stalled worker).
+    connected = (
+        connected_pin_pairs(connectivity_model, nets=nets)
+        if connectivity_model is not None
+        and _pending_copper_count(connectivity_model, nets)
+        <= _RATSNEST_COMPONENT_MAX_COPPER
+        else set()
     )
-    pads: dict[str, dict[str, set[tuple[float, float]]]] = {}
+    pads: dict[str, dict[tuple[str, str], set[tuple[float, float]]]] = {}
     for key, art in sorted(arts.items()):
         if not key.endswith("_Cu"):
             continue
-        for f in art.flashes:
-            if f.net in nets and f.refdes and f.pin:
-                pads.setdefault(f.net, {}).setdefault(f"{f.refdes}.{f.pin}", set()).add(
-                    (f.x, f.y)
-                )
-        for region in art.regions:
-            if (
-                region.solid
-                and region.net in nets
-                and region.refdes
-                and region.pin
-                and region.ring
-            ):
-                # Polygon pads are regions, not flashes. Use the same pin
-                # identity as connectivity and the artwork's bounds centre.
-                xs, ys = zip(*region.ring, strict=True)
-                centre = ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
-                pads.setdefault(region.net, {}).setdefault(
-                    f"{region.refdes}.{region.pin}", set()
-                ).add(centre)
+        objects: list[tuple[Any, tuple[float, float]]] = [
+            (f, (f.x, f.y)) for f in art.flashes
+        ]
+        # Polygon/oblique rectangle pads are regions; oblique obrounds
+        # are strokes. Their X2 pad identity is as authoritative as a flash.
+        nonflashes: list[Region | Stroke] = [*art.regions, *art.strokes]
+        for obj in nonflashes:
+            if not obj.solid or not obj.refdes or not obj.pin:
+                continue
+            box = _region_box(obj) if isinstance(obj, Region) else _stroke_box(obj)
+            objects.append((obj, ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)))
+        for obj, point in objects:
+            if obj.net in nets and obj.refdes and obj.pin:
+                pads.setdefault(obj.net, {}).setdefault(
+                    (obj.refdes, obj.pin), set()
+                ).add(point)
     alpha = _ratsnest_alpha(len(nets))
     out = [f'<g id="ratsnest" class="ratsnest" data-pcb-unrouted="{len(nets)}">']
     for net in sorted(pads):
         hl = net in highlight
-        members = [
-            (pin, point)
-            for pin, points in sorted(pads[net].items())
-            for point in sorted(points)
-        ]
-        for _a, _b, p1, p2 in _mst_edges(members, components=member_components):
+        for p1, p2 in _ratsnest_edges(pads[net], connected):
             if clip is not None and not _seg_hits_rect(
                 p1[0], p1[1], p2[0], p2[1], clip
             ):
@@ -1290,9 +1340,6 @@ def _hit_els(objects: list[Any]) -> list[str]:
         )
         for hit in obj.hits:
             attrs = f'{common} data-pcb-layer="{esc(str(hit["layer"]), quote=True)}"'
-            if "layers" in hit:
-                layers = " ".join(hit["layers"])
-                attrs += f' data-pcb-layers="{esc(layers, quote=True)}"'
             shape = hit["shape"]
             if shape == "circle":
                 out.append(
@@ -1608,15 +1655,13 @@ def render_fab_svg(
     on a ``nets`` name get the gold highlight overlay. ``scope`` with no
     content (no bbox, no refdes, no nets) clips nothing.
 
+    ``connectivity_model`` is the full model exported into ``files``. When
+    supplied, pending-net airwires join only disconnected copper components.
+    Raw Gerber callers without it retain a conservative all-pin ratsnest.
+
     The layer selector is inline: legend rows toggle a CSS class on their
     group. A viewer that does not run script still shows every layer that
     starts visible, so the file is never blank in a static renderer.
-
-    ``connectivity_model`` is the board model used for this fab set. Its DRC
-    components restrict pending-net airwires to disconnected copper islands;
-    Gerber-only callers retain the full ratsnest when the model is unavailable.
-    It also supplies exact mask/paste membership for part-body targets. Only
-    the no-model path derives those layers by side and may over-include them.
     """
     arts: dict[str, LayerArt] = {}
     drills: dict[str, list[tuple[float, ...]]] = {}
@@ -1665,19 +1710,7 @@ def render_fab_svg(
     if clip is not None:
         film_ring = _clip_ring(film_ring, clip) or _rect_ring((x0, y0, x1, y1))
 
-    surface_layers: dict[str, set[str]] | None = None
-    if connectivity_model is not None:
-        from precis.pcb.gerber import _pad_surface_layers
-
-        surface_layers = {}
-        model_layers = list(connectivity_model.get("layers") or [])
-        for pad in connectivity_model.get("pads") or []:
-            refdes = str(pad.get("refdes") or "")
-            if refdes:
-                surface_layers.setdefault(refdes, set()).update(
-                    _pad_surface_layers(pad, model_layers)
-                )
-    body: list[str] = _part_body_els(arts, surface_layers)
+    body: list[str] = _part_body_els(arts)
     hover = (selection_manifest or {}).get("hover") or {}
     rs_nets = set(hover.get("unrouted") or ())
     if rs_nets:
@@ -1686,25 +1719,13 @@ def render_fab_svg(
         # above the airwires and a partially-routed board no longer reads
         # as "nothing routed". Hover is unaffected: the page walks every
         # stacked element at the point, not just the top one.
-        from precis.pcb.connectivity import pin_components
-
-        # The extractor is quadratic per net and layer, and this render runs on
-        # the board.svg request path. Past the bound keep the full MST: extra
-        # airwires on a huge pending net, not a stalled worker.
-        components = (
-            pin_components(connectivity_model, nets=rs_nets)
-            if connectivity_model is not None
-            and _pending_copper_count(connectivity_model, rs_nets)
-            <= _RATSNEST_COMPONENT_MAX_COPPER
-            else None
-        )
         body.extend(
             _ratsnest_els(
                 arts_full,
                 rs_nets,
                 clip=clip,
                 highlight=highlight,
-                components=components,
+                connectivity_model=connectivity_model,
             )
         )
     for key in keys:

@@ -91,6 +91,7 @@ on a capability board shared an outline wall across every tight pair
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -107,6 +108,7 @@ from precis.pcb.topoplace.design import (
     ObjectiveShares,
     SilkRoom,
     TopoDesign,
+    qrot,
 )
 
 #: Same straddle epsilon as ``geom.segments_cross`` — parity between the
@@ -197,6 +199,31 @@ def _body_geom(d: TopoDesign, row: np.ndarray, part: int):
     return g if not g.is_empty and g.area > _EPS else None
 
 
+def _silk_extent_geom(part_silk: tuple[np.ndarray, ...], row: np.ndarray, part: int):
+    """A vendor-silk part's own ink extent (:attr:`TopoDesign.part_silk`)
+    as a world polygon — ``None`` for a ring-outlined part. The margin
+    term's EDGE axis measures this against ``silk.edge_margin_mm``
+    instead of the courtyard ring against ``silk.edge_req_mm``
+    (Reto 2026-11-03, ruling 4 — placement keeps a part's real silk
+    inside the board's silk edge margin; edge axis only, part-to-part
+    spacing keeps pricing the courtyard)."""
+    ring = part_silk[part] if part < len(part_silk) else ()
+    pts = np.asarray(ring, dtype=np.float64).reshape(-1, 2)
+    if len(pts) < 4:
+        return None
+    g = Polygon(local_to_world(pts, row)[:-1])
+    return g if not g.is_empty and g.area > _EPS else None
+
+
+def _edge_geom_req(silk_geom: Any, ring_geom: Any, silk: SilkRoom) -> tuple[Any, float]:
+    """``(geom, req_mm)`` for one part's edge axis: its vendor ink extent
+    at ``silk.edge_margin_mm`` when it has one, else its courtyard ring
+    at ``silk.edge_req_mm``."""
+    if silk_geom is not None:
+        return silk_geom, float(silk.edge_margin_mm)
+    return ring_geom, float(silk.edge_req_mm)
+
+
 def through_hole_parts(d: TopoDesign) -> np.ndarray:
     """Per-part flag: any pin on a through-hole land (``pin_side == 2``).
     A TH part's pads exist on EVERY copper layer (the plated barrel), so
@@ -214,6 +241,174 @@ def _collides(sides: np.ndarray, th: np.ndarray, i: int, j: int) -> bool:
     """The courtyard-pair test — same mount side, or either part
     through-hole (its barrel occupies the other face's copper too)."""
     return bool(sides[i] == sides[j] or th[i] or th[j])
+
+
+def rigid_pairs(d: TopoDesign) -> frozenset[tuple[int, int]]:
+    """Members of one rigid ``d.group_of`` group — the authored
+    ``"group"``/generator-group unit every mover treats as a single
+    rigid body already. Fully exempt from every pair rule: their shape
+    is authored (overlaid footprints like taz-leaf's SNS1/SNS2 may
+    share one origin), so neither the hard silk pair gap nor the
+    courtyard non-overlap applies (round-3 ruling 2026-11-02).
+    Normalised ``(min, max)`` part-id pairs."""
+    out: set[tuple[int, int]] = set()
+    for members in d.group_members:
+        for k, a in enumerate(members):
+            for b in members[k + 1 :]:
+                out.add((min(a, b), max(a, b)))
+    return frozenset(out)
+
+
+def one_body_pairs(d: TopoDesign) -> frozenset[tuple[int, int]]:
+    """Part pairs exempt from the hard silk pair GAP on purpose
+    (Reto/coordinator ruling 2026-11-02):
+
+    - members of one rigid group (:func:`rigid_pairs`), and
+    - the two ends of a hard upper-distance measure — the bodies
+      :func:`settle_measures` carries together: a crystal's load caps
+      ride it as one assembly, and the bound is pin-to-pin so their
+      courtyards legitimately nest inside the ring requirement.
+
+    The two exemption classes differ (round-3 ruling): a rigid-group
+    pair is exempt from courtyard non-overlap too — the body is
+    authored — while a hard-measure pair is exempt from the GAP only
+    and still may not overlap (treat as ``req=0``: courtyards may
+    touch, never overlap; the round-1 full exemption let carried caps
+    land inside their IC's courtyard and the routed boards came back
+    with clearance DRC errors).
+
+    Not transitive, and hard measures only — both intended (round-3
+    ruling): two caps bound to the same IC are one body with the IC
+    but NOT with each other, and a decap tied by a soft ``near()``
+    alone gets the full gap. Normalised ``(min, max)`` part-id pairs;
+    the same-side test still applies elsewhere — an exempt flag never
+    legalises a top/bottom pairing. Both-fixed authored adjacency is a
+    SEPARATE exemption — reported, not silent
+    (:func:`fixed_fixed_pairs`)."""
+    out: set[tuple[int, int]] = set(rigid_pairs(d))
+    for s in d.measures:
+        if s.hard and s.metric == "dist" and s.bound == "upper" and s.ib >= 0:
+            if s.ia != s.ib:
+                out.add((min(s.ia, s.ib), max(s.ia, s.ib)))
+    return frozenset(out)
+
+
+def fixed_fixed_pairs(d: TopoDesign) -> frozenset[tuple[int, int]]:
+    """Pairs BOTH of whose ends are ``d.fixed`` — authored adjacency
+    (round-2 ruling 2026-11-02): the placer may not move either part,
+    so a tight pair is intended. Exempt from the hard pair gap like a
+    one-body pair but REPORTED (:func:`pair_gap_report` tags it
+    ``"fixed-fixed"``) — never a ``pcb.placement-gap`` failure.
+    ``d.fixed`` already pins every member of a rigid group a fixed
+    member anchors (:func:`design_from_ir`), so a locked assembly
+    counts whole. Normalised ``(min, max)`` part-id pairs."""
+    idx = np.flatnonzero(np.asarray(d.fixed, dtype=bool))
+    return frozenset((int(i), int(j)) for k, i in enumerate(idx) for j in idx[k + 1 :])
+
+
+def _pair_gap_scan(
+    d: TopoDesign,
+    pose: np.ndarray,
+    geoms: list[Any] | None,
+) -> Iterator[tuple[int, int, float]]:
+    """Yield ``(i, j, shortfall_mm)`` for every same-side pair under the
+    hard ``SilkRoom.pair_req_mm`` — the shared sweep behind
+    :func:`pair_gap_report` and its subsets. Rigid-group pairs never
+    appear (:func:`rigid_pairs`); an exempt-from-the-gap one-body pair
+    appears only when its courtyards OVERLAP, the overlap area standing
+    in as the shortfall (round-3 ruling: may touch, never overlap).
+    ``geoms`` are placed courtyard polygons (:func:`_ring_geom`),
+    derived at ``pose`` when not handed in."""
+    req = float(d.silk.pair_req_mm)
+    n = len(d.parts)
+    if req <= 0.0 or not len(d.part_outline) or not n:
+        return
+    sides = np.asarray(pose)[:, 3] >= 0.5
+    th = through_hole_parts(d)
+    if geoms is None:
+        geoms = [_ring_geom(d, pose[i], i) for i in range(n)]
+    rigid = rigid_pairs(d)
+    gap_free = one_body_pairs(d)
+    for i, gi in enumerate(geoms):
+        if gi is None:
+            continue
+        x0, y0, x1, y1 = gi.bounds
+        for j in range(i + 1, n):
+            gj = geoms[j]
+            if gj is None or not _collides(sides, th, i, j):
+                continue
+            pair = (i, j)
+            if pair in rigid:
+                continue  # authored rigid shape — no pair rule at all
+            ri = 0.0 if pair in gap_free else req
+            bx0, by0, bx1, by1 = gj.bounds
+            if x1 + ri < bx0 or bx1 + ri < x0 or y1 + ri < by0 or by1 + ri < y0:
+                continue
+            dist = float(gi.distance(gj))
+            short = ri - dist
+            if short <= _EPS and dist <= _EPS:
+                # an exempt-from-the-gap pair still may not overlap —
+                # its shortfall is the overlap area, not a distance
+                short = float(gi.intersection(gj).area)
+            if short > _EPS:
+                yield i, j, short
+
+
+def pair_gap_report(
+    d: TopoDesign,
+    pose: np.ndarray,
+    geoms: list[Any] | None = None,
+) -> tuple[tuple[int, int, float, str], ...]:
+    """Every same-side pair whose courtyard rings sit closer than the
+    HARD ``SilkRoom.pair_req_mm``, annotated — ``(a, b, shortfall_mm,
+    reason)`` sorted. ``reason`` is ``"gap"`` for a live violation at
+    least one movable part could resolve and ``"fixed-fixed"`` for
+    authored adjacency (both ends xy-locked — exempt, but reported so
+    the run record still names the shared-wall risk). This is the
+    placement-side twin of the silk draw's
+    ``outline_pair_separation_mm`` shared-wall rule (taz-leaf x2: 17
+    pairs, Reto 2026-11-02). Rigid pairs never appear; an
+    exempt-from-the-gap one-body pair appears only on courtyard
+    OVERLAP (:func:`_pair_gap_scan`); opposite-side pairs never count
+    (``_collides`` keeps the TH-barrel exception)."""
+    ff = fixed_fixed_pairs(d)
+    return tuple(
+        sorted(
+            (i, j, s, "fixed-fixed" if (i, j) in ff else "gap")
+            for i, j, s in _pair_gap_scan(d, pose, geoms)
+        )
+    )
+
+
+def pair_gap_violations(
+    d: TopoDesign,
+    pose: np.ndarray,
+    geoms: list[Any] | None = None,
+) -> tuple[tuple[int, int, float], ...]:
+    """The live subset of :func:`pair_gap_report` — ``(a, b,
+    shortfall_mm)`` rows a movable part could still resolve, the
+    ``pcb.placement-gap`` named failure's list. Exempt-but-reported
+    ``fixed-fixed`` rows ride :func:`pair_gap_flagged`."""
+    return tuple(
+        (a, b, s) for a, b, s, r in pair_gap_report(d, pose, geoms) if r == "gap"
+    )
+
+
+def pair_gap_flagged(
+    d: TopoDesign,
+    pose: np.ndarray,
+    geoms: list[Any] | None = None,
+) -> tuple[tuple[int, int, float], ...]:
+    """The exempt-but-reported subset of :func:`pair_gap_report` —
+    ``(a, b, shortfall_mm)`` rows where BOTH parts are xy-locked
+    (authored adjacency: overlaid sensor footprints, pinned
+    neighbours). The placer may not move either, so these are notes,
+    never violations (round-2 ruling)."""
+    return tuple(
+        (a, b, s)
+        for a, b, s, r in pair_gap_report(d, pose, geoms)
+        if r == "fixed-fixed"
+    )
 
 
 def _ring_overlap_total(geoms: list[Any], pose: np.ndarray, th: np.ndarray) -> float:
@@ -261,11 +456,11 @@ _LBL_HEIGHT_MM = DEFAULT_REFDES_HEIGHT_MM
 #: walk on a board the anneal can fix).
 _LBL_NO_SPOT_MM = 4.0
 #: The route-time keep-out ring pads each label box by this much: a via
-#: sited near a box bulges the settled courtyard outline by the via
-#: annulus + silk clearance (:func:`precis.pcb.silk._via_to_silk_mm`,
-#: ~0.3 + 0.15) and the bulge swallows the box at draw time (taz-leaf
-#: run 36: pinned boxes intersected by neighbours' via bulges, d=0.000).
-#: 0.6 covers the annulus reach with slack.
+#: sited near a box opens a gap in the drawn courtyard outline at the
+#: via annulus + silk clearance (:func:`precis.pcb.silk._via_to_silk_mm`,
+#: ~0.3 + 0.15) — the label gap off the drawn ring then reaches inside
+#: the box (taz-leaf run 36: pinned boxes hit neighbours' via
+#: clearances, d=0.000). 0.6 covers the annulus reach with slack.
 _LBL_KEEPOUT_PAD_MM = 0.6
 #: Bbox slack a moved ring can reach a partner's label candidates:
 #: a canonical box extends at most ``(ring half-extent) + gap + text``
@@ -326,11 +521,11 @@ def _ring_silkroom_total(
 #: walk on a board the anneal can fix).
 _LBL_NO_SPOT_MM = 4.0
 #: The route-time keep-out ring pads each label box by this much: a via
-#: sited near a box bulges the settled courtyard outline by the via
-#: annulus + silk clearance (:func:`precis.pcb.silk._via_to_silk_mm`,
-#: ~0.3 + 0.15) and the bulge swallows the box at draw time (taz-leaf
-#: run 36: pinned boxes intersected by neighbours' via bulges, d=0.000).
-#: 0.6 covers the annulus reach with slack.
+#: sited near a box opens a gap in the drawn courtyard outline at the
+#: via annulus + silk clearance (:func:`precis.pcb.silk._via_to_silk_mm`,
+#: ~0.3 + 0.15) — the label gap off the drawn ring then reaches inside
+#: the box (taz-leaf run 36: pinned boxes hit neighbours' via
+#: clearances, d=0.000). 0.6 covers the annulus reach with slack.
 _LBL_KEEPOUT_PAD_MM = 0.6
 #: Bbox slack a moved ring can reach a partner's label candidates:
 #: a canonical box extends at most ``(ring half-extent) + gap + text``
@@ -436,7 +631,7 @@ def _label_box_free(
     (:class:`SilkRoom.label_clear_mm` — the draw's label gap off the
     DRAWN outline, plus the drawn outline's target offset, PLUS the
     draw's settling inflation: decimation, shared-wall bridging, via
-    bulges; runs 42-43 priced the formula and every pin sat exactly on
+    clearance gaps; runs 42-43 priced the formula and every pin sat exactly on
     silk's minimum) off every colliding ring (line or area — one polygon
     distance covers both), and not intersect a hole keep-out. ``bounds``
     is every ring's ``(x0, y0, x1, y1)`` as an ``(n, 4)`` array — the
@@ -587,10 +782,10 @@ def label_boxes_for(
     routing and a via on the pin walks the label onto the relocation
     ladder (taz-leaf run 35: R23's pinned right spot carried a via, U2's
     label walked 13 mm). Each ring is padded by
-    :data:`_LBL_KEEPOUT_PAD_MM`: a via near (not on) a box still bulges
-    the settled courtyard outline into it (run 36: neighbours' bulges
-    intersected pinned boxes at d=0), so the reservation must claim the
-    bulge's reach, not just the ink's box."""
+    :data:`_LBL_KEEPOUT_PAD_MM`: a via near (not on) a box still opens
+    a clearance gap in the drawn outline that reaches into it (run 36:
+    neighbours' via clearances intersected pinned boxes at d=0), so the
+    reservation must claim the gap's reach, not just the ink's box."""
     if not spots:
         return ()
     pose = np.asarray(pose, dtype=np.float64)
@@ -666,9 +861,10 @@ def label_room_walks(d: TopoDesign, pose: np.ndarray) -> tuple[np.ndarray, np.nd
         if ring is None:
             continue
         if outline is not None and not em[i]:
-            edge[i] = max(
-                0.0, d.silk.edge_req_mm - float(outline.exterior.distance(ring))
+            eg, ereq = _edge_geom_req(
+                _silk_extent_geom(d.part_silk, pose[i], i), ring, d.silk
             )
+            edge[i] = max(0.0, ereq - float(outline.exterior.distance(eg)))
         free = any(
             _label_box_free(i, b, ring_at, side_at, n, th, eroded, zones, bounds, clear)
             for b in _label_spot_boxes(d.parts[i], ring, anchor)
@@ -714,7 +910,12 @@ def _label_room_legal(
     the outline (the DRC's ``outline_containment`` measures pad RECTS —
     a pin whose centre is inside but whose pad overhangs still fails;
     run 42's repair committed 4 such errors before this check), its
-    ring gains NO same-side overlap, its body stays out of every
+    ring gains NO same-side gap under ``silk.pair_req_mm`` (the
+    legaliser's hard rule — a nudge may not buy room with a shared
+    outline wall; :func:`one_body_pairs` keeps the gap exemption but
+    never an overlap — :func:`rigid_pairs` skips the rule outright),
+    its body stays
+    out of every
     hole keep-out, and its courtyard never moves further OUT along the
     edge line the anneal enforces — the overhang past the outline
     (``outline_containment`` on the part) and the
@@ -775,15 +976,40 @@ def _label_room_legal(
             )
         ):
             return False
+    req = float(d.silk.pair_req_mm)
+    gap_free = one_body_pairs(d)
+    rigid = rigid_pairs(d)
     for j, gj in enumerate(rings):
         if j == part or gj is None or not _collides(sides, th, part, j):
             continue
+        pair = (min(part, j), max(part, j))
+        if pair in rigid:
+            continue  # authored rigid shape — no pair rule at all
+        # a hard-measure pair is exempt from the GAP only (round-3
+        # ruling): courtyards may touch, never overlap — ri=0
+        ri = 0.0 if pair in gap_free else req
         bx0, by0, bx1, by1 = gj.bounds
         x0, y0, x1, y1 = gi.bounds
-        if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
+        if x1 + ri < bx0 or bx1 + ri < x0 or y1 + ri < by0 or by1 + ri < y0:
             continue
-        if gi.intersection(gj).area > _EPS:
-            return False
+        new_d = float(gi.distance(gj))
+        if new_d <= _EPS and float(gi.intersection(gj).area) > _EPS:
+            return False  # a nudge never lands IN an overlap (Fable R3-1)
+        if ri > 0.0:
+            # The legaliser's hard pair gap is the settle passes' gate
+            # too: a nudge may not land a part DEEPER inside a
+            # neighbour's silk room than it already is — under it the
+            # two outlines share a wall the draw cannot un-share
+            # (topo-silk-spacing ruling). An already-tight pair may
+            # only improve, so a violating cluster is never frozen.
+            cur_ring = rings[part]
+            cur_d = (
+                float(cur_ring.distance(gj))
+                if cur_ring is not None
+                else ri  # no prior ring — the gap applies outright
+            )
+            if new_d < ri - _EPS and new_d < cur_d - _EPS:
+                return False
     body = _body_geom(d, row, part)
     if body is not None:
         for owner, zg in zones:
@@ -827,10 +1053,13 @@ def _label_room_tuple(
     th: np.ndarray,
     outline: Any | None,
     zones: list[tuple[int, Any]],
+    silks: list[Any] | None = None,
 ) -> tuple[float, float]:
     """``part``'s ``(walk, edge)`` tuple under the model with a given
     ring list — the acceptance score for both the offender's and the
-    blockers' candidate moves."""
+    blockers' candidate moves. ``silks`` is the parallel vendor ink
+    extent list (:func:`_silk_extent_geom` per part at the same pose the
+    rings were built at); ``None`` reads every part as ring-outlined."""
     ring = rings[part]
     if ring is None:
         return 0.0, 0.0
@@ -870,7 +1099,10 @@ def _label_room_tuple(
     if outline is not None:
         em = d.part_edge_mate
         if not (len(em) == n and bool(em[part])):
-            edge = max(0.0, d.silk.edge_req_mm - float(outline.exterior.distance(ring)))
+            eg, ereq = _edge_geom_req(
+                silks[part] if silks is not None else None, ring, d.silk
+            )
+            edge = max(0.0, ereq - float(outline.exterior.distance(eg)))
     return walk, edge
 
 
@@ -902,8 +1134,9 @@ def _try_label_nudges(
     dragged one off the outline and the gate refused the board)."""
     if bool(d.fixed[who]):
         return False
-    who_cur = _label_room_tuple(d, who, rings, sides, th, outline, zones)
-    score_cur = _label_room_tuple(d, score, rings, sides, th, outline, zones)
+    silks = [_silk_extent_geom(d.part_silk, pose[i], i) for i in range(len(d.parts))]
+    who_cur = _label_room_tuple(d, who, rings, sides, th, outline, zones, silks)
+    score_cur = _label_room_tuple(d, score, rings, sides, th, outline, zones, silks)
     hard_cur = _hard_violation(d, pose, who)
     for ring_nudges in nudges:
         for dx, dy in ring_nudges:
@@ -920,14 +1153,20 @@ def _try_label_nudges(
                 continue
             trial = list(rings)
             trial[who] = _ring_geom(d, row, who)
+            trial_silks = list(silks)
+            trial_silks[who] = _silk_extent_geom(d.part_silk, row, who)
             if (
-                _label_room_tuple(d, score, trial, sides, th, outline, zones)
+                _label_room_tuple(
+                    d, score, trial, sides, th, outline, zones, trial_silks
+                )
                 >= score_cur
             ):
                 continue
             if (
                 who != score
-                and _label_room_tuple(d, who, trial, sides, th, outline, zones)
+                and _label_room_tuple(
+                    d, who, trial, sides, th, outline, zones, trial_silks
+                )
                 > who_cur
             ):
                 continue
@@ -1040,6 +1279,132 @@ def _hard_violation(
     return total
 
 
+def _small_end(spec: Any, pins: np.ndarray | None) -> int:
+    """The end of a two-part measure the settle moves: fewer pins, a tie
+    moves operand a (the cap, the crystal — never the IC)."""
+    if pins is not None and int(pins[spec.ib]) < int(pins[spec.ia]):
+        return int(spec.ib)
+    return int(spec.ia)
+
+
+def _riders(
+    d: TopoDesign, mover: int, anchor: int, pins: np.ndarray | None
+) -> list[int]:
+    """The parts a moving end carries (taz-leaf B1: X2 could not reach
+    XL1 without leaving its load caps C1/C2 past their 2 mm bounds): the
+    small end of every other hard upper-distance measure that binds a
+    part to ``mover`` — movable, ungrouped, never the anchor. One level:
+    a rider's own riders stay where they are."""
+    out: list[int] = []
+    for s in d.measures:
+        if not (s.hard and s.metric == "dist" and s.bound == "upper" and s.ib >= 0):
+            continue
+        if mover not in (s.ia, s.ib):
+            continue
+        k = _small_end(s, pins)
+        if k in (mover, anchor) or k in out:
+            continue
+        grouped = len(d.group_of) == len(d.parts) and int(d.group_of[k]) >= 0
+        if bool(d.fixed[k]) or grouped:
+            continue
+        out.append(k)
+    return out
+
+
+def _carry(
+    pose: np.ndarray, mover: int, row: np.ndarray, riders: Sequence[int]
+) -> dict[int, np.ndarray]:
+    """The rows one rigid move of ``mover`` to ``row`` takes its riders
+    to: the mover's quarter turn about its own origin, then its
+    translation (the placer's group rotate, mount sides kept)."""
+    row0 = pose[mover]
+    dq = (round(float(row[2])) - round(float(row0[2]))) % 4
+    out = {mover: row}
+    for k in riders:
+        rk = pose[k].copy()
+        rk[:2] = row[:2] + qrot(pose[k, :2] - row0[:2], dq)
+        rk[2] = float((round(float(rk[2])) + dq) % 4)
+        out[k] = rk
+    return out
+
+
+def _group_legal(
+    d: TopoDesign,
+    pose: np.ndarray,
+    rows: Mapping[int, np.ndarray],
+    rings: list[Any],
+    sides: np.ndarray,
+    th: np.ndarray,
+    outline: Any | None,
+    zones: list[tuple[int, Any]],
+) -> bool:
+    """:func:`_label_room_legal` for parts moving together: each one
+    against the others' NEW rings, its own edge line against its current
+    ring."""
+    trial = pose.copy()
+    check = list(rings)
+    for k, rk in rows.items():
+        trial[k] = rk
+        check[k] = _ring_geom(d, rk, k)
+    for k, rk in rows.items():
+        own = list(check)
+        own[k] = rings[k]
+        if not _label_room_legal(d, trial, k, rk, own, sides, th, outline, zones):
+            return False
+    return True
+
+
+def _carried_repair(
+    d: TopoDesign,
+    pose: np.ndarray,
+    spec: Any,
+    mover: int,
+    anchor: int,
+    local: Any,
+    target_pts: Any,
+    riders: Sequence[int],
+    rings: list[Any],
+    sides: np.ndarray,
+    th: np.ndarray,
+    outline: Any | None,
+    zones: list[tuple[int, Any]],
+) -> dict[int, np.ndarray] | None:
+    """Rows for ``mover`` and its ``riders`` moved as one body onto the
+    spots :func:`_measure_repair_row` tries alone, judged by the summed
+    hard violation of every part that moves (a candidate must lower it)
+    and :func:`_group_legal`; least violation, then least displacement.
+    The body turns only when every member may."""
+    movers = (mover, *riders)
+    cur = sum(_hard_violation(d, pose, k) for k in movers)
+    row0 = pose[mover]
+    turn = all(int(d.freedoms[k]) & int(FREEDOM_ROTATE) for k in movers)
+    rots = range(4) if turn else (round(float(row0[2])) % 4,)
+    cands: list[tuple[float, float, dict[int, np.ndarray]]] = []
+    for tx, ty in _pose_points(target_pts, pose[anchor]):
+        for frac in _MEASURE_RING_FRACTIONS:
+            r = frac * spec.goal_mm
+            for k in range(_MEASURE_DIRECTIONS):
+                ang = 2.0 * math.pi * k / _MEASURE_DIRECTIONS
+                px, py = tx + r * math.cos(ang), ty + r * math.sin(ang)
+                for q in rots:
+                    turned = np.array([0.0, 0.0, float(q), float(row0[3])])
+                    for ox, oy in _pose_points(local or ((0.0, 0.0),), turned):
+                        row = np.array([px - ox, py - oy, float(q), float(row0[3])])
+                        rows = _carry(pose, mover, row, riders)
+                        trial = pose.copy()
+                        for j, rj in rows.items():
+                            trial[j] = rj
+                        v = sum(_hard_violation(d, trial, j) for j in movers)
+                        if v < cur - _EPS:
+                            moved = math.hypot(row[0] - row0[0], row[1] - row0[1])
+                            cands.append((v, moved, rows))
+    cands.sort(key=lambda c: (round(c[0], 6), c[1]))
+    for _v, _moved, rows in cands[:_MEASURE_REPAIR_TRIES]:
+        if _group_legal(d, pose, rows, rings, sides, th, outline, zones):
+            return rows
+    return None
+
+
 def _measure_repair_row(
     d: TopoDesign,
     pose: np.ndarray,
@@ -1063,6 +1428,31 @@ def _measure_repair_row(
     grouped = len(d.group_of) == len(d.parts) and int(d.group_of[mover]) >= 0
     if bool(d.fixed[mover]) or grouped:
         return None
+    rings = [_ring_geom(d, pose[k], k) for k in range(len(d.parts))]
+    zones = _margin_zone_entries(d, pose)
+    riders = _riders(d, mover, anchor, pins)
+    if riders:
+        carried = _carried_repair(
+            d,
+            pose,
+            spec,
+            mover,
+            anchor,
+            local,
+            target_pts,
+            riders,
+            rings,
+            sides,
+            th,
+            outline,
+            zones,
+        )
+        if carried is not None:
+            return (
+                mover,
+                carried[mover],
+                {k: r for k, r in carried.items() if k != mover},
+            )
     cur = _hard_violation(d, pose, mover)
     row0 = pose[mover]
     rots = (
@@ -1090,8 +1480,6 @@ def _measure_repair_row(
     cands.sort(key=lambda c: (round(c[0], 6), c[1]))
     best = [c for c in cands if round(c[0], 6) == round(cands[0][0], 6)]
     rest = cands[len(best) :]
-    rings = [_ring_geom(d, pose[k], k) for k in range(len(d.parts))]
-    zones = _margin_zone_entries(d, pose)
     for _v, _moved, row in best[:_MEASURE_REPAIR_TRIES]:
         if _label_room_legal(d, pose, mover, row, rings, sides, th, outline, zones):
             return mover, row, {}
@@ -1116,23 +1504,35 @@ def _clear_blockers(
     outline: Any | None,
     zones: list[tuple[int, Any]],
 ) -> dict[int, np.ndarray] | None:
-    """New rows for the parts ``mover`` at ``row`` would overlap, nudged
-    clear on the label settle's lattice (0.5–3 mm, 8 directions, away from
-    the mover first). Each blocker must be movable and ungrouped, legal
-    against the mover's new ring and keep its hard measures no worse;
-    more than :data:`_MEASURE_MAX_BLOCKERS` means that side of the IC is
+    """New rows for the parts ``mover`` at ``row`` would sit on —
+    overlapping its ring or inside its ``silk.pair_req_mm`` room —
+    nudged clear on the label settle's lattice (0.5–3 mm, 8 directions,
+    away from the mover first). Each blocker must be movable and
+    ungrouped, clear the mover's ring by the pair's full requirement
+    (a partial retreat leaves the pair a named gap failure anyway —
+    Fable R3-4), stay legal and keep its hard measures no worse; more
+    than :data:`_MEASURE_MAX_BLOCKERS` means that side of the IC is
     full. ``None`` when a blocker cannot move or the mover is still
     illegal after."""
     gi = _ring_geom(d, row, mover)
     if gi is None:
         return None
+    req = float(d.silk.pair_req_mm)
+    gap_free = one_body_pairs(d)
+
+    def _pair_req(j: int) -> float:
+        return 0.0 if (min(j, mover), max(j, mover)) in gap_free else req
+
     blockers = [
         j
         for j, gj in enumerate(rings)
         if j != mover
         and gj is not None
         and _collides(sides, th, mover, j)
-        and gi.intersection(gj).area > _EPS
+        and (
+            float(gi.intersection(gj).area) > _EPS
+            or float(gi.distance(gj)) < _pair_req(j) - _EPS
+        )
     ]
     if not blockers or len(blockers) > _MEASURE_MAX_BLOCKERS:
         return None
@@ -1158,6 +1558,11 @@ def _clear_blockers(
                 rj[1] += dy
                 if _hard_violation(d, trial, j, rj) > hard_j + _EPS:
                     continue
+                rj_ring = _ring_geom(d, rj, j)
+                if rj_ring is None:
+                    continue
+                if float(rj_ring.distance(gi)) < _pair_req(j) - _EPS:
+                    continue  # still on the spot — the move gains nothing
                 if _label_room_legal(
                     d, trial, j, rj, trial_rings, sides, th, outline, zones
                 ):
@@ -1340,6 +1745,7 @@ def _margin_axes(
     edge_mate: np.ndarray,
     refdes: tuple[str, ...],
     silk: SilkRoom,
+    part_silk: tuple[np.ndarray, ...] = (),
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Per-part (edge, pair, hole, label) margin shortfalls in mm over
     placed ring/body lists — the full-recompute body ``margin_total``
@@ -1348,7 +1754,9 @@ def _margin_axes(
     ``req`` of bbox slack) with the shortfall MAXED per part instead of
     summed; the edge axis measures the COURTYARD ring against the outline
     against the flat ``silk.edge_req_mm`` (the silk ring's room, not
-    the 0.4mm fab bar the overlap term prices on the body); the hole axis
+    the 0.4mm fab bar the overlap term prices on the body) — or the
+    part's own vendor-silk ink extent against ``silk.edge_margin_mm``
+    when it carries one (:func:`_edge_extent`, Reto 2026-11-03); the hole axis
     measures the pad-union BODY against the hole keep-outs, the owner
     exempt like the DRC's ``courtyard_hole``; the label axis is
     :func:`_label_axis` over the canonical spot boxes. Edge-mated parts
@@ -1375,7 +1783,10 @@ def _margin_axes(
         gi = rings[i]
         if gi is not None:
             if outline is not None and not em[i]:
-                e[i] = max(0.0, silk.edge_req_mm - float(outline.exterior.distance(gi)))
+                eg, ereq = _edge_geom_req(
+                    _silk_extent_geom(part_silk, pose[i], i), gi, silk
+                )
+                e[i] = max(0.0, ereq - float(outline.exterior.distance(eg)))
             x0, y0, x1, y1 = gi.bounds
             for j in range(n):
                 if j == i:
@@ -1451,6 +1862,7 @@ def margin_total(d: TopoDesign, pose: np.ndarray) -> float:
         d.part_edge_mate,
         d.parts,
         d.silk,
+        d.part_silk,
     )
     worst = np.maximum(np.maximum(e, p), np.maximum(h, l))
     exp_sum = float(np.exp(-worst / _MARGIN_SOFTMIN_TAU_MM).sum())
@@ -2083,6 +2495,7 @@ class ProxyState:
                 d.part_edge_mate,
                 d.parts,
                 d.silk,
+                d.part_silk,
             )
             worst = np.maximum(
                 np.maximum(self._mg_e, self._mg_p),
@@ -2388,23 +2801,25 @@ class ProxyState:
                 out.append((int(z.part), g))
         return out
 
-    def _mg_edge(self, part: int, ring) -> float:
-        """The margin term's edge axis for one part:
-        ``max(0, silk.edge_req_mm − courtyard-to-outline gap)`` — the
-        FLAT silk-room requirement (a big ring overlapping the edge band
-        still loses its outer wall; the retired ring-radius want priced
-        that at 0). Edge-mated parts are exempt like the overlap term's
-        edge half (gr530632 — the mating face is SUPPOSED to meet the
-        outline)."""
-        if ring is None or self._mg_outline is None:
+    def _mg_edge(self, part: int, row, ring) -> float:
+        """The margin term's edge axis for one part at staged pose
+        ``row``: ``max(0, req − extent-to-outline gap)`` — ``req`` is the
+        silk edge margin for a vendor-silk part (its own ink extent is
+        what the draw cuts), ``silk.edge_req_mm`` off the courtyard ring
+        otherwise (Reto 2026-11-03). Edge-mated parts are exempt like
+        the overlap term's edge half (gr530632 — the mating face is
+        SUPPOSED to meet the outline)."""
+        if self._mg_outline is None:
             return 0.0
         em = self.d.part_edge_mate
         if len(em) == len(self.d.parts) and bool(em[part]):
             return 0.0
-        return max(
-            0.0,
-            self.d.silk.edge_req_mm - float(self._mg_outline.exterior.distance(ring)),
+        eg, ereq = _edge_geom_req(
+            _silk_extent_geom(self.d.part_silk, row, part), ring, self.d.silk
         )
+        if eg is None:
+            return 0.0
+        return max(0.0, ereq - float(self._mg_outline.exterior.distance(eg)))
 
     def _mg_label(self, part: int, zones: list[tuple[int, Any]]) -> float:
         """The margin term's label axis for one part under the CURRENT
@@ -2662,7 +3077,7 @@ class ProxyState:
                 )
                 if j == part:
                     axes = (
-                        self._mg_edge(j, new_geom),
+                        self._mg_edge(j, staged_row, new_geom),
                         new_scan[1],
                         self._mg_hole(j, new_body, zones),
                         self._mg_label(j, zones),

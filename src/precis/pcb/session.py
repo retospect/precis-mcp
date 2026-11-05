@@ -439,9 +439,9 @@ def land_rects_by_instance(
                 w, h = max(xs) - min(xs), max(ys) - min(ys)
             else:
                 rot = float(pad.get("rot") or 0.0)
-                if pcb_padplace.rect_swaps_wh(rot):
+                if pcb_padplace.rect_swaps_wh(rot, w_mm=w, h_mm=h):
                     w, h = h, w
-                elif not pcb_padplace.pad_axis_aligned(rot):
+                elif not pcb_padplace.pad_axis_aligned(rot, w_mm=w, h_mm=h):
                     w = h = max(w, h)
             rows.append((cx, cy, w / 2.0, h / 2.0))
             nets.append(by_pin.get(pcb_padplace.pad_label(pad, pin_map) or "", ""))
@@ -592,13 +592,15 @@ def build_ir(
     )
     ir.fixed_vias = fixed_vias_from_copper(fixed_copper)
     if footprints_by_lcsc or local_footprints_by_name:
+        sources: dict[str, str] = {}
         by_refdes = footprints_by_refdes(
             ir,
             footprints_by_lcsc or {},
             local_footprints_by_name=local_footprints_by_name,
             local_names_by_refdes=local_footprint_names_by_refdes(graph),
+            resolved_source=sources,
         )
-        apply_real_pin_offsets(ir, by_refdes)
+        apply_real_pin_offsets(ir, by_refdes, footprint_sources=sources)
         ir.inst_land_rects, ir.inst_land_nets = land_rects_by_instance(ir, by_refdes)
         derived = footprint_holes(graph, by_refdes)
         # The footprint wins: a legacy part-owned feature for a refdes whose
@@ -670,6 +672,7 @@ def footprints_by_refdes(
     *,
     local_footprints_by_name: dict[str, dict[str, Any]] | None = None,
     local_names_by_refdes: dict[str, str] | None = None,
+    resolved_source: dict[str, str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Remap :meth:`~precis.store.Store.pcb_footprints_for`'s C-number-keyed
     cache onto the refdes-keyed shape :func:`precis.pcb.realize.pad_geometry`
@@ -700,6 +703,12 @@ def footprints_by_refdes(
     own authored geometry even when it also has a catalog part
     (Reto 2026-10-14: the .epro2 import keeps its footprint; the C-number
     is for datasheets and ordering, not pads).
+
+    ``resolved_source`` (optional out-param) records WHICH map each
+    resolved row came from — ``"local"`` or ``"catalog"`` — for callers
+    that must tell a design-local footprint's pad-derived courtyard
+    fallback from the catalog cache's authored one
+    (:func:`precis.pcb.ir.footprint_body_bboxes`).
     """
     out: dict[str, dict[str, Any]] = {}
     local_footprints_by_name = local_footprints_by_name or {}
@@ -712,6 +721,7 @@ def footprints_by_refdes(
         name = local_names_by_refdes.get(refdes)
         if name:
             fp = local_footprints_by_name.get(name)
+        source = "local" if fp is not None else "catalog"
         if fp is None and lcsc:
             fp = footprints_by_lcsc.get(str(lcsc))
         if fp:
@@ -723,6 +733,8 @@ def footprints_by_refdes(
                 if isinstance(ov, dict) and ov
                 else fp
             )
+            if resolved_source is not None:
+                resolved_source[refdes] = source
     return out
 
 
@@ -856,7 +868,10 @@ def pin_name_mismatch_note(
 
 
 def apply_real_pin_offsets(
-    ir: pcb_ir.PcbIR, footprints: dict[str, dict[str, Any]]
+    ir: pcb_ir.PcbIR,
+    footprints: dict[str, dict[str, Any]],
+    *,
+    footprint_sources: dict[str, str] | None = None,
 ) -> int:
     """Overwrite every pin's synthesized land-pattern offset with its REAL
     footprint coordinate where one exists; returns how many pins changed.
@@ -893,8 +908,28 @@ def apply_real_pin_offsets(
     footprint_pads`, gr451276) from the same footprints: this is the one
     seam where footprints meet the IR, and the courtyard/land-rect
     readers that take no ``footprints`` argument read it from there.
+
+    Also hydrates :attr:`~precis.pcb.ir.PcbIR.inst_body_bbox` — the
+    footprint row's authored courtyard (body) extent the courtyard ring
+    unions in, so a part's keep-out covers its body and not only its
+    lands. ``footprint_sources`` is :func:`footprints_by_refdes`'s
+    ``resolved_source`` map: a refdes it marks ``"catalog"`` takes its
+    row's courtyard unconditionally, while a design-local row's courtyard
+    counts only when it is authored, not the pad-derived fallback —
+    the distinction that keeps an authored comb's concave ring. Callers
+    without source knowledge get the derived-check alone, which keeps
+    every local row honest and costs only the rare catalog row whose
+    courtyard equals its pad bbox exactly.
     """
     ir.footprint_pads = pcb_ir.footprint_pad_set(ir, footprints)
+    ir.inst_body_bbox = pcb_ir.footprint_body_bboxes(
+        ir,
+        footprints,
+        catalog_refdes={
+            r for r, s in (footprint_sources or {}).items() if s == "catalog"
+        },
+    )
+    ir.inst_silk_graphics = pcb_ir.footprint_silk_graphics(ir, footprints)
     real_by_inst: dict[int, dict[str, tuple[float, float]]] = {}
     pads_by_inst: dict[int, dict[str, _PinPad]] = {}
     for inst_id in range(ir.n_instances):
@@ -1183,6 +1218,8 @@ def placement_drc_findings(
         edge_mates=pcb_edge_mate.records(ir),
         courtyard_clearance_mm=COURTYARD_CLEARANCE_MM,
         bodies=bodies,
+        bodied=pcb_ir.bodied_refdes(ir),
+        rigid_pairs=pcb_ir.rigid_refdes_pairs(ir),
     )
 
 

@@ -29,9 +29,11 @@ requirement, a separate figure from ``via_diameter_mm`` (a plated-via size).
 ``house_default`` is set by an auditable rule (also recorded in the JSON
 ``_note``): 1.5x ``jlc_min`` rounded up to the nearest 0.05mm, or JLC's own
 published "recommended" figure where one exists, whichever is higher —
-except ``soldermask_dam_mm``, whose default clears the 2oz-copper minimum
-rather than the 1oz ``jlc_min``, so a copper-weight change on the order
-doesn't silently violate it.
+except ``soldermask_dam_mm``, whose default follows the 1oz ``jlc_min``
+verbatim (Reto 2026-11-03: the via keep-out is budgeted at JLC MIN
+figures, see :func:`via_mask_web_mm`); an order at 2oz copper, whose dam
+minimum is 0.20mm, needs its own capability row rather than a shared
+figure that would silently under- or over-state it.
 
 ``soldermask_expansion_mm`` and ``silk_to_mask_clearance_mm`` are the two
 terms of the silk-clearance chain (``pad copper edge + expansion = mask
@@ -294,6 +296,38 @@ def design_value(row: CapabilityRow | None, field: str, *, fallback: float) -> f
     return fallback
 
 
+#: ``via_mask_web_mm``'s fallback terms (mm) — JLC's 1oz FR-4 minima.
+#: Used only where a row carries ``None`` for the field (a process JLC
+#: publishes no figure for — aluminum, the coverlay flex rows) or where a
+#: board resolves to no row at all, the same "``None`` falls back to a
+#: documented constant" contract :func:`design_value` callers follow.
+DEFAULT_VIA_MASK_EXPANSION_MM = 0.05
+DEFAULT_VIA_MASK_DAM_MM = 0.10
+
+
+def via_mask_web_mm(row: CapabilityRow | None) -> float:
+    """Copper-edge to copper-edge distance a via must keep from EVERY pad
+    so a soldermask web prints between their mask openings (no wicking
+    down the barrel, vias treated as NOT tented — Reto 2026-11-03)::
+
+        pad copper edge + soldermask expansion = pad mask opening edge
+          + soldermask dam (the minimum web the film can print)
+          + soldermask expansion back to the via's copper edge
+
+    — ``2 x expansion + dam``, 0.20mm at JLC's 1oz minima. Read at the
+    ``jlc_min`` tier: this is a fabrication floor (can the fab print a
+    dam there at all), not a design margin — the copper clearance to a
+    foreign pad still applies on top wherever it is larger. Applies to
+    the via's own-net pads exactly as to foreign ones (the old own-net
+    exemption is gone); a via inside a pad is ``via_in_pad``'s case,
+    not this rule's."""
+    expansion = row.jlc_min.get("soldermask_expansion_mm") if row is not None else None
+    dam = row.jlc_min.get("soldermask_dam_mm") if row is not None else None
+    return 2.0 * (
+        DEFAULT_VIA_MASK_EXPANSION_MM if expansion is None else float(expansion)
+    ) + (DEFAULT_VIA_MASK_DAM_MM if dam is None else float(dam))
+
+
 def headroom(row: CapabilityRow, field: str, value_mm: float) -> float:
     """How much margin ``value_mm`` spends above JLC's published minimum for
     ``field`` — the quantity a DRC digest quotes ("2.5 mil of headroom")."""
@@ -390,4 +424,5 @@ __all__ = [
     "headroom",
     "load_capabilities",
     "process_layer_counts",
+    "via_mask_web_mm",
 ]

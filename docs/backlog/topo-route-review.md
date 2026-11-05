@@ -184,7 +184,13 @@ gr524392, gr543905, and the 2026-10-31 C10/DEC5 hop.
 ## Plan
 
 Each slice is one commit with its test. Slices A, E1 and C need no new
-ruling except C's D2.
+ruling except C's D2. **D-b and D-c are superseded** (2026-11-01) by
+[topo-route-geometry-truth](topo-route-geometry-truth.md): the 2× board
+showed the crossing detector sees 2 of 27 real crossings and the route
+search is layer-blind, so the realiser has nothing it could repair
+inside a corridor — the plan there replaces the detector and the search
+and deletes the recovery loop. C's fanout never ran on the DB path (its
+`plane_net` feature is dropped by the store; G4 there).
 
 **A. Make the problem true**
 - A1. Fix the measures argument in `pcb_place.py::_topo_run` (pass
@@ -289,7 +295,17 @@ that cross each other still fail the guard with or without the plane.
   the taz-leaf pads, the index and `run_geometric_drc` disagree 0 times.
   Port the guards, the kink and shortcut checks and via `qualifies` onto
   it, then delete the five route-path pad builders and the `_seg_*`
-  helpers.
+  helpers. Slice 1 landed 2026-11-01: `topoplace/copper_index.py` (an
+  STRtree over swept bodies, the larger clearance of a pair wins, a net's
+  own wires never block it; property test against a brute-force distance
+  loop) and `_site_via` on it, a candidate batch per GEOS call
+  (`_pad_clear`/`_seg_rect_clear` deleted). Bench, same complete nets
+  before and after: taz-leaf at the taz-leaf-t pose 66 → 24 s, sanity
+  40 → 27 s, the seed pose 192 → 158 s (its time is no longer siting).
+  A wire's keep-out is now priced at the barrel actually tried and a stub
+  at its track width. Left: pads from `realize.pads_for_ir`, the guards,
+  kink and shortcut checks and `_fanout_vias` onto the index, then the
+  deletions.
 - D-b. Repair, not withdraw. When a piece fails the oracle (short-risk, no
   via site, unconnected), the realiser tries local alternatives inside the
   branch's corridor triangles, cheapest first: slide the kink along its

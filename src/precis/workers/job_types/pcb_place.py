@@ -292,22 +292,33 @@ def _diverged_pose(
     cands.append(("the stored placement", td.pose0, False))
     from precis.pcb import topoplace as _tp
 
+    why_best = ""
     for i, (label, pose, settle) in enumerate(cands):
         cand = _tp.settle_pose(td, pose) if settle else pose
         n = gate(cand)
+        gap = _tp.pair_gap_violations(td, cand)
         # First-at-or-under, deliberately NOT lowest: the candidate order
         # (the anneal's own best, elites by cost, the stored pose) IS the
         # preference — a marginally cleaner later candidate never
-        # preempts the pose the run actually produced.
-        if n is not None and n <= errors_before:
+        # preempts the pose the run actually produced. A candidate short
+        # of the hard silk pair gap does not count as committable either
+        # (topo-silk-spacing ruling — the named failure in the caller
+        # lists the pairs).
+        if n is not None and n <= errors_before and not gap:
             note = ""
             if i:
                 note = (
-                    f"⚠️  the best pose failed the pre-route gate — "
+                    f"⚠️  the best pose {why_best} — "
                     f"committed {label} instead ({n} pre-route DRC "
                     f"error(s), the stored placement had {errors_before})\n\n"
                 )
             return cand, note
+        if i == 0:
+            why_best = (
+                f"carries {len(gap)} pair(s) under the hard silk pair gap"
+                if gap
+                else "failed the pre-route gate"
+            )
     return settled_pose, ""
 
 
@@ -435,6 +446,38 @@ def _topo_run(
             # board already had rather than a worse pose.
             diverged = (
                 "no anneal pose beat the stored placement — kept it (settled)\n\n"
+            )
+        tight = _tp.pair_gap_violations(td, committed)
+        if tight:
+            # The silk pair gap is a HARD placement rule (topo-silk-
+            # spacing ruling): a board that cannot meet it fails by
+            # name — never a silent commit at the old courtyard line.
+            req = float(td.silk.pair_req_mm)
+            shown = ", ".join(
+                f"{td.parts[a]}/{td.parts[b]} {(req - s):.2f}mm short"
+                for a, b, s in tight[:8]
+            ) + (f" (+{len(tight) - 8} more)" if len(tight) > 8 else "")
+            ctx.record_failure(
+                f"pcb_place: {len(tight)} same-side pair(s) cannot meet the "
+                f"{req:.2f} mm silk pair gap — {shown} — spread the parts, "
+                "or declare the pair one body (group / hard measure)"
+            )
+            return None
+        flagged = _tp.pair_gap_flagged(td, committed)
+        if flagged:
+            # Both ends xy-locked is authored adjacency — exempt from
+            # the hard gap but still named in the summary (round-2
+            # ruling): the shared-wall risk stays visible, the commit
+            # is not a failure.
+            req = float(td.silk.pair_req_mm)
+            shown = ", ".join(
+                f"{td.parts[a]}/{td.parts[b]} {(req - s):.2f}mm short"
+                for a, b, s in flagged[:8]
+            ) + (f" (+{len(flagged) - 8} more)" if len(flagged) > 8 else "")
+            diverged += (
+                f"note: {len(flagged)} fixed-fixed pair(s) under the "
+                f"{req:.2f} mm silk pair gap — {shown} — authored "
+                "adjacency, exempt\n\n"
             )
         assignment = _tp.assign_pins(td, result.best_pose, prior=slot_prior)
     except PinConflict as exc:
@@ -809,6 +852,7 @@ def _topo_route(
     # default) finds no site on a branch.
     min_via_dia = capability.jlc_min.get("via_diameter_mm")
     min_via_drill = capability.jlc_min.get("drill_mm")
+    min_via_ring = capability.jlc_min.get("annular_ring_mm")
 
     # gr513870: per-round progress lands as job_event chunks — the live
     # surface a watcher tails while the route runs (phase lines plus
@@ -831,6 +875,7 @@ def _topo_route(
         net_rules=net_rules,
         min_via_dia=None if min_via_dia is None else float(min_via_dia),
         min_via_drill=None if min_via_drill is None else float(min_via_drill),
+        min_via_ring=None if min_via_ring is None else float(min_via_ring),
         event=event,
         masks=_route_masks(
             td_route, td_route.pose0, ir.n_layers, net_rules, min_via_dia
@@ -889,6 +934,8 @@ def _topo_route(
                 pose=pose,
                 net_rules=net_rules,
                 min_via_dia=None if min_via_dia is None else float(min_via_dia),
+                min_via_drill=None if min_via_drill is None else float(min_via_drill),
+                min_via_ring=None if min_via_ring is None else float(min_via_ring),
                 event=event,
                 masks=_route_masks(td_route, pose, ir.n_layers, net_rules, min_via_dia),
                 **plane_kw,
@@ -1005,8 +1052,10 @@ def _topo_route(
                 "net_id": db_id,
                 "route_id": None,
                 "geom": {
-                    "x": round(v.x, 4),
-                    "y": round(v.y, 4),
+                    # These are validated sites: rounding can consume the
+                    # remaining mask web even when it moves only microns.
+                    "x": v.x,
+                    "y": v.y,
                     "dia_mm": v.dia_mm,
                     "drill_mm": v.drill_mm,
                     "span": [layers[lo], layers[hi]],

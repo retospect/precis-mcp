@@ -934,10 +934,12 @@ def test_pad_flash_carries_its_refdes_pin_handle_where_the_gerber_named_it() -> 
 
 @pytest.mark.parametrize("side", ["F", "B"])
 @pytest.mark.parametrize("surface_layers", [("Mask", "Paste"), ("Mask",), ()])
-def test_part_body_infers_only_present_surface_layers_on_its_copper_side(
+def test_part_body_records_only_its_copper_side_not_anonymous_surface_art(
     side: str, surface_layers: tuple[str, ...]
 ) -> None:
-    """Anonymous surface art keeps parts selectable, even with no paste pad."""
+    """gr565256: the part-body fallback names the layers whose artwork carries
+    its refdes (copper). Mask and paste Gerbers name no refdes, so they never
+    appear; hiding the copper leaves no invisible hoverable body."""
     model = _model()
     model["pads"][0].update(layer=f"{side}.Cu", refdes="U1", pin="3", paste="none")
     files = gerber.export_fab(model, name="t", allow_synthesized=True)
@@ -946,9 +948,8 @@ def test_part_body_infers_only_present_surface_layers_on_its_copper_side(
             del files[f"t-{side}_{surface}.gbr"]
     svg = gerber_view.render_fab_svg(files, title="t")
     parts = _parts_group(svg)
-    expected = " ".join([f"{side}_Cu", *(f"{side}_{key}" for key in surface_layers)])
     assert 'data-handle="U1"' in parts
-    assert f'data-pcb-layers="{expected}"' in parts
+    assert f'data-pcb-layers="{side}_Cu"' in parts
 
 
 def _parts_group(svg: str) -> str:
@@ -1067,7 +1068,7 @@ def test_part_body_hit_rect_spans_the_parts_pads_under_the_layer_stack() -> None
     x, w = float(mx.group(1)), float(mw.group(1))
     assert x < 2.0 and x + w > 6.0  # spans both pads, each half-pad wider
     assert "part Q4" in parts.group(1) and "mm" in parts.group(1)
-    assert 'data-pcb-layers="F_Cu F_Mask F_Paste"' in rects[0]
+    assert 'data-pcb-layers="F_Cu"' in rects[0]
     assert svg.index('<g class="parts">') < svg.index('<g id="layer-')
 
 
@@ -1075,6 +1076,34 @@ def test_no_part_bodies_when_no_pad_names_a_part() -> None:
     files = gerber.export_fab(_model(), name="t", allow_synthesized=True)
     svg = gerber_view.render_fab_svg(files, title="t")
     assert '<g class="parts">' not in svg
+
+
+def test_part_body_declares_copper_and_silk_visibility_without_mask() -> None:
+    pad = gerber_view.Flash(
+        gerber_view.Aperture("C", (1.0,)), 2.0, 2.0, refdes="U1", pin="1"
+    )
+    silk = gerber_view.Stroke([(1.0, 1.0), (3.0, 1.0)], 0.15, refdes="U1")
+    arts = {
+        "B_Cu": gerber_view.LayerArt(flashes=[pad]),
+        "B_Silkscreen": gerber_view.LayerArt(strokes=[silk]),
+        "B_Mask": gerber_view.LayerArt(flashes=[pad]),
+        "B_Paste": gerber_view.LayerArt(flashes=[pad]),
+    }
+    body = "".join(gerber_view._part_body_els(arts))
+    assert body.count("<rect ") == 1
+    assert 'data-pcb-layers="B_Cu B_Silkscreen"' in body
+    assert 'data-handle="U1"' in body
+
+
+def test_mask_opening_alone_does_not_create_a_part_body_hit() -> None:
+    art = gerber_view.LayerArt(
+        flashes=[
+            gerber_view.Flash(
+                gerber_view.Aperture("C", (1.0,)), 2.0, 2.0, refdes="U1", pin="1"
+            )
+        ]
+    )
+    assert "<rect " not in "".join(gerber_view._part_body_els({"F_Mask": art}))
 
 
 def test_handle_attribute_is_escaped() -> None:

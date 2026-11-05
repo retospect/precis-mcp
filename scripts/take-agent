@@ -73,8 +73,10 @@ if [[ "$discard" == 1 ]]; then
 fi
 
 [[ -z "$(git status --porcelain)" ]] || die "this tree is dirty — commit first"
-git -C "$tree" rebase -q "$ours" \
-    || die "rebase conflict in $tree — resolve there, 'git add -A && GIT_EDITOR=true git rebase --continue', re-run"
+if ! git merge-base --is-ancestor "$ours" "$branch"; then
+    git -C "$tree" rebase -q "$ours" \
+        || die "rebase conflict in $tree — resolve there, 'git add -A && GIT_EDITOR=true git rebase --continue', re-run"
+fi
 before="$(git rev-parse HEAD)"
 git merge -q --ff-only "$branch"
 printf '%s %s\n' "$branch" "$(git rev-parse "$branch")" >> "$(git rev-parse --git-path taken-agents)"

@@ -50,19 +50,24 @@ stack, not just the two outer layers — plus one Excellon hole in
 same "plated unless marked otherwise" default :mod:`precis.pcb.export`'s
 Excellon writer already documents).
 
-**Shape/size.** :mod:`precis.pcb.gerber`'s apertures carry NO rotation
-angle (``_ApertureTable`` is shape+size only) — a genuinely oblique
-(non-multiple-of-90°) rotation cannot be represented exactly for a
-rectangular/obround pad by this writer. :func:`_swap_wh` handles the one
-case that CAN be represented exactly — an effective rotation that lands on
-90°/270° swaps width and height so the flashed aperture still matches the
-pad's true footprint; any other angle keeps the authored w/h (an honest,
-documented approximation, not a silent wrong answer — circle pads are
-unaffected either way since they have no orientation).
+**Shape/size.** Alignment and width/height swapping use the board-frame
+angle: instance + pad on top, instance - pad on bottom. The mirror reverses
+the pad's turn before the instance rotates it; testing the unmirrored sum
+can transpose an axis-aligned bottom pad by 90 degrees. Quarter turns swap
+width and height for axis-aligned apertures. Near-axis snapping is allowed
+only when the farthest corner moves by at most half ``FAB_QUANTUM_MM``;
+an angle-only threshold is unsafe for long lands. Oblique rectangles/obrounds
+keep authored w/h and their full board-frame angle: angular rounding moves
+the ends of a long pad farther
+than a fixed linear export reserve permits. Gerber emits the rotated
+rectangle as a region and the obround as a round-aperture stroke, retaining
+the same geometry in copper, mask and paste. Circles have no orientation;
+polygon vertices are already transformed into the board frame.
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from precis.pcb import pose as _pose
@@ -129,25 +134,39 @@ def is_bottom_instance(inst: dict[str, Any]) -> bool:
     return _pose.is_bottom(inst)
 
 
-def _swap_wh(rot_deg: float, *, tol_deg: float = 0.05) -> bool:
+def _swap_wh(
+    rot_deg: float, *, tol_deg: float = 0.05, w_mm: float = 0.0, h_mm: float = 0.0
+) -> bool:
     """True when ``rot_deg`` (mod 180) is within ``tol_deg`` of 90° — the
-    only rotation this aperture-less writer can represent exactly for a
-    non-circular pad by swapping width/height (module docstring)."""
+    quarter turn represented by swapping width/height rather than carrying
+    an oblique board-frame angle (module docstring)."""
     r = rot_deg % 180.0
-    return abs(r - 90.0) <= tol_deg
+    return abs(r - 90.0) <= tol_deg and pad_axis_aligned(
+        rot_deg, tol_deg=tol_deg, w_mm=w_mm, h_mm=h_mm
+    )
 
 
-def pad_axis_aligned(rot_deg: float, *, tol_deg: float = 0.05) -> bool:
-    """True when ``rot_deg`` (mod 90) is within ``tol_deg`` of a multiple
-    of 90° — the SUPERSET of :func:`_swap_wh`'s own 90°/270° test (0°/180°
-    need no swap, 90°/270° do; both land a rect/obround pad's true extent
-    exactly on the board axes). Exposed for callers outside this module
-    that need to know "can this pad's board-space extent be represented
-    by an axis-aligned box at all" without re-deriving the tolerance
-    arithmetic a third time (:mod:`precis.pcb.realize`'s router
-    claim, gripe 346962)."""
+def pad_axis_aligned(
+    rot_deg: float, *, tol_deg: float = 0.05, w_mm: float = 0.0, h_mm: float = 0.0
+) -> bool:
+    """Axis snapping moves no point farther than half the fab quantum.
+
+    A corner at radius hypot(w,h)/2 moves by 2*r*sin(delta/2). This
+    bounds every rectangle/obround extremity, including unusually long
+    lands; an angle-only tolerance cannot. Without dimensions, accept
+    exact quarter turns only. All geometry consumers pass their extent.
+    """
+    from precis.pcb.clearance import FAB_QUANTUM_MM
+
     r = rot_deg % 90.0
-    return r <= tol_deg or r >= 90.0 - tol_deg
+    delta = min(r, 90.0 - r)
+    if delta == 0.0:
+        return True
+    if delta > tol_deg or max(abs(w_mm), abs(h_mm)) == 0.0:
+        return False
+    return (
+        math.hypot(w_mm, h_mm) * math.sin(math.radians(delta) / 2) <= FAB_QUANTUM_MM / 2
+    )
 
 
 def oblique_world_rot(inst_rot_deg: float, pad_rot_deg: float, bottom: bool) -> float:
@@ -171,12 +190,14 @@ def pad_world_rot(pad: dict[str, Any]) -> float:
     return float(rot or 0.0)
 
 
-def rect_swaps_wh(rot_deg: float, *, tol_deg: float = 0.05) -> bool:
+def rect_swaps_wh(
+    rot_deg: float, *, tol_deg: float = 0.05, w_mm: float = 0.0, h_mm: float = 0.0
+) -> bool:
     """Public wrapper on :func:`_swap_wh`, for a caller outside this
     module that needs the IDENTICAL 90°/270° swap decision
     (:mod:`precis.pcb.realize`'s synthesized-pad board-space sizing,
     gripe 346962) rather than reaching into a private helper."""
-    return _swap_wh(rot_deg, tol_deg=tol_deg)
+    return _swap_wh(rot_deg, tol_deg=tol_deg, w_mm=w_mm, h_mm=h_mm)
 
 
 def _effective_layer(pad_layer: str, *, bottom: bool) -> str:
@@ -212,8 +233,30 @@ def place_pad_point(pad: dict[str, Any], inst: dict[str, Any]) -> tuple[float, f
     return _pose.to_world(lx, ly, inst)
 
 
+def drill_offset_world(
+    pad: dict[str, Any], inst: dict[str, Any]
+) -> tuple[float, float]:
+    """Hole displacement from the copper origin, in board coordinates.
+
+    ``drill_offset`` uses the hole's unrotated pad frame, so the pad turn
+    precedes the instance mirror/rotation, exactly as for a slot axis.
+    """
+    offset = pad.get("drill_offset") or {}
+    dx, dy = _rotate_cw(
+        float(offset.get("x") or 0.0),
+        float(offset.get("y") or 0.0),
+        float(pad.get("rot") or 0.0),
+    )
+    return _transform_local_point(dx, dy, inst)
+
+
 def _slot_centre_line(
-    pad: dict[str, Any], inst: dict[str, Any], bx: float, by: float
+    pad: dict[str, Any],
+    inst: dict[str, Any],
+    bx: float,
+    by: float,
+    *,
+    quantize: bool = True,
 ) -> list[list[float]] | None:
     """Board-frame end-centre points of a slotted pad's hole, or ``None``.
 
@@ -222,7 +265,7 @@ def _slot_centre_line(
     tool of ``drill`` (= the short axis) swept between two end centres
     ``(long - short)`` apart. The axis is turned by the pad's own ``rot``
     then by the instance's mirror/rotate, the same order ``w``/``h`` follow
-    (they swap exactly when the sum is 90 mod 180)."""
+    (they swap when the board-frame angle is 90 mod 180)."""
     slot = pad.get("slot")
     if not isinstance(slot, dict):
         return None
@@ -233,10 +276,41 @@ def _slot_centre_line(
     dx, dy = (half, 0.0) if sw > sh else (0.0, half)
     dx, dy = _rotate_cw(dx, dy, float(pad.get("rot") or 0.0))
     dx, dy = _transform_local_point(dx, dy, inst)
-    return [
-        [round(bx - dx, 4), round(by - dy, 4)],
-        [round(bx + dx, 4), round(by + dy, 4)],
-    ]
+    ox, oy = drill_offset_world(pad, inst)
+    bx, by = bx + ox, by + oy
+    ends = [[bx - dx, by - dy], [bx + dx, by + dy]]
+    return [[round(x, 4), round(y, 4)] for x, y in ends] if quantize else ends
+
+
+def place_pad_drill(
+    pad: dict[str, Any],
+    inst: dict[str, Any],
+    bx: float,
+    by: float,
+    *,
+    quantize: bool = True,
+) -> dict[str, Any] | None:
+    """One authored pad's physical hole in the board frame.
+
+    ``bx/by`` is its placed copper origin (zero requests relative hole
+    geometry). Export, IR reconstruction and router consumers share this
+    transform, including offsets in the pad axes and both slot end centres.
+    Relative IR probes set ``quantize=False``; round only after adding the
+    final board translation, so a probe cannot shift a near-floor ring.
+    """
+    if not pad.get("drill"):
+        return None
+    ox, oy = drill_offset_world(pad, inst)
+    hole: dict[str, Any] = {
+        "x": round(bx + ox, 4) if quantize else bx + ox,
+        "y": round(by + oy, 4) if quantize else by + oy,
+        "dia_mm": float(pad["drill"]),
+        "plated": True,
+    }
+    slot = _slot_centre_line(pad, inst, bx, by, quantize=quantize)
+    if slot is not None:
+        hole["slot"] = slot
+    return hole
 
 
 def place_footprint_pads(
@@ -270,10 +344,12 @@ def place_footprint_pads(
     default :mod:`precis.pcb.gerber` already assumed). A ``shape:
     "polygon"`` pad's ``poly`` vertex ring is transformed per-vertex by
     the SAME mirror/rotate :func:`place_pad_point` uses for the center
-    (:func:`_transform_local_point`) — the center is still emitted too
-    (as the ring's own bbox center) so a consumer that only reads
-    ``x``/``y``/``w``/``h`` (the courtyard/DRC bbox fallback) keeps
-    working.
+    (:func:`_transform_local_point`). An explicit pad origin stays fixed:
+    moving it to the polygon bbox centre would move a drilled hole.
+    Polygon w/h metadata is the placed ring's board-frame extent; bounds
+    consumers must read the ring, since it can be asymmetric about x/y.
+    A ``drill_offset`` is relative to the unrotated pad frame and becomes
+    an explicit board-frame ``drill_x``/``drill_y`` hole centre.
     """
     bottom = is_bottom_instance(inst)
     inst_rot = float(inst.get("rot") or 0.0)
@@ -286,10 +362,17 @@ def place_footprint_pads(
         bx, by = place_pad_point(pad, inst)
         raw_shape = str(pad.get("shape") or "").upper()
         shape = _SHAPE_MAP.get(raw_shape, "rect")
-        w = float(pad["w"])
-        h = float(pad.get("h", pad["w"]))
+        poly = pad.get("poly") if shape == "polygon" else None
+        if poly:
+            xs, ys = zip(*poly, strict=True)
+            w, h = max(xs) - min(xs), max(ys) - min(ys)
+        else:
+            w = float(pad["w"])
+            h = float(pad.get("h", pad["w"]))
         total_rot = inst_rot + float(pad.get("rot") or 0.0)
-        if shape in ("rect", "obround") and _swap_wh(total_rot):
+        world_rot = oblique_world_rot(inst_rot, float(pad.get("rot") or 0.0), bottom)
+        aligned = pad_axis_aligned(world_rot, w_mm=w, h_mm=h)
+        if shape in ("rect", "obround") and _swap_wh(world_rot, w_mm=w, h_mm=h):
             w, h = h, w
 
         pin_name = pad_label(pad, pin_map)
@@ -308,24 +391,23 @@ def place_footprint_pads(
             # never joined the cached footprint" (gr346009).
             "refdes": str(inst.get("refdes") or ""),
             "pin": pin_name,
+            # A circle/custom land still has authored axes for its hole.
+            "pad_rot_deg": float(pad.get("rot") or 0.0),
         }
         if shape != "circle":
             base["h"] = round(h, 4)
-        if shape in ("rect", "obround") and not pad_axis_aligned(total_rot):
-            # The w/h above are the AUTHORED extent, not the board one (module
-            # docstring, Shape/size). Say so on the pad, so a writer that
-            # cannot rotate it either can warn by refdes. Instance + pad
-            # rotation, before the bottom mirror: only "oblique or not" is
-            # meaningful, and a mirror does not change that.
-            base["oblique_rot"] = round(total_rot % 360.0, 4)
+        if shape in ("rect", "obround") and not aligned:
+            # The w/h above are the authored extent. Keep the full angle;
+            # a fixed angular quantum has no fixed linear error bound.
+            # Retain the unmirrored sum for consumers recovering the
+            # authored pad angle; geometry uses only the board-frame angle.
+            base["oblique_rot"] = total_rot % 360.0
             # The land's angle IN THE BOARD FRAME (CW degrees), which is
             # what a shape function rotates the w×h outline by: on a
             # bottom part the mirror reverses the pad's own rotation
             # (M·R(p) = R(-p)·M, and a rect/obround is mirror-symmetric),
             # so the world angle is inst - pad, not inst + pad (gr504558).
-            base["oblique_world_rot"] = round(
-                oblique_world_rot(inst_rot, float(pad.get("rot") or 0.0), bottom), 4
-            )
+            base["oblique_world_rot"] = world_rot
         if shape == "polygon" and pad.get("poly"):
             base["poly"] = [
                 [
@@ -337,6 +419,9 @@ def place_footprint_pads(
                     for vx, vy in pad["poly"]
                 )
             ]
+            xs, ys = zip(*base["poly"], strict=True)
+            base["w"] = round(max(xs) - min(xs), 4)
+            base["h"] = round(max(ys) - min(ys), 4)
         if pad.get("role") is not None:
             base["role"] = str(pad["role"])
         if pad.get("mask") is not None:
@@ -354,9 +439,14 @@ def place_footprint_pads(
             # coordinate against ``model["drills"]`` would be re-deriving a
             # fact we chose to throw away, at rounding-tolerance risk.
             base["drill"] = float(drill)
-            slot_line = _slot_centre_line(pad, inst, bx, by)
-            if slot_line is not None:
-                base["slot"] = slot_line
+            hole = place_pad_drill(pad, inst, bx, by)
+            assert hole is not None
+            hx, hy = hole["x"], hole["y"]
+            if pad.get("drill_offset"):
+                base["drill_x"], base["drill_y"] = hx, hy
+            if "slot" in hole:
+                base["slot"] = hole["slot"]
+            out_drills.append(hole)
 
         target_layers = (
             list(layers)
@@ -366,17 +456,34 @@ def place_footprint_pads(
         for layer in target_layers:
             out_pads.append({"layer": layer, **base})
 
-        if drill:
-            hole: dict[str, Any] = {
-                "x": round(bx, 4),
-                "y": round(by, 4),
-                "dia_mm": float(drill),
-                "plated": True,
-            }
-            if "slot" in base:
-                hole["slot"] = base["slot"]
-            out_drills.append(hole)
     return out_pads, out_drills
+
+
+def drills_for_pads(pads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One physical hole per placed pad, retaining offsets and slot ends.
+
+    Through-hole lands repeat on each copper layer. Offline and stored
+    IR models must deduplicate those lands without dropping the geometry
+    the Excellon writer needs.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for pad in pads:
+        if not pad.get("drill"):
+            continue
+        x, y = float(pad.get("drill_x", pad["x"])), float(pad.get("drill_y", pad["y"]))
+        drill = float(pad["drill"])
+        slot = pad.get("slot")
+        ends = tuple(sorted(tuple(map(float, point)) for point in slot)) if slot else ()
+        key = (round(x, 4), round(y, 4), round(drill, 4), ends)
+        if key in seen:
+            continue
+        seen.add(key)
+        hole: dict[str, Any] = {"x": x, "y": y, "dia_mm": drill, "plated": True}
+        if slot:
+            hole["slot"] = slot
+        out.append(hole)
+    return out
 
 
 #: The ``pad_overrides`` map's non-pad meta entry (slice 3): its value is

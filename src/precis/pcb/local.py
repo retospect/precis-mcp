@@ -66,6 +66,8 @@ from precis.pcb import (
 )
 from precis.pcb import diag as pcb_diag
 from precis.pcb import drc as pcb_drc
+from precis.pcb import padplace as pcb_padplace
+from precis.pcb import planes as pcb_planes
 from precis.pcb import profiles as pcb_profiles
 from precis.pcb import realize as pcb_realize
 from precis.pcb import route_digest as pcb_route_digest
@@ -403,24 +405,6 @@ def _expand_generators(batch: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def _planes_rows(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """``plane_net`` features as ``pcb_planes`` rows (``source='authored'``
-    — a script declaration is the human's instruction, exactly what
-    ``op='plane_net'`` writes)."""
-    return [
-        {
-            "layer": str(f_["layer"]),
-            "net": str(f_["net"]),
-            "region_hint": f_.get("region_hint"),
-            "source": "authored",
-            "region": f_.get("region"),
-            "priority": int(f_.get("priority") or 0),
-        }
-        for f_ in features
-        if str(f_.get("ftype") or "") == "plane_net"
-    ]
-
-
 #: The env var naming the laptop's footprint cache — a JSON file, or a
 #: directory holding ``footprints.json`` (gr520330).
 FOOTPRINT_CACHE_ENV = "PRECIS_FOOTPRINT_CACHE"
@@ -662,7 +646,12 @@ def _design(board: Any, catalog: dict[str, dict[str, Any]] | None) -> _Design:
         features=features,
         outline=outline,
         mounting_holes=pcb_session.mounting_holes_from_features(features),
-        planes=_planes_rows(features),
+        # The same rows the batch put writes to pcb_planes (one converter,
+        # so bench and job pour the same board).
+        planes=[
+            {**r, "priority": r["priority"] or 0}
+            for r in pcb_planes.plane_rows_from_features(features)
+        ],
         # The stored shape, as ``_pcb_insert_measure`` writes it: a
         # builder ``near()`` row resolves to no spec until converted.
         measures=[
@@ -894,6 +883,7 @@ def _route_stage(
     # pair when the net-rule via (house default) finds no site.
     _min_via = design.fab_caps.jlc_min.get("via_diameter_mm")
     _min_drill = design.fab_caps.jlc_min.get("drill_mm")
+    _min_ring = design.fab_caps.jlc_min.get("annular_ring_mm")
     plan, rres = _tprealise.route_design(
         td_route,
         ir,
@@ -901,6 +891,7 @@ def _route_stage(
         net_rules=net_rules,
         min_via_dia=None if _min_via is None else float(_min_via),
         min_via_drill=None if _min_drill is None else float(_min_drill),
+        min_via_ring=None if _min_ring is None else float(_min_ring),
         event=event,
         # gr524239: a poured net fans out by via; the plane pours over the
         # finished copper, keeping off the real pads and authored copper
@@ -1337,6 +1328,35 @@ def topo_place(
     result = dataclasses.replace(
         result, best_pose=_tp.settle_pose(td, result.best_pose)
     )
+    tight = _tp.pair_gap_violations(td, result.best_pose)
+    if tight:
+        # The silk pair gap is a HARD placement rule (topo-silk-spacing
+        # ruling): a board that cannot meet it fails by name, listing
+        # the pairs — never a silent return to the old courtyard line.
+        req = float(td.silk.pair_req_mm)
+        shown = ", ".join(
+            f"{td.parts[a]}/{td.parts[b]} {(req - s):.2f}mm short"
+            for a, b, s in tight[:8]
+        ) + (f" (+{len(tight) - 8} more)" if len(tight) > 8 else "")
+        raise LocalError(
+            f"pcb.local.topo_place: {len(tight)} same-side pair(s) cannot "
+            f"meet the {req:.2f} mm silk pair gap — {shown} — spread the "
+            "parts, or declare the pair one body (group / hard measure)",
+            code="pcb.placement-gap",
+        )
+    flagged = _tp.pair_gap_flagged(td, result.best_pose)
+    if flagged and progress is not None:
+        # Both ends xy-locked is authored adjacency — exempt from the
+        # gap but still reported (round-2 ruling).
+        req = float(td.silk.pair_req_mm)
+        shown = ", ".join(
+            f"{td.parts[a]}/{td.parts[b]} {(req - s):.2f}mm short"
+            for a, b, s in flagged[:8]
+        ) + (f" (+{len(flagged) - 8} more)" if len(flagged) > 8 else "")
+        progress(
+            f"note: {len(flagged)} fixed-fixed pair(s) under the "
+            f"{req:.2f} mm silk pair gap (authored adjacency, exempt): {shown}"
+        )
     assignment = _tp.assign_pins(td, result.best_pose)
     pm = _tp.pair_map(td)
     # The refdes-label pins for the winning pose — computed before the run
@@ -1479,11 +1499,7 @@ def _model(placement: LocalPlacement | LocalRoute) -> dict[str, Any]:
         footprints=placement.footprints,
     )
     pads = model.get("pads") or []
-    drills = [
-        {"x": p["x"], "y": p["y"], "dia_mm": p["drill"], "plated": True}
-        for p in pads
-        if p.get("drill")
-    ]
+    drills = pcb_padplace.drills_for_pads(pads)
     drills += [
         {"x": h.x, "y": h.y, "dia_mm": h.drill_mm, "plated": h.plated}
         for h in design.mounting_holes
@@ -1560,6 +1576,7 @@ def drc(placement: LocalPlacement | LocalRoute) -> list[Any]:
     runs, on the laptop's model rather than the store's."""
     design = placement.design
     model = _model(placement)
+    census = model.pop("_silk_census", None)
     return pcb_drc.run_geometric_drc(
         model,
         capability=design.fab_caps,
@@ -1568,6 +1585,10 @@ def drc(placement: LocalPlacement | LocalRoute) -> list[Any]:
         net_voltages=_net_voltages(design.graph),
         unconnected=design.graph.get("unconnected"),
         keepouts=pcb_session.keepouts_from_features(design.features),
+        # The silk census the model's own build_silk pass produced —
+        # silk_missing/silk_printability need it to fire locally as
+        # they do on prod's check_run (review-1 finding 3).
+        census=census,
         phase="placed",
         profile_rules=pcb_profiles.profile_rules(design.profile),
     )
@@ -1804,8 +1825,8 @@ def copper_json(
             {
                 "ctype": "via",
                 "net": str(ir.net_name[v.net_id]) if ir is not None else "",
-                "x": round(float(v.x), 4),
-                "y": round(float(v.y), 4),
+                "x": float(v.x),
+                "y": float(v.y),
                 "dia_mm": v.dia_mm,
                 "drill_mm": v.drill_mm,
                 "span": [layers[lo], layers[hi]] if layers else [],

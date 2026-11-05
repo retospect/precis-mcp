@@ -59,6 +59,7 @@ from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
 from precis.pcb import ir as pcb_ir
 from precis.pcb import padplace as pcb_padplace
+from precis.pcb import planes as pcb_planes
 from precis.pcb import route_state as pcb_route_state
 from precis.pcb import rows as pcb_rows
 from precis.pcb.capabilities import capability_for, conductor_spacing_mm
@@ -969,6 +970,7 @@ class PcbMixin:
             "conns": 0,
             "measures": 0,
             "features": 0,
+            "planes": 0,
             "outline_replaced": 0,
             "footprints": 0,
             "generators": 0,
@@ -1388,6 +1390,16 @@ class PcbMixin:
             counts["measures"] += 1
 
         for ft in features or []:
+            if pcb_planes.is_plane_net_feature(ft):
+                # A `plane_net` feature is a pcb_planes declaration riding
+                # the features list (a script's `b.plane()`), not a placed
+                # feature: filed as a pcb_features row its `net` was
+                # dropped and nothing read it, so every job routed the
+                # plane net as a signal tree while the laptop path, which
+                # converts it, poured it (topo-route-geometry-truth root
+                # cause 4). Written below, after this loop, through the
+                # same checked assign op='plane_net' uses.
+                continue
             if str(ft.get("ftype") or ft.get("type") or "").strip() == "outline":
                 # A board has ONE outline (gr464529): a new one retires the
                 # old, the same retired_at path every other feature removal
@@ -1400,6 +1412,13 @@ class PcbMixin:
                 ).rowcount
             self._pcb_insert_feature(conn, ref.id, board_id, ft)
             counts["features"] += 1
+
+        # The nets upsert above has run, so a plane declared for a net this
+        # batch authors resolves; the same converter `pcb.local._design`
+        # pours from, so bench and job agree on which nets are planes.
+        counts["planes"] += self._pcb_apply_plane_features(
+            conn, ref.id, pcb_planes.plane_rows_from_features(features or [])
+        )
 
         if net_classes:
             # A generator's own net-class rules (e.g. ewod_pad_array's
@@ -6037,6 +6056,110 @@ class PcbMixin:
                         f"'net':'{net}'}}) once the net is back"
                     ),
                 )
+
+    def _pcb_apply_plane_features(
+        self, conn: Connection, ref_id: int, rows: list[dict[str, Any]]
+    ) -> int:
+        """Write a batch's ``plane_net`` FEATURE declarations
+        (:func:`precis.pcb.planes.plane_rows_from_features`) to
+        ``pcb_planes`` through the same :meth:`_pcb_assign_plane` upsert
+        ``op='plane_net'`` uses; returns how many landed. Runs after the
+        batch's nets upsert so a net authored in the same put resolves.
+
+        Checked before any is written, as :meth:`_pcb_check_stackup_planes`
+        does: every declaration naming no live net is refused in one
+        message, and the refusal rolls the whole put back — a board never
+        keeps half of a script's plane instructions."""
+        if not rows:
+            return 0
+        # Judged against the stackup in effect NOW — this batch's own
+        # meta.stackup is already on the board row (and a brand-new design
+        # has the default one) — the way `op='plane_net'` judges.
+        srow = conn.execute(
+            "SELECT stackup FROM pcb_boards WHERE board_id = %s",
+            (self._pcb_ensure_board(conn, ref_id),),
+        ).fetchone()
+        layer_names = [
+            str(e.get("name")) for e in (srow[0] if srow else None) or DEFAULT_STACKUP
+        ]
+        for row in rows:
+            if row["layer"] not in layer_names:
+                raise BadInput(
+                    f"features: plane_net layer {row['layer']!r} is not in this "
+                    "board's stackup — a plane on it would be stored and never "
+                    "poured; nothing was stored",
+                    next="name a copper layer of the stackup, or set "
+                    "meta.stackup_layers / meta.stackup_preset first",
+                    options=layer_names,
+                )
+        known = {
+            str(r[0])
+            for r in conn.execute(
+                "SELECT name FROM pcb_nets WHERE ref_id = %s AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchall()
+        }
+        missing = [row for row in rows if row["net"] not in known]
+        if missing:
+            first = missing[0]
+            raise BadInput(
+                "features: plane_net "
+                + "; ".join(f"{m['layer']}: no net {m['net']!r}" for m in missing)
+                + " — author the net in this batch (nets=[{'name': ...}]) "
+                "before declaring a plane for it, or drop the declaration; "
+                "nothing was stored",
+                next=(
+                    f"put(args={{'op':'plane_net','layer':'{first['layer']}',"
+                    f"'net':'{first['net']}'}}) once the net exists"
+                ),
+            )
+        # One whole-board net per layer, as `op='plane_net'` holds it: among
+        # this batch's declarations and against stored live whole-board rows
+        # (a re-put of the same net is no conflict). `plane_pours`' tie-break
+        # would otherwise silently drop one of the two.
+        stored = [
+            {"layer": r[0], "net": r[1], "region": r[2], "source": r[3] or "authored"}
+            for r in conn.execute(
+                "SELECT pl.layer, n.name, pl.region, pl.meta->>'source' "
+                "FROM pcb_planes pl "
+                "JOIN pcb_boards b ON b.board_id = pl.board_id "
+                "JOIN pcb_nets n ON n.net_id = pl.net_id "
+                "WHERE b.ref_id = %s AND pl.retired_at IS NULL",
+                (ref_id,),
+            ).fetchall()
+        ]
+        seen: list[dict[str, Any]] = list(stored)
+        for row in rows:
+            clash = pcb_planes.whole_board_plane_conflict(
+                seen, row["layer"], row["net"]
+            )
+            if clash is not None and row.get("region") is None:
+                raise BadInput(
+                    f"features: plane_net layer {row['layer']!r} would carry "
+                    f"{row['net']!r} and {clash['net']!r} — a layer is one "
+                    "sheet of copper; nothing was stored",
+                    next="declare one whole-board net per layer, or move one "
+                    "to another layer",
+                    options=[n for n in layer_names if n != row["layer"]],
+                )
+            seen.append(row)
+        # Re-checked on the return value, not trusted (the `known` read is a
+        # READ; a concurrent retire can land between it and this loop) —
+        # same hedge as `_pcb_apply_stackup_planes`.
+        for row in rows:
+            if not self._pcb_assign_plane(
+                conn, ref_id, row["layer"], row["net"], row["priority"]
+            ):
+                raise BadInput(
+                    f"features: plane_net {row['layer']}: net {row['net']!r} "
+                    "could not be applied — it stopped existing during this "
+                    "call (a concurrent edit retired it); nothing was stored",
+                    next=(
+                        f"put(args={{'op':'plane_net','layer':'{row['layer']}',"
+                        f"'net':'{row['net']}'}}) once the net is back"
+                    ),
+                )
+        return len(rows)
 
     def pcb_measures_list(self, ref_id: int) -> list[dict[str, Any]]:
         """Live measures of a design. ``measure_id`` and ``meta`` ride along

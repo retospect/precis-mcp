@@ -247,7 +247,7 @@ def test_a_polygon_pad_touched_on_a_diagonal_vertex_is_connected() -> None:
 
 
 def test_a_rect_pad_touched_on_its_short_edge_is_connected() -> None:
-    """gr450064/gr449709: `_pad_poly` used to return `None` for every
+    """gr450064/gr449709: pad contact used to use an inscribed disk for every
     rect/obround pad, so `_pad_primitives` fell back to the INSCRIBED disk
     (`min(w, h) / 2`) for them too. A 2.0x1.0mm pad's inscribed disk has
     radius 0.5mm — half the pad's actual 1.0mm reach on its long (x) axis.

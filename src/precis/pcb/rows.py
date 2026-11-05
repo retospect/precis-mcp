@@ -332,6 +332,9 @@ def normalize_pad(p: dict[str, Any]) -> dict[str, Any]:
     ``rot``/``layer``/``drill``), plus the ``role``/``mask``/``paste``
     intent and, for ``shape: "polygon"``, the vertex ``poly`` ring
     (footprint-local mm — same frame as ``x``/``y`` on every other shape).
+    An optional ``drill_offset: {x, y}`` offsets the hole in unrotated pad
+    axes; a drilled polygon's explicit origin stays fixed. Undrilled
+    polygons retain their bbox-centre routing representative.
     The authored alias ``pin`` normalises to the canonical ``number``;
     ``shape`` takes the vendor spellings in :data:`_VENDOR_PAD_SHAPES` as
     aliases for the canonical vocabulary (``oval`` -> ``obround``,
@@ -391,6 +394,21 @@ def normalize_pad(p: dict[str, Any]) -> dict[str, Any]:
     }
     if p.get("drill") is not None:
         pad["drill"] = float(p["drill"])
+        offset = p.get("drill_offset")
+        if offset is not None:
+            if not isinstance(offset, dict) or not all(
+                isinstance(offset.get(k), (int, float))
+                and math.isfinite(float(offset[k]))
+                for k in ("x", "y")
+            ):
+                raise ValueError(
+                    f"pcb footprint pad {pin_name!r}: drill_offset must be "
+                    "{x, y} with finite values"
+                )
+            pad["drill_offset"] = {
+                "x": round(float(offset["x"]), 4),
+                "y": round(float(offset["y"]), 4),
+            }
         # A slotted hole (EasyEDA holeType SLOT, a USB-C shield tab) is a
         # footprint-local ``{w, h}`` extent beside the round cutter
         # diameter in ``drill`` — the shape
@@ -418,13 +436,24 @@ def normalize_pad(p: dict[str, Any]) -> dict[str, Any]:
             )
         verts = [(float(v[0]), float(v[1])) for v in poly]
         xs, ys = [v[0] for v in verts], [v[1] for v in verts]
-        # x/y still carry the bbox CENTER (not a spare field): every
-        # downstream reader that only knows circle/rect pads — the
-        # courtyard/DRC bbox fallback, an SVG viewBox scan — reads
-        # `pad["x"]`/`["y"]` unconditionally, so a polygon pad answers
-        # that question too, even though `poly` is its real shape.
-        pad["x"] = round((min(xs) + max(xs)) / 2.0, 4)
-        pad["y"] = round((min(ys) + max(ys)) / 2.0, 4)
+        # The explicit origin locates a drilled polygon's hole; its
+        # asymmetric copper need not have the same bbox centre. An
+        # undrilled polygon still uses its established bbox routing
+        # representative: changing that point changes route attachment
+        # even though its absolute copper vertices did not move.
+        drilled = bool(pad.get("drill"))
+        pad["x"] = round(
+            float(p["x"])
+            if drilled and p.get("x") is not None
+            else (min(xs) + max(xs)) / 2.0,
+            4,
+        )
+        pad["y"] = round(
+            float(p["y"])
+            if drilled and p.get("y") is not None
+            else (min(ys) + max(ys)) / 2.0,
+            4,
+        )
         pad["w"] = round(max(xs) - min(xs), 4) or 0.01
         pad["h"] = round(max(ys) - min(ys), 4) or 0.01
         pad["poly"] = [[round(vx, 4), round(vy, 4)] for vx, vy in verts]

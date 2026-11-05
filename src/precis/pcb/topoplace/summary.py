@@ -293,6 +293,13 @@ def render_summary(
             f"conflict(s) (reason={result.shove.reason or 'ok'})"
             + (f" — {result.shove.mesh_error}" if result.shove.mesh_error else "")
         )
+    noted = getattr(result.legalize, "noted", ()) or ()
+    if noted:
+        shown = ", ".join(f"{d.parts[a]}/{d.parts[b]}" for a, b, _s, _r in noted[:8])
+        lines.append(
+            f"silk pair gap: {len(noted)} exempt fixed-fixed pair(s) "
+            f"(authored adjacency): {shown}"
+        )
     lines.append(
         f"run: {result.evals} evals, {result.restarts} restart(s), seed "
         f"{result.seed}, effort {effort}, objective crossings "

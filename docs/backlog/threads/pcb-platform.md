@@ -32,6 +32,12 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
 
 ## Do next
 
+Reto's 2026-11-04 TAZ preview follow-up is scoped in
+[pcb-preview-connectivity](../pcb-preview-connectivity.md): actual GND
+fanouts, component-aware airwires, visible-layer picking and footprint intake
+verification, followed by bounded bundle/blocker experiments. The campaign's
+current evidence and local intake gate remain in memory me562868.
+
 1. **backlog/pcb-workspace-code.md** — `status: ready` (Reto 2026-10-22,
    Q1–Q6 approved); construction moves to a Python script in a workspace,
    place/route/move/rip/import_epro/views/DRC stay in MCP. Ranked first
@@ -46,7 +52,10 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
    on main through r107 and it builds on its own worktree; ranked here
    so the thread sees the engine work its items serve. Its routing gap
    has a fix order in **backlog/topo-route-review.md** (2026-11-01
-   design review on taz-leaf: slices A → E1 → C → B → D).
+   design review on taz-leaf: slices A → E1 → C → B → D), its D-b/D-c
+   superseded by **backlog/topo-route-geometry-truth.md**. G4 changes what
+   stored boards mean: a re-put of a script with `b.plane()` now pours
+   that net in the next job instead of routing it as a tree.
 3. **backlog/source-bundles.md** — `draft/normal`, filed 2026-10-29 from
    gr520323 (Reto 2026-10-26): a design owns an immutable, hash-keyed
    source snapshot via the signed upload door. Unblocks the 36 KB inline

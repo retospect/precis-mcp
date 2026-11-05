@@ -133,6 +133,8 @@ through `src/precis_se/flow_registry.py::COMPUTER_GROUPS`. The latter stays
 solver-free for property discovery; species computations live separately in
 `src/precis_se/flow_species.py::_species_run`.
 
+PCB contract details: [kernel reference](reference/pcb-kernel-contracts.md).
+
 PCB selection binds raw board snapshots and instance IDs to optional Gerber
 SVG targets. The shared web design-chat engine stores proposals in conversations;
 PCB Apply reuses the handler and design history on one guarded connection.

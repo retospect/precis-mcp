@@ -717,8 +717,12 @@ def test_pcb_place_topo_falls_back_instead_of_refusing(
         captured["td"] = d
         captured["elites"] = res.elites
         pose = res.best_pose.copy()
-        pose[:, 0] = pose[0, 0]
-        pose[:, 1] = pose[0, 1]
+        # A uniform drift parks every part off-board — the pre-route DRC
+        # gate refuses it, while every pair keeps its spacing (collapsing
+        # the pose onto one point would trip the hard silk pair gap
+        # first, a different gate than this test asserts).
+        pose[:, 0] += 900.0
+        pose[:, 1] += 900.0
         return dataclasses.replace(res, best_pose=pose)
 
     monkeypatch.setattr(tp, "topo_place", _collapse)
@@ -808,13 +812,16 @@ def test_pcb_place_topo_diverged_falls_back_to_an_elite(
     from precis.pcb.topoplace.archive import Elite
     from precis.pcb.topoplace.placer import TopoPlaceResult
 
-    ref_id = _seed(store, "place-diverge", {**_CROSSED, "features": [closed_outline()]})
+    ref_id = _seed(store, "place-diverge", _CROSSED_INBOARD)
 
     def _diverged(td: Any, *, objective: Any, effort: int, seed: int, **_k: Any) -> Any:
         bad = np.asarray(td.pose0, dtype=float).copy()
-        bad[:, :2] = 999.0  # every part parked outside the board
+        bad[:, :2] += 900.0  # parked off-board, pairs still legal
         good = np.asarray(td.pose0, dtype=float).copy()
-        good[0, 0] += 0.5  # elite: the stored pose, one part nudged
+        good[0, 0] -= 0.5  # elite: the stored pose, one part nudged AWAY
+        # (+0.5 pushes A inside its neighbours' courtyard — an illegal
+        # elite would fall through to the stored pose this test isn't
+        # about)
         return TopoPlaceResult(
             best_pose=bad,
             best_cost=9.9,
@@ -841,7 +848,7 @@ def test_pcb_place_topo_diverged_falls_back_to_an_elite(
     placed = {
         i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
     }
-    assert placed["A"] == pytest.approx((0.5, 0.0))
+    assert placed["A"] == pytest.approx((49.5, 50.0))
 
 
 def test_pcb_place_topo_diverged_falls_back_to_the_stored_pose(
@@ -854,18 +861,16 @@ def test_pcb_place_topo_diverged_falls_back_to_the_stored_pose(
     from precis.pcb.topoplace.archive import Elite
     from precis.pcb.topoplace.placer import TopoPlaceResult
 
-    ref_id = _seed(
-        store, "place-diverge2", {**_CROSSED, "features": [closed_outline()]}
-    )
+    ref_id = _seed(store, "place-diverge2", _CROSSED_INBOARD)
     before = {
         i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
     }
 
     def _diverged(td: Any, *, objective: Any, effort: int, seed: int, **_k: Any) -> Any:
         bad = np.asarray(td.pose0, dtype=float).copy()
-        bad[:, :2] = 999.0
+        bad[:, :2] += 900.0  # off-board, pairs still legal
         worse = np.asarray(td.pose0, dtype=float).copy()
-        worse[:, :2] = 888.0  # an elite that is illegal too
+        worse[:, :2] += 800.0  # an elite that is illegal too
         return TopoPlaceResult(
             best_pose=bad,
             best_cost=9.9,
@@ -979,7 +984,15 @@ def test_pcb_place_topo_refuses_when_the_stored_pose_is_not_recoverable(
     from precis.pcb.topoplace.placer import TopoPlaceResult
 
     ref_id = _seed(
-        store, "place-topo-refuse", {**_CROSSED, "features": [closed_outline()]}
+        store,
+        "place-topo-refuse",
+        {
+            **_CROSSED_INBOARD,
+            "components": [
+                {**c, "x": c["x"] - 55.0} if c["refdes"] == "A" else c
+                for c in _CROSSED_INBOARD["components"]
+            ],
+        },
     )
     before = {
         i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
@@ -989,14 +1002,17 @@ def test_pcb_place_topo_refuses_when_the_stored_pose_is_not_recoverable(
     def _unrecoverable(*a: Any, **k: Any) -> Any:
         td = real_design(*a, **k)
         bad0 = np.asarray(td.pose0, dtype=float).copy()
-        bad0[:, :2] = bad0[0, :2]  # pose0 cannot reproduce the stored pose
+        # pose0 cannot reproduce the stored pose — a uniform drift keeps
+        # every pair legal (the 0.20mm pair gap must not be what refuses;
+        # collapsing the pose trips that gate first instead).
+        bad0[:, :2] += 900.0
         return dataclasses.replace(td, pose0=bad0)
 
     def _diverged(td: Any, *, objective: Any, effort: int, seed: int, **_k: Any) -> Any:
         bad = np.asarray(td.pose0, dtype=float).copy()
-        bad[:, :2] = 999.0
+        bad[:, :2] += 900.0  # off-board, pairs still legal
         worse = np.asarray(td.pose0, dtype=float).copy()
-        worse[:, :2] = 888.0  # an elite that is illegal too
+        worse[:, :2] += 800.0  # an elite that is illegal too
         return TopoPlaceResult(
             best_pose=bad,
             best_cost=9.9,
@@ -1060,3 +1076,67 @@ def test_pcb_place_topo_route_stamps_the_run_digest(store: Store) -> None:
     assert last_route["digest"] == digest
     assert last_route["realized"] == route["realized"]
     assert last_route["failed"] == route["failed"]
+
+
+def test_pcb_place_topo_persists_validated_coordinates_without_snapping(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Four-decimal storage snapping consumed a validated via's mask web."""
+    from shapely.geometry import Point, box
+
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.topoplace import realise
+
+    site = 5.800521
+    pad = box(4.5, 4.5, 5.5, 5.5)
+    # The review's 1 x 1 mm pad / diameter 0.45 mm via is qualified,
+    # but snapping both axes to four decimals violates its 0.20 mm web.
+    assert Point(site, site).distance(pad) - 0.225 >= 0.2
+    assert Point(round(site, 4), round(site, 4)).distance(pad) - 0.225 < 0.2
+    track = pcb_realize.RealizedTrack(
+        seg_id=0,
+        net_id=0,
+        layer=0,
+        segments=(
+            {"shape": "line", "start": [site, site], "end": [7.1234567, 8.7654321]},
+        ),
+        length_mm=3.327186,
+        blocked_by=None,
+        width_mm=0.15,
+    )
+    via = pcb_realize.RealizedVia(
+        seg_id=0,
+        net_id=0,
+        x=site,
+        y=site,
+        dia_mm=0.45,
+        drill_mm=0.2,
+        layer_lo=0,
+        layer_hi=3,
+        endpoint="a",
+    )
+    plan = realise.RoutePlan(pieces=(), vias=(), layers=())
+    monkeypatch.setattr(
+        realise,
+        "route_design",
+        lambda *args, **kwargs: (plan, pcb_realize.RealizeResult((track,), (via,), ())),
+    )
+    ref_id = _seed(store, "place-topo-precision", _CROSSED_INBOARD)
+    ctx = _FakeCtx(
+        store,
+        params={
+            "pcb_ref_id": ref_id,
+            "placer": "topo",
+            "route": True,
+            "iters": 50,
+            "seed": 1,
+        },
+    )
+    _dispatch(ctx)
+    assert not ctx.failures
+    copper = store.pcb_copper_list(store.pcb_ensure_board(ref_id))
+    stored_via = next(row for row in copper if row["ctype"] == "via")
+    assert (stored_via["x"], stored_via["y"]) == (site, site)
+    assert Point(stored_via["x"], stored_via["y"]).distance(pad) - 0.225 >= 0.2
+    stored_track = next(row for row in copper if row["ctype"] == "track")
+    assert stored_track["segments"] == list(track.segments)

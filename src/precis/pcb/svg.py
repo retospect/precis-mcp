@@ -65,6 +65,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from precis.pcb import ir as pcb_ir
+from precis.pcb.padplace import pad_world_rot
 from precis.utils.text import esc
 
 # ── palette + non-colour layer cues ─────────────────────────────────────
@@ -231,7 +232,8 @@ def _pad_el(pad: dict[str, Any], *, fill: str) -> str:
                 f'stroke-width="{_fmt(float(drill))}" stroke-linecap="round"/>'
             )
         else:
-            hole = f'<circle cx="{_fmt(x)}" cy="{_fmt(y)}" r="{_fmt(r_drill)}" fill="#ffffff"/>'
+            hx, hy = float(pad.get("drill_x", x)), float(pad.get("drill_y", y))
+            hole = f'<circle cx="{_fmt(hx)}" cy="{_fmt(hy)}" r="{_fmt(r_drill)}" fill="#ffffff"/>'
     if shape == "polygon" and pad.get("poly"):
         pts = " ".join(f"{_fmt(float(p[0]))},{_fmt(float(p[1]))}" for p in pad["poly"])
         return f'<polygon points="{pts}" fill="{fill}"/>' + hole
@@ -244,10 +246,12 @@ def _pad_el(pad: dict[str, Any], *, fill: str) -> str:
     w = float(pad["w"])
     h = float(pad.get("h", pad["w"]))
     rx = min(w, h) / 2 if shape == "obround" else 0.0
+    rot = pad_world_rot(pad)
+    turn = f' transform="rotate({_fmt(-rot)} {_fmt(x)} {_fmt(y)})"' if rot else ""
     return (
         f'<rect x="{_fmt(x - w / 2)}" y="{_fmt(y - h / 2)}" '
         f'width="{_fmt(w)}" height="{_fmt(h)}" rx="{_fmt(rx)}" ry="{_fmt(rx)}" '
-        f'fill="{fill}"/>' + hole
+        f'fill="{fill}"{turn}/>' + hole
     )
 
 

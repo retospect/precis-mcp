@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import httpx
 import pytest
 
-from precis.pcb import easyeda
+from precis.pcb import easyeda, padplace
 
 FIXTURE = Path(__file__).parent / "fixtures" / "pcb" / "easyeda_c42163081_trimmed.json"
 # Current API shape (spike-verified 2026-09-02, C2765186, editorVersion
@@ -35,6 +36,109 @@ def test_to_mm_is_10_mil_to_mm():
     assert easyeda._to_mm(1) == pytest.approx(0.254)
     assert easyeda._to_mm(10) == pytest.approx(2.54)
     assert easyeda._to_mm(0) == 0.0
+
+
+@pytest.mark.parametrize(
+    "w,h,expected",
+    [(6, 16, {"w": 0.9144, "h": 2.794}), (16, 6, {"w": 2.794, "h": 0.9144})],
+)
+def test_standard_slot_hole_length_survives(w, h, expected):
+    """Standard hole_length is total length, including both round ends."""
+    fields = [
+        "PAD",
+        "OVAL",
+        "0",
+        "0",
+        str(w),
+        str(h),
+        "11",
+        "",
+        "1",
+        "1.8",
+        "",
+        "23.7",
+        "id",
+        "11",
+        "",
+        "Y",
+    ]
+    pad = easyeda._parse_pad(fields, 0.0, 0.0)
+    assert pad is not None
+    assert pad["drill"] == pytest.approx(0.9144)
+    assert pad["slot"] == pytest.approx(expected)
+    assert pad["rot"] == 23.7
+
+
+def test_standard_slot_explicit_endpoints_override_copper_major_axis():
+    # The long copper axis is horizontal; the hole's explicit centres
+    # make a vertical slot, exactly as Standard's documented alphabet.
+    fields = [
+        "PAD",
+        "OVAL",
+        "0",
+        "0",
+        "16",
+        "6",
+        "11",
+        "",
+        "1",
+        "1.8",
+        "",
+        "0",
+        "id",
+        "11",
+        "0 -3.7 0 3.7",
+        "Y",
+    ]
+    pad = easyeda._parse_pad(fields, 0.0, 0.0)
+    assert pad is not None
+    assert pad["slot"] == {"w": 0.9144, "h": 2.794}
+
+
+@pytest.mark.parametrize("w,h", [(6, 16), (16, 6)])
+@pytest.mark.parametrize("bottom", [False, True])
+@pytest.mark.parametrize("angle", [0.0, 90.0, 23.7])
+def test_standard_slot_endpoints_follow_authored_length(w, h, bottom, angle):
+    fields = [
+        "PAD",
+        "OVAL",
+        "0",
+        "0",
+        str(w),
+        str(h),
+        "11",
+        "",
+        "1",
+        "1.8",
+        "",
+        "37",
+        "id",
+        "11",
+        "",
+        "Y",
+    ]
+    pad = easyeda._parse_pad(fields, 0.0, 0.0)
+    assert pad is not None
+    _, drills = padplace.place_footprint_pads(
+        [pad],
+        {"x": 5, "y": 7, "rot": angle, "layer": "bottom" if bottom else "top"},
+        layers=["F.Cu", "B.Cu"],
+    )
+    half = (11 * 0.254 - 2 * 1.8 * 0.254) / 2
+    x, y = (half, 0.0) if w > h else (0.0, half)
+    theta = math.radians(37)
+    x, y = (
+        x * math.cos(theta) + y * math.sin(theta),
+        -x * math.sin(theta) + y * math.cos(theta),
+    )
+    x = -x if bottom else x
+    theta = math.radians(angle)
+    x, y = (
+        x * math.cos(theta) + y * math.sin(theta),
+        -x * math.sin(theta) + y * math.cos(theta),
+    )
+    assert drills[0]["slot"][0] == pytest.approx([5 - x, 7 - y], abs=0.00005)
+    assert drills[0]["slot"][1] == pytest.approx([5 + x, 7 + y], abs=0.00005)
 
 
 def test_num_defensive_on_empty_and_junk():

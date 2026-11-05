@@ -36,6 +36,8 @@
 //      (pcb-argue.js).
 //  12. gr543695 — a click on the legend never selects the object beneath
 //      (pcb-selection.js); the row's own toggle is a separate handler.
+//  13. gr565256 — hidden artwork cannot leak through whole-part fallback
+//      hits, legacy body handles, tooltip, cross-probe or overlap choices.
 
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -196,12 +198,20 @@ const objects = [
   { key: 'outline:220', kind: 'outline' },
   { key: 'inst:1', kind: 'instance', refdes: 'U1', footprint: {} },
 ];
+// The pytest wrapper supplies real catalogue hits so the pointer regression
+// covers both Python hit generation and the JavaScript consumers.
+const selectionCases = JSON.parse(process.env.PRECIS_PCB_SELECTION_CASES || '[]');
+objects.push(...selectionCases.map((c) => c.identity));
 
 const boardDoc = svgDoc({
   'pcb-facts': { textContent: JSON.stringify(facts) },
   'pcb-objects': { textContent: JSON.stringify(objects) },
   'pcb-cursor-readout': elem('text'),
 });
+for (const key of ['F_Cu', 'In1_Cu', 'B_Cu', 'F_Silkscreen', 'B_Silkscreen']) {
+  boardDoc.byId[`layer-${key}`] = elem('g');
+  boardDoc.byId[`layer-${key}`].classList.add('off');
+}
 ids['pcb-selection-panel'] = elem('div'); // the one selection display
 ids['pcb-selection-hover'] = elem('div');
 ids['pcb-selection-identity'] = elem('pre');
@@ -430,6 +440,25 @@ boardDoc._els = [legendRow, arguable];
 fire(boardDoc, 'click', { clientX: 3, clientY: 3 });
 assert.equal(argueBox.value, '', 'a legend click never argues the board beneath');
 
+// The legacy data-handle body sits outside .layer just like the catalogue
+// overlay. Its represented artwork union must gate hover and fallback clicks.
+const legacyBody = elem('rect');
+legacyBody.dataset.pcbLayers = 'F_Cu F_Silkscreen';
+legacyBody.getAttribute = () => 'U1';
+legacyBody.closest = (sel) => sel === '[data-handle]' ? legacyBody : null;
+boardDoc._els = [legacyBody];
+fire(boardDoc, 'mousemove', {clientX: 3, clientY: 3});
+assert(!panel.classList.contains('hovering'), 'hidden legacy body cannot cross-probe');
+fire(boardDoc, 'click', {clientX: 3, clientY: 3});
+assert.equal(argueBox.value, '', 'hidden legacy body cannot enter the argument');
+boardDoc.byId['layer-F_Silkscreen'].classList.remove('off');
+fire(boardDoc, 'mousemove', {clientX: 3, clientY: 3});
+assert(panel.classList.contains('hovering'), 'one visible legacy body layer permits hover');
+fire(boardDoc, 'click', {clientX: 3, clientY: 3});
+assert(argueBox.value.includes('U1'), 'one visible legacy body layer permits the argument');
+boardDoc.byId['layer-F_Silkscreen'].classList.add('off');
+argueBox.value = '';
+
 // ── 12. gr543695: a legend click never selects the board beneath ─────
 globalThis.MutationObserver = class {
   observe() {}
@@ -475,76 +504,54 @@ assert.equal(
   'Select a board object.',
   'a legend click never selects the object beneath');
 
-// gr565256: a whole-instance fallback follows its associated artwork,
-// including artwork on either side. Unrelated visible layers cannot revive it.
-const instanceLayers = ['F_Cu', 'B_Cu', 'F_Silkscreen', 'F_Paste', 'F_Mask'];
-for (const key of [...instanceLayers, 'Edge_Cuts']) {
-  boardDoc.byId[`layer-${key}`] = elem('g');
+// gr565256: fallback bodies follow their actual artwork layers, including
+// bottom-side and through-hole parts. Hidden hits must not survive via the
+// independent cross-probe hover path or make visible overlaps ambiguous.
+const hitNodes = (c) => c.hits.map((h) => ({
+  dataset: {pcbObject: c.identity.key, pcbKind: 'instance', pcbLayer: h.layer},
+  closest: () => null,
+}));
+for (const c of selectionCases) {
+  boardDoc._els = hitNodes(c);
+  fire(ids['pcb-deselect'], 'click');
+  fire(boardDoc, 'click', {clientX: 4, clientY: 4});
+  assert.equal(statusEl.textContent, 'Select a board object.', `${c.identity.refdes}: hidden fallback cannot select`);
+  fire(boardDoc, 'mousemove', {clientX: 4, clientY: 4});
+  assert(!panel.classList.contains('hovering'), `${c.identity.refdes}: hidden fallback cannot cross-probe`);
+  for (const key of c.layers) {
+    boardDoc.byId[`layer-${key}`].classList.remove('off');
+    fire(boardDoc, 'click', {clientX: 4, clientY: 4});
+    assert(statusEl.textContent.startsWith(`Selected ${c.identity.refdes}`), `${c.identity.refdes}: ${key} alone keeps the part selectable`);
+    fire(boardDoc, 'mousemove', {clientX: 4, clientY: 4});
+    assert(panel.classList.contains('hovering'), `${c.identity.refdes}: visible fallback cross-probes`);
+    boardDoc.byId[`layer-${key}`].classList.add('off');
+  }
 }
-selectable.dataset.pcbLayers = instanceLayers.join(' ');
-const partBody = {
-  get dataset() {
-    return { pcbLayers: selectable.dataset.pcbLayers, pcbLayer: selectable.dataset.pcbLayer };
-  },
-  closest: (sel) => (sel === '[data-handle]' ? handleEl : null),
-};
-boardDoc._els = [selectable, partBody];
-const clickSelection = () => fire(boardDoc, 'click', { clientX: 4, clientY: 4 });
-const hoverSelection = () => fire(boardDoc, 'mousemove', { clientX: 4, clientY: 4 });
-const deselectSelection = () => fire(ids['pcb-deselect'], 'click');
-for (const key of instanceLayers) {
-  boardDoc.byId[`layer-${key}`].classList.add('off');
-}
-clickSelection();
-assert.equal(statusEl.textContent, 'Select a board object.', 'all artwork hidden means no hit');
-assert.equal(ids['pcb-chat-context'].value, '', 'hidden fallback cannot attach selection identity');
-hoverSelection();
-assert(!panel.classList.contains('hovering'), 'all artwork hidden means no instance hover');
-for (const key of instanceLayers) {
-  boardDoc.byId[`layer-${key}`].classList.remove('off');
-  hoverSelection();
-  assert(panel.classList.contains('hovering'), `${key} alone keeps the instance hoverable`);
-  clickSelection();
-  assert(statusEl.textContent.startsWith('Selected U1'), `${key} alone keeps the instance selectable`);
-  assert.equal(JSON.parse(ids['pcb-chat-context'].value).selected[0].key, 'inst:1');
-  deselectSelection();
-  boardDoc.byId[`layer-${key}`].classList.add('off');
-}
-selectable.dataset.pcbLayers = 'Missing_Layer';
-clickSelection();
-assert.equal(statusEl.textContent, 'Select a board object.', 'absent artwork is not visible');
-hoverSelection();
-assert(!panel.classList.contains('hovering'), 'absent artwork cannot produce hover');
-// A pad with no paste aperture cannot revive its instance on paste alone.
-selectable.dataset.pcbLayers = 'F_Cu F_Mask F_Silkscreen';
-boardDoc.byId['layer-F_Paste'].classList.remove('off');
-clickSelection();
-assert.equal(statusEl.textContent, 'Select a board object.', 'unassociated paste means no hit');
-hoverSelection();
-assert(!panel.classList.contains('hovering'), 'unassociated paste cannot produce hover');
-boardDoc.byId['layer-F_Paste'].classList.add('off');
-for (const layerList of ['', '  ']) {
-  selectable.dataset.pcbLayers = layerList;
-  clickSelection();
-  assert(statusEl.textContent.startsWith('Selected U1'), 'empty layer list preserves selection');
-  assert.equal(JSON.parse(ids['pcb-chat-context'].value).selected[0].key, 'inst:1');
-  hoverSelection();
-  assert(panel.classList.contains('hovering'), 'empty layer list preserves hover');
-  deselectSelection();
+if (selectionCases.length >= 2) {
+  const [top, bottom] = selectionCases;
+  boardDoc.byId['layer-B_Cu'].classList.remove('off');
+  boardDoc._els = [...hitNodes(top), ...hitNodes(bottom)];
+  boardDoc.byId['layer-F_Cu'].classList.remove('off');
+  fire(boardDoc, 'click', {clientX: 4, clientY: 4});
+  assert.equal(statusEl.textContent, 'Overlapping instances: choose from the list.', 'visible overlapping parts still require an explicit choice');
+  boardDoc.byId['layer-F_Cu'].classList.add('off');
+  fire(boardDoc, 'click', {clientX: 4, clientY: 4});
+  assert(statusEl.textContent.startsWith(`Selected ${bottom.identity.refdes}`), 'hidden overlapping part is excluded from the choices');
+  boardDoc.byId['layer-B_Cu'].classList.add('off');
 }
 
-// Existing single-layer targets retain their own visibility rule.
-delete selectable.dataset.pcbLayers;
-selectable.dataset.pcbLayer = 'F_Cu';
-clickSelection();
-assert.equal(statusEl.textContent, 'Select a board object.', 'single-layer hidden target stays filtered');
-hoverSelection();
-assert(!panel.classList.contains('hovering'), 'single-layer hidden target cannot hover');
+// Ordinary artwork and overlays use the same gate. Exercise the tooltip's
+// own path as well as cross-probe; no declaration preserves legacy nodes.
+const layeredPad = {...padEl, dataset: {...padEl.dataset, pcbLayer: 'F_Cu'}};
+boardDoc._els = [layeredPad];
+fire(boardDoc, 'mousemove', {clientX: 4, clientY: 4});
+assert.equal(tip.style.display, 'none', 'hidden pad overlay has no tooltip');
+assert(!panel.classList.contains('hovering'), 'hidden pad overlay has no cross-probe');
 boardDoc.byId['layer-F_Cu'].classList.remove('off');
-hoverSelection();
-assert(panel.classList.contains('hovering'), 'single-layer visible target still hovers');
-clickSelection();
-assert(statusEl.textContent.startsWith('Selected U1'), 'single-layer visible target still selects');
-deselectSelection();
+fire(boardDoc, 'mousemove', {clientX: 4, clientY: 4});
+assert.equal(tip.style.display, 'block', 'visible pad overlay has a tooltip');
+assert(panel.classList.contains('hovering'), 'visible pad overlay cross-probes');
+assert(!PcbFacts.layerVisible(boardDoc, {dataset: {pcbLayer: 'absent'}}), 'a missing declared artwork layer is not visible');
+assert(PcbFacts.layerVisible(boardDoc, {dataset: {}}), 'legacy nodes without layers remain supported');
 
-console.log('pcb viewer smoke: ok');
+console.log(`pcb viewer smoke: ok (${selectionCases.length} generated layer-visibility cases)`);

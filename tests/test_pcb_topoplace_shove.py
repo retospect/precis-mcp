@@ -58,11 +58,15 @@ def test_shove_fixed_parts_never_move() -> None:
     np.testing.assert_allclose(res.pose[0], pose[0])
     assert res.resolved
 
-    # both fixed: unresolvable — reported, pose untouched
+    # both fixed: authored adjacency — exempt from the gap but still
+    # reported (round-2 ruling): the pair lands on ``noted`` with
+    # reason ``fixed-fixed``, never ``remaining``, pose untouched
     d2 = dataclasses.replace(d, fixed=np.ones(len(d.parts), dtype=bool))
     res2 = shove_pose(d2, pose)
-    assert not res2.resolved and res2.moved_mm == 0.0
-    assert any((a, b) == (0, 1) for a, b, _ in res2.remaining)
+    assert res2.moved_mm == 0.0
+    np.testing.assert_allclose(res2.pose, pose)
+    assert any((a, b) == (0, 1) and r == "fixed-fixed" for a, b, _s, r in res2.noted)
+    assert not any((a, b) == (0, 1) for a, b, _ in res2.remaining)
 
 
 def test_shove_no_triangle_inverts_on_squeezed_board() -> None:

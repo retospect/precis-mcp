@@ -29,6 +29,9 @@ documents:
   placed instances that un-place to the same authored pad set share one
   document, as Pro's own libraries do — ``COMPONENT.angle`` carries the
   real rotation so the footprint stores authored (unrotated) pads.
+  Pad and hole identities agree to 0.000001 mm: a coarser shared
+  identity can substitute nearby copper and consume the route oracle's
+  export-quantization margin.
   Each doc carries the same LAYER/LAYER_PHYS/CANVAS/PREFERENCE block,
   ``META``, and the ``Name``/``Designator`` attrs Pro's library docs
   carry;
@@ -42,7 +45,11 @@ documents:
   arc is written with a positive sweep (:func:`arc_sweep_deg`, the exact
   inverse of the reader's ``cw = sweep > 0``). A blind/buried via is
   written through-hole and named in a warning: ``VIA`` is documented
-  through-hole only, and flattening one silently would short layers;
+  through-hole only, and flattening one silently would short layers.
+  Arcs over 180 degrees split into two stable sweeps: endpoint rounding
+  otherwise moves a nearly closed arc's inferred centre beyond the
+  fabrication reserve. Pad angles retain their full precision because
+  their linear rounding error scales with land length;
 * pours (slices 2d/2f): a ``ctype='pour'`` becomes a ``POUR`` zone — the
   ``"R"`` rectangle op for an axis-aligned rectangle (Pro 3.2.149's
   shape), else the vertex-list ``"L"`` path Pro 3.2.206 writes on the
@@ -105,9 +112,12 @@ an asymmetric bottom-side part in Pro is the check.
 ``padplace.board_pads`` marks a pad that landed non-axis-aligned with
 ``oblique_rot`` (the total rotation); the authored ``padAngle`` is
 recovered as ``oblique_rot - inst_rot``. An axis-aligned board pad
-decomposes as ``padAngle 0`` plus ``w``/``h`` un-swapped by the instance
-rotation — the rendered shape is identical; only the "rotated inside the
-footprint" label is chosen canonically.
+decomposes canonically: quarter-turn instances use ``padAngle 0`` plus
+``w``/``h`` un-swapped by the instance rotation. An oblique instance needs
+the inverse instance turn (reversed again on bottom) with board ``w``/``h``
+unchanged. Otherwise a bottom 45-degree instance whose pad lands horizontal
+would acquire a diagonal pad when re-opened. The rendered shape is identical;
+only the "rotated inside the footprint" label is chosen canonically.
 
 **Determinism.** A re-export must re-open as the same project: document
 uuids are ``uuid5`` of the slug, record ids ``uuid5`` of slug + refdes +
@@ -1114,9 +1124,9 @@ def _footprint_groups(
                 [p.canon() for p in part.local_pads],
                 [
                     [
-                        round(float(h["x"]), 4),
-                        round(float(h["y"]), 4),
-                        round(float(h["dia_mm"]), 4),
+                        round(float(h["x"]), 6),
+                        round(float(h["y"]), 6),
+                        round(float(h["dia_mm"]), 6),
                     ]
                     for h in holes
                 ],
@@ -1169,8 +1179,8 @@ class _LocalPad:
     what a shared ``FOOTPRINT`` document stores. ``num`` is the pin
     label the model carries (``padplace.board_pads`` resolves it through
     the footprint's pin_map); two instances share a document exactly when
-    their local pad sets agree, fields rounded to the same 0.0001-mm
-    quantum :func:`_group_pads` dedups board pads on."""
+    their local pad sets agree to 0.000001 mm. Reusing a merely nearby
+    footprint can move a validated pad through its clearance margin."""
 
     num: str
     shape: str
@@ -1184,25 +1194,27 @@ class _LocalPad:
     slot: tuple[float, float] | None = None  # (width, height) in the pad frame
     slot_rounded: bool = False  # an off-axis slot written as a round hole
     poly: tuple[tuple[float, float], ...] | None = None
+    drill_offset: tuple[float, float] = (0.0, 0.0)
 
     def canon(self) -> tuple[Any, ...]:
-        """The identity a footprint group dedups on. Rounded to 1 um:
-        un-placing through an odd instance angle and back accumulates
-        ~0.1 um of float noise, and library footprints differ by tens of
-        microns at the smallest — 1 um splits the noise without ever
-        merging two real footprints."""
+        """Share geometry only to 1 nm, within the route export margin.
+
+        Coarser identity rounding substitutes the first group's actual
+        geometry and can consume a later instance's qualified mask web.
+        """
         return (
             self.num,
             self.shape,
-            round(self.x, 3),
-            round(self.y, 3),
-            round(self.rot, 3),
-            round(self.w, 3),
-            round(self.h, 3),
-            None if self.drill is None else round(self.drill, 3),
+            round(self.x, 6),
+            round(self.y, 6),
+            self.rot,
+            round(self.w, 6),
+            round(self.h, 6),
+            None if self.drill is None else round(self.drill, 6),
             self.slot,
+            tuple(round(v, 6) for v in self.drill_offset),
             (
-                tuple((round(vx, 3), round(vy, 3)) for vx, vy in self.poly)
+                tuple((round(vx, 6), round(vy, 6)) for vx, vy in self.poly)
                 if self.poly
                 else None
             ),
@@ -1214,14 +1226,15 @@ def _local_pad(pad: dict[str, Any], inst: dict[str, Any]) -> _LocalPad:
     footprint frame.
 
     Position inverts exactly through :func:`to_footprint_xy`. The
-    ``w``/``h``/``padAngle`` triple needs the decomposition the board pad
-    only partly carries: ``board_pads`` emits AUTHORED ``w``/``h`` (swapped
-    only when the total rotation lands on 90 mod 180) and marks a
-    non-axis-aligned placed pad ``oblique_rot`` = instance + pad rotation.
-    From that: an oblique pad's authored angle is ``oblique_rot - rot``
-    exactly; an axis-aligned one is written ``padAngle 0`` with ``w``/``h``
-    un-swapped by the instance rotation — rendered identically (module
-    docstring, "A pad's authored rotation").
+    ``pad_rot_deg`` preserves the authored axis, including a circular or
+    polygon land whose copper alone cannot recover its slot frame.
+    ``w``/``h`` are authored dimensions, swapped only when the board-frame
+    rotation lands on 90 mod 180. Placement also marks a non-axis-aligned
+    pad ``oblique_rot`` = instance + pad rotation.
+    Legacy pads without the explicit axis use ``oblique_rot - rot``
+    exactly. An axis-aligned one has board-oriented dimensions; invert the
+    instance turn and mirror, retaining ``padAngle 0`` only for quarter-turn
+    instances (module docstring, "A pad's authored rotation").
     """
     bottom = padplace.is_bottom_instance(inst)
     rot = float(inst.get("rot") or 0.0)
@@ -1231,10 +1244,25 @@ def _local_pad(pad: dict[str, Any], inst: dict[str, Any]) -> _LocalPad:
     h = float(pad.get("h", w) or 0.0)
     oblique = pad.get("oblique_rot")
     pad_rot = 0.0
-    if oblique is not None:
+    if pad.get("pad_rot_deg") is not None:
+        pad_rot = _clean(float(pad["pad_rot_deg"]) % 360.0)
+        # Aligned rect/stadium dimensions were put into board axes by
+        # placement. Restore their authored axes before retaining the turn.
+        world_rot = padplace.oblique_world_rot(rot, pad_rot, bottom)
+        if shape in ("rect", "obround") and padplace.rect_swaps_wh(
+            world_rot, w_mm=w, h_mm=h
+        ):
+            w, h = h, w
+    elif oblique is not None:
         pad_rot = _clean((float(oblique) - rot) % 360.0)
-    elif shape in ("rect", "obround") and padplace.rect_swaps_wh(rot):
-        w, h = h, w
+    elif shape in ("rect", "obround"):
+        if padplace.pad_axis_aligned(rot, w_mm=w, h_mm=h):
+            if padplace.rect_swaps_wh(rot, w_mm=w, h_mm=h):
+                w, h = h, w
+        else:
+            # The board pad's axes already include any dimension swap.
+            # Invert R(inst) M R(pad), choosing its world angle as zero.
+            pad_rot = _clean((rot if bottom else -rot) % 360.0)
     local = _LocalPad(
         num=str(pad.get("pin") or ""),
         shape=shape,
@@ -1250,6 +1278,12 @@ def _local_pad(pad: dict[str, Any], inst: dict[str, Any]) -> _LocalPad:
         local.poly = tuple(
             to_footprint_xy((float(vx), float(vy)), inst) for vx, vy in pad["poly"]
         )
+    if local.drill and ("drill_x" in pad or "drill_y" in pad):
+        hx, hy = to_footprint_xy(
+            (float(pad.get("drill_x", pad["x"])), float(pad.get("drill_y", pad["y"]))),
+            inst,
+        )
+        local.drill_offset = pose.rotate_cw(hx - lx, hy - ly, -pad_rot)
     if local.drill and pad.get("slot"):
         # model pads carry the slot as board-frame end centres; the hole's
         # w/h live in the PAD frame (padAngle turns both, same as the pad's
@@ -1263,9 +1297,15 @@ def _local_pad(pad: dict[str, Any], inst: dict[str, Any]) -> _LocalPad:
         if bottom:
             ux = -ux
         ux, uy = pose.rotate_cw(ux, uy, -pad_rot)
-        if abs(uy) < 1e-6:
+        # Each board endpoint is rounded to 0.0001 mm in each axis.
+        # Subtracting two endpoints bounds each vector error by 0.0001;
+        # inverse rotation projects that square onto either pad axis.
+        world_turn = rot - pad_rot if bottom else rot + pad_rot
+        angle = math.radians(world_turn)
+        alignment_tol = 0.0001 * (abs(math.cos(angle)) + abs(math.sin(angle))) + 1e-12
+        if abs(uy) <= alignment_tol:
             local.slot = (round(long_, 4), round(local.drill, 4))
-        elif abs(ux) < 1e-6:
+        elif abs(ux) <= alignment_tol:
             local.slot = (round(local.drill, 4), round(long_, 4))
         else:
             local.slot_rounded = True
@@ -1344,12 +1384,12 @@ def _pad_body(local: _LocalPad, z_index: int) -> dict[str, Any]:
         "num": local.num,
         "centerX": to_mils(local.x),
         "centerY": to_mils(-local.y),
-        "padAngle": _clean(round(local.rot, 4)),
+        "padAngle": _clean(local.rot),
         "hole": {"holeType": "ROUND", "width": 0, "height": 0},
         "defaultPad": default,
         "specialPad": [],
-        "padOffsetX": 0,
-        "padOffsetY": 0,
+        "padOffsetX": to_mils(local.drill_offset[0]) if local.drill_offset[0] else 0,
+        "padOffsetY": to_mils(-local.drill_offset[1]) if local.drill_offset[1] else 0,
         "relativeAngle": 90 if portrait else 0,
         "plated": True,
         "padType": "NORMAL",
@@ -1416,7 +1456,10 @@ def loose_drills(
     a placed footprint hole's world position is covered by the ``FILL``
     the group writes; everything else is a board-level hole."""
     covered = {
-        (round(float(p["x"]), 3), round(float(p["y"]), 3))
+        (
+            round(float(p.get("drill_x", p["x"])), 3),
+            round(float(p.get("drill_y", p["y"])), 3),
+        )
         for part in parts.values()
         for p in part.pads
         if p.get("drill")
@@ -1731,10 +1774,29 @@ def _write_copper(
                         "has no finite centre (full circle or degenerate)"
                     )
                     continue
-                body["angle"] = _clean(round(sweep, 9))
-                body["arcType"] = _ARC_TYPE
-                s.record("ARC", body, _rid(slug, f"arc:{n}:{k}"))
-                out.arcs += 1
+                # A near-360 sweep amplifies endpoint quantization into
+                # a large centre shift in Pro's endpoint+sweep format.
+                # Two arcs of at most 180 degrees have stable centres.
+                arcs = [(a, b, sweep)]
+                if abs(sweep) > 180.0:
+                    dx, dy = pose.rotate_cw(a[0] - c[0], a[1] - c[1], sweep / 2.0)
+                    mid = (c[0] + dx, c[1] + dy)
+                    arcs = [(a, mid, sweep / 2.0), (mid, b, sweep / 2.0)]
+                for part, (pa, pb, turn) in enumerate(arcs):
+                    sx, sy = to_epro_xy(*pa, frame)
+                    ex, ey = to_epro_xy(*pb, frame)
+                    arc_body = {
+                        **body,
+                        "startX": sx,
+                        "startY": sy,
+                        "endX": ex,
+                        "endY": ey,
+                        "angle": _clean(round(turn, 9)),
+                        "arcType": _ARC_TYPE,
+                    }
+                    key = f"arc:{n}:{k}" if len(arcs) == 1 else f"arc:{n}:{k}:{part}"
+                    s.record("ARC", arc_body, _rid(slug, key))
+                    out.arcs += 1
             else:
                 s.record("LINE", body, _rid(slug, f"line:{n}:{k}"))
                 out.lines += 1

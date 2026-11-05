@@ -14,6 +14,7 @@ from __future__ import annotations
 import itertools
 import math
 import re
+from dataclasses import replace
 from typing import Any
 from unittest import mock
 
@@ -584,61 +585,23 @@ def _any_cross_part_silk_overlap(draws: list[dict], stroke_width_mm: float) -> b
     of ``silk.py``'s own obstacle machinery) -- the property the fix in
     this task exists to establish: a dense cluster's silk must not
     collide across parts, not just within one part's own courtyard/tick/
-    label."""
+    label. Since the shared-wall draw was removed (Reto 2026-11-02) there
+    is no legitimate coincidence to exempt: ANY segment pair inside a
+    stroke width counts."""
     by_refdes: dict[str, list[dict]] = {}
     for d in draws:
         by_refdes.setdefault(d["refdes"], []).append(d)
 
-    def shared_wall(a: dict, b: dict) -> bool:
-        """Two outline segments sharing the boundary between the parts is
-        the DESIGNED behaviour for adjacent parts (gr496366 comment 5):
-        exempt collinear coincidence, endpoint contact, and the µm-scale
-        endpoint wobble of the sampled split — but keep flagging an actual
-        crossing (interior-to-interior) or near-parallel runs squeezed
-        within a stroke without coinciding."""
-        from shapely.geometry import LineString as SLine
-        from shapely.geometry import Point as SPoint
-
-        la = SLine([a["start"], a["end"]])
-        lb = SLine([b["start"], b["end"]])
-        inter = la.intersection(lb)
-        if inter.length > 0.0:
-            return True
-        seam = 3e-3
-        ends_a = [SPoint(*a["start"]), SPoint(*a["end"])]
-        ends_b = [SPoint(*b["start"]), SPoint(*b["end"])]
-        if not inter.is_empty:
-            # Point contact: a seam if it is an endpoint of either
-            # segment; interior-to-interior is a real crossing.
-            return any(inter.distance(p) <= seam for p in ends_a + ends_b)
-        # Disjoint within a stroke: the shared wall can leave a
-        # sub-stroke seam where the sampled frontier steps, always at a
-        # segment END — the closest approach of two illegitimately close
-        # parallel runs is interior-to-interior.
-        dmin = la.distance(lb)
-        return (
-            min(p.distance(lb) for p in ends_a) <= dmin + 1e-9
-            or min(p.distance(la) for p in ends_b) <= dmin + 1e-9
-        )
-
     refdes_list = list(by_refdes)
     for i in range(len(refdes_list)):
-        segs_i = [
-            (seg, d["role"] == "outline")
-            for d in by_refdes[refdes_list[i]]
-            for seg in d["segments"]
-        ]
+        segs_i = [seg for d in by_refdes[refdes_list[i]] for seg in d["segments"]]
         for j in range(i + 1, len(refdes_list)):
-            segs_j = [
-                (seg, d["role"] == "outline")
-                for d in by_refdes[refdes_list[j]]
-                for seg in d["segments"]
-            ]
-            for a, a_outline in segs_i:
-                for b, b_outline in segs_j:
+            segs_j = [seg for d in by_refdes[refdes_list[j]] for seg in d["segments"]]
+            for a in segs_i:
+                for b in segs_j:
                     if _segments_hit(
                         (a["start"], a["end"]), (b["start"], b["end"]), stroke_width_mm
-                    ) and not (a_outline and b_outline and shared_wall(a, b)):
+                    ):
                         return True
     return False
 
@@ -701,9 +664,9 @@ def test_processing_order_is_natural_refdes_order_not_array_order():
     result = builds[0]
     outcome = {(row.refdes, row.kind): row.outcome for row in result.census}
     reason = {(row.refdes, row.kind): row.reason for row in result.census}
-    # The pair overlaps: the stretch where the shared wall would sit inside
-    # the pad-clearance floor is left open on BOTH (gr496366 comment 5) —
-    # no part's line crosses into the other, and neither keeps more ink.
+    # The pair overlaps: the facing stretch that would sit inside the
+    # pad-clearance floor is left open on BOTH — no part's line crosses
+    # into the other, and neither keeps more ink.
     for refdes in ("C1", "C14"):
         assert outcome[(refdes, "courtyard")] == "relocated"
         assert "pad-clearance floor" in str(reason[(refdes, "courtyard")])
@@ -939,8 +902,7 @@ def test_courtyard_margin_still_notices_a_genuine_foreign_encroachment():
     assert silk.outline_offsets_mm(None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM)[
         1
     ] == pytest.approx(
-        silk_clearance_mm(None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM)
-        + 2.0 * gerber.DEFAULT_SILK_WIDTH_MM
+        silk.vendor_ink_clear_mm(None) + gerber.DEFAULT_SILK_WIDTH_MM / 2.0
     )
     own_pads = [
         {"shape": "rect", "x": 3.0, "y": 0.0, "w": 0.1, "h": 0.1, "net": "A"},
@@ -1529,9 +1491,13 @@ def test_an_aligned_column_of_identical_parts_shares_one_label_spot(rot):
         for k, ring in enumerate(rings):
             if k != own:
                 assert not convex_polygons_overlap(box, ring), (refdes, names[k])
+    # A column this dense (0402s at 1.383 mm pitch) is packed tighter than
+    # two floors plus the outline spacing, so facing sides now open rather
+    # than share a wall — "relocated" is the honest outcome; only a drop
+    # is a failure.
     assert not any(
-        row.kind == "courtyard" and row.outcome != "placed" for row in result.census
-    ), result.relocated
+        row.kind == "courtyard" and row.outcome == "dropped" for row in result.census
+    ), result.dropped
 
 
 def test_identical_parts_far_apart_on_one_axis_are_not_one_group():
@@ -3136,6 +3102,7 @@ def _outline_lines(result, refdes: str) -> list[list[tuple[float, float]]]:
 
 
 def _pad_shape(pad: dict):
+    from shapely.affinity import rotate as srotate
     from shapely.geometry import Point as SPoint
     from shapely.geometry import Polygon as SPolygon
 
@@ -3145,7 +3112,7 @@ def _pad_shape(pad: dict):
         return SPoint(pad["x"], pad["y"]).buffer(pad["w"] / 2.0)
     w, h = pad["w"], pad.get("h", pad["w"])
     x, y = pad["x"], pad["y"]
-    return SPolygon(
+    land = SPolygon(
         [
             (x - w / 2, y - h / 2),
             (x + w / 2, y - h / 2),
@@ -3153,6 +3120,10 @@ def _pad_shape(pad: dict):
             (x - w / 2, y + h / 2),
         ]
     )
+    # The IR keeps native land dimensions and a board-frame clockwise
+    # angle. This independent oracle must rotate those corners as well.
+    angle = pad.get("oblique_world_rot", pad.get("oblique_rot", 0.0))
+    return srotate(land, -angle, origin=(x, y))
 
 
 @pytest.mark.parametrize(
@@ -3171,13 +3142,15 @@ def _pad_shape(pad: dict):
         (200, 180.0, "top", 0.0),
     ],
 )
-def test_an_outline_is_one_closed_line_two_widths_clear_of_its_pads(
+def test_an_outline_is_one_closed_line_at_legal_clearance_of_its_pads(
     n_pins, rot, side, slack
 ):
     """gr495393 (Reto 2026-10-17): a part's outline is ONE closed line,
-    never clipped into pieces by its own pads, and its ink keeps at least
-    two silk line widths of clear board from every pad's copper. Checked
-    with shapely distances, not silk.py's own overlap predicates."""
+    never clipped into pieces by its own pads, and its ink keeps at
+    least the JLC-min legal clearance from every pad's copper (Reto
+    2026-11-03: the two-line-width breathing room moved to placement —
+    the drawn offset is now legal + half stroke). Checked with shapely
+    distances, not silk.py's own overlap predicates."""
     from shapely.geometry import LineString as SLine
 
     ir = from_graph(_graph("U1", n_pins, rot=rot), stackup=DEFAULT_STACKUP)
@@ -3189,14 +3162,16 @@ def test_an_outline_is_one_closed_line_two_widths_clear_of_its_pads(
     assert line[0] == pytest.approx(line[-1])
     ink = SLine(line)
     for pad in pads:
-        # centreline to copper >= 2 widths of clear board + half the stroke
-        assert ink.distance(_pad_shape(pad)) >= 2.0 * _W + _W / 2.0 - 1e-6
+        # centreline to copper >= the legal clearance + half the stroke
+        assert ink.distance(_pad_shape(pad)) >= (
+            silk.vendor_ink_clear_mm(None) + _W / 2.0 - 1e-6
+        )
     # and where nothing is in the way, the full target: the legal chain
-    # plus two widths (plus the bridge fixture's decimate slack, above)
+    # plus half the stroke (plus the bridge fixture's decimate slack, above)
     floor, target = silk.outline_offsets_mm(None, stroke_width_mm=_W)
-    assert floor >= 2.0 * _W + _W / 2.0
-    assert target == pytest.approx(silk_clearance_mm(None, stroke_width_mm=_W) + 2 * _W)
-    # (pads_for_ir rounds an oblique pad's polygon to 0.1 um)
+    assert floor == pytest.approx(target)
+    assert target == pytest.approx(silk.vendor_ink_clear_mm(None) + _W / 2.0)
+    # Compare the independently rotated native land, including decimate slack.
     assert min(ink.distance(_pad_shape(p)) for p in pads) == pytest.approx(
         target + slack, abs=1e-3
     )
@@ -3239,15 +3214,16 @@ def test_neighbour_voronoi_cells_partition_the_requested_margin(dx, dy):
     )
 
 
-def test_close_neighbours_bend_their_outlines_and_keep_two_widths_apart():
-    """gr496366 comment 5 (Reto 2026-10-19: "just overlap the lines, don;t
-    invade the neighbour"): two parts packed so their outlines cannot keep
-    the outline spacing apart share ONE coincident line on the split
-    between them instead of printing two nearly-touching lines."""
+def test_close_neighbours_shrink_their_outlines_and_keep_the_spacing():
+    """Reto 2026-11-02 ("end these weird shared outlines", supersedes
+    gr496366 comment 5's shared line): two parts packed so their outlines
+    cannot keep the outline spacing apart each yield half the spacing off
+    the split on their own side — two separate rings shrinking toward the
+    floor, never one coincident wall."""
     from shapely.geometry import LineString as SLine
 
     # hull gap 1.4 mm: the target rings (0.575 mm each) would sit 0.25 mm
-    # apart — too close to stay separate, so they merge into one wall.
+    # apart — too close to stay separate, so each pulls in to 0.475 mm.
     ir = from_graph(
         _multi(
             _graph("U1", 8, x=0.0, y=0.0), _graph("U2", 8, x=2.0 + 1.4 + 0.2, y=0.0)
@@ -3261,11 +3237,14 @@ def test_close_neighbours_bend_their_outlines_and_keep_two_widths_apart():
     (a,), (b,) = _outline_lines(result, "U1"), _outline_lines(result, "U2")
     assert a[0] == pytest.approx(a[-1]) and b[0] == pytest.approx(b[-1])
     la, lb = SLine(a), SLine(b)
-    # Coincident on the shared stretch: the two rings run along the same
-    # boundary as one line (the sampled split sits within ~1 um of the
-    # midline), and neither crosses into the other part's side.
-    shared = la.intersection(lb)
-    assert shared.length > 0.5, shared
+    # Two separate rings: nothing coincident, and the kept stretches hold
+    # the outline spacing (1 + OUTLINE_GAP_STROKES widths, centreline to
+    # centreline) between them.
+    spacing = (1.0 + silk.OUTLINE_GAP_STROKES) * _W
+    assert la.intersection(lb).is_empty or la.intersection(lb).length == pytest.approx(
+        0.0
+    )
+    assert la.distance(lb) >= spacing - 0.02
     for line, ref in ((la, "U1"), (lb, "U2")):
         own = [p for p in pads if p["refdes"] == ref]
         other = [p for p in pads if p["refdes"] != ref]
@@ -3283,35 +3262,134 @@ def test_close_neighbours_bend_their_outlines_and_keep_two_widths_apart():
     assert SLine(fa).distance(SLine(fb)) > _W
 
 
-def test_adjacent_parts_at_min_spacing_share_one_wall_segment():
-    """gr496366 comment 5 acceptance: two parts as close as placement
-    rules allow draw ONE coincident outline segment on the boundary —
-    neither ring enters the other's side, and silk-to-pad clearance holds
-    on both."""
+def test_adjacent_parts_below_two_floors_open_on_the_facing_side():
+    """Reto 2026-11-02: a pair packed tighter than two floors plus the
+    outline spacing has no legal line on the facing side at all — each
+    ring opens there (``floor_open``), still never a coincident or
+    invading segment, and silk-to-pad clearance holds on both."""
     from shapely.geometry import LineString as SLine
-    from shapely.geometry import Polygon as SPoly
 
     # Hull gap 0.9 mm — what a pair of 0603s at JLCPCB's 0.18 mm body
-    # minimum lands at once pad keep-outs are counted: the midline sits
-    # at 0.45 mm, above the 0.375 mm floor, so a shared wall is legal.
+    # minimum lands at once pad keep-outs are counted: even the floor
+    # rings could not keep the spacing, so the facing sides open.
     ir = from_graph(
         _multi(_graph("U1", 8, x=0.0, y=0.0), _graph("U2", 8, x=3.1, y=0.0)),
         stackup=DEFAULT_STACKUP,
     )
     pads = realize.pads_for_ir(ir, [layer["name"] for layer in DEFAULT_STACKUP])
     result = build_silk(ir, pads=pads)
-    (a,), (b,) = _outline_lines(result, "U1"), _outline_lines(result, "U2")
-    la, lb = SLine(a), SLine(b)
-    # One coincident shared segment — the wall between them.
-    assert la.intersection(lb).length > 0.5
-    # Neither ring invades the other part's side: no drawn stretch sits
-    # inside the other's outline area (the shared wall lies ON it).
-    assert la.intersection(SPoly(b).buffer(-1e-6)).length == pytest.approx(0.0)
-    assert lb.intersection(SPoly(a).buffer(-1e-6)).length == pytest.approx(0.0)
+    lines_a = _outline_lines(result, "U1")
+    lines_b = _outline_lines(result, "U2")
+    assert lines_a and lines_b
+    lines = [SLine(run) for run in (*lines_a, *lines_b)]
+    for a in (SLine(run) for run in lines_a):
+        for b in (SLine(run) for run in lines_b):
+            # No coincident stretch, and what is drawn keeps the outline
+            # spacing between the two parts' rings.
+            assert a.intersection(b).length == pytest.approx(0.0)
+            assert a.distance(b) >= (1.0 + silk.OUTLINE_GAP_STROKES) * _W - 0.02
     floor, _ = silk.outline_offsets_mm(None, stroke_width_mm=_W)
-    for line, ref in ((la, "U1"), (lb, "U2")):
+    for line in lines:
         for p in pads:
-            assert line.distance(_pad_shape(p)) >= floor - 0.011, (ref, p)
+            assert line.distance(_pad_shape(p)) >= floor - 0.011, p
+    # The opening is reported: the facing stretch sits inside the
+    # pad-clearance floor on BOTH parts.
+    reasons = {c.refdes: str(c.reason) for c in result.census if c.kind == "courtyard"}
+    assert "pad-clearance floor" in reasons["U1"]
+    assert "pad-clearance floor" in reasons["U2"]
+
+
+def _r0402_pair(pad_gap_mm: float):
+    """Two real-geometry 0402s side by side along x with their pad hulls
+    ``pad_gap_mm`` apart (edge to edge)."""
+    dx = pad_gap_mm + 2.0 * (_R0402_PAD_X + _R0402_PAD_W / 2.0)
+    ir = from_graph(
+        _multi(_graph("R1", 2, x=0.0, y=0.0), _graph("R2", 2, x=dx, y=0.0)),
+        stackup=DEFAULT_STACKUP,
+    )
+    pads = []
+    for pid in range(ir.n_pins):
+        inst = int(ir.pin_instance[pid])
+        sign = 1.0 if pid % 2 == 0 else -1.0
+        ir.set_pin_offset(pid, sign * _R0402_PAD_X, 0.0)
+        ir.pin_w[pid] = _R0402_PAD_W
+        ir.pin_h[pid] = _R0402_PAD_H
+        pads.append(
+            {
+                "shape": "rect",
+                "x": float(ir.inst_x[inst]) + sign * _R0402_PAD_X,
+                "y": float(ir.inst_y[inst]),
+                "w": _R0402_PAD_W,
+                "h": _R0402_PAD_H,
+                "refdes": str(ir.instance_refdes[inst]),
+            }
+        )
+    return ir, pads
+
+
+def _pad_hull_gap(pads: list[dict], a: str, b: str) -> float:
+    """Edge-to-edge distance of the two refdes' pad unions — measured, so
+    the test asserts against the geometry it built, not the intended
+    number."""
+    pa = unary_union([_pad_shape(p) for p in pads if p["refdes"] == a])
+    pb = unary_union([_pad_shape(p) for p in pads if p["refdes"] == b])
+    return float(pa.distance(pb))
+
+
+def test_two_0402s_at_pair_separation_draw_two_full_rings():
+    """Reto 2026-11-02: at the ruled pad-hull separation
+    (:func:`silk.outline_pair_separation_mm`) and beyond, two parts draw
+    two complete rings — no shared segment, spacing held."""
+    from shapely.geometry import LineString as SLine
+
+    ir, pads = _r0402_pair(1.9)
+    assert _pad_hull_gap(pads, "R1", "R2") == pytest.approx(1.9, abs=1e-6)
+    assert _pad_hull_gap(pads, "R1", "R2") > silk.outline_pair_separation_mm(None)
+    result = build_silk(ir, pads=pads)
+    (a,), (b,) = _outline_lines(result, "R1"), _outline_lines(result, "R2")
+    assert a[0] == pytest.approx(a[-1]) and b[0] == pytest.approx(b[-1])
+    la, lb = SLine(a), SLine(b)
+    assert la.intersection(lb).length == pytest.approx(0.0)
+    assert la.distance(lb) >= (1.0 + silk.OUTLINE_GAP_STROKES) * _W - 0.02
+
+
+def test_two_0402s_inside_the_floor_keep_the_floor_or_open():
+    """At a 1.2 mm pad-hull gap — right at two floors plus the outline
+    spacing — each ring stays at or above ``floor``; whatever would dip
+    below opens on the facing side (``floor_open``), and the two rings
+    still never draw a coincident or inside-the-spacing segment."""
+    from shapely.geometry import LineString as SLine
+
+    ir, pads = _r0402_pair(1.2)
+    assert _pad_hull_gap(pads, "R1", "R2") == pytest.approx(1.2, abs=1e-6)
+    floor, _ = silk.outline_offsets_mm(None, stroke_width_mm=_W)
+    spacing = (1.0 + silk.OUTLINE_GAP_STROKES) * _W
+    result = build_silk(ir, pads=pads)
+    for run in (
+        *_outline_lines(result, "R1"),
+        *_outline_lines(result, "R2"),
+    ):
+        line = SLine(run)
+        for p in pads:
+            assert line.distance(_pad_shape(p)) >= floor - 0.011, p
+    for run_a in _outline_lines(result, "R1"):
+        la = SLine(run_a)
+        for run_b in _outline_lines(result, "R2"):
+            lb = SLine(run_b)
+            assert la.intersection(lb).length == pytest.approx(0.0)
+            assert la.distance(lb) >= spacing - 0.02
+    # And when the gap really is below two floors plus spacing, the
+    # facing side reports open rather than printing inside the floor.
+    ir2, pads2 = _r0402_pair(1.0)
+    outs2 = silk.part_outlines(ir2, capability=None)
+    assert all(o.floor_open_mm > 0.1 for o in outs2.values())
+    result2 = build_silk(ir2, pads=pads2)
+    for run_a in _outline_lines(result2, "R1"):
+        la = SLine(run_a)
+        for run_b in _outline_lines(result2, "R2"):
+            lb = SLine(run_b)
+            assert la.intersection(lb).length == pytest.approx(0.0)
+            assert la.distance(lb) >= spacing - 0.02
 
 
 def _canon_silk(result) -> tuple[list, list]:
@@ -3491,33 +3569,36 @@ def _dogfood_cluster():
 
 def test_dogfood_u2_outline_is_no_longer_cut_by_u1s_silk():
     """The dogfood board's U2 lost a third of its outline to U1's courtyard
-    bounding box. Outlines now never clip each other: U2 is one closed
-    line, and with no via in the way so are U1 and J2."""
+    bounding box. Outlines now never clip each other: every part keeps at
+    least one drawn run and no ring is buried inside a neighbour's
+    outline; where the pair is packed tighter than two floors the facing
+    side opens (Reto 2026-11-02) instead of drawing one shared wall."""
     ir, pads, _via = _dogfood_cluster()
     result = build_silk(ir, pads=pads)
+    outlines = silk.part_outlines(ir, capability=None)
+    assert all(o.meets == () for o in outlines.values())
     for refdes in ("U1", "U2", "J2"):
         lines = _outline_lines(result, refdes)
-        assert len(lines) == 1, (refdes, lines)
+        assert lines, (refdes, lines)
         row = next(
             c for c in result.census if c.refdes == refdes and c.kind == "courtyard"
         )
         if "pad-clearance floor" in str(row.reason):
-            # Packed tighter than two floors: the stretch where the
-            # shared wall would sit inside the pad clearance is left open
-            # (gr496366 comment 5) — one line, open on the facing side,
-            # and the census says so.
+            # Packed tighter than two floors plus the spacing: the facing
+            # stretch is left open and the census says so.
             continue
         assert lines[0][0] == pytest.approx(lines[0][-1]), refdes
         assert row.outcome == "placed", (refdes, row.reason)
 
 
-def test_dogfood_outlines_bend_around_the_routed_via_instead_of_breaking():
-    """gr495393 option A (Reto's ruling 2026-10-18): the via routed onto the
-    U1/J2 wall is copper silk must not print on, so both outlines are
-    redrawn around it. Each dents: J2 round the via's +y side (its body),
-    U1 round the -y side, so the shared wall opens into one eye with the
-    via inside, and each stays ONE closed line clear of the via by the
-    legal clearance. The router is untouched."""
+def test_dogfood_outlines_open_a_gap_at_the_routed_via():
+    """Reto 2026-11-02 ("a weird jiggly silkscreen outline is not
+    allowed"; supersedes gr495393 option A): the via routed onto the U1/J2
+    frontier is copper silk must not print on, so each ring whose
+    clearance band holds it OPENS a straight gap there — never a dent or
+    bulge detour. What is drawn keeps the legal clearance off the
+    annulus; where the shrunk ring lands inside the pad-clearance floor
+    the facing side opens as before. The router is untouched."""
     from shapely.geometry import LineString as SLine
     from shapely.geometry import Point as SPoint
 
@@ -3525,43 +3606,27 @@ def test_dogfood_outlines_bend_around_the_routed_via_instead_of_breaking():
     result = build_silk(ir, pads=pads, vias=[via])
     centre = SPoint(via["x"], via["y"])
     legal = _W / 2.0 + silk.DEFAULT_SILK_TO_MASK_CLEARANCE_MM
-    rings = {}
     for refdes in ("U1", "U2", "J2"):
-        (line,) = _outline_lines(result, refdes)
-        rings[refdes] = SLine(line)
+        lines = _outline_lines(result, refdes)
+        assert lines, refdes
         row = next(
             c for c in result.census if c.refdes == refdes and c.kind == "courtyard"
         )
         assert "broken around" not in str(row.reason), (refdes, row.reason)
-        if refdes == "U2":
-            assert line[0] == pytest.approx(line[-1])
-            assert row.outcome == "placed"
-            continue
-        assert "bent around via at (13.52, 13.54)" in str(row.reason), row.reason
-        assert rings[refdes].distance(centre) >= via["dia_mm"] / 2.0 + legal - 1e-6
+        assert "bent around" not in str(row.reason), (refdes, row.reason)
+        for line in lines:
+            assert SLine(line).distance(centre) >= via["dia_mm"] / 2.0 + legal - 1e-6
     assert not _draws_hit_any_pad(result.draws["top"], [_via_as_pad(via)])
     assert not _draws_hit_any_pad(result.draws["top"], pads)
-    # The wall opens where it would sit inside the pad-clearance floor
-    # (gr496366 comment 5): each of U1's and J2's drawn lines has an open
-    # end right at the via zone, and what is drawn still clears the via.
-    for refdes in ("U1", "J2"):
-        ends = [
-            SPoint(*p)
-            for line in _outline_lines(result, refdes)
-            for p in (line[0], line[-1])
-        ]
-        assert min(p.distance(centre) for p in ends) < 2.2, (refdes, ends)
 
 
-def test_dogfood_outline_stays_one_line_through_two_vias():
-    """gr495393: J2's ring meets two routed vias — the shared-wall one at
+def test_dogfood_outline_opens_at_each_via_it_would_print_on():
+    """J2's ring meets two routed vias — the one on the U1 frontier at
     (13.52, 13.54) and a second under its own top-left body at
-    (11.42, 18.21). The under-body via's natural move is a dent, but the
-    dented stretch lands inside the pad-clearance floor, where the floor
-    pass opens it: a second forced gap and the outline comes out in two
-    fragments. The bend now takes the move that adds no floor-open — J2
-    bulges out round the under-body via — so the one gap the shared wall
-    forces leaves ONE line."""
+    (11.42, 18.21). Each opens its own straight gap at the legal
+    clearance (the under-body via used to force a dent or a bulge and a
+    second forced opening; supersedes the gr495393 floor-interaction
+    dance). Every drawn run clears both annuli by the legal clearance."""
     from shapely.geometry import LineString as SLine
     from shapely.geometry import Point as SPoint
 
@@ -3575,30 +3640,169 @@ def test_dogfood_outline_stays_one_line_through_two_vias():
     }
     result = build_silk(ir, pads=pads, vias=[via, under_body])
     legal = _W / 2.0 + silk.DEFAULT_SILK_TO_MASK_CLEARANCE_MM
-    for refdes in ("U1", "U2", "J2"):
-        (line,) = _outline_lines(result, refdes)
-        if refdes == "U2":
-            assert line[0] == pytest.approx(line[-1])
-    ring = SLine(_outline_lines(result, "J2")[0])
+    lines = _outline_lines(result, "J2")
+    assert lines
     for v in (via, under_body):
         centre = SPoint(v["x"], v["y"])
-        assert ring.distance(centre) >= v["dia_mm"] / 2.0 + legal - 1e-6
-    # The one gap is the shared wall's, on the U1-facing side — not at
-    # the under-body via.
-    line = _outline_lines(result, "J2")[0]
-    ends = [SPoint(*p) for p in (line[0], line[-1])]
-    wall = SPoint(via["x"], via["y"])
-    assert min(p.distance(wall) for p in ends) < 2.2, ends
+        for line in lines:
+            assert SLine(line).distance(centre) >= v["dia_mm"] / 2.0 + legal - 1e-6
     assert not _draws_hit_any_pad(
         result.draws["top"], [_via_as_pad(via), _via_as_pad(under_body)]
     )
     assert not _draws_hit_any_pad(result.draws["top"], pads)
 
 
-def test_dogfood_cluster_renders_one_gerber_stroke_per_part_outline():
+def test_a_via_inside_the_ring_band_cuts_a_square_gap_not_a_detour():
+    """The brief's synthetic case: a via inside a ring's clearance band
+    opens a gap whose every vertex lies ON the un-settled offset ring —
+    no vertex off the part's offset shape, and the ring's vertex count
+    does not grow per nearby via."""
+    from shapely.geometry import LineString as SLine
+    from shapely.geometry import Point as SPoint
+
+    ir, pads, _via = _dogfood_cluster()
+    outlines = silk.part_outlines(ir, capability=None)
+    settled = {i: SLine(o.ring) for i, o in outlines.items()}
+    n_verts = {i: len(o.ring) for i, o in outlines.items()}
+    # On a DRAWN run — a via over an already-open stretch removes nothing
+    # and is correctly not named.
+    run = max(
+        (r for o in outlines.values() for r in o.runs), key=lambda r: SLine(r).length
+    )
+    mid = SLine(run).interpolate(SLine(run).length / 2.0)
+    via: dict[str, Any] = {
+        "x": mid.x,
+        "y": mid.y,
+        "dia_mm": 0.75,
+        "drill_mm": 0.25,
+        "span": ["F.Cu", "B.Cu"],
+    }
+    obs = {"top": [silk._via_pad(via)], "bottom": [silk._via_pad(via)]}
+    with_via = silk.part_outlines(ir, capability=None, obstacles_by_side=obs)
+    centre = SPoint(via["x"], via["y"])
+    legal = _W / 2.0 + silk.DEFAULT_SILK_TO_MASK_CLEARANCE_MM
+    assert any(o.via_gaps for o in with_via.values())
+    for inst, o in with_via.items():
+        # the settled ring is identical — vertex count never grows per via
+        assert len(o.ring) == n_verts[inst], (inst, len(o.ring), n_verts[inst])
+        for run in o.runs:
+            line = SLine(run)
+            # every run vertex is a point of the settled ring's polyline —
+            # original vertices or square gap ends cut into its segments
+            for p in run:
+                assert settled[inst].distance(SPoint(p)) < 1e-6, (inst, p)
+            assert line.distance(centre) >= via["dia_mm"] / 2.0 + legal - 1e-6
+
+
+def test_every_same_side_ring_pair_keeps_the_outline_spacing():
+    """Round-2 blocker (Fable 2026-11-02): each cell was simplified on its
+    own, so a shared frontier drifted in two directions and the pair
+    yielded ``spacing / 2`` off DIFFERENT lines — the dogfood U1-U2 pair
+    measured 0.4125 mm against the 0.45 mm rule. Every same-side ring
+    pair must keep the full spacing: the shared frontier is now ONE
+    line (a later part's cell is cut against the earlier parts' settled
+    cells) and the yield applies only where a neighbour's ring can
+    actually reach."""
+    from shapely.geometry import MultiLineString as SMulti
+
+    spacing = (1.0 + silk.OUTLINE_GAP_STROKES) * _W
+
+    def assert_pairs(ir):
+        outlines = silk.part_outlines(ir, capability=None)
+        insts = sorted(outlines, key=lambda i: str(ir.instance_refdes[i]))
+        for a in insts:
+            for b in insts:
+                if a >= b or outlines[a].side != outlines[b].side:
+                    continue
+                # the drawn runs carry the rule: a packed ring may dip to
+                # its hull inside a floor-open stretch that is never drawn
+                if not outlines[a].runs or not outlines[b].runs:
+                    continue
+                d = SMulti(outlines[a].runs).distance(SMulti(outlines[b].runs))
+                ref = (ir.instance_refdes[a], ir.instance_refdes[b])
+                assert d >= spacing - 1e-6, (*ref, d, spacing)
+
+    ir, _pads, _via = _dogfood_cluster()
+    assert_pairs(ir)
+    # A staircase-prone synthetic pair: two parts diagonally offset so
+    # the sampled Voronoi frontier between them staircases at
+    # _CELL_SAMPLE_MM; the hulls sit ~1.4 mm apart so the facing sides
+    # contest but still draw.
+    ir2 = from_graph(
+        _multi(
+            _graph("U1", 8, x=0.0, y=0.0),
+            _graph("U2", 8, x=3.44, y=3.1),
+        ),
+        stackup=DEFAULT_STACKUP,
+    )
+    assert_pairs(ir2)
+    # A packed row of 2-pin parts at 1.6 mm pitch: the rings dip inside
+    # their floor-open stretches, the drawn runs still hold the spacing.
+    ir3 = from_graph(
+        _multi(*(_graph(f"R{k}", 2, x=1.6 * k, y=0.0) for k in range(1, 4))),
+        stackup=DEFAULT_STACKUP,
+    )
+    assert_pairs(ir3)
+
+
+def test_via_gaps_count_against_the_outline_and_name_only_cutting_vias():
+    """Via-opened outline is lost ink, not a designed gap: enough vias on
+    a ring must fail the kept fraction and drop the outline with a via
+    cause — and ``via_gaps`` names only the vias whose disk removes
+    drawn length (Fable 2026-11-02: U2 with 7 vias drew 5.67 of
+    15.57 mm with no finding; no "leaves open 0.00mm" notes)."""
+    from shapely.geometry import LineString as SLine
+
+    ir, pads, _via = _dogfood_cluster()
+    outlines = silk.part_outlines(ir, capability=None)
+    u2 = next(o for i, o in outlines.items() if str(ir.instance_refdes[i]) == "U2")
+    run = max(u2.runs, key=lambda r: SLine(r).length)
+    line = SLine(run)
+    vias = [
+        {
+            "x": line.interpolate(line.length * t).x,
+            "y": line.interpolate(line.length * t).y,
+            "dia_mm": 0.6,
+            "drill_mm": 0.25,
+            "span": ["F.Cu", "B.Cu"],
+        }
+        for t in (0.05, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95)
+    ]
+    obs = {"top": [silk._via_pad(v) for v in vias], "bottom": []}
+    with_via = silk.part_outlines(ir, capability=None, obstacles_by_side=obs)
+    u2v = next(o for i, o in with_via.items() if str(ir.instance_refdes[i]) == "U2")
+    # Every via on the ring is named, its opened length counts against
+    # the kept fraction, and the pieces it makes count toward the cap.
+    assert len(u2v.via_gaps) == 7
+    assert u2v.via_open_mm > 0
+    assert u2v.via_pieces == len(u2v.runs)
+    result = build_silk(ir, pads=pads, vias=vias)
+    row = next(c for c in result.census if c.refdes == "U2" and c.kind == "courtyard")
+    assert row.outcome == "dropped", row.reason
+    assert "silk clearance" in str(row.reason), row.reason
+    # A via inside the courtyard but off the drawn runs removes nothing
+    # and is not named.
+    from shapely.geometry import Polygon as _SPoly
+
+    cen = _SPoly(u2.ring).centroid
+    off = {
+        "x": cen.x,
+        "y": cen.y,
+        "dia_mm": 0.6,
+        "drill_mm": 0.25,
+        "span": ["F.Cu", "B.Cu"],
+    }
+    obs2 = {"top": [silk._via_pad(off)], "bottom": []}
+    quiet = silk.part_outlines(ir, capability=None, obstacles_by_side=obs2)
+    u2_inst = next(i for i in quiet if str(ir.instance_refdes[i]) == "U2")
+    assert quiet[u2_inst].via_gaps == ()
+    assert quiet[u2_inst].via_open_mm == 0.0
+
+
+def test_dogfood_cluster_renders_one_gerber_stroke_per_outline_run():
     """gr495393: verify the J2/U1/U2 fixture at the emitted film, not only
-    the in-memory paths. Silk's segment clipping must not fragment them
-    during Gerber export or parsing."""
+    the in-memory paths. Each drawn outline run must survive Gerber
+    export and parsing as exactly one stroke — no fragmentation."""
     ir, pads, via = _dogfood_cluster()
     result = build_silk(ir, pads=pads, vias=[via])
     model = {
@@ -3607,25 +3811,26 @@ def test_dogfood_cluster_renders_one_gerber_stroke_per_part_outline():
     }
     film = gerber_view.parse_gerber(gerber.silkscreen_gerber(model, "top"))
     for refdes in ("U1", "U2", "J2"):
-        (line,) = _outline_lines(result, refdes)
-        assert (
-            sum(
-                len(stroke.points) == len(line)
-                and all(
-                    actual == pytest.approx(expected, abs=1e-4)
-                    for actual, expected in zip(stroke.points, line, strict=True)
+        for line in _outline_lines(result, refdes):
+            assert (
+                sum(
+                    len(stroke.points) == len(line)
+                    and all(
+                        actual == pytest.approx(expected, abs=1e-4)
+                        for actual, expected in zip(stroke.points, line, strict=True)
+                    )
+                    for stroke in film.strokes
                 )
-                for stroke in film.strokes
-            )
-            == 1
-        ), refdes
+                == 1
+            ), refdes
 
 
-def test_a_via_no_bend_clears_still_cuts_the_outline():
-    """gr495393: a via on J1's outline right under a pad, with the board's
-    silk edge margin just past the ring. A dent would cross the pad, a
-    bulge would leave the board, so the outline is cut around the via as
-    before, and the census names the via."""
+def test_a_via_on_an_edge_opened_ring_still_cuts_a_gap():
+    """A via on J1's outline right under a pad, with the board's silk
+    edge margin just past the ring: the ring opens a square gap at the
+    via's legal clearance (never a dent into the pad nor a bulge off the
+    board — there is no detour at all now), and the census names the
+    via."""
     ir, pads = _edge_connector(5.0)
     (ring,) = _outline_lines(build_silk(ir, pads=pads), "J1")
     low = min(p[1] for p in ring)
@@ -3643,7 +3848,7 @@ def test_a_via_no_bend_clears_still_cuts_the_outline():
     result = build_silk(ir, pads=pads, vias=[via], outline=outline)
     row = next(c for c in result.census if c.kind == "courtyard")
     label = f"via at ({via['x']:.2f}, {via['y']:.2f})"
-    assert f"broken around {label}" in str(row.reason), row.reason
+    assert label in str(row.reason), row.reason
     assert "bent around" not in str(row.reason)
     assert not _draws_hit_any_pad(result.draws["top"], [_via_as_pad(via)])
 
@@ -3863,22 +4068,26 @@ def test_courtyard_clipped_into_fragments_drops_whole_instead():
     xs = [p[0] for p in local]
     ys = [p[1] for p in local]
     x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
-    # Three small pads ON each side edge: each punches one gap and the
-    # runs left between them clear the min-run floor — confetti, not a
-    # mostly-erased ring (kept fraction stays ~80%, far above the
-    # half-floor, so only the piece cap can drop it).
+    # Eight small pads spaced along the drawn ring itself (it is waisted
+    # at the tighter JLC-min offset — vertices alone won't hit it).
+    # Each punches one gap and the runs left between them clear the
+    # min-run floor — confetti, not a mostly-erased ring (kept fraction
+    # stays ~80%, far above the half-floor, so only the piece cap can
+    # drop it).
+    from shapely.geometry import LineString as _SLine
+
+    line = _SLine(silk.part_outlines(ir, capability=None)[0].ring)
     pads = [
         {
             "shape": "rect",
-            "x": ex,
-            "y": 10.0 + y0 + (y1 - y0) * (k + 1) / 4.0,
+            "x": line.interpolate(line.length * t).x,
+            "y": line.interpolate(line.length * t).y,
             "w": 0.25,
             "h": 0.25,
             "net": "FOREIGN",
             "layer": "top",
         }
-        for k in range(3)
-        for ex in (10.0 + x0, 10.0 + x1)
+        for t in (k / 8.0 for k in range(8))
     ]
     result = build_silk(ir, pads=pads)
     assert any("U1" in msg and "dropped" in msg for msg in result.dropped)
@@ -3888,7 +4097,7 @@ def test_courtyard_with_designed_gaps_keeps_past_the_piece_cap() -> None:
     """GRIPE_FIX (gr520792 review): the piece cap counts what
     ``_clip_polyline`` PRODUCED, not every surviving run — an
     edge-mated connector's courtyard already carries designed gaps
-    (the edge opening plus the shared-wall openings, 3 runs here);
+    (the edge opening plus the floor openings, 3 runs here);
     one small pad clip splitting a run to 3 pieces must not drop a
     courtyard still ~94 % intact."""
     insts = [
@@ -3931,3 +4140,551 @@ def test_courtyard_with_designed_gaps_keeps_past_the_piece_cap() -> None:
     result = build_silk(ir, pads=pads, outline=board)
     j1 = next(c for c in result.census if c.refdes == "J1" and c.kind == "courtyard")
     assert j1.outcome != "dropped", j1.reason
+
+
+# ── vendor footprint silk as the part outline (Reto 2026-11-03) ────────
+def _vendor_ir(
+    graphics: tuple,
+    *,
+    x: float = 10.0,
+    y: float = 10.0,
+    rot: float = 0.0,
+    bottom: bool = False,
+):
+    """A 2-pin synthetic part carrying ``inst_silk_graphics`` — the
+    hydrated-IR field ``footprint_silk_graphics`` fills from the
+    footprint row's ``graphics[]``. Fully synthetic; no board data."""
+    graph = {
+        "instances": [
+            {
+                "refdes": "C1",
+                "x": x,
+                "y": y,
+                "rot": rot,
+                "layer": "bottom" if bottom else "top",
+            }
+        ],
+        "nets": [
+            {
+                "name": f"N{i}",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [{"refdes": "C1", "pin": str(i + 1)}],
+            }
+            for i in range(2)
+        ],
+    }
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir.inst_silk_graphics = (graphics,)
+    return ir
+
+
+_SQUARE_GRAPHIC = (
+    {
+        "kind": "polyline",
+        "layer": "F.SilkS",
+        "width_mm": 0.12,
+        "points": [
+            [-2.0, -1.0],
+            [2.0, -1.0],
+            [2.0, 1.0],
+            [-2.0, 1.0],
+            [-2.0, -1.0],
+        ],
+    },
+)
+
+
+def test_footprint_silk_strokes_decodes_the_vendor_kinds() -> None:
+    """The four stroke kinds decode to polylines with their own widths;
+    text/region entries and non-silk layers are not line ink and drop."""
+    strokes = silk.footprint_silk_strokes(
+        [
+            {
+                "kind": "polyline",
+                "layer": "F.SilkS",
+                "width_mm": 0.12,
+                "points": [[0.0, 0.0], [1.0, 0.0]],
+            },
+            {
+                "kind": "polygon",
+                "layer": "F.SilkS",
+                "width_mm": 0.10,
+                "points": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+            },
+            {
+                "kind": "arc",
+                "layer": "F.SilkS",
+                "width_mm": 0.10,
+                "start": [1.0, 0.0],
+                "end": [0.0, 1.0],
+                "radius_mm": 1.0,
+                "cw": False,
+                "large_arc": False,
+            },
+            {
+                "kind": "circle",
+                "layer": "F.SilkS",
+                "width_mm": 0.10,
+                "center": [5.0, 5.0],
+                "radius_mm": 0.5,
+            },
+            {
+                "kind": "text",
+                "layer": "F.SilkS",
+                "width_mm": 0.10,
+                "anchor": [0.0, 0.0],
+                "text": "+",
+                "height_mm": 0.5,
+            },
+            {
+                "kind": "region",
+                "layer": "F.SilkS",
+                "points": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+            },
+            {
+                "kind": "polyline",
+                "layer": "F.Cu",
+                "width_mm": 0.12,
+                "points": [[0.0, 0.0], [1.0, 0.0]],
+            },
+        ]
+    )
+    kinds = [len(pts) for pts, _w in strokes]
+    assert kinds[0] == 2 and kinds[1] == 4  # line + closed polygon
+    assert 8 <= kinds[2] <= 12 and kinds[3] == 17  # ~90deg arc; circle 16+1
+    # the arc starts and ends exactly on its authored endpoints
+    arc = strokes[2][0]
+    assert arc[0] == pytest.approx((1.0, 0.0), abs=1e-9)
+    assert arc[-1] == pytest.approx((0.0, 1.0), abs=1e-9)
+    assert [w for _p, w in strokes] == [0.12, 0.10, 0.10, 0.10]
+    # the circle decodes centred on its centre
+    cx = sum(p[0] for p in strokes[3][0][:-1]) / 16
+    assert abs(cx - 5.0) < 0.02
+
+
+def test_part_outlines_draws_vendor_silk_transformed_by_pose() -> None:
+    """A footprint carrying its own silk strokes draws THOSE strokes,
+    pose-transformed — no precis ring, no Voronoi, no shrink."""
+    ir = _vendor_ir(_SQUARE_GRAPHIC, x=10.0, y=10.0, rot=90.0)
+    out = silk.part_outlines(ir, capability=None, stroke_width_mm=0.15)
+    o = out[0]
+    assert o.vendor and len(o.runs) == 1
+    xs = [p[0] for p in o.runs[0]]
+    ys = [p[1] for p in o.runs[0]]
+    # rot=90: local (-2,-1)..(2,1) maps to a 2x4 box at (10,10)
+    assert (min(xs), max(xs)) == pytest.approx((9.0, 11.0), abs=1e-6)
+    assert (min(ys), max(ys)) == pytest.approx((8.0, 12.0), abs=1e-6)
+    assert o.run_widths == (0.12,)
+
+
+def test_part_outlines_vendor_bottom_mirrors_the_stroke() -> None:
+    """A bottom-mounted part's vendor silk is mirrored like its pads."""
+    ir = _vendor_ir(_SQUARE_GRAPHIC, bottom=True)
+    out = silk.part_outlines(ir, capability=None, stroke_width_mm=0.15)
+    o = out[0]
+    assert o.vendor and o.side == "bottom"
+    ys = [p[1] for p in o.runs[0]]
+    assert (min(ys), max(ys)) == pytest.approx((9.0, 11.0), abs=1e-6)
+
+
+def test_part_outlines_keeps_the_ring_when_no_silk_graphics() -> None:
+    """A footprint with no silk graphics keeps the synthesized ring —
+    the pre-vendor-silk path, unchanged."""
+    ir = _vendor_ir(())
+    out = silk.part_outlines(ir, capability=None, stroke_width_mm=0.15)
+    assert not out[0].vendor
+    assert len(out[0].ring) >= 4
+
+
+def _vendor_line(width: float, start: tuple[float, float], end: tuple[float, float]):
+    return {
+        "kind": "polyline",
+        "layer": "F.SilkS",
+        "width_mm": width,
+        "points": [list(start), list(end)],
+    }
+
+
+@pytest.mark.parametrize(
+    "printable_tail_mm", [0.0, 0.06], ids=["all-thin", "tiny-tail"]
+)
+def test_vendor_silk_unprintable_ink_counts_against_original_length(
+    printable_tail_mm: float,
+) -> None:
+    """Caught the U2 bug: a tiny legal tail cannot turn mostly unprintable
+    artwork into 100% retained ink by dropping thin ink from the denominator."""
+    cap = capability_for("4layer")
+    floor = cap.jlc_min["silk_width_mm"]
+    assert floor is not None
+    graphics: tuple[dict[str, Any], ...] = (
+        _vendor_line(0.1016, (-2.0, 3.0), (2.0, 3.0)),
+    )
+    if printable_tail_mm:
+        graphics += (_vendor_line(floor, (0.0, 4.0), (printable_tail_mm, 4.0)),)
+    ir = _vendor_ir(graphics)
+    expected = silk.part_outlines(_vendor_ir(()), capability=cap)[0]
+
+    actual = silk.part_outlines(ir, capability=cap)[0]
+
+    assert not actual.vendor
+    assert actual.runs == expected.runs
+    assert actual.ring == expected.ring
+
+
+@pytest.mark.parametrize(
+    "width",
+    [0.15, 0.17, 0.15 - 5e-10],
+    ids=["exact-floor", "above-floor", "drc-tolerance"],
+)
+def test_vendor_silk_printable_width_is_preserved_exactly(width: float) -> None:
+    """The fab floor admits original supplier widths; it does not redraw ink."""
+    cap = capability_for("4layer")
+    assert cap.jlc_min["silk_width_mm"] == pytest.approx(0.15)
+    ir = _vendor_ir((_vendor_line(width, (-2.0, 3.0), (2.0, 3.0)),))
+
+    actual = silk.part_outlines(ir, capability=cap)[0]
+
+    assert actual.vendor
+    assert actual.run_widths == (width,)
+    assert len(actual.runs) == 1
+    assert actual.runs[0] == [(8.0, 13.0), (12.0, 13.0)]
+    result = build_silk(ir, pads=[], capability=cap)
+    assert any(c.kind == "courtyard" and c.outcome != "dropped" for c in result.census)
+    assert drc.check_silk_printability(result.census, cap) == []
+
+
+@pytest.mark.parametrize(
+    ("floor", "width", "vendor"),
+    [(0.11, 0.12, True), (0.16, 0.155, False)],
+    ids=["lower-floor-admits-thin", "higher-floor-rejects-thicker"],
+)
+def test_vendor_silk_printability_uses_declared_fabrication_floor(
+    floor: float, width: float, vendor: bool
+) -> None:
+    cap = capability_for("4layer")
+    cap = replace(cap, jlc_min={**cap.jlc_min, "silk_width_mm": floor})
+    ir = _vendor_ir((_vendor_line(width, (-2.0, 3.0), (2.0, 3.0)),))
+
+    actual = silk.part_outlines(ir, capability=cap, stroke_width_mm=0.17)[0]
+
+    assert actual.vendor is vendor
+    assert actual.runs
+    if vendor:
+        assert actual.run_widths == (width,)
+
+
+def test_vendor_silk_exactly_half_printable_keeps_only_legal_vendor_ink() -> None:
+    """Exactly half the ORIGINAL ink survives: keep vendor, discard thin ink."""
+    cap = capability_for("4layer")
+    ir = _vendor_ir(
+        (
+            _vendor_line(0.1016, (-2.0, 3.0), (2.0, 3.0)),
+            _vendor_line(0.17, (-2.0, 4.0), (2.0, 4.0)),
+        )
+    )
+
+    actual = silk.part_outlines(ir, capability=cap)[0]
+
+    assert actual.vendor
+    assert actual.run_widths == (0.17,)
+    assert len(actual.runs) == 1
+    assert actual.runs[0] == [(8.0, 14.0), (12.0, 14.0)]
+    assert sum(_length(run) for run in actual.runs) == pytest.approx(4.0)
+
+
+@pytest.mark.parametrize("cut", ["pad", "edge"])
+def test_vendor_silk_printability_and_geometric_cuts_share_original_denominator(
+    cut: str,
+) -> None:
+    """Six of ten mm are printable, then geometric clipping takes that
+    below five: neither filter may reset the submitted-ink denominator."""
+    cap = capability_for("4layer")
+    ir = _vendor_ir(
+        (
+            _vendor_line(0.1016, (-4.0, -3.0), (0.0, -3.0)),
+            _vendor_line(0.15, (-3.0, 3.0), (3.0, 3.0)),
+        )
+    )
+    board = [(0.0, 0.0), (12.0 if cut == "edge" else 30.0, 0.0)]
+    board += [(board[1][0], 30.0), (0.0, 30.0)]
+    obstacles = {
+        "top": [{"shape": "rect", "x": 10.0, "y": 13.0, "w": 1.1, "h": 1.1}]
+        if cut == "pad"
+        else [],
+        "bottom": [],
+    }
+    # A legal-only control proves this geometry keeps more than half of
+    # the legal stroke, so filtering before the denominator is insufficient.
+    legal_only = _vendor_ir((ir.inst_silk_graphics[0][1],))
+    control = silk.part_outlines(
+        legal_only, capability=cap, outline=board, obstacles_by_side=obstacles
+    )[0]
+    assert control.vendor
+    assert 3.0 < sum(_length(run) for run in control.runs) < 5.0
+
+    actual = silk.part_outlines(
+        ir, capability=cap, outline=board, obstacles_by_side=obstacles
+    )[0]
+
+    assert not actual.vendor
+    assert actual.runs
+
+
+def test_vendor_silk_legal_selected_runs_still_clip_at_pad_and_edge() -> None:
+    """Removing thin ink leaves both cuts active on selected legal artwork."""
+    cap = capability_for("4layer")
+    ir = _vendor_ir(
+        (
+            _vendor_line(0.1016, (-4.0, -3.0), (-3.0, -3.0)),
+            _vendor_line(0.17, (-4.0, 3.0), (4.0, 3.0)),
+        )
+    )
+    board = [(0.0, 0.0), (13.0, 0.0), (13.0, 30.0), (0.0, 30.0)]
+    obstacles = {
+        "top": [{"shape": "rect", "x": 10.0, "y": 13.0, "w": 1.1, "h": 1.1}],
+        "bottom": [],
+    }
+
+    actual = silk.part_outlines(
+        ir, capability=cap, outline=board, obstacles_by_side=obstacles
+    )[0]
+
+    assert actual.vendor and actual.edge_cut
+    assert actual.run_widths == (0.17, 0.17)
+    assert len(actual.runs) == 2
+    assert all(y == pytest.approx(13.0) for run in actual.runs for _x, y in run)
+    assert max(x for run in actual.runs for x, _y in run) == pytest.approx(12.315)
+    assert all(not (9.3 < x < 10.7) for run in actual.runs for x, _y in run)
+    assert sum(_length(run) for run in actual.runs) > 4.5
+
+
+@pytest.mark.parametrize("minimum", ["no-capability", "none", "missing"])
+def test_vendor_silk_without_authoritative_width_floor_keeps_thin_artwork(
+    minimum: str,
+) -> None:
+    cap = capability_for("4layer")
+    fields = dict(cap.jlc_min)
+    if minimum == "missing":
+        del fields["silk_width_mm"]
+    else:
+        fields["silk_width_mm"] = None
+    capability = None if minimum == "no-capability" else replace(cap, jlc_min=fields)
+    ir = _vendor_ir((_vendor_line(0.1016, (-2.0, 3.0), (2.0, 3.0)),))
+
+    actual = silk.part_outlines(ir, capability=capability)[0]
+
+    assert actual.vendor
+    assert actual.run_widths == (0.1016,)
+    assert actual.runs == [[(8.0, 13.0), (12.0, 13.0)]]
+
+
+def test_vendor_silk_fallback_passes_shared_printability_checker() -> None:
+    """The actual generated census exposes thin vendor ink and accepts the
+    capability-aware fallback; the checker must have a negative control."""
+    cap = capability_for("4layer")
+    ir = _vendor_ir((_vendor_line(0.1016, (-2.0, 3.0), (2.0, 3.0)),))
+    board = [(0.0, 0.0), (30.0, 0.0), (30.0, 30.0), (0.0, 30.0)]
+    unchecked = build_silk(ir, pads=[], outline=board)
+    findings = drc.check_silk_printability(unchecked.census, cap)
+    assert any(f.severity == "error" and "C1" in f.where for f in findings)
+
+    checked = build_silk(ir, pads=[], outline=board, capability=cap)
+
+    courtyard = next(c for c in checked.census if c.kind == "courtyard")
+    assert courtyard.outcome in ("placed", "relocated")
+    assert drc.check_silk_printability(checked.census, cap) == []
+    draws = [d for d in checked.draws["top"] if d["role"] == "outline"]
+    assert draws
+    assert all(d["width_mm"] == pytest.approx(0.15) for d in draws)
+
+
+def test_vendor_silk_cut_at_pad_copper_and_via_square_ends() -> None:
+    """A vendor stroke whose ink comes within 0.20mm of pad copper or a
+    via annulus is CUT there — square ends at the clearance boundary —
+    and the part keeps the untouched stretches."""
+    board = [(0.0, 0.0), (30.0, 0.0), (30.0, 30.0), (0.0, 30.0)]
+    ir = _vendor_ir(
+        (
+            {
+                "kind": "polyline",
+                "layer": "F.SilkS",
+                "width_mm": 0.10,
+                "points": [[-3.0, 0.0], [3.0, 0.0]],
+            },
+            {
+                "kind": "polyline",
+                "layer": "F.SilkS",
+                "width_mm": 0.10,
+                "points": [[-3.0, 5.0], [3.0, 5.0]],
+            },
+        )
+    )
+    # mask opening 1.1x1.1 at (10,10) (copper+0.05 expansion, already
+    # widened) straddles the y=10 stroke; a bare via annulus at (12,10).
+    obstacles = {
+        "top": [
+            {
+                "shape": "rect",
+                "x": 10.0,
+                "y": 10.0,
+                "w": 1.1,
+                "h": 1.1,
+                "refdes": "X9",
+                "pin": "1",
+            },
+            {"x": 12.0, "y": 10.0, "w": 0.45, "obstacle": "via"},
+        ],
+        "bottom": [],
+    }
+    out = silk.part_outlines(
+        ir,
+        capability=None,
+        stroke_width_mm=0.15,
+        outline=board,
+        obstacles_by_side=obstacles,
+    )
+    o = out[0]
+    # The lower stroke is cut twice: ends near (9.25,10) and resumes at
+    # (10.75,10); the via cuts it again near 11.5-12.5. The upper stroke
+    # survives whole.
+    assert o.vendor and len(o.runs) == 3
+    low = sorted(
+        (min(p[0] for p in r), max(p[0] for p in r))
+        for r in o.runs
+        if abs(r[0][1] - 10.0) < 1e-6
+    )
+    high = [r for r in o.runs if abs(r[0][1] - 15.0) < 1e-6]
+    assert len(high) == 1
+    assert low[0] == pytest.approx((7.0, 9.25), abs=0.15)
+    assert low[1] == pytest.approx((10.75, 11.5), abs=0.15)
+    assert (min(p[0] for p in high[0]), max(p[0] for p in high[0])) == pytest.approx(
+        (7.0, 13.0), abs=1e-6
+    )
+    # gap labels name the pad AND the via
+    assert any("pad X9.1" in g for g in o.via_gaps)
+    assert any("via" in g for g in o.via_gaps)
+
+
+def test_vendor_silk_cut_past_the_edge_margin() -> None:
+    """Vendor ink past the board's silk edge margin is cut too — the
+    ruling's third boundary. A stroke straddling the +x edge survives
+    only inside the margin."""
+    board = [(0.0, 0.0), (12.0, 0.0), (12.0, 20.0), (0.0, 20.0)]
+    ir = _vendor_ir(
+        (
+            {
+                "kind": "polyline",
+                "layer": "F.SilkS",
+                "width_mm": 0.10,
+                "points": [[-3.0, 0.0], [3.0, 0.0]],
+            },
+        ),
+        x=9.0,
+        y=10.0,
+    )
+    out = silk.part_outlines(ir, capability=None, stroke_width_mm=0.15, outline=board)
+    o = out[0]
+    # edge margin 0.6 + half the 0.10 stroke = keep inside x <= 11.35
+    xs = [p[0] for p in o.runs[0]]
+    assert o.edge_cut
+    assert max(xs) <= 11.36
+    assert min(xs) == pytest.approx(6.0, abs=1e-6)
+
+
+def test_vendor_silk_falls_back_to_the_ring_when_cut_below_half() -> None:
+    """Ruling (Reto 2026-11-03): a part that keeps under half its
+    submitted vendor stroke length after the 0.20mm ink-clearance cut —
+    wholly cut included — draws the minimal precis ring instead of
+    vendor silk; never both. A 0402-like footprint whose bracket silk
+    sits 0.10mm off its own pads keeps ~0% and falls back."""
+    board = [(0.0, 0.0), (30.0, 0.0), (30.0, 30.0), (0.0, 30.0)]
+    # 0402-like bracket silk: two short strokes straddling its own pads,
+    # 0.10mm ink gap — under the 0.20mm bar, so the pads' keep-out zone
+    # swallows both strokes whole.
+    ir = _vendor_ir(
+        (
+            {
+                "kind": "polyline",
+                "layer": "F.SilkS",
+                "width_mm": 0.10,
+                "points": [[-0.55, -0.3], [0.55, -0.3]],
+            },
+            {
+                "kind": "polyline",
+                "layer": "F.SilkS",
+                "width_mm": 0.10,
+                "points": [[-0.55, 0.3], [0.55, 0.3]],
+            },
+        )
+    )
+    obstacles = {
+        "top": [
+            {
+                "shape": "rect",
+                "x": 9.6,
+                "y": 10.0,
+                "w": 0.6,
+                "h": 0.5,
+                "refdes": "C1",
+                "pin": "1",
+            },
+            {
+                "shape": "rect",
+                "x": 10.4,
+                "y": 10.0,
+                "w": 0.6,
+                "h": 0.5,
+                "refdes": "C1",
+                "pin": "2",
+            },
+        ],
+        "bottom": [],
+    }
+    out = silk.part_outlines(
+        ir,
+        capability=None,
+        stroke_width_mm=0.15,
+        outline=board,
+        obstacles_by_side=obstacles,
+    )
+    o = out[0]
+    # The fallback: a normal precis ring, not vendor strokes.
+    assert not o.vendor
+    assert o.runs and len(o.runs[0]) >= 4
+
+
+def test_vendor_silk_falls_back_to_the_ring_when_wholly_edge_cut() -> None:
+    """The same fallback through the edge path: vendor ink wholly past
+    the board's silk edge margin keeps 0% and draws the ring (clipped to
+    the board, as any ring part is) — not a silent no-outline part."""
+    board = [(0.0, 0.0), (12.0, 0.0), (12.0, 20.0), (0.0, 20.0)]
+    ir = _vendor_ir(_SQUARE_GRAPHIC, x=12.0, y=10.0)
+    out = silk.part_outlines(ir, capability=None, stroke_width_mm=0.15, outline=board)
+    o = out[0]
+    assert not o.vendor
+
+
+def test_outline_offsets_drop_the_gap_strokes_breathing_room() -> None:
+    """Ruling 3: the ring target is JLC-min legal clearance + half
+    stroke (0.20 + 0.075 = 0.275mm), floor == target — the two-stroke
+    breathing room moved to placement."""
+    floor, target = silk.outline_offsets_mm(None, stroke_width_mm=0.15)
+    assert (floor, target) == pytest.approx((0.275, 0.275), abs=1e-9)
+    assert silk.outline_pair_separation_mm(None) == pytest.approx(1.0, abs=1e-9)
+
+
+def test_build_silk_emits_vendor_outline_at_its_own_width() -> None:
+    """End to end: the courtyard census notes the footprint's own silk
+    and the draw carries the vendor stroke's own width."""
+    board = [(0.0, 0.0), (30.0, 0.0), (30.0, 30.0), (0.0, 30.0)]
+    ir = _vendor_ir(_SQUARE_GRAPHIC)
+    result = build_silk(ir, pads=[], outline=board)
+    c = next(c for c in result.census if c.refdes == "C1" and c.kind == "courtyard")
+    assert c.outcome in ("placed", "relocated")
+    assert "footprint's own silk" in (c.reason or "")
+    outline_draws = [
+        d for d in result.draws["top"] if d["role"] == "outline" and d["refdes"] == "C1"
+    ]
+    assert len(outline_draws) == 1
+    assert outline_draws[0]["width_mm"] == pytest.approx(0.12)

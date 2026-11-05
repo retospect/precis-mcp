@@ -560,7 +560,7 @@ def test_net_islands_reads_a_genuinely_touching_diagonal_escape_as_connected():
     escape's genuinely-touching neck (proved by the sibling test above) read
     as a SECOND, disconnected piece while every cardinal one never did —
     gr449483's measured split. ``_pad_primitives`` now reads the real ring
-    via ``_pad_poly``/``_touch_gap``, like its siblings
+    via ``body_of``/``_touch_gap``, like its siblings
     ``connected_pin_pairs``/``fixed_copper_pin_terminals`` in the SAME
     module, so NEITHER kind is flagged. A failure here means that pad model
     has regressed to the inscribed disk."""

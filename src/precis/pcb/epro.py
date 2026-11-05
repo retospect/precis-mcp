@@ -1601,6 +1601,12 @@ def _pad_to_precis(
             ]
         pad["shape"] = "polygon"
         pad["poly"] = [[Frame.length(px), -Frame.length(py) or 0.0] for px, py in pts]
+        xs, ys = [p[0] for p in pad["poly"]], [p[1] for p in pad["poly"]]
+        # Direct/offline import consumes these pads before authoring's
+        # normalize_pad seam. Supply size metadata here too, without
+        # moving the explicit origin (which also anchors the hole).
+        pad["w"] = round(max(xs) - min(xs), 4)
+        pad["h"] = round(max(ys) - min(ys), 4)
     elif ea_shape in _PAD_SHAPES:
         shape = _PAD_SHAPES[ea_shape]
         if w_mil is None:
@@ -1645,6 +1651,12 @@ def _pad_to_precis(
                 f"({hw}x{hh} mil); imported by its hole extents"
             )
         pad["drill"] = Frame.length(min(hw, hh))
+        ox = Frame.length(float(b.get("padOffsetX") or 0.0))
+        oy = -Frame.length(float(b.get("padOffsetY") or 0.0)) or 0.0
+        if ox or oy:
+            # Pro offsets the HOLE from the pad origin, in pad axes;
+            # x/y and polygon vertices continue to describe the copper.
+            pad["drill_offset"] = {"x": ox, "y": oy}
         if hw != hh:
             pad["slot"] = {"w": Frame.length(hw), "h": Frame.length(hh)}
     return pad, warnings

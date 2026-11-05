@@ -98,6 +98,7 @@ C4U7 = "C19666"  # 4.7uF 16V X5R 0603
 C10N = "C15195"  # 10nF 50V X7R 0402
 C12P = "C1547"  # 12pF C0G 0402
 C100P = "C1546"  # 100pF C0G 0402
+C1P0 = "C1550"  # 1.0pF C0G 0402 (Basic)
 
 # Hand placement, leaf frame (x, y, rot). Pin sides of U1 at rot 0 (catalog
 # footprint C2895249): left 1-10 (DEC1, XL1, XL2, AIN2, AIN3, P1.09, P0.11,
@@ -399,27 +400,32 @@ def build() -> pcb.Board:
             b.near(c["1"], near, within, hard=True)
         return c
 
-    def two_pin(ref, value, label, a, k, note=None, fmax=0.0):
-        p = b.part(ref, value=value, label=label, note=note)
-        p.declare("1", "2")
+    def two_pin(ref, value, label, a, k, note=None, fmax=0.0, lcsc=None):
+        p = b.part(ref, lcsc=lcsc, value=value, label=label, note=note)
+        if lcsc is None:
+            p.declare("1", "2")
         for num in ("1", "2"):
             p.pin(num, etype="passive", fmax_hz=fmax, assume="two-pin terminal")
         a.tie(p["1"])
         k.tie(p["2"])
         return p
 
-    def res(ref, value, a, k, note=None, fmax=0.0):
-        return two_pin(ref, value, f"R {value} 0402 1%", a, k, note=note, fmax=fmax)
+    def res(ref, value, lcsc, a, k, note=None, fmax=0.0):
+        # every R is UNI-ROYAL 0402WGF 1% (one family; Reto 2026-11-02:
+        # real JLCPCB part + its footprint, coarsest workable E-series)
+        return two_pin(ref, value, f"R {value} 0402 1%", a, k, note=note, fmax=fmax, lcsc=lcsc)
 
     # RF: Nordic match (L1, C3, L3, C4; topology inferred, VERIFY vs Fig 211)
-    # then a pi pad for the chip antenna (R14 0R + C14/C15 DNP).
-    two_pin("L1", "4.7nH", "L 4.7nH 0402 HF", ant, rf1, fmax=2.4e9)
-    cap("C3", None, "1.0pF", rf1, fmax=2.4e9)
-    two_pin("L3", "2.2nH", "L 2.2nH 0402 HF", rf1, rf2, fmax=2.4e9)
-    cap("C4", None, "1.2pF", rf2, fmax=2.4e9)
-    cap("C14", None, "DNP", rf2, note="antenna pi match, not fitted", fmax=2.4e9)
-    res("R14", "0R", rf2, rf3, note="antenna match series element", fmax=2.4e9)
-    cap("C15", None, "DNP", rf3, note="antenna pi match, not fitted", fmax=2.4e9)
+    # then a pi pad for the chip antenna (R14 0R + C14/C15 DNP). Exact
+    # values (a match network), Sunlord SDCL1005 inductors, C0G caps.
+    two_pin("L1", "4.7nH", "L 4.7nH 0402 HF", ant, rf1, fmax=2.4e9, lcsc="C13595")
+    cap("C3", C1P0, "1.0pF", rf1, fmax=2.4e9)
+    two_pin("L3", "2.2nH", "L 2.2nH 0402 HF", rf1, rf2, fmax=2.4e9, lcsc="C27122")
+    cap("C4", "C1551", "1.2pF", rf2, fmax=2.4e9)
+    # DNP sites bound to a real 1pF C0G so their pads are the real land
+    cap("C14", C1P0, "DNP", rf2, note="antenna pi match, not fitted", fmax=2.4e9)
+    res("R14", "0R", "C17168", rf2, rf3, note="antenna match series element", fmax=2.4e9)
+    cap("C15", C1P0, "DNP", rf3, note="antenna pi match, not fitted", fmax=2.4e9)
 
     ae1 = b.part("AE1", lcsc="C49330090", label="BW2.4MNX3216 chip antenna")
     # the feed point radiates and receives — <> on the schematic
@@ -445,7 +451,7 @@ def build() -> pcb.Board:
     cap("C11", C100N, "100nF", dec1, near=u1["DEC1"], note="DEC1")
     cap("C6", C4U7, "4.7uF", vstor, near=u1[40], within=4.0, note="VDD bulk, pin 40")
     cap("C13", C1U, "1uF", vstor, near=u1[18], note="VDD pin 18")
-    cap("C8", None, "820pF", dec5, near=u1["DEC5"], note="DEC5")
+    cap("C8", "C1543", "820pF", dec5, near=u1["DEC5"], note="DEC5")
     cap("C10", C100P, "100pF", dec3, near=u1["DEC3"], note="DEC3")
     cap("C12", C1U, "1uF", dec4, near=u1["DEC4"], note="DEC4/DEC6")
     x1 = b.part("X1", lcsc="C18213028", label="32MHz 1612 8pF")
@@ -541,19 +547,21 @@ def build() -> pcb.Board:
     cap("C21", C4U7, "4.7uF", vstor, note="CSTOR, close to pins 15/13")
     cap("C22", C10N, "10nF", vstor, note="CBYP")
     cap("C23", C10N, "10nF", vref, note="CREF, low leakage")
-    # MPPT 78 % of Voc: ROC1 (bottom) 15.8M, ROC2 (top) 4.42M, sum 20.2M
-    res("R20", "4.42M", vin, voc, note="ROC2")
-    res("R21", "15.8M", voc, gnd, note="ROC1")
-    # VBAT_OV = 1.5*1.25*(1+ROV2/ROV1) = 3.32 V (nRF VDD max 3.6 V)
-    res("R22", "4.32M", vrdiv, ov, note="ROV2")
-    res("R23", "5.62M", ov, gnd, note="ROV1")
-    # VBAT_UV = 1.25*(1+RUV2/RUV1) = 2.24 V
-    res("R24", "4.42M", vrdiv, uv, note="RUV2")
-    res("R25", "5.6M", uv, gnd, note="RUV1")
-    # VBAT_OK 2.44 V rising-hysteresis 2.85 V (datasheet example values)
-    res("R26", "1.43M", vrdiv, okh, note="ROK3")
-    res("R27", "4.22M", okh, okp, note="ROK2")
-    res("R28", "4.42M", okp, gnd, note="ROK1")
+    # Divider values: coarsest E-series in stock (2026-11-02; E96 originals
+    # in brackets). Every threshold within 2 % of the E96 design.
+    # MPPT 78.7 % of Voc [78.1 %]: ROC1 10M, ROC2 2.7M, sum 12.7M
+    res("R20", "2.7M", "C270621", vin, voc, note="ROC2 [4.42M]")
+    res("R21", "10M", "C26082", voc, gnd, note="ROC1 [15.8M]")
+    # VBAT_OV = 1.5*1.25*(1+ROV2/ROV1) = 3.31 V [3.32] (nRF VDD max 3.6 V)
+    res("R22", "3.9M", "C30329", vrdiv, ov, note="ROV2 [4.32M]")
+    res("R23", "5.1M", "C270595", ov, gnd, note="ROV1 [5.62M]")
+    # VBAT_UV = 1.25*(1+RUV2/RUV1) = 2.21 V [2.24]
+    res("R24", "3.9M", "C30329", vrdiv, uv, note="RUV2 [4.42M]")
+    res("R25", "5.1M", "C270595", uv, gnd, note="RUV1 [5.6M]")
+    # VBAT_OK 2.40 V [2.44] rising-hysteresis 2.84 V [2.85]
+    res("R26", "1.8M", "C38587", vrdiv, okh, note="ROK3 [1.43M]")
+    res("R27", "4.7M", "C474132", okh, okp, note="ROK2 [4.22M]")
+    res("R28", "5.1M", "C270595", okp, gnd, note="ROK1 [4.42M]")
 
     pv1 = b.part("PV1", lcsc="C5358484", label="KXOB25-05X3F solar (consign)")
     pv1.pin(
@@ -602,8 +610,8 @@ def build() -> pcb.Board:
     vstor.tie(u3["VDD"])
     gnd.tie(u3["VSS"], u3["EP"])
     cap("C30", C100N, "100nF", vstor, near=u3["VDD"])
-    res("R30", "10k", sda, vstor, note="I2C pull-up")
-    res("R31", "10k", scl, vstor, note="I2C pull-up")
+    res("R30", "10k", "C25744", sda, vstor, note="I2C pull-up")
+    res("R31", "10k", "C25744", scl, vstor, note="I2C pull-up")
 
     # -- wetness combs: one geometry, two finishes, next to the hanger ----
     spec = CombSpec()
@@ -650,13 +658,13 @@ def build() -> pcb.Board:
     )
 
     # S1: EXA_LO -R10 100k- M, EXA_HI -R11 10M- M; M -C40 1uF- S1_A; S1_B = EXB
-    res("R10", "100k", exa_lo, s1m, note="S1 low-range reference")
-    res("R11", "10M", exa_hi, s1m, note="S1 high-range reference")
+    res("R10", "100k", "C25741", exa_lo, s1m, note="S1 low-range reference")
+    res("R11", "10M", "C26082", exa_hi, s1m, note="S1 high-range reference")
     cap("C40", C1U, "1uF", s1m, k=s1a, note="DC block: no net DC through the comb")
     # S2: DRV -R12 1M- S2_A (comb), DRV -R13 1M- S2_REF -C41 47pF C0G- GND
-    res("R12", "1M", cdrv, s2a, note="S2 charge resistor")
-    res("R13", "1M", cdrv, s2ref, note="reference charge resistor, match R12")
-    cap("C41", None, "47pF C0G", s2ref, note="S2 reference, C0G 1%")
+    res("R12", "1M", "C26083", cdrv, s2a, note="S2 charge resistor")
+    res("R13", "1M", "C26083", cdrv, s2ref, note="reference charge resistor, match R12")
+    cap("C41", "C1567", "47pF C0G", s2ref, note="S2 reference, C0G 1%")
 
     # -- programming pads (program before coating; Reto 2026-10-26) -------
     nets = {"VSTOR": vstor, "GND": gnd, "SWDIO": swdio, "SWDCLK": swdclk, "NRESET": nreset}

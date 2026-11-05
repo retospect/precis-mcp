@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 from shapely.geometry import Polygon
 
+from precis.pcb.clearance import FAB_QUANTUM_MM
 from precis.pcb.topoplace import placer
 from precis.pcb.topoplace.contain import (
     board_polygon,
@@ -260,10 +261,8 @@ def test_keeps_on_board_gate_is_the_shared_rule() -> None:
 
 
 def test_contain_predicate_matches_legalize_report() -> None:
-    """One notion everywhere: on-board is the courtyard covered by the
-    outline polygon (boundary contact allowed), graded as the area off
-    it — the same number legalize reports as an ``(i, -1, area)``
-    residual for a part it cannot bring back."""
+    """Containment measures area outside the supplied outline; legalize's
+    outline also holds the fabrication reserve against export rounding."""
     board = Polygon(_U)
     touching = Polygon(_sq(0.4)[:-1] + (5.6, 12.0))
     poking = Polygon(_sq(0.4)[:-1] + (5.8, 12.0))
@@ -277,6 +276,8 @@ def test_contain_predicate_matches_legalize_report() -> None:
     d = _board([_sq(0.4)], [[5.8, 12, 0, 0]], [True])
     res = legalize_pose(d, d.pose0.copy())
     off = [area for a, b, area in res.remaining if (a, b) == (0, -1)]
-    assert off and off[0] == pytest.approx(0.16, abs=1e-9)
+    assert off and off[0] == pytest.approx((0.2 + FAB_QUANTUM_MM) * 0.8, abs=1e-9)
     ring = _ring_geom(d, d.pose0[0], 0)
-    assert off[0] == outside_mm2(board_polygon(d), ring)
+    outline = board_polygon(d)
+    assert outline is not None
+    assert off[0] == outside_mm2(outline.buffer(-FAB_QUANTUM_MM), ring)

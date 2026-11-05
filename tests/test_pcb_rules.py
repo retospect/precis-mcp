@@ -22,6 +22,7 @@ from precis.pcb.rules import (
     LayerTiers,
     NetRules,
     Owner,
+    RouteVia,
     RuleContext,
     clearance_rule_problems,
     ipc2221_capacity_a,
@@ -29,6 +30,7 @@ from precis.pcb.rules import (
     net_current_a_or_none,
     required,
     resolve_net_rules,
+    route_via,
     via_capacity_a,
     via_count_for_current,
 )
@@ -272,6 +274,130 @@ def test_via_count_for_current_scales_up_for_a_real_power_rail():
 def test_via_count_for_current_never_below_one():
     for current in (0.001, 0.1, 1.0, 100.0):
         assert via_count_for_current(current, 0.4) >= 1
+
+
+# ── route-stage via choice: route_via ────────────────────────────────────
+#
+# The ladder the rule ranks (4layer, derived): the fab floor 0.45/0.15
+# (1.5 A conservative capacity) and the house via 0.75/0.25 (2.5 A). An
+# n-barrel row packs at same-net pitch dia + 0.2 (the fab's hole-to-hole
+# spacing) behind one clearance ring c:
+#   footprint(d, n) = ((n - 1)(d + 0.2) + d + 2c)(d + 2c).
+
+_FAB_VIA = (
+    float(_CAP4.jlc_min["via_diameter_mm"] or 0.0),  # 0.45
+    float(_CAP4.jlc_min["drill_mm"] or 0.0),  # 0.15
+)
+_HOUSE = NetRules(
+    track_width_mm=0.15,
+    clearance_mm=0.15,
+    via_dia_mm=_CAP4.house_default["via_diameter_mm"],  # 0.75
+    via_drill_mm=_CAP4.house_default["drill_mm"],  # 0.25
+)
+
+
+def test_route_via_no_current_takes_one_fab_minimum_via() -> None:
+    """A signal via carries no current: the smallest legal barrel takes
+    the least room — via room is the router's dominant failure."""
+    for cur in (None, math.nan, 0.0):
+        v = route_via(cur, _FAB_VIA, _HOUSE)
+        assert v is not None and v.count == 1
+        assert v.dia_mm == pytest.approx(0.45)
+        assert v.drill_mm == pytest.approx(0.15)
+
+
+def test_route_via_at_fab_capacity_is_still_one_fab_via() -> None:
+    v = route_via(via_capacity_a(_FAB_VIA[0]), _FAB_VIA, _HOUSE)
+    assert v is not None and v.count == 1 and v.dia_mm == pytest.approx(0.45)
+
+
+def test_route_via_three_amps_is_an_array_of_small_vias() -> None:
+    """The footprint formula's worked example: 3 A needs two barrels at
+    either rung (fab 1.5 A, house 2.5 A per via), and the 0.45 pair's
+    keep-out (1.1 + 2c)(0.45 + 2c) = 1.26 mm^2 undercuts the 0.75
+    pair's (1.7 + 2c)(0.75 + 2c) = 2.16 mm^2 at c = 0.15 — the rail is
+    carried by an array of small vias, not one large."""
+    v = route_via(3.0, _FAB_VIA, _HOUSE)
+    assert v is not None
+    assert v.dia_mm == pytest.approx(0.45)
+    assert v.drill_mm == pytest.approx(0.15)
+    assert v.count == 2
+
+
+def test_route_via_one_big_via_wins_when_the_ring_dominates() -> None:
+    """The other end of the tradeoff: on a net whose clearance is the
+    room (an HV 1.0 mm ring), a 2 A draw's two fab vias footprint
+    (1.1 + 2)(0.45 + 2) = 7.595 mm^2 against one house barrel's
+    (0.75 + 2)^2 = 7.5625 mm^2 — one big via."""
+    hv = NetRules(
+        track_width_mm=0.15,
+        clearance_mm=1.0,
+        via_dia_mm=0.75,
+        via_drill_mm=0.25,
+    )
+    v = route_via(2.0, _FAB_VIA, hv)
+    assert v == RouteVia(0.75, 0.25, 1)
+
+
+def test_route_via_equal_footprints_go_to_fewer_vias() -> None:
+    """The tie rule: at c = 0.2 a fab 0.2 needing 3 and a house 0.3
+    needing 2 both footprint 0.84 mm^2 (1.4 x 0.6 against 1.2 x 0.7);
+    fewer vias wins."""
+    house = NetRules(
+        track_width_mm=0.15,
+        clearance_mm=0.2,
+        via_dia_mm=0.3,
+        via_drill_mm=0.2,
+    )
+    assert route_via(1.5, (0.2, 0.15), house) == RouteVia(0.3, 0.2, 2)
+
+
+def test_route_via_never_below_the_fab_floor() -> None:
+    """A house via under the fab floor is not a rung — the floor is,
+    however small the net rule asks."""
+    under = NetRules(
+        track_width_mm=0.15,
+        clearance_mm=0.15,
+        via_dia_mm=0.3,
+        via_drill_mm=0.15,
+    )
+    v0 = route_via(None, _FAB_VIA, under)
+    assert v0 is not None and v0.dia_mm == pytest.approx(0.45)
+    v = route_via(3.0, _FAB_VIA, under)
+    assert v is not None and v.dia_mm == pytest.approx(0.45) and v.count == 2
+
+
+def test_route_via_no_fab_floor_uses_the_house_via() -> None:
+    assert route_via(None, (None, None), _HOUSE) == RouteVia(0.75, 0.25, 1)
+    v = route_via(5.0, (None, None), _HOUSE)
+    assert v is not None and v.dia_mm == pytest.approx(0.75) and v.count == 2
+
+
+def test_route_via_inherited_floor_drill_keeps_the_annular_ring() -> None:
+    """A house via under the fab floor collapses into the floor rung;
+    when the fab carries no drill figure the rung inherits the house
+    drill — clamped to ``floor_dia - 2 x ring_min`` (the same coupling
+    resolve_net_rules holds) so the emitted barrel's annular ring never
+    sits under the fab floor."""
+    under = NetRules(
+        track_width_mm=0.15,
+        clearance_mm=0.15,
+        via_dia_mm=0.4,
+        via_drill_mm=0.3,
+    )
+    v = route_via(None, (0.45, None), under, ring_min_mm=0.13)
+    assert v is not None
+    assert v.dia_mm == pytest.approx(0.45)
+    assert v.drill_mm == pytest.approx(0.45 - 2 * 0.13)
+    # no ring figure passed: the rung inherits the house drill as-is
+    v = route_via(None, (0.45, None), under)
+    assert v is not None and v.drill_mm == pytest.approx(0.3)
+
+
+def test_route_via_no_via_figures_at_all_returns_none() -> None:
+    bare = NetRules(track_width_mm=0.15, clearance_mm=0.15)
+    assert route_via(None, (None, None), bare) is None
+    assert route_via(9.0, (None, None), bare) is None
 
 
 # ── net_current_a_or_none ────────────────────────────────────────────────

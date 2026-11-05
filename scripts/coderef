@@ -56,6 +56,19 @@ call the session MCP, so the nudge shells out here and appends the top hits.
 Scoring mirrors the python kind's lexical needle paths (exact-name > qualname
 > signature/docstring) with the same test-path demotion.
 
+Local source navigation needs no served index or import graph:
+
+    coderef outline file.py                  # module imports + definition tree
+    coderef outline file.py --symbol Qual    # exact decorated class/function source
+
+`outline` reads one file in this checkout without importing or executing it.
+File mode lists module-scope import statements (including conditional imports,
+excluding class/function locals), signatures, decorated line spans and durable
+anchors. Symbol mode uses the same exact/unique-suffix lookup as `resolve` and
+prints only the original selected source, including its local imports. This is
+the fallback when the Python kind serves a different checkout; `imports` remains
+the module dependency graph rather than a source reader.
+
 Python-only (the repo is ~all Python); stdlib ``ast``, no deps, no running index —
 deterministic, exact, fast. The precis python kind (``search(kind='python',
 mode='pattern', ...)``, ``get(kind='python', id='main::<qualname>')``) is for
@@ -202,7 +215,7 @@ def anchor_for(root: Path, relpath: str, line: int) -> tuple[str | None, str]:
 # does it touch and who touches it.
 
 
-def _symbol_nodes(src: str) -> dict[str, ast.AST]:
+def _symbol_nodes(src: str, *, tree: ast.Module | None = None) -> dict[str, ast.AST]:
     """qualname -> ast node, mirroring ``symbol_index``'s walk (same qualname
     convention) but keeping the node itself — what ``deps`` needs to inspect a
     symbol's body rather than just its line range."""
@@ -222,7 +235,7 @@ def _symbol_nodes(src: str) -> dict[str, ast.AST]:
             else:
                 walk(child, prefix)
 
-    walk(ast.parse(src), "")
+    walk(tree if tree is not None else ast.parse(src), "")
     return out
 
 
@@ -244,6 +257,95 @@ def _dep_node(
     if matched is None:
         return None, None, note
     return idx[matched], matched, note
+
+
+def _outline_signature(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+) -> str:
+    params = getattr(node, "type_params", [])
+    name = node.name
+    if params:
+        name += "[" + ", ".join(ast.unparse(p) for p in params) + "]"
+    if isinstance(node, ast.ClassDef):
+        bases = [ast.unparse(base) for base in node.bases]
+        bases.extend(ast.unparse(keyword) for keyword in node.keywords)
+        return f"class {name}" + (f"({', '.join(bases)})" if bases else "") + ":"
+    prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
+    returns = f" -> {ast.unparse(node.returns)}" if node.returns else ""
+    return f"{prefix} {name}({ast.unparse(node.args)}){returns}:"
+
+
+def cmd_outline(root: Path, tokens: list[str]) -> int:
+    if (
+        len(tokens) not in (1, 3)
+        or tokens[0].startswith("-")
+        or (len(tokens) == 3 and tokens[1] != "--symbol")
+    ):
+        print("usage: coderef outline <file.py> [--symbol Qual]")
+        return 2
+    path = (root / tokens[0]).resolve()
+    try:
+        relpath = path.relative_to(root.resolve()).as_posix()
+    except ValueError:
+        print("outline: file must be inside this checkout; use a repo-relative path")
+        return 1
+    try:
+        src = path.read_text(encoding="utf-8")
+        tree = ast.parse(src, filename=relpath)
+    except SyntaxError as exc:
+        print(f"{relpath}:{exc.lineno}: {exc.msg}; fix the syntax, then retry outline")
+        return 1
+    except (OSError, UnicodeError, ValueError) as exc:
+        print(
+            f"{relpath}: cannot read Python source: {exc}; check the file path/encoding"
+        )
+        return 1
+    nodes = {
+        qual: node
+        for qual, node in _symbol_nodes(src, tree=tree).items()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    lines = src.splitlines(keepends=True)
+    if len(tokens) == 3:
+        matched, note = _lookup_qual(nodes, _norm_qual(tokens[2]))
+        if matched is None:
+            print(f"{relpath}: {note}; next: scripts/coderef outline {relpath}")
+            return 1
+        node = nodes[matched]
+        start = min([node.lineno, *[d.lineno for d in node.decorator_list]])
+        sys.stdout.write("".join(lines[start - 1 : node.end_lineno]))
+        return 0
+
+    imports: list[ast.Import | ast.ImportFrom] = []
+
+    def module_imports(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.Import, ast.ImportFrom)):
+                imports.append(child)
+            elif not isinstance(
+                child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                module_imports(child)
+
+    module_imports(tree)
+    print(f"{relpath}\nModule imports:")
+    for imp in sorted(imports, key=lambda n: (n.lineno, n.col_offset)):
+        print(f"  L{imp.lineno}-L{imp.end_lineno}:")
+        for line in (ast.get_source_segment(src, imp) or "").splitlines():
+            print(f"    {line}")
+    if not imports:
+        print("  (none)")
+    print("Definitions:")
+    for qual, node in sorted(nodes.items(), key=lambda item: item[1].lineno):
+        start = min([node.lineno, *[d.lineno for d in node.decorator_list]])
+        indent = "  " * (qual.count(".") + 1)
+        print(
+            f"{indent}{relpath}::{qual}  L{start}-L{node.end_lineno}  "
+            f"{_outline_signature(node)}"
+        )
+    if not nodes:
+        print("  (none)")
+    return 0
 
 
 def _bound_names(node: ast.AST) -> set[str]:
@@ -943,9 +1045,11 @@ def main(argv: list[str]) -> int:
         return cmd_importers(root, rest)
     if cmd == "find":
         return cmd_find(root, rest)
+    if cmd == "outline":
+        return cmd_outline(root, rest)
     print(
         f"unknown command: {cmd} "
-        "(resolve | anchor | check | deps | callers | refs | imports | importers | find)"
+        "(resolve | anchor | check | deps | callers | refs | imports | importers | find | outline)"
     )
     return 2
 

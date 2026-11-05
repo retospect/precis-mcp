@@ -509,6 +509,98 @@ JLC_VIA_HOLE_TO_HOLE_MM = 0.2
 
 
 @dataclass(frozen=True, slots=True)
+class RouteVia:
+    """The route stage's via choice for one net (:func:`route_via`) —
+    the barrel to site (``dia_mm``/``drill_mm``) and ``count``, the
+    number of those barrels the net's current needs PER LAYER HOP.
+    ``count > 1`` names a stitched group the router does not plant yet:
+    the caller still sites one barrel at ``dia_mm`` and reports the
+    shortfall — never a silent single via."""
+
+    dia_mm: float
+    drill_mm: float | None
+    count: int = 1
+
+
+def route_via(
+    current_a: float | None,
+    fab_via: tuple[float | None, float | None],
+    house: NetRules,
+    *,
+    ring_min_mm: float | None = None,
+) -> RouteVia | None:
+    """The via the route stage sites for one net, from the net's expected
+    current (Reto 2026-11-02: "determine vias based on expected current;
+    the tradeoff for high current is multiple small or one big via").
+
+    ``fab_via`` is the capability floor pair — ``(capability.jlc_min
+    ["via_diameter_mm"], capability.jlc_min["drill_mm"])``, the smallest
+    legal barrel on the process. ``house`` is the net's resolved rules
+    (:func:`resolve_net_rules`), whose ``via_dia_mm``/``via_drill_mm`` is
+    the comfortable house via. ``ring_min_mm`` is the fab's annular-ring
+    minimum (``capability.jlc_min["annular_ring_mm"]``): when the floor
+    rung inherits the house drill (the fab drill is ``None``), it is
+    clamped to ``floor_dia - 2 x ring_min`` — the same coupling
+    :func:`resolve_net_rules` holds, so the emitted barrel's ring never
+    sits under the fab floor. The candidate ladder is those two rungs,
+    ascending; nothing below the fab floor is ever a rung, so a house via
+    at or under the floor collapses into it. ``None`` return = no via
+    figure anywhere (the caller keeps its own default).
+
+    - ``current_a`` absent/non-positive, or at or under one fab-floor
+      barrel's capacity (:func:`via_capacity_a`): ONE fab-floor via. A
+      signal via carries no current to speak of and the smallest legal
+      barrel takes the least room — via room is the router's dominant
+      failure.
+    - Higher current: each rung ``d`` sites ``n_d =
+      via_count_for_current(I, d)`` barrels in a row at SAME-NET pitch
+      ``p = d + JLC_VIA_HOLE_TO_HOLE_MM`` (same-net barrels need no
+      copper clearance between them — the fab's drill-wall spacing is
+      the only gap; the hole-to-hole figure is applied to the PAD
+      diameter ``d``, not the smaller drill — conservative), and the
+      group carries one foreign-clearance ring ``c`` (the net's own
+      clearance) around its hull::
+
+          footprint(d, n) = ((n - 1) * p + d + 2c) * (d + 2c)   [mm^2]
+
+      — the row's keep-out bounding box. The smallest footprint wins; a
+      tie goes to fewer vias.
+    """
+    cur = net_current_a_or_none(current_a)
+    rungs: list[tuple[float, float | None]] = []
+    fd, fdr = fab_via
+    if fd is not None:
+        rungs.append((float(fd), None if fdr is None else float(fdr)))
+    if house.via_dia_mm is not None:
+        hdr = house.via_drill_mm
+        pair = (float(house.via_dia_mm), None if hdr is None else float(hdr))
+        if rungs and pair[0] <= rungs[0][0]:
+            drill = rungs[0][1] if rungs[0][1] is not None else pair[1]
+            if drill is not None and ring_min_mm is not None:
+                # the drill the rung inherits is the HOUSE via's — legal
+                # under the house diameter, it can still leave the floor
+                # barrel a sub-minimum annular ring.
+                cap = rungs[0][0] - 2.0 * float(ring_min_mm)
+                drill = None if cap <= 0.0 else min(drill, cap)
+            rungs[0] = (rungs[0][0], drill)
+        else:
+            rungs.append(pair)
+    if not rungs:
+        return None
+    if cur is None or cur <= via_capacity_a(rungs[0][0]):
+        return RouteVia(rungs[0][0], rungs[0][1], 1)
+    c = float(house.clearance_mm)
+
+    def _footprint(dia: float, n: int) -> float:
+        hull = (n - 1) * (dia + JLC_VIA_HOLE_TO_HOLE_MM) + dia
+        return (hull + 2.0 * c) * (dia + 2.0 * c)
+
+    options = [(via_count_for_current(cur, d), d, dr) for d, dr in rungs]
+    n, dia, dr = min(options, key=lambda t: (_footprint(t[1], t[0]), t[0]))
+    return RouteVia(dia, dr, n)
+
+
+@dataclass(frozen=True, slots=True)
 class Requirement:
     """What one pair of objects owes each other on one layer:
     ``error_mm`` the hard floor, ``warn_mm`` the preferred tier (``None``
@@ -901,6 +993,7 @@ __all__ = [
     "Owner",
     "PairRule",
     "Requirement",
+    "RouteVia",
     "RuleContext",
     "clearance_rule_problems",
     "implied_via_count",
@@ -911,6 +1004,7 @@ __all__ = [
     "pin_current_a_or_none",
     "required",
     "resolve_net_rules",
+    "route_via",
     "seg_current_a_or_none",
     "via_capacity_a",
     "via_count_for_current",

@@ -154,10 +154,6 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "resolver never registers and precis_diag's registry dispatch "
         "never calls it"
     ),
-    "src/precis/pcb/clearance.py::outward_circle": (
-        "pcb-vector-router slice 2: the circumscribed polygon for consumers "
-        "that only take polygons; its first caller is slice 5's CDT input"
-    ),
     "src/precis/pcb/jlc_api.py::reset_live_cache": (
         "own docstring: 'Clear the live-lookup negative cache (tests; an "
         "operator retry)' -- same ops-tool shape as _http.reset_circuit"
@@ -252,11 +248,6 @@ _KNOWN_UNWIRED: dict[str, str] = {
     # production caller was the vector router / pcb_route job. Kept for the
     # topological realiser (docs/backlog/pcb-topo-place.md slice 5) — each
     # entry names what consumes it again; delete any the realiser skips.
-    "src/precis/pcb/connectivity.py::connected_pin_pairs": (
-        "stored-copper connectivity reader; its only consumer was the "
-        "deleted routed-copper DRC path (session.stored_copper_drc_findings) "
-        "— the topo realiser's copper DRC is the intended consumer"
-    ),
     "src/precis/pcb/geom.py::fillet_polyline": (
         "track-arc filleting; its only caller (_track_from_run) went with "
         "the deleted router — kept with the sagitta cross-check pair in "
@@ -383,11 +374,11 @@ _KNOWN_UNWIRED: dict[str, str] = {
     # ---- class methods/properties (widened 2026-08-29) --------------
     # ---- capabilities.FIELDS entries (widened 2026-08-29) -------------
     "src/precis/pcb/capabilities.py::FIELDS.soldermask_dam_mm": (
-        "real defect flagged by this widened gate 2026-08-29 (module "
-        "docstring item (3)): declared in the schema and given a "
-        "house_default rule (this module's own docstring), but no DRC/"
-        "cost/export consumer reads it anywhere -- not fixed here, "
-        "reported to the caller as a real gap"
+        "consumed since 2026-11-03 by capabilities.via_mask_web_mm and "
+        "drc.check_via_mask_web (the via-to-pad soldermask web, Reto's "
+        "no-tenting ruling) — still listed because this gate's literal "
+        "scan excludes capabilities.py itself, which is where the single "
+        "accessor lives"
     ),
     # ---- PcbIR fields: L2 explicit-embedding tier ----------------------
     # set_rotation/rotation_darts/rotation_index are the L2 tier
@@ -542,6 +533,13 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "instance_courtyard_polygon, which this cross-module scan "
         "correctly doesn't count -- DRC, silk and the placer reach it "
         "through that function"
+    ),
+    "src/precis/pcb/ir.py::PcbIR.inst_body_bbox": (
+        "wired both ways, invisibly to this scan: session.py hydrates it "
+        "from the footprint rows' courtyard bboxes (7da7c7a66); the "
+        "readers are ir.py's own instance_courtyard_polygons and "
+        "bodied_refdes, which DRC courtyard_overlap and the placer reach "
+        "-- same shape as PcbIR.pin_poly above"
     ),
     # ---- class methods/properties: legitimately unwired ------------------
     "src/precis/pcb/datasheet_facts.py::PinFact.missing": (

@@ -114,12 +114,7 @@
     if (window.PrecisViewport && window.PrecisViewport.overHud(els)) return null;
     for (const n of els) {
       if (!n || !n.dataset) continue;
-      const layer = n.closest && n.closest('.layer');
-      if (layer && layer.classList.contains('off')) continue;
-      const key = n.dataset.pcbLayer;
-      if (key && doc.getElementById(`layer-${key}`)?.classList.contains('off')) continue;
-      if (window.PrecisViewport &&
-          !window.PrecisViewport.hasVisibleLayer(doc, n.dataset.pcbLayers)) continue;
+      if (!window.PcbFacts.layerVisible(doc, n)) continue;
       const hit = n.closest && n.closest('[data-handle]');
       if (hit) {
         // An off-sheet connector's destination tspan names the sheet to

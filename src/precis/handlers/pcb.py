@@ -1814,6 +1814,8 @@ class PcbHandler(Handler):
         extra = f", +{counts['measures']} measure(s)" if counts["measures"] else ""
         if counts["features"]:
             extra += f", +{counts['features']} feature(s)"
+        if counts.get("planes"):
+            extra += f", +{counts['planes']} plane(s)"
         if counts.get("outline_replaced"):
             extra += ", replaced the existing outline (a board has one)"
         if counts.get("footprints"):
@@ -3603,15 +3605,8 @@ class PcbHandler(Handler):
         # instruction was stored, agreed to, and never appeared on the
         # board. A row with a region (a derived power region, an imported
         # fill) shares the layer by priority and is no conflict.
-        conflict = next(
-            (
-                row
-                for row in self.store.pcb_planes_list(ref.id)
-                if row["layer"] == layer
-                and row["net"] != net
-                and row.get("region") is None
-            ),
-            None,
+        conflict = pcb_planes.whole_board_plane_conflict(
+            self.store.pcb_planes_list(ref.id), layer, net
         )
         if conflict is not None:
             raise BadInput(
@@ -5956,33 +5951,7 @@ class PcbHandler(Handler):
         _drilled_pad_ring_items` uses — so a pad list that ever carries a
         hole twice (``place_footprint_pads`` flashes one per copper layer)
         still writes one Excellon coordinate."""
-        out: list[dict[str, Any]] = []
-        seen: set[tuple[float, float, float]] = set()
-        for pad in pads:
-            drill = pad.get("drill")
-            if not drill:
-                continue
-            key = (
-                round(float(pad["x"]), 4),
-                round(float(pad["y"]), 4),
-                round(float(drill), 4),
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            hole: dict[str, Any] = {
-                "x": float(pad["x"]),
-                "y": float(pad["y"]),
-                "dia_mm": float(drill),
-                "plated": True,
-            }
-            # ``slot`` on a placed pad is already the board-frame
-            # end-centre pair ``_excellon_file``'s G85 row and
-            # ``gerber_view``'s slot render both consume.
-            if pad.get("slot"):
-                hole["slot"] = pad["slot"]
-            out.append(hole)
-        return out
+        return padplace.drills_for_pads(pads)
 
     def _mask_open_regions(self, ref_id: int) -> list[dict[str, Any]]:
         """``ftype='mask_open'`` features -> :mod:`precis.pcb.gerber`'s
@@ -8688,6 +8657,9 @@ class PcbHandler(Handler):
                 bottom_by_refdes=courtyard_bottom,
                 clearance_mm=pcb_ir.COURTYARD_CLEARANCE_MM,
                 pads=pads,
+                bodies=bodies,
+                bodied=pcb_ir.bodied_refdes(ir),
+                rigid_pairs=pcb_ir.rigid_refdes_pairs(ir),
             )
             findings += pcb_drc.check_courtyard_hole(
                 courtyards,
@@ -9616,9 +9588,9 @@ class PcbHandler(Handler):
             body = gerber_view.render_fab_svg(
                 files,
                 title=slug,
+                connectivity_model=model,
                 overlays=self._fab_overlays(ref_id),
                 selection_manifest=selection_manifest,
-                connectivity_model=model,
                 # `feature:outline` on the Edge_Cuts group — only when the
                 # board's outline is a pcb_features row (`model["outline"]`
                 # comes from `_outline_from_features` and nowhere else).

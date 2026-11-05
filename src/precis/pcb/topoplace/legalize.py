@@ -1,25 +1,33 @@
-"""Legalize a pose: drive same-side courtyard overlaps to zero.
+"""Legalize a pose: drive same-side courtyard pairs to the hard
+``SilkRoom.pair_req_mm`` separation (topo-silk-spacing ruling
+2026-11-02 — under it the two drawn outlines share a wall, so
+courtyard-to-courtyard gap, not mere non-overlap, is the legality
+line; pairs deliberately one body — rigid groups (exempt outright)
+and hard-measure carries (exempt from the gap, never from overlap —
+round-3 ruling), :func:`proxy.one_body_pairs` — are exempt, as are
+both-fixed pairs: authored adjacency the round-2 ruling exempts and
+REPORTS on ``noted`` with reason ``fixed-fixed``).
 
 The proxy's ``overlap`` share pulls the anneal toward legal poses, but
 on a dense real board the best pose still carries collisions the commit
 gate counts as pre-route DRC errors. This post-pass walks the worst
-same-side overlapping pair per round and separates it exactly — the
-minimum-translation vector from SAT on the courtyard rings' convex
-hulls (gr524238 rings can be concave; SAT hulls them, see ``_mtv``) —
-splitting the push between two free parts, moving only the free one
-against a fixed part, and skipping both-fixed pairs (unresolvable;
-reported). Parts the push shoves outside the board outline (the
-courtyard-in-polygon test of :mod:`.contain`, shared with the shove LP
-and the anneal) are pulled back toward the outline centroid between
-sweep rounds. Returns the legalized pose plus a report; phase 3's
-corridor LP replaces this with a global minimum-displacement solve when
-slice 4 lands.
+same-side pair per round and separates it exactly — overlapping rings
+take the minimum-translation vector from SAT on their convex hulls
+(gr524238 rings can be concave; SAT hulls them, see ``_mtv``) extended
+by the requirement, already-separated rings the shortest-gap direction
+by the shortfall — splitting the push between two free parts and moving
+only the free one against a fixed part. Parts the push shoves outside
+the board outline (the courtyard-in-polygon test of :mod:`.contain`,
+shared with the shove LP and the anneal) are pulled back toward the
+outline centroid between sweep rounds. Returns the legalized pose plus
+a report; phase 3's corridor LP replaces this with a global
+minimum-displacement solve when slice 4 lands.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Callable, Collection, Mapping
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -27,13 +35,19 @@ from shapely import box as shapely_box
 from shapely.geometry import Point, Polygon
 from shapely.ops import nearest_points
 
+from precis.pcb.clearance import FAB_QUANTUM_MM
 from precis.pcb.topoplace.contain import board_polygon, on_board, outside_mm2
 from precis.pcb.topoplace.design import TopoDesign, TopoZone
 from precis.pcb.topoplace.proxy import (
     _EPS,
     _body_geom,
+    _measure_violation,
     _ring_geom,
+    fixed_fixed_pairs,
     local_to_world,
+    one_body_pairs,
+    pair_gap_report,
+    rigid_pairs,
     through_hole_parts,
     zone_world_circle,
     zone_world_ring,
@@ -42,16 +56,41 @@ from precis.pcb.topoplace.proxy import (
 
 @dataclass(frozen=True, slots=True)
 class LegalizeResult:
-    """``pose`` is the legalized pose; ``resolved`` means zero same-side
-    overlap remains. ``remaining`` lists unresolved (a, b, area) pairs —
-    both-fixed collisions and any budget exhaustion; ``moved_mm`` the
-    total translation applied."""
+    """``pose`` is the legalized pose; ``resolved`` means every same-side
+    pair meets ``silk.pair_req_mm`` and no zone/outline residual stands.
+    ``remaining`` lists unresolved (a, b, amount) rows — pair rows carry
+    the gap shortfall in mm, zone rows (b = n_parts + zone index) and
+    outline rows (b = -1) carry areas in mm²; ``moved_mm`` the total
+    translation applied. ``noted`` carries exempt-but-reported tight
+    pairs — ``(a, b, shortfall_mm, reason)`` rows, ``"fixed-fixed"``
+    authored adjacency the only reason so far — which never count
+    against ``resolved``."""
 
     pose: np.ndarray
     resolved: bool
     rounds: int
     moved_mm: float
     remaining: tuple[tuple[int, int, float], ...] = field(default_factory=tuple)
+    noted: tuple[tuple[int, int, float, str], ...] = field(default_factory=tuple)
+
+
+#: How many CONSECUTIVE picks one member-connected pair fight may take
+#: before the loop calls it a seesaw and breaks it structurally (the
+#: escape in :func:`legalize_pose`). A push separates a pair fully in
+#: one move, so a healthy sweep picks a pair once; a pick unrelated to
+#: the last resets the count — only a deadlock the sweep cannot leave
+#: accumulates. 10 is generous headroom for a legit fight over a
+#: crowded corner while still catching a loop inside ~20 rounds.
+_SEESAW_PICK_LIMIT = 10
+
+#: The escape teleport's search radius, in multiples of the LARGER
+#: courtyard diameter of the pair in the fight (round-4 ruling: a part
+#: wedged against a wide authored body — BT1's 24.5mm supercap ring —
+#: may look past that body; 3 × only the mover's side could never
+#: clear it). A legal spot beyond this neighbourhood is a different
+#: region of the board — the named failure on ``remaining`` is worth
+#: more than a cross-board teleport.
+_ESCAPE_SPOT_DIAMETERS = 3.0
 
 
 def _axes(ring: np.ndarray) -> list[np.ndarray]:
@@ -228,6 +267,9 @@ def _via_zone_exempt(
     so legalize never accepts a cover the gate then reports
     ``via_in_pad`` (an ordinary pad overlapping the annulus; only a
     copper-field pad — ``d.pin_role`` — may swallow it, gr496850)."""
+    if z.kind != "fixed_via":
+        return False
+
     from precis.pcb.drc import (
         _COPPER_FIELD_PAD_ROLES,
         _VIA_ANCHOR_TOL_MM,
@@ -287,7 +329,8 @@ def _legalize_zones(
                 continue
             if not _zone_blocks_part(z, bool(sides[i]), bool(th[i]), n_layers):
                 continue
-            bx0, by0, bx1, by1 = zg.bounds
+            barrier = zg.buffer(FAB_QUANTUM_MM)
+            bx0, by0, bx1, by1 = barrier.bounds
             if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
                 continue
             if z.kind == "fixed_via":
@@ -297,7 +340,7 @@ def _legalize_zones(
                     pads_of[i] = _pad_polys(d, pose[i], i)
                 if _via_zone_exempt(d, pose[i], i, z, zg, pin_names, pads_of[i]):
                     continue
-            elif z.net and z.net in part_nets[i]:
+            elif z.kind == "fixed_copper" and z.net and z.net in part_nets[i]:
                 continue
             circ = zone_world_circle(d, z, pose) if z.kind == "mounting_hole" else None
             if circ is not None:
@@ -311,13 +354,15 @@ def _legalize_zones(
                 bg = _body_geom(d, pose[i], i)
                 gi_z = bg if bg is not None else gi
                 cpt = Point(circ[0], circ[1])
-                if float(gi_z.distance(cpt)) >= circ[2]:
+                if float(gi_z.distance(cpt)) >= circ[2] + FAB_QUANTUM_MM:
                     continue
-                area = float(gi_z.intersection(cpt.buffer(circ[2])).area)
+                area = float(
+                    gi_z.intersection(cpt.buffer(circ[2] + FAB_QUANTUM_MM)).area
+                )
             else:
-                area = float(gi.intersection(zg).area)
-                if area <= _EPS:
+                if float(gi.distance(zg)) >= FAB_QUANTUM_MM:
                     continue
+                area = max(float(gi.intersection(barrier).area), _EPS)
             if d.fixed[i]:
                 if fixed_worst is None or area > fixed_worst[2]:
                     fixed_worst = (i, z_i, area)
@@ -353,10 +398,10 @@ def _legalize_zones(
                 np.asarray(gi_z.exterior.coords),
             )
             axis = vec0 / d0 if d0 > 0.0 else np.asarray([1.0, 0.0])
-        vec = axis * (circ[2] - dist)
+        vec = axis * (circ[2] + FAB_QUANTUM_MM - dist)
     else:
         vec, _depth = _mtv(
-            np.asarray(zone_geoms[z_i].exterior.coords),
+            np.asarray(zone_geoms[z_i].buffer(FAB_QUANTUM_MM).exterior.coords),
             np.asarray(geoms[i].exterior.coords),
         )
     vec = vec + np.sign(vec + 1e-12) * 1e-3
@@ -369,51 +414,105 @@ def _legalize_zones(
     return moved, None
 
 
-def _legalize_once(
+def _worst_pair(
     d: TopoDesign,
-    pose: np.ndarray,
     geoms: list[Any],
     sides: np.ndarray,
     th: np.ndarray,
-    dead: set[tuple[int, int]],
-) -> tuple[float, tuple[int, int, float] | None]:
-    """One sweep: find the worst same-side overlapping pair, apply the
-    MTV split/moved as fixed bits allow. Returns (mm moved, worst pair
-    unresolved-or-None). Both-fixed pairs can't move — they join
-    ``dead`` so later sweeps stop re-finding them."""
+    ff: frozenset[tuple[int, int]],
+    rigid: frozenset[tuple[int, int]],
+    gap_free: frozenset[tuple[int, int]],
+    stuck: Collection[tuple[int, int]],
+) -> tuple[int, int, float] | None:
+    """The same-side pair most under the hard ``silk.pair_req_mm`` —
+    the one :func:`_legalize_once` pushes this round, returned as
+    ``(i, j, ring distance)`` or ``None`` when every colliding pair is
+    legal. ``ff`` carries the both-fixed pairs — authored adjacency the
+    sweep cannot move, exempt like a one-body pair (the final report
+    lists them on ``noted``). ``rigid``/``gap_free`` carry the
+    precomputed exemption sets: rigid mates never separate (authored
+    shape, no pair rule); a hard-measure pair is exempt from the gap
+    only and is a collision just when its courtyards OVERLAP (round-3
+    ruling). ``stuck`` carries pairs the sweep already gave up on this
+    call — a seesaw it could not break — skipped here and still
+    reported by the final ``pair_gap_report`` pass."""
     n = len(d.parts)
+    req = float(d.silk.pair_req_mm) + FAB_QUANTUM_MM
     worst: tuple[int, int, float] | None = None
-    worst_area = _EPS
+    worst_score = _EPS
     for i in range(n):
         gi = geoms[i]
         if gi is None:
             continue
         x0, y0, x1, y1 = gi.bounds
         for j in range(i + 1, n):
-            if (i, j) in dead:
+            pair = (i, j)
+            if pair in ff or pair in rigid or pair in stuck:
                 continue
             gj = geoms[j]
             if gj is None or (sides[i] != sides[j] and not (th[i] or th[j])):
                 continue
             if len(d.group_of) and 0 <= int(d.group_of[i]) == int(d.group_of[j]):
                 continue  # rigid mates never separate — authored shape
+            ri = 0.0 if pair in gap_free else req
             bx0, by0, bx1, by1 = gj.bounds
-            if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
+            if x1 + ri < bx0 or bx1 + ri < x0 or y1 + ri < by0 or by1 + ri < y0:
                 continue
-            area = float(gi.intersection(gj).area)
-            if area > worst_area:
-                worst, worst_area = (i, j, area), area
+            dist = float(gi.distance(gj))
+            short = ri - dist
+            if short <= _EPS:
+                if dist > _EPS or float(gi.intersection(gj).area) <= _EPS:
+                    continue
+            # rank: the gap shortfall, with the overlap area as the
+            # tiebreak so a real collision outranks a mere squeeze
+            score = short + (float(gi.intersection(gj).area) if dist <= _EPS else 0.0)
+            if score > worst_score:
+                worst, worst_score = (i, j, dist), score
+    return worst
+
+
+def _legalize_once(
+    d: TopoDesign,
+    pose: np.ndarray,
+    geoms: list[Any],
+    sides: np.ndarray,
+    th: np.ndarray,
+    ff: frozenset[tuple[int, int]],
+    rigid: frozenset[tuple[int, int]],
+    gap_free: frozenset[tuple[int, int]],
+    stuck: Collection[tuple[int, int]] = (),
+) -> tuple[float, tuple[int, int] | None]:
+    """One sweep: find the worst same-side pair short of the hard
+    ``silk.pair_req_mm`` courtyard gap, apply the separation split/moved
+    as fixed bits allow, return ``(mm moved, the (i, j) pair pushed)`` —
+    the pair back so the caller can count how often the sweep re-picks
+    it (a seesaw signature). See :func:`_worst_pair` for the exemption
+    sets and the ``stuck`` skip-list."""
+    worst = _worst_pair(d, geoms, sides, th, ff, rigid, gap_free, stuck)
     if worst is None:
         return 0.0, None
-    i, j, _area = worst
+    i, j, dist = worst
+    ri = 0.0 if (i, j) in gap_free else float(d.silk.pair_req_mm) + FAB_QUANTUM_MM
     free_i, free_j = not d.fixed[i], not d.fixed[j]
-    if not (free_i or free_j):
-        dead.add((i, j))
-        return 0.0, worst  # unresolvable
-    # MTV on WORLD rings (rot+mirror applied) via the placed polygons.
-    vec, _depth = _mtv(
-        np.asarray(geoms[i].exterior.coords), np.asarray(geoms[j].exterior.coords)
-    )
+    gi, gj = geoms[i], geoms[j]
+    if dist > _EPS:
+        # Separated but under the pair requirement — push along the
+        # shortest-gap direction by the shortfall.
+        pa, pb = nearest_points(gi, gj)
+        axis = np.asarray([pb.x - pa.x, pb.y - pa.y], dtype=np.float64)
+        vec = axis / float(np.hypot(*axis)) * (ri - dist)
+    else:
+        # MTV on WORLD rings (rot+mirror applied) via the placed
+        # polygons — separates the overlap, then the requirement.
+        vec, depth = _mtv(
+            np.asarray(gi.exterior.coords), np.asarray(gj.exterior.coords)
+        )
+        if depth > 0.0:
+            vec = vec / depth * (depth + ri)
+        else:
+            # touching but not overlapping (dist 0): centroid axis
+            axis = np.asarray(gj.centroid.coords[0]) - np.asarray(gi.centroid.coords[0])
+            vec = axis / max(float(np.hypot(*axis)), 1e-9) * ri
     vec = vec + np.sign(vec + 1e-12) * 1e-3  # clearance epsilon
     if free_i and free_j:
         di, dj = -vec / 2.0, vec / 2.0
@@ -427,7 +526,7 @@ def _legalize_once(
             pose[mate, 0] += dm[0]
             pose[mate, 1] += dm[1]
             geoms[mate] = _ring_geom(d, pose[mate], mate)
-    return moved, None
+    return moved, (i, j)
 
 
 def _zone_geoms(d: TopoDesign, pose: np.ndarray) -> dict[int, Any]:
@@ -465,11 +564,17 @@ def _nearest_free_spot(
     zgs: dict[int, Any],
     zone_hit: Callable[..., bool],
     part_hit: Callable[..., bool],
+    within_mm: float | None = None,
+    spot_ok: Callable[[float, float], bool] | None = None,
 ) -> np.ndarray | None:
     """The nearest centre (grid-sampled over the outline's bounds, step
     half the part's ring radius, floor 0.5 mm) at which every rigid
     mate's ring is inside the outline and clear of zones and other
-    parts — ``None`` when none is within the board."""
+    parts — ``None`` when none is within the board. ``within_mm``
+    bounds the search radius about the part's current centre (the
+    seesaw escape's neighbourhood limit — a teleport across the board
+    is worse than a named failure); ``spot_ok`` is an extra per-
+    candidate predicate (the hard-measure check)."""
     start = np.asarray(pose[part][:2], dtype=float)
     g0 = _ring_geom(d, pose[part], part)
     if g0 is None:
@@ -488,7 +593,11 @@ def _nearest_free_spot(
         for y in ys
         if outline_geom.contains(Point(x, y))
     )
-    for _dist, x, y in cands:
+    for dist, x, y in cands:
+        if within_mm is not None and dist > within_mm:
+            break  # sorted by distance — nothing closer remains
+        if spot_ok is not None and not spot_ok(x, y):
+            continue
         delta = np.asarray([x, y]) - start
         ok = True
         for mate in mates:
@@ -524,6 +633,9 @@ def legalize_pose(
     zone_geoms = _zone_geoms(d, pose)
     part_nets = [_part_nets(d, i) for i in range(n)] if zone_geoms else []
     n_layers = _board_layers(d)
+    _req_mm = float(d.silk.pair_req_mm) + FAB_QUANTUM_MM
+    _rigid_pairs = rigid_pairs(d)
+    _gap_free_pairs = one_body_pairs(d)
 
     pin_names_hit: dict[int, str] | None = None
 
@@ -538,14 +650,14 @@ def legalize_pose(
                 continue
             if not _zone_blocks_part(z, bool(sides[part]), bool(th[part]), n_layers):
                 continue
-            if not geom.intersects(zg):
+            if float(geom.distance(zg)) >= FAB_QUANTUM_MM:
                 continue
             if z.kind == "fixed_via":
                 if pin_names_hit is None:
                     pin_names_hit = _pin_net_names(d)
                 if _via_zone_exempt(d, test_row, part, z, zg, pin_names_hit):
                     continue
-            elif z.net and z.net in part_nets[part]:
+            elif z.kind == "fixed_copper" and z.net and z.net in part_nets[part]:
                 continue
             circ = zone_world_circle(d, z, pose) if z.kind == "mounting_hole" else None
             if circ is not None:
@@ -555,7 +667,10 @@ def legalize_pose(
                 bg = _body_geom(d, test_row, part)
                 if bg is None:
                     bg = geom
-                if float(bg.distance(Point(circ[0], circ[1]))) >= circ[2]:
+                if (
+                    float(bg.distance(Point(circ[0], circ[1])))
+                    >= circ[2] + FAB_QUANTUM_MM
+                ):
                     continue
             return True
         return False
@@ -566,7 +681,10 @@ def legalize_pose(
         its outline escape: on a FIXED courtyard the pair sweep just
         shoves it back out, the two passes fight, and the committed pose
         keeps the overlap (gr520792: C8/C10 parked on U1's courtyard —
-        fixed courtyards are hard obstacles, like zones)."""
+        fixed courtyards are hard obstacles, like zones). The pair gap
+        is the courtyard rule's line: a candidate inside a neighbour's
+        ``pair_req_mm`` is a hit (one-body pairs exempt from the gap;
+        an overlap stays a hit — round-3 ruling)."""
         for j, gj in enumerate(geoms):
             if j == part or gj is None:
                 continue
@@ -578,13 +696,23 @@ def legalize_pose(
                 continue  # rigid mates share the pull — never a collision
             if sides[part] != sides[j] and not (th[part] or th[j]):
                 continue
-            if geom.intersects(gj):
+            pair = (min(part, j), max(part, j))
+            if pair in _rigid_pairs:
+                continue  # authored rigid shape — no pair rule at all
+            if pair in _gap_free_pairs:
+                # one body for the GAP only — an overlap is still a hit
+                if float(geom.intersection(gj).area) > _EPS:
+                    return True
+                continue
+            if float(geom.distance(gj)) < max(_req_mm, 1e-6):
                 return True
         return False
 
     # on-board = the courtyard inside the outline polygon — the one
     # containment test the shove LP and the anneal hold their moves to
     outline_geom = board_polygon(d)
+    if outline_geom is not None:
+        outline_geom = outline_geom.buffer(-FAB_QUANTUM_MM)
     # Pull-back anchors: the outline centroid AND its representative
     # point (guaranteed interior even for concave outlines); containment
     # along the path is sampled, not bisected — on a concave board the
@@ -595,12 +723,158 @@ def legalize_pose(
             np.asarray(outline_geom.centroid.coords[0]),
             np.asarray(outline_geom.representative_point().coords[0]),
         ]
-    dead: set[tuple[int, int]] = set()
+    ff = fixed_fixed_pairs(d)
     total_moved = 0.0
     spent = 0
     zgs = zone_geoms
+
+    #: The pair sweep is a pure function of the pose plus a tiny drift
+    #: (the push epsilon walks a seesawing part ~0.001mm/round), so a
+    #: fight shows two ways: a pose literally recurring, or the same
+    #: pair re-picked past :data:`_SEESAW_PICK_LIMIT` — the x1 seesaw:
+    #: C5 wedged between FIXED PV1 and FIXED L2, pushed ~0.4mm
+    #: alternately, 2000 rounds spent while other violating pairs
+    #: waited. A detected fight is broken STRUCTURALLY: teleport a
+    #: movable member to the nearest legal spot, or — nobody movable /
+    #: nowhere free — set the pair aside so the rest still fix and
+    #: ``remaining`` names it (``pair_gap_report`` re-derives every
+    #: violation for it; setting a pair aside hides nothing).
+    seen: set[bytes] = set()
+    run: tuple[int, int] | None = None
+    run_n = 0
+    run_moved0 = 0.0
+    stuck: set[tuple[int, int]] = set()
+    teleported: set[int] = set()
+    hard_upper = [
+        s for s in d.measures if s.hard and s.bound == "upper" and s.metric == "dist"
+    ]
+
+    def _escape(pair: tuple[int, int]) -> None:
+        """Break a detected seesaw on ``pair`` — see the comment above."""
+        nonlocal total_moved, run, run_n
+        i, j = pair
+        if outline_geom is not None:
+            for cand in (i, j):
+                if d.fixed[cand] or cand in teleported:
+                    continue
+                gc = geoms[cand]
+                within = None
+                if gc is not None:
+                    cx0, cy0, cx1, cy1 = gc.bounds
+                    span = max(cx1 - cx0, cy1 - cy0)
+                    other = geoms[j if cand == i else i]
+                    if other is not None:
+                        ox0, oy0, ox1, oy1 = other.bounds
+                        span = max(span, ox1 - ox0, oy1 - oy0)
+                    within = _ESCAPE_SPOT_DIAMETERS * span
+                mates = _mates(d, cand)
+                moving = set(mates)
+                start = np.asarray(pose[cand][:2])
+
+                def _spot_ok(
+                    x: float,
+                    y: float,
+                    *,
+                    _start: np.ndarray = start,
+                    _moving: set[int] = moving,
+                ) -> bool:
+                    # A part carried by a hard dist-upper measure (a
+                    # decap/crystal near its IC) may only teleport to a
+                    # spot that KEEPS the measure — a relocation that
+                    # breaks it is no escape.
+                    dx_, dy_ = x - _start[0], y - _start[1]
+                    rows = {}
+                    for m in _moving:
+                        row = np.asarray(pose[m]).copy()
+                        row[:2] += (dx_, dy_)
+                        rows[m] = row
+                    for s in hard_upper:
+                        if s.ia not in _moving and s.ib not in _moving:
+                            continue
+                        ra = rows.get(s.ia, np.asarray(pose[s.ia]))
+                        rb = (
+                            rows.get(s.ib, np.asarray(pose[s.ib]))
+                            if s.ib >= 0
+                            else None
+                        )
+                        if _measure_violation(s, ra, rb) > _EPS:
+                            return False
+                    return True
+
+                spot = _nearest_free_spot(
+                    d,
+                    pose,
+                    cand,
+                    mates,
+                    outline_geom,
+                    zgs,
+                    _zone_hit,
+                    _part_hit,
+                    within_mm=within,
+                    spot_ok=_spot_ok,
+                )
+                if spot is None:
+                    continue
+                delta = spot - np.asarray(pose[cand][:2])
+                for mate in mates:
+                    pose[mate, 0] += delta[0]
+                    pose[mate, 1] += delta[1]
+                    geoms[mate] = _ring_geom(d, pose[mate], mate)
+                    _refresh_owned_zones(d, pose, zgs, mate)
+                teleported.add(cand)
+                total_moved += float(np.hypot(*delta))
+                seen.clear()
+                run, run_n = None, 0
+                return
+        # Nobody movable left to try, or nowhere free within reach:
+        # set the pair aside for the rest of this call.
+        stuck.add((min(i, j), max(i, j)))
+        seen.clear()
+        run, run_n = None, 0
+
     for _ in range(rounds):
-        moved, _skipped = _legalize_once(d, pose, geoms, sides, th, dead)
+        key = np.round(pose, 3).tobytes()
+        if key in seen:
+            # A literal pose revisit — the round is near-deterministic,
+            # so this state loops forever.
+            pair = _worst_pair(
+                d, geoms, sides, th, ff, _rigid_pairs, _gap_free_pairs, stuck
+            )
+            if pair is None:
+                # No pair violator left — a zone/pull-back fight the
+                # sweeps cannot win either; ``remaining`` names it.
+                break
+            _escape(pair[:2])
+            spent += 1
+            continue
+        seen.add(key)
+        moved, picked = _legalize_once(
+            d, pose, geoms, sides, th, ff, _rigid_pairs, _gap_free_pairs, stuck
+        )
+        if picked is not None:
+            # CONSECUTIVE re-picks count, resetting on an unrelated pick
+            # — a healthy sweep revisits a pair only after progress
+            # elsewhere. A pick sharing a member with the last continues
+            # the same fight (the alternating two-fixed-ring seesaw is
+            # one deadlock from the wedged part's side). One more reset:
+            # a run whose pushes have decayed to an eighth of the first
+            # is a DAMPED oscillation converging on a fix, not a
+            # deadlock (the stacked-pair case: each push halves the
+            # shortfall as a third part drifts out of the way) — let it
+            # finish instead of teleporting mid-fight.
+            if run is not None and set(picked) & set(run):
+                run_n += 1
+                if moved <= run_moved0 / 8.0:
+                    run, run_n, run_moved0 = None, 0, 0.0
+                else:
+                    run = picked
+            else:
+                run, run_n, run_moved0 = picked, 1, moved
+            if run_n >= _SEESAW_PICK_LIMIT:
+                total_moved += moved
+                _escape(picked)
+                spent += 1
+                continue
         # zone sweeps run every round — a pull or a pair fix can land a
         # part on a zone at ANY point, not only when pairs are settled.
         if zone_geoms:
@@ -680,26 +954,21 @@ def legalize_pose(
         if moved == 0.0:
             break
         total_moved += moved
-    # final report — pair leftovers, then unresolvable zone leftovers
-    # (a part on a zone reports b = n_parts + zone index)
-    remaining: list[tuple[int, int, float]] = []
-    for i in range(n):
-        gi = geoms[i]
-        if gi is None:
-            continue
-        for j in range(i + 1, n):
-            gj = geoms[j]
-            if gj is None or (sides[i] != sides[j] and not (th[i] or th[j])):
-                continue
-            if len(d.group_of) and 0 <= int(d.group_of[i]) == int(d.group_of[j]):
-                continue  # rigid mates — authored overlap, not a residual
-            x0, y0, x1, y1 = gi.bounds
-            bx0, by0, bx1, by1 = gj.bounds
-            if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
-                continue
-            area = float(gi.intersection(gj).area)
-            if area > 1e-6:
-                remaining.append((i, j, area))
+    # final report — pair leftovers (the gap shortfall in mm; exempt
+    # fixed-fixed authored adjacency lands on ``noted``, never here),
+    # then unresolvable zone leftovers (a part on a zone reports
+    # b = n_parts + zone index)
+    report = pair_gap_report(
+        replace(d, silk=replace(d.silk, pair_req_mm=_req_mm)), pose, geoms
+    )
+    remaining: list[tuple[int, int, float]] = [
+        (a, b, s) for a, b, s, r in report if r == "gap"
+    ]
+    # Authored fixed-fixed adjacency is informational, exempt from the
+    # reserve as well as the hard gap. Keep its public report unchanged.
+    noted = tuple(
+        (a, b, s, r) for a, b, s, r in pair_gap_report(d, pose, geoms) if r != "gap"
+    )
     n_layers = _board_layers(d)
     pin_names_fin: dict[int, str] | None = None
     pads_fin: dict[int, list[tuple[int, Any]]] = {}
@@ -713,7 +982,8 @@ def legalize_pose(
                 continue
             if not _zone_blocks_part(z, bool(sides[i]), bool(th[i]), n_layers):
                 continue
-            bx0, by0, bx1, by1 = zg.bounds
+            barrier = zg.buffer(FAB_QUANTUM_MM)
+            bx0, by0, bx1, by1 = barrier.bounds
             if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
                 continue
             if z.kind == "fixed_via":
@@ -723,19 +993,21 @@ def legalize_pose(
                     pads_fin[i] = _pad_polys(d, pose[i], i)
                 if _via_zone_exempt(d, pose[i], i, z, zg, pin_names_fin, pads_fin[i]):
                     continue
-            elif z.net and z.net in part_nets[i]:
+            elif z.kind == "fixed_copper" and z.net and z.net in part_nets[i]:
                 continue
             circ = zone_world_circle(d, z, pose) if z.kind == "mounting_hole" else None
             if circ is not None:
                 bg = _body_geom(d, pose[i], i)
                 gi_z = bg if bg is not None else gi
                 cpt = Point(circ[0], circ[1])
-                if float(gi_z.distance(cpt)) < circ[2]:
-                    area = float(gi_z.intersection(cpt.buffer(circ[2])).area)
+                if float(gi_z.distance(cpt)) < circ[2] + FAB_QUANTUM_MM:
+                    area = float(
+                        gi_z.intersection(cpt.buffer(circ[2] + FAB_QUANTUM_MM)).area
+                    )
                     remaining.append((i, n + z_i, area))
                 continue
-            area = float(gi.intersection(zg).area)
-            if area > 1e-6:
+            area = float(gi.intersection(barrier).area)
+            if float(gi.distance(zg)) < FAB_QUANTUM_MM:
                 remaining.append((i, n + z_i, area))
     if outline_geom is not None:
         for i, gi in enumerate(geoms):
@@ -750,6 +1022,7 @@ def legalize_pose(
         rounds=spent,
         moved_mm=total_moved,
         remaining=tuple(sorted(remaining)),
+        noted=noted,
     )
 
 

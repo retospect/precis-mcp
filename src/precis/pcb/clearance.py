@@ -29,8 +29,10 @@ its radius. A box is a superset of the body, so pruning never drops a pair
 the exact test would keep.
 
 The independent check of this module is
-:func:`precis.pcb.drc.clearance_violations_naive` (no shapely), asserted
-equal to it over randomized layouts in ``tests/test_pcb_clearance.py``.
+:func:`precis.pcb.drc.clearance_violations_naive` (separate distance math
+and pair enumeration, shared placed pad geometry), asserted equal to it over
+randomized layouts in ``tests/test_pcb_clearance.py``. Independent authored
+geometry tests additionally check native pad placement.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from itertools import pairwise
 from typing import Any
 
 import numpy as np
@@ -56,6 +59,14 @@ Coord = tuple[float, float]
 _ANG_EPS = 1e-12
 #: Decision 6: the router's margin and the outward polygonisation sagitta.
 DELTA_MM = 0.005
+
+#: Route-oracle reserve; DRC continues to measure exact geometry. With an
+#: export grid q=1e-4 mm, two rectangular objects can lose 3q/sqrt(2)
+#: (0.000212133 mm): both centres move by q/sqrt(2), and both half-size
+#: vectors grow by q/(2sqrt(2)). Rounding this bound up to 0.000225 mm
+#: leaves 0.000012867 mm for finer Gerber/mil conversion and EasyEDA's
+#: 1e-6 mm footprint identity, while keeping narrow channels open.
+FAB_QUANTUM_MM = 0.000225
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,6 +425,62 @@ def body_of(item: dict[str, Any]) -> Body | None:
     return None
 
 
+def region_touches_land(
+    region: BaseGeometry,
+    land: Body,
+    hole: Body | None = None,
+    *,
+    touch_eps: float = 0.0,
+    hole_cuts: dict[int, BaseGeometry] | None = None,
+) -> bool:
+    """A polygon contacts native pad copper outside its round/slot void.
+
+    Clip straight lands exactly. Curved lands retain their analytic core;
+    only an open bore needs an outward polygon cut (excess < q/1000), so
+    an inscribed hole facet cannot certify a false electrical connection.
+    ``touch_eps`` is caller-owned float-noise slack, never a fab margin.
+    """
+    if land.core is None or land.core.is_empty:
+        return False
+    if hole is None or hole.core is None:
+        return signed_gap(land, Body(region, (), 0.0)) <= touch_eps
+    for piece in shapely.get_parts(region):
+        if piece.is_empty or piece.distance(land.core) > land.r + touch_eps:
+            continue
+        # A piece may extend beyond both the land and an open slot. Only
+        # the part touching the land can establish a copper connection.
+        contact = piece
+        if land.r == 0.0:
+            contact = piece.intersection(land.core)
+            if contact.is_empty and touch_eps > 0.0:
+                contact = piece.buffer(touch_eps).intersection(land.core)
+        if contact.is_empty:
+            continue
+        points = shapely.points(shapely.get_coordinates(contact))
+        if np.all(shapely.distance(points, hole.core) < hole.r):
+            continue
+        if land.r > 0.0:
+            # A connected piece leaving a bore wholly inside a convex
+            # circular/capsule land must cross real copper.
+            ends = shapely.points(shapely.get_coordinates(hole.core))
+            enclosed = np.all(shapely.distance(ends, land.core) + hole.r < land.r)
+            if not enclosed:
+                key = id(hole.core)
+                cut = hole_cuts.get(key) if hole_cuts is not None else None
+                if cut is None:
+                    cut = outward_polygon(hole, sagitta=FAB_QUANTUM_MM / 1000.0)
+                    if hole_cuts is not None:
+                        hole_cuts[key] = cut
+                remaining = piece.difference(cut)
+                if (
+                    remaining.is_empty
+                    or remaining.distance(land.core) > land.r + touch_eps
+                ):
+                    continue
+        return True
+    return False
+
+
 # ── the per-layer index ──────────────────────────────────────────────────
 
 
@@ -501,6 +568,37 @@ def outward_segments_per_quadrant(radius: float, sagitta: float = DELTA_MM) -> i
     return max(1, math.ceil(math.pi / (4 * half_angle)))
 
 
+def pad_boundary(
+    pad: dict[str, Any],
+) -> tuple[list[tuple[Coord, Coord]], tuple[Arc, ...]]:
+    """Exact straight edges and circular caps of a placed land.
+
+    Derive them from :func:`body_of`, so rotation and bottom-side mirroring
+    have one owner. A stadium's caps are arcs, never its enclosing box.
+    """
+    body = body_of({**pad, "ctype": "pad"})
+    if body is None or body.core is None:
+        return [], ()
+    core = body.core
+    if isinstance(core, Polygon):
+        pts = [(float(x), float(y)) for x, y in core.exterior.coords]
+        return list(pairwise(pts)), ()
+    if isinstance(core, Point):
+        return [], (Arc(core.x, core.y, body.r, 0.0, math.tau),)
+    if isinstance(core, LineString):
+        (ax, ay), (bx, by) = core.coords
+        theta = math.atan2(by - ay, bx - ax)
+        nx, ny = -math.sin(theta) * body.r, math.cos(theta) * body.r
+        return [
+            ((ax + nx, ay + ny), (bx + nx, by + ny)),
+            ((ax - nx, ay - ny), (bx - nx, by - ny)),
+        ], (
+            Arc(bx, by, body.r, theta - math.pi / 2, math.pi),
+            Arc(ax, ay, body.r, theta + math.pi / 2, math.pi),
+        )
+    raise ValueError(f"unsupported pad core {core.geom_type!r}")
+
+
 def outward_circle(
     x: float, y: float, radius: float, sagitta: float = DELTA_MM
 ) -> Polygon:
@@ -557,6 +655,7 @@ def outward_polygon(
 
 __all__ = [
     "DELTA_MM",
+    "FAB_QUANTUM_MM",
     "Arc",
     "Body",
     "arc_arc",
@@ -570,6 +669,7 @@ __all__ = [
     "outward_segments_per_quadrant",
     "point_arc",
     "point_segment",
+    "region_touches_land",
     "segment_arc",
     "signed_gap",
 ]

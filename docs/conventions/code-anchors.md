@@ -19,13 +19,15 @@ src/precis/dispatch.py::Hub.register_ability
 src/precis/store/types.py::Tag.open
 ```
 
-## The tool — `scripts/coderef` (three verbs, one `ast` pass)
+## The tool — `scripts/coderef`
 
 ```sh
 scripts/coderef resolve <anchor>…        # anchor -> clickable file:line
 scripts/coderef anchor  <file.py:LINE>   # a line you have -> the durable anchor
 scripts/coderef check   <paths…>         # DRIFT: anchors whose symbol no longer resolves (tree-wide, high-signal)
 scripts/coderef check --bare <file>      # + UPGRADE nudges: bare file.py:line refs, with the anchor to use (point-of-use)
+scripts/coderef outline <file.py>        # local imports, definition signatures, spans and anchors
+scripts/coderef outline <file.py> --symbol Qual.name  # exact decorated source for one class/function
 ```
 
 - **Authoring:** grab the durable form from a line you're looking at —
@@ -40,6 +42,12 @@ scripts/coderef check --bare <file>      # + UPGRADE nudges: bare file.py:line r
   each (the authoring nudge — point-of-use, kept out of the tree-wide run so it isn't
   a firehose). Advisory — never a gate — wired into `/whatneedsdoing`'s hygiene wave
   next to `memory-lint` / `backlog-lint`.
+- **Local fallback:** when the Python kind serves another checkout or the file
+  is unindexed, use `outline` to inspect one local file, then `--symbol` to read
+  a chosen class/function (exact or unique-suffix name). File mode shows import
+  source at module scope and nested definition signatures; symbol mode preserves
+  decorators, indentation and local imports. Neither executes the target.
+  `scripts/coderef imports` still answers the module dependency graph question.
 
 ## Rules that keep it from rotting — or nagging
 

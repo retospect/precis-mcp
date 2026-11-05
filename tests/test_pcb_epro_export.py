@@ -292,8 +292,10 @@ def test_every_line_parses_through_the_reader_and_the_shape_is_a_pcb_then_footpr
         assert b == '""' or isinstance(json.loads(b), dict)
     docs = epro.split_documents(stream)
     # One FOOTPRINT document per DISTINCT footprint (slice 2f), not per
-    # instance — _INSTANCES places ASYM3 eight ways and POLY1 once.
-    assert [d.doc_type for d in docs] == ["PCB"] + ["FOOTPRINT"] * 2
+    # instance. R7's 37-degree placement is rounded to 0.0001 mm by
+    # padplace; unplacing those sites yields a distinct ASYM3 pad set
+    # (up to 0.000061 mm off), which the 0.000001-mm identity preserves.
+    assert [d.doc_type for d in docs] == ["PCB"] + ["FOOTPRINT"] * 3
     assert sum(1 for ln in lines if ln.startswith('{"type":"DOCHEAD"')) == len(docs)
 
 
@@ -313,7 +315,8 @@ def test_referential_integrity():
     comp_ids = {r.id for r in pcb.of_type("COMPONENT")}
     assert len(comp_ids) == len(_INSTANCES)
     fp_docs = {d.uuid: d for d in project.by_type("FOOTPRINT")}
-    assert len(fp_docs) == 2  # ASYM3 + POLY1, not one per instance
+    # ASYM3 + its rounded R7 variant + POLY1, shared by the other instances.
+    assert len(fp_docs) == 3
 
     # There is no NET record in Pro's own files: a net is declared by the
     # PAD_NET rows and the copper that name it. A declared net with no

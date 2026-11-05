@@ -38,6 +38,7 @@ re-spiking:
 
 from __future__ import annotations
 
+import math
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -346,8 +347,11 @@ def _parse_pad(
 
     Field order (easyeda2kicad's alphabet, spike-verified against
     C42163081): ``PAD~shape~x~y~w~h~layer~net~number~hole_radius~points~
-    rotation~id~hole_length~...``. Fields past ``hole_length`` (plated/
-    locked flags) are ignored — we don't need them. Malformed/short
+    rotation~id~hole_length~hole_points~...``. ``hole_length`` is the
+    complete slotted-hole length, including its round ends. Explicit
+    hole end centres disambiguate its axis; absent those, it follows the
+    pad's major axis. The later plated/locked flags are ignored.
+    Malformed/short
     primitives are skipped, not fatal (defensive parsing per the caller).
     """
     if len(fields) < 9:
@@ -366,6 +370,9 @@ def _parse_pad(
     hole_radius = float_or_zero(fields[9]) if len(fields) > 9 and fields[9] else 0.0
     rotation = float_or_zero(fields[11]) if len(fields) > 11 and fields[11] else 0.0
     drill = round(_to_mm(hole_radius) * 2, 4) if hole_radius > 0 else None
+    hole_length = (
+        _to_mm(float_or_zero(fields[13])) if len(fields) > 13 and fields[13] else 0.0
+    )
 
     pad: dict[str, Any] = {
         "number": number,
@@ -380,6 +387,27 @@ def _parse_pad(
         "layer": "B.Cu" if layer_id == 2 else "F.Cu",
         "drill": drill,
     }
+    if drill and hole_length > drill:
+        length = round(hole_length, 4)
+        along_x = w >= h
+        if len(fields) > 14 and fields[14]:
+            ends = _parse_points_field(fields[14], origin_x, origin_y)
+            if len(ends) == 2:
+                dx, dy = ends[1][0] - ends[0][0], ends[1][1] - ends[0][1]
+                theta = math.radians(rotation)
+                ux = dx * math.cos(theta) - dy * math.sin(theta)
+                uy = dx * math.sin(theta) + dy * math.cos(theta)
+                # Native pad coordinates round to 0.0001 mm. Two
+                # independently rounded endpoints can differ by that
+                # amount on either axis (and sqrt(2) after rotation).
+                axis_error_mm = math.sqrt(2.0) * 0.0001
+                if abs(uy) <= axis_error_mm and abs(ux) > axis_error_mm:
+                    along_x = True
+                elif abs(ux) <= axis_error_mm and abs(uy) > axis_error_mm:
+                    along_x = False
+        pad["slot"] = (
+            {"w": length, "h": drill} if along_x else {"w": drill, "h": length}
+        )
     if shape == "POLYGON" and len(fields) > 10 and fields[10]:
         # field 10 ("points") is the same flat "x1 y1 x2 y2 ..." alphabet
         # TRACK's own points field uses (:func:`_parse_track`) — a

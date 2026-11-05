@@ -29,6 +29,11 @@ _NOT_MARGINED = {
     # margining it up would enlarge every opening on every board while
     # calling itself safety. Both tiers carry JLC's applied default.
     "soldermask_expansion_mm",
+    # Follows the 1oz jlc_min verbatim (Reto 2026-11-03: the via-to-pad
+    # soldermask web is budgeted at JLC MIN figures — capabilities'
+    # `via_mask_web_mm`); a 2oz order, whose dam minimum is 0.20mm,
+    # needs its own row rather than a margined shared figure.
+    "soldermask_dam_mm",
 }
 
 

@@ -62,9 +62,8 @@ uses the V-cut figure (the conservative one, per ``capabilities.py``).
 
 **The O(n^2) reference oracle — the highest-value code in this module.**
 :func:`clearance_violations_naive` computes every same-layer,
-different-net track/via pair's exact copper-to-copper gap using ONLY
-closed-form circle/segment math (no shapely, no spatial index, no shared
-code with the accelerated path below the primitive-flattening step) and is
+different-net pair's copper-to-copper gap using circle/segment/polygon
+distance math, with no spatial index or shared distance implementation, and is
 asserted equal to :func:`check_clearance`'s STRtree-accelerated engine over
 many randomized layouts (``tests/test_pcb_drc.py``). This build has
 already shipped four silent-but-fatal bugs that crashed nothing and failed
@@ -72,16 +71,12 @@ no type check (an inverted hardening penalty, a schedule-mismatched
 acceptance test, a temperature decayed below eligibility, an estimator
 that was provably always zero) — a spatial-index bug that silently misses
 a neighbour is the same family, and produces a clean DRC pass on a shorted
-board. Pour polygons — and, since 2026-08-29, PAD polygons
-(:func:`clearance_pairs_indexed` now folds ``model["pads"]`` into the same
-per-layer check every other copper item gets; see its own docstring) — are
-checked by the accelerated engine only, not cross-validated by the
-dependency-free oracle, which is deliberately restricted to the
-circle/capsule primitives that make closed-form math possible (a
-rect/obround pad is neither). A stated, not silent, gap in oracle
-coverage — and note it is the SAME gap pours already had: the oracle
-agreeing with the accelerated engine on tracks/vias was never evidence
-that either one was checking pads or pours at all.
+board. Pads join the same per-layer check as tracks/vias. Their placed
+primitives now come from ``clearance.body_of``, including native rotation;
+the reference distance and pair enumeration remain separate. Independent
+authored-geometry tests cover placement, which these two engines now share.
+Pour polygons remain outside the reference oracle's census, so agreement on
+track/via/pad pairs does not establish pour coverage.
 
 **A reference oracle only checks the inputs it's fed**: ``clearance_
 violations_naive`` was correct against every synthetic fixture and still
@@ -116,7 +111,7 @@ import collections
 import dataclasses
 import math
 import re
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -143,7 +138,11 @@ from precis.pcb import (
     PIN_ETYPES,
 )
 from precis.pcb import clearance as clearance_kernel
-from precis.pcb.capabilities import CapabilityRow, strict_fields_of
+from precis.pcb.capabilities import (
+    CapabilityRow,
+    strict_fields_of,
+    via_mask_web_mm,
+)
 from precis.pcb.geom import _orient, dist_point_to_segment
 from precis.pcb.geom import dist as _dist
 from precis.pcb.gerber import declares_parylene_coat
@@ -642,11 +641,10 @@ def _copper_item_polygon(item: dict[str, Any]) -> BaseGeometry | None:
     real outline through this SAME function too — the disc either used
     before over-stated a non-square pad's reach past its actual land,
     firing on vias/off-board findings against copper that, on the real
-    board, clears them by a wide margin. :mod:`precis.pcb.connectivity`'s
-    own pad-touch test (:func:`~precis.pcb.connectivity._pad_poly`) reads
-    its rect/obround outline from here for the same reason, though it
-    keeps its own polygon-vertex machinery rather than sharing shapely
-    geometry across module boundaries.
+    board, clears them by a wide margin. Native pad geometry comes from
+    :func:`precis.pcb.clearance.body_of`; connectivity consumes those same
+    analytic bodies, retaining stadium caps instead of using this polygon
+    representation for electrical contact.
 
     **A pour's ``holes`` are antipads, not decoration.** :mod:`precis.pcb.
     planes` (:func:`~precis.pcb.planes.plane_pours`, its own docstring)
@@ -685,60 +683,14 @@ def _copper_item_polygon(item: dict[str, Any]) -> BaseGeometry | None:
         ]
         return Polygon([(float(p[0]), float(p[1])) for p in poly], holes)
     if ctype == "pad":
-        shape = item.get("shape", "circle")
-        if shape == "polygon":
-            poly = item.get("poly") or []
-            if len(poly) < 3:
-                return None
-            return Polygon([(float(p[0]), float(p[1])) for p in poly])
-        x, y = float(item["x"]), float(item["y"])
-        w = float(item.get("w", 0.0))
-        h = float(item.get("h", w))
-        if w <= 0 or h <= 0:
+        body = clearance_kernel.body_of(item)
+        if body is None or body.core is None:
             return None
-        if shape == "circle":
-            return Point(x, y).buffer(w / 2.0, quad_segs=_BUFFER_QUAD_SEGS)
-        # ``oblique_rot`` (instance + pad rotation, CW-from-north degrees —
-        # :func:`precis.pcb.padplace.place_footprint_pads`'s record on a pad
-        # it could not keep axis-aligned) is part of the shape, not metadata:
-        # read it or the pad is measured as its unrotated w×h box, which is
-        # both a false hit where the true land is narrower (a rotated
-        # exposed pad's corner poking into its neighbour's land) and a
-        # false miss where it is wider. The ring-geometry half already read
-        # it (:func:`_pad_boundary_edges`); the clearance half dropped it.
-        # Read through `pad_world_rot`: on a bottom part the land's board
-        # angle is instance - pad, not the recorded total (gr504558).
-        rot = pad_world_rot(item)
-
-        def _rot(px: float, py: float) -> tuple[float, float]:
-            rx, ry = _rotate_cw(px, py, rot)
-            return x + rx, y + ry
-
-        if shape == "rect":
-            hw, hh = w / 2.0, h / 2.0
-            return Polygon(
-                [
-                    _rot(px, py)
-                    for px, py in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))
-                ]
-            )
-        if shape == "obround":
-            # A capsule -- the same "buffer a segment" construction a track
-            # uses above -- with the rounded ends on the LONGER of w/h (the
-            # conventional "stadium" reading of an oval pad) and a straight
-            # zero-length degenerate case at w == h so this never divides
-            # by an undefined axis.
-            if w == h:
-                return Point(x, y).buffer(w / 2.0, quad_segs=_BUFFER_QUAD_SEGS)
-            if w > h:
-                half_len, r = (w - h) / 2.0, h / 2.0
-                ends = [(-half_len, 0.0), (half_len, 0.0)]
-            else:
-                half_len, r = (h - w) / 2.0, w / 2.0
-                ends = [(0.0, -half_len), (0.0, half_len)]
-            line = LineString([_rot(px, py) for px, py in ends])
-            return line.buffer(r, quad_segs=_BUFFER_QUAD_SEGS)
-        raise ValueError(f"unknown pad shape {shape!r}")
+        return (
+            body.core.buffer(body.r, quad_segs=_BUFFER_QUAD_SEGS)
+            if body.r
+            else body.core
+        )
     return None
 
 
@@ -802,12 +754,9 @@ def clearance_pairs_indexed(
     disagreeing on exactly this case (property test,
     ``tests/test_pcb_drc.py``) — the oracle doing its job.
 
-    **The reference oracle does NOT cross-check a pad pair.**
-    :func:`clearance_violations_naive` is restricted to the circle/capsule
-    primitive alphabet (module docstring); a rect/obround pad is neither,
-    so pad clearance — like pour clearance before it — is validated by
-    this accelerated engine alone, a stated gap in oracle coverage, not a
-    silent one.
+    The reference oracle cross-checks native pad pairs using independent
+    distance math over shared placed bodies. Pour pairs remain outside its
+    census; independent board/film tests cover that boolean boundary.
 
     **A drilled (through-hole) pad has no single ``item["layer"]`` either**
     (gr341516) — its plated land is real copper on every board layer, not
@@ -1276,7 +1225,7 @@ def _max_voltage_spacing_mm(net_voltages: dict[str, float]) -> float:
     return _voltage_spacing_mm(max(values) - min(values), outer=True) or 0.0
 
 
-# ── the O(n^2) reference oracle — no shapely, no spatial index ────────────
+# ── the O(n^2) reference oracle — independent distance, no spatial index ──
 #
 # A brute-force, obviously-correct implementation over the same primitive
 # alphabet realize.py's closed-form geometry already uses (circles for
@@ -1351,35 +1300,21 @@ def _copper_primitives(model: dict[str, Any]) -> list[_Prim]:
 
 
 def _pad_primitives(item: dict[str, Any], idx: int, net: str) -> list[_Prim]:
-    """A pad's shape as one layer-less oracle primitive (empty when the
-    pad is degenerate)."""
-    shape = item.get("shape", "circle")
-    if shape == "polygon":
-        poly = tuple((float(p[0]), float(p[1])) for p in item.get("poly") or [])
-        if len(poly) < 3:
-            return []
-        return [_Prim(poly[0], None, 0.0, idx, net, "", poly=poly)]
-    x, y = float(item["x"]), float(item["y"])
-    w = float(item.get("w", 0.0))
-    h = float(item.get("h", w))
-    if w <= 0 or h <= 0:
+    """A placed land as one layer-less oracle primitive.
+
+    Placement comes from the shared body; the oracle's distance calculation
+    remains independent of the clearance kernel's distance implementation.
+    """
+    body = clearance_kernel.body_of({**item, "ctype": "pad"})
+    if body is None or body.core is None:
         return []
-    if shape == "rect":
-        hw, hh = w / 2.0, h / 2.0
-        corners = (
-            (x - hw, y - hh),
-            (x + hw, y - hh),
-            (x + hw, y + hh),
-            (x - hw, y + hh),
-        )
-        return [_Prim(corners[0], None, 0.0, idx, net, "", poly=corners)]
-    if shape == "obround" and w != h:
-        half, r = (abs(w - h) / 2.0, min(w, h) / 2.0)
-        ends = (
-            ((x - half, y), (x + half, y)) if w > h else ((x, y - half), (x, y + half))
-        )
-        return [_Prim(ends[0], ends[1], r, idx, net, "")]
-    return [_Prim((x, y), None, w / 2.0, idx, net, "")]
+    if isinstance(body.core, Polygon):
+        poly = tuple((float(x), float(y)) for x, y in body.core.exterior.coords[:-1])
+        return [_Prim(poly[0], None, 0.0, idx, net, "", poly=poly)]
+    coords = list(body.core.coords)
+    a = (float(coords[0][0]), float(coords[0][1]))
+    b = (float(coords[-1][0]), float(coords[-1][1])) if len(coords) > 1 else None
+    return [_Prim(a, b, body.r, idx, net, "")]
 
 
 def _on_segment(p: Coord, q: Coord, r: Coord, *, eps: float = 1e-9) -> bool:
@@ -1582,11 +1517,12 @@ def clearance_violations_naive(
     model: dict[str, Any], *, required_mm: float
 ) -> list[tuple[int, int, float]]:
     """The O(n^2) reference oracle (backlog, verbatim): every same-layer,
-    different-net pair of track/via copper ITEMS whose exact minimum
+    different-net pair of track/via/pad ITEMS whose minimum
     edge-to-edge gap (the min over every constituent circle/capsule sub-
     primitive pair sharing a layer — see :func:`_capsule_capsule_gap`) is
-    below ``required_mm``. Pure closed-form math; no shapely, no
-    dependency. Compare against :func:`check_clearance` / :func:`clearance_
+    below ``required_mm``. Distance math and pair enumeration are independent;
+    placed pad geometry comes from the shared body. Compare against
+    :func:`check_clearance` / :func:`clearance_
     pairs_indexed` — the property test in ``tests/test_pcb_drc.py`` asserts
     the two agree on both WHICH pairs violate and the gap number itself,
     over many randomized track/via-only layouts.
@@ -1680,39 +1616,97 @@ def check_trace_width(
 def _pad_boundary_edges(
     pad: dict[str, Any],
 ) -> list[tuple[float, float, float, float]]:
-    """The pad's land outline, board frame, as boundary segments — its
-    ``poly`` ring when it carries one (a polygon pad, or the true rotated
-    outline :func:`precis.pcb.realize.pads_for_ir` emits for an oblique
-    land), else the w×h rect rotated clockwise by its board-frame angle
-    (:func:`~precis.pcb.padplace.pad_world_rot`). An obround pad
-    is read on its bbox: the stadium's side walls ARE the bbox edges, so
-    a lateral measurement is exact everywhere but right at the end arcs,
-    where it errs a hair generous."""
-    poly = pad.get("poly")
-    if poly:
-        pts = [(float(p[0]), float(p[1])) for p in poly]
-    else:
-        w = float(pad.get("w", 0.0))
-        h = float(pad.get("h", w))
-        hw, hh = w / 2.0, h / 2.0
-        # CW, the same rotation `_copper_item_polygon` applies — this half
-        # used to turn CCW, so the two disagreed on every oblique pad
-        # (gr504558).
-        rot = pad_world_rot(pad)
-        cx, cy = float(pad["x"]), float(pad["y"])
-        pts = []
-        for px, py in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)):
-            rx, ry = _rotate_cw(px, py, rot)
-            pts.append((cx + rx, cy + ry))
-    return [
-        (
-            pts[i][0],
-            pts[i][1],
-            pts[(i + 1) % len(pts)][0],
-            pts[(i + 1) % len(pts)][1],
+    """The straight parts of the native land boundary, in board coordinates.
+
+    Stadium caps are measured separately as analytic arcs by the slot ring
+    check; substituting their enclosing rectangle overstates cap copper.
+    """
+    edges, _ = clearance_kernel.pad_boundary(pad)
+    return [(a[0], a[1], b[0], b[1]) for a, b in edges]
+
+
+def _slot_arc_lateral_distance(
+    arc: clearance_kernel.Arc,
+    mx: float,
+    my: float,
+    ux: float,
+    uy: float,
+    half: float,
+) -> float:
+    """Minimum transverse reach on a circular cap inside the slot's span.
+
+    The clipped arc's endpoints, transverse extrema and zero crossings are
+    the complete candidates. Strip intersections supply the clipped endpoints;
+    evaluating the circle analytically keeps near-floor verdicts exact.
+    """
+    along = (arc.cx - mx) * ux + (arc.cy - my) * uy
+    across = -(arc.cx - mx) * uy + (arc.cy - my) * ux
+    angle_u = math.atan2(uy, ux)
+    angle_v = angle_u + math.pi / 2
+    candidates = [arc.a0, arc.a0 + arc.sweep, angle_v, angle_v + math.pi]
+    for value, axis in (
+        (-across, angle_v),
+        (-half - along, angle_u),
+        (half - along, angle_u),
+    ):
+        if abs(value) <= arc.radius:
+            delta = math.acos(value / arc.radius)
+            candidates.extend((axis - delta, axis + delta))
+    nearest = math.inf
+    for theta in candidates:
+        if not arc.contains_angle(theta):
+            continue
+        x, y = arc.point_at(theta)
+        a = (x - mx) * ux + (y - my) * uy
+        if abs(a) <= half + 1e-12:
+            nearest = min(nearest, abs(-(x - mx) * uy + (y - my) * ux))
+    return nearest
+
+
+def _round_pad_ring_mm(pad: dict[str, Any], drill: float) -> float:
+    """Shortest signed copper margin around a round hole at its real centre.
+
+    A custom land's bounding box does not describe its nearest edge, and
+    an offset hole need not share the land's centre. Outside centres have
+    a negative margin even if their distance to the boundary is large.
+    """
+    x, y = float(pad["x"]), float(pad["y"])
+    hx = float(pad.get("drill_x", x))
+    hy = float(pad.get("drill_y", y))
+    w = float(pad.get("w", 0.0))
+    h = float(pad.get("h", w))
+    shape = pad.get("shape", "circle")
+    if shape == "circle":
+        return w / 2.0 - math.hypot(hx - x, hy - y) - drill / 2.0
+    if shape == "rect":
+        dx, dy = _rotate_cw(hx - x, hy - y, -pad_world_rot(pad))
+        sx, sy = w / 2.0 - abs(dx), h / 2.0 - abs(dy)
+        distance = (
+            min(sx, sy)
+            if sx >= 0 and sy >= 0
+            else -math.hypot(max(-sx, 0.0), max(-sy, 0.0))
         )
-        for i in range(len(pts))
-    ]
+        return distance - drill / 2.0
+    if shape == "obround" and (hx != x or hy != y):
+        # A stadium is the exact offset of its centre segment. Keep this
+        # analytic so tessellated end caps cannot move a floor verdict.
+        half = abs(w - h) / 2.0
+        ends = ((-half, 0.0), (half, 0.0)) if w >= h else ((0.0, -half), (0.0, half))
+        a, b = [
+            (x + rx, y + ry)
+            for rx, ry in (_rotate_cw(px, py, pad_world_rot(pad)) for px, py in ends)
+        ]
+        return min(w, h) / 2.0 - dist_point_to_segment((hx, hy), a, b) - drill / 2.0
+    if shape != "polygon" and hx == x and hy == y:
+        # Preserve the exact centred rect/stadium result, including the
+        # real narrow side carried by a rotated-bbox size probe.
+        return (float(pad.get("land_min_mm") or min(w, h)) - drill) / 2.0
+    land = _copper_item_polygon({**pad, "ctype": "pad"})
+    if land is None or land.is_empty:
+        return -drill / 2.0
+    centre = Point(hx, hy)
+    distance = centre.distance(land.boundary)
+    return (distance if land.covers(centre) else -distance) - drill / 2.0
 
 
 def _slot_lateral_ring_mm(pad: dict[str, Any], slot: Any, drill: float) -> float:
@@ -1738,12 +1732,14 @@ def _slot_lateral_ring_mm(pad: dict[str, Any], slot: Any, drill: float) -> float
     if span < 1e-9:
         # A degenerate slot line carries no axis; judge it as the round
         # hole it degenerates to, against the pad's narrow side.
-        w = float(pad.get("w", 0.0))
-        h = float(pad.get("h", w))
-        dia = float(pad.get("land_min_mm") or min(w, h))
-        return (dia - drill) / 2.0
+        return _round_pad_ring_mm(pad, drill)
     ux, uy = dx / span, dy / span
     mx, my = (sx1 + sx2) / 2.0, (sy1 + sy2) / 2.0
+    # Distances to both side walls are positive even when the entire hole
+    # lies outside the land. Its midpoint must be in copper. End caps may
+    # still open through a pad's ends, as allowed by the lateral contract.
+    if _round_pad_ring_mm({**pad, "drill_x": mx, "drill_y": my}, 0.0) < 0.0:
+        return -drill / 2.0
     half = span / 2.0
     nearest = math.inf
     for ex1, ey1, ex2, ey2 in _pad_boundary_edges(pad):
@@ -1773,6 +1769,9 @@ def _slot_lateral_ring_mm(pad: dict[str, Any], slot: Any, drill: float) -> float
         # at whichever end sits nearer the slot line — or exactly 0 where
         # the edge crosses it (the slot's side is outside the pad).
         nearest = min(nearest, 0.0 if ta * tb <= 0 else min(abs(ta), abs(tb)))
+    _, arcs = clearance_kernel.pad_boundary(pad)
+    for arc in arcs:
+        nearest = min(nearest, _slot_arc_lateral_distance(arc, mx, my, ux, uy, half))
     if nearest is math.inf:
         # No pad boundary beside the slot at all: nothing wraps its
         # sides, so there is no ring — a certain violation.
@@ -1796,8 +1795,8 @@ def _drilled_pad_ring_items(model: dict[str, Any]) -> list[dict[str, Any]]:
         if not drill:
             continue
         key = (
-            round(float(pad["x"]), 4),
-            round(float(pad["y"]), 4),
+            round(float(pad.get("drill_x", pad["x"])), 4),
+            round(float(pad.get("drill_y", pad["y"])), 4),
             round(float(drill), 4),
         )
         seen.setdefault(key, pad)
@@ -1860,11 +1859,6 @@ def check_annular_ring(
             )
         )
     for pad in _drilled_pad_ring_items(model):
-        w = float(pad.get("w", 0.0))
-        h = float(pad.get("h", w))
-        # An oblique pad's w/h are its rotated bbox; `land_min_mm` is the
-        # land's real narrow side (realize.pads_for_ir).
-        dia = float(pad.get("land_min_mm") or min(w, h))
         drill = float(pad["drill"])
         slot = pad.get("slot")
         if slot:
@@ -1873,7 +1867,7 @@ def check_annular_ring(
             # promised (:func:`_slot_lateral_ring_mm`; gr484771).
             ring = _slot_lateral_ring_mm(pad, slot, drill)
         else:
-            ring = (dia - drill) / 2.0
+            ring = _round_pad_ring_mm(pad, drill)
         result = _two_tier(
             ring, jlc_min, house, strict=field in strict_fields_of(capability)
         )
@@ -2307,6 +2301,163 @@ def check_via_pad_keepout(
     return findings
 
 
+# ── via-to-pad soldermask web (a dam must print between the openings) ──
+
+
+def check_via_mask_web(
+    model: dict[str, Any], capability: CapabilityRow
+) -> list[DrcFinding]:
+    """A via's copper edge must sit ``via_mask_web_mm`` off EVERY pad's
+    copper edge — pad mask expansion + minimum soldermask dam + via mask
+    expansion — or no mask web prints between the two openings and solder
+    wicks down the barrel (Reto 2026-11-03: vias are NOT tented —
+    :func:`precis.pcb.capabilities.via_mask_web_mm`, JLC-min figures,
+    0.20mm on the FR-4 rows). Net-blind like
+    :func:`check_via_pad_keepout` — the pad on the via's OWN net wicks
+    identically — and stricter than it: the keepout's
+    ``trace_spacing_mm`` floor (0.09–0.10mm) is smaller than the web, so
+    a pair that clears the keepout can still fail here, and a pair
+    failing both is reported by both rules (two different fab facts).
+
+    Geometry, layering and degenerate-pad handling are deliberately the
+    same as :func:`check_via_pad_keepout`'s: the pad's real outline
+    (:func:`_copper_item_polygon` via ``clearance_kernel``), the via a
+    disc, the gap edge-to-edge; a drilled pad's land counts on every
+    layer (gr341516), an unshapeable pad keeps the circumscribed-circle
+    fallback. The same-net FIXED-via anchor carve-out is kept too — the
+    authored plaza-via drop point into its own electrode body is legal
+    there for the same reason it is under the keepout (the electrode is
+    a copper field, not a solder land); ``via_in_pad`` itself is never
+    exempted anywhere. Severity ``error``: a dam the fab cannot print
+    is not a margin to grade."""
+    required = via_mask_web_mm(capability)
+    all_layers = list(model.get("layers") or [])
+    pads = model.get("pads") or []
+    findings: list[DrcFinding] = []
+    pad_bodies = [clearance_kernel.body_of({**pad, "ctype": "pad"}) for pad in pads]
+    by_layer: dict[str, list[int]] = {}
+    drilled: list[int] = []
+    degenerate: list[int] = []
+    for idx, pad in enumerate(pads):
+        if pad_bodies[idx] is None:
+            degenerate.append(idx)
+        elif pad.get("drill"):
+            drilled.append(idx)
+        else:
+            by_layer.setdefault(str(pad.get("layer", "")), []).append(idx)
+
+    def _box_tree(idxs: list[int]) -> STRtree:
+        boxes = []
+        for i in idxs:
+            body = pad_bodies[i]
+            assert body is not None
+            boxes.append(shapely_box(*body.bounds()))
+        return STRtree(boxes)
+
+    layer_trees = {layer: (idxs, _box_tree(idxs)) for layer, idxs in by_layer.items()}
+    drilled_tree = _box_tree(drilled) if drilled else None
+
+    for item in model.get("copper") or []:
+        if item.get("ctype") != "via":
+            continue
+        vx, vy = float(item["x"]), float(item["y"])
+        vr = float(item.get("dia_mm", 0.0)) / 2.0
+        via_net = item.get("net")
+        via_fixed = bool(item.get("fixed"))
+        via_layers = set(_via_layer_names(item, all_layers))
+        vx_y = Point(vx, vy)
+        probe = (
+            max(required + vr, _VIA_ANCHOR_TOL_MM + vr) if via_fixed else required + vr
+        )
+        cand: set[int] = set(degenerate)
+        for layer in via_layers:
+            entry = layer_trees.get(layer)
+            if entry is None:
+                continue
+            layer_idxs, layer_tree = entry
+            for c in layer_tree.query(vx_y, predicate="dwithin", distance=probe):
+                cand.add(layer_idxs[int(c)])
+        if drilled_tree is not None:
+            for c in drilled_tree.query(vx_y, predicate="dwithin", distance=probe):
+                cand.add(drilled[int(c)])
+        rows: list[tuple[dict[str, Any], float]] = []
+        for pad_idx in sorted(cand):
+            pad = pads[pad_idx]
+            if pad.get("layer") not in via_layers and not pad.get("drill"):
+                continue
+            pad_body = pad_bodies[pad_idx]
+            if pad_body is not None:
+                gap = (
+                    clearance_kernel.gap(clearance_kernel.Body(vx_y, (), 0.0), pad_body)
+                    - vr
+                )
+            else:
+                px, py = float(pad["x"]), float(pad["y"])
+                w = float(pad.get("w", 0.0))
+                h = float(pad.get("h", w))
+                gap = _dist((vx, vy), (px, py)) - vr - max(w, h) / 2.0
+            rows.append((pad, gap))
+        anchored = via_fixed and _via_anchor_ok(
+            str(via_net or ""),
+            [
+                (
+                    pad.get("net"),
+                    max(gap, 0.0),
+                    gap < -_EPS,
+                    pad.get("role") in _COPPER_FIELD_PAD_ROLES,
+                )
+                for pad, gap in rows
+            ],
+        )
+        if anchored:
+            continue
+        for pad, gap in rows:
+            if gap >= required - _EPS:
+                continue
+            pad_net, pad_layer = pad.get("net"), pad.get("layer")
+            pad_refdes, pad_pin = pad.get("refdes"), pad.get("pin")
+            pad_id = (
+                f"{pad_refdes}/{pad_pin} (net {pad_net})"
+                if pad_refdes and pad_pin
+                else f"pad[{pad_net}]"
+            )
+            findings.append(
+                DrcFinding(
+                    rule="via_mask_web",
+                    severity="error",
+                    where=(
+                        f"via[{via_net}] @ ({vx}, {vy}) <-> {pad_id} on {pad_layer}"
+                    ),
+                    detail=(
+                        f"via clears {pad_id} by {gap:.3f}mm, needs "
+                        f"{required:.3f}mm (2 x soldermask expansion + dam, "
+                        f"{capability.process}) — no soldermask web can print "
+                        "between the two mask openings, so solder wicks down "
+                        "the barrel regardless of net"
+                    ),
+                    objects=(
+                        {
+                            "via_net": via_net,
+                            **({"via_derived": True} if item.get("derived") else {}),
+                            **(
+                                {"via_fixed_id": item["fixed_id"]}
+                                if item.get("fixed_id") is not None
+                                else {}
+                            ),
+                            "via_x": vx,
+                            "via_y": vy,
+                            "pad_net": pad_net,
+                            "pad_refdes": pad_refdes,
+                            "pad_pin": pad_pin,
+                            "pad_layer": pad_layer,
+                        },
+                    ),
+                    margin_mm=gap - required,
+                )
+            )
+    return findings
+
+
 # ── via-to-via keep-out (two drilled holes, not a clearance pair) ───────
 
 
@@ -2635,6 +2786,9 @@ def check_courtyard_overlap(
     bottom_by_refdes: dict[str, bool] | None = None,
     clearance_mm: float | None = None,
     pads: Sequence[dict[str, Any]] | None = None,
+    bodies: Sequence[Courtyard] | None = None,
+    bodied: Collection[str] | None = None,
+    rigid_pairs: Collection[tuple[str, str]] | None = None,
 ) -> list[DrcFinding]:
     """Two parts' courtyards overlapping is an ERROR when their land
     patterns themselves collide, and a WARNING when only the placer's
@@ -2650,8 +2804,36 @@ def check_courtyard_overlap(
     land of the other; courtyards that overlap with every land clear are
     a warning naming the land gap (taz15's L2 inductor pad reaching into
     the TO-263's courtyard between its leads, 1.06 mm "deep" by
-    courtyard, 0 mm by land). Bodies are not modelled; that is said in
-    the finding.
+    courtyard, 0 mm by land).
+
+    ``bodies`` + ``bodied`` (round-2 ruling, Reto 2026-11-02 — "No parts
+    can be inside another part's courtyard"): the zero-clearance
+    occupied union per part — the same ``(refdes, poly)`` shape as
+    ``courtyards``, what
+    :func:`precis.pcb.ir.world_courtyard_polygons` returns at
+    ``clearance_mm=0`` (gr529963's pad-and-body union) — and the refdes
+    subset whose union carries a real BODY extent
+    (:attr:`precis.pcb.ir.PcbIR.inst_body_bbox`, from
+    :func:`precis.pcb.ir.bodied_refdes`). Given both, a pair in which a
+    modelled body participates is graded on real geometry, not the
+    over-approximation argument: an overlap that reaches either part's
+    occupied region is a proven collision — ERROR; an overlap living
+    only in the two routing margins stays a WARN naming the occupied
+    gap. A pair with no modelled body keeps the land-hull grading —
+    the pad-union rings of two body-less parts still prove nothing.
+    ``bodied`` without ``bodies`` is inert (there is nothing to
+    measure); ``bodies`` without ``bodied`` leaves every pair on the
+    legacy path, so the same ``bodies`` list the edge rules already
+    take can be threaded unconditionally.
+
+    ``rigid_pairs`` is the explicit authored exemption — unordered
+    refdes pairs of one rigid ``inst_group`` assembly
+    (:func:`precis.pcb.ir.rigid_refdes_pairs`), the placer's
+    ``rigid_pairs`` ruling (round 3, 2026-11-02): the shape is authored,
+    no pair rule applies at all, so the pair is skipped outright rather
+    than downgraded. A hard-measure carry (a decap nested under its
+    package's edge) is NOT one of these: it may touch, never overlap —
+    such a pair grades exactly like any other.
 
     ``clearance_mm`` is the offset the caller inflated each courtyard by
     (:data:`precis.pcb.ir.COURTYARD_CLEARANCE_MM` for every placer/DRC
@@ -2706,6 +2888,17 @@ def check_courtyard_overlap(
         return []
     tree = STRtree([g for _, g in indexed])
     lands = _land_polygons_by_refdes(pads)
+    # The body-aware grading needs BOTH inputs: the occupied polygons to
+    # measure and the flag saying which refdes' union carries a real
+    # body. Either missing -> every pair keeps the land-hull reading.
+    occupied: dict[str, BaseGeometry] = {}
+    if bodies is not None and bodied is not None:
+        for refdes, poly in bodies:
+            bg = Polygon(poly) if len(poly) >= 3 else None
+            if bg is not None and not bg.is_empty:
+                occupied[str(refdes)] = bg
+    bodied_set = {str(r) for r in (bodied or ())}
+    rigid = {frozenset((str(a), str(b))) for a, b in (rigid_pairs or ())}
     findings: list[DrcFinding] = []
     seen: set[tuple[int, int]] = set()
     for pos, (i, gi) in enumerate(indexed):
@@ -2725,6 +2918,12 @@ def check_courtyard_overlap(
                     # each other, not colliding (docstring's sink-under-
                     # array example).
                     continue
+            if frozenset((courtyards[i][0], courtyards[j][0])) in rigid:
+                # One authored rigid assembly — the placer's
+                # ``rigid_pairs`` ruling: the shape is authored, no pair
+                # rule applies at all (SNS1/SNS2-style overlaid
+                # footprints share one origin by design).
+                continue
             overlap = gi.intersection(gj)
             if overlap.is_empty or overlap.area <= _EPS:
                 # A shared edge or a single touching vertex: STRtree's
@@ -2736,6 +2935,46 @@ def check_courtyard_overlap(
                 f"overlap over {overlap.area:.4f}mm^2, "
                 f"{_overlap_depth_mm(overlap):.3f}mm deep"
             )
+            occ_i = occupied.get(courtyards[i][0])
+            occ_j = occupied.get(courtyards[j][0])
+            body_graded = (
+                occ_i is not None
+                and occ_j is not None
+                and (courtyards[i][0] in bodied_set or courtyards[j][0] in bodied_set)
+            )
+            if body_graded and occ_i is not None and occ_j is not None:
+                # A modelled body is in the pair, so grade the overlap on
+                # REAL occupied area (pads + authored body), not the
+                # deflated-hull approximation: an occupied region inside
+                # the other's courtyard is a proven collision, a
+                # margin-only overlap stays a warn (round-2 ruling).
+                inside_i = overlap.intersection(occ_i).area > _EPS
+                inside_j = overlap.intersection(occ_j).area > _EPS
+                if inside_i or inside_j:
+                    who = []
+                    if inside_i:
+                        who.append(
+                            f"{courtyards[i][0]}'s occupied area sits inside "
+                            f"{courtyards[j][0]}'s courtyard"
+                        )
+                    if inside_j:
+                        who.append(
+                            f"{courtyards[j][0]}'s occupied area sits inside "
+                            f"{courtyards[i][0]}'s courtyard"
+                        )
+                    detail += " — " + " and ".join(who)
+                else:
+                    severity = "warn"
+                    margin_txt = (
+                        f"the {clearance_mm:.2f}mm routing margins"
+                        if clearance_mm is not None
+                        else "the routing margins"
+                    )
+                    detail += (
+                        f" — the parts' occupied areas (pads and bodies) "
+                        f"clear by {occ_i.distance(occ_j):.3f}mm; only "
+                        f"{margin_txt} overlap, not a proven collision"
+                    )
             # Only a courtyard built from real lands can be deflated back
             # to them: with `pads` supplied (non-empty), a part that has no land in it
             # (a pinless mounting hole or fiducial, whose courtyard is the
@@ -2744,7 +2983,11 @@ def check_courtyard_overlap(
             deflatable = not pads or (
                 bool(lands.get(courtyards[i][0])) and bool(lands.get(courtyards[j][0]))
             )
-            land_gap = _land_hull_gap_mm(gi, gj, clearance_mm) if deflatable else None
+            land_gap = (
+                _land_hull_gap_mm(gi, gj, clearance_mm)
+                if deflatable and not body_graded
+                else None
+            )
             if land_gap is not None and land_gap > _EPS:
                 severity = "warn"
                 detail += (
@@ -4814,6 +5057,8 @@ def run_geometric_drc(
     courtyard_clearance_mm: float | None = None,
     profile_rules: ProfileRules | None = None,
     bodies: Sequence[Courtyard] | None = None,
+    bodied: Collection[str] | None = None,
+    rigid_pairs: Collection[tuple[str, str]] | None = None,
 ) -> list[DrcFinding]:
     """Every geometric DRC rule over one realized board, in one call — what
     ``view='drc'`` and the ``netlist_drc_clean`` gate evaluator both run.
@@ -4892,6 +5137,12 @@ def run_geometric_drc(
     ``courtyards``, byte-identical to before — the identical "silent
     about a thing this module was never told" contract ``unrouted=None``
     already has.
+
+    ``bodied`` + ``rigid_pairs`` (round-2 ruling, Reto 2026-11-02) feed
+    :func:`check_courtyard_overlap`'s severity — the refdes set whose
+    occupied union carries a real body extent, and the authored rigid
+    assemblies exempt from the pair rule entirely. See that function's
+    docstring; ``None`` (the defaults) keeps its pre-existing grading.
     """
     findings: list[DrcFinding] = []
     findings += check_synthesized_footprint(model)
@@ -4903,6 +5154,7 @@ def run_geometric_drc(
     findings += check_npth_clearance(model, capability)
     findings += check_via_pad_keepout(model, capability)
     findings += check_via_via_keepout(model, capability)
+    findings += check_via_mask_web(model, capability)
     findings += check_board_edge_clearance(
         model, capability, outline=outline, panel_type=panel_type
     )
@@ -4938,6 +5190,9 @@ def run_geometric_drc(
             bottom_by_refdes=courtyard_bottom,
             clearance_mm=courtyard_clearance_mm,
             pads=model.get("pads"),
+            bodies=bodies,
+            bodied=bodied,
+            rigid_pairs=rigid_pairs,
         )
         findings += check_courtyard_hole(courtyards, holes, bodies)
     findings += check_silk_missing(census or (), model)
@@ -6149,6 +6404,8 @@ def run_placement_drc(
     edge_mates: Sequence[Any] | None = None,
     courtyard_clearance_mm: float | None = None,
     bodies: Sequence[Courtyard] | None = None,
+    bodied: Collection[str] | None = None,
+    rigid_pairs: Collection[tuple[str, str]] | None = None,
 ) -> list[DrcFinding]:
     """The PLACEMENT-only subset of :func:`run_geometric_drc` — every rule
     that can fire before a single trace is routed, over a model carrying
@@ -6194,8 +6451,11 @@ def run_placement_drc(
 
     ``bodies`` (gr529963, ruling Reto 2026-10-28) threads into
     :func:`check_courtyard_edge_clearance` — the zero-clearance pad-union
-    body the fab bar measures. ``None`` (the default) keeps the rule
-    measuring ``courtyards``, byte-identical to before — the same "silent
+    body the fab bar measures — and, with ``bodied`` (the refdes set whose
+    union carries a real body extent, round-2 ruling) and ``rigid_pairs``
+    (the authored-assembly exemption), into
+    :func:`check_courtyard_overlap`'s body-aware severity. ``None`` (the
+    defaults) keep every rule's pre-existing reading — the same "silent
     about a thing this module was never told" contract
     :func:`run_geometric_drc`'s optional inputs carry.
     """
@@ -6203,6 +6463,7 @@ def run_placement_drc(
     findings += check_clearance(model, capability, net_rules=net_rules)
     findings += check_via_pad_keepout(model, capability)
     findings += check_via_via_keepout(model, capability)
+    findings += check_via_mask_web(model, capability)
     findings += check_outline_missing(outline)
     findings += check_outline_containment(
         model, outline=outline, courtyards=courtyards, bodies=bodies
@@ -6217,6 +6478,9 @@ def run_placement_drc(
             bottom_by_refdes=courtyard_bottom,
             clearance_mm=courtyard_clearance_mm,
             pads=model.get("pads"),
+            bodies=bodies,
+            bodied=bodied,
+            rigid_pairs=rigid_pairs,
         )
     return findings
 
@@ -6262,6 +6526,7 @@ __all__ = [
     "check_unconnected_pins",
     "check_undeclared_pads",
     "check_unrouted",
+    "check_via_mask_web",
     "check_via_pad_keepout",
     "check_via_via_keepout",
     "clearance_pairs_indexed",

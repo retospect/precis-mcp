@@ -33,7 +33,8 @@ from typing import Any
 from shapely.geometry import Point as _ShapelyPoint
 from shapely.geometry import Polygon as _ShapelyPolygon
 
-from precis.pcb import geom, landpattern, padplace, pose
+from precis.pcb import clearance as clearance_kernel
+from precis.pcb import geom, padplace, pose
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.geom import Point
 from precis.pcb.ir import (
@@ -529,75 +530,31 @@ def pad_board_wh(geom: PadGeom, inst_rot: float) -> tuple[float, float]:
     Only rect/obround have an orientation to get wrong: a circle's w/h
     are its diameter, and a polygon pad carries a true rotated ring
     instead. An oblique (non-90-degree-multiple) rotation is NOT handled
-    here — :func:`pads_for_ir` claims a conservative enclosing circle for
-    that case, and ``pads_for_ir`` emits the true rotated outline as a
-    polygon pad (:func:`oblique_pad_ring`), so w/h are not read."""
+    here — the routing claim uses a conservative enclosing circle for
+    that case. :func:`pads_for_ir` restores the native dimensions and
+    board angle so fabrication and DRC retain the analytic land."""
     if geom.shape not in ("rect", "obround"):
         return geom.w_mm, geom.h_mm
     rot = 0.0 if math.isnan(inst_rot) else inst_rot
-    if geom.footprint_local and padplace.rect_swaps_wh(rot):
+    if geom.footprint_local and padplace.rect_swaps_wh(
+        rot, w_mm=geom.w_mm, h_mm=geom.h_mm
+    ):
         return geom.h_mm, geom.w_mm
     return geom.w_mm, geom.h_mm
-
-
-#: Vertices per semicircular cap of an oblique obround's polygon outline.
-_OBLIQUE_CAP_SEGMENTS = 16
 
 
 def pad_is_oblique(geom: PadGeom, inst_rot: float) -> bool:
     """True for a rect/obround pad whose board-space extent is NOT an
     axis-aligned box — the case :func:`pad_board_wh`'s w/h cannot describe
-    and :func:`oblique_pad_ring` exists for. Same axis-alignment decision
+    and :func:`pads_for_ir` retains an explicit board angle for. Same axis-alignment decision
     :func:`pads_for_ir` makes (a synthesized pad's off the instance
     rotation, a real pad's off :attr:`PadGeom.axis_aligned`)."""
     if geom.shape not in ("rect", "obround"):
         return False
     rot = 0.0 if math.isnan(inst_rot) else inst_rot
     if geom.footprint_local:
-        return not padplace.pad_axis_aligned(rot)
+        return not padplace.pad_axis_aligned(rot, w_mm=geom.w_mm, h_mm=geom.h_mm)
     return not geom.axis_aligned
-
-
-def oblique_pad_ring(
-    geom: PadGeom, inst_rot: float, *, mirrored: bool = False
-) -> list[tuple[float, float]]:
-    """The true board-space outline of an oblique rect/obround pad, as
-    vertices relative to the pad centre.
-
-    The authored ``w`` x ``h`` outline is rotated by the pad's own ``rot``,
-    then placed like any footprint-local offset
-    (:func:`~precis.pcb.landpattern.rotate_offset`: mirror, then instance
-    rotation). A rect is its four corners; an obround is a stadium — two
-    semicircular caps of ``min(w, h) / 2`` joined along the long axis,
-    tessellated at :data:`_OBLIQUE_CAP_SEGMENTS` per cap with every vertex
-    ON the true arc (so the ring sits at most ~0.5% of the radius inside
-    the real outline, always within the pad claim's circumscribed
-    circle)."""
-    w, h = geom.w_mm, geom.h_mm
-    local: list[tuple[float, float]]
-    if geom.shape == "obround" and w != h:
-        r = min(w, h) / 2.0
-        n = _OBLIQUE_CAP_SEGMENTS
-        if w > h:
-            half = w / 2.0 - r
-            cap_a, cap_b, start_a, start_b = (half, 0.0), (-half, 0.0), -90.0, 90.0
-        else:
-            half = h / 2.0 - r
-            cap_a, cap_b, start_a, start_b = (0.0, half), (0.0, -half), 0.0, 180.0
-        local = []
-        for centre, start in ((cap_a, start_a), (cap_b, start_b)):
-            for i in range(n + 1):
-                a = math.radians(start + 180.0 * i / n)
-                local.append((centre[0] + r * math.cos(a), centre[1] + r * math.sin(a)))
-    else:
-        hw, hh = w / 2.0, h / 2.0
-        local = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
-    rot = 0.0 if math.isnan(inst_rot) else inst_rot
-    out: list[tuple[float, float]] = []
-    for lx, ly in local:
-        px, py = landpattern.rotate_offset(lx, ly, geom.pad_rot_deg)
-        out.append(landpattern.rotate_offset(px, py, rot, mirrored=mirrored))
-    return out
 
 
 def _net_clearances(
@@ -633,8 +590,7 @@ def _pad_blockers(
     :func:`precis.pcb.drc._copper_item_polygon` already knows how to turn
     into a polygon — so :func:`_pour_planes` can hand it to
     :func:`~precis.pcb.planes.plane_pours` as just another blocker,
-    without ``planes.py`` (or ``drc.py``, neither of which this module
-    may edit) ever having to learn a fourth ``ctype``.
+    without teaching ``planes.py`` another blocker representation.
 
     **Why a pad has to be a blocker at all.** ``to_gerber_model``'s
     ``model["copper"]`` is tracks/vias/pours only — real pin copper is a
@@ -651,13 +607,10 @@ def _pad_blockers(
     pinned to just this one layer through the ``layers`` override
     :func:`~precis.pcb.drc._via_layer_names` reads before ``span`` — no
     stackup-index lookup needed for a pad that never spans anything). A
-    rectangular pad fakes a ``pour`` (its four corners, axis-aligned, as
-    ``polygon`` — the same enclosing-rectangle-in-board-frame treatment
-    :func:`pad_geometry` already gives every pad's KEEPOUT; a true
-    per-footprint rotation is a finer shape than anything else in this
-    router tracks). Neither fake item is buffered here:
-    ``plane_pours`` buffers every blocker by its own ``clearance_mm``
-    uniformly, so doing it again here would double it.
+    non-circular pad fakes a ``pour`` from its shared placed body. Straight
+    boundaries stay exact; stadium caps use the kernel's outward polygon
+    because a boolean cut must contain the native copper. No clearance is
+    added here: ``plane_pours`` applies its own ``clearance_mm`` once.
 
     ``plane_pours`` already skips a blocker whose ``net`` matches the
     pour's own net (own-net copper is the connection, not an obstacle) —
@@ -700,8 +653,16 @@ def _pad_blockers(
                 }
             )
             continue
-        half_w = float(pad["w"]) / 2.0
-        half_h = float(pad.get("h", pad["w"])) / 2.0
+        body = clearance_kernel.body_of({**pad, "ctype": "pad"})
+        if body is None or body.core is None:
+            continue
+        # Pours consume polygons. Keep straight native outlines exact, and
+        # circumscribe curved caps so their antipads retain the full authored
+        # clearance. The shared body owns all placement and rotation.
+        land = clearance_kernel.outward_polygon(body) if body.r else body.core
+        if not isinstance(land, _ShapelyPolygon) or land.is_empty:
+            continue
+        polygon = [[float(px), float(py)] for px, py in land.exterior.coords[:-1]]
         # The rect fake is a `pour`, which carries ONE `layer` key, so a
         # drilled rectangular pad needs one item per layer rather than a
         # `layers` list. (`_via_layer_names`' override is read for
@@ -711,12 +672,7 @@ def _pad_blockers(
                 "ctype": "pour",
                 "net": net,
                 "layer": pad_layer,
-                "polygon": [
-                    [x - half_w, y - half_h],
-                    [x + half_w, y - half_h],
-                    [x + half_w, y + half_h],
-                    [x - half_w, y + half_h],
-                ],
+                "polygon": polygon,
             }
             for pad_layer in pad_layers
         )
@@ -1260,8 +1216,8 @@ class PadGeom:
     these authored gets from ``place_footprint_pads`` itself).
 
     ``axis_aligned`` (gripe 346962) is ``True`` only for a REAL pad whose
-    total rotation (instance + the source footprint's own per-pad
-    ``rot``) landed on an exact 90°-multiple — the one case
+    board-frame rotation (instance + pad on top, instance - pad on bottom)
+    landed on an exact 90°-multiple — the one case
     :func:`~precis.pcb.padplace.place_footprint_pads` already swapped
     ``w_mm``/``h_mm`` into true board orientation for, so ``w_mm``/
     ``h_mm`` are only trustworthy as an axis-aligned board-space rect
@@ -1293,13 +1249,15 @@ class PadGeom:
     drill_mm: float | None = None
     axis_aligned: bool = True
     #: The source footprint pad's own ``rot`` (0 for a synthesized pad) —
-    #: only :func:`oblique_pad_ring` reads it, to build the true outline of
-    #: a rect/obround pad whose total rotation is not a 90-multiple.
+    #: fabrication retains this axis alongside the analytic land so native
+    #: export can recover the same authored shape and hole frame.
     pad_rot_deg: float = 0.0
     #: A slotted hole's two end-centre points RELATIVE to the pad centre,
     #: board frame (``padplace`` ``slot`` minus the pad's x/y); ``None`` for
     #: a round hole. ``drill_mm`` is then the slot width.
     slot_off: list[list[float]] | None = None
+    #: Hole centre relative to the pad origin, already in the board frame.
+    drill_off: tuple[float, float] | None = None
 
 
 #: Which pin a raw footprint pad belongs to — :func:`precis.pcb.padplace.
@@ -1326,6 +1284,7 @@ def _real_pad_sizes(
         bool,
         float,
         list[list[float]] | None,
+        tuple[float, float] | None,
     ],
 ]:
     """This one instance's REAL per-pin pad size (plus
@@ -1357,15 +1316,10 @@ def _real_pad_sizes(
     ``pin_map`` indirection, offset to be relative to the pad's own
     center.
 
-    **``axis_aligned`` (gripe 346962)** is the one fact the probe's own
-    output cannot answer: ``place_footprint_pads`` already swapped w/h
-    into board orientation when the pad's total rotation (instance +
-    the raw pad's own ``rot``) is a 90°-multiple, but its return dict
-    carries no rotation, so a caller cannot tell "already swapped, exact"
-    apart from "any other angle, left alone, inexact" without asking the
-    SAME question again here — read straight off the raw pad (mirroring
-    ``raw_poly_by_name`` right below), never re-derived from the probe's
-    transformed output.
+    The probe uses the real instance side, since mirroring reverses the
+    raw pad's turn before instance rotation. ``axis_aligned`` uses that
+    same board-frame angle; an unmirrored probe would transpose a bottom
+    45-degree pad on a 45-degree instance relative to the fab model.
     """
     pin_names = {
         str(ir.pin_label[p])
@@ -1376,7 +1330,13 @@ def _real_pad_sizes(
         return {}
     rot = float(ir.inst_rot[inst_id])
     inst_rot = 0.0 if math.isnan(rot) else rot
-    probe_inst = {"x": 0.0, "y": 0.0, "rot": inst_rot}
+    bottom = bool(ir.inst_bottom[inst_id])
+    probe_inst = {
+        "x": 0.0,
+        "y": 0.0,
+        "rot": inst_rot,
+        "layer": "bottom" if bottom else "top",
+    }
     pads, _drills = padplace.place_footprint_pads(
         fp.get("pads") or [],
         probe_inst,
@@ -1419,11 +1379,8 @@ def _real_pad_sizes(
         raw_poly_by_name[name] = [
             (float(vx) - cx, float(vy) - cy) for vx, vy in raw["poly"]
         ]
-    # `total_rot` (instance + this raw pad's own ``rot``) per pin name --
-    # the SAME figure `place_footprint_pads` used internally to decide
-    # whether a rect/obround pad's w/h needed swapping, re-derived here
-    # (not threaded out of it) because its own return dict carries no
-    # rotation. "First raw pad per pin name wins", same convention as
+    # Raw authored rotation per pin, used by native fabrication and the
+    # board-frame alignment check. "First raw pad per pin name wins", as
     # `raw_poly_by_name`/`out[name]` below -- for a THT pad every
     # layer-entry shares one raw pad so this cannot disagree with itself.
     raw_rot_by_name: dict[str, float] = {}
@@ -1432,21 +1389,16 @@ def _real_pad_sizes(
         if name in raw_rot_by_name:
             continue
         raw_rot_by_name[name] = float(raw.get("rot") or 0.0)
-    # Slot end-centres relative to the pad centre, through the instance's
-    # REAL side: the probe above is never mirrored, but an oblique slot on
-    # a bottom-side part must match padplace's (fab/Excellon) diagonal.
-    side_inst = {
-        "x": 0.0,
-        "y": 0.0,
-        "rot": inst_rot,
-        "layer": "bottom" if bool(ir.inst_bottom[inst_id]) else "top",
-    }
+    # Slot end-centres use the same side and rotation as the size probe.
     raw_slot_by_name: dict[str, list[list[float]] | None] = {}
+    raw_drill_by_name: dict[str, tuple[float, float] | None] = {}
     for raw in fp.get("pads") or []:
         name = _footprint_pad_label(raw, pin_map)
         if name not in raw_slot_by_name:
-            raw_slot_by_name[name] = padplace._slot_centre_line(
-                raw, side_inst, 0.0, 0.0
+            hole = padplace.place_pad_drill(raw, probe_inst, 0.0, 0.0, quantize=False)
+            raw_slot_by_name[name] = hole.get("slot") if hole else None
+            raw_drill_by_name[name] = (
+                (hole["x"], hole["y"]) if hole and raw.get("drill_offset") else None
             )
     out: dict[
         str,
@@ -1462,6 +1414,7 @@ def _real_pad_sizes(
             bool,
             float,
             list[list[float]] | None,
+            tuple[float, float] | None,
         ],
     ] = {}
     for pad in pads:
@@ -1480,7 +1433,9 @@ def _real_pad_sizes(
         mask = pad.get("mask")
         paste = pad.get("paste")
         drill = pad.get("drill")
-        total_rot = inst_rot + raw_rot_by_name.get(name, 0.0)
+        world_rot = padplace.oblique_world_rot(
+            inst_rot, raw_rot_by_name.get(name, 0.0), bottom
+        )
         out[name] = (
             w,
             float(pad.get("h", w)),
@@ -1490,9 +1445,10 @@ def _real_pad_sizes(
             str(mask) if mask is not None else None,
             str(paste) if paste is not None else None,
             float(drill) if drill is not None else None,
-            padplace.pad_axis_aligned(total_rot),
+            padplace.pad_axis_aligned(world_rot, w_mm=w, h_mm=float(pad.get("h", w))),
             raw_rot_by_name.get(name, 0.0),
             raw_slot_by_name.get(name),
+            raw_drill_by_name.get(name),
         )
     return out
 
@@ -1539,6 +1495,7 @@ def pad_geometry(
                 bool,
                 float,
                 list[list[float]] | None,
+                tuple[float, float] | None,
             ],
         ],
     ] = {}
@@ -1564,6 +1521,7 @@ def pad_geometry(
                 axis_aligned,
                 pad_rot,
                 slot_off,
+                drill_off,
             ) = real
             out.append(
                 PadGeom(
@@ -1579,6 +1537,7 @@ def pad_geometry(
                     axis_aligned=axis_aligned,
                     pad_rot_deg=pad_rot,
                     slot_off=slot_off,
+                    drill_off=drill_off,
                 )
             )
         else:
@@ -1947,32 +1906,19 @@ def pads_for_ir(
                 pad["pin_unmatched"] = True
         if geom.shape != "circle":
             pad["h"] = pad_h
+        pad["pad_rot_deg"] = geom.pad_rot_deg
         if pad_is_oblique(geom, float(ir.inst_rot[inst_id])):
-            # An obliquely-rotated rect/obround is NOT an axis-aligned w x
-            # h box: emit its true rotated outline as a polygon pad so the
-            # DRC, gerber, fab preview and connectivity all measure the
-            # real land. ``w``/``h`` become the ring's bbox -- the
-            # "informational bbox" a polygon pad carries (gerber.py's
-            # module docstring), which keeps the silk's box tests
-            # conservative. The router's claim stays the enclosing circle
-            # (`vroute.obstacles_of`'s pad body), which contains this ring.
-            ring = oblique_pad_ring(
-                geom,
+            # Preserve the analytic land through fab, DRC and export. An
+            # inscribed stadium polygon can fall below the ring floor even
+            # when the authored land passes. Gerber emits exact round strokes;
+            # Pro writes native obrounds, including the authored pad axis.
+            pad["w"], pad["h"] = geom.w_mm, geom.h_mm
+            pad["oblique_rot"] = float(ir.inst_rot[inst_id]) + geom.pad_rot_deg
+            pad["oblique_world_rot"] = padplace.oblique_world_rot(
                 float(ir.inst_rot[inst_id]),
-                mirrored=bool(ir.inst_bottom[inst_id]),
+                geom.pad_rot_deg,
+                bool(ir.inst_bottom[inst_id]),
             )
-            xs = [rx for rx, _ in ring]
-            ys = [ry for _, ry in ring]
-            pad["shape"] = "polygon"
-            # The land's own narrow dimension, before the bbox below
-            # replaces w/h: the annular-ring rule must keep judging the
-            # true land, not its (wider) rotated bbox.
-            pad["land_min_mm"] = round(min(float(pad["w"]), float(pad["h"])), 4)
-            pad["w"] = round(max(xs) - min(xs), 4)
-            pad["h"] = round(max(ys) - min(ys), 4)
-            pad["poly"] = [
-                [round(point[0] + rx, 4), round(point[1] + ry, 4)] for rx, ry in ring
-            ]
         elif geom.shape == "polygon" and geom.poly:
             # `point` is already the placed pin CENTER (`pin_point`); the
             # ring is stored relative to that same center, so it only needs
@@ -2014,6 +1960,9 @@ def pads_for_ir(
             pad["paste"] = geom.paste
         if geom.drill_mm:
             pad["drill"] = geom.drill_mm
+            if geom.drill_off:
+                pad["drill_x"] = round(point[0] + geom.drill_off[0], 4)
+                pad["drill_y"] = round(point[1] + geom.drill_off[1], 4)
             if geom.slot_off:
                 pad["slot"] = [
                     [round(point[0] + ox, 4), round(point[1] + oy, 4)]

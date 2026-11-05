@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
@@ -607,6 +607,30 @@ class PcbIR:
     #: pinned pad carries (read through ``ir.pin_net[pad.pin]``), never
     #: the pad set itself.
     footprint_pads: tuple[FootprintPad, ...] = ()
+
+    #: The footprint row's authored BODY extent per instance — ``(x0, y0,
+    #: x1, y1)`` in the same footprint-local frame :attr:`footprint_pads`
+    #: uses, or ``None`` where the resolved row carries no authored
+    #: courtyard claim — :func:`footprint_body_bboxes`'s answer, hydrated
+    #: at the same seam (:func:`precis.pcb.session.apply_real_pin_offsets`).
+    #: :func:`instance_courtyard_polygon` unions it into the ring: a part's
+    #: keep-out is its BODY, not only its lands — a two-pad part whose
+    #: pads sit at the ends of a long body (an SMD cell, a supercap)
+    #: reserves the whole span, not two islands bridged by a corridor.
+    #: ``()`` where no caller hydrated bodies (a hand-built IR, or none
+    #: resolved) — the courtyard is then the pad union alone, as before.
+    inst_body_bbox: tuple[tuple[float, float, float, float] | None, ...] = ()
+
+    #: The footprint's own silk-layer stroke graphics per instance — the
+    #: decoded ``graphics[]`` entries on an ``F.SilkS``/``B.SilkS`` layer,
+    #: footprint-local mm in the same frame :attr:`footprint_pads` uses —
+    #: :func:`footprint_silk_graphics`'s answer, hydrated at the same
+    #: seam (:func:`precis.pcb.session.apply_real_pin_offsets`).
+    #: :func:`precis.pcb.silk.part_outlines` draws them AS the part's
+    #: outline (cut only, never moved) instead of the synthesized ring
+    #: (Reto 2026-11-03). ``()`` unhydrated — every instance then keeps
+    #: the synthesized ring, the pre-vendor-silk behaviour.
+    inst_silk_graphics: tuple[tuple[dict[str, Any], ...], ...] = ()
 
     #: The datasheet :class:`precis.pcb.objectives.NetAnnotation`, per net —
     #: ``float64[n_nets]`` with ``nan`` for "not annotated" (``pcb_nets.
@@ -2805,6 +2829,15 @@ def instance_courtyard_polygon(
     a connector's second tab outside it, so the placer could park a
     neighbour on copper the gerbers flash.
 
+    The union also takes the instance's authored BODY extent
+    (:attr:`PcbIR.inst_body_bbox` — the footprint row's ``courtyard``
+    claim, hydrated where :attr:`PcbIR.footprint_pads` is): pads alone
+    leave the space BETWEEN disjoint pads open, so the placer parked a
+    small part on the body of a two-pad cell whose lands sit at its ends
+    (taz-leaf x2: L1 inside PV1's 24mm span). Over-covering is the safe
+    direction here as everywhere above: the authored box is the part's
+    own extent claim, and "two objects can not occupy same space".
+
     **Dense unions decimate BEFORE the offset** (:data:`COURTYARD_UNION_
     DENSE_VERTS`, gr536561): a shaped-electrode instance arrives with
     ~50k union vertices, and a mitre-join buffer's offset-curve noding
@@ -2847,6 +2880,12 @@ def instance_courtyard_polygon(
             if w > 0.0 and h > 0.0
             else _ShapelyPoint(cx, cy)
         )
+    if inst < len(ir.inst_body_bbox):
+        body = ir.inst_body_bbox[inst]
+        if body is not None:
+            x0, y0, x1, y1 = body
+            geoms.append(_shapely_box(x0, y0, x1, y1))
+            corners += [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
     if not corners:
         if pins is None:
             pins = [p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == inst]
@@ -3138,6 +3177,219 @@ def footprint_pad_set(
             )
             seen.add(label)
     return tuple(out)
+
+
+#: How far a footprint row's ``courtyard.bbox`` may sit from the pads'
+#: own extent before it counts as an AUTHORED body claim rather than the
+#: pad-derived fallback (:func:`precis.pcb.rows.normalize_footprint`
+#: emits exactly that fallback for a row with no authored courtyard —
+#: recognising it by equality keeps an authored-comb footprint's concave
+#: pad-union ring, which the pad bbox would erase). The producers round
+#: the stored bbox to 4 decimals, so the tolerance only has to clear
+#: round-trip noise, not real geometry.
+_BODY_DERIVED_TOL_MM = 0.002
+
+
+def _pads_extent_bbox(
+    raw_pads: Sequence[dict[str, Any]],
+) -> tuple[float, float, float, float] | None:
+    """The bbox both courtyard producers derive from a pad list —
+    :func:`precis.pcb.easyeda._courtyard`'s pad half and
+    :func:`precis.pcb.rows.normalize_footprint`'s fallback (a poly pad's
+    vertex ring; else centre ± w/2,h/2 — ``rot`` deliberately unread,
+    matching both). ``None`` on a malformed pad."""
+    xs: list[float] = []
+    ys: list[float] = []
+    for pad in raw_pads:
+        try:
+            if pad.get("poly"):
+                xs += [float(v[0]) for v in pad["poly"]]
+                ys += [float(v[1]) for v in pad["poly"]]
+            else:
+                w = float(pad["w"])
+                h = float(pad.get("h", pad["w"]))
+                x, y = float(pad["x"]), float(pad["y"])
+                xs += [x - w / 2.0, x + w / 2.0]
+                ys += [y - h / 2.0, y + h / 2.0]
+        except (KeyError, TypeError, ValueError):
+            return None
+    if not xs:
+        return None
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def footprint_body_bboxes(
+    ir: PcbIR,
+    footprints: dict[str, dict[str, Any]] | None,
+    *,
+    catalog_refdes: Collection[str] | None = None,
+) -> tuple[tuple[float, float, float, float] | None, ...]:
+    """Each instance's authored BODY extent — ``(x0, y0, x1, y1)`` in the
+    same footprint-local frame :func:`footprint_pad_set` emits — or
+    ``None`` where there is none, indexed by instance id.
+
+    The source is the resolved row's ``courtyard.bbox`` — the footprint
+    author's own extent claim (EasyEDA's ``_courtyard``: pad extents
+    widened by the drawn silk/body outline), the one fact that knows a
+    two-pad part's body fills the space BETWEEN its pads (the C5358484
+    cell's 24mm span over two 3mm lands). :func:`instance_courtyard_
+    polygon` unions it into the ring so the keep-out covers the part.
+
+    A catalog row (``catalog_refdes`` — the refdeses
+    :func:`precis.pcb.session.footprints_by_refdes` resolved through the
+    C-number cache rather than a design-local row) always qualifies: its
+    courtyard is vendor data even when it equals the pad bbox. Any other
+    row qualifies only when its courtyard is NOT the pad-derived
+    fallback — recognised by equality within :data:`_BODY_DERIVED_TOL_MM`
+    of :func:`_pads_extent_bbox`. An authored courtyard on a
+    design-local row (a supercap's authored span) applies the same way;
+    the auto-derived one an authored comb gets never does.
+
+    The join rule is :func:`footprint_pad_set`'s: an instance whose
+    pin/pad join failed contributes nothing — the footprint's extent
+    would hang off pads this IR does not carry."""
+    if not footprints:
+        return ()
+    catalog = set(catalog_refdes or ())
+    pins_of: dict[int, set[str]] = {}
+    for pid in range(ir.n_pins):
+        pins_of.setdefault(int(ir.pin_instance[pid]), set()).add(str(ir.pin_label[pid]))
+    out: list[tuple[float, float, float, float] | None] = []
+    for inst_id in range(ir.n_instances):
+        refdes = str(ir.instance_refdes[inst_id])
+        fp = footprints.get(refdes) or {}
+        raw_pads = fp.get("pads") or []
+        raw_bbox = (fp.get("courtyard") or {}).get("bbox")
+        body = None
+        if raw_pads and raw_bbox is not None:
+            try:
+                bbox = tuple(float(v) for v in raw_bbox)
+            except (TypeError, ValueError):
+                bbox = ()
+            if len(bbox) == 4 and all(math.isfinite(v) for v in bbox):
+                labels = {
+                    padplace.pad_label(raw, fp.get("pin_map") or {}) for raw in raw_pads
+                }
+                if not (pins_of.get(inst_id, set()) - labels):
+                    authored = refdes in catalog
+                    if not authored:
+                        pads_bbox = _pads_extent_bbox(raw_pads)
+                        authored = pads_bbox is not None and any(
+                            abs(a - b) > _BODY_DERIVED_TOL_MM
+                            for a, b in zip(bbox, pads_bbox, strict=True)
+                        )
+                    if authored:
+                        body = bbox
+        out.append(body)
+    return tuple(out)
+
+
+def footprint_silk_graphics(
+    ir: PcbIR,
+    footprints: dict[str, dict[str, Any]] | None,
+) -> tuple[tuple[dict[str, Any], ...], ...]:
+    """Each instance's vendor silk graphics — the footprint row's
+    ``graphics[]`` entries on an ``F.SilkS``/``B.SilkS`` layer that draw
+    line ink (polylines, polygons, arcs, circles), in the same
+    footprint-local frame :func:`footprint_pad_set` emits — indexed by
+    instance id, ``()`` where the row carries none.
+
+    These are the strokes :func:`precis.pcb.silk.part_outlines` draws as
+    the part's outline in place of the synthesized ring (Reto
+    2026-11-03). ``text`` and filled ``region`` graphics are not line
+    ink and stay out. The join rule is :func:`footprint_pad_set`'s —
+    an instance whose footprint row did not resolve contributes
+    nothing, so synthesized and design-local footprints keep their
+    precis ring."""
+    if not footprints:
+        return ()
+    stroke_kinds = frozenset({"line", "polyline", "polygon", "arc", "circle"})
+    out: list[tuple[dict[str, Any], ...]] = []
+    for inst_id in range(ir.n_instances):
+        fp = footprints.get(str(ir.instance_refdes[inst_id])) or {}
+        out.append(
+            tuple(
+                dict(g)
+                for g in fp.get("graphics") or ()
+                if isinstance(g, dict)
+                and str(g.get("layer") or "").endswith("SilkS")
+                and str(g.get("kind") or "") in stroke_kinds
+            )
+        )
+    return tuple(out)
+
+
+def bodied_refdes(ir: PcbIR) -> frozenset[str]:
+    """Refdes whose instance carries a real body extent
+    (:attr:`PcbIR.inst_body_bbox` — a catalog row's courtyard bbox or
+    an authored local one). :func:`precis.pcb.drc.check_courtyard_
+    overlap` grades an overlap reaching those occupied regions as a
+    proven collision, not a margin shortfall."""
+    return frozenset(
+        str(ir.instance_refdes[i])
+        for i, b in enumerate(ir.inst_body_bbox)
+        if b is not None
+    )
+
+
+def group_member_shapeless(ir: PcbIR, inst: int) -> bool:
+    """Whether an ``inst_group`` member's place in the rigid shape is
+    unrecoverable — no finite ``group_offset`` AND no placed pose. This
+    is the demotion test ``design_from_ir``'s ``group_of`` build and
+    :func:`rigid_instance_groups` share, so the placer's mover units and
+    DRC's exemption list cannot drift: an unrecoverable member would
+    normalise onto the anchor's xy, the movers would skip the same-group
+    pair, and the collision would never surface."""
+    return (
+        not np.isfinite(
+            [
+                ir.inst_group_offset_dx[inst],
+                ir.inst_group_offset_dy[inst],
+                ir.inst_group_offset_rot[inst],
+            ]
+        ).all()
+        and not np.isfinite([ir.inst_x[inst], ir.inst_y[inst]]).all()
+    )
+
+
+def rigid_instance_groups(ir: PcbIR) -> tuple[tuple[int, ...], ...]:
+    """The ``inst_group`` member sets (instance indices) that are ONE
+    rigid body — the same two demotions ``design_from_ir``'s
+    ``group_of`` build applies: a ``group_pattern`` tile is a post-seed
+    stamp, not a mover unit, and a group with a
+    :func:`group_member_shapeless` member stays independent."""
+    members: dict[int, list[int]] = {}
+    for i in range(ir.n_instances):
+        g = int(ir.inst_group[i]) if i < len(ir.inst_group) else -1
+        if g >= 0:
+            members.setdefault(g, []).append(i)
+    out: list[tuple[int, ...]] = []
+    for gid, ms in members.items():
+        if gid < len(ir.group_pattern) and ir.group_pattern[gid] is not None:
+            continue
+        if len(ms) < 2 or any(group_member_shapeless(ir, m) for m in ms):
+            continue
+        out.append(tuple(ms))
+    return tuple(out)
+
+
+def rigid_refdes_pairs(ir: PcbIR) -> frozenset[tuple[str, str]]:
+    """Unordered refdes pairs bound into one rigid ``inst_group``
+    assembly — the DRC-side twin of the placer's ``rigid_pairs``
+    exemption (round-3 ruling 2026-11-02: an authored rigid shape gets
+    no pair rule at all, so two members' courtyards may nest by
+    design). Flattened over :func:`rigid_instance_groups`, so the two
+    demotions the placer applies — pattern tiles and shapeless groups
+    are independent movers — are demoted here too.
+    ``check_courtyard_overlap`` skips these pairs; a hard-measure
+    carry is NOT one of these and still may not overlap."""
+    out: set[tuple[str, str]] = set()
+    for ms in rigid_instance_groups(ir):
+        for k, a in enumerate(ms):
+            for b in ms[k + 1 :]:
+                ra, rb = str(ir.instance_refdes[a]), str(ir.instance_refdes[b])
+                out.add((ra, rb) if ra <= rb else (rb, ra))
+    return frozenset(out)
 
 
 def courtyard_bound_radius_mm(

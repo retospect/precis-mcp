@@ -20,9 +20,9 @@ prod ``ewod-dogfood-2``.
    — a hand-built, minimal fixture reproducing the exact prod geometry
    (2.02mm square pad, corner-anchored stub) directly against
    :mod:`precis.pcb.connectivity`, with no DB and no generator. Proves
-   the fixture actually bites by monkeypatching ``_pad_poly`` back to
-   always-``None`` (the OLD behaviour) and checking the touch is then
-   missed.
+   the fixture actually bites by replacing the analytic ``body_of`` pad
+   seam with inscribed disks (the OLD behaviour) and checking the touch
+   is then missed.
 2. :func:`test_ring_sink_island_terminals_offered_under_both_worlds`
    — the real :func:`precis.pcb.generators.expand` ``ewod_pad_array``
    generator against a NON-grid ring sink footprint
@@ -149,19 +149,9 @@ def test_polygon_pad_corner_is_touched_by_a_stub_the_inscribed_circle_misses(
     pairs = pcb_connectivity.connected_pin_pairs(model)
     assert frozenset({("ARR1", "R0C2"), ("DRV1", "1")}) in pairs
 
-    # (c) with the OLD inscribed-circle-only touch test (`_pad_poly`
-    # forced to report no polygon, same as every pad had before this
-    # fix), the SAME model misses both -- the fixture bites. The pad's
-    # `shape` also flips to "rect" for this arm: `_pad_primitives` reads a
-    # `shape == "polygon"` pad whose outline won't resolve (`_pad_poly`
-    # -> None) as "cannot represent exactly" and substitutes the
-    # CIRCUMSCRIBED disk `hypot(w, h)/2`, not the inscribed one the
-    # pre-`_pad_primitives` loops used for every pad -- the right call for
-    # a genuinely degenerate outline, but it would swallow this fixture's
-    # corner stub and break the old-world comparison. Same w/h, same
-    # inscribed disk.
-    monkeypatch.setattr(pcb_connectivity, "_pad_poly", lambda pad: None)
-    model["pads"][0]["shape"] = "rect"
+    # (c) replace the analytic pad-body seam with the OLD inscribed disks.
+    # The same model must miss both joins, proving that this fixture bites.
+    _old_world_patches(monkeypatch)
     old_terminals = pcb_connectivity.fixed_copper_pin_terminals(model)
     assert key not in old_terminals
     old_pairs = pcb_connectivity.connected_pin_pairs(model)
@@ -369,32 +359,21 @@ def _island_terminals_offered(pcb, store, ref_id: int) -> tuple[int, int]:
 
 
 def _old_world_patches(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Force the pre-fix world: ``_pad_poly`` -> None reproduces every
-    pad's behaviour before the polygon touch fix, and ``_pad_primitives``
-    gets the same relocation the square-pad fixture documents — under
-    ``_pad_poly`` -> None a ``shape == "polygon"`` pad would take the
-    CIRCUMSCRIBED-disk fallback (meant for a genuinely unresolvable
-    outline), not the inscribed disk the pre-``_pad_primitives`` loops
-    used for EVERY pad; presenting those pads as "rect" -- same w/h,
-    hence the same inscribed disk -- restores the old circle-only world."""
-    real_pad_primitives = pcb_connectivity._pad_primitives
+    """Replace native pad bodies with the pre-fix inscribed-circle model.
 
-    def _inscribed_primitives(
-        model: dict[str, Any], start_group: int
-    ) -> tuple[list[Any], dict[int, Any], list[Any], list[list[int]]]:
-        return real_pad_primitives(
-            {
-                **model,
-                "pads": [
-                    {**pad, "shape": "rect"} if pad.get("shape") == "polygon" else pad
-                    for pad in model.get("pads") or []
-                ],
-            },
-            start_group,
-        )
+    Inject at the shared analytic body seam, so this still proves that
+    polygon/stadium reach beyond those disks is what supplies the joins.
+    """
+    real_body_of = pcb_connectivity.body_of
 
-    monkeypatch.setattr(pcb_connectivity, "_pad_primitives", _inscribed_primitives)
-    monkeypatch.setattr(pcb_connectivity, "_pad_poly", lambda pad: None)
+    def _inscribed_body(item: dict[str, Any]) -> Any:
+        if item.get("ctype") != "pad":
+            return real_body_of(item)
+        w = float(item.get("w", 0.0))
+        h = float(item.get("h", w))
+        return real_body_of({**item, "shape": "circle", "w": min(w, h)})
+
+    monkeypatch.setattr(pcb_connectivity, "body_of", _inscribed_body)
 
 
 def test_ring_sink_island_terminals_offered_under_both_worlds(

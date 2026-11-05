@@ -14,11 +14,14 @@ Authority: memory me540899 (Reto 2026-10-30, in-pane: taz-leaf prod
 design-flow writes are a standing approved write) + Reto's ask.
 
 Run (host-side, mirrors prod-precis credential handling — the DSN never
-hits argv or output):
+hits argv or output; without an exported PRECIS_DATABASE_URL the script
+reads ~/.secrets/pw/PRECIS_DATABASE_URL itself, tunnel host made local):
 
-    export PRECIS_DATABASE_URL="$(sed 's#@host.docker.internal:#@127.0.0.1:#' "$HOME/.secrets/pw/PRECIS_DATABASE_URL")"
-    uv run --no-sync python scratch/taz-leaf/prod_put_copper.py            # dry run
-    PRECIS_PROD_WRITE=1 uv run --no-sync python scratch/taz-leaf/prod_put_copper.py
+    uv run --no-sync python scratch/taz-leaf/prod_put_copper.py <slug> <export>   # dry run
+    PRECIS_PROD_WRITE=1 uv run --no-sync python scratch/taz-leaf/prod_put_copper.py <slug> <export>
+
+TAZ_OUT=<dir> takes the batch from scratch/taz-leaf/<dir>/batch.min.json
+(the doubled leaf: out-x2); the export dir stays under out/.
 
 Refuses to run if a pcb design 'taz-leaf-i' already exists.
 """
@@ -36,13 +39,26 @@ from precis.handlers.pcb import PcbHandler
 from precis.store import Store
 
 HERE = Path(__file__).parent
+BATCH = HERE / os.environ.get("TAZ_OUT", "out") / "batch.min.json"
 SLUG = sys.argv[1] if len(sys.argv) > 1 else "taz-leaf-i"
 EXPORT = HERE / "out" / (sys.argv[2] if len(sys.argv) > 2 else "local-55_export")
 WEB = "https://melchior.tailded4cf.ts.net/pcb/"
 
 
+def _prod_dsn() -> None:
+    """PRECIS_DATABASE_URL for a host-side run: the caller's export, else
+    the stored container DSN with its tunnel host made local. Read in
+    process so it never reaches argv or output."""
+    if os.environ.get("PRECIS_DATABASE_URL"):
+        return
+    stored = Path.home() / ".secrets" / "pw" / "PRECIS_DATABASE_URL"
+    dsn = stored.read_text(encoding="utf-8").strip()
+    os.environ["PRECIS_DATABASE_URL"] = dsn.replace("@host.docker.internal:", "@127.0.0.1:")
+
+
 def main() -> int:
     write = os.environ.get("PRECIS_PROD_WRITE") == "1"
+    _prod_dsn()
     poses = json.loads((EXPORT / "poses.json").read_text(encoding="utf-8"))
     spots = json.loads((EXPORT / "label_spots.json").read_text(encoding="utf-8"))
     routes = json.loads((EXPORT / "routes.json").read_text(encoding="utf-8"))
@@ -57,7 +73,8 @@ def main() -> int:
         print(f"refusing to overwrite: kind='pcb' id='{SLUG}' already exists", file=sys.stderr)
         return 2
 
-    batch = json.loads((HERE / "out" / "batch.min.json").read_text(encoding="utf-8"))
+    batch = json.loads(BATCH.read_text(encoding="utf-8"))
+    print(f"batch: {BATCH.relative_to(HERE)}")
     overridden = 0
     for c in batch["components"]:
         p = poses.get(c["refdes"])

@@ -30,6 +30,8 @@ Conventions pinned here, each a way these sheets get scrapped:
 * **Versioning.** :func:`board_fingerprint` hashes the geometry the layers
   derive from (outline, electrode pads, vias); it is embedded in each SVG
   and in its filename, so cut files pair with the fab order they came from.
+  Native land rotation is geometry, and shares the clearance body's placed
+  frame; an unrotated electrode box can leave adhesive over visible copper.
 * **Alignment** is one reusable primitive, :func:`alignment_features` (round
   hole + slot, unequal edge insets so a 180-degree-rotated stack does not
   seat), shared by every sheet and available to board-to-board stacking.
@@ -56,6 +58,8 @@ from shapely import affinity
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon, box
 from shapely.geometry.base import BaseGeometry
 from shapely.validation import make_valid
+
+from precis.pcb.clearance import body_of, outward_polygon
 
 # Defaults (mm). The sheet is inset from the board edge so it never
 # overhangs the board.
@@ -123,19 +127,13 @@ def _outline_polygon(outline: Any) -> Polygon:
 
 
 def _pad_geom(pad: dict[str, Any]) -> BaseGeometry:
-    poly = pad.get("poly")
-    if pad.get("shape") == "polygon" and poly:
-        return _valid_polygon(
-            Polygon([(float(p[0]), float(p[1])) for p in poly]), "electrode pad"
-        )
-    x, y = float(pad["x"]), float(pad["y"])
-    w = float(pad.get("w", 0.0))
-    h = float(pad.get("h", w))
-    if pad.get("shape") == "circle":
-        return _valid_polygon(Point(x, y).buffer(w / 2), "electrode pad")
-    return _valid_polygon(
-        box(x - w / 2, y - h / 2, x + w / 2, y + h / 2), "electrode pad"
-    )
+    body = body_of({**pad, "ctype": "pad"})
+    if body is None or body.core is None:
+        raise ValueError("electrode pad has no land geometry")
+    # Sheets are polygon booleans. Curved lands must be enclosed rather
+    # than inscribed, so material never remains over an electrode cap.
+    geom = outward_polygon(body) if body.r else body.core
+    return _valid_polygon(geom, "electrode pad")
 
 
 def board_fingerprint(model: dict[str, Any], spec: MechSpec | None = None) -> str:
@@ -147,7 +145,16 @@ def board_fingerprint(model: dict[str, Any], spec: MechSpec | None = None) -> st
             (
                 {
                     k: p.get(k)
-                    for k in ("x", "y", "w", "h", "shape", "poly")
+                    for k in (
+                        "x",
+                        "y",
+                        "w",
+                        "h",
+                        "shape",
+                        "poly",
+                        "oblique_rot",
+                        "oblique_world_rot",
+                    )
                     if p.get(k) is not None
                 }
                 for p in model.get("pads", [])
@@ -156,7 +163,7 @@ def board_fingerprint(model: dict[str, Any], spec: MechSpec | None = None) -> st
             key=lambda d: json.dumps(d, sort_keys=True),
         ),
         "vias": sorted(
-            [round(float(c["x"]), 4), round(float(c["y"]), 4), c.get("dia_mm")]
+            [float(c["x"]), float(c["y"]), c.get("dia_mm")]
             for c in model.get("copper", [])
             if c.get("ctype") == "via"
         ),

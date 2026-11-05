@@ -32,6 +32,19 @@
     } catch (_) { return {parts: {}, nets: {}}; }
   }
 
+  // Overlay hits live outside the artwork groups. Whole-part fallbacks may
+  // represent several layers; one visible represented layer keeps them live.
+  function layerVisible(doc, node) {
+    const group = node.closest && node.closest('.layer');
+    if (group && group.classList.contains('off')) return false;
+    const data = node.dataset || {};
+    const keys = (data.pcbLayers || data.pcbLayer || '').split(/\s+/).filter(Boolean);
+    return !keys.length || keys.some((key) => {
+      const layer = doc.getElementById(`layer-${key}`);
+      return layer && !layer.classList.contains('off');
+    });
+  }
+
   // current_a is amps, a plain number the agent sets explicitly (gr520542):
   // no hidden default — unset shows nothing, a set value renders in mA
   // under 1 A, in A otherwise.
@@ -172,5 +185,5 @@
     return 'Silkscreen ' + (silk.role || 'art') + '/' + (silk.layer || 'unknown layer');
   }
 
-  return {describe, isGround, lcscUrl, load, netText, partText, silkText, trackText, viaText, webUrl, LCSC_PRODUCT};
+  return {describe, isGround, layerVisible, lcscUrl, load, netText, partText, silkText, trackText, viaText, webUrl, LCSC_PRODUCT};
 });

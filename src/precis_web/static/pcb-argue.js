@@ -109,6 +109,7 @@
     if (window.PrecisViewport && window.PrecisViewport.overHud(els)) return null;
     for (var i = 0; i < els.length; i++) {
       var el = els[i];
+      if (el && window.PcbFacts && !window.PcbFacts.layerVisible(doc, el)) continue;
       var hit = el && el.closest ? el.closest("[data-handle]") : null;
       if (hit) return hit.getAttribute("data-handle");
     }

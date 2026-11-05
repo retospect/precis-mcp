@@ -294,12 +294,10 @@ def test_ratsnest_keeps_airwires_for_pads_missing_from_connectivity() -> None:
     assert len(_pending_airwires(model, partial)) == 1
 
 
-@pytest.mark.parametrize("pour", [None, "declared", "stored"])
-def test_pending_pin_components_match_unfiltered_connectivity(pour: str | None) -> None:
+@pytest.mark.parametrize("pour", [None, "stored"])
+def test_pending_pin_pairs_match_unfiltered_connectivity(pour: str | None) -> None:
     model = _partly_connected_model()
-    if pour == "declared":
-        model["pending_pours"] = [{"net": "GND", "layer": "F.Cu"}]
-    elif pour == "stored":
+    if pour == "stored":
         model["copper"].append(
             {
                 "ctype": "pour",
@@ -311,17 +309,15 @@ def test_pending_pin_components_match_unfiltered_connectivity(pour: str | None) 
     unrelated = _model()
     model["pads"] = unrelated["pads"] + model["pads"]
     model["copper"] = unrelated["copper"] + model["copper"]
-    full = connectivity.pin_components(model)
-    scoped = connectivity.pin_components(model, nets={"GND"})
-    assert full is not None and scoped is not None
-    assert ("J1", "1") in full  # Default extraction still includes routed nets.
-    assert set(scoped) == {("C1", "2"), ("C2", "2"), ("C3", "2")}
-    assert scoped[("C1", "2")] == scoped[("C2", "2")]
-    assert (scoped[("C1", "2")] == scoped[("C3", "2")]) == (pour is not None)
-    for a in scoped:
-        for b in scoped:
-            assert (scoped[a] == scoped[b]) == (full[a] == full[b])
-    assert connectivity.pin_components(model, nets=set()) is None
+    full = connectivity.connected_pin_pairs(model)
+    scoped = connectivity.connected_pin_pairs(model, nets={"GND"})
+    gnd = {("C1", "2"), ("C2", "2"), ("C3", "2")}
+    assert any(not pair <= gnd for pair in full)  # routed nets are in the full pass
+    assert all(pair <= gnd for pair in scoped)
+    assert scoped == {pair for pair in full if pair <= gnd}
+    assert frozenset({("C1", "2"), ("C2", "2")}) in scoped
+    assert (frozenset({("C1", "2"), ("C3", "2")}) in scoped) == (pour is not None)
+    assert connectivity.connected_pin_pairs(model, nets=set()) == set()
 
 
 def test_pending_connectivity_does_not_examine_unrelated_routed_segments() -> None:
@@ -335,9 +331,8 @@ def test_pending_connectivity_does_not_examine_unrelated_routed_segments() -> No
     unrelated = _model()["copper"][0]
     unrelated["segments"] = UnexaminedSegments(unrelated["segments"] * 5000)
     connectivity_model = {**model, "copper": [unrelated, *model["copper"]]}
-    components = connectivity.pin_components(connectivity_model, nets={"GND"})
-    assert components is not None
-    assert set(components) == {("C1", "2"), ("C2", "2"), ("C3", "2")}
+    pairs = connectivity.connected_pin_pairs(connectivity_model, nets={"GND"})
+    assert pairs == {frozenset({("C1", "2"), ("C2", "2")})}
     # Export normal artwork; only the viewer's connectivity input contains
     # the guarded segments, so this exercises render_fab_svg's net scope.
     assert len(_pending_airwires(model, connectivity_model)) == 1
@@ -560,6 +555,6 @@ def test_oversized_pending_net_skips_component_extraction(
 
     model = _partly_connected_model()
     scoped = len(_pending_airwires(model, model))
-    monkeypatch.setattr(connectivity, "pin_components", refuse)
+    monkeypatch.setattr(connectivity, "connected_pin_pairs", refuse)
     monkeypatch.setattr(gerber_view, "_RATSNEST_COMPONENT_MAX_COPPER", -1)
     assert len(_pending_airwires(model, model)) > scoped

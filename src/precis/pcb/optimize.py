@@ -386,7 +386,10 @@ PLACE_ONLY_SCHEDULE: tuple[ScheduleStage, ...] = (
 #: record (``precis.pcb.run_record``'s ``placer_code_version``) — bump it
 #: whenever the anneal or its cost changes, so a placement stored by
 #: different code is skipped, never silently replayed.
-ANNEAL_CODE_VERSION = 1
+#: Version 4 keeps native analytic lands through fabrication and rounds
+#: offset drill/slot geometry only after final board translation.
+#: Version 5 corrects native pad pours, slot caps and electrical contact.
+ANNEAL_CODE_VERSION = 5
 
 #: The place-only run's default iteration count (the ``pcb_place`` job's
 #: ``_DEFAULT_ITERS`` — ``pcb_route``'s is 3000, unchanged).

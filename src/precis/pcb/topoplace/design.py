@@ -28,14 +28,17 @@ from typing import Any
 import numpy as np
 
 from precis.errors import BadInput
+from precis.pcb import capabilities as pcb_capabilities
 from precis.pcb import padplace, ratsnest
 from precis.pcb.gerber import DEFAULT_SILK_WIDTH_MM
 from precis.pcb.ir import (
     COURTYARD_CLEARANCE_MM,
     NO_NET,
+    FootprintPad,
     PcbIR,
     footprint_pad_extent,
     footprint_pad_set,
+    group_member_shapeless,
     instance_courtyard_polygons,
     layer_name,
     pin_pad_offsets,
@@ -68,25 +71,51 @@ class SilkRoom:
     outline rings need, the label box's gap off a ring (including the
     draw's own outline inflation), the flat edge-axis requirement, and
     the outline erosion the label acceptance test prices. Priced with
-    the module fallbacks these under-read the real draw by 0.1-0.2 mm
-    (taz-leaf runs 34-37: the anneal packed parts at the fallback pair
-    floor 0.80 mm where the capability figures need 1.00 mm, so nearly
-    every tight pair shared one outline wall and every canonical label
-    box between them failed the draw's 0.45 mm gap — 26-32 of 50 labels
-    walked the relocation ladder). The figures here are THE SAME
-    functions the silk pass draws with (:mod:`precis.pcb.silk`), so
-    "the placer thinks there is room" and "the draw finds room" stop
-    being two definitions."""
+    the module fallbacks these used to under-read the real draw by
+    0.1-0.2 mm (taz-leaf runs 34-37: the anneal packed parts at the
+    fallback pair floor 0.80 mm where the capability figures need 1.00
+    mm, so nearly every tight pair shared one outline wall and every
+    canonical label box between them failed the draw's 0.45 mm gap —
+    26-32 of 50 labels walked the relocation ladder). Reto 2026-11-03's
+    vendor-silk ruling moved the ring target to the JLC-MIN tier
+    (:func:`~precis.pcb.silk.vendor_ink_clear_mm` — the same 0.20 mm at
+    every row), so the pair/anchor/edge figures now coincide across
+    tiers by design; ``via_to_silk_mm`` still reads the capability's
+    own tier. The figures here are THE SAME functions the silk pass
+    draws with (:mod:`precis.pcb.silk`), so "the placer thinks there is
+    room" and "the draw finds room" stop being two definitions."""
 
     pair_req_mm: float  # ring-to-ring separation for two FULL outlines
     label_anchor_mm: float  # where the draw puts a label box off a ring
     label_clear_mm: float  # the model's ring-clearance acceptance test
     edge_req_mm: float  # flat edge-axis requirement (ring to cut edge)
     edge_erode_mm: float  # outline erosion for the label box acceptance
+    #: Where the un-settled outline ring's centreline sits off the part's
+    #: pad hull — ``outline_offsets_mm``'s ``target``. The fanout-via
+    #: siting measures a candidate's ring clearance from it.
+    outline_target_mm: float
+    #: How far OUT the drawn ring can reach off the hull — ``target``
+    #: plus half the outline spacing, the bound a shared wall attains
+    #: (:func:`precis.pcb.silk.part_outlines`' ``reach``): the ring's
+    #: line is always inside ``hull.buffer(outline_reach_mm)``.
+    outline_reach_mm: float
+    #: Clear board silk owes a via's annulus
+    #: (:func:`precis.pcb.silk._via_to_silk_mm`) — the same figure the
+    #: ring's legal reach prices in ``silk._via_gap_cut``.
+    via_to_silk_mm: float
+    #: The silk edge margin itself — what a part's OWN ink extent (a
+    #: vendor footprint's silk strokes, ``TopoDesign.part_silk``) owes
+    #: the cut edge on the edge axis. For a precis-ring part the same
+    #: axis prices ``edge_req_mm`` off the courtyard ring instead.
+    edge_margin_mm: float = 0.0
 
     @classmethod
     def from_capability(cls, capability: Any) -> SilkRoom:
-        from precis.pcb.silk import _silk_edge_margin_mm
+        from precis.pcb.silk import (
+            _silk_edge_margin_mm,
+            _via_to_silk_mm,
+            silk_clearance_mm,
+        )
 
         sw = DEFAULT_SILK_WIDTH_MM
         target = outline_offsets_mm(capability, stroke_width_mm=sw)[1]
@@ -96,8 +125,8 @@ class SilkRoom:
         )
         # The acceptance test prices the DRAWN outline, which settles
         # 0.025-0.05 mm outside the clean ring+target inflation
-        # (decimation, shared-wall bridging) and bulges around routed
-        # vias by the annulus reach. Runs 42-43 taught the hard version
+        # (decimation, shared-wall bridging). Runs 42-43 taught the hard
+        # version
         # of this: the anchor slack and the draw inflation are the SAME
         # 0.05, so a model-free spot sat exactly ON silk's minimum and
         # every pin walked — the clearance must price the draw's reach,
@@ -113,6 +142,23 @@ class SilkRoom:
             edge_erode_mm=edge
             + sw / 2.0
             + _REFDES_OVERHANG_EM * DEFAULT_REFDES_HEIGHT_MM,
+            outline_target_mm=target,
+            # The ROUTER's via-ring band (``realise._site_via``'s
+            # ``ring_clear``) is pinned to the pre-ruling-3 figure: the
+            # drawn ring now sits at the JLC-min 0.275 target, but the
+            # band a via site owes a part's hull is a routing input this
+            # slice must not change (vendor-silk review-1 finding 4 —
+            # letting it ride ``target`` re-sited vias and cost x2p-s1
+            # two nets). Priced as the old target
+            # (``silk_clearance_mm`` + ``OUTLINE_GAP_STROKES`` strokes)
+            # plus the same half-spacing bound.
+            outline_reach_mm=(
+                silk_clearance_mm(capability, stroke_width_mm=sw)
+                + OUTLINE_GAP_STROKES * sw
+                + (1.0 + OUTLINE_GAP_STROKES) * sw / 2.0
+            ),
+            via_to_silk_mm=_via_to_silk_mm(capability),
+            edge_margin_mm=edge,
         )
 
     @classmethod
@@ -442,6 +488,17 @@ class TopoDesign:
     #: 0.4mm house margin belongs to. ``()``/empty = no body (synthetic
     #: designs) — consumers fall back to the courtyard ring.
     part_body: tuple[np.ndarray, ...] = ()
+    #: The vendor footprint's own silk extent per part
+    #: (Reto 2026-11-03): ``(K, 2)`` footprint-frame ring — the convex
+    #: hull of the footprint's silk-layer stroke INK (each stroke grown
+    #: by half its own width) — or empty where the footprint carries no
+    #: silk graphics and the part gets a precis-drawn ring instead. The
+    #: margin edge axis measures THIS polygon against the silk edge
+    #: margin, so a part whose own ink reaches further than its
+    #: courtyard still keeps everything inside the board (L1's cut
+    #: ring). Edge-axis only — part-to-part spacing keeps measuring the
+    #: courtyard.
+    part_silk: tuple[np.ndarray, ...] = ()
     #: Slice 2 (list-2-colouring): per ``net_pins`` entry the forced
     #: outer layer from the net's class ``layers`` rule, projected onto
     #: the two outer layers: ``-1`` free (both outers allowed or no
@@ -478,6 +535,10 @@ class TopoDesign:
     #: Slice 2 (certificates): the routable net's name per ``net_pins``
     #: entry — odd-cycle certificates name nets, not indices.
     net_name: tuple[str, ...] = ()
+    #: Full IR net-name table: ``pin_net`` indexes this, while branches
+    #: index ``net_name``. Singleton/plane filtering must not shift pads'
+    #: identities or rules. Empty only for hand-built synthetic designs.
+    ir_net_name: tuple[str, ...] = ()
     #: The draw-side silk figures the margin/silkroom terms price
     #:(:class:`SilkRoom`) — resolved from the board's capability row
     #: when the caller passes one, else the documented fallbacks. The
@@ -493,6 +554,15 @@ class TopoDesign:
     #: the outline (Reto 2026-10-31: RF_FEED hugged the leaf edge at
     #: 0.273 mm against a 0.4 mm bar).
     edge_clearance_mm: float = 0.0
+    #: Copper-edge to copper-edge distance a via must keep from EVERY
+    #: pad — the soldermask web that must print between their mask
+    #: openings (:func:`precis.pcb.capabilities.via_mask_web_mm`, JLC-min
+    #: tier; Reto 2026-11-03: vias are NOT tented). Applies to the via's
+    #: own-net pads exactly as to foreign ones — the own-net exemption
+    #: is gone. Where the copper clearance is larger it wins; this is a
+    #: floor, not a replacement. Resolved off the capability row, the
+    #: fallback figure when none was passed.
+    via_mask_web_mm: float = pcb_capabilities.via_mask_web_mm(None)
     #: Layers reserved for a plane pour (gr524239; Reto 2026-11-01: an
     #: In1 GND pour as an interim): no routed net's wire may use them —
     #: the plane net reaches its layer by a fanout via per pad
@@ -590,6 +660,25 @@ class TopoDesign:
     #: every non-polygon extra.
     pad_extra_shape: np.ndarray = field(default_factory=lambda: np.zeros(0, object))
     pad_extra_poly: np.ndarray = field(default_factory=lambda: np.zeros(0, object))
+    #: Exact authored pad geometry for connectivity. Extent arrays lose
+    #: an oblique pad's angle and cannot certify copper in their corners.
+    #: Keep the raw set even when the IR has not been footprint-hydrated.
+    footprint_pads: tuple[FootprintPad, ...] = ()
+
+    def pin_nets(self) -> tuple[tuple[str, int], ...]:
+        """Each pin's name and routed-net index (-1 when unrouted).
+
+        Resolve through names, never by indexing the filtered route
+        table with an IR ID. IR IDs remain untouched for emit/connectivity
+        consumers. A routing pass may empty a plane's pin list without
+        changing its identity; singleton pads retain names and rules too.
+        """
+        names = self.ir_net_name or self.net_name
+        route_of = {str(name): k for k, name in enumerate(self.net_name)}
+        pin_names = (
+            str(names[int(n)]) if 0 <= int(n) < len(names) else "" for n in self.pin_net
+        )
+        return tuple((name, route_of.get(name, -1)) for name in pin_names)
 
 
 def qrot(v: np.ndarray, q: int) -> np.ndarray:
@@ -821,12 +910,20 @@ def _net_direction_exempt(
     return ex
 
 
-def _circle_ring(x: float, y: float, r: float, n: int = 12) -> np.ndarray:
-    """A closed n-gon standing in for a drilled disc — the mesh works in
-    rings, and 12 sides costs little against a millimetre object."""
-    a = np.linspace(0.0, 2.0 * math.pi, n, endpoint=False)
-    ring = np.column_stack([x + r * np.cos(a), y + r * np.sin(a)])
-    return np.vstack([ring, ring[:1]])
+#: Maximum outward error of authored and frozen copper zone rings. The
+#: CDT needs coarse polygons, but a chord inside the copper underprices
+#: every later clearance query against that ring.
+_COPPER_ZONE_SAG_MM = 0.02
+
+
+def _circle_ring(x: float, y: float, r: float) -> np.ndarray:
+    """A closed polygon enclosing the drilled disc within the zone sag."""
+    from precis.pcb.clearance import outward_circle
+
+    return np.asarray(
+        outward_circle(x, y, r, _COPPER_ZONE_SAG_MM).exterior.coords,
+        dtype=np.float64,
+    )
 
 
 def _world_to_local(x: float, y: float, row: np.ndarray) -> tuple[float, float]:
@@ -861,8 +958,8 @@ def _zones(
     mounting holes and authored vias off the IR, ``ftype='keepout'``
     features (layer-scoped; a name that resolves to no stackup layer
     contributes nothing to ``layers`` — an unscoped keepout blocks every
-    layer), and ``fixed_copper`` track/pour rows polygonised through the
-    DRC's one shape function. ``ctype='via'`` rows are skipped: the same
+    layer), and ``fixed_copper`` track/pour rows circumscribed through the
+    clearance kernel. ``ctype='via'`` rows are skipped: the same
     rows already arrived as :attr:`PcbIR.fixed_vias`."""
     zones: list[TopoZone] = []
     part_of = {str(r): i for i, r in enumerate(ir.instance_refdes)}
@@ -976,10 +1073,10 @@ def _zones(
             body = body_of(dict(row))
             if body is None:
                 continue
-            # Inscribed buffer chords cut inside round copper caps. The
-            # mesh ring must enclose the true copper even between vertices
-            # so a taut wire cannot consume the authored clearance.
-            geom = outward_polygon(body, sagitta=0.02)
+            # The mesh ring must enclose the true copper even between
+            # buffer vertices so a taut wire cannot consume the authored
+            # clearance.
+            geom = outward_polygon(body, 0.0, _COPPER_ZONE_SAG_MM)
             layer = str(row.get("layer") or "")
             # Disconnected runs belong to one row but remain separate
             # obstacles; neither discard them nor bridge their empty gap.
@@ -1167,6 +1264,35 @@ def design_from_ir(
             fallback_half_extent_mm=DEFAULT_COURTYARD_RADIUS_MM,
         )
     )
+    # The vendor footprint's own silk extent (Reto 2026-11-03, ruling 4):
+    # the convex hull of the footprint's silk-layer stroke ink, part-local
+    # — the polygon the margin edge axis measures instead of the
+    # courtyard ring, so a part whose own ink reaches further than its
+    # courtyard still keeps everything inside the board's silk edge
+    # margin. Built from the ``footprints`` rows directly (same seam as
+    # ``_extra_pads`` — right however the IR was hydrated); empty where
+    # no silk graphics resolve, and the edge axis then prices the ring.
+    from shapely.geometry import LineString
+    from shapely.ops import unary_union
+
+    from precis.pcb.silk import footprint_silk_strokes
+
+    part_silk: list[np.ndarray] = []
+    for inst, refdes in enumerate(parts):
+        strokes = footprint_silk_strokes(
+            (footprints.get(refdes) or {}).get("graphics") if footprints else None
+        )
+        if not strokes:
+            part_silk.append(np.zeros((0, 2)))
+            continue
+        ink = unary_union(
+            [LineString(pts).buffer(w / 2.0) for pts, w in strokes]
+        ).convex_hull
+        part_silk.append(
+            np.asarray(ink.exterior.coords, dtype=np.float64)
+            if ink.geom_type == "Polygon" and not ink.is_empty
+            else np.zeros((0, 2))
+        )
 
     names = _layer_name_map(ir)
     pin_side = _pin_sides(ir, footprints)
@@ -1198,18 +1324,7 @@ def design_from_ir(
         # xy, and the movers/legalizer/shove skip same-group pairs, so
         # the overlap is permanent and unreported. The group stays
         # independent instead, and the place reply warns once.
-        shapeless = [
-            m
-            for m in members
-            if not np.isfinite(
-                [
-                    ir.inst_group_offset_dx[m],
-                    ir.inst_group_offset_dy[m],
-                    ir.inst_group_offset_rot[m],
-                ]
-            ).all()
-            and not np.isfinite(pose0[m, :2]).all()
-        ]
+        shapeless = [m for m in members if group_member_shapeless(ir, m)]
         if shapeless:
             warnings.append(
                 f"group {str(ir.group_name[gid])!r} "
@@ -1365,6 +1480,7 @@ def design_from_ir(
         pin_functions=decl["pin_functions"],
         part_outline=part_outline,
         part_body=part_body,
+        part_silk=tuple(part_silk),
         net_layer_force=_net_layer_force(ir, route_of, net_classes, names),
         net_pin_force=_net_pin_force(tuple(net_pins), pin_side, ir.n_layers),
         net_direction_exempt=_net_direction_exempt(ir, route_of, net_classes),
@@ -1381,6 +1497,7 @@ def design_from_ir(
         ),
         zones=_zones(ir, features, fixed_copper, names, pose0, hole_margin_mm),
         net_name=tuple(net_names),
+        ir_net_name=tuple(str(n) for n in ir.net_name),
         silk=SilkRoom.from_capability(capability),
         edge_clearance_mm=float(
             (getattr(capability, "jlc_min", None) or {}).get(
@@ -1388,6 +1505,7 @@ def design_from_ir(
             )
             or 0.0
         ),
+        via_mask_web_mm=pcb_capabilities.via_mask_web_mm(capability),
         pin_wh=np.column_stack(
             [
                 np.asarray(ir.pin_w, dtype=np.float64),
@@ -1414,6 +1532,11 @@ def design_from_ir(
         pin_poly=_pad_field(getattr(ir, "pin_poly", None), len(ir.pin_dx), None),
         pad_extra_shape=extras["shape"],
         pad_extra_poly=extras["poly"],
+        footprint_pads=(
+            footprint_pad_set(ir, {k: dict(v) for k, v in footprints.items()})
+            if footprints
+            else tuple(getattr(ir, "footprint_pads", ()))
+        ),
     )
 
 

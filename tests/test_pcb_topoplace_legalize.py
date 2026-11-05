@@ -223,7 +223,11 @@ def test_owner_not_shoved_off_its_own_hole() -> None:
         pose0=[[5.0, 5.0, 0, 0], [6.0, 5.0, 0, 0]],
     )
     res = legalize_pose(d, d.pose0)
-    np.testing.assert_allclose(res.pose[0], d.pose0[0])
+    # the pair-gap rule (topo-silk-spacing): J1's courtyard is 0.2mm off
+    # U1's — under the 0.8mm requirement — so BOTH free parts share the
+    # separation push; J1 was never shoved FOR its own hole (the owner
+    # exemption means its hole is where it happens to land).
+    assert abs(res.pose[0, 0] - d.pose0[0, 0]) <= 0.4
     assert res.pose[1, 0] > 6.1  # pushed +x, off the hole's rim
     assert not any(a == 0 and b >= len(d.parts) for a, b, _ in res.remaining)
 

@@ -176,6 +176,79 @@ def test_pad_pin_alias_normalizes_to_number() -> None:
     assert by_pin["number"] == "7" and "pin" not in by_pin
 
 
+def test_polygon_pad_keeps_explicit_origin_for_its_drill() -> None:
+    """An asymmetric copper bbox is not the plated hole's origin."""
+    pad = pcb_rows.normalize_pad(
+        {
+            "pin": "1",
+            "shape": "polygon",
+            "x": 0.0,
+            "y": 0.0,
+            "poly": [[-0.3, -0.5], [1.3, -0.5], [1.3, 0.5], [-0.3, 0.2]],
+            "drill": 0.6,
+        }
+    )
+    assert (pad["x"], pad["y"]) == (0.0, 0.0)
+    assert (pad["w"], pad["h"]) == (1.6, 1.0)
+    assert pcb_rows.normalize_pad(pad) == pad
+
+
+def test_polygon_pad_without_origin_uses_bbox_centre() -> None:
+    pad = pcb_rows.normalize_pad(
+        {"pin": "1", "shape": "polygon", "poly": [[0, 0], [2, 0], [0, 1]]}
+    )
+    assert (pad["x"], pad["y"], pad["w"], pad["h"]) == (1.0, 0.5, 2.0, 1.0)
+
+
+def test_undrilled_polygon_keeps_its_existing_routing_representative() -> None:
+    pad = pcb_rows.normalize_pad(
+        {
+            "pin": "1",
+            "shape": "polygon",
+            "x": 2.0,
+            "y": 0.0,
+            "poly": [[0, 0], [2, 0], [2, 1], [0, 1]],
+        }
+    )
+    assert (pad["x"], pad["y"]) == (1.0, 0.5)
+    assert pad["poly"] == [[0, 0], [2, 0], [2, 1], [0, 1]]
+
+
+def test_pad_drill_offset_survives_authoring() -> None:
+    pad = pcb_rows.normalize_pad(
+        {
+            "pin": "1",
+            "shape": "rect",
+            "x": 0,
+            "y": 0,
+            "w": 2,
+            "drill": 0.6,
+            "drill_offset": {"x": 0.254, "y": -0.127},
+        }
+    )
+    assert pad["drill_offset"] == {"x": 0.254, "y": -0.127}
+    assert pcb_rows.normalize_pad(pad) == pad
+
+
+@pytest.mark.parametrize(
+    "offset",
+    [{"x": 0}, {"x": float("nan"), "y": 0}, {"x": 0, "y": float("inf")}, [0, 0]],
+)
+def test_pad_drill_offset_rejects_incomplete_or_nonfinite_coordinates(offset) -> None:
+    with pytest.raises(ValueError, match="drill_offset"):
+        pcb_rows.normalize_pad(
+            {
+                "pin": "1",
+                "shape": "rect",
+                "x": 0,
+                "y": 0,
+                "w": 2,
+                "drill": 0.6,
+                "drill_offset": offset,
+            }
+        )
+
+
 def test_pad_vendor_shape_spellings_map_to_canonical() -> None:
     """gr536876: a stored EasyEDA pad (``OVAL``/``ELLIPSE`` tokens) or an
     export row written before export-side normalisation re-authors —

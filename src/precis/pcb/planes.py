@@ -81,6 +81,7 @@ from shapely.geometry import LineString, MultiPoint, MultiPolygon, Point, Polygo
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union, voronoi_diagram
 
+from precis.errors import BadInput
 from precis.pcb import clearance as clearance_kernel
 from precis.pcb.drc import _copper_item_polygon, _via_layer_names
 from precis.pcb.profiles import ProfileRules
@@ -258,6 +259,98 @@ def region_json(poly: Polygon) -> dict[str, Any]:
     if holes:
         out["holes"] = holes
     return out
+
+
+#: The batch ``features`` entry that declares a whole-layer pour — what
+#: ``precis_geom.pcb.Board.plane`` emits (``{"ftype": "plane_net",
+#: "layer", "net", "priority"}``). It is a ``pcb_planes`` declaration
+#: riding the features list, not a placed feature.
+PLANE_NET_FTYPE = "plane_net"
+
+
+def is_plane_net_feature(feature: dict[str, Any]) -> bool:
+    """Whether ``feature`` is a :data:`PLANE_NET_FTYPE` declaration — the
+    one test both consumers of a batch use, so a feature the laptop path
+    pours can never be one the store path files as a plain row."""
+    # `type` is the alias `_pcb_insert_feature` accepts for `ftype`.
+    return str(feature.get("ftype") or feature.get("type") or "").strip() == (
+        PLANE_NET_FTYPE
+    )
+
+
+def plane_rows_from_features(
+    features: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """``plane_net`` features as ``pcb_planes`` rows (the
+    ``Store.pcb_planes_list`` shape; ``source='authored'`` — a script
+    declaration is the human's instruction, exactly what ``op='plane_net'``
+    writes). The ONE converter both batch consumers read the feature
+    through: ``pcb.local._design`` hands the rows to
+    :func:`precis.pcb.session.apply_plane_assignments`, the batch put
+    writes them through ``Store.pcb_assign_plane`` — so a board script's
+    ``b.plane()`` means the same thing on the bench and in the job
+    (topo-route-geometry-truth root cause 4: the store path filed the
+    feature as a dead ``pcb_features`` row, dropped its ``net``, and every
+    job run routed GND as a signal tree while the bench poured it)."""
+    out: list[dict[str, Any]] = []
+    for f_ in features:
+        if not is_plane_net_feature(f_):
+            continue
+        layer = str(f_.get("layer") or "").strip()
+        net = str(f_.get("net") or "").strip()
+        if not (layer and net):
+            raise BadInput(
+                f"features: plane_net needs a layer and a net (got {f_!r})",
+                next=_PLANE_FEATURE_SHAPE,
+            )
+        priority = f_.get("priority")
+        if priority is not None and (
+            isinstance(priority, bool) or not isinstance(priority, int)
+        ):
+            raise BadInput(
+                f"features: plane_net {layer} priority must be an integer "
+                f"(got {priority!r})",
+                next=_PLANE_FEATURE_SHAPE,
+            )
+        out.append(
+            {
+                "layer": layer,
+                "net": net,
+                "region_hint": f_.get("region_hint"),
+                "source": "authored",
+                "region": f_.get("region"),
+                # None = omitted: the store keeps the row's stored priority
+                # on a re-put (as op='plane_net' does); a reader that needs
+                # a number coalesces to 0 (pcb.local._design).
+                "priority": priority,
+            }
+        )
+    return out
+
+
+_PLANE_FEATURE_SHAPE = (
+    "features=[{'ftype':'plane_net','layer':'In1.Cu','net':'GND','priority':10}]"
+)
+
+
+def whole_board_plane_conflict(
+    rows: Iterable[dict[str, Any]], layer: str, net: str
+) -> dict[str, Any] | None:
+    """The first ``pcb_planes`` row that already carries ``layer`` as a
+    whole-board sheet for a DIFFERENT net than ``net`` (``region`` None), or
+    None. A layer is one sheet of copper: :func:`plane_pours`' lowest-net-id
+    tie-break would silently drop one of two such declarations, so
+    ``op='plane_net'`` and the batch put both refuse the second. A row with
+    a region (derived power region, imported fill) shares the layer by
+    priority and is no conflict."""
+    return next(
+        (
+            row
+            for row in rows
+            if row["layer"] == layer and row["net"] != net and row.get("region") is None
+        ),
+        None,
+    )
 
 
 def _spoke_bridges(

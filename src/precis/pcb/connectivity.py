@@ -24,9 +24,10 @@ version of that measurement that runs every time.
 
 **What counts as connected.** Copper that overlaps. Each track segment is a
 capsule (segment + half-width), each via a disk on every layer it spans,
-each pad a disk on its own layer; two primitives on the same layer are
-joined when their gap is ``<= 0``, and all primitives of one via are joined
-to each other because a plated barrel *is* the connection between layers.
+each pad its placed circle, capsule or polygon on its own layer; two
+primitives on the same layer are joined when their gap is ``<= 0``, and all
+primitives of one via are joined to each other because a plated barrel *is*
+the connection between layers.
 Union-find over that relation; a net is healthy when its primitives form
 exactly one component.
 
@@ -43,12 +44,13 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from shapely.geometry import LineString, Polygon
 from shapely.geometry import Point as ShapelyPoint
 
+from precis.pcb.clearance import Body, body_of, region_touches_land, signed_gap
 from precis.pcb.drc import (
     _arc_points,
     _capsule_capsule_gap,
-    _copper_item_polygon,
     _Prim,
     _segments_intersect,
     _via_layer_names,
@@ -111,36 +113,24 @@ def _union_same_pin_pads(
 def _pad_primitives(
     model: dict[str, Any], start_group: int
 ) -> tuple[list[_Prim], dict[int, tuple[Point, ...]], list[_PadKey], list[list[int]]]:
-    """Pads as disks, each its OWN group — two pads of one part are not
+    """Placed pad bodies, each its OWN group — two pads of one part are not
     electrically joined just because they belong to the same footprint
     (the pads of one PIN are, see :func:`_union_same_pin_pads`; the third
     return value carries each primitive's ``(refdes, pin)`` for that). A
     pad with no net is skipped — a mechanical land has nothing to be
-    connected to. A drilled pad is one disk per board layer; the fourth
+    connected to. A drilled pad is one body per board layer; the fourth
     return value lists each such barrel's primitive indices for the
     caller to join.
 
-    The disk is the pad's INSCRIBED circle (``min(w, h) / 2``) for a
-    genuinely round (``shape == 'circle'``) pad — that disk already IS its
-    exact reach, not an approximation of it.
-
-    Every other shape gets its real outline instead (:func:`_pad_poly`) —
-    the inscribed disk UNDER-approximates all of them, and by a lot right
-    where a trace actually lands: a rect/obround pad's reach on its long
-    axis (gr450064/gr449709 — a 2:1 pad's inscribed disk understated its
-    long-axis reach 2x, enough to read a track landing on the pad's own
-    short edge as disconnected), and a ``shape == 'polygon'`` pad's
-    vertices (gr339236's EWOD electrodes: real anchors sat outside the
-    inscribed disk on every diagonal vertex, so every one of them read as
-    disconnected too). The second return value carries that outline, keyed
-    by the pad's index in the returned primitive list, so a caller can
-    route it through :func:`_touch_gap` exactly like
-    :func:`connected_pin_pairs` and :func:`fixed_copper_pin_terminals`
-    already do — one polygon-aware touch test for all three callers, not a
-    fourth independent one here.
+    ``clearance.body_of`` supplies the same analytic placed land the
+    clearance kernel measures. A circle stays a disk, a stadium stays a
+    capsule, and a rectangle/custom land supplies its straight polygon.
+    Tessellating a stadium's caps could invent a gap in overlapping native
+    copper. The second return value carries only straight polygon outlines;
+    every caller shares this conversion and :func:`_touch_gap`.
 
     A polygon pad whose outline cannot actually be resolved (``poly``
-    missing or degenerate — :func:`_pad_poly` returns ``None`` even though
+    missing or degenerate — ``body_of`` returns ``None`` even though
     ``shape == 'polygon'`` said there should be one) still needs a disk,
     but NOT the inscribed one: this module's touch test is a NEGATIVE
     predicate ("this gap is > eps, so call it not-touching"), and an
@@ -162,8 +152,22 @@ def _pad_primitives(
             continue
         w = float(pad.get("w", 0.0))
         h = float(pad.get("h", w))
-        poly = _pad_poly(pad)
-        if poly is None and pad.get("shape") == "polygon":
+        a = (float(pad["x"]), float(pad["y"]))
+        b: Point | None = None
+        poly: tuple[Point, ...] | None = None
+        body = body_of({**pad, "ctype": "pad"})
+        if body is not None and body.core is not None:
+            r = body.r
+            if isinstance(body.core, Polygon):
+                poly = tuple(
+                    (float(x), float(y)) for x, y in body.core.exterior.coords[:-1]
+                )
+            else:
+                points = list(body.core.coords)
+                a = (float(points[0][0]), float(points[0][1]))
+                if len(points) > 1:
+                    b = (float(points[-1][0]), float(points[-1][1]))
+        elif pad.get("shape") == "polygon":
             # Outline authored but unresolvable -- see the docstring above.
             r = math.hypot(w, h) / 2.0
         else:
@@ -184,8 +188,8 @@ def _pad_primitives(
             barrel.append(pad_index)
             prims.append(
                 _Prim(
-                    (float(pad["x"]), float(pad["y"])),
-                    None,
+                    a,
+                    b,
                     r,
                     start_group + i,
                     net,
@@ -234,38 +238,10 @@ def _copper_primitives_with_vias(
     return prims, via_groups
 
 
-def _pad_poly(pad: dict[str, Any]) -> tuple[Point, ...] | None:
-    """The pad's authored outline, as an exact polygon — ``None`` only for
-    a genuinely round pad (``shape == 'circle'``, whose inscribed disk
-    already IS its exact reach) or one this function cannot resolve.
-
-    ``shape == 'polygon'`` pads (the EWOD electrode pads that motivate this
-    module at all — gr339236) read their raw authored outline directly.
-    ``rect``/``obround`` pads (gr450064/gr449709) get theirs from
-    :mod:`precis.pcb.drc`'s :func:`~precis.pcb.drc._copper_item_polygon` —
-    that module's own "ONE shape function" for what a pad physically
-    occupies — rather than a second rect-corners/stadium construction here:
-    two independently-maintained notions of "what shape is this pad" is
-    this subsystem's own most-repeated defect (see that function's own
-    docstring)."""
-    shape = pad.get("shape")
-    if shape == "polygon":
-        poly = pad.get("poly")
-        if not poly or len(poly) < 3:
-            return None
-        return tuple((float(p[0]), float(p[1])) for p in poly)
-    if shape in ("rect", "obround"):
-        geom = _copper_item_polygon({**pad, "ctype": "pad"})
-        if geom is None or geom.is_empty:
-            return None
-        return tuple((float(x), float(y)) for x, y in geom.exterior.coords[:-1])
-    return None
-
-
 def _prim_polygon_gap(prim: _Prim, poly: tuple[Point, ...]) -> float:
     """Gap between a circle/capsule primitive and a closed polygon — the
     polygon-aware sibling of :func:`_capsule_capsule_gap`, used only for
-    the pin/net whose pad is a :func:`_pad_poly` polygon rather than a
+    the pin/net whose pad has a straight polygon boundary rather than a
     circle. Same edge-to-edge contract: 0 the instant the primitive's
     centreline enters or crosses the polygon, else the closed-form
     distance to the nearest edge minus the primitive's own radius.
@@ -308,10 +284,18 @@ def _touch_gap(
     poly_b: tuple[Point, ...] | None,
 ) -> float:
     """Same-layer touch distance between two primitives, honouring either
-    side's :func:`_pad_poly` outline when it has one, else falling back to
+    side's straight polygon outline when it has one, else falling back to
     :func:`_capsule_capsule_gap`'s circle/capsule math unchanged — the
     seam :func:`connected_pin_pairs` and :func:`fixed_copper_pin_terminals`
     both call instead of :func:`_capsule_capsule_gap` directly."""
+    if poly_a is not None and poly_b is not None:
+        # Testing each polygon against the other's inscribed disk misses
+        # edge crossings with both centres outside. The straight land cores
+        # are exact, so use the shared analytic contact predicate directly.
+        return max(
+            0.0,
+            signed_gap(Body(Polygon(poly_a), (), 0.0), Body(Polygon(poly_b), (), 0.0)),
+        )
     gaps = []
     if poly_a is not None:
         gaps.append(_prim_polygon_gap(pb, poly_a))
@@ -320,6 +304,120 @@ def _touch_gap(
     if gaps:
         return min(gaps)
     return _capsule_capsule_gap(pa, pb)
+
+
+def _region_members(
+    model: dict[str, Any],
+    prims: list[_Prim],
+    net: str,
+    layer: str,
+    area: Body | None,
+    *,
+    pour: dict[str, Any] | None = None,
+) -> list[int]:
+    """Region membership with analytic native-pad contact at the pad seam.
+
+    A capsule's ``a`` is a centreline endpoint, not its pad centre. Neither
+    that endpoint nor the centre alone proves contact with a pour: its cap
+    may overlap, or the entire pad may sit inside a hole. Measure each pad's
+    shared placed body against the region including its holes, excluding
+    the pad's physical round/offset/slot drill void. Non-pad copper retains
+    the existing point-membership policy.
+    """
+    first_pad_group = len(model.get("copper") or [])
+    pads = model.get("pads") or []
+    pad_bodies: dict[int, Body | None] = {}
+    pad_holes: dict[int, Body] = {}
+    hole_cuts: dict[int, Any] = {}
+    members = []
+    for i, prim in enumerate(prims):
+        if prim.net != net or prim.layer != layer:
+            continue
+        if prim.group >= first_pad_group:
+            if prim.group not in pad_bodies:
+                pad = pads[prim.group - first_pad_group]
+                pad_bodies[prim.group] = body_of({**pad, "ctype": "pad"})
+                if pad.get("drill"):
+                    hole_core = (
+                        LineString(pad["slot"])
+                        if pad.get("slot")
+                        else ShapelyPoint(
+                            float(pad.get("drill_x", pad["x"])),
+                            float(pad.get("drill_y", pad["y"])),
+                        )
+                    )
+                    pad_holes[prim.group] = Body(
+                        hole_core, (), float(pad["drill"]) / 2.0
+                    )
+            land = pad_bodies[prim.group]
+            if land is not None and area is not None:
+                if area.core is not None and region_touches_land(
+                    area.core,
+                    land,
+                    pad_holes.get(prim.group),
+                    touch_eps=TOUCH_EPS_MM,
+                    hole_cuts=hole_cuts,
+                ):
+                    members.append(i)
+                continue
+        if pour is not None:
+            inside = point_in_pour(pour, prim.a[0], prim.a[1])
+        elif area is None:
+            inside = True
+        else:
+            assert area.core is not None
+            inside = area.core.covers(ShapelyPoint(prim.a))
+        if inside:
+            members.append(i)
+    return members
+
+
+def _gap_boxes(
+    prims: list[_Prim], pad_polys: dict[int, tuple[Point, ...]]
+) -> list[
+    tuple[tuple[float, float, float, float], tuple[float, float, float, float], float]
+]:
+    """``(centreline AABB, gap-geometry AABB, geometry radius)`` per
+    primitive — the touch pair scan's early-out. The gap geometry is the
+    pad polygon's when the primitive has one (radius 0 — the polygon IS
+    the reach), else the centreline's own (the primitive radius). A
+    pair's gap is ``dist(core_a, core_b) - r_a - r_b``, so cores whose
+    boxes sit further apart than the radii plus :data:`TOUCH_EPS_MM`
+    cannot touch in ANY direction the exact
+    eval measures. A bound on the same arithmetic, applied earlier — not
+    a spatial index, so the checker keeps its independence per the
+    pair-scan note below."""
+    out = []
+    for i, p in enumerate(prims):
+        ax, ay = p.a
+        if p.b is None:
+            sx0 = sx1 = ax
+            sy0 = sy1 = ay
+        else:
+            bx, by = p.b
+            sx0, sx1 = (ax, bx) if ax < bx else (bx, ax)
+            sy0, sy1 = (ay, by) if ay < by else (by, ay)
+        seg = (sx0, sy0, sx1, sy1)
+        poly = pad_polys.get(i)
+        if poly is None:
+            out.append((seg, seg, p.r))
+        else:
+            xs = [pt[0] for pt in poly]
+            ys = [pt[1] for pt in poly]
+            out.append((seg, (min(xs), min(ys), max(xs), max(ys)), 0.0))
+    return out
+
+
+def _aabb_beyond(
+    b1: tuple[float, float, float, float],
+    b2: tuple[float, float, float, float],
+    reach: float,
+) -> bool:
+    """The two boxes' axis-aligned gap exceeds ``reach`` — every real
+    distance between them is at least that, so the pair cannot touch."""
+    dx = max(b1[0] - b2[2], b2[0] - b1[2], 0.0)
+    dy = max(b1[1] - b2[3], b2[1] - b1[3], 0.0)
+    return dx * dx + dy * dy > reach * reach
 
 
 class _DisjointSet:
@@ -380,16 +478,8 @@ def pour_components(model: dict[str, Any]) -> dict[tuple[str, str], int]:
     roots: dict[tuple[str, str], set[Any]] = {}
     for k, pour in enumerate(pours):
         net, layer = str(pour.get("net", "")), str(pour.get("layer", ""))
-        member = next(
-            (
-                i
-                for i, p in enumerate(prims)
-                if p.net == net
-                and p.layer == layer
-                and point_in_pour(pour, p.a[0], p.a[1])
-            ),
-            None,
-        )
+        members = _region_members(model, prims, net, layer, body_of(pour), pour=pour)
+        member = next(iter(members), None)
         roots.setdefault((net, layer), set()).add(
             dsu.find(member) if member is not None else ("bare", k)
         )
@@ -431,11 +521,7 @@ def _net_components(model: dict[str, Any]) -> tuple[list[_Prim], _DisjointSet] |
     ]
     for pour in pours:
         net, layer = str(pour.get("net", "")), str(pour.get("layer", ""))
-        members = [
-            i
-            for i, p in enumerate(prims)
-            if p.net == net and p.layer == layer and point_in_pour(pour, p.a[0], p.a[1])
-        ]
+        members = _region_members(model, prims, net, layer, body_of(pour), pour=pour)
         for other in members[1:]:
             dsu.union(members[0], other)
 
@@ -451,13 +537,9 @@ def _net_components(model: dict[str, Any]) -> tuple[list[_Prim], _DisjointSet] |
         if (net, layer) in poured:
             continue
         area = region_polygon(decl.get("region"))
-        members = [
-            i
-            for i, p in enumerate(prims)
-            if p.net == net
-            and p.layer == layer
-            and (area is None or area.covers(ShapelyPoint(p.a)))
-        ]
+        members = _region_members(
+            model, prims, net, layer, Body(area, (), 0.0) if area is not None else None
+        )
         for other in members[1:]:
             dsu.union(members[0], other)
 
@@ -469,60 +551,31 @@ def _net_components(model: dict[str, Any]) -> tuple[list[_Prim], _DisjointSet] |
     # the same reason drc.py's oracle has none: this is the check that
     # catches the accelerated path being wrong, so it must not share its
     # machinery.
+    boxes = _gap_boxes(prims, pad_polys)
     for members in by_key.values():
         for a_i in range(len(members)):
-            pa = prims[members[a_i]]
+            mi = members[a_i]
+            pa = prims[mi]
+            poly_a = pad_polys.get(mi)
+            ba = boxes[mi]
             for b_i in range(a_i + 1, len(members)):
-                pb = prims[members[b_i]]
-                gap = _touch_gap(
-                    pa, pb, pad_polys.get(members[a_i]), pad_polys.get(members[b_i])
-                )
-                if gap <= TOUCH_EPS_MM:
-                    dsu.union(members[a_i], members[b_i])
+                mj = members[b_i]
+                pb = prims[mj]
+                poly_b = pad_polys.get(mj)
+                bb = boxes[mj]
+                # Bound the actual two land cores, including polygon edge
+                # crossings with neither pad centre inside the other land.
+                possible = not _aabb_beyond(ba[1], bb[1], ba[2] + bb[2] + TOUCH_EPS_MM)
+                if not possible:
+                    continue
+                if _touch_gap(pa, pb, poly_a, poly_b) <= TOUCH_EPS_MM:
+                    dsu.union(mi, mj)
     return prims, dsu
 
 
-def pin_components(
+def connected_pin_pairs(
     model: dict[str, Any], *, nets: set[str] | None = None
-) -> dict[tuple[str, str], int] | None:
-    """Map pad identities to the DRC's copper components for viewer airwires.
-
-    Read the pad row indices retained in primitive groups from the existing
-    extractor; do not infer connectivity again from Gerber flashes. Missing
-    geometry returns ``None``, so a Gerber-only viewer can keep its full MST.
-    Restricting ``nets`` filters before primitive extraction and quadratic
-    touch checks: a pending net must not pay for unrelated routed copper.
-    Component numbers are local to this extraction; only equality matters.
-    """
-    if nets is not None:
-        model = {
-            **model,
-            **{
-                key: [
-                    item
-                    for item in model.get(key) or []
-                    if str(item.get("net", "")) in nets
-                ]
-                for key in ("pads", "copper", "pending_pours")
-            },
-        }
-    built = _net_components(model)
-    if built is None:
-        return None
-    prims, dsu = built
-    pad_start = len(model.get("copper") or [])
-    pads = model.get("pads") or []
-    components: dict[tuple[str, str], int] = {}
-    for i, prim in enumerate(prims):
-        if prim.group < pad_start:
-            continue
-        key = _pad_key(pads[prim.group - pad_start])
-        if key is not None:
-            components[key] = dsu.find(i)
-    return components
-
-
-def connected_pin_pairs(model: dict[str, Any]) -> set[frozenset[tuple[str, str]]]:
+) -> set[frozenset[tuple[str, str]]]:
     """Every pair of ``(refdes, pin)`` pads ``model["pads"]`` already joins
     through ``model["copper"]`` — the same union-find :func:`net_islands`
     runs, restated at PIN granularity for a caller asking a different
@@ -547,7 +600,24 @@ def connected_pin_pairs(model: dict[str, Any]) -> set[frozenset[tuple[str, str]]
     mounting-hole rings :func:`~precis.pcb.realize.pads_for_ir` emits
     carry neither), contributes no pair — same "nothing to check against"
     convention :func:`_pad_primitives` already applies to a netless pad.
-    Drilled pads are one primitive per board layer there (gr489175)."""
+    Drilled pads are one primitive per board layer there (gr489175).
+
+    ``nets`` restricts the pass to those nets' pads and copper BEFORE the
+    primitive extraction and the quadratic touch checks (every join is
+    same-net, so pairs of the named nets are unchanged): the viewer's
+    pending nets must not pay for unrelated routed copper (gr565255)."""
+    if nets is not None:
+        model = {
+            **model,
+            **{
+                key: [
+                    item
+                    for item in model.get(key) or []
+                    if str(item.get("net", "")) in nets
+                ]
+                for key in ("pads", "copper")
+            },
+        }
     prims, via_groups = _copper_primitives_with_vias(model)
     pad_offset = len(prims)
     pad_prims, pad_polys_raw, pad_keys, pad_barrels = _pad_primitives(
@@ -572,27 +642,32 @@ def connected_pin_pairs(model: dict[str, Any]) -> set[frozenset[tuple[str, str]]
     ]
     for pour in pours:
         net, layer = str(pour.get("net", "")), str(pour.get("layer", ""))
-        members = [
-            i
-            for i, p in enumerate(prims)
-            if p.net == net and p.layer == layer and point_in_pour(pour, p.a[0], p.a[1])
-        ]
+        members = _region_members(model, prims, net, layer, body_of(pour), pour=pour)
         for other in members[1:]:
             dsu.union(members[0], other)
 
     by_key: dict[tuple[str, str], list[int]] = {}
     for i, p in enumerate(prims):
         by_key.setdefault((p.net, p.layer), []).append(i)
+    boxes = _gap_boxes(prims, pad_polys)
     for members in by_key.values():
         for a_i in range(len(members)):
-            pa = prims[members[a_i]]
+            mi = members[a_i]
+            pa = prims[mi]
+            poly_a = pad_polys.get(mi)
+            ba = boxes[mi]
             for b_i in range(a_i + 1, len(members)):
-                pb = prims[members[b_i]]
-                gap = _touch_gap(
-                    pa, pb, pad_polys.get(members[a_i]), pad_polys.get(members[b_i])
-                )
-                if gap <= TOUCH_EPS_MM:
-                    dsu.union(members[a_i], members[b_i])
+                mj = members[b_i]
+                pb = prims[mj]
+                poly_b = pad_polys.get(mj)
+                bb = boxes[mj]
+                # Bound the actual two land cores, including polygon edge
+                # crossings with neither pad centre inside the other land.
+                possible = not _aabb_beyond(ba[1], bb[1], ba[2] + bb[2] + TOUCH_EPS_MM)
+                if not possible:
+                    continue
+                if _touch_gap(pa, pb, poly_a, poly_b) <= TOUCH_EPS_MM:
+                    dsu.union(mi, mj)
 
     by_root: dict[int, dict[tuple[str, str], None]] = {}
     for offset, key in enumerate(pad_keys):
@@ -792,5 +867,4 @@ __all__ = [
     "fixed_copper_branches",
     "fixed_copper_pin_terminals",
     "net_islands",
-    "pin_components",
 ]

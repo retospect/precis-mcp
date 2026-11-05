@@ -9,20 +9,10 @@ design leaves the relational graph.
 
 Inspection and run intake: :mod:`~precis.pcb.inspection`, :mod:`~precis.pcb.workspace`.
 
-``pcb_review`` works the shipped ``pcb-tapeout`` and conditionally assigned
-``pcb-mech-env`` judgment ledgers through the same checklist sync/status/write
-path. Mechanical review is declaration-driven (flex process, fab features or
-board metadata), so a plain rigid board gains no implicit mechanical gate.
-Batch ``put(args={'meta': ...})`` and workspace ``Board(meta=...)`` validate
-``coating``/``enclosure``/``environment`` and merge them into the board row
-in the batch transaction. Reference metadata alone is insufficient because
-checklist applicability and revisions read ``pcb_boards.meta``. Explicit
-``coating='none'``, ``enclosure=False`` and ``environment='indoor'`` do not
-activate the checklist; incomplete legacy declarations still do.
-Mechanical verdicts cover the whole board and consume the ``pcb:mech-env``
-input revision: pcb_graph omits fab polygons, copper and footprint geometry,
-so its fingerprint alone cannot invalidate a mask/coverlay decision. Missing
-geometry records ``not checkable (gr520329)``, never an inferred pass.
+Mechanical review is declaration-driven and consumes the whole-board
+``pcb:mech-env`` revision because the graph omits fabrication geometry.
+Missing geometry is not checkable, never an inferred pass. Ledger and metadata
+details: ``docs/reference/pcb-kernel-contracts.md#mechanical-review``.
 
 Placement and route refuse an unset net current (gr520545 —
 :mod:`~precis.pcb.currents`).
@@ -44,10 +34,8 @@ it refuses with :data:`ROUTE_RETIRED` — and
 model + gerber-model slice that placement, DRC, fab render/export and
 stored runs still need.
 
-Stored ``meta.last_route.warm_start`` records each group's method and
-distance in mm for boards routed before the cut — matched roles also
-carry `cost_mm`/`prior_cost_mm`, which `format_warm_start` renders into
-`view='route-status'` (stored runs only).
+Stored warm-start status fields:
+``docs/reference/pcb-kernel-contracts.md#stored-route-status``.
 
 Footprint-owned geometry (pads, polygon vertices, holes, courtyard) is
 stored footprint-local and only mapped to world through :mod:`~precis.pcb.pose`
@@ -64,18 +52,19 @@ Map, in pipeline order (design doc:
   ratsnest + crossing count, proximity, signal trace, measures — the
   pre-routing objective, folded over
   :meth:`precis.store._pcb_ops.PcbMixin.pcb_graph`.
-* **Parts + footprints** — :mod:`~precis.pcb.catalog` (jlcparts dump),
-  :mod:`~precis.pcb.jlc_api` (live stock), :mod:`~precis.pcb.easyeda` +
-  :mod:`~precis.pcb.footprint` (pad geometry), :mod:`~precis.pcb.padplace`
-  (pads in board coordinates), :mod:`~precis.pcb.landpattern`
-  (synthesized pads when no footprint is cached),
-  :mod:`~precis.pcb.escape` (footprint-intrinsic escape precompute),
-  :mod:`~precis.pcb.capabilities` (fab rules as versioned data),
-  :mod:`~precis.pcb.datasheets` (the ``datasheet_pull`` trigger + read
-  side) and :mod:`~precis.pcb.datasheet_facts` (the extracted pin table /
-  required externals / conditional-table block on the part ref —
-  ``get(kind='part', view='facts')`` reads it, the ``datasheet_facts``
-  job writes it).
+* **Parts + footprints** — :mod:`~precis.pcb.catalog` (jlcparts),
+  :mod:`~precis.pcb.jlc_api` (stock), :mod:`~precis.pcb.easyeda` /
+  :mod:`~precis.pcb.footprint` (geometry), :mod:`~precis.pcb.padplace`
+  (world placement), :mod:`~precis.pcb.landpattern` (synthesized fallback),
+  :mod:`~precis.pcb.escape` (intrinsic escape precompute),
+  :mod:`~precis.pcb.capabilities` (versioned fab rules),
+  :mod:`~precis.pcb.datasheets` / :mod:`~precis.pcb.datasheet_facts`
+  (datasheet pull and extracted facts).
+  Copper and physical drills stay distinct: a filled envelope cannot prove
+  contact in a bore. DRC approves the boundary actually emitted; analytic
+  contact and outward blockers prevent facets from inventing or erasing joins.
+  Full geometry contract:
+  ``docs/reference/pcb-kernel-contracts.md#footprint-geometry``.
 * **Place** — :mod:`~precis.pcb.place` (force-directed seed),
   :mod:`~precis.pcb.optimize` (the placement annealer, the
   package's largest engine), :mod:`~precis.pcb.cost` (its one cost
@@ -94,6 +83,12 @@ Map, in pipeline order (design doc:
   (segment/fillet/quantization primitives).
   Silk's Voronoi guard sites prevent macOS outer-ray clipping defects; see
   :mod:`~precis.pcb.silk`.
+  Vendor silk selection measures printable, geometrically surviving ink
+  against the ORIGINAL submitted length, including strokes below the fab's
+  ``jlc_min.silk_width_mm``. Removing thin ink from that denominator would
+  let a tiny legal tail suppress the existing minimal-ring fallback.
+  Accepted vendor strokes retain their authored widths; callers without
+  an authoritative minimum keep their existing behavior.
 * **Checks** — :mod:`~precis.pcb.drc` (geometric DRC on realized copper;
   its graph-level half lives in ``ir.py``), :mod:`~precis.pcb.connectivity`
   (is each net's copper one piece).
@@ -118,81 +113,29 @@ Map, in pipeline order (design doc:
   the roster), a stored one that stops resolving is a report, not an
   error.
 
-Fresh local EasyEDA Pro intake retains accepted LINE/ARC records and ordinary
-through vias as fixed source copper, so preview does not erase existing routing
-(gr470192). This supersedes the older regenerate-only default, still available
-as copper="none". Partial updates retain that older behavior: their intentionally
-unchanged nets/outline cannot safely receive changed copper. Import and source
-copper share one transaction; neither the reader nor preview invents routing.
+Intake, viewer identity, connectivity previews, dependency boundaries,
+route-pitch experiments and pad/pin contracts:
+``docs/reference/pcb-kernel-contracts.md#intake-and-pad-contracts``.
+Fresh Pro intake preserves accepted fixed source copper; partial updates
+cannot safely replace it. Viewer Apply binds actual instance identity and raw
+snapshots, rejecting collateral changes. Airwires join existing copper
+components because a pending net may already contain connected pins.
 
-The web selection adapter binds actual instance IDs and shown raw snapshots to
-Gerber flash targets; refdes and footprint UUID/design-local key remain separate.
-Unknown identity stays unavailable. Shared design chat proposes a single move;
-explicit Apply uses the existing handler under the bounded cache/row guard and
-rejects any generator, copper or annotation collateral. Replay-normalized IDs
-and routing hashes were refused as viewer identity because they omit those facts.
+Pins retain netlist identity; pads retain every physical land, including
+multiple lands bonded to one pin. Promoting pads to pins breaks swaps and
+name-based net indexing; leaving extra lands net-less creates foreign
+obstacles on their own net. Footprint pin completion exposes every land name
+without merging these identities. Uncached geometry is NOT-CHECKED.
+Pinout inspection reads raw stored pads because synthesized bounds cannot
+prove numbering and per-layer flashes duplicate through-hole lands.
+Unsaved label overlays remain proposals, never inferred vendor pinouts.
 
-Internal :mod:`~precis.pcb.snapshot` captures raw relational routing inputs and
-checkpoints for dev/test replay; its module docstring owns the replay rules.
-
-Dependencies: shapely is imported at module top by ``drc``, ``generators``,
-``gerber``, ``ir``, ``planes``, ``realize`` and ``tiling`` — it is a core
-dependency (pyproject), not confined to the tiling pass any more.
-``geom.py`` stays dependency-free by convention because its primitives
-are closed-form, not because the package as a whole is. No GL, no
-meshing, no embedder. The handler (:mod:`precis.handlers.pcb`) renders
-results as TOON; this package owns the algorithms.
-
-The route pitch cap retains two-thirds of clearance, bounded by
-existing pitch floor. A one-third experiment gained one net on the faithful
-dogfood replay (12 gains/11 losses, zero geometric DRC errors), but regressed
-ESP32 reference seed5 and fab-film seeds2/3/4. The global refinement was withdrawn:
-deterministic routing competition changes with the grid, so finer is not a
-monotonic yield improvement. The measured fine-grid fixture remains an explicit
-experiment, not a default or new API. Clearance/layers/fixed copper, all route/DRC
-ratchets and search budgets stay authoritative; diagnostic parity is separate.
-
-Pads are not pins (gr451276). A pin is a netlist name; a pad is footprint
-copper keyed by pad number, carried as the IR's pad set
-(``ir.FootprintPad``/``footprint_pad_set``, memoised on
-``PcbIR.footprint_pads`` by ``session.apply_real_pin_offsets``). Pins join
-pads by name, first pad per name supplying the pin's own position/size;
-every other pad of a real footprint is emitted by ``realize.pads_for_ir``,
-claimed on the router grid (``_footprint_pad_claims``, under its pin's net
-or a per-land sentinel) and hulled by the courtyard, so pad count equals the
-footprint's regardless of wiring. Pads were never promoted to pins because
-pin ids carry pin swaps, net indexing and pin_to_net-by-name. Connectivity
-unions the pads of one pin: the part bonds them internally, so a second lead
-is not an island of its net. Alternatives refused: seeding pins from the
-footprint (breaks pin identity), and net-less extra pads (made a pin's own
-second land a foreign obstacle to its net, measured on GND).
-
-Slice 2 of docs/backlog/pcb-lazy-netlist-and-checks.md then closed the other
-direction: every footprint pad NAME is also a declared pin —
-``_pcb_apply`` completes a component's pins from the cached footprint's
-``pin_map`` (``store._pcb_ops._pcb_complete_footprint_pins``), so the
-netlist can name every land while pads still outnumber pins wherever two
-pads share one name. A declared pin with no net and no §1j marker is
-``drc.check_unconnected_pins`` (warn while the board is worked, error at
-the authored ``fab`` phase); a pad no pin claims at all is
-``drc.check_undeclared_pads`` — and a part whose footprint is not cached
-is reported NOT-CHECKED, never a clean pass. The marker vocabulary
-(``nc``/``unused``/``must_terminate``, on ``pcb_pins.meta`` + the ``nc``
-tag) is what keeps that complaint an oracle and not noise.
-
-Instance pinout inspection (``eyes.pinout``) reads raw stored pads and
-reuses ``padplace.place_pad_point``. IR/fab pads were refused as its input:
-synthesized bounds cannot establish numbering, and per-layer flashes
-multiply through-hole lands. Explicit pin-to-pad and footprint naming are
-reported separately rather than changing routing's mapping policy. Missing
-placement leaves board coordinates unavailable; source geometry does not
-verify a vendor pinout or connector mating orientation.
-
-Unsaved intake preview overlays explicit proposed labels on those same stored
-rows, separately from persisted pin/net evidence. It never authors the draft:
-canonical ownership conflicts remain inspectable proposals, while authoring
-still refuses them. Prose/numbering/mating/net inference and provider fetches
-were refused; a read-only echo is not a routing or alias-storage policy.
+``geom.py`` stays dependency-free for its closed-form primitives; shapely is
+a core package dependency. The handler renders TOON; this package owns the
+algorithms. Internal :mod:`~precis.pcb.snapshot` owns raw-input replay rules.
+The route pitch cap retains two-thirds of clearance: finer grids change
+deterministic competition and do not monotonically improve routing yield.
+Existing floors, rules and budgets remain authoritative.
 """
 
 from __future__ import annotations

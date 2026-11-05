@@ -124,6 +124,12 @@ No via may sit in a pad: a via whose annulus overlaps a solder pad's copper
 is an error (`via_pad_keepout`, or `via_in_pad` for an imported or authored
 same-net fixed via), because a via in a pad needs a filled and capped via,
 a fab upgrade we do not buy. Fix an imported one at the source board.
+Clearing the keepout is not enough — vias are not tented, so
+`via_mask_web` (error, net-blind: the pad on the via's own net wicks
+identically) flags a via whose copper edge sits closer than
+`via_mask_web_mm` — pad mask expansion + dam + via expansion, 0.20mm at
+the JLC-min figures — to ANY pad's copper; the authored fixed-via drop
+point into its own electrode keeps the keepout's carve-out.
 
 An authored keepout binds: a `features[]` row `{'ftype':'keepout',
 'geom':{'poly':[[x,y],…]}}` — optional `layers:['F.Cu',…]` (absent means
@@ -214,6 +220,14 @@ Pad `shape` is `circle`/`rect`/`obround`/`polygon`; vendor spellings map
 on input (`oval` → `obround`, `ellipse` → `circle`), so a
 `view='footprints' args={'format':'json'}` row — or a vendor-decoded one —
 authors back through `args.footprint` verbatim.
+For a drilled pad, `drill` is the cutter diameter and optional `slot={w,h}`
+is the full hole extent in the unrotated pad frame. Optional
+`drill_offset={x,y}` locates the hole relative to the copper origin in that
+same frame; pad rotation precedes the instance mirror/rotation. A drilled polygon's
+explicit `x,y` origin is preserved independently of its vertex bbox, so an
+asymmetric outline does not relocate its hole. Omit the origin only when
+the polygon bbox centre is the intended hole origin. Undrilled polygons
+use their bbox centre as the routing representative.
 
 `view='footprints'` lists every catalog-part instance on the board
 (refdes, C-number, cached?, source, pad count, authored `op='pad'`
