@@ -100,7 +100,7 @@ from mcp.shared import session as mcp_shared_session
 from pydantic import ValidationError
 from pydantic_core import ErrorType
 
-from precis import calllat, inflight
+from precis import calllat, inflight, mcp_identity
 from precis.budget.work_class import WorkClass, work_class_scope
 from precis.runtime import PrecisRuntime, build_runtime
 from precis.secrets import mounted_secret
@@ -131,8 +131,14 @@ _SDK_SESSION_PATH = mcp_shared_session.BaseSession._receive_loop.__code__.co_fil
 def _mask_protocol_secrets(text: str) -> str:
     # Personal bearer values have a known prefix; even a low-entropy token
     # must be masked when the general credential heuristic does not match.
-    text = re.sub(r"\bprecis_user_[A-Za-z0-9_-]+", "[redacted]", text)
+    text = re.sub(
+        rf"\b{re.escape(mcp_identity.TOKEN_PREFIX)}[A-Za-z0-9_-]+", "[redacted]", text
+    )
     return mask_secrets(text, warn=False)
+
+
+def _strip_protocol_input_values(text: str) -> str:
+    return re.sub(r", input_value=[^\n]*", "]", text)
 
 
 def _protocol_validation_text(error: ValidationError) -> str:
@@ -194,30 +200,51 @@ class _ProtocolPayloadFilter(logging.Filter):
     results before our dispatcher has an opportunity to redact them.
     Filtering is independent of an ambient owner: transport tasks outlive
     request contexts, and denied anonymous learning calls are private too.
+    SDK session validation warnings keep only their summary: even Pydantic
+    locations contain client dictionary keys and can forge log lines.
     Application logger levels and diagnostics are unaffected.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
+        safe_message = ""
         try:
-            return self._filter(record)
+            if record.levelno <= logging.DEBUG:
+                return False
+            safe_message = self._message(record)
+            record.msg = safe_message
+            record.args = ()
+            if record.exc_info and record.exc_info[1] is not None:
+                record.exc_text = "".join(
+                    _protocol_exception_trace(record.exc_info[1]).format()
+                ).rstrip()
+            if record.exc_text:
+                record.exc_text = _mask_protocol_secrets(
+                    _strip_protocol_input_values(record.exc_text)
+                )
+            if record.stack_info:
+                record.stack_info = _mask_protocol_secrets(record.stack_info)
+            # Stock Formatter appends exc_text without exc_info; RichHandler and
+            # the DB handler must not rebuild the original, unsafe traceback.
+            record.exc_info = None
+            return True
         except Exception:
             # Never emit a partially sanitized record, nor break the application
-            # while reporting its error. Do not stringify the failed exception.
+            # while reporting its error. Only retain a fully sanitized message;
+            # do not stringify the failed exception or retry a failing scrubber.
             error_type = (
                 type(record.exc_info[1]).__name__
                 if record.exc_info and record.exc_info[1] is not None
                 else "Exception"
             )
-            record.msg = f"{error_type} (details unavailable)"
+            prefix = f"{safe_message}: " if safe_message else ""
+            record.msg = f"{prefix}{error_type} (details unavailable)"
             record.args = ()
             record.exc_info = None
             record.exc_text = None
             record.stack_info = None
             return True
 
-    def _filter(self, record: logging.LogRecord) -> bool:
-        if record.levelno <= logging.DEBUG:
-            return False
+    def _message(self, record: logging.LogRecord) -> str:
         # MCP 1.30 also interpolates client-controlled values before logging:
         # SSE's invalid/unknown session query and lowlevel's stream exception.
         # The latter receives SSE ValidationError (or HTTP's Exception(err));
@@ -237,7 +264,6 @@ class _ProtocolPayloadFilter(logging.Filter):
                 message = message % args
             except Exception:
                 pass  # Keep the format string when placeholders do not match.
-        record.args = ()
         for prefix in (
             "Received invalid session ID: ",
             "Could not find session for ID: ",
@@ -253,7 +279,13 @@ class _ProtocolPayloadFilter(logging.Filter):
         # Lowlevel stream errors and shared/session.py's root warnings already
         # contain rendered Pydantic errors. Notifications append the full body.
         message = message.partition("Message was:")[0]
-        message = re.sub(r", input_value=[^\n]*", "]", message)
+        if record.pathname == _SDK_SESSION_PATH and re.search(
+            r"\b\d+ validation errors? for ", message
+        ):
+            # The SDK model title and count are static diagnostics. Everything
+            # after that first line can include client keys, not just values.
+            message = message.splitlines()[0]
+        message = _strip_protocol_input_values(message)
         # shared/session.py also preformats a client-supplied response ID.
         if message.startswith("Response ID ") and message.endswith(
             " cannot be normalized to match pending requests"
@@ -261,19 +293,7 @@ class _ProtocolPayloadFilter(logging.Filter):
             message = (
                 "Response ID [redacted] cannot be normalized to match pending requests"
             )
-        record.msg = _mask_protocol_secrets(message)
-        if record.exc_info and record.exc_info[1] is not None:
-            record.exc_text = "".join(
-                _protocol_exception_trace(record.exc_info[1]).format()
-            ).rstrip()
-        if record.exc_text:
-            record.exc_text = _mask_protocol_secrets(record.exc_text)
-        if record.stack_info:
-            record.stack_info = _mask_protocol_secrets(record.stack_info)
-        # Stock Formatter appends exc_text without exc_info; RichHandler and the
-        # DB handler must not rebuild a raw traceback from the original tuple.
-        record.exc_info = None
-        return True
+        return _mask_protocol_secrets(message)
 
 
 _PROTOCOL_PAYLOAD_FILTER = _ProtocolPayloadFilter()

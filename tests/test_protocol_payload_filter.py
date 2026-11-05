@@ -502,3 +502,135 @@ def test_sdk_request_and_notification_validation_logs_are_private(
     for record in warnings:
         assert "input_value=" not in record.getMessage()
         assert "Message was:" not in record.getMessage()
+
+
+@pytest.mark.parametrize("method", ["prompts/get", "completion/complete"])
+@pytest.mark.parametrize(
+    "key",
+    [
+        "private-argument-key",
+        "private-argument-key\nWARNING forged entry",
+        "private-argument-key\rWARNING forged entry",
+        "private-argument-key\x1b[2J",
+        "private-argument-key\u2028WARNING forged entry",
+    ],
+    ids=["plain", "newline", "carriage-return", "terminal-escape", "unicode-line"],
+)
+def test_sdk_validation_warning_omits_client_argument_keys(
+    method: str, key: str
+) -> None:
+    from mcp.types import ClientRequest
+
+    params: dict[str, Any]
+    if method == "prompts/get":
+        params = {"name": "example", "arguments": {key: 1}}
+    else:
+        params = {
+            "ref": {"type": "ref/prompt", "name": "example"},
+            "argument": {"name": "example", "value": ""},
+            "context": {"arguments": {key: 1}},
+        }
+    with pytest.raises(ValidationError) as caught:
+        ClientRequest.model_validate({"method": method, "params": params})
+    error = caught.value
+    assert any(key in detail["loc"] for detail in error.errors())
+    message = f"Failed to validate request: {error}"
+    record = logging.LogRecord(
+        "root",
+        logging.WARNING,
+        sdk_session.BaseSession._receive_loop.__code__.co_filename,
+        1,
+        message,
+        (),
+        None,
+    )
+
+    assert _PROTOCOL_SESSION_FILTER.filter(record)
+
+    rendered = logging.Formatter().format(record)
+    assert rendered == message.splitlines()[0]
+    assert "for ClientRequest" in rendered
+    assert "private-argument-key" not in rendered
+    assert "forged entry" not in rendered
+    assert "input_value=" not in rendered
+    assert len(rendered.splitlines()) == 1
+    assert record.args == ()
+    assert record.exc_info is None
+
+
+@pytest.mark.parametrize("cached", [False, True], ids=["exc-info", "exc-text"])
+def test_wrapped_validation_error_omits_input_from_exception_text(cached: bool) -> None:
+    try:
+        try:
+            _parse_private_message()
+        except ValidationError as exc:
+            raise RuntimeError(str(exc)) from None
+    except RuntimeError:
+        record = logging.LogRecord(
+            "mcp.server.lowlevel.server",
+            logging.ERROR,
+            __file__,
+            1,
+            "Failed to read stream",
+            (),
+            sys.exc_info(),
+        )
+    formatter = logging.Formatter()
+    assert _SECRET in formatter.format(record)
+    if cached:
+        assert record.exc_text is not None
+        record.exc_info = None
+
+    assert _PROTOCOL_PAYLOAD_FILTER.filter(record)
+
+    rendered = formatter.format(record)
+    assert "Failed to read stream" in rendered
+    assert "RuntimeError" in rendered
+    assert "Traceback (most recent call last)" in rendered
+    assert "Input should be a valid string" in rendered
+    assert "input_value=" not in rendered
+    assert _SECRET not in rendered
+    assert record.exc_info is None
+
+
+def test_personal_token_mask_uses_identity_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis import mcp_identity
+
+    monkeypatch.setattr(mcp_identity, "TOKEN_PREFIX", "test.identity+")
+    credential = mcp_identity.TOKEN_PREFIX + "a" * 43
+    near_match = "testXidentity" + "a" * 43
+
+    rendered = server._mask_protocol_secrets(f"failed: {credential}; {near_match}")
+
+    assert credential not in rendered
+    assert rendered == f"failed: [redacted]; {near_match}"
+
+
+def test_filter_fallback_preserves_masked_static_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.mcp_identity import TOKEN_PREFIX
+
+    def fail_render(exc: BaseException) -> traceback.TracebackException:
+        raise RuntimeError(_SECRET)
+
+    credential = TOKEN_PREFIX + "a" * 43
+    record = _parser_record()
+    record.msg = f"Failed to parse message with bearer {credential}"
+    assert _SECRET in logging.Formatter().format(record)
+    monkeypatch.setattr(server, "_protocol_exception_trace", fail_render)
+
+    assert _PROTOCOL_PAYLOAD_FILTER.filter(record)
+
+    rendered = logging.Formatter().format(record)
+    assert "Failed to parse message with bearer [redacted]" in rendered
+    assert "ValidationError" in rendered
+    assert "(details unavailable)" in rendered
+    assert _SECRET not in rendered
+    assert credential not in rendered
+    assert record.args == ()
+    assert record.exc_info is None
+    assert record.exc_text is None
+    assert record.stack_info is None
