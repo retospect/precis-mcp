@@ -5479,6 +5479,230 @@ def _pour_piece_joined(
     return False
 
 
+def _world_to_part_local(
+    xy: tuple[float, float], pose_row: np.ndarray
+) -> tuple[float, float]:
+    """Inverse of :func:`topo_proxy.local_to_world` for one ``(4,)``
+    pose row — mirror and quarter-turn are each their own inverse under
+    negation, so this is exact, not an approximation. td569572's
+    synthetic via-landing pins need the reverse direction: a board-space
+    point back into a part's footprint frame."""
+    x, y, rot_q, side = (float(v) for v in pose_row[:4])
+    rx, ry = xy[0] - x, xy[1] - y
+    r = round(rot_q) % 4
+    if r == 0:
+        mx, ly = rx, ry
+    elif r == 1:
+        mx, ly = -ry, rx
+    elif r == 2:
+        mx, ly = -rx, -ry
+    else:
+        mx, ly = ry, -rx
+    lx = -mx if side >= 0.5 else mx
+    return lx, ly
+
+
+def _plane_trees(
+    d: TopoDesign,
+    ir: Any,
+    planes: Mapping[int, int],
+    pose_a: np.ndarray,
+    tracks: Sequence[Any],
+    vias: Sequence[Any],
+    f_vias: Sequence[Any],
+    e_tracks: Sequence[Any],
+    e_done: Sequence[tuple[int, int]],
+    e_spans: Mapping[tuple[int, int], tuple[int, int]],
+    net_rules: Mapping[str, NetRules] | None,
+    min_via_dia: float | None,
+    min_via_drill: float | None,
+    min_via_ring: float | None,
+    event: Callable[[str], None] | None,
+) -> tuple[list[Any], list[Any], set[int]]:
+    """Grow each plane net's copper tree on its own reserved layer
+    (td569572, ruling me569463: "every net including GND is a tree";
+    me569570 stage 4) over the signal+fanout+escape copper already
+    frozen in ``tracks``/``vias`` — :func:`route_design`'s pour
+    (:func:`_plane_pours`) stays only as the fallback for a net this
+    pass cannot connect whole.
+
+    A fanout via's barrel spans every layer (:func:`_fanout_vias`) and
+    an escape's lands on a barrel reaching the plane layer
+    (``e_spans``) — both are real copper already, just not a MESH PIN
+    the search can grow a branch to. This mints one synthetic
+    through-hole pin per landing (plus every drilled pin already on
+    ``d.net_pins[k]``, which reaches any layer with no via at all) at
+    the landing's board-space point, anchored to an arbitrary existing
+    part (part 0 — a via landing belongs to no part; the anchor only
+    supplies a pose to invert) via :func:`_world_to_part_local`. It
+    also carries a ``pin_wh`` the size of a via barrel: with none,
+    :func:`_pad_bodies` mints no pad for it at all (``hw <= 0.0``), and
+    :func:`_severed_nets`'s emit-connectivity check — which counts a
+    component "joining the net's pads" only by a ``pad_bodies`` hit —
+    then sees a perfectly connected tree with ZERO pads and withdraws
+    it whole.
+
+    The grown design forces each plane net onto exactly its layer
+    (``net_layer_force``) and bars no layer (``plane_layers=()`` — the
+    bar exists only to keep OTHER nets off the plane during the shared
+    signal pass; nothing else routes here). Returns ``(tracks, vias,
+    ok)`` — the tree's extra copper and the subset of ``planes`` keys
+    it connected as ONE component spanning every landing; the caller
+    drops those nets' pour fragments and leaves the rest to the pour."""
+    from precis.pcb.realize import RealizeResult
+    from precis.pcb.topoplace.mesh import MeshConflictError
+
+    ir_of = {str(n): i for i, n in enumerate(ir.net_name)}
+    n_layers = int(ir.n_layers)
+    anchor_part = 0
+    pose_row = pose_a[anchor_part]
+
+    real_pins: dict[int, list[int]] = {}
+    new_xy: list[tuple[float, float]] = []
+    new_net: list[int] = []
+    owner_k: list[int] = []
+    for k in planes:
+        ir_id = ir_of.get(str(d.net_name[k]))
+        if ir_id is None:
+            real_pins[k] = []
+            continue
+        real_pins[k] = [int(p) for p in d.net_pins[k] if int(d.pin_side[p]) == 2]
+        for v in f_vias:
+            if int(v.net_id) == ir_id:
+                new_xy.append((float(v.x), float(v.y)))
+                new_net.append(ir_id)
+                owner_k.append(k)
+        lay = planes[k]
+        for t, (kk, pin) in zip(e_tracks, e_done):
+            if kk != k:
+                continue
+            slo, shi = e_spans.get((kk, pin), (0, n_layers - 1))
+            if slo <= lay <= shi:
+                end = t.segments[-1]["end"]
+                new_xy.append((float(end[0]), float(end[1])))
+                new_net.append(ir_id)
+                owner_k.append(k)
+
+    counts: dict[int, int] = dict.fromkeys(planes, 0)
+    for k in owner_k:
+        counts[k] += 1
+    for k, pins in real_pins.items():
+        counts[k] += len(pins)
+    attemptable = {k for k, n in counts.items() if n >= 2}
+    if not attemptable:
+        return [], [], set()
+
+    base = len(d.pin_xy)
+    n_new = len(new_xy)
+    if n_new:
+        local = [_world_to_part_local(xy, pose_row) for xy in new_xy]
+        pin_xy = np.vstack([d.pin_xy, np.asarray(local, dtype=np.float64)])
+        pin_part = np.concatenate(
+            [d.pin_part, np.full(n_new, anchor_part, dtype=d.pin_part.dtype)]
+        )
+        pin_side = np.concatenate(
+            [d.pin_side, np.full(n_new, 2, dtype=d.pin_side.dtype)]
+        )
+        pin_net = np.concatenate(
+            [d.pin_net, np.asarray(new_net, dtype=d.pin_net.dtype)]
+        )
+        pin_label = (
+            np.concatenate([d.pin_label, np.full(n_new, "gnd-tree-via", dtype=object)])
+            if len(d.pin_label) >= base
+            else d.pin_label
+        )
+        via_dia = np.asarray(
+            [
+                (net_rules or {}).get(str(d.net_name[k]), _DEFAULT).via_dia_mm
+                or _VIA_DIA_MM
+                for k in owner_k
+            ],
+            dtype=np.float64,
+        )
+        pin_wh = (
+            np.vstack([d.pin_wh, np.column_stack([via_dia, via_dia])])
+            if len(d.pin_wh) >= base
+            else d.pin_wh
+        )
+    else:
+        pin_xy, pin_part, pin_side, pin_net, pin_label, pin_wh = (
+            d.pin_xy,
+            d.pin_part,
+            d.pin_side,
+            d.pin_net,
+            d.pin_label,
+            d.pin_wh,
+        )
+
+    net_pins_new: list[np.ndarray] = []
+    for k in range(len(d.net_pins)):
+        if k not in attemptable:
+            net_pins_new.append(np.zeros(0, dtype=np.int64))
+            continue
+        extra = [base + i for i, kk in enumerate(owner_k) if kk == k]
+        net_pins_new.append(np.asarray(real_pins[k] + extra, dtype=np.int64))
+
+    # the pads _pad_bodies/_severed_nets gather are read off pin_net,
+    # not net_pins — a plane net's SMD pad (fanned out before this pass,
+    # excluded above) still carries d.pin_net == this net, so the
+    # connectivity check sees it as a dangling GND pad with no copper
+    # and calls the whole tree severed. Disown it here: its real join
+    # is the fanout via, already frozen outside d_gnd.
+    from precis.pcb.ir import NO_NET
+
+    pin_net = pin_net.copy()
+    for k in attemptable:
+        kept = set(real_pins[k])
+        for p in d.net_pins[k]:
+            if int(p) not in kept:
+                pin_net[int(p)] = NO_NET
+
+    force = np.array(d.net_layer_force, dtype=np.int8, copy=True)
+    if len(force) < len(d.net_pins):
+        force = np.concatenate(
+            [force, np.zeros(len(d.net_pins) - len(force), dtype=np.int8)]
+        )
+    for k in attemptable:
+        force[k] = planes[k]
+
+    copper = RealizeResult(tuple(tracks), tuple(vias), ())
+    d_gnd = dataclasses.replace(
+        d,
+        pin_xy=pin_xy,
+        pin_part=pin_part,
+        pin_side=pin_side,
+        pin_net=pin_net,
+        pin_label=pin_label,
+        pin_wh=pin_wh,
+        net_pins=tuple(net_pins_new),
+        net_layer_force=force,
+        plane_layers=(),
+        zones=tuple(d.zones) + tuple(_copper_zones(copper, d, ir, pose_a)),
+    )
+    try:
+        plan_gnd, rres_gnd = _route_signals(
+            d_gnd,
+            ir,
+            pose=pose_a,
+            net_rules=net_rules,
+            min_via_dia=min_via_dia,
+            min_via_drill=min_via_drill,
+            min_via_ring=min_via_ring,
+            event=event,
+        )
+    except (CorridorOverflow, MeshConflictError):
+        return [], [], set()
+
+    failed = _plan_failed_nets(plan_gnd)
+    ok = attemptable - failed
+    if not ok:
+        return [], [], set()
+    ok_ir_ids = {ir_of[str(d.net_name[k])] for k in ok}
+    tree_tracks = [t for t in rres_gnd.tracks if int(t.net_id) in ok_ir_ids]
+    tree_vias = [v for v in rres_gnd.vias if int(v.net_id) in ok_ir_ids]
+    return tree_tracks, tree_vias, ok
+
+
 def route_design(
     d: TopoDesign,
     ir: Any,
@@ -5721,6 +5945,34 @@ def route_design(
                     fixed_copper,
                     hole_clearance_mm,
                 )
+    tree_tracks, tree_vias, tree_ok = _plane_trees(
+        d,
+        ir,
+        planes,
+        pose_a,
+        tracks,
+        vias,
+        f_vias,
+        e_tracks,
+        e_done,
+        e_spans,
+        net_rules,
+        min_via_dia,
+        min_via_drill,
+        min_via_ring,
+        event,
+    )
+    if tree_ok:
+        tracks = tracks + tuple(tree_tracks)
+        vias = vias + tuple(tree_vias)
+        if pours:
+            treed_names = {str(d.net_name[k]) for k in tree_ok}
+            pours = [p for p in pours if str(p.get("net")) not in treed_names]
+        if event is not None:
+            event(
+                f"route: plane-tree — {len(tree_ok)}/{len(planes)} net(s) treed, "
+                f"{len(pours)} pour fragment(s) remain"
+            )
     rres = dataclasses.replace(
         rres, tracks=tracks, vias=vias, pours=tuple(rres.pours) + tuple(pours)
     )

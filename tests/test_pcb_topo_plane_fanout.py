@@ -1,10 +1,14 @@
 """gr524239 (topo-route-review C): a plane net drops to its plane by via.
+td569572: the plane is then a routed TREE on its layer, not a pour —
+the pour (:func:`precis.pcb.topoplace.realise._plane_pours`) stays only
+as the fallback for a net the tree cannot connect whole (ruling
+me569463).
 
-A board that pours GND on In1 routes no GND wire: every SMD GND pad gets
-a fanout via and a stub on its own layer, In1 is barred to every routed
-net, and the plane is poured over the finished copper (an interim, Reto
-2026-11-01). Driven through ``pcb.local``'s route stage, DB-free — the
-half the ``placer='topo'`` job shares.
+A board that trees GND on In1 routes no GND wire between pads directly:
+every SMD GND pad gets a fanout via and a stub on its own layer, In1 is
+barred to every routed net, and the tree joins the vias' In1 landings
+into one component. Driven through ``pcb.local``'s route stage, DB-free
+— the half the ``placer='topo'`` job shares.
 
 The board: four two-pad parts. GND sits on one pad of each, spread round
 the board (R1 west, R2 east); signal S runs R3 → R4 south to north, across
@@ -15,6 +19,7 @@ resolution, with or without the plane.)
 
 from __future__ import annotations
 
+import itertools
 import math
 from typing import Any
 
@@ -126,17 +131,66 @@ def test_each_gnd_pad_drops_to_the_plane_by_its_own_via(routed) -> None:
         assert near < bound, pad
 
 
-def test_signals_stay_off_the_plane_layer_and_the_plane_pours(routed) -> None:
+def _net_components(tracks: Any, net_id: int) -> list[set[tuple[float, float]]]:
+    """Connected components of ``net_id``'s copper, by rounded endpoint
+    coincidence — a via's barrel joins every track whose stub ends on
+    its XY, so sharing a coordinate is sharing a node."""
+    parent: dict[tuple[float, float], tuple[float, float]] = {}
+
+    def find(a: tuple[float, float]) -> tuple[float, float]:
+        parent.setdefault(a, a)
+        while parent[a] != a:
+            a = parent[a]
+        return a
+
+    def union(a: tuple[float, float], b: tuple[float, float]) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for t in tracks:
+        if t.net_id != net_id:
+            continue
+        pts = [tuple(s["start"]) for s in t.segments] + [tuple(t.segments[-1]["end"])]
+        pts = [(round(float(x), 3), round(float(y), 3)) for x, y in pts]
+        for a, b in itertools.pairwise(pts):
+            union(a, b)
+    groups: dict[tuple[float, float], set[tuple[float, float]]] = {}
+    for p in list(parent):
+        groups.setdefault(find(p), set()).add(p)
+    return list(groups.values())
+
+
+def test_signals_never_route_on_the_plane_layer(routed) -> None:
+    """In1 is reserved to the GND tree (td569572) — every OTHER net's
+    copper stays off it, exactly as when it was a pour."""
     _design, ir, _fps, stage = routed
-    gnd = list(ir.net_name).index("GND")
-    assert all(t.layer != 1 for t in stage.result.tracks)
-    # GND is never wired: its copper is the stubs on the pads' own layer
-    assert all(t.layer == 0 for t in stage.result.tracks if t.net_id == gnd)
-    assert any(p["layer"] == "In1.Cu" and p["net"] == "GND" for p in stage.result.pours)
+    s = list(ir.net_name).index("S")
+    assert all(t.layer != 1 for t in stage.result.tracks if t.net_id == s)
     assert stage.rows["S"]["status"] == "realized"
 
 
-def test_the_poured_board_is_drc_clean(routed) -> None:
+def test_gnd_routes_as_one_tree_on_in1_and_the_plane_never_pours(routed) -> None:
+    """td569572: the gauge board's 4 GND pads all fan out clean, so the
+    In1 tree (:func:`precis.pcb.topoplace.realise._plane_trees`)
+    connects them whole and :func:`_plane_pours` never fires — no
+    ``pcb_planes`` feature on the dogfood copy."""
+    _design, ir, _fps, stage = routed
+    gnd = list(ir.net_name).index("GND")
+    assert not any(p["net"] == "GND" for p in stage.result.pours)
+    # the fanout stub stays on each pad's own layer; the tree joining
+    # the stubs' vias together is the ONLY thing on In1
+    assert all(t.layer in (0, 1) for t in stage.result.tracks if t.net_id == gnd)
+    assert any(t.layer == 1 for t in stage.result.tracks if t.net_id == gnd)
+    landings = {
+        (round(v.x, 3), round(v.y, 3)) for v in stage.result.vias if v.net_id == gnd
+    }
+    comps = _net_components(stage.result.tracks, gnd)
+    assert len(comps) == 1
+    assert landings <= comps[0]
+
+
+def test_the_treed_board_is_drc_clean(routed) -> None:
     design, ir, fps, stage = routed
     model = pcb_session._copper_model(
         ir,
@@ -157,6 +211,45 @@ def test_the_poured_board_is_drc_clean(routed) -> None:
         if f.severity == "error"
     ]
     assert errors == []
+
+
+def test_gnd_falls_back_to_the_pour_when_the_tree_cannot_connect() -> None:
+    """td569572 DECISION 2: both GND pads fan out fine, but an In1-only
+    wall spanning the board's full height between them leaves the tree
+    two components — :func:`_plane_trees` reports neither net ok, so
+    :func:`_plane_pours` stays the fallback, exactly as before this
+    slice."""
+    batch = {
+        "footprints": [_P2],
+        "components": [_part("R1", 8.0, 10.0), _part("R2", 22.0, 10.0)],
+        "nets": [{"name": "GND", "class": "gnd", "current": 0.1}],
+        "connections": [
+            {"net": "GND", "refdes": "R1", "pin": "1"},
+            {"net": "GND", "refdes": "R2", "pin": "2"},
+        ],
+        "features": [
+            closed_outline(0.0, 0.0, 30.0, 20.0),
+            {"ftype": "plane_net", "layer": "In1.Cu", "net": "GND"},
+            # a full-height In1-only wall between the two pads: other
+            # layers (the fanout vias' own sites, well clear of it) stay
+            # open, but the tree's one candidate layer has no path across
+            {
+                "ftype": "keepout",
+                "geom": {
+                    "poly": [[14.0, 0.0], [16.0, 0.0], [16.0, 20.0], [14.0, 20.0]]
+                },
+                "layers": ["In1.Cu"],
+            },
+        ],
+    }
+    design = local._design(batch, None)
+    ir, fps, _specs = local._prepare(design)
+    stage = local._route_stage(design, ir, fps)
+    gnd = list(ir.net_name).index("GND")
+    assert stage.plan.fanout_missing == ()
+    vias = [v for v in stage.result.vias if v.net_id == gnd]
+    assert len(vias) == 2
+    assert any(p["net"] == "GND" and p["layer"] == "In1.Cu" for p in stage.result.pours)
 
 
 def test_without_a_plane_gnd_routes_as_a_net() -> None:
@@ -1367,3 +1460,20 @@ def test_the_escape_keeps_clearance_off_a_foreign_pad() -> None:
     stub_ln = LineString(spts)
     s_pad = Point(13.1, 10.4).buffer(0.25)  # R3 pad 1, 0.5x0.5 at (13.6-0.5)
     assert stub_ln.distance(s_pad) >= need - 1e-6
+
+
+@pytest.mark.parametrize("rot_q", [0, 1, 2, 3])
+@pytest.mark.parametrize("side", [0.0, 1.0])
+def test_world_to_part_local_inverts_local_to_world(rot_q: int, side: float) -> None:
+    """td569572: the synthetic via-landing pin's placement depends on
+    this being an exact inverse, not an approximation — every quarter
+    turn and both part sides round-trip."""
+    from precis.pcb.topoplace import proxy as topo_proxy
+    from precis.pcb.topoplace.realise import _world_to_part_local
+
+    pose_row = np.asarray([5.0, -3.0, float(rot_q), side])
+    for lx, ly in [(0.0, 0.0), (1.5, -2.25), (-4.0, 3.0)]:
+        wx, wy = topo_proxy.local_to_world(np.asarray([[lx, ly]]), pose_row)[0]
+        rx, ry = _world_to_part_local((float(wx), float(wy)), pose_row)
+        assert math.isclose(rx, lx, abs_tol=1e-9)
+        assert math.isclose(ry, ly, abs_tol=1e-9)
