@@ -97,10 +97,13 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         "--verify-list",
         action="store_true",
         help=(
-            "Print one JSON line {id, status, sha, held} per live "
-            "verify-state gripe (auto_verify, user_verify, legacy "
+            "Print one JSON line {id, status, sha, held, check, check_why} "
+            "per live verify-state gripe (auto_verify, user_verify, legacy "
             "verify); sha is from its newest 'resolved: <sha>' / "
-            "'fix-sha: <sha>' comment, held is the hold:no-autoclose tag "
+            "'fix-sha: <sha>' comment, held is the hold:no-autoclose tag, "
+            "check flags a prod-check line the autoclose pass can evaluate "
+            "(it owns the close), check_why names why a check line it "
+            "cannot evaluate falls back to the sha close "
             "(scripts/gripe-validate). Read-only."
         ),
     )
@@ -181,6 +184,7 @@ def run(args: argparse.Namespace) -> None:
             if args.verify_list:
                 vrows = verify_list(store)
                 held = hold_set(store, [g for g, _st, _s in vrows])
+                cmap = check_map(store, [g for g, _st, _s in vrows])
                 for gid, status, sha in vrows:
                     print(
                         json.dumps(
@@ -189,6 +193,8 @@ def run(args: argparse.Namespace) -> None:
                                 "status": status,
                                 "sha": sha,
                                 "held": gid in held,
+                                "check": gid in cmap and cmap[gid] is None,
+                                "check_why": cmap.get(gid),
                             }
                         )
                     )
@@ -436,6 +442,30 @@ def hold_set(store: Any, ids: list[int]) -> set[int]:
     return {int(r[0]) for r in rows}
 
 
+def check_map(store: Any, ids: list[int]) -> dict[int, str | None]:
+    """The check-lined gripes among ``ids``: ``{gid: None}`` when the
+    ``gripe_autoclose`` pass can evaluate the line (autoclose-owned),
+    ``{gid: why}`` when a check line exists but cannot be evaluated —
+    that gripe is validate's to close on the sha, and ``why`` is the
+    reason to name (td570413 r2). Empty while the pass is dark
+    (td570413 r3: the mechanism is wholly inert). One evaluator lives
+    in :func:`precis.workers.gripe_autoclose.check_lined_ids`."""
+    if not ids:
+        return {}
+    # Lazy: cli sits above workers in the import order; the predicate
+    # module loads at call time (--verify-list / verify_done only).
+    from precis.workers.gripe_autoclose import check_lined_ids
+
+    return check_lined_ids(store, ids)
+
+
+def check_set(store: Any, ids: list[int]) -> set[int]:
+    """The evaluable — autoclose-owned — subset of :func:`check_map`:
+    the ids ``verify_done`` refuses and ``--verify-list`` marks
+    ``check: true``."""
+    return {g for g, why in check_map(store, ids).items() if why is None}
+
+
 def verify_done(
     store: Any,
     text: str,
@@ -460,10 +490,14 @@ def verify_done(
     wanted = {f"STATUS:{s}" for s in statuses}
     # A ``hold:no-autoclose`` gripe is never closed by this verb
     # (gr547015) — a stale caller's id list cannot override the hold.
+    # Same for a check-lined gripe (td570413): the gripe_autoclose pass
+    # owns that close, so ``verify_done`` refuses it too.
     held = hold_set(store, ids) if statuses == AUTO_VERIFY_STATUSES else set()
+    checked = check_set(store, ids) if statuses == AUTO_VERIFY_STATUSES else set()
     groups: dict[str, list[str]] = {
         "done": [],
         "held:": [],
+        "autoclose-owned:": [],
         "not verify:": [],
         "not found:": [],
         "failed:": [],
@@ -471,6 +505,9 @@ def verify_done(
     for gid in ids:
         if gid in held:
             groups["held:"].append(f"gr{gid}")
+            continue
+        if gid in checked:
+            groups["autoclose-owned:"].append(f"gr{gid}")
             continue
         if store.get_ref(kind="gripe", id=gid) is None:
             groups["not found:"].append(f"gr{gid}")
@@ -488,6 +525,14 @@ def verify_done(
     line = " · ".join(
         f"{label} {' '.join(items)}" for label, items in groups.items() if items
     )
+    if groups["autoclose-owned:"]:
+        # The refusal names the next step, not just the block (r2):
+        # the check line owns the close; clearing it returns the gripe
+        # to the sha path.
+        line += (
+            " — closes when its prod check passes after deploy; "
+            "clear meta.fix.check to close on the sha alone"
+        )
     return line or "nothing to do"
 
 

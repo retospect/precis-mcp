@@ -926,6 +926,7 @@ class TodoHandler(NumericRefHandler):
         guards.check_llm_select_meta(meta)
         guards.check_budget_usd_meta(meta)
         guards.check_rung_meta(meta)
+        guards.check_fix_meta(meta)
         _check_plan_meta(meta)
         ask_blocks = guards.check_ask_meta(meta)
         if meta is not None and "ask" in meta and not guards.has_ask_user_tag(tags):
@@ -1995,9 +1996,11 @@ class TodoHandler(NumericRefHandler):
         # ``meta=`` is the facet-promotion surface (§M facet
         # normalization): ``rotation_root`` / ``worker_mintable`` /
         # ``schedule`` (owner-only gradient), ``llm_tier`` (the
-        # dispatcher's model picker — e.g. a retry swapping tiers), and
+        # dispatcher's model picker — e.g. a retry swapping tiers),
         # ``budget_usd`` (a per-todo override of the planner
-        # guardrails' cost cap, gr332026).
+        # guardrails' cost cap, gr332026), and ``fix`` (a code todo's
+        # prod-check line, td570413 — ``check_fix_meta`` runs the
+        # ``gripe_autoclose`` grammar at write time).
         # ``tag()`` already carries non-tag state via ``prio=``, so this
         # follows the same precedent rather than adding a new verb. It
         # is a closed allowlist (``check_meta_keys_promotable``), not a
@@ -2014,6 +2017,7 @@ class TodoHandler(NumericRefHandler):
         guards.check_llm_select_meta(meta)
         guards.check_budget_usd_meta(meta)
         guards.check_rung_meta(meta)
+        guards.check_fix_meta(meta)
         guards.check_halt_remove(remove=remove)
         # Claim CAS: a worker claiming a leaf whose live lease another
         # handle holds gets a BadInput naming the holder, instead of the

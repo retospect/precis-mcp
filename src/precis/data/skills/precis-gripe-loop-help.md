@@ -50,7 +50,7 @@ still readable; see the legacy appendix at the end.
 | 5 review verdict | `put(id=T, text='review: LAND\|FIX\|REVERT — …')` | — |
 | 5b fix round | `put(id=T, text='brief: round <n>: …')` | `attempt:<n>` bump |
 | 6 landed on main | squash subject ends `(gr<N>, td<T>)`; land-notify moves both | todo `done` + `landed:`; gripe `auto_verify` + `resolved:` |
-| 7 deployed | nothing by hand — the gripe-validate pass closes it | gripe `done` |
+| 7 deployed | nothing by hand — gripe-validate closes a check-less gripe; a `meta.fix.check` line on the todo makes the `gripe_autoclose` pass run it in prod and own the close | gripe `done` |
 
 A red attempt is not a queue either: the todo goes back to `open` (the
 claim drops, `attempt:<n>` bumps, the `handoff:` comment says why) and
@@ -235,6 +235,29 @@ close note on the todo. A gripe the commit subject did not name is
 yours to close the ordinary way — the `resolved:` comment and
 `STATUS:done` in one call:
 
+**A brief names a prod-check line whenever the fix is observable through
+the MCP** (td570413, Reto 2026-11-05). The line lives on the code todo's
+`meta.fix.check`, written — and grammar-checked at write time — with:
+
+```python
+tag(kind="todo", id=T, meta={"fix": {"check": 'read skill 123 contains "new flag"'}})
+# or at mint: meta={..., "fix": {"check": "<line>"}}; {'check': None} clears
+```
+
+The write replaces the whole `fix` dict, so re-tagging the line clears
+the tick's `check_failed_at` marker — a retagged check starts its
+failure clock over.
+
+The grammar is the closed set in the legacy appendix below
+(`read`/`count`). When a check line exists — on the todo or the legacy
+gripe-side `meta.fix.check` — gripe-validate skips the gripe and the
+`gripe_autoclose` tick owns the close: once the sha is an ancestor of
+the recorded prod head and the head has stood 30 min, it runs the line
+read-only; pass → `resolved:` + `STATUS:done`, a confirmed failure →
+close + a `derived-from` triage refile. A fix that is NOT observable
+through the MCP (CI workflow, harness, docs-only) gets no check line —
+the brief says so — and closes on the sha-in-prod flip as today.
+
 ```python
 put(kind="gripe", id=514335, text="resolved: 98aa301d6 (r110) — deployed, probe ok",
     tags=["STATUS:done"])
@@ -320,6 +343,11 @@ written for new work:
 | tree | `meta.fix.tree` | `args={'tree': 'tables-s2'}` |
 | landed sha | `meta.fix.landed` | `args={'landed': '98aa301d6'}` |
 | prod check | `meta.fix.check` | `args={'check': 'count job with tag=STATUS:succeeded >= 1'}` |
+
+New work puts the prod-check line on the code todo instead —
+`meta.fix.check` there via `tag(kind='todo', id=T, meta={'fix': {'check':
+'<line>'}})`; the landed sha comes from the todo's `landed:` comment.
+A gripe-side line still evaluates, but the todo's wins when both exist.
 
 `host` is the machine name the fleet kind reports; `session` is
 `<vendor>:<window>` — the builder's tmux window

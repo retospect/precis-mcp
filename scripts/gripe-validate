@@ -24,7 +24,10 @@ overrides the ref (default origin/prod, fetched first). A gripe
 carrying ``hold:no-autoclose`` (gr547015's never-close mark — the
 ``held`` field on ``--verify-list`` rows) is never in the close set;
 the recurring ``gripe_validate`` job posts its ``shipped in r<N>``
-note instead.
+note instead. A gripe carrying a prod-check line — its own
+``meta.fix.check`` or its ``fixes``-linked code todo's (td570413, the
+``check`` field) — is likewise skipped: the ``gripe_autoclose`` pass
+runs the line in prod and owns that close.
 
 scripts/release runs it after the deploy step; it is idempotent and
 non-interactive, so a recurring job (precis schedule, cron) can run it
@@ -92,13 +95,18 @@ def _git(*args: str) -> subprocess.CompletedProcess[str] | None:
 _AUTO_STATUSES = frozenset({"verify", "auto_verify"})
 
 
-def parse_verify_list(out: str) -> list[tuple[int, str, str | None, bool]]:
-    """``[(id, status, sha|None, held)]`` from ``gripes --verify-list``
-    JSON lines; any non-JSON line (a deprecation notice, a warning) is
-    skipped. A row with no ``status`` reads as ``verify``; ``held``
-    (the ``hold:no-autoclose`` tag, gr547015) defaults False — an older
-    prod build does not emit it."""
-    rows: list[tuple[int, str, str | None, bool]] = []
+def parse_verify_list(
+    out: str,
+) -> list[tuple[int, str, str | None, bool, bool, str | None]]:
+    """``[(id, status, sha|None, held, check, check_why)]`` from
+    ``gripes --verify-list`` JSON lines; any non-JSON line (a
+    deprecation notice, a warning) is skipped. A row with no ``status``
+    reads as ``verify``; ``held`` (the ``hold:no-autoclose`` tag,
+    gr547015), ``check`` (a prod-check line the autoclose pass can
+    evaluate, td570413) and ``check_why`` (the reason a check line it
+    cannot evaluate falls back to the sha close, r2) all default
+    empty — an older prod build emits none."""
+    rows: list[tuple[int, str, str | None, bool, bool, str | None]] = []
     for line in out.splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -108,12 +116,15 @@ def parse_verify_list(out: str) -> list[tuple[int, str, str | None, bool]]:
         except json.JSONDecodeError:
             continue
         sha = obj.get("sha")
+        why = obj.get("check_why")
         rows.append(
             (
                 int(obj["id"]),
                 str(obj.get("status") or "verify"),
                 str(sha) if sha else None,
                 bool(obj.get("held")),
+                bool(obj.get("check")),
+                str(why) if why else None,
             )
         )
     return rows
@@ -236,9 +247,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     rows = parse_verify_list(listed.stdout)
-    held = [(g, s) for g, st, s, h in rows if st in _AUTO_STATUSES and h]
-    auto = [(g, s) for g, st, s, h in rows if st in _AUTO_STATUSES and not h]
-    users = [g for g, st, _s, _h in rows if st == "user_verify"]
+    held = [(g, s) for g, st, s, h, c, w in rows if st in _AUTO_STATUSES and h]
+    owned = [
+        (g, s) for g, st, s, h, c, w in rows if st in _AUTO_STATUSES and not h and c
+    ]
+    auto = [
+        (g, s) for g, st, s, h, c, w in rows if st in _AUTO_STATUSES and not h and not c
+    ]
+    why = {g: w for g, st, s, h, c, w in rows if w}
+    users = [g for g, st, _s, _h, _c, _w in rows if st == "user_verify"]
     groups = classify(auto, prod)
     live = groups["live"][:MAX_IDS]
     rest = [
@@ -248,6 +265,21 @@ def main(argv: list[str] | None = None) -> int:
     ]
     if held:
         rest.append("held (no auto-close): " + _named(held))
+    if owned:
+        # The refusal names the next step, not just the block (r2).
+        rest.append(
+            "autoclose-owned: "
+            + _named(owned)
+            + " — closes when its prod check passes after deploy; "
+            "clear meta.fix.check to close on the sha alone"
+        )
+    # A check line the pass cannot evaluate behaves as check-less (r2's
+    # ruling) — it closes on the sha like any other, and the line names
+    # the reason so nobody reads it as a silent autoclose miss.
+    for gid, _s in live:
+        w = why.get(gid)
+        if w:
+            rest.append(f"check not evaluable ({w}) — closing on sha: gr{gid}")
     if len(groups["live"]) > MAX_IDS:
         rest.append(f"+{len(groups['live']) - MAX_IDS} live next run")
     tail = (" · " + " · ".join(rest)) if rest else ""

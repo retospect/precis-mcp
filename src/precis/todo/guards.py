@@ -1016,6 +1016,7 @@ TAG_META_ALLOWED_KEYS: frozenset[str] = frozenset(
         "llm_select",
         "budget_usd",
         "rung",  # a roadmap rung's produces is updated on completion
+        "fix",  # a code todo's prod-check line (td570413; check_fix_meta)
     }
 )
 
@@ -1035,6 +1036,77 @@ def check_meta_keys_promotable(meta: dict[str, Any] | None) -> None:
                 "workspace) at create time or via a full meta rewrite"
             ),
         )
+
+
+#: The one meta.fix key a todo write may carry — the prod-check line the
+#: ``gripe_autoclose`` pass runs on the gripe this todo ``fixes``
+#: (td570413). The landed sha is not here: it comes from the todo's
+#: ``landed:`` comment (land-notify's land record). ``check_failed_at``
+#: appears inside the same dict but is worker-written, never agent-written.
+_FIX_META_KEYS: frozenset[str] = frozenset({"check"})
+
+_FIX_META_NEXT = (
+    "tag(kind='todo', id=N, meta={'fix': {'check': '<line>'}}) — the line "
+    "is the gripe_autoclose grammar: "
+    'read <kind> <id> contains "<substring>" · '
+    "count <kind> [with <pred>…] <cmp> <n>"
+)
+
+
+def check_fix_meta(meta: dict[str, Any] | None) -> None:
+    """Validate a ``meta.fix`` write on a todo (td570413).
+
+    The code todo's prod-check line is the ``gripe_autoclose`` closed
+    grammar, so ``parse_check`` must accept it at write time — same
+    contract ``edit(kind='gripe', mode='fix', args={'check': …})``
+    applies to the legacy gripe-side line. ``fix`` is a closed bag:
+    ``{'check': '<line>'}`` to set, ``{'check': None}`` or ``None`` to
+    clear; anything else refuses rather than landing a key nothing
+    reads. Runs on both ``put()`` (create) and ``tag(meta=...)``.
+
+    Note the write replaces the whole ``fix`` dict (``stamp_ref_meta``'s
+    top-level ``meta ||`` merge), so re-tagging the line also clears
+    the worker's ``check_failed_at`` marker — intended: a new line is
+    a fresh evaluation with a fresh failure clock.
+    """
+    if not meta or "fix" not in meta:
+        return
+    fix = meta["fix"]
+    if fix is None:
+        return  # {'fix': None} clears the whole key
+    if not isinstance(fix, dict):
+        raise BadInput(
+            "meta.fix must be a dict like {'check': '<line>'}, got "
+            f"{type(fix).__name__}",
+            next=_FIX_META_NEXT,
+        )
+    extra = set(fix) - _FIX_META_KEYS
+    if extra:
+        raise BadInput(
+            f"meta.fix on a todo only carries 'check' (the prod-check "
+            f"line), not {sorted(extra)} — the landed sha comes from the "
+            "todo's landed: comment",
+            next=_FIX_META_NEXT,
+        )
+    check = fix.get("check")
+    if check is None:
+        return  # {'check': None} clears the line
+    if not isinstance(check, str):
+        raise BadInput(
+            f"meta.fix.check must be a string, got {type(check).__name__}",
+            next=_FIX_META_NEXT,
+        )
+    # Lazy like handlers/_gripe_fix.py: workers sit below handlers in
+    # the import order, so the grammar module loads at call time.
+    from precis.workers.gripe_autoclose import CheckError, parse_check
+
+    try:
+        parse_check(check)
+    except (CheckError, BadInput) as e:
+        raise BadInput(
+            f"meta.fix.check does not parse: {e}",
+            next=_FIX_META_NEXT,
+        ) from e
 
 
 def check_status_done_artifact(
@@ -1465,6 +1537,7 @@ __all__ = [
     "check_executor_tag",
     "check_facets_on_create",
     "check_facets_on_tag",
+    "check_fix_meta",
     "check_halt_remove",
     "check_llm_select_meta",
     "check_llm_tier_meta",

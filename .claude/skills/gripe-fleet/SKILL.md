@@ -37,7 +37,7 @@ the tier, with its UTC time).
 | handoff | the builder's finish message / handoff → `put(kind='todo', id=T, text='handoff: …')`; a red round also bumps `attempt:<n>` on the todo and mirrors `work: attempt N failed on <lane> — <first line>` on the gripe |
 | review | a `reviewer` agent on the branch; its verdict → `put(kind='todo', id=T, text='review: LAND\|FIX\|REVERT — …')`; a fix round is the next `brief:` comment on the todo, sent with `send-line` |
 | land | tier R: the release owner runs `scripts/fleet-wave land <tree>` (ship in the builder's own tree; no cherry-pick), or a round (`round` skill) for migrations; tier W: the builder lands. The squash subject ends `(gr<N>, td<T>)` — land-notify posts `landed:` + `STATUS:done` on the todo and `resolved:` + `auto_verify` on the gripe, nothing by hand. `scripts/fleet-wave cites ID...` lists unlanded branch commits naming a gripe (is it already built somewhere?) |
-| close on deploy | `gripe-validate` after the rollout flips `auto_verify` to `done` (only `auto_verify` auto-closes; `user_verify` waits on a human); `scripts/fleet-wave close NAME...` reaps the tree |
+| close on deploy | `gripe-validate` after the rollout flips `auto_verify` to `done` (only `auto_verify` auto-closes; `user_verify` waits on a human) — unless the gripe or its code todo carries a `meta.fix.check` line, which the `gripe_autoclose` tick runs in prod and owns the close (td570413); `scripts/fleet-wave close NAME...` reaps the tree |
 | import the old file state | `scripts/prod-precis gripe-fix import DIR` (dry run), `--apply` to write |
 
 Retired scratch (GRIPE_FIX's job dir): `launch3.sh`/`launch-codex.sh` →
@@ -65,7 +65,13 @@ names it `refs gr<id>` inside the subject's trailing list
 `landed (partial)` comment, no `resolved:` and no `STATUS:auto_verify` —
 a plain `(gr<id>)` still auto-closes on deploy. A never-close gripe
 carries the `hold:no-autoclose` tag: gripe-validate skips it and notes
-`shipped in r<N>` instead of `STATUS:done`. When the tier grants precis writes (W), say the
+`shipped in r<N>` instead of `STATUS:done`. A brief names a prod-check
+line whenever the fix is observable through the MCP —
+`tag(kind='todo', id=T, meta={'fix': {'check': '<line>'}})` — and the
+gripe_autoclose tick then owns the close (grammar and mechanics in
+`precis-gripe-loop-help` step 7); a fix that is not observable (CI,
+harness, docs) says so in the brief and closes on the sha-in-prod flip
+as today. When the tier grants precis writes (W), say the
 write verbs are deferred tools: load them with ToolSearch
 `select:mcp__precis__put,mcp__precis__edit,mcp__precis__tag,mcp__precis__link`
 first (gr504489). Hook wiring claims are checked against

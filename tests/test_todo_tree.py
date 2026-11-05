@@ -313,6 +313,62 @@ def test_tag_meta_budget_usd_rejects_negative(handler: TodoHandler) -> None:
         handler.tag(id=rid, meta={"budget_usd": -1.0})
 
 
+# ── meta.fix.check — the code todo's prod-check line (td570413) ──────
+
+
+def test_tag_meta_fix_check_writes_a_parsed_line(handler: TodoHandler) -> None:
+    """``meta={'fix': {'check': '<line>'}}`` is how a check line lands on
+    a code todo — the gripe_autoclose pass reads it back verbatim."""
+    r = handler.put(text="a leaf")
+    rid = _id_of(r.body)
+    handler.tag(id=rid, meta={"fix": {"check": 'read todo 1 contains "x"'}})
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta["fix"]["check"] == 'read todo 1 contains "x"'
+
+
+def test_tag_meta_fix_check_refuses_an_unparsed_line(handler: TodoHandler) -> None:
+    """A line the closed grammar rejects is refused at write time, same
+    as ``edit(kind='gripe', mode='fix', args={'check': …})`` does."""
+    r = handler.put(text="a leaf")
+    rid = _id_of(r.body)
+    with pytest.raises(BadInput, match="does not parse"):
+        handler.tag(id=rid, meta={"fix": {"check": "frobnicate the refs"}})
+
+
+def test_tag_meta_fix_rejects_unknown_fix_keys(handler: TodoHandler) -> None:
+    """``fix`` is a closed bag — the landed sha lives in the ``landed:``
+    comment, not in meta."""
+    r = handler.put(text="a leaf")
+    rid = _id_of(r.body)
+    with pytest.raises(BadInput, match="only carries 'check'"):
+        handler.tag(id=rid, meta={"fix": {"landed": "abc1234"}})
+    with pytest.raises(BadInput, match="must be a dict"):
+        handler.tag(id=rid, meta={"fix": "not a dict"})
+
+
+def test_tag_meta_fix_check_none_clears(handler: TodoHandler) -> None:
+    r = handler.put(text="a leaf")
+    rid = _id_of(r.body)
+    handler.tag(id=rid, meta={"fix": {"check": 'read todo 1 contains "x"'}})
+    handler.tag(id=rid, meta={"fix": {"check": None}})
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta["fix"]["check"] is None
+
+
+def test_put_meta_fix_check_validated_on_create(handler: TodoHandler) -> None:
+    """The create path runs the same grammar check — a malformed line
+    refuses rather than landing silently in meta."""
+    with pytest.raises(BadInput, match="does not parse"):
+        handler.put(text="a leaf", meta={"fix": {"check": "bogus line"}})
+    r = handler.put(text="a leaf", meta={"fix": {"check": "count gripe >= 1"}})
+    rid = _id_of(r.body)
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta["fix"]["check"] == "count gripe >= 1"
+
+
 # ── meta.tier enum (todo-surface-naming, approved 2026-09-06) ──────
 
 

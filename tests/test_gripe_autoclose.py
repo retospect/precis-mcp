@@ -111,6 +111,54 @@ def _gripe(
     return gid
 
 
+def _code_todo(
+    store: Store,
+    gid: int,
+    *,
+    check: str | None = 'read todo {probe} contains "needle"',
+    probe: int | None = None,
+    landed: str | list[str] | None = SHA[:9],
+    status: str = "done",
+) -> int:
+    """The gripe's ``fixes``-linked code todo (td570413): ``landed:``
+    comment(s) (land-notify's land record), STATUS and ``meta.fix.check``.
+
+    The gripe itself carries no ``meta.fix`` — the todo path is where a
+    new fix's check line lives.
+    """
+    from precis.handlers._comment_timeline import append_comment
+
+    ref = store.insert_ref(kind="todo", slug=None, title="the code item", meta={})
+    tid = int(ref.id)
+    store.add_link(src_ref_id=tid, dst_ref_id=gid, relation="fixes")
+    store.add_tag(tid, Tag.closed("STATUS", status), set_by="agent")
+    if landed:
+        # The real write path (``put(id=T, text=…)`` → ``append_comment``)
+        # so the land record is a genuine ``todo_comment`` chunk, ords
+        # included — the candidate SQL filters on exactly that kind.
+        # A list appends in order: the last one is the NEWEST landed:
+        # comment, the one the pass reads.
+        for text in [landed] if isinstance(landed, str) else landed:
+            append_comment(
+                store,
+                ref,
+                kind="todo",
+                comment_kind="todo_comment",
+                text=f"landed: {text} — feat(x): y (gr{gid}, td{tid})",
+            )
+    if check:
+        if probe is None and "{probe}" in check:
+            probe = _probe(store)
+        line = check.format(gid=gid, probe=probe, tid=tid)
+        store.update_ref(tid, meta_patch={"fix": {"check": line}})
+    return tid
+
+
+def _bare_gripe(store: Store) -> int:
+    """A live gripe with no ``meta.fix`` — the todo-path candidate shape."""
+    return int(insert_gripe(store, "Area: the thing is broken", status="in_review").id)
+
+
 def _status(store: Store, gid: int) -> str | None:
     vals = [str(t) for t in store.tags_for(gid) if str(t).startswith("STATUS:")]
     return vals[0].split(":", 1)[1] if vals else None
@@ -392,14 +440,16 @@ def test_fresh_head_waits_out_the_settle_window(store: Store) -> None:
     assert r["ok"] == 1
 
 
-def test_unclean_landed_sha_is_skipped(store: Store) -> None:
+def test_unclean_landed_sha_is_not_evaluable(store: Store) -> None:
     """``meta.fix.landed`` goes through ``_clean_sha``: a hand-edited
-    non-hex value is skipped, never deployed on."""
+    non-hex value makes the line not evaluable — dropped at candidate
+    selection (never claimed), so gripe-validate stays free to close the
+    gripe on the sha (td570413 r2's ruling)."""
     _enable(store)
     _record(store)
     gid = _gripe(store, landed="not-a-sha; drop table refs")
     r = run_gripe_autoclose_pass(store)
-    assert r["skipped"] == 1 and r["claimed"] == 0
+    assert r["skipped"] == 0 and r["claimed"] == 0
     assert _status(store, gid) == "in_review"
 
 
@@ -474,12 +524,13 @@ def test_record_membership_is_the_clone_less_fallback(
 
 def test_read_check_refuses_own_id(store: Store) -> None:
     """``read gripe <self>`` is tautological — the gripe's own text
-    always carries whatever the fixer wrote."""
+    always carries whatever the fixer wrote. The refusal is at
+    evaluability: not a candidate, so validate can still close it."""
     _enable(store)
     _record(store)
     gid = _gripe(store, check='read gripe {gid} contains "needle"')
     r = run_gripe_autoclose_pass(store)
-    assert r["skipped"] == 1 and r["claimed"] == 0
+    assert r["skipped"] == 0 and r["claimed"] == 0
     assert _status(store, gid) == "in_review"
     assert _comments(store, gid) == []
 
@@ -559,12 +610,14 @@ def test_rerun_is_a_noop(store: Store) -> None:
 
 
 def test_count_check_and_malformed_check(store: Store) -> None:
+    """An unparseable line is not evaluable (r2) — dropped at candidate
+    selection, never counted, and validate may close it on the sha."""
     _enable(store)
     _record(store)
     ok_gid = _gripe(store, check="count gripe with tag=STATUS:in_review >= 1")
     bad_gid = _gripe(store, check="frobnicate the refs")
     r = run_gripe_autoclose_pass(store)
-    assert r["ok"] == 1 and r["skipped"] == 1
+    assert r["ok"] == 1 and r["skipped"] == 0
     assert _status(store, ok_gid) == "done"
     assert _status(store, bad_gid) == "in_review"
 
@@ -621,3 +674,197 @@ def test_cadence_registered_dark_safe(store: Store) -> None:
     assert 3600 <= cad.interval_s < 2 * 3600
     assert cad.service is None  # gate lives inside the pass, not the lease
     assert not cad.spends
+
+
+# ── the code-todo path (td570413) ─────────────────────────────────────
+#
+# A gripe whose ``fixes``-linked code todo carries ``meta.fix.check`` is
+# a candidate once the todo is ``STATUS:done`` and its newest ``landed:``
+# comment names the sha — the gripe itself needs no ``meta.fix``.
+
+
+def test_todo_path_candidate_closes_on_pass(store: Store) -> None:
+    _enable(store)
+    _record(store)
+    gid = _bare_gripe(store)
+    _code_todo(store, gid, probe=_probe(store))
+    r = run_gripe_autoclose_pass(store)
+    assert r["claimed"] == 1 and r["ok"] == 1
+    assert _status(store, gid) == "done"
+    newest = _comments(store, gid)[-1]
+    assert newest.startswith(f"resolved: {SHA[:9]} (r42)")
+    assert "prod check passed" in newest
+
+
+def test_todo_path_failure_marker_lives_on_the_todo(store: Store) -> None:
+    """A first failure stamps ``meta.fix.check_failed_at`` on the code
+    todo (the ref the check line lives on), never on the gripe."""
+    _enable(store)
+    _record(store)
+    gid = _bare_gripe(store)
+    tid = _code_todo(
+        store, gid, check='read todo {probe} contains "absent"', probe=_probe(store)
+    )
+    r = run_gripe_autoclose_pass(store, now=T0)
+    assert r["skipped"] == 1 and r["failed"] == 0
+    assert _status(store, gid) == "in_review"
+    todo_ref = store.get_ref(kind="todo", id=tid)
+    assert todo_ref is not None
+    todo_fix = dict((todo_ref.meta or {}).get("fix") or {})
+    assert todo_fix["check_failed_at"] == T0.strftime("%Y-%m-%dT%H:%M:%SZ")
+    gripe_ref = store.get_ref(kind="gripe", id=gid)
+    assert "check_failed_at" not in dict(
+        (gripe_ref.meta or {}).get("fix") or {} if gripe_ref is not None else {}
+    )
+
+
+def test_todo_path_confirmed_failure_closes_and_refiles(store: Store) -> None:
+    """The todo-path marker drives the same confirmed-failure close +
+    ``derived-from`` refile as the gripe-side one."""
+    _enable(store)
+    _record(store)
+    gid = _bare_gripe(store)
+    tid = _code_todo(
+        store, gid, check='read todo {probe} contains "absent"', probe=_probe(store)
+    )
+    tref = store.get_ref(kind="todo", id=tid)
+    assert tref is not None
+    store.update_ref(
+        tid,
+        meta_patch={
+            "fix": {
+                **dict((tref.meta or {}).get("fix") or {}),
+                "check_failed_at": OLD_FAIL,
+            }
+        },
+    )
+    r = run_gripe_autoclose_pass(store, now=T0)
+    assert r["failed"] == 1
+    assert _status(store, gid) == "done"
+    others = [g for g in _gripes(store) if g != gid]
+    assert len(others) == 1 and _status(store, others[0]) == "triaged"
+    comments = _comments(store, gid)
+    assert "prod check FAILED" in comments[-2]
+    assert comments[-1] == f"resolved: refiled as gr{others[0]}"
+
+
+def test_todo_path_requires_done_status(store: Store) -> None:
+    """A code todo still in build is not a candidate — its ``landed:``
+    record only counts once land-notify flipped it ``done``."""
+    _enable(store)
+    _record(store)
+    gid = _bare_gripe(store)
+    _code_todo(store, gid, status="doing", probe=_probe(store))
+    r = run_gripe_autoclose_pass(store)
+    assert r["claimed"] == 0
+    assert _status(store, gid) == "in_review"
+
+
+def test_todo_path_requires_landed_record(store: Store) -> None:
+    """Done with a check line but no ``landed:`` comment: there is no
+    sha to deploy-check against, so the gripe is not a candidate."""
+    _enable(store)
+    _record(store)
+    gid = _bare_gripe(store)
+    _code_todo(store, gid, landed=None, probe=_probe(store))
+    r = run_gripe_autoclose_pass(store)
+    assert r["claimed"] == 0
+    assert _status(store, gid) == "in_review"
+
+
+def test_todo_path_read_of_own_todo_is_not_evaluable(store: Store) -> None:
+    """``read todo <the code todo>`` is as tautological as ``read gripe
+    <self>``: the todo's ``landed:`` comment is always in its own text.
+    Not evaluable → not a candidate → validate's to close."""
+    _enable(store)
+    _record(store)
+    gid = _bare_gripe(store)
+    tid = _code_todo(store, gid, check='read todo {tid} contains "landed"')
+    assert tid
+    r = run_gripe_autoclose_pass(store)
+    assert r["skipped"] == 0 and r["claimed"] == 0
+    assert _status(store, gid) == "in_review"
+
+
+def test_todo_path_newest_landed_pending_is_not_evaluable(store: Store) -> None:
+    """r2: an older ``landed: <sha>`` followed by a NEWER
+    ``landed: pending`` is no usable land record — only the newest
+    landed: comment counts, so the line is not evaluable and the gripe
+    is validate's to close on the sha."""
+    _enable(store)
+    _record(store)
+    gid = _bare_gripe(store)
+    _code_todo(store, gid, landed=[SHA[:9], "pending"], probe=_probe(store))
+    r = run_gripe_autoclose_pass(store)
+    assert r["claimed"] == 0 and r["skipped"] == 0
+    assert _status(store, gid) == "in_review"
+
+
+def test_todo_path_unparseable_check_is_not_evaluable(store: Store) -> None:
+    """r2: a line ``parse_check`` rejects (planted straight into meta,
+    past the write-time guard) cannot be evaluated — dropped at
+    candidate selection, left for gripe-validate."""
+    _enable(store)
+    _record(store)
+    gid = _bare_gripe(store)
+    tid = _code_todo(store, gid, check="count gripe >= 1")
+    store.update_ref(tid, meta_patch={"fix": {"check": "this is not a check"}})
+    r = run_gripe_autoclose_pass(store)
+    assert r["claimed"] == 0 and r["skipped"] == 0
+    assert _status(store, gid) == "in_review"
+
+
+def test_todo_check_wins_over_gripe_side(store: Store) -> None:
+    """Both lines present → the code todo's is the one in force (the
+    gripe-side ``meta.fix.check`` is legacy state). Here the gripe-side
+    line would fail; the close proves the todo's ran."""
+    _enable(store)
+    _record(store)
+    gid = _gripe(
+        store, check='read todo {probe} contains "absent"', probe=_probe(store)
+    )
+    _code_todo(store, gid, probe=_probe(store))
+    r = run_gripe_autoclose_pass(store)
+    assert r["ok"] == 1
+    assert _status(store, gid) == "done"
+
+
+def test_inevaluable_todo_yields_to_an_evaluable_one(store: Store) -> None:
+    """r3: several ``fixes`` todos — the first EVALUABLE one owns the
+    gripe. The older todo is still in build so its line cannot run; the
+    newer done+landed todo's line is the one evaluated (its sha is the
+    one the close names)."""
+    _enable(store)
+    _record(store)
+    gid = _bare_gripe(store)
+    _code_todo(
+        store,
+        gid,
+        check='read todo {probe} contains "absent"',
+        status="doing",
+        landed=None,
+        probe=_probe(store),
+    )
+    probe2 = _probe(store)
+    _code_todo(store, gid, probe=probe2)
+    r = run_gripe_autoclose_pass(store)
+    assert r["ok"] == 1
+    assert _status(store, gid) == "done"
+    newest = _comments(store, gid)[-1]
+    assert f'read todo {probe2} contains "needle"' in newest
+
+
+def test_evaluable_legacy_line_beats_inevaluable_todo(store: Store) -> None:
+    """r3: no evaluable todo → the evaluable legacy ``meta.fix`` line
+    stands. The todo is still in build (not evaluable); the gripe's own
+    line names the probe that closes it."""
+    _enable(store)
+    _record(store)
+    probe = _probe(store)
+    gid = _gripe(store, probe=probe)  # legacy landed + passing check
+    _code_todo(store, gid, status="doing", landed=None)
+    r = run_gripe_autoclose_pass(store)
+    assert r["ok"] == 1
+    assert _status(store, gid) == "done"
+    newest = _comments(store, gid)[-1]
+    assert f'read todo {probe} contains "needle"' in newest

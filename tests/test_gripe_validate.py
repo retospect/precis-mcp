@@ -165,6 +165,51 @@ def test_nothing_live_makes_no_write(tmp_path: Path, repo: dict[str, Any]) -> No
     assert len(log.read_text(encoding="utf-8").splitlines()) == 2
 
 
+@posix
+def test_check_gripe_is_autoclose_owned_not_closed(
+    tmp_path: Path, repo: dict[str, Any]
+) -> None:
+    """td570413: a ``check`` row on --verify-list (the gripe's own
+    ``meta.fix.check`` or its code todo's) is the gripe_autoclose pass's
+    to close on the check's verdict — reported, never in the close set,
+    and the report names the next step (r2)."""
+    rows = _rows(repo) + [{"id": 6, "sha": repo["c1"][:9], "check": True}]
+    cli, log = _fake_cli(tmp_path, rows)
+    line = _run(repo, cli)
+    assert ": done gr1 · pending:" in line
+    assert f"autoclose-owned: gr6@{repo['c1'][:9]}" in line
+    assert "closes when its prod check passes after deploy" in line
+    assert "clear meta.fix.check" in line
+    calls = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    done = calls[1]
+    assert done[:2] == ["gripes", "--verify-done"]
+    assert done[3:] == ["--ids", "1,5"]  # gr6 is live but check-owned — absent
+
+
+@posix
+def test_inevaluable_check_closes_on_sha_naming_why(
+    tmp_path: Path, repo: dict[str, Any]
+) -> None:
+    """td570413 r2: a ``check_why`` row — a check line the pass cannot
+    evaluate — is validate's to close on the sha like a check-less
+    gripe, and the output names the reason."""
+    rows = _rows(repo) + [
+        {
+            "id": 6,
+            "sha": repo["c1"][:9],
+            "check_why": "check does not parse (nope)",
+        }
+    ]
+    cli, log = _fake_cli(tmp_path, rows)
+    line = _run(repo, cli)
+    assert "check not evaluable (check does not parse (nope))" in line
+    assert "closing on sha" in line
+    calls = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    done = calls[1]
+    assert done[:2] == ["gripes", "--verify-done"]
+    assert done[3:] == ["--ids", "1,5,6"]  # gr6 closes on the sha anyway
+
+
 # ── the prod halves, in process on the test DB ──────────────────────
 
 
@@ -173,6 +218,15 @@ def _gripe(store: Store, status: str) -> int:
         ref = store.insert_ref(kind="gripe", slug=None, title="v", meta={}, conn=conn)
         store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="agent", conn=conn)
     return int(ref.id)
+
+
+def _enable(store: Store) -> None:
+    """Light the dark ``gripe_autoclose`` gate — the check-line
+    mechanism is inert until service_config lights it (r3)."""
+    from precis.workers.gripe_autoclose import SERVICE_NAME
+    from precis.workers.service_config import set_service_prio
+
+    set_service_prio(store, "*", SERVICE_NAME, 1, actor="test")
 
 
 @pytest.mark.db
@@ -224,3 +278,230 @@ def test_verify_done_refuses_a_held_gripe(hub: Any, store: Store) -> None:
     out = verify_done(store, "resolved: {sha} (on prod p) — test", [a])
     assert out == f"held: gr{a}"
     assert {str(t) for t in store.tags_for(a)} >= {"STATUS:verify"}
+
+
+def _code_todo(
+    store: Store,
+    *,
+    check: bool,
+    status: str | None = "done",
+    landed: str | list[str] | None = "b1b2b3b4b",
+) -> int:
+    """A ``fixes``-shaped code todo: STATUS tag, real ``todo_comment``
+    ``landed:`` chunk(s) (the land record — a list appends in order,
+    the last is the NEWEST one the pass reads) and ``meta.fix.check``."""
+    from precis.handlers._comment_timeline import append_comment
+
+    tref = store.insert_ref(kind="todo", slug=None, title="code item", meta={})
+    tid = int(tref.id)
+    if status is not None:
+        store.add_tag(tid, Tag.closed("STATUS", status), set_by="agent")
+    if landed:
+        for text in [landed] if isinstance(landed, str) else landed:
+            append_comment(
+                store,
+                tref,
+                kind="todo",
+                comment_kind="todo_comment",
+                text=f"landed: {text} — feat(x): y",
+            )
+    if check:
+        store.update_ref(tid, meta_patch={"fix": {"check": "count gripe >= 1"}})
+    return tid
+
+
+@pytest.mark.db
+def test_check_map_flags_evaluable_and_names_why(store: Store) -> None:
+    """td570413 r2: ``check_map`` shares ``gripe_autoclose._candidates``'
+    evaluator — a check line the pass cannot evaluate (no landed, todo
+    not ``done``, a newest ``landed:`` that is not a sha, an
+    unparseable or own-ref line) is NOT autoclose-owned but IS named
+    with its reason, so gripe-validate can close it and say why."""
+    from precis.cli.gripe import check_map, check_set
+
+    _enable(store)  # the whole mechanism is inert while dark (r3)
+    # legacy gripe-side, evaluable: landed + parseable check (a count —
+    # a bare ``read <kind> <gid>`` collides with the own-ref rule, which
+    # matches ref_id regardless of kind).
+    a = _gripe(store, "verify")
+    store.update_ref(
+        a, meta_patch={"fix": {"landed": "b1b2b3b4b", "check": "count gripe >= 1"}}
+    )
+    # todo-side, evaluable: done + landed comment + check.
+    b = _gripe(store, "verify")
+    store.add_link(
+        src_ref_id=_code_todo(store, check=True), dst_ref_id=b, relation="fixes"
+    )
+    # gripe-side check with no landed.
+    c = _gripe(store, "verify")
+    store.update_ref(c, meta_patch={"fix": {"check": "count gripe >= 1"}})
+    # done todo with check but no landed: record.
+    d = _gripe(store, "verify")
+    store.add_link(
+        src_ref_id=_code_todo(store, check=True, landed=None),
+        dst_ref_id=d,
+        relation="fixes",
+    )
+    # a check-lined todo still in build.
+    e = _gripe(store, "verify")
+    store.add_link(
+        src_ref_id=_code_todo(store, check=True, status="doing"),
+        dst_ref_id=e,
+        relation="fixes",
+    )
+    # a fixes todo carrying no check line.
+    f = _gripe(store, "verify")
+    store.add_link(
+        src_ref_id=_code_todo(store, check=False), dst_ref_id=f, relation="fixes"
+    )
+    # a check-lined retired todo does not count.
+    g = _gripe(store, "verify")
+    dead = _code_todo(store, check=True)
+    store.retire_ref(dead)
+    store.add_link(src_ref_id=dead, dst_ref_id=g, relation="fixes")
+    # an unparseable gripe-side check.
+    h = _gripe(store, "verify")
+    store.update_ref(
+        h, meta_patch={"fix": {"landed": "b1b2b3b4b", "check": "not a check"}}
+    )
+    # a gripe-side check reading its own ref — tautological.
+    i = _gripe(store, "verify")
+    store.update_ref(
+        i,
+        meta_patch={
+            "fix": {"landed": "b1b2b3b4b", "check": f'read gripe {i} contains "x"'}
+        },
+    )
+    # the NEWEST landed: comment is no sha — the older valid one loses.
+    j = _gripe(store, "verify")
+    store.add_link(
+        src_ref_id=_code_todo(store, check=True, landed=["b1b2b3b4b", "pending"]),
+        dst_ref_id=j,
+        relation="fixes",
+    )
+    # r3: an older INEVALUABLE todo does not shadow a newer evaluable
+    # one — the first evaluable line owns the gripe.
+    k = _gripe(store, "verify")
+    store.add_link(
+        src_ref_id=_code_todo(store, check=True, status="doing"),
+        dst_ref_id=k,
+        relation="fixes",
+    )
+    store.add_link(
+        src_ref_id=_code_todo(store, check=True), dst_ref_id=k, relation="fixes"
+    )
+    # r3: no evaluable todo → the evaluable legacy gripe-side line
+    # stands (the todo is still in build; the gripe's meta.fix is good).
+    ll = _gripe(store, "verify")
+    store.update_ref(
+        ll,
+        meta_patch={"fix": {"landed": "b1b2b3b4b", "check": "count gripe >= 1"}},
+    )
+    store.add_link(
+        src_ref_id=_code_todo(store, check=True, status="doing"),
+        dst_ref_id=ll,
+        relation="fixes",
+    )
+    ids = [a, b, c, d, e, f, g, h, i, j, k, ll]
+    assert check_set(store, ids) == {a, b, k, ll}
+    cm = check_map(store, ids)
+    assert {g for g, w in cm.items() if w is None} == {a, b, k, ll}
+    assert f not in cm and g not in cm
+
+    def _why(gid: int) -> str:
+        w = cm[gid]
+        assert w is not None
+        return w
+
+    assert "landed" in _why(c)
+    assert "landed" in _why(d)
+    assert "done" in _why(e)
+    assert "does not parse" in _why(h)
+    assert "own ref" in _why(i)
+    assert "landed" in _why(j)
+
+
+@pytest.mark.db
+def test_verify_done_refuses_a_check_lined_gripe(hub: Any, store: Store) -> None:
+    """td570413 r1: ``verify_done`` itself refuses a check-lined gripe —
+    a stale caller's id list cannot close what ``gripe_autoclose`` owns,
+    the same shape as the ``hold:no-autoclose`` refusal."""
+    from precis.cli.gripe import verify_done
+    from precis.handlers._comment_timeline import append_comment
+    from precis.handlers.gripe import GripeHandler
+
+    _enable(store)  # the refusal exists only while the pass is lit (r3)
+    h = GripeHandler(hub=hub)
+    a = _gripe(store, "verify")
+    h.put(id=a, text="resolved: abcdef123 (main, release pending)")
+    tref = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="code item",
+        meta={"fix": {"check": "count gripe >= 1"}},
+    )
+    tid = int(tref.id)
+    store.add_link(src_ref_id=tid, dst_ref_id=a, relation="fixes")
+    store.add_tag(tid, Tag.closed("STATUS", "done"), set_by="agent")
+    append_comment(
+        store,
+        tref,
+        kind="todo",
+        comment_kind="todo_comment",
+        text="landed: abcdef123 — feat(x): y",
+    )
+    out = verify_done(store, "resolved: {sha} (on prod p) — test", [a])
+    assert out == (
+        f"autoclose-owned: gr{a} — closes when its prod check passes "
+        "after deploy; clear meta.fix.check to close on the sha alone"
+    )
+    assert {str(t) for t in store.tags_for(a)} >= {"STATUS:verify"}
+
+
+@pytest.mark.db
+def test_gate_off_closes_check_lined_gripes_on_the_sha(hub: Any, store: Store) -> None:
+    """td570413 r3: while the pass is dark, behaviour is exactly as
+    before this branch — ``check_map`` is empty and ``verify_done``
+    closes a check-lined gripe on the sha. Lit, the same shape is
+    autoclose-owned."""
+    from precis.cli.gripe import check_map, check_set, verify_done
+    from precis.handlers._comment_timeline import append_comment
+    from precis.handlers.gripe import GripeHandler
+
+    def _lined() -> int:
+        g = _gripe(store, "verify")
+        tref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="code item",
+            meta={"fix": {"check": "count gripe >= 1"}},
+        )
+        tid = int(tref.id)
+        store.add_link(src_ref_id=tid, dst_ref_id=g, relation="fixes")
+        store.add_tag(tid, Tag.closed("STATUS", "done"), set_by="agent")
+        append_comment(
+            store,
+            tref,
+            kind="todo",
+            comment_kind="todo_comment",
+            text="landed: abcdef123 — feat(x): y",
+        )
+        return g
+
+    h = GripeHandler(hub=hub)
+    a = _lined()
+    h.put(id=a, text="resolved: abcdef123 (main, release pending)")
+    # Dark: nothing marks it — it closes on the sha like any other.
+    assert check_map(store, [a]) == {}
+    assert check_set(store, [a]) == set()
+    out = verify_done(store, "resolved: {sha} (on prod p) — test", [a])
+    assert out == f"done gr{a}"
+    assert {str(t) for t in store.tags_for(a)} >= {"STATUS:done"}
+    # Lit: the identical shape is autoclose-owned and refuses.
+    _enable(store)
+    b = _lined()
+    h.put(id=b, text="resolved: abcdef123 (main, release pending)")
+    assert check_set(store, [b]) == {b}
+    out = verify_done(store, "resolved: {sha} (on prod p) — test", [b])
+    assert out.startswith("autoclose-owned:")
+    assert {str(t) for t in store.tags_for(b)} >= {"STATUS:verify"}

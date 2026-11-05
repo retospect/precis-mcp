@@ -12,6 +12,16 @@ on "the sha reached prod" alone; this tick closes ``meta.fix`` gripes on
 "the fix *works* in prod" — and only gripes that opted in by carrying a
 check line.
 
+Since td570413 the check line's home is the gripe's ``fixes``-linked
+**code todo**: ``tag(kind='todo', id=T, meta={'fix': {'check': …}})``
+(written and parse-checked like the gripe-side edit) plus the
+``landed: <sha>`` comment land-notify already posts — the todo's
+``STATUS:done`` and its newest ``landed:`` line are the land record.
+The legacy gripe-side ``meta.fix.landed`` + ``meta.fix.check`` path
+keeps working; when both carry a line the todo's wins. ``scripts/
+gripe-validate`` skips either shape, so a check-lined gripe is this
+pass's to close, never the sha-in-prod flip's.
+
 The check line is a small closed grammar, no LLM anywhere:
 
 - ``read <kind> <id> contains "<substring>"`` — the ref's raw title +
@@ -92,6 +102,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -167,6 +178,35 @@ _THREADS_ENV = "PRECIS_THREADS_DIR"
 _CMPS: tuple[str, ...] = (">=", "<=", "!=", "=", ">", "<")
 _TERMINAL_STATUS = ("done", "wontfix")
 _META_PATH_RE_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_")
+
+#: The todo's land record (td570413): land-notify's ``landed: <sha9> —
+#: <subject>`` comment (``scripts/lib/land_notify.py``); the newest one
+#: names the sha the deploy check runs against.
+_LANDED_RE = re.compile(r"^\s*landed:\s*([0-9a-f]{7,40})\b")
+
+
+@dataclass
+class _Candidate:
+    """One check-lined gripe the SQL fetch surfaced — evaluable or not.
+
+    ``fix`` is the resolved ``{"landed", "check", "check_failed_at"}``
+    bag; ``owner_id`` is the ref it lives on — the gripe itself on the
+    legacy path, the ``fixes``-linked code todo on the new one (the
+    failure marker writes there too). ``landed_raw`` is the landed
+    text to judge (``meta.fix.landed`` vs the NEWEST ``landed:``
+    comment); ``todo_done`` the todo's live ``STATUS:done``. ``sha`` is
+    the sha ``_evaluable`` proved — set only on a candidate this pass
+    will actually evaluate.
+    """
+
+    gid: int
+    title: str
+    fix: dict[str, Any]
+    owner_id: int
+    landed_what: str
+    landed_raw: str
+    todo_done: bool = True
+    sha: str = ""
 
 
 class CheckError(ValueError):
@@ -447,37 +487,246 @@ def gripe_autoclose_enabled(store: Store, *, conn: Any = None) -> bool:
         return False
 
 
-def _candidates(store: Store, *, limit: int) -> list[tuple[int, str, dict[str, Any]]]:
-    """``(ref_id, title, meta.fix dict)`` for live gripe-loop gripes
-    carrying a check line — terminal STATUS and ``hold:no-autoclose``
-    excluded, each only while its ``ref_tags`` row is unexpired (the
-    ``build_tag_filter`` expiry rule). ``hold:no-autoclose`` parses as an
-    OPEN-namespace tag (:data:`HOLD_TAG`), so the match is
-    ``(namespace, value)``, not a bare value."""
+#: The todo-side fetch predicate — deliberately COARSE (td570413 r2):
+#: every live ``fixes`` todo carrying ``meta.fix.check`` surfaces, and
+#: ``_evaluable`` decides whether the pass can run it (``STATUS:done``,
+#: a newest ``landed:`` comment that is a sha, a parseable line, not a
+#: self-read). The finer conditions live ONLY there, so ``_candidates``
+#: and ``check_lined_ids`` can never drift apart — a check-lined gripe
+#: the pass cannot evaluate reads as validate-closable with its reason.
+_TODO_CHECK_LINED = "AND COALESCE(btrim(t.meta->'fix'->>'check'), '') <> '' "
+
+#: The gripe-side exclusions both candidate sources share: a terminal
+#: STATUS or a ``hold:no-autoclose`` row, each only while unexpired.
+_GRIPE_NOT_CLOSED = (
+    "AND NOT EXISTS ("
+    "SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+    "WHERE rt.ref_id = g.ref_id AND t.namespace = 'STATUS' "
+    "AND t.value = ANY(%s) "
+    "AND (rt.expires_at IS NULL OR rt.expires_at > now())) "
+    "AND NOT EXISTS ("
+    "SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+    "WHERE rt.ref_id = g.ref_id AND t.namespace = 'OPEN' "
+    "AND t.value = %s "
+    "AND (rt.expires_at IS NULL OR rt.expires_at > now()))"
+)
+
+
+def _candidate_rows(
+    store: Store, ids: Collection[int] | None = None
+) -> list[_Candidate]:
+    """Every check-lined candidate row — evaluable or not (td570413
+    r2: evaluability is ``_evaluable``'s call alone, so every shape it
+    can refuse must surface here). Possibly several rows per gripe:
+    each live ``fixes`` todo carrying ``meta.fix.check`` (with its live
+    ``STATUS:done`` flag and its NEWEST ``landed:`` comment's text),
+    oldest first; then the legacy gripe-side ``meta.fix`` line last.
+    :func:`_picked` resolves which row owns the gripe.
+
+    Terminal STATUS and ``hold:no-autoclose`` are excluded on the
+    gripe, each only while its ``ref_tags`` row is unexpired (the
+    ``build_tag_filter`` expiry rule). ``hold:no-autoclose`` parses as
+    an OPEN-namespace tag (:data:`HOLD_TAG`), so the match is
+    ``(namespace, value)``, not a bare value. ``ids`` scopes the fetch
+    (:func:`check_lined_ids`).
+    """
+    scope = "AND g.ref_id = ANY(%s) " if ids is not None else ""
+    params: list[Any] = ([list(ids)] if ids is not None else []) + [
+        list(_TERMINAL_STATUS),
+        HOLD_TAG,
+    ]
     with store.pool.connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT r.ref_id, r.title, r.meta->'fix' AS fix
-              FROM refs r
-             WHERE r.kind = 'gripe' AND r.retired_at IS NULL
-               AND COALESCE(btrim(r.meta->'fix'->>'landed'), '') <> ''
-               AND COALESCE(btrim(r.meta->'fix'->>'check'), '') <> ''
-               AND NOT EXISTS (
-                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
-                      AND t.value = ANY(%s)
-                      AND (rt.expires_at IS NULL OR rt.expires_at > now()))
-               AND NOT EXISTS (
-                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
-                      AND t.value = %s
-                      AND (rt.expires_at IS NULL OR rt.expires_at > now()))
-             ORDER BY r.ref_id
-             LIMIT %s
-            """,
-            (list(_TERMINAL_STATUS), HOLD_TAG, limit),
+        legacy = conn.execute(
+            "SELECT g.ref_id, g.title, g.meta->'fix' AS fix "
+            "FROM refs g "
+            "WHERE g.kind = 'gripe' AND g.retired_at IS NULL "
+            + scope
+            + "AND COALESCE(btrim(g.meta->'fix'->>'check'), '') <> '' "
+            + _GRIPE_NOT_CLOSED
+            + " ORDER BY g.ref_id",
+            params,
         ).fetchall()
-    return [(int(r[0]), str(r[1] or ""), dict(r[2] or {})) for r in rows]
+        todos = conn.execute(
+            "SELECT g.ref_id, g.title, t.ref_id, t.meta->'fix' AS fix, "
+            "EXISTS ("
+            "SELECT 1 FROM ref_tags rt JOIN tags t2 ON t2.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = t.ref_id AND t2.namespace = 'STATUS' "
+            "AND t2.value = 'done' "
+            "AND (rt.expires_at IS NULL OR rt.expires_at > now())) AS done, "
+            "(SELECT c.text FROM chunks c WHERE c.ref_id = t.ref_id "
+            " AND c.chunk_kind = 'todo_comment' AND c.retired_at IS NULL "
+            " AND c.text LIKE 'landed:%%' ORDER BY c.ord DESC LIMIT 1) "
+            "FROM refs g "
+            "JOIN links l ON l.dst_ref_id = g.ref_id AND l.relation = 'fixes' "
+            "JOIN refs t ON t.ref_id = l.src_ref_id "
+            "WHERE g.kind = 'gripe' AND g.retired_at IS NULL "
+            + scope
+            + "AND t.kind = 'todo' AND t.retired_at IS NULL "
+            + _TODO_CHECK_LINED
+            + _GRIPE_NOT_CLOSED
+            + " ORDER BY g.ref_id, t.ref_id",
+            params,
+        ).fetchall()
+    todo_rows: dict[int, list[_Candidate]] = {}
+    for gid, title, tid, fix, done, landed_line in todos:
+        todo_rows.setdefault(int(gid), []).append(
+            _Candidate(
+                gid=int(gid),
+                title=str(title or ""),
+                fix=dict(fix or {}),
+                owner_id=int(tid),
+                landed_what=f"td{int(tid)} landed: comment",
+                landed_raw=str(landed_line or ""),
+                todo_done=bool(done),
+            )
+        )
+    legacy_rows: dict[int, _Candidate] = {
+        int(gid): _Candidate(
+            gid=int(gid),
+            title=str(title or ""),
+            fix=dict(fix or {}),
+            owner_id=int(gid),
+            landed_what="meta.fix.landed",
+            landed_raw=str((fix or {}).get("landed") or ""),
+        )
+        for gid, title, fix in legacy
+    }
+    # Per gripe: todos oldest-first, the legacy gripe-side line last —
+    # the order _picked walks (first EVALUABLE wins; the legacy line is
+    # the fallback when no todo is evaluable).
+    out: list[_Candidate] = []
+    for gid in sorted(set(todo_rows) | set(legacy_rows)):
+        out.extend(todo_rows.get(gid, []))
+        if gid in legacy_rows:
+            out.append(legacy_rows[gid])
+    return out
+
+
+def _evaluable(
+    cand: _Candidate, *, kinds: Collection[str] | None
+) -> tuple[str | None, str | None]:
+    """``(sha, None)`` when this candidate's check line can run, else
+    ``(None, why)`` — the ONE judge of evaluability, shared by
+    :func:`_candidates` (which drops the row) and :func:`check_lined_ids`
+    (which reports the reason), so a check-lined gripe the pass cannot
+    evaluate is never skipped by gripe-validate (td570413 r2's ruling:
+    such a gripe behaves as check-less and closes on the sha).
+
+    Judges, in order:
+
+    - the **landed sha** — ``_clean_sha`` on the gripe-side
+      ``meta.fix.landed``; on the todo path the todo must be
+      ``STATUS:done`` and the NEWEST ``landed:`` comment must match
+      :data:`_LANDED_RE` (``landed: pending`` after a real sha is no
+      record);
+    - the **check line** — ``parse_check`` must accept it;
+    - **own-ref reads** — ``read <kind> <id>`` of the gripe itself or
+      of the todo the line lives on is tautological.
+    """
+    sha: str | None
+    if cand.owner_id == cand.gid:
+        from precis.plans.gates import _clean_sha
+
+        sha, bad = _clean_sha(cand.landed_raw, cand.landed_what)
+        if bad is not None:
+            return None, bad.why
+    else:
+        if not cand.todo_done:
+            return None, f"fixes todo td{cand.owner_id} is not STATUS:done"
+        if not cand.landed_raw:
+            return None, f"fixes todo td{cand.owner_id} has no landed: comment"
+        m = _LANDED_RE.match(cand.landed_raw)
+        if m is None:
+            return None, (
+                f"newest landed: comment on td{cand.owner_id} is not "
+                "'landed: <hex-sha>'"
+            )
+        sha = m.group(1)
+    check_line = str(cand.fix.get("check") or "")
+    try:
+        check = parse_check(check_line, kinds=kinds)
+    except (CheckError, PrecisError) as e:
+        return None, f"check does not parse ({e})"
+    if isinstance(check, ReadCheck) and check.ref_id in (cand.gid, cand.owner_id):
+        # A check's read of the ref the line lives on can never be
+        # evidence: the gripe always carries whatever the fixer wrote,
+        # and the code todo always carries its own landed: comment.
+        return None, "check reads its own ref"
+    return sha, None
+
+
+def _picked(
+    rows: list[_Candidate], *, kinds: Collection[str] | None
+) -> list[tuple[_Candidate, str | None]]:
+    """One ``(candidate, None)`` per gripe whose first-evaluable line
+    ``_evaluable`` accepts — the walk order is each ``fixes`` todo
+    oldest-first, then the legacy gripe-side line (td570413 r3: an
+    EVALUABLE newer todo beats an inevaluable older one; when no todo
+    is evaluable, an evaluable legacy ``meta.fix`` line stands). When
+    nothing is evaluable, ``(first todo row, first refusal reason)``
+    — the gripe is validate's to close on the sha, and ``why`` is the
+    reason to name."""
+    groups: dict[int, list[_Candidate]] = {}
+    order: list[int] = []
+    for cand in rows:
+        if cand.gid not in groups:
+            order.append(cand.gid)
+            groups[cand.gid] = []
+        groups[cand.gid].append(cand)
+    out: list[tuple[_Candidate, str | None]] = []
+    for gid in order:
+        cands = groups[gid]
+        why: str | None = None
+        for cand in cands:
+            sha, w = _evaluable(cand, kinds=kinds)
+            if sha is not None:
+                cand.sha = sha
+                out.append((cand, None))
+                break
+            if why is None:
+                why = w
+        else:
+            out.append((cands[0], why or "not evaluable"))
+    return out
+
+
+def _candidates(store: Store, *, limit: int) -> list[_Candidate]:
+    """The check-lined gripes this pass can actually evaluate, oldest
+    first, capped at ``limit``. A row ``_evaluable`` refuses is dropped
+    here — not skipped in the loop — so gripe-validate can close that
+    gripe on the sha (td570413 r2)."""
+    kinds = _kind_slugs(store)
+    out: list[_Candidate] = []
+    for cand, why in _picked(_candidate_rows(store), kinds=kinds):
+        if why is not None:
+            log.warning(
+                "gripe_autoclose: gr%d check not evaluable — %s; "
+                "left for gripe-validate",
+                cand.gid,
+                why,
+            )
+            continue
+        out.append(cand)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def check_lined_ids(store: Store, ids: Collection[int]) -> dict[int, str | None]:
+    """The check-lined gripes among ``ids``: ``{gid: None}`` when the
+    line is evaluable this pass (autoclose owns the close), ``{gid:
+    why}`` when a check line exists but ``_evaluable`` refuses it —
+    that gripe is validate's to close on the sha, and ``why`` is the
+    reason to name (td570413 r2). Empty while the pass is dark —
+    the whole mechanism is inert until service_config lights
+    :data:`SERVICE_NAME` (td570413 r3)."""
+    if not ids or not gripe_autoclose_enabled(store):
+        return {}
+    kinds = _kind_slugs(store)
+    out: dict[int, str | None] = {}
+    for cand, why in _picked(_candidate_rows(store, ids=set(ids)), kinds=kinds):
+        out[cand.gid] = why
+    return out
 
 
 def _kind_slugs(store: Store) -> set[str] | None:
@@ -602,12 +851,17 @@ def _ancestor_of(repo: Path, sha: str, head: str) -> bool | None:
 
 
 def _write_check_failed_at(store: Store, ref_id: int, stamp: datetime | None) -> None:
-    """Set or clear ``meta.fix.check_failed_at``. ``meta_patch`` is a
-    top-level ``meta ||`` merge, so the whole ``fix`` dict is rewritten
-    each time — never a bare ``{"fix": {"check_failed_at": …}}``, which
-    would drop ``landed``/``check``."""
-    ref = store.get_ref(kind="gripe", id=ref_id)
-    fix = dict((ref.meta or {}).get("fix") or {}) if ref is not None else {}
+    """Set or clear ``meta.fix.check_failed_at`` on the ref the check
+    bag lives on — the gripe on the legacy path, its code todo on the
+    new one (td570413). ``meta_patch`` is a top-level ``meta ||`` merge,
+    so the whole ``fix`` dict is rewritten each time — never a bare
+    ``{"fix": {"check_failed_at": …}}``, which would drop
+    ``landed``/``check``."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->'fix' FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    fix = dict(row[0]) if row is not None and isinstance(row[0], dict) else {}
     if stamp is None:
         fix.pop(_FAILED_AT_KEY, None)
     else:
@@ -679,7 +933,7 @@ def run_gripe_autoclose_pass(
     in (defaults to the ``PRECIS_THREADS_DIR``/package-root resolution).
     """
     from precis.cli.gripe import resolve_gripe
-    from precis.plans.gates import _clean_sha, read_prod_head, sha_deployed
+    from precis.plans.gates import read_prod_head, sha_deployed
 
     if enabled is None:
         enabled = gripe_autoclose_enabled(store)
@@ -721,15 +975,13 @@ def run_gripe_autoclose_pass(
     repo_dir = _repo_dir(repo)
     kinds = _kind_slugs(store)
 
-    for gid, title, fix in cands:
-        landed = str(fix.get("landed") or "")
+    for cand in cands:
+        gid, title, fix = cand.gid, cand.title, cand.fix
+        # ``cand.sha`` is the clean landed sha ``_evaluable`` proved —
+        # sha shape, parse and the own-ref refusal are all judged there.
+        sha = cand.sha
         check_line = str(fix.get("check") or "")
         failed_at = _parse_ts(fix.get(_FAILED_AT_KEY))
-        sha, bad = _clean_sha(landed, "meta.fix.landed")
-        if bad is not None:
-            log.warning("gripe_autoclose: gr%d %s; skipped", gid, bad.why)
-            out["skipped"] += 1
-            continue
         verdict = (
             _ancestor_of(repo_dir, sha, head_sha) if repo_dir and head_sha else None
         )
@@ -743,19 +995,14 @@ def run_gripe_autoclose_pass(
         try:
             check = parse_check(check_line, kinds=kinds)
         except (CheckError, PrecisError) as e:
+            # Defensive only: _evaluable parsed this same line at
+            # selection, so a raise here cannot fire — but the pass
+            # degrades, never dies, so it stays a skip not a crash.
             log.warning(
                 "gripe_autoclose: gr%d check line does not parse (%s); skipped",
                 gid,
                 e,
             )
-            out["skipped"] += 1
-            continue
-        if isinstance(check, ReadCheck) and check.ref_id == gid:
-            # A gripe's read of itself can never be evidence: same-kind
-            # it always carries whatever the fixer wrote (tautological
-            # pass), another kind it can't resolve and reads as a
-            # spurious failure. Refuse either way.
-            log.warning("gripe_autoclose: gr%d check reads its own ref; skipped", gid)
             out["skipped"] += 1
             continue
         try:
@@ -767,11 +1014,11 @@ def run_gripe_autoclose_pass(
         out["claimed"] += 1
         if passed:
             if failed_at is not None:
-                _write_check_failed_at(store, gid, None)
+                _write_check_failed_at(store, cand.owner_id, None)
             if resolve_gripe(
                 store,
                 gid,
-                f"resolved: {landed} ({rel}) — prod check passed: {check_line}",
+                f"resolved: {sha} ({rel}) — prod check passed: {check_line}",
             ):
                 out["ok"] += 1
             else:
@@ -781,7 +1028,7 @@ def run_gripe_autoclose_pass(
         # Failed. The first failure only records the marker — a second
         # failure at least FAIL_RECHECK_S later is the confirmed one.
         if failed_at is None:
-            _write_check_failed_at(store, gid, when)
+            _write_check_failed_at(store, cand.owner_id, when)
             log.info(
                 "gripe_autoclose: gr%d check failed (%s) — marker set; "
                 "closes on a repeat failure >= %ds later",
@@ -805,7 +1052,7 @@ def run_gripe_autoclose_pass(
         # — that was the hourly-duplicate bug), then refile-or-reuse.
         existing = _derived_refile(store, gid)
         comment = (
-            f"resolved: {landed} ({rel}) — prod check FAILED: {check_line} ({detail})"
+            f"resolved: {sha} ({rel}) — prod check FAILED: {check_line} ({detail})"
         )
         comment += (
             f" → refiled as gr{existing}"
@@ -824,7 +1071,7 @@ def run_gripe_autoclose_pass(
                 store,
                 old_id=gid,
                 old_title=" ".join(title.split())[:120],
-                sha=landed,
+                sha=sha,
                 check_line=check_line,
                 detail=detail,
                 held=held,
@@ -871,6 +1118,7 @@ __all__ = [
     "CheckError",
     "CountCheck",
     "ReadCheck",
+    "check_lined_ids",
     "gripe_autoclose_enabled",
     "parse_check",
     "run_check",
