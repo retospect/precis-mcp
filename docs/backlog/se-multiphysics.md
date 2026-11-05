@@ -26,8 +26,9 @@ the Eulerian wall coefficient (`_entry_distance` + `wall_sink_star`
 `entrance=`), the slice-1 `wall-flux-fraction` flag removed, and a kernel
 acceptance test. See slice 1b below.
 
-**Ready.** Slice 1 on 2026-10-21; slices 2, 4 and 5 on 2026-11-04, after
-the seam (§Seam slice, §Acceptance: slip, heat, Darcy). The other slices
+**Ready.** Slice 1 on 2026-10-21; slices 2, 4 and 5 on 2026-11-04
+(§Acceptance: slip, heat, Darcy), using the registrations in
+`src/precis_flow/physics.py::PHYSICS`. The other slices
 stay draft; each gets its acceptance when it goes ready. A physics review (Fable,
 2026-10-21) found the core relations correct: the Taylor coefficient with
 the full gap and 1/210, the reduced numbers, the series `k_eff`, the
@@ -511,29 +512,6 @@ measurand migration. Then 3 (Joule heating refused until heat lands), 7
 after slip (shared gap profile), 6 and 8 later. 1c when a case has
 `|α − 1| > 0.2` at conversion above 0.2. B is unordered.
 
-## Seam slice
-
-Behaviour-neutral; lands after 4a-i (both touch `src/precis_se/flow.py`).
-Heat, slip and Darcy wait for it. Existing tests stay unchanged and green.
-
-It moves the species section of `src/precis_se/flow.py`
-(`_SPECIES_INPUT_PROPS` through `_flow_damkohler`) into its own module.
-Each physics then registers on these surfaces:
-
-| Surface | Today | After the seam |
-|---|---|---|
-| Measure computers | the `src/precis_se/flow.py::FLOW_COMPUTERS` literal; the slug list in `src/precis_se/properties/__init__.py::COMPUTERS` | each physics registers its computers; slugs stay declared without importing a solver (`src/precis_se/properties/__init__.py::_LazyComputer`) |
-| Regime card line group | `src/precis_flow/regime.py::RegimeCard` field `species`, species kwargs on `from_physical`, the fixed `lines` tuple | each physics registers a group; `lines`, `ok`, `failures` and `src/precis_geom/physics.py::card_dict` cover every group; `species` keeps its attribute |
-| `flow:` token keys | the closed set in `src/precis_se/flow.py::parse_flow_shape`, fields on `FlowSpec` | each physics registers its keys; an unknown key still refuses |
-| `evaluate` spec keys | `src/precis_geom/physics.py::_FLOW_KEYS`, `MEASURANDS`, `_flow_case` | each physics registers its keys and measurands; an unknown key still refuses |
-
-The tracker names the first three. The fourth is needed because
-`src/precis_se/flow.py::_flow_measure` reaches the kernel through
-`evaluate`: a physics without a spec key never changes a flow measurand.
-An empty registration is valid. Slip and Darcy add no computers (their
-effect reaches the existing measurands); none of the three adds a token
-key (Q1). The solver layer is not covered: see log item M1.
-
 ## Combination rule
 
 A lane refuses every physics combination it has not tested.
@@ -543,7 +521,7 @@ A lane refuses every physics combination it has not tested.
   `evaluate` spec key or input measure), whatever output was requested:
   `outlet-conversion` on a chamber with a `slip-length` measure is a slip +
   species case.
-- **Tested.** The set is in the seam's `TESTED` registry. An entry lands in
+- **Tested.** The set is in `src/precis_flow/physics.py::TESTED`. An entry lands in
   the commit that adds its test. `{flow}` and `{flow, species}` seed it.
 - **Refusal.** `evaluate` and `view='flow'` raise `BadInput` naming
   `physics.untested_combination`, the set, and `next=` (which input to
@@ -750,8 +728,13 @@ homogeneous (bulk) reactions. The last is a later one-liner on the same
 `src/precis_se/flow.py` gains the token keys, the computers and the
 `wall_rate` handler op. Measurand taxon nodes for the new slugs need a
 core seed migration, which goes through the release owner (C7).
-The seam adds the registrations of §Seam slice; slices 5, 2 and 4 add one
-module each under `src/precis_flow/` and `src/precis_se/`.
+Slices 5, 2 and 4 add one module each under `src/precis_flow/` and
+`src/precis_se/`, registering through
+`src/precis_flow/physics.py::PHYSICS`,
+`src/precis_flow/regime.py::REGIME_GROUPS` and
+`src/precis_se/flow_registry.py::COMPUTER_GROUPS`.
+Empty registrations are valid: slip and Darcy add no computers, and
+none of the three adds a token key (Q1).
 `precis-se-regions-help` and the flow skill gain the BC vocabulary.
 
 ## Rulings (Reto 2026-11-04, tracker gr563788)
@@ -761,34 +744,34 @@ Q1–Q4 spec defaults stand:
 - Q1 BCs are measures on `patch:` regions; the `flow:` token stays a role
   list.
 - Q2 Species scope is the measure name `<block>.<species>/<property>`
-  (`src/precis_se/flow.py::_scoped_prop`), not a column on `se_measures`.
+  (`src/precis_se/flow_species.py::_scoped_prop`), not a column on `se_measures`.
 - Q3 Liquid-phase catpath rates are refused until a solvation/Henry model
   is stated (`src/precis_se/wall_rate.py::op_wall_rate`).
 - Q4 Backend B1 is FEniCSx, run as a job on the compute lane, never in the
   MCP process.
 
-Multiphysics runs in parallel through §Seam slice, not as a chain.
+Multiphysics runs in parallel through the registrations in
+`src/precis_flow/physics.py::PHYSICS`, subject to §Combination rule.
 
 ## Open questions log
 
 Statements not grounded in code or in the tracker. Each names the default
 a lane takes until it closes.
 
-- **M1 Solver hook.** `src/precis_flow/flow.py::solve` hard-codes `h**3` and
-  `h**2`; `src/precis_flow/tracer.py::trace` knows `plug|parabolic`;
-  `src/precis_flow/species.py::taylor_tensor` takes one scalar `pe`. Slip,
-  heat and Darcy each need to change these, and the seam as tracked does
-  not open them, so three parallel lanes would edit the same lines.
-  Default: a behaviour-neutral hook lands with the seam, `solve` taking a
-  `T*` factor field and `trace` a per-cell profile.
-- **M2 Physics names.** `heat`, `species` and `darcy` are also rows of the
-  se-native-fields `REGISTRY`, where `evaluate(physics=[...])` routes them
-  to `precis_fields`. Default: thin-gap physics are keys of the `flow` spec,
-  so `physics=['flow']` stays the only thin-gap name.
+- **M1 Solver hook — ruled (Reto, 2026-11-04).**
+  `src/precis_flow/flow.py::solve` takes a `T*` factor field;
+  `src/precis_flow/tracer.py::trace` takes a per-cell profile. Their
+  defaults reproduce `h**3`, `h**2`, plug and parabolic bit-identically,
+  without reordering floating-point operations.
+- **M2 Physics names — ruled (Reto, 2026-11-04).** Thin-gap physics stay
+  keys of the `flow` spec; `physics=['flow']` remains the thin-gap name.
+  They do not route through the se-native-fields `REGISTRY`, whose
+  `heat`, `species` and `darcy` names belong to `precis_fields`.
 - **M3 Species on `evaluate`.** `MEASURANDS` holds the four flow measurands;
   the species computers call `_species_run`, not `evaluate`, so a script
   cannot state a species number and the import re-check cannot cover one.
-  The seam moves the code unchanged. Default: left as is; S9, H10 and D6
+  `src/precis_se/flow_species.py::_species_run` keeps that route unchanged.
+  Default: left as is; S9, H10 and D6
   test through the kernel and the se computers.
 - **M4 Fluid properties.** The core registry
   (`src/precis/migrations/0092_material_kind.sql`) has no viscosity or

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -35,6 +36,13 @@ import numpy as np
 
 from precis.errors import BadInput
 from precis_flow import Domain, Paths, RegimeCard, Seed, nonuniformity, solve, trace
+from precis_flow.physics import (
+    MEASURANDS,
+    PHYSICS,
+    active_physics,
+    combination_refusal,
+    keys,
+)
 from precis_flow.regime import KN_CONTINUUM_MAX
 from precis_geom import __version__ as _GEOM_VERSION
 from precis_geom.flow import (
@@ -58,15 +66,7 @@ INLINE_TRACE_WORK = 400_000
 
 #: The flow measurands ``evaluate(['flow'])`` returns — the same four
 #: ``precis_se.flow.FLOW_COMPUTERS`` registers.
-FLOW_MEASURANDS = (
-    "breakthrough-fraction",
-    "residence-time-t0",
-    "resistance-ratio",
-    "evenness",
-)
-
-#: physics name → its measurands. se-native-fields slice 1 adds its names.
-MEASURANDS: dict[str, tuple[str, ...]] = {"flow": FLOW_MEASURANDS}
+FLOW_MEASURANDS = MEASURANDS["flow"]
 
 #: A spec measure's strength: ``hard`` gates (``hard_ok``), ``soft`` is a
 #: script objective term, ``gauge`` reports.
@@ -75,19 +75,6 @@ STRENGTHS = ("hard", "soft", "gauge")
 #: Tracer particles when the spec does not say.
 DEFAULT_N = 400
 
-_FLOW_KEYS = (
-    "inlet",
-    "outlet",
-    "dv",
-    "profile",
-    "zplane",
-    "n",
-    "frames",
-    "seed_z",
-    "evenness_region",
-    "fluid",
-    "measures",
-)
 _FLUID_KEYS = (
     "mu",
     "rho",
@@ -241,6 +228,7 @@ class _FlowCase:
     z_hi: float
     evenness_region: PortPatch | None
     fluid: dict[str, float] | None
+    physics_inputs: dict[str, Any]
 
 
 def _number(spec: dict[str, Any], key: str, what: str) -> float | None:
@@ -253,11 +241,12 @@ def _number(spec: dict[str, Any], key: str, what: str) -> float | None:
 
 
 def _flow_case(spec: dict[str, Any]) -> _FlowCase:
-    stray = sorted(set(spec) - set(_FLOW_KEYS))
+    allowed = keys("spec_keys")
+    stray = sorted(set(spec) - set(allowed))
     if stray:
         raise BadInput(
             f"evaluate(['flow']): unknown spec key(s) {', '.join(stray)}",
-            options=list(_FLOW_KEYS),
+            options=list(allowed),
         )
     for req in ("inlet", "outlet", "dv"):
         if spec.get(req) is None:
@@ -335,6 +324,9 @@ def _flow_case(spec: dict[str, Any]) -> _FlowCase:
             None if region is None else PortPatch.coerce(region, "spec.evenness_region")
         ),
         fluid=fluid,
+        physics_inputs={
+            k: v for k, v in spec.items() if k not in PHYSICS["flow"].spec_keys
+        },
     )
 
 
@@ -481,6 +473,23 @@ def _flow_measures(
     return measures, reasons
 
 
+def check_flow_physics(
+    *,
+    token_keys: Iterable[str] = (),
+    spec_keys: Iterable[str] = (),
+    input_measures: Iterable[str] = (),
+    lumen: bool = False,
+) -> None:
+    """Refuse untested declared inputs before geometry, tracing or an output lookup."""
+    active = active_physics(
+        token_keys=token_keys, spec_keys=spec_keys, input_measures=input_measures
+    )
+    refusal = combination_refusal(active, lumen=lumen)
+    if refusal is not None:
+        cause, hint = refusal
+        raise BadInput(cause, next=hint)
+
+
 def evaluate(
     shape: Any,
     physics: list[str] | tuple[str, ...] = ("flow",),
@@ -519,6 +528,7 @@ def evaluate(
         )
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise BadInput(f"evaluate: seed must be an int, got {seed!r}")
+    check_flow_physics(spec_keys=spec)
     nx, ny = gap_cells(shape, cells)
     if nx * ny > INLINE_CELLS:
         if budget == "inline":

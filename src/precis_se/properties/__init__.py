@@ -53,6 +53,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from precis_se.flow_registry import subscribe_computers
 from precis_se.measures import LEGACY_MEASURANDS
 
 #: A region computer: ``(tree, measure) -> realised value or None`` —
@@ -109,21 +110,14 @@ COMPUTERS: dict[str, Computer] = {
         "electrostatic-potential",
     )
 }
-COMPUTERS.update(
-    {
-        slug: _LazyComputer(slug, table="flow")
-        for slug in (
-            "breakthrough-fraction",
-            "residence-time-t0",
-            "resistance-ratio",
-            "evenness",
-            "outlet-conversion",
-            "outlet-concentration",
-            "wall-flux-fraction",
-            "damkohler",
-        )
-    }
-)
+
+
+def _register_flow_computers(module: str, computers: dict[str, str]) -> None:
+    """Expose declared flow slugs while their implementation stays unloaded."""
+    COMPUTERS.update({slug: _LazyComputer(slug, table="flow") for slug in computers})
+
+
+subscribe_computers(_register_flow_computers)
 COMPUTERS.update({"output-torque": _LazyComputer("output-torque", table="motor")})
 
 

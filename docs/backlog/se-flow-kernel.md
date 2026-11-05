@@ -570,10 +570,11 @@ commit carrying this line; `git log` has the sha.*
        seconds and rebuild count and reports the steps that are both
        expensive and often invalidated, so a bad order is visible;
        `out.search` prints the report with the search summary.
-     - **Container-only.** An LRU over step snapshots, in-process, with
-       a byte cap; never Postgres (host runs differ: K5). Only the final
-       build's trace and the search summary are stored (structure-workspaces
-       §Construction traces, Storage).
+     - **Step cache.** In the container, an in-process LRU over step
+       snapshots with a byte cap; a host run may keep a disk cache in
+       `scratch/cache/` (K5). Snapshots never reach Postgres or the
+       manifest. Only the final build's trace and the search summary are
+       stored (structure-workspaces §Construction traces, Storage).
      - **Later, not v1:** incremental evaluation under the same keys
        (slice 4c).
    - **`precis_geom.optimize`** — search tooling over `evaluate`:
@@ -747,9 +748,11 @@ commit carrying this line; `git log` has the sha.*
      rebuild count into the search summary and the run echo names the
      steps that are both expensive and frequently invalidated; a
      fixture with a volatile step placed under a stable one flags it.
-   - **Container-only.** Step snapshots never reach the manifest or
-     Postgres (the stored trace carries only the final build's frames);
-     the LRU evicts under its byte cap and the build still completes.
+   - **Step cache.** Step snapshots stay in-process in the container;
+     a host run may cache them on disk in `scratch/cache/`. They never
+     reach the manifest or Postgres (the stored trace carries only the
+     final build's frames). The LRU evicts under its byte cap and the
+     build still completes.
    - **Heavy macro case.** On a filleted-bracket fixture (base, pads,
      clearance holes, ribs, fillets — the se-native-fields §Bracket
      shape built with `pg`, no solver), a rib edit rebuilds the rib
@@ -854,8 +857,9 @@ slices 1–2 and precede se-native-fields slice 1 (ranked in
   build it in. Contract: slice 4b §Design representation.
 - 4a end-to-end before `run` exists: the stand-in rule in slice 4a
   §End to end.
-- Multiphysics runs in parallel through the seam slice
-  ([se-multiphysics](se-multiphysics.md) §Seam slice), not as a chain.
+- Multiphysics runs in parallel through
+  `src/precis_flow/physics.py::PHYSICS`, subject to
+  [se-multiphysics](se-multiphysics.md) §Combination rule.
 - Wave 1 go.
 
 ## Open questions log
@@ -875,10 +879,10 @@ until it moves into the contract.
 - **K4 `precis.cad.patch` order.** The contract moves the resolver in 4b.
   [se-native-fields](se-native-fields.md) slice 1 lists the same move and
   runs after 4b, so its row needs to say the move is already done.
-- **K5 Step cache on host runs.** Reto's 2026-10-23 ruling says in-container
-  LRU only. `src/precis_geom/steps.py::_backend` also keeps a disk cache in
-  `scratch/cache/` on a host run. Open for Reto: amend the ruling or change
-  the code. Never Postgres holds either way.
+- **K5 Step cache on host runs — ruled (Reto, 2026-11-04).** The cache is
+  in-process in the container; a host run may keep the disk cache in
+  `scratch/cache/` (`src/precis_geom/steps.py::_backend`). Step snapshots
+  never reach Postgres or the manifest.
 
 ## Explicitly NOT in scope
 

@@ -543,7 +543,7 @@ def _vet_physics_measures(
     with ``next=`` here so nothing reaches the op layer malformed. An
     evenness measure sits on ``evenness_region`` — the region ``evaluate``
     scored — and anything else on its own ``datum``, default the outlet."""
-    from precis_geom.physics import FLOW_MEASURANDS, STRENGTHS
+    from precis_geom.physics import MEASURANDS, STRENGTHS
 
     if raw is None:
         return []
@@ -558,7 +558,7 @@ def _vet_physics_measures(
             f"{MAX_WS_PHYSICS_MEASURES} measures-per-row cap",
             next=f"keep at most {MAX_WS_PHYSICS_MEASURES} measures on one "
             "out.physics row — there are only "
-            f"{len(FLOW_MEASURANDS)} flow measurands",
+            f"{len(MEASURANDS['flow'])} flow measurands",
         )
     out: list[dict[str, Any]] = []
     names: set[str] = set()
@@ -568,11 +568,11 @@ def _vet_physics_measures(
             raise BadInput(f"manifest {mw}: must be an object", next=_PHYSICS_NEXT)
         _unknown_keys(mm, _PHYSICS_MEASURE_KEYS, mw)
         slug = str(mm.get("measurand") or "").strip()
-        if slug not in FLOW_MEASURANDS:
+        if slug not in MEASURANDS["flow"]:
             raise BadInput(
                 f"manifest {mw}: measurand {mm.get('measurand')!r} is not an "
                 "evaluate(['flow']) outcome",
-                options=list(FLOW_MEASURANDS),
+                options=list(MEASURANDS["flow"]),
             )
         name = str(mm.get("name") or slug).strip()
         if "." in name:

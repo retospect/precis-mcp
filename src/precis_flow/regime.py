@@ -43,11 +43,19 @@ any ``Pe·eps`` and is the reference in the mixed ``wall_damkohler`` band,
 where the depth average drops the O(Da_w) dispersion shift).
 ``species_solver`` names which solver the card admits for —
 ``'lagrangian'`` makes the taylor line a route note, never a refusal.
+
+Additional physics register their line builder and input names through
+:func:`register_group`. The card snapshots each group's lines, so a later
+registration cannot change an already computed card. ``species`` remains
+a named attribute for existing callers; every group participates in
+``lines``, ``ok`` and ``failures``.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 G0 = 9.80665  # standard gravity, m/s^2
 
@@ -71,6 +79,35 @@ class RegimeLine:
     holds_when: str  # e.g. "<= 0.1"
     otherwise: str  # what a failure means
     applicable: bool = True
+
+
+@dataclass(frozen=True)
+class RegimeGroup:
+    """One physics' line builder and the physical inputs it consumes.
+
+    Builders receive keyword arguments for exactly ``inputs``. Existing
+    ``from_physical`` arguments are available by name; additional registered
+    inputs default to ``None`` when omitted. A builder returns an empty tuple
+    when its physics has no applicable lines.
+    """
+
+    inputs: tuple[str, ...]
+    build: Callable[..., tuple[RegimeLine, ...]]
+
+
+REGIME_GROUPS: dict[str, RegimeGroup] = {}
+
+
+def register_group(
+    name: str,
+    *,
+    inputs: tuple[str, ...],
+    build: Callable[..., tuple[RegimeLine, ...]],
+) -> None:
+    """Register an additional card group without importing its solver."""
+    if name in REGIME_GROUPS:
+        raise ValueError(f"regime group {name!r} is already registered")
+    REGIME_GROUPS[name] = RegimeGroup(inputs, build)
 
 
 def _line(
@@ -126,6 +163,9 @@ class RegimeCard:
     #: species input was supplied; ``peclet`` above is the group's fifth
     #: line and stays at top level for slice-1 compatibility.
     species: tuple[RegimeLine, ...] = ()
+    #: Other registered groups, in registration order. Species keeps its
+    #: historical field above, avoiding a second copy of its lines here.
+    groups: tuple[tuple[str, tuple[RegimeLine, ...]], ...] = ()
 
     @property
     def lines(self) -> tuple[RegimeLine, ...]:
@@ -137,6 +177,7 @@ class RegimeCard:
             self.peclet,
             self.knudsen,
             *self.species,
+            *(line for _name, lines in self.groups for line in lines),
         )
 
     @property
@@ -196,6 +237,7 @@ class RegimeCard:
         n_walls: int = 2,
         apparent_order: float | None = None,
         species_solver: str | None = None,
+        **physics_inputs: Any,
     ) -> RegimeCard:
         """Compute the card for a physical case (SI units throughout).
 
@@ -212,7 +254,19 @@ class RegimeCard:
         line stays a route note and never blocks ``ok``; ``'eulerian'``
         gates on ``Pe·ε ≤ 0.1``; ``'lagrangian'`` is valid for any
         ``Pe·ε``.
+
+        Additional keyword inputs must be declared by a registered
+        :class:`RegimeGroup`; misspellings refuse instead of disappearing.
         """
+        registered_inputs = {
+            key for group in REGIME_GROUPS.values() for key in group.inputs
+        }
+        unknown = sorted(set(physics_inputs) - registered_inputs)
+        if unknown:
+            raise ValueError(
+                f"unknown regime input(s): {', '.join(unknown)} — "
+                "register the physics group and its inputs first"
+            )
         if dp is not None and u0 is not None:
             raise ValueError("state exactly one of dp or u0")
         if L <= 0 or h0 <= 0 or mu <= 0 or rho <= 0:
@@ -288,16 +342,27 @@ class RegimeCard:
                 "knudsen", 0.01, "free-molecular: the nano propagator, not this kernel"
             )
 
-        species = _species_lines(
-            L=L,
-            h0=h0,
-            u0=u0,
-            molecular_d=molecular_d,
-            k_s=k_s,
-            n_walls=n_walls,
-            apparent_order=apparent_order,
-            species_solver=species_solver,
-        )
+        inputs = {
+            "L": L,
+            "h0": h0,
+            "mu": mu,
+            "rho": rho,
+            "dp": dp,
+            "u0": u0,
+            "particle_d": particle_d,
+            "rho_p": rho_p,
+            "molecular_d": molecular_d,
+            "mean_free_path": mean_free_path,
+            "k_s": k_s,
+            "n_walls": n_walls,
+            "apparent_order": apparent_order,
+            "species_solver": species_solver,
+            **physics_inputs,
+        }
+        groups = {
+            name: group.build(**{key: inputs.get(key) for key in group.inputs})
+            for name, group in REGIME_GROUPS.items()
+        }
 
         return cls(
             L=L,
@@ -309,7 +374,8 @@ class RegimeCard:
             gravity=gravity,
             peclet=peclet,
             knudsen=knudsen,
-            species=species,
+            species=groups.pop("species", ()),
+            groups=tuple(groups.items()),
         )
 
 
@@ -451,3 +517,19 @@ def _species_lines(
             )
         )
     return tuple(out)
+
+
+register_group(
+    "species",
+    inputs=(
+        "L",
+        "h0",
+        "u0",
+        "molecular_d",
+        "k_s",
+        "n_walls",
+        "apparent_order",
+        "species_solver",
+    ),
+    build=_species_lines,
+)

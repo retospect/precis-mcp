@@ -42,6 +42,7 @@ decoupled from the step size). ``t* = t / t0`` counts in transit times.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
 
@@ -56,6 +57,25 @@ EXIT_FRACTION = 0.95  # stop once this fraction is resolved (broke OR exited)
 MAX_STEPS = 4000  # safety cap only; normal stop is EXIT_FRACTION
 STUCK_PATIENCE = 50  # consecutive near-stationary steps before "trapped"
 STUCK_SPEED_FRAC = 1e-3  # "stationary" = speed below this * char_speed
+
+
+class CellProfile(Protocol):
+    """A local horizontal speed multiplier at each particle's gap fraction.
+
+    A physics owns its per-cell coefficient fields and samples them at
+    ``(x_star, y_star)`` (for example with :func:`_bilinear`). Return an
+    array with the same shape as ``psi``. The profile's depth average is
+    one, so ``Field`` still carries the depth-averaged velocity. As with
+    the built-in parabolic profile, the vertical mean field is unchanged.
+    """
+
+    def __call__(
+        self,
+        domain: Domain,
+        x_star: np.ndarray,
+        y_star: np.ndarray,
+        psi: np.ndarray,
+    ) -> np.ndarray: ...
 
 
 @dataclass(frozen=True)
@@ -193,7 +213,12 @@ def _seed_positions(
     return np.column_stack([x, y, b + frac * h])
 
 
-def _velocity(field: Field, pos: np.ndarray, profile: str = "plug") -> np.ndarray:
+def _velocity(
+    field: Field,
+    pos: np.ndarray,
+    profile: str = "plug",
+    cell_profile: CellProfile | None = None,
+) -> np.ndarray:
     """3-D reduced mean velocity (n, 3) at particle positions.
 
     ``profile='plug'`` advects every particle horizontally at the depth-averaged
@@ -212,7 +237,18 @@ def _velocity(field: Field, pos: np.ndarray, profile: str = "plug") -> np.ndarra
     u_dot_gradb = ux * bx + uy * by
     psi = np.clip((z - b) / np.where(h > 1e-9, h, 1.0), 0.0, 1.0)
     w = u_dot_gradb * (1.0 - psi)
-    if profile == "parabolic":
+    if cell_profile is not None:
+        shear = np.asarray(
+            cell_profile(field.domain, pos[:, 0], pos[:, 1], psi), dtype=float
+        )
+        if shear.shape != psi.shape or not np.all(np.isfinite(shear) & (shear >= 0)):
+            raise ValueError(
+                "trace: cell_profile must return one finite, non-negative "
+                "multiplier per particle"
+            )
+        ux = ux * shear
+        uy = uy * shear
+    elif profile == "parabolic":
         shear = 6.0 * psi * (1.0 - psi)
         ux = ux * shear
         uy = uy * shear
@@ -243,6 +279,8 @@ def trace(
     epsilon: float | None = None,
     walls: dict[str, float | np.ndarray] | None = None,
     max_steps: int = MAX_STEPS,
+    *,
+    cell_profile: CellProfile | None = None,
 ) -> Paths:
     """Advect the swarm and record first plane crossings.
 
@@ -259,6 +297,11 @@ def trace(
     horizontal advection changes — ``d_v_star`` and the vertical model are
     untouched.
 
+    ``cell_profile`` overrides the horizontal multiplier with a per-cell
+    law; it receives the domain, particle coordinates and local gap
+    fractions. Its default ``None`` keeps the plug/parabolic arithmetic
+    unchanged. The vertical drift remains the depth-averaged model above.
+
     ``record_frames > 0`` additionally returns ``Paths.frames``, a float32
     ``(record_frames, n, 3)`` array of ``(x*, y*, psi)`` at ``frame_t`` =
     ``linspace(0, t*_end, record_frames)`` (a web player consumes it later;
@@ -266,7 +309,7 @@ def trace(
     """
     if profile not in ("plug", "parabolic"):
         raise ValueError(f"profile must be 'plug' or 'parabolic', got {profile!r}")
-    if pe is not None and profile != "parabolic":
+    if pe is not None and profile != "parabolic" and cell_profile is None:
         raise ValueError(
             "trace: pe= needs profile='parabolic' — molecular diffusion on a "
             "plug is not Taylor dispersion (se-multiphysics.md slice 1)"
@@ -351,9 +394,9 @@ def trace(
         p = pos[idx]
 
         # RK2 (midpoint) advection by the mean field.
-        v1 = _velocity(field, p, profile)
+        v1 = _velocity(field, p, profile, cell_profile)
         pmid = p + 0.5 * dt * v1
-        v2 = _velocity(field, pmid, profile)
+        v2 = _velocity(field, pmid, profile, cell_profile)
         pnew = p + dt * v2
 
         # Stochastic vertical mixing where the floor is deepened:

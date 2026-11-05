@@ -15,6 +15,11 @@ The assembly lives in :mod:`precis_flow.fv` (the shared finite-volume
 operator of se-multiphysics.md slice 1) — this module keeps the velocity,
 floor-gradient and resistance post-processing.
 
+``solve(t_factor=...)`` multiplies the cubic-gap transmissivity and the
+quadratic-gap velocity coefficient by a per-cell dimensionless factor. The
+default leaves both expressions untouched: computing velocity as ``T*/h*``
+would round differently from the original ``h*^2`` path.
+
 Returns the depth-averaged reduced velocity ``U*``, the reduced pressure
 ``p*``, the reduced floor gradient ``grad* b~`` (``b~ = 1 - h*``; the tracer's
 vertical velocity is driven by it — evaluating ``w`` from ``grad* b~``
@@ -94,15 +99,29 @@ def _harmonic(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return np.where(s > 0, 2.0 * a * b / np.where(s > 0, s, 1.0), 0.0)
 
 
-def solve(domain: Domain) -> Field:
-    """Assemble and solve the variable-transmissivity Poisson problem."""
+def solve(domain: Domain, *, t_factor: np.ndarray | None = None) -> Field:
+    """Assemble and solve the variable-transmissivity Poisson problem.
+
+    ``t_factor`` is a positive, finite ``(ny, nx)`` field on inside cells.
+    It scales both ``T* = h*^3`` and ``U* = -h*^2 grad* p*``; outside cells
+    are ignored. ``None`` preserves the original arithmetic exactly.
+    """
     dx = domain.dx_star
     inside = domain.mask
     inlet = domain.ports.inlet
     outlet = domain.ports.outlet
     h = domain.h_star
 
+    if t_factor is not None:
+        t_factor = np.asarray(t_factor, dtype=float)
+        if t_factor.shape != domain.shape:
+            raise ValueError("solve: t_factor must have the domain's (ny, nx) shape")
+        if not np.all(np.isfinite(t_factor[inside]) & (t_factor[inside] > 0)):
+            raise ValueError("solve: t_factor must be finite and > 0 inside")
+
     t_field = np.where(inside, h**3, 0.0)
+    if t_factor is not None:
+        t_field = np.where(inside, t_field * t_factor, 0.0)
     p = fv.elliptic(domain, t_field, [(inlet, 1.0), (outlet, 0.0)])
 
     # Depth-averaged reduced velocity U* = -h*^2 grad* p*.
@@ -110,6 +129,8 @@ def solve(domain: Domain) -> Field:
     dpdx = _masked_gradient(p_for_grad, inside, dx, axis=1)
     dpdy = _masked_gradient(p_for_grad, inside, dx, axis=0)
     coef = np.where(inside, h**2, 0.0)
+    if t_factor is not None:
+        coef = np.where(inside, coef * t_factor, 0.0)
     ux = -coef * dpdx
     uy = -coef * dpdy
 
