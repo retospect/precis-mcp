@@ -416,18 +416,13 @@ def _review(args: argparse.Namespace, store: Store) -> None:
 
 def _stats(args: argparse.Namespace, store: Store) -> None:
     from precis.graph.garden.consumer import reject_reasons
-    from precis.graph.garden.proposals import pending_proposals
     from precis.graph.garden.reviewer import agreement_stats
+    from precis.graph.garden.smells import MEMORY_DETECTORS, pending_detector_counts
 
-    pending: dict[str, int] = {}
-    for p in pending_proposals(store, limit=1000):
-        pending[p.detector] = pending.get(p.detector, 0) + 1
+    pending = pending_detector_counts(store)
     stats = agreement_stats(store)
     reasons = reject_reasons(store)
-    detectors = sorted(set(stats) | set(pending) | set(reasons))
-    if not detectors:
-        print("no garden proposals or reviewer rows")
-        return
+    detectors = sorted(set(MEMORY_DETECTORS) | set(stats) | set(pending) | set(reasons))
     for det in detectors:
         s = stats.get(det, {})
         rate = f"{s['rate']:.0%}" if s.get("sampled") else "—"

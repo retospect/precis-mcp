@@ -281,7 +281,8 @@ hit keeps a slot even with no word match, recently touched nodes rank a
 little higher, and when no gotcha made the page the best matching
 `section:gotchas` node is added as one extra line. Shell form: `precis memory
 index --q "<task>" --k 5`. Besides `index`, `count` and the default,
-memory search takes `view='reads'` and `view='rulings'` (below); any other
+memory search takes `view='reads'`, `view='rulings'` and `view='smells'`
+(below); any other
 `view=` is refused.
 
 ## Rank memories by reads or body size
@@ -312,6 +313,26 @@ An oversized page refuses with a smaller-page restart call; no partial page
 is returned. A single oversized row requires a larger result byte budget.
 Omit `q=`: nonblank text queries, `mode=`, `scope=`, `status=` and date windows
 are refused on this inventory view (`q='*'` means all).
+
+## Read garden proposals and detector statistics
+
+`get(kind='memory', id='me73', view='smells')` groups existing garden
+proposals by detector: action, evidence, verdict and UTC proposal/decision
+times. It includes all open proposals and decisions from the last 30 days.
+No proposals does not mean the node passed review.
+
+`search(kind='memory', view='smells', args={'under': 'me<hub>'})` rolls
+the hub's live descendants up by detector and `section:<type>`, with pending,
+recently decided and node counts. `tags=` narrows further; omit `under`
+for all live memories. This is an aggregate, so `q`/`mode`/`scope`/`status`
+and pages beyond 1 are refused. Open a member with the single-node view
+to read its evidence.
+
+`precis garden stats` reports pending, sampled and Opus approval agreement
+per detector, including zero rows for all nine memory detectors. A zero
+sample count means no agreement measurement yet. These reads create no
+proposals or reviews. The `kg-review:<model>:<date>:ok` stamp and `reviewed:`
+line await the type checklist (gr560762).
 
 ## Read a memory I have the id for
 ## Open a memory by id

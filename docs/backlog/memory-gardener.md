@@ -287,8 +287,13 @@ third, the entity normal form last. `blocked-by` edges carry the order.
    (medium; after 4; blocks 7, 8, 9, 12).
 7. gr560763 — `review_due`, `title_shape`, `negative_undated` detectors
    (medium; after 6).
-8. gr560764 — `view='smells'`, per-detector stats, the `kg-review` ok
-   stamp on a clean pass (small; after 6).
+8. gr560764 — remaining: the `kg-review` ok stamp and `reviewed:` line
+   on a clean pass, blocked by gr560762's type checklist. Read-only
+   `view='smells'` and per-detector stats are implemented by
+   `src/precis/handlers/_memory_smells.py::render_memory_smells` and
+   `src/precis/cli/garden.py::_stats` (td564337): all open proposals plus
+   decisions from the last 30 days; hub totals by detector and section
+   type; zero rows for memory detectors without proposals. No writes.
 9. gr560765 — `source_drift` and `entity_claim_stale` detectors (medium;
    after 6).
 11. gr560767 — host facts onto `machine` refs, the spark pass (small;

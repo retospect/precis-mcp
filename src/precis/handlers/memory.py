@@ -148,6 +148,7 @@ from precis.handlers._attribution import (
 from precis.handlers._eye import EYE_LADDER, is_eye_view
 from precis.handlers._interpret import interpreted
 from precis.handlers._memory_shape import ShapeAudit, audit_shape
+from precis.handlers._memory_smells import render_memory_smells, render_smell_rollup
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import (
     _BASE_VIEWS,
@@ -694,6 +695,12 @@ class MemoryHandler(NumericRefHandler):
 
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=processing_report(self.store, ref.id).render())
+        if view == "smells" and concrete:
+            if isinstance(id, list):
+                return self._get_batch(id, view=view)
+            return render_memory_smells(
+                self.store, self._resolve_live_ref(self._coerce_id(id))
+            )
         if view == "members" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return self._render_members(ref, offset=offset, depth=depth)
@@ -3381,6 +3388,19 @@ class MemoryHandler(NumericRefHandler):
             )
         if sort is not None:
             kw["sort"] = sort
+        if view == "smells":
+            return render_smell_rollup(
+                self.store,
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
+                tags=tags,
+                under=under,
+                q=q,
+                page=page,
+                mode=mode,
+                scope=scope,
+                status=status,
+            )
         if view == "rulings":
             return self._rulings_view(
                 q=q,
