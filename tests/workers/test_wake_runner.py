@@ -53,9 +53,10 @@ def test_every_wake_kind_has_a_selector() -> None:
 def test_cancel_override_select_is_present() -> None:
     """The cancel-override selector exists separately from the
     four wake-kind selectors. ``STATUS:cancel_requested`` on a
-    waiting job re-queues unconditionally so the coordinator's
-    cancel-poll fires on its next slice."""
+    parked job is cancelled in place (gr570507; the real-PG tests
+    below), never re-queued."""
     assert callable(wake_runner._wake_cancel_override)
+    assert callable(wake_runner._cancel_parked)
 
 
 def test_tag_pattern_glob_handling_documented() -> None:
@@ -393,6 +394,80 @@ def test_at_time_requeue_echoes_the_park_why(store: Store) -> None:
     assert any(
         "re-queued (at_time" in t and "local reader lane saturated" in t for t in texts
     )
+
+
+def _events(store: Store, ref_id: int) -> list[str]:
+    with store.pool.connection() as conn:
+        return [
+            str(r[0])
+            for r in conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'job_event'",
+                (ref_id,),
+            ).fetchall()
+        ]
+
+
+def test_cancel_on_a_parked_job_cancels_it_in_place(store: Store) -> None:
+    """gr570507: ``STATUS:cancel_requested`` on a lane-parked job was
+    re-queued — ``queued`` replaced the cancel (``STATUS:`` is
+    closed-prefix) and the next claim launched the job as if never
+    cancelled. Nobody holds a parked job (``park_job_until`` released its
+    reservation, ``submit_started_at`` was cleared, no compute handle), so
+    the wake pass cancels it where it sits and echoes the park's why."""
+    job = _mk_job(
+        store,
+        parent_id=None,
+        status="cancel_requested",
+        meta={"job_type": "run_slice", "executor": "ssh_node"},
+    )
+    with store.pool.connection() as conn:
+        set_meta(
+            conn,
+            job,
+            wake_when={
+                "kind": "at_time",
+                "payload": {"ts": 2**40, "why": "lane 'claude-sub' at its cap"},
+            },
+            compute_handle=None,
+            submit_started_at=None,
+        )
+        conn.commit()
+
+    result = wake_runner.run_wake_pass(store)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_of(store, job) == "cancelled"
+    texts = _events(store, job)
+    assert any("cancelled while parked" in t and "claude-sub" in t for t in texts)
+    assert not any("re-queued" in t for t in texts)
+
+
+def test_cancel_on_a_launched_job_is_left_to_its_executor(store: Store) -> None:
+    """A job that parked once keeps ``meta.wake_when`` after it launches.
+    With a compute handle the executor's own cancel drive owns the stop
+    (``ssh_node._cancelling_jobs`` TERM/KILLs the process); the wake pass
+    must neither cancel nor re-queue it — a re-queue would launch a
+    second compute beside the first."""
+    job = _mk_job(
+        store,
+        parent_id=None,
+        status="cancel_requested",
+        meta={"job_type": "run_slice", "executor": "ssh_node"},
+    )
+    with store.pool.connection() as conn:
+        set_meta(
+            conn,
+            job,
+            wake_when={"kind": "at_time", "payload": {"ts": 0}},
+            compute_handle={"pid": 4242, "pgid": 4242},
+        )
+        conn.commit()
+
+    result = wake_runner.run_wake_pass(store)
+
+    assert result == {"claimed": 0, "ok": 0, "failed": 0}
+    assert _status_of(store, job) == "cancel_requested"
+    assert _events(store, job) == []
 
 
 def test_woken_loop_is_not_reaped_as_a_reboot_orphan(store: Store) -> None:

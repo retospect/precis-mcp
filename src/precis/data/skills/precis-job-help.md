@@ -516,6 +516,7 @@ failed rows).
 tag(kind="job", id=101, add=["STATUS:cancel_requested"])
 # worker SIGTERMs at the next safe point; final tag is STATUS:cancelled
 # a still-queued (never claimed) job goes straight to STATUS:cancelled
+# a parked job (STATUS:waiting_*) is cancelled where it sits by the wake runner
 ```
 
 Agents drive only these `tag` edges: queued|yielded ->

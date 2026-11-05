@@ -17,8 +17,15 @@ Five wake conditions, each a separate SELECT bounded by the pass
    for ``ask-user:*`` human-approval pauses.
 4. ``tag_added`` — the named tag (exact match) is present.
 5. ``cancel_override`` — a ``STATUS:cancel_requested`` row that
-   also has ``meta.wake_when`` set. Re-queues unconditionally so
-   the coordinator's cancel-poll fires on its next slice.
+   also has ``meta.wake_when`` set and no live compute (no
+   ``compute_handle``, no ``submit_started_at``). Nobody holds a parked
+   job, so it is cancelled where it sits. It used to be re-queued "so
+   the coordinator's cancel-poll fires on its next slice", but
+   ``STATUS:`` is closed-prefix: ``queued`` replaced the cancel and the
+   next claim ran the job as if never cancelled (gr570507: a
+   lane-parked run_slice launched a 2 h measure after its cancel). A
+   row with a compute handle is its executor's — ``ssh_node``'s cancel
+   drive stops the process — and is left alone here.
 
 **Child-deadlock deadline (a sixth, distinct lease-epoch reclaim step).** A ``children_done`` park's
 wake condition can never fire at all if one of its children never reaches
@@ -54,6 +61,9 @@ from psycopg import Connection
 
 from precis.workers.executors._common import (
     CANCEL_REQUESTED as _CANCEL_REQUESTED,
+)
+from precis.workers.executors._common import (
+    CANCELLED as _CANCELLED,
 )
 from precis.workers.executors._common import (
     QUEUED as _QUEUED,
@@ -328,16 +338,20 @@ def _wake_tag_added(conn: Connection, *, limit: int) -> list[int]:
 
 
 def _wake_cancel_override(conn: Connection, *, limit: int) -> list[int]:
-    """Find waiting jobs whose ``STATUS:cancel_requested`` is set.
+    """Find parked jobs whose ``STATUS:cancel_requested`` is set.
 
-    Cancel pre-empts any other wake condition. Re-queues the job
-    so the coordinator's cancel-poll fires on its next slice and
-    transitions to ``STATUS:cancelled``.
+    Cancel pre-empts any other wake condition. A hit is cancelled in
+    place by :func:`_cancel_parked`, never re-queued: ``STATUS:`` is
+    closed-prefix, so the re-queue to ``queued`` erased the cancel and
+    the next claim launched the job (gr570507).
 
-    Note the STATUS::* tag is closed-prefix — setting
-    ``STATUS:cancel_requested`` replaces ``STATUS:waiting_*``. The
-    ``meta.wake_when`` field is what marks this row as having
-    been paused by the coordinator.
+    ``meta.wake_when`` marks a row that was parked (a coordinator yield,
+    ``park_job_until``); nothing clears it, so a job that parked once and
+    then launched still carries it. The compute filter keeps such a row
+    out: with ``compute_handle`` or a live ``submit_started_at`` an
+    executor holds the compute and its own cancel drive
+    (``ssh_node._cancelling_jobs``) owns the stop. ``set_meta(key=None)``
+    leaves a JSON null behind, hence ``->>`` rather than ``?``.
     """
     rows = conn.execute(
         """
@@ -352,6 +366,8 @@ def _wake_cancel_override(conn: Connection, *, limit: int) -> list[int]:
                     AND t.value = %s
                )
            AND r.meta ? 'wake_when'
+           AND r.meta->>'compute_handle' IS NULL
+           AND r.meta->>'submit_started_at' IS NULL
          ORDER BY r.ref_id
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
@@ -457,6 +473,37 @@ def _requeue(store: Store, ref_id: int, reason: str) -> None:
             f"wake_runner: re-queued ({reason}{' — ' + why if why else ''})",
             conn=conn,
         )
+        conn.commit()
+
+
+def _cancel_parked(store: Store, ref_id: int) -> None:
+    """Transition a parked ``STATUS:cancel_requested`` job to
+    ``STATUS:cancelled`` + audit chunk (gr570507).
+
+    The executors' own "cancel requested before run" write, done here
+    because a parked row never reaches an executor: event chunk, then the
+    terminal status (``set_status`` releases the job reservation). No
+    release hook runs — a parked job holds no lease on its work
+    (``park_job_until`` released the reservation; a run_slice park happens
+    before the todo is claimed) — the same as the coordinator's
+    slice-boundary cancel. The park's ``wake_when.payload.why`` is echoed
+    like a re-queue's, so the record says what the job was waiting for
+    when it was cancelled.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->'wake_when'->'payload'->>'why' FROM refs WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchone()
+        why = str(row[0]).strip()[:200] if row and row[0] else ""
+        _append_chunk(
+            store,
+            ref_id,
+            "job_event",
+            f"wake_runner: cancelled while parked{' — ' + why if why else ''}",
+            conn=conn,
+        )
+        _set_status(store, ref_id, _CANCELLED, conn=conn)
         conn.commit()
 
 
@@ -604,12 +651,16 @@ def run_wake_pass(store: Store, *, limit: int = 16) -> dict[str, int]:
 
     for ref_id, label in ready:
         try:
-            _requeue(store, ref_id, label)
+            if label == "cancel":
+                _cancel_parked(store, ref_id)
+            else:
+                _requeue(store, ref_id, label)
             ok += 1
         except Exception:  # pragma: no cover — defensive
             failed += 1
             log.warning(
-                "wake_runner: re-queue of job %d failed",
+                "wake_runner: %s of job %d failed",
+                "cancel" if label == "cancel" else "re-queue",
                 ref_id,
                 exc_info=True,
             )

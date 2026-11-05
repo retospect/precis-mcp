@@ -61,8 +61,8 @@ class WakeWhen:
 
     The cancel-override case (``STATUS:cancel_requested`` set on
     a waiting job) lives outside this contract: the wake_runner
-    re-queues such jobs unconditionally so the coordinator can
-    observe the cancel on its next slice.
+    cancels such a job where it sits — nobody holds a parked job, and
+    re-queuing it erased the cancel (gr570507).
     """
 
     kind: WakeKind
