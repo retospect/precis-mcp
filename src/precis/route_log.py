@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from precis.utils.env import env_flag
@@ -254,6 +254,23 @@ def record_call(rec: LlmCallRecord, *, store: Store | None = None) -> str | None
     if st is None:
         return None
     try:
+        from precis.utils.llm.recipes import resolve
+
+        demand = resolve(
+            rec.source or "",
+            rec.features.get("task_kind"),
+            rec.features.get("consequence"),
+            rec.features.get("privacy_class"),
+        )
+        features = dict(rec.features)
+        for key, value in (
+            ("task_kind", demand.task_kind),
+            ("task_kind_origin", demand.origin),
+            ("consequence", demand.consequence),
+            ("privacy_class", demand.privacy_class),
+        ):
+            features.setdefault(key, value)
+        rec = replace(rec, features=features)
         return _write(st, rec)
     except Exception:
         log.debug("route_log: record_call failed", exc_info=True)

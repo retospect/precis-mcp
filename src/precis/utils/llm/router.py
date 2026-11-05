@@ -1430,6 +1430,10 @@ class LlmRequest:
     #: Caller label ("dream", "review:structural", "chase:verify", ...) — the
     #: categorical feature the route-log keys on. Free-form; empty if unset.
     source: str = ""
+    #: Demand metadata only; deliberately excluded from request serialization.
+    task_kind: str | None = None
+    consequence: str | None = None
+    privacy_class: str = "default"
     #: Caller-owned JSON telemetry, merged into the call-log features. Omitted
     #: from serialized requests when unset, preserving existing request hashes.
     features: dict[str, Any] | None = None
@@ -1506,6 +1510,14 @@ class LlmRequest:
     #: :func:`route` has no streaming path and ignores it. ``None`` ⇒ no
     #: callback, and :func:`dispatch_async` delegates to sync ``route``.
     on_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+
+    def __post_init__(self) -> None:
+        if self.task_kind is not None and not isinstance(self.task_kind, str):
+            raise ValueError("task_kind must be a string or None")
+        if self.consequence not in (None, "low", "medium", "high"):
+            raise ValueError("consequence must be low, medium, high or None")
+        if self.privacy_class not in ("default", "local-only"):
+            raise ValueError("privacy_class must be default or local-only")
 
 
 class LlmProvider(Protocol):
@@ -4673,6 +4685,10 @@ def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[st
         "has_mcp": bool(req.mcp_config),
         "max_tokens": req.max_tokens,
     }
+    for key in ("task_kind", "consequence", "privacy_class"):
+        value = getattr(req, key)
+        if value is not None:
+            feats.setdefault(key, value)
     if req.degraded_from:
         feats["degraded_from"] = req.degraded_from
     if req.keyword_rule:

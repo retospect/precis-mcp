@@ -94,6 +94,7 @@ log = logging.getLogger(__name__)
 #: in dependency order below anyway, as a human-readable contract, in
 #: case that pg_dump behaviour ever changes.
 SEED_TABLES: tuple[str, ...] = (
+    "task_recipes",
     "actors",
     "kinds",
     "relations",

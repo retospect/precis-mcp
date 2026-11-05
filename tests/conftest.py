@@ -1637,6 +1637,7 @@ def chunk_handle(store: Store, slug: str, *, kind: str = "paper", ord: int = 0) 
 # vocabulary every test relies on. CASCADE handles FK ordering in one shot.
 _PRESERVE_TABLES: frozenset[str] = frozenset(
     {
+        "task_recipes",
         # Migrations ledger — never data.
         "_migrations",
         # Seeded vocabulary (populated by migrations; tests depend on it).

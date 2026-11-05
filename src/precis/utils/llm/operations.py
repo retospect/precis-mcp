@@ -485,6 +485,13 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
     ),
 }
 
+LLM_OPERATIONS["llm:requirement-judge"] = OpDefault(
+    tier=Tier.MEDIUM,
+    model=None,
+    label="Requirement judge",
+    description="Infers capability requirements without choosing a model.",
+)
+
 LLM_OPERATIONS["dtree:claim_check"] = OpDefault(
     tier=Tier.BIG,
     model=None,

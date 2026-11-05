@@ -1,0 +1,109 @@
+"""Cached demand metadata, independent of routing and request hashes.
+
+Recipes share the route logger's boot-time store binding. A missing database or
+table yields an empty cache so telemetry cannot prevent an LLM call.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from time import monotonic
+from typing import Any, NamedTuple
+
+from precis import route_log
+
+
+@dataclass(frozen=True)
+class Recipe:
+    """One source's declared demand; none of these fields steer routing yet."""
+
+    source: str
+    task_kind: str
+    lane_class: str = "none"
+    consequence: str = "medium"
+    classify: bool = False
+    requirement: dict[str, Any] = field(default_factory=dict)
+    difficulty_prior: int | None = None
+    validators: tuple[str, ...] = ()
+
+
+class Resolution(NamedTuple):
+    """Effective demand and task-kind provenance."""
+
+    task_kind: str
+    consequence: str
+    privacy_class: str
+    origin: str
+
+
+_TTL = 300.0
+_cache: dict[str, Recipe] = {}
+_expires = 0.0
+_store_identity: object = None
+
+
+def _rows() -> dict[str, Recipe]:
+    global _cache, _expires, _store_identity
+    store = route_log.bound_store()
+    now = monotonic()
+    if store is _store_identity and now < _expires:
+        return _cache
+    rows: dict[str, Recipe] = {}
+    if store is not None:
+        try:
+            with store.pool.connection() as conn:
+                for row in conn.execute(
+                    "SELECT source, task_kind, lane_class, consequence, classify, "
+                    "requirement, difficulty_prior, validators FROM task_recipes"
+                ).fetchall():
+                    recipe = Recipe(
+                        source=row[0],
+                        task_kind=row[1],
+                        lane_class=row[2],
+                        consequence=row[3],
+                        classify=row[4],
+                        requirement=row[5],
+                        difficulty_prior=row[6],
+                        validators=tuple(row[7]),
+                    )
+                    rows[recipe.source] = recipe
+        except Exception:
+            rows = {}
+    _cache, _expires, _store_identity = rows, now + _TTL, store
+    return rows
+
+
+def lookup(source: str) -> Recipe | None:
+    """Exact, one trailing :local inheritance, then longest prefix family."""
+    rows = _rows()
+    if source in rows:
+        return rows[source]
+    base = source.removesuffix(":local")
+    if base in rows:
+        return rows[base]
+    prefixes = [key for key in rows if key.endswith(":") and base.startswith(key)]
+    return rows[max(prefixes, key=len)] if prefixes else None
+
+
+def resolve(
+    source: str,
+    caller_task_kind: str | None = None,
+    caller_consequence: str | None = None,
+    caller_privacy_class: str | None = None,
+) -> Resolution:
+    """Caller values win independently; unknown sources default to medium."""
+    recipe = lookup(source)
+    return Resolution(
+        caller_task_kind
+        if caller_task_kind is not None
+        else recipe.task_kind
+        if recipe
+        else f"unknown.{source}",
+        caller_consequence
+        if caller_consequence is not None
+        else recipe.consequence
+        if recipe
+        else "medium",
+        caller_privacy_class if caller_privacy_class is not None else "default",
+        "caller" if caller_task_kind is not None else "recipe" if recipe else "unknown",
+    )

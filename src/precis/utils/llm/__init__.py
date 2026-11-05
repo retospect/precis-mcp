@@ -182,6 +182,13 @@ The ``llm`` model catalog (ships dark) layers on this seam — facts/writer in
   judges *capability needed*, never picks a model), ``choose_model`` chains
   the two.
 
+Demand metadata (``recipes``) shares the route logger's bound store and uses a
+300-second cache; outages yield an empty cache. Requests carry task kind,
+consequence and privacy without affecting routing, blob policy or request hashes.
+``route_log.record_call`` stamps every writer, including agent-cost records;
+the scheduler's six-hour ``recipe_gap`` scan reports unknown sources with daily
+deduplication rather than writing gripes from the router.
+
 Invariant: empty catalog / nothing-fits ⇒ ``resolve_model(tier_floor)``,
 byte-identical to routing without a catalog.
 """

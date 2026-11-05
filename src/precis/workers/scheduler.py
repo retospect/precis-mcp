@@ -266,6 +266,12 @@ def _run_doctor_tick_mint(store: Store, batch_size: int) -> None:
     log.info("scheduler: minted doctor_tick job for window %s", idem_key)
 
 
+def _run_recipe_gap(store: Store, batch_size: int) -> None:
+    from precis.workers.recipe_gap import run_recipe_gap
+
+    log.info("scheduler: recipe_gap filed=%d", run_recipe_gap(store))
+
+
 def _run_call_errors(store: Store, batch_size: int) -> None:
     """One failed-call mining pass (gr484070): cluster the last 24h of
     rejected-before-work ``tool_calls`` errors and file/bump one gripe
@@ -1016,6 +1022,7 @@ def _over_daily_budget(store: Store, cadence: str) -> bool:
 #: and are gated there, at mint, so marking this cadence too would double-gate
 #: the same spend.
 CADENCES: tuple[Cadence, ...] = (
+    Cadence(name="recipe_gap", interval_s=6 * 3600, run=_run_recipe_gap),
     Cadence(name="cron_tick", interval_s=60, run=_run_cron_tick),
     Cadence(name="watch_poll", interval_s=3600, run=_run_watch_poll),
     # docs/backlog/self-healing-spine.md Layer 2: the liveness-net digest.
