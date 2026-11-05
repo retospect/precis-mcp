@@ -69,7 +69,11 @@ classified (``meta.pr.head_sha`` on the plan root). The subject is the PR
 title made lint-clean (:func:`precis.plans.pr_class.land_subject`) plus
 ``(td<id>)``. Every land ships ``--checked`` (:func:`ship_flag`; a
 pyproject diff selects the contract and import-map tests) unless
-``params.checked`` is ``False``.
+``params.checked`` is ``False``. A checked land the selector refuses with
+FULL (a migration or harness diff: :data:`FULL_SELECTOR_MARK`) relaunches
+once with :func:`full_fallback_flag` — ``--quick``, lint only, the release
+gate on ``/go`` covers it (Reto 2026-11-05, me570388) — without consuming
+an attempt.
 After a green land — of a PR node, or of any slice whose todo carries
 ``meta.pr_close = <n>`` (the "land after fixes" slice) — the PR is closed
 with a comment naming the squash sha (:func:`_gh`, the host's ``gh auth``:
@@ -137,6 +141,23 @@ def ship_flag(params: dict[str, Any]) -> str:
     slice; ``--quick`` is lint only and stays for an operator who asks.
     """
     return "--quick" if params.get("checked") is False else "--checked"
+
+
+#: The ✖ line ``scripts/ship --checked`` dies with when the impacted-tests
+#: selector answers FULL for the diff (a migration or a harness file): the
+#: checked lane cannot run a full selection by design, so the refusal names
+#: the lane, not the branch (jo570215; a builder handed it as a fix request
+#: "repaired" the migration instead, gr570221).
+FULL_SELECTOR_MARK = "the selector answers FULL"
+
+
+def full_fallback_flag() -> str | None:
+    """The flag a FULL-selector refusal relaunches with: ``--quick`` (lint
+    only; the release gate on ``/go`` runs the full suite before deploy —
+    Reto 2026-11-05, me570388) unless ``PRECIS_LAND_FULL_FALLBACK`` is
+    ``off``, which keeps the refusal a red."""
+    value = os.environ.get("PRECIS_LAND_FULL_FALLBACK", "quick").strip().lower()
+    return None if value in ("off", "0", "no", "false") else "--quick"
 
 
 #: Substrings of ship's own refusal lines (``die`` in ``scripts/ship``'s
@@ -1258,6 +1279,34 @@ def poll(ctx: Any, handle: Any) -> bool:
         errors = gate_error_lines(log_text)
         if errors:
             handoff += f"\n\nThe gate's error lines:\n{errors}"
+        fallback = full_fallback_flag()
+        if (
+            fallback
+            and FULL_SELECTOR_MARK in cross
+            and str(handle.get("flag") or ship_flag(params)) != fallback
+        ):
+            # The lane is refused, not the branch: relaunch through the quick
+            # lane (Reto 2026-11-05, me570388). No attempt is consumed and no
+            # builder is asked to fix what the ship said about itself.
+            Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
+            ctx.append_chunk(
+                "job_event",
+                f"land_slice: {cross} — relaunching scripts/ship {fallback} "
+                "(lint only; the release gate on /go runs the full suite)",
+            )
+            fresh = _launch_ship(ctx, tree, fallback, subject, carry=handle)
+            if fresh is None:
+                return True
+            handle.clear()
+            handle.update(fresh)
+            if fresh.get("not_before"):
+                return False  # parked by the preflight; its deferral set the meta
+            ctx.set_meta(
+                compute_handle=fresh,
+                compute_handle_released=False,
+                deadline=_now().timestamp() + wall_seconds(),
+            )
+            return False
         side = refusal_side(cross)
         if side is not None:
             # Main's or the host's state, not the branch's: park and retry

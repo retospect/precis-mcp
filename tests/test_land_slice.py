@@ -680,6 +680,75 @@ def test_poll_red_lint_fails_with_the_cross_line(seams: dict[str, Any]) -> None:
     assert "landed_sha" not in pctx.meta_set
 
 
+FULL_REFUSAL_LOG = (
+    "checked ship (--checked)\n"
+    "2144 passed, 75 skipped, 2 warnings in 205.62s (0:03:25)\n"
+    "\x1b[31m✖ the diff touches the harness/schema — the selector answers FULL, "
+    "which the checked lane cannot run. Land with --quick (lint only; the "
+    "release gate covers it) or a local full gate (--full / --impacted).\x1b[0m\n"
+)
+
+
+def test_poll_full_selector_refusal_relaunches_quick(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Reto 2026-11-05 (me570388, gr570221): a migration or harness diff makes
+    # the selector answer FULL, which --checked cannot run by design. The lane
+    # is refused, not the branch, so the land goes through the quick lane
+    # instead of bouncing the todo to a builder (jo570215 → jo570217 "fixed"
+    # the migration it was told nothing about).
+    monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 1, FULL_REFUSAL_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert pctx.status is None and pctx.failure is None
+    [(first, _kw1), (second, _kw2)] = seams["launch"]
+    assert first[1] == "--checked"
+    assert second[1] == "--quick" and second[2] == SUBJECT
+    assert handle["flag"] == "--quick"
+    assert pctx.meta_set["compute_handle"]["flag"] == "--quick"
+    assert pctx.meta_set["compute_handle_released"] is False
+    tags = store.tag_strings(42)
+    assert not any(t.startswith("attempt:") for t in tags)
+    assert "claimed-by:lane-claude-sub" in tags
+    assert not any(c.startswith("handoff: land FAILED") for c in store.comments(42))
+    events = [t for k, t in pctx.chunks if k == "job_event"]
+    assert any("selector answers FULL" in e and "--quick" in e for e in events)
+
+
+def test_poll_full_selector_refusal_is_red_when_fallback_off(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_LAND_FULL_FALLBACK", "off")
+    store = _Store()
+    store.add_todo(42)
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 1, FULL_REFUSAL_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "selector answers FULL" in (pctx.failure or "")
+    assert len(seams["launch"]) == 1
+
+
+def test_poll_full_selector_refusal_on_quick_does_not_loop(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    store = _Store()
+    store.add_todo(42)
+    ctx, handle = _submit(store, seams)
+    handle["flag"] = "--quick"
+    _finish(handle, 1, FULL_REFUSAL_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert len(seams["launch"]) == 1
+
+
 def test_poll_red_without_a_cross_line_names_the_exit(seams: dict[str, Any]) -> None:
     store = _Store()
     store.add_todo(42)
