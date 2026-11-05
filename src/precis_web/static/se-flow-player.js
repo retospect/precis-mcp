@@ -557,7 +557,7 @@ export async function flowPlayer(opts) {
     draw();
     say(
       `${d.n} particles × ${d.K} frames · profile ${payload.profile} · D_v* ${payload.d_v_star} · ` +
-        `breakthrough ${(payload.breakthrough * 100).toFixed(1)} % · ${((performance.now() - t0) / 1000).toFixed(1)} s`,
+        `rendered swarm breakthrough ${(payload.breakthrough * 100).toFixed(1)} % · ${((performance.now() - t0) / 1000).toFixed(1)} s`,
     );
   }
 

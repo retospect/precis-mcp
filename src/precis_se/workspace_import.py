@@ -2032,9 +2032,8 @@ def import_workspace_run(
         raise persist.design_not_found(store, design)
     # A fork's ref carries no workspace record, but its tree is a copy of
     # what this one's physics record describes.
-    source_physics = (
-        ((ref.meta or {}).get("workspaces") or {}).get(workspace) or {}
-    ).get("physics") or {}
+    source_record = ((ref.meta or {}).get("workspaces") or {}).get(workspace) or {}
+    source_physics = source_record.get("physics") or {}
     if target == "fork":
         fork_slug = f"{design}--{run_job if run_job is not None else workspace}"
         with store.tx() as conn:
@@ -2546,7 +2545,7 @@ def import_workspace_run(
             manifest["physics"],
             physics_solved,
             source_physics,
-            set(prev.get("measures") or []),
+            set(source_record.get("measures") or []),
             declared_measures,
             workspace=workspace,
             result=result,

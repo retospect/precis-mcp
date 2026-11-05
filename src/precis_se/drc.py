@@ -852,6 +852,11 @@ def drc(
     # realised and required); a computer returning nothing is
     # ``measure_uncomputable`` (warn, carrying its reason) rather than a
     # silent pass.
+    from precis_geom.physics import FLOW_MEASURANDS
+    from precis_se.flow import _flow_measure
+
+    flow_memo: dict[Any, Any] = {}
+    live_flow: set[str] = set()
     for m in tree.measures:
         if m.measurand is None:
             continue
@@ -861,12 +866,15 @@ def drc(
         subject = f"{m.block}.{m.name}"
         reason: str | None
         try:
-            realised = computer(tree, m)
+            if m.measurand in FLOW_MEASURANDS:
+                live_flow.add(subject)
+                realised, reason = _flow_measure(tree, m, m.measurand, flow_memo)
+            else:
+                realised = computer(tree, m)
+                reason = getattr(computer, "reason", None)
         except Exception as exc:  # a read-time check never crashes the read
             realised = None
             reason = f"{type(exc).__name__}: {exc}"
-        else:
-            reason = getattr(computer, "reason", None)
         if realised is None:
             findings.append(
                 ValidationIssue(
@@ -876,7 +884,9 @@ def drc(
                         f"measurand {measurand_name(m)!r} (tn{m.measurand_ref}) "
                         f"could not be computed: {reason or 'no value returned'}"
                     ),
-                    severity="warn",
+                    severity="error"
+                    if subject in live_flow and m.strength == "hard"
+                    else "warn",
                 )
             )
             continue
@@ -915,7 +925,9 @@ def drc(
                         f"measurand {measurand_name(m)!r} (tn{m.measurand_ref}) "
                         f"{' on ' + m.datum if m.datum else ''}: {unmet}"
                     ),
-                    severity="warn",
+                    severity="error"
+                    if subject in live_flow and m.strength == "hard"
+                    else "warn",
                     measured=realised,
                     expected=expected,
                     expected_hi=expected_hi,
@@ -1052,6 +1064,8 @@ def drc(
     for m in tree.measures:
         if m.strength != "hard":
             continue
+        if f"{m.block}.{m.name}" in live_flow:
+            continue
         if f"{m.block}.{m.name}" in sourced:
             continue
         if m.relation is not None:
@@ -1089,6 +1103,8 @@ def drc(
     strength_of = {f"{m.block}.{m.name}": m.strength for m in tree.measures}
     measures_by_key = {f"{m.block}.{m.name}": m for m in tree.measures}
     for res in stack:
+        if res.measure in live_flow and res.problem_kind == "mismatch":
+            continue
         if res.problem is None:
             continue
         rule, severity = _STACK_RULES.get(

@@ -74,7 +74,7 @@ _NUM_ARGS = (
 )
 _INT_ARGS = {"n", "frames", "seed", "nx"}
 _CHAMBER_KEYS = ("block", "inlet", "outlet", "nx", "zplane")
-_TRACE_KEYS = (*_CHAMBER_KEYS, "dv", "profile", "n", "frames", "seed")
+_TRACE_KEYS = (*_CHAMBER_KEYS, "dv", "profile", "n", "frames", "seed", "seed_z")
 
 _CACHE_SIZE = 8
 _lock = threading.Lock()
@@ -165,7 +165,10 @@ def player_payload(store: Store, slug: str, query: dict[str, Any]) -> dict[str, 
         "dv": fp.spec.d_v_star,
         "profile": fp.spec.profile,
         "zplane": fp.spec.zplane,
-        "n": DEFAULT_N,
+        "n": fp.spec.n or se_flow.geom_physics.DEFAULT_N,
+        "nx": fp.spec.cells or se_flow.DEFAULT_NX,
+        "seed": fp.spec.seed,
+        "seed_z": fp.spec.seed_z or (0.0, 0.5),
         "frames": DEFAULT_FRAMES,
     }
     args.update({k: v for k, v in query.items() if k not in ("block", "pocket")})
@@ -281,7 +284,9 @@ async def se_flow_page(request: Request, slug: str) -> Response:
                 else None
             ),
             "defaults": {
-                "n": DEFAULT_N,
+                "n": (chosen.spec.n or se_flow.geom_physics.DEFAULT_N)
+                if chosen
+                else DEFAULT_N,
                 "frames": DEFAULT_FRAMES,
                 "profile": chosen.spec.profile if chosen is not None else "parabolic",
             },

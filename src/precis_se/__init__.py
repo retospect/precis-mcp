@@ -153,6 +153,10 @@ applies them.
 
 **Seams.**
 
+- Flow DRC shares a chamber outcome only within one pass; region evenness
+  reuses its paths. Live flow checks own constraint findings, so stored
+  import snapshots cannot duplicate or contradict them after a CAD edit.
+
 - Trace diffs across a schema-1 migration match qualified ancestry and
   per-qual occurrences: schema-1 keys include line numbers, so direct key
   matches would falsely replace the entire trace. Other diffs retain keys.

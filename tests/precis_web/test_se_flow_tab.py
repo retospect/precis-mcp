@@ -162,3 +162,42 @@ def test_player_instance_count_is_the_payload_particle_axis() -> None:
     assert "floor.receiveShadow = true" in js
     frames = (_STATIC / "se-flow-frames.js").read_text(encoding="utf-8")
     assert "const [K, n] = fr ? fr.shape : [0, 0];" in frames
+
+
+def test_player_uses_token_solve_inputs(monkeypatch, store: Any) -> None:
+    from types import SimpleNamespace
+
+    from precis_se.flow import FlowSpec
+    from precis_web.routes import se_flow
+
+    spec = FlowSpec("in", "out", 1.0, cells=120, seed=7, n=240, seed_z=(0.1, 0.4))
+    fp = SimpleNamespace(block="c", pocket="flow", spec=spec)
+    monkeypatch.setattr(
+        se_flow, "resolve_live_slug_ref", lambda *a, **k: SimpleNamespace(id=123)
+    )
+    monkeypatch.setattr(se_flow.se_persist, "load_tree", lambda *a: object())
+    monkeypatch.setattr(se_flow, "_pick_pocket", lambda *a: fp)
+    monkeypatch.setattr(se_flow, "_bound_version", lambda *a: "")
+    monkeypatch.setattr(se_flow.se_flow, "flow_chamber", lambda *a: object())
+    seen = []
+
+    def trace(chamber, args):
+        seen.append(dict(args))
+        return None, SimpleNamespace(breakthrough=0.335), "parabolic", 1.0
+
+    monkeypatch.setattr(se_flow.se_flow, "flow_trace", trace)
+    monkeypatch.setattr(se_flow.se_flow, "flow_scale", lambda *a: (None, {"u0": None}))
+    monkeypatch.setattr(se_flow.se_flow, "flow_payload", lambda *a, **k: {})
+    se_flow._chambers.clear()
+    se_flow._traces.clear()
+    result = se_flow.player_payload(store, "test", {})
+    assert result["breakthrough"] == pytest.approx(0.335)
+    assert {k: seen[0][k] for k in ("nx", "seed", "n", "seed_z")} == {
+        "nx": 120,
+        "seed": 7,
+        "n": 240,
+        "seed_z": (0.1, 0.4),
+    }
+    se_flow.player_payload(store, "test", {"seed": 8})
+    se_flow.player_payload(store, "test", {"seed_z": (0.2, 0.3)})
+    assert len(seen) == 3

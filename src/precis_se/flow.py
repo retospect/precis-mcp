@@ -1278,11 +1278,15 @@ def flow_outcome(
 
 
 def _flow_measure(
-    tree: Any, measure: Any, slug: str
+    tree: Any,
+    measure: Any,
+    slug: str,
+    memo: dict[Any, Any] | None = None,
 ) -> tuple[float | None, str | None]:
     """One flow measurand for a measure on a ``flow:`` pocket's region:
     :func:`flow_outcome` at the token's solve parameters; evenness scores
-    over the measure's own datum region."""
+    over the measure's own datum region. A caller-owned ``memo`` shares
+    outcomes and failures within a pass, never across geometry edits."""
     from precis_se import datums as se_datums
 
     node = tree.blocks.get(measure.block)
@@ -1309,13 +1313,41 @@ def _flow_measure(
         if sel.kind not in ("patch", "rect"):
             return None, f"evenness scores over a patch: region, got {datum!r}"
     try:
-        out = flow_outcome(
-            placed,
-            tree,
-            measure.block,
-            spec,
-            datum if slug == "evenness" else None,
-        )
+        key = (measure.block, spec)
+        if memo is None:
+            out = flow_outcome(
+                placed,
+                tree,
+                measure.block,
+                spec,
+                datum if slug == "evenness" else None,
+            )
+        else:
+            if key not in memo:
+                try:
+                    memo[key] = flow_outcome(placed, tree, measure.block, spec)
+                except (
+                    Exception
+                ) as exc:  # DRC reports failures without retrying each measure
+                    memo[key] = f"{type(exc).__name__}: {exc}"
+            out = memo[key]
+            if isinstance(out, str):
+                return None, out
+            if slug == "evenness":
+                ranges = geom_physics.region_ranges(
+                    out.gap, patch_port(tree, measure.block, datum)
+                )
+                if isinstance(ranges, str):
+                    return None, ranges
+                nu, kept = nonuniformity(
+                    out.paths.crossing_points(), ranges[0], ranges[1], EVENNESS_BINS
+                )
+                if not kept.shape[0]:
+                    return (
+                        None,
+                        "no particle crossed the tracking plane inside the evenness region — no evenness",
+                    )
+                return float(1.0 - nu), None
     except (BadInput, ValueError) as exc:
         return None, str(exc)
     if slug in out.measures:

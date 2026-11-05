@@ -433,6 +433,59 @@ def test_flow_computers() -> None:
     assert "no particle crossed" in (FLOW_COMPUTERS["evenness"].reason or "")
 
 
+def test_flow_pass_reuses_paths_for_distinct_evenness_regions(monkeypatch):
+    from precis_geom import physics as geom_physics
+    from precis_se.flow import _flow_measure
+
+    tree = _chamber_tree()
+    tree.blocks["c"].pockets["flow"].regions.append("patch:c.bottom@0,0+0.03x0.01")
+    calls = []
+    real = geom_physics.evaluate
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(geom_physics, "evaluate", counting)
+    memo: dict[Any, Any] = {}
+    for datum in (
+        "patch:c.bottom@0,0+0.06x0.02",
+        "patch:c.bottom@0,0+0.03x0.01",
+    ):
+        measure = MeasureSpec(
+            block="c", name="ev", datum=datum, measurand="evenness", unit="ratio"
+        )
+        value, reason = _flow_measure(tree, measure, "evenness", memo)
+        assert value is None and reason is not None and "no particle crossed" in reason
+    assert calls == [1]
+
+
+def test_flow_pass_caches_solver_failure(monkeypatch):
+    from precis_se import flow
+
+    calls = []
+
+    def failing(*args, **kwargs):
+        calls.append(1)
+        raise RuntimeError("solver failed")
+
+    monkeypatch.setattr(flow, "flow_outcome", failing)
+    tree = _chamber_tree()
+    memo: dict[Any, Any] = {}
+    for slug in ("breakthrough-fraction", "resistance-ratio"):
+        measure = MeasureSpec(
+            block="c",
+            name=slug,
+            datum="patch:c.side1@0,0+0.006x0.001",
+            measurand=slug,
+            unit="ratio",
+        )
+        value, reason = flow._flow_measure(tree, measure, slug, memo)
+        assert value is None
+        assert reason == "RuntimeError: solver failed"
+    assert calls == [1]
+
+
 def test_flow_computer_reports_reason() -> None:
     """A measure on a region no flow pocket claims is uncomputable —
     with a reason, never silent."""
@@ -936,6 +989,61 @@ def test_flow_reimport_of_the_same_run(store: Any, tmp_path: Any) -> None:
     assert sorted(m.name for m in again.measures) == ["bt", "rr", "rt"]
     bt = next(m for m in again.measures if m.name == "bt")
     assert bt.value == pytest.approx(oc.measures["breakthrough-fraction"], rel=1e-9)
+
+
+def test_flow_drc_shares_solve_and_checks_live_values(store, tmp_path, monkeypatch):
+    from precis_geom import physics as geom_physics
+    from precis_se.drc import drc
+
+    _oc, _res, tree = _flow_workspace_run(store, tmp_path, cells=60)
+    rr = next(m for m in tree.measures if m.name == "rr")
+    rr.value, rr.max_value, rr.strength = 1000.0, 100.0, "hard"
+    calls = []
+    real = geom_physics.evaluate
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(geom_physics, "evaluate", counting)
+    first = drc(tree)
+    assert calls == [1]
+    assert not [f for f in first.findings if f.subject == "c.rr"]
+    rr.max_value = 0.01
+    second = drc(tree)
+    assert calls == [1, 1]  # no memo survives into another pass
+    (finding,) = [f for f in second.findings if f.subject == "c.rr"]
+    assert finding.rule == "measure_unmet" and finding.severity == "error"
+    assert finding.measured != pytest.approx(rr.value)
+
+
+def test_flow_fork_moves_block_declaration_into_physics(store, tmp_path):
+    _flow_workspace_run(
+        store,
+        tmp_path,
+        physics=False,
+        cells=60,
+        block_measures=[{"name": "rr", "measurand": "resistance-ratio"}],
+    )
+    out2 = Path(tmp_path) / "out2"
+    flow_chamber.write_out(out2, cells=60)
+    result = _flow_import(store, out2, target="fork")
+    tree = _reload(store, result.design_slug)
+    assert {m.name for m in tree.measures} == {"bt", "rt", "rr"}
+    assert next(m for m in tree.measures if m.name == "rr").value is not None
+
+
+def test_imported_flow_player_repeats_swarm(store, tmp_path):
+    from precis_web.routes.se_flow import player_payload
+
+    outcome, _result, _tree = _flow_workspace_run(
+        store, tmp_path, cells=120, seed=7, n=240, seed_z=[0.1, 0.4]
+    )
+    payload = player_payload(store, "wsflow", {"frames": 24})
+    assert payload["particles"]["n"] == 240
+    assert payload["breakthrough"] == pytest.approx(
+        outcome.measures["breakthrough-fraction"]
+    )
 
 
 def test_flow_set_desc_through_apply_ops_after_import(
