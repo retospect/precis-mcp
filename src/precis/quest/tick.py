@@ -23,6 +23,11 @@ ticks as a perpetual ``quest_tick`` coordinator campaign, gated on
 
 The single model call is injectable (``dispatch_fn``) — deterministically
 unit-testable without a live model.
+
+Payload logbook, proposal and review-direction writes collect structure-link
+receipts across the apply stage. Their totals survive checkpoints and appear
+in the outcome note: an unresolved mention must remain visible even though
+the WORM entry itself succeeds.
 """
 
 from __future__ import annotations
@@ -44,6 +49,7 @@ from precis.quest.logbook import (
     ENTRY_TYPES,
     LOG_KIND,
     MEASURED_BY,
+    StructureLinkReceipt,
     append_entry,
     clamp_entry_type,
 )
@@ -3315,6 +3321,25 @@ class _TickRun:
         review directions. No LLM call, no network."""
         store, quest_id, by = self.store, self.quest_id, self.by
         payload = self.payload()
+        structure_links = StructureLinkReceipt()
+
+        def append_with_receipt(
+            *, text: str, entry_type: str, cost: float | None = None
+        ) -> int:
+            receipt = StructureLinkReceipt()
+            number = append_entry(
+                store,
+                quest_id,
+                text=text,
+                entry_type=entry_type,
+                by=by,
+                cost=cost,
+                link_receipt=receipt,
+            )
+            structure_links.linked += receipt.linked
+            structure_links.skipped += receipt.skipped
+            structure_links.failed += receipt.failed
+            return number
 
         # Open hypotheses to dedup fresh ones against — a spin is the same
         # question restated, so a near-duplicate `hypothesis` is dropped rather
@@ -3340,9 +3365,7 @@ class _TickRun:
                 continue
             raw_cost = e.get("cost")
             cost_val = float(raw_cost) if isinstance(raw_cost, (int, float)) else None
-            append_entry(
-                store, quest_id, text=text, entry_type=etype, by=by, cost=cost_val
-            )
+            append_with_receipt(text=text, entry_type=etype, cost=cost_val)
             if etype == "hypothesis":
                 open_hyps.append(text)
             added += 1
@@ -3463,19 +3486,19 @@ class _TickRun:
         # Proposals — log each candidate as a hypothesis (WORM). The
         # materialise + dispatch half is the `compute` stage.
         proposals = _tick_proposals(payload)
+        proposal_entries: list[int | None] = []
         for p in proposals:
             name = str(p.get("name") or "").strip()
             if not name:
+                proposal_entries.append(None)
                 continue
             rationale = str(p.get("rationale") or "").strip()
             buildable = " [buildable]" if isinstance(p.get("structure"), dict) else ""
-            append_entry(
-                store,
-                quest_id,
+            entry_no = append_with_receipt(
                 text=f"candidate: {name}{buildable} — {rationale}"[:400],
                 entry_type="hypothesis",
-                by=by,
             )
+            proposal_entries.append(entry_no)
             added += 1
 
         # Directions — set on a frontier review; recorded as a `decision` deed.
@@ -3486,12 +3509,9 @@ class _TickRun:
                 if str(d).strip()
             ]
             if directions:
-                append_entry(
-                    store,
-                    quest_id,
+                append_with_receipt(
                     text="frontier review — next directions: " + "; ".join(directions),
                     entry_type="decision",
-                    by=by,
                 )
                 added += 1
 
@@ -3515,6 +3535,14 @@ class _TickRun:
                 "ledger_added": ledger_added,
                 "dialectic_applied": dialectic_applied,
                 "n_proposals": len(proposals),
+                # Receipts, not another copy of the model payload: preserve
+                # the exact proposal chunk across an apply/compute boundary.
+                "proposal_entries": proposal_entries,
+                "structure_links": {
+                    "linked": structure_links.linked,
+                    "skipped": structure_links.skipped,
+                    "failed": structure_links.failed,
+                },
             }
         )
         return None
@@ -3684,6 +3712,16 @@ class _TickRun:
             if self.quest_body == QUEST_BODY_INQUIRY
             else _tick_proposals(self.payload())
         )
+        proposal_entries = self.st.get("proposal_entries") or []
+        proposals = [
+            {
+                **p,
+                "_proposal_entry": (
+                    proposal_entries[i] if i < len(proposal_entries) else None
+                ),
+            }
+            for i, p in enumerate(proposals)
+        ]
 
         # Structure search slot ("search, don't guess" — backlog item 4):
         # an opt-in `meta.search` on the quest spends this tick's WIP slot
@@ -4062,6 +4100,14 @@ class _TickRun:
             if did_work
             else "no-op"
         )
+        link_counts = st.get("structure_links") or {}
+        structure_links = StructureLinkReceipt(
+            linked=int(link_counts.get("linked") or 0),
+            skipped=int(link_counts.get("skipped") or 0),
+            failed=int(link_counts.get("failed") or 0),
+        )
+        if structure_links.linked or structure_links.skipped or structure_links.failed:
+            note += "; " + structure_links.summary()
         # Attribute the tick's *real* measured usage to the tote (gripe 162594).
         # Quest ticks run on the claude_p transport at MEDIUM, where
         # ``cost_usd`` is null/0.00 for 100% of prod rows (free/quota-bound lane)

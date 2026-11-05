@@ -123,9 +123,11 @@ def test_status_gathers_logbook_candidates_sim_jobs_and_llm_spend(
     status = status_mod.gather_quest_status(store, qid)
     assert status is not None
 
-    assert len(status.logbook_tail) == 2
+    # ensure_candidate adds its two lineage entries after the authored ones.
+    assert len(status.logbook_tail) == 4
     assert status.logbook_tail[0].entry_type == "note"
     assert status.logbook_tail[1].entry_type == "dead-end"
+    assert status.logbook_tail[3].text.startswith("minted [st")
 
     assert len(status.candidates) == 1
     cand = status.candidates[0]

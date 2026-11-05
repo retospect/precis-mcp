@@ -374,7 +374,7 @@ def _up_link(
         if resolved is None:
             return None
         ref = store.get_ref(
-            kind=resolved.kind, id=resolved.public_id, include_deleted=True
+            kind=resolved.kind, id=resolved.ref_id, include_deleted=True
         )
         if ref is None or not profiles.visible_to(ref, login):
             return None

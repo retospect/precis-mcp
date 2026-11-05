@@ -115,6 +115,93 @@ def test_chunk_focus_up_link_targets_its_record(client: TestClient, store: Any) 
     assert 'data-key="U ArrowUp"' in page.text
 
 
+def test_structure_log_entry_link_opens_the_quest_entry(
+    client: TestClient, runtime_with_store: Any, store: Any
+) -> None:
+    """gr553318: follow the rendered entry link through the real dispatcher."""
+    from precis.quest.logbook import append_entry
+
+    quest = store.insert_ref(kind="quest", slug=None, title="Candidate search")
+    candidate = store.insert_ref(
+        kind="structure", slug="linked-candidate", title="Site"
+    )
+    other_text = "A separate log entry that must not replace the selected reasoning."
+    append_entry(store, quest.id, text=other_text, entry_type="note", by="agent")
+    text = f"Consider st{candidate.id} because its exposed site may bind nitrogen."
+    append_entry(store, quest.id, text=text, entry_type="hypothesis", by="agent")
+    entry = store.chunks.list_chunks_for_ref(quest.id)[1]
+    assert entry.ord == 1
+
+    page = client.get(f"/eye/st{candidate.id}")
+
+    assert page.status_code == 200
+    target = re.search(rf'href="([^"]+)">ql{entry.id}</a>', page.text)
+    assert target is not None, page.text
+    entry_page = client.get(target.group(1))
+    assert entry_page.status_code == 200, entry_page.text
+    assert "because its exposed site may bind nitrogen." in entry_page.text
+    assert other_text not in entry_page.text
+    assert f'data-zoom-out="qu{quest.id}"' in entry_page.text
+    assert "[error:" not in entry_page.text
+    ordinal_page = client.get(f"/eye/qu{quest.id}~1")
+    assert ordinal_page.status_code == 200, ordinal_page.text
+    assert "because its exposed site may bind nitrogen." in ordinal_page.text
+    assert other_text not in ordinal_page.text
+
+    body, error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "quest", "id": quest.id, "extent": "fisheye+1hop"}
+    )
+    assert not error, body
+    assert f"qu{quest.id} [quest] Candidate search" in body
+
+
+@pytest.mark.parametrize("kind, code", [("quest", "qu"), ("todo", "td")])
+def test_plain_numeric_eye_keeps_record_focus(
+    client: TestClient, runtime_with_store: Any, store: Any, kind: str, code: str
+) -> None:
+    ref = store.insert_ref(kind=kind, slug=None, title="Plain numeric focus")
+
+    body, error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": kind, "id": ref.id, "extent": "fisheye+1hop"}
+    )
+    page = client.get(f"/eye/{code}{ref.id}")
+
+    assert not error, body
+    assert f"{code}{ref.id} [{kind}] Plain numeric focus" in body
+    assert page.status_code == 200, page.text
+    assert f">{code}{ref.id}</a> [{kind}] Plain numeric focus" in page.text
+    assert "[error:" not in page.text
+
+
+def test_numeric_eye_missing_ordinal_falls_back_to_record(
+    client: TestClient, runtime_with_store: Any, store: Any
+) -> None:
+    quest = store.insert_ref(kind="quest", slug=None, title="No entry yet")
+
+    page = client.get(f"/eye/qu{quest.id}~99")
+    body, error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "quest", "id": f"{quest.id}~99", "extent": "fisheye+1hop"}
+    )
+
+    assert page.status_code == 200, page.text
+    assert not error, body
+    assert f"qu{quest.id} [quest] No entry yet" in body
+    assert "[error:" not in page.text
+
+
+def test_numeric_eye_invalid_ordinal_still_refuses(
+    runtime_with_store: Any, store: Any
+) -> None:
+    quest = store.insert_ref(kind="quest", slug=None, title="Invalid selector")
+
+    body, error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "quest", "id": f"{quest.id}~invalid", "extent": "fisheye"}
+    )
+
+    assert error
+    assert "[error:BadInput]" in body
+
+
 def test_focus_page_keeps_the_up_link_on_a_soft_deleted_focus(
     client: TestClient, store: Any
 ) -> None:

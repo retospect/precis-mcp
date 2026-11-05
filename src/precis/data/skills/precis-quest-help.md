@@ -131,6 +131,20 @@ completable deliverable (*"screen these 20 candidates", "write the
 review"*) → an ordinary **project/todo that `serves`** the quest. On
 *how* to phrase the striving itself, see [[precis-quest-writing-help]].
 
+## Candidate reasoning from a structure
+
+New logbook entries mentioning a live `st<N>` handle automatically `cites`
+that structure from the entry's chunk. The append receipt counts linked,
+unresolved/skipped and failed targets; a failed link does not lose the entry.
+Repeated mentions in one entry create one edge per structure.
+
+The structure's `fisheye+1hop` groups these entries under **Notes & links**
+by their stored section, falling back to entry type, then one plain group.
+Each row names the logbook block (`qu<N>~<ord>`). New candidate mints also
+log their structure handle and originating proposal block, carrying its
+rationale into the candidate's neighbourhood. Existing entries are not
+backfilled.
+
 ## The logbook — a WORM ledger of the journey
 
 A quest keeps an **append-only, dated logbook** (like a lab notebook):

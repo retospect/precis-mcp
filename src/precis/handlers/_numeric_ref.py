@@ -818,7 +818,29 @@ class NumericRefHandler(Handler):
         """The eye ladder on one ref, resolved the way this kind's ``get``
         resolves it — ``kind:id`` link targets, pub-id slugs where the
         subclass overrides ``_coerce_id``, and ``Gone`` for a soft-deleted
-        row — before the shared render (:mod:`precis.handlers._eye`)."""
+        row — before the shared render (:mod:`precis.handlers._eye`).
+
+        Chunk handles can arrive raw or as ``<id>~<ord>``. Resolve the
+        owner first so its live-ref checks still apply, then focus the chunk;
+        a missing chunk or a kind without chunk handles falls back to its ref.
+        """
+        parsed = handle_registry.parse(id) if isinstance(id, str) else None
+        if parsed is not None and parsed[0] == self.kind and parsed[1]:
+            resolved = self.store.resolve_handle(id)
+            if resolved is not None:
+                self._resolve_live_ref(resolved.ref_id)
+            return super().eye(id=id, extent=extent, q=q, ring=ring)
+        if isinstance(id, str) and "~" in id:
+            base, _, selector = id.partition("~")
+            ref = self._resolve_live_ref(self._coerce_id(base))
+            if handle_registry.try_format(self.kind, 0, chunk=True) is not None:
+                try:
+                    return super().eye(
+                        id=f"{ref.id}~{selector}", extent=extent, q=q, ring=ring
+                    )
+                except NotFound:
+                    pass
+            return super().eye(id=int(ref.id), extent=extent, q=q, ring=ring)
         ref = self._resolve_live_ref(self._coerce_id(id))
         return super().eye(id=int(ref.id), extent=extent, q=q, ring=ring)
 

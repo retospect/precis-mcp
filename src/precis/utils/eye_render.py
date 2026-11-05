@@ -30,6 +30,9 @@ kind, so the ladder generalizes but its shape does not:
   roadmap, taxonomy, concepts, parts, argument, notes) and capped per
   label. A note linked to a paper surfaces when you fisheye the paper (via
   the doc eye's ring) and the paper surfaces when you fisheye the note.
+  A structure's incoming quest-log citations stay as individual entries,
+  grouped by stored section or entry type, so the candidate exposes its
+  reasoning instead of collapsing it into a single quest row.
 
 - **Skill eyes** (``sk:<slug>``): a skill is file-backed, not refs-backed, so
   it has no numeric pk for ``handle_registry.parse``'s decimal grammar
@@ -705,7 +708,8 @@ def _render_note_eye(
     body *is* the note and the links are its point. A todo's focal card also
     carries its workflow state line (:func:`_todo_state`) — STATUS and prio
     are the fields a task handoff reads first, and neither rides the chip
-    row."""
+    row. A quest log chunk focuses its entry text, not the quest's gist;
+    its rings still belong to the owning quest."""
     ref = _resolve_ref(store, handle)
     if ref is None or getattr(ref, "retired_at", None) is not None:
         raise ValueError(f"eye: no live {kind} ref for {handle!r}")
@@ -723,7 +727,12 @@ def _render_note_eye(
     if ext <= Extent.TOC and not recall:
         return f"· {_head(ref, kind, chips)}"
     cap = _SUMMARY_CAP if ext <= Extent.SUMMARY else _VERBATIM_CAP
-    body, total = _note_body(store, ref, kind, cap=cap)
+    parsed = handle_registry.parse(handle)
+    if kind == "quest" and parsed is not None and parsed[1]:
+        text = store.chunks.chunk_text_by_id(parsed[2]) or ""
+        body, total = _cap(text, cap), len(text)
+    else:
+        body, total = _note_body(store, ref, kind, cap=cap)
     if cap == _VERBATIM_CAP and total > _VERBATIM_CAP:
         marker = _cut_marker(
             kind, handle_registry.format_handle(kind, int(ref.id)), _VERBATIM_CAP, total
@@ -809,6 +818,7 @@ class _RingNeighbour:
     ref_id: int
     edges: int = 1
     passages: tuple[tuple[int, int | None], ...] = ()
+    log_entry: tuple[int, str] | None = None
 
 
 def _link_neighbors(store: Store, ref_id: int) -> str:
@@ -1197,7 +1207,29 @@ def _first_hop(
     ords = _chunk_ords(
         store, (c for pairs in live.values() for _o, c in pairs if c is not None)
     )
-    out = {key: _collapse_pairs(pairs, ords) for key, pairs in live.items()}
+    entries = _quest_log_entries(store, ref_id, live, refs)
+    out: dict[tuple[str, str], list[_RingNeighbour]] = {}
+    for key, pairs in live.items():
+        ordinary = []
+        seen: set[int] = set()
+        for oid, cid in pairs:
+            entry = (
+                entries.get(cid) if cid is not None and key[1] == "cited-by" else None
+            )
+            if entry is None:
+                ordinary.append((oid, cid))
+                continue
+            if cid in seen:
+                continue
+            assert cid is not None
+            seen.add(cid)
+            ord_, section, preview = entry
+            label = f"quest log — {section}" if section else "quest log"
+            out.setdefault((key[0], label), []).append(
+                _RingNeighbour(oid, passages=((cid, ord_),), log_entry=(ord_, preview))
+            )
+        if ordinary:
+            out.setdefault(key, []).extend(_collapse_pairs(ordinary, ords))
     for (group, _label), ns in out.items():
         rank = RING_GROUP_KIND_RANK.get(group)
         if rank:
@@ -1208,6 +1240,61 @@ def _first_hop(
                 )
             )
     return out, refs
+
+
+def _quest_log_entries(
+    store: Store,
+    ref_id: int,
+    pairs: dict[tuple[str, str], list[tuple[int, int | None]]],
+    refs: dict[int, Any],
+) -> dict[int, tuple[int, str, str]]:
+    """A structure's incoming log entries, keyed by the linked chunk.
+
+    Keep the stored section (or entry type) verbatim; free prose never
+    supplies a category. Read only linked chunks, after ring and scope
+    filtering, and use the ordinary ring if this optional read fails.
+    """
+    ids = {
+        cid
+        for (_group, label), neighbours in pairs.items()
+        if label == "cited-by"
+        for oid, cid in neighbours
+        if cid is not None
+        and str(getattr(refs[oid], "kind", "")) == "quest"
+        and not _scope_masks(refs[oid])
+    }
+    if not ids:
+        return {}
+    focus = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+    if focus is None or focus.kind != "structure":
+        return {}
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id, ord, meta, text FROM chunks "
+                "WHERE chunk_id = ANY(%s) AND chunk_kind = 'quest_log'",
+                (list(ids),),
+            ).fetchall()
+    except Exception:
+        log.debug("quest log ring read failed", exc_info=True)
+        return {}
+    out = {}
+    for cid, ord_, meta, text in rows:
+        meta = meta or {}
+        section = next(
+            (
+                value.strip()
+                for key in ("section", "entry_type")
+                if isinstance(value := meta.get(key), str) and value.strip()
+            ),
+            "",
+        )
+        out[int(cid)] = (
+            int(ord_),
+            section,
+            _cap(_preview_text(text), _CHUNK_SUMMARY_CAP),
+        )
+    return out
 
 
 #: ``cap`` for the ring's :meth:`Store.neighbourhood` read: past any real
@@ -1429,6 +1516,10 @@ def _ring_row(ref: Any, n: _RingNeighbour, *, chips: str = "", size: str = "") -
         # The placeholder carries no passage handles either — a masked
         # neighbour leaks nothing but its existence as a neighbour.
         return placeholder
+    if n.log_entry is not None:
+        ord_, preview = n.log_entry
+        handle = handle_registry.format_handle("quest", n.passages[0][0], chunk=True)
+        return f"{handle} ~{ord_} — {preview}"
     return _neighbor_label(ref, n.ref_id, chips=chips, size=size) + _passage_suffix(
         n, str(getattr(ref, "kind", "") or "")
     )

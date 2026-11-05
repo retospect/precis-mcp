@@ -74,6 +74,7 @@ from precis.quest.logbook import (
 from precis.quest.logbook import (
     LOG_KIND as _LOG_KIND,
 )
+from precis.quest.logbook import StructureLinkReceipt
 from precis.quest.logbook import append_entry as _append_logbook_entry
 from precis.response import Response
 from precis.store import Ref, Tag
@@ -1091,16 +1092,28 @@ class QuestHandler(NumericRefHandler):
         ref = self._resolve_live_ref(ref_id)
         # Shared append path (precis.quest.logbook) — the same insert the
         # autonomous quest_tick writes through, so there is one logbook writer.
+        receipt = StructureLinkReceipt()
         entry_no = _append_logbook_entry(
-            self.store, ref.id, text=text, entry_type=entry_type, by=by_who, cost=cost
+            self.store,
+            ref.id,
+            text=text,
+            entry_type=entry_type,
+            by=by_who,
+            cost=cost,
+            link_receipt=receipt,
         )
         deed = " (a deed)" if entry_type == "milestone" else ""
         # The ack prints the linkable block handle, not the bare 1-based
         # entry number — '~N' selects a chunk by its 0-based ord, so the
         # bare number missed by one as a link target (gr511468).
         block = f"{handle_registry.format_handle('quest', ref.id)}~{entry_no - 1}"
+        links = (
+            f"; {receipt.summary()}"
+            if receipt.linked or receipt.skipped or receipt.failed
+            else ""
+        )
         return Response(
-            body=f"logged {entry_type} on {self._sense()} id={ref.id}{deed} ({block})"
+            body=f"logged {entry_type} on {self._sense()} id={ref.id}{deed} ({block}){links}"
         )
 
     # ── edit: in-place rewrite of the founding striving statement ────

@@ -14,6 +14,12 @@ proposer's job (:mod:`precis.quest.tick`). A proposal with no structure
 spec is still recorded as a logbook `hypothesis` but mints no sim — a weak
 proposer produces no compute, visible rather than silently wrong.
 
+Fresh candidates append a lineage log entry naming their structure and
+the proposal chunk, so its rationale is reachable from the candidate's
+fisheye. The tick carries the proposal receipt across stages; direct mint
+callers record a proposal first. Existing-candidate retry paths never
+append a second mint entry.
+
 Compute dispatch is **off by default** (``compute=False`` on the tick); the
 manual ``precis quest tick --compute`` and the autonomous coordinator loop
 (:mod:`precis.quest.loop`, gated ``PRECIS_QUEST_LOOP_ENABLED``) turn it on.
@@ -921,7 +927,52 @@ def _ensure_candidate_detail(
     if composition is not None:
         _stamp_atom_cost(store, int(ref.id), composition)
     note = _link_parent_if_present(store, quest_id, proposal, int(ref.id))
+    _note_minted_candidate(store, quest_id, proposal, int(ref.id))
     return int(ref.id), False, note
+
+
+def _note_minted_candidate(
+    store: Store, quest_id: int, proposal: dict[str, Any], candidate_id: int
+) -> None:
+    """Connect a fresh candidate to the exact hypothesis that motivated it.
+
+    Only the new-candidate branch calls this; slug and symmetry retries
+    return earlier. A direct caller or an older checkpoint has no proposal
+    receipt, so preserve its rationale in a new hypothesis before linking.
+    """
+    entry_no: Any = proposal.get("_proposal_entry")
+    proposal_chunk = None
+    if isinstance(entry_no, int) and not isinstance(entry_no, bool) and entry_no > 0:
+        proposal_chunk = store.chunks.get_chunk(quest_id, pos=entry_no - 1)
+    if proposal_chunk is None or proposal_chunk.chunk_kind != "quest_log":
+        name = str(proposal.get("name") or "(unnamed)")
+        rationale = str(proposal.get("rationale") or "").strip()
+        entry_no = append_entry(
+            store,
+            quest_id,
+            text=f"candidate: {name} — {rationale}",
+            entry_type="hypothesis",
+            by="agent",
+        )
+        proposal_text = f"candidate: {name} — {rationale}"
+    else:
+        proposal_text = proposal_chunk.text
+    proposal_handle = f"qu{quest_id}~{int(entry_no) - 1}"
+    append_entry(
+        store,
+        quest_id,
+        text=(
+            f"minted [st{candidate_id}] from proposal [{proposal_handle}] — "
+            f"{proposal_text}"
+        ),
+        entry_type="observation",
+        by=MEASURED_BY,
+        extra_meta={
+            "section": "lineage",
+            "candidate_id": candidate_id,
+            "proposal_entry": proposal_handle,
+        },
+    )
 
 
 def ensure_candidate(
