@@ -4,9 +4,8 @@
 - three same-site calls in one loop are ``#0..#2``;
 - a 2k same-site-call fixture collapses past 64;
 - ``precis_ws.out`` writes ``manifest.json`` + ``trace.json``;
-- trace overhead stays under 5 % of the build (measured, written into
-  the spec's slice row — the assertion carries characterization-budget
-  headroom, not the target).
+- trace CPU overhead stays below the per-call characterization budget;
+  the spec's 5 % build-time target is not a relative assertion here.
 """
 
 from __future__ import annotations
@@ -551,10 +550,15 @@ def test_out_board_writes_pcb_manifest(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_overhead_budget() -> None:
-    """Trace overhead < 5 % of the build — measured with a real-primitive
-    fixture (sheetnet ``strip``+``pore``), the number written into the
-    spec row. The per-call bound guards the wrapper cost on degenerate
-    near-free calls, where any relative bound is meaningless."""
+    """Bound trace CPU overhead on near-free calls, where a relative
+    bound is meaningless. The real-primitive fixture (sheetnet
+    ``strip``+``pore``) supplies diagnostic build timings only.
+
+    Process CPU time counts wrapper work, including system-call CPU,
+    without charging time descheduled on a loaded machine. This guards
+    computation cost, not blocking I/O latency. Keep the 150 µs/call
+    budget (450 µs under coverage) and the 2000-call sample unchanged.
+    """
     from hexfold.sheetnet import pore, strip
 
     def build() -> None:
@@ -562,33 +566,31 @@ def test_overhead_budget() -> None:
         pore(sts[0], [(1, 1), (5, 5)])
 
     n = 8
-    t0 = time.perf_counter()
+    t0 = time.process_time()
     for _ in range(n):
         build()
-    cold = (time.perf_counter() - t0) / n
+    cold = (time.process_time() - t0) / n
     with trace.run(work_root=_WORK_ROOT):
-        t0 = time.perf_counter()
+        t0 = time.process_time()
         for _ in range(n):
             build()
-        warm = (time.perf_counter() - t0) / n
-    # measured on the dev Mac: ~0.68 ms cold / 1.42 ms warm (≈3 traced
-    # calls at ~30 µs each — thin fixture; real builds amortise it under
-    # the 5 % budget). Bound: absolute per-call, not the ratio.
+        warm = (time.process_time() - t0) / n
+    # Bound the extra CPU per call, not the thin fixture's build ratio.
     out._reset()
-    t0 = time.perf_counter()
+    t0 = time.process_time()
     for i in range(2000):
         out.note(f"n{i}")
-    per_call_cold = (time.perf_counter() - t0) / 2000
+    per_call_cold = (time.process_time() - t0) / 2000
     with trace.run(work_root=_WORK_ROOT):
         out._reset()
-        t0 = time.perf_counter()
+        t0 = time.process_time()
         for i in range(2000):
             out.note(f"n{i}")
-        per_call_warm = (time.perf_counter() - t0) / 2000
+        per_call_warm = (time.process_time() - t0) / 2000
     overhead_us = (per_call_warm - per_call_cold) * 1e6
     assert overhead_us < budget(150), (
-        f"trace overhead {overhead_us:.0f}µs/call "
-        f"(fixture build {cold * 1e3:.2f}ms cold / {warm * 1e3:.2f}ms warm)"
+        f"trace CPU overhead {overhead_us:.0f}µs/call "
+        f"(fixture build CPU {cold * 1e3:.2f}ms cold / {warm * 1e3:.2f}ms warm)"
     )
 
 
