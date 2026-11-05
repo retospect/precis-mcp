@@ -342,3 +342,31 @@ def test_kinetics_summary_views_and_args_are_declared() -> None:
     assert "kinetics-summary" in _QUEST_CONCRETE_VIEWS
     for handler in (PathwayHandler, QuestHandler):
         assert {"axis", "class", "page_size", "offset"} <= handler.ARGS["get"].keys
+
+
+@pytest.mark.parametrize("in_args", [False, True])
+def test_paper_stub_authors_reach_dispatch_without_a_new_mode(
+    full_hub: Hub, monkeypatch: pytest.MonkeyPatch, in_args: bool
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def capture(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
+        assert verb == "put"
+        seen.update(payload)
+        return "ok"
+
+    monkeypatch.setattr(tools_core, "_dispatch", capture)
+    authors: list[str | dict[str, Any]] = ["Doe, Jane"]
+    if in_args:
+        assert (
+            tools_core.put(kind="paper", title="A book", args={"authors": authors})
+            == "ok"
+        )
+        assert seen["__extras__"]["authors"] == authors
+    else:
+        assert tools_core.put(kind="paper", title="A book", authors=authors) == "ok"
+        assert seen["authors"] == authors
+    assert seen["mode"] is None
+    paper = full_hub.handlers["paper"]
+    assert "authors" in paper.ARGS_KEYS["put"]
+    assert paper.spec.modes == ("fetch-si",)

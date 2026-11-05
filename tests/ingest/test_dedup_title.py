@@ -88,6 +88,42 @@ def test_title_only_acquire_of_held_paper_is_idempotent(store: Store) -> None:
     assert ref_id == held
 
 
+def test_title_match_with_conflicting_supplied_author_mints(store: Store) -> None:
+    """A supplied byline must prevent merging unrelated same-title works."""
+    title = "Advanced Graph Algorithms for Distributed Network Analysis"
+    held = _held(
+        store,
+        n=1,
+        slug="smith24",
+        title=title,
+        authors=("John Smith",),
+        year=2024,
+    )
+    ref_id, created = store.upsert_stub_paper(
+        identifiers=[], title=title, year=2024, authors=["Doe, Jane"]
+    )
+    assert created is True
+    assert ref_id != held
+
+
+def test_title_match_with_matching_supplied_author_merges(store: Store) -> None:
+    """Matching supplied and held surnames still allow title deduplication."""
+    title = "Advanced Graph Algorithms for Distributed Network Analysis"
+    held = _held(
+        store,
+        n=1,
+        slug="smith24",
+        title=title,
+        authors=("John Smith",),
+        year=2024,
+    )
+    ref_id, created = store.upsert_stub_paper(
+        identifiers=[], title=title, year=2024, authors=["Smith, John"]
+    )
+    assert created is False
+    assert ref_id == held
+
+
 def test_title_only_acquire_of_new_paper_still_mints(store: Store) -> None:
     _held(
         store,

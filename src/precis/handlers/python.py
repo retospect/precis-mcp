@@ -2100,11 +2100,19 @@ class PythonHandler(Handler):
 
     def _check_expected_root(self, alias: str, expected_root: str) -> None:
         root = self._resolve_alias(alias)
-        if root != Path(expected_root).expanduser().resolve():
+        expected = Path(expected_root).expanduser()
+        if root == expected.resolve():
+            return
+        # The caller can see the same checkout through the host mount.
+        # Reuse discovery's configured prefix map, never guess from a basename.
+        if self.worktrees is not None:
+            expected = self.worktrees.translate_path(str(expected))
+        if root != expected.resolve():
             raise BadInput(
                 f"Python root mismatch: alias={alias!r}, configured={str(root)!r}, "
                 f"expected={expected_root!r}; available aliases={list(self.roots)!r}",
-                next="Configure an authorized local server with PRECIS_PYTHON_ROOTS=alias:/absolute/root; "
+                next=f"get(kind='python', id={alias!r}) without expected_root "
+                "to inspect the configured checkout, or Grep/Read in your own tree; "
                 "expected_root grants no access or registration",
             )
 

@@ -179,7 +179,7 @@ def title_merge_refusal(
     deliberately narrow — it applies only when the normalised title has
     >=2 content tokens AND both sides carry a known year AND both carry a
     first-author family name that matches. Without that bar a title-only
-    acquire (``upsert_stub_paper`` passes no authors) of ``Editorial`` or
+    acquire with no supplied authors of ``Editorial`` or
     ``Reply`` would collapse onto whatever held paper shares the title —
     the hole the Opus review of gr515509 caught. Only the token count is
     waived; the year and author legs still apply afterwards.

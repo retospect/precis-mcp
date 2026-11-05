@@ -993,8 +993,8 @@ class RefsMixin:
             # re-acquire is idempotent too. Gated tight (held-only,
             # trigram sim >= 0.85 plus ``title_merge_refusal`` corroboration:
             # >=5 title tokens, years within 1 (a missing year needs sim
-            # >= 0.95); no author check, the stub has none) so a
-            # genuinely-new paper still mints. See
+            # >= 0.95); supplied authors must agree when both sides have
+            # usable bylines) so a genuinely-new paper still mints. See
             # ingest/dedup.py (Phase 3).
             if not norm and title and title.strip():
                 # "Truly held" = a real, ingested copy: a pdf_sha256 AND
@@ -1020,13 +1020,13 @@ class RefsMixin:
                 # with >=5 title tokens and a year within 1 on both sides.
                 # A missing year is tolerated only at sim >= 0.95, so a
                 # year-less title-only re-acquire of a held paper stays
-                # idempotent. No author check here (stubs carry none).
+                # idempotent. Check the caller's byline when supplied.
                 for cid, ctitle, cyear, cauthors, csim in cands:
                     if (
                         title_merge_refusal(
                             title,
                             year,
-                            None,
+                            authors,
                             ctitle,
                             cyear,
                             cauthors,

@@ -362,6 +362,70 @@ def test_stub_mint_keys_on_authors_then_significant_title_word(
     assert minted2.slug == "human26"
 
 
+def test_put_book_stub_stores_supplied_authors(
+    handler: PaperHandler, store: Store
+) -> None:
+    response = handler.put(
+        title="A Book On Graph Algorithms",
+        year=2024,
+        tags=["is-book"],
+        args={"authors": ["Doe, Jane", {"given": "John", "family": "Smith"}]},
+    )
+    rid = _ref_id(response.body)
+    ref = store.get_ref(kind="paper", id=rid)
+    assert ref is not None
+    assert ref.slug == "doe24"
+    assert ref.year == 2024
+    assert "is-book" in _tags(store, rid)
+    assert ref.authors == [
+        {"given": "Jane", "family": "Doe"},
+        {"given": "John", "family": "Smith"},
+    ]
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT family, source FROM paper_authors "
+            "WHERE ref_id = %s ORDER BY position",
+            (rid,),
+        ).fetchall()
+    assert rows == [("Doe", "human"), ("Smith", "human")]
+    assert "stored 2 supplied authors" in response.body
+
+
+def test_put_supplied_authors_override_registry_on_fresh_stub(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", lambda *_: None)
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_doi_registry",
+        lambda *_: {
+            "title": "A Registered Book",
+            "authors": [{"given": "Other", "family": "Writer"}],
+            "year": 2024,
+            "source": "crossref",
+        },
+    )
+    response = handler.put(doi="10.1/supplied-byline", authors=["Doe, Jane"])
+    ref = store.get_ref(kind="paper", id=_ref_id(response.body))
+    assert ref is not None
+    assert ref.slug == "doe24"
+    assert ref.authors == [{"given": "Jane", "family": "Doe"}]
+
+
+def test_put_authors_preserves_existing_byline_on_identifier_hit(
+    handler: PaperHandler, store: Store
+) -> None:
+    first = handler.put(doi="10.1/existing-byline", authors=["Doe, Jane"])
+    rid = _ref_id(first.body)
+    repeated = handler.put(doi="10.1/existing-byline", authors=["Smith, John"])
+    assert _ref_id(repeated.body) == rid
+    ref = store.get_ref(kind="paper", id=rid)
+    assert ref is not None
+    assert ref.authors == [{"given": "Jane", "family": "Doe"}]
+    assert "supplied authors not applied" in repeated.body
+    assert f"edit(kind='paper', id='pa{rid}', authors=" in repeated.body
+
+
 def test_acquire_links_from_context(handler: PaperHandler, store: Store) -> None:
     ctx = store.insert_ref(kind="memory", slug=None, title="where it came up")
     r = handler.acquire(

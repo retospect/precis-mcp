@@ -81,6 +81,136 @@ def test_discovery_and_alias(env):
     assert "return 1" in out or "def f" in out
 
 
+@pytest.mark.parametrize("verb", ["get", "get-args", "search"])
+@pytest.mark.parametrize("mount", ["host", "server", "host-parent"])
+def test_expected_root_accepts_same_worktree_across_mounts(env, verb, mount):
+    _, wts, _ = env
+    h, _, _ = _make(env)
+    if mount == "host-parent":
+        expected = f"{HOST}/wts/beta/../alpha"
+    elif mount == "host":
+        expected = f"{HOST}/wts/alpha"
+    else:
+        expected = str(wts / "alpha")
+    if verb == "get-args":
+        body = h.get(id="wt-alpha::m.f", args={"expected_root": expected}).body
+    elif verb == "get":
+        body = h.get(id="wt-alpha::m.f", expected_root=expected).body
+    else:
+        body = h.search(
+            q="f", scope="wt-alpha", mode="lexical", expected_root=expected
+        ).body
+    assert "checkout: wt-alpha@" in body
+    assert "m.f" in body
+    assert h.cache.known_roots() == [(wts / "alpha").resolve()]
+
+
+@pytest.mark.parametrize("verb", ["get", "get-args", "search"])
+@pytest.mark.parametrize(
+    "expected",
+    [
+        f"{HOST}/wts/beta",
+        f"{HOST}/other/alpha",
+        "/otherprefix/wts/alpha",
+        f"{HOST}-other/wts/alpha",
+    ],
+    ids=["different-tree", "same-basename", "unknown-prefix", "prefix-boundary"],
+)
+def test_expected_root_refuses_different_tree_before_indexing(
+    env, monkeypatch: pytest.MonkeyPatch, verb, expected
+):
+    _, _, tmp = env
+    h, _, _ = _make(env, ("alpha", "beta"))
+    _checkout(tmp / "other" / "alpha")
+
+    def forbidden(root: Path) -> None:
+        raise AssertionError("a root mismatch must not build an index")
+
+    monkeypatch.setattr(h.cache, "get", forbidden)
+    with pytest.raises(BadInput, match="root mismatch") as caught:
+        if verb == "get-args":
+            h.get(id="wt-alpha::m.f", args={"expected_root": expected})
+        elif verb == "get":
+            h.get(id="wt-alpha::m.f", expected_root=expected)
+        else:
+            h.search(q="f", scope="wt-alpha", expected_root=expected)
+    hint = str(caught.value.next)
+    assert "get(kind='python', id='wt-alpha') without expected_root" in hint
+    assert "Grep/Read in your own tree" in hint
+    assert h.cache.known_roots() == []
+
+
+def test_expected_root_refuses_parent_escape_before_mount_translation(
+    env, monkeypatch: pytest.MonkeyPatch
+):
+    _, _, tmp = env
+    h, _, _ = _make(env)
+
+    def forbidden(root: Path) -> None:
+        raise AssertionError("a root mismatch must not build an index")
+
+    monkeypatch.setattr(h.cache, "get", forbidden)
+    # Translating before normalizing would turn this unrelated host path
+    # into tmp/../tmp.name/wts/alpha, falsely matching the configured tree.
+    expected = f"{HOST}/../{tmp.name}/wts/alpha"
+    with pytest.raises(BadInput, match="root mismatch"):
+        h.get(id="wt-alpha::m.f", expected_root=expected)
+    assert h.cache.known_roots() == []
+
+
+def test_expected_root_preserves_symlink_parent_resolution(
+    env, monkeypatch: pytest.MonkeyPatch
+):
+    _, wts, tmp = env
+    h, _, _ = _make(env)
+    other = tmp / "other"
+    (other / "beta").mkdir(parents=True)
+    _checkout(other / "alpha")
+    (wts / "beta").symlink_to(other / "beta", target_is_directory=True)
+
+    def forbidden(root: Path) -> None:
+        raise AssertionError("a root mismatch must not build an index")
+
+    monkeypatch.setattr(h.cache, "get", forbidden)
+    # beta/.. traverses the symlink to other; lexical normalization must
+    # not erase it and falsely accept wts/alpha as the expected checkout.
+    with pytest.raises(BadInput, match="root mismatch"):
+        h.get(id="wt-alpha::m.f", expected_root=f"{HOST}/wts/beta/../alpha")
+    assert h.cache.known_roots() == []
+
+
+def test_expected_root_accepts_exact_server_path_with_overlapping_prefixes(env):
+    main, _, tmp = env
+    root = main / "wts" / "alpha"
+    _checkout(root)
+    reg = WorktreeRegistry("wt", main, gitdir_map=(str(tmp), str(main)))
+    h = PythonHandler(hub=Hub(), roots={"r": root}, worktrees=reg)
+
+    body = h.get(id="r::m.f", expected_root=str(root)).body
+
+    assert "checkout: r@" in body
+    assert "m.f" in body
+    assert h.cache.known_roots() == [root.resolve()]
+
+
+def test_expected_root_uses_static_alias_when_worktree_name_collides(
+    env, monkeypatch: pytest.MonkeyPatch
+):
+    _, _, tmp = env
+    _, reg, _ = _make(env)
+    static = tmp / "static"
+    _checkout(static)
+    h = PythonHandler(hub=Hub(), roots={"wt-alpha": static}, worktrees=reg)
+
+    def forbidden(root: Path) -> None:
+        raise AssertionError("a root mismatch must not build an index")
+
+    monkeypatch.setattr(h.cache, "get", forbidden)
+    with pytest.raises(BadInput, match="root mismatch"):
+        h.get(id="wt-alpha::m.f", expected_root=f"{HOST}/wts/alpha")
+    assert h.cache.known_roots() == []
+
+
 @pytest.mark.parametrize("verb", ["get", "search", "search-no-hits"])
 def test_matching_dynamic_worktree_reads_have_no_missing_index_note(env, verb):
     h, _, _ = _make(env)

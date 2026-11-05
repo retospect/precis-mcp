@@ -9,6 +9,9 @@ Source of truth is the main checkout's worktree registry:
 binary). ``PRECIS_PYTHON_GITDIR_MAP=<hostprefix>:<containerprefix>``
 translates host paths to container paths; a worktree is a root only when its
 translated path exists here. Aliases are ``<prefix>-<basename>``.
+Python expected-root assertions reuse this mapping so the caller's host
+mount and the server mount can identify the same checkout without accepting
+unrelated trees with the same basename.
 
 The listing is re-read at most every ``ttl`` seconds. Worktree indexes build
 lazily on first query — or earlier on a daemon thread, when a scan discovers
@@ -25,6 +28,7 @@ default search fan-out and never writable.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from collections import OrderedDict
@@ -94,10 +98,19 @@ class WorktreeRegistry:
     def owns(self, alias: str) -> bool:
         return alias.startswith(self.prefix + "-")
 
-    def _translate(self, host: str) -> Path:
+    def translate_path(self, host: str) -> Path:
+        """Map a host path by the configured mount prefix, preserving its suffix.
+
+        Discovery and expected-root assertions must use the same mapping;
+        matching only a checkout basename would admit a different tree.
+        Refuse lexical prefix escapes, but preserve internal ``..`` so the
+        server resolves it against the mapped checkout's actual symlinks.
+        """
         if self.gitdir_map:
             h, c = self.gitdir_map
-            if host == h or host.startswith(h + "/"):
+            if (host == h or host.startswith(h + "/")) and Path(
+                os.path.normpath(host)
+            ).is_relative_to(h):
                 return Path(c + host[len(h) :])
         return Path(host)
 
@@ -115,7 +128,7 @@ class WorktreeRegistry:
                 continue
             if not target.endswith("/.git"):
                 continue
-            path = self._translate(target[: -len("/.git")])
+            path = self.translate_path(target[: -len("/.git")])
             try:
                 if not (path / ".git").exists() or not path.is_dir():
                     continue

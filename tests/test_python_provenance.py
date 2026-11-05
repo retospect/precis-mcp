@@ -88,6 +88,8 @@ def test_expected_root_mismatch_keeps_refusal_without_worktree_note(
             handler.search(q="hello", scope="r", expected_root=expected)
     assert provenance.WORKTREE_NOTE not in caught.value.cause
     assert "expected_root grants no access or registration" in str(caught.value.next)
+    assert "get(kind='python', id='r') without expected_root" in str(caught.value.next)
+    assert "Grep/Read in your own tree" in str(caught.value.next)
     assert list(handler.roots) == ["r"] and handler.cache.known_roots() == []
 
 

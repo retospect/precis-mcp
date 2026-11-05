@@ -631,7 +631,13 @@ put(kind="paper", doi="10.1038/nature10352")  # best — resolvable id
 put(kind="paper", arxiv="2401.00001", title="…")  # or an arXiv id
 put(kind="paper", doi="10.1038/nature10352", tags=["reading-list"])  # tags= applied to the stub
 put(kind="paper", title="Some Paper With No DOI Yet")  # title-only backlog stub
+put(kind="paper", title="A Book", year=2024, tags=["is-book"], args={"authors": ["Doe, Jane"]})
 ```
+
+`authors=` (also accepted inside `args=`) stores the fresh stub's byline
+and seeds its citation key. Use names or `{given, family}` dictionaries;
+omit the field if unknown. A duplicate keeps the existing byline and the
+receipt names `edit(kind='paper', id=…, authors=[…])` to change it.
 
 Idempotent (already-held / already-wanted is a no-op). A DOI Semantic
 Scholar doesn't know is tried against Crossref, then DataCite, before

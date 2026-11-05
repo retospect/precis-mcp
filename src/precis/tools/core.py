@@ -1699,6 +1699,7 @@ def put(
     arxiv: str | None = None,
     identifier: str | None = None,
     year: int | None = None,
+    authors: list[str | dict[str, Any]] | str | None = None,
     reason: str | None = None,
     # paper stub-mint extras (see precis-paper-help): verify=False skips
     # the S2/registry not-found rejection for a known-real paper no index
@@ -1977,6 +1978,7 @@ def put(
                 "arxiv": arxiv,
                 "identifier": identifier,
                 "year": year,
+                "authors": authors,
                 "reason": reason,
                 "verify": verify,
                 "citation": citation,

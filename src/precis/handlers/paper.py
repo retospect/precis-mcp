@@ -19,6 +19,10 @@ shows the newest, ``view='comments'`` lists them all,
 ``delete(id=.., args={'comment': K})`` hides one — never an in-place
 edit.
 
+Stub puts accept caller-supplied authors through the existing byline writer.
+They seed the cite key and populate ``paper_authors`` on a fresh mint; a
+deduplication hit keeps its byline and names the explicit metadata-edit call.
+
 Superseded paper restoration is CLI-only (``precis garden restore``);
 MCP/web handlers expose no restore-superseded write door.
 Superseded-handle resolution on link/edit/put/tag emits a per-call footer
@@ -514,6 +518,20 @@ def _suggest_paper_slugs(slug: str, *, store: Store, kind: str = "paper") -> lis
 _ACQUIRE_ID_PREFIXES = ("doi", "arxiv", "s2", "pubmed")
 
 
+def _stub_authors(raw: Any) -> list[dict[str, Any]] | None:
+    """Validate supplied stub authors before lookup or mutation."""
+    if raw is None:
+        return None
+    authors = normalize_authors(raw)
+    if not authors:
+        raise BadInput(
+            "authors= contains no usable author names",
+            next="put(kind='paper', title='<title>', "
+            "authors=['Family, Given']); omit authors= if unknown",
+        )
+    return authors
+
+
 def _parse_acquire_identifier(raw: str) -> tuple[str, str] | None:
     """Parse an ``acquire`` identifier into an ``(id_kind, id_value)`` pair.
 
@@ -668,6 +686,7 @@ class PaperHandler(Handler):
                 "arxiv",
                 "title",
                 "year",
+                "authors",
                 "reason",
                 "context_ref_id",
                 "citation",
@@ -824,6 +843,7 @@ class PaperHandler(Handler):
         arxiv: str | None = None,
         title: str | None = None,
         year: int | None = None,
+        authors: list[str | dict[str, Any]] | str | None = None,
         reason: str | None = None,
         context_ref_id: int | str | None = None,
         verify: bool = True,
@@ -897,6 +917,8 @@ class PaperHandler(Handler):
         identifier = identifier or extras.get("identifier")
         title = title or extras.get("title")
         year = year if year is not None else extras.get("year")
+        authors = authors if authors is not None else extras.get("authors")
+        _stub_authors(authors)
         reason = reason or extras.get("reason")
         context_ref_id = (
             context_ref_id
@@ -950,6 +972,7 @@ class PaperHandler(Handler):
                     ("identifier", identifier),
                     ("title", title),
                     ("year", year),
+                    ("authors", authors),
                     ("citation", citation),
                     ("record_type", record_type),
                     ("tags", tags),
@@ -982,6 +1005,7 @@ class PaperHandler(Handler):
                     ("identifier", identifier),
                     ("title", title),
                     ("year", year),
+                    ("authors", authors),
                     ("citation", citation),
                     ("record_type", record_type),
                     ("tags", tags),
@@ -1025,6 +1049,7 @@ class PaperHandler(Handler):
                     ("identifier", identifier),
                     ("title", title),
                     ("year", year),
+                    ("authors", authors),
                     ("reason", reason),
                     ("context_ref_id", context_ref_id),
                     ("citation", citation),
@@ -1044,6 +1069,16 @@ class PaperHandler(Handler):
                     next=f"put(kind={self.spec.kind!r}, id={id}, text='your note')",
                 )
             return self._append_note(id=id, text=note_text.strip())
+        if authors is not None and (
+            pdf_url is not None or mode is not None or record_type is not None
+        ):
+            raise BadInput(
+                "authors= applies only to minting a stub; it cannot combine "
+                "with pdf_url=, mode= or record_type=",
+                next="put(kind='paper', title='<title>', authors=['Family, Given']); "
+                "for an existing paper: edit(kind='paper', id='<pa-or-slug>', "
+                "authors=['Family, Given'])",
+            )
         if tags:
             if pdf_url is not None or mode is not None:
                 raise BadInput(
@@ -1137,6 +1172,7 @@ class PaperHandler(Handler):
             identifier=ident,
             title=title,
             year=year,
+            authors=authors,
             reason=reason,
             context_ref_id=context_ref_id,
             verify=verify,
@@ -1680,6 +1716,7 @@ class PaperHandler(Handler):
         identifier: str | None = None,
         title: str | None = None,
         year: int | None = None,
+        authors: list[str | dict[str, Any]] | str | None = None,
         reason: str | None = None,
         context_ref_id: int | str | None = None,
         verify: bool = True,
@@ -1727,6 +1764,7 @@ class PaperHandler(Handler):
         resolver outages mint with ``meta.acquire_unverified=True`` for
         a later re-check.
         """
+        new_authors = _stub_authors(authors)
         has_identifier = bool(identifier and identifier.strip())
         has_title = bool(title and title.strip())
         if not has_identifier and not has_title:
@@ -1906,9 +1944,10 @@ class PaperHandler(Handler):
                 identifiers=identifiers,
                 title=stub_title,
                 year=year,
-                # S2/registry authors seed the cite_key (gr523730) —
+                # Supplied or S2/registry authors seed the cite_key —
                 # a real surname beats a title word.
-                authors=(meta or {}).get("authors")
+                authors=new_authors
+                or (meta or {}).get("authors")
                 or (registry_meta or {}).get("authors"),
                 set_by="dream",
                 s2_meta=s2_meta,
@@ -1985,6 +2024,14 @@ class PaperHandler(Handler):
                         ),
                         conn=conn,
                     )
+                if new_authors is not None:
+                    self.store.update_paper_fields(
+                        ref_id,
+                        authors=new_authors,
+                        source="mcp-put",
+                        authors_source="human",
+                        conn=conn,
+                    )
             if ctx_id is not None:
                 self.store.add_link(
                     src_ref_id=ctx_id,
@@ -2017,6 +2064,15 @@ class PaperHandler(Handler):
 
         state = "minted stub" if created else "already tracked"
         parts = [f"acquire: {state} paper id={ref_id}"]
+        if new_authors is not None:
+            if created:
+                parts.append(f"(stored {len(new_authors)} supplied authors)")
+            else:
+                parts.append(
+                    "(supplied authors not applied to the existing paper; "
+                    f"edit(kind='paper', id='pa{ref_id}', authors={new_authors!r}) "
+                    "to change its byline)"
+                )
         if resolver_err is not None:
             # Say what failed and what clears the flag (gr489237): the
             # fetch runs either way, and S2 enrichment or a landed PDF

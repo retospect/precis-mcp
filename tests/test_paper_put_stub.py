@@ -11,7 +11,7 @@ covered by the DB-backed ``test_acquire.py`` / ``test_stubs.py``.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -119,3 +119,48 @@ def test_put_forwards_tags_to_acquire() -> None:
     h, cap = _capturing_handler()
     h.put(doi="10.1038/nature10352", tags=["reading-list"], args={"verify": False})
     assert cap["tags"] == ["reading-list"]
+
+
+@pytest.mark.parametrize("in_args", [False, True])
+def test_put_forwards_authors_to_acquire(in_args: bool) -> None:
+    h, cap = _capturing_handler()
+    authors: list[str | dict[str, Any]] = [
+        "Doe, Jane",
+        {"given": "John", "family": "Smith"},
+    ]
+    if in_args:
+        h.put(title="A book", args={"authors": authors})
+    else:
+        h.put(title="A book", authors=authors)
+    assert cap["authors"] == authors
+    assert "authors" in PaperHandler.ARGS_KEYS["put"]
+
+
+@pytest.mark.parametrize("authors", [[], "", [""], [None], {"name": "Jane Doe"}])
+def test_put_rejects_unusable_authors_before_acquire(authors: object) -> None:
+    h, cap = _capturing_handler()
+    with pytest.raises(BadInput, match="no usable author names") as caught:
+        h.put(title="A book", args={"authors": authors})
+    assert "put(kind='paper'" in str(caught.value.next)
+    assert cap == {}
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"text": "a note"},
+        {"mode": "fetch-si"},
+        {"record_type": "software"},
+        {"args": {"pdf_url": "unused"}},
+        {"args": {"pdf_upload_link": True}},
+        {"args": {"pdf_upload": "unused"}},
+        {"args": {"restore": {}}},
+        {"args": {"restore_abort": True}},
+    ],
+)
+def test_put_other_doors_refuse_authors(kwargs: dict) -> None:
+    h, cap = _capturing_handler()
+    with pytest.raises(BadInput, match="authors") as caught:
+        h.put(id="pa1", authors=["Doe, Jane"], **kwargs)
+    assert caught.value.next
+    assert cap == {}
