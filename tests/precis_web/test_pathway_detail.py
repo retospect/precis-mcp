@@ -2818,8 +2818,8 @@ def test_pathway_layer_helpers_defaults_and_each_off_state(tmp_path: Path) -> No
         + """
 const keys = PW_LAYERS.map((l) => l.key);
 const ignored = [];
-const parsed = pwReadLayers(new URLSearchParams('layer_feed=0&layer_energy=1&layer_ea=no'), ignored);
-const qs = new URLSearchParams('state=N%2BH&layer_energy=1');
+const parsed = pwReadLayers(new URLSearchParams('layer_feed=0&layer_energy=1&layer_ea=no&layer_measured=0'), ignored);
+const qs = new URLSearchParams('state=N%2BH&layer_energy=1&layer_measured=0');
 pwWriteLayers(qs, parsed);
 console.log(JSON.stringify({
   layers: PW_LAYERS, defaults: pwLayerDefaults(),
@@ -2828,7 +2828,7 @@ console.log(JSON.stringify({
   node: [pwNodeLabel({id:'NH2', rel_energy:-4.47, energy_std:0.03}),
     pwNodeLabel({id:'NH2', rel_energy:-4.47, energy_std:0.03}, {energy:false}),
     pwNodeLabel({id:'NH2', rel_energy:-4.47, energy_std:0})],
-  humps: [pwShowHump({barrier:0.5}), pwShowHump({barrier:0.5}, {measured:false}),
+  humps: [pwShowHump({barrier:0.5}),
     pwShowHump({barrier:null,bepEa:0.4}),
     pwShowHump({barrier:null,bepEa:0.4}, {bep:false}),
     pwShowHump({barrier:null,bepEa:null})],
@@ -2848,7 +2848,6 @@ console.log(JSON.stringify({
         "energy",
         "desorption",
         "ea",
-        "measured",
         "bep",
         "forks",
         "confidence",
@@ -2866,7 +2865,7 @@ console.log(JSON.stringify({
         "barrier_filter",
         "turnover_filter",
     ]
-    defaults = {key: i < 12 or key == "turnover_filter" for i, key in enumerate(keys)}
+    defaults = {key: i < 11 or key == "turnover_filter" for i, key in enumerate(keys)}
     assert [layer["key"] for layer in got["layers"]] == keys
     assert all(layer["label"] and layer["help"] for layer in got["layers"])
     assert got["defaults"] == defaults
@@ -2876,7 +2875,7 @@ console.log(JSON.stringify({
     assert got["query"] == "state=N%2BH&layer_feed=0"
     assert got["restored"] == got["parsed"]
     assert got["node"] == ["NH2 (-4.47±0.03)", "NH2", "NH2"]
-    assert got["humps"] == [True, False, True, False, False]
+    assert got["humps"] == [True, True, False, False]
     assert got["ea"] == [
         "Ea=0.50±0.03 (25%)",
         "25%",
@@ -3021,7 +3020,74 @@ def test_pathway_diagram_bep_estimated_hump_is_dashed_with_band(
 
 
 @needs_node
-@pytest.mark.parametrize("hidden", ["measured", "bep"])
+@pytest.mark.parametrize("bep_off", [False, True])
+def test_pathway_legacy_measured_off_link_keeps_hump_without_checkbox(
+    client, runtime, tmp_path: Path, bep_off: bool
+) -> None:
+    """gr565351: retired measured-off links draw the curve and retire on sync."""
+    graph = {
+        "nodes": [{"id": "A", "rel_energy": 0.0}, {"id": "B", "rel_energy": 0.1}],
+        "links": [
+            {
+                "source": "A",
+                "target": "B",
+                "kind": "reaction",
+                "barrier": 0.5,
+                "barrier_std": 0.04,
+            }
+        ],
+    }
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "graph": graph,
+            "results": {
+                "edges": [{"name": "A->B", "barrier": {"mean": 0.5, "std": 0.04}}]
+            },
+        },
+        body_text=None,
+    )
+    search = "?layer_measured=0" + ("&layer_bep=0" if bep_off else "")
+    response = client.get("/refs/pathway/171696" + search)
+    assert response.status_code == 200
+    out = _run_url_probe(tmp_path, response.text, search=search)
+    assert all(layer["key"] != "measured" for layer in out["layers"])
+    assert (
+        next(layer for layer in out["layers"] if layer["key"] == "bep")["checked"]
+        is not bep_off
+    )
+    assert out["noteHidden"] is True
+    segment = re.search(
+        r'<polyline class="pw-seg"[^>]*data-from="A"[^>]*'
+        r'points="([^"]*)"[^>]*><title>([^<]*)</title></polyline>'
+        r"(<line[^>]*/>)?",
+        out["svg"],
+    )
+    assert segment is not None
+    assert len(segment[1].split()) > 2
+    assert segment[3]  # The measured uncertainty band still draws.
+    assert "Ea=0.50 eV" in segment[2] and "source=neb" in segment[2]
+    assert out["svg"] == _run_url_probe(tmp_path, response.text)["svg"]
+
+    synced = _run_url_probe(
+        tmp_path,
+        response.text,
+        search=search,
+        after="""
+const bep = created.find(el => el.dataset.layer === 'bep');
+bep.checked = false;
+bep.handlers.change[0]();
+els['pw-copy-link'].handlers.click[0]();
+""",
+    )
+    assert "layer_measured" not in synced["rs"][-1]
+    assert "layer_measured" not in synced["clip"][0]
+    assert "layer_bep=0" in synced["rs"][-1]
+    assert synced["svg"] == out["svg"]
+
+
+@needs_node
+@pytest.mark.parametrize("hidden", ["bep"])
 def test_pathway_hump_layers_hide_only_their_own_curve_and_band(
     client, runtime, tmp_path: Path, hidden: str
 ) -> None:
@@ -3945,9 +4011,9 @@ def test_pathway_layers_controls_render_and_url_round_trip(
     _seed_parked(runtime, _parked_graph())
     html = client.get("/refs/pathway/171696").text
     defaults = _run_url_probe(tmp_path, html)
-    assert len(defaults["layers"]) == 20
+    assert len(defaults["layers"]) == 19
     assert all(layer["title"] for layer in defaults["layers"])
-    assert [layer["checked"] for layer in defaults["layers"]] == [True] * 12 + [
+    assert [layer["checked"] for layer in defaults["layers"]] == [True] * 11 + [
         False
     ] * 8
     assert defaults["statesHidden"] is False
@@ -3982,11 +4048,11 @@ els['pw-copy-link'].handlers.click[0]();
         assert marker not in off["svg"]
     assert not re.search(r"<text[^>]*>Ea(?:=|≈| n/a)", off["svg"])
     assert set(_level_bars(off["svg"])) == set(_level_bars(defaults["svg"]))
-    assert len(off["rs"]) == 20
+    assert len(off["rs"]) == 19
     assert off["rs"][-1].endswith("#kinetics")
     assert off["clip"] == ["http://precis.test" + off["rs"][-1]]
     query = off["rs"][-1].split("?", 1)[1].split("#", 1)[0]
-    assert query.count("layer_") == 12
+    assert query.count("layer_") == 11
     restored = _run_url_probe(tmp_path, html, search="?" + query, hash_="#kinetics")
     assert restored["rs"] == []
     assert restored["layers"] == off["layers"]

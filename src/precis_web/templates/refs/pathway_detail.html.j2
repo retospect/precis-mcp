@@ -703,7 +703,6 @@
     { key: 'energy', label: 'Species energies ±σ', help: 'Print species energy and uncertainty when σ is recorded. Exact energies remain available on hover.' },
     { key: 'desorption', label: 'Desorption labels', help: 'Label released molecules, including H₂, with an upward arrow.' },
     { key: 'ea', label: 'Ea labels', help: 'Print measured or BEP activation energies, or Ea n/a where no barrier is known.' },
-    { key: 'measured', label: 'Measured humps', help: 'Draw measured transition-state humps and their uncertainty bands. Off keeps a connector and the stored barrier on hover.' },
     { key: 'bep', label: 'BEP humps', help: 'Draw dashed estimated transition-state humps and fit uncertainty bands. Off keeps a connector and the BEP estimate on hover.' },
     { key: 'forks', label: 'Fork percentages', help: 'Show branching percentages at forks with complete, trusted measured barriers.' },
     { key: 'confidence', label: 'Low-confidence styling', help: 'Mark flagged states in red with a warning symbol. Hiding this styling does not change data or trust checks; reasons remain on hover.' },
@@ -731,6 +730,8 @@
     return out;
   }
   function pwWriteLayers(qs, layers) {
+    // Measured humps are always visible; retire the toggle from old links.
+    qs.delete('layer_measured');
     PW_LAYERS.forEach(({ key, defaultOn }) => {
       qs.delete('layer_' + key);
       if (typeof layers[key] === 'boolean' && layers[key] !== (defaultOn !== false)) { qs.set('layer_' + key, layers[key] ? '1' : '0'); }
@@ -743,7 +744,7 @@
   }
   function pwShowHump(geo, layers) {
     const view = pwLayerPresentation(layers);
-    return geo.barrier != null ? view.measured : geo.bepEa != null && view.bep;
+    return geo.barrier != null ? true : geo.bepEa != null && view.bep;
   }
   function pwEaLabel(geo, forkPct, layers) {
     const view = pwLayerPresentation(layers);

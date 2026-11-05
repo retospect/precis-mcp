@@ -54,7 +54,7 @@
   }
 
   function barrier(edge, bepOn) {
-    // The graph's finite measured barrier wins even if its hump is hidden.
+    // The graph's finite measured barrier takes precedence over BEP estimates.
     if (Number.isFinite(edge.barrier)) { return Math.max(0, edge.barrier); }
     const b = edge.bep;
     if (bepOn && b && Number.isFinite(b.alpha) && Number.isFinite(b.beta)
