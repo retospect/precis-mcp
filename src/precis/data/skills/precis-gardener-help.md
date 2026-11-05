@@ -39,7 +39,7 @@ action restrictions and existing audited apply/undo paths still govern.
 
 One bounded tick per minted job (`job_inproc` executor), `params.pass`
 selects the detector subset (`merge|split|relink|prune|tag-sweep|
-siblings|paper-identity|memory`, one name or a list, default `all`):
+siblings|paper-identity|memory|memory-review`, one name or a list, default `all`):
 
 - **merge** — same-kind node pairs that look like one term minted
   twice. taxon/concept compare their `card_combined` embeddings and
@@ -68,23 +68,8 @@ siblings|paper-identity|memory`, one name or a list, default `all`):
   retirement requires preservation review. Section hubs are excluded.
   These actions are proposal-only. SHA ancestry on `origin/prod` is not
   checked: there is no general ancestry oracle in the DB.
-## Memory anchor checks
 
-The opt-in `memory` pass includes `anchor_rot`: Python file/symbol anchors
-and dotted qualnames, scripts/docs paths, Markdown sections and fragments,
-and mixed letter-and-digit commit SHAs of at least seven characters.
-It reads the configured Python `main` root's local `main` commit, using
-committed blobs for the Python index and Markdown heading chunks. Every
-proposal pins `base_sha` and `main_sha`, names each failed anchor, and
-records the lookups tried. Working-tree edits do not affect that evidence.
-
-Each memory checks at most 20 anchors; `matches_capped` says more remain.
-Unavailable git, indexes, or incomplete history produce `not_checked`
-entries alongside verified failures, never rot evidence. A body with only
-unverifiable anchors produces no proposal. DREAMs and retired bodies are
-excluded. The evaluator distinguishes rename, removal and already-recorded
-history; a live SHA proves existence, not that the surrounding claim is
-current. Rewrites remain proposal-only, with no apply path.
+Memory anchor checks and restated claims: [[precis-gardener-memory-help]].
 
 ## Structural scans
 

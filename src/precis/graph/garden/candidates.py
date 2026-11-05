@@ -22,6 +22,12 @@ nonsense distance. The lexical leg is the same ``lexical_overlap`` +
 normalized-name rules the taxon mint-time dedup uses
 (``precis.utils.text`` / ``precis.taxonomy.nodes.dimension_clash`` —
 this layer must not import handlers).
+
+``restated_claim`` compares bounded sentence windows within one memory hub,
+stopping at nested hubs so a shared root cannot make unrelated hubs peers.
+Sentence vectors are ephemeral default-embedder reads, never stored embeddings.
+Both semantic and lexical legs require a working embedder; outages are reported
+as ``not_checked`` rather than silently weakening the evidence to lexical only.
 """
 
 from __future__ import annotations
@@ -43,7 +49,7 @@ from precis.reading.concepts import normalize_name
 from precis.store._mappers import _coerce_vector
 from precis.taxonomy.nodes import dimension_clash
 from precis.todo import TERMINAL_TODO_STATUSES
-from precis.utils.deadline import DeadlineExceeded, call_with_deadline
+from precis.utils.deadline import DeadlineExceeded, call_with_deadline, deadline_at
 from precis.utils.handle_registry import parse as parse_handle
 from precis.utils.handle_registry import try_format
 from precis.utils.lexical import content_words, lexical_overlap
@@ -174,11 +180,12 @@ _DETECTOR_BY_PASS = {
     "siblings": ("sibling_confusion",),
     "paper-identity": ("paper_identity",),
     "memory": ("dangling_mention", "thread_shape", "anchor_rot"),
+    "memory-review": ("restated_claim",),
 }
 
-#: Passes ``all`` skips. The memory detectors spend proposer calls, so they
-#: run only when a job names ``memory``, until Reto turns them on.
-OPT_IN_PASSES: frozenset[str] = frozenset({"memory"})
+#: Passes ``all`` skips. Memory detectors spend proposer calls, so a job
+#: must name their pass explicitly; memory-review is independent of memory.
+OPT_IN_PASSES: frozenset[str] = frozenset({"memory", "memory-review"})
 
 #: Job ``params.pass`` values → detectors. ``all`` runs everything not opt-in.
 PASS_CHOICES: tuple[str, ...] = tuple(_DETECTOR_BY_PASS) + ("all",)
@@ -1002,6 +1009,319 @@ def thread_shape_candidates(
             break
     if next_cursors is not None:
         next_cursors[key] = nxt
+    return out
+
+
+RESTATED_SENTENCE_CAP = 128
+RESTATED_NODE_SENTENCE_CAP = 20
+RESTATED_MATCH_CAP = 20
+RESTATED_MIN_COSINE = 0.9
+RESTATED_MIN_LEXICAL = 0.7
+RESTATED_EMBED_SECONDS = 10.0
+_RESTATED_PREFIX = "restated_claim:"
+_SENTENCE = re.compile(r"\S[\s\S]*?(?:[.!?](?=\s|$)|$)")
+_BOILERPLATE = re.compile(r"^(?:source|left|meta|title)\s*:", re.IGNORECASE)
+_OWNER_RANK = {"section:reference": 0, "section:gotchas": 1, "section:threads": 2}
+
+
+def _claim_sentences(body: str, title: str) -> Iterator[tuple[str, list[int]]]:
+    """Exact sentence spans, omitting short text, headings and metadata lines.
+
+    Join soft-wrapped prose within a paragraph; a boilerplate line terminates
+    the paragraph so it cannot leak into a neighbouring sentence's span.
+    """
+    start = 0
+    paragraph_start: int | None = None
+    ranges: list[tuple[int, int]] = []
+    for line in body.splitlines(keepends=True):
+        clean = line.strip()
+        plain = re.sub(r"^[*_-]+\s*", "", clean).strip("*_ ")
+        excluded = (
+            not clean
+            or clean.startswith("#")
+            or plain == title.strip()
+            or bool(_BOILERPLATE.match(plain))
+        )
+        if excluded and paragraph_start is not None:
+            ranges.append((paragraph_start, start))
+            paragraph_start = None
+        elif not excluded and paragraph_start is None:
+            paragraph_start = start
+        start += len(line)
+    if paragraph_start is not None:
+        ranges.append((paragraph_start, len(body)))
+    for begin, end in ranges:
+        for match in _SENTENCE.finditer(body, begin, end):
+            text = match.group().rstrip()
+            if len(re.findall(r"\b\w+\b", text)) >= 8:
+                yield text, [match.start(), match.start() + len(text)]
+
+
+def _restated_window(
+    store: Store, saved: dict[str, int], size: int
+) -> tuple[int, list[int]]:
+    """One live section:index hub's descendants, excluding nested hubs.
+
+    UNION deduplicates recursive paths, including cycles. Only live memory
+    parents are traversed; a retired summary cannot establish shared scope.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT r.ref_id FROM refs r JOIN ref_tags rt USING (ref_id) "
+            "JOIN tags t USING (tag_id) WHERE r.kind = 'memory' "
+            "AND r.retired_at IS NULL AND t.namespace = 'OPEN' AND t.value = %s "
+            "AND r.ref_id > %s ORDER BY r.ref_id LIMIT 1",
+            (INDEX_TAG, saved.get(_RESTATED_PREFIX + "after_hub", 0)),
+        ).fetchone()
+        if row is None:
+            return 0, []
+        hub = int(row[0])
+        after = (
+            saved.get(_RESTATED_PREFIX + "memory", 0)
+            if saved.get(_RESTATED_PREFIX + "hub") == hub
+            else 0
+        )
+        rows = conn.execute(
+            "WITH RECURSIVE members(ref_id) AS (SELECT %s::bigint UNION "
+            "SELECT r.ref_id FROM members m JOIN links l ON l.dst_ref_id = m.ref_id "
+            "JOIN refs r ON r.ref_id = l.src_ref_id WHERE l.relation = 'part-of' "
+            "AND r.kind = 'memory' AND r.retired_at IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN' AND t.value = %s)) "
+            "SELECT ref_id FROM members WHERE ref_id <> %s AND ref_id > %s "
+            "ORDER BY ref_id LIMIT %s",
+            (hub, INDEX_TAG, hub, after, size),
+        ).fetchall()
+    return hub, [int(row[0]) for row in rows]
+
+
+def _restated_embeddings(store: Store, texts: list[str]) -> list[list[float]]:
+    """Use the configured embedder only if it matches the registry default.
+
+    No cold local model load, mock fallback, LLM route or stored-vector fill.
+    The caller bounds construction, readiness, identity and the batch together.
+    """
+    from precis.config import load_config
+    from precis.embedder import make_embedder_from_config
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT name, dim FROM embedders WHERE is_default = TRUE "
+            "ORDER BY name LIMIT 1"
+        ).fetchone()
+    if row is None:
+        raise RuntimeError("default embedder unavailable")
+    embedder = make_embedder_from_config(load_config(), dim=int(row[1]))
+    if (
+        not getattr(embedder, "is_production", True)
+        or not embedder.is_ready()
+        or embedder.model != str(row[0])
+        or embedder.dim != int(row[1])
+    ):
+        raise RuntimeError("configured embedder is not the ready default embedder")
+    vectors = embedder.embed(texts)
+    array = np.asarray(vectors, dtype=float)
+    if (
+        array.shape != (len(texts), int(row[1]))
+        or not np.isfinite(array).all()
+        or (np.linalg.norm(array, axis=1) == 0).any()
+    ):
+        raise ValueError("default embedder returned invalid vectors")
+    return vectors
+
+
+def restated_claim_candidates(
+    store: Store,
+    *,
+    scan_cap: int = 2000,
+    limit: int = 50,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
+    not_checked: dict[str, str] | None = None,
+) -> list[GardenCandidate]:
+    """Propose one keeper and sentence-to-handle rewrites within a hub window.
+
+    At most 128 sentences (20 per node) are embedded per tick. Candidate
+    pairs resume inside the same window when limit fills; completed windows
+    advance by memory id, completed hubs by hub id. Comparisons stay within
+    each window, not an exhaustive comparison of the corpus.
+    The dispatcher bounds SQL too; the embed batch has its own shorter bound.
+    """
+    if limit <= 0 or scan_cap <= 0:
+        return []
+    saved = dict(cursors or {})
+    size = min(scan_cap, RESTATED_SENTENCE_CAP)
+    hub, window = _restated_window(store, saved, size)
+    if not hub:
+        if next_cursors is not None:
+            next_cursors.update(
+                {
+                    _RESTATED_PREFIX + key: 0
+                    for key in ("hub", "after_hub", "memory", "pair")
+                }
+            )
+        return []
+    refs = store.fetch_refs_by_ids(window)
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT rt.ref_id, t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = ANY(%s) AND t.namespace = 'OPEN' "
+            "AND t.value = ANY(%s)",
+            (window, list(_OWNER_RANK)),
+        ).fetchall()
+    ranks: dict[int, int] = {}
+    for rid, tag in rows:
+        ranks[int(rid)] = min(ranks.get(int(rid), 3), _OWNER_RANK[str(tag)])
+    sentences: list[tuple[int, str, list[int]]] = []
+    shas: dict[str, str] = {}
+    capped: set[int] = set()
+    bodies = {rid: (body, sha) for rid, body, sha in _memory_bodies(store, window)}
+    last = 0
+    window_capped = False
+    for rid in window:
+        if rid not in bodies:
+            last = rid
+            continue
+        body, sha = bodies[rid]
+        spans = list(
+            islice(
+                _claim_sentences(body, refs[rid].title or ""),
+                RESTATED_NODE_SENTENCE_CAP + 1,
+            )
+        )
+        if (
+            len(sentences) + min(len(spans), RESTATED_NODE_SENTENCE_CAP)
+            > RESTATED_SENTENCE_CAP
+        ):
+            window_capped = True
+            break
+        if len(spans) > RESTATED_NODE_SENTENCE_CAP:
+            capped.add(rid)
+        sentences.extend(
+            (rid, text, span) for text, span in spans[:RESTATED_NODE_SENTENCE_CAP]
+        )
+        shas[str(rid)] = sha
+        last = rid
+
+    grouped: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    matches_capped: set[tuple[int, int]] = set()
+    if len({rid for rid, _, _ in sentences}) >= 2:
+        budget = RESTATED_EMBED_SECONDS
+        if (deadline := deadline_at()) is not None:
+            budget = min(budget, max(0.001, deadline - time.monotonic() - 0.1))
+        try:
+            vectors = call_with_deadline(
+                lambda: _restated_embeddings(store, [text for _, text, _ in sentences]),
+                deadline_s=budget,
+                label="garden:restated_claim:embed",
+            )
+        except (RuntimeError, ValueError, OSError, ImportError) as exc:
+            # DeadlineExceeded inherits TimeoutError/OSError. Never turn an
+            # unavailable semantic source into a lexical-only finding.
+            if not_checked is not None:
+                not_checked["restated_claim"] = "embedder_unavailable"
+            log.info("garden: restated_claim not_checked (%s)", type(exc).__name__)
+            return []
+        for i, (a, a_text, a_span) in enumerate(sentences):
+            for j in range(i + 1, len(sentences)):
+                b, b_text, b_span = sentences[j]
+                if a == b:
+                    continue
+                cosine = 1.0 - _cosine(vectors[i], vectors[j])
+                overlap = lexical_overlap(a_text, b_text)
+                if cosine < RESTATED_MIN_COSINE and overlap < RESTATED_MIN_LEXICAL:
+                    continue
+                keeper, target = sorted(
+                    (a, b), key=lambda rid: (ranks.get(rid, 3), rid)
+                )
+                key = (target, keeper)
+                matches = grouped.setdefault(key, [])
+                if len(matches) == RESTATED_MATCH_CAP:
+                    matches_capped.add(key)
+                    continue
+                matches.append(
+                    {
+                        "target": {
+                            "text": a_text if target == a else b_text,
+                            "span": a_span if target == a else b_span,
+                        },
+                        "keeper": {
+                            "text": a_text if keeper == a else b_text,
+                            "span": a_span if keeper == a else b_span,
+                        },
+                        "distance": 1.0 - cosine,
+                        "lexical_overlap": overlap,
+                    }
+                )
+    pairs = sorted(grouped)
+    offset = (
+        saved.get(_RESTATED_PREFIX + "pair", 0)
+        if saved.get(_RESTATED_PREFIX + "hub") == hub
+        else 0
+    )
+    out: list[GardenCandidate] = []
+    for target, keeper in pairs[offset : offset + limit]:
+        matches = grouped[(target, keeper)]
+        ops: list[dict[str, Any]] = []
+        seen: set[tuple[int, ...]] = set()
+        for match in matches:
+            span = match["target"]["span"]
+            if tuple(span) not in seen:
+                seen.add(tuple(span))
+                ops.append(
+                    {
+                        "find": match["target"]["text"],
+                        "span": span,
+                        "text": f"See me{keeper}.",
+                    }
+                )
+        out.append(
+            GardenCandidate(
+                detector="restated_claim",
+                action="rewrite",
+                target_kind="ref",
+                target_id=target,
+                other_id=keeper,
+                title=f"me{target} restates a claim in me{keeper}",
+                evidence={
+                    "hub": f"me{hub}",
+                    "matches": matches,
+                    "content_sha": shas[str(target)],
+                    "keeper_sha": shas[str(keeper)],
+                    "owner_ranks": {
+                        str(rid): ranks.get(rid, 3) for rid in (target, keeper)
+                    },
+                },
+                payload={
+                    "base_sha": shas[str(target)],
+                    "shas": {str(rid): shas[str(rid)] for rid in (target, keeper)},
+                    "keeper": f"me{keeper}",
+                    "ops": ops,
+                    "matches_capped": (target, keeper) in matches_capped,
+                    "match_cap": RESTATED_MATCH_CAP,
+                    "sentences_capped": bool(capped & {target, keeper})
+                    or window_capped,
+                    "sentence_cap": RESTATED_SENTENCE_CAP,
+                },
+            )
+        )
+    if next_cursors is not None:
+        more_pairs = offset + len(out) < len(pairs)
+        more_nodes = window_capped or len(window) == size
+        next_cursors.update(
+            {
+                _RESTATED_PREFIX + "hub": hub if more_pairs or more_nodes else 0,
+                _RESTATED_PREFIX + "after_hub": saved.get(
+                    _RESTATED_PREFIX + "after_hub", 0
+                )
+                if more_pairs or more_nodes
+                else hub,
+                _RESTATED_PREFIX + "memory": saved.get(_RESTATED_PREFIX + "memory", 0)
+                if more_pairs
+                else (last if more_nodes else 0),
+                _RESTATED_PREFIX + "pair": offset + len(out) if more_pairs else 0,
+            }
+        )
     return out
 
 
@@ -2155,6 +2475,8 @@ class DetectorRun:
 
     candidates: list[GardenCandidate] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
+    #: Unavailable evidence sources, separate from verified findings.
+    not_checked: dict[str, str] = field(default_factory=dict)
     cursors: dict[str, int] = field(default_factory=dict)
     skipped_considered: int = 0
 
@@ -2199,6 +2521,7 @@ def run_detectors(
         # Each detector writes its own dict: an abandoned (timed-out)
         # detector's late writes land in a dict nobody reads.
         nxt: dict[str, int] = {}
+        unchecked: dict[str, str] = {}
         if det == "dup_pair":
             fn = partial(
                 duplicate_candidates,
@@ -2260,6 +2583,16 @@ def run_detectors(
                 cursors=saved,
                 next_cursors=nxt,
             )
+        elif det == "restated_claim":
+            fn = partial(
+                restated_claim_candidates,
+                store,
+                scan_cap=scan_cap,
+                limit=limit,
+                cursors=saved,
+                next_cursors=nxt,
+                not_checked=unchecked,
+            )
         elif det == "polysemy":
             fn = partial(polysemy_candidates, store, limit=limit)
         elif det == "sibling_confusion":
@@ -2291,6 +2624,7 @@ def run_detectors(
             continue
         out.candidates += found
         out.cursors.update(nxt)
+        out.not_checked.update(unchecked)
     if considered_days > 0 and out.candidates:
         fresh = freshly_considered(
             store,
@@ -2336,6 +2670,7 @@ __all__ = [
     "paper_identity_candidates",
     "polysemy_candidates",
     "redundant_link_candidates",
+    "restated_claim_candidates",
     "run_detectors",
     "short_sibling_pair",
     "sibling_confusion_candidates",

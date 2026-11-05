@@ -284,7 +284,7 @@ third, the entity normal form last. `blocked-by` edges carry the order.
    with undo, consumer review extended, human hold, the successor-handle
    auto-apply (medium; blocks 6 and 11).
 6. gr560762 — evaluator memory-body mode and the per-type checklist
-   (medium; after 4; blocks 7, 8, 9, 12).
+   (medium; after 4; blocks 7, 8, 9).
 7. gr560763 — `review_due`, `title_shape`, `negative_undated` detectors
    (medium; after 6).
 8. gr560764 — remaining: the `kg-review` ok stamp and `reviewed:` line
@@ -298,8 +298,6 @@ third, the entity normal form last. `blocked-by` edges carry the order.
    after 6).
 11. gr560767 — host facts onto `machine` refs, the spark pass (small;
     after 4).
-12. gr560768 — `restated_claim`, the sentence-level DRY detector (medium;
-    after 6).
 13. gr561019 — `grab_bag` detector, `split` action, `apply_split` with
     undo (large; after 4 and 6).
 14. gr561025 — `compact`: no retire and no dropped sentence before every

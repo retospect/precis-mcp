@@ -56,6 +56,7 @@ _PASS_CHOICES = (
     "siblings",
     "paper-identity",
     "memory",
+    "memory-review",
     "all",
 )
 
@@ -209,6 +210,7 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         "llm_errors": outcome.llm_errors,
         "llm_truncated": outcome.llm_truncated,
         "skipped_detectors": list(outcome.skipped_detectors),
+        "not_checked": dict(outcome.not_checked),
         "proposals_by_detector": dict(outcome.proposals_by_detector),
         # Carried forward: a run over a subset of kinds/passes keeps
         # the other windows where the last run left them.

@@ -62,6 +62,7 @@ MEMORY_ACTIONS = {
     "dangling_mention": ("rewrite",),
     "thread_shape": ("supersede", "retire"),
     "anchor_rot": ("rewrite",),
+    "restated_claim": ("rewrite",),
 }
 _LEGACY_ACTIONS = ("merge", "split", "relink", "prune", "tag")
 
@@ -124,6 +125,17 @@ still-true facts must be preserved. Terminal handles in Left: are evidence
 of stale resume state, not proof that all work is done. SHA ancestry on
 origin/prod has not been checked. Preserve these requirements and SHA pins;
 never refine these candidates to merge or prune.
+
+restated_claim compares individual sentences within one hub, not whole bodies.
+Distance and lexical overlap are hints: check that both spans assert the same
+fact with the same scope, time and polarity. Opposite claims and shared topic
+words are not restatements. Choose one keeper whose type owns the fact:
+reference before gotcha before thread; ties use the lower ref id. The proposed
+keeper follows that order. Accept only if it preserves the entire target claim.
+Replace only the redundant sentence with a pointer to that keeper's live me
+handle; retain surrounding facts. Preserve both SHA pins, both evidence spans
+and the anchored rewrite ops. Reject if ownership or equivalence is unclear.
+This is proposal-only: never merge, retire, apply, or treat not_checked as proof.
 """
 
 

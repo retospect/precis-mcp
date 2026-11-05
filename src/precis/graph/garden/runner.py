@@ -85,6 +85,8 @@ class GardenOutcome:
     #: Detectors skipped on their timeout/budget this tick (gr503580) —
     #: the job summary names them so a partial tick is visible.
     skipped_detectors: list[str] = field(default_factory=list)
+    #: Unavailable evidence sources; never counted as maintenance findings.
+    not_checked: dict[str, str] = field(default_factory=dict)
     #: Proposals written per detector — the round-robin budget's spend.
     proposals_by_detector: dict[str, int] = field(default_factory=dict)
     #: Scan positions for the next run (:attr:`DetectorRun.cursors`).
@@ -135,6 +137,7 @@ def run_garden_tick(
         candidates=len(candidates),
         skipped_considered=run.skipped_considered,
         skipped_detectors=list(run.skipped),
+        not_checked=dict(run.not_checked),
         cursors=dict(run.cursors),
     )
 
