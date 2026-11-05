@@ -1209,11 +1209,16 @@ CADENCES: tuple[Cadence, ...] = (
     # the host's resolved gripe_dispatch prio (Reto lights it); no
     # `eligible` probe — the pass only writes todos, the build picks its
     # own lane at dispatch. spends=False: no model call.
+    # Ships DISABLED: the cadence fires and the lease advances, but the pass
+    # no-ops until a `service_config` row lights `gripe_dispatch` (prio > 0)
+    # for the host — `precis service prio melchior gripe_dispatch 1`. No
+    # `service=` gate on the cadence on purpose (al567129): that gate leaves
+    # the lease unclaimed while dark, which health_digest's cadence-staleness
+    # check reports as "stopped firing" forever.
     Cadence(
         name="gripe_dispatch",
         interval_s=10 * 60,
         run=_run_gripe_dispatch,
-        service="gripe_dispatch",
     ),
     # gr485358 item 1: retire dead section:threads memory nodes — 'Left:
     # none' first lines, nodes another live memory supersedes, and nodes

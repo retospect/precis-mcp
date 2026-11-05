@@ -215,7 +215,9 @@ def test_cadence_and_service_spec() -> None:
 
     cad = next(c for c in CADENCES if c.name == "gripe_dispatch")
     assert cad.interval_s == 10 * 60
-    assert cad.service == "gripe_dispatch" and cad.spends is False
+    # No service= gate: a dark pass must still win its lease, else the
+    # cadence-staleness check reads it as "stopped firing" (al567129).
+    assert cad.service is None and cad.spends is False
     spec = SERVICES_BY_NAME["gripe_dispatch"]
     assert spec.kind is ServiceKind.PASS
     assert not spec.default_profiles and spec.ref_pass is False
