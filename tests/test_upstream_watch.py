@@ -27,10 +27,15 @@ from precis.workers.upstream_watch import (
 
 AUTHOR = "retospect"
 REPO = "speedyk-005/yasbd-lib"
-#: Pinned clock for every pass: the fixture timestamps are absolute, so a
-#: wall-clock "now" slid the since-window past them at the 2026-11-03 UTC
-#: rollover.
+#: Pinned clock for every pass: the fixture timestamps are offsets from
+#: it, so a wall-clock "now" can't slide the since-window past them
+#: (gr568181 — absolute fixture dates expired against the calendar).
 NOW = datetime(2026, 11, 2, 12, 0, tzinfo=UTC)
+
+
+def _ts(dt: datetime) -> str:
+    """GitHub ``...Z`` timestamp for a fixture time derived from NOW."""
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class _FakeGitHub:
@@ -66,14 +71,16 @@ def _item(
     comments: int = 0,
     title: str = "split_sentences breaks on abbreviations",
     pr: bool = False,
-    updated: str = "2026-10-31T18:00:00Z",
+    updated: str | None = None,
 ) -> dict:
     it = {
         "number": number,
         "title": title,
         "state": state,
         "comments": comments,
-        "updated_at": updated,
+        "updated_at": updated
+        if updated is not None
+        else _ts(NOW - timedelta(hours=42)),
         "html_url": f"https://github.com/{repo}/issues/{number}",
         "repository_url": f"https://api.github.com/repos/{repo}",
     }
@@ -85,19 +92,19 @@ def _item(
     return it
 
 
-def _comment(login: str, body: str, *, at: str = "2026-11-01T08:00:00Z") -> dict:
+def _comment(login: str, body: str, *, at: str | None = None) -> dict:
     return {
         "event": "commented",
         "actor": {"login": login},
         "body": body,
-        "created_at": at,
+        "created_at": at if at is not None else _ts(NOW - timedelta(hours=28)),
     }
 
 
-def _cross_ref_pr(url: str, *, at: str = "2026-11-01T09:00:00Z") -> dict:
+def _cross_ref_pr(url: str, *, at: str | None = None) -> dict:
     return {
         "event": "cross-referenced",
-        "created_at": at,
+        "created_at": at if at is not None else _ts(NOW - timedelta(hours=27)),
         "source": {
             "issue": {
                 "html_url": url,
@@ -107,12 +114,14 @@ def _cross_ref_pr(url: str, *, at: str = "2026-11-01T09:00:00Z") -> dict:
     }
 
 
-def _release(tag: str, body: str, *, published: str = "2026-11-01T10:00:00Z") -> dict:
+def _release(tag: str, body: str, *, published: str | None = None) -> dict:
     return {
         "tag_name": tag,
         "name": tag,
         "body": body,
-        "published_at": published,
+        "published_at": published
+        if published is not None
+        else _ts(NOW - timedelta(hours=26)),
         "html_url": f"https://github.com/{REPO}/releases/tag/{tag}",
     }
 

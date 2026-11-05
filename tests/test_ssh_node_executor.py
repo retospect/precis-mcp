@@ -3129,3 +3129,96 @@ def test_cancelling_jobs_respects_node_pin(
     )
     assert ssh_node._cancelling_jobs(store, "spark") == []
     assert [row[0] for row in ssh_node._cancelling_jobs(store, "other-node")] == [rid]
+
+
+def test_cancel_requested_kill_hook_error_recorded(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr568379: a ``spec.kill`` that raises must not chunk as "nothing
+    to signal" — the event carries the exception type and text."""
+
+    def _kill(_ctx: Any, _handle: Any) -> None:
+        raise RuntimeError("plugin stop exploded")
+
+    spec = replace(_kill_reap_spec([], []), kill=_kill)
+    monkeypatch.setattr(ssh_node, "get_job_type", lambda name: spec)
+    _fake_detached_identity(monkeypatch)
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    rid = _mk_cancel_job(store, compute_handle=_identity_handle(), target_node="spark")
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert _status(store, rid) == "cancel_requested"
+    assert _meta(store, rid)["cancel_term_at"]
+    events = _job_events(store, rid)
+    assert any(
+        "FAILED" in t and "RuntimeError" in t and "plugin stop exploded" in t
+        for t in events
+    )
+    assert not any("nothing to signal" in t for t in events)
+
+
+def test_cancel_requested_term_oserror_recorded(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr568379: the executor's own SIGTERM raising ``OSError`` must reach
+    the event chunk — the bare ``except OSError: pass`` dropped it."""
+
+    def _killpg(_pgid: int, _sig: int) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(submit=lambda c, s: None, poll=lambda c, h: False),
+    )
+    _fake_detached_identity(monkeypatch)
+    monkeypatch.setattr(ssh_node.os, "killpg", _killpg)
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    rid = _mk_cancel_job(store, compute_handle=_identity_handle(), target_node="spark")
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert _status(store, rid) == "cancel_requested"
+    assert _meta(store, rid)["cancel_term_at"]
+    events = _job_events(store, rid)
+    assert any(
+        "FAILED" in t
+        and "SIGTERM" in t
+        and "PermissionError" in t
+        and "Operation not permitted" in t
+        for t in events
+    )
+    assert not any("nothing to signal" in t for t in events)
+
+
+def test_cancel_requested_kill_oserror_recorded(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr568379: a failed SIGKILL must not chunk as sent — the event
+    records the ``OSError`` type and text next to the grace note."""
+
+    def _killpg(_pgid: int, _sig: int) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(submit=lambda c, s: None, poll=lambda c, h: False),
+    )
+    _fake_detached_identity(monkeypatch)
+    monkeypatch.setattr(ssh_node.os, "killpg", _killpg)
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    rid = _mk_cancel_job(store, compute_handle=_identity_handle(), target_node="spark")
+    _backdate_cancel_meta(
+        store, rid, cancel_term_at=time.time() - ssh_node._CANCEL_KILL_GRACE_S - 1
+    )
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert _status(store, rid) == "cancel_requested"
+    assert _meta(store, rid)["cancel_kill_at"]
+    events = _job_events(store, rid)
+    assert any(
+        "SIGKILL" in t and "FAILED" in t and "PermissionError" in t for t in events
+    )

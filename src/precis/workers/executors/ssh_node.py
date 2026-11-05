@@ -919,33 +919,37 @@ def _cancel_one(ctx: DispatchContext) -> bool:
                 released=True,
             )
         how = "nothing to signal"
+        signal_error: str | None = None
         if spec is not None and spec.kill is not None:
+            how = f"{spec.name} kill hook"
             try:
                 spec.kill(ctx, handle)
-                how = f"{spec.name} kill hook"
-            except Exception:  # pragma: no cover — defensive
+            except Exception as exc:
                 log.warning(
                     "ssh_node: cancel kill(handle=%r) of job %d raised",
                     handle,
                     ref_id,
                     exc_info=True,
                 )
+                signal_error = f"{type(exc).__name__}: {exc}"
         elif process_handle:
             pgid = _detached_pgid(handle)
             if pgid is not None:
+                how = f"SIGTERM to process group {pgid}"
                 try:
                     os.killpg(pgid, signal.SIGTERM)
-                    how = f"SIGTERM to process group {pgid}"
-                except OSError:
-                    pass
+                except OSError as exc:
+                    signal_error = f"{type(exc).__name__}: {exc}"
+        outcome = f"signalled via {how}"
+        if signal_error is not None:
+            outcome = f"via {how} FAILED: {signal_error}"
         with store.pool.connection() as conn:
             _set_meta(conn, ref_id, cancel_term_at=now)
             _append_chunk(
                 store,
                 ref_id,
                 _JOB_EVENT_KIND,
-                f"runner: cancel requested — stop signalled via {how} "
-                f"(handle {handle!r})",
+                f"runner: cancel requested — stop {outcome} (handle {handle!r})",
                 conn=conn,
             )
             conn.commit()
@@ -980,11 +984,12 @@ def _cancel_one(ctx: DispatchContext) -> bool:
             kill_at = meta.get("cancel_kill_at")
             if kill_at is None:
                 pgid = _detached_pgid(handle)
+                kill_error = ""
                 if pgid is not None:
                     try:
                         os.killpg(pgid, signal.SIGKILL)
-                    except OSError:
-                        pass
+                    except OSError as exc:
+                        kill_error = f" — FAILED: {type(exc).__name__}: {exc}"
                 with store.pool.connection() as conn:
                     _set_meta(conn, ref_id, cancel_kill_at=now)
                     _append_chunk(
@@ -993,7 +998,7 @@ def _cancel_one(ctx: DispatchContext) -> bool:
                         _JOB_EVENT_KIND,
                         f"runner: cancel requested — SIGKILL to process "
                         f"group {pgid} after {_CANCEL_KILL_GRACE_S:.0f}s "
-                        "grace",
+                        f"grace{kill_error}",
                         conn=conn,
                     )
                     conn.commit()
