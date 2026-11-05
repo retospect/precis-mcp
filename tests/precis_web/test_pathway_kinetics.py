@@ -698,7 +698,8 @@ def test_rate_control_zero_values_do_not_name_a_top_step(tmp_path):
     [
         ({"control step": 0, "missing": None}, None, False, False),
         ({"control step": 150.995}, None, False, True),
-        ({"control step": 150.995, "balance": -149.995}, "mf", False, True),
+        ({"control step": 150.995, "balance": -149.995}, "mf", True, True),
+        ({"control step": 3.0, "balance": -2.0}, "mf", True, True),
         ({"NO@fcc": -0.7}, "mf", False, True),
         ({"control step": 1.0}, "mf", True, True),
         ({"control step": 0.99995}, "chain", True, True),
@@ -721,6 +722,14 @@ def test_control_bars_require_usable_values(
     section_id = "rate-control" if field == "drc" else "thermodynamic-control"
     section = html.split(f"<h3 id='kinetics-{section_id}'>", 1)[1].split("<h3", 1)[0]
     assert ("class='kbar'" in section) is usable
+    caution = (
+        "Caution: large offsetting X_RC are sensitive to small changes in the solve."
+    )
+    expected_caution = (
+        field == "drc" and usable and any(abs(value) > 2.0 for value in values.values())
+    )
+    assert (caution in section) is expected_caution
+    assert "unusual X_RC values" not in section
     if usable:
         label = {"mf": "mean-field estimate", "chain": "chain estimate"}.get(
             source, "source was not recorded; the values are unreliable"
@@ -1100,6 +1109,7 @@ def test_rate_control_number_sits_on_the_coloured_fill(tmp_path: Path) -> None:
     ("field", "key", "value", "balance"),
     [
         ("drc", "X_RC", -1.5, {"a->b": 2.0, "b->c": 0.5}),
+        ("drc", "X_RC", -3.0, {"a->b": 4.0}),
         ("thermodynamic_drc", "X_TRC", -249.94, {"a->b": 0.5}),
     ],
 )
@@ -1112,8 +1122,8 @@ def test_out_of_range_bar_clamps_but_keeps_the_true_number(
 ) -> None:
     """|X| beyond the 220 px scale used to draw the same full-width bar as
     everything else; now the fill clamps, the caption says the scale is
-    relative, the section flags itself, and the printed number stays true.
-    X_RC stays within its magnitude guard; X_TRC has no such restriction."""
+    relative, and the printed number stays true. Large offsetting X_RC
+    carries the shared caution; X_TRC retains its unusual-values warning."""
     out = kinetics_payload(
         {"kinetics": _record(**{field: {key: {"NO*->NOH*": value, **balance}}})}
     )
@@ -1129,7 +1139,15 @@ def test_out_of_range_bar_clamps_but_keeps_the_true_number(
     assert int(m.group(1)) <= 220  # the bar is clamped …
     assert m.group(2) == f"{value:+.2f}"  # … the number is not
     assert "scaled to the largest shown" in html
-    # The warning starts above 2.0; X_RC at the guard boundary still scales.
+    # Only X_RC above the caution threshold carries the shared source note.
+    caution = (
+        "Caution: large offsetting X_RC are sensitive to small changes in the solve."
+    )
+    expected_caution = (
+        key == "X_RC" and max(abs(value), *map(abs, balance.values())) > 2.0
+    )
+    assert (caution in html) is expected_caution
+    assert "unusual X_RC values" not in html
     assert (f"unusual {key} values" in html) is (key == "X_TRC")
     # a small value still draws SOMETHING: the fill floors at the number's
     # width rather than vanishing (min-width 0 + the kval chip)

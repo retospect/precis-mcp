@@ -143,9 +143,10 @@ def attach_step_kinetics(links: list[dict[str, Any]], results: dict[str, Any]) -
     chain_drc = _mapping(_mapping(v1.get("drc")).get("X_RC"))
     drc_is_v2 = isinstance(v2.get("drc"), dict)
     drc = _mapping(v2.get("drc")) if drc_is_v2 else chain_drc
-    drc_source = (v2 if drc_is_v2 else v1).get("drc_source")
-    drc_usable = usable_rate_control(drc)
-    drc_note = rate_control_note(drc_source, drc)
+    drc_record = v2 if drc_is_v2 else v1
+    drc_source = drc_record.get("drc_source")
+    drc_usable = usable_rate_control(drc, record=drc_record)
+    drc_note = rate_control_note(drc_source, drc, record=drc_record)
     failure, _, failed_observables, _, _ = _mf_reading(v2)
     mf_failed = failure is not None or (
         "tof_mf" in v2 and _number(v2["tof_mf"]) is None

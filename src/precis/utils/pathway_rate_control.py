@@ -4,6 +4,10 @@ Equal numerical sensitivities do not establish which solve produced them.
 Only the record's explicit source licenses a mean-field or chain label.
 All readers gate control claims before dropping missing values. This module
 also works without the optional engine; it never solves or mutates a record.
+Competing routes or inhibition can give large offsetting X_RC values: their
+magnitude warrants a sensitivity caution, not rejection of a unit-sum map.
+An explicit TOF noise flag for the recorded source does reject X_RC: a
+normalised map cannot make sensitivities about an unresolved rate usable.
 """
 
 from __future__ import annotations
@@ -14,18 +18,33 @@ from typing import Any
 # autocatpath/kinetics.py::degree_of_rate_control's ``sum_tol`` default.
 # The engine exposes a function parameter, not an importable constant.
 RATE_CONTROL_SUM_TOL = 0.05
-# The verdict's existing ill-conditioned guard, retained for every X_RC reader.
+# Above this magnitude, show X_RC values with a sensitivity caution.
 RATE_CONTROL_MAX_ABS = 2.0
 
 
-def usable_rate_control(values: Any) -> bool:
-    """Require bounded, complete finite X_RC summing to one within tolerance."""
+def rate_control_near_noise(record: dict[str, Any] | None) -> bool:
+    """Use only the named solve's TOF flag; unknown sources check both."""
+    if record is None:
+        return False
+    status = record.get("mf_status")
+    mf_noise = isinstance(status, dict) and status.get("tof_near_noise") is True
+    chain_noise = record.get("tof_chain_near_noise") is True
+    source = record.get("drc_source")
+    if source == "mf":
+        return mf_noise
+    if source == "chain":
+        return chain_noise
+    return mf_noise or chain_noise
+
+
+def usable_rate_control(values: Any, *, record: dict[str, Any] | None = None) -> bool:
+    """Reject flagged TOF noise, then require complete finite unit-sum X_RC."""
+    if rate_control_near_noise(record):
+        return False
     if not isinstance(values, dict) or not values:
         return False
     finite = finite_rate_control(values)
     if len(finite) != len(values):
-        return False
-    if any(abs(value) > RATE_CONTROL_MAX_ABS for value in finite.values()):
         return False
     try:
         total = math.fsum(finite.values())
@@ -58,17 +77,29 @@ def finite_rate_control(values: Any) -> dict[str, float]:
 
 
 def rate_control_note(
-    source: Any, values: Any = None, *, thermodynamic: bool = False
+    source: Any,
+    values: Any = None,
+    *,
+    thermodynamic: bool = False,
+    record: dict[str, Any] | None = None,
 ) -> str:
     """Label only usable control, with provenance from the same stored solve."""
     usable = (
         usable_thermodynamic_rate_control(values)
         if thermodynamic
-        else usable_rate_control(values)
+        else usable_rate_control(values, record=record)
     )
     if not usable:
+        if not thermodynamic and rate_control_near_noise(record):
+            return "No usable rate control: the rate is at noise level."
         return "No usable rate control" + (" (X_TRC)." if thermodynamic else ".")
-    return rate_control_source_note(source, thermodynamic=thermodynamic)
+    note = rate_control_source_note(source, thermodynamic=thermodynamic)
+    if not thermodynamic and any(
+        abs(value) > RATE_CONTROL_MAX_ABS
+        for value in finite_rate_control(values).values()
+    ):
+        note += " Caution: large offsetting X_RC are sensitive to small changes in the solve."
+    return note
 
 
 def rate_control_source_note(source: Any, *, thermodynamic: bool = False) -> str:

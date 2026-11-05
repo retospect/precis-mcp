@@ -1083,6 +1083,7 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
     )
     kin = results.get("kinetics")
     v2 = results.get("kinetics_v2")
+    drc_record = kin if isinstance(kin, dict) else {}
     # D8 reader flip: the v2 record answers first; the v1 block fills what
     # the record lacks (``environment_basis``, ``product`` — it holds
     # neither) through a shallow merge — a v1 value survives only where the
@@ -1091,6 +1092,7 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
         merged = dict(kin) if isinstance(kin, dict) else {}
         merged.update({k: val for k, val in v2.items() if val is not None})
         if isinstance(v2.get("drc"), dict):
+            drc_record = v2
             # A v1 source stamp cannot establish provenance for v2 values.
             merged["drc_source"] = v2.get("drc_source")
         else:
@@ -1102,7 +1104,9 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
     if isinstance(kin, dict):
         lines += [
             "",
-            *_solve_lines(kin, product=results.get("target") or target),
+            *_solve_lines(
+                kin, product=results.get("target") or target, drc_record=drc_record
+            ),
         ]
     # gr553328: the solve ran at its own environment — state it beside the
     # profile's gas pricing so the kT·ln(p/p°) difference is on the page.
@@ -1387,7 +1391,12 @@ def _environment_line(env: dict[str, Any], basis: Any) -> str:
     return "Environment: " + "; ".join(parts)
 
 
-def _solve_lines(kin: dict[str, Any], product: str | None = None) -> list[str]:
+def _solve_lines(
+    kin: dict[str, Any],
+    product: str | None = None,
+    *,
+    drc_record: dict[str, Any] | None = None,
+) -> list[str]:
     """The steady-state solve's environment, Q/K and per-step reversibility
     (``results_json['kinetics_v2']`` — the v1 block's fields survive the
     caller's merge where the record lacks them); empty on an older solve
@@ -1415,8 +1424,13 @@ def _solve_lines(kin: dict[str, Any], product: str | None = None) -> list[str]:
     if isinstance(drc, dict) and isinstance(drc.get("X_RC"), dict):
         drc = drc["X_RC"]
     if isinstance(drc, dict):
-        out += ["", rate_control_note(kin.get("drc_source"), drc)]
-        if usable_rate_control(drc):
+        if drc_record is None:
+            drc_record = kin
+        out += [
+            "",
+            rate_control_note(drc_record.get("drc_source"), drc, record=drc_record),
+        ]
+        if usable_rate_control(drc, record=drc_record):
             finite_drc = finite_rate_control(drc)
             out.append(
                 toon.dump(

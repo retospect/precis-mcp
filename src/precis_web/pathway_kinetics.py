@@ -10,9 +10,12 @@ parity gate. When catpath's panel changes, re-sync the port and companion
 renderer ``static/pathway-kinetics.js``.
 
 ``stored_kinetics_verdict`` gates a copy before calling that port and adds
-source notes from the same record's explicit stamps. Stored X_RC requires
-complete finite values, the engine sum tolerance and the verdict's existing
-magnitude guard; X_TRC needs complete finite values but has no sum rule.
+source notes from the same record's explicit stamps. Stored X_RC rejects the
+source's TOF noise flag before requiring complete finite values and the engine
+sum tolerance. Large offsetting values
+get a ranking and caution instead of the engine port's legacy magnitude
+refusal; X_TRC needs complete finite values but has no sum or TOF noise rule.
+Its existing browser magnitude banner remains separate.
 The payload uses the same predicates to gate bars. No reader recomputes or
 modifies stored data.
 
@@ -32,6 +35,8 @@ import re
 from typing import Any
 
 from precis.utils.pathway_rate_control import (
+    RATE_CONTROL_MAX_ABS,
+    finite_rate_control,
     rate_control_note,
     usable_rate_control,
     usable_thermodynamic_rate_control,
@@ -188,9 +193,8 @@ def kinetics_verdict(d: dict[str, Any]) -> dict[str, Any]:
         key=lambda kv: -abs(kv[1]),
     )
     if rc and abs(rc[0][1]) > 2.0:
-        # X_RC is a normalised sensitivity: single steps live in 0..1 and the
-        # set sums to ~1. Decades outside that is not a strong dependence, it
-        # is an ill-conditioned solve, and must not be read as a ranking.
+        # Legacy engine wording is pinned by parity. Stored readers replace
+        # this refusal for usable maps in stored_kinetics_verdict.
         lines.append(
             f"Rate control is UNUSABLE here: the largest X_RC is {rc[0][0]} "
             f"at {rc[0][1]:+.2f}, far outside the physical 0-1 range, which "
@@ -262,21 +266,40 @@ def kinetics_verdict(d: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def stored_kinetics_verdict(d: dict[str, Any]) -> dict[str, Any]:
+def stored_kinetics_verdict(
+    d: dict[str, Any], *, drc_record: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Gate stored control on a copy, preserving the verbatim engine port."""
     gated = dict(d)
     drc = _dict(d.get("drc"))
     trc = _dict(d.get("thermodynamic_drc"))
-    if not usable_rate_control(drc.get("X_RC")):
+    if drc_record is None:
+        drc_record = d
+    drc_usable = usable_rate_control(drc.get("X_RC"), record=drc_record)
+    if not drc_usable:
         gated["drc"] = {key: value for key, value in drc.items() if key != "X_RC"}
     if not usable_thermodynamic_rate_control(trc.get("X_TRC")):
         gated["thermodynamic_drc"] = {
             key: value for key, value in trc.items() if key != "X_TRC"
         }
     verdict = kinetics_verdict(gated)
+    if drc_usable:
+        finite_drc = finite_rate_control(drc["X_RC"])
+        step = max(finite_drc, key=lambda key: abs(finite_drc[key]))
+        value = finite_drc[step]
+        if abs(value) > RATE_CONTROL_MAX_ABS:
+            # Preserve the engine port and all unrelated verdict sentences.
+            verdict["lines"] = [
+                f"Rate control sits on {step} (X_RC = {value:+.2f})."
+                if line.startswith("Rate control is UNUSABLE here:")
+                else line
+                for line in verdict["lines"]
+            ]
     verdict["lines"].extend(
         [
-            rate_control_note(d.get("drc_source"), drc.get("X_RC")),
+            rate_control_note(
+                drc_record.get("drc_source"), drc.get("X_RC"), record=drc_record
+            ),
             rate_control_note(
                 d.get("trc_source"), trc.get("X_TRC"), thermodynamic=True
             ),
@@ -625,7 +648,7 @@ def kinetics_payload(
     v2 = results.get("kinetics_v2")
     drc_source: str | None = None
     trc_source: str | None = None
-    drc_record = d
+    drc_record = dict(d)
     classes: list[dict[str, Any]] = []
     if isinstance(v2, dict):
         # the record's flat ``drc``/``trc`` are the MF solve's values when it
@@ -717,11 +740,11 @@ def kinetics_payload(
     }
     drc_values = _dict(_dict(d.get("drc")).get("X_RC"))
     recorded_source = drc_record.get("drc_source")
-    drc_note = rate_control_note(recorded_source, drc_values)
+    drc_note = rate_control_note(recorded_source, drc_values, record=drc_record)
     trc_values = _dict(_dict(d.get("thermodynamic_drc")).get("X_TRC"))
     recorded_trc_source = d.get("trc_source")
     trc_note = rate_control_note(recorded_trc_source, trc_values, thermodynamic=True)
-    verdict = stored_kinetics_verdict(d_verdict)
+    verdict = stored_kinetics_verdict(d_verdict, drc_record=drc_record)
     sens = _dict(d.get("sensitivity"))
     br = _dict(d.get("tof_bracket")) or None
     warns = _strlist(d.get("warnings"))
@@ -762,7 +785,7 @@ def kinetics_payload(
             "drc_source": drc_source,
             "drc_source_recorded": recorded_source,
             "drc_note": drc_note,
-            "drc_usable": usable_rate_control(drc_values),
+            "drc_usable": usable_rate_control(drc_values, record=drc_record),
             "trc": _dict(_dict(d.get("thermodynamic_drc")).get("X_TRC")),
             "trc_source": trc_source,
             "trc_source_recorded": recorded_trc_source,

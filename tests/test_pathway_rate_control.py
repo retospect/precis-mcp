@@ -10,24 +10,32 @@ from typing import Any
 
 import pytest
 
+from precis.utils.pathway_rate_control import rate_control_note, usable_rate_control
 from precis_pathway._dispatch_common import _kinetics_scalars
 from precis_pathway.toon_views import kinetics_sweep_text, kinetics_text
 from precis_web.pathway_kinetics import kinetics_payload, stored_kinetics_verdict
 from precis_web.pathway_step_kinetics import attach_step_kinetics
 
+CONTROL_CAUTION = (
+    "Caution: large offsetting X_RC are sensitive to small changes in the solve."
+)
+
 CONTROL_CASES = [
     pytest.param({"A->B": 0.0, "B->C": None}, None, False, id="zero-and-null"),
     pytest.param({"A->B": 150.995}, None, False, id="sum-150.995"),
     pytest.param(
-        {"A->B": 150.995, "B->C": -149.995}, "mf", False, id="ill-conditioned-unit-sum"
+        {"A->B": 150.995, "B->C": -149.995}, "mf", True, id="ill-conditioned-unit-sum"
     ),
     pytest.param({"A->B": 2.0, "B->C": -1.0}, "mf", True, id="magnitude-edge"),
     pytest.param(
         {"A->B": math.nextafter(2.0, math.inf), "B->C": -1.0},
         "mf",
-        False,
+        True,
         id="above-magnitude-edge",
     ),
+    pytest.param({"A->B": 3.0, "B->C": -2.0}, "mf", True, id="offsetting-mf"),
+    pytest.param({"A->B": 3.0, "B->C": -2.0}, "chain", True, id="offsetting-chain"),
+    pytest.param({"A->B": 3.0, "B->C": -2.0}, None, True, id="offsetting-no-source"),
     pytest.param({"A->B": 0.8, "B->C": 0.2}, "mf", True, id="mf-unit-sum"),
     pytest.param({"A->B": 0.8, "B->C": 0.19995}, "chain", True, id="chain-0.99995"),
     pytest.param({"A->B": 1.0}, None, True, id="unit-sum-no-source"),
@@ -50,6 +58,145 @@ CONTROL_CASES = [
 ]
 
 
+def _assert_control_caution(text, values, usable):
+    expected = usable and any(abs(value) > 2.0 for value in values.values())
+    assert (CONTROL_CAUTION in text) is expected
+    assert "UNUSABLE" not in text
+    assert "outside the physical 0-1 range" not in text
+
+
+@pytest.mark.parametrize(
+    ("flags", "usable"),
+    [
+        pytest.param(
+            {"drc_source": "mf", "mf_status": {"tof_near_noise": True}},
+            False,
+            id="mf-noise",
+        ),
+        pytest.param(
+            {
+                "drc_source": "chain",
+                "mf_status": {"tof_near_noise": True},
+                "tof_chain_near_noise": False,
+            },
+            True,
+            id="chain-ignores-mf-noise",
+        ),
+        pytest.param(
+            {"drc_source": "chain", "tof_chain_near_noise": True},
+            False,
+            id="chain-noise",
+        ),
+        pytest.param(
+            {"drc_source": "mf", "tof_chain_near_noise": True},
+            True,
+            id="mf-ignores-chain-noise",
+        ),
+        pytest.param(
+            {"mf_status": {"tof_near_noise": True}}, False, id="no-source-mf-noise"
+        ),
+        pytest.param({"tof_chain_near_noise": True}, False, id="no-source-chain-noise"),
+        pytest.param(
+            {"drc_source": "unknown", "mf_status": {"tof_near_noise": True}},
+            False,
+            id="unknown-source-mf-noise",
+        ),
+        pytest.param(
+            {"drc_source": "unknown", "tof_chain_near_noise": True},
+            False,
+            id="unknown-source-chain-noise",
+        ),
+        pytest.param({}, True, id="no-flags"),
+        pytest.param({"drc_source": "mf"}, True, id="mf-no-flags"),
+        pytest.param({"drc_source": "chain"}, True, id="chain-no-flags"),
+    ],
+)
+@pytest.mark.parametrize("values", [{"A->B": 1.0}, {"A->B": 150.995, "B->C": -149.995}])
+def test_tof_noise_gates_all_stored_control_readers(flags, usable, values):
+    record = {"tof_mf": 1e-3, "drc": values, "trc": {"A": -0.7}, **flags}
+    meta = _meta(record)
+    before = copy.deepcopy(meta)
+    assert usable_rate_control(values, record=record) is usable
+    note = rate_control_note(record.get("drc_source"), values, record=record)
+    scalars = _kinetics_scalars(meta["results"])
+    body = kinetics_text(meta)
+    payload = kinetics_payload(meta["results"])
+    assert payload is not None
+    panel = payload["ml"]
+    links: list[dict[str, Any]] = [{"source": "A", "target": "B"}]
+    attach_step_kinetics(links, meta["results"])
+    step = links[0]["step_kinetics"]
+    # The stored-verdict API takes the v1-shaped map, with the same flags.
+    verdict = stored_kinetics_verdict({"tof": 1e-3, "drc": {"X_RC": values}, **flags})
+    for text in (
+        note,
+        scalars["drc_note"],
+        body,
+        panel["drc_note"],
+        step["drc_note"],
+        "\n".join(panel["verdict"]["lines"]),
+        "\n".join(verdict["lines"]),
+    ):
+        _assert_control_caution(text, values, usable)
+        noise_note = "No usable rate control: the rate is at noise level."
+        assert (noise_note in text) is (not usable)
+    assert ("drc_top" in scalars) is usable
+    assert ("X_RC" in body) is usable
+    assert ("X_RC" in step["quantities"]) is usable
+    assert panel["drc_usable"] is usable
+    for result in (verdict, panel["verdict"]):
+        assert any("Rate control sits on" in line for line in result["lines"]) is usable
+    # Noise policy is X_RC-only, even when both controls share a record.
+    assert panel["trc_usable"] is True
+    assert meta == before
+
+
+@pytest.mark.parametrize("v2_has_drc", [False, True])
+def test_noise_flags_follow_the_control_record_across_v1_v2_merges(v2_has_drc):
+    values = {"A->B": 1.0}
+    v1: dict[str, Any] = {"tof": 1e-3, "drc": {"X_RC": values}, "drc_source": "mf"}
+    v2: dict[str, Any] = {"tof_mf": 1e-3, "drc_source": "mf"}
+    if v2_has_drc:
+        v2["drc"] = values
+        v1["mf_status"] = {"tof_near_noise": True}
+    else:
+        v2["mf_status"] = {"tof_near_noise": True}
+    meta = _meta(v2)
+    meta["results"]["kinetics"] = v1
+    before = copy.deepcopy(meta)
+    assert _kinetics_scalars(meta["results"])["drc_top"] == "A->B"
+    assert "No usable rate control." not in kinetics_text(meta)
+    payload = kinetics_payload(meta["results"])
+    assert payload is not None
+    panel = payload["ml"]
+    assert panel["drc_usable"] is True
+    assert "No usable rate control." not in panel["verdict"]["lines"]
+    links: list[dict[str, Any]] = [{"source": "A", "target": "B"}]
+    attach_step_kinetics(links, meta["results"])
+    assert "X_RC" in links[0]["step_kinetics"]["quantities"]
+    assert meta == before
+
+
+@pytest.mark.parametrize(("values", "source", "usable"), CONTROL_CASES)
+def test_control_usability_and_caution(values, source, usable):
+    assert usable_rate_control(values) is usable
+    note = rate_control_note(source, values)
+    _assert_control_caution(note, values, usable)
+    if usable:
+        label = {
+            "mf": "Rate control: mean-field estimate.",
+            "chain": "Rate control: chain estimate.",
+        }.get(
+            source, "Rate control source was not recorded; the values are unreliable."
+        )
+        expected = label
+        if any(abs(value) > 2.0 for value in values.values()):
+            expected += " " + CONTROL_CAUTION
+        assert note == expected
+    else:
+        assert note == "No usable rate control."
+
+
 @pytest.mark.parametrize(("values", "source", "usable"), CONTROL_CASES)
 def test_stored_verdict_gates_control_without_mutating_record(values, source, usable):
     record = {
@@ -59,6 +206,7 @@ def test_stored_verdict_gates_control_without_mutating_record(values, source, us
     }
     before = copy.deepcopy(record)
     verdict = stored_kinetics_verdict(record)
+    _assert_control_caution("\n".join(verdict["lines"]), values, usable)
     assert any("Rate control sits on" in line for line in verdict["lines"]) is usable
     assert ("No usable rate control." in verdict["lines"]) is (not usable)
     if usable:
@@ -88,6 +236,14 @@ def test_control_rule_across_stored_readers(values, source, usable, version):
     links: list[dict[str, Any]] = [{"source": "A", "target": "B"}]
     attach_step_kinetics(links, meta["results"])
     step = links[0]["step_kinetics"]
+    for text in (
+        scalars["drc_note"],
+        body,
+        panel["drc_note"],
+        step["drc_note"],
+        "\n".join(panel["verdict"]["lines"]),
+    ):
+        _assert_control_caution(text, values, usable)
     assert ("X_RC" in step["quantities"]) is usable
     assert panel["drc_usable"] is usable
     assert ("drc_top" in scalars) is usable
@@ -101,6 +257,9 @@ def test_control_rule_across_stored_readers(values, source, usable, version):
         assert label in panel["drc_note"]
         assert label in step["drc_note"]
         assert label in step["quantities"]["X_RC"]["solve"]
+        _assert_control_caution(step["quantities"]["X_RC"]["solve"], values, usable)
+        assert step["quantities"]["X_RC"]["value"] == values["A->B"]
+        assert panel["drc"] == values
         assert scalars["drc_top"] == "A->B"
     else:
         assert scalars["drc_note"] == "No usable rate control."
@@ -126,6 +285,7 @@ def test_sweep_requires_the_complete_control_map(values, source, usable):
     }
     before = copy.deepcopy(meta)
     body = kinetics_sweep_text(meta)
+    _assert_control_caution(body, values, usable)
     assert ("drc_top A->B" in body) is usable
     if not usable:
         assert "No usable rate control." in body
@@ -185,6 +345,8 @@ def test_thermodynamic_control_requires_only_complete_finite_values(
     payload = kinetics_payload(results)
     assert payload is not None
     panel = payload["ml"]
+    assert "Caution:" not in panel["trc_note"]
+    assert CONTROL_CAUTION not in "\n".join(panel["verdict"]["lines"])
     assert panel["trc_usable"] is usable
     assert panel["trc_source_recorded"] == source
     if usable:
@@ -368,3 +530,11 @@ def test_kinetics_view_staleness_uses_the_solve_stamp(
     meta = _meta(record)
     meta["autocatpath_version"] = "0.49.0"
     assert expected in kinetics_text(meta)
+
+
+def test_noise_refusal_says_why() -> None:
+    """A flagged row must not read as a failed solve."""
+    record = {"drc_source": "chain", "tof_chain_near_noise": True}
+    note = rate_control_note("chain", {"A->B": 1.0}, record=record)
+    assert note == "No usable rate control: the rate is at noise level."
+    assert rate_control_note("chain", {"A->B": 0.5}) == "No usable rate control."

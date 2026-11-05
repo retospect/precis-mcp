@@ -651,9 +651,8 @@
   // rate-control bars (gr549763): a colour legend, the value ON the fill
   // itself (the fill carries the number, floored at the number's width so
   // even a tiny |X| shows its figure on the colour), bars scaled to the
-  // section's largest |X| so magnitude survives clipping, and an unusable
-  // banner the moment a value leaves the physical range -- |X_RC| above ~2
-  // is a broken linearisation, not a strong effect
+  // section's largest |X| so magnitude survives clipping. The shared source
+  // note carries the X_RC sensitivity caution; X_TRC keeps its own banner.
   const srcName = s => s === "mf" ? "mean-field solve"
                              : s === "chain" ? "chain solve" : null;
   const bars = (obj, pos, neg, what, src) => {
@@ -666,14 +665,10 @@
     // relative to the section's largest value and the caption says so
     const scale = 220 / Math.max(maxAbs, 1);
     let out = "";
-    if (maxAbs > 2)
+    if (what === "X_TRC" && maxAbs > 2)
       out += "<div class='kguard'>&#9888; unusual " + esc2(what) +
         " values (largest |value| = " + maxAbs.toFixed(2) +
-        "): " + (what === "X_RC"
-          ? "X_RC is a normalised sensitivity that usually sums to ~1 " +
-            "-- values this far out can signal inhibition or an " +
-            "ill-conditioned solve rather than strong control"
-          : "values this large are rare for a well-behaved solve") +
+        "): values this large are rare for a well-behaved solve" +
         " &mdash; read with care.</div>";
     out += all.slice(0, 6).map(kv => {
       const w = Math.abs(kv[1]) * scale;

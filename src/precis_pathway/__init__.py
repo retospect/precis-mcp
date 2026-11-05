@@ -74,6 +74,12 @@ barrier/span, ``selectivity_margin``/``trap_margin``/``poison_margin``
 (``electro_trusted``/``electro_note``; an untrusted value is stashed as
 ``{key}_untrusted_value``), and trust-gated kinetics scalars
 ``tof``/``log_tof``/band, ``kinetics_trusted``/``kinetics_note``/``drc_top``.
+Stored X_RC readers use ``precis.utils.pathway_rate_control`` to refuse the
+recorded source's TOF noise flag before checking the complete map's unit sum.
+Unknown sources check both flags; missing flags do not refuse. Large offsetting
+values only caution, since inhibition can produce them even with a resolved
+rate. Readers retain the control map's original record across v1/v2 merges so
+another solve's flags cannot decide its usability. X_TRC keeps its own rule.
 
 ``surface_pourbaix`` + ``coverage_job`` are the surface-Pourbaix inner loop
 (``docs/backlog/surface-pourbaix-staircase-optimizer.md`` slice 1): the

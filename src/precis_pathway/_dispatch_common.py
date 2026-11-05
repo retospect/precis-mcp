@@ -379,8 +379,10 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
         drc_values = drc.get("X_RC") if isinstance(drc, dict) else None
         drc_record = kin
     out["drc_source"] = drc_record.get("drc_source")
-    out["drc_note"] = rate_control_note(out["drc_source"], drc_values)
-    if usable_rate_control(drc_values):
+    out["drc_note"] = rate_control_note(
+        out["drc_source"], drc_values, record=drc_record
+    )
+    if usable_rate_control(drc_values, record=drc_record):
         finite_drc = finite_rate_control(drc_values)
         out["drc_top"] = max(finite_drc, key=lambda k: abs(finite_drc[k]))
 
