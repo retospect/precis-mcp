@@ -999,6 +999,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "paper_pull",
     "paper_ingest",
     "paper_reextract",
+    "pres_reextract",
     "pdf_attach",
     "deferred_llm_call",
     "survey_extract",
@@ -1191,6 +1192,11 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "paper_reextract":
         _REGISTRY["paper_reextract"] = _load_paper_reextract()
         return _REGISTRY["paper_reextract"]
+    if name == "pres_reextract":
+        from precis.workers.job_types.pres_reextract import SPEC
+
+        _REGISTRY["pres_reextract"] = SPEC
+        return SPEC
     if name == "youtube_bulk":
         _REGISTRY["youtube_bulk"] = _load_youtube_bulk()
         return _REGISTRY["youtube_bulk"]

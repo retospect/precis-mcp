@@ -30,9 +30,11 @@ Tag lists repeat the scalar operation inside one store transaction, like
 numeric-ref kinds, so a missing deck cannot leave a partially tagged batch.
 The runtime already repeats metadata edits with the same atomic contract.
 
-PDF ingest (auto-chunk a slide PDF into per-slide blocks) is a
-follow-up — see ``cluster/playbooks/27-extract-watch.yml`` for
-the watch-and-extract pattern the new_pres drop folder will reuse.
+PDF ingest uses fitz, one page per slide. Low-text pages are counted in
+``meta.image_only_pages`` and shown on the overview. The explicit
+``edit(args={'reextract': True})`` door queues ``pres_reextract``; it
+does not run OCR. The worker preserves unchanged slide handles and only
+swaps changed bodies after extraction succeeds.
 """
 
 from __future__ import annotations
@@ -65,7 +67,7 @@ from precis.handlers._slug_ref_shared import (
     render_slug_ref_list,
     resolve_live_slug_ref,
 )
-from precis.protocol import Handler, KindSpec
+from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store.types import ChunkInsert
 from precis.utils import handle_registry
@@ -90,6 +92,7 @@ class PresentationHandler(Handler):
     #: ``edit(id=[...])`` repeats the same edit per id in one transaction
     #: (gr514482); the method itself keeps its scalar-id signature.
     edit_id_list: ClassVar[str] = "repeat"
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {"edit": ArgsSpec({"reextract"})}
 
     spec: ClassVar[KindSpec] = KindSpec(
         kind="pres",
@@ -113,12 +116,14 @@ class PresentationHandler(Handler):
         id_required=False,
         note_like=True,
         placement="corpus",
+        can_own_jobs=True,
     )
 
     def __init__(self, *, hub: Hub) -> None:
         if hub.store is None:
             raise InitError("pres: store required")
         self.store = hub.store
+        self.hub = hub
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
         # First entry is the conventional default (overview). ``full``
@@ -366,10 +371,10 @@ class PresentationHandler(Handler):
 
     # ── edit: attribution metadata (for citing slides) ──────────────
 
-    def edit(  # type: ignore[override]
+    def edit(
         self,
         *,
-        id: str | int,
+        id: str | int | None = None,
         title: str | None = None,
         authors: Any = None,
         venue: str | None = None,
@@ -378,6 +383,7 @@ class PresentationHandler(Handler):
         note: str | None = None,
         bibtex_type: str | None = None,
         meta: dict[str, Any] | None = None,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         """Edit a deck's attribution metadata so slides can be cited.
@@ -387,7 +393,7 @@ class PresentationHandler(Handler):
         (a list of name strings), ``venue`` (BibTeX ``howpublished``),
         ``date``, ``url``, ``note``, and ``bibtex_type``
         (``misc`` / ``unpublished`` / ``inproceedings``). Body blocks
-        are never touched — this is metadata only.
+        are only refreshed by the explicit reextract job door.
 
         Only the fields passed are changed; a ``None`` field is left
         as-is (the web form's "leave blank to keep" contract). Passing
@@ -395,10 +401,31 @@ class PresentationHandler(Handler):
         ``authors=[]`` clears the author list. Feeds
         ``get(view='bibtex')``.
         """
+        if id is None:
+            raise BadInput(
+                "edit(kind='pres') needs a deck id",
+                next="edit(kind='pres', id='pr<id>', args={'reextract': True})",
+            )
         address = (
             handle_registry.format_handle("pres", id) if isinstance(id, int) else id
         )
         ref = resolve_live_slug_ref(self.store, kind="pres", id=address)
+
+        if args and "reextract" in args:
+            if args["reextract"] is not True:
+                raise BadInput(
+                    "reextract must be true",
+                    next="edit(kind='pres', id='pr<id>', args={'reextract': True})",
+                )
+            if any(
+                value is not None
+                for value in (title, authors, venue, date, url, note, bibtex_type, meta)
+            ):
+                raise BadInput(
+                    "reextract cannot be combined with metadata edits",
+                    next="edit metadata in a separate call, then request reextract",
+                )
+            return self._reextract(ref)
 
         patch: dict[str, Any] = {}
         if authors is not None:
@@ -437,6 +464,36 @@ class PresentationHandler(Handler):
             ]
         )
         return Response(body=body)
+
+    def _reextract(self, ref: Any) -> Response:
+        """Queue a fitz-only refresh; never drop the body at submit time."""
+        from precis.workers.job_types import pres_reextract
+
+        handle = handle_registry.format_handle("pres", ref.id)
+        sha = ref.pdf_sha256
+        if not sha or self.store.pdf_missing(sha):
+            raise BadInput(
+                f"{handle} has no stored source PDF available to re-extract",
+                next="ingest the source PDF as a presentation, or restore its "
+                "stored file into the corpus, then retry reextract",
+            )
+        response = self.hub.sibling("job").put(
+            job_type=pres_reextract.JOB_TYPE,
+            executor="job_inproc",
+            parent_id=ref.id,
+            params={"ref_id": ref.id, "pdf_sha256": sha},
+            idem_key=pres_reextract.idem_key(ref.id, sha),
+        )
+        state = "already queued" if getattr(response, "reused", False) else "queued"
+        return Response(
+            body=f"{state}: pres_reextract for {handle}; "
+            f"watch get(kind='job', id={response.ref_id}). "
+            "Reads the stored PDF with fitz only; no OCR or model calls. "
+            "A truly image-only deck stays textless: reextract refreshes its "
+            "low-text page count only. Unchanged slides keep their handles; "
+            "changed slides replace the body and remove old chunk links. "
+            "The current body survives extraction failure."
+        )
 
     # ── delete / tag / link ──────────────────────────────────────────
 
@@ -623,6 +680,32 @@ class PresentationHandler(Handler):
         lines.append("")
         lines.append(f"{n_blocks} block{'s' if n_blocks != 1 else ''}")
         lines.append(pdf_overview_line(self.store, ref))
+        if "image_only_pages" in meta:
+            from precis.ingest.pres import MIN_PRES_TEXT_CHARS
+
+            count = meta["image_only_pages"]
+            lines.append(
+                f"text: {count} pages have no or little extractable text "
+                f"(<{MIN_PRES_TEXT_CHARS} non-whitespace characters)."
+                + render_next_section(
+                    [
+                        (
+                            f"get(id='{handle}', view='pdf_link')"
+                            if count
+                            else f"get(id='{handle}/full')",
+                            "inspect the stored PDF; OCR is needed to recover "
+                            "image text."
+                            if count
+                            else "read the slides.",
+                        ),
+                        (
+                            f"edit(kind='pres', id='{handle}', "
+                            "args={'reextract': True})",
+                            "Refresh; fitz only, no OCR.",
+                        ),
+                    ]
+                )
+            )
         lines.append(self._tags_line(ref.id))
         body = "\n".join(lines)
         next_steps = [

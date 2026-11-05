@@ -134,6 +134,7 @@ def test_convert_keeps_pdf_moves_identifiers_and_rechunks_pages(
     assert "retir" in response.body.lower()
     assert deck.path.read_bytes() == pdf_bytes
     assert store.pdf_storage_path(deck.sha) == str(deck.path)
+    assert store.fetch_refs_by_ids([new_id])[new_id].meta["image_only_pages"] == 1
     with store.pool.connection() as conn:
         assert conn.execute(
             "SELECT pdf_sha256 FROM refs WHERE ref_id = %s", (new_id,)
@@ -238,6 +239,7 @@ def test_conversion_carries_allowed_tags_and_links(
     assert _tags(store, new_id) == {
         "OPEN:topic:conversion",
         "OPEN:subtype:slides",
+        "OPEN:ocr:needed",
         "SRC:primary",
     }
     with store.pool.connection() as conn:

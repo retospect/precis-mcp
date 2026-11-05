@@ -23,6 +23,7 @@ import pytest
 from precis.identity import make_pdf_sha256
 from precis.ingest.add import PresInput, precis_add
 from precis.ingest.pres import (
+    MIN_PRES_TEXT_CHARS,
     PresSlide,
     PresToWrite,
     _resolve_pres_slug,
@@ -395,6 +396,35 @@ class TestExtractPresPages:
     """extract_pres yields exactly one slide per PDF page (the bug this
     replaced collapsed a whole deck onto 1-2 slides because the Marker
     path re-derived pages from a TOC decks don't have)."""
+
+    def test_counts_empty_and_low_text_pages_at_threshold(self, tmp_path: Path):
+        pdf = _make_pdf(
+            ["", "7", "A B", "x" * MIN_PRES_TEXT_CHARS],
+            tmp_path / "mixed.pdf",
+        )
+        result = extract_pres(pdf)
+        assert result.meta["image_only_pages"] == 3
+        assert len(result.slides) == 4
+        assert result.slides[-1].text == "x" * MIN_PRES_TEXT_CHARS
+
+    def test_image_only_pdf_is_flagged_without_ocr(self, tmp_path: Path):
+        import fitz
+
+        pdf = tmp_path / "image-only.pdf"
+        with fitz.open() as doc:
+            pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 32, 32), False)
+            pix.clear_with(128)
+            for _ in range(2):
+                page = doc.new_page()
+                page.insert_image(page.rect, pixmap=pix)
+            doc.save(str(pdf))
+        result = extract_pres(pdf)
+        assert result.meta["image_only_pages"] == 2
+        assert [s.text for s in result.slides] == ["", ""]
+
+    def test_text_deck_has_zero_low_text_pages(self, tmp_path: Path):
+        pdf = _make_pdf(["A readable slide with enough text"], tmp_path / "text.pdf")
+        assert extract_pres(pdf).meta["image_only_pages"] == 0
 
     def test_latexit_payload_removed_with_adjacent_prose_preserved(
         self, tmp_path: Path

@@ -243,6 +243,29 @@ def test_paper_retire_force_is_an_edit_arg_not_a_mode(
     assert PaperHandler.spec.edit_modes is None
 
 
+def test_pres_reextract_args_reach_edit_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.handlers.presentation import PresentationHandler
+
+    captured: dict[str, Any] = {}
+
+    def capture(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
+        assert verb == "edit"
+        captured.update(payload)
+        return "captured"
+
+    monkeypatch.setattr(tools_core, "_dispatch", capture)
+    assert (
+        tools_core.edit(kind="pres", id="pr1", args={"reextract": True}) == "captured"
+    )
+    assert captured["__extras__"] == {"reextract": True}
+    assert "args" in signature(tools_core.edit).parameters
+    assert "args" in signature(PresentationHandler.edit).parameters
+    assert PresentationHandler.ARGS_KEYS["edit"] == frozenset({"reextract"})
+    assert PresentationHandler.spec.edit_modes is None
+
+
 @pytest.fixture
 def full_hub(store: Store) -> Iterator[Hub]:
     """Every store-backed handler registered — the real dispatch registry,

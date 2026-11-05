@@ -2278,6 +2278,10 @@ def _ingest_pres_pdf(
     # subtype:slides + caller tags, in one apply so the validation
     # batch is one round-trip.
     tags_to_apply: tuple[str, ...] = ("subtype:slides", *input.extra_tags)
+    if pres.meta.get("image_only_pages", 0):
+        from precis.ingest.pres import OCR_NEEDED_TAG
+
+        tags_to_apply += (OCR_NEEDED_TAG,)
     _apply_extra_tags(store, "pres", result.ref_id, tags_to_apply)
 
     return IngestResult(

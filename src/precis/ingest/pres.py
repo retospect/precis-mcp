@@ -11,8 +11,8 @@ Public surface:
 * :class:`PresToWrite` — what :func:`write_pres` consumes (parallel to
   :class:`precis.ingest.db_writer.PaperToWrite`).
 * :class:`PresWriteResult` — what :func:`write_pres` returns.
-* :func:`extract_pres` — pipeline producer; runs Marker, groups blocks
-  by page, mints slide titles.
+* :func:`extract_pres` — pipeline producer; reads each page with fitz
+  and mints slide titles without OCR or model calls.
 * :func:`write_pres` — atomic INSERT cascade (refs + ref_identifiers +
   chunks). Caller owns the transaction.
 
@@ -28,6 +28,12 @@ suffixes ``-2``, ``-3``, … with a warning log. The numeric suffix
 diverges from :func:`precis.identity.make_cite_key`'s ``a/b/c`` style
 on purpose — pres slugs are user-typed in directory paths and
 ``lecture-3-2`` reads more naturally than ``lecture-3a``.
+
+``meta.image_only_pages`` counts cleaned bodies below
+``MIN_PRES_TEXT_CHARS`` non-whitespace characters. This low-text heuristic
+also catches blank pages and slide-number-only pages; it does not prove
+an image is present. ``ocr:needed`` is an allowed open tag on ``pres``.
+The same extractor and slide writer serve explicit re-extraction jobs.
 """
 
 from __future__ import annotations
@@ -46,6 +52,9 @@ from precis.identity import make_node_id, make_pdf_sha256
 from precis.utils.pres_text import strip_latexit
 
 log = logging.getLogger(__name__)
+
+MIN_PRES_TEXT_CHARS = 10
+OCR_NEEDED_TAG = "ocr:needed"
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +237,13 @@ def extract_pres(
         pdf_page_count=n_pages,
         pdf_size_bytes=len(pdf_bytes),
         pdf_storage_path=str(pdf_path),
-        meta={"source_pdf": pdf_path.name},
+        meta={
+            "source_pdf": pdf_path.name,
+            "image_only_pages": sum(
+                len("".join(slide.text.split())) < MIN_PRES_TEXT_CHARS
+                for slide in slides
+            ),
+        },
         slides=slides,
     )
 
@@ -396,6 +411,19 @@ def write_pres(pres: PresToWrite, *, conn: Connection) -> PresWriteResult:
         )
 
     # 5. chunks — one per slide
+    n_slides = write_pres_slides(pres, ref_id=ref_id, slug=final_slug, conn=conn)
+    return PresWriteResult(
+        ref_id=ref_id,
+        slug=final_slug,
+        n_slides=n_slides,
+        slug_suffixed=suffixed,
+    )
+
+
+def write_pres_slides(
+    pres: PresToWrite, *, ref_id: int, slug: str, conn: Connection
+) -> int:
+    """Insert extracted slides; callers own the transaction and any body removal."""
     chunk_rows: list[tuple[Any, ...]] = []
     for slide in pres.slides:
         slide_meta: dict[str, Any] = {
@@ -403,7 +431,7 @@ def write_pres(pres: PresToWrite, *, conn: Connection) -> PresWriteResult:
             "slide_index": slide.pos,
             "slide_title": slide.slide_title,
             "page": slide.page,
-            "node_id": make_node_id(f"pres:{final_slug}", slide.page, slide.pos),
+            "node_id": make_node_id(f"pres:{slug}", slide.page, slide.pos),
         }
         if slide.image_base64:
             slide_meta["image_base64"] = slide.image_base64
@@ -434,12 +462,7 @@ def write_pres(pres: PresToWrite, *, conn: Connection) -> PresWriteResult:
                 chunk_rows,
             )
 
-    return PresWriteResult(
-        ref_id=ref_id,
-        slug=final_slug,
-        n_slides=len(chunk_rows),
-        slug_suffixed=suffixed,
-    )
+    return len(chunk_rows)
 
 
 def _resolve_pres_slug(slug: str, *, conn: Connection) -> tuple[str, bool]:

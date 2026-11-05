@@ -2250,7 +2250,8 @@ def edit(
     # ``__extras__`` channel (ratchet entries ("structure","edit","ops")/
     # ("structure","edit","args"), retired by this wiring).
     ops: list[dict[str, Any]] | None = None,
-    # Mirrors ``put``'s ``args=`` — kind-specific op payloads on edit.
+    # Mirrors ``put``'s ``args=`` — kind-specific op payloads on edit,
+    # including pres's {"reextract": True} stored-PDF refresh.
     args: dict[str, Any] | None = None,
     # metadata patch (see precis-pres-help / precis-draft-help): meta=
     # merges keys into the ref's meta dict, on the kinds whose edit()

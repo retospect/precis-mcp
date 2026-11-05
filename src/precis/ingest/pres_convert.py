@@ -174,6 +174,12 @@ def apply_pres_convert(
         (result.ref_id, ref_id, sorted(paper_only_tag_namespaces("pres"))),
     )
     store.add_tag(result.ref_id, Tag.open("subtype:slides"), conn=conn)
+    if pres.meta.get("image_only_pages", 0):
+        from precis.ingest.pres import OCR_NEEDED_TAG
+
+        store.add_tag(
+            result.ref_id, Tag.parse_strict(OCR_NEEDED_TAG, kind="pres"), conn=conn
+        )
     # This lifecycle edge records the conversion itself, not a model's
     # evidence claim. Write it inside the lifecycle transaction;
     # add_link's machine-evidence admission does not apply here.

@@ -8,6 +8,7 @@ answers:
   - how do I capture an unpublished writeup or course notes?
   - how do I find a specific slide or paragraph in a stored deck?
   - how do I delete or restore a presentation?
+  - why are the slides empty and can I re-extract a stored deck?
 applies-to: get/search/put/edit/delete/tag/link (kind='pres')
 tags: addressing, drafting
 kinds: pres
@@ -146,6 +147,35 @@ get(kind="pres", id="pr5", view="pdf_link")
 `pdf_link` returns a signed download URL, UTC expiry, SHA256, size, page
 count and curl command. It uses the same short-lived link as papers and
 datasheets; a deck without an attached PDF refuses with ingest guidance.
+
+## Empty slides and re-extraction
+
+PDF ingest uses fitz text extraction, with no OCR or model calls.
+`meta.image_only_pages` counts pages with fewer than 10 non-whitespace
+characters after cleaning. Blank pages, slide numbers and short headings
+can also trigger this heuristic. The overview shows the count and next step;
+affected decks receive the allowed open tag `ocr:needed`.
+
+```python
+edit(kind="pres", id="pr123", args={"reextract": True})
+```
+
+This queues a `pres_reextract` job on the deck, deduplicating active requests.
+The receipt gives the job handle to watch. A deck without a stored source PDF
+refuses with ingest/restore guidance. A file held elsewhere waits for a worker
+with the bytes; exhausted placement retries fail with a restore instruction.
+
+The worker re-reads the stored PDF with **fitz only**. A truly image-only deck
+stays textless: this refreshes its count, it does not recover image text.
+Inspect the PDF and arrange OCR separately to recover that text; this door
+neither performs OCR nor attaches a replacement source. Keep metadata edits
+in a separate call.
+
+Successful extraction atomically refreshes the count and `ocr:needed` tag
+(removing it when no pages are low-text). Unchanged slides retain their handles;
+changed text replaces the slide body, removing old chunk links. Extraction
+failure leaves the previous body intact. The successful outcome is recorded
+in `meta.reextract`, and job failures name the next step.
 
 ## Browse what's been stored
 
