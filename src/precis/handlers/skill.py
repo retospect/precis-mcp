@@ -1622,6 +1622,17 @@ class SkillHandler(Handler):
                 )
             )
 
+        # Score ties must not fall back to corpus iteration order:
+        # ``_load_skills_map`` walks the package dir in filesystem order,
+        # which differs between the bind-mounted dev container and the
+        # gate's ``git archive`` extract — the same query ranked
+        # differently per environment (gr569532). Break ties by lexical
+        # hit count (more body evidence first), then recency, then slug
+        # so the order is fully determined by the query and corpus.
+        lex_counts = {
+            slug: count for slug, count, _preview, _verbatim, _compounds in lexical_hits
+        }
+
         # Recent use is only a tie-break among near-equal scores (relevance
         # stays primary): scores bucket to 3 decimals, then most recently read.
         usage = self._usage_map() or {}
@@ -1632,8 +1643,12 @@ class SkillHandler(Handler):
 
         all_rows = sorted(
             merged.values(),
-            key=lambda r: (round(r.score, 3), _recency(r.slug)),
-            reverse=True,
+            key=lambda r: (
+                -round(r.score, 3),
+                -lex_counts.get(r.slug, 0),
+                -_recency(r.slug),
+                r.slug,
+            ),
         )
 
         # tag=/kinds= axis filter (docs/backlog/skill-graph.md slice 1)

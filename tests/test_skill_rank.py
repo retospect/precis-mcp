@@ -102,6 +102,30 @@ def test_single_word_query_pins_named_skill(skill: SkillHandler) -> None:
     assert any("gripe" in s for s in top3), top3
 
 
+def test_search_ranking_independent_of_corpus_order(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr569532: ``_load_skills_map`` walks the package dir in filesystem
+    order — sorted under the gate's ``git archive`` extract, arbitrary
+    under the bind-mounted dev container. Score ties (every title pin
+    carries the same flat boost) must not inherit that order, or the same
+    query ranks differently per environment."""
+    import precis.handlers.skill as skill_mod
+    from precis.handlers.skill import _load_skills_map
+
+    corpus = _load_skills_map()
+
+    def _ranked(files: dict[str, str]) -> list[str]:
+        monkeypatch.setattr(skill_mod, "_SKILLS_MAP_CACHE", files)
+        monkeypatch.setattr(skill_mod, "_SKILL_GRAPH_CACHE", None)
+        return _ranked_slugs(skill.search(q="memory").body)
+
+    forward = _ranked(dict(sorted(corpus.items())))
+    backward = _ranked(dict(sorted(corpus.items(), reverse=True)))
+    assert forward == backward
+    assert "precis-memory-help" in forward[:3]
+
+
 # ── DF-aware rare-identity-token bypass (gr259665) ────────────────────
 #
 # The 70%-coverage bar starves a long, multi-topic query even when one of
