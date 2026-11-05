@@ -275,7 +275,10 @@ def test_a_bad_escape_returns_the_state_that_armed_it(
             view = dataclasses.replace(
                 view, closed=np.full_like(view.closed, (1 << 4) - 1)
             )
-        return grow(*args[:-1], view, **kwargs)
+        ctx, mesh, d, n_layers, k, rule, occ, pin_vids, occupancy = args[:9]
+        return grow(
+            ctx, mesh, d, n_layers, k, rule, occ, pin_vids, occupancy, view, **kwargs
+        )
 
     witness = wm._witness_crossings
 

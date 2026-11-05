@@ -151,18 +151,21 @@ TRI_OCC_MM = 1.0
 #: net's previous wires are ripped out first — ``_Occupancy.rebuild``);
 #: a net whose wires satisfy every resource keeps them (selective
 #: re-route). Two conditions keep the variant honest (spec-owner ruling
-#: 2026-11-05): a pass entered while the overuse total has not fallen
-#: for two consecutive passes re-grows EVERY net in order once — the
-#: stall escape, so a clean net parked on a contested resource cannot
-#: hold it for ever — and a final pass entered with conflicts standing
-#: does the same.
+#: 2026-11-05, windowed 2026-11-06): a pass entered while the overuse
+#: total has set no new minimum for ``_NEG_STALL_K`` passes re-grows
+#: EVERY net in order once — the stall escape, so a clean net parked on
+#: a contested resource cannot hold it for ever; revisiting the minimum
+#: is no progress, which is what catches the period-2 oscillation a
+#: consecutive-non-fall window never sees — and a final pass entered
+#: with conflicts standing does the same.
 #: Passes 1..K-1 soften today's legality into priced resources at
 #: ``base × (1 + p_k × present_overuse) + h``; pass K restores hard
 #: legality and ``_Shove`` repairs as before. ``p_k`` ramps from
 #: ``_NEG_P0`` by ``_NEG_PRAMP`` per pass; ``h`` accumulates
 #: ``_NEG_H_* × overuse`` on every resource still oversubscribed at a
-#: pass's end. The pass with the best ``(failed nets, crossings, vias,
-#: length)`` ledger that stays corridor-legal is emitted.
+#: pass's end. The pass ranked best under ``(unrouted nets, overuse,
+#: length)`` is emitted — every pass is a candidate, so a wrecked
+#: escape can never leave the emit worse than the state that armed it.
 _NEGOTIATE_ITERS = 10
 #: ``negotiate`` beyond this refuses: ``_NEG_P0 × _NEG_PRAMP**99`` is
 #: already ~1e14, so every soft price is indistinguishable from inf
@@ -175,6 +178,9 @@ _NEG_H_TRI = 0.15  # mm per corridor over _NEG_TRI_CAP per pass
 _NEG_H_CROSS = 0.8  # mm per residual same-layer crossing per pass
 _NEG_CROSS_MM = 2.0  # base mm price of one chord crossing at p = 0
 _NEG_TRI_CAP = 2.0  # corridors a (tri, layer) holds before overuse
+#: passes without a new overuse minimum before the escape re-grows
+#: every net — the window that catches a period-2 oscillation
+_NEG_STALL_K = 4
 
 #: Step-cost gate: a step through a triangle touching an edge this long
 #: is priced by the portal (point-to-segment) metric, not the
@@ -5821,12 +5827,12 @@ def _neg_grow_set(
     """The next pass's grow set (td569540): the nets last pass left on
     a conflict — failed or holding an oversubscribed resource — plus
     the partners recorded against them; ``None`` re-grows EVERY net in
-    order. The stall escape returns ``None`` (overuse flat two passes
-    running: a clean net parked on a resource the conflicted ones need
-    never yields to price alone) and so does a final pass entered with
-    conflicts standing. An empty touch set returns ``None`` too — the
-    detection missed something, so a full pass runs rather than stale
-    prices."""
+    order. The stall escape returns ``None`` (no new overuse minimum
+    for ``_NEG_STALL_K`` passes: a clean net parked on a resource the
+    conflicted ones need never yields to price alone) and so does a
+    final pass entered with conflicts standing. An empty touch set
+    returns ``None`` too — the detection missed something, so a full
+    pass runs rather than stale prices."""
     if stall or (final and touch):
         return None
     grow = set(touch)
@@ -6853,8 +6859,8 @@ def build_wires(
     hist_t = np.zeros((len(mesh.tris), n_layers))
     hist_c = np.zeros((len(mesh.tris), n_layers))
     p_fac = _NEG_P0
-    prev_over = math.inf  # last pass's overuse total — the stall signal
-    stall_n = 0  # consecutive passes the overuse total did not fall
+    best_over = math.inf  # lowest overuse total seen — the stall signal
+    since_min = 0  # passes since that minimum was set
     prev_keys: dict[int, tuple[int, int]] = {}
     prev_touch: set[int] = set()
     prev_unreach: list[Unreachable] = []
@@ -6899,10 +6905,10 @@ def build_wires(
             # _neg_grow_set decides — touched nets plus partners, or
             # every net once (the stall escape, a conflicted final
             # pass, or an empty touch set). The escape fires once then
-            # rearms on two fresh flat passes.
-            escape = stall_n >= 2
+            # rearms on _NEG_STALL_K fresh passes without a new minimum.
+            escape = since_min >= _NEG_STALL_K
             if escape:
-                stall_n = 0
+                since_min = 0
             grow_set = _neg_grow_set(
                 prev_touch,
                 prev_partners,
@@ -7269,34 +7275,35 @@ def build_wires(
         all_pairs = [(j, b) for j in route_order for b in builts.get(j, ())]
         occupancy = occupancy.rebuild(all_pairs)
         used = corridor.used_of(b.branch for _jj, b in all_pairs)
+        over_e = np.maximum(0.0, occupancy.used - occupancy.cap)
+        over_t = np.maximum(0.0, occupancy.tri_used - _NEG_TRI_CAP)
+        over_c = occupancy.cross_used
+        over_total = float(over_e.sum() + over_t.sum() + over_c.sum())
         branches_it = [b.branch for bl in builts.values() for b in bl]
         ord_it, _ord_pos_it, _res_it = _order(ctx, mesh, tuple(branches_it))
         cuts_it = corridor.cut(branches_it, ord_it, extra=extra)
         legal = all(c.refused for c in cuts_it)
-        # td569540: a soft pass's priced crossings are negotiable
-        # intermediate state, never emittable copper — a soft ledger is
-        # a best candidate only when it carries none. The hard pass is
-        # always eligible: its crossings are the honest named failures
-        # _Shove and the plan already handle.
-        cross_free = not any(v[1] for v in keys.values())
+        # td569540 review-3: the emit is the best pass under (unrouted
+        # nets, overuse, length) — unrouted counts the nets without
+        # clean copper (stranded, crossing or via-collided). Only a
+        # corridor-legal pass is a candidate: routed demand over a cut
+        # is CorridorOverflow at emit, never report data — but a priced
+        # crossing or tri overuse is, so a conflicted soft state stays
+        # eligible and a wrecked escape or final re-grow can never
+        # leave the emit worse than the state that armed it.
         coll_nets = {c[0] for c in collisions}
-        metric_it = _sum_stats(
-            _wire_stats(
-                int(
-                    keys.get(kk, (1, 0))[0] > 1
-                    or keys.get(kk, (1, 0))[1] > 0
-                    or kk in coll_nets
-                ),
-                keys.get(kk, (1, 0))[1],
-                builts.get(kk, ()),
-            )
-            for kk in order
+        metric_it = (
+            sum(
+                1
+                for kk in range(len(d.net_pins))
+                if keys.get(kk, (1, 0))[0] > 1
+                or keys.get(kk, (1, 0))[1] > 0
+                or kk in coll_nets
+            ),
+            over_total,
+            sum(b.branch.length_mm for bl in builts.values() for b in bl),
         )
-        if (
-            legal
-            and (not soft or cross_free)
-            and (best_it is None or metric_it < best_it[0])
-        ):
+        if legal and (best_it is None or metric_it < best_it[0]):
             best_it = (
                 metric_it,
                 {j: list(bl) for j, bl in builts.items()},
@@ -7310,22 +7317,22 @@ def build_wires(
                 used,
             )
         if soft:
-            over_e = np.maximum(0.0, occupancy.used - occupancy.cap)
-            over_t = np.maximum(0.0, occupancy.tri_used - _NEG_TRI_CAP)
-            over_c = occupancy.cross_used
             hist_e += _NEG_H_EDGE * over_e
             hist_t += _NEG_H_TRI * over_t
             hist_c += _NEG_H_CROSS * over_c
-            over_total = float(over_e.sum() + over_t.sum() + over_c.sum())
             if over_total <= 1e-9 and not any(keys.get(kk, (0, 0))[1] for kk in keys):
                 # converged: nothing oversubscribed, nothing crossing —
                 # this pass is legal and cannot improve (td569540)
                 break
-            # the stall signal (td569540 ruling): the total not falling
-            # two passes running means negotiation is frozen — the next
-            # pass re-grows every net once
-            stall_n = stall_n + 1 if over_total >= prev_over - 1e-9 else 0
-            prev_over = over_total
+            # the stall signal (td569540 review-3 ruling): the total
+            # setting no NEW minimum within _NEG_STALL_K passes is
+            # frozen — an oscillation that keeps revisiting its minimum
+            # never improves either; the next pass re-grows every net
+            if over_total < best_over - 1e-9:
+                best_over = over_total
+                since_min = 0
+            else:
+                since_min += 1
             p_fac *= _NEG_PRAMP
             prev_keys = keys
             prev_touch = _neg_touch(occupancy, builts, keys, collisions)
