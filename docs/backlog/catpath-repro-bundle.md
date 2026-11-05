@@ -13,9 +13,10 @@ hashes, the outputs, an offline viewer, a provenance chain to the
 finding/nanopub, and a `reproduce` + `verify` entry pair. Every file has a
 SHA-256 in `MANIFEST.sha256` and in the RO-Crate metadata. Verification is
 "re-run and compare within stated tolerances", not byte equality. The
-Zenodo deposit is a separate step that Reto approves per deposit. Roughly
-70 % of the parts exist (table below); missing are the packager, the
-lock/weights/platform stamps, the verify script and the Zenodo client.
+Zenodo deposit is a separate step that Reto approves per deposit.
+The parts now include D10 lock/weights/platform stamps and a stored-seed
+envelope (table below); missing are the publication packager, complete
+producer-bound provenance, the verify script and the Zenodo client.
 Slice 1 needs no GPU and no outward call.
 
 Reto, 2026-10-19: "For catpath stuff (including the Kinetics). I wish to
@@ -45,9 +46,11 @@ Proposed gate (all must hold; Reto to confirm, Q1):
 
 1. A `pathway` ref with a completed `autocatpath_aggregate` (all
    `(model, seed)` partials present, `low_confidence` known).
-2. If the claim uses kinetics: a `meta.kinetics_v2` record and a
+2. If the claim uses kinetics: a `meta.results.kinetics_v2` record and a
    `meta.validation_manifest` (kinetics-engine-v2 D10) with a `reproduced`
-   verdict from at least one same-platform re-validation.
+   verdict from at least one complete same-platform re-validation.
+   D10 is implemented; `reproduced_partial` does not satisfy this gate
+   (`src/precis_pathway/manifest.py::manifest_text`).
 3. A finding link or `STATUS:` tag saying the result is frozen. Export from
    a mutable ref is refused with a next step (a re-mint changes the content
    address, so the bundle would be stale at once).
@@ -60,18 +63,88 @@ records the *validation* of a found compound, not how the search found it.
 
 | Need | Exists (anchor) | Missing |
 |---|---|---|
-| Engine run outputs, offline viewer | catpath `autocatpath.report::build_report` writes `index.html`, `report_assets/` with vendored 3Dmol, `manifest.json`, `methods.md`, `results.json`; `config.snapshot.yaml` via `cfg.snapshot` in the pipeline; opens over `file://` | outputs are not archived where precis can hand them out; precis keeps only `PathwayArtifact` in pathway `meta` (`precis_pathway.persist::pathway_meta`) |
-| Content addresses | `precis_pathway.runner::content_key`, `seed_content_key`; `PathwayArtifact.autocatpath_version`, `config_snapshot_yaml` (`precis_pathway.types`) | no lock hash, weights hash, platform record, or single id naming all of it (kinetics-engine-v2 D10 "Gaps") |
-| Seeds and job params | `search.seeds`; per-`(model, seed)` jobs `autocatpath_seed` / `autocatpath_aggregate` with a params schema (`precis_pathway.seed_job`); KMC seeds specified in kinetics-engine-v2 D5/D10 | one file collecting all params; KMC replica seeds not built |
+| Engine run outputs, offline viewer | catpath `autocatpath.report::build_report` writes `index.html`, `report_assets/` with vendored 3Dmol, `manifest.json`, `methods.md`, `results.json`; `config.snapshot.yaml` via `cfg.snapshot` in the pipeline; opens over `file://`. Precis retains pathway outputs and seed job outputs plus hashed artifact pointers (`src/precis_pathway/seed_job.py::_record_artifacts`) | no retained complete report outdir/viewer inventory; seed artifacts do not supply the missing report manifest, thumbnails and viewer assets |
+| Content addresses | `precis_pathway.runner::content_key`, `seed_content_key`; D10 code/lock/weights/platform record (`src/precis_pathway/manifest.py::build`); seed envelope output and bundle digests (`src/precis_pathway/bundle.py::build_envelope`) | complete execution provenance bound to each seed, wheel/image digests and the publication archive identity; a pathway D10 stamp does not attest to an earlier seed's environment |
+| Seeds and job params | `search.seeds`; per-`(model, seed)` jobs `autocatpath_seed` / `autocatpath_aggregate` with a params schema (`precis_pathway.seed_job`); D10 collects search, kinetics, KMC replica and LHS seeds via engine `seeds_from_config` (`src/precis_pathway/manifest.py::build`) | one archive file collecting all params and retained aggregate membership; `src/precis_pathway/aggregate_job.py::_collect_seed_results` does not retain the selected seed job ids |
 | Pinned engine | `[tool.uv.sources] autocatpath` git rev in `pyproject.toml`; `uv.lock`; host wheelhouse (`deploy/roles/autocatpath`) | the catpath repo is private, so outsiders cannot pull the rev; wheel version is reused across commits (`catpath-wheel-version-reuse.md`), so a version string does not identify a wheel |
-| Manifest + re-validate design | kinetics-engine-v2 D10 (`ValidationManifest`, tolerance table, `autocatpath_revalidate`), specified, unbuilt | build it; this item consumes it, does not duplicate it |
+| Manifest + re-validation | kinetics-engine-v2 D10 is implemented: `src/precis_pathway/manifest.py::build`, `src/precis_pathway/revalidate_job.py::revalidate`; code/lock mismatch refuses, CPU legs are judged against stored tolerances | archive packaging and complete validation: energy legs are not rerun by the CPU job, and missing engine commits prevent complete validation; this item consumes D10, does not duplicate it |
 | Claim publication | `precis.nanopub` (mint, sign, OTS, registry); `CITATION.cff`; `fto-defensive-publication.md` Leg 1 plans a Zenodo GitHub-release snapshot of the repo | no nanopub field for a supporting-dataset DOI; no deposition client; no Zenodo deposit exists |
 | Secret gate | `tests/test_deploy_tree_no_secrets.py` over the repo tree | not applied to generated archives |
 | Licences | catpath and precis are GPL-3.0-or-later | licence for outputs/data undecided (Q3) |
 
-Not found anywhere in catpath or precis: RO-Crate, a bundle/export of a
-run folder, a weights hash, a platform stamp. catpath's `provenance.py` is
-caption/methods text and PNG tEXt only.
+Still missing: RO-Crate and a publication archive of a run folder.
+D10 supplies weights hashes when locatable and a platform stamp;
+`src/precis_pathway/bundle.py::build_envelope` supplies an internal stored-seed
+envelope, not that archive. catpath's `provenance.py` is caption/methods text
+and PNG tEXt only.
+
+## First slice: stored-seed envelope (REPROENV, gr564182, td567064)
+
+The first implemented boundary is
+`src/precis_pathway/bundle.py::build_envelope`: one explicitly selected
+`autocatpath_seed` job with stored `partial` outputs, its recorded pathway
+id, and caller-supplied snapshots of both metadata records. It returns
+detached JSON-compatible data; `src/precis_pathway/bundle.py::canonical_bytes`
+serializes it. These logical paths name inline records, not files already
+written into the archive layout below.
+
+| Exact envelope inventory | Stored source / absence rule |
+|---|---|
+| `inputs/config.json` | `job.meta.params.config`, requested config; absent is recorded in `missing` |
+| `inputs/slab.extxyz` | `job.meta.params.slab_extxyz`; absent is recorded in `missing` |
+| `inputs/selection.json` | Present params among `seed`, `model_index`, `force_backend`, `only_steps`, `step_retry`, `engine_token` |
+| `outputs/partial.json` | Required `job.meta.partial` object |
+| `outputs/lattice.json`, `outputs/structures.json`, `outputs/bands.json`, `outputs/ts.json` | Corresponding job metadata fields when present; otherwise `missing` entries |
+| `artifacts` | Every recorded `job.meta.artifacts` entry: name, relative path, producer SHA-256, byte count and observed availability; sorted by name/path/hash |
+| `run` | Selected job id/type and stored `content_key`, `seed`, `model_index`, `model`; missing stamps stay explicit |
+| `pathway_context` | Selected pathway id, stored content key, D10 `manifest_id` and unchanged `validation_manifest`; `execution_binding` explicitly unproven |
+| `provenance` | Seed-stamped `weights_sha256` if present; code, lock, wheel, image, platform, units and effective config are null with `missing` reasons |
+| Envelope controls | `schema: precis_pathway_seed_envelope`, `schema_version: 1`, `missing`, `output_id`, `bundle_id` |
+
+Inline entries carry source, data, encoding, SHA-256 and byte count. The
+seed producer (`src/precis_pathway/seed_job.py::_dispatch` / `_poll`)
+records the outputs and weights stamp; `_record_artifacts` retains large
+outputs via `src/precis/store/job_artifacts.py::write_artifact`. Effective
+config and execution identities must be recorded by the producer when it
+runs. Requested config and `engine_token` are intent, not execution proof.
+The aggregate/kinetics pathway record can change after a seed finishes;
+its manifest and results cannot fill that seed's missing provenance.
+
+Export is a read-only caller process with selected snapshots and access to
+existing artifact bytes, using
+`src/precis/store/job_artifacts.py::read_artifact` by default (root/spool
+fallback). The function performs no engine lookup, compute, DB mutation,
+job discovery or publication; it adds no handler view or export job. The
+catalyst-host job default below belongs to the eventual archive builder.
+Missing historical pins are never reconstructed from the exporter host.
+Absent artifact hashes/sizes remain unverified; missing files retain their
+pins as unavailable; byte/hash mismatches and contradictory job/pathway
+selection refuse. Other read errors propagate. Artifact paths must stay
+in the selected job's directory.
+
+`output_id` hashes inline outputs and external artifact pins, excluding
+availability. The envelope's `bundle_id` hashes canonical JSON except its
+own field, including context, missing fields and observed availability.
+It is distinct from the proposed archive `bundle_id` (hash of
+`MANIFEST.sha256` below), and leaves D10 identity unchanged. Callers must
+retain canonical envelope bytes; rereading mutable refs cannot recover an
+earlier snapshot. No exporter timestamp or current host provenance is added.
+
+This slice emits no zip, RO-Crate, `MANIFEST.sha256`, `env/`, viewer,
+reproduction scripts or Zenodo deposit. D10 is related context, not an
+exported `manifest/validation_manifest.json` bound to this seed. The
+compound done gate and public secret gate remain archive requirements;
+this internal envelope neither enforces them nor certifies reproducibility.
+The eventual archive must retain and reference this evidence with distinct
+identities, add the missing producer records and membership, and package
+and sanitize the actual files. The viewer-less first slice follows decision
+1 below; it does not reconstruct a historical report with current code.
+
+`tests/test_pathway_bundle.py` and synthetic
+`tests/fixtures/pathway/repro_seed.json` cover stable detached bytes,
+inventory ordering, missing evidence, artifact integrity and selection
+refusals. They do not establish the compound archive acceptance criteria
+below; the bundle layout, reproduction and Zenodo work remain open.
 
 ## Bundle layout
 
@@ -103,8 +176,8 @@ result needs tamper evidence. The zip's per-entry CRC32 stays (free), so
 SHA-256 of `MANIFEST.sha256`: the identity that does not depend on the DOI,
 and what a nanopub cites alongside it.
 
-Entries are written sorted with fixed mtimes and no extra fields, so
-rebuilding from the same inputs gives the same archive bytes (tested).
+The archive writer must sort entries with fixed mtimes and no extra fields,
+and test that rebuilding from the same inputs gives the same archive bytes.
 
 ## Reproduce and verify
 
@@ -184,9 +257,10 @@ the export and lists offending paths.
 
 ## Slices (ranked)
 
-1. **Bundle writer, offline.** `precis_pathway/bundle.py`: from a pathway
-   handle, stage the layout from what exists today (config snapshot,
-   results, catpath outdir regenerated through `report::rebuild`, viewer,
+1. **Bundle writer, offline.** The stored-seed envelope now exists in
+   `src/precis_pathway/bundle.py`; the remaining archive writer must, from a
+   pathway handle, stage the layout from what exists today (config snapshot,
+   results, retained catpath outdir/viewer when available,
    job params, seeds, nanopub ids), write `MANIFEST.sha256`,
    `ro-crate-metadata.json`, deterministic zip, secret gate. A
    `view='bundle-plan'` previews; export writes to a scratch dir and never
@@ -242,11 +316,12 @@ Slices 1 to 3 are the useful core; 1 and 2 do not wait on kinetics v2.
 
 ## Target + blast radius
 
-New: `src/precis_pathway/bundle.py`, a Zenodo publish module, a
+Existing: `src/precis_pathway/bundle.py` (stored-seed envelope). Still new:
+the archive writer, a Zenodo publish module, a
 `view='bundle-plan'` and an export mode on the `pathway` handler
 (`precis_pathway.handler`), skill text for the verbs. Engine side:
-`manifest.py` already planned in kinetics-engine-v2; precis can call
-`report::rebuild` so no catpath change is required for slice 1. No
+the D10 manifest is implemented; `report::rebuild` still needs a complete
+retained report outdir, which the seed envelope does not supply. No
 migration through slice 4 (bundles are files; the DOI goes in `meta`);
 slice 5 may need one.
 
@@ -263,8 +338,8 @@ sweep; not individually ruled, Reto may override):
    `next=` when `import autocatpath` fails.
 3. Done gate: slice 1 enforces "aggregate complete + frozen marker" and
    writes `preliminary: true` in the crate otherwise; the kinetics gate joins
-   when kinetics-engine-v2 D10 ships. Frozen marker: open tag `repro:frozen`
-   on the pathway, set by Reto.
+   through the implemented D10 complete-revalidation contract. Frozen marker:
+   open tag `repro:frozen` on the pathway, set by Reto.
 4. Weights: hash + fetch recipe, no weights in the bundle.
 5. Licence: CC-BY-4.0 for outputs. Bundle the catpath wheel only if catpath
    goes public; otherwise record rev + sha and say so in the crate.
@@ -285,7 +360,7 @@ community; which compound goes first.
 - blocker: slice 1 "outdir regenerated through `report::rebuild`" cannot work from stored data: `rebuild(outdir)` reads `manifest.json` (state energies, thumbs, selection, side routes), `graph.json`, `results.json`, `structures/*.extxyz` from a catpath run folder, but `PathwayArtifact`/`pathway_meta` hold only config, snapshot, results_json, graph_json, methods_md, structures_extxyz. No `manifest.json`, thumbs, kinetics.json or PNGs are persisted, so the "What exists" row ("outputs not archived where precis can hand them out") is the gap slice 1 must close, not assume away. Decide: persist the catpath outdir at run time (new storage), or synthesise `manifest.json` from stored artifact, or ship viewer-less outputs in slice 1.
 - blocker: where slice 1 runs is unspecified. `report::rebuild` needs `autocatpath` + ase/rdkit; pyproject says the web export excludes autocatpath (`catalyst` extra, host wheelhouse). Name the process/extra the export mode and `view='bundle-plan'` run in, and what happens when autocatpath is not importable (refuse with next=).
 - blocker: slice 1 vs layout mismatch: layout lists env/, platform.json, weights.json, validation_manifest.json, corrections, TPD set, kmc seeds; slice 1 says "from what exists today" without naming which layout paths it writes and which are omitted/placeholder (slice 2 adds env/). RO-Crate hasPart and MANIFEST must be defined for the slice-1 subset; `bundle_id` changes when slice 2 adds files.
-- blocker: done-gate (Q1) is an unresolved blocker-severity question and gate item 2 depends on unbuilt kinetics-engine-v2 D10 `validation_manifest`. Slice 1 must state which gate it enforces (e.g. aggregate complete + frozen STATUS tag only, preliminary flag otherwise) and how "frozen" is detected (STATUS: tag value? finding link type?).
+- blocker: done-gate (Q1) remains an archive-policy question; gate item 2 now has an implemented D10 `validation_manifest`, but CPU-only `reproduced_partial` is insufficient. The internal seed envelope does not enforce the publication gate; the archive writer must enforce the agreed frozen marker and complete-revalidation requirement.
 - blocker: open Qs affecting slices 1-2 still unresolved: Q3 (outputs licence goes into crate root `license`; bundling the private catpath wheel publishes it), Q2 (weights shipped vs hash-only changes slice 2 `env/weights.json` and size), Q4 (checksum format), Q5 (bundle_id per compound vs engine version).
 - blocker: slice 2 "closes `catpath-wheel-version-reuse.md`" but that spec prefers git-derived versioning in catpath and says repro-bundle slice 2 "takes the sha-assert option"; the wheel sha256+rev stamp for a wheel built where, from which checkout (catpath path, clean-tree rule), and how the rev is read from `uv.lock` is not specified. Also unspecified: where weights come from for the hash (which backend/model file paths, MACE cache location), what "lock slice" means (which pyproject extras/pins are pruned), and the `platform.json` field source for accelerator class/driver.
 - blocker: slice 2 test "platform is recorded but not hashed into `manifest_id`" - `manifest_id` is a kinetics-engine-v2 D10 concept and slice 2 does not build it; the bundle's own id is `bundle_id` (hash of MANIFEST, which includes platform.json, contradicting "not hashed"). Reconcile.
