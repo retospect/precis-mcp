@@ -23,6 +23,8 @@ newest verdict is ``rejected`` while the target's sha is unchanged. An
 ``approved`` verdict, or an edit to the target after a rejection,
 re-opens the key — the graph moved on, so the question is legitimately
 open again.
+An explicit undo remains rejected on the restored content; anchor-rot undo
+matches across main SHAs so a repository commit cannot undo that decision.
 
 **Proposer rejections are rows too** (gr506046). A candidate the
 proposer turns down gets a ``rejected`` graph-garden row
@@ -43,6 +45,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from precis.errors import BadInput, NotFound
 from precis.graph.garden.candidates import GardenCandidate
 from precis.utils.handle_registry import parse as parse_handle
 
@@ -98,7 +101,10 @@ def proposal_ref_ids(proposal: GardenProposal) -> list[int]:
         if isinstance(val, int):
             ids.append(val)
     if proposal.action in MEMORY_APPLY_ACTIONS:
-        successors = [proposal.payload.get("successor")]
+        successors = [
+            proposal.payload.get("successor"),
+            proposal.payload.get("delete_successor"),
+        ]
         successors.extend(
             mention.get("successor")
             for mention in proposal.evidence.get("mentions", [])
@@ -117,6 +123,104 @@ def proposal_ref_ids(proposal: GardenProposal) -> list[int]:
             if successor is not None and not successor[1]:
                 ids.append(successor[2])
     return list(dict.fromkeys(ids))
+
+
+def memory_successor_refusal(
+    payload: dict[str, Any], evidence: dict[str, Any]
+) -> str | None:
+    """Refuse document successors until their content can be shown and pinned.
+
+    An ``md:`` route has no ref content SHA. Treating it like a missing handle
+    silently omits the evidence on which preservation depends.
+    """
+    successors = [payload.get("successor"), payload.get("delete_successor")]
+    successors.extend(
+        mention.get("successor")
+        for mention in evidence.get("mentions", [])
+        if isinstance(mention, dict)
+    )
+    if any(isinstance(value, str) and value.startswith("md:") for value in successors):
+        return (
+            "md: successors are unsupported: their source content cannot be "
+            "shown and pinned; use a live ref successor and propose again"
+        )
+    return None
+
+
+def _retirement_successor_pin(
+    store: Store, target: int, *, conn: Any = None
+) -> dict[str, Any]:
+    """Read the delete door's inferred route without changing detector evidence."""
+    from precis.dispatch import Hub
+
+    if conn is None:
+        with store.pool.connection() as c:
+            return _retirement_successor_pin(store, target, conn=c)
+    row = conn.execute(
+        "SELECT meta FROM refs WHERE ref_id = %s AND kind = 'memory' "
+        "AND retired_at IS NULL",
+        (target,),
+    ).fetchone()
+    if row is None:
+        return {"delete_successor_error": "the memory is no longer live"}
+    try:
+        handle, successor, _kind = (
+            Hub(store=store)
+            .sibling("memory")
+            ._delete_successor(target, row[0] or {}, conn=conn)
+        )
+    except (BadInput, NotFound) as exc:
+        return {"delete_successor_error": str(exc)}
+    sha = (
+        conn.execute("SELECT precis_target_sha('ref', %s)", (successor,)).fetchone()[0]
+        if successor is not None
+        else None
+    )
+    return {"delete_successor": handle, "delete_successor_sha": sha}
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryRetirementDrift:
+    """Changed evidence is retryable; an unresolved route needs repair."""
+
+    reason: str
+    why: str
+
+
+def memory_retirement_drift(
+    store: Store, proposal: GardenProposal
+) -> MemoryRetirementDrift | None:
+    """Refuse unread or changed inferred successor evidence before paid review."""
+    if proposal.action != "retire" or proposal.detector not in MEMORY_APPLY_DETECTORS:
+        return None
+    current = _retirement_successor_pin(store, proposal.target_id)
+    if error := current.get("delete_successor_error"):
+        return MemoryRetirementDrift(
+            "apply_refused", f"the retirement successor cannot be resolved: {error}"
+        )
+    # Legacy proposals without a route need no extra evidence, but cannot
+    # acquire a successor invisibly. Newly emitted proposals pin None too.
+    for key in ("delete_successor", "delete_successor_sha"):
+        if current[key] != proposal.payload.get(key):
+            return MemoryRetirementDrift(
+                "stale",
+                "the retirement successor or its content changed; propose again",
+            )
+    if proposal.payload.get("delete_successor_error"):
+        return MemoryRetirementDrift(
+            "stale",
+            "the retirement successor was not resolved when proposed; propose again",
+        )
+    return None
+
+
+def _undo_key(key: str) -> str:
+    """Undo pins restored content across main commits and retirement routes."""
+    action, *parts = key.split(":")
+    if action in {"supersede", "retire", "merge"} and len(parts) >= 2:
+        return ":".join(("retire", *parts[:2]))
+    prefix, marker, _main_sha = key.rpartition(":anchor_rot:")
+    return prefix + marker if marker else key
 
 
 def _parse_note(note: str | None) -> dict[str, Any] | None:
@@ -152,12 +256,29 @@ def key_block(
     re-opens the key: stale supporting evidence needs a fresh review even
     when the target's content is unchanged. No actor filter: the verdict belongs to
     whoever resolved it, not to graph-garden.
+    An undo rejection also matches anchor-rot keys across main SHAs and all
+    retirement actions/successors, including merges losing this target, while
+    restored target content is current.
 
     A proposer rejection (:func:`record_rejection`) blocks only a caller
     naming the same ``prompt_version`` — the runner, asking whether to
     re-ask. Without one (the emit path, after the runner decided) it
     does not block."""
-    for rev in store.reviews_for(target_kind, target_id):
+    reviews = store.reviews_for(target_kind, target_id)
+    # An undo rejects changing/removing the restored body. Repo movement or
+    # a different retirement route cannot reopen it. Other rejections retain
+    # exact-key scope.
+    for rev in reviews:
+        g = _parse_note(rev.note)
+        if (
+            g is not None
+            and rev.verdict == "rejected"
+            and rev.current
+            and g.get("reason") == "undone"
+            and _undo_key(str(g.get("key") or "")) == _undo_key(key)
+        ):
+            return "rejected"
+    for rev in reviews:
         g = _parse_note(rev.note)
         if g is None or g.get("key") != key:
             continue
@@ -209,6 +330,9 @@ def emit_proposal(
     dedup_key = key or candidate.key
     if _key_pending(store, candidate.target_kind, candidate.target_id, dedup_key):
         return None
+    payload = dict(candidate.payload)
+    if candidate.action == "retire" and candidate.detector in MEMORY_APPLY_DETECTORS:
+        payload.update(_retirement_successor_pin(store, candidate.target_id, conn=conn))
     note = json.dumps(
         {
             "garden": {
@@ -218,7 +342,7 @@ def emit_proposal(
                 "detector": candidate.detector,
                 "title": candidate.title,
                 "evidence": candidate.evidence,
-                "payload": candidate.payload,
+                "payload": payload,
                 "rationale": rationale,
             }
         },
@@ -597,6 +721,8 @@ __all__ = [
     "MergeLedgerEntry",
     "emit_proposal",
     "key_block",
+    "memory_retirement_drift",
+    "memory_successor_refusal",
     "merge_ledger",
     "pending_proposals",
     "proposal_key_pending",

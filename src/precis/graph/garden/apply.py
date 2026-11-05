@@ -21,6 +21,12 @@ mention sync can otherwise erase provenance/route edges. Undo restores
 that snapshot and refuses to overwrite intervening work. Supersede and
 retire both use the existing memory delete door; supersede also leaves
 the tombstone redirect and a winner-to-loser ``supersedes`` edge.
+Both snapshot incident links, successor twins and endpoint pins under
+``meta.garden_retirement`` before deleting. Their undo restores the node
+and edges atomically, refusing changed content at rewritten link ends and
+changed liveness elsewhere. Chunk pins omit read statistics and derived data.
+Exact snapshots preserve deduplicated twins and chunk anchors during reversal;
+strict trust restores legacy origin/confidence with an audited v1 import stamp.
 
 Reversibility is the contract. Every repointed edge is recorded —
 original endpoints, chunks, relation, meta — on the loser's
@@ -101,9 +107,14 @@ class MergeRefused(BadInput):
     gate's finding when it refused."""
 
     def __init__(
-        self, reason: str, why: str, detail: dict[str, Any] | None = None
+        self,
+        reason: str,
+        why: str,
+        detail: dict[str, Any] | None = None,
+        *,
+        next: str | None = None,
     ) -> None:
-        super().__init__(f"{reason}: {why}")
+        super().__init__(f"{reason}: {why}", next=next)
         self.reason = reason
         self.why = why
         self.detail = detail
@@ -1169,7 +1180,11 @@ def _memory_dependency_ids(conn: Any, target: int, garden: dict[str, Any]) -> se
     evidence = garden.get("evidence") or {}
     payload = garden.get("payload") or {}
     ids = {target}
-    handles = [payload.get("successor"), *evidence.get("terminal_work", {})]
+    handles = [
+        payload.get("successor"),
+        payload.get("delete_successor"),
+        *evidence.get("terminal_work", {}),
+    ]
     for mention in evidence.get("mentions", []):
         handles.extend([mention.get("retired_ref"), mention.get("successor")])
     for value in handles:
@@ -1224,7 +1239,12 @@ def _checked_memory_proposal(
     Evidence changes (including successor or main SHA drift) need a new review.
     """
     from precis.graph.garden import candidates
-    from precis.graph.garden.proposals import GARDEN_ACTOR, MEMORY_APPLY_DETECTORS
+    from precis.graph.garden.proposals import (
+        GARDEN_ACTOR,
+        MEMORY_APPLY_DETECTORS,
+        key_block,
+        memory_successor_refusal,
+    )
 
     prop = conn.execute(
         "SELECT target_kind, target_id, note, content_sha FROM reviews "
@@ -1238,6 +1258,9 @@ def _checked_memory_proposal(
         raise BadInput(f"review {review_id} is not a memory {action} proposal")
     target = int(prop[1])
     payload = garden.get("payload") or {}
+    refusal = memory_successor_refusal(payload, garden.get("evidence") or {})
+    if refusal:
+        raise MergeRefused("apply_refused", refusal)
     successor = _memory_successor(payload) if action == "supersede" else None
     if action == "supersede" and (successor is None or successor == target):
         raise BadInput("supersede requires a distinct live memory successor")
@@ -1259,6 +1282,12 @@ def _checked_memory_proposal(
     sha = conn.execute("SELECT precis_target_sha('ref', %s)", (target,)).fetchone()[0]
     if not sha or prop[3] != sha:
         raise MergeRefused("stale", "the proposal no longer matches the target")
+    if key_block(store, "ref", target, garden["key"]) == "rejected":
+        raise MergeRefused(
+            "apply_refused",
+            "the proposal is rejected on this unchanged target content",
+            next=f"get(kind='memory', id={target})",
+        )
     if payload.get("base_sha") != sha:
         raise MergeRefused("apply_refused", "base_sha does not match the pinned target")
     if memory_human_hold(store, target):
@@ -1290,17 +1319,17 @@ def _checked_memory_proposal(
     fresh = detect(
         store, scan_cap=1, limit=1, cursors={f"{detector}:memory": target - 1}
     )
-    if fresh and fresh[0].target_id == target and fresh[0].action != action:
-        raise MergeRefused(
-            "apply_refused",
-            "the proposal action differs from the fresh detector action",
-        )
     if (
         not fresh
         or fresh[0].target_id != target
         or fresh[0].evidence != garden.get("evidence")
     ):
         raise MergeRefused("stale", "the detector predicate or its evidence changed")
+    if fresh[0].action != action:
+        raise MergeRefused(
+            "apply_refused",
+            "the proposal action differs from the fresh detector action",
+        )
     for key in ("shas", "successor", "main_sha"):
         if fresh[0].payload.get(key) != payload.get(key):
             raise MergeRefused(
@@ -1423,6 +1452,7 @@ def _guard_memory_link_measures(conn: Any, links: list[dict[str, Any]]) -> None:
         raise MergeRefused(
             "apply_refused",
             "memory links anchor measures; resolve them before rewriting",
+            next="get(kind='skill', id='precis-measure-help')",
         )
 
 
@@ -1454,22 +1484,24 @@ def _guard_legacy_memory_links(links: list[dict[str, Any]]) -> None:
 
 def _restore_memory_link(
     store: Store, conn: Any, link: dict[str, Any], *, actor: str
-) -> None:
+) -> bool:
     """Replay an existing edge, including its id and trust, through trust acts.
 
     Like merge undo, this restores a prior edge rather than admitting a new
     machine relation. Trust columns cannot be assigned by SQL: reconstruct
     the recorded origin/confidence through the existing import/consider doors.
+    Return whether strict mode required a legacy v0 row to be stamped v1;
+    its recorded unknown origin and confidence remain unchanged.
     """
     existing = conn.execute(
         "SELECT to_jsonb(l) FROM links l WHERE link_id = %s", (link["link_id"],)
     ).fetchone()
     if existing is not None and existing[0] == link:
-        return
-    if link["trust_write_version"] == 0:
-        raise MergeRefused(
-            "apply_refused", "a legacy memory link cannot be recreated exactly"
-        )
+        return False
+    legacy = link["trust_write_version"] == 0
+    preserve_v0 = (
+        legacy and not conn.execute("SELECT precis_trust_strict()").fetchone()[0]
+    )
     chunk_ids = {
         link[key] for key in ("src_chunk_id", "dst_chunk_id") if link[key] is not None
     }
@@ -1480,7 +1512,9 @@ def _restore_memory_link(
         ).fetchall()
         if chunk_ids != {row[0] for row in present}:
             raise MergeRefused(
-                "apply_refused", "a memory link's original chunk cannot be restored"
+                "apply_refused",
+                "a memory link's original chunk cannot be restored",
+                next="get(kind='skill', id='precis-gardener-memory-help')",
             )
     conn.execute(
         "DELETE FROM links WHERE link_id = %(link_id)s OR "
@@ -1501,11 +1535,12 @@ def _restore_memory_link(
             confidence="unknown",
             reason="garden rewrite restores the recorded link origin",
         )
-        if origin == "unknown"
+        if origin == "unknown" and not preserve_v0
         else None
     )
+    write_origin = "generated" if origin == "unknown" else origin
     with revision_context(
-        trust_origin="generated" if origin == "unknown" else origin,
+        trust_origin="" if preserve_v0 else write_origin,
         trust_act=import_act,
         actor=actor,
         trust_actor_type="agent",
@@ -1523,6 +1558,8 @@ def _restore_memory_link(
         if import_act is not None:
             conn.execute("SELECT set_config('precis.trust_act_bound', '', true)")
     apply_revision_context(conn, clear=True)
+    if preserve_v0:
+        return False
     lid = int(link["link_id"])
     state = store.trust_state("link", lid, conn=conn)
     assert state is not None
@@ -1557,6 +1594,7 @@ def _restore_memory_link(
             actor_type="agent",
         )
     apply_revision_context(conn, clear=True)
+    return legacy
 
 
 def _resolve_memory_apply(
@@ -1845,6 +1883,278 @@ def undo_rewrite(store: Store, rewrite_id: str, *, actor: str) -> dict[str, int]
     return {"links_restored": len(rec["links"]), "links_deleted": deleted}
 
 
+def _retirement_links(conn: Any, scope: list[int]) -> list[dict[str, Any]]:
+    """Include both ends and existing successor twins before deduplication."""
+    return [
+        dict(row[0])
+        for row in conn.execute(
+            "SELECT to_jsonb(l) FROM links l WHERE src_ref_id = ANY(%s) "
+            "OR dst_ref_id = ANY(%s) ORDER BY link_id FOR UPDATE",
+            (scope, scope),
+        ).fetchall()
+    ]
+
+
+def _retirement_ends(
+    conn: Any, ids: list[int], *, content_ids: list[int] | None = None
+) -> list[dict[str, Any]]:
+    """Pin liveness everywhere, content only where undo rewrites a link."""
+    conn.execute(
+        "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) ORDER BY ref_id FOR UPDATE",
+        (ids,),
+    ).fetchall()
+    return [
+        dict(row[0])
+        for row in conn.execute(
+            "SELECT jsonb_build_object('id', ref_id, 'kind', kind, "
+            "'retired_at', retired_at, 'sha', CASE WHEN ref_id = ANY(%s) "
+            "THEN precis_target_sha('ref', ref_id) END) "
+            "FROM refs WHERE ref_id = ANY(%s) ORDER BY ref_id",
+            (ids if content_ids is None else content_ids, ids),
+        ).fetchall()
+    ]
+
+
+def _retirement_chunks(conn: Any, links: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ids = sorted(
+        {
+            link[key]
+            for link in links
+            for key in ("src_chunk_id", "dst_chunk_id")
+            if link[key] is not None
+        }
+    )
+    return [
+        dict(row[0])
+        for row in conn.execute(
+            "SELECT jsonb_build_object('chunk_id', chunk_id, 'ref_id', ref_id, "
+            "'ord', ord, 'text', text, 'content_sha', content_sha, "
+            "'retired_at', retired_at) FROM chunks WHERE chunk_id = ANY(%s) "
+            "ORDER BY chunk_id FOR UPDATE",
+            (ids,),
+        ).fetchall()
+    ]
+
+
+def _retirement_snapshot(
+    store: Store,
+    conn: Any,
+    target: int,
+    garden: dict[str, Any],
+    review_id: int,
+    *,
+    successor: int | None,
+) -> dict[str, Any]:
+    from precis.dispatch import Hub
+    from precis.graph.garden.proposals import memory_successor_refusal
+
+    ref = store.get_ref(kind="memory", id=target)
+    assert ref is not None
+    reason = f"garden:{garden['detector']}:{review_id}"
+    handle, resolved, _kind = (
+        Hub(store=store)
+        .sibling("memory")
+        ._delete_successor(
+            target,
+            ref.meta or {},
+            conn=conn,
+            superseded_by=f"me{successor}" if successor is not None else None,
+            reason=reason,
+        )
+    )
+    refusal = memory_successor_refusal({"successor": handle}, {})
+    if refusal:
+        raise MergeRefused("apply_refused", refusal)
+    scope = sorted({target, *([resolved] if resolved is not None else [])})
+    ends = _retirement_ends(conn, scope)
+    if garden["action"] == "retire":
+        payload = garden["payload"]
+        sha = next((end["sha"] for end in ends if end["id"] == resolved), None)
+        if (
+            payload.get("delete_successor") != handle
+            or payload.get("delete_successor_sha") != sha
+            or payload.get("delete_successor_error")
+        ):
+            raise MergeRefused(
+                "stale", "the retirement successor or its content changed"
+            )
+    if resolved is not None:
+        _check_retirement_cycle(conn, target, resolved)
+    links = _retirement_links(conn, scope)
+    affected = [l for l in links if target in (l["src_ref_id"], l["dst_ref_id"])]
+    _guard_memory_link_measures(conn, affected)
+    endpoints = sorted(
+        {*scope, *(l[k] for l in links for k in ("src_ref_id", "dst_ref_id"))}
+    )
+    _retirement_ends(conn, endpoints)
+    return {
+        "retirement_id": f"garden-{garden['action']}:{target}:{review_id}",
+        "proposal": review_id,
+        "target": target,
+        "successor": resolved,
+        "successor_handle": handle,
+        "scope": scope,
+        "endpoints": endpoints,
+        "prior_meta": ref.meta or {},
+        "links": links,
+        "chunks": _retirement_chunks(conn, links),
+    }
+
+
+def _check_retirement_cycle(conn: Any, target: int, successor: int) -> None:
+    # Both endpoints migrate. Direct target/successor edges collapse away;
+    # every other migrated edge must leave containment acyclic.
+    cycle = conn.execute(
+        "WITH RECURSIVE paths(id, goal) AS ("
+        "SELECT dst_ref_id, %(successor)s::bigint FROM links "
+        "WHERE relation = 'part-of' AND src_ref_id = %(target)s "
+        "AND dst_ref_id != %(successor)s "
+        "UNION SELECT %(successor)s::bigint, src_ref_id FROM links "
+        "WHERE relation = 'part-of' AND dst_ref_id = %(target)s "
+        "AND src_ref_id != %(successor)s "
+        "UNION SELECT l.dst_ref_id, p.goal FROM links l "
+        "JOIN paths p ON p.id = l.src_ref_id WHERE l.relation = 'part-of') "
+        "SELECT 1 FROM paths WHERE id = goal LIMIT 1",
+        {"target": target, "successor": successor},
+    ).fetchone()
+    if cycle is not None:
+        raise MergeRefused(
+            "apply_refused",
+            "migrating the memory's part-of links would close a cycle",
+        )
+
+
+def _save_retirement(store: Store, conn: Any, rec: dict[str, Any]) -> None:
+    rec["applied_links"] = _retirement_links(conn, rec["scope"])
+    prior = {link["link_id"]: link for link in rec["links"]}
+    applied = {link["link_id"]: link for link in rec["applied_links"]}
+    rewritten = [link for lid, link in prior.items() if applied.get(lid) != link]
+    changed = rewritten + [
+        link for lid, link in applied.items() if prior.get(lid) != link
+    ]
+    rec["content_endpoints"] = sorted(
+        {*rec["scope"], *(l[k] for l in changed for k in ("src_ref_id", "dst_ref_id"))}
+    )
+    # Undo never touches unchanged successor links or their endpoints.
+    rec["endpoints"] = rec["content_endpoints"]
+    chunk_ids = {l[k] for l in rewritten for k in ("src_chunk_id", "dst_chunk_id")}
+    rec["chunks"] = [c for c in rec["chunks"] if c["chunk_id"] in chunk_ids]
+    rec["applied_ends"] = _retirement_ends(
+        conn, rec["endpoints"], content_ids=rec["content_endpoints"]
+    )
+    rec["applied_meta"] = conn.execute(
+        "SELECT meta - 'garden_retirement' FROM refs WHERE ref_id = %s",
+        (rec["target"],),
+    ).fetchone()[0]
+    store.stamp_ref_meta(rec["target"], {"garden_retirement": rec}, conn=conn)
+
+
+@trust_door("generated")
+def undo_retirement(store: Store, retirement_id: str, *, actor: str) -> dict[str, int]:
+    """Restore a retired node and its exact edges, refusing intervening edits.
+
+    Both ends are saved because migration can collapse links onto existing
+    successor twins. Only changed rows are removed; unchanged trust survives.
+    The snapshot and terminal undo decision share the restoration transaction.
+    ``links_restamped`` counts legacy edges strict trust required to move from
+    version 0 to 1, preserving their original origin and confidence.
+    """
+    from precis.graph.garden.proposals import GARDEN_VERSION
+
+    with store.atomic() as conn:
+        row = conn.execute(
+            "SELECT ref_id, meta->'garden_retirement', meta - 'garden_retirement' "
+            "FROM refs WHERE meta->'garden_retirement'->>'retirement_id' = %s "
+            "AND retired_at IS NOT NULL FOR UPDATE",
+            (retirement_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFound(f"no retirement record for {retirement_id!r}")
+        target, rec = int(row[0]), row[1]
+        ends = _retirement_ends(
+            conn, rec["endpoints"], content_ids=rec["content_endpoints"]
+        )
+        links = _retirement_links(conn, rec["scope"])
+        prior = {l["link_id"]: l for l in rec["links"]}
+        applied = {l["link_id"]: l for l in rec["applied_links"]}
+        rewritten = [l for lid, l in prior.items() if applied.get(lid) != l]
+        removed = [l for lid, l in applied.items() if prior.get(lid) != l]
+        touched = {l["link_id"] for l in rewritten + removed}
+        current = {l["link_id"]: l for l in links}
+        edge_keys = (
+            "src_ref_id",
+            "src_chunk_id",
+            "dst_ref_id",
+            "dst_chunk_id",
+            "relation",
+        )
+        restored_edges = {tuple(l[k] for k in edge_keys) for l in rewritten}
+        if (
+            ends != rec["applied_ends"]
+            or any(current.get(lid) != applied.get(lid) for lid in touched)
+            or any(
+                l["link_id"] not in touched
+                and tuple(l[k] for k in edge_keys) in restored_edges
+                for l in links
+            )
+            or row[2] != rec["applied_meta"]
+            or _retirement_chunks(conn, rewritten) != rec["chunks"]
+        ):
+            raise BadInput(
+                "retired memory, successor or link end changed; undo is unsafe",
+                next=f"inspect me{target} and its garden_retirement snapshot; "
+                "reconcile changed endpoints before retrying garden undo",
+            )
+        _guard_memory_link_measures(conn, removed)
+        deleted = store.delete_links(
+            [l["link_id"] for l in removed],
+            conn=conn,
+        )
+        restamped = []
+        with revision_context(f"garden:undo:{retirement_id}", actor=actor):
+            apply_revision_context(conn, clear=True)
+            store.restore_ref(target, conn=conn)
+            conn.execute(
+                "UPDATE refs SET meta = %s WHERE ref_id = %s",
+                (Jsonb(rec["prior_meta"]), target),
+            )
+            for link in rewritten:
+                if _restore_memory_link(store, conn, link, actor=actor):
+                    restamped.append(link["link_id"])
+        proposal = conn.execute(
+            "SELECT note FROM reviews WHERE review_id = %s", (rec["proposal"],)
+        ).fetchone()
+        assert proposal is not None
+        garden = (json.loads(proposal[0]) or {}).get("garden") or {}
+        store.record_target_review(
+            "ref",
+            target,
+            actor=actor,
+            verdict="rejected",
+            version=GARDEN_VERSION,
+            note=json.dumps(
+                {
+                    "garden": {
+                        "v": 1,
+                        "key": garden["key"],
+                        "resolves": rec["proposal"],
+                        "undone": retirement_id,
+                        "reason": "undone",
+                        "restamped_links": restamped,
+                    }
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            conn=conn,
+        )
+    return {
+        "links_restored": len(rewritten),
+        "links_deleted": deleted,
+        "links_restamped": len(restamped),
+    }
+
+
 @trust_door("generated")
 def apply_supersede(
     store: Store,
@@ -1863,27 +2173,9 @@ def apply_supersede(
         )
         successor = _memory_successor(garden["payload"])
         assert successor is not None
-        # Delete migrates both endpoints. A direct target/successor edge
-        # collapses to a self-loop and is dropped; every other migrated
-        # edge closes a cycle only if its destination reaches its source.
-        cycle = conn.execute(
-            "WITH RECURSIVE paths(id, goal) AS ("
-            "SELECT dst_ref_id, %(successor)s::bigint FROM links "
-            "WHERE relation = 'part-of' AND src_ref_id = %(target)s "
-            "AND dst_ref_id != %(successor)s "
-            "UNION SELECT %(successor)s::bigint, src_ref_id FROM links "
-            "WHERE relation = 'part-of' AND dst_ref_id = %(target)s "
-            "AND src_ref_id != %(successor)s "
-            "UNION SELECT l.dst_ref_id, p.goal FROM links l "
-            "JOIN paths p ON p.id = l.src_ref_id WHERE l.relation = 'part-of') "
-            "SELECT 1 FROM paths WHERE id = goal LIMIT 1",
-            {"target": target, "successor": successor},
-        ).fetchone()
-        if cycle is not None:
-            raise MergeRefused(
-                "apply_refused",
-                "migrating the memory's part-of links would close a cycle",
-            )
+        rec = _retirement_snapshot(
+            store, conn, target, garden, review_id, successor=successor
+        )
         _resolve_memory_apply(
             store,
             conn,
@@ -1891,7 +2183,7 @@ def apply_supersede(
             actor=actor,
             model=model,
             garden=garden,
-            applied="supersede",
+            applied=rec["retirement_id"],
             verdict_extra=verdict_extra,
         )
         reason = f"garden:{garden['detector']}:{review_id}"
@@ -1910,6 +2202,7 @@ def apply_supersede(
                 meta={"garden_supersede": {"proposal": review_id}},
                 conn=conn,
             )
+            _save_retirement(store, conn, rec)
     return {"target": target, "successor": successor}
 
 
@@ -1929,6 +2222,9 @@ def apply_retire(
         target, garden, _body = _checked_memory_proposal(
             store, conn, review_id, "retire"
         )
+        rec = _retirement_snapshot(
+            store, conn, target, garden, review_id, successor=None
+        )
         _resolve_memory_apply(
             store,
             conn,
@@ -1936,12 +2232,15 @@ def apply_retire(
             actor=actor,
             model=model,
             garden=garden,
-            applied="retire",
+            applied=rec["retirement_id"],
             verdict_extra=verdict_extra,
         )
         reason = f"garden:{garden['detector']}:{review_id}"
         with revision_context(reason, actor=actor):
-            Hub(store=store).sibling("memory").delete(id=target, reason=reason)
+            Hub(store=store).sibling("memory").delete(
+                id=target, reason=reason, superseded_by=rec["successor_handle"]
+            )
+            _save_retirement(store, conn, rec)
     return {"target": target}
 
 
@@ -1960,5 +2259,6 @@ __all__ = [
     "apply_supersede",
     "undo_merge",
     "undo_relink",
+    "undo_retirement",
     "undo_rewrite",
 ]

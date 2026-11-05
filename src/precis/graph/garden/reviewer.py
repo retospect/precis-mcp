@@ -48,9 +48,12 @@ from precis.graph.garden.proposals import (
     MEMORY_APPLY_DETECTORS,
     GardenProposal,
     _parse_note,
+    memory_retirement_drift,
+    memory_successor_refusal,
     proposal_ref_ids,
 )
 from precis.graph.garden.proposer import ref_excerpts
+from precis.utils.env import env_flag
 from precis.utils.memory_reconcile import (
     memory_reconciliation_policy,
     uses_memory_policy,
@@ -339,6 +342,15 @@ def _call_verdict(
     call: ModelCall, store: Store, prop: GardenProposal
 ) -> ReviewerVerdict:
     try:
+        if prop.action in MEMORY_APPLY_ACTIONS and env_flag(
+            "PRECIS_GARDEN_MEMORY_APPLY"
+        ):
+            refusal = memory_successor_refusal(prop.payload, prop.evidence)
+            if refusal:
+                return ReviewerVerdict(verdict="reject", why=refusal)
+            drift = memory_retirement_drift(store, prop)
+            if drift:
+                return ReviewerVerdict(verdict="reject", why=drift.why)
         return call(store, prop)
     except Exception as exc:
         log.warning("garden reviewer: model raised on %s: %s", prop.key, exc)

@@ -3895,6 +3895,53 @@ class MemoryHandler(NumericRefHandler):
             )
         return address, target.ref_id, str(row[0])
 
+    def _delete_successor(
+        self,
+        ref_id: int,
+        meta: dict[str, Any],
+        *,
+        conn: Any,
+        superseded_by: str | None = None,
+        reason: str | None = None,
+    ) -> tuple[str | None, int | None, str | None]:
+        """Resolve the delete route before mutation so garden can snapshot it."""
+        raw_sup = superseded_by or meta.get("superseded_by")
+        if superseded_by is None:
+            inbound: list[str] = []
+            for rid, kind in conn.execute(
+                "SELECT DISTINCT r.ref_id, r.kind FROM links l JOIN refs r "
+                "ON r.ref_id = l.src_ref_id WHERE l.dst_ref_id = %s "
+                "AND l.relation = 'supersedes' AND r.retired_at IS NULL "
+                "AND r.ref_id <> %s ORDER BY r.ref_id",
+                (ref_id, ref_id),
+            ):
+                address = handle_registry.try_format(str(kind), int(rid))
+                if address is not None:
+                    inbound.append(address)
+                    if len(inbound) == 2:
+                        break
+            if len(inbound) > 1:
+                raise BadInput(
+                    "multiple live successors supersede this memory; choose one",
+                    next=[
+                        f"delete(kind='memory', id={ref_id}, superseded_by={address!r})"
+                        for address in inbound
+                    ],
+                )
+            if raw_sup is None and inbound:
+                raw_sup = inbound[0]
+        if raw_sup is None and reason:
+            named = self._reason_named_ref({"reason": reason})
+            if (
+                named is not None
+                and named != ref_id
+                and self.store.get_ref(kind="memory", id=named, conn=conn) is not None
+            ):
+                raw_sup = f"me{named}"
+        if raw_sup is None:
+            return None, None, None
+        return self._retire_successor(str(raw_sup), ref_id, conn=conn)
+
     def _delete(
         self,
         id: str | int | None,
@@ -3925,48 +3972,13 @@ class MemoryHandler(NumericRefHandler):
                     f"memory {ref_id} is no longer live",
                     next=f"get(kind='memory', id={ref_id}, view='retired')",
                 )
-            raw_sup = superseded_by or (row[1] or {}).get("superseded_by")
-            if superseded_by is None:
-                inbound: list[str] = []
-                for rid, kind in conn.execute(
-                    "SELECT DISTINCT r.ref_id, r.kind FROM links l JOIN refs r "
-                    "ON r.ref_id = l.src_ref_id WHERE l.dst_ref_id = %s "
-                    "AND l.relation = 'supersedes' AND r.retired_at IS NULL "
-                    "AND r.ref_id <> %s ORDER BY r.ref_id",
-                    (ref_id, ref_id),
-                ):
-                    address = handle_registry.try_format(str(kind), int(rid))
-                    if address is not None:
-                        inbound.append(address)
-                        if len(inbound) == 2:
-                            break
-                if len(inbound) > 1:
-                    raise BadInput(
-                        "multiple live successors supersede this memory; choose one",
-                        next=[
-                            f"delete(kind='memory', id={ref_id}, "
-                            f"superseded_by={address!r})"
-                            for address in inbound
-                        ],
-                    )
-                if raw_sup is None and inbound:
-                    raw_sup = inbound[0]
-            if raw_sup is None and reason:
-                named = self._reason_named_ref({"reason": reason})
-                if (
-                    named is not None
-                    and named != ref_id
-                    and self.store.get_ref(kind="memory", id=named, conn=conn)
-                    is not None
-                ):
-                    raw_sup = f"me{named}"
-            successor: int | None = None
-            successor_kind: str | None = None
-            successor_handle: str | None = None
-            if raw_sup is not None:
-                successor_handle, successor, successor_kind = self._retire_successor(
-                    str(raw_sup), ref_id, conn=conn
-                )
+            successor_handle, successor, successor_kind = self._delete_successor(
+                ref_id,
+                row[1] or {},
+                conn=conn,
+                superseded_by=superseded_by,
+                reason=reason,
+            )
             report = scan_mentions(conn, ref_id)
             receipt = report.render(
                 f"me{ref_id}",

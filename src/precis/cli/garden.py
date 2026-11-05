@@ -15,10 +15,11 @@ acts:
   proposal flips to ``approved`` (the second bar) — all one
   transaction. Relink proposals apply through the consumer's reviewed
   door (gr507641), not this verb; other actions are still manual work.
-* ``precis garden undo <merge_id|relink_id>`` — reverse an applied
+* ``precis garden undo <apply_id>`` — reverse an applied
   merge from the reversal record on the loser (``meta.garden_merge``),
   or delete the edge a relink wrote (``links.meta.garden_relink``,
-  ids ``garden-relink:…``).
+  ids ``garden-relink:…``). Memory rewrites, supersedes and retirements
+  restore their saved node/link snapshots and reject the restored key.
 * ``precis garden restore <slug-or-id>`` — revive a superseded paper
   without reversing migrated content. This operator-only CLI resolves the
   original row, bypassing redirects; garden merges must use ``undo`` so
@@ -91,7 +92,7 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         ),
         (
             "undo",
-            "Undo an applied merge, relink or memory rewrite by its recorded id.",
+            "Undo an applied merge, relink or memory action by its recorded id.",
             "apply_id",
         ),
     ):
@@ -239,8 +240,8 @@ def _reject(args: argparse.Namespace, store: Store) -> None:
     review_id = int(args.review_id)
     hold = _proposal_holds(store, [review_id]).get(review_id, {})
     extra = (
-        {"reason": "apply_error", "retryable": True}
-        if hold.get("held") == "apply_error"
+        {"reason": hold["held"], "retryable": True}
+        if hold.get("held") in {"apply_error", "unresolved"}
         else None
     )
     row = resolve_proposal(
@@ -252,14 +253,26 @@ def _reject(args: argparse.Namespace, store: Store) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
-    suffix = " — retryable after the apply error is fixed" if extra else ""
+    suffix = " — retryable after the held issue is fixed" if extra else ""
     print(f"rejected proposal {args.review_id}{suffix}")
 
 
 def _undo(args: argparse.Namespace, store: Store) -> None:
-    from precis.graph.garden.apply import undo_merge, undo_relink, undo_rewrite
+    from precis.graph.garden.apply import (
+        undo_merge,
+        undo_relink,
+        undo_retirement,
+        undo_rewrite,
+    )
 
     apply_id = args.apply_id
+    if apply_id.startswith(("garden-supersede:", "garden-retire:")):
+        counts = undo_retirement(store, apply_id, actor=_actor(args))
+        print(
+            f"undid {apply_id}: memory restored, {counts['links_restored']} link(s) restored, "
+            f"{counts['links_restamped']} link(s) restamped"
+        )
+        return
     if apply_id.startswith("garden-rewrite:"):
         counts = undo_rewrite(store, apply_id, actor=_actor(args))
         print(

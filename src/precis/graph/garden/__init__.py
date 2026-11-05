@@ -22,19 +22,18 @@ a fresh review. A proposal must match the fresh detector's action, checked
 before paid review and again at apply, so supersede cannot degrade to retire.
 Deterministic refusals close the key; unexpected deterministic apply failures
 hold the proposal so they cannot buy another review each tick. Operational
-database failures (including deadlocks and lock timeouts) leave it pending.
+database failures hold after five recorded attempts.
 Memory approvals are saved separately before apply, survive rollback, and
 are reused on bounded later-tick attempts after the same evidence checks.
 If saving the approval itself fails, no apply occurs; a later tick may pay
 again, at most once per proposal per tick within the shared review limit.
 Hold-write failures count as errors without aborting the remaining tick.
 The CLI shows hold reasons; rejecting an apply-error hold reopens its key.
-Unresolved
-rewrite text stays pending without review. Applied find/span pairs must match
+Unresolved ops wait one day, then resolved ops get a fresh proposal. Applied find/span pairs must match
 fresh detector ops, and link removals are refused, because model
 payload overrides cannot expand the detector's edit scope. Undo writes a
 terminal rejection on the restored content so the next tick cannot reapply it.
-Supersede and retire have no undo and require stronger preservation evidence.
+Supersede and retire snapshot links for undo, refusing changed endpoints.
 Supersede checks incoming and outgoing part-of migrations
 before writing and refuses edges that close a containment cycle. A direct
 parent remains a valid successor: migration drops the collapsed self-loop.

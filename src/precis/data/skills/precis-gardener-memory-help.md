@@ -126,7 +126,7 @@ history. Both detectors propose rewrites only; neither adds an apply path.
 
 ## Reviewed memory actions
 
-`PRECIS_GARDEN_MEMORY_APPLY` defaults **off**. While off, the consumer
+The memory apply gate defaults **off**. While off, the consumer
 leaves `rewrite`, `supersede` and `retire` proposals pending without a
 reviewer call, write or row-state change. Enabling the flag admits only
 `dangling_mention`, `anchor_rot` and `thread_shape` to the existing bounded
@@ -137,22 +137,27 @@ Fable cross-check remain non-terminal. The no-model
 Before a memory action applies, its door checks that the proposal is
 still pending and current, the node's pinned SHA holds, and the detector
 predicate still holds. Its action must match the fresh candidate's action:
-a proposer cannot replace a supersede with a retire. Mismatches close as
-non-retryable `apply_refused` before paid review, with the same check at apply.
+a proposer cannot replace a supersede with a retire. An exact-evidence
+mismatch closes as `apply_refused`; changed evidence or target content closes
+as retryable `stale`, with the same check at apply. `md:` successors are
+refused: their source content cannot yet be shown and pinned for review.
 A `trust_origin='human'` or currently `considered`
 node is held for a human (`garden_review`, `held='human'`), including
 when protection changed after review.
 
-Unresolved rewrite ops (`text=null`) stay pending without a reviewer call.
+Unresolved rewrite ops (`text=null`) get no reviewer call. After one day,
+mixed proposals close retryably and re-propose only resolved ops for review;
+wholly unresolved proposals hold as `unresolved` for evidence repair.
 Legacy proposals lacking supporting ref SHA pins close before review so a
 fresh detector run can replace them. Stale evidence permits a fresh proposal;
 deterministic apply refusals close the unchanged key. Operational database
-errors, including deadlocks and lock timeouts, leave proposals pending and
-reuse the saved approval on a later tick within the shared review budget.
+errors reuse the saved approval within the shared review budget. Five failed
+apply attempts, recorded across ticks, hold as `apply_error` with the last error.
 If saving approval itself fails, nothing applies; a later tick may pay again,
-at most once per proposal per tick. Other unexpected apply errors hold the
-proposal for a human. `precis garden proposals` shows the hold reason;
-after fixing an `apply_error`, `precis garden reject <review_id>` reopens
+at most once per proposal per tick and within the consecutive-error cap.
+Other unexpected apply errors hold the
+proposal for a human. The proposal listing shows the hold reason;
+after fixing an `apply_error` or `unresolved` hold, rejecting the proposal reopens
 the unchanged key for a fresh proposal. Failed hold writes count as errors
 without aborting the rest of the tick.
 
@@ -160,6 +165,8 @@ The six `memory-review` detectors remain proposal-only: even with the gate
 on, the consumer leaves them pending, unreviewed and unchanged because
 they have no apply-time detector checks. `qualify` and `ask` stay outside
 consumer review.
+
+## Memory undo
 
 An approved rewrite applies anchored edits with
 `reason='garden:<detector>:<proposal id>'`, recording the
@@ -169,14 +176,24 @@ body bytes, outgoing links and incoming chunk links. Each applied `find` and
 `span` must match a freshly detected op; the model supplies replacement text.
 Mention synchronization cannot silently drop provenance or route links:
 link removals are refused because no rewrite detector justifies them.
-`precis garden undo <rewrite_id>` restores the prior body byte-for-byte and
+Undoing the rewrite restores the prior body byte-for-byte and
 the saved links, then rejects the key on the restored content so the next
-tick cannot apply it again.
+tick cannot apply it again. Anchor-rot undo remains blocked across main commits
+while the restored target content is unchanged.
 
 An approved supersede writes the winner → loser `supersedes` edge,
 retires the loser and stamps `meta.superseded_by` so ordinary `get`
 redirects to the survivor. Retire uses the existing memory delete door.
-Neither action has undo. Both require review that still-true claims and needed
+Both save `meta.garden_retirement`: prior metadata, every incident link
+(including chunk ends, metadata and setter), successor links and endpoint pins.
+Undoing a supersede or retire restores the node and
+links, reverses moved edges and removes the newly written supersedes trail.
+Changed successors or affected link ends refuse undo with a repair next step;
+unrelated successor links are left alone. An undone removal blocks every removal
+route of that node, including a merge losing it, until its content changes.
+In strict mode, restoring a legacy link stamps it from version zero to one while
+preserving its original origin and confidence; the result reports `links_restamped`.
+Both actions require review that still-true claims and needed
 figures are already preserved elsewhere; a payload instruction to preserve them later is not
 enough. Applied rows remain `approved` plus `garden.applied`, with no
 new verdict or table.

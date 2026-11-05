@@ -203,6 +203,24 @@ see-also only — so a future dangling edge resolves by its relation.
   `meta.superseded_by` on the tombstone so `get` redirects exactly as a
   garden merge does. **apply_retire**: through
   `src/precis/handlers/memory.py::MemoryHandler._delete`.
+  Both save node metadata and all affected links in `meta.garden_retirement`;
+  `src/precis/graph/garden/apply.py::undo_retirement` restores those routes,
+  including migrated edges, and removes the new supersedes trail. Successor
+  or affected endpoint drift refuses undo with a next step. Undo compares and
+  restores only rewritten or added rows; unrelated successor link additions or
+  cascaded deletions cannot refuse it. An undone removal blocks every removal
+  route of that node, including pending merges losing it, until its content
+  changes. In strict mode, restoring a legacy link stamps it from version zero
+  to one while preserving origin and confidence; undo prints `links_restamped`.
+  Anchor-rot undo also survives a changed main SHA.
+- Edited targets and changed detector evidence close old proposals retryably.
+  An exact-evidence action downgrade remains refused. `md:` successors are
+  refused until their contents can be shown and pinned. Sampled-review successor
+  and drift checks run only with the memory apply gate on; flag-off reviews keep
+  the existing model path. After one day, mixed
+  unresolved rewrites re-propose their resolved ops for review; wholly
+  unresolved proposals hold. Operational apply failures hold after five durable
+  attempts. Approval-save errors count toward the consecutive-error cap.
 - **Human protection**: a node with `trust_origin='human'` or a current
   `considered` stamp is held (`garden_review` row, `held=human`), never
   applied by the consumer.
