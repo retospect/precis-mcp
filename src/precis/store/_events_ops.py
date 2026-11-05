@@ -134,15 +134,20 @@ class EventsMixin:
         source: str | None = None,
         event: str | None = None,
         limit: int = 100,
+        offset: int = 0,
+        event_id: int | None = None,
     ) -> list[RefEvent]:
         """Return events for ``ref_id`` newest-first.
 
         Optional ``source`` and ``event`` filters compose with AND.
         ``limit`` caps the result; the per-ref index is sorted by
-        ``ts DESC`` so this is a cheap range scan.
+        ``ts DESC`` so this is a cheap range scan. ``event_id`` narrows
+        within this ref; ``offset`` pages with event-id ties broken stably.
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
+        if offset < 0:
+            raise ValueError("offset must be non-negative")
         where = ["ref_id = %s"]
         params: list[Any] = [ref_id]
         if source is not None:
@@ -151,15 +156,30 @@ class EventsMixin:
         if event is not None:
             where.append("event = %s")
             params.append(event)
-        params.append(limit)
+        if event_id is not None:
+            where.append("event_id = %s")
+            params.append(event_id)
+        params.extend((limit, offset))
         sql = (
             f"SELECT {_EVENT_COLS} FROM ref_events "
             f"WHERE {' AND '.join(where)} "
-            "ORDER BY ts DESC LIMIT %s"
+            "ORDER BY ts DESC, event_id DESC LIMIT %s OFFSET %s"
         )
         with self.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [_row_to_event(r) for r in rows]
+
+    def count_events_for(self, ref_id: int, *, source: str | None = None) -> int:
+        """Count a ref's log without loading historical payload bodies."""
+        sql = "SELECT count(*) FROM ref_events WHERE ref_id = %s"
+        params: list[Any] = [ref_id]
+        if source is not None:
+            sql += " AND source = %s"
+            params.append(source)
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, params).fetchone()
+        assert row is not None
+        return int(row[0])
 
     def recent_events(
         self,

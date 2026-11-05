@@ -95,6 +95,23 @@ get(
 Reserved keys (`kind`, `id`, `view`, `q`) inside `args=` raise
 `BadInput` — pass them as explicit kwargs.
 
+## Read a memory's recent log, a window, or one full event
+
+```python
+get(kind='memory', id='me73', view='log')
+get(kind='memory', id='me73', view='log', args={'limit': 10, 'offset': 10})
+get(kind='memory', id='me73', view='log', args={'event_id': 123})
+```
+
+Memory logs list newest first, with bounded one-line previews and a
+shown/total header. `limit` defaults to 50 and caps positive integers at
+100; the byte budget may shorten a page. `offset` skips recent events;
+follow the footer's next call for the next window. Use the `event_id`
+printed on a line to read its complete payload. An oversized full event
+marks its cut and supplies an `event_id`/`offset` continuation; here offset
+counts JSON payload characters. Paper and finding logs remain oldest first
+with clipped value previews. Details: `precis-memory-help`.
+
 ## List only the neighbours of one kind
 ## Which pathways / structures / gripes are linked to this quest or todo?
 

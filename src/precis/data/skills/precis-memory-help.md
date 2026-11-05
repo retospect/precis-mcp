@@ -340,6 +340,28 @@ ref has `meta.superseded_by`. Distinct resolved handles appear once, at most
 carry the same courtesy lines and current state on linked neighbour rows.
 These lines are computed on read; bodies and index bullets stay unchanged.
 
+## Read recent edits and one complete audit event
+
+```python
+get(kind='memory', id='me73', view='log')  # recent events, newest first
+get(kind='memory', id='me73', view='log', args={'limit': 10, 'offset': 10})
+get(kind='memory', id='me73', view='log', args={'event_id': 123})
+```
+
+Use an `event_id` printed on a log line for the last call. The default
+lists at most 50 events; positive integer `limit` is capped at 100, and
+the response byte budget can shorten a page further. The header reports
+how many of the total are shown and the offset; follow the footer's exact
+next call for older events. Offsets count events from newest to oldest.
+Concurrent edits can shift those offsets; event identifiers stay fixed.
+
+Each line previews body values with their character lengths. Select one
+event to read its complete JSON payload, including `old_text` and
+`new_text`. If it cannot fit, the footer marks the cut and gives a call
+with `event_id` and `offset` to continue. With `event_id`, offset counts
+characters in that event's JSON payload, starting at zero. Invalid values
+or an event belonging to another memory refuse with a recovery call.
+
 ## Link a memory to the paper or patent it came from
 ## Attach a note to a specific paper section
 ## Cross-reference a memory with another ref

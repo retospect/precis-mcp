@@ -616,16 +616,63 @@ class MemoryHandler(NumericRefHandler):
         # 'depth': D}``) — declared so the extras gate accepts them.
         offset: int | str | None = None,
         depth: int | str | None = None,
+        limit: int | str | None = None,
+        event_id: int | str | None = None,
         **_kw: Any,
     ) -> Response:
-        # offset=/depth= belong to view='members' alone; anywhere else
-        # they would be silently dropped, so refuse with the shape.
-        if (offset is not None or depth is not None) and (
-            view != "members" or q is not None
+        # Log offsets count events, or payload characters when event_id
+        # selects one event. Keep members' independent cursor contract.
+        if depth is not None and (view != "members" or q is not None):
+            raise BadInput(
+                "depth= only applies to get(kind='memory', view='members')",
+                next="get(kind='memory', id=N, view='members', args={'depth': 1})",
+            )
+        if offset is not None and (view not in {"members", "log"} or q is not None):
+            raise BadInput(
+                "offset= can only apply to memory view='members' or view='log'",
+                next="get(kind='memory', id=N, view='log', args={'offset': 0})",
+            )
+        if any(v is not None for v in (limit, event_id)) and (
+            view != "log" or q is not None
         ):
             raise BadInput(
-                "offset=/depth= only apply to get(kind='memory', view='members')",
-                next="get(kind='memory', id=N, view='members', args={'offset': 0})",
+                "limit=/event_id= only apply to memory view='log'",
+                next="get(kind='memory', id=N, view='log')",
+            )
+        if view == "log" and any(v is not None for v in (limit, offset, event_id)):
+            if (
+                id is None
+                or isinstance(id, list)
+                or (isinstance(id, str) and (id.startswith("/") or "~" in id))
+            ):
+                raise BadInput(
+                    "log arguments require one whole memory id",
+                    next="get(kind='memory', id=N, view='log')",
+                )
+        if view == "log" and id is not None and not isinstance(id, list) and q is None:
+            from precis.handlers._event_log_render import log_integer, render_event_log
+
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            count = (
+                50 if limit is None else log_integer(limit, "limit", ref.id, minimum=1)
+            )
+            off = (
+                0
+                if offset is None
+                else log_integer(offset, "offset", ref.id, minimum=0)
+            )
+            selected = (
+                None
+                if event_id is None
+                else log_integer(event_id, "event_id", ref.id, minimum=1)
+            )
+            return render_event_log(
+                self.store,
+                ref.id,
+                newest_first=True,
+                limit=min(count, 100),
+                offset=off,
+                event_id=selected,
             )
         if isinstance(id, str) and "~" in id:
             return self._get_section(id=id, view=view, q=q)
