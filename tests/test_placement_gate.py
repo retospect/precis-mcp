@@ -79,6 +79,7 @@ def _alert_open(store: Store, fingerprint: str) -> bool:
         ("land_slice", {"repo_checkout", "git"}),
         ("release_cut", {"repo_checkout", "git"}),
         ("release_deploy", {"repo_checkout", "git"}),
+        ("release_confirm", {"repo_checkout", "git"}),
         ("ci_red_digest", {"repo_checkout", "git"}),
         ("plan_dispatch", set()),
         ("ci_verdict_poll", set()),

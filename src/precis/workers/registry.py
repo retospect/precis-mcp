@@ -1408,6 +1408,18 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        name="release_confirm",
+        label="Release confirm (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        placement=frozenset({"repo_checkout", "git"}),
+        one_line="Attest the deployed runtime (worker heartbeat shas, the "
+        "web's boot sha when release.health_url is set), then "
+        "scripts/round deploy --confirm-runtime and close on the release "
+        "owner's host.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
         name="ci_red_digest",
         label="CI red digest (job)",
         category="jobs",

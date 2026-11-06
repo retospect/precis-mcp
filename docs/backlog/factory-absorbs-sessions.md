@@ -60,14 +60,16 @@ c, n). Everything else is a bounded op or a Reto-only ask that stays one.
 
 Ordered by what it unlocks. "Exists" names code to extend, not rebuild.
 
-1. **Runtime-confirm op** (`release_confirm`): after `release_deploy`
-   returns, wait for the session MCP respawn, read `precis-status`
-   `served_sha` and every required daemon's boot sha, then run
-   `scripts/round deploy --confirm-runtime` and `scripts/round close`;
-   also read the ansible PLAY RECAP (`failed=0`) and the two asserts
-   instead of the exit code alone. Exists: `release_deploy`,
-   `src/precis/plans/release.py`, the release-pass template. Unblocks
-   BUILDER 7, 8, 9; needs the authority ruling (C1).
+1. **Runtime-confirm op** (`release_confirm`) — landed td573432: the
+   release-pass `confirm` node after `deploy` attests that every live
+   worker's heartbeat `code_sha` (and the web's `/healthz` boot sha, when
+   `release.health_url` is set) equals the release sha, re-probing on a
+   parked handle until a deadline (10 min after the deploy finished) for
+   workers that have not restarted, then runs `scripts/round deploy
+   --confirm-runtime` and `scripts/round close`. Any probe failure —
+   including a pinned sha that is not the plan's release sha — files the
+   tick's retry-cap ask (`retries: 0`); no rollback, no `good/r<N>` tag.
+   Unblocks BUILDER 7, 8, 9; still needs the authority ruling (C1).
 2. **Gripe → code todo, phase 1** (unify §6, no code): Reto or an owner
    creates the `Code work from gripes` root; GRIPE_FIX mints the code
    todo at dispatch, records lane/handoff/review/landed on it, converts

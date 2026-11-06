@@ -2581,6 +2581,7 @@ def test_every_seed_lane_carries_the_factory_deny_paths() -> None:
         "src/precis/workers/job_types/ci_red_digest.py",
         "src/precis/workers/job_types/release_poll.py",
         "src/precis/workers/job_types/release_deploy.py",
+        "src/precis/workers/job_types/release_confirm.py",
         "src/precis/workers/job_types/land_slice.py",
         "scripts/release",
     ):
@@ -2597,6 +2598,7 @@ def test_release_modules_are_denied_by_name() -> None:
             "src/precis/workers/job_types/ci_red_digest.py",
             "src/precis/workers/job_types/release_poll.py",
             "src/precis/workers/job_types/release_deploy.py",
+            "src/precis/workers/job_types/release_confirm.py",
             "src/precis/workers/job_types/land_slice.py",
             "src/precis/workers/job_types/fix_gripe.py",
         ],
@@ -2607,6 +2609,7 @@ def test_release_modules_are_denied_by_name() -> None:
         "src/precis/workers/job_types/ci_red_digest.py",
         "src/precis/workers/job_types/ci_verdict_poll.py",
         "src/precis/workers/job_types/land_slice.py",
+        "src/precis/workers/job_types/release_confirm.py",
         "src/precis/workers/job_types/release_cut.py",
         "src/precis/workers/job_types/release_deploy.py",
         "src/precis/workers/job_types/release_poll.py",

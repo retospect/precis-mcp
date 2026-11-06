@@ -580,8 +580,9 @@ def release_main_tag(head_sha: Any) -> str | None:
 def mint_release_pass(
     store: Store, parent_id: int | None = None, *, main_sha: str | None = None
 ) -> PlanMint:
-    """cut -> poll -> gate tests-green -> approval ask -> deploy; a loop
-    mints triage + fixer + re-cut + poll while red (td543733, td543855).
+    """cut -> poll -> gate tests-green -> approval ask -> deploy -> confirm;
+    a loop mints triage + fixer + re-cut + poll while red (td543733,
+    td543855, td573432).
 
     ``cut`` (``release_cut``) runs ``scripts/release --cut-only`` and stamps
     r<N>/sha on the root (``meta.release``) and the real range on the gate
@@ -591,7 +592,12 @@ def mint_release_pass(
     closes it empty, red mints a fixer. ``approval`` is an ``answer`` gate
     that is also the ask-user todo Reto answers (``deploy r<N>`` | ``hold``);
     ``deploy`` (``release_deploy``) refuses unless that answer names
-    ``deploy r<N>`` (:func:`precis.plans.release.approval`). The root is
+    ``deploy r<N>`` (:func:`precis.plans.release.approval`). ``confirm``
+    (``release_confirm``) then attests the deployed runtime — every live
+    worker's heartbeat ``code_sha``, and the web's boot sha when
+    ``release.health_url`` is set — before ``scripts/round`` confirms and
+    closes the release; a failed probe hits the retry-cap ask
+    (``retries: 0``), never a rollback. The root is
     tagged ``release-pass`` — the open-pass check
     ``release_poll`` reads before minting the next one — and, when
     ``main_sha`` is given, ``release-main:<sha12>``: the one-pass-per-sha
@@ -663,6 +669,20 @@ def mint_release_pass(
                 "only after the approval ask is answered 'deploy r<N>'."
             ),
             blocked_by=("approval",),
+        )
+        m.node(
+            "confirm",
+            "Confirm the release runtime",
+            {**_task("release_confirm"), "retries": 0},
+            body=(
+                "release_confirm checks that every live worker's heartbeat "
+                "code_sha (and the web's boot sha when release.health_url is "
+                "set) equals the release sha, then runs scripts/round deploy "
+                "--confirm-runtime then scripts/round close; a mismatch "
+                "fails it and the tick's retry-cap ask goes to a human; no "
+                "rollback."
+            ),
+            blocked_by=("deploy",),
         )
         final = {**ask, "blocks": f"td{deploy}"}
         check_ask_meta({"ask": final})

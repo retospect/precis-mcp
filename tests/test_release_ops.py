@@ -1,10 +1,12 @@
 """Dark release pass (td543733): the ``release_cut`` / ``ci_verdict_poll`` /
-``release_deploy`` job types, the cut's facts flowing through the plan root
-(``precis.plans.release``), the approval guard on the deploy, and the plan
-tick driving a ``release-pass`` plan. Subprocess and HTTP are faked."""
+``release_deploy`` / ``release_confirm`` job types, the cut's facts flowing
+through the plan root (``precis.plans.release``), the approval guard on the
+deploy, and the plan tick driving a ``release-pass`` plan. Subprocess and
+HTTP are faked."""
 
 from __future__ import annotations
 
+import json
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -23,6 +25,7 @@ from precis.workers.job_types import ci_red_digest as crd
 from precis.workers.job_types import ci_verdict_poll as cvp
 from precis.workers.job_types import get_job_type, known_job_types
 from precis.workers.job_types import plan_dispatch as pd
+from precis.workers.job_types import release_confirm as rcf
 from precis.workers.job_types import release_cut as rc
 from precis.workers.job_types import release_deploy as rd
 from precis.workers.job_types import run_slice as rs
@@ -39,6 +42,7 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.delenv("PRECIS_NODE", raising=False)
+    monkeypatch.delenv("PRECIS_RELEASE_HEALTH_URL", raising=False)
     psettings.invalidate()
 
 
@@ -133,13 +137,14 @@ def test_registry_and_executors() -> None:
         ("release_cut", "ssh_node"),
         ("ci_verdict_poll", "job_inproc"),
         ("release_deploy", "ssh_node"),
+        ("release_confirm", "ssh_node"),
         ("release_poll", "job_inproc"),
     ):
         spec = get_job_type(name)
         assert spec is not None, name
         assert spec.compatible_executors == frozenset({executor})
         assert name in known_job_types()
-    for name in ("release_cut", "release_deploy"):
+    for name in ("release_cut", "release_deploy", "release_confirm"):
         spec = get_job_type(name)
         assert spec is not None and spec.submit is not None and spec.poll is not None
     for name in ("ci_verdict_poll", "release_poll"):
@@ -1183,3 +1188,333 @@ def test_digest_dispatch_is_pinned_to_the_cut_host(store: Store) -> None:
     assert meta["executor"] == "ssh_node"
     assert meta["params"] == {"todo_id": digest_id, "target_node": "node-a"}
     assert _jobs_under(store, fix_id) == []  # still blocked by the digest
+
+
+# ── release_confirm (td573432) ────────────────────────────────────
+
+
+def _round_script(checkout: dict[str, Any]) -> Path:
+    path = checkout["root"] / "scripts" / "round"
+    path.write_text("#!/bin/sh\n", encoding="utf-8")
+    return path
+
+
+def _walk_to_confirm(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> tuple[T.PlanMint, int, dict[str, Any]]:
+    """Walk a release pass to a succeeded deploy on ``node-a``; the tick
+    then dispatches the confirm node. Returns ``(mint, confirm job id,
+    the job's params)``."""
+    mint = T.mint_release_pass(store)
+    ids = mint.ids
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    pd.run_pass(store)
+    job, _ = _only_job(store, ids["cut"])
+    R.record_cut(
+        store,
+        ids["cut"],
+        "r7",
+        SHA,
+        RNG,
+        repo="o/r",
+        host="node-a",
+        checkout=str(checkout["root"]),
+    )
+    _succeed(store, job)
+    pd.run_pass(store)
+    job, _ = _only_job(store, ids["poll"])
+    R.record_ci_verdict(store, SHA, RNG, "green", "31")
+    _succeed(store, job)
+    pd.run_pass(store)
+    pd.run_pass(store)
+    _comment(store, ids["approval"], "answer: deploy r7")
+    pd.run_pass(store)
+    job, meta = _only_job(store, ids["deploy"])
+    assert meta["params"] == {"todo_id": ids["deploy"], "target_node": "node-a"}
+    ctx = Ctx(store, dict(meta["params"]))
+    handle = rd.submit(ctx, None)
+    assert handle is not None, ctx.failures
+    _exit(checkout, 3, f"RELEASE_DEPLOYED: r7 {SHA} {PREV}\n")
+    assert rd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    _succeed(store, job)
+    pd.run_pass(store)
+    pd.run_pass(store)
+    job_id, meta = _only_job(store, ids["confirm"])
+    assert (meta["job_type"], meta["executor"]) == ("release_confirm", "ssh_node")
+    assert meta["params"] == {"todo_id": ids["confirm"], "target_node": "node-a"}
+    return mint, job_id, dict(meta["params"])
+
+
+def _round_row(n: int, state: str, deploy: dict[str, Any] | None = None) -> str:
+    row: dict[str, Any] = {
+        "n": n,
+        "branch": f"release/r{n}",
+        "base": "b" * 40,
+        "state": state,
+        "owner": {"peer": "main", "host": "node-a"},
+    }
+    if deploy:
+        row["deploy"] = deploy
+    return json.dumps(row)
+
+
+def _fail_job(store: Store, job_id: int, reason: str) -> None:
+    """What the executor does when the op fails the job: a job_event tail
+    plus STATUS:failed — the retry-cap ask reads both."""
+    store.chunks.insert_chunks(
+        job_id, [ChunkInsert(ord=0, text=reason, meta={"chunk_kind": "job_event"})]
+    )
+    store.add_tag(
+        job_id, Tag.closed("STATUS", "failed"), set_by="system", replace_prefix=True
+    )
+
+
+def _asks_under(store: Store, root_id: int) -> list[int]:
+    """Ask todos under the plan root (the retry-cap / reland asks)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'todo' AND parent_id = %s "
+            "AND retired_at IS NULL",
+            (root_id,),
+        ).fetchall()
+    out = []
+    for (rid,) in rows:
+        tags = {t.value for t in store.tags_for(int(rid))}
+        if {"ask-user", "showstopper"} <= tags:
+            out.append(int(rid))
+    return out
+
+
+def test_confirm_after_deploy_exit_3_confirms_and_closes(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = _round_script(checkout)
+    mint, _job, params = _walk_to_confirm(store, checkout, monkeypatch)
+    store.record_heartbeat("node-a", meta={"code_sha": SHA})
+    # The script already published its own confirm values; the job merges,
+    # never overwrites.
+    psettings.set_setting(
+        "release.round",
+        _round_row(
+            7,
+            "deployed",
+            {
+                "sha": SHA,
+                "confirmed_at": "2026-11-06T11:00:00Z",
+                "evidence": "the script's evidence",
+            },
+        ),
+        store=store,
+    )
+    ctx = Ctx(store, params)
+    handle = rcf.submit(ctx, None)
+    assert handle is not None, ctx.failures
+    text = handle["evidence"]
+    assert "web: not attested (release.health_url unset)" in text
+    assert checkout["argv"][-1] == [
+        str(script),
+        "deploy",
+        "--confirm-runtime",
+        SHA,
+        "--runtime-evidence",
+        text,
+    ]
+    _exit(checkout, 0, "confirmed\n")
+    assert rcf.poll(ctx, handle) is False  # swapped onto round close
+    assert handle["phase"] == "close"
+    assert checkout["argv"][-1] == [str(script), "close"]
+    _exit(checkout, 0, "closed\n")
+    assert rcf.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    rel = _meta(store, mint.root_id)["release"]
+    assert rel["confirmed"]["sha"] == SHA
+    row = R.read_round(store)
+    assert row is not None
+    assert row["deploy"]["confirmed_at"] == "2026-11-06T11:00:00Z"
+    assert row["deploy"]["evidence"] == "the script's evidence"
+
+
+def test_probe_mismatch_files_an_ask_and_confirms_nothing(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _round_script(checkout)
+    mint, job_id, params = _walk_to_confirm(store, checkout, monkeypatch)
+    store.record_heartbeat("node-a", meta={"code_sha": SHA})
+    store.record_heartbeat("node-b", meta={"code_sha": SHA2})
+    psettings.set_setting(
+        "release.round", _round_row(7, "deployed", {"sha": SHA}), store=store
+    )
+    launches = list(checkout["argv"])
+    ctx = Ctx(store, params)
+    assert rcf.submit(ctx, None) is None
+    reason = ctx.failures[0]
+    assert "probe failed" in reason
+    assert "node-b" in reason and SHA2[:12] in reason
+    assert checkout["argv"] == launches  # nothing launched
+
+    _fail_job(store, job_id, reason)
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    asks = _asks_under(store, mint.root_id)
+    assert len(asks) == 1
+    meta = _meta(store, asks[0])
+    assert "node-b" in meta["ask"]["context"]
+    assert SHA2[:12] in meta["ask"]["context"]
+    assert "probe failed" in meta["ask"]["context"]
+    with store.pool.connection() as conn:
+        link = conn.execute(
+            "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = 'blocked-by'",
+            (mint.ids["confirm"], asks[0]),
+        ).fetchone()
+    assert link is not None
+    assert "confirmed" not in _meta(store, mint.root_id)["release"]
+    assert R.read_round(store) == json.loads(_round_row(7, "deployed", {"sha": SHA}))
+
+
+def test_web_sha_mismatch_fails_the_confirm(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _round_script(checkout)
+    _mint, _job, params = _walk_to_confirm(store, checkout, monkeypatch)
+    store.record_heartbeat("node-a", meta={"code_sha": SHA})
+    url = "https://health.example.invalid/healthz"
+    psettings.set_setting(rcf.HEALTH_URL_KEY, url, store=store)
+    monkeypatch.setattr(
+        rcf,
+        "_http_get",
+        lambda _url: SimpleNamespace(
+            status_code=200, headers={rcf.BOOT_SHA_HEADER: SHA2}
+        ),
+    )
+    launches = list(checkout["argv"])
+    ctx = Ctx(store, params)
+    assert rcf.submit(ctx, None) is None
+    reason = ctx.failures[0]
+    assert "web reports" in reason and SHA2[:12] in reason
+    assert url not in reason and "health.example.invalid" not in reason
+    assert checkout["argv"] == launches
+
+
+def test_confirm_close_failure_still_succeeds(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = _round_script(checkout)
+    _mint, _job, params = _walk_to_confirm(store, checkout, monkeypatch)
+    store.record_heartbeat("node-a", meta={"code_sha": SHA})
+    ctx = Ctx(store, params)
+    handle = rcf.submit(ctx, None)
+    assert handle is not None, ctx.failures
+    _exit(checkout, 0, "confirmed\n")
+    assert rcf.poll(ctx, handle) is False
+    assert checkout["argv"][-1] == [str(script), "close"]
+    _exit(checkout, 1, "scripts/round: close failed\n")
+    assert rcf.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    assert ctx.stamped["release_confirm"] == {"rN": "r7", "sha": SHA}
+    summary = ctx.chunks[-1][1]
+    assert "scripts/round close exit 1" in summary
+    assert "deployed/r7" in summary
+
+
+def test_confirm_close_launch_failure_still_succeeds(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A close that never launches still succeeds the job: the release is
+    already confirmed and ``scripts/release`` retries the close."""
+    script = _round_script(checkout)
+    _mint, _job, params = _walk_to_confirm(store, checkout, monkeypatch)
+    store.record_heartbeat("node-a", meta={"code_sha": SHA})
+    ctx = Ctx(store, params)
+    handle = rcf.submit(ctx, None)
+    assert handle is not None, ctx.failures
+    _exit(checkout, 0, "confirmed\n")
+    script.unlink()  # scripts/round gone: the close cannot launch
+    assert rcf.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    assert ctx.failures == []
+    assert ctx.stamped["release_confirm"] == {"rN": "r7", "sha": SHA}
+    summary = ctx.chunks[-1][1]
+    assert "scripts/round close failed to launch" in summary
+    assert "deployed/r7" in summary
+
+
+def _stale_beat(store: Store, host: str, code_sha: str, minutes: int = 10) -> None:
+    """A heartbeat at ``code_sha`` written *before* the deploy finished:
+    the host has not restarted since the rollout. ``minutes`` backdates
+    the beat (still inside the 60-minute liveness window)."""
+    store.record_heartbeat(host, meta={"code_sha": code_sha})
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE host_heartbeat SET ts = now() - make_interval(mins => %s) "
+            "WHERE host = %s",
+            (minutes, host),
+        )
+
+
+def test_probe_parks_until_the_worker_restarts(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A heartbeat predating the deploy finish parks the probe; a fresh
+    beat at the release sha on the re-probe launches the confirm."""
+    script = _round_script(checkout)
+    _mint, _job, params = _walk_to_confirm(store, checkout, monkeypatch)
+    _stale_beat(store, "node-a", SHA2)
+    launches = list(checkout["argv"])
+    ctx = Ctx(store, params)
+    handle = rcf.submit(ctx, None)
+    assert handle is not None and handle["phase"] == "probe", ctx.failures
+    assert handle["rn"] == "r7" and handle["sha"] == SHA
+    assert ctx.failures == []
+    assert checkout["argv"] == launches  # nothing launched while waiting
+    # The worker restarts and beats the release sha: the re-probe launches.
+    store.record_heartbeat("node-a", meta={"code_sha": SHA})
+    handle["not_before"] = "2000-01-01T00:00:00Z"
+    assert rcf.poll(ctx, handle) is False
+    assert handle["phase"] == "confirm"
+    text = handle["evidence"]
+    assert checkout["argv"][-1] == [
+        str(script),
+        "deploy",
+        "--confirm-runtime",
+        SHA,
+        "--runtime-evidence",
+        text,
+    ]
+
+
+def test_probe_still_stale_at_the_deadline_files_an_ask(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Still not restarted once the confirm window has passed: the probe
+    fails naming the host, its last heartbeat and its sha — the plan
+    tick's retry-cap ask goes to a human."""
+    _round_script(checkout)
+    mint, job_id, params = _walk_to_confirm(store, checkout, monkeypatch)
+    _stale_beat(store, "node-a", SHA2, minutes=30)
+    launches = list(checkout["argv"])
+    ctx = Ctx(store, params)
+    handle = rcf.submit(ctx, None)
+    assert handle is not None and handle["phase"] == "probe", ctx.failures
+    assert checkout["argv"] == launches
+    # Re-date the deploy 11 minutes back — still after the beat, but the
+    # 10-minute window has passed: the wait is over, the host failed.
+    R.record_prod_head(store, SHA, [], now=datetime.now(UTC) - timedelta(minutes=11))
+    handle["not_before"] = "2000-01-01T00:00:00Z"
+    assert rcf.poll(ctx, handle) is True
+    reason = ctx.failures[0]
+    assert "probe failed" in reason
+    assert "node-a" in reason and "last heartbeat" in reason
+    assert SHA2[:12] in reason and SHA[:12] in reason
+    assert checkout["argv"] == launches  # nothing launched
+
+    _fail_job(store, job_id, reason)
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    asks = _asks_under(store, mint.root_id)
+    assert len(asks) == 1
+    meta = _meta(store, asks[0])
+    assert "node-a" in meta["ask"]["context"]
+    assert "last heartbeat" in meta["ask"]["context"]
+    assert "confirmed" not in _meta(store, mint.root_id)["release"]

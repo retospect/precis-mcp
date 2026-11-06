@@ -36,7 +36,7 @@ Disarm: close or pause that todo. Dry run by hand: a `gripe_validate` job
 with `params={'dry_run': true}` lists what would flip. Not covered by the
 factory kill switch (it only closes gripes whose fix is already deployed).
 
-## Release pass (cut, verdict, approval, deploy)
+## Release pass (cut, verdict, approval, deploy, confirm)
 
 Mint one plan; the armed `plan_dispatch` tick drives it:
 
@@ -53,7 +53,8 @@ red run, the digest posted as a `brief:` on the fix) → fix → `recut`
 cut and range on the root, the gate, the loop and the approval options) →
 `poll` (`ci_verdict_poll` on the new sha); red again mints the next
 iteration, up to 3) → `approval` → `deploy` (`release_deploy`:
-`scripts/release --deploy-only r<N>`, pinned).
+`scripts/release --deploy-only r<N>`, pinned) → `confirm`
+(`release_confirm`: the runtime attestation below).
 
 The `approval` node is an `ask-user` todo (`meta.ask.kind = approval`,
 options `deploy r<N>` | `hold`); it shows on `/asks` once the plan exists
@@ -65,9 +66,28 @@ and opens once the gate is green and it is answered. To deploy:
 Any other answer (`hold`) closes the ask but deploys nothing: `release_deploy`
 refuses unless the newest `answer:` names `deploy r<N>` for the cut this plan
 recorded, and the tick notes "not dispatched" each pass. To deploy later,
-add a new `answer: deploy r<N>` comment. The deploy exits at "rollout done,
-runtime pending" like `/go`: confirming runtime
-(`scripts/round deploy --confirm-runtime`) stays a session's step.
+add a new `answer: deploy r<N>` comment.
+
+The `confirm` node (`release_confirm`, `retries: 0`, pinned to the cut's
+host like the deploy) then attests the runtime: every live worker's
+heartbeat `code_sha`, read from the store with no network, must equal the
+release sha, and when `release.health_url` is set the live web's
+`X-Precis-Boot-Sha` header must too. On pass it runs `scripts/round deploy
+--confirm-runtime <sha> --runtime-evidence "<text>"` then `scripts/round
+close`, stamps the evidence on the plan root and `release.round`, and the
+release is tagged `deployed/r<N>`; a failed close still succeeds the job —
+`scripts/release` retries the close on its next run. A mismatch or gap
+fails the job before any script runs and the tick's retry-cap ask goes to
+a human; there is no rollback and no `good/r<N>` tag — the factory
+attests, a failed probe asks, never rolls back.
+
+`release.health_url` is an optional operator setting
+(`scripts/prod-precis settings set release.health_url <url>`) naming the
+live web's `/healthz`. Unset means the web is not attested — the workers
+still decide; a set URL must be a public address `safe_get` may reach (the
+SSRF guard refuses private ones, which fails the confirm), and a failing
+or different-sha URL fails the confirm too. No URL or host is printed in a
+job result or failure reason.
 
 Host needs: the slice host's checkout (`PRECIS_SLICE_ROOT`), `gh` (the
 script's gate step), and whatever `scripts/deploy` needs for the deploy.
@@ -175,7 +195,8 @@ whose `(td<id>)` PRs count as factory slices (default Devin's bot).
 ## Kill switch
 
 - `PRECIS_FACTORY=off` in the worker's environment: `run_slice`,
-  `release_cut`, `release_deploy`, `dep_check` and `pr_action` refuse
+  `release_cut`, `release_deploy`, `release_confirm`, `dep_check` and
+  `pr_action` refuse
   every submit, and `plan_dispatch` runs read-only (counts what it would
   have done, writes nothing). Unset it and restart the worker to re-arm.
 - A `service_config` row for `plan_dispatch` with `prio = 0` (any host)
@@ -199,9 +220,10 @@ either makes each tick read-only (it logs what it would have done).
 
 A slice host is any worker whose heartbeat advertises `repo_checkout`,
 `claude_bin` and `git`. No host is named anywhere: `run_slice` is claimed
-only by a worker advertising all three; `land_slice`, `release_cut` and
-`release_deploy` need `repo_checkout` + `git` (the lander and a re-cut or
-deploy stay pinned to the host that ran the slice or the cut). Until a host
+only by a worker advertising all three; `land_slice`, `release_cut`,
+`release_deploy` and `release_confirm` need `repo_checkout` + `git` (the
+lander and a re-cut, deploy or confirm stay pinned to the host that ran
+the slice or the cut). Until a host
 qualifies, the job waits `STATUS:queued` — it is not failed or counted as
 an attempt — the sweeper raises `scheduler/unschedulable:<job id>`, and
 after 10 min the tick notes `td<id>: job jo<N> queued <m> min — no host

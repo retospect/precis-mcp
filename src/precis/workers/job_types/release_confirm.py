@@ -1,0 +1,686 @@
+"""``release_confirm`` — the factory attests the deployed runtime (td573432).
+
+Spec: ``docs/backlog/dark-factory.md`` § "4. Release pass, event-driven";
+the ``confirm`` node of the ``release-pass`` template
+(:func:`precis.plans.templates.mint_release_pass`). Mechanical, no LLM; a
+detached submit/poll pair under ``ssh_node``, the same launcher as
+``release_cut``, pinned to the cut's host and checkout the same way.
+
+After ``release_deploy`` the plan must confirm the pinned sha is what
+runs, without a session. :func:`gather_evidence` reads the mechanical
+evidence — every live worker host's ``host_heartbeat.meta->>'code_sha'``
+(the deploy-fleet query of :mod:`precis.workers.conditions`, store only,
+no network; a heartbeat inside the last 60 minutes on a non-ephemeral
+host that is not a 12-hex container id) — plus the live web's
+``X-Precis-Boot-Sha`` header when the ``release.health_url`` operator
+setting names its ``/healthz`` (one ``safe_get``; a set URL must be a
+public address the guard may reach). The workers decide; the web is
+optional. Any gap or mismatch fails the job *before* any script runs and
+the tick's retry-cap ask goes to a human — the factory attests, a failed
+probe asks, never rolls back; there is no ``good/r<N>`` tag.
+
+**The restart race.** Right after the rollout a worker's heartbeat can
+still carry the old sha. The probe re-reads the store until a deadline —
+:data:`_CONFIRM_WINDOW` after the deploy finished (the round row's
+``deploy.rollout_at``, else the prod head's ``deployed_at``): a worker
+whose newest heartbeat predates the deploy finish is *not yet restarted*
+and keeps the probe parked (phase ``probe``, ``not_before``-paced like
+``ci_red_digest``); a heartbeat written *after* the deploy finish at
+another sha fails at once; past the deadline anything still not at the
+release sha fails, naming each host, its last heartbeat time and its
+sha. Hosts with no heartbeat inside the liveness window stay ignored.
+
+On ok the job runs ``scripts/round deploy --confirm-runtime <sha>
+--runtime-evidence <text>`` (phase ``confirm``), stamps the evidence on
+the plan root and ``release.round``
+(:func:`precis.plans.release.record_confirm` — the script's own publish
+wins where it wrote first), then ``scripts/round close`` (phase
+``close``). A failed ``close`` — non-zero exit *or a failed launch* —
+still succeeds the job: the release is already confirmed and tagged
+``deployed/r<N>`` and ``scripts/release`` retries the close on its next
+run.
+
+No URL, host of the health URL or token reaches a log line, job result
+or failure reason: a web failure is reported by exception class name or
+HTTP status only, never ``str(exc)`` (httpx messages carry the URL).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
+
+from precis.plans import release as _release
+from precis.utils.secret_scan import mask_secrets
+from precis.workers.job_types import release_cut as _rc
+from precis.workers.job_types import run_slice as _rs
+
+if TYPE_CHECKING:
+    from precis.store import Store
+
+log = logging.getLogger(__name__)
+
+NAME = "release_confirm"
+
+#: The probe and the two scripts are minutes of work; the wall only
+#: covers a stuck ``git``/``ssh`` inside ``scripts/round``.
+_DEFAULT_WALL_S = 15 * 60
+
+PARAMS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        # The plan's confirm node: the release is read from its root.
+        "todo_id": {"type": "integer"},
+        # ssh_node's host pin (the host holding the release checkout).
+        "target_node": {"type": "string"},
+        "resources": {
+            "type": "object",
+            "properties": {"wall_seconds": {"type": "integer"}},
+        },
+    },
+    "required": ["todo_id"],
+    "additionalProperties": False,
+}
+
+COMPATIBLE_EXECUTORS: frozenset[str] = frozenset({"ssh_node"})
+REQUIRES: frozenset[str] = frozenset()
+
+DESCRIPTION: str = (
+    "Dark release pass, the confirm node: attest the pinned sha is what "
+    "runs — every live worker's heartbeat code_sha, and the web's boot "
+    "sha when release.health_url is set — then scripts/round deploy "
+    "--confirm-runtime and scripts/round close. A failed probe asks, "
+    "never rolls back. Refused while PRECIS_FACTORY=off."
+)
+
+
+def wall_seconds() -> float:
+    return float(_DEFAULT_WALL_S)
+
+
+#: ``release.health_url`` — the operator setting naming the live web's
+#: ``/healthz``; empty means the web is not attested.
+HEALTH_URL_KEY = "release.health_url"
+
+#: The response header ``/healthz`` carries the boot sha in — restated
+#: as a literal (``precis_web.bootsha.BOOT_SHA_HEADER``; a test pins
+#: them equal, the same repeated-literal arrangement as
+#: :data:`precis.plans.release.ROUND_KEY`).
+BOOT_SHA_HEADER = "X-Precis-Boot-Sha"
+
+#: A host heartbeating within this window counts as live (the value of
+#: ``conditions._DEPLOY_FLEET_FRESH_MIN``, restated).
+_FLEET_FRESH_MIN = 60
+
+#: The restart-race window: the probe re-reads heartbeats until this long
+#: after the deploy finished, then anything still not at the release sha
+#: fails the job. ``_REPROBE_EVERY`` paces the parked probe (the
+#: ``not_before`` marker, ``ci_red_digest``'s park pattern — no sleep
+#: loop in a worker pass).
+_CONFIRM_WINDOW = timedelta(minutes=10)
+_REPROBE_EVERY = timedelta(seconds=60)
+
+#: Timestamp shape ``release.round`` / ``release.prod_head`` and the
+#: parked handle carry (``precis.plans.release._stamp``'s, restated).
+_TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
+
+#: The live-worker query — the same rows ``conditions._DEPLOY_FLEET_SQL``
+#: selects for the deploy-fleet-coverage probe plus each row's ``ts``
+#: (the restart check needs the heartbeat's write time): a heartbeat in
+#: the last ``fresh_min`` minutes, not ephemeral, host not a 12-hex
+#: container id.
+_LIVE_FLEET_SQL = """
+SELECT host, ts, meta->>'code_sha' AS code_sha
+  FROM host_heartbeat
+ WHERE ts > now() - make_interval(mins => %(fresh_min)s)
+   AND (meta->>'ephemeral') IS DISTINCT FROM 'true'
+   AND host !~ '^[0-9a-f]{12}$'
+ ORDER BY host
+"""
+
+#: The evidence line's and the failure reason's caps. The reason must
+#: fit the retry-cap ask's 600-character context
+#: (``plan_dispatch._mint_ask`` copies the newest job_event tail into it,
+#: after its own head line).
+_TEXT_CAP = 900
+_FAILURE_CAP = 560
+
+
+@dataclass(frozen=True, slots=True)
+class Evidence:
+    """What :func:`gather_evidence` found: ``ok`` (no problems and no
+    hosts still waiting on a restart), the pinned ``sha`` the runtime
+    must serve (``None`` when neither the round row nor the prod head
+    names one), ``text`` the masked, capped evidence line for
+    ``--runtime-evidence``, and ``problems`` — the decisive evidence
+    first (a pinned-sha mismatch, mismatching workers and the web line
+    before any "no live host" or "unset" line). ``waiting`` names the
+    live hosts whose heartbeat predates the deploy finish and whose
+    ``deadline`` (the restart-race window's end) has not passed — the
+    probe parks on them instead of failing."""
+
+    ok: bool
+    sha: str | None
+    text: str
+    problems: list[str]
+    waiting: tuple[str, ...] = ()
+    deadline: datetime | None = None
+
+
+def _http_get(url: str) -> Any:
+    """Seam: one GET of the health URL through the SSRF-pinned client
+    (``http_client`` + ``safe_get``; no ``with_backoff`` — that needs a
+    service row). The response; raises on transport or SSRF refusal."""
+    from precis.utils.http import http_client
+    from precis.utils.safe_fetch import safe_get
+
+    with http_client(timeout=10) as client:
+        return safe_get(client, url)
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    """``value`` as an aware datetime (the ``_TS_FMT`` / ISO stamps the
+    store rows and the parked handle carry, or a timestamptz), else
+    ``None``."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _rn_number(rn: object) -> int | None:
+    """``7`` for ``"r7"``, else ``None`` (``release._rn_number``'s twin —
+    the job keeps its own so it does not reach into the module's
+    privates)."""
+    m = re.fullmatch(r"r(\d+)", str(rn or ""))
+    return int(m.group(1)) if m else None
+
+
+def _deployed_at(store: Store, rn: str) -> datetime | None:
+    """When ``rn``'s deploy finished: the round row's ``deploy.rollout_at``
+    when the row is this release, else the prod head's ``deployed_at``
+    (``pinned_deploy_sha``'s own fallback order), else ``None``."""
+    row = _release.read_round(store)
+    n = _rn_number(rn)
+    if row is not None and n is not None and row.get("n") == n:
+        dep = row.get("deploy")
+        if isinstance(dep, dict):
+            ts = _parse_ts(dep.get("rollout_at"))
+            if ts is not None:
+                return ts
+    rec = _release.read_prod_head(store)
+    return _parse_ts(rec.get("deployed_at")) if rec is not None else None
+
+
+def _live_worker_shas(store: Store) -> list[tuple[str, datetime | None, str | None]]:
+    """``(host, heartbeat ts, code_sha|None)`` of every live worker host,
+    store only; ``ts`` is the heartbeat's write time, the restart check's
+    clock."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(_LIVE_FLEET_SQL, {"fresh_min": _FLEET_FRESH_MIN}).fetchall()
+    return [
+        (str(host), _parse_ts(ts), None if code_sha is None else str(code_sha))
+        for host, ts, code_sha in rows
+    ]
+
+
+def _web_evidence(url: str | None, sha: str) -> tuple[str, str | None]:
+    """``(clause, problem)`` for the web half of the evidence.
+
+    ``url`` unset is a clause, never a problem — the workers decide. A
+    raise (``SsrfBlocked`` included), a non-200 or a missing/mismatching
+    boot-sha header is a problem reported without the URL or host."""
+    if not url or not url.strip():
+        return "not attested (release.health_url unset)", None
+    try:
+        resp = _http_get(url.strip())
+    except Exception as exc:
+        return "", f"web unreachable ({type(exc).__name__})"
+    if resp.status_code != 200:
+        return "", f"web HTTP {resp.status_code}"
+    boot = str(resp.headers.get(BOOT_SHA_HEADER) or "").strip()
+    if boot == sha:
+        return f"at {sha[:12]}", None
+    reported = boot[:12] if boot else "no sha"
+    return "", f"web reports {reported}, release is {sha[:12]}"
+
+
+def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evidence:
+    """The runtime attestation for the plan's release ``rel``
+    (``meta.release``); ``now`` pins the call's clock seam for tests.
+
+    Required evidence is the workers — the pinned sha
+    (:func:`precis.plans.release.pinned_deploy_sha`) must equal every
+    live host's heartbeat ``code_sha`` exactly, and it must be the plan's
+    own release sha. The restart race: a host whose newest heartbeat
+    predates the deploy finish (:func:`_deployed_at`) has not restarted
+    yet — it joins ``waiting`` until ``deadline`` (the confirm window's
+    end) and is a problem only past it; a heartbeat written *after* the
+    deploy finish at another sha is a problem at once. The web is
+    optional: ``release.health_url`` unset attests nothing and is not a
+    problem. Any problem or any waiting host makes ``ok`` false."""
+    rn = str(rel.get("rN") or "")
+    sha = _release.pinned_deploy_sha(store, rn)
+    rel_sha = str(rel.get("sha") or "")
+    live = _live_worker_shas(store)
+    hosts = ", ".join(host for host, _, _ in live)
+    deployed_at = _deployed_at(store, rn) if sha is not None else None
+    deadline = deployed_at + _CONFIRM_WINDOW if deployed_at is not None else None
+
+    problems: list[str] = []
+    waiting: list[str] = []
+    states: list[str] = []
+    if sha is not None:
+        if rel_sha and sha != rel_sha:
+            problems.append(
+                f"pinned deploy sha {sha[:12]} is not the plan's release "
+                f"sha {rel_sha[:12]}"
+            )
+        for host, ts, code_sha in live:
+            reported = code_sha[:12] if code_sha else "no code_sha"
+            if deployed_at is not None and (ts is None or ts <= deployed_at):
+                # The heartbeat predates the deploy finish: the worker
+                # has not restarted, its report says nothing yet.
+                if deadline is not None and now < deadline:
+                    waiting.append(host)
+                    states.append(f"{host} not yet restarted")
+                else:
+                    beat = ts.strftime(_TS_FMT) if ts is not None else "unknown"
+                    problems.append(
+                        f"worker {host} last heartbeat {beat} reports "
+                        f"{reported}, release is {sha[:12]}"
+                    )
+                    states.append(f"{host} at {reported}")
+            elif code_sha != sha:
+                problems.append(
+                    f"worker {host} reports {reported}, release is {sha[:12]}"
+                )
+                states.append(f"{host} at {reported}")
+            else:
+                states.append(f"{host} at {sha[:12]}")
+    from precis import settings
+
+    url = settings.get_str(HEALTH_URL_KEY, store=store) if sha is not None else None
+    if sha is not None:
+        web_clause, web_problem = _web_evidence(url, sha)
+        if web_problem is not None:
+            problems.append(web_problem)
+    else:
+        web_clause = "not attested (no pinned sha)"
+    if not live:
+        problems.append("no live worker host (no heartbeat in the last 60 min)")
+    if sha is None:
+        problems.append("no pinned deploy sha (release.round and prod head unset)")
+
+    if (
+        sha is not None
+        and live
+        and not waiting
+        and all(code_sha == sha for _, _, code_sha in live)
+    ):
+        workers = f"workers: {len(live)} live ({hosts}), all at {sha[:12]}"
+    elif sha is not None and live:
+        workers = f"workers: {len(live)} live ({', '.join(states)})"
+    else:
+        workers = f"workers: {len(live)} live ({hosts})"
+    short = sha[:12] if sha else "unset"
+    text = mask_secrets(f"{rn or 'r?'} pinned {short}; {workers}; web: {web_clause}")[
+        :_TEXT_CAP
+    ]
+    return Evidence(
+        ok=not problems and not waiting,
+        sha=sha,
+        text=text,
+        problems=problems,
+        waiting=tuple(waiting),
+        deadline=deadline,
+    )
+
+
+def failure_reason(ev: Evidence) -> str:
+    """The job's failure text after ``release_confirm: probe failed — ``:
+    the problems in order, masked, capped so the retry-cap ask's
+    600-character context still carries the decisive line."""
+    return mask_secrets("; ".join(ev.problems))[:_FAILURE_CAP]
+
+
+# ── the job ─────────────────────────────────────────────────────────
+
+
+def _refusal(
+    store: Any, params: dict[str, Any], *, running: bool = False
+) -> tuple[str | None, str | None]:
+    """``(refusal, rN)`` — ``release_deploy._refusal`` without the
+    approval gate: the confirm sits where the cut ran
+    (``meta.release.host`` / ``checkout``), pinned at dispatch by
+    ``params.target_node`` and once running by this worker's own node
+    and checkout."""
+    todo_id = params.get("todo_id")
+    reason = _rc.factory_refusal(NAME) or _rc.todo_refusal(
+        store, NAME, todo_id, required=True
+    )
+    if reason is not None:
+        return reason, None
+    if store is None or not isinstance(todo_id, int):
+        return None, None
+    rel = _release.release_of(store, todo_id)
+    if rel is None:
+        return (
+            f"{NAME}: no release on td{_release.plan_root(store, todo_id)}'s "
+            "plan root (meta.release)",
+            None,
+        )
+    host = os.environ.get("PRECIS_NODE") if running else params.get("target_node")
+    checkout = None
+    if running:
+        try:
+            checkout = str(_rs.slice_root())
+        except RuntimeError as exc:
+            return f"{NAME}: {exc}", None
+    pin = _release.pin_refusal(rel, host=host or None, checkout=checkout)
+    if pin is not None:
+        return f"{NAME}: {pin}", None
+    return None, str(rel["rN"])
+
+
+def validate_submit(
+    store: Any, *, gripe_id: int | None = None, params: dict[str, Any]
+) -> str | None:
+    del gripe_id
+    return _refusal(store, params)[0]
+
+
+def _launch_confirm(ctx: Any, rn: str, ev: Evidence) -> dict[str, Any] | None:
+    """The launch half of the probe's verdict: stamp the release and the
+    evidence on the job, run ``scripts/round deploy --confirm-runtime``;
+    the handle carries ``phase``/``rn``/``sha``/``evidence``."""
+    ctx.set_meta(release=rn, confirm_evidence=ev.text)
+    handle = _rc.launch_script(
+        ctx,
+        NAME,
+        [
+            "deploy",
+            "--confirm-runtime",
+            str(ev.sha),
+            "--runtime-evidence",
+            ev.text,
+        ],
+        script="round",
+    )
+    if isinstance(handle, dict):
+        handle.update(phase="confirm", rn=rn, sha=ev.sha, evidence=ev.text)
+    return handle
+
+
+def _park_probe(
+    ctx: Any, ev: Evidence, rn: str, now: datetime, handle: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The probe is waiting on hosts that have not restarted since the
+    deploy finished: park the job on ``not_before`` (crd's park pattern —
+    the handle is mutated in place and persisted as ``meta.compute_handle``)
+    and re-gather the evidence then; ``deadline`` is the restart-race
+    window's end, the wall covers the wait plus one run."""
+    due = now + _REPROBE_EVERY
+    if ev.deadline is not None and ev.deadline < due:
+        due = ev.deadline
+    fields: dict[str, Any] = {
+        "phase": "probe",
+        "rn": rn,
+        "sha": ev.sha,
+        "not_before": due.strftime(_TS_FMT),
+        "deadline": ev.deadline.strftime(_TS_FMT) if ev.deadline else "",
+    }
+    if handle is None:
+        handle = dict(fields)
+    else:
+        handle.update(fields)
+    note = (
+        f"{NAME}: waiting on {', '.join(ev.waiting)} to restart — "
+        f"re-probe after {due:%H:%M}Z"
+    )
+    if ev.deadline is not None:
+        note += f" (deadline {ev.deadline:%H:%M}Z)"
+    ctx.append_chunk("job_event", note)
+    wait = (
+        (ev.deadline - now).total_seconds()
+        if ev.deadline is not None
+        else _REPROBE_EVERY.total_seconds()
+    )
+    ctx.set_meta(
+        compute_handle=handle,
+        compute_handle_released=False,
+        deadline=time.time() + wait + wall_seconds(),
+    )
+    return handle
+
+
+def submit(ctx: Any, spec: Any) -> Any:
+    del spec
+    params = dict((ctx.meta or {}).get("params") or {})
+    reason, rn = _refusal(ctx.store, params, running=True)
+    if reason is not None or rn is None:
+        ctx.record_failure(reason or f"{NAME}: no release on the plan root")
+        return None
+    rel = _release.release_of(ctx.store, int(params["todo_id"])) or {}
+    now = datetime.now(UTC)
+    ev = gather_evidence(ctx.store, rel, now=now)
+    if ev.ok and ev.sha is not None:
+        return _launch_confirm(ctx, rn, ev)
+    if ev.problems:
+        ctx.record_failure(f"{NAME}: probe failed — {failure_reason(ev)}")
+        return None
+    return _park_probe(ctx, ev, rn, now)
+
+
+def _probe_poll(ctx: Any, handle: dict[str, Any]) -> bool:
+    """The parked probe: ``False`` before ``not_before``; at or after it,
+    re-gather the evidence — ok launches the confirm (the handle swaps in
+    place), problems fail, still waiting re-parks."""
+    try:
+        due = datetime.strptime(str(handle["not_before"]), _TS_FMT).replace(tzinfo=UTC)
+    except (KeyError, ValueError):
+        due = datetime.now(UTC)  # unreadable marker: do not park forever
+    now = datetime.now(UTC)
+    if now < due:
+        return False
+    params = dict((ctx.meta or {}).get("params") or {})
+    todo_id = params.get("todo_id")
+    rel = (
+        _release.release_of(ctx.store, int(todo_id))
+        if isinstance(todo_id, int)
+        else None
+    )
+    if rel is None:
+        ctx.record_failure(f"{NAME}: no release on the plan root")
+        return True
+    ev = gather_evidence(ctx.store, rel, now=now)
+    if ev.ok and ev.sha is not None:
+        rn = str(handle.get("rn") or rel["rN"])
+        fresh = _launch_confirm(ctx, rn, ev)
+        if fresh is None:
+            return True
+        handle.clear()
+        handle.update(fresh)
+        ctx.set_meta(
+            compute_handle=handle,
+            compute_handle_released=False,
+            deadline=time.time() + wall_seconds(),
+        )
+        return False
+    if ev.problems:
+        ctx.record_failure(f"{NAME}: probe failed — {failure_reason(ev)}")
+        return True
+    _park_probe(ctx, ev, str(handle.get("rn") or rel["rN"]), now, handle)
+    return False
+
+
+def _confirmed(ctx: Any, handle: dict[str, Any]) -> bool:
+    """Exit 0 of ``round deploy --confirm-runtime``: merge the
+    confirmation into the store (the script's own publish wins where it
+    wrote first) and swap the handle in place onto ``scripts/round
+    close`` — ``ci_red_digest._relaunch_when_due``'s pattern: a fresh
+    handle persisted as ``compute_handle`` with a fresh ``deadline``."""
+    params = dict((ctx.meta or {}).get("params") or {})
+    todo_id = params.get("todo_id")
+    notes: list[str] = []
+    if isinstance(todo_id, int):
+        try:
+            notes = _release.record_confirm(
+                ctx.store,
+                todo_id,
+                str(handle.get("sha") or ""),
+                str(handle.get("evidence") or ""),
+            )
+        except Exception as exc:
+            log.warning("%s: record_confirm failed", NAME, exc_info=True)
+            notes = [f"record_confirm failed: {type(exc).__name__}"]
+    ctx.append_chunk(
+        "job_event",
+        f"{NAME}: confirmed {str(handle.get('sha') or '')[:12]}"
+        + ("" if not notes else " — " + "; ".join(notes)),
+    )
+    fresh = _launch_close(ctx)
+    if fresh is None:
+        return _closed(
+            ctx,
+            handle,
+            exit_code=None,
+            close_problem="scripts/round close failed to launch",
+        )
+    keep = {k: handle.get(k) for k in ("rn", "sha", "evidence")}
+    handle.clear()
+    handle.update(fresh)
+    handle.update(keep)
+    handle["phase"] = "close"
+    ctx.set_meta(
+        compute_handle=handle,
+        compute_handle_released=False,
+        deadline=time.time() + wall_seconds(),
+    )
+    return False
+
+
+def _launch_close(ctx: Any) -> dict[str, Any] | None:
+    """``scripts/round close`` detached — ``_rc.launch_script``'s
+    mechanics, except a failed launch is a job_event note, never a job
+    failure: the release is already confirmed and tagged ``deployed/r<N>``
+    and ``scripts/release`` retries the close on its next run."""
+    try:
+        root = _rs.slice_root()
+        path = root / "scripts" / "round"
+        if not path.exists():
+            raise RuntimeError(f"no scripts/round in {root}")
+        base = _rc._run_dir() / f"{NAME}-{ctx.ref_id}-close"
+        log_path = base.with_suffix(".log")
+        exit_file = base.with_suffix(".exit")
+        exit_file.unlink(missing_ok=True)
+        pid = _rc._launch(
+            [str(path), "close"], cwd=root, log_path=log_path, exit_file=exit_file
+        )
+    except Exception as exc:
+        log.warning("%s: scripts/round close failed to launch", NAME, exc_info=True)
+        ctx.append_chunk(
+            "job_event", f"{NAME}: scripts/round close failed to launch: {exc}"
+        )
+        return None
+    ctx.append_chunk(
+        "job_event",
+        f"{NAME}: launched scripts/round close pid {pid} in {root}",
+    )
+    handle: dict[str, Any] = {
+        "pid": pid,
+        "pgid": pid,
+        "root": str(root),
+        "log": str(log_path),
+        "exit_file": str(exit_file),
+        "started_at": datetime.now(UTC).strftime(_TS_FMT),
+    }
+    identity = _rs._process_identity(pid)
+    if identity is not None:
+        handle["boot_id"], handle["start_time"] = identity
+    return handle
+
+
+def _closed(
+    ctx: Any,
+    handle: dict[str, Any],
+    exit_code: int | None,
+    close_problem: str | None = None,
+) -> bool:
+    """The ``close`` phase's verdict: exit 0 closed the round; any other
+    exit — or a close that never launched — still succeeds: the release
+    is already confirmed and tagged ``deployed/r<N>`` and
+    ``scripts/release`` retries the close on its next run (its
+    close-retry branch)."""
+    rn = str(handle.get("rn") or "r?")
+    sha = str(handle.get("sha") or "")
+    lines = [f"{NAME}: {rn} confirmed at {sha[:12]} — {handle.get('evidence') or ''}"]
+    if close_problem is not None:
+        lines.append(
+            f"{close_problem} — {rn} is already confirmed and tagged "
+            f"deployed/{rn}; scripts/release retries the close on its next run"
+        )
+    elif exit_code == 0:
+        lines.append("scripts/round close: round closed")
+    else:
+        lines.append(
+            f"scripts/round close exit {exit_code} — {rn} is already "
+            f"confirmed and tagged deployed/{rn}; scripts/release retries "
+            "the close on its next run"
+        )
+    ctx.append_chunk("job_summary", "\n".join(lines))
+    ctx.set_meta(release_confirm={"rN": rn, "sha": sha})
+    ctx.set_status("succeeded")
+    return True
+
+
+def poll(ctx: Any, handle: Any) -> bool:
+    if isinstance(handle, dict) and handle.get("phase") == "probe":
+        return _probe_poll(ctx, handle)  # parked probe: no pid/exit_file
+    done = _rc.finish_run(ctx, handle, NAME)
+    if done is None:
+        return not isinstance(handle, dict)
+    exit_code, log_text = done
+    phase = str(handle.get("phase") or "confirm")
+    if phase == "confirm":
+        if exit_code != 0:
+            # Exit 3 is the script refusing the evidence (a rollout done
+            # but this confirmation not accepted), 1 a hard refusal.
+            _rc.fail_with_tail(
+                ctx,
+                f"{NAME}: scripts/round deploy --confirm-runtime exit {exit_code}",
+                mask_secrets(log_text),
+            )
+            return True
+        return _confirmed(ctx, handle)
+    return _closed(ctx, handle, exit_code)
+
+
+kill = _rc.kill
+
+
+__all__ = [
+    "BOOT_SHA_HEADER",
+    "COMPATIBLE_EXECUTORS",
+    "DESCRIPTION",
+    "HEALTH_URL_KEY",
+    "NAME",
+    "PARAMS_SCHEMA",
+    "REQUIRES",
+    "Evidence",
+    "failure_reason",
+    "gather_evidence",
+    "kill",
+    "poll",
+    "submit",
+    "validate_submit",
+    "wall_seconds",
+]

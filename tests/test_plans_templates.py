@@ -347,6 +347,7 @@ def test_release_pass_shape(store: Store) -> None:
         "loop": "loop",
         "approval": "gate",
         "deploy": "task",
+        "confirm": "task",
     }
     assert _blocked_by(store, mint) == {
         ("poll", "cut"),
@@ -354,10 +355,14 @@ def test_release_pass_shape(store: Store) -> None:
         ("loop", "poll"),
         ("approval", "gate"),
         ("deploy", "approval"),
+        ("confirm", "deploy"),
     }
     assert _meta(store, mint.ids["cut"])["op"] == "release_cut"
     assert _meta(store, mint.ids["poll"])["op"] == "ci_verdict_poll"
     assert _meta(store, mint.ids["deploy"])["op"] == "release_deploy"
+    confirm = _meta(store, mint.ids["confirm"])
+    assert confirm["op"] == "release_confirm"
+    assert confirm["retries"] == 0
     gate = _meta(store, mint.ids["gate"])["gate"]
     assert gate == {"kind": "tests-green", "args": {"range": "0000000"}}
     loop = _meta(store, mint.ids["loop"])["loop"]

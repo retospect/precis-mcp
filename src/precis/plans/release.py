@@ -27,6 +27,11 @@ what lives here:
   the active release's row (``{n, branch, base, state, owner, cut_at,
   deploy?}``) so a second clone and the release loop read the same
   lifecycle state the coordinator's ``round.json`` tracks.
+  :func:`pinned_deploy_sha` resolves the sha the runtime must serve (the
+  round row's ``deploy.sha`` for this release, else the prod head);
+  :func:`record_confirm` merges the runtime confirmation into the row and
+  ``meta.release.confirmed``, deferring to the script's own publish where
+  it wrote first (td573432).
 - **The approval check** (:func:`approval`): the deploy runs only when the
   approval ask that blocks it carries an ``answer:`` comment naming
   ``deploy r<N>`` for the release the plan cut. The ``answer`` gate opens on
@@ -492,6 +497,114 @@ def read_round(store: Store) -> dict[str, Any] | None:
     return rec if isinstance(rec, dict) else None
 
 
+def _rn_number(rn: object) -> int | None:
+    """``7`` for ``"r7"``, else ``None``."""
+    m = _RN_RE.match(str(rn or ""))
+    return int(m.group(0)[1:]) if m else None
+
+
+def pinned_deploy_sha(store: Store, rn: str) -> str | None:
+    """The sha the deployed runtime must serve for ``rn`` (td573432).
+
+    ``release.round`` wins when it names this release — ``scripts/round``
+    records ``deploy.sha`` the moment the rollout lands, ahead of the
+    ``release.prod_head`` write. The prod head is the fallback for a plan
+    whose round record a host without the prod credential never
+    published; ``None`` when neither names one.
+    """
+    row = read_round(store)
+    n = _rn_number(rn)
+    if row is not None and n is not None and row.get("n") == n:
+        dep = row.get("deploy")
+        if isinstance(dep, dict) and isinstance(dep.get("sha"), str):
+            return dep["sha"]
+    rec = read_prod_head(store)
+    return str(rec["head"]) if rec is not None else None
+
+
+#: Round ``state`` values ``record_confirm`` never moves back or over —
+#: the release lifecycle's terminal states (``scripts/round`` §states).
+_CONFIRM_TERMINAL = frozenset({"confirmed", "superseded", "abandoned"})
+
+
+def record_confirm(
+    store: Store,
+    todo_id: int,
+    sha: str,
+    evidence: str,
+    *,
+    now: datetime | None = None,
+) -> list[str]:
+    """Record the runtime confirmation on ``release.round`` and the plan
+    root (td573432); one note per write.
+
+    Two writers can record the confirmation: ``scripts/round`` (it
+    publishes ``deploy.confirmed_at`` and ``deploy.evidence`` from its
+    journal at the end of the confirm verb, best-effort, only when its
+    host has a prod credential) and this store-side call. The script's
+    values win: only absent keys are filled, never an existing
+    ``confirmed_at`` or ``evidence``. The row is skipped (with a note)
+    when its ``n`` differs from the plan's release or its ``deploy.sha``
+    differs from ``sha``; no row is ever written from nothing. ``state``
+    moves to ``confirmed`` only when it is not already terminal. On the
+    plan root ``meta.release.confirmed = {sha, at, evidence}`` is
+    stamped, every other key kept, only while ``confirmed`` is absent or
+    names a different sha — so the call is idempotent and a repeat call
+    after the script's own publish returns ``[]``.
+    """
+    from precis import settings
+
+    notes: list[str] = []
+    when = _stamp(now or datetime.now(UTC))
+    root = plan_root(store, todo_id)
+    rel = release_of(store, todo_id)
+    n = _rn_number((rel or {}).get("rN"))
+
+    row = read_round(store)
+    if row is None:
+        notes.append("release.round: no row on record; nothing stamped")
+    elif n is None or row.get("n") != n:
+        notes.append(
+            f"release.round: skipped — the row is r{row.get('n', '?')}, "
+            f"this plan is {(rel or {}).get('rN') or 'r?'}"
+        )
+    else:
+        dep = row.get("deploy")
+        dep_sha = dep.get("sha") if isinstance(dep, dict) else None
+        if dep_sha != sha:
+            notes.append(
+                f"release.round: skipped — deploy.sha "
+                f"{str(dep_sha)[:12] if dep_sha else 'absent'} is not {sha[:12]}"
+            )
+        else:
+            assert isinstance(dep, dict)
+            updates = {
+                k: v
+                for k, v in (("confirmed_at", when), ("evidence", evidence))
+                if not dep.get(k)
+            }
+            if updates or str(row.get("state")) not in _CONFIRM_TERMINAL:
+                new_row = dict(row)
+                new_row["deploy"] = {**dep, **updates}
+                if str(row.get("state")) not in _CONFIRM_TERMINAL:
+                    new_row["state"] = "confirmed"
+                settings.invalidate(ROUND_KEY)
+                settings.set_setting(
+                    ROUND_KEY,
+                    json.dumps(new_row, separators=(",", ":")),
+                    store=store,
+                )
+                notes.append(f"release.round: r{n} confirmed at {when}")
+
+    if rel is not None:
+        confirmed = rel.get("confirmed")
+        if not (isinstance(confirmed, dict) and confirmed.get("sha") == sha):
+            stamp = {"sha": sha, "at": when, "evidence": evidence}
+            store.stamp_ref_meta(root, {"release": {**rel, "confirmed": stamp}})
+            notes.append(f"td{root}: meta.release.confirmed = {sha[:12]}")
+    return notes
+
+
 __all__ = [
     "APPROVE_OPTION",
     "HOLD_OPTION",
@@ -503,11 +616,13 @@ __all__ = [
     "parse_cut",
     "parse_deployed",
     "pin_refusal",
+    "pinned_deploy_sha",
     "pinned_host",
     "plan_root",
     "prod_head_record",
     "read_round",
     "record_ci_verdict",
+    "record_confirm",
     "record_cut",
     "record_prod_head",
     "record_round",

@@ -780,6 +780,7 @@ _RELEASE_OPS: tuple[str, ...] = (
     "release_deploy",
     "ci_red_digest",
     "release_poll",
+    "release_confirm",
 )
 
 
@@ -1022,6 +1023,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "release_deploy",
     "ci_red_digest",
     "release_poll",
+    "release_confirm",
     "pr_poll",
     "dep_check",
     "pr_action",

@@ -352,6 +352,19 @@ REGISTRY: dict[str, SettingSpec] = {
             "Unset: the cut's recorded repo, else the checkout's origin remote.",
         ),
         SettingSpec(
+            key="release.health_url",
+            type="str",
+            env_var="PRECIS_RELEASE_HEALTH_URL",
+            default=None,
+            doc="The full URL of the live web's /healthz that "
+            "release_confirm reads for the X-Precis-Boot-Sha header "
+            "(precis.workers.job_types.release_confirm) — an operator "
+            "setting, no address belongs in the repo. Empty: the web is "
+            "not attested and the confirm still passes on the workers. A "
+            "set URL must be one safe_get may reach (a public address), "
+            "else the confirm fails and asks.",
+        ),
+        SettingSpec(
             key="release.no_release_windows",
             type="str",
             env_var="PRECIS_RELEASE_NO_RELEASE_WINDOWS",
