@@ -59,16 +59,19 @@ claimed commit by sha before trusting it; the executor never hands the
 session a prod-write credential and never will.
 
 **Failure classes.** A 402/403-class refusal on create or poll fails
-the job ``failure_class='config'`` with an explicit "plan lacks Devin
-API" line (whether our plan includes the API is an open question —
-the gripe's first step). A 401 means the token is rejected — config
-too. A 404 poll means the session vanished — plain failed. Transient
+the job ``failure_class='config'``, quoting the provider's own refusal
+detail (the problem+json ``detail`` from the kept, secret-masked body
+prefix — gr570579) and saying only "the token lacks permission for
+this call or the plan lacks the Devin API" — never a permission name
+we cannot verify. A 401 means the token is rejected — config too. A
+404 poll means the session vanished — plain failed. Transient
 transport/rate-limit outcomes neither fail nor heartbeat the job; the
 next tick retries the poll.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -235,14 +238,19 @@ class _HttpxSessionAPI:
             service="devin",
             url=url,
             idempotent=idempotent,
+            keep_refusal_body=True,
         )
         if resp.status_code == 200:
             body = resp.json()
             return body if isinstance(body, dict) else {}
+        # Non-200: keep the first 300 chars of the refusal body (the v3
+        # API answers problem+json with a "detail" field) so the job
+        # reason can quote what the provider actually said (gr570579).
         raise VendorError(
             "devin",
             f"{method} {url} -> HTTP {resp.status_code}",
             status=resp.status_code,
+            body=_masked_body(resp.text),
         )
 
     def create_session(self, org_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -453,15 +461,48 @@ def _park(store: Store, ref_id: int, wake_at: datetime | None, note: str) -> boo
     return parked
 
 
+def _masked_body(text: str | None, *, limit: int = 300) -> str | None:
+    """A response body made safe to keep or quote: NUL bytes stripped
+    (they break the text columns the record lands in), then
+    secret-masked — providers echo request credentials in refusals
+    (gr570579 review) — then capped. The mask runs on the full text so
+    a credential spanning the cap is masked, not halved."""
+    if not text:
+        return None
+    from precis.utils.secret_scan import mask_secrets
+
+    return mask_secrets(text.replace("\x00", ""), warn=False)[:limit] or None
+
+
+def _refusal_detail(exc: VendorError) -> str | None:
+    """What the provider actually said — the problem+json ``detail``
+    when the body parses, else the raw body prefix; capped at 300
+    chars. ``None`` when the refusal carried no body (gr570579)."""
+    if not exc.body:
+        return None
+    body = _masked_body(exc.body)
+    if not body:
+        return None
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        parsed = None
+    detail = parsed.get("detail") if isinstance(parsed, dict) else None
+    return str(detail)[:300] if detail else body[:300]
+
+
 def _plan_failure_reason(exc: VendorError) -> str | None:
-    """The "plan lacks Devin API" / auth-reject line for a fatal
-    vendor status, else ``None`` (leave it to the caller's mapping)."""
+    """The auth/plan refusal line for a fatal vendor status — quoting
+    the provider's own detail, naming no permission we cannot verify —
+    else ``None`` (leave it to the caller's mapping)."""
     if exc.status in (402, 403):
+        detail = _refusal_detail(exc)
+        said = f" — {detail}" if detail else ""
         return (
-            f"devin_api: plan lacks Devin API access (HTTP {exc.status}) "
-            "— the subscription has no API entitlement or the service "
-            "user lacks UseDevinSessions; next: confirm the plan on "
-            "devin.ai/pricing before enabling this lane"
+            f"devin_api: refused (HTTP {exc.status}){said}; the token "
+            "lacks permission for this call or the plan lacks the "
+            "Devin API; next: confirm the plan on devin.ai/pricing "
+            "before enabling this lane"
         )
     if exc.status == 401:
         return (

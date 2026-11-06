@@ -109,6 +109,61 @@ def test_fatal_status_is_not_vendor_unavailable():
     assert not isinstance(excinfo.value, VendorUnavailable)
 
 
+def test_fatal_body_kept_masked_when_opted_in():
+    """gr570579 review: a provider may echo a credential in a refusal
+    body — keeping it on the VendorError is opt-in, and what is kept
+    is secret-masked."""
+    clock = FakeClock()
+    key = "sk-ant-" + "aB3x" * 10
+    body = f'{{"detail":"bad key {key}"}}'
+
+    def send():
+        return _resp(403, text=body, url="https://vendor.example/x")
+
+    with pytest.raises(VendorError) as excinfo:
+        with_backoff(
+            send,
+            service="fatal-body-on",
+            sleep=clock.sleep,
+            now=clock.now,
+            rng=_fixed_rng(),
+            keep_refusal_body=True,
+        )
+    err = excinfo.value
+    assert err.body is not None
+    assert key not in str(err)
+    assert key not in err.body
+    assert "<redacted:" in err.body
+    assert "bad key" in err.body
+
+
+def test_fatal_body_dropped_by_default():
+    """gr570579 review: with the opt-in off the raised text is exactly
+    the pre-opt-in line — no body anywhere in it."""
+    clock = FakeClock()
+    key = "sk-ant-" + "aB3x" * 10
+
+    def send():
+        return _resp(
+            403,
+            text=f'{{"detail":"bad key {key}"}}',
+            url="https://vendor.example/x",
+        )
+
+    with pytest.raises(VendorError) as excinfo:
+        with_backoff(
+            send,
+            service="fatal-body-off",
+            sleep=clock.sleep,
+            now=clock.now,
+            rng=_fixed_rng(),
+        )
+    err = excinfo.value
+    assert err.body is None
+    assert str(err) == "fatal-body-off: HTTP 403 — auth/permission failure, not retried"
+    assert key not in str(err)
+
+
 # ── retryable statuses: retried up to policy.attempts, then unavailable ──
 
 

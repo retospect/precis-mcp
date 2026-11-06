@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 import pytest
 
 from precis.store import Store
@@ -251,7 +252,120 @@ def test_plan_lacks_api_fails_clean(store: Store, api: FakeAPI) -> None:
     assert _status(store, rid) == "failed"
     meta = _meta(store, rid)
     assert meta["failure_class"] == "config"
-    assert "plan lacks Devin API" in _summary(store, rid)
+    assert "plan lacks the Devin API" in _summary(store, rid)
+
+
+def test_forbidden_create_quotes_provider_detail(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr570579: a live-shape 403 — the provider's problem+json detail
+    rides the VendorError into the job reason, which quotes it and
+    names no permission it cannot verify."""
+    _enable(store)
+    detail = "service user cannot create sessions in this org"
+    resp = httpx.Response(
+        403,
+        json={"detail": detail},
+        request=httpx.Request(
+            "POST", "https://api.devin.ai/v3/organizations/org-test/sessions"
+        ),
+    )
+
+    class _Client:
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def request(self, *_a: Any, **_kw: Any) -> httpx.Response:
+            return resp
+
+    def _fake_client(**_kw: Any) -> _Client:
+        return _Client()
+
+    def _no_limiter(*_a: Any, **_kw: Any) -> None:
+        return None
+
+    # No api= injection: the real _HttpxSessionAPI + real with_backoff,
+    # with only the transport client and the shared limiter faked.
+    monkeypatch.setattr("precis.utils.http.http_client", _fake_client)
+    monkeypatch.setattr("precis.utils.rate_limit.require", _no_limiter)
+    rid = _mk_queued_job(store)
+    result = devin_api.run_devin_api_pass(store)
+    assert result["failed"] == 1
+    assert _status(store, rid) == "failed"
+    assert _meta(store, rid)["failure_class"] == "config"
+    summary = _summary(store, rid)
+    assert detail in summary
+    assert "UseDevinSessions" not in summary
+
+
+def test_refusal_detail_masks_echoed_credential(store: Store, api: FakeAPI) -> None:
+    """gr570579 review: a provider that echoes a credential inside its
+    refusal detail gets it masked out of the job reason and the error
+    meta — a kept body is never trusted to be credential-free."""
+    _enable(store)
+    key = "sk-ant-" + "aB3x" * 10
+    exc = VendorError(
+        "devin",
+        "POST https://api.devin.ai/x -> HTTP 403",
+        status=403,
+        body=f'{{"detail":"token {key} rejected"}}',
+    )
+    # The reason text itself — it is logged and composed into messages
+    # before the store's write-time mask ever sees it.
+    reason = devin_api._plan_failure_reason(exc)
+    assert reason is not None
+    assert key not in reason
+    assert "<redacted:" in reason
+    api.create_exc = exc
+    rid = _mk_queued_job(store)
+    result = devin_api.run_devin_api_pass(store, api=api)
+    assert result["failed"] == 1
+    summary = _summary(store, rid)
+    assert key not in summary
+    assert "<redacted:" in summary
+    error = str(_meta(store, rid).get("error") or "")
+    assert key not in error
+    assert "<redacted:" in error
+
+
+def test_send_keeps_refusal_body_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr570579: _send keeps the first 300 characters of a refused
+    non-200 body on the VendorError so the reason can quote it."""
+    detail = "plan has no API entitlement " + "x" * 400
+    resp = httpx.Response(
+        402,
+        json={"detail": detail},
+        request=httpx.Request(
+            "POST", "https://api.devin.ai/v3/organizations/org-test/sessions"
+        ),
+    )
+
+    class _Client:
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def request(self, *_a: Any, **_kw: Any) -> httpx.Response:
+            return resp
+
+    def _fake_client(**_kw: Any) -> _Client:
+        return _Client()
+
+    def _no_limiter(*_a: Any, **_kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr("precis.utils.http.http_client", _fake_client)
+    monkeypatch.setattr("precis.utils.rate_limit.require", _no_limiter)
+    api = devin_api._HttpxSessionAPI("tok", "https://api.devin.ai")
+    with pytest.raises(VendorError) as excinfo:
+        api.create_session("org-test", {"prompt": "x"})
+    assert excinfo.value.status == 402
+    assert excinfo.value.body == resp.text[:300]
 
 
 def test_vanished_session_fails(store: Store, api: FakeAPI) -> None:

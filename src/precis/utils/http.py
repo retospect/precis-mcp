@@ -589,6 +589,24 @@ def _body_prefix(resp: httpx.Response) -> str | None:
     return text[:_BODY_PREFIX_LIMIT] if text else None
 
 
+def _masked_body_prefix(resp: httpx.Response) -> str | None:
+    """``_body_prefix`` made safe to keep: NUL bytes stripped (they break
+    the text columns the error record lands in), then secret-masked —
+    providers do echo request credentials in refusal bodies (gr570579)
+    and a kept body surfaces in logs and composed messages long before
+    the store's write-time mask sees it. The mask runs on the full body
+    so a credential spanning the cap is masked, not halved."""
+    try:
+        text = resp.text
+    except Exception:
+        return None
+    if not text:
+        return None
+    from precis.utils.secret_scan import mask_secrets
+
+    return mask_secrets(text.replace("\x00", ""), warn=False)[:_BODY_PREFIX_LIMIT]
+
+
 def redact_url(url: str | None) -> str | None:
     """``url`` with credential-named query param values masked (``REDACTED``).
 
@@ -845,6 +863,7 @@ def with_backoff(
     idempotent: bool = True,
     provider: str | _Unset | None = _UNSET,
     url: str | None = None,
+    keep_refusal_body: bool = False,
 ) -> httpx.Response:
     """Call ``send()`` under the politeness rules; return the final response.
 
@@ -865,6 +884,11 @@ def with_backoff(
     server) and 429 (rejected unprocessed) are retried. A read timeout or a
     5xx may follow a server-side commit, so those raise :class:`VendorError`
     at once rather than risk a duplicate.
+
+    ``keep_refusal_body=True`` keeps a NUL-stripped, secret-masked prefix
+    of a fatal refusal's body on the raised :class:`VendorError` — opt-in
+    because a 401/403 body can itself echo a credential (gr570579 review);
+    with it off the error text is exactly the bare status line.
     """
     import httpx
 
@@ -950,6 +974,7 @@ def with_backoff(
                     service,
                     f"HTTP {resp.status_code} — auth/permission failure, not retried",
                     status=resp.status_code,
+                    body=_masked_body_prefix(resp) if keep_refusal_body else None,
                 )
             if resp.status_code not in RETRY_STATUSES:
                 circuit.consecutive_failures = 0
@@ -1308,7 +1333,7 @@ def _log_refusal(service: str, resp: httpx.Response) -> None:
     """Diagnostics for a 401/403: bounded body prefix and the CDN request id
     (``x-amz-cf-id``, which the operator can quote to the CDN). Read-only —
     nothing here feeds back into the request headers."""
-    body = _body_prefix(resp) or ""
+    body = _masked_body_prefix(resp) or ""
     log.warning(
         "%s refused HTTP %s url=%s x-amz-cf-id=%s body=%r",
         service,
