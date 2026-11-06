@@ -228,6 +228,10 @@ def test_topo_place_accepts_pcb_objective(tmp_path: Path) -> None:
         out=str(tmp_path / "topo"),
     )
     assert run.poses
+    manifest = json.loads((Path(run.out) / "manifest.json").read_text(encoding="utf-8"))
+    # pcb-intent-api §Recording: the default ref is "seed" even when an
+    # explicit ``pcb.objective(...)`` (not a plain dict) names it.
+    assert manifest["result"]["ref"] == "seed"
 
 
 def test_objective_shares_mapping_fills_unset_terms_with_zero() -> None:
@@ -280,6 +284,36 @@ def test_objective_ref_values_resolves_the_named_run() -> None:
         _objective_ref_values(_HandBuiltObjective(ratsnest=1.0))
 
 
+def test_objective_ref_label_names_seed_or_the_run() -> None:
+    """``_objective_ref_label`` (pcb-intent-api §Recording): what the
+    manifest's ``result.ref`` records for ``objective=``'s ``ref=``
+    argument — "seed" for a plain mapping or an explicit ``ref="seed"``,
+    the referenced run's ``out`` directory when it has one, else the
+    referenced object's type name (never a crash on a hand-built run
+    stand-in with no ``out``)."""
+    from precis.pcb.local import _objective_ref_label
+
+    assert _objective_ref_label({"ratsnest": 1.0}) == "seed"
+    assert _objective_ref_label(pcb.objective(ratsnest=1.0)) == "seed"
+
+    class _RunWithOut:
+        ref_values = {"ratsnest": 1.0}
+        out = "out/earlier"
+
+    assert (
+        _objective_ref_label(pcb.objective(ratsnest=1.0, ref=_RunWithOut()))
+        == "run:out/earlier"
+    )
+
+    class _RunNoOut:
+        ref_values = {"ratsnest": 1.0}
+
+    assert (
+        _objective_ref_label(pcb.objective(ratsnest=1.0, ref=_RunNoOut()))
+        == "run:_RunNoOut"
+    )
+
+
 def test_topo_place_ref_run_reuses_its_reference_values(tmp_path: Path) -> None:
     """End to end (pcb-intent-api §Weights slice 1 remainder):
     ``pcb.objective(ref=<an earlier run>)`` makes THIS run's R_i the
@@ -301,6 +335,9 @@ def test_topo_place_ref_run_reuses_its_reference_values(tmp_path: Path) -> None:
     assert run.ref_values == _FakeRun.ref_values
     manifest = json.loads((Path(run.out) / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["result"]["ref_values"] == _FakeRun.ref_values
+    # pcb-intent-api §Recording: a run object with no ``out`` attribute
+    # still names something stable (its type), not "seed".
+    assert manifest["result"]["ref"] == "run:_FakeRun"
 
 
 def test_board_default_stackup_is_four_routable_layers() -> None:

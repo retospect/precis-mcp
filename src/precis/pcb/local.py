@@ -1308,6 +1308,19 @@ def _objective_ref_values(objective: Any) -> dict[str, float] | None:
     return dict(ref_values)
 
 
+def _objective_ref_label(objective: Any) -> str:
+    """The manifest's ``result.ref`` (pcb-intent-api §Recording): the
+    ``ref=`` argument ``objective`` named, rendered for provenance —
+    ``"seed"`` or the referenced run's ``out`` directory (falling back
+    to its type name for a ``ref_values``-carrying object with no
+    ``out``, e.g. a hand-built result)."""
+    ref = getattr(objective, "ref", "seed")
+    if ref == "seed":
+        return "seed"
+    out = getattr(ref, "out", None)
+    return f"run:{out}" if out else f"run:{type(ref).__name__}"
+
+
 @pcb_diag.op("topo_place")
 def topo_place(
     board: Any,
@@ -1447,6 +1460,7 @@ def topo_place(
             td,
             result,
             objective=obj,
+            objective_ref=_objective_ref_label(objective),
             effort=effort,
             board_hash=board_hash,
             parts=_runstore.manifest_parts(td, design.graph),

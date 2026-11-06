@@ -522,6 +522,21 @@ def test_objective_shares() -> None:
         pcb.objective(ratsnest=1.0, ref="run-42")
 
 
+def test_objective_is_a_traced_frame() -> None:
+    """pcb-intent-api §Recording: ``pcb.objective(...)`` is a frame like
+    any other builder call — a script's weights and ``ref=`` show up in
+    the construction trace next to ``room``/``keepout``/``route_rule``,
+    not only in the manifest a later run writes."""
+    from precis_geom import trace
+
+    with trace.run() as tr:
+        pcb.objective(ratsnest=0.8, crossings=0.2)
+        doc = tr.dump()
+    frame = next(f for f in doc["frames"] if f["qual"] == "pcb.objective")
+    assert frame["args"]["ratsnest"] == 0.8
+    assert frame["args"]["crossings"] == 0.2
+
+
 def test_objective_ref_accepts_an_earlier_run_result() -> None:
     """``ref=<run>`` (pcb-intent-api §Weights, slice 1 remainder):
     anything carrying ``.ref_values`` — the object

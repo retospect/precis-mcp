@@ -38,8 +38,10 @@ from precis.pcb.topoplace.writeback import lock_payload
 #: ``manifest.json``'s schema tag — bump on any shape change (the
 #: objective dict gained ``silkroom`` at /2, ``margin`` at /3,
 #: ``measures`` at /4, 2026-11-01; ``result.ref_values`` — the run's R_i
-#: vector, pcb-intent-api §Weights — at /5).
-RUN_SCHEMA = "precis.topo-run/5"
+#: vector, pcb-intent-api §Weights — at /5; ``result.ref`` — the
+#: objective's ``ref=`` argument, ``"seed"`` or the referenced run's
+#: ``out`` directory, pcb-intent-api §Recording — at /6).
+RUN_SCHEMA = "precis.topo-run/6"
 #: Kernel version stamped on every manifest: bump when the solver's
 #: output changes for equal inputs (the route job's ``CODE_VERSION``
 #: convention — a stored run must name the code that made it).
@@ -89,6 +91,7 @@ def manifest(
     result: TopoPlaceResult,
     *,
     objective: ObjectiveShares,
+    objective_ref: str = "seed",
     effort: int,
     board_hash: str,
     parts: list[dict[str, Any]],
@@ -97,7 +100,10 @@ def manifest(
     """The ``manifest.json`` payload. ``parts`` is the 0c provenance
     list (one ``{"refdes", "lcsc", "source"}`` row per design part, in
     ``d.parts`` order — the drill-down diff names poses through it);
-    ``footprints`` the footprint rows read, ``{refdes: content sha}``."""
+    ``footprints`` the footprint rows read, ``{refdes: content sha}``.
+    ``objective_ref`` is what ``pcb.objective(ref=...)`` named for this
+    run's R_i — ``"seed"`` (the default, self-measured) or the
+    referenced run's label (pcb-intent-api §Recording)."""
     return {
         "schema": RUN_SCHEMA,
         "code_version": CODE_VERSION,
@@ -126,6 +132,10 @@ def manifest(
             # <run>``) carried over from an earlier run — what a later
             # ``ref=<this run>`` reuses for cross-run comparability.
             "ref_values": {k: float(v) for k, v in result.ref_values.items()},
+            # pcb-intent-api §Recording: what ``objective=pcb.objective(
+            # ref=...)`` named for ``ref_values`` above — "seed" (the
+            # default) or the referenced run's label.
+            "ref": str(objective_ref),
             # post-pass reports (additive — readers ignore absent keys)
             "legalize": (
                 {
