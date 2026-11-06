@@ -44,6 +44,14 @@ description budgets, then Drive.
    opens a command popdown; the web counterpart of discoverable verbs.
    Slice 2 (bare-word qualifiers + `//` escape) landed 2026-10-21;
    remaining slices are pipes (traverse) and result-list actions.
+4. **Coding-agent start page** (gr564575, design in its comment 1, Reto
+   2026-11-05) — `CLAUDE.md`/`AGENTS.md` shrink to the hard rules, one
+   load line and a fallback path; a short start skill points to skills,
+   memory hubs and repo docs; the SessionStart hook prints it. Waits on
+   Reto's yes/no for the conduct sentences (gr572704); a skill renders no
+   linked neighbours yet (gr572706). Filed by the 2026-11-05
+   surface-review pass on this surface: gr570088, gr570089, gr572707,
+   gr572708, gr572709, gr572710.
 
 ## Horizon
 
