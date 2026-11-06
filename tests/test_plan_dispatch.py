@@ -1121,7 +1121,8 @@ def test_release_fix_body_shape(store: Store) -> None:
     mint = T.TEMPLATES["release-pass"].mint(store, None)
     loop = mint.ids["loop"]
     body = T.mint_body(store, loop, "release-fix", iteration=2)
-    assert set(body.ids) == {"triage", "fix", "recut", "poll"}
+    assert set(body.ids) == {"digest", "fix", "recut", "poll"}
+    assert _meta(store, body.ids["digest"])["op"] == "ci_red_digest"
     assert _meta(store, body.ids["recut"])["op"] == "release_cut"
     assert _meta(store, body.ids["poll"])["op"] == "ci_verdict_poll"
     assert body.root_id == loop
@@ -1130,8 +1131,7 @@ def test_release_fix_body_shape(store: Store) -> None:
         ref = store.get_ref(kind="todo", id=todo_id)
         assert ref is not None and ref.parent_id == loop
         assert "iteration 2" in str(ref.title)
-    triage = _meta(store, body.ids["triage"])["generate"]
-    assert triage == {"role": "triage", "from": f"gripes tagged plan:{mint.root_id}"}
+    assert "brief:" in _body_text(store, body.ids["fix"])
 
 
 def _pcb(store: Store, slug: str = "amp") -> int:

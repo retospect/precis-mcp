@@ -1408,6 +1408,18 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        name="ci_red_digest",
+        label="CI red digest (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        placement=frozenset({"repo_checkout", "git"}),
+        uses_external=("github",),
+        one_line="Digest the red check.yml run (scripts/ci-failed) into a "
+        "brief: comment for the release-fix fixer; probe mode reports what "
+        "the factory credential may read.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
         name="plan_dispatch",
         label="Plan dispatch tick (job)",
         category="jobs",

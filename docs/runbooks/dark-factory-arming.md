@@ -47,7 +47,9 @@ in the slice host's checkout, then `meta.release = {rN, sha, range, repo}`
 on the plan root) → `poll` (`ci_verdict_poll`: records check.yml's verdict
 in `release.ci_verdicts`, parked between polls while CI runs) → `gate`
 (`tests-green` on the cut's range) and `loop` (a red verdict mints the
-`release-fix` body: triage → fix → `recut` (`release_cut`, records the new
+`release-fix` body: `digest` (`ci_red_digest`: `scripts/ci-failed` on the
+red run, the digest posted as a `brief:` on the fix) → fix → `recut`
+(`release_cut`, records the new
 cut and range on the root, the gate, the loop and the approval options) →
 `poll` (`ci_verdict_poll` on the new sha); red again mints the next
 iteration, up to 3) → `approval` → `deploy` (`release_deploy`:

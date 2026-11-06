@@ -1289,41 +1289,47 @@ def _iteration_suffix(iteration: Any) -> str:
 def mint_release_fix(
     store: Store, loop_todo_id: int, *, iteration: int | None = None, **_ctx: Any
 ) -> PlanMint:
-    """triage (generator over gripes tagged ``plan:<root>``) -> fix -> re-cut
-    (``release_cut``) -> poll (``ci_verdict_poll``), td543855.
+    """digest (``ci_red_digest``) -> fix -> re-cut (``release_cut``) -> poll
+    (``ci_verdict_poll``), td543855; the mechanical digest op replaced the
+    LLM triage in td573431.
 
-    The re-cut is the mechanical op the release-pass ``cut`` is: it records
-    the new cut on the plan root (:func:`precis.plans.release.record_cut`
-    overwrites ``meta.release`` and rewrites the open ``tests-green`` gate,
-    the loop's ``until`` and the approval options to the new range / r<N>).
-    The poll reads that new ``meta.release``, so the loop -- which waits for
-    every child to close -- re-evaluates ``until`` on a recorded verdict for
-    the new range: red mints the next iteration, green closes the loop while
-    the gate opens and frees the approval ask."""
+    The digest runs ``scripts/ci-failed`` on the plan's newest red
+    check.yml run and posts the masked digest as a ``brief:`` comment on
+    the fix node -- the run_slice session reads it through
+    ``run_slice._brief_parts``. The re-cut is the mechanical op the
+    release-pass ``cut`` is: it records the new cut on the plan root
+    (:func:`precis.plans.release.record_cut` overwrites ``meta.release``
+    and rewrites the open ``tests-green`` gate, the loop's ``until`` and
+    the approval options to the new range / r<N>). The poll reads that new
+    ``meta.release``, so the loop -- which waits for every child to close
+    -- re-evaluates ``until`` on a recorded verdict for the new range: red
+    mints the next iteration, green closes the loop while the gate opens
+    and frees the approval ask."""
     _loop, root = _loop_context(store, loop_todo_id)
-    tag = f"plan:{root}"
     suffix = _iteration_suffix(iteration)
 
     def build(m: _Minter) -> None:
         m.node(
-            "triage",
-            f"Triage the red release's gripes{suffix}",
-            _generate("triage", f"gripes tagged {tag}"),
+            "digest",
+            f"Digest the red run{suffix}",
+            _task("ci_red_digest"),
             body=(
-                f"Read the open gripes tagged {tag} and the red check output; "
-                "mint one fix task per independent failure, or an ask gate when "
-                "a report is unusable."
+                "ci_red_digest runs scripts/ci-failed on the plan's newest "
+                "red check.yml run and posts the masked digest as a brief: "
+                "comment on this node's blocked run_slice fix nodes."
             ),
         )
         m.node(
             "fix",
-            f"Fix what triage found{suffix}",
+            f"Fix the failures the digest found{suffix}",
             _task(),
             body=(
-                f"Fix the failures triage named for {tag}; land each fix with "
-                "'resolved: <sha>' on its gripe."
+                "Read the brief: comment on this todo -- the digest of the "
+                "red run's failed jobs -- and fix the failures it names; "
+                "land with scripts/ship --quick. Fix forward: never skip, "
+                "xfail or loosen a test."
             ),
-            blocked_by=("triage",),
+            blocked_by=("digest",),
         )
         m.node(
             "recut",

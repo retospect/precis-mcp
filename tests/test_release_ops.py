@@ -19,6 +19,7 @@ from precis.plans import release as R
 from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
+from precis.workers.job_types import ci_red_digest as crd
 from precis.workers.job_types import ci_verdict_poll as cvp
 from precis.workers.job_types import get_job_type, known_job_types
 from precis.workers.job_types import plan_dispatch as pd
@@ -476,6 +477,27 @@ def test_release_cut_fails_without_a_cut(
     assert R.release_of(store, mint.ids["deploy"]) is None
 
 
+def test_launch_script_runs_the_named_script(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    """``launch_script`` runs ``<root>/scripts/<script>`` — the default
+    stays ``release``; ``ci_red_digest`` and ``round`` reuse the same
+    detached launcher on other scripts."""
+    probe = checkout["root"] / "scripts" / "ci-failed"
+    probe.write_text("#!/bin/sh\n", encoding="utf-8")
+    ctx = Ctx(store, {})
+    handle = rc.launch_script(
+        ctx, "ci_red_digest", ["445", "--probe"], script="ci-failed"
+    )
+    assert ctx.failures == []
+    assert checkout["argv"] == [[str(probe), "445", "--probe"]]
+    assert handle is not None and handle["root"] == str(checkout["root"])
+
+    ctx = Ctx(store, {})
+    assert rc.launch_script(ctx, "ci_red_digest", [], script="missing") is None
+    assert "no scripts/missing in" in ctx.failures[0]
+
+
 def test_release_deploy_refuses_without_approval_and_launches_with_it(
     store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -668,10 +690,15 @@ def _iteration(store: Store, loop_id: int) -> dict[str, int]:
             "AND retired_at IS NULL ORDER BY ref_id",
             (loop_id,),
         ).fetchall()
-    keys = {"run_slice": "fix", "release_cut": "recut", "ci_verdict_poll": "poll"}
+    keys = {
+        "ci_red_digest": "digest",
+        "run_slice": "fix",
+        "release_cut": "recut",
+        "ci_verdict_poll": "poll",
+    }
     out: dict[str, int] = {}
     for ref_id, meta in rows:
-        key = "triage" if "generate" in meta else keys[meta["op"]]
+        key = keys[meta["op"]]
         assert key not in out, (key, rows)
         out[key] = int(ref_id)
     return out
@@ -690,7 +717,7 @@ def test_red_verdict_recuts_and_a_green_recut_opens_the_approval(
     job, _ = _only_job(store, ids["poll"])
 
     # Red on r7: the poll closes, the gate stays shut, the loop mints
-    # iteration 1 = triage -> fix -> recut (release_cut) -> poll.
+    # iteration 1 = digest (ci_red_digest) -> fix -> recut -> poll.
     R.record_ci_verdict(store, SHA, RNG, "red", "31")
     _succeed(store, job)
     pd.run_pass(store)
@@ -701,15 +728,22 @@ def test_red_verdict_recuts_and_a_green_recut_opens_the_approval(
     assert _meta(store, ids["gate"])["gate_result"]["open"] is False
     assert _meta(store, ids["loop"])["loop"]["count"] == 1
     it = _iteration(store, ids["loop"])
-    assert set(it) == {"triage", "fix", "recut", "poll"}
-    assert _jobs_under(store, it["recut"]) == []  # blocked by the fix
+    assert set(it) == {"digest", "fix", "recut", "poll"}
 
-    # Triage and fix land (their sessions close them); the tick dispatches
-    # the mechanical re-cut.
-    for key in ("triage", "fix"):
-        for job_id, _m in _jobs_under(store, it[key]):
-            _succeed(store, job_id)
-        _close(store, it[key])
+    # The digest job posts its brief and closes, then the fixer's session
+    # runs and closes; the tick dispatches the mechanical re-cut.
+    pd.run_pass(store)
+    job, meta = _only_job(store, it["digest"])
+    assert meta["job_type"] == "ci_red_digest"
+    assert meta["params"] == {"todo_id": it["digest"]}
+    assert _jobs_under(store, it["fix"]) == []  # blocked by the digest
+    assert _jobs_under(store, it["recut"]) == []  # blocked by the fix
+    _succeed(store, job)
+    _close(store, it["digest"])
+    pd.run_pass(store)
+    for job_id, _m in _jobs_under(store, it["fix"]):
+        _succeed(store, job_id)
+    _close(store, it["fix"])
     pd.run_pass(store)
     job, meta = _only_job(store, it["recut"])
     assert (meta["job_type"], meta["executor"]) == ("release_cut", "ssh_node")
@@ -749,7 +783,7 @@ def test_red_verdict_recuts_and_a_green_recut_opens_the_approval(
     assert res.loops_minted == 0, res.notes
     assert _status(store, ids["gate"]) == "done"
     assert _status(store, ids["loop"]) == "done"
-    assert set(_iteration(store, ids["loop"])) == {"triage", "fix", "recut", "poll"}
+    assert set(_iteration(store, ids["loop"])) == {"digest", "fix", "recut", "poll"}
     assert _status(store, ids["approval"]) == "open"
     assert "ask-user" in {str(t.value) for t in store.tags_for(ids["approval"])}
     assert "deploy r8" in _meta(store, ids["approval"])["ask"]["options"]
@@ -773,7 +807,7 @@ def test_recut_is_pinned_to_the_first_cut_host(store: Store) -> None:
         _close(store, ids[key])
     T.mint_body(store, ids["loop"], "release-fix", iteration=2)
     it = _iteration(store, ids["loop"])
-    for key in ("triage", "fix"):
+    for key in ("digest", "fix"):
         _close(store, it[key])
     pd.run_pass(store)
     _job, meta = _only_job(store, it["recut"])
@@ -808,3 +842,342 @@ def test_recut_reopens_a_gate_an_earlier_cut_opened(store: Store) -> None:
     _close(store, mint.ids["gate"])
     R.record_cut(store, mint.ids["cut"], "r8", SHA2, RNG2)
     assert _status(store, mint.ids["gate"]) == "done"
+
+
+# ── ci_red_digest (td573431) ──────────────────────────────────────
+
+
+def _digest_and_fix(store: Store, loop_id: int, root: int) -> tuple[int, int]:
+    """A ``ci_red_digest`` task and a ``run_slice`` fix blocked-by it —
+    the release-fix body's first two nodes, minted by hand."""
+    with store.tx() as conn:
+        digest = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="Digest the red run",
+            meta={"op": "ci_red_digest"},
+            parent_id=loop_id,
+            conn=conn,
+        )
+        fix = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="Fix the failures",
+            meta={"op": "run_slice"},
+            parent_id=loop_id,
+            conn=conn,
+        )
+        store.add_link(
+            src_ref_id=fix.id,
+            dst_ref_id=digest.id,
+            relation="blocked-by",
+            conn=conn,
+        )
+        for ref in (digest, fix):
+            store.add_tag(ref.id, Tag.open(f"plan:{root}"), set_by="agent", conn=conn)
+            store.add_tag(
+                ref.id,
+                Tag.closed("STATUS", "open"),
+                set_by="agent",
+                replace_prefix=True,
+                conn=conn,
+            )
+    return int(digest.id), int(fix.id)
+
+
+def _ci_failed_script(checkout: dict[str, Any]) -> Path:
+    path = checkout["root"] / "scripts" / "ci-failed"
+    path.write_text("#!/bin/sh\n", encoding="utf-8")
+    return path
+
+
+def test_digest_posts_a_masked_brief_on_the_fix_node(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    script = _ci_failed_script(checkout)
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    assert ctx.failures == []
+    assert checkout["argv"] == [[str(script), "31"]]
+    token = "ghp_" + "A1b2C3d4" * 4 + "E5f6"  # 36 alnum after ghp_
+    _exit(checkout, 0, f"== test-linux ==\n  FAILED t.py::x - leaked {token}\n")
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    comments = [
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(fix_id)
+        if c.chunk_kind == "todo_comment"
+    ]
+    assert len(comments) == 1
+    text = comments[0]
+    assert text.startswith(
+        f"brief: release r7 is red at {SHA[:9]} (range {RNG}), check.yml run 31"
+    )
+    assert token not in text
+    assert "<redacted:github token>" in text
+    assert "never skip, xfail or loosen a test" in text
+    assert text in ctx.chunks[-1][1]
+
+
+def test_digest_fails_without_a_red_verdict_run_id(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    mint = _cut(store)
+    # A green on the cut's sha, a red on another sha, and a red with no
+    # run id — none names a run to digest.
+    R.record_ci_verdict(store, SHA2, RNG2, "red", "32")
+    R.record_ci_verdict(store, SHA, RNG, "red", "")
+    digest_id, _fix = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    ctx = Ctx(store, {"todo_id": digest_id})
+    assert crd.submit(ctx, None) is None
+    assert "no red verdict with a run id for r7" in ctx.failures[0]
+    assert checkout["argv"] == []
+
+
+def test_digest_failure_masks_secrets_in_the_log_tail(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, _fix = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    token = "ghp_" + "A1b2C3d4" * 4 + "E5f6"  # 36 alnum after ghp_
+    _exit(checkout, 1, f"ci-failed: gh run view 31 --log-failed: {token}\n")
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status is None
+    assert len(ctx.failures) == 1
+    assert "exit 1" in ctx.failures[0]
+    assert token not in ctx.failures[0]
+    assert "<redacted:github token>" in ctx.failures[0]
+
+
+def test_digest_auth_refusal_names_the_token_probe_masked(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, _fix = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    token = "ghp_" + "A1b2C3d4" * 4 + "E5f6"  # 36 alnum after ghp_
+    _exit(
+        checkout,
+        1,
+        f"ci-failed: gh run view 31 --log-failed failed (1): gh: HTTP 403: "
+        f"Resource not accessible by integration {token}\n",
+    )
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status is None
+    assert len(ctx.failures) == 1
+    assert "HTTP 403" in ctx.failures[0]
+    assert "token probe" in ctx.failures[0]
+    assert "params.probe=true" in ctx.failures[0]
+    assert "params.run_id=31" in ctx.failures[0]
+    assert token not in ctx.failures[0]
+
+
+def test_digest_fails_with_no_fix_node_to_brief(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    with store.tx() as conn:
+        digest = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="Digest the red run",
+            meta={"op": "ci_red_digest"},
+            parent_id=mint.ids["loop"],
+            conn=conn,
+        )
+        store.add_tag(
+            digest.id,
+            Tag.open(f"plan:{mint.root_id}"),
+            set_by="agent",
+            conn=conn,
+        )
+    _ci_failed_script(checkout)
+    ctx = Ctx(store, {"todo_id": int(digest.id)})
+    handle = crd.submit(ctx, None)
+    assert ctx.failures == []
+    _exit(checkout, 0, "== lint ==\n  Found 1 error.\n")
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status is None
+    assert "no run_slice todo" in ctx.failures[0]
+
+
+def test_digest_with_no_failing_test_closes_fix_and_the_plan_recuts(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    """A cancelled-only / infra-killed red run leaves nothing to digest:
+    the job succeeds, the fix node closes no-op without a session, and
+    the loop goes on to recut + poll."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    for key in ("cut", "poll"):
+        _close(store, mint.ids[key])
+    T.mint_body(store, mint.ids["loop"], "release-fix", iteration=1)
+    it = _iteration(store, mint.ids["loop"])
+    _ci_failed_script(checkout)
+    ctx = Ctx(store, {"todo_id": it["digest"]})
+    handle = crd.submit(ctx, None)
+    assert ctx.failures == []
+    _exit(checkout, 0, "ci-failed: no failed-job log lines\n")
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    assert "no failing test in the logs (cancelled or infra)" in ctx.chunks[-1][1]
+    assert _status(store, it["fix"]) == "done"
+    comments = [
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(it["fix"])
+        if c.chunk_kind == "todo_comment"
+    ]
+    assert len(comments) == 1
+    assert comments[0].startswith("no-op:")
+    assert "no failing test in the logs" in comments[0]
+
+    # The loop goes on: no fix session is dispatched, the re-cut is.
+    _close(store, it["digest"])
+    res = pd.run_pass(store)
+    assert _jobs_under(store, it["fix"]) == []
+    _job, meta = _only_job(store, it["recut"])
+    assert meta["job_type"] == "release_cut", res.notes
+
+
+def test_digest_parks_and_recovers_a_still_running_run(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    """A run still in progress prints the ``… lines yet`` marker: that is
+    a deferral, never the no-op close — the handle parks on
+    ``not_before``, nothing closes, and once the marker passes the same
+    run is digested again. The finished run's marker then takes the
+    usual no-op path."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    script = _ci_failed_script(checkout)
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    assert ctx.failures == []
+    _exit(
+        checkout,
+        0,
+        "ci-failed: run 31 still in_progress; no failed-job log lines yet\n",
+    )
+    assert crd.poll(ctx, handle) is False  # parked, not done
+    assert ctx.status is None and ctx.failures == []
+    assert _status(store, fix_id) == "open"  # no no-op close
+    assert "pid" not in handle and handle.get("not_before")
+    assert handle["parks"] == 1
+    assert "re-digest after" in ctx.chunks[-1][1]
+
+    # Before not_before the job stays parked; at it ci-failed runs again
+    # on the same run.
+    assert crd.poll(ctx, handle) is False
+    assert checkout["argv"] == [[str(script), "31"]]
+    handle["not_before"] = "2000-01-01T00:00:00Z"
+    assert crd.poll(ctx, handle) is False  # relaunched, run in flight
+    assert checkout["argv"] == [[str(script), "31"], [str(script), "31"]]
+    assert "not_before" not in handle and handle["run_id"] == "31"
+    assert handle["parks"] == 1
+
+    # The completed run's marker then takes the usual no-op close.
+    _exit(checkout, 0, "ci-failed: no failed-job log lines\n")
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    assert _status(store, fix_id) == "done"
+
+
+def test_digest_still_running_past_the_park_cap_fails(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    """Past ``_PARK_CAP`` waits a wedged in-progress run fails the job;
+    the plan tick re-dispatches within the node's retries."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    handle["parks"] = crd._PARK_CAP
+    _exit(
+        checkout,
+        0,
+        "ci-failed: run 31 still in_progress; no failed-job log lines yet\n",
+    )
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status is None
+    assert len(ctx.failures) == 1
+    assert "still in progress" in ctx.failures[0]
+    assert _status(store, fix_id) == "open"
+
+
+def test_digest_auth_check_scopes_to_the_scripts_own_lines(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    """``_AUTH_RE`` reads the script's ``ci-failed:`` stderr lines only:
+    'HTTP 403' inside digested log content (a partial digest after a
+    metadata-read exit 1) never names the token probe."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    _exit(
+        checkout,
+        1,
+        "ci-failed: gh run view 31 --json unreadable: exit 1: boom\n"
+        "== test-linux ==\n"
+        "  FAILED t.py::x - fixture answered HTTP 403\n",
+    )
+    assert crd.poll(ctx, handle) is True
+    assert len(ctx.failures) == 1
+    assert "exit 1" in ctx.failures[0]
+    assert "token probe" not in ctx.failures[0]
+    assert _status(store, fix_id) == "open"
+
+
+def test_probe_reports_the_permission_line(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    script = _ci_failed_script(checkout)
+    ctx = Ctx(store, {"probe": True, "run_id": "445"})
+    handle = crd.submit(ctx, None)
+    assert ctx.failures == []
+    assert checkout["argv"] == [[str(script), "445", "--probe"]]
+    _exit(
+        checkout,
+        0,
+        "probe: status=403 accepted-permissions=contents=read run=445\n",
+    )
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    assert ctx.stamped["ci_probe"] == {
+        "status": "403",
+        "accepted_permissions": "contents=read",
+        "run": "445",
+    }
+    assert (
+        "probe: status=403 accepted-permissions=contents=read run=445"
+        in ctx.chunks[-1][1]
+    )
+
+
+def test_digest_dispatch_is_pinned_to_the_cut_host(store: Store) -> None:
+    mint = _cut(store, host="node-a", checkout="/srv/repo")
+    for key in ("cut", "poll"):
+        _close(store, mint.ids[key])
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    pd.run_pass(store)
+    _job, meta = _only_job(store, digest_id)
+    assert meta["job_type"] == "ci_red_digest"
+    assert meta["executor"] == "ssh_node"
+    assert meta["params"] == {"todo_id": digest_id, "target_node": "node-a"}
+    assert _jobs_under(store, fix_id) == []  # still blocked by the digest

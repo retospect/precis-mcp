@@ -769,10 +769,16 @@ def _load_good_search_triage() -> JobTypeSpec:
     return good_search.TRIAGE_SPEC
 
 
-#: The dark release pass's mechanical ops (td543733): the cut and the deploy
-#: are detached submit/poll pairs under ssh_node; the verdict poll is a
-#: plugin dispatch under job_inproc. PRECIS_FACTORY=off refuses cut/deploy.
-_RELEASE_OPS: tuple[str, ...] = ("release_cut", "ci_verdict_poll", "release_deploy")
+#: The dark release pass's mechanical ops (td543733, td573431): the cut,
+#: the deploy and the red-run digest are detached submit/poll pairs under
+#: ssh_node; the verdict poll is a plugin dispatch under job_inproc.
+#: PRECIS_FACTORY=off refuses the detached ops.
+_RELEASE_OPS: tuple[str, ...] = (
+    "release_cut",
+    "ci_verdict_poll",
+    "release_deploy",
+    "ci_red_digest",
+)
 
 
 def _load_release_op(name: str) -> JobTypeSpec:
@@ -1008,6 +1014,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "release_cut",
     "ci_verdict_poll",
     "release_deploy",
+    "ci_red_digest",
     "pr_poll",
     "dep_check",
     "pr_action",

@@ -122,20 +122,22 @@ def todo_refusal(store: Any, name: str, todo_id: Any, *, required: bool) -> str 
     return None
 
 
-def launch_script(ctx: Any, name: str, args: list[str]) -> dict[str, Any] | None:
-    """Run ``<root>/scripts/release <args>`` detached; the handle, or
+def launch_script(
+    ctx: Any, name: str, args: list[str], *, script: str = "release"
+) -> dict[str, Any] | None:
+    """Run ``<root>/scripts/<script> <args>`` detached; the handle, or
     ``None`` after failing the job."""
     try:
         root = _rs.slice_root()
-        script = root / "scripts" / "release"
-        if not script.exists():
-            raise RuntimeError(f"no scripts/release in {root}")
+        path = root / "scripts" / script
+        if not path.exists():
+            raise RuntimeError(f"no scripts/{script} in {root}")
         base = _run_dir() / f"{name}-{ctx.ref_id}"
         log_path = base.with_suffix(".log")
         exit_file = base.with_suffix(".exit")
         exit_file.unlink(missing_ok=True)
         pid = _launch(
-            [str(script), *args], cwd=root, log_path=log_path, exit_file=exit_file
+            [str(path), *args], cwd=root, log_path=log_path, exit_file=exit_file
         )
     except Exception as exc:
         log.warning("%s: launch failed", name, exc_info=True)
@@ -143,7 +145,7 @@ def launch_script(ctx: Any, name: str, args: list[str]) -> dict[str, Any] | None
         return None
     ctx.append_chunk(
         "job_event",
-        f"{name}: launched scripts/release {' '.join(args)} pid {pid} in {root}",
+        f"{name}: launched scripts/{script} {' '.join(args)} pid {pid} in {root}",
     )
     handle: dict[str, Any] = {
         "pid": pid,
