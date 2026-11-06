@@ -4067,6 +4067,22 @@ def _run_chosen(
         and rung.transport is not req.require_transport
     ):
         return None, stamp
+    # The ladder built in _route_inner already lost its cloud rungs
+    # (_apply_cloud_throttle) and any rung off the req.placement pin
+    # (_apply_placement) before the chooser ever saw it — the chosen
+    # offering carries no such guarantee, since the chooser ranks the
+    # full catalog. Re-check both here so a cloud-disabled op can't
+    # dispatch the chosen cloud pick, and a placement pin can't dispatch
+    # the chosen rung on the wrong side of it.
+    if req.placement in ("local", "cloud") and (
+        req.placement == "cloud"
+    ) != _rung_is_cloud(rung):
+        return None, stamp
+    if _rung_is_cloud(rung):
+        from precis.utils.llm import live_config
+
+        if not live_config.cloud_enabled():
+            return None, stamp
     if stamp.get("agree"):
         # The pick IS the ladder's rung 0 — a second attempt on it
         # would be an added retry, so the legacy path runs it once.
@@ -4156,7 +4172,14 @@ def _run_chosen(
     )
     started = time.monotonic()
     try:
-        result = FailoverProvider([rung]).run(call_req, model=call_model)
+        # rung.model still carries offering.model (rung_for always sets
+        # it) — clear it so FailoverProvider.run's `rung.model or model`
+        # precedence lands on call_model, which already folds in the
+        # reserved slot's served_model and the hosted-small remap; left
+        # alone, the rung's unremapped model would win.
+        result = FailoverProvider([_replace(rung, model=None)]).run(
+            call_req, model=call_model
+        )
     finally:
         _local.release(slot)
     _react_to_quota(result, transport=rung.transport, bare=rung.bare)

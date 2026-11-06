@@ -602,6 +602,13 @@ def _cmd_decide_mode(store: Store, args: argparse.Namespace) -> None:
     prefix = getattr(args, "prefix", None)
     mode = getattr(args, "mode", None)
     kind = getattr(args, "kind", None)
+    if kind is not None and mode is None and prefix is not None:
+        # argparse hands a lone trailing token to the first nargs='?'
+        # positional (prefix) even when --kind makes it the mode — e.g.
+        # "decide-mode --kind chunk.summarize on" parses as
+        # prefix="on". --kind forbids a prefix outright, so a lone token
+        # here can only be the mode.
+        prefix, mode = None, prefix
     if getattr(args, "show", False):
         if prefix is not None or mode is not None or kind is not None:
             raise SystemExit(f"llm decide-mode: {_DECIDE_MODE_USAGE}")

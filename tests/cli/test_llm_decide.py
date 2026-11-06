@@ -140,6 +140,44 @@ def test_decide_mode_kind_writes_and_clears_exact_key(
         decide.reset_mode_cache()
 
 
+def test_decide_mode_kind_cli_parses_trailing_mode_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``llm decide-mode --kind <kind> <mode>`` must not misparse the
+    lone trailing token as ``prefix`` — argparse hands it to the first
+    nargs='?' positional unless ``_cmd_decide_mode`` corrects it, and the
+    other tests here all construct the ``Namespace`` by hand, so they
+    never exercise the real parser (the bug this test catches)."""
+    from precis.budget import meter
+    from precis.budget import settings as budget_settings
+
+    rows: dict[str, str] = {}
+    store = cast("Any", object())
+    monkeypatch.setattr(meter, "active_store", lambda: store)
+    monkeypatch.setattr(budget_settings, "get_setting", lambda _s, key: rows.get(key))
+    monkeypatch.setattr(
+        budget_settings,
+        "set_setting",
+        lambda _s, key, value: rows.__setitem__(key, value),
+    )
+    monkeypatch.setattr(
+        budget_settings, "clear_setting", lambda _s, key: rows.pop(key, None)
+    )
+    monkeypatch.delenv("PRECIS_LLM_DECIDE", raising=False)
+    live_config.bust_cache()
+    decide.reset_mode_cache()
+    parser = argparse.ArgumentParser()
+    llm_cli.add_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(["llm", "decide-mode", "--kind", "chunk.summarize", "on"])
+    try:
+        llm_cli._cmd_decide_mode(store, args)
+        assert rows["llm.decide.kind.chunk.summarize"] == "on"
+        assert decide.mode_for("chunk.summarize") == "on"
+    finally:
+        live_config.bust_cache()
+        decide.reset_mode_cache()
+
+
 def test_decide_mode_show_lists_rows(
     store: Any, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -312,8 +312,10 @@ def test_legacy_keys_and_compare(
 
 
 def test_compare_agrees_within_adapter_family() -> None:
-    def picked(model: str, adapter: str) -> d.Decision:
-        o = d.Offering(f"{model}@{adapter}/acct", model, adapter=adapter)
+    def picked(model: str, adapter: str, account: str | None = "acct") -> d.Decision:
+        o = d.Offering(
+            f"{model}@{adapter}/acct", model, adapter=adapter, account=account
+        )
         return d.Decision("x", o, False, (), (), {}, {}, None, Requirement(Tier.SMALL))
 
     same_model = picked("m", "claude_agent")
@@ -325,6 +327,20 @@ def test_compare_agrees_within_adapter_family() -> None:
         is True
     )
     assert d.compare(picked("m", "codex_exec"), legacy_lane)["agree"] is False
+
+
+def test_compare_disagrees_across_accounts_on_the_same_model_and_family() -> None:
+    """Same model, same adapter family — but a different account (the
+    legacy-sub pick vs. a metered pick the chooser made) must not agree:
+    agreeing would run the wrong account's dispatch under ``executed:
+    decision`` (td575104)."""
+
+    def picked(account: str | None) -> d.Decision:
+        o = d.Offering("m@claude_p/acct", "m", adapter="claude_p", account=account)
+        return d.Decision("x", o, False, (), (), {}, {}, None, Requirement(Tier.SMALL))
+
+    assert d.compare(picked("claude-sub"), picked("anthropic-api"))["agree"] is False
+    assert d.compare(picked("claude-sub"), picked("claude-sub"))["agree"] is True
 
 
 def test_mode_for_legacy_reads_nothing_per_call(

@@ -559,6 +559,48 @@ def test_on_mode_agreeing_choice_runs_the_ladder_unchanged(
     assert recorded[0].features["decision"]["executed"] == "decision"
 
 
+def test_on_mode_chosen_dispatch_uses_remapped_served_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The chosen rung's dispatch must run with the reserved slot's
+    ``served_model``, not the offering's own model — ``decide.rung_for``
+    always sets ``rung.model`` to ``offering.model``, and
+    ``FailoverProvider.run`` prefers a set ``rung.model`` over the
+    ``call_model`` it was given, which discards the remap."""
+    from precis.utils.llm import local_serving as ls
+
+    recorded = _on_harness(
+        monkeypatch, offerings=(_free_pick("offering-model"),), pools=_behind_pool()
+    )
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://hosted.example/v1")
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [router.Rung(Transport.LOCAL, model="legacy-model")],
+    )
+    monkeypatch.setattr(
+        ls,
+        "acquire",
+        lambda m: ls.LocalSlot(
+            host="h",
+            resource=f"llm:{m}",
+            reserved=True,
+            paused=False,
+            endpoint="http://local-host:1234",
+            served_model="served-model-x",
+        ),
+    )
+    chosen = _FakeProv(_ok("chosen answer", model="served-model-x"))
+    legacy = _FakeProv(_ok("legacy answer", model="legacy-model"))
+    _wire_providers(monkeypatch, chosen, legacy)
+    out = route(LlmRequest(Tier.SMALL, prompt="x", source="apply-test"))
+    assert out.error is None and out.text == "chosen answer"
+    assert chosen.calls == 1 and legacy.calls == 0
+    assert chosen.model_seen == "served-model-x"
+    assert len(recorded) == 1
+    assert recorded[0].model == "served-model-x"
+
+
 def test_on_mode_content_error_does_not_fall_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -591,17 +633,50 @@ def test_on_mode_content_error_does_not_fall_back(
     assert recorded[0].features["decision"]["executed"] == "decision"
 
 
-@pytest.mark.parametrize("case", ["pin", "keyword", "transport"])
+@pytest.mark.parametrize(
+    "case", ["pin", "keyword", "transport", "placement", "cloud_disabled"]
+)
 def test_on_mode_ineligible_calls_stay_legacy(
     monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
-    """Pinned, keyword-routed and transport-fenced calls keep
-    ``executed: legacy`` with no fallback reason."""
-    recorded = _on_harness(monkeypatch, offerings=(_free_pick(),), pools=_behind_pool())
+    """Pinned, keyword-routed, transport-fenced, placement-mismatched and
+    cloud-throttled calls keep ``executed: legacy`` with no fallback
+    reason — the chosen offering never dispatches outside the filters
+    the legacy ladder already applied to its own rung 0."""
+    from precis.utils.llm import decide
+
+    if case == "placement":
+        # decide()'s own ranking (decide._rejection) only ever rejects a
+        # *local* placement pin against a cloud offering — there is no
+        # analogous check for a *cloud* pin against a local offering, so
+        # the chooser can still hand _run_chosen a local pick here;
+        # _run_chosen's own placement re-check is the only thing that
+        # catches it.
+        offerings: tuple[Any, ...] = (
+            decide.Offering(
+                "local-model@local/local",
+                "local-model",
+                adapter="local",
+                billing="local",
+                capacity_class="free",
+                locality="local",
+                live=True,
+                price_in=0.0,
+                price_out=0.0,
+                pool_keys=("p",),
+            ),
+        )
+    else:
+        offerings = (_free_pick(),)
+    recorded = _on_harness(monkeypatch, offerings=offerings, pools=_behind_pool())
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://hosted.example/v1")
     monkeypatch.setattr(
         "precis.utils.llm.keyword_route.match_request", lambda req: None
     )
+    if case == "cloud_disabled":
+        from precis.utils.llm import live_config
+
+        monkeypatch.setattr(live_config, "cloud_enabled", lambda: False)
     if case == "transport":
         ladder = [router.Rung(Transport.CLAUDE_P, model="legacy-model")]
         req = LlmRequest(
@@ -610,6 +685,12 @@ def test_on_mode_ineligible_calls_stay_legacy(
             source="apply-test",
             require_transport=Transport.CLAUDE_P,
         )
+    elif case == "placement":
+        # A cloud rung so _apply_placement's own pre-dispatch "the chain
+        # has no cloud rung" gate (router._route_inner) doesn't refuse
+        # the call outright before _apply_chosen ever runs.
+        ladder = [router.Rung(Transport.CLAUDE_P, model="legacy-model")]
+        req = LlmRequest(Tier.SMALL, prompt="x", source="apply-test", placement="cloud")
     else:
         ladder = [router.Rung(Transport.LOCAL, model="legacy-model")]
         req = LlmRequest(

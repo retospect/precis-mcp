@@ -545,12 +545,18 @@ def compare(shadow: Decision, legacy: Decision) -> dict[str, Any]:
             and any(k.startswith("llm:claude-sub:") for k in d.chosen.pool_keys)
         )
 
-    def lane(d: Decision) -> tuple[str, str] | None:
+    def lane(d: Decision) -> tuple[str, str, str | None] | None:
+        # Account (and thus bare/profile, both derived from it in
+        # rung_for) must match too — same model/adapter family on a
+        # different account is a different thing to execute (e.g. the
+        # legacy-sub account vs the chosen metered one), not a lane the
+        # ladder already covers.
         if d.chosen is None:
             return None
         return (
             d.chosen.model,
             _ADAPTER_FAMILY.get(d.chosen.adapter, d.chosen.adapter),
+            d.chosen.account,
         )
 
     return {
