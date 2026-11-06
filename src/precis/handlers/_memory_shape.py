@@ -267,13 +267,17 @@ def audit_shape(
     an absolute (always/never/only) claim in its body. Ordinary descriptive
     verbs and sentence punctuation are not evidence of such a claim.
     Incident narratives intentionally group cause, impact and timeline;
-    only their grab-bag check is exempt, not the other shape checks.
+    only their grab-bag check is exempt, not the other shape checks. A
+    section:index hub is a member list by design, so it is grab-bag exempt
+    on the same terms.
     """
     lines = _prose_lines(body)
     findings: list[ShapeFinding] = []
     checked = set(SHAPE_CODES)
     tag_set = set(tags)
-    titles = () if "incident" in tag_set else _atomic_titles(title, lines)
+    titles = (
+        () if tag_set & {"incident", "section:index"} else _atomic_titles(title, lines)
+    )
     if titles:
         count = max(2, len(titles))
         findings.append(

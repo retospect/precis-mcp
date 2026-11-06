@@ -117,6 +117,21 @@ def test_incident_exempts_only_grab_bag(monkeypatch, incident_tags):
     assert audit.checked_codes == shape.SHAPE_CODES
 
 
+def test_section_index_hub_list_is_not_grab_bag():
+    body = (
+        "- me563920 — Structure and curator\n"
+        "- me563916 — Projects and quests\n"
+        "- me563907 — Sessions and panes\n"
+        "- me568215 — Specifications index"
+    )
+    title = "repo-dev memory graph root"
+    assert "grab-bag" in _codes(title=title, body=body)
+    audit = shape.audit_shape(title=title, body=body, tags=("section:index",))
+    assert "grab-bag" not in {f.code for f in audit.findings}
+    # An exempt check is clean, not unavailable: stale grab-bag tags can clear.
+    assert audit.checked_codes == shape.SHAPE_CODES
+
+
 def test_one_topic_list_is_not_grab_bag():
     assert "grab-bag" not in _codes(
         title="Cache keys must include every input",
