@@ -881,6 +881,23 @@ def _review_target(store: Any, meta: Any) -> str | None:
     return "\n".join(lines)
 
 
+#: The lint the land runs on the whole tree before it merges, in the
+#: order scripts/ship's pre-qland lint runs it (``QLAND_CMD`` —
+#: ``QLAND_MYPY``/``QLAND_TAIL``/``SECRET_SCAN``; the
+#: ``test_brief_lint_steps_match_ship`` test pins each step to it). A
+#: build session runs the same steps so a red the land would report is
+#: fixed before the commit, not after a failed land (gr573347).
+_LAND_LINT_STEPS: tuple[str, ...] = (
+    "uv run ruff check --fix .",
+    "uv run ruff format .",
+    "uv run ruff check .",
+    "uv run ruff format --check .",
+    "uv run mypy src tests",
+    "uv run lint-imports",
+    "uv run pytest -q -n0 -p no:cacheprovider tests/test_deploy_tree_no_secrets.py",
+)
+
+
 def render_brief(
     *,
     todo_id: int,
@@ -953,26 +970,34 @@ def render_brief(
                 todo_id, lane_obj.models if lane_obj is not None else ()
             )
         return "\n".join(lines) + "\n"
+    n = len(_LAND_LINT_STEPS)
     lines += [
         "",
         "## When done: commit on the branch and hand off",
         "",
-        "Before you commit, run `uv run ruff check <files>` and `uv run mypy "
-        "<files>` on the files you touched (tests included; annotate test "
-        "literals). The land's lint gate runs both and a red reopens this "
-        "todo: td565331 came back for six missing annotations in its tests.",
+        "Land lint — the land runs these on the whole tree, in this "
+        "order, and a red reopens this todo (td565331 came back for six "
+        "missing test annotations). Run each before you commit:",
         "",
-        f"1. Commit on `{slice_branch(todo_id)}` with a conventional subject "
-        f"(`type(scope): what (td{todo_id})`, at most 72 bytes), message via "
-        "`git commit -F scratch/commit-msg.txt`. One commit is best: the "
-        "lander squashes the branch under that subject.",
-        "2. Leave the working tree clean (`git status --porcelain` prints nothing). "
-        "If your sandbox refuses `git commit` (a read-only `.git`), stop with "
-        "the changes in the working tree and `scratch/commit-msg.txt` written: "
-        "the worker commits them with that message after you exit.",
-        "3. Stop. Do not land, push, comment `landed:` or tag this todo done: "
-        "once you exit cleanly, the lander lands every commit on the branch, "
-        "so commit only work fit to land.",
+        *[f"{i}. `{step}`" for i, step in enumerate(_LAND_LINT_STEPS, 1)],
+        f"{n + 1}. Run the tests you added or changed with `scripts/test <paths>`.",
+        "",
+        "Fix every report and re-run until all are clean — do not commit "
+        "while any step is red. If a step cannot run in this sandbox, "
+        "name it in your final message instead of skipping it silently.",
+        "",
+        f"{n + 2}. Commit on `{slice_branch(todo_id)}` with a conventional "
+        f"subject (`type(scope): what (td{todo_id})`, at most 72 bytes), "
+        "message via `git commit -F scratch/commit-msg.txt`. One commit "
+        "is best: the lander squashes the branch under that subject.",
+        f"{n + 3}. Leave the working tree clean (`git status --porcelain` "
+        "prints nothing). If your sandbox refuses `git commit` (a "
+        "read-only `.git`), stop with the changes in the working tree and "
+        "`scratch/commit-msg.txt` written: the worker commits them with "
+        "that message after you exit.",
+        f"{n + 4}. Stop. Do not land, push, comment `landed:` or tag this "
+        "todo done: once you exit cleanly, the lander lands every commit "
+        "on the branch, so commit only work fit to land.",
         "",
         "Nothing to commit on purpose? Say so as the FIRST line of your final "
         "message: `validated: <why>` when the check you were asked for passed, "

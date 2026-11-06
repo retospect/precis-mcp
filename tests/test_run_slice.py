@@ -741,9 +741,60 @@ def test_task_brief_commits_and_never_ships(
     assert "Do not land, push" in brief
     assert "create the child todos" not in brief
     # td565331: the land's lint gate reopened a codex build for six missing
-    # test annotations; the brief now asks for ruff + mypy before the commit.
-    assert "`uv run ruff check <files>`" in tail and "`uv run mypy <files>`" in tail
-    assert tail.index("uv run mypy") < tail.index("1. Commit on")
+    # test annotations; the brief runs the land's lint steps before the
+    # commit (each named in test_brief_names_the_lands_lint_steps).
+    assert "uv run mypy src tests" in tail
+    assert tail.index("uv run mypy") < tail.index(". Commit on")
+
+
+def test_brief_names_the_lands_lint_steps() -> None:
+    """gr573347 / td573419: a build session's prompt names the same lint
+    the land runs — the whole tree, not just touched files — and forbids
+    a commit while any step is red."""
+    brief = run_slice.render_brief(
+        todo_id=42,
+        title="Build the widget",
+        body="Do X.",
+        latest=None,
+        lane="claude-sub",
+        model="m",
+        effort="high",
+    )
+    tail = brief[brief.index("## When done: commit on the branch and hand off") :]
+    for step in (
+        "uv run ruff check --fix .",
+        "uv run ruff format .",
+        "uv run mypy src tests",
+        "uv run lint-imports",
+        "uv run pytest -q -n0 -p no:cacheprovider tests/test_deploy_tree_no_secrets.py",
+    ):
+        assert step in tail
+    for step in run_slice._LAND_LINT_STEPS:
+        assert f"`{step}`" in tail
+    # one continuous numbered list: lint, then commit/clean/stop —
+    # the commit step never restarts at 1
+    assert "1. Commit on" not in tail
+    assert f"{len(run_slice._LAND_LINT_STEPS) + 2}. Commit on" in tail
+    assert tail.index("uv run ruff check --fix .") < tail.index(". Commit on")
+    assert "do not commit while any" in tail.lower()
+
+
+def test_brief_lint_steps_match_ship() -> None:
+    """gr573347 / td573419: every lint step the prompt names appears in
+    scripts/ship's pre-qland lint (``QLAND_CMD`` / ``QLAND_TAIL`` /
+    ``QLAND_MYPY`` / ``SECRET_SCAN``), so the prompt cannot drift from
+    the land."""
+    ship = (Path(__file__).resolve().parents[1] / "scripts" / "ship").read_text(
+        encoding="utf-8"
+    )
+    qland = "\n".join(
+        line
+        for line in ship.splitlines()
+        if re.match(r"\s*(QLAND_(CMD|TAIL|MYPY)|SECRET_SCAN)=", line)
+    )
+    assert qland
+    for step in run_slice._LAND_LINT_STEPS:
+        assert step in qland, step
 
 
 # ── submit / poll ──────────────────────────────────────────────────
