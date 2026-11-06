@@ -457,6 +457,63 @@ def test_collapsed_worker_slice_root_renders_on_the_gateway_unarmed() -> None:
     ) == {"PRECIS_SLICE_ROOT": "/srv/slices"}
 
 
+def _render_collapsed_worker_slice_token_env(
+    *, gateway: bool, **extra: object
+) -> dict[str, str]:
+    """Render 20b's ``_l_b_slice_token_env`` (the shared MCP's per-slice
+    grant registry run_slice mints into) — same stub idiom as
+    :func:`_render_collapsed_worker_slice_env`."""
+    import yaml
+    from jinja2.nativetypes import NativeEnvironment
+
+    play_src = (
+        _REPO_ROOT / "deploy" / "playbooks" / "20b-precis-worker-collapsed.yml"
+    ).read_text(encoding="utf-8")
+    plays = yaml.safe_load(play_src)
+    expr = plays[0]["vars"]["_l_b_slice_token_env"]
+
+    env = NativeEnvironment(undefined=jinja2.ChainableUndefined)
+    rendered = env.from_string(expr).render(
+        inventory_hostname="host-a",
+        groups={"gateway": ["host-a"] if gateway else ["host-b"]},
+        **extra,
+    )
+    assert isinstance(rendered, dict), (
+        f"_l_b_slice_token_env rendered to {type(rendered)}"
+    )
+    return rendered
+
+
+def test_collapsed_worker_slice_token_dir_renders_only_when_the_host_var_is_set() -> (
+    None
+):
+    """``PRECIS_MCP_SLICE_TOKEN_DIR`` is the operator's mcp-http state dir, so
+    it has no default: set ``precis_mcp_slice_token_dir`` for the gateway and
+    the key renders there; unset or empty, the key is omitted (the worker then
+    falls back to its own home, which no server reads, and the slice runs on
+    the shared token). The r224 redeploy (2026-11-06) re-rendered the plists
+    with the hand-set value gone and every slice since launched blind to the
+    MCP, 401 for the whole session (gripe 571617). Off the gateway the block
+    is empty."""
+    token_dir = "/Users/operator/.cache/precis-mcp-http/slice-tokens"
+    assert _render_collapsed_worker_slice_token_env(
+        gateway=True, precis_mcp_slice_token_dir=token_dir
+    ) == {"PRECIS_MCP_SLICE_TOKEN_DIR": token_dir}
+    assert _render_collapsed_worker_slice_token_env(gateway=True) == {}
+    assert (
+        _render_collapsed_worker_slice_token_env(
+            gateway=True, precis_mcp_slice_token_dir=""
+        )
+        == {}
+    )
+    assert (
+        _render_collapsed_worker_slice_token_env(
+            gateway=False, precis_mcp_slice_token_dir=token_dir
+        )
+        == {}
+    )
+
+
 def _seed_loop_enabled(service: str, **render_vars: object) -> bool:
     """Render the ``enabled`` expression of one entry of the precis_worker
     role's §L ``service seed`` loop (the task that mirrors a host's arming

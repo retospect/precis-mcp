@@ -71,6 +71,10 @@ def test_env_has_parity_keys_and_own_identity() -> None:
         # The checkout run_slice cuts worktrees under; a venv install has none
         # around its code. Same value as 20b's _l_b_slice_env (gripe 570787).
         "PRECIS_SLICE_ROOT",
+        # The shared MCP's per-slice grant registry; rendered from the host
+        # var precis_mcp_slice_token_dir when set, as 20b's
+        # _l_b_slice_token_env (gripe 571617).
+        "PRECIS_MCP_SLICE_TOKEN_DIR",
         "precis_shared_env",
         "precis_identity_env",
     ):

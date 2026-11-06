@@ -413,6 +413,21 @@
       {{ (
         {'PRECIS_SLICE_ROOT': precis_slice_root | default(precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo'))}
       ) if inventory_hostname in groups['gateway'] else {} }}
+    # ── slice tokens (dark factory). PRECIS_MCP_SLICE_TOKEN_DIR is the shared
+    # MCP server's per-slice grant registry (the mcp-http ensure script's
+    # `${STATE_DIR}/slice-tokens`, under the OPERATOR's home, mounted read-only
+    # into the server). run_slice (job_ssh_node runs in this unit's rotation
+    # too, and in 20g) mints one grant there per session; unset, the worker
+    # falls back to its OWN home where no server reads, the session starts on
+    # the worker's PRECIS_MCP_TOKEN, and the deploy service account has none:
+    # 401 for the whole build (2026-11-06 r224 re-render, gripe 571617). The
+    # dir is the operator's, so there is no default: the host var
+    # precis_mcp_slice_token_dir is set in the overlay for the gateway, and
+    # unset the key is omitted. Gateway-only, like the slice root. ──
+    _l_b_slice_token_env: >-
+      {{ {'PRECIS_MCP_SLICE_TOKEN_DIR': precis_mcp_slice_token_dir}
+         if (inventory_hostname in groups['gateway']
+             and ((precis_mcp_slice_token_dir | default('')) | length > 0)) else {} }}
     # ── tts render (darwin only, gated on topology.yml tts_render — the
     # GPU-node-retirement rehome, 2026-08-29): launchd has no
     # EnvironmentFile, so the same vars roles/tts's tts.env.j2 drops for the
@@ -439,7 +454,8 @@
     _l_b_env: >-
       {{ _l_b_base_env | combine(_l_b_review_env) | combine(_l_b_container_env)
          | combine(_l_b_dream_env) | combine(_l_b_anki_env) | combine(_l_b_gateway_extras_env)
-         | combine(_l_b_fix_env) | combine(_l_b_slice_env) | combine(_l_b_tts_env) }}
+         | combine(_l_b_fix_env) | combine(_l_b_slice_env) | combine(_l_b_slice_token_env)
+         | combine(_l_b_tts_env) }}
     # ── dedicated OA-fetch lane env (header's option-A block) ──
     # The collapsed-unit union minus everything `fetch` never reads, PLUS the
     # shared/identity env verbatim — that is what carried PRECIS_WATCH_INBOX,

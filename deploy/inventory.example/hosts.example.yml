@@ -99,6 +99,13 @@ all:
           ansible_host: 203.0.113.10
           lan_ip: 192.0.2.10
           node_role: gateway
+          # Dark-factory slice host (playbooks 20b/20g). The shared MCP
+          # server's per-slice grant registry: the mcp-http ensure script's
+          # `${STATE_DIR}/slice-tokens` under the OPERATOR's home, which the
+          # launchd `deploy` worker cannot guess. No default — unset, slices
+          # launch on the shared token and a service account sees 401
+          # (gr571617). Write the real path in the gitignored overlay.
+          # precis_mcp_slice_token_dir: /Users/<operator>/.cache/precis-mcp-http/slice-tokens
         node-worker:
           ansible_host: 203.0.113.11
           lan_ip: 192.0.2.11

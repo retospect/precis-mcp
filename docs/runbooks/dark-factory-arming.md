@@ -189,7 +189,12 @@ The other settings a slice host reads:
   default is under the *worker's* home, where no server reads, so the
   session would start on the worker's `PRECIS_MCP_TOKEN` — and a service
   account has none, which the session sees as `401 AUTH_HEADER_REJECTED`
-  / "Not logged in" (jo546987). The ensure script makes the dir setgid
+  / "Not logged in" (jo546987). The deploy renders it on the gateway from
+  the host var `precis_mcp_slice_token_dir` (no default: the dir is the
+  operator's) in playbooks 20b and 20g; set the variable in the operator
+  overlay, never the plist — the r224 redeploy (2026-11-06) re-rendered
+  the plists with the hand-set value gone, and every slice after it
+  launched "mcp token: shared" and built blind to the MCP (gr571617). The ensure script makes the dir setgid
   group-writable; the worker user must share that group. The grant file
   holds the bearer's SHA-256 digest at mode 644, not the token: on a Mac
   host colima's virtiofs reads every mounted file as the colima user, so

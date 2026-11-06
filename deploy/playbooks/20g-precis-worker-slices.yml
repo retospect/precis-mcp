@@ -45,6 +45,19 @@
 # gripe 570787: every run_slice/land_slice queued "no host advertises
 # repo_checkout").
 #
+# SLICE TOKENS. PRECIS_MCP_SLICE_TOKEN_DIR is the shared MCP server's per-slice
+# grant registry (`<mcp-http state dir>/slice-tokens`, the ensure script's
+# setgid dir the server mounts read-only). run_slice mints one grant there per
+# session; without it the session starts on the worker's own PRECIS_MCP_TOKEN,
+# and the deploy service account has none, so the builder sees 401 for its
+# whole run (precis.slice_tokens.registry_dir falls back to the WORKER's home,
+# where no server reads). The dir is the operator's, so the value is a host
+# var (precis_mcp_slice_token_dir, no default): set it in the overlay for the
+# gateway; unset, the key is omitted. 20b renders the same key (its
+# `_l_b_slice_token_env`): that unit's rotation includes job_ssh_node too.
+# Hand-set on the plist it dies at the next re-render (2026-11-06 r224,
+# gripe 571617: every slice after 01:03Z launched "mcp token: shared").
+#
 # NO READINESS GATE (unlike 20e/43). A repeated `--only` has no
 # append-vs-store hazard for job_ssh_node, long-registered in the installed
 # argparse choices. plan_tick is NOT in an older venv's choices, but the
@@ -119,6 +132,10 @@
              | combine(
                  {'PRECIS_CLAUDE_BIN': claude_run_wrapper | default('/opt/precis/bin/claude-run-user')}
                  if ((claude_run_user | default('')) | length > 0) else {}
+               )
+             | combine(
+                 {'PRECIS_MCP_SLICE_TOKEN_DIR': precis_mcp_slice_token_dir}
+                 if ((precis_mcp_slice_token_dir | default('')) | length > 0) else {}
                ) }}
 
     # Code-refresh bounce for the site.yml path ONLY: redeploy defines
