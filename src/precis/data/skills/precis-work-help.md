@@ -265,8 +265,8 @@ The `gripe_dispatch` worker pass (every 10 minutes, dark until
 chain per free code-lane slot: the summed cap of the enabled lanes that
 fit the `code` class, minus the plan roots still `related-to` a gripe
 and not `done`/`won't-do`, at most two per fire. The build node carries
-the gripe text verbatim and picks its lane at dispatch (codex first by
-table order); the land writes `resolved: <sha>` on the gripe. It picks
+the gripe text verbatim and picks its lane at dispatch (devin first by
+table order, then codex); the land writes `resolved: <sha>` on the gripe. It picks
 the hottest `prio` then the oldest among gripes that are `open` or
 `triaged`, tagged `fix:code`, older than an hour, with no live todo
 `related-to` them, and filed by a Claude Code session or a human

@@ -1309,13 +1309,12 @@ def test_review_without_verdict_retries_once_then_asks(store: Store) -> None:
     assert _meta(store, review)["review"]["verdict"] is None
     assert "malformed verdict" in _todo_comments(store, review)[-1]
     # One retry, pinned to the review lane. The builder ran on the Claude
-    # lane, so the cross-vendor rule picks codex (it fits `review` since
-    # td564019 cut 1; no model list, so no rung to climb).
+    # lane, so the cross-vendor rule picks the first other-vendor lane in
+    # the table: devin (it fits `review`; enabled td562568), ahead of codex.
     assert res.dispatched == 1
     (_old, (retry, meta)) = _jobs_under(store, review)
     assert meta["params"]["todo_id"] == review
-    assert meta["params"]["lane"] == "codex"
-    assert "model" not in meta["params"]
+    assert meta["params"]["lane"] == "devin"
     assert not any("shares the builder's vendor" in n for n in res.notes)
     # The retry posts nothing either: the hygiene ask follows.
     store.add_tag(
@@ -1341,13 +1340,23 @@ def test_dispatch_orders_by_prio_across_roots(store: Store) -> None:
     assert order == [f"td{newer.ids['task']}", f"td{older.ids['task']}"]
 
 
+def _pin_codex_and_sub(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the table to the seed's codex and claude-sub lanes, the two
+    vendors the review-vendor tests below were written against (the seed
+    table also carries devin since td562568, which would take every review)."""
+    codex, sub = L.get_lane("codex"), L.get_lane("claude-sub")
+    assert codex is not None and sub is not None
+    monkeypatch.setattr(L, "LANES", (codex, sub))
+
+
 def test_review_excludes_every_build_vendor_then_the_original_builder(
-    store: Store,
+    store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """td565332 (2026-11-05): codex built the fix, a sonnet retry repaired the
     lint; reading only the newest job sent the review to codex, which then
     reviewed its own build. With both enabled vendors on the branch the
     review goes to the lane that is not the original builder's."""
+    _pin_codex_and_sub(monkeypatch)
     mint = _review_plan(store)
     build, review = mint.ids["build"], mint.ids["review"]
     _job(store, build, status="failed", lane="codex")
@@ -1364,11 +1373,14 @@ def test_review_excludes_every_build_vendor_then_the_original_builder(
     assert not any("shares the builder's vendor" in n for n in res.notes)
 
 
-def test_review_counts_only_jobs_that_left_commits(store: Store) -> None:
+def test_review_counts_only_jobs_that_left_commits(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """BUILDER 2026-11-05: a claude-sub attempt that died with no commit,
     then a codex build — counting the dead attempt would make anthropic the
     "original builder" and codex would review its own work. Only committing
     jobs are builders; the review goes to claude-sub."""
+    _pin_codex_and_sub(monkeypatch)
     mint = _review_plan(store)
     build, review = mint.ids["build"], mint.ids["review"]
     _job(store, build, status="failed", lane="claude-sub", commits=[])

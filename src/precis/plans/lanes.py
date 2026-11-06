@@ -12,13 +12,12 @@ that can still write code, so an unpinned child never drifts to the
 frontier pin).
 
 The table lives in code until the lane registry (step 3, a ``lanes``
-table seeded from me538174) lands; :data:`LANES` is its seed. ``codex``
-and ``claude-sub`` are enabled (Reto 2026-11-03: "ok both devin and codex
-are ok. Lets make them go."); the others are declared with their adapters
-named so the pick, the work view and the tests already see them, and
-:func:`pick_lane` never returns a disabled lane. ``devin`` flips on once
-its CLI is installed and logged in on the slice host (td561545,
-gr562902).
+table seeded from me538174) lands; :data:`LANES` is its seed. ``devin``,
+``codex`` and ``claude-sub`` are enabled (Reto 2026-11-03: "ok both devin
+and codex are ok. Lets make them go."; devin on once its CLI login on the
+slice host was confirmed, 2026-11-06, td562568); the others are declared
+with their adapters named so the pick, the work view and the tests
+already see them, and :func:`pick_lane` never returns a disabled lane.
 
 Pick (:func:`pick_lane`): fit for the task class first, then the fit lane
 with the fewest live ``run_slice`` jobs carrying its ``meta.lane``, under
@@ -142,12 +141,14 @@ LANES: tuple[Lane, ...] = (
         name="devin",
         adapter="devin_tree",
         credential_pool="devin",
-        cap=1,
+        cap=3,
         task_classes=frozenset({"code", "review", "validate"}),
-        # The devin_tree adapter is in (td561543); flips on once the Devin
-        # CLI is installed and logged in on the slice host under the vendor
-        # account (td561545, gr562902).
-        enabled=False,
+        # On (td562568, Reto 2026-11-06): the devin_tree adapter is in
+        # (td561543) and the Devin CLI is logged in for the deploy user on
+        # the slice host (``devin auth status``; the dedicated vendor
+        # account is gr562902). ``run_slice`` preflights binary, login and
+        # directory trust before each launch (gr570688).
+        enabled=True,
         vendor="cognition",
         # `devin models list` 2026-11-03: every SWE-2 tier is free; the
         # "-lightning" variants and every other family are paid and never
@@ -313,8 +314,7 @@ def ladder(
     failed slice climbs before the cap asks): every enabled fit lane in
     table order, each contributing its ``models`` from ``default_model``
     upward, or one model-less rung when it declares none. With today's
-    table that is codex → sonnet → opus; devin high → devin max joins at
-    the foot once the devin lane is on."""
+    table that is devin high → devin max → codex → sonnet → opus."""
     out: list[Rung] = []
     for lane in LANES if lanes is None else lanes:
         if not lane.enabled or not lane.fits(task_class):

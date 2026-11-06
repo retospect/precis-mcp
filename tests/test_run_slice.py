@@ -291,10 +291,26 @@ def _lane(name: str, cap: int, classes: set[str], enabled: bool = True) -> Lane:
 
 
 def test_seed_table_enabled_lanes() -> None:
-    """td562568: codex is on (free vendor lane, table-first); devin waits
-    for its CLI login on the slice host; kimi and metered stay declared."""
+    """td562568: devin and codex are on (free vendor lanes, table-first);
+    kimi and metered stay declared."""
     enabled = [ln.name for ln in lanes.LANES if ln.enabled]
-    assert enabled == ["codex", "claude-sub"]
+    assert enabled == ["devin", "codex", "claude-sub"]
+    devin = lanes.get_lane("devin")
+    assert devin is not None
+    assert (devin.adapter, devin.cap, devin.default_model) == (
+        "devin_tree",
+        3,
+        "swe-2-high",
+    )
+    # Only the free SWE-2 tiers: no paid "-lightning" id is ever a rung.
+    assert all(m.startswith("swe-2-") and "lightning" not in m for m in devin.models)
+    assert [(r.lane, r.model) for r in lanes.ladder("code")] == [
+        ("devin", "swe-2-high"),
+        ("devin", "swe-2-max"),
+        ("codex", None),
+        ("claude-sub", "claude-sonnet-5"),
+        ("claude-sub", "claude-opus-4-8"),
+    ]
     sub = lanes.get_lane("claude-sub")
     assert sub is not None
     assert (sub.adapter, sub.credential_pool, sub.cap) == (
@@ -416,20 +432,31 @@ def test_pick_lane_honours_a_pinned_model() -> None:
 
 
 def test_pick_lane_reads_live_counts(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The seed table: codex (cap 1) and claude-sub (cap 2) fit ``code``."""
+    """The seed table: devin (cap 3), codex (cap 1) and claude-sub (cap 2)
+    fit ``code``."""
     monkeypatch.setattr(
-        lanes, "live_lane_counts", lambda store: {"claude-sub": 2, "codex": 1}
+        lanes,
+        "live_lane_counts",
+        lambda store: {"claude-sub": 2, "codex": 1, "devin": 3},
     )
     assert pick_lane(object(), "code") is None
     monkeypatch.setattr(
-        lanes, "live_lane_counts", lambda store: {"claude-sub": 1, "codex": 1}
+        lanes,
+        "live_lane_counts",
+        lambda store: {"claude-sub": 1, "codex": 1, "devin": 3},
     )
     picked = pick_lane(object(), "code")
     assert picked is not None and picked.name == "claude-sub"
-    # Both free: the free vendor lane is first in the table (td559457).
-    monkeypatch.setattr(lanes, "live_lane_counts", lambda store: {})
+    # Devin full, codex free: the free vendor lane still beats claude-sub.
+    monkeypatch.setattr(
+        lanes, "live_lane_counts", lambda store: {"claude-sub": 1, "devin": 3}
+    )
     picked = pick_lane(object(), "code")
     assert picked is not None and picked.name == "codex"
+    # All free: the first free vendor lane is first in the table (td559457).
+    monkeypatch.setattr(lanes, "live_lane_counts", lambda store: {})
+    picked = pick_lane(object(), "code")
+    assert picked is not None and picked.name == "devin"
 
 
 # ── registry ───────────────────────────────────────────────────────

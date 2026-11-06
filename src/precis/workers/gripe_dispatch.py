@@ -34,7 +34,7 @@ Each fire:
   (:mod:`precis.filing_origin`); a gripe without one is skipped. Order:
   ``PRIO`` (lower is hotter) then oldest.
 * **Mint** through :func:`precis.plans.templates.mint_gripe_fix_direct`
-  (unpinned: the build picks its lane at dispatch, codex first by table
+  (unpinned: the build picks its lane at dispatch, devin first by table
   order) and one ``dispatch:`` comment on the gripe naming the root. The
   ``related-to`` link the template writes is the idempotency marker: a
   re-fire sees the gripe linked and skips it, so a doubled tick converges.
@@ -239,7 +239,7 @@ def _comment(store: Store, gripe_id: int, root_id: int) -> None:
 
     text = (
         f"dispatch: minted gripe-fix-direct td{root_id} (build picks its lane at "
-        "dispatch, codex first; the land writes `resolved: <sha>` here)"
+        "dispatch, devin first; the land writes `resolved: <sha>` here)"
     )
     with store.tx() as conn:
         ords = conn.execute(
