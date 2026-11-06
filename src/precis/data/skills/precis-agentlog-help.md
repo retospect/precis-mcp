@@ -69,6 +69,12 @@ get(kind='agentlog', id=42)         # one run
 get(kind='agentlog', id='/recent')  # recent runs, newest-first
 get(kind='agentlog', id='/traces', args={'since': '90d', 'kind': 'memory'})
                                   # search traces, excluded from /recent
+get(kind='agentlog', id='/scope?since=24&role=builder')
+                                  # slice-scope would-refuse ledger
+                                  # (td575705 G1): observe-mode marks +
+                                  # enforced refusals, grouped by
+                                  # role/rule/verb/kind — filters since,
+                                  # role, rule, verb, kind, page_size
 search(kind='agentlog', q='...')    # lexical over run titles
 search(kind='agentlog', link='dr42995')  # runs linked to that ref — the
                                     # touched edges included, so this is

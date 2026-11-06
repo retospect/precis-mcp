@@ -18,7 +18,7 @@ from typing import Any
 from psycopg import Connection
 from psycopg_pool import ConnectionPool
 
-from precis import agentlog, tool_ledger
+from precis import agentlog, principal, tool_ledger
 from precis.store.revision_context import current_revision_context
 from precis.utils.secret_scan import mask_secrets
 
@@ -89,6 +89,10 @@ def current_filed_by(
         "session_id": tool_ledger._session_id,
         "source": agentlog.current_source_from_env,
         "agentlog_id": agentlog.current_from_env,
+        # Server-set write principal (td575705 G1): slice:<grant>:<role>,
+        # install, user:<abbrev>, personal:<id>, worker:<source>. Never
+        # caller-supplied — a worker record is what factory readers trust.
+        "principal": principal.current,
     }
     origin: dict[str, Any] = {
         key: value for key, read in readers.items() if (value := _read(read))

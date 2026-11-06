@@ -287,6 +287,7 @@ def human_write_context(request: Request) -> contextlib.AbstractContextManager[A
     auth off nobody knows who typed it, so nothing is claimed and the write
     falls back to the verb's own producer. Only for routes whose payload the
     person typed — a route that runs a model keeps its generated producer."""
+    from precis import principal
     from precis.acting_user import actor_for
     from precis.store.revision_context import revision_context
     from precis_web.auth import current_user
@@ -295,11 +296,18 @@ def human_write_context(request: Request) -> contextlib.AbstractContextManager[A
     user = current_user(request) if hasattr(request, "scope") else None
     if user is None:
         return contextlib.nullcontext()
-    return revision_context(
-        actor=actor_for(user.abbrev),
-        trust_origin="human",
-        trust_actor_type="human",
+    stack = contextlib.ExitStack()
+    stack.enter_context(
+        revision_context(
+            actor=actor_for(user.abbrev),
+            trust_origin="human",
+            trust_actor_type="human",
+        )
     )
+    # The write principal (td575705 G1): a human write stamps
+    # ``user:<abbrev>`` — the record factory readers trust for answers.
+    stack.enter_context(principal.bind(f"user:{user.abbrev}"))
+    return stack
 
 
 async def await_dispatch(

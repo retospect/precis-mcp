@@ -53,6 +53,7 @@ from typing import Any
 from precis.corpus_layout import host_name
 from precis.plans import lanes as _lanes
 from precis.plans.templates import mint_gripe_fix_direct
+from precis.principal import worker_comment_meta
 from precis.store import Store
 from precis.workers.runner import BatchResult
 from precis.workers.service_config import ALL_HOSTS, ServiceConfigResolver
@@ -287,7 +288,11 @@ def _append_comment(store: Store, gripe_id: int, text: str) -> None:
                 ChunkInsert(
                     ord=int(ords[0]) if ords else 0,
                     text=text,
-                    meta={"chunk_kind": "gripe_comment"},
+                    meta={
+                        "chunk_kind": "gripe_comment",
+                        # worker-stamped — the G2 trust boundary (td575705).
+                        **worker_comment_meta(),
+                    },
                 )
             ],
             conn=conn,

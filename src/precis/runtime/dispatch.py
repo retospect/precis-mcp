@@ -1525,6 +1525,15 @@ class DispatchMixin(RuntimeShape):
         )
         with self.hub.request_scope(verb=verb):
             try:
+                # Slice scope (td575705 G1): a slice bearer writes only what
+                # its role's grant covers. Runs before the verb check so an
+                # unknown verb logs would-refuse too; reads always pass. In
+                # observe the verdict marks this call's own tool_calls row;
+                # in enforce it raises Denied through the PrecisError path so
+                # the row records the refusal either way.
+                from precis import principal
+
+                scope_verdict = principal.check(self, verb, args)
                 if verb not in _VERBS:
                     raise BadInput(
                         f"unknown verb: {verb}",
@@ -1622,6 +1631,7 @@ class DispatchMixin(RuntimeShape):
                     started,
                     response.result_count,
                     budget_fitted=budget_fitted,
+                    scope_verdict=scope_verdict,
                 )
                 return body, False
             except PrecisError as e:
@@ -1670,12 +1680,19 @@ class DispatchMixin(RuntimeShape):
         result_count: int | None = None,
         *,
         budget_fitted: bool = False,
+        scope_verdict: Any = None,
     ) -> None:
         """Best-effort tool-call ledger write (migration 0133).
 
         ``budget_fitted`` marks an ``ok`` row whose body the result
         budget cut to head + outline (``error_type`` carries
         ``tool_ledger.BUDGET_FITTED`` — the roll-up's fit counter).
+
+        ``scope_verdict`` marks an ``ok`` row whose slice-scope check
+        returned a would-refuse verdict under ``mcp.slice_scope=observe``
+        (``error_type`` carries ``principal.WOULD_REFUSE`` and
+        ``error_head`` the verdict's k=v line; wins over BUDGET_FITTED —
+        the security mark is what the arming readout mines).
 
         Fires after the verb has already fully run and its body is
         rendered — the one extra INSERT never gates the caller's
@@ -1696,7 +1713,7 @@ class DispatchMixin(RuntimeShape):
         if store is None:
             return
         try:
-            from precis import serve_ledger
+            from precis import principal, serve_ledger
             from precis.agentlog import current_from_env, current_source_from_env
             from precis.tool_ledger import (
                 BUDGET_FITTED,
@@ -1712,6 +1729,8 @@ class DispatchMixin(RuntimeShape):
             if is_error:
                 m = _ERROR_TYPE_RE.match(body)
                 error_type = m.group(1) if m else "Unknown"
+            elif scope_verdict is not None:
+                error_type = principal.WOULD_REFUSE
             elif budget_fitted:
                 error_type = BUDGET_FITTED
             kind = args.get("kind")
@@ -1750,7 +1769,15 @@ class DispatchMixin(RuntimeShape):
                     session_id=session_id,
                     seq=seq,
                     result_bytes=len(body.encode("utf-8", errors="replace")),
-                    error_head=error_head(body) if is_error else None,
+                    error_head=(
+                        error_head(body)
+                        if is_error
+                        else (
+                            f"slice-scope would-refuse {scope_verdict.line()}"
+                            if scope_verdict is not None
+                            else None
+                        )
+                    ),
                     arg_sample=arg_sample(args),
                     client=current_client(),
                 ),

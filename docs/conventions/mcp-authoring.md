@@ -84,6 +84,55 @@ adding a pragma fails until that file is bumped in the same diff, removing one
 until it is lowered. Burn-down builders add pragmas only for genuine terminal
 or internal cases and list each one in the commit body.
 
+## Write principals and the slice scope (td575705 G1)
+
+Every write records its **principal** — a server-set string naming whose
+call it was, bound in `tools.core._dispatch_as_user` from the ASGI scope's
+trusted stamps, never caller input (`precis.principal`). The values:
+`slice:<td..grant>:<role>` (a validated slice grant), `install` (the
+install bearer), `user:<abbrev>` (a browser write under
+`human_write_context`), `personal:<token id>` (a personal MCP token), and
+`worker:<PRECIS_SOURCE>` for an in-process write with no bound request
+(`cli` when no source is set). Worker-written comments stamp
+`worker:<source>` explicitly via `worker_comment_meta()` — a bound slice
+or install principal must not leak onto a record the workers sign.
+
+Where the principal lands:
+
+| write | column |
+|---|---|
+| comment chunk | `chunks.meta.principal` |
+| create | `meta.filed_by.principal` + `revisions.writer.principal` |
+| covered edit / link update | `revisions.writer.principal` |
+| tag set | `ref_tags.principal` (migration 0287 — `set_by` is an FK to the closed `actors` table and cannot hold these strings) |
+
+Tag removal and deletes leave no row: nothing is recorded there.
+
+A slice principal's writes are also **scope-gated** in dispatch
+(`principal.check`, before the verb table so an unknown verb is judged
+too). Reads (`get`/`search`) always pass. The gate is armed by
+`mcp.slice_scope` — DB-only, default `observe`, unknown values observe
+with a warn-once: a security control never silently opens on a typo and
+is never settable by the sessions it gates. A failed `app_settings`
+read keeps the last good mode (an armed `enforce` cannot decay to
+`observe` mid-outage); nothing good read yet fails closed on `enforce`.
+A `slice:`-shaped principal that fails the grammar is refused
+(`rule=principal-shape`), never allowed.
+
+- `off` — the check is skipped.
+- `observe` — the write runs; the call's `tool_calls` row is marked
+  `error_type='SliceScopeWouldRefuse'` carrying the verdict's k=v line
+  (`role= rule= verb= kind= target=`) in `error_head`, plus a
+  `precis.slice_scope` log line. Same `Denied`-row shape under enforce,
+  so `get(kind='agentlog', id='/scope?…')` reads both identically.
+- `enforce` — the write refuses with `Denied` whose first line is the
+  same k=v line; `next=` tells the slice to put it in its final message
+  (the worker records it) and `options=` lists what the role may write
+  (`role_write_options`).
+
+The role→write table lives in the `precis.principal` docstring; the
+observe→enforce arming ladder is `docs/runbooks/dark-factory-arming.md`.
+
 ## Boot path
 
 Nothing before `mcp.run()` (`server.main()` → `_init_runtime`, instructions

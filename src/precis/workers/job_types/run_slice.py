@@ -112,6 +112,7 @@ from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert, resolve_alert_by_fingerprint
 from precis.plans import lanes as _lanes
 from precis.plans.nodes import MOOT_TAG, generator_verdict, node_kind
+from precis.principal import worker_comment_meta
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers.job_types._slice_adapters import (
     PERMISSION_MODE,
@@ -672,7 +673,17 @@ def _append_comment(store: Any, todo_id: int, text: str) -> None:
     ord_ = max((int(c.ord) for c in existing), default=0) + 1
     store.chunks.insert_chunks(
         todo_id,
-        [ChunkInsert(ord=ord_, text=text, meta={"chunk_kind": _COMMENT_KIND})],
+        [
+            ChunkInsert(
+                ord=ord_,
+                text=text,
+                meta={
+                    "chunk_kind": _COMMENT_KIND,
+                    # worker-stamped — the G2 trust boundary (td575705).
+                    **worker_comment_meta(),
+                },
+            )
+        ],
     )
 
 

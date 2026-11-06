@@ -29,6 +29,7 @@ surfaced by the ``/agentlogs`` web tab, direct queries, and chunk
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, ClassVar
 from urllib.parse import parse_qsl, urlencode
 
@@ -93,8 +94,43 @@ _SESSIONS_FILTER_KEYS = frozenset(
         "page_size",
     }
 )
+#: ``id='/scope?<k>=<v>'`` accepted filter keys — the slice-scope
+#: would-refuse readout (td575705 G1; ``mcp.slice_scope=observe`` marks
+#: ok rows, enforce refusals arrive as Denied rows with the same k=v
+#: ``error_head``).
+_SCOPE_FILTER_KEYS = frozenset(
+    {
+        "since",
+        "role",
+        "rule",
+        "verb",
+        "kind",
+        "limit",
+        "page_size",
+    }
+)
 #: Group rows a ``/calls`` summary shows before folding to the line count.
 _CALLS_GROUP_CAP = 12
+
+_SCOPE_HEAD_PREFIXES = (
+    "[error:Denied] slice scope refused ",
+    "slice scope refused ",
+    "slice-scope would-refuse ",
+)
+
+
+def _parse_scope_head(head: str | None) -> dict[str, str]:
+    """The ``role=/rule=/verb=/kind=/target=`` pairs off a scope-marked
+    ``error_head`` — the same k=v line both the observe marker and the
+    enforce Denied's first line carry."""
+    if not head:
+        return {}
+    text = head
+    for prefix in _SCOPE_HEAD_PREFIXES:
+        if text.startswith(prefix):
+            text = text[len(prefix) :]
+            break
+    return dict(re.findall(r"(\w+)=(\S*)", text))
 
 
 def _meta_value(val: Any) -> str:
@@ -152,7 +188,7 @@ class AgentLogHandler(NumericRefHandler):
     # ── list-view filters (id='/<view>') ────────────────────────────
 
     def _supported_list_views(self) -> tuple[str, ...]:
-        return ("recent", "calls", "sessions", "traces")
+        return ("recent", "calls", "sessions", "scope", "traces")
 
     def get(
         self,
@@ -195,9 +231,12 @@ class AgentLogHandler(NumericRefHandler):
             or id.startswith("/calls?")
             or id == "/sessions"
             or id.startswith("/sessions?")
+            or id == "/scope"
+            or id.startswith("/scope?")
         ):
-            # A top-level limit= folds into the /calls or /sessions query
-            # string (the job /logs fold, gr500645); the id's own value wins.
+            # A top-level limit= folds into the /calls, /sessions or
+            # /scope query string (the job /logs fold, gr500645); the
+            # id's own value wins.
             if limit is not None:
                 path, _, qs = id.partition("?")
                 merged = {
@@ -210,7 +249,7 @@ class AgentLogHandler(NumericRefHandler):
             raise BadInput(
                 "limit= only applies to "
                 "get(kind='agentlog', id=<N>, view='calls'), "
-                "id='/calls?…' or id='/sessions?…'",
+                "id='/calls?…', id='/sessions?…' or id='/scope?…'",
                 next="get(kind='agentlog', id=<N>, view='calls', limit=50)",
             )
         return super().get(id=id, view=view, q=q, since=since, **_kw)
@@ -224,6 +263,9 @@ class AgentLogHandler(NumericRefHandler):
         if view == "sessions" or view.startswith("sessions?"):
             _, _, query_string = view.partition("?")
             return self._render_sessions_mining(query_string)
+        if view == "scope" or view.startswith("scope?"):
+            _, _, query_string = view.partition("?")
+            return self._render_scope(query_string)
         return super()._list_view(view)
 
     def _render_traces(self, params: dict[str, str]) -> Response:
@@ -594,6 +636,164 @@ class AgentLogHandler(NumericRefHandler):
             )
         lines.append("")
         lines.append(f"{len(out['rows'])} sessions shown of {out['total']}")
+        return interpreted(Response(body="\n".join(lines)), readings)
+
+    def _render_scope(self, query_string: str) -> Response:
+        """``id='/scope?since=<hrs>&role=<r>&rule=<r>&verb=<v>&kind=<k>
+        &page_size=<n>'`` — the slice-scope would-refuse readout
+        (td575705 G1). Two row shapes share the one k=v ``error_head``:
+        ``error_type='SliceScopeWouldRefuse'`` (an ok call observe would
+        have refused) and ``error_type='Denied'`` with ``error_head``
+        ``slice scope refused …`` (an enforced refusal). Grouped by
+        role/rule/verb/kind parsed out of ``error_head``; newest first.
+        Same posture as ``/calls`` — all params optional, all bound."""
+        from precis import principal, tool_ledger
+        from precis.handlers._interpret import interpreted
+        from precis.handlers.job import _parse_logs_int
+        from precis.utils.next_block import render_next_section
+        from precis.utils.timeutil import as_utc
+
+        params = dict(parse_qsl(query_string, keep_blank_values=True))
+        unknown = sorted(k for k in params if k not in _SCOPE_FILTER_KEYS)
+        if unknown:
+            raise BadInput(
+                f"unknown /scope filter(s): {', '.join(unknown)}",
+                options=sorted(_SCOPE_FILTER_KEYS),
+                next="get(kind='agentlog', id='/scope?since=24')",
+            )
+
+        since_hours = _parse_logs_int(
+            params.get("since"),
+            default=24,
+            field="since",
+            example="since=24 (default) — hours to look back",
+            units=True,
+        )
+        if since_hours <= 0:
+            raise BadInput(
+                f"since={since_hours} must be a positive number of hours",
+                next="since=24 (default) — hours to look back",
+            )
+        since_hours = min(since_hours, tool_ledger.CALLS_MAX_SINCE_HOURS)
+
+        readings: list[str] = []
+        raw_ps, raw_lim = params.get("page_size"), params.get("limit")
+        if raw_ps not in (None, "") and raw_lim not in (None, "") and raw_ps != raw_lim:
+            raise BadInput(
+                f"conflicting page_size={raw_ps!r} and limit={raw_lim!r}",
+                next="pass one — page_size= is the canonical name",
+            )
+        if raw_lim not in (None, "") and raw_ps in (None, ""):
+            readings.append("'limit' read as 'page_size'")
+        limit = _parse_logs_int(
+            raw_ps if raw_ps not in (None, "") else raw_lim,
+            default=tool_ledger.CALLS_DEFAULT_LIMIT,
+            field="page_size",
+            example="page_size=100 (default), cap 200",
+        )
+        if limit <= 0:
+            raise BadInput(
+                f"page_size={limit} must be positive",
+                next="page_size=100 (default), cap 200",
+            )
+        limit = min(limit, tool_ledger.CALLS_MAX_LIMIT)
+
+        clauses = [
+            "ts >= now() - %s::interval",
+            "(error_type = %s OR (error_type = 'Denied' AND error_head LIKE %s))",
+        ]
+        values: list[Any] = [
+            f"{since_hours} hours",
+            principal.WOULD_REFUSE,
+            "%slice scope refused%",
+        ]
+        verb = (params.get("verb") or "").strip() or None
+        kind = (params.get("kind") or "").strip() or None
+        if verb:
+            clauses.append("verb = %s")
+            values.append(verb)
+        if kind:
+            clauses.append("kind = %s")
+            values.append(kind)
+        # role/rule ride the error_head k=v line, not a column.
+        role = (params.get("role") or "").strip() or None
+        rule = (params.get("rule") or "").strip() or None
+        if role:
+            clauses.append("error_head LIKE %s")
+            values.append(f"%role={role} %")
+        if rule:
+            clauses.append("error_head LIKE %s")
+            values.append(f"%rule={rule} %")
+
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ts, verb, kind, error_type, error_head, session_id, "
+                "agentlog_id, source FROM tool_calls WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY ts DESC, call_id DESC LIMIT %s",
+                (*values, limit),
+            ).fetchall()
+
+        filter_bits = [f"since={since_hours}h"]
+        for key in ("role", "rule", "verb", "kind"):
+            if params.get(key):
+                filter_bits.append(f"{key}={params[key]!r}")
+        lines = [f"# slice scope — {', '.join(filter_bits)}", ""]
+
+        groups: dict[tuple[str, str, str, str], int] = {}
+        parsed = [_parse_scope_head(str(r[4])) for r in rows]
+        for r, head in zip(rows, parsed):
+            g = (
+                head.get("role") or "-",
+                head.get("rule") or "-",
+                str(r[1]),
+                str(r[2]) if r[2] is not None else "-",
+            )
+            groups[g] = groups.get(g, 0) + 1
+        if groups:
+            lines.append("## groups — role rule verb kind: calls")
+            for g, n in sorted(groups.items(), key=lambda kv: (-kv[1], kv[0]))[
+                :_CALLS_GROUP_CAP
+            ]:
+                lines.append(f"{g[0]} {g[1]} {g[2]} {g[3]}: {n}")
+            if len(groups) > _CALLS_GROUP_CAP:
+                lines.append(f"… +{len(groups) - _CALLS_GROUP_CAP} more groups")
+            lines.append("")
+
+        if not rows:
+            mode = principal.slice_scope_mode(self.store)
+            lines.append(
+                f"no scope-marked rows in the window "
+                f"(mcp.slice_scope={mode}) — observed would-refuses land "
+                "here as SliceScopeWouldRefuse ok rows, enforced refusals "
+                "as Denied rows. Nothing marked means either traffic "
+                "stayed in-scope or no slice called."
+            )
+            body = "\n".join(lines)
+            body += render_next_section(
+                [
+                    (
+                        "get(kind='agentlog', id='/scope?since=168')",
+                        "widen the window before arming enforce",
+                    ),
+                ]
+            )
+            return interpreted(Response(body=body), readings)
+
+        lines.append("## newest")
+        for r, head in zip(rows, parsed):
+            ts = as_utc(r[0])
+            stamp = ts.strftime("%m-%d %H:%MZ") if ts is not None else "?"
+            session = str(r[5] or "-")
+            refused = "refused" if r[3] == "Denied" else "would-refuse"
+            target = head.get("target") or "-"
+            lines.append(
+                f"{stamp} {session} {head.get('role') or '-'} "
+                f"{r[1]} {r[2] or '-'} {target} — {refused} "
+                f"rule={head.get('rule') or '-'}"
+            )
+        lines.append("")
+        lines.append(f"{len(rows)} row(s) shown")
         return interpreted(Response(body="\n".join(lines)), readings)
 
     def _render_one(self, ref, tags):

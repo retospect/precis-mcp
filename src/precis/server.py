@@ -1933,14 +1933,18 @@ def _install_token_auth(
     validated against a grant file ``run_slice`` minted at submit and
     deletes at poll. A validated grant is stamped into the ASGI scope so
     the dispatch path attributes the call to its slice
-    (:mod:`precis.slice_tokens`).
+    (:mod:`precis.slice_tokens`). Since td575705 G1 the stamps also bind
+    the call's write principal (:mod:`precis.principal`): ``install`` on
+    the install bearer, ``slice:<grant>:<role>`` on a grant,
+    ``personal:<token_id>`` on a personal token — and a slice
+    principal's writes are scope-gated in dispatch.
     """
     from starlette.authentication import AuthCredentials
     from starlette.datastructures import Headers
     from starlette.responses import JSONResponse
     from starlette.types import ASGIApp, Receive, Send
 
-    from precis import mcp_identity, slice_tokens
+    from precis import mcp_identity, principal, slice_tokens
 
     class _TokenAuthMiddleware:
         def __init__(self, app: ASGIApp) -> None:
@@ -1956,12 +1960,14 @@ def _install_token_auth(
                 mcp_identity.SCOPE_TOKEN_ID,
                 slice_tokens.SCOPE_SLICE_ID,
                 slice_tokens.SCOPE_AGENTLOG_ID,
+                principal.SCOPE_INSTALL,
                 "user",
                 "auth",
             ):
                 scope.pop(key, None)
             header = Headers(scope=scope).get("authorization")
             if _check_bearer_token(header, token):
+                scope[principal.SCOPE_INSTALL] = True
                 await self._authorized(scope, receive, send, "precis-install")
                 return
             grant = slice_tokens.grant(slice_dir, header)
@@ -1991,7 +1997,7 @@ def _install_token_auth(
                     await response(scope, receive, send)
                     return
                 try:
-                    principal = await anyio.to_thread.run_sync(
+                    identity = await anyio.to_thread.run_sync(
                         mcp_identity.resolve_user_token, store, raw
                     )
                 except Exception:
@@ -2001,7 +2007,7 @@ def _install_token_auth(
                     )
                     await response(scope, receive, send)
                     return
-                if principal is not None:
+                if identity is not None:
                     if personal_path is None or scope.get("path") != personal_path:
                         response = JSONResponse(
                             {
@@ -2013,14 +2019,14 @@ def _install_token_auth(
                         )
                         await response(scope, receive, send)
                         return
-                    scope[mcp_identity.SCOPE_USER_ID] = principal.user_id
-                    scope[mcp_identity.SCOPE_TOKEN_ID] = principal.token_id
+                    scope[mcp_identity.SCOPE_USER_ID] = identity.user_id
+                    scope[mcp_identity.SCOPE_TOKEN_ID] = identity.token_id
                     await self._authorized(
                         scope,
                         receive,
                         send,
                         "precis-user",
-                        subject=str(principal.user_id),
+                        subject=str(identity.user_id),
                     )
                     return
             response = JSONResponse({"error": "unauthorized"}, status_code=401)

@@ -45,6 +45,19 @@ def test_decide_mode_registered_legacy_default(monkeypatch: pytest.MonkeyPatch) 
     assert psettings.get_str("llm.decide.mode") == "legacy"
 
 
+def test_slice_scope_registered_db_only_default_observe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``mcp.slice_scope`` (td575705 G1) is a security control: registered,
+    DB-only — no env var can set it — defaulting to ``observe``."""
+    spec = psettings.REGISTRY["mcp.slice_scope"]
+    assert spec.type == "str"
+    assert spec.env_var is None
+    assert spec.default == "observe"
+    monkeypatch.setenv("PRECIS_MCP_SLICE_SCOPE", "off")
+    assert psettings.get_str("mcp.slice_scope", store=None) == "observe"
+
+
 class _Cursor:
     def __init__(self, row: tuple | None) -> None:
         self._row = row

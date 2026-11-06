@@ -70,6 +70,7 @@ from precis.plans.gates import (
     read_ci_verdicts,
     read_prod_head,
 )
+from precis.principal import worker_comment_meta
 from precis.store.types import ChunkInsert, Tag
 from precis.utils import handle_registry
 
@@ -494,7 +495,17 @@ def _auto_answer_approval(
     ord_ = max((int(c.ord) for c in existing), default=0) + 1
     store.chunks.insert_chunks(
         approval_id,
-        [ChunkInsert(ord=ord_, text=text, meta={"chunk_kind": _COMMENT_KIND})],
+        [
+            ChunkInsert(
+                ord=ord_,
+                text=text,
+                meta={
+                    "chunk_kind": _COMMENT_KIND,
+                    # worker-stamped — the G2 trust boundary (td575705).
+                    **worker_comment_meta(),
+                },
+            )
+        ],
     )
     store.remove_tag(approval_id, Tag.open("ask-user"))
     return True, f"auto-answered td{approval_id}: deploy {rn} at {sha12}"

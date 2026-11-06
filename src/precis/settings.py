@@ -121,6 +121,16 @@ REGISTRY: dict[str, SettingSpec] = {
             doc="Default decide() mode for every task-kind prefix: legacy, shadow "
             "or on; llm.decide.<prefix> rows override it.",
         ),
+        SettingSpec(
+            key="mcp.slice_scope",
+            type="str",
+            env_var=None,
+            default="observe",
+            doc="Slice-grant write scope (td575705 G1): off | observe | "
+            "enforce. DB-only — a security control never settable by the "
+            "sessions it gates; unknown values observe. See "
+            "precis.principal and docs/runbooks/dark-factory-arming.md.",
+        ),
         *(
             SettingSpec(
                 key=f"llm.local_first.set.{name}.mode",
@@ -544,15 +554,24 @@ def _warn_once(guard: str, msg: str) -> None:
         log.warning(msg)
 
 
+def _db_read_strict(store: Store, key: str) -> str | None:
+    """One ``app_settings`` read that propagates failures: ``None`` means
+    the row is genuinely unset, anything else raises. For callers whose
+    default-on-error policy must differ from default-on-unset (a security
+    control that fails closed)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = %s", (key,)
+        ).fetchone()
+    return str(row[0]) if row else None
+
+
 def _db_read(store: Store, key: str) -> str | None:
     """One ``app_settings`` read. Best-effort: a missing table / unreachable
     DB returns ``None`` (caller falls through to env / default) rather than
     raising, so this module ships dark on an un-migrated DB."""
     try:
-        with store.pool.connection() as conn:
-            row = conn.execute(
-                "SELECT value FROM app_settings WHERE key = %s", (key,)
-            ).fetchone()
+        return _db_read_strict(store, key)
     except Exception:
         log.debug(
             "settings: app_settings read failed for %s (table missing?)",
@@ -560,7 +579,6 @@ def _db_read(store: Store, key: str) -> str | None:
             exc_info=True,
         )
         return None
-    return str(row[0]) if row else None
 
 
 def _identity_summary() -> str:

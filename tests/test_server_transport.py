@@ -124,13 +124,14 @@ def _scope_echo_app() -> Any:
     from starlette.responses import PlainTextResponse
     from starlette.routing import Route
 
-    from precis import slice_tokens
+    from precis import principal, slice_tokens
 
     async def _probe(request: Any) -> Any:
         scope = request.scope
         return PlainTextResponse(
             f"{scope.get(slice_tokens.SCOPE_SLICE_ID)}"
             f"|{scope.get(slice_tokens.SCOPE_AGENTLOG_ID)}"
+            f"|{scope.get(principal.SCOPE_INSTALL)}"
         )
 
     return Starlette(routes=[Route("/probe", _probe)])
@@ -146,10 +147,10 @@ def test_install_token_auth_accepts_a_minted_slice_token(tmp_path: Any) -> None:
     token = slice_tokens.mint(tmp_path, "td42", agentlog_id=777)
     resp = TestClient(app).get("/probe", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
-    assert resp.text == "td42|777"  # the grant reaches the ASGI scope
+    assert resp.text == "td42|777|None"  # the grant reaches the ASGI scope
 
 
-def test_install_token_auth_slice_grant_stamps_nothing_on_the_shared_token(
+def test_install_token_auth_stamps_install_on_the_shared_token(
     tmp_path: Any,
 ) -> None:
     from starlette.testclient import TestClient
@@ -158,7 +159,40 @@ def test_install_token_auth_slice_grant_stamps_nothing_on_the_shared_token(
     server._install_token_auth(app, token="s3cr3t", slice_dir=tmp_path)
     resp = TestClient(app).get("/probe", headers={"Authorization": "Bearer s3cr3t"})
     assert resp.status_code == 200
-    assert resp.text == "None|None"
+    assert resp.text == "None|None|True"  # install stamp, no grant stamps
+
+
+def test_install_token_auth_clears_stale_stamps(tmp_path: Any) -> None:
+    """An upstream layer's leftover stamps never reach dispatch: the
+    middleware pops every auth key before checking this request's own
+    credential — a slice call re-stamps its grant only, an install call
+    the install flag only."""
+    from starlette.testclient import TestClient
+    from starlette.types import ASGIApp, Receive, Scope, Send
+
+    from precis import principal, slice_tokens
+
+    class _StaleStamps:
+        def __init__(self, app: ASGIApp) -> None:
+            self.app = app
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            scope[principal.SCOPE_INSTALL] = True
+            scope[slice_tokens.SCOPE_SLICE_ID] = "td99"
+            scope[slice_tokens.SCOPE_AGENTLOG_ID] = 1
+            await self.app(scope, receive, send)
+
+    app = _scope_echo_app()
+    server._install_token_auth(app, token="s3cr3t", slice_dir=tmp_path)
+    app.add_middleware(_StaleStamps)  # outermost: injects before auth pops
+    client = TestClient(app)
+    resp = client.get("/probe", headers={"Authorization": "Bearer s3cr3t"})
+    assert resp.status_code == 200
+    assert resp.text == "None|None|True"  # stale grant stamps popped
+    token = slice_tokens.mint(tmp_path, "td42")
+    resp = client.get("/probe", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    assert resp.text == "td42|None|None"  # stale install stamp popped
 
 
 def test_install_token_auth_rejects_a_revoked_slice_token(tmp_path: Any) -> None:

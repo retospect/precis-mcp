@@ -18,9 +18,12 @@ stamps the grant (``precis.slice_id`` /
 on new refs and the ``slice-td<id>-`` session-id prefix follow from the
 existing readers.
 
-The grant is ATTRIBUTION, not a security boundary: a slice session runs
-as the same host user with the same MCP access as the shared token — the
-bearer only names whose calls they are.
+The grant is attribution AND, since td575705 G1, a write scope: the
+dispatch gate (:mod:`precis.principal`) binds ``slice:<grant>:<role>``
+as the call's principal and limits its writes by the role the grant's
+todo declares — observe-first under ``mcp.slice_scope``. The OS-user
+boundary is separate (G3): a slice session still runs as the same host
+user with the same ambient read access as the shared token.
 
 Revocation is three-layered because every layer can be skipped: poll and
 ``kill`` both delete the file; a grant older than the run_slice

@@ -158,3 +158,20 @@ quality-of-life and container items.
 `monitors-that-go-quiet` owns signals that lie; this thread owns the lanes
 that stop. `local-compute` consumes the budget and accounting items
 (`backlog/llm-cost-accounting.md` stays there).
+
+## G1 (slice-g1, 2026-11-06Z)
+
+Principal-on-writes and the observe-mode slice scope landed on this
+branch (gr575691, td575705 G1): every write stamps a server-set
+principal (`slice:<grant>:<role>`, `install`, `user:<abbrev>`,
+`personal:<id>`, `worker:<source>`) into `chunks.meta.principal`,
+`filed_by.principal` + `revisions.writer.principal`, and
+`ref_tags.principal` (migration 0287); a slice grant's writes are gated
+by role under `mcp.slice_scope` (DB-only, default `observe`,
+would-refuses marked on `tool_calls` and read via
+`get(kind='agentlog', id='/scope?…')`). Docs: `precis.principal`
+docstring, `docs/conventions/mcp-authoring.md` §Write principals,
+`docs/runbooks/dark-factory-arming.md` §Slice write scope,
+`precis-work-help` "What may a dispatched slice write". Next per spec:
+~24 h of observe, fill `SLICE_TAG_ALLOW` from the readout, then
+`enforce`; G3 is the OS-user boundary.

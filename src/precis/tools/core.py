@@ -21,7 +21,7 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Any
 
-from precis import serve_ledger
+from precis import principal, serve_ledger
 from precis.handlers._interpret import PREFIX as _INTERPRETED_PREFIX
 from precis.learning_privacy import is_learning_call
 from precis.runtime.handle_deref import TEXT_PAYLOAD_MAX_BYTES
@@ -360,7 +360,12 @@ def _dispatch_as_user(
             )
         else:
             ctxmgr = contextlib.nullcontext()
-        with ctxmgr, user_actor_scope(getattr(runtime, "store", None)):
+        store = getattr(runtime, "store", None)
+        with (
+            ctxmgr,
+            user_actor_scope(store),
+            principal.bind(_ctx_principal(ctx, store, verb)),
+        ):
             # Revalidation above must win over scope refusal for revoked tokens.
             # Verb wrappers supply None defaults; the wire boundary separately
             # checks the exact supplied keys before SDK argument coercion.
@@ -744,6 +749,45 @@ def _http_slice_run_context(request: Any) -> Any:
         agentlog_id=agentlog_id if isinstance(agentlog_id, int) else None,
         slice_id=str(slice_id),
     )
+
+
+def _ctx_principal(ctx: Context | None, store: Any, verb: str) -> str | None:
+    """The write-attribution principal this request's bearer resolved to —
+    read only from server-set ASGI scope stamps, never caller input.
+
+    Mirrors the middleware's check order: the install bearer stamps
+    ``install``; a validated slice grant stamps ``slice:<grant>:<role>``
+    with the role resolved from the grant's own todo (skipped on read
+    verbs — nothing stamps off a read, and the scope gate passes them
+    without one); a personal token stamps ``personal:<token_id>``. No
+    request (stdio / in-process dispatch) returns ``None`` — the bound
+    ``None`` makes :func:`precis.principal.current` fall through to the
+    ``worker:<source>`` in-process stamp.
+    """
+    from precis import slice_tokens
+    from precis.mcp_identity import SCOPE_TOKEN_ID
+
+    try:
+        request = ctx.request_context.request if ctx is not None else None
+        scope = request.scope if request is not None else {}
+    except (AttributeError, ValueError):
+        scope = {}
+    if not isinstance(scope, dict):
+        scope = {}
+    if scope.get(principal.SCOPE_INSTALL):
+        return "install"
+    slice_id = scope.get(slice_tokens.SCOPE_SLICE_ID)
+    if slice_id:
+        role = (
+            "unknown"
+            if verb in ("get", "search")
+            else principal.slice_role(store, str(slice_id))
+        )
+        return principal.for_slice(str(slice_id), role)
+    token_id = scope.get(SCOPE_TOKEN_ID)
+    if type(token_id) is int and token_id > 0:
+        return f"personal:{token_id}"
+    return None
 
 
 def get(

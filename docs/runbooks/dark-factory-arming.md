@@ -491,3 +491,53 @@ The other settings a slice host reads:
   (env or the mounted secret) to reach the precis MCP, and the claude
   login under `HOME` (or `CLAUDE_CONFIG_DIR`); `ANTHROPIC_API_KEY` is
   not passed.
+
+## Slice write scope (mcp.slice_scope)
+
+The scope gate (`precis.principal.check`, td575705 G1) bounds what a
+validated slice grant may write by the role its own todo declares —
+reads always pass, and the role→write table sits in the module
+docstring. Armed by `mcp.slice_scope`, DB-only (no env var) so the
+sessions it gates cannot flip it:
+
+    scripts/prod-precis settings set mcp.slice_scope observe   # the default
+    scripts/prod-precis settings set mcp.slice_scope enforce
+    scripts/prod-precis settings set mcp.slice_scope off
+
+An unset row reads the registered default `observe`; an unknown value
+observes too and warns once — a typo'd mode never silently opens the
+scope. A failed `app_settings` read keeps the last good mode and warns
+once — an armed `enforce` cannot decay to `observe` during a DB
+outage, and a process that has never seen a good read fails closed on
+`enforce`.
+
+Arming ladder:
+
+1. Ship with `observe`. A write the role's grant does not cover still
+   runs, but the call's `tool_calls` row is marked
+   `error_type='SliceScopeWouldRefuse'` with the
+   `role=/rule=/verb=/kind=/target=` k=v line in `error_head`, and a
+   `precis.slice_scope` log line records the same.
+2. After ~24 h of slice traffic, read the would-refuses:
+
+       get(kind='agentlog', id='/scope?since=24')
+       get(kind='agentlog', id='/scope?since=24&role=builder&rule=tag-allowlist')
+
+   The view groups by role/rule/verb/kind and lists the newest rows
+   (enforced Denied rows share the one k=v `error_head`, so the readout
+   parses both shapes identically); an empty window names the armed
+   mode. All filters optional: `since`, `role`, `rule`, `verb`, `kind`,
+   `page_size`.
+3. Fill `SLICE_TAG_ALLOW` (`src/precis/principal.py`) with the tags the
+   readout shows real builders reach for — a code change: ship and
+   deploy it. Until then every builder `tag` would-refuses
+   (`rule=tag-allowlist`), which is the expected bulk of the first
+   window.
+4. `settings set mcp.slice_scope enforce`. A refused write raises
+   Denied listing what the role may write (`next=`: put it in the final
+   message, the worker records it) and lands on `/scope` as a Denied
+   row — the readout keeps working through the flip.
+
+Kill path: `settings set mcp.slice_scope observe` (refusals stop, marks
+continue) or `off` (the check is skipped). Either takes effect on the
+next call — no restart.

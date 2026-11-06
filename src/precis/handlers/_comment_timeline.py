@@ -505,6 +505,11 @@ def append_comment(
     ctx = current_revision_context()
     if ctx is not None and ctx.actor:
         merged_meta.setdefault("authored_by", ctx.actor)
+    # The write principal (td575705 G1) is server-set — a caller-supplied
+    # ``meta.principal`` never survives the merge.
+    from precis import principal
+
+    merged_meta["principal"] = principal.current()
 
     def _ins() -> int:
         return _insert_next(

@@ -11,6 +11,7 @@ answers:
   - how do I claim a slice before working it, and how do I release it?
   - where does a gripe land in the work tree, and what does its stage mean?
   - what does a rescue:<class> tag mean, and how do I read the rescue queue?
+  - what may a dispatched slice write over the MCP?
   - what is a pillar quest, and why is a paper a month todo and not a quest?
 applies-to: search(kind='todo', view='work'); get(kind='todo', id=N, extent='fisheye+1hop'); tag(kind='todo', add=['claimed-by:…'])
 tags: [workflow]
@@ -434,6 +435,38 @@ builder's vendor. Nodes that mint or post through the MCP stay on a
 Claude lane: a triage or slicer (mints children), a brief writer (posts
 `brief:`), a pcb fix (drives the pcb kind). `run_slice` refuses a
 child-minting generator on an MCP-less lane before the claim.
+
+## What may a dispatched slice write over the MCP?
+
+A dispatched slice authenticates with its own grant token; every write
+stamps `slice:td<grant>:<role>` as its principal — server-set, never
+something the call claims. Reads (`get`, `search`) are unrestricted.
+Writes are bounded by the role the slice's own todo declares, under
+`mcp.slice_scope` (default `observe`: an out-of-scope write still runs
+today but its call row is marked `SliceScopeWouldRefuse`; under
+`enforce` it refuses with Denied):
+
+| role | may write |
+|---|---|
+| every role | comment on its own todo (`put(kind='todo', id=<own>, text=…)`); file a new gripe |
+| `builder` (a todo with no `generate` block) | + tags on its own todo — `SLICE_TAG_ALLOW` is empty until the observe readout fills it, so every tag refuses for now |
+| `generator` (slicer / spec-writer / triage) | + `put(kind='todo')` children under its own todo, meta limited to `{llm_tier, op}` with `op={'type':'run_slice','params':{'model','effort'}}`; + `link(rel='blocked-by')` between children of its own todo |
+| `reviewer`, `analyst`, `brief`, `security-reviewer`, `diagnose` (a `meta.rescue_for` todo) | comment only |
+| any other `generate.role`; an unreadable grant todo | `comment` — fail closed |
+
+Everything else refuses: `edit`/`delete`, tags on foreign refs or with
+`meta`/`prio`, link rels other than `blocked-by`, jobs, memory,
+settings (`put(kind='job', mode='setting', args={'key':'claim.*'})`
+included), unknown verbs. A refused write is not lost — put it in your
+final message and the worker records it (the Denied's `next=` says
+exactly that). A `text` comment on your own todo is also how a slice
+answers a question or reports a halt, so comment-only roles still
+finish their contract.
+
+The would-refuse ledger is `get(kind='agentlog', id='/scope?…')` —
+[[precis-agentlog-help]]. The observe → `SLICE_TAG_ALLOW` → `enforce`
+ladder is an operator runbook (`docs/runbooks/dark-factory-arming.md`),
+not a slice's call.
 
 ## What is a pillar quest?
 ## Why is a paper a month todo and not a quest?

@@ -200,8 +200,17 @@ class TagsMixin:
         Chunk-level expiry is not supported in v1; pass ``pos=None`` for
         any TTL'd tag. The schema column lives only on ``ref_tags`` for
         now; promote when a chunk-level use case appears.
+
+        The write principal (td575705 G1, migration 0287) lands on the
+        ref-level row as ``ref_tags.principal`` — ``set_by`` is an FK to
+        the closed ``actors`` table and cannot carry ``slice:``/``user:``
+        /``worker:`` strings. Server-set, never caller-supplied. Tag
+        removal deletes the row — there is no tombstone to attribute.
         """
+        from precis import principal
+
         namespace, value = _tag_to_namespace_value(tag)
+        write_principal = principal.current()
 
         def _do(c: Connection) -> None:
             if pos is None:
@@ -217,12 +226,14 @@ class TagsMixin:
                     )
                 tag_id = _upsert_tag(c, namespace, value)
                 c.execute(
-                    "INSERT INTO ref_tags (ref_id, tag_id, set_by, expires_at) "
-                    "VALUES (%s, %s, %s, %s) "
+                    "INSERT INTO ref_tags "
+                    "(ref_id, tag_id, set_by, expires_at, principal) "
+                    "VALUES (%s, %s, %s, %s, %s) "
                     "ON CONFLICT (ref_id, tag_id) DO UPDATE "
                     "SET set_by = EXCLUDED.set_by, "
-                    "    expires_at = EXCLUDED.expires_at",
-                    (ref_id, tag_id, set_by, expires_at),
+                    "    expires_at = EXCLUDED.expires_at, "
+                    "    principal = EXCLUDED.principal",
+                    (ref_id, tag_id, set_by, expires_at, write_principal),
                 )
                 if namespace == "STATUS" and value in _JOB_TERMINAL:
                     _stamp_job_completion(c, ref_id)

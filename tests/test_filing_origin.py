@@ -71,13 +71,19 @@ def test_bound_put_records_session_and_actor(
         "actor": "origin-tester",
         "client": "origin-test/1",
         "session_id": session_id,
+        "principal": "worker:cli",
     }
 
 
-def test_unbound_cli_put_records_actor_only(runtime_with_store: PrecisRuntime) -> None:
+def test_unbound_cli_put_records_actor_and_principal(
+    runtime_with_store: PrecisRuntime,
+) -> None:
     with revision_context(actor="cli-operator"):
         meta = _put(runtime_with_store, "gripe")
-    assert meta["filed_by"] == {"actor": "cli-operator"}
+    assert meta["filed_by"] == {
+        "actor": "cli-operator",
+        "principal": "worker:cli",
+    }
 
 
 def test_declared_model_is_labelled(runtime_with_store: PrecisRuntime) -> None:
@@ -110,6 +116,7 @@ def test_invalid_declared_model_does_not_prevent_put(
     expected: dict[str, Any] = {
         "actor": "origin-tester",
         "session_id": session_id,
+        "principal": "worker:cli",
     }
     # The ledger bounds its client label, but NULs/surrogates still invalidate it.
     if client is not None:
@@ -159,7 +166,10 @@ def test_identity_values_are_bounded_jsonb_scalars(
 def test_oversized_agentlog_id_does_not_prevent_put(store: Store) -> None:
     with tick_context(TickContext(agentlog_id=10**5000, source="test-tick")):
         ref = store.insert_ref(kind="todo", slug=None, title="oversized origin")
-    assert ref.meta["filed_by"] == {"source": "test-tick"}
+    assert ref.meta["filed_by"] == {
+        "source": "test-tick",
+        "principal": "worker:test-tick",
+    }
 
 
 def test_agentlog_model_and_source_are_recorded(
@@ -211,7 +221,10 @@ def test_storage_replaces_carried_origin(store: Store) -> None:
             title="copied origin",
             meta={"filed_by": {"actor": "forged"}, "other": "retained"},
         )
-    assert ref.meta["filed_by"] == {"actor": "real-actor"}
+    assert ref.meta["filed_by"] == {
+        "actor": "real-actor",
+        "principal": "worker:cli",
+    }
     assert ref.meta["other"] == "retained"
 
 
@@ -227,7 +240,7 @@ def test_identity_read_failure_does_not_prevent_put(
     monkeypatch.setattr(tool_ledger, field, fail)
     with revision_context(actor="still-known"):
         origin = _put(runtime_with_store, "gripe")["filed_by"]
-    assert origin == {"actor": "still-known"}
+    assert origin == {"actor": "still-known", "principal": "worker:cli"}
 
 
 def test_failed_agentlog_query_keeps_filing_transaction_usable(store: Store) -> None:
