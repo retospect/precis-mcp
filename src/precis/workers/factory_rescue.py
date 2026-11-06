@@ -41,7 +41,7 @@ from psycopg import Connection
 
 from precis.errors import BadInput, NotFound
 from precis.plans.nodes import node_kind
-from precis.plans.templates import PENDING_SHA
+from precis.plans.templates import PENDING_SHA, REVIEW_TASK_CLASS
 from precis.store.types import ChunkInsert, Tag
 from precis.todo import BLOCKER_TERMINAL_STATUSES, TERMINAL_TODO_STATUSES
 from precis.todo.views import _fetch_subtree
@@ -654,27 +654,59 @@ def _is_sha_gate(n: Any) -> bool:
     return node_kind(n.meta) == "gate" and _gate_kind(n) == "sha-in-prod"
 
 
-def _lane_verdict(store: Store, now: datetime, n: Any) -> str | None:
+def _lane_verdict(
+    store: Store, now: datetime, plan: Any, n: Any, params: dict[str, Any]
+) -> str | None:
     """``None`` to judge normally; the ``error_line`` for a no-fit stall;
-    ``"parked"`` when the fit lanes are full or backed off (the live jobs
-    on them are judged by their own deadlines)."""
-    from precis.plans import lanes as _lanes
+    ``"parked …"`` when the fit lanes are full or backed off (the live jobs
+    on them are judged by their own deadlines).
 
+    A reviewer without a lane pin is judged on the pick
+    ``plan_dispatch._review_lane`` would make — the same three tables,
+    shrunk first by every build vendor, then by the original builder's
+    alone, then the full table — so a reviewer waiting on a full
+    alternative-vendor lane stays held instead of being rescued on a
+    free lane of the builder's vendor the dispatcher would never use.
+    """
+    from precis.plans import lanes as _lanes
+    from precis.workers.job_types import plan_dispatch as pd
+
+    lane_table = _lanes.load_lanes(store)
     task_class = str(n.meta.get("task_class") or "code")
-    fit = [ln for ln in _lanes.load_lanes(store) if ln.enabled and ln.fits(task_class)]
-    if not fit:
-        return f"no enabled lane fits {task_class}"
-    if _lanes.pick_lane(store, task_class) is not None:
-        return None
-    counts = _lanes.live_lane_counts(store)
-    backoffs = _lanes.lane_backoffs(store, now)
-    full = [ln.name for ln in fit if counts.get(ln.name, 0) >= ln.cap]
-    backed = [ln.name for ln in fit if ln.name in backoffs]
-    why = ", ".join(
-        [f"full: {', '.join(sorted(full))}" if full else ""]
-        + [f"backed off: {', '.join(sorted(backed))}" if backed else ""]
-    ).strip(", ")
-    return f"parked ({why or 'fit lanes busy'})"
+    tables: list[tuple[tuple[Any, ...], str]] = [(lane_table, "")]
+    if pd._is_reviewer(n) and "lane" not in params:
+        task_class = REVIEW_TASK_CLASS
+        vendors = pd._builder_vendors(plan, n, lane_table)
+        exclude_all = frozenset(vendors)
+        exclude_first = frozenset(vendors[:1])
+        tables = [
+            (
+                tuple(ln for ln in lane_table if ln.vendor not in exclude_all),
+                "every build vendor",
+            ),
+            (
+                tuple(ln for ln in lane_table if ln.vendor not in exclude_first),
+                "the original builder's vendor",
+            ),
+            (lane_table, ""),
+        ]
+    for table, label in tables:
+        fit = [ln for ln in table if ln.enabled and ln.fits(task_class)]
+        if not fit:
+            continue  # nothing enabled in this step's table: next step
+        if _lanes.pick_lane(store, task_class, lanes=table) is not None:
+            return None
+        counts = _lanes.live_lane_counts(store)
+        backoffs = _lanes.lane_backoffs(store, now)
+        full = [ln.name for ln in fit if counts.get(ln.name, 0) >= ln.cap]
+        backed = [ln.name for ln in fit if ln.name in backoffs]
+        why = ", ".join(
+            [f"full: {', '.join(sorted(full))}" if full else ""]
+            + [f"backed off: {', '.join(sorted(backed))}" if backed else ""]
+        ).strip(", ")
+        scope = f" outside {label}" if label else ""
+        return f"parked ({why or 'fit lanes busy'}{scope})"
+    return f"no enabled lane fits {task_class}"
 
 
 def _stage_for(
@@ -721,9 +753,9 @@ def _stage_for(
                 "stage review silent past its deadline",
             )
         return "stalled", "build", live, "stage build silent past its deadline"
-    job_type, _params = pd._resolve_op(n)
+    job_type, params = pd._resolve_op(n)
     if job_type == pd.DEFAULT_OP:
-        verdict = _lane_verdict(store, now, n)
+        verdict = _lane_verdict(store, now, plan, n, params)
         if verdict is not None:
             if verdict.startswith("parked"):
                 return "parked", "parked", j, verdict

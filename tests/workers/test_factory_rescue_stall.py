@@ -571,6 +571,112 @@ def test_reviewer_with_no_lane_fit_is_rescued(
     assert "no enabled lane fits review" in comment
 
 
+def test_reviewer_parked_on_full_alternative_lane_is_held(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``plan_dispatch._review_lane`` waits rather than pick the build
+    vendor's lane while another vendor's fit lane exists: a reviewer
+    waiting on a full alternative is PARKED even though the builder's
+    vendor lane sits free — an unrestricted pick saw that free lane and
+    rescued the reviewer (td575363)."""
+    built = Lane("codex", "codex_exec", "s", 1, frozenset({"review"}), vendor="openai")
+    alt = Lane("claude-sub", "claude_p", "s", 1, frozenset({"*"}), vendor="anthropic")
+    use_lanes(monkeypatch, built, alt)
+    monkeypatch.setattr(
+        "precis.plans.lanes.live_lane_counts", lambda store: {"claude-sub": 1}
+    )
+    root = _root(store)
+    build = _node(store, root, title="build", status="done")
+    _job(
+        store,
+        build,
+        status="succeeded",
+        meta_extra={"lane": "codex", "branch_commits": ["abc1234 feat: x"]},
+    )
+    review = _node(
+        store,
+        root,
+        title="reviewer",
+        meta={
+            "generate": {"role": "reviewer", "from": f"td{build}"},
+            "task_class": "review",
+        },
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, review) == []
+    assert any("parked" in n for n in res.notes)
+
+
+def test_reviewer_with_free_alternative_lane_is_judged(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The vendor-aware verdict still rescues a silent reviewer an
+    alternative-vendor lane could take right now."""
+    built = Lane("codex", "codex_exec", "s", 1, frozenset({"review"}), vendor="openai")
+    alt = Lane("claude-sub", "claude_p", "s", 2, frozenset({"*"}), vendor="anthropic")
+    use_lanes(monkeypatch, built, alt)
+    root = _root(store)
+    build = _node(store, root, title="build", status="done")
+    _job(
+        store,
+        build,
+        status="succeeded",
+        meta_extra={"lane": "codex", "branch_commits": ["abc1234 feat: x"]},
+    )
+    review = _node(
+        store,
+        root,
+        title="reviewer",
+        meta={
+            "generate": {"role": "reviewer", "from": f"td{build}"},
+            "task_class": "review",
+        },
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
+
+    assert res.rescued == [(review, "stalled", "idle")]
+    assert _rescue_tags(store, review) == ["rescue:stalled"]
+
+
+def test_reviewer_judged_when_only_build_vendor_is_enabled(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No alternative vendor's lane is enabled at all: ``_review_lane``'s
+    third step lets the builder's own vendor review — the reviewer is
+    dispatchable, so a silent one is a stall, not a park."""
+    built = Lane("codex", "codex_exec", "s", 1, frozenset({"review"}), vendor="openai")
+    code_only = Lane(
+        "devin", "devin_tree", "s", 2, frozenset({"code"}), vendor="cognition"
+    )
+    use_lanes(monkeypatch, built, code_only)
+    root = _root(store)
+    build = _node(store, root, title="build", status="done")
+    _job(
+        store,
+        build,
+        status="succeeded",
+        meta_extra={"lane": "codex", "branch_commits": ["abc1234 feat: x"]},
+    )
+    review = _node(
+        store,
+        root,
+        title="reviewer",
+        meta={
+            "generate": {"role": "reviewer", "from": f"td{build}"},
+            "task_class": "review",
+        },
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
+
+    assert res.rescued == [(review, "stalled", "idle")]
+    assert _rescue_tags(store, review) == ["rescue:stalled"]
+
+
 # ── the tick heartbeat (tick-silent) ──────────────────────────────
 
 
