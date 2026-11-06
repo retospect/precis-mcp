@@ -79,6 +79,15 @@
           {{ _slices_venv }}/bin/precis worker --only job_ssh_node
           --only plan_tick --batch-size 1
           --idle-seconds {{ precis_worker_slices_idle_seconds | default(5) }}
+        # run_slice's devin lane resolves the CLI through PRECIS_DEVIN_BIN —
+        # the unit PATH carries no user-local bin dir (gr570688); the login
+        # under the deploy user is a stopgap. DOCKER_HOST points at the
+        # deploy-owned colima socket (the 33-agent-image convention): a
+        # slice's `scripts/test` gate run dials it, and run_slice passes it
+        # into the session env and the socket's parent into codex's
+        # --add-dir writable roots (gr570533).
+        # No '#' comments inside the expression — the >- block inside {{ }}
+        # is Jinja, not YAML, and a '#' line there breaks the render.
         service_unit_env: >-
           {{ precis_shared_env
              | combine(precis_identity_env | default({}))
@@ -86,15 +95,7 @@
                  'HOME': _slices_home,
                  'PATH': _slices_venv + '/bin:/opt/homebrew/bin:/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin',
                  'PGPASSFILE': _slices_home + '/.pgpass',
-                 # run_slice's devin lane resolves the CLI through this —
-                 # the unit PATH carries no user-local bin dir (gr570688).
-                 # The login under the deploy user is a stopgap.
                  'PRECIS_DEVIN_BIN': _slices_home + '/.local/bin/devin',
-                 # Docker via the deploy-owned colima socket (the 33-
-                 # agent-image convention) — a slice's `scripts/test`
-                 # gate run dials it; run_slice passes DOCKER_HOST into
-                 # the session env and the socket's parent into codex's
-                 # --add-dir writable roots (gr570533).
                  'DOCKER_HOST': 'unix://' + _slices_home + '/.colima/docker.sock',
                  'PRECIS_DATABASE_URL': _slices_dsn,
                  'PRECIS_PROCESS': 'precis-worker-slices',
