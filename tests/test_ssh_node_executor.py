@@ -1690,6 +1690,69 @@ def _kill_reap_spec(
     )
 
 
+def test_orphan_lookup_plan_uses_partial_index(store: Store) -> None:
+    """EXPLAIN of the reaper's own statement picks ``refs_orphan_handle_idx``.
+
+    Prod's plan (gr573350) aggregated ~164k terminal STATUS ``ref_tags``
+    rows and probed ``refs_ref_id_kind_key`` once per row; the partial
+    index starts from the handful of unreleased ``boot_id`` handles. On a
+    tiny test table the planner could still prefer a seq scan or the
+    generic ``refs_kind_idx``, so both alternatives are forbidden rather
+    than weakening the assert.
+    """
+    _mk_terminal_handle_job(store, compute_handle=_identity_handle())
+    _mk_terminal_handle_job(store, compute_handle=_identity_handle(), released=True)
+    _mk_terminal_handle_job(store, compute_handle={"pid": 1})
+    _mk_job(store)
+    with store.pool.connection() as conn:
+        conn.execute("ANALYZE refs")
+        conn.execute("SET LOCAL enable_seqscan = off")
+        conn.execute("SET LOCAL enable_bitmapscan = off")
+        plan = "\n".join(
+            str(r[0])
+            for r in conn.execute(
+                "EXPLAIN " + ssh_node._ORPHANED_DETACHED_SQL,
+                (
+                    ssh_node._EXECUTOR_NAME,
+                    "spark",
+                    list(ssh_node._TERMINAL),
+                    ssh_node._ORPHAN_REAP_GRACE_S,
+                    ssh_node._ORPHAN_REAP_LIMIT,
+                ),
+            ).fetchall()
+        )
+    assert "refs_orphan_handle_idx" in plan, plan
+    assert "refs_kind_idx" not in plan, plan
+
+
+def test_orphan_lookup_migration_predicate_matches(store: Store) -> None:
+    """The index predicate is the statement's WHERE, kept in step.
+
+    The planner only uses a partial index when the query's WHERE implies
+    its predicate; an edit to ``_ORPHANED_DETACHED_SQL`` that breaks that
+    implication turns the index dead weight, so the applied predicate is
+    pinned clause-for-clause here.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT i.indisvalid, pg_get_expr(i.indpred, i.indrelid) "
+            "FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+            "WHERE c.relname = 'refs_orphan_handle_idx'"
+        ).fetchone()
+    assert row is not None, "refs_orphan_handle_idx missing — migration not applied"
+    valid, pred = row
+    assert valid
+    for fragment in (
+        "kind = 'job'::text",
+        "retired_at IS NULL",
+        "'boot_id'::text",
+        "IS DISTINCT FROM 'true'::text",
+        "detached_orphan_reaped",
+        "detached_orphan_skipped",
+    ):
+        assert fragment in pred, pred
+
+
 def test_orphan_reap_kills_identity_matched_terminal_handle_once(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

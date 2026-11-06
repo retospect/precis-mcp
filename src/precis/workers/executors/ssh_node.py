@@ -224,6 +224,34 @@ _ORPHAN_REAP_LIMIT = 25
 # Let a terminal poll finish exiting before considering its handle orphaned.
 _ORPHAN_REAP_GRACE_S = 120
 
+
+#: The orphan-lookup statement, lifted out of
+#: :func:`_orphaned_detached_jobs` so tests can EXPLAIN the exact text the
+#: reaper issues (gr573350). The partial index ``refs_orphan_handle_idx``
+#: (migration 0282) only applies while this WHERE clause implies its
+#: predicate — edit one, keep the other in step.
+_ORPHANED_DETACHED_SQL = """
+SELECT r.ref_id, r.title, r.meta
+  FROM refs r
+ WHERE r.kind = 'job'
+   AND r.retired_at IS NULL
+   AND r.meta->>'executor' = %s
+   AND r.meta->'compute_handle' ? 'boot_id'
+   AND r.meta->>'compute_handle_released' IS DISTINCT FROM 'true'
+   AND NOT (r.meta ? 'detached_orphan_reaped')
+   AND NOT (r.meta ? 'detached_orphan_skipped')
+   AND (r.meta->'params'->>'target_node') = %s
+   AND EXISTS (
+         SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+          WHERE rt.ref_id = r.ref_id
+            AND t.namespace = 'STATUS'
+            AND t.value = ANY(%s)
+            AND rt.created_at < now() - make_interval(secs => %s)
+       )
+ ORDER BY r.ref_id
+ LIMIT %s
+"""
+
 #: TERM→KILL grace for a ``STATUS:cancel_requested`` detached job
 #: (gr567620), spread across poll ticks via ``meta.cancel_term_at`` /
 #: ``meta.cancel_kill_at`` — the pass never blocks on the wait. Same 30 s
@@ -368,27 +396,7 @@ def _orphaned_detached_jobs(
     """Unreleased identity-bearing handles, terminal on this node for 120s."""
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
-            SELECT r.ref_id, r.title, r.meta
-              FROM refs r
-             WHERE r.kind = 'job'
-               AND r.retired_at IS NULL
-               AND r.meta->>'executor' = %s
-               AND r.meta->'compute_handle' ? 'boot_id'
-               AND r.meta->>'compute_handle_released' IS DISTINCT FROM 'true'
-               AND NOT (r.meta ? 'detached_orphan_reaped')
-               AND NOT (r.meta ? 'detached_orphan_skipped')
-               AND (r.meta->'params'->>'target_node') = %s
-               AND EXISTS (
-                     SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                      WHERE rt.ref_id = r.ref_id
-                        AND t.namespace = 'STATUS'
-                        AND t.value = ANY(%s)
-                        AND rt.created_at < now() - make_interval(secs => %s)
-                   )
-             ORDER BY r.ref_id
-             LIMIT %s
-            """,
+            _ORPHANED_DETACHED_SQL,
             (_EXECUTOR_NAME, node, list(_TERMINAL), _ORPHAN_REAP_GRACE_S, limit),
         ).fetchall()
     return [(int(r[0]), str(r[1]), dict(r[2] or {})) for r in rows]
