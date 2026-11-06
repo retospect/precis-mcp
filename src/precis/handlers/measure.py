@@ -431,7 +431,9 @@ class MeasureHandler(Handler):
         live recipe rows and the rows that would now be refused are
         listed with their reasons. ``args.dry_run`` defaults to True —
         a list only; ``dry_run=False`` records a ``rejected`` ledger
-        review per refused row (the measure kind's retraction). The
+        review per refused row (the measure kind's retraction) — a
+        refused row whose newest current review already approves or
+        rejects it is kept, not re-reviewed. The
         reply defaults to a compact summary (counts by reason × paper ×
         extraction_run, refused ids as ranges); ``args.detail=True``
         pages the per-row listing via ``args.page``/``args.page_size``.

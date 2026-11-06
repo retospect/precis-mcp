@@ -323,6 +323,10 @@ the papers' live recipe rows, and each row that would now be refused is
 listed with its reasons. `dry_run` defaults to True; with
 `args={'dry_run': False}` each refused row gets a `rejected` ledger
 review — the measure kind's retraction, which drops it from rankings.
+A refused row whose newest current review is an approval or already a
+rejection is kept, not re-reviewed, and counted as `kept: approved` /
+`kept: already rejected` — running the apply twice writes nothing the
+second time.
 
 ```python
 put(kind="measure", mode="recheck", args={"papers": ["pa452964"]})

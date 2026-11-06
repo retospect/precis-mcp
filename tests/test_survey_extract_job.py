@@ -4145,3 +4145,133 @@ class TestMeasureRecheck:
         assert "review-only page 1/2" in p1, p1
         assert f"mx{mids[0]} " in p1 and f"mx{mids[1]} " not in p1
         assert "'page_size': 1" in p1
+
+    def test_approved_row_is_kept_and_not_rereviewed(self, store: Store) -> None:
+        # gr573886: a refused row whose newest current review is an
+        # approval keeps that verdict — the recheck's retraction must
+        # not hide it.
+        from precis.extract import recheck as _recheck
+
+        w = self._world(store)
+        bad = self._recipe_row(w, "3", 1, "Number of oxide layers", 2)
+        store.record_target_review(
+            "measure", bad, actor="test", verdict="approved", version="1"
+        )
+        result = _recheck.measure_recheck(store, [w["paper"]], dry_run=False)
+        assert result["applied"] == 0
+        assert bad in {r["id"] for r in result["kept_approved"]}
+        assert bad not in {r["id"] for r in result["refused"]}
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT verdict FROM reviews WHERE target_kind = 'measure' "
+                "AND target_id = %s",
+                (bad,),
+            ).fetchall()
+        assert [r[0] for r in rows] == ["approved"]
+
+    def test_newest_verdict_decides(self, store: Store) -> None:
+        # gr573886: the NEWEST current verdict decides — a rejection on
+        # top of an approval keeps the row rejected; an approval on top
+        # of a rejection keeps it approved.
+        from precis.extract import recheck as _recheck
+
+        w = self._world(store)
+        a = self._recipe_row(w, "3", 1, "Number of oxide layers", 2)
+        b = self._recipe_row(w, "-1.2", 2, "Number of oxide layers", 3)
+        store.record_target_review(
+            "measure", a, actor="test", verdict="approved", version="1"
+        )
+        store.record_target_review(
+            "measure", a, actor="test", verdict="rejected", version="1"
+        )
+        store.record_target_review(
+            "measure", b, actor="test", verdict="rejected", version="1"
+        )
+        store.record_target_review(
+            "measure", b, actor="test", verdict="approved", version="1"
+        )
+        result = _recheck.measure_recheck(store, [w["paper"]], dry_run=False)
+        assert result["applied"] == 0
+        assert a in {r["id"] for r in result["kept_rejected"]}
+        assert b in {r["id"] for r in result["kept_approved"]}
+        refused = {r["id"] for r in result["refused"]}
+        assert a not in refused and b not in refused
+
+    def test_rejected_row_is_kept_and_unreviewed_row_is_applied(
+        self, store: Store
+    ) -> None:
+        # gr573886: an already-rejected row gains no duplicate
+        # rejection while an unreviewed refused row still applies.
+        from precis.extract import recheck as _recheck
+
+        w = self._world(store)
+        unreviewed = self._recipe_row(w, "3", 1, "Number of oxide layers", 2)
+        rejected = self._recipe_row(w, "-1.2", 2, "Number of oxide layers", 3)
+        store.record_target_review(
+            "measure", rejected, actor="test", verdict="rejected", version="1"
+        )
+        result = _recheck.measure_recheck(store, [w["paper"]], dry_run=False)
+        assert result["applied"] == 1
+        assert unreviewed in {r["id"] for r in result["refused"]}
+        assert rejected in {r["id"] for r in result["kept_rejected"]}
+        assert result["kept_approved"] == []
+        with store.pool.connection() as conn:
+            n = conn.execute(
+                "SELECT count(*) FROM reviews WHERE target_kind = 'measure' "
+                "AND target_id = %s",
+                (rejected,),
+            ).fetchone()
+        assert n is not None and n[0] == 1
+
+    def test_apply_is_idempotent(self, store: Store) -> None:
+        # gr573886: a second apply writes nothing — the first run's
+        # rejections keep every refused row.
+        from precis.extract import recheck as _recheck
+
+        w = self._world(store)
+        a = self._recipe_row(w, "3", 1, "Number of oxide layers", 2)
+        b = self._recipe_row(w, "-1.2", 2, "Number of oxide layers", 3)
+        first = _recheck.measure_recheck(store, [w["paper"]], dry_run=False)
+        assert first["applied"] == 2
+        with store.pool.connection() as conn:
+            before = conn.execute(
+                "SELECT count(*) FROM reviews WHERE target_kind = 'measure'"
+            ).fetchone()
+        second = _recheck.measure_recheck(store, [w["paper"]], dry_run=False)
+        assert second["applied"] == 0
+        assert {r["id"] for r in second["kept_rejected"]} == {a, b}
+        assert second["refused"] == []
+        with store.pool.connection() as conn:
+            after = conn.execute(
+                "SELECT count(*) FROM reviews WHERE target_kind = 'measure'"
+            ).fetchone()
+        assert before is not None and after is not None
+        assert after[0] == before[0]
+
+    def test_dry_run_summary_counts_kept_lines(self, store: Store) -> None:
+        # gr573886: the dry run already splits kept rows out — the
+        # header counts them and each kept list prints its own line;
+        # an unreviewed refused row stays under counts by reason.
+        from precis.extract import recheck as _recheck
+
+        w = self._world(store)
+        approved = self._recipe_row(w, "3", 1, "Number of oxide layers", 2)
+        rejected = self._recipe_row(w, "-1.2", 2, "Number of oxide layers", 3)
+        unreviewed = self._recipe_row(w, "4", 1, "Number of oxide layers", 2)
+        store.record_target_review(
+            "measure", approved, actor="test", verdict="approved", version="1"
+        )
+        store.record_target_review(
+            "measure", rejected, actor="test", verdict="rejected", version="1"
+        )
+        result = _recheck.measure_recheck(store, [w["paper"]], dry_run=True)
+        assert unreviewed in {r["id"] for r in result["refused"]}
+        text = "\n".join(_recheck.recheck_lines(result))
+        assert "1 kept: approved" in text
+        assert "1 kept: already rejected" in text
+        assert "kept: approved (newest current review is an approval" in text
+        assert f"mx{approved} (1)" in text
+        assert "kept: already rejected (newest current review is a rejection" in text
+        assert f"mx{rejected} (1)" in text
+        assert "counts by reason" in text
+        assert f"mx{unreviewed} (1)" in text

@@ -19,8 +19,10 @@ Two consumers, one engine:
   be refused. ``dry_run`` defaults to True and only lists; a
   non-dry-run apply records a ``rejected`` ledger review per refused
   row — the retraction the measure kind already uses (a rejected
-  newest current review drops a row out of every ranking). It is a
-  hand-run command, never a cadence.
+  newest current review drops a row out of every ranking). A refused
+  row whose newest current review already approves or rejects it is
+  kept, not re-reviewed, so a repeat apply writes nothing (gr573886).
+  It is a hand-run command, never a cadence.
 
 The per-paper table lookups (``table_runs`` grouping, continuation
 headers, caption pairing) mirror ``survey_extract``'s extract-time
@@ -243,6 +245,28 @@ def _measurand_entries(store: Store, ref_ids: set[int]) -> dict[int, Any]:
     return out
 
 
+def _newest_current_verdicts(store: Store, ids: list[int]) -> dict[int, str]:
+    """Newest current review verdict per measure id in ``ids`` — the
+    same currency test (``content_sha = precis_target_sha``) and
+    newest ordering (``at DESC, review_id DESC``) as the measure
+    kind's ``review_state`` read in ``_measure_rows``. Ids with no
+    current review are absent (a stale review says nothing about this
+    version)."""
+    if not ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ON (target_id) target_id, verdict "
+            "  FROM reviews "
+            " WHERE target_kind = 'measure' "
+            "   AND target_id = ANY(%s) "
+            "   AND content_sha = precis_target_sha('measure', target_id) "
+            " ORDER BY target_id, at DESC, review_id DESC",
+            (list(ids),),
+        ).fetchall()
+    return {int(tid): str(verdict) for tid, verdict in rows}
+
+
 def measure_recheck(
     store: Store,
     papers: list[Any],
@@ -252,13 +276,18 @@ def measure_recheck(
     """Re-run the extraction guards over the live ``table_recipe``
     measure rows of ``papers`` (gr506762 subset-4).
 
-    Returns ``{papers, checked, refused, unlocated, applied}``:
-    ``refused`` is one entry per row that a current guard would refuse
-    (each ``{id, literal, measurand, reasons: [(reason, detail)]}``);
-    ``unlocated`` counts rows whose source table could not be re-parsed
-    (unchecked, not refused). ``dry_run=False`` applies: a ``rejected``
-    ledger review per refused row under actor ``measure-recheck`` —
-    the retraction the measure kind already uses."""
+    Returns ``{papers, checked, refused, review_only, unlocated,
+    kept_approved, kept_rejected, applied}``: ``refused`` is one entry
+    per row that a current guard would refuse (each ``{id, literal,
+    measurand, reasons: [(reason, detail)]}``); ``unlocated`` counts
+    rows whose source table could not be re-parsed (unchecked, not
+    refused). A refused row whose newest current review is an approval
+    or already a rejection is kept — listed under ``kept_approved`` /
+    ``kept_rejected`` (same entry shape), never re-reviewed, so a
+    repeat apply writes nothing (gr573886). ``dry_run=False`` applies:
+    a ``rejected`` ledger review per refused row under actor
+    ``measure-recheck`` — the retraction the measure kind already
+    uses."""
     scope: list[int] = []
     for raw in papers:
         pid = _resolve_paper(store, raw)
@@ -354,6 +383,16 @@ def measure_recheck(
                 review_only.append(entry_)
             else:
                 refused.append(entry_)
+    # A refused row whose newest current review already decided it —
+    # an approval the apply would hide, or a rejection the apply would
+    # duplicate — is kept, not re-reviewed (gr573886). ``proposed``,
+    # stale and missing reviews leave the row refused.
+    verdicts = _newest_current_verdicts(store, [r["id"] for r in refused])
+    kept_approved = [r for r in refused if verdicts.get(r["id"]) == "approved"]
+    kept_rejected = [r for r in refused if verdicts.get(r["id"]) == "rejected"]
+    refused = [
+        r for r in refused if verdicts.get(r["id"]) not in ("approved", "rejected")
+    ]
     applied = 0
     if refused and not dry_run:
         for row in refused:
@@ -375,6 +414,8 @@ def measure_recheck(
         "checked": len(rows),
         "refused": refused,
         "review_only": review_only,
+        "kept_approved": kept_approved,
+        "kept_rejected": kept_rejected,
         "unlocated": unlocated,
         "applied": applied,
     }
@@ -403,6 +444,26 @@ def _detail_line(row: dict[str, Any]) -> str:
     )
 
 
+def _kept_lines(result: dict[str, Any]) -> list[str]:
+    """The ``kept:`` listing lines — refused rows whose newest current
+    review already approves or rejects them are not re-reviewed
+    (gr573886). ``result.get`` so a caller holding a pre-change result
+    dict does not break."""
+    lines = []
+    for key, label, gloss in (
+        ("kept_approved", "kept: approved", "an approval"),
+        ("kept_rejected", "kept: already rejected", "a rejection"),
+    ):
+        rows = result.get(key, [])
+        if rows:
+            ids = [r["id"] for r in rows]
+            lines.append(
+                f"{label} (newest current review is {gloss}; not "
+                f"re-reviewed): {_id_ranges(ids)} ({len(set(ids))})"
+            )
+    return lines
+
+
 def recheck_lines(
     result: dict[str, Any], *, detail: bool = False, page: int = 1, page_size: int = 50
 ) -> list[str]:
@@ -414,6 +475,8 @@ def recheck_lines(
     24-paper dry run's per-row listing truncated at ~24 kB).
     ``detail=True`` pages the per-row listing, ``page_size`` rows a
     page."""
+    kept_approved = result.get("kept_approved", [])
+    kept_rejected = result.get("kept_rejected", [])
     lines = [
         f"measure recheck over {len(result['papers'])} paper(s): "
         f"{result['checked']} table_recipe row(s) checked, "
@@ -423,6 +486,8 @@ def recheck_lines(
             if result["review_only"]
             else ""
         )
+        + (f", {len(kept_approved)} kept: approved" if kept_approved else "")
+        + (f", {len(kept_rejected)} kept: already rejected" if kept_rejected else "")
         + (
             f", {result['unlocated']} unlocated (unchecked)"
             if result["unlocated"]
@@ -455,6 +520,7 @@ def recheck_lines(
             for reason in sorted(ro_reasons):
                 ids = ro_reasons[reason]
                 lines.append(f"  {reason}: {_id_ranges(ids)} ({len(set(ids))})")
+        lines.extend(_kept_lines(result))
     else:
         rows = result["refused"]
         total = len(rows)
@@ -488,6 +554,7 @@ def recheck_lines(
                     f"args={{'detail': True, 'page': {ro_page + 1}, "
                     f"'page_size': {page_size}}}"
                 )
+        lines.extend(_kept_lines(result))
     if result["applied"]:
         lines.append(
             f"applied: {result['applied']} rejected review(s) recorded — "
