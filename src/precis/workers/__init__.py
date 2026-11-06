@@ -86,6 +86,9 @@ checked inside heavy-executor claims.
 
 Scheduler cadences
 ------------------
+``transcript_audit`` samples closed factory chains, dark by default;
+:mod:`.transcript_audit`.
+
 ``memory_recall`` measures renders; :mod:`.memory_recall`.
 ``memory_recall_harvest`` queues proposals, default-OFF; :mod:`.memory_recall_harvest`.
 
@@ -195,9 +198,7 @@ Notable pass mechanics
   LLM-band pipeline; writes ``refs.prio`` (1=hottest..10=coldest), which
   ``fetch``'s claim query and the ``stubs``/``chase-queue`` backlog views
   sort on.
-* ``paper_rank`` (console-gated, default-OFF) — own docstring; writes a
-  query-independent 0-100 composite to ``refs.meta['paper_rank']``, never
-  ``refs.prio``.
+* ``paper_rank`` (console-gated, default-OFF) — own docstring.
 * ``cast_audio`` narrates the two daily casts (morning ``reading`` brief,
   evening ``nidra`` meditation) via a produce→narrate→publish spine;
   compose runs as ``claude_inproc`` job_types on ``Tier.BIG`` (an

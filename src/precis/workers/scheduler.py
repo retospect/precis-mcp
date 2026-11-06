@@ -312,6 +312,20 @@ def _run_gripe_triage(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_transcript_audit(store: Store, batch_size: int) -> None:
+    """Mint one sampled chain audit; the pass checks its dark-by-default gate."""
+    del batch_size
+    from precis.workers.transcript_audit import run_transcript_audit_pass
+
+    result = run_transcript_audit_pass(store)
+    log.info(
+        "scheduler: transcript_audit inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_gripe_dispatch(store: Store, batch_size: int) -> None:
     """One gripe dispatch tick (dark factory intake, td564019 cut 3): mint
     a ``gripe-fix-direct`` chain for the hottest agent- or human-filed
@@ -1209,6 +1223,12 @@ CADENCES: tuple[Cadence, ...] = (
         eligible=_gripe_triage_eligible,
         service="gripe_triage",
         spends=True,
+    ),
+    # Model-free audits: advance the lease even while the pass reads dark.
+    Cadence(
+        name="transcript_audit",
+        interval_s=1800,
+        run=_run_transcript_audit,
     ),
     # Dark factory intake (td564019 cut 3): every 10 minutes, mint a
     # gripe-fix-direct chain per free code-lane slot for the hottest

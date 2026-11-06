@@ -1539,6 +1539,15 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-gripe-help",
     ),
     ServiceSpec(
+        name="transcript_audit",
+        label="Transcript audit",
+        category="health",
+        kind=ServiceKind.PASS,
+        one_line="30-minute model-free sampler of closed factory chains; "
+        "mints claude-sub audit tasks, dark until service_config lights it.",
+        doc_skill="precis-work-help",
+    ),
+    ServiceSpec(
         # Dark factory intake (precis.workers.gripe_dispatch, td564019 cut
         # 3): the 10-minute `gripe_dispatch` scheduler cadence fires the
         # pass; this row names the service so `precis service` can light
