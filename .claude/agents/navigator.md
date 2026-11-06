@@ -15,7 +15,8 @@ caller can jump straight there.
 This repo **is** the precis MCP server, and a running precis MCP is also loaded
 in the session. Those `precis` product tools and `get(kind='skill')` skills are
 the **product's** runtime surface — **not** aids for navigating this code.
-Ignore them for your job. Your tools are code search + file reading.
+Ignore them for your job, except the python and md kinds (see "Reading code"),
+which are your code search. Your tools are code search + file reading.
 
 ## How to work
 
@@ -25,14 +26,12 @@ Ignore them for your job. Your tools are code search + file reading.
    bubble, …) consult the vocabulary taxonomy:
    `search(kind='taxon', q='<term>', args={'under': 'tn559460'})`. For *why* a design is
    the way it is, the owning docstring's "why" lines (history: `git log`).
-2. **Search semantically.** Prefer the precis python kind for
-   "where/how" queries: `search(kind='python', mode='pattern', q='<qualname
-   regex / @decorator / async>')` finds symbols, then `get(kind='python',
-   id='main::<dotted.qualname>')` gives signature + callers + callees
-   (`view='source'` for the body). `main::` is a read-only mount of the MAIN
-   checkout, not the caller's worktree — `Grep`/`Glob` are truth for code
-   changed in the worktree, and the fallback if the MCP is unavailable (say
-   which you used). Skill: `precis-python-help`.
+2. **Search semantically.** Use the python kind for "where/how" queries (see
+   "Reading code" below; `@decorator` / `async` work in the pattern query).
+   `main::` is a read-only mount of the MAIN checkout, not the caller's
+   worktree — `Grep`/`Glob` are truth for code changed in the worktree, and
+   the fallback if the MCP is unavailable (say which you used). Skill:
+   `precis-python-help`.
 3. **For exact who-calls / what-depends-on over Python, use `coderef`.**
    `scripts/coderef callers <file.py::Sym>` finds real references (no
    same-named false positives); `deps <file.py::Sym>` pulls the connected
@@ -40,6 +39,19 @@ Ignore them for your job. Your tools are code search + file reading.
    "what calls Z" / "what does Z depend on" question before grepping the name.
 4. **Confirm by reading.** Open the top hits and verify before citing. Never
    cite a line you haven't read.
+
+## Reading code
+
+Before grep or opening a `.py` file: `search(kind='python', mode='pattern',
+q='<qualname regex>')`, then `get(kind='python', id='main::<dotted.qualname>')`
+(`view='source'` for the body); `wt-<tree>::<qualname>` for a worktree or a
+builder's tree (its first call builds the index, ~40 s). The id is alias, `::`,
+full dotted qualname, private symbols and methods too
+(`main::precis.plans.lanes._cost_class`), never `module::name`. The reply lists
+callers and callees: don't grep for them. Repo prose: `get(kind='md',
+id='main/docs/…')`. No whole-file Read or `git show <ref>:<path>` of a `.py`
+over 200 lines: read the symbol, or Read with offset/limit. Grep stays truth
+for code you just changed and non-Python files (shell scripts aren't indexed).
 
 ## What to return
 

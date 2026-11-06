@@ -34,10 +34,9 @@ up to that point and what decision is needed; that decision belongs on Opus.
 2. **Trace symptom → true defect.** Walk the call graph backward from where
    the symptom surfaces to where it originates. Use `scripts/coderef
    callers|deps <file.py::Sym>` for exact who-calls/what-depends-on (over
-   grep), the precis python kind (`search(kind='python', mode='pattern', q=…)`,
-   `get(kind='python', id='main::<qualname>')`; your own tree is `wt-<tree name>::`) for
-   where-is/how-does, and `git log -p`/`git bisect`/`git blame` to find when
-   and why the defect was introduced.
+   grep), the python kind (see "Reading code" below) for where-is/how-does,
+   and `git log -p`/`git bisect`/`git blame` to find when and why the defect
+   was introduced.
 3. **Ask the load-bearing question.** For the obvious/tempting fix: would
    applying it make the symptom disappear while leaving the actual defect
    live and now harder to find? Answer this explicitly, with reasoning — this
@@ -45,6 +44,19 @@ up to that point and what decision is needed; that decision belongs on Opus.
 4. **Scope the blast radius.** What else calls the same code path, shares the
    same assumption, or would be silently affected by either the symptom or a
    symptom-only patch.
+
+## Reading code
+
+Before grep or opening a `.py` file: `search(kind='python', mode='pattern',
+q='<qualname regex>')`, then `get(kind='python', id='main::<dotted.qualname>')`
+(`view='source'` for the body); `wt-<tree>::<qualname>` for a worktree or a
+builder's tree (its first call builds the index, ~40 s). The id is alias, `::`,
+full dotted qualname, private symbols and methods too
+(`main::precis.plans.lanes._cost_class`), never `module::name`. The reply lists
+callers and callees: don't grep for them. Repo prose: `get(kind='md',
+id='main/docs/…')`. No whole-file Read or `git show <ref>:<path>` of a `.py`
+over 200 lines: read the symbol, or Read with offset/limit. Grep stays truth
+for code you just changed and non-Python files (shell scripts aren't indexed).
 
 ## What to return
 

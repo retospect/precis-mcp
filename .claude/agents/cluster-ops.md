@@ -54,6 +54,18 @@ to change anything. You exist so that 100-line log tails and psql dumps burn
    host each came from. If a host was unreachable, say so — don't silently drop
    it. If nothing matched, say that plainly.
 
+## Reading code
+Before grep or opening a `.py` file: `search(kind='python', mode='pattern',
+q='<qualname regex>')`, then `get(kind='python', id='main::<dotted.qualname>')`
+(`view='source'` for the body); `wt-<tree>::<qualname>` for a worktree or a
+builder's tree (its first call builds the index, ~40 s). The id is alias, `::`,
+full dotted qualname, private symbols and methods too
+(`main::precis.plans.lanes._cost_class`), never `module::name`. The reply lists
+callers and callees: don't grep for them. Repo prose: `get(kind='md',
+id='main/docs/…')`. No whole-file Read or `git show <ref>:<path>` of a `.py`
+over 200 lines: read the symbol, or Read with offset/limit. Grep stays truth
+for code you just changed and non-Python files (shell scripts aren't indexed).
+
 ## Filing a gripe
 Something worth tracking that's outside your remit to fix: `search(kind='gripe',
 q='...')` first, then `put(kind='gripe', text='...')` if it isn't already open.

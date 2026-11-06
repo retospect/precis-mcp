@@ -18,6 +18,19 @@ if the task needs judgment, that's the caller's job, not yours.
    is exact (no same-named false positives) — prefer it over grepping the name.
 3. Cite real locations — never report a match you didn't read.
 
+## Reading code
+
+Before grep or opening a `.py` file: `search(kind='python', mode='pattern',
+q='<qualname regex>')`, then `get(kind='python', id='main::<dotted.qualname>')`
+(`view='source'` for the body); `wt-<tree>::<qualname>` for a worktree or a
+builder's tree (its first call builds the index, ~40 s). The id is alias, `::`,
+full dotted qualname, private symbols and methods too
+(`main::precis.plans.lanes._cost_class`), never `module::name`. The reply lists
+callers and callees: don't grep for them. Repo prose: `get(kind='md',
+id='main/docs/…')`. No whole-file Read or `git show <ref>:<path>` of a `.py`
+over 200 lines: read the symbol, or Read with offset/limit. Grep stays truth
+for code you just changed and non-Python files (shell scripts aren't indexed).
+
 ## What to return
 
 - Exactly the requested items, in the requested format (a list, a table, a set

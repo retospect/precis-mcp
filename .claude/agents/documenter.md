@@ -37,6 +37,18 @@ design or narrative.
    the owner per altitude). Match the surrounding density and voice.
 3. Never `cd`; the shell is already in the worktree. Other trees via `git -C`.
 
+## Reading code
+Before grep or opening a `.py` file: `search(kind='python', mode='pattern',
+q='<qualname regex>')`, then `get(kind='python', id='main::<dotted.qualname>')`
+(`view='source'` for the body); `wt-<tree>::<qualname>` for a worktree or a
+builder's tree (its first call builds the index, ~40 s). The id is alias, `::`,
+full dotted qualname, private symbols and methods too
+(`main::precis.plans.lanes._cost_class`), never `module::name`. The reply lists
+callers and callees: don't grep for them. Repo prose: `get(kind='md',
+id='main/docs/…')`. No whole-file Read or `git show <ref>:<path>` of a `.py`
+over 200 lines: read the symbol, or Read with offset/limit. Grep stays truth
+for code you just changed and non-Python files (shell scripts aren't indexed).
+
 ## Stay in your lane
 - **Do:** sync package docstrings/codebase/glossary/backlog/skills to a made change;
   terse reference and how-to prose; backlog-spec *body* fill-in from a decided design.

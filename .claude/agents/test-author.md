@@ -27,6 +27,18 @@ the caller; you write the tests that pin it down and prove they run.
 4. Respect test conventions: no DB connection leaks (the suite hard-fails on
    them), use the RAM test DB the script wires.
 
+## Reading code
+Before grep or opening a `.py` file: `search(kind='python', mode='pattern',
+q='<qualname regex>')`, then `get(kind='python', id='main::<dotted.qualname>')`
+(`view='source'` for the body); `wt-<tree>::<qualname>` for a worktree or a
+builder's tree (its first call builds the index, ~40 s). The id is alias, `::`,
+full dotted qualname, private symbols and methods too
+(`main::precis.plans.lanes._cost_class`), never `module::name`. The reply lists
+callers and callees: don't grep for them. Repo prose: `get(kind='md',
+id='main/docs/…')`. No whole-file Read or `git show <ref>:<path>` of a `.py`
+over 200 lines: read the symbol, or Read with offset/limit. Grep stays truth
+for code you just changed and non-Python files (shell scripts aren't indexed).
+
 ## What to return
 - Tests added, as `file — what each asserts`.
 - The run result and what it means (green = contract holds / red = repro captured,

@@ -21,12 +21,9 @@ abstraction, a schema/migration shape) — **stop and report the question**, don
 guess. Those decisions belong on Opus.
 
 ## How to work
-1. **Orient before editing.** For where-is/how-does questions, prefer
-   the precis python kind — `search(kind='python', mode='pattern',
-   q='<qualname regex>')`, `get(kind='python', id='main::<dotted.qualname>')`
-   (signature + callers + callees; your own tree is `wt-<tree name>::`) — or a
-   quick Grep (truth for code you changed) — don't spelunk with Read. For who-calls /
-   what-depends-on over Python, `scripts/coderef callers|deps <file.py::Sym>`
+1. **Orient before editing** (see "Reading code" below) — don't spelunk with
+   Read. For who-calls / what-depends-on over Python,
+   `scripts/coderef callers|deps <file.py::Sym>`
    is exact — use it over grepping the bare name. Never `cd`; the shell is
    already in the worktree, and other trees are reached via `git -C`.
 2. **Make the change** to match the surrounding code — its naming, idiom, comment
@@ -47,6 +44,18 @@ guess. Those decisions belong on Opus.
 4. Respect the repo's conventions that bite: the four invariants in
    `docs/conventions/invariants.md`; container tests via `scripts/test`. When unsure whether a convention applies, check
    CLAUDE.md / AGENTS.md rather than improvising.
+
+## Reading code
+Before grep or opening a `.py` file: `search(kind='python', mode='pattern',
+q='<qualname regex>')`, then `get(kind='python', id='main::<dotted.qualname>')`
+(`view='source'` for the body); `wt-<tree>::<qualname>` for a worktree or a
+builder's tree (its first call builds the index, ~40 s). The id is alias, `::`,
+full dotted qualname, private symbols and methods too
+(`main::precis.plans.lanes._cost_class`), never `module::name`. The reply lists
+callers and callees: don't grep for them. Repo prose: `get(kind='md',
+id='main/docs/…')`. No whole-file Read or `git show <ref>:<path>` of a `.py`
+over 200 lines: read the symbol, or Read with offset/limit. Grep stays truth
+for code you just changed and non-Python files (shell scripts aren't indexed).
 
 ## What to return
 - What you changed, as a short list of `file — what/why`.
