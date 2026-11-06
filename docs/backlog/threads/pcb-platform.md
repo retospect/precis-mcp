@@ -112,13 +112,7 @@ current evidence and local intake gate remain in memory me562868.
     what "fatten traces by net property" already has (current→width
     via IPC-2221) and lacks (impedance→width, return-path→geometry,
     per-edge widths). Do not build without a further ruling.
-14. **backlog/pcb-design-flow.md** — `ready/high`, filed 2026-10-26 from
-    the TAZ leaf dogfood: the requirements-to-fab
-    skill, selection record (graph memory, selects/rejects, ruled
-    2026-10-26), budget convention, consigned BOM lines, mech/coating
-    checklist. Slice 1 is a skill with no code and can go now; it is
-    independent of items 1–12.
-15. **backlog/design-rerun-pull.md** — `draft/normal`: a run
+14. **backlog/design-rerun-pull.md** — `draft/normal`: a run
     archive, content-keyed replay and elite warm starts so a re-run
     pulls from prior successes. Its record layer feeds 1's §3 request
     cache and its route leg waits on 2's realiser; every open question
