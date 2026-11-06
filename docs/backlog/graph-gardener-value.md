@@ -153,9 +153,11 @@ The 6-hourly chat-desk watch (gardener runs, proposals,
 gr512125). The trial itself keeps running unattended: recurring td504852
 every 2 h, proposer castor-only, consumer cloud Opus; since 2026-10-24 the
 `reviews` ledger shows 102 approved / 344 rejected / 59 held for a human
-(read 2026-11-01). Still open from the watch: the four pre-gate merges
-applied 2026-10-24 06:33Z (reviews 8830, 8833, 8845, 8846) are unaudited
-(gr512125 c8). Operator recipe (pause, resume, re-route, logs, undo):
+(read 2026-11-01). Closed since the watch: the four pre-gate merges
+applied 2026-10-24 06:33Z (reviews 8830, 8833, 8845, 8846) were audited
+2026-11-01 (gr512125 c9; summary me570668): 8845 undone as a version
+pair, 8846 and 8833 repaired under gr548654, 8830 left. Operator recipe
+(pause, resume, re-route, logs, undo):
 [`docs/runbooks/graph-gardener-ops.md`](../runbooks/graph-gardener-ops.md).
 Reto decides whether the trial continues or slices 4–5 start (slice 5's
 blocker gr502793 closed 2026-10-22).

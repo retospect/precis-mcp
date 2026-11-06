@@ -55,9 +55,11 @@ read for the key yet (gr548280); until then `scripts/prod-psql --ro
 A gardener merge keeps the prior in `links.meta.prior_relation` /
 `prior_axis` and the merged ref's `superseded_by`; undo is one query per
 merge — see the audit procedure on gr512125 (comments 5–6 undid the wrong
-and suspect merges of 2026-10-24). Four pre-gate merges from that day
-(reviews 8830, 8833, 8845, 8846) are still unaudited as of 2026-11-01
-(memory me502337).
+and suspect merges of 2026-10-24). The four pre-gate merges from that day
+(reviews 8830, 8833, 8845, 8846) were audited 2026-11-01 (gr512125
+comment 9; summary me570668): 8845 undone as a version pair, 8846 and
+8833 repaired under gr548654 (loser PDF/body attached to the survivor),
+8830 left — its survivor was already folded into a digest.
 
 ## Reto's frame for what the gardener may write
 

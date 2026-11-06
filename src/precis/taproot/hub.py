@@ -1143,8 +1143,7 @@ def attach_evidence(
     (:func:`validate_relation`). ``hub_ref_id`` must be a ``TAPROOT:claim``
     finding, NOT a **composite** hub (raises otherwise); the source must be
     an evidence-source ref (:data:`EVIDENCE_SRC_KINDS`) OR a computed
-    ``pathway`` (:data:`PATHWAY_EVIDENCE_KINDS`; docs/backlog/computed-
-    pathways-cannot-be-cited-as-claim-evidence.md — see
+    ``pathway`` (:data:`PATHWAY_EVIDENCE_KINDS` — see
     :func:`_pathway_evidence_meta` for that branch's own guards and edge
     meta). Directed **paper -> hub**; the hub reads evidence via
     ``links_for(direction='in', relation=role)``. ``meta`` carries the chase

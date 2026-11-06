@@ -34,9 +34,11 @@ Devin in the current terminal.
 
 Devin reads its MCP config from `~/.config/devin/mcp_config.json` (user
 scope, chmod 600): server `precis`, HTTP `http://127.0.0.1:8765/mcp`, with the
-same bearer header as `~/.claude.json`. That server is PROD. The first call to
-each tool asks for permission: allow `get`/`search`/`more` for read-only work.
-Never choose "all tools" unless the task writes to precis.
+same bearer header as `~/.claude.json`. That server is PROD. The tree runs
+`--permission-mode dangerous`, so nothing ever prompts — the per-tool
+permission prompt exists under `auto` only. Stick to
+`get`/`search`/`more` for read-only work and never write unless the task
+writes to precis.
 
 ## Non-tty shell: prefix editor-spawning git with `GIT_EDITOR=true`
 
