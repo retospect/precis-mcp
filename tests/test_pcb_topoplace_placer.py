@@ -1230,6 +1230,28 @@ def test_topo_place_ref_values_param_overrides_every_restart() -> None:
     )
 
 
+def test_topo_place_self_measured_ref_survives_unplaced_pose0() -> None:
+    """``place=True`` hands the placer a ``pose0`` with NaN rows (parts not
+    placed yet). The self-measured R_i must come from restart 0's scattered
+    pose, not ``d.pose0`` (which cannot build a ProxyState), and equal what
+    that scattered state measures."""
+    import dataclasses
+
+    from precis.pcb.topoplace.placer import _domain, _legal_xy, _scatter
+
+    d, _inst, _nets = synth_design(seed=0)
+    pose0 = np.array(d.pose0, copy=True)
+    movable = np.flatnonzero(~d.fixed)
+    pose0[movable, :2] = np.nan
+    dn = dataclasses.replace(d, pose0=pose0)
+    res = topo_place(dn, objective=W, effort=500, seed=1)
+    lo, hi = _domain(dn)
+    xy_lo, xy_hi = _legal_xy(dn, lo, hi)
+    scattered = _scatter(dn, dn.pose0, np.random.default_rng(1), xy_lo, xy_hi)
+    assert np.isfinite(scattered[:, :2]).all()
+    assert res.ref_values == ProxyState(dn, scattered, W).reference_values()
+
+
 def test_replace_never_ends_worse_than_the_stored_placement() -> None:
     """gr520372: a re-place starts from the stored placement, and that
     pose is the one to beat. The incumbent race used to rank only
