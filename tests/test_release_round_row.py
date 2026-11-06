@@ -75,6 +75,23 @@ def test_row_omits_absent_deploy_keys() -> None:
     assert row["deploy"] == {"sha": BASE}
 
 
+def test_row_carries_state_at_when_present() -> None:
+    row = plans_release.round_record(
+        _rel(state="deploying", state_at="2026-11-06T11:20:00Z"),
+        n=1,
+        owner=OWNER,
+        now=NOW,
+    )
+    assert row["state_at"] == "2026-11-06T11:20:00Z"
+
+
+def test_row_omits_state_at_when_absent() -> None:
+    """A record cut before state_at existed publishes no key — never a
+    null — so the watchdog knows not to judge it."""
+    row = plans_release.round_record(_rel(), n=1, owner=OWNER, now=NOW)
+    assert "state_at" not in row
+
+
 def test_record_round_then_read_round(store: Store) -> None:
     row = plans_release.round_record(_rel(), n=1, owner=OWNER, now=NOW)
     line = plans_release.record_round(store, row)

@@ -633,6 +633,8 @@ def round_record(
     }
     if rel.get("cut_at"):
         row["cut_at"] = rel["cut_at"]
+    if rel.get("state_at"):
+        row["state_at"] = rel["state_at"]
     dep = rel.get("deployment") or {}
     deploy = {
         dst: dep[src]

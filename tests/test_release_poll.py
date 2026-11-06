@@ -67,6 +67,7 @@ def _fake_github(
     tags: Any = (),
     prod_cmp: Any = None,
     main_ref: Any = ...,
+    runs: Any = ...,
     status: int = 200,
     error: Exception | None = None,
 ) -> list[str]:
@@ -91,6 +92,8 @@ def _fake_github(
                 data = {"ref": "refs/heads/main", "object": {"sha": MAIN_SHA}}
             else:
                 data = main_ref
+        elif url.endswith("/actions/runs"):
+            data = {"workflow_runs": []} if runs is ... else runs
         elif "/compare/" in url and url.endswith("...prod"):
             data = prod_cmp if prod_cmp is not None else {"status": "ahead"}
         else:
@@ -582,3 +585,636 @@ def test_two_interleaved_runners_mint_once(
     assert len(results) == 2 and len(minted) == 1 and len(blocked) == 1
     assert blocked[0].blocker == f"release-pass td{minted[0].minted} is open"
     assert len(rp._release_pass_ids(store)) == 1
+
+
+# ── the observation-only stuck watchdog (td574370) ───────────────────
+#
+# The ``release.round`` row's ``state_at`` is judged against
+# ``release.stage_deadlines``; an overdue stage gets one ``ask-user``
+# ruling todo per (round, stage), offering only the hand verbs. GitHub
+# is faked at ``pr_class._http_get`` like the mint tests.
+
+STUCK_BASE = "c" * 40
+
+
+def _stuck_row(
+    state: str,
+    *,
+    n: int = 5,
+    state_at: str | None = None,
+    base: str = STUCK_BASE,
+    deploy: dict[str, Any] | None = None,
+) -> str:
+    row: dict[str, Any] = {
+        "n": n,
+        "branch": f"release/r{n}",
+        "base": base,
+        "state": state,
+    }
+    if state_at is not None:
+        row["state_at"] = state_at
+    if deploy is not None:
+        row["deploy"] = deploy
+    return json.dumps(row)
+
+
+def _verdict_row(sha: str, verdict: str, at: str) -> dict[str, str]:
+    return {
+        "sha": sha[:12],
+        "range": f"aa..{sha[:12]}",
+        "verdict": verdict,
+        "run_id": "42",
+        "at": at,
+    }
+
+
+def _stuck_asks(store: Store) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t USING (tag_id)
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value LIKE 'release-stuck:%'
+             ORDER BY r.ref_id
+            """
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _ask_body(store: Store, ref_id: int) -> str:
+    return "\n".join(
+        str(c.text or "") for c in store.chunks.list_chunks_for_ref(ref_id)
+    )
+
+
+def _stamp(minutes_ago: int) -> str:
+    from datetime import timedelta
+
+    return (NOW - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _watch(store: Store) -> list[str]:
+    return rp.watch_stuck(store, now=NOW, dry_run=False)
+
+
+def test_stage_deadlines_default_is_db_only() -> None:
+    spec = psettings.REGISTRY[rp.STUCK_SETTING]
+    assert spec.env_var is None
+    assert json.loads(str(spec.default)) == {
+        "cut": 30,
+        "gating": 180,
+        "fixing": 240,
+        "deploying": 60,
+        "confirm": 45,
+    }
+
+
+def test_deploying_overdue_files_one_ask_with_the_named_content(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(120), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    notes = _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    assert any("filed" in n for n in notes)
+    ref = store.get_ref(kind="todo", id=asks[0])
+    assert ref is not None
+    ask = ref.meta["ask"]
+    assert ask["kind"] == "ruling"
+    assert ask["options"] == ["acknowledged", "false alarm"]
+    assert ask["blocks"] == "nothing"
+    assert "60m past the 60m deadline" in ask["context"]
+    assert STUCK_BASE[:12] in ask["context"]
+    assert "executes nothing" in ask["context"]
+    tags = _tags(store, asks[0])
+    assert {"ask-user", "showstopper", "release-stuck:r5:deploying"} <= tags
+    body = _ask_body(store, asks[0])
+    assert "scripts/round deploy" in body
+    assert "supersede --partial" in body
+    assert "executes nothing" in body
+
+
+def test_confirm_overdue_files_an_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row(
+            "deployed",
+            state_at=_stamp(60),
+            deploy={"sha": STUCK_BASE, "rollout_at": _stamp(65)},
+        ),
+        store=store,
+    )
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    assert "release-stuck:r5:confirm" in _tags(store, asks[0])
+
+
+def test_deployed_with_confirmation_never_asks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row(
+            "deployed",
+            state_at=_stamp(300),
+            deploy={
+                "sha": STUCK_BASE,
+                "rollout_at": _stamp(300),
+                "confirmed_at": _stamp(200),
+            },
+        ),
+        store=store,
+    )
+    assert _watch(store) == []
+    assert _stuck_asks(store) == []
+
+
+def test_cut_no_verdict_no_run_files_cut(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    psettings.set_setting("release.repo", REPO, store=store)
+    calls = _fake_github(monkeypatch, runs={"workflow_runs": []})
+    psettings.set_setting(
+        "release.round", _stuck_row("cut", state_at=_stamp(45)), store=store
+    )
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    assert "release-stuck:r5:cut" in _tags(store, asks[0])
+    assert calls == [f"{API}/actions/runs"]
+
+
+def test_cut_no_verdict_with_a_run_is_gating_past_its_own_deadline(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    psettings.set_setting("release.repo", REPO, store=store)
+    runs = {"workflow_runs": [{"status": "in_progress"}]}
+    _fake_github(monkeypatch, runs=runs)
+    # 60m in: past the 30m cut mark so the probe runs, but well inside
+    # gating's 180m — no ask.
+    psettings.set_setting(
+        "release.round", _stuck_row("cut", state_at=_stamp(60)), store=store
+    )
+    _watch(store)
+    assert _stuck_asks(store) == []
+    # 240m in: the run is still in flight and gating's own deadline passed.
+    psettings.set_setting(
+        "release.round", _stuck_row("cut", state_at=_stamp(240)), store=store
+    )
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    assert "release-stuck:r5:gating" in _tags(store, asks[0])
+
+
+def test_red_verdict_past_fixing_files_fixing(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.ci_verdicts",
+        json.dumps([_verdict_row(STUCK_BASE, "red", _stamp(300))]),
+        store=store,
+    )
+    psettings.set_setting(
+        "release.round", _stuck_row("cut", state_at=_stamp(50)), store=store
+    )
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    assert "release-stuck:r5:fixing" in _tags(store, asks[0])
+    assert calls == []  # a verdict answers the stage; no GitHub read
+
+
+def test_green_verdict_never_asks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.ci_verdicts",
+        json.dumps([_verdict_row(STUCK_BASE, "green", _stamp(400))]),
+        store=store,
+    )
+    psettings.set_setting(
+        "release.round", _stuck_row("cut", state_at=_stamp(400)), store=store
+    )
+    assert _watch(store) == []
+    assert _stuck_asks(store) == []
+
+
+def test_red_on_an_older_head_is_fixing_until_the_current_head_has_a_verdict(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """meta.release.sha names the fix head; a red on the row's base (the
+    round's older head) is fixing until the new head has a verdict."""
+    calls = _fake_github(monkeypatch)
+    new_head = "d" * 40
+    root = T.mint_release_pass(store).root_id
+    store.stamp_ref_meta(
+        root, {"release": {"rN": "r5", "sha": new_head, "range": "aa..dd"}}
+    )
+    psettings.set_setting(
+        "release.ci_verdicts",
+        json.dumps([_verdict_row(STUCK_BASE, "red", _stamp(300))]),
+        store=store,
+    )
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("cut", state_at=_stamp(50), base=STUCK_BASE),
+        store=store,
+    )
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    assert "release-stuck:r5:fixing" in _tags(store, asks[0])
+    assert calls == []
+
+
+def test_no_state_at_never_asks(store: Store, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A record cut before state_at existed is never judged."""
+    _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    assert _watch(store) == []
+    assert _stuck_asks(store) == []
+
+
+def test_future_state_at_never_asks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at="2026-11-03T13:00:00Z"),
+        store=store,
+    )
+    assert _watch(store) == []
+    assert _stuck_asks(store) == []
+
+
+@pytest.mark.parametrize("state", ["confirmed", "superseded", "abandoned"])
+def test_terminal_state_never_asks(
+    store: Store, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.round", _stuck_row(state, state_at=_stamp(9999)), store=store
+    )
+    assert _watch(store) == []
+    assert _stuck_asks(store) == []
+
+
+def test_second_tick_files_no_second_ask_even_after_the_first_is_answered(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(120), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    _close(store, asks[0])  # answered and closed
+    assert _stuck_asks(store) == [asks[0]]
+    _watch(store)
+    assert _stuck_asks(store) == [asks[0]]  # the tag dedupes any status
+
+
+def test_a_new_round_or_another_stage_files_its_own(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(120), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    _watch(store)
+    assert len(_stuck_asks(store)) == 1
+    # a different stage of the same round files its own ask
+    psettings.set_setting(
+        "release.round",
+        _stuck_row(
+            "deployed",
+            state_at=_stamp(120),
+            deploy={"sha": STUCK_BASE},
+        ),
+        store=store,
+    )
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 2
+    assert "release-stuck:r5:confirm" in _tags(store, asks[-1])
+    # and a new round files its own
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", n=6, state_at=_stamp(120), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 3
+    assert "release-stuck:r6:deploying" in _tags(store, asks[-1])
+
+
+def test_cut_zero_still_watches_gating(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`cut: 0` disables only `cut`: with a run in flight the probe
+    fires on the enabled gating mark and files gating past it."""
+    psettings.set_setting("release.repo", REPO, store=store)
+    _fake_github(
+        monkeypatch,
+        runs={"workflow_runs": [{"status": "in_progress", "head_sha": "d" * 40}]},
+    )
+    psettings.set_setting(
+        rp.STUCK_SETTING, json.dumps({"cut": 0, "gating": 180}), store=store
+    )
+    psettings.set_setting(
+        "release.round", _stuck_row("cut", state_at=_stamp(240)), store=store
+    )
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    assert "release-stuck:r5:gating" in _tags(store, asks[0])
+
+
+def test_gating_zero_disables_only_gating(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`gating: 0` disables only `gating`: a run in flight files
+    nothing, and no run still files `cut` past its own mark."""
+    psettings.set_setting("release.repo", REPO, store=store)
+    _fake_github(
+        monkeypatch,
+        runs={"workflow_runs": [{"status": "in_progress", "head_sha": "d" * 40}]},
+    )
+    psettings.set_setting(
+        rp.STUCK_SETTING, json.dumps({"cut": 30, "gating": 0}), store=store
+    )
+    psettings.set_setting(
+        "release.round", _stuck_row("cut", state_at=_stamp(45)), store=store
+    )
+    _watch(store)
+    assert _stuck_asks(store) == []
+    _fake_github(monkeypatch, runs={"workflow_runs": []})
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    assert "release-stuck:r5:cut" in _tags(store, asks[0])
+
+
+def test_the_probe_reads_branch_runs_and_names_their_head(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one GitHub read asks for runs on branch ``release/r<N>``
+    (newest first), never a head sha from the record — a hand
+    ``ship --release`` head move cannot produce a wrong stage. The ask
+    names the head the run was on and flags it may differ from the
+    record's base."""
+    psettings.set_setting("release.repo", REPO, store=store)
+    probed: list[dict[str, Any]] = []
+
+    def fake_get_json(url: str, params: dict[str, Any]) -> Any:
+        probed.append({"url": url, **dict(params)})
+        return {"workflow_runs": [{"status": "in_progress", "head_sha": "d" * 40}]}
+
+    monkeypatch.setattr(P, "_get_json", fake_get_json)
+    psettings.set_setting(
+        "release.round", _stuck_row("cut", state_at=_stamp(240)), store=store
+    )
+    _watch(store)
+    assert probed and probed[0].get("branch") == "release/r5"
+    assert "head_sha" not in probed[0]
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    assert "release-stuck:r5:gating" in _tags(store, asks[0])
+    body = _ask_body(store, asks[0])
+    assert ("d" * 40)[:12] in body
+    assert "may differ from the record's base" in body
+    assert STUCK_BASE[:12] in body
+
+
+def test_a_filed_stage_costs_no_more_github_reads(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the (round, stage) ask exists the dedupe tag is checked
+    first — the probe never runs again (the shared 60/h budget)."""
+    psettings.set_setting("release.repo", REPO, store=store)
+    calls = _fake_github(
+        monkeypatch,
+        runs={"workflow_runs": [{"status": "in_progress", "head_sha": "d" * 40}]},
+    )
+    psettings.set_setting(
+        "release.round", _stuck_row("cut", state_at=_stamp(240)), store=store
+    )
+    _watch(store)
+    assert calls == [f"{API}/actions/runs"]
+    _watch(store)
+    _watch(store)
+    assert calls == [f"{API}/actions/runs"]
+
+
+def test_a_stage_set_to_zero_disables_only_that_stage(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    psettings.set_setting("release.repo", REPO, store=store)
+    _fake_github(monkeypatch, runs={"workflow_runs": []})
+    psettings.set_setting(
+        rp.STUCK_SETTING,
+        json.dumps({"cut": 30, "deploying": 0}),
+        store=store,
+    )
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(120), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    _watch(store)
+    assert _stuck_asks(store) == []  # deploying: 0 → not watched
+    psettings.set_setting(
+        "release.round", _stuck_row("cut", state_at=_stamp(45)), store=store
+    )
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    assert "release-stuck:r5:cut" in _tags(store, asks[0])
+
+
+@pytest.mark.parametrize("bad", ["not json", "[1, 2]", '"x"'])
+def test_unparsable_or_non_object_deadlines_ask_nothing(
+    store: Store, monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    _fake_github(monkeypatch)
+    psettings.set_setting(rp.STUCK_SETTING, bad, store=store)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(120), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    notes = _watch(store)
+    assert any("watching nothing" in n for n in notes)
+    assert _stuck_asks(store) == []
+
+
+def test_dry_run_files_nothing(store: Store, monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(120), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    notes = rp.watch_stuck(store, now=NOW, dry_run=True)
+    assert any("would file" in n for n in notes)
+    assert _stuck_asks(store) == []
+
+
+def test_factory_off_files_nothing(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_FACTORY", "off")
+    _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(120), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    notes = _watch(store)
+    assert any("would file" in n for n in notes)
+    assert _stuck_asks(store) == []
+
+
+def test_unreadable_record_github_error_and_db_error_ask_nothing(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # unparsable / non-object record: a note, no ask
+    _fake_github(monkeypatch)
+    for raw in ("not json", "[1,2]", '{"n":5,"state":null}'):
+        psettings.set_setting("release.round", raw, store=store)
+        notes = _watch(store)
+        assert _stuck_asks(store) == []
+        assert notes
+    # GitHub error on the runs probe: a note, no ask
+    psettings.set_setting("release.repo", REPO, store=store)
+    _fake_github(monkeypatch, error=OSError("network down"))
+    psettings.set_setting(
+        "release.round", _stuck_row("cut", state_at=_stamp(45)), store=store
+    )
+    notes = _watch(store)
+    assert any("GitHub unreadable" in n for n in notes)
+    assert _stuck_asks(store) == []
+
+    # a database error on the round row: a note, no ask, no raise
+    def boom(s: Store) -> str | None:
+        raise OSError("db gone")
+
+    monkeypatch.setattr(rp, "_round_raw", boom)
+    notes = _watch(store)
+    assert any("unreadable" in n for n in notes)
+    assert _stuck_asks(store) == []
+
+
+def test_a_watch_failure_never_blocks_the_mint(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """watch_stuck raising inside run_pass is one note; the gates run."""
+
+    def boom(store: Store, **kw: Any) -> list[str]:
+        raise RuntimeError("watch exploded")
+
+    monkeypatch.setattr(rp, "watch_stuck", boom)
+    _fake_github(monkeypatch)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None
+    assert any("raised" in n for n in res.notes)
+    assert _stuck_asks(store) == []
+
+
+def test_dry_run_pass_writes_no_ask_but_still_reports(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(120), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    res = rp.run_pass(store, repo=REPO, dry_run=True, now=NOW)
+    assert _stuck_asks(store) == []
+    assert any("would file" in n for n in res.notes)
+
+
+@pytest.mark.parametrize("auto_deploy", ["true", "false"])
+def test_asks_are_identical_with_auto_deploy_on_or_off(
+    store: Store, monkeypatch: pytest.MonkeyPatch, auto_deploy: str
+) -> None:
+    _fake_github(monkeypatch)
+    psettings.set_setting("release.auto_deploy", auto_deploy, store=store)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(120), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    ref = store.get_ref(kind="todo", id=asks[0])
+    assert ref is not None
+    assert ref.meta["ask"]["options"] == ["acknowledged", "false alarm"]
+
+
+def test_the_ask_parents_under_the_matching_pass_root_only(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    # hand release: no pass root → parentless ask, no plan tag
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(120), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    ref = store.get_ref(kind="todo", id=asks[0])
+    assert ref is not None and ref.parent_id is None
+    assert not any(t.startswith("plan:") for t in _tags(store, asks[0]))
+    # an open pass whose release_of names r5 → parent + plan:<root> tag
+    _close(store, asks[0])
+    root = T.mint_release_pass(store).root_id
+    store.stamp_ref_meta(
+        root,
+        {"release": {"rN": "r5", "sha": STUCK_BASE, "range": "aa..cc"}},
+    )
+    psettings.set_setting(
+        "release.round",
+        _stuck_row(
+            "deployed",
+            state_at=_stamp(120),
+            deploy={"sha": STUCK_BASE},
+        ),
+        store=store,
+    )
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 2
+    ref = store.get_ref(kind="todo", id=asks[-1])
+    assert ref is not None and ref.parent_id == root
+    assert f"plan:{root}" in _tags(store, asks[-1])

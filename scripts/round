@@ -39,6 +39,9 @@ and nothing is tracked or pushed.
                                       superseded when origin/prod already moved past its
                                       pinned sha (record only; keeps the journal, touches
                                       no remote ref; default: the one live deploying record)
+                [--partial --reason "<text>"]   coordinator: retire a PARTIAL rollout —
+                                      origin/prod does not hold the pinned sha; keeps the
+                                      journal so the next cut can pipeline past it
 
 A peer is named by its worktree directory (`PRECIS_ROUND_PEER` overrides).
 Marks carry the open release's number (the round number when no release is
@@ -203,6 +206,15 @@ def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _set_state(rel: dict[str, Any], state: str) -> None:
+    """Transition ``rel`` to ``state``, stamping ``state_at`` (UTC
+    ``...Z``) — the shared record's clock a stuck-release watchdog
+    judges stage ages against. A caller reverting the state must
+    restore the prior ``state_at`` too (``cmd_cut``'s lost race)."""
+    rel["state"] = state
+    rel["state_at"] = _now()
+
+
 def _read(path: Path) -> dict[str, Any] | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -346,6 +358,8 @@ def _round_record(
     }
     if rel.get("cut_at"):
         row["cut_at"] = rel["cut_at"]
+    if rel.get("state_at"):
+        row["state_at"] = rel["state_at"]
     dep = rel.get("deployment") or {}
     deploy = {
         dst: dep[src]
@@ -524,7 +538,7 @@ def _reconcile_completion_archive(
         )
         return 0
     cur["deployed"] = archived["deployed"]
-    rel["state"] = "confirmed"
+    _set_state(rel, "confirmed")
     _write(state / "round.json", cur)
     print(
         f"round {cur['n']} completion already archived at {cur['deployed']['sha'][:9]}; "
@@ -1640,7 +1654,7 @@ def _finish_release(
         return _deploy_refuse("release deletion was not confirmed")
     cur["deployed"] = _completed_deployment(cur, rel)
     _archive_receipt(state, cur)
-    rel["state"] = "confirmed"
+    _set_state(rel, "confirmed")
     _write(state / "round.json", cur)
     print(
         f"{branch} deployed at {sha[:9]}, tagged {tag}, forwarded to main and retired"
@@ -1807,7 +1821,7 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
         if not journal.get("rollout_at"):
             journal["rollout_at"] = _now()
             journal["skipped_hosts"] = _deploy_skipped(root, sha)
-            rel["state"] = "deployed"
+            _set_state(rel, "deployed")
             _write(state / "round.json", cur)
     if rel and journal.get("rollout_at"):
         sha = journal["sha"]
@@ -1982,7 +1996,7 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
             "gated_before": f["origin_gated"],
             "gated_action": "retain" if retain_gated else "publish",
         }
-        rel["state"] = "deploying"
+        _set_state(rel, "deploying")
         _write(state / "round.json", cur)
     if retain_gated:
         if os.environ.get("PRECIS_ENV_POINTERS", "1") == "0":
@@ -2064,7 +2078,7 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
             "deploy returned zero without matching fresh success marker and origin/prod"
         )
     rel["deployment"]["rollout_at"] = _now()
-    rel["state"] = "deployed"
+    _set_state(rel, "deployed")
     skipped = _deploy_skipped(root, cand)
     if skipped:
         rel["deployment"]["skipped_hosts"] = skipped
@@ -2161,6 +2175,7 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
     records = _releases(cur)
     open_rel = _open_rel(cur)
     open_state = open_rel["state"] if open_rel is not None else ""
+    open_state_at = open_rel.get("state_at") if open_rel is not None else None
     auto_superseded = False
     if open_rel is not None:
         rel = open_rel
@@ -2215,7 +2230,7 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             return _cut_refuse(why)
         # In memory only: the cut record's write below persists it, so a
         # refused or dry-run cut leaves the open release open.
-        open_rel["state"] = "superseded"
+        _set_state(open_rel, "superseded")
         open_rel.pop("cut_pending", None)
         if auto_superseded:
             open_rel["superseded_why"] = "red, contained in main"
@@ -2348,9 +2363,9 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
         "branch": branch,
         "base": sha,
         "cut_at": _now(),
-        "state": "cut",
         "cut_pending": True,
     }
+    _set_state(rel, "cut")
     cur.setdefault("releases", []).append(rel)
     _write(state / "round.json", cur)
     push = _rgit(
@@ -2377,6 +2392,10 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             cur["releases"].remove(rel)
             if open_rel is not None and open_rel["state"] == "superseded":
                 open_rel["state"] = open_state
+                if open_state_at is None:
+                    open_rel.pop("state_at", None)
+                else:
+                    open_rel["state_at"] = open_state_at
                 open_rel.pop("superseded_by", None)
                 open_rel.pop("superseded_why", None)
             _write(state / "round.json", cur)
@@ -2446,7 +2465,7 @@ def _cut_abandon(root: Path, state: Path, args: argparse.Namespace) -> int:
         # Already gone from origin: only the record is left to mark.
         print(f"{branch} is not on origin — marking the record abandoned")
         if not args.dry_run:
-            rel["state"] = "abandoned"
+            _set_state(rel, "abandoned")
             rel.pop("cut_pending", None)
             _write(state / "round.json", cur)
         return 0
@@ -2479,7 +2498,7 @@ def _cut_abandon(root: Path, state: Path, args: argparse.Namespace) -> int:
         is None
     ):
         return _cut_refuse(f"deleting {branch} on origin failed")
-    rel["state"] = "abandoned"
+    _set_state(rel, "abandoned")
     rel.pop("cut_pending", None)
     _write(state / "round.json", cur)
     print(
@@ -2493,10 +2512,55 @@ def _sup_refuse(why: str) -> int:
     return 1
 
 
+def _print_unforwarded(root: Path, branch: str) -> None:
+    """After a partial supersede, list commits ``origin/<branch>`` holds
+    that ``origin/main`` lacks — they still gate the next cut
+    (``origin/main must contain release/r<N>'s head``), so the operator
+    merges them into main by hand. Output only; a fetch/log failure
+    prints one line and never fails the verb."""
+    if not branch:
+        return
+    if _rgit(root, "fetch", "-q", "origin", "main") is None:
+        print(
+            "scripts/round: could not fetch origin/main to check for"
+            f" unforwarded {branch} commits",
+            file=sys.stderr,
+        )
+        return
+    if _rgit(root, "fetch", "-q", "origin", f"refs/heads/{branch}") is None:
+        print(
+            f"scripts/round: could not fetch origin/{branch} to check for"
+            " unforwarded commits",
+            file=sys.stderr,
+        )
+        return
+    out = _rgit(root, "log", "--oneline", "--no-decorate", "origin/main..FETCH_HEAD")
+    if out is None:
+        print(
+            "scripts/round: could not list origin/main.."
+            f"origin/{branch} for unforwarded commits",
+            file=sys.stderr,
+        )
+        return
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    if not lines:
+        return
+    print(
+        f"note: {len(lines)} commit(s) on origin/{branch} are not on"
+        " origin/main — they must be forwarded to main by hand before"
+        " the next cut:"
+    )
+    for ln in lines:
+        print(f"  {ln}")
+
+
 def cmd_supersede(state: Path, args: argparse.Namespace) -> int:
     """Record a deploying/deployed release superseded once origin/prod has
     moved past its pinned sha (gr573151): a dead clone's record is stale, not
-    a blocker. Record only — the journal stays and no remote ref moves."""
+    a blocker. ``--partial`` is the opposite reach: prod does NOT hold the
+    pin, a rollout that stopped short is retired with a mandatory
+    ``--reason`` (``superseded_partial`` set). Record only — the journal
+    stays and no remote ref moves."""
     root = _root()
     cur = _read_round(state)
     if args.release:
@@ -2558,7 +2622,19 @@ def cmd_supersede(state: Path, args: argparse.Namespace) -> int:
             " completed; confirm runtime with `scripts/round deploy"
             f" --confirm-runtime {pin}`"
         )
-    if (
+    if args.partial:
+        if prod:
+            if not _ref(root, f"{pin}^{{commit}}"):
+                return _sup_refuse(
+                    f"r{n_rel}'s pinned sha {pin[:9]} is not a commit here —"
+                    " cannot prove origin/prod lacks it"
+                )
+            if _ancestor(root, pin, prod):
+                return _sup_refuse(
+                    f"origin/prod {prod[:9]} contains r{n_rel}'s pinned sha"
+                    f" {pin[:9]} — use plain `scripts/round supersede`"
+                )
+    elif (
         not prod
         or not _ref(root, f"{pin}^{{commit}}")
         or not _ancestor(root, pin, prod)
@@ -2570,7 +2646,14 @@ def cmd_supersede(state: Path, args: argparse.Namespace) -> int:
     if args.dry_run:
         print(f"dry-run: would supersede r{n_rel}")
         return 0
-    rel["state"] = "superseded"
+    _set_state(rel, "superseded")
+    if args.partial:
+        rel["superseded_partial"] = True
+        rel["superseded_why"] = args.reason.strip()[:500]
+        _write(state / "round.json", cur)
+        print(f"r{n_rel} superseded — partial rollout ({pin[:9]} not on origin/prod)")
+        _print_unforwarded(root, str(rel.get("branch") or ""))
+        return 0
     rel["superseded_why"] = "origin/prod moved past it"
     _write(state / "round.json", cur)
     print(f"r{n_rel} superseded (origin/prod {prod[:9]} is past {pin[:9]})")
@@ -2633,6 +2716,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_sup.add_argument("release", nargs="?", default="", metavar="rN")
     p_sup.add_argument("--dry-run", action="store_true")
+    p_sup.add_argument(
+        "--partial",
+        action="store_true",
+        help="retire a PARTIAL rollout: origin/prod does not hold the "
+        "pinned sha (record only; keeps the journal)",
+    )
+    p_sup.add_argument(
+        "--reason",
+        default="",
+        help="why the partial rollout is retired (mandatory with --partial)",
+    )
     p_good = sub.add_parser(
         "good",
         help="mark a deployed release good/r<N> after 24h clean runtime",
@@ -2661,6 +2755,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_good.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    if args.cmd == "supersede":
+        if args.partial and not args.reason.strip():
+            parser.error("supersede --partial needs --reason '<text>'")
+        if not args.partial and args.reason:
+            parser.error("--reason only means something with --partial")
     if args.cmd == "gate":
         return cmd_gate(args)
     if args.cmd == "deploy":

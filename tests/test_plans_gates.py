@@ -501,6 +501,7 @@ def test_round_record_literal_matches_script(round_script: ModuleType) -> None:
         "base": HEAD,
         "state": "deployed",
         "cut_at": "2026-11-06T11:00:00Z",
+        "state_at": "2026-11-06T11:20:00Z",
         "deployment": {
             "sha": HEAD,
             "rollout_at": "2026-11-06T11:40:00Z",

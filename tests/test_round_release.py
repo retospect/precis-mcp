@@ -18,6 +18,7 @@ if sys.platform != "win32":
     import fcntl
 
 from tests.test_round_gate import (
+    REPO_ROOT,
     Rig,
     _child,
     _commit,
@@ -1976,6 +1977,221 @@ def test_supersede_needs_a_live_record_or_a_name(rig: Rig) -> None:
     out = rig.round("supersede")
     assert out.returncode == 1
     assert "no live deploying/deployed" in out.stderr
+
+
+# ── supersede --partial (td574370): a rollout that never reached prod ────
+
+
+def test_supersede_partial_retires_a_partial_rollout_keeping_the_journal(
+    rig: Rig,
+) -> None:
+    """A deploying record whose pinned sha never reached origin/prod is a
+    partial rollout: --partial retires the record, stores the reason and
+    keeps the deployment journal byte-for-byte; no remote ref moves."""
+    head = _deploying(rig)
+    journal = dict(_rel(_round_json(rig), 1)["deployment"])
+    out = rig.round("supersede", "--partial", "--reason", "rollout stalled")
+    assert out.returncode == 0, out.stderr
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "superseded"
+    assert rel["superseded_why"] == "rollout stalled"
+    assert rel["superseded_partial"] is True
+    assert rel["deployment"] == journal
+    assert rig.origin_ref("release/r1") == head
+    assert rig.origin_ref("prod") == ""
+
+
+@pytest.mark.parametrize("reason", [[], [""], ["   "]])
+def test_supersede_partial_requires_a_reason(rig: Rig, reason: list[str]) -> None:
+    _deploying(rig)
+    out = rig.round(
+        "supersede", "--partial", *(["--reason", *reason] if reason else [])
+    )
+    assert out.returncode == 2
+    assert "reason" in out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "deploying"
+
+
+def test_reason_without_partial_is_refused(rig: Rig) -> None:
+    _deploying(rig)
+    out = rig.round("supersede", "--reason", "rollout stalled")
+    assert out.returncode == 2
+    assert "reason" in out.stderr
+
+
+def test_supersede_partial_refuses_when_prod_has_the_pin(rig: Rig) -> None:
+    head = _cut(rig)
+    out = rig.round("deploy", DEPLOY_STUB_VERIFY="1", **_verdict(head))
+    assert out.returncode == 3
+    # prod sits AT the pin: the rollout completed — confirm runtime instead.
+    out = rig.round("supersede", "--partial", "--reason", "x")
+    assert out.returncode == 1
+    assert "--confirm-runtime" in out.stderr
+    # prod moved PAST the pin: the record is stale — plain supersede retires it.
+    _push_branch(rig, "prod", rig.shas["c3"])
+    out = rig.round("supersede", "--partial", "--reason", "x")
+    assert out.returncode == 1
+    assert "plain `scripts/round supersede`" in out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "deployed"
+
+
+def test_supersede_partial_refuses_on_open_terminal_or_confirmed_record(
+    rig: Rig,
+) -> None:
+    head = _cut(rig)
+    out = rig.round("supersede", "r1", "--partial", "--reason", "x")
+    assert out.returncode == 1
+    assert "still open" in out.stderr
+    # terminal: a record --partial already retired is refused again.
+    _journal_deploy(rig, head)
+    assert rig.round("supersede", "--partial", "--reason", "x").returncode == 0
+    out = rig.round("supersede", "r1", "--partial", "--reason", "x")
+    assert out.returncode == 1
+    assert "nothing to supersede" in out.stderr
+    # runtime-confirmed: the deploy path finished it; nothing to retire.
+    assert rig.round("cut").returncode == 0
+    _journal_deploy(rig, rig.shas["c3"], n=2)
+    assert (
+        _deploy(rig, DEPLOY_STUB_VERIFY="1", **_verdict(rig.shas["c3"])).returncode == 0
+    )
+    out = rig.round("supersede", "r2", "--partial", "--reason", "x")
+    assert out.returncode == 1
+    assert "nothing to supersede" in out.stderr
+
+
+def test_supersede_partial_refuses_when_prod_unreadable(rig: Rig) -> None:
+    _deploying(rig)
+    _git(rig.root, "remote", "set-url", "origin", str(rig.root / "nonexistent.git"))
+    out = rig.round("supersede", "--partial", "--reason", "x")
+    assert out.returncode == 1
+    assert "could not read origin/prod" in out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "deploying"
+
+
+def test_supersede_partial_dry_run_writes_nothing(rig: Rig) -> None:
+    _deploying(rig)
+    path = rig.root / ".git/precis-round/round.json"
+    before = path.read_bytes()
+    out = rig.round("supersede", "--partial", "--reason", "x", "--dry-run")
+    assert out.returncode == 0, out.stderr
+    assert "dry-run: would supersede r1" in out.stdout
+    assert path.read_bytes() == before
+
+
+def test_cut_accepts_a_partial_superseded_record_with_its_journal(rig: Rig) -> None:
+    """After --partial retires a partial rollout the next cut pipelines:
+    main contains the pin with a differing tree, so r<N+1> mints at main
+    while the superseded record keeps its journal. Both readers accept it."""
+    _deploying(rig)
+    out = rig.round("supersede", "--partial", "--reason", "rollout stalled")
+    assert out.returncode == 0, out.stderr
+    cut = rig.round("cut")
+    assert cut.returncode == 0, cut.stderr
+    assert rig.origin_ref("release/r2") == rig.shas["c3"]
+    rel1 = _rel(_round_json(rig), 1)
+    assert rel1["state"] == "superseded"
+    assert rel1["deployment"]["sha"] == rig.shas["c2"]
+    assert _rel(_round_json(rig), 2)["state"] == "cut"
+    status = rig.round("status", "--json")
+    assert status.returncode == 0, status.stderr
+    assert json.loads(status.stdout)["next_n"] == 3
+    reader = load_script(
+        "round_state_partial", REPO_ROOT / "scripts" / "lib" / "round_state.py"
+    )
+    data = reader.read_round(rig.root / ".git" / "precis-round" / "round.json")
+    rels = {r["n"]: r for r in data["releases"]}
+    assert rels[1]["state"] == "superseded" and rels[1]["deployment"]
+    assert rels[2]["state"] == "cut"
+
+
+def test_supersede_partial_prints_the_unforwarded_commits(rig: Rig) -> None:
+    """A partial rollout's release-branch fixes are unforwarded: after
+    --partial the operator must merge them into main by hand before the
+    next cut — the verb says so and names them (output only)."""
+    _deploying(rig)
+    fix = _child(rig, rig.shas["c2"], "release fix not yet on main")
+    _push_branch(rig, "release/r1", fix)
+    out = rig.round("supersede", "--partial", "--reason", "x")
+    assert out.returncode == 0, out.stderr
+    assert "forward" in out.stdout and "by hand" in out.stdout
+    assert fix[:7] in out.stdout
+    assert "release fix not yet on main" in out.stdout
+
+
+def test_supersede_partial_prints_nothing_when_main_covers_the_branch(
+    rig: Rig,
+) -> None:
+    _deploying(rig)
+    out = rig.round("supersede", "--partial", "--reason", "x")
+    assert out.returncode == 0, out.stderr
+    assert "forward" not in out.stdout
+
+
+# ── state_at (td574370): every transition stamps the record's clock ──────
+
+
+def test_state_at_marks_every_transition(rig: Rig) -> None:
+    head = _cut(rig)
+    cut_at = _rel(_round_json(rig), 1)["state_at"]
+    assert str(cut_at).endswith("Z")
+    _journal_deploy(rig, head)
+    assert _rel(_round_json(rig), 1)["state"] == "deploying"
+    assert str(_rel(_round_json(rig), 1)["state_at"]).endswith("Z")
+    out = rig.round("deploy", DEPLOY_STUB_VERIFY="1", **_verdict(head))
+    assert out.returncode == 3
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "deployed" and str(rel["state_at"]).endswith("Z")
+    out = rig.round(
+        "deploy",
+        "--confirm-runtime",
+        head,
+        "--runtime-evidence",
+        "fake runtime evidence",
+    )
+    assert out.returncode == 0, out.stderr
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "confirmed" and str(rel["state_at"]).endswith("Z")
+
+
+def test_state_at_on_superseded_and_abandoned(rig: Rig) -> None:
+    head = _cut(rig)
+    _journal_deploy(rig, head)
+    assert rig.round("supersede", "--partial", "--reason", "x").returncode == 0
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "superseded" and str(rel["state_at"]).endswith("Z")
+    assert rig.round("cut").returncode == 0
+    assert rig.round("cut", "--abandon").returncode == 0
+    rel = _rel(_round_json(rig), 2)
+    assert rel["state"] == "abandoned" and str(rel["state_at"]).endswith("Z")
+
+
+def test_lost_cut_race_restores_state_and_state_at(rig: Rig) -> None:
+    """The lease loser's revert restores the open release's state AND its
+    state_at — an in-memory supersede must not leak a fresh clock."""
+    _cut(rig)
+    path = rig.root / ".git/precis-round/round.json"
+    cur = _round_json(rig)
+    _rel(cur)["state_at"] = "2026-01-01T00:00:00Z"
+    path.write_text(json.dumps(cur), encoding="utf-8")
+    foreign = _child(rig, rig.shas["c0"], "foreign winner")
+    mark = rig.origin.parent / "hook-once"
+    _hook(
+        rig,
+        f'[ -f "{mark}" ] && exit 0\n'
+        f'touch "{mark}"\n'
+        "env -u GIT_DIR -u GIT_OBJECT_DIRECTORY"
+        " -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_QUARANTINE_PATH"
+        f' git -C "{rig.root}" push -q origin'
+        f" {foreign}:refs/heads/release/r2 >&2 || true\n"
+        "exit 1\n",
+    )
+    out = rig.round("cut", "--supersede")
+    assert out.returncode == 1
+    assert "lost the cut race" in out.stderr
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "cut"
+    assert rel["state_at"] == "2026-01-01T00:00:00Z"
+    assert "superseded_by" not in rel and "superseded_why" not in rel
 
 
 # ── good/r<N> (gr517170) ──────────────────────────────────────────────────

@@ -134,6 +134,36 @@ a human: rollback, superseding a partial rollout, and the exhausted
 release-fix loop — two red fix iterations run unattended, the second red
 files the ruling ask and no third starts by itself.
 
+### Stuck watchdog
+
+The same `release_poll` pass also watches the live `release.round`
+record for a release that stopped moving (td574370). It runs first in
+every pass — at any hour, inside the no-release window and while a pass
+is open — and its only write is one `ask-user` ruling todo, once per
+`(round, stage)` (the dedupe tag is `release-stuck:r<N>:<stage>`).
+
+The record's `state_at` is the clock. Stages: `deploying` (the rollout
+journal is live), `confirm` (deployed, `deploy.confirmed_at` absent),
+`fixing` (the newest `release.ci_verdicts` row for the head is red —
+counting a red on the round's older head until the current head has a
+verdict), `gating` (no verdict, but a check.yml run is in flight on the
+head — the one GitHub read the watchdog pays, made only past the `cut`
+mark), and `cut` (no verdict and no run). A green verdict is the
+approval/deploy wait and never asks. Records without `state_at` (every
+round cut before this) and terminal states are never judged.
+
+Minutes per stage come from `release.stage_deadlines` (DB-only, JSON;
+default `{"cut":30,"gating":180,"fixing":240,"deploying":60,"confirm":45}`).
+A stage absent, non-integer or `<= 0` is not watched; an unparsable or
+non-object value watches nothing — fail closed, no ask.
+
+The ask is a `ruling` (`acknowledged` | `false alarm`, blocks
+`nothing`); it names the round, stage, minutes over, head sha and the
+hand verbs that apply (`scripts/round deploy`, `scripts/round
+supersede --partial --reason "<why>"`, `scripts/round cut --abandon`).
+Answering executes nothing: deploys, supersedes, cuts and abandons stay
+a human's call.
+
 ## Release loop (release_poll)
 
 The loop starts itself: one recurring todo; every 10 minutes

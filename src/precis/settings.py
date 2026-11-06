@@ -381,6 +381,22 @@ REGISTRY: dict[str, SettingSpec] = {
             "unparsable value blocks the pass (fail-safe).",
         ),
         SettingSpec(
+            key="release.stage_deadlines",
+            type="str",
+            env_var=None,
+            default='{"cut":30,"gating":180,"fixing":240,"deploying":60,"confirm":45}',
+            doc="Minutes per release stage before release_poll's stuck "
+            "watchdog files one ask-user ruling todo (td574370). A JSON "
+            "object keyed by stage: 'cut' (no CI verdict or run yet), "
+            "'gating' (a check.yml run still in flight), 'fixing' (a "
+            "recorded red verdict), 'deploying' (the rollout journal is "
+            "live), 'confirm' (deployed, runtime unconfirmed). A stage "
+            "absent, non-integer or <= 0 is not watched; an unparsable "
+            "or non-object value watches nothing (fail closed — no "
+            "ask). The approval stage has no key: an open approval ask "
+            "is already a human's item. DB-only — no env fallback.",
+        ),
+        SettingSpec(
             key="release.auto_deploy",
             type="bool",
             env_var=None,
