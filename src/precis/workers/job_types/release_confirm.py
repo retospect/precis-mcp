@@ -13,7 +13,7 @@ evidence — every live worker host's ``host_heartbeat.meta->>'code_sha'``
 no network; a heartbeat inside the last 60 minutes on a non-ephemeral
 host that is not a 12-hex container id) — plus the live web's
 ``X-Precis-Boot-Sha`` header when the ``release.health_url`` operator
-setting names its ``/healthz`` (one ``safe_get``; a set URL must be a
+setting names its ``/healthz`` (one ``polite_safe_get``; a set URL must be a
 public address the guard may reach). The workers decide; the web is
 optional. Any gap or mismatch fails the job *before* any script runs and
 the tick's retry-cap ask goes to a human — the factory attests, a failed
@@ -173,14 +173,15 @@ class Evidence:
 
 
 def _http_get(url: str) -> Any:
-    """Seam: one GET of the health URL through the SSRF-pinned client
-    (``http_client`` + ``safe_get``; no ``with_backoff`` — that needs a
-    service row). The response; raises on transport or SSRF refusal."""
-    from precis.utils.http import http_client
-    from precis.utils.safe_fetch import safe_get
+    """Seam: one GET of the health URL through the SSRF-pinned client under
+    the politeness core (``http_client`` + ``polite_safe_get``: host-lane
+    limiter token, backoff on transport errors and 429/5xx). The response;
+    raises on transport, SSRF or exhausted-retry refusal — the caller counts
+    every raise as "not confirmed"."""
+    from precis.utils.http import http_client, polite_safe_get
 
     with http_client(timeout=10) as client:
-        return safe_get(client, url)
+        return polite_safe_get(client, url)
 
 
 def _parse_ts(value: Any) -> datetime | None:
