@@ -5641,6 +5641,37 @@ def _limiter_refused(req: LlmRequest, model: str, exc: RateLimited) -> LlmResult
     )
 
 
+def _openrouter_spend_tally(base_url: str, cost_usd: float | None) -> None:
+    """Meter one hosted call's provider-reported dollar cost into
+    ``llm:openrouter:credits`` (td572038).
+
+    Counts only calls to an ``openrouter.ai`` host (or a subdomain) whose
+    wire response carried a positive ``usage.cost`` — a price-table
+    estimate is not spend and never feeds. The value reads as cumulative
+    spend since the pool's seeding: no limit, no reset, pacing stays
+    ``unknown`` by design (no management key, so no credit-balance read
+    exists). Dark without a bound store; a failed write warns and never
+    raises.
+    """
+    cost = cost_usd
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost <= 0:
+        return
+    host = urlparse(base_url).hostname or ""
+    if host != "openrouter.ai" and not host.endswith(".openrouter.ai"):
+        return
+    from precis.budget import meter as _meter
+
+    store = _meter.active_store()
+    if store is None:
+        return
+    from precis.utils.llm.accounts import add_pool_usage
+
+    try:
+        add_pool_usage(store, "llm:openrouter:credits", cost, now=datetime.now(UTC))
+    except Exception:
+        log.warning("openrouter credits pool write failed", exc_info=True)
+
+
 def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
     """Drive a hosted OpenAI-compatible OSS backend (the ``OPENAI`` backend).
 
@@ -5751,6 +5782,7 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
             exc=exc,
         )
     out = result_from_openai(res, model=model, tier=req.tier)
+    _openrouter_spend_tally(base_url, getattr(res, "cost_usd", None))
     # An HTTP 200 with empty content, no tool calls and no refusal is a
     # failed call, not an answer (gr464672: ~1360 taproot:dedup replies were
     # logged errored=false and read downstream as a real "different").

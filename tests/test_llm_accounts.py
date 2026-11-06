@@ -44,6 +44,7 @@ def restore_seeded_pools(store: Any) -> Iterator[None]:
                     "llm:codex:weekly",
                     "llm:kimi:monthly",
                     "llm:devin:sessions",
+                    "llm:devin:acu",
                     "llm:openrouter:credits",
                 ],
             ),
@@ -284,7 +285,7 @@ class TestSeededAccounts:
         assert a.api_key_ref == "DEVIN_API_TOKEN"
         assert a.promo_expiry is not None and a.promo_expiry.isoformat() == "2026-11-30"
         assert "source" in a.entitlement
-        assert a.pools == ("llm:devin:sessions",)
+        assert a.pools == ("llm:devin:sessions", "llm:devin:acu")
 
     def test_codex_has_empty_models_and_no_default(self, store: Any) -> None:
         a = get_account(store, "codex")
@@ -312,7 +313,7 @@ class TestSeededAccounts:
 
 
 class TestSeededPools:
-    def test_six_pools_seeded(self, store: Any) -> None:
+    def test_seven_pools_seeded(self, store: Any) -> None:
         pools = {p.provider for p in list_pools(store)}
         assert pools == {
             "llm:claude-sub:5h",
@@ -320,6 +321,7 @@ class TestSeededPools:
             "llm:codex:weekly",
             "llm:kimi:monthly",
             "llm:devin:sessions",
+            "llm:devin:acu",
             "llm:openrouter:credits",
         }
 
@@ -341,6 +343,7 @@ class TestSeededPools:
             "llm:claude-sub:7d",
             "llm:codex:weekly",
             "llm:kimi:monthly",
+            "llm:devin:acu",
             "llm:openrouter:credits",
         ):
             assert pools[key].limit_reported is None
@@ -354,6 +357,17 @@ class TestSeededPools:
         assert pools["llm:codex:weekly"].reset_rule is None
         assert pools["llm:kimi:monthly"].reset_rule is None
         assert pools["llm:devin:sessions"].reset_rule is None
+        acu = pools["llm:devin:acu"]
+        assert acu.reset_rule == "calendar:weekly:sun:08:00@Etc/UTC"
+        assert acu.unit == "acu"
+        rule = parse_reset_rule(acu.reset_rule or "")
+        assert isinstance(rule, CalendarReset)
+        assert (rule.period, rule.weekday, rule.hour, rule.minute) == (
+            "weekly",
+            6,
+            8,
+            0,
+        )
 
     def test_host_rows_excluded(self, store: Any) -> None:
         with store.pool.connection() as conn:

@@ -309,6 +309,7 @@ class TestPoolsView:
             "llm:codex:weekly",
             "llm:kimi:monthly",
             "llm:devin:sessions",
+            "llm:devin:acu",
             "llm:openrouter:credits",
         ):
             assert key in body
@@ -320,7 +321,7 @@ class TestPoolsView:
 
         body = _handler(store).get(id="/pools").body
         lines = [line for line in body.splitlines() if line.strip().startswith("llm:")]
-        assert len(lines) == 6
+        assert len(lines) == 7
         assert all(line.endswith("pacing=unknown") for line in lines), lines
         key = "llm:claude-sub:7d"
         now = datetime.now(UTC)
@@ -341,7 +342,7 @@ class TestPoolsView:
     def test_retry_at_and_stale_render(self, store: Any) -> None:
         body = _handler(store).get(id="/pools").body
         lines = [line for line in body.splitlines() if line.strip().startswith("llm:")]
-        assert len(lines) == 6
+        assert len(lines) == 7
         for line in lines:
             assert "retry_at=" in line
             assert "stale=true" in line

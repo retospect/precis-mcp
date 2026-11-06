@@ -18,8 +18,9 @@ from precis.store.types import Tag
 from precis.utils.http import VendorError
 from precis.workers.executors import devin_api
 from precis.workers.service_config import set_service_prio
+from tests.test_llm_accounts import restore_seeded_pools  # noqa: F401  fixture
 
-pytestmark = pytest.mark.db
+pytestmark = [pytest.mark.db, pytest.mark.usefixtures("restore_seeded_pools")]
 
 
 class FakeAPI:
@@ -406,3 +407,128 @@ def test_rejecting_params_fail_before_mint(store: Store, api: FakeAPI) -> None:
     devin_api.run_devin_api_pass(store, api=api)
     assert _status(store, rid) == "failed"
     assert api.created == []
+
+
+# ── ACU pool feed (td572038) ──────────────────────────────────────
+
+
+def _running_session(acus: float | None, **over: Any) -> dict[str, Any]:
+    session: dict[str, Any] = {
+        "session_id": "devin-abc123",
+        "url": "x",
+        "status": "running",
+        "status_detail": "working",
+        "pull_requests": [],
+    }
+    if acus is not None:
+        session["acus_consumed"] = acus
+    session.update(over)
+    return session
+
+
+def _acu_used(store: Store) -> float | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT used_reported FROM external_rate_limits WHERE provider = %s",
+            ("llm:devin:acu",),
+        ).fetchone()
+    assert row is not None
+    return float(row[0]) if row[0] is not None else None
+
+
+def test_poll_feeds_acu_delta_to_pool(store: Store, api: FakeAPI) -> None:
+    _enable(store)
+    rid = _mk_running_job(
+        store, meta_extra={"usage": {"acus_consumed": 1.0, "acus_fed": 1.0}}
+    )
+    api.answer("devin-abc123", _running_session(3.5))
+    devin_api.run_devin_api_pass(store, api=api)
+    # The pool gets the delta over the acus_fed mark, not the
+    # cumulative 3.5; the mark advances to the fed figure.
+    assert _acu_used(store) == 2.5
+    usage = _meta(store, rid)["usage"]
+    assert usage["acus_consumed"] == 3.5
+    assert usage["acus_fed"] == 3.5
+
+
+def test_poll_second_poll_feeds_only_the_increment(store: Store, api: FakeAPI) -> None:
+    _enable(store)
+    rid = _mk_running_job(store)
+    api.answer("devin-abc123", _running_session(3.5), _running_session(4.0))
+    devin_api.run_devin_api_pass(store, api=api)
+    assert _acu_used(store) == 3.5
+    devin_api.run_devin_api_pass(store, api=api)
+    # Second poll's delta reads off the acus_fed mark (3.5), so only
+    # the 0.5 increment feeds — never a double count.
+    assert _acu_used(store) == 4.0
+    assert _meta(store, rid)["usage"]["acus_fed"] == 4.0
+
+
+def test_poll_absent_report_keeps_mark_and_never_refeeds(
+    store: Store, api: FakeAPI
+) -> None:
+    """Sequence 5, absent, 7 feeds 5 then 2 — the absent poll can neither
+    feed nor null the last numeric acus_consumed."""
+    _enable(store)
+    rid = _mk_running_job(store)
+    api.answer(
+        "devin-abc123",
+        _running_session(5.0),
+        _running_session(None),
+        _running_session(7.0),
+    )
+    devin_api.run_devin_api_pass(store, api=api)
+    assert _acu_used(store) == 5.0
+    devin_api.run_devin_api_pass(store, api=api)
+    usage = _meta(store, rid)["usage"]
+    assert usage["acus_consumed"] == 5.0  # kept, not overwritten with None
+    assert usage["acus_fed"] == 5.0
+    assert _acu_used(store) == 5.0
+    devin_api.run_devin_api_pass(store, api=api)
+    assert _acu_used(store) == 7.0
+    assert _meta(store, rid)["usage"]["acus_fed"] == 7.0
+
+
+def test_poll_falling_report_never_lowers_the_mark(store: Store, api: FakeAPI) -> None:
+    """Sequence 5, 3, 6 feeds 5 then 1 — a report below the mark feeds
+    nothing and the mark never drops."""
+    _enable(store)
+    rid = _mk_running_job(store)
+    api.answer(
+        "devin-abc123",
+        _running_session(5.0),
+        _running_session(3.0),
+        _running_session(6.0),
+    )
+    devin_api.run_devin_api_pass(store, api=api)
+    assert _acu_used(store) == 5.0
+    devin_api.run_devin_api_pass(store, api=api)
+    usage = _meta(store, rid)["usage"]
+    assert usage["acus_consumed"] == 3.0  # provider truth is mirrored
+    assert usage["acus_fed"] == 5.0  # the mark never lowers
+    assert _acu_used(store) == 5.0
+    devin_api.run_devin_api_pass(store, api=api)
+    assert _acu_used(store) == 6.0
+    assert _meta(store, rid)["usage"]["acus_fed"] == 6.0
+
+
+def test_poll_pool_failure_does_not_fail_the_job(
+    store: Store, api: FakeAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable(store)
+    rid = _mk_running_job(store)
+    api.answer("devin-abc123", _running_session(3.5))
+
+    def boom(*a: Any, **kw: Any) -> bool:
+        raise RuntimeError("pool write exploded")
+
+    monkeypatch.setattr("precis.utils.llm.accounts.add_pool_usage", boom)
+    result = devin_api.run_devin_api_pass(store, api=api)
+    assert result["failed"] == 0
+    assert _status(store, rid) == "running"
+    # The usage mirror committed but the mark did not advance — the
+    # delta retries on the next poll instead of being lost.
+    usage = _meta(store, rid)["usage"]
+    assert usage["acus_consumed"] == 3.5
+    assert "acus_fed" not in usage
+    assert _acu_used(store) is None

@@ -107,6 +107,18 @@ profile's window cap counts in its own pools, `llm:<profile>:calls` and
 an exhausted row skips the profile's rung, an ahead one skips it for
 background calls (`subscription_cap`).
 
+`llm:devin:acu` meters Devin session ACUs — each devin_api poll adds the
+increment over the job's `usage.acus_fed` high-water mark — and resets
+on a weekly calendar rule (Sunday 08:00 Etc/UTC). Its limit is unknown
+(NULL), as is `llm:openrouter:credits`'s: that pool accumulates
+per-call `usage.cost` dollars reported by calls to an `openrouter.ai`
+host and never resets; a price-table estimate is not spend, and calls
+through `run_oss_tool_loop` are not metered yet. Both figures are
+estimates from per-call and per-session usage, not provider-reported
+balances — Devin has no dollar pool (on-demand dollars stay a hard
+stop in job meta) and there is no OpenRouter management key for a
+credit-balance read — so both pools read `pacing=unknown` by design.
+
 ## What would the new router have chosen? /decisions and llm.decide
 
 `llm.decide.mode` defaults to `legacy`; `shadow` and `on` compute and log

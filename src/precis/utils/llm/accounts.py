@@ -5,8 +5,9 @@ credential at one provider under one plan, ``llm_account``) and **pool**
 (a rate bucket with a reset rule and explicit scope, a row of
 ``external_rate_limits`` whose ``provider`` starts with ``llm:``). This
 module supplies typed reads, the UPDATE-only usage-signal writers for
-existing pools (:func:`record_pool_report`, :func:`record_pool_failure`)
-and :func:`consume_cap`, the one writer here that inserts rows: a
+existing pools (:func:`record_pool_report`, :func:`record_pool_failure`,
+:func:`add_pool_usage`) and :func:`consume_cap`, the one writer here that
+inserts rows: a
 subscription profile's window cap meters into its own
 ``llm:<profile>:calls|tokens`` rows, so the cap holds across processes.
 The owner-only account write path (which also creates an account's
@@ -276,6 +277,71 @@ def record_pool_report(
     if known is None:
         log.warning("pool report: unknown pool key %s", key)
     return False
+
+
+def add_pool_usage(
+    store: Store,
+    key: str,
+    amount: float | Decimal,
+    *,
+    source: str = "estimate",
+    now: datetime,
+) -> bool:
+    """Add ``amount`` to an existing pool's ``used_reported``.
+
+    The caller-side meter for usage a provider never reports back
+    (td572038): Devin session ACUs and OpenRouter per-call dollars feed
+    their pools here. ``amount`` must be positive and finite — anything
+    else returns ``False``. A row whose ``reset_rule`` window has ended
+    (``resets_at`` NULL or already past) restarts: ``used_reported``
+    becomes ``amount`` and ``resets_at`` the next calendar/rolling
+    instant after ``now``; inside a window the amount accumulates. A
+    rule-less row accumulates forever and leaves ``resets_at`` alone.
+    Never inserts a row, never sets a limit: an unknown key warns and
+    returns ``False``. The read-modify-write runs under ``FOR UPDATE``
+    in one transaction, so concurrent feeders serialise on the row.
+    """
+    if not key.startswith(POOL_PREFIX):
+        log.warning("pool usage: unknown pool key %s", key)
+        return False
+    try:
+        numeric = float(amount)
+    except (TypeError, ValueError):
+        numeric = math.nan
+    if not math.isfinite(numeric) or numeric <= 0:
+        log.warning("pool usage: bad amount %r for %s", amount, key)
+        return False
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT reset_rule, resets_at FROM external_rate_limits "
+            "WHERE provider = %s FOR UPDATE",
+            (key,),
+        ).fetchone()
+        if row is None:
+            log.warning("pool usage: unknown pool key %s", key)
+            return False
+        rule_text, resets_at = row
+        if rule_text is not None and (resets_at is None or resets_at <= now):
+            conn.execute(
+                "UPDATE external_rate_limits SET used_reported = %s, "
+                "resets_at = %s, reported_at = %s, source = %s "
+                "WHERE provider = %s",
+                (
+                    amount,
+                    next_reset(parse_reset_rule(rule_text), now),
+                    now,
+                    source,
+                    key,
+                ),
+            )
+        else:
+            conn.execute(
+                "UPDATE external_rate_limits SET "
+                "used_reported = COALESCE(used_reported, 0) + %s, "
+                "reported_at = %s, source = %s WHERE provider = %s",
+                (amount, now, source, key),
+            )
+    return True
 
 
 def record_pool_failure(
@@ -643,6 +709,7 @@ __all__ = [
     "Pool",
     "ResetRule",
     "RollingReset",
+    "add_pool_usage",
     "consume_cap",
     "format_reset_rule",
     "get_account",

@@ -2403,6 +2403,131 @@ def test_openai_compat_limiter_refusal_is_a_paused_rate_result(
     assert router._server_retry_hint_s(out) is not None
 
 
+#: The genuine ``summ.LlmClient``, captured before this file's spend-feed
+#: helpers first patch it — a second ``_dispatch_compat_at`` call inside
+#: one test would otherwise re-capture the lambda and recurse.
+_REAL_LLM_CLIENT: Any = None
+
+
+def _dispatch_compat_at(
+    monkeypatch: pytest.MonkeyPatch,
+    body: dict[str, Any],
+    base_url: str,
+    model: str = "m",
+) -> router.LlmResult:
+    """Run _dispatch_openai_compat over a fake HTTP 200 at ``base_url`` —
+    ``_openai_compat_with_body`` with the host as a parameter."""
+    import precis.secrets as secrets
+    import precis.workers.llm_summarize as summ
+
+    global _REAL_LLM_CLIENT
+    if _REAL_LLM_CLIENT is None:
+        _REAL_LLM_CLIENT = summ.LlmClient
+
+    class FakeTransport:
+        def post_json(self, *a: Any, **kw: Any) -> dict[str, Any]:
+            return body
+
+    monkeypatch.setattr(
+        summ,
+        "LlmClient",
+        lambda cfg: _REAL_LLM_CLIENT(cfg, transport=FakeTransport()),
+    )
+    monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: "sk")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", base_url)
+    return router._dispatch_openai_compat(
+        LlmRequest(tier=Tier.MEDIUM, prompt="x"), model=model
+    )
+
+
+def test_openrouter_cost_feeds_credits_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """td572038: a priced call to an openrouter.ai host (or a subdomain)
+    meters its reported dollar cost into ``llm:openrouter:credits`` —
+    cumulative spend, no limit, no reset."""
+    from precis.budget import meter
+    from precis.utils.llm import accounts
+
+    fed: list[tuple[Any, str, float]] = []
+
+    def feed(store: Any, key: str, amount: float, **kw: Any) -> bool:
+        fed.append((store, key, amount))
+        return True
+
+    monkeypatch.setattr(accounts, "add_pool_usage", feed)
+    bound = object()
+    monkeypatch.setattr(meter, "active_store", lambda: bound)
+    body = {
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"cost": 0.0042, "total_tokens": 9},
+    }
+
+    for base_url in (
+        "https://openrouter.ai/api/v1",
+        "https://eu.openrouter.ai/api/v1",
+    ):
+        out = _dispatch_compat_at(monkeypatch, body, base_url)
+        assert out.cost_usd == pytest.approx(0.0042)
+
+    assert fed == [
+        (bound, "llm:openrouter:credits", 0.0042),
+        (bound, "llm:openrouter:credits", 0.0042),
+    ]
+
+
+def test_other_host_and_free_calls_feed_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The feed is provider-reported OpenRouter spend only: a different
+    host never meters, and a call whose wire response omitted
+    ``usage.cost`` meters nothing — even when the price table produces a
+    ``cost_usd`` estimate (an estimate is not spend)."""
+    from precis.budget import meter
+    from precis.utils.llm import accounts
+
+    fed: list[Any] = []
+
+    def feed(*a: Any, **kw: Any) -> bool:
+        fed.append(a)
+        return True
+
+    monkeypatch.setattr(accounts, "add_pool_usage", feed)
+    monkeypatch.setattr(meter, "active_store", lambda: object())
+
+    priced = {
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"cost": 0.01, "total_tokens": 9},
+    }
+    free = {
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"total_tokens": 9},
+    }
+    for base_url, body in (
+        ("https://api.deepinfra.com/v1", priced),
+        ("https://openrouter.ai/api/v1", free),
+        ("https://openrouter.ai.evil.example/v1", priced),
+    ):
+        out = _dispatch_compat_at(monkeypatch, body, base_url)
+        assert out.error is None
+
+    # Priced-table model, token split reported, NO usage.cost: the
+    # result carries a real cost_usd estimate yet feeds nothing.
+    estimated = _dispatch_compat_at(
+        monkeypatch,
+        {
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {
+                "total_tokens": 1_000_000,
+                "prompt_tokens": 1_000_000,
+                "completion_tokens": 0,
+            },
+        },
+        "https://openrouter.ai/api/v1",
+        model="Qwen/Qwen2.5-72B-Instruct",
+    )
+    assert estimated.cost_usd == pytest.approx(0.23)
+    assert fed == []
+
+
 def test_run_with_retry_does_not_requeue_a_limiter_refusal_in_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

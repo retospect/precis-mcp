@@ -50,7 +50,10 @@ the job for ``PAUSE_BACKOFF`` without pausing the lane.
 ``meta.devin`` (session id, url, status, status_detail, pull_requests,
 structured_output) and ``meta.usage`` (``acus_consumed``,
 ``on_demand_usd``, ``checked_at``) — the per-job usage field the gripe
-asks for.
+asks for. The poll's ACU increment (reported ``acus_consumed`` minus the
+``usage.acus_fed`` high-water mark, stamped only after a successful
+feed) also meters into the ``llm:devin:acu`` weekly pool (td572038);
+on-demand dollars stay a hard stop here, never a pool.
 
 **Trust.** ``meta.devin`` is provider-reported *evidence*: status and
 PR links straight from the session object, ``structured_output``
@@ -354,14 +357,32 @@ def _concurrency() -> int:
     return max(1, min(8, n))
 
 
-def _usage_meta(session: dict[str, Any], now: datetime) -> dict[str, Any]:
+def _usage_meta(
+    session: dict[str, Any],
+    now: datetime,
+    prior: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """The per-job usage field — provider-reported ACUs (+ Teams
-    overage dollars when the plan exposes them)."""
-    return {
-        "acus_consumed": session.get("acus_consumed"),
+    overage dollars when the plan exposes them).
+
+    ``prior`` is the last mirrored usage dict, needed because each write
+    replaces the whole ``usage`` key: a poll that omits
+    ``acus_consumed`` keeps the last numeric value (a number is never
+    overwritten with None), and the feed's ``acus_fed`` high-water mark
+    always carries forward.
+    """
+    prior = prior if isinstance(prior, dict) else {}
+    acus = session.get("acus_consumed")
+    if acus is None:
+        acus = prior.get("acus_consumed")
+    usage: dict[str, Any] = {
+        "acus_consumed": acus,
         "on_demand_usd": session.get("on_demand_usage"),
         "checked_at": now.isoformat(),
     }
+    if "acus_fed" in prior:
+        usage["acus_fed"] = prior["acus_fed"]
+    return usage
 
 
 def _devin_meta(session: dict[str, Any]) -> dict[str, Any]:
@@ -382,6 +403,56 @@ def _devin_meta(session: dict[str, Any]) -> dict[str, Any]:
         "structured_output": session.get("structured_output"),
         "devin_mode": session.get("devin_mode"),
     }
+
+
+def _feed_acu_pool(
+    store: Store,
+    ref_id: int,
+    session: dict[str, Any],
+    now: datetime,
+    usage: dict[str, Any],
+) -> None:
+    """Meter the poll's ACU increment into ``llm:devin:acu`` (td572038).
+
+    The session's ``acus_consumed`` is cumulative, so the pool gets the
+    delta over ``usage.acus_fed`` — a high-water mark stamped only
+    after a successful feed, so a missing or falling report can never
+    re-feed consumed ACUs and a failed write retries on the next poll
+    instead of being lost. ``usage`` is the dict the mirror just
+    committed; on a successful feed its mark advances in place and is
+    written back, never lowered. Any failure warns and never fails the
+    poll.
+    """
+    current = session.get("acus_consumed")
+    if isinstance(current, bool) or not isinstance(current, (int, float)):
+        return
+    mark_raw = usage.get("acus_fed")
+    mark = (
+        float(mark_raw)
+        if isinstance(mark_raw, (int, float)) and not isinstance(mark_raw, bool)
+        else 0.0
+    )
+    delta = float(current) - mark
+    if delta <= 0:
+        return
+    from precis.utils.llm.accounts import add_pool_usage
+
+    try:
+        fed = add_pool_usage(store, "llm:devin:acu", delta, now=now)
+    except Exception:
+        log.warning(
+            "devin_api: job %d ACU pool write failed (delta %s)",
+            ref_id,
+            delta,
+            exc_info=True,
+        )
+        return
+    if not fed:
+        return
+    usage["acus_fed"] = float(current)
+    with store.pool.connection() as conn:
+        _set_meta(conn, ref_id, usage=usage)
+        conn.commit()
 
 
 def _fail(
@@ -410,6 +481,8 @@ def _succeed(
     ref_id: int,
     session: dict[str, Any],
     now: datetime,
+    *,
+    prior_usage: dict[str, Any] | None = None,
 ) -> None:
     """Terminal success — final devin/usage mirror + job_summary chunk
     + STATUS:succeeded. The recorded fields are provider-reported
@@ -419,7 +492,12 @@ def _succeed(
     pr_note = " PRs: " + ", ".join(str(p["pr_url"]) for p in prs) if prs else ""
     acus = session.get("acus_consumed")
     with store.pool.connection() as conn:
-        _set_meta(conn, ref_id, devin=devin, usage=_usage_meta(session, now))
+        _set_meta(
+            conn,
+            ref_id,
+            devin=devin,
+            usage=_usage_meta(session, now, prior_usage),
+        )
         _append_chunk(
             store,
             ref_id,
@@ -630,11 +708,11 @@ def _poll_job(
     detail = str(detail) if detail else None
 
     # Mirror the latest provider evidence every poll (cheap jsonb merge).
+    usage = _usage_meta(session, now, meta.get("usage"))
     with store.pool.connection() as conn:
-        _set_meta(
-            conn, ref_id, devin=_devin_meta(session), usage=_usage_meta(session, now)
-        )
+        _set_meta(conn, ref_id, devin=_devin_meta(session), usage=usage)
         conn.commit()
+    _feed_acu_pool(store, ref_id, session, now, usage)
 
     if status == "exit":
         if detail in _QUOTA_DETAILS:
@@ -650,7 +728,7 @@ def _poll_job(
             store.set_setting(_PAUSED_KEY, wake.isoformat())
             return "waiting_time"
         if detail is None or detail == "finished":
-            _succeed(store, ref_id, session, now)
+            _succeed(store, ref_id, session, now, prior_usage=usage)
             return _SUCCEEDED
         _fail(
             store,

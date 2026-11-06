@@ -10,10 +10,12 @@ window cap kept in pool rows, including across two processes.
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import sys
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
@@ -26,6 +28,7 @@ from precis.utils.llm.accounts import (
     DRAIN_WINDOW,
     PACE_TARGET,
     Pool,
+    add_pool_usage,
     consume_cap,
     list_pools,
     pacing,
@@ -423,3 +426,80 @@ class TestPoolGates:
         assert child.stdout.split()[-2:] == ["subscription_cap", "refused"], (
             f"stdout={child.stdout!r} stderr={child.stderr!r}"
         )
+
+
+@pytest.mark.usefixtures("restore_seeded_pools")
+class TestAddPoolUsage:
+    """add_pool_usage (td572038): caller-side metering into a seeded pool's
+    ``used_reported``, with the row's reset rule deciding when a new
+    window opens. Real PG; the seeded pools are restored per test."""
+
+    def test_add_pool_usage_accumulates_within_window(self, store: Any) -> None:
+        key = "llm:devin:acu"
+        now = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)  # a Friday
+        assert add_pool_usage(store, key, 2.0, now=now)
+        first = _pools(store)[key]
+        assert first.used_reported == 2.0
+        # resets_at seeded NULL → the first write opens the window at the
+        # rule's next instant: Sunday 08:00 Etc/UTC = 2026-11-08T08:00Z.
+        assert first.resets_at == datetime(2026, 11, 8, 8, 0, tzinfo=UTC)
+        later = now + timedelta(minutes=5)
+        assert add_pool_usage(store, key, 2.5, now=later)
+        row = _pools(store)[key]
+        assert row.used_reported == 4.5
+        assert row.resets_at == first.resets_at
+        assert row.reported_at == later
+        assert row.source == "estimate"
+
+    def test_add_pool_usage_restarts_after_reset_and_stamps_weekly_resets_at(
+        self, store: Any
+    ) -> None:
+        key = "llm:devin:acu"
+        now = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE external_rate_limits SET used_reported = 9, "
+                "resets_at = %s WHERE provider = %s",
+                (now - timedelta(hours=1), key),
+            )
+        assert add_pool_usage(store, key, 1.25, now=now)
+        row = _pools(store)[key]
+        # The past resets_at ends the window: used restarts at the new
+        # amount (never 10.25) and resets_at moves to the next weekly
+        # anchor after now.
+        assert row.used_reported == 1.25
+        assert row.resets_at == datetime(2026, 11, 8, 8, 0, tzinfo=UTC)
+
+    def test_add_pool_usage_no_rule_accumulates_forever(self, store: Any) -> None:
+        key = "llm:openrouter:credits"  # seeded with reset_rule NULL
+        now = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)
+        assert add_pool_usage(store, key, 0.5, now=now)
+        assert add_pool_usage(store, key, Decimal("1.25"), now=now + timedelta(days=30))
+        row = _pools(store)[key]
+        assert row.used_reported == 1.75
+        assert row.resets_at is None
+
+    def test_add_pool_usage_refuses_unknown_key_and_nonpositive(
+        self, store: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        now = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)
+        with caplog.at_level("WARNING", logger="precis.utils.llm.accounts"):
+            assert not add_pool_usage(store, "llm:missing:weekly", 1, now=now)
+            assert not add_pool_usage(
+                store, "host:pool-usage-unknown.example", 1, now=now
+            )
+            for bad in (0, -3, math.nan, math.inf):
+                assert not add_pool_usage(store, "llm:devin:acu", bad, now=now)
+        assert "unknown pool key" in caplog.text
+        # Nothing landed: the acu row keeps its seeded NULLs, and no
+        # carrier row was invented for either refused key.
+        assert _pools(store)["llm:devin:acu"].used_reported is None
+        with store.pool.connection() as conn:
+            for key in ("llm:missing:weekly", "host:pool-usage-unknown.example"):
+                assert (
+                    conn.execute(
+                        "SELECT 1 FROM external_rate_limits WHERE provider = %s",
+                        (key,),
+                    ).fetchone()
+                    is None
+                )
