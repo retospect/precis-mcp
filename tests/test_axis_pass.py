@@ -908,7 +908,7 @@ def test_claim_chunk_anchor_varies_start_within_band(
 
     # Roll back after each claim so both anchored runs see the same
     # candidate pool — the difference must be the anchor, not the leases.
-    monkeypatch.setattr(ap, "random_chunk_anchor", lambda _conn: first_chunk)
+    monkeypatch.setattr(ap, "random_chunk_anchor", lambda _conn, **_kw: first_chunk)
     with store.pool.connection() as conn:
         rows = ap._claim_chunk(
             conn, "patent_example", axis, version="1", limit=2, ref_ids=None
@@ -916,7 +916,7 @@ def test_claim_chunk_anchor_varies_start_within_band(
         conn.rollback()
     assert [r["ref_id"] for r in rows] == [first, second]
 
-    monkeypatch.setattr(ap, "random_chunk_anchor", lambda _conn: second_chunk)
+    monkeypatch.setattr(ap, "random_chunk_anchor", lambda _conn, **_kw: second_chunk)
     with store.pool.connection() as conn:
         rows = ap._claim_chunk(
             conn, "patent_example", axis, version="1", limit=2, ref_ids=None
@@ -942,14 +942,100 @@ def test_claim_ref_anchor_varies_start_within_band(
 
     # Roll back after each claim so both anchored runs see the same
     # candidate pool — the difference must be the anchor, not the leases.
-    monkeypatch.setattr(ap, "random_ref_anchor", lambda _conn: first)
+    monkeypatch.setattr(ap, "random_ref_anchor", lambda _conn, **_kw: first)
     with store.pool.connection() as conn:
         rows = ap._claim_ref(conn, "domain", axis, version="1", limit=2, ref_ids=None)
         conn.rollback()
     assert [r["ref_id"] for r in rows] == [first, second]
 
-    monkeypatch.setattr(ap, "random_ref_anchor", lambda _conn: second)
+    monkeypatch.setattr(ap, "random_ref_anchor", lambda _conn, **_kw: second)
     with store.pool.connection() as conn:
         rows = ap._claim_ref(conn, "domain", axis, version="1", limit=2, ref_ids=None)
         conn.rollback()
     assert [r["ref_id"] for r in rows] == [second, first]
+
+
+# ---------------------------------------------------------------------------
+# gr573350: the chunk-level band-2 walk carries the per-process frontier
+# floor keyed by the axis's artifact — the second sweep resumes at the
+# lowest chunk_id the first returned.
+# ---------------------------------------------------------------------------
+
+
+def test_chunk_walk_floor_resumes_the_second_claim_at_the_first_min(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The forward slice's ``lo`` is ``max(anchor, floor)`` — spied
+    through ``_claim_chunk_walk_slice``'s kwargs."""
+    from precis.workers import axis_pass as ap
+
+    refs = [seed_ref(store, title=f"paper {i}") for i in range(3)]
+    ids = {
+        r: [
+            seed_chunk(store, ref_id=r, text=f"{_LONG_PARA} {j}", ord=j)
+            for j in range(2)
+        ]
+        for r in refs
+    }
+    monkeypatch.setattr(ap, "random_chunk_anchor", lambda _conn, **_kw: 0)
+
+    calls: list[dict[str, Any]] = []
+    orig = ap._claim_chunk_walk_slice
+
+    def spy(conn: Any, axis_id: str, **kw: Any) -> list[dict[str, Any]]:
+        calls.append(kw)
+        return orig(conn, axis_id, **kw)
+
+    monkeypatch.setattr(ap, "_claim_chunk_walk_slice", spy)
+
+    axis = {"applies_to_kinds": ["paper"]}
+    with store.pool.connection() as conn:
+        first = ap._claim_chunk(conn, "role3", axis, version="1", limit=2, ref_ids=None)
+        second = ap._claim_chunk(
+            conn, "role3", axis, version="1", limit=2, ref_ids=None
+        )
+        conn.commit()
+
+    floor = min(r["chunk_id"] for r in first)
+    assert floor == ids[refs[0]][0]
+    # Each claim filled its batch in the forward slice, so the wrap never
+    # ran; claim 2's slice starts at the floor, not the anchor.
+    assert [(kw["lo"], kw["hi"]) for kw in calls] == [(0, None), (floor, None)]
+    assert [r["chunk_id"] for r in second] == ids[refs[1]]
+
+
+def test_chunk_walk_forward_slice_above_the_floor_does_not_advance_it(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same coverage rule as classify's walk (gr573350 review): a ``>=``
+    slice anchored above the floor examined nothing in ``[floor,
+    anchor)`` — filling the batch there leaves the floor alone."""
+    from precis.workers import _claim as cq
+    from precis.workers import axis_pass as ap
+
+    refs = [seed_ref(store, title=f"paper {i}") for i in range(3)]
+    ids = {
+        r: [
+            seed_chunk(store, ref_id=r, text=f"{_LONG_PARA} {j}", ord=j)
+            for j in range(2)
+        ]
+        for r in refs
+    }
+    monkeypatch.setattr(ap, "random_chunk_anchor", lambda _conn, **_kw: 0)
+
+    axis = {"applies_to_kinds": ["paper"]}
+    pass_name = "axis:role3-v1"
+    with store.pool.connection() as conn:
+        ap._claim_chunk(conn, "role3", axis, version="1", limit=2, ref_ids=None)
+        conn.commit()
+        floor = cq.claim_frontier(pass_name, "walk")
+        assert floor == ids[refs[0]][0]
+
+        monkeypatch.setattr(
+            ap, "random_chunk_anchor", lambda _conn, **_kw: ids[refs[1]][0]
+        )
+        got = ap._claim_chunk(conn, "role3", axis, version="1", limit=1, ref_ids=None)
+        conn.commit()
+
+    assert [r["chunk_id"] for r in got] == [ids[refs[1]][0]]
+    assert cq.claim_frontier(pass_name, "walk") == floor

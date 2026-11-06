@@ -1762,3 +1762,207 @@ def test_resolve_concurrency_precedence(monkeypatch):
     assert resolve_concurrency(_FakeResolver(99), 3) == 32  # default clamp
     monkeypatch.setenv("PRECIS_SUMMARIZE_MAX_CONCURRENCY", "8")
     assert resolve_concurrency(_FakeResolver(24), 3) == 8  # env ceiling
+
+
+# --------------------------------------------------------------------------
+# gr573350: the rest tier carries the per-process frontier floor — the
+# ref_id,ord walk resumes at the lowest ref_id the previous claim returned
+# instead of re-probing the whole done prefix.
+# --------------------------------------------------------------------------
+
+
+def _age_out_of_hot_window(store: Any) -> None:
+    """Seeded chunks default ``last_seen = now()`` — hot-tier eligible.
+    Age them all out so the claim path under test is the ``rest`` tier."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET last_seen = now() - "
+            f"interval '{HOT_WINDOW_MIN + 60} minutes'"
+        )
+        conn.commit()
+
+
+def test_rest_tier_second_claim_runs_under_the_frontier_floor(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rest claim's floor is the lowest ref_id the previous claim
+    returned — spied through ``_claim_fresh``'s ``frontier`` kwarg."""
+    from precis.workers import llm_summarize as s
+    from tests.workers._helpers import seed_chunk, seed_ref
+
+    ra = seed_ref(store)
+    seed_chunk(store, ref_id=ra, text=_PROSE, ord=0)
+    rb = seed_ref(store)
+    seed_chunk(store, ref_id=rb, text=_PROSE, ord=0)
+    _age_out_of_hot_window(store)
+
+    frontiers: list[int | None] = []
+    orig = s._claim_fresh
+
+    def spy(conn: Any, **kw: Any) -> Any:
+        if kw["tier"] == "rest":
+            frontiers.append(kw["frontier"])
+        return orig(conn, **kw)
+
+    monkeypatch.setattr(s, "_claim_fresh", spy)
+
+    with store.pool.connection() as conn:
+        first = claim_chunks_without_summary(conn, summarizer="llm-v1", limit=1)
+        second = claim_chunks_without_summary(conn, summarizer="llm-v1", limit=1)
+        conn.commit()
+
+    assert [c.ref_id for c in first] == [ra]
+    assert [c.ref_id for c in second] == [rb]
+    assert frontiers == [None, ra]
+
+
+def test_below_floor_chunk_surfaces_once_the_floor_ttl_lapses(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A chunk that becomes eligible below the floor is invisible to
+    floored claims; once the injected clock crosses the TTL the next
+    claim's full scan finds it."""
+    from precis.workers import _claim as cq
+    from tests.workers._helpers import seed_chunk, seed_ref
+
+    now = [1000.0]
+    monkeypatch.setattr(cq, "_frontier_clock", lambda: now[0])
+    ra = seed_ref(store)
+    low = seed_chunk(store, ref_id=ra, text=_PROSE, ord=0)
+    rb = seed_ref(store)
+    mid = seed_chunk(store, ref_id=rb, text=_PROSE, ord=0)
+    rc = seed_ref(store)
+    high = seed_chunk(store, ref_id=rc, text=_PROSE, ord=0)
+    _age_out_of_hot_window(store)
+
+    with store.pool.connection() as conn:
+        first = claim_chunks_without_summary(conn, summarizer="llm-v1", limit=1)
+        second = claim_chunks_without_summary(conn, summarizer="llm-v1", limit=1)
+        # Re-pend the lowest chunk: drop its lease — still fresh-eligible,
+        # but below the floor (rb).
+        conn.execute(
+            "DELETE FROM chunk_claims WHERE chunk_id = %s AND artifact = 'llm-v1'",
+            (low,),
+        )
+        conn.commit()
+        third = claim_chunks_without_summary(conn, summarizer="llm-v1", limit=1)
+        conn.commit()
+        now[0] += 301.0
+        fourth = claim_chunks_without_summary(conn, summarizer="llm-v1", limit=1)
+        conn.commit()
+
+    assert [c.chunk_id for c in first] == [low]
+    assert [c.chunk_id for c in second] == [mid]
+    assert [c.chunk_id for c in third] == [high]  # floored: skipped low
+    assert [c.chunk_id for c in fourth] == [low]  # TTL lapsed: full scan
+
+
+def test_empty_rest_scan_parks_the_floor_at_max_ref_id(store: Any) -> None:
+    """A drained rest tier parks the floor at ``max(ref_id)`` so it stops
+    re-walking; a chunk inserted above the floor is still claimed."""
+    from precis.workers import _claim as cq
+    from tests.workers._helpers import seed_chunk, seed_ref
+
+    ra = seed_ref(store)
+    old = seed_chunk(store, ref_id=ra, text=_PROSE, ord=0)
+    _age_out_of_hot_window(store)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_claims (chunk_id, artifact) VALUES (%s, 'llm-v1')",
+            (old,),
+        )
+        conn.commit()
+        assert claim_chunks_without_summary(conn, summarizer="llm-v1", limit=4) == []
+        conn.commit()
+        assert cq.claim_frontier("summarize:llm-v1", "rest") == ra
+        rb = seed_ref(store)
+        new = seed_chunk(store, ref_id=rb, text=_PROSE, ord=0)
+        _age_out_of_hot_window(store)
+        claimed = claim_chunks_without_summary(conn, summarizer="llm-v1", limit=4)
+        conn.commit()
+
+    assert [c.chunk_id for c in claimed] == [new]
+
+
+def test_empty_floored_rest_claim_raises_the_floor_to_max(store: Any) -> None:
+    """Only the TTL clears a floor: an empty rest claim RAISES the floor
+    to the table's ``max(ref_id)`` — a drained tier costs one full scan
+    per TTL, not one every second claim (gr573350 review)."""
+    from precis.workers import _claim as cq
+    from tests.workers._helpers import seed_chunk, seed_ref
+
+    ra = seed_ref(store)
+    seed_chunk(store, ref_id=ra, text=_PROSE, ord=0)
+    rb = seed_ref(store)
+    parked = seed_chunk(store, ref_id=rb, text=_PROSE, ord=0)
+    _age_out_of_hot_window(store)
+
+    with store.pool.connection() as conn:
+        # rb's only chunk is already leased — rest holds just ra's.
+        conn.execute(
+            "INSERT INTO chunk_claims (chunk_id, artifact) VALUES (%s, 'llm-v1')",
+            (parked,),
+        )
+        conn.commit()
+        first = claim_chunks_without_summary(conn, summarizer="llm-v1", limit=4)
+        conn.commit()
+        assert [c.ref_id for c in first] == [ra]
+        assert cq.claim_frontier("summarize:llm-v1", "rest") == ra
+        # Rest is drained — the empty claim raises the floor to
+        # max(ref_id) = rb instead of clearing it.
+        assert claim_chunks_without_summary(conn, summarizer="llm-v1", limit=4) == []
+        conn.commit()
+        assert cq.claim_frontier("summarize:llm-v1", "rest") == rb
+        # And it stays — a second empty claim does NOT clear it.
+        assert claim_chunks_without_summary(conn, summarizer="llm-v1", limit=4) == []
+        conn.commit()
+        assert cq.claim_frontier("summarize:llm-v1", "rest") == rb
+
+
+def test_below_floor_row_surfaces_within_one_ttl_under_a_stream(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rule 4: a steady stream of eligible rows above the floor keeps
+    every claim non-empty, but the floor's timestamp is never re-stamped
+    — a chunk re-pended below it is claimed once the floor's first-set
+    TTL lapses (gr573350 review)."""
+    from precis.workers import _claim as cq
+    from tests.workers._helpers import seed_chunk, seed_ref
+
+    now = [1000.0]
+    monkeypatch.setattr(cq, "_frontier_clock", lambda: now[0])
+    ra = seed_ref(store)
+    low = seed_chunk(store, ref_id=ra, text=_PROSE, ord=0)
+    rb = seed_ref(store)
+    seed_chunk(store, ref_id=rb, text=_PROSE, ord=0)
+    _age_out_of_hot_window(store)
+
+    streamed: list[list[int]] = []
+    with store.pool.connection() as conn:
+        claim_chunks_without_summary(conn, summarizer="llm-v1", limit=1)  # ra
+        conn.commit()
+        claim_chunks_without_summary(conn, summarizer="llm-v1", limit=1)  # rb
+        conn.commit()
+        # Re-pend the low chunk below the floor (rb).
+        conn.execute(
+            "DELETE FROM chunk_claims WHERE chunk_id = %s AND artifact = 'llm-v1'",
+            (low,),
+        )
+        conn.commit()
+        # Stream: new refs above the floor keep each claim non-empty —
+        # none of them re-stamps the floor.
+        for _ in range(2):
+            now[0] += 119.0
+            r = seed_ref(store)
+            seed_chunk(store, ref_id=r, text=_PROSE, ord=0)
+            _age_out_of_hot_window(store)
+            got = claim_chunks_without_summary(conn, summarizer="llm-v1", limit=1)
+            streamed.append([c.chunk_id for c in got])
+            conn.commit()
+        # t = 238 — the floor is still live. Cross its first-set TTL.
+        now[0] += 100.0  # 338 > 300
+        final = claim_chunks_without_summary(conn, summarizer="llm-v1", limit=1)
+        conn.commit()
+
+    assert [low] not in streamed
+    assert [c.chunk_id for c in final] == [low]

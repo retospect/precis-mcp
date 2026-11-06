@@ -80,6 +80,7 @@ from precis.utils.prompt import (
     Profile,
     assemble,
 )
+from precis.workers._claim import claim_frontier, note_claim_frontier
 
 log = logging.getLogger(__name__)
 
@@ -497,7 +498,7 @@ _FRESH_CLAIM_SQL = """
            AND c.chunk_kind <> ALL(%(skip_kinds)s)
            AND length(c.text) >= %(min_chars)s
            AND length(c.text) <= %(max_chars)s
-           AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+           AND (c.meta->>'no_index') IS DISTINCT FROM 'true'{floor_pred}
          ORDER BY {order_by}
          LIMIT %(limit)s
            FOR UPDATE OF c SKIP LOCKED
@@ -627,7 +628,7 @@ def _rows_to_claims(rows: list[tuple[Any, ...]]) -> list[_Claimed]:
 
 
 def _claim_fresh(
-    conn: Any, *, summarizer: str, limit: int, tier: str
+    conn: Any, *, summarizer: str, limit: int, tier: str, frontier: int | None = None
 ) -> list[_Claimed]:
     """Claim never-seen chunks (no summary, no claim) for one queue tier.
 
@@ -640,11 +641,23 @@ def _claim_fresh(
     numeric-dump filter is applied in Python after the claim, not here (a
     ``regexp_replace`` over ~1M rows made the claim ~74s/batch; cheap
     length/kind filters stay SQL).
+
+    ``frontier`` is honored on the ``rest`` tier only: the
+    :func:`precis.workers._claim.claim_frontier` floor, spliced as
+    ``AND c.ref_id >= %(frontier)s`` so the ``ref_id, ord`` walk resumes
+    where the last claim stopped rather than re-probing ~3.2M done
+    chunks (gr573350). Every other tier emits byte-identical SQL.
     """
     kind_pred, extra_pred, order_by = _FRESH_TIERS[tier]
+    floor_pred = ""
+    if tier == "rest" and frontier is not None:
+        floor_pred = "\n           AND c.ref_id >= %(frontier)s"
     rows = conn.execute(
         _FRESH_CLAIM_SQL.format(
-            kind_pred=kind_pred, extra_pred=extra_pred, order_by=order_by
+            kind_pred=kind_pred,
+            extra_pred=extra_pred,
+            order_by=order_by,
+            floor_pred=floor_pred,
         ),
         {
             "artifact": summarizer,
@@ -652,6 +665,7 @@ def _claim_fresh(
             "min_chars": MIN_CHUNK_CHARS,
             "max_chars": MAX_CHUNK_CHARS,
             "hot_window_min": HOT_WINDOW_MIN,
+            "frontier": frontier,
             "limit": limit,
         },
     ).fetchall()
@@ -721,7 +735,14 @@ def claim_chunks_without_summary(
        un-summarised chunks to claim, so it can't starve the rest.
     5. **Fresh, rest** — every remaining never-seen chunk, ``ref_id, ord``
        order (a document's chunks stay contiguous so the prompt's shared
-       doc-header prefix keeps hitting the llama.cpp prefix cache).
+       doc-header prefix keeps hitting the llama.cpp prefix cache). This
+       tier carries the per-process frontier floor (gr573350,
+       :func:`precis.workers._claim.claim_frontier`): the walk starts at
+       the lowest ref_id the previous non-empty claim returned instead of
+       re-probing the whole done prefix (~3.2M chunks, 12.5s mean per
+       claim on prod). An empty rest claim raises the floor to the
+       table's ``max(ref_id)`` — it never clears it; only the TTL does,
+       so a ref re-pended below the floor waits at most one TTL.
     6. **Reclaim (top-up)** — remaining stale claim rows when fresh runs dry.
        (A row reclaimed in step 1 got ``claimed_at = now()`` so it cannot be
        double-claimed here; a fresh chunk with a claim row is excluded by the
@@ -737,11 +758,34 @@ def claim_chunks_without_summary(
     # Fresh tiers in queue order: draft > conv > hot > rest. The hot tier
     # (a paper a human just opened, salience-heated) jumps ahead of the
     # cold backlog but sits behind the actively-edited draft/conv writes.
+    rest_pass = f"summarize:{summarizer}"
     for tier in ("draft", "conv", "hot", "rest"):
         if len(claimed) >= limit:
             break
-        claimed += _claim_fresh(
-            conn, summarizer=summarizer, limit=limit - len(claimed), tier=tier
+        if tier != "rest":
+            claimed += _claim_fresh(
+                conn, summarizer=summarizer, limit=limit - len(claimed), tier=tier
+            )
+            continue
+        floor = claim_frontier(rest_pass, "rest")
+        got = _claim_fresh(
+            conn,
+            summarizer=summarizer,
+            limit=limit - len(claimed),
+            tier=tier,
+            frontier=floor,
+        )
+        claimed += got
+        high_water = None
+        if not got:
+            row = conn.execute("SELECT max(ref_id) FROM chunks").fetchone()
+            high_water = int(row[0]) if row and row[0] is not None else None
+        note_claim_frontier(
+            rest_pass,
+            "rest",
+            floor=floor,
+            min_key=min((c.ref_id for c in got), default=None),
+            high_water=high_water,
         )
     if len(claimed) < limit:
         claimed += _claim_reclaim(

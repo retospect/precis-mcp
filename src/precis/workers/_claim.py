@@ -14,6 +14,15 @@ refs first (whatever their body state), then usable-body refs, then
 recently touched refs, then the tail — ``ref_id`` breaks ties inside a
 band.
 
+Also home to the per-process *frontier floor* (:func:`claim_frontier` /
+:func:`note_claim_frontier`, gr573350): a chunk-PK or ref-PK claim walk
+that re-scans its already-done prefix on every call parks a floor at the
+lowest key it just returned, so the next claim resumes there instead.
+The floor only narrows the scan — eligibility predicates, SKIP LOCKED and
+the claim INSERT are untouched — and it may advance only where the claim
+provably covered everything below the new mark; a TTL counted from the
+floor's first set keeps below-floor work reachable in bounded time.
+
 Pure SQL plumbing; the caller owns the connection and its commit.
 """
 
@@ -33,8 +42,11 @@ __all__ = [
     "band_predicates",
     "band_ref_ids",
     "claim_batch",
+    "claim_frontier",
     "drop_band_ids",
     "invalidate_band_ids",
+    "invalidate_claim_frontiers",
+    "note_claim_frontier",
     "priority_band_sql",
     "quest_linked_sql",
     "random_chunk_anchor",
@@ -220,15 +232,107 @@ def band_batches(ids: list[int], floor: int | None) -> list[list[int]]:
     ]
 
 
-def random_chunk_anchor(conn: Any) -> int | None:
-    """A random ``chunk_id`` in ``[0, max]`` — the fair-claim scan anchor
-    for a band-2 chunk-PK walk (gr515633; Slice 3 fair-claim ordering,
-    ``docs/backlog/small-llm-derived-drain-band.md``). One cheap scalar
-    (``max(chunk_id)`` is an index lookup); ``None`` on an empty corpus."""
+#: TTL for a claim frontier floor (gr573350): a claim walk parked above a
+#: floor re-reads a row that becomes eligible BELOW it only after this —
+#: or after one cleared-floor full scan, whichever comes first.
+_FRONTIER_TTL_S = 300.0
+
+#: The clock behind the floor TTL — module-level so tests can advance it
+#: (``monkeypatch.setattr(_claim, "_frontier_clock", lambda: t)``).
+_frontier_clock = time.monotonic
+
+_frontier_floors: dict[tuple[str, str], tuple[float, int]] = {}
+
+
+def invalidate_claim_frontiers() -> None:
+    """Drop every frontier floor — test isolation (the ``store`` fixture
+    calls it per test, like :func:`invalidate_band_ids`; floors are keyed
+    by pass name, not Store, and would survive the TRUNCATE)."""
+    _frontier_floors.clear()
+
+
+def claim_frontier(pass_name: str, tier: str = "") -> int | None:
+    """Current frontier floor for one sweep's ``(pass_name, tier)`` scan —
+    the lowest key its previous non-empty claim returned — or ``None``
+    for a full scan (no floor parked, or the TTL lapsed)."""
+    key = (pass_name, tier)
+    hit = _frontier_floors.get(key)
+    if hit is None:
+        return None
+    if _frontier_clock() - hit[0] >= _FRONTIER_TTL_S:
+        del _frontier_floors[key]
+        return None
+    return hit[1]
+
+
+def note_claim_frontier(
+    pass_name: str,
+    tier: str = "",
+    *,
+    floor: int | None,
+    min_key: int | None,
+    high_water: int | None = None,
+) -> None:
+    """Update the floor after the floored slice ran (gr573350).
+
+    ``floor`` is the value :func:`claim_frontier` returned this claim;
+    ``min_key`` the lowest scan key the covered scan returned (``None``
+    when it returned nothing); ``high_water`` the table's current
+    maximum key read at scan time.
+
+    * rows → the floor advances to ``min_key``: the just-claimed rows
+      re-probe through their eligibility predicates next claim (cheap —
+      one batch) and the walk resumes where this one stopped instead of
+      re-walking the whole done prefix.
+    * empty → the floor rises to ``max(floor, high_water)`` — the empty
+      scan proved nothing eligible at/above the floor, so the done mark
+      parks at the table's current maximum key; rows inserted above it
+      are still found (``>=``).
+
+    The timestamp is set once, when the floor is first parked — every
+    later advance keeps it, so a live floor ALWAYS dies one
+    :data:`_FRONTIER_TTL_S` after it was first set and the next claim
+    does one full scan. That is the bound for a row that becomes
+    eligible below the floor (a re-pend, an unlock, a prerequisite
+    finishing): at most one TTL, however busy the stream above it
+    stays. An empty claim never clears the floor — only the TTL does —
+    so a drained queue costs one full scan per TTL, not one per claim.
+
+    Call only when the floored slice ran — when an earlier slice filled
+    the batch first, leave the floor untouched by not calling.
+    """
+    key = (pass_name, tier)
+    now = _frontier_clock()
+    hit = _frontier_floors.get(key)
+    live_ts = hit[0] if hit is not None and now - hit[0] < _FRONTIER_TTL_S else None
+    ts = live_ts if live_ts is not None else now
+    if min_key is not None:
+        _frontier_floors[key] = (ts, min_key)
+    elif high_water is not None:
+        _frontier_floors[key] = (ts, max(floor or 0, high_water))
+
+
+def random_chunk_anchor(conn: Any, lo: int | None = None) -> int | None:
+    """A random ``chunk_id`` in ``[lo or 0, max]`` — the fair-claim scan
+    anchor for a band-2 chunk-PK walk (gr515633; Slice 3 fair-claim
+    ordering, ``docs/backlog/small-llm-derived-drain-band.md``). One
+    cheap scalar (``max(chunk_id)`` is an index lookup); ``None`` on an
+    empty corpus when ``lo`` is unset, ``lo`` itself otherwise.
+
+    ``lo`` is the frontier floor (gr573350): with a floor set the draw
+    comes from ``[floor, max]`` so the walk does not anchor inside the
+    already-done prefix."""
+    if lo is None:
+        row = conn.execute(
+            "SELECT floor(random() * (max(chunk_id) + 1))::bigint FROM chunks"
+        ).fetchone()
+        return int(row[0]) if row and row[0] is not None else None
     row = conn.execute(
-        "SELECT floor(random() * (max(chunk_id) + 1))::bigint FROM chunks"
+        "SELECT floor(%(lo)s + random() * "
+        "(GREATEST(max(chunk_id), %(lo)s) + 1 - %(lo)s))::bigint FROM chunks",
+        {"lo": lo},
     ).fetchone()
-    return int(row[0]) if row and row[0] is not None else None
+    return int(row[0]) if row and row[0] is not None else lo
 
 
 def random_ref_anchor(conn: Any) -> int | None:

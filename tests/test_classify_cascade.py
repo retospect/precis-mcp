@@ -289,7 +289,7 @@ def test_fair_claim_scan_starts_at_random_anchor(
     from precis.workers import classify as c
 
     refs, ids = _seed_claim_papers(store, 3)
-    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn: ids[refs[1]][0])
+    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn, **_kw: ids[refs[1]][0])
 
     with store.pool.connection() as conn:
         rows = c._claim(conn, limit=4)
@@ -309,7 +309,7 @@ def test_fair_claim_head_fallback_covers_everything(
     from precis.workers import classify as c
 
     refs, ids = _seed_claim_papers(store, 3)
-    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn: ids[refs[2]][0])
+    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn, **_kw: ids[refs[2]][0])
 
     with store.pool.connection() as conn:
         rows = c._claim(conn, limit=10)
@@ -332,7 +332,7 @@ def test_ref_ids_claim_ignores_anchor_stays_ordered(
         seed_chunk(store, ref_id=ref, text=f"MARK{i} {_PROSE}", ord=i)
     ids = _seeded_ids(store, ref)
     # Anchor set high; the ref_ids path must ignore it entirely.
-    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn: ids[5])
+    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn, **_kw: ids[5])
 
     with store.pool.connection() as conn:
         rows = c._claim(conn, limit=3, ref_ids=[ref])
@@ -395,7 +395,7 @@ def test_claim_orders_refs_by_priority_band(
     store.add_tag(band4, Tag.open("body:partial"), set_by="system")
     _backdate(store, band4, 90)
     # Anchor above every ref — band order still beats the wrap position.
-    monkeypatch.setattr(c, "_random_ref_anchor", lambda _conn: band4 + 1)
+    monkeypatch.setattr(c, "_random_ref_anchor", lambda _conn, **_kw: band4 + 1)
 
     with store.pool.connection() as conn:
         rows = c._claim(conn, limit=4)
@@ -420,13 +420,13 @@ def test_random_anchor_varies_the_start_within_a_band(
 
     # Roll the lease back after each claim so both anchored runs see the
     # same candidate pool — the difference must be the anchor, not leases.
-    monkeypatch.setattr(c, "_random_ref_anchor", lambda _conn: first)
+    monkeypatch.setattr(c, "_random_ref_anchor", lambda _conn, **_kw: first)
     with store.pool.connection() as conn:
         rows = c._claim(conn, limit=1)
         conn.rollback()
     assert [r["ref_id"] for r in rows] == [first]
 
-    monkeypatch.setattr(c, "_random_ref_anchor", lambda _conn: second)
+    monkeypatch.setattr(c, "_random_ref_anchor", lambda _conn, **_kw: second)
     with store.pool.connection() as conn:
         rows = c._claim(conn, limit=1)
         conn.rollback()
@@ -456,7 +456,7 @@ def test_band1_claim_wraps_across_ref_batch_boundary(
         _quest_link(store, ref)
         refs.append(ref)
     assert refs == sorted(refs)
-    monkeypatch.setattr(c, "_random_ref_anchor", lambda _conn: refs[anchor_ix])
+    monkeypatch.setattr(c, "_random_ref_anchor", lambda _conn, **_kw: refs[anchor_ix])
 
     with store.pool.connection() as conn:
         rows = c._claim(conn, limit=n)
@@ -1196,3 +1196,265 @@ def test_inflight_cap_follows_the_shared_bucket_rate(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_LLM_BACKEND", "anthropic")
     assert classify_mod._limiter_provider() is None  # SMALL runs local
+
+
+# ---------------------------------------------------------------------------
+# gr573350: the band-2 chunk-PK walk carries the per-process frontier floor —
+# the second claim resumes at the lowest chunk_id the first returned instead
+# of re-walking the done prefix from the random anchor.
+# ---------------------------------------------------------------------------
+
+
+def test_walk_floor_resumes_the_second_claim_at_the_first_min(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The forward slice's ``lo`` is ``max(anchor, floor)`` — spied through
+    ``_claim_walk_slice``'s kwargs."""
+    from precis.workers import classify as c
+
+    refs, ids = _seed_claim_papers(store, 3)
+    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn, **_kw: 0)
+
+    calls: list[dict[str, Any]] = []
+    orig = c._claim_walk_slice
+
+    def spy(conn: Any, **kw: Any) -> list[dict]:
+        calls.append(kw)
+        return orig(conn, **kw)
+
+    monkeypatch.setattr(c, "_claim_walk_slice", spy)
+
+    with store.pool.connection() as conn:
+        first = c._claim(conn, limit=2)
+        second = c._claim(conn, limit=2)
+        conn.commit()
+
+    floor = min(r["chunk_id"] for r in first)
+    assert floor == ids[refs[0]][0]
+    # Each claim filled its batch in the forward slice, so the wrap never
+    # ran; claim 2's slice starts at the floor, not the anchor.
+    assert calls == [
+        {"limit": 2, "lo": 0, "hi": None},
+        {"limit": 2, "lo": floor, "hi": None},
+    ]
+    assert [r["chunk_id"] for r in second] == ids[refs[1]]
+
+
+def test_below_floor_chunk_waits_for_the_floor_ttl(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A chunk re-pended below the floor is invisible to floored claims;
+    once the injected clock crosses the TTL the full scan finds it."""
+    from precis.workers import _claim as cq
+    from precis.workers import classify as c
+
+    refs, ids = _seed_claim_papers(store, 3)
+    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn, **_kw: 0)
+    now = [1000.0]
+    monkeypatch.setattr(cq, "_frontier_clock", lambda: now[0])
+
+    low = ids[refs[0]][0]
+    with store.pool.connection() as conn:
+        first = c._claim(conn, limit=1)
+        conn.commit()
+        c._claim(conn, limit=1)
+        conn.commit()
+        # Re-pend the lowest chunk below the floor (drop its lease).
+        conn.execute(
+            "DELETE FROM chunk_claims WHERE chunk_id = %s AND artifact = %s",
+            (low, c.ARTIFACT),
+        )
+        conn.commit()
+        third = c._claim(conn, limit=1)
+        conn.commit()
+        now[0] += 301.0
+        fourth = c._claim(conn, limit=1)
+        conn.commit()
+
+    assert first[0]["chunk_id"] == low
+    assert third[0]["chunk_id"] == ids[refs[1]][0]  # floored: skipped low
+    assert [r["chunk_id"] for r in fourth] == [low]  # TTL lapsed: full scan
+
+
+def test_empty_walk_parks_the_floor_at_max_chunk_id(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A drained sweep parks the floor at ``max(chunk_id)`` — one full
+    scan per TTL instead of one per claim — and a chunk inserted above
+    the floor is still found (``>=``)."""
+    from precis.workers import _claim as cq
+    from precis.workers import classify as c
+
+    refs, ids = _seed_claim_papers(store, 1)
+    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn, **_kw: 0)
+    high = ids[refs[0]][-1]
+    with store.pool.connection() as conn:
+        for cid in ids[refs[0]]:
+            conn.execute(
+                "INSERT INTO chunk_claims (chunk_id, artifact) VALUES (%s, %s)",
+                (cid, c.ARTIFACT),
+            )
+        conn.commit()
+        assert c._claim(conn, limit=4) == []
+        conn.commit()
+        assert cq.claim_frontier(c.ARTIFACT, "walk") == high
+
+        new_ref = seed_ref(store)
+        new_cid = seed_chunk(store, ref_id=new_ref, text=_PROSE, ord=0)
+        rows = c._claim(conn, limit=4)
+        conn.commit()
+        assert [r["chunk_id"] for r in rows] == [new_cid]
+
+
+def test_forward_slice_above_the_floor_does_not_advance_it(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review case (a): a ``>=`` slice anchored above the floor examined
+    nothing in ``[floor, anchor)`` — filling the batch there must not
+    ratchet the floor past the unexamined gap."""
+    from precis.workers import _claim as cq
+    from precis.workers import classify as c
+
+    refs, ids = _seed_claim_papers(store, 3)
+    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn, **_kw: 0)
+
+    with store.pool.connection() as conn:
+        c._claim(conn, limit=2)  # covered from key 0 — sets the floor
+        conn.commit()
+        floor = cq.claim_frontier(c.ARTIFACT, "walk")
+        assert floor == ids[refs[0]][0]
+
+        monkeypatch.setattr(
+            c, "_random_chunk_anchor", lambda _conn, **_kw: ids[refs[1]][0]
+        )
+        calls: list[dict[str, Any]] = []
+        orig = c._claim_walk_slice
+
+        def spy(conn: Any, **kw: Any) -> list[dict]:
+            calls.append(kw)
+            return orig(conn, **kw)
+
+        monkeypatch.setattr(c, "_claim_walk_slice", spy)
+        got = c._claim(conn, limit=1)  # batch fills in the forward slice
+        conn.commit()
+
+    assert [r["chunk_id"] for r in got] == [ids[refs[1]][0]]
+    assert calls == [{"limit": 1, "lo": ids[refs[1]][0], "hi": None}]
+    assert cq.claim_frontier(c.ARTIFACT, "walk") == floor
+
+
+def test_walk_floor_moves_to_the_wraps_lowest_key(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The floor moves when the wrap ran — to the wrap slice's lowest
+    returned key (coverage ``[start, anchor)`` up to it is complete)."""
+    from precis.workers import _claim as cq
+    from precis.workers import classify as c
+
+    refs, ids = _seed_claim_papers(store, 3)
+    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn, **_kw: ids[refs[1]][0])
+
+    with store.pool.connection() as conn:
+        got = c._claim(conn, limit=6)
+        conn.commit()
+
+    assert [r["chunk_id"] for r in got] == (ids[refs[1]] + ids[refs[2]] + ids[refs[0]])
+    assert cq.claim_frontier(c.ARTIFACT, "walk") == ids[refs[0]][0]
+
+
+def test_walk_floor_moves_to_forward_min_when_the_wrap_is_empty(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wrap ran but returned nothing — everything below the anchor was
+    already claimed — so the floor moves to the ``>=`` slice's lowest
+    key (coverage ``[start, anchor) ∪ [anchor, K)`` is complete)."""
+    from precis.workers import _claim as cq
+    from precis.workers import classify as c
+
+    refs, ids = _seed_claim_papers(store, 2)
+    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn, **_kw: ids[refs[1]][0])
+
+    with store.pool.connection() as conn:
+        for cid in ids[refs[0]]:
+            conn.execute(
+                "INSERT INTO chunk_claims (chunk_id, artifact) VALUES (%s, %s)",
+                (cid, c.ARTIFACT),
+            )
+        conn.commit()
+        got = c._claim(conn, limit=4)
+        conn.commit()
+
+    assert [r["chunk_id"] for r in got] == ids[refs[1]]
+    assert cq.claim_frontier(c.ARTIFACT, "walk") == ids[refs[1]][0]
+
+
+def test_empty_floored_walk_raises_the_floor_to_max(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the TTL clears a floor: an empty walk with a floor set raises
+    it to the table's ``max(chunk_id)`` instead of clearing it."""
+    from precis.workers import _claim as cq
+    from precis.workers import classify as c
+
+    refs, ids = _seed_claim_papers(store, 1)
+    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn, **_kw: 0)
+    high = ids[refs[0]][-1]
+
+    with store.pool.connection() as conn:
+        assert len(c._claim(conn, limit=4)) == 2  # covered → floor = min
+        conn.commit()
+        assert cq.claim_frontier(c.ARTIFACT, "walk") == ids[refs[0]][0]
+        assert c._claim(conn, limit=4) == []
+        conn.commit()
+        assert cq.claim_frontier(c.ARTIFACT, "walk") == high
+        # And it stays — a second empty claim does NOT clear it.
+        assert c._claim(conn, limit=4) == []
+        conn.commit()
+        assert cq.claim_frontier(c.ARTIFACT, "walk") == high
+
+
+def test_below_floor_row_is_claimed_within_one_ttl_under_a_stream(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rule 4 / review case (a): a steady stream of eligible rows above
+    the floor keeps every claim non-empty, but the floor's timestamp is
+    never re-stamped — a chunk re-pended below it is claimed once the
+    floor's first-set TTL lapses."""
+    from precis.workers import _claim as cq
+    from precis.workers import classify as c
+
+    refs, ids = _seed_claim_papers(store, 3)
+    monkeypatch.setattr(c, "_random_chunk_anchor", lambda _conn, **_kw: 0)
+    now = [1000.0]
+    monkeypatch.setattr(cq, "_frontier_clock", lambda: now[0])
+    low = ids[refs[0]][0]
+
+    claimed: list[int] = []
+    with store.pool.connection() as conn:
+        for i in range(3):
+            got = c._claim(conn, limit=1)
+            claimed.append(got[0]["chunk_id"])
+            conn.commit()
+            if i < 2:
+                now[0] += 119.0
+        # t = 238, floor = ids[refs[1]][0] — re-pend the low chunk below it.
+        conn.execute(
+            "DELETE FROM chunk_claims WHERE chunk_id = %s AND artifact = %s",
+            (low, c.ARTIFACT),
+        )
+        conn.commit()
+        # Floored claim keeps working above the floor and skips the low row.
+        got = c._claim(conn, limit=1)
+        claimed.append(got[0]["chunk_id"])
+        conn.commit()
+        now[0] += 100.0  # 338 > 300s since the floor's first set
+        final = c._claim(conn, limit=1)
+        conn.commit()
+
+    assert claimed == [
+        ids[refs[0]][0],
+        ids[refs[0]][1],
+        ids[refs[1]][0],
+        ids[refs[1]][1],  # floored claim — skipped the re-pended low row
+    ]
+    assert [r["chunk_id"] for r in final] == [low]

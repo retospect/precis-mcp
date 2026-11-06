@@ -109,9 +109,11 @@ from precis.workers._claim import (
     band_batches,
     band_predicates,
     band_ref_ids,
+    claim_frontier,
     drop_band_ids,
     effective_kinds,
     finding_text,
+    note_claim_frontier,
     priority_band_sql,
     random_chunk_anchor,
     random_ref_anchor,
@@ -562,20 +564,30 @@ def _claim_chunk_walk_slice(
     limit: int,
     kinds: list[str],
     usable_pred: str,
-    floor: int | None,
-    floor_cmp: str,
+    lo: int | None,
+    hi: int | None,
     extra_sql: str,
     extra_params: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Band-2 sweep slice, mirroring ``classify._claim_walk_slice`` — a
-    forward ``chunk_id`` PK-index walk from an optional ``floor``, held
-    inside band 2 by ``usable_pred`` ("ref has a usable body"). The anchor
-    wraps the walk inside band 2 only: concurrent workers still spread
-    out, but the anchor can't jump a higher band's refs."""
+    forward ``chunk_id`` PK-index walk inside the optional ``lo``/``hi``
+    bounds, held inside band 2 by ``usable_pred`` ("ref has a usable
+    body"). The anchor wraps the walk inside band 2 only: concurrent
+    workers still spread out, but the anchor can't jump a higher band's
+    refs. ``lo`` is the effective start (``max(anchor, frontier)`` for the
+    forward slice, the frontier alone for the wrap); ``hi`` caps the wrap
+    at the anchor."""
     ns = axis_id.upper()
     marker_ns = f"{ns}CASCADE"
     artifact = f"axis:{axis_id}-v{version}"
-    floor_filter = f"AND c.chunk_id {floor_cmp} %(floor)s" if floor is not None else ""
+    bounds = " ".join(
+        b
+        for b, v in (
+            ("AND c.chunk_id >= %(lo)s", lo),
+            ("AND c.chunk_id < %(hi)s", hi),
+        )
+        if v is not None
+    )
     sql = f"""
     WITH cand AS (
       SELECT c.chunk_id, c.ref_id, c.ord, c.text, c.section_path
@@ -583,7 +595,7 @@ def _claim_chunk_walk_slice(
       WHERE r.kind = ANY(%(kinds)s) AND r.retired_at IS NULL
         AND {usable_pred}
         AND c.ord >= 0 AND c.chunk_kind = 'paragraph' AND length(c.text) > 120
-        {floor_filter}
+        {bounds}
         {extra_sql}
         AND NOT EXISTS (SELECT 1 FROM chunk_tags ct JOIN tags t ON t.tag_id = ct.tag_id
                         WHERE ct.chunk_id = c.chunk_id AND t.namespace = %(marker_ns)s
@@ -606,8 +618,10 @@ def _claim_chunk_walk_slice(
         "limit": limit,
         **extra_params,
     }
-    if floor is not None:
-        params["floor"] = floor
+    if lo is not None:
+        params["lo"] = lo
+    if hi is not None:
+        params["hi"] = hi
     return _claim_chunk_rows(conn.execute(sql, params).fetchall())
 
 
@@ -631,7 +645,16 @@ def _claim_chunk(
     recently touched unusable body, the tail) and a chunk-PK walk for
     band 2 (the bulk usable-body pool). Anchors wrap inside each band only, so
     concurrent workers still spread out but a lower band never jumps a
-    higher one. Eligibility is unchanged — only the claim order."""
+    higher one. Eligibility is unchanged — only the claim order.
+
+    The band-2 walk carries the same per-process frontier floor as
+    classify's (gr573350, :func:`precis.workers._claim.claim_frontier`,
+    keyed by this axis's artifact): with a floor set the random anchor
+    is drawn from ``[floor, max]`` so the walk never starts inside the
+    done prefix, and the wrap covers ``floor <= chunk_id < anchor``.
+    The floor moves only where the claim's own slices covered every key
+    up to the new mark — the wrap completing ``[floor, anchor)``, or the
+    forward slice starting at/below the floor itself."""
     kinds = axis.get("applies_to_kinds") or ["paper"]
     prereq_sql, prereq_params = _prereq_clauses(
         axis, ref_col="c.ref_id", chunk_col="c.chunk_id"
@@ -654,7 +677,6 @@ def _claim_chunk(
         )
     band1, band2, band3, band4 = band_predicates("r")
     ref_anchor = random_ref_anchor(conn)
-    chunk_anchor = random_chunk_anchor(conn)
     shared: dict[str, Any] = {
         "version": version,
         "kinds": kinds,
@@ -685,25 +707,65 @@ def _claim_chunk(
             drop_band_ids(kinds=kinds, ref_pred=band1, done=batch)
         if len(rows) >= limit:
             break
+    floor = claim_frontier(f"axis:{axis_id}-v{version}", "walk")
+    # With a floor set the anchor is drawn from [floor, max] so the walk
+    # does not start inside the done prefix.
+    chunk_anchor = random_chunk_anchor(conn, lo=floor)
+    walk_ran = wrap_ran = covered_from_floor = False
+    fwd_min: int | None = None
+    wrap_min: int | None = None
     if len(rows) < limit:
-        rows += _claim_chunk_walk_slice(
+        walk_ran = True
+        lo = chunk_anchor
+        if floor is not None:
+            lo = floor if chunk_anchor is None else max(chunk_anchor, floor)
+        got = _claim_chunk_walk_slice(
             conn,
             axis_id,
             limit=limit - len(rows),
             usable_pred=band2,
-            floor=chunk_anchor,
-            floor_cmp=">=",
+            lo=lo,
+            hi=None,
             **shared,
         )
-    if len(rows) < limit:
-        rows += _claim_chunk_walk_slice(
+        rows += got
+        fwd_min = min((r["chunk_id"] for r in got), default=None)
+        covered_from_floor = lo is None or lo <= (floor if floor is not None else 0)
+    if len(rows) < limit and (
+        floor is None or (chunk_anchor is not None and floor < chunk_anchor)
+    ):
+        # Wrap slice: chunk_id below the anchor, but never below the
+        # floor — that prefix was already walked. Skipped entirely when
+        # the floor sits at/above the anchor (the range would be empty).
+        wrap_ran = True
+        got = _claim_chunk_walk_slice(
             conn,
             axis_id,
             limit=limit - len(rows),
             usable_pred=band2,
-            floor=chunk_anchor,
-            floor_cmp="<",
+            lo=floor,
+            hi=chunk_anchor,
             **shared,
+        )
+        rows += got
+        wrap_min = min((r["chunk_id"] for r in got), default=None)
+    if walk_ran and (wrap_ran or covered_from_floor):
+        # The floor may move to K only when this claim's slices covered
+        # every key from the floor (or the table start) up to K: the wrap
+        # completing [floor, anchor), or the forward slice itself
+        # starting at/below the floor. Its new mark is the wrap's lowest
+        # key, or the forward slice's when the wrap came back empty.
+        advance = wrap_min if wrap_min is not None else fwd_min
+        high_water = None
+        if advance is None:
+            row = conn.execute("SELECT max(chunk_id) FROM chunks").fetchone()
+            high_water = int(row[0]) if row and row[0] is not None else None
+        note_claim_frontier(
+            f"axis:{axis_id}-v{version}",
+            "walk",
+            floor=floor,
+            min_key=advance,
+            high_water=high_water,
         )
     if len(rows) < limit:
         for batch in band_batches(

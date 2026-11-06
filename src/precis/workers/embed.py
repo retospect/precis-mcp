@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from psycopg import Connection
 
 from precis.embedder import Embedder, EmbedderUnavailable, make_embedder
+from precis.workers._claim import claim_frontier, note_claim_frontier
 from precis.workers._embed_jobs import targeted_embed_job_sql
 from precis.workers.base import ClaimedChunk, WorkerHandler
 
@@ -63,8 +64,8 @@ _CORPUS_PRED = "(r.kind <> ALL(ARRAY['conv', 'draft', 'finding']))"
 #: priority tiers keep ``c.ref_id, c.ord`` contiguity (small populations);
 #: each corpus tier keeps the base class's flat ``c.chunk_id`` FIFO
 #: (oldest-first — chunk_id order is insertion order) under its own
-#: resume cursor. Three separate statements, not one ``ORDER BY CASE``:
-#: a CASE rank can't carry the ``_rest_after`` cursor (the high-water is
+#: frontier floor. Three separate statements, not one ``ORDER BY CASE``:
+#: a CASE rank can't carry a per-tier floor (the high-water is
 #: not one ``chunk_id`` once ranks differ) and would sort the whole
 #: unembedded set per 32-chunk micro-batch — the gr506753 claim-cost
 #: regression this machinery exists to avoid.
@@ -87,9 +88,10 @@ _FRESH_TIERS: dict[str, tuple[str, str]] = {
     ),
 }
 
-#: Tiers carrying a ``_rest_after`` resume cursor — the corpus backlog
-#: tiers, keyed by their own name in that dict.
-_CURSORED_TIERS = frozenset({"paragraph", "structured", "other"})
+#: Tiers carrying a frontier floor — the corpus backlog tiers, keyed by
+#: their own name under ``embed:<model>`` in
+#: :func:`precis.workers._claim.claim_frontier`.
+_FLOORED_TIERS = frozenset({"paragraph", "structured", "other"})
 
 #: Same predicate as ``WorkerHandler._claim_fresh`` (no current, non-failed
 #: artifact row for this model; a stale ``content_sha`` re-derives an edited
@@ -165,17 +167,13 @@ class EmbedHandler(WorkerHandler):
 
     def __init__(self, embedder: Embedder) -> None:
         self._embedder = embedder
-        # Resume cursors for the corpus tiers' ``ORDER BY c.chunk_id``
-        # scans, keyed by tier name (``paragraph`` / ``structured`` /
-        # ``other``). Without them every 32-chunk micro-batch re-walks the
-        # whole already-embedded prefix (gr506753: ~4M row probes, ~9s per
-        # claim on a 4.5M-chunk corpus — claim SQL, not the embedder, was
-        # the drain's wall-clock bound). A missing key = scan from the
-        # bottom (first claim, or a post-tail reset); a re-pended low-id
-        # chunk is only visible to an uncursored scan, so an empty tier
-        # result resets that tier's cursor and retries once (see
-        # :meth:`_claim_fresh`).
-        self._rest_after: dict[str, int] = {}
+        # The corpus tiers' ``ORDER BY c.chunk_id`` scans ride the shared
+        # per-process frontier floor (gr573350,
+        # :func:`precis.workers._claim.claim_frontier`) keyed by this
+        # model — the successor of the ``_rest_after`` per-instance
+        # resume cursors (gr506753: ~4M row probes, ~9s per claim on a
+        # 4.5M-chunk corpus — claim SQL, not the embedder, was the drain's
+        # wall-clock bound). Module state, nothing to init here.
         # ``model_name`` / ``name`` are resolved lazily (see the
         # properties below), NOT here. Both read ``embedder.model``,
         # which for the remote backend is a ``GET /model`` round-trip.
@@ -370,16 +368,30 @@ class EmbedHandler(WorkerHandler):
         pending. A chunk claimed by an earlier tier is excluded from a later
         one by the fresh ``NOT EXISTS chunk_claims`` (its claim row is
         written in the same statement).
+
+        Each corpus tier (``_FLOORED_TIERS``) rides the shared per-process
+        frontier floor (gr573350,
+        :func:`precis.workers._claim.claim_frontier`) keyed by this model:
+        the claim starts at the lowest chunk_id the previous non-empty
+        claim returned instead of re-walking the embedded prefix. An
+        empty claim raises the floor to ``max(chunk_id)`` — only the TTL
+        clears it, so a chunk re-pended below the floor (an edit bumps
+        ``content_sha`` in place, resurfacing at the ORIGINAL id) waits
+        at most one TTL; a drained tier parks at the high-water and
+        costs one full scan per TTL, not one per claim.
         """
         skip_clause, skip_kinds = self._skip_clause("c")
+        pass_name = f"embed:{self.model_name}"
         claimed: list[ClaimedChunk] = []
         for tier, (kind_pred, order_by) in _FRESH_TIERS.items():
             remaining = limit - len(claimed)
             if remaining <= 0:
                 break
-            cursored = tier in _CURSORED_TIERS and tier in self._rest_after
-            if cursored:
-                kind_pred += " AND c.chunk_id > %(rest_after)s"
+            frontier = None
+            if tier in _FLOORED_TIERS:
+                frontier = claim_frontier(pass_name, tier)
+                if frontier is not None:
+                    kind_pred += " AND c.chunk_id >= %(frontier)s"
             sql = _TIERED_FRESH_CLAIM_SQL.format(
                 output_table=self.output_table,
                 model_column=self.model_column,
@@ -393,31 +405,22 @@ class EmbedHandler(WorkerHandler):
             }
             if skip_kinds:
                 params["skip_kinds"] = skip_kinds
-            if cursored:
-                params["rest_after"] = self._rest_after[tier]
+            if frontier is not None:
+                params["frontier"] = frontier
             rows = conn.execute(sql, params).fetchall()
-            if tier in _CURSORED_TIERS and not rows and tier in self._rest_after:
-                # Cursor past the live tail: either the tier truly drained,
-                # or a chunk re-pended BELOW the cursor (an edit bumps
-                # content_sha in place — the chunk resurfaces at its ORIGINAL
-                # id, not the tail). One unbounded rescan sees both cases;
-                # it also reseeds the cursor from the true frontier.
-                del self._rest_after[tier]
-                sql = _TIERED_FRESH_CLAIM_SQL.format(
-                    output_table=self.output_table,
-                    model_column=self.model_column,
-                    kind_pred=_FRESH_TIERS[tier][0],
-                    order_by=order_by,
-                    skip_clause=skip_clause,
+            if tier in _FLOORED_TIERS:
+                high_water = None
+                if not rows:
+                    row = conn.execute("SELECT max(chunk_id) FROM chunks").fetchone()
+                    high_water = int(row[0]) if row and row[0] is not None else None
+                note_claim_frontier(
+                    pass_name,
+                    tier,
+                    floor=frontier,
+                    min_key=min((int(r[0]) for r in rows), default=None),
+                    high_water=high_water,
                 )
-                rows = conn.execute(sql, params).fetchall()
-            batch = [ClaimedChunk(chunk_id=int(r[0]), text=str(r[1])) for r in rows]
-            if tier in _CURSORED_TIERS and batch:
-                # Corpus tiers order by c.chunk_id ASC — the last row is
-                # the high-water this claim reached; the next micro-batch
-                # resumes past it.
-                self._rest_after[tier] = batch[-1].chunk_id
-            claimed += batch
+            claimed += [ClaimedChunk(chunk_id=int(r[0]), text=str(r[1])) for r in rows]
         return claimed
 
 

@@ -1440,6 +1440,10 @@ def store() -> Iterator[Store]:
     # kinds), not by Store — a resolved set would otherwise hand the next
     # test's claim sweep ref_ids the TRUNCATE already deleted.
     _claim_queries.invalidate_band_ids()
+    # Same for the claim frontier floors (gr573350): keyed by (pass,
+    # tier), not Store — a parked floor would otherwise keep the next
+    # test's sweep scanning above the TRUNCATEd corpus's ids.
+    _claim_queries.invalidate_claim_frontiers()
     # Same for context_sentence's stamped-ref set (gr514381): a 900s TTL
     # holding last test's stamped ref_ids would shadow newly stamped refs
     # out of the scheduled-sweep cohort.

@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from precis.embedder import MockEmbedder
+from precis.workers._claim import claim_frontier
 from precis.workers.base import ClaimedChunk
 from precis.workers.embed import EmbedHandler
 from tests.workers._helpers import make_mock_bge_m3, seed_chunk, seed_chunks, seed_ref
@@ -401,48 +402,53 @@ class TestEmbedHandlerPriorityTiers:
         assert [row.chunk_id for row in claimed] == chunk_ids
 
 
-class TestEmbedHandlerRestCursor:
-    """gr506753: the corpus tiers' ``ORDER BY c.chunk_id`` used to rescan
-    the whole already-embedded prefix on EVERY micro-batch (~9s/claim on a
-    4.5M-chunk prod corpus — claim SQL, not the embedder, was the drain's
-    bound). ``EmbedHandler._rest_after`` resumes each claim past the
-    previous one's high-water instead of re-walking from chunk_id 1 —
-    one cursor per corpus tier since gr513749."""
+class TestEmbedHandlerFrontierFloor:
+    """gr506753/gr573350: the corpus tiers' ``ORDER BY c.chunk_id`` used to
+    rescan the whole already-embedded prefix on EVERY micro-batch
+    (~9s/claim on a 4.5M-chunk prod corpus — claim SQL, not the embedder,
+    was the drain's bound). The shared per-process frontier floor
+    (``_claim.claim_frontier``, successor of ``_rest_after``) resumes each
+    claim at the lowest chunk_id the previous one returned — one floor
+    per corpus tier under ``embed:<model>``."""
 
-    def test_second_claim_resumes_past_first_high_water(self, store):
+    def test_second_claim_resumes_at_the_frontier_floor(self, store):
         h = EmbedHandler(make_mock_bge_m3())
         _ref, ids = seed_chunks(store, [f"c{i}" for i in range(6)])
         with store.pool.connection() as conn:
             first = h.claim_batch(conn, limit=4)
             conn.commit()
-            # Released unembedded — without the cursor the next claim would
-            # re-return this SAME lowest window.
-            h.release_claims(conn, [row.chunk_id for row in first])
-            conn.commit()
+            # Without the floor the next claim would re-probe the
+            # just-claimed window from chunk_id 1; the floor resumes at
+            # first's lowest id.
             second = h.claim_batch(conn, limit=4)
             conn.commit()
 
         assert [row.chunk_id for row in first] == ids[:4]
         assert [row.chunk_id for row in second] == ids[4:]
-        assert h._rest_after["paragraph"] == ids[-1]
+        assert claim_frontier("embed:bge-m3", "paragraph") == ids[4]
 
-    def test_repended_low_id_chunk_found_after_tail_reset(self, store):
+    def test_repended_low_id_chunk_found_after_floor_ttl(self, store, monkeypatch):
         """An edit re-pends a chunk at its ORIGINAL chunk_id (content_sha
-        bumps in place), which may sit below the cursor. An empty tier
-        result at a set cursor resets to a full rescan so the re-pended
-        row is found rather than skipped forever."""
+        bumps in place), which may sit below the floor. Only the TTL
+        clears a floor now — empty claims RAISE it to ``max(chunk_id)``
+        — so the re-pended row surfaces once the floor's first-set TTL
+        lapses rather than on the next claim."""
+        from precis.workers import _claim as cq
+
+        now = [1000.0]
+        monkeypatch.setattr(cq, "_frontier_clock", lambda: now[0])
         h = EmbedHandler(make_mock_bge_m3())
         _ref, (low_id, high_id) = seed_chunks(store, ["low", "high"])
         with store.pool.connection() as conn:
-            # Embed the low chunk, then drain the tail — the cursor parks
-            # above the low id.
+            # Embed the low chunk, then drain the tail — the floor parks
+            # at the claimed high id.
             vec = h.process(ClaimedChunk(chunk_id=low_id, text="low"))
             h.write_ok(conn, low_id, vec)
             conn.commit()
             first = h.claim_batch(conn, limit=10)
             conn.commit()
         assert [row.chunk_id for row in first] == [high_id]
-        assert h._rest_after["paragraph"] == high_id
+        assert claim_frontier("embed:bge-m3", "paragraph") == high_id
 
         with store.pool.connection() as conn:
             conn.execute(
@@ -450,11 +456,40 @@ class TestEmbedHandlerRestCursor:
                 (low_id,),
             )
             conn.commit()
+            # Floored claim: the re-pended row sits below the floor —
+            # nothing returned, and the floor does NOT clear (it
+            # re-parks at max(chunk_id)).
+            assert h.claim_batch(conn, limit=10) == []
+            conn.commit()
+            assert claim_frontier("embed:bge-m3", "paragraph") == high_id
+            # The TTL lapse clears it; the full rescan finds the row.
+            now[0] += 301.0
             claimed = h.claim_batch(conn, limit=10)
             conn.commit()
 
         assert [row.chunk_id for row in claimed] == [low_id]
-        assert h._rest_after["paragraph"] == low_id
+        assert claim_frontier("embed:bge-m3", "paragraph") == low_id
+
+    def test_drained_tier_parks_the_floor_at_max_chunk_id(self, store):
+        """An empty full scan parks the floor at ``max(chunk_id)`` — the
+        old cursor had no high-water, so a drained tier rescanned the
+        corpus EVERY claim (gr573350). A chunk inserted above the floor
+        is still found (``>=``)."""
+        h = EmbedHandler(make_mock_bge_m3())
+        ref_id, (old_id,) = seed_chunks(store, ["old"])
+        with store.pool.connection() as conn:
+            vec = h.process(ClaimedChunk(chunk_id=old_id, text="old"))
+            h.write_ok(conn, old_id, vec)
+            conn.commit()
+            assert h.claim_batch(conn, limit=4) == []
+            conn.commit()
+            assert claim_frontier("embed:bge-m3", "paragraph") == old_id
+
+            new_id = seed_chunk(store, ref_id=ref_id, text="new", ord=1)
+            claimed = h.claim_batch(conn, limit=4)
+            conn.commit()
+
+        assert [row.chunk_id for row in claimed] == [new_id]
 
 
 class TestEmbedHandlerBacklogTierOrder:
@@ -526,9 +561,9 @@ class TestEmbedHandlerBacklogTierOrder:
 
         assert [row.chunk_id for row in claimed] == [eq_id, fig_id, other_id]
 
-    def test_tier_cursors_do_not_starve_lower_tiers(self, store):
-        """A partial paragraph claim parks only the paragraph cursor —
-        the next micro-batch still reaches the structured/other tiers."""
+    def test_tier_floors_do_not_starve_lower_tiers(self, store):
+        """A partial paragraph claim parks only the paragraph floor —
+        the next micro-batch still reaches the lower tiers' rooms."""
         h = EmbedHandler(make_mock_bge_m3())
         ref_id = seed_ref(store)
         para1 = seed_chunk(
@@ -540,9 +575,7 @@ class TestEmbedHandlerBacklogTierOrder:
         table_id = seed_chunk(
             store, ref_id=ref_id, ord=2, chunk_kind="table", text="|t|"
         )
-        other_id = seed_chunk(
-            store, ref_id=ref_id, ord=3, chunk_kind="heading", text="h"
-        )
+        seed_chunk(store, ref_id=ref_id, ord=3, chunk_kind="heading", text="h")
 
         with store.pool.connection() as conn:
             first = h.claim_batch(conn, limit=1)
@@ -553,12 +586,12 @@ class TestEmbedHandlerBacklogTierOrder:
             conn.commit()
 
         assert [row.chunk_id for row in first] == [para1]
-        # para1 was released unembedded but sits below the paragraph
-        # cursor — the rescan-reset only fires once the tail dries up.
-        assert [row.chunk_id for row in second] == [para2, table_id, other_id]
-        assert h._rest_after["paragraph"] == para2
-        assert h._rest_after["structured"] == table_id
-        assert h._rest_after["other"] == other_id
+        # para1 was released unembedded — still at/above the floor, so it
+        # is re-claimed immediately; structured gets the leftover room.
+        assert [row.chunk_id for row in second] == [para1, para2, table_id]
+        assert claim_frontier("embed:bge-m3", "paragraph") == para1
+        assert claim_frontier("embed:bge-m3", "structured") == table_id
+        assert claim_frontier("embed:bge-m3", "other") is None
 
 
 class TestUnembeddedCountExcludesReferences:
