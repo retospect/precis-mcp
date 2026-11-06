@@ -122,6 +122,14 @@ quality-of-life and container items.
     auto-score plus a human triage loop.
 14. **backlog/backlog-groomer-items-half.md** — groomer for work items;
     blocked on two prereqs.
+15. **Factory release loop (td570415)** — `release_cut` → `ci_verdict_poll`
+    / `ci_red_digest` → approval → `release_deploy` → `release_confirm`,
+    plus `release_poll`'s mint gate and stuck watchdog and
+    `scripts/round supersede --partial`, landed across S1-S4 (td573237),
+    S5 (td573429), S6 (td573430), S7 (td573431), S8 (td573432), S9
+    (td573809), S10 (td574370) and S11 (td574366). It has never run in
+    prod and is not armed; the open blockers and arming order sit in
+    `docs/runbooks/release-cycle.md` §Factory loop.
 
 ## Parked
 

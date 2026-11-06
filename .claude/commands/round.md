@@ -12,6 +12,8 @@ Outside a fleet, `/go` runs the same pass for one release through
 `scripts/release` (open → `cut --sha` → wait CI → `deploy` → confirm →
 close); an open `release/r<N>` from either path blocks the other's cut.
 
+When the factory release loop is armed, it owns cut and deploy itself through its own `release_poll` → `release_cut` → `release_deploy` pass; `/round` is then for hand releases only, with the recurring `release_poll` tick todo paused — never both armed at once. Run `scripts/round status` first: it names the open round's owner, whichever path cut it. A partial rollout is retired with `scripts/round supersede --partial --reason "<why>"`, never by hand-editing refs.
+
 The tally is a file, not a conversation: `scripts/round` keeps who has landed
 under the common git dir, and peers mark themselves from their own trees. A
 message wakes a whole session on both ends, so send one only when it carries

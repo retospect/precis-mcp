@@ -284,6 +284,8 @@ leaves runtime proof to the session: verify boot shas and the session MCP,
 then `round deploy --confirm-runtime S --runtime-evidence …` tags
 `deployed/r<N>`, deletes the branch, and `round close` ends the round.
 
+When the factory is armed, `release_poll` ticks every 10 minutes and mints a `release-pass` plan only when `origin/main` is ahead of `origin/prod`, no pass, round or release branch is already in flight, and the clock sits outside `release.no_release_windows`. The minted plan runs the same cut → gate → approval → deploy → confirm shape as `/go`: `release_cut` cuts, `ci_verdict_poll` polls check.yml, and a red verdict runs up to 2 automatic `release-fix` loops (`ci_red_digest` digests the failure, a fix lands, `release_cut` recuts; `plan_dispatch._RELEASE_FIX_AUTO_CAP` caps this at 2 — a third red is a human call). A green verdict reaches the `approval` ask, which `release.auto_deploy` (default off, DB-only) auto-answers `deploy r<N>` once CI is green on the cut's exact sha and `release.round` names an open round on it; otherwise a human answers. `release_deploy` then deploys pinned, and `release_confirm` attests the runtime — mechanical evidence, no rollback. The same pass also files a stuck-release ruling ask when a stage runs longer than `release.stage_deadlines` allows; answering it executes nothing. Detail: `docs/runbooks/dark-factory-arming.md` §Release pass, §Standing approval, §Stuck watchdog; the stage table is `docs/runbooks/release-cycle.md` §Factory loop.
+
 Main pushes after the cut never reach the release. One *open* release at a
 time, but the train pipelines (release-train §5): once release N is deploying,
 `round cut` may cut r<N+1> at `origin/main` (which must contain N's head with
@@ -535,6 +537,8 @@ windows) or `scripts/fleet say -m '<text>' <window>` (gr514682).
 an old base can predate it — run the main checkout's copy by absolute
 path, or rebase the tree first (gr515501). Post lines over 120 chars are
 refused: keep the line short, put detail in a handoff or gripe.
+
+Hand releases are that same `release_poll` todo paused — never both armed. Origin (branch heads, `deployed/r<N>` tags, the `release.round` row) is the truth for release numbering and in-flight state; a clone's `round.json` is only that host's own journal of its own verb calls.
 
 When a coordinator has a peer round open (`scripts/round status`), end your
 land by marking it from your own tree — `scripts/round in <sha>`,
