@@ -8,6 +8,7 @@ holds; ``dry_run`` lists what it would do."""
 
 from __future__ import annotations
 
+import sys
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -22,7 +23,15 @@ from precis.workers._mint import mint_background_job
 from precis.workers.job_types import plan_dispatch as pd
 from tests._refs import insert_gripe
 
-NOW = datetime.now(UTC)
+# ``NOW`` is re-stamped per test (see test_factory_rescue_stall): rows carry
+# database ``now()`` times, so an import-time constant ages by the shard's
+# elapsed time. The import-time value is stale on purpose.
+NOW = datetime.now(UTC) - timedelta(hours=1)
+
+
+@pytest.fixture(autouse=True)
+def _now(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys.modules[__name__], "NOW", datetime.now(UTC))
 
 
 @pytest.fixture(autouse=True)
