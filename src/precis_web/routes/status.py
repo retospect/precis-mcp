@@ -32,6 +32,14 @@ from precis.workers.executors._common import (
     STATUS_NAMESPACE,
     TERMINAL,
 )
+from precis.workers.job_describe import (
+    PLATFORM_UPKEEP,
+    collapse_upkeep,
+    job_sentence,
+    quest_id_from_meta,
+    quest_ids_for_structures,
+    structure_ref_id_from_meta,
+)
 from precis.workers.registry import SERVICES, ServiceKind
 from precis.workers.service_config import ALL_HOSTS, DEFAULT_PRIO
 from precis_web.config import WebConfig
@@ -730,6 +738,12 @@ def _now_jobs(store: Store) -> dict[str, Any]:
     appends), so the join below returns each job's current status plus
     exactly when it was set (``ref_tags.created_at`` — the STATUS-tag
     timestamp).
+
+    Live (running/queued) rows also carry ``sentence`` — the per-type
+    :func:`precis.workers.job_describe.job_sentence` line — and ``quest``
+    when ``quest_id_from_meta`` resolves one; ``PLATFORM_UPKEEP`` types
+    leave the lanes entirely and collapse into ``upkeep``, one
+    "platform upkeep" line per job type (td573331).
     """
     with _connect(store) as conn:
         running_rows = conn.execute(
@@ -770,41 +784,151 @@ def _now_jobs(store: Store) -> dict[str, Any]:
             (STATUS_NAMESPACE, list(TERMINAL), _NOW_RECENT_TERMINAL_LIMIT),
         ).fetchall()
 
+        # Latest job_summary / job_event text per live job, for the
+        # per-type describe sentence (td573331). Two bulk reads total:
+        # one for the chunk heads, one for the quest titles the
+        # meta-only resolution names.
+        live_ids = [int(r[0]) for r in running_rows] + [int(r[0]) for r in queued_rows]
+        latest: dict[tuple[int, str], str] = {}
+        if live_ids:
+            for rid, ckind, text in conn.execute(
+                """
+                SELECT DISTINCT ON (c.ref_id, c.chunk_kind)
+                       c.ref_id, c.chunk_kind, c.text
+                  FROM chunks c
+                 WHERE c.ref_id = ANY(%s)
+                   AND c.chunk_kind IN ('job_summary', 'job_event')
+                 ORDER BY c.ref_id, c.chunk_kind, c.ord DESC
+                """,
+                (live_ids,),
+            ).fetchall():
+                latest[(int(rid), ckind)] = text
+        live_meta = {int(r[0]): (r[2] or {}) for r in running_rows + queued_rows}
+        # One bulk read of the open quest:<id> tags for every structure
+        # a live job names — never a tags_for per row, and on this same
+        # already-held connection (td573331 fix round).
+        structure_quests = quest_ids_for_structures(
+            conn,
+            [
+                sid
+                for m in live_meta.values()
+                if (sid := structure_ref_id_from_meta(m)) is not None
+            ],
+        )
+        live_qid = {
+            rid: qid
+            for rid, m in live_meta.items()
+            if (qid := quest_id_from_meta(m, structure_quests)) is not None
+        }
+        quest_titles: dict[int, str] = {}
+        if live_qid:
+            for qid, qtitle in conn.execute(
+                "SELECT ref_id, title FROM refs "
+                "WHERE kind = 'quest' AND ref_id = ANY(%s)",
+                (sorted(set(live_qid.values())),),
+            ).fetchall():
+                if qtitle:
+                    quest_titles[int(qid)] = qtitle
+
+    def _sentence(
+        rid: int, meta: dict[str, Any], status: str
+    ) -> tuple[str | None, Any]:
+        qid = live_qid.get(rid)
+        sentence = None
+        # A row with no job_type keeps its title — 'job: running' would be
+        # worse than what was already stored (td573331 fix round).
+        if meta.get("job_type"):
+            headline = quest_titles.get(qid) or f"qu{qid}" if qid is not None else None
+            sentence = job_sentence(
+                str(meta["job_type"]),
+                params=meta.get("params"),
+                meta=meta,
+                status=status,
+                summary=latest.get((rid, "job_summary")),
+                last_event=latest.get((rid, "job_event")),
+                quest_headline=headline,
+                error=None,
+            )
+        quest = (
+            {
+                "id": qid,
+                "handle": f"qu{qid}",
+                "title": quest_titles.get(qid),
+            }
+            if qid is not None
+            else None
+        )
+        return sentence, quest
+
     running: list[dict[str, Any]] = []
+    upkeep_rows: list[dict[str, Any]] = []
     for ref_id, title, meta, since in running_rows:
         meta = meta or {}
+        rid = int(ref_id)
         lease_until = meta.get("lease_until")
         lease_age = _age_seconds(lease_until) if lease_until else None
-        running.append(
-            {
-                "ref_id": int(ref_id),
-                "title": title,
-                "job_type": meta.get("job_type"),
-                "lease_host": meta.get("lease_host"),
-                "lease_until": lease_until,
-                # Positive = time left before expiry, negative = already
-                # expired that long ago; None = no lease recorded.
-                "lease_remaining_s": -lease_age if lease_age is not None else None,
-                "lease_relative": _relative(lease_until) if lease_until else None,
-                "lease_until_title": _abs_ts(lease_until) if lease_until else None,
-                "lease_expired": lease_age is not None and lease_age > 0,
-                "since_ago": _ago(since),
-            }
-        )
+        row = {
+            "ref_id": rid,
+            "title": title,
+            "job_type": meta.get("job_type"),
+            "lease_host": meta.get("lease_host"),
+            "lease_until": lease_until,
+            # Positive = time left before expiry, negative = already
+            # expired that long ago; None = no lease recorded.
+            "lease_remaining_s": -lease_age if lease_age is not None else None,
+            "lease_relative": _relative(lease_until) if lease_until else None,
+            "lease_until_title": _abs_ts(lease_until) if lease_until else None,
+            "lease_expired": lease_age is not None and lease_age > 0,
+            "since_ago": _ago(since),
+        }
+        if row["job_type"] in PLATFORM_UPKEEP:
+            upkeep_rows.append(
+                {
+                    "ref_id": rid,
+                    "job_type": row["job_type"],
+                    "status": "running",
+                    "age_s": _age_seconds(since),
+                    "params": meta.get("params"),
+                    "meta": meta,
+                    "summary": latest.get((rid, "job_summary")),
+                    "last_event": latest.get((rid, "job_event")),
+                }
+            )
+            continue
+        row["sentence"], row["quest"] = _sentence(rid, meta, "running")
+        running.append(row)
 
     queued: list[dict[str, Any]] = []
+    stalled_total = 0
     for ref_id, title, meta, created_at in queued_rows:
         meta = meta or {}
+        rid = int(ref_id)
         age = _age_seconds(created_at)
-        queued.append(
-            {
-                "ref_id": int(ref_id),
-                "title": title,
-                "job_type": meta.get("job_type"),
-                "age_ago": _ago(created_at),
-                "stalled": age is not None and age > _STALLED_QUEUE_AFTER_S,
-            }
-        )
+        stalled = age is not None and age > _STALLED_QUEUE_AFTER_S
+        stalled_total += 1 if stalled else 0
+        row = {
+            "ref_id": rid,
+            "title": title,
+            "job_type": meta.get("job_type"),
+            "age_ago": _ago(created_at),
+            "stalled": stalled,
+        }
+        if row["job_type"] in PLATFORM_UPKEEP:
+            upkeep_rows.append(
+                {
+                    "ref_id": rid,
+                    "job_type": row["job_type"],
+                    "status": "queued",
+                    "age_s": age,
+                    "params": meta.get("params"),
+                    "meta": meta,
+                    "summary": latest.get((rid, "job_summary")),
+                    "last_event": latest.get((rid, "job_event")),
+                }
+            )
+            continue
+        row["sentence"], row["quest"] = _sentence(rid, meta, "queued")
+        queued.append(row)
 
     terminal = [
         {
@@ -819,10 +943,11 @@ def _now_jobs(store: Store) -> dict[str, Any]:
     return {
         "running": running,
         "queued": queued,
+        "upkeep": collapse_upkeep(upkeep_rows),
         "terminal": terminal,
-        "running_count": len(running),
-        "queued_count": len(queued),
-        "stalled_count": sum(1 for q in queued if q["stalled"]),
+        "running_count": len(running_rows),
+        "queued_count": len(queued_rows),
+        "stalled_count": stalled_total,
     }
 
 

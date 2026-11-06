@@ -83,6 +83,7 @@ from precis.workers.executors._common import (
     claim_class_age_s,
     claim_class_rank_enabled,
 )
+from precis.workers.job_describe import job_row_sentence
 from precis.workers.job_types import get_job_type, known_job_types
 from precis.workers.wake_runner import _requeue
 
@@ -4140,10 +4141,15 @@ class JobHandler(NumericRefHandler):
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         lines = [f"# job {ref.id}"]
         status = _status_of(tags)
-        if status is not None:
-            lines.append(f"status: {status}")
         meta = ref.meta or {}
         blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+        # The plain-language row sentence leads the card (td573331): the
+        # stored title's "(unlinked)"/"(materializer i/n)" never leads.
+        lines.append(
+            f"summary: {job_row_sentence(self.store, meta=meta, status=status, blocks=blocks)}"
+        )
+        if status is not None:
+            lines.append(f"status: {status}")
         if status == "failed":
             # ``error:`` rides under ``status:`` — gr536316: the reason
             # used to sit at the END of the event timeline, where the

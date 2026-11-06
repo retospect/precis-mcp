@@ -48,8 +48,12 @@ def _quest_tree(handler: TodoHandler, store: Store, title: str) -> dict[str, int
     return {"quest": quest.id, "root": root, "leaf": leaf}
 
 
-def _job(store: Store, parent: int, status: str) -> int:
-    job = store.insert_ref(kind="job", slug=None, title="run_slice", parent_id=parent)
+def _job(
+    store: Store, parent: int, status: str, meta: dict[str, Any] | None = None
+) -> int:
+    job = store.insert_ref(
+        kind="job", slug=None, title="run_slice", parent_id=parent, meta=meta
+    )
     store.add_tag(
         job.id, Tag.parse_strict(f"STATUS:{status}", kind="job"), set_by="system"
     )
@@ -93,6 +97,27 @@ def test_quest_running_by_running_job(handler: TodoHandler, hub: Hub) -> None:
     assert len(q.jobs) == 1
     assert f"jo{jid} [running]" in q.jobs[0]
     assert f"td{t['leaf']}" in q.jobs[0]
+
+
+def test_work_job_line_shows_the_sentence(handler: TodoHandler, hub: Hub) -> None:
+    """td573331: a live job's board line reads as its describe sentence —
+    quest + activity — not the stored title's "run_slice"."""
+    store = hub.live_store
+    t = _quest_tree(handler, store, "Sentenced quest")
+    jid = _job(
+        store,
+        t["leaf"],
+        "running",
+        meta={"job_type": "quest_tick", "params": {"quest_id": t["quest"]}},
+    )
+    q = _quest(work_view.work_model(store), t["quest"])
+    assert len(q.jobs) == 1
+    assert f"jo{jid} [running]" in q.jobs[0]
+    assert "Sentenced quest" in q.jobs[0]
+    assert f"qu{t['quest']}" in q.jobs[0]
+    assert "run_slice" not in q.jobs[0]
+    out = handler.search(view="work").body
+    assert "Sentenced quest" in out
 
 
 def test_expired_lease_is_not_running(handler: TodoHandler, hub: Hub) -> None:

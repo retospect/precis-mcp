@@ -9,8 +9,12 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
+import precis_web.routes.status as status_module
 from precis.alerts import raise_alert, resolve_stale_alerts
 from precis.store import Tag
+from precis.workers.executors._common import append_chunk
 from precis_web.routes.status import _now_alerts, _now_hosts, _now_jobs
 
 
@@ -158,6 +162,125 @@ def test_now_jobs_lease_expired_flag(store: Any) -> None:
     assert row["lease_remaining_s"] is not None
     assert row["lease_remaining_s"] < 0
     assert row["lease_relative"].endswith(" ago")
+
+
+def test_now_jobs_quest_tick_row_renders_sentence(store: Any) -> None:
+    """A live quest_tick row reads as a sentence naming its quest —
+    never the stored title's "(unlinked)" (td573331)."""
+    quest = store.insert_ref(kind="quest", slug=None, title="Hunt catalysts", meta={})
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="quest_tick (unlinked)",
+        meta={
+            "job_type": "quest_tick",
+            "params": {"quest_id": quest.id},
+            "coordinator_state": {"slice_count": 7},
+        },
+    )
+    append_chunk(
+        store,
+        job.id,
+        "job_event",
+        "tick #7: ok — 2 candidate(s), 1 sim(s), 3 harvested, "
+        "0 graduated, 1 search(es) (+4 papers); frontier moved",
+    )
+    _set_status(store, job.id, "running")
+
+    jobs = _now_jobs(store)
+    row = next(j for j in jobs["running"] if j["ref_id"] == job.id)
+    assert "(unlinked)" not in row["sentence"]
+    assert "Hunt catalysts" in row["sentence"]
+    assert f"qu{quest.id}" in row["sentence"]
+    assert "tick 7" in row["sentence"]
+    assert row["quest"]["handle"] == f"qu{quest.id}"
+
+
+def test_now_jobs_struct_quest_tags_one_bulk_query(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A page of struct_relax rows resolves its ``quest:<id>`` tags in ONE
+    bulk query on the request connection — never a ``tags_for`` per row
+    (td573331 fix round)."""
+    quest = store.insert_ref(kind="quest", slug=None, title="Bulk quest", meta={})
+    for i in range(4):
+        struct = store.insert_ref(kind="structure", slug=f"s{i}", title=f"s{i}")
+        store.add_tag(struct.id, Tag.open(f"quest:{quest.id}"), set_by="agent")
+        job = store.insert_ref(
+            kind="job",
+            slug=None,
+            title=f"relax {i}",
+            meta={
+                "job_type": "struct_relax",
+                "params": {"structure_ref_id": struct.id},
+            },
+        )
+        _set_status(store, job.id, "running")
+
+    calls = {"bulk": 0}
+    real = status_module.quest_ids_for_structures
+
+    def spy(conn: Any, structure_ids: Any) -> dict[int, int]:
+        calls["bulk"] += 1
+        return real(conn, structure_ids)
+
+    monkeypatch.setattr(status_module, "quest_ids_for_structures", spy)
+    monkeypatch.setattr(
+        type(store),
+        "tags_for",
+        lambda *a, **k: pytest.fail("per-row tags_for called"),
+    )
+
+    jobs = _now_jobs(store)
+    assert calls["bulk"] == 1
+    rows = [j for j in jobs["running"] if j["job_type"] == "struct_relax"]
+    assert len(rows) == 4
+    for j in rows:
+        assert j["quest"]["handle"] == f"qu{quest.id}"
+        assert "Bulk quest" in j["sentence"]
+
+
+def test_now_jobs_row_without_job_type_keeps_title(store: Any) -> None:
+    """A row whose meta names no ``job_type`` gets no sentence — the
+    template falls back to the stored title; ``'job: running'`` would be
+    worse (td573331 fix round)."""
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="mystery worker",
+        meta={"lease_host": "melchior"},
+    )
+    _set_status(store, job.id, "running")
+    row = next(j for j in _now_jobs(store)["running"] if j["ref_id"] == job.id)
+    assert row["sentence"] is None
+    assert row["title"] == "mystery worker"
+
+
+def test_now_jobs_upkeep_collapses_into_one_line(store: Any) -> None:
+    """Three queued embed_batch jobs render as one platform-upkeep line
+    carrying the count — not three queue rows (td573331)."""
+    ids = []
+    for _ in range(3):
+        ref = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="embed_batch (materializer 1/3)",
+            meta={"job_type": "embed_batch"},
+        )
+        _set_status(store, ref.id, "queued")
+        ids.append(ref.id)
+
+    jobs = _now_jobs(store)
+    assert not any(j["job_type"] == "embed_batch" for j in jobs["queued"])
+    lines = [u for u in jobs["upkeep"] if u["job_type"] == "embed_batch"]
+    assert len(lines) == 1
+    line = lines[0]
+    assert line["queued"] == 3
+    assert "platform upkeep" in line["sentence"]
+    assert "embedding new text chunks" in line["sentence"]
+    assert "3 queued" in line["sentence"]
+    assert line["ref_id"] in ids
+    assert jobs["queued_count"] == 3
 
 
 def test_now_alerts_active_first_then_resolved(store: Any) -> None:

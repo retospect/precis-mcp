@@ -84,7 +84,7 @@
         {% for j in jobs.running %}
         <tr class="hover:bg-surface-subtle {% if j.lease_expired %}bg-danger-subtle{% endif %}">
           <td class="px-4 py-2">
-            <a class="text-fg-secondary hover:underline truncate" href="/refs/job/{{ j.ref_id }}">#{{ j.ref_id }} {{ j.title }}</a>
+            <a class="text-fg-secondary hover:underline truncate" href="/refs/job/{{ j.ref_id }}">#{{ j.ref_id }} {{ j.sentence or j.title }}</a>
           </td>
           <td class="px-4 py-2 font-mono text-fg-subtle">{{ j.job_type or '—' }}</td>
           <td class="px-4 py-2 text-fg-subtle">{{ j.lease_host or '—' }}</td>
@@ -113,7 +113,7 @@
         {% for j in jobs.queued %}
         <tr class="hover:bg-surface-subtle {% if j.stalled %}bg-warning-subtle{% endif %}">
           <td class="px-4 py-2">
-            <a class="text-fg-secondary hover:underline truncate" href="/refs/job/{{ j.ref_id }}">#{{ j.ref_id }} {{ j.title }}</a>
+            <a class="text-fg-secondary hover:underline truncate" href="/refs/job/{{ j.ref_id }}">#{{ j.ref_id }} {{ j.sentence or j.title }}</a>
           </td>
           <td class="px-4 py-2 font-mono text-fg-subtle">{{ j.job_type or '—' }}</td>
           <td class="px-4 py-2 text-right {% if j.stalled %}text-warning-strong font-semibold{% else %}text-fg-faint{% endif %} tabular-nums">
@@ -126,6 +126,28 @@
   </div>
   {% endif %}
 </section>
+
+{# ── platform upkeep — one collapsed line per upkeep job type ───── #}
+{% if jobs.upkeep %}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Platform upkeep</h2>
+  <div class="rounded-lg border border-line bg-surface overflow-hidden">
+    <table class="w-full text-sm">
+      <tbody class="divide-y divide-line-subtle">
+        {% for u in jobs.upkeep %}
+        <tr class="hover:bg-surface-subtle">
+          <td class="px-4 py-2">
+            <a class="text-fg-secondary hover:underline truncate" href="/refs/job/{{ u.ref_id }}">{{ u.sentence }}</a>
+          </td>
+          <td class="px-4 py-2 font-mono text-fg-subtle">{{ u.job_type }}</td>
+          <td class="px-4 py-2 text-right text-fg-faint">{{ u.quest }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
 
 {# ── recent terminal ──────────────────────────────────────────── #}
 <section class="mb-6">

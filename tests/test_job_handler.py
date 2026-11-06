@@ -25,6 +25,7 @@ from precis.handlers import job as job_mod
 from precis.handlers.job import JobHandler
 from precis.runtime import PrecisRuntime
 from precis.store import Store, Tag
+from precis.workers.executors._common import append_chunk
 
 
 @pytest.fixture
@@ -833,6 +834,37 @@ def _insert_job(store: Store, *, meta: dict, status: str) -> int:
     ref = store.insert_ref(kind="job", slug=None, title="t", meta=meta)
     store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="system")
     return ref.id
+
+
+def test_job_card_leads_with_describe_sentence(jobs: JobHandler, store: Store) -> None:
+    """The card's first content line is the per-type sentence (td573331),
+    with ``job_type:`` still present below it."""
+    quest = store.insert_ref(kind="quest", slug=None, title="Hunt catalysts", meta={})
+    job_id = _insert_job(
+        store,
+        meta={
+            "job_type": "quest_tick",
+            "params": {"quest_id": quest.id},
+            "coordinator_state": {"slice_count": 7},
+        },
+        status="running",
+    )
+    append_chunk(
+        store,
+        job_id,
+        "job_event",
+        "tick #7: ok — 2 candidate(s), 1 sim(s), 3 harvested, "
+        "0 graduated, 1 search(es) (+4 papers); frontier moved",
+    )
+
+    body = jobs.get(id=job_id).body
+    lines = body.split("\n")
+    assert lines[0] == f"# job {job_id}"
+    assert lines[1].startswith("summary: Hunt catalysts")
+    assert f"qu{quest.id}" in lines[1]
+    assert "tick 7" in lines[1]
+    assert "(unlinked)" not in lines[1]
+    assert "job_type: quest_tick" in body
 
 
 @pytest.mark.parametrize("reason", [None, "lane capacity available"])

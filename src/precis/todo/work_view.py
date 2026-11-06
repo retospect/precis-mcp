@@ -50,6 +50,12 @@ from precis.todo import blocker_terminal_sql, views, work_gripes
 from precis.todo.work_gripes import GripeBlock
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
+from precis.workers.job_describe import (
+    job_sentence,
+    quest_id_from_meta,
+    quest_ids_for_structures,
+    structure_ref_id_from_meta,
+)
 
 if TYPE_CHECKING:
     from precis.store import Ref, Store
@@ -488,11 +494,12 @@ def _job_line(
     title: str | None,
     parent_handle: str,
     fields: tuple[str, str, str] = ("", "", ""),
+    sentence: str | None = None,
 ) -> str:
-    """One live job's board line: handle, STATUS, title, parent todo."""
-    line = (
-        f"  {_h('job', job_id)} [{status}] {_first_line(title)} · under {parent_handle}"
-    )
+    """One live job's board line: handle, STATUS, the describe sentence
+    (falling back to the title), parent todo, placement fields."""
+    text = sentence or _first_line(title)
+    line = f"  {_h('job', job_id)} [{status}] {text} · under {parent_handle}"
     parts = [
         f"{key}={value}"
         for key, value in zip(("lane", "model", "host"), fields, strict=True)
@@ -539,6 +546,86 @@ def _job_fields(store: Store, job_ids: list[int]) -> dict[int, tuple[str, str, s
     }
 
 
+def _job_sentences(
+    store: Store,
+    job_rows: list[dict[str, Any]],
+    statuses: dict[int, str],
+) -> dict[int, str]:
+    """``{job_id: describe sentence}`` for the board's live job lines
+    (td573331) — the per-type
+    :func:`precis.workers.job_describe.job_sentence`, never the stored
+    title's "(unlinked)"/"(materializer i/n)". Three bulk reads (metas +
+    latest job_summary/job_event chunk heads + the open ``quest:<id>``
+    tags for every structure a job names) plus one quest-title read; a
+    job row whose meta names no ``job_type`` (a bare test fixture)
+    keeps its title instead.
+    """
+    ids = [r["id"] for r in job_rows]
+    if not ids:
+        return {}
+    with store.pool.connection() as conn:
+        metas = {
+            int(rid): (m or {})
+            for rid, m in conn.execute(
+                "SELECT ref_id, meta FROM refs WHERE ref_id = ANY(%s)",
+                (ids,),
+            ).fetchall()
+        }
+        latest: dict[tuple[int, str], str] = {}
+        for rid, ckind, text in conn.execute(
+            """
+            SELECT DISTINCT ON (c.ref_id, c.chunk_kind)
+                   c.ref_id, c.chunk_kind, c.text
+              FROM chunks c
+             WHERE c.ref_id = ANY(%s)
+               AND c.chunk_kind IN ('job_summary', 'job_event')
+             ORDER BY c.ref_id, c.chunk_kind, c.ord DESC
+            """,
+            (ids,),
+        ).fetchall():
+            latest[(int(rid), ckind)] = text
+        structure_quests = quest_ids_for_structures(
+            conn,
+            [
+                sid
+                for m in metas.values()
+                if (sid := structure_ref_id_from_meta(m)) is not None
+            ],
+        )
+    qid_by_rid = {
+        rid: qid
+        for rid, m in metas.items()
+        if (qid := quest_id_from_meta(m, structure_quests)) is not None
+    }
+    titles = (
+        {
+            i: (ref.title or "")
+            for i, ref in store.fetch_refs_by_ids(set(qid_by_rid.values())).items()
+        }
+        if qid_by_rid
+        else {}
+    )
+    out: dict[int, str] = {}
+    for r in job_rows:
+        rid = int(r["id"])
+        meta = metas.get(rid, {})
+        if not meta.get("job_type"):
+            continue
+        qid = qid_by_rid.get(rid)
+        headline = titles.get(qid) or f"qu{qid}" if qid is not None else None
+        out[rid] = job_sentence(
+            str(meta["job_type"]),
+            params=meta.get("params"),
+            meta=meta,
+            status=statuses.get(rid, "open"),
+            summary=latest.get((rid, "job_summary")),
+            last_event=latest.get((rid, "job_event")),
+            quest_headline=headline,
+            error=None,
+        )
+    return out
+
+
 def _newest_job_lanes(store: Store, job_ids: list[int]) -> dict[int, str]:
     """``{parent id: lane}`` from the newest of the given jobs per parent
     (``meta.lane``; one query). A parent whose newest job names no lane is
@@ -581,6 +668,15 @@ def _render_root(
     job_fields = _job_fields(store, [r["id"] for r in rows if r["kind"] == "job"])
     planned = any(t.startswith("plan:") for tags in tags_by_ref.values() for t in tags)
     lanes = _newest_job_lanes(store, [r["id"] for r in rows if r["kind"] == "job"])
+    sentences = _job_sentences(
+        store,
+        [
+            r
+            for r in rows
+            if r["kind"] == "job" and statuses.get(r["id"], "open") in _BOARD_JOB
+        ],
+        statuses,
+    )
     by_parent: dict[int | None, list[dict[str, Any]]] = {}
     job_counts: dict[int, tuple[int, int]] = {}
     job_lines: list[str] = []
@@ -603,6 +699,7 @@ def _render_root(
                         r["title"],
                         _h("todo", r["parent_id"]),
                         job_fields.get(r["id"], ("", "", "")),
+                        sentence=sentences.get(r["id"]),
                     )
                 )
             continue
