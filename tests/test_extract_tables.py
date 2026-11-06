@@ -14,6 +14,8 @@ import pytest
 
 from precis.extract.tables import (
     TableSig,
+    _column_label_row,
+    _row_cells,
     assign_captions,
     first_pipe_line,
     has_citation_marker,
@@ -176,6 +178,98 @@ class TestParseGrid:
         assert [[c.text for c in r] for r in parsed.rows] == [
             ["mol", "0.7", "0.6", "0.5"]
         ]
+        _assert_offsets(text, parsed)
+
+    def test_stacked_title_two_cells_over_m_equals_index_row_promotes(self) -> None:
+        # gr573944 (pa452964 T2): a two-cell title — the caption text
+        # plus a symbol over its column — still spans the grid, and the
+        # ``$m = 0$ | 1 | 2 | …`` row under it is the printed index
+        # axis, not data. On the paper the wrong split left 164 correct
+        # sticking measures headerless.
+        text = (
+            "| Sticking probabilities | | $\\mathcal{V}_{(l,m)}$ | | |\n"
+            "|---|---|---|---|---|\n"
+            "| | $m = 0$ | 1 | 2 | 3 |\n"
+            "| $[Rh_3Fe_3(N_2)_m]^+$ | 0.71 | 0.73 | 0.60 | 0.59 |\n"
+            "| $[Rh_3Fe_4(N_2)_m]^+$ | 0.68 | 0.45 | 0.19 | 0.67 |"
+        )
+        parsed = parse_table(19, text)
+        assert parsed is not None
+        assert parsed.header_rows == 2
+        assert parsed.columns[1].header == "$m = 0$"
+        assert parsed.columns[2].header == "$\\mathcal{V}_{(l,m)}$ / 1"
+        assert parsed.columns[3].header == "2"
+        assert len(parsed.rows) == 2
+        assert parsed.rows[0][0].text == "$[Rh_3Fe_3(N_2)_m]^+$"
+        _assert_offsets(text, parsed)
+
+    def test_index_row_m_equals_under_single_title_promotes(self) -> None:
+        # gr573944 blocker 1 alone: under a one-cell title the
+        # ``$m = 0$`` cell must still count as index point 0 — a plain
+        # ``_int_point`` read returns ``None`` for ``<sym> = <int>``.
+        text = (
+            "| Sticking probabilities | | | |\n|---|---|---|---|\n"
+            "| | $m = 0$ | 1 | 2 |\n"
+            "| mol | 0.7 | 0.6 | 0.5 |"
+        )
+        parsed = parse_table(20, text)
+        assert parsed is not None
+        assert parsed.header_rows == 2
+        assert parsed.columns[1].header == "$m = 0$"
+        assert [[c.text for c in r] for r in parsed.rows] == [
+            ["mol", "0.7", "0.6", "0.5"]
+        ]
+        _assert_offsets(text, parsed)
+
+    def test_two_cell_title_over_bare_index_row_promotes(self) -> None:
+        # gr573944 blocker 2 alone: a title carrying a symbol over its
+        # column is two non-empty cells, not a one-cell spanning line —
+        # it still qualifies when every non-empty cell is non-numeric
+        # and the row below is a bare index run.
+        text = (
+            "| Sticking probabilities | | $\\mathcal{V}_{(l,m)}$ | | |\n"
+            "|---|---|---|---|---|\n"
+            "| | 0 | 1 | 2 | 3 |\n"
+            "| mol | 0.7 | 0.6 | 0.5 | 0.4 |"
+        )
+        parsed = parse_table(21, text)
+        assert parsed is not None
+        assert parsed.header_rows == 2
+        assert parsed.columns[1].header == "0"
+        assert parsed.columns[2].header == "$\\mathcal{V}_{(l,m)}$ / 1"
+        assert [[c.text for c in r] for r in parsed.rows] == [
+            ["mol", "0.7", "0.6", "0.5", "0.4"]
+        ]
+        _assert_offsets(text, parsed)
+
+    def test_genuine_column_label_row_still_recognised(self) -> None:
+        # The label-row evidence directly: a text row over a numeric
+        # body labels it, and so does an ``m = 0`` index row; a labelled
+        # integer row over a text body and a non-consecutive run are
+        # data.
+        body_num = [
+            _row_cells("| A | 0.9 | 0.8 | 0.7 |", 0),
+            _row_cells("| B | 0.7 | 0.6 | 0.5 |", 0),
+        ]
+        body_text = [_row_cells("| Pd | a | b | c |", 0)]
+        assert _column_label_row(_row_cells("| Site | E_fcc | E_top |", 0), body_num)
+        assert _column_label_row(_row_cells("| | $m = 0$ | 1 | 2 |", 0), body_num)
+        assert not _column_label_row(_row_cells("| Pt | 1 | 2 | 3 |", 0), body_text)
+        assert not _column_label_row(_row_cells("| | m = 3 | m = 5 |", 0), body_num)
+
+    def test_two_cell_title_over_non_index_row_stays_data(self) -> None:
+        # The relaxed title test is index-run evidence only: a
+        # non-numeric two-cell title over ordinary readings is still
+        # just a header line — the readings stay data.
+        text = (
+            "| Rates | | eV | |\n|---|---|---|---|\n"
+            "| A | 0.9 | 0.8 | 0.7 |\n"
+            "| B | 0.7 | 0.6 | 0.5 |"
+        )
+        parsed = parse_table(22, text)
+        assert parsed is not None
+        assert parsed.header_rows == 1
+        assert len(parsed.rows) == 2
         _assert_offsets(text, parsed)
 
     def test_stacked_header_without_separator(self) -> None:

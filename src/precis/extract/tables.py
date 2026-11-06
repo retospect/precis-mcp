@@ -509,6 +509,45 @@ def _enumeration_run(nums: list[int]) -> bool:
     )
 
 
+#: ``<symbol> = <integer>`` — the way a printed index axis labels each
+#: point (``m = 0``, ``n=1``, ``$m = 0$``). The symbol side stays short:
+#: a real label like ``rate = 0.5 s^-1`` or an equation is text, not an
+#: axis point.
+_INDEX_EQ_RE = re.compile(r"^\s*\S{1,12}?\s*=\s*(-?\d+)\s*$")
+
+
+def _index_cell_int(text: str) -> int | None:
+    """The cell as one point of a printed index axis, else ``None`` — a
+    plain integer point (:func:`_int_point`) or ``<symbol> = <integer>``
+    (``m = 0``, ``$m = 0$``, ``n=1``), the ``m = k`` form pa452964
+    prints for its sticking-probability axis (gr573944). Surrounding
+    ``$`` math markup and whitespace are stripped first; a bound,
+    interval, ``±`` or non-integer stays real data."""
+    stripped = text.strip().strip("$").strip()
+    if (v := _int_point(stripped)) is not None:
+        return v
+    m = _INDEX_EQ_RE.match(stripped)
+    return int(m.group(1)) if m is not None else None
+
+
+def _index_axis_row(cells: list[tuple[str, int, int]]) -> bool:
+    """Every non-empty cell is one point of a ``0../1..`` index axis
+    (:func:`_index_cell_int` + :func:`_enumeration_run`) — the whole row
+    is the printed index. Unlike :func:`_column_label_row`'s run loop
+    there is no label-column skip: a leading ``m`` makes
+    ``| m | 0 | 1 | 2 |`` a labelled data row (its ``m``-axis values),
+    not the column labels."""
+    nums: list[int] = []
+    for t, _s, _e in cells:
+        if not t.strip():
+            continue
+        v = _index_cell_int(t)
+        if v is None:
+            return False
+        nums.append(v)
+    return _enumeration_run(nums)
+
+
 def _spanning_line(cells: list[tuple[str, int, int]]) -> bool:
     """A caption-like spanning line: exactly one non-empty cell — the
     title row over a stacked header, never the column-label row."""
@@ -548,13 +587,16 @@ def _column_label_row(
         return False
     if not _body_numeric_in({j for j, _t in nonempty}, body):
         return False
-    if all(not _numeric_cell(t) for _j, t in nonempty):
+    # An ``m = k`` cell is index-shaped, not a text label — a row of
+    # them falls through to the run check, which refuses a
+    # non-consecutive set (``m = 3 | m = 5`` is data, not labels).
+    if all(not _numeric_cell(t) and _index_cell_int(t) is None for _j, t in nonempty):
         return True
     nums: list[int] = []
     for t, _s, _e in cells[1:]:
         if not t.strip():
             continue
-        v = _int_point(t)
+        v = _index_cell_int(t)
         if v is None:
             return False
         nums.append(v)
@@ -634,21 +676,38 @@ def parse_table(
         # value columns keep their printed labels). The label row may
         # sit under the separator (Marker prints the visual title as
         # THE header line) or directly under the title line.
+        # A title line qualifies even with several non-empty cells —
+        # pa452964's ``Sticking probabilities | | V_{(l,m)} | |`` —
+        # when it leaves a gap (a filled cell per column is a label
+        # row, not a title), every non-empty cell is non-numeric, and
+        # the row below is a whole index axis (gr573944). That stricter
+        # evidence keeps a multi-cell label row from eating a real data
+        # row under it — ``| a | b |`` over ``| 1 | 2 |`` stays put.
         next_idx = header_idx[-1] + 1 if header_idx else -1
         if sep_idx is not None and next_idx == sep_idx:
             next_idx += 1
-        if (
-            header_idx
-            and 0 <= next_idx < len(pipe_rows) - 1
-            and _spanning_line(
-                _row_cells(pipe_rows[header_idx[-1]][2], pipe_rows[header_idx[-1]][0])
+        if header_idx and 0 <= next_idx < len(pipe_rows) - 1:
+            title_cells = _row_cells(
+                pipe_rows[header_idx[-1]][2], pipe_rows[header_idx[-1]][0]
             )
-            and _column_label_row(
-                _row_cells(pipe_rows[next_idx][2], pipe_rows[next_idx][0]),
-                [_row_cells(ln, s) for s, _e, ln in pipe_rows[next_idx + 1 :]],
-            )
-        ):
-            header_idx.append(next_idx)
+            cand_cells = _row_cells(pipe_rows[next_idx][2], pipe_rows[next_idx][0])
+            if (
+                _spanning_line(title_cells)
+                and _column_label_row(
+                    cand_cells,
+                    [_row_cells(ln, s) for s, _e, ln in pipe_rows[next_idx + 1 :]],
+                )
+            ) or (
+                any(not text.strip() for text, _s, _e in title_cells)
+                and all(
+                    not _numeric_cell(text)
+                    for text, _s, _e in title_cells
+                    if text.strip()
+                )
+                and not _index_axis_row(title_cells)
+                and _index_axis_row(cand_cells)
+            ):
+                header_idx.append(next_idx)
 
         header_rows = len(header_idx)
         raw_header = [pipe_rows[i][2] for i in header_idx]
