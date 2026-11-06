@@ -1885,12 +1885,12 @@ sys.exit(int(os.environ.get("FAKE_SHIP_RC", "0")))
 """
 
 
-def _ship_tree(env: dict[str, str], name: str) -> Path:
+def _ship_tree(env: dict[str, str], name: str, body: str = FAKE_SHIP) -> Path:
     """A builder worktree whose scripts/ship is a logging fake."""
     wt = _worktree(env, name)
     (wt / "scripts").mkdir()
     ship = wt / "scripts" / "ship"
-    ship.write_text(FAKE_SHIP, encoding="utf-8")
+    ship.write_text(body, encoding="utf-8")
     ship.chmod(0o755)
     return wt
 
@@ -2001,15 +2001,23 @@ def test_land_refuses_a_live_session_but_not_a_dead_lock(
     wt = _ship_tree(env, "b4")
     env = _land_env(env, tmp_path)
     lock = ["git", "worktree", "lock", "--reason"]
-    subprocess.run(
-        [*lock, f"claude agent b4 (pid {os.getpid()})", str(wt)],
-        cwd=env["CWD"],
-        check=True,
-    )
-    proc = _run(env, "land", "b4")
-    assert proc.returncode == 3
-    assert f"live session live#{os.getpid()}" in proc.stderr
-    assert _ship_call(tmp_path) is None
+    # The live pid must NOT be in the land's own ancestor chain — one of
+    # those is the calling session itself and passes now (gr574979), so a
+    # foreign session is a spawned sleeper, not os.getpid().
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        subprocess.run(
+            [*lock, f"claude agent b4 (pid {other.pid})", str(wt)],
+            cwd=env["CWD"],
+            check=True,
+        )
+        proc = _run(env, "land", "b4")
+        assert proc.returncode == 3
+        assert f"live session live#{other.pid}" in proc.stderr
+        assert _ship_call(tmp_path) is None
+    finally:
+        other.kill()
+        other.wait()
     # A pid that has exited is a dead lock, not a session.
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     dead.wait()
@@ -2022,6 +2030,115 @@ def test_land_refuses_a_live_session_but_not_a_dead_lock(
     proc = _run(env, "land", "b4")
     assert proc.returncode == 0, proc.stderr
     assert _ship_call(tmp_path) is not None
+
+
+def test_land_retries_past_a_lock_naming_its_own_session(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """gr574979: a failed land leaves the tree locked with the CALLING
+    session's pid — ship's reassert_session_lock resolves its own caller's
+    session chain and re-locks a dead-pid builder tree with it. The retry
+    must not read its own ancestor as a live builder holding the tree."""
+    wt = _ship_tree(env, "b11")
+    lenv = _land_env(env, tmp_path, rc=1)
+    proc = _run(lenv, "land", "b11")
+    assert proc.returncode == 1
+    assert _ship_call(tmp_path) is not None
+    # The state the failed ship leaves: a live lock naming a pid in the
+    # fleet-wave process's own ancestor chain — os.getpid() (pytest)
+    # stands in for the coordinator session the first land ran under.
+    subprocess.run(
+        ["git", "worktree", "lock", "--reason", f"pid {os.getpid()}", str(wt)],
+        cwd=env["CWD"],
+        check=True,
+    )
+    proc = _run({**lenv, "FAKE_SHIP_RC": "0"}, "land", "b11")
+    assert proc.returncode == 0, proc.stderr
+    assert "REFUSED" not in proc.stderr
+    assert "not a builder" in proc.stdout
+
+
+FAKE_SHIP_FAIL_ONCE = f"""#!{sys.executable}
+import os, sys
+from pathlib import Path
+runs = Path(os.environ["FAKE_SHIP_RUNS"])
+n = int(runs.read_text(encoding="utf-8")) if runs.exists() else 0
+runs.write_text(str(n + 1), encoding="utf-8")
+if n == 0:
+    sys.stdout.write(os.environ["FAKE_SHIP_FAIL_OUT"])
+    sys.exit(1)
+print("fake ship ran")
+"""
+
+#: git/ship's words for the transient class (gr574979): a bare remote
+#: rejection whose reason is ``(failed)`` — no hook name to decline on.
+REMOTE_REJECTED_FAILED = (
+    "To github.invalid:t/precis.git\n"
+    " ! [remote rejected]        HEAD -> main (failed)\n"
+    "error: failed to push some refs to 'github.invalid:t/precis.git'\n"
+    "✖ git push failed inside the ship lock for a reason other than a lost "
+    "race (exit 1) — lock released, nothing landed.\n"
+)
+
+REMOTE_REJECTED_HOOK = (
+    " ! [remote rejected]        HEAD -> main (pre-receive hook declined)\n"
+    "error: failed to push some refs to 'github.invalid:t/precis.git'\n"
+)
+
+
+def test_land_retries_once_on_a_bare_remote_rejected_push(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """gr574979: `(failed)` is the host's transient receive error — ship's
+    lost-race classifier declines every remote-rejected, so the land
+    retries once before dying."""
+    _ship_tree(env, "b12", FAKE_SHIP_FAIL_ONCE)
+    runs = tmp_path / "ship-runs"
+    lenv = {
+        **_land_env(env, tmp_path),
+        "FAKE_SHIP_RUNS": str(runs),
+        "FAKE_SHIP_FAIL_OUT": REMOTE_REJECTED_FAILED,
+    }
+    proc = _run(lenv, "land", "b12")
+    assert proc.returncode == 0, proc.stderr
+    assert "retrying" in proc.stdout
+    assert runs.read_text(encoding="utf-8") == "2"
+    log = Path(proc.stdout.split("log: ", 1)[1].splitlines()[0])
+    text = log.read_text(encoding="utf-8")
+    assert "remote rejected" in text and "fake ship ran" in text
+
+
+def test_land_does_not_retry_a_rejection_with_a_reason(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """A remote rejection carrying its cause (hook, protected branch) is
+    terminal — the same input that makes ship die must not retry here."""
+    _ship_tree(env, "b13", FAKE_SHIP_FAIL_ONCE)
+    runs = tmp_path / "ship-runs"
+    lenv = {
+        **_land_env(env, tmp_path),
+        "FAKE_SHIP_RUNS": str(runs),
+        "FAKE_SHIP_FAIL_OUT": REMOTE_REJECTED_HOOK,
+    }
+    proc = _run(lenv, "land", "b13")
+    assert proc.returncode == 1
+    assert "retrying" not in proc.stdout
+    assert runs.read_text(encoding="utf-8") == "1"
+
+
+def test_land_does_not_retry_an_unrelated_failure(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _ship_tree(env, "b14", FAKE_SHIP_FAIL_ONCE)
+    runs = tmp_path / "ship-runs"
+    lenv = {
+        **_land_env(env, tmp_path),
+        "FAKE_SHIP_RUNS": str(runs),
+        "FAKE_SHIP_FAIL_OUT": "✖ ruff check failed\n",
+    }
+    proc = _run(lenv, "land", "b14")
+    assert proc.returncode == 1
+    assert runs.read_text(encoding="utf-8") == "1"
 
 
 def test_land_refuses_a_live_subagent_task(env: dict[str, str], tmp_path: Path) -> None:

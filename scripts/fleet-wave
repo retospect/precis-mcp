@@ -152,8 +152,14 @@ pytest) or ``--remote`` (harness diffs) — with cwd=TREE and the
 output in ``$FLEET_STATE/land/<tree>-<stamp>.log``; it prints the log path
 and ship's exit code and returns it. It never cherry-picks or creates a
 branch (a copy leaves the builder's branch looking unmerged forever), and
-refuses a tree whose lock names a live session pid or that has an active
-subagent task, and any run outside ``FLEET_COORDINATOR_TREE``.
+refuses a tree whose lock names a live OTHER session pid, that already has
+a ship running in it, or that has an active subagent task — and any run
+outside ``FLEET_COORDINATOR_TREE``. A lock whose pid is in the land's own
+ancestor chain is the calling session itself — what a failed land's ship
+re-assertion leaves behind (gr574979) — so a retry is not refused by it,
+and a failed run whose log shows a bare ``remote rejected … (failed)``
+push (the transient host-error class ship's race classifier declines) is
+retried once.
 
 The approval ledger lives in ``$FLEET_STATE/approvals/<tree>.tsv`` (never
 the repo: its lines carry user and session ids, and the repo is public).
@@ -2630,6 +2636,63 @@ def _live_session(reason: str) -> str:
     return f"live#{m.group(1)}" if m and _pid_alive(int(m.group(1))) else ""
 
 
+def _ancestor_pids() -> set[int]:
+    """This process's pid and every ancestor's, walked via ``ps -o ppid=``.
+
+    Bounded at 25 hops like scripts/lib/session-lock.sh's is_ancestor —
+    a dead mid-walk pid or a ps failure just ends the set, never spins."""
+    out: set[int] = set()
+    pid: int | None = os.getpid()
+    for _ in range(25):
+        if pid is None or pid <= 1 or pid in out:
+            break
+        out.add(pid)
+        try:
+            proc = subprocess.run(
+                ["ps", "-o", "ppid=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+        except OSError:
+            break
+        ppid = proc.stdout.strip()
+        pid = int(ppid) if ppid.isdigit() else None
+    return out
+
+
+def _own_session_lock(reason: str) -> bool:
+    """Whether the lock's ``pid N`` sits in this invocation's own chain —
+    the calling coordinator session or an ancestor of the fleet-wave
+    process.
+
+    gr574979: ship's reassert_session_lock resolves its own caller's
+    session, so a land run from a session re-locks a dead-pid builder tree
+    with that session's pid; when the ship fails the lock stays, and the
+    retry reads its own session as a live builder and refuses itself. A
+    live pid in our own chain is not a builder holding the tree."""
+    m = re.search(r"pid\s+(\d+)", reason)
+    return m is not None and int(m.group(1)) in _ancestor_pids()
+
+
+#: A bare ``[remote rejected] … (failed)`` — the host's no-reason internal
+#: receive error — is the one transient push class ship dies on: its
+#: _push_is_lost_race declines every remote-rejected as terminal. A hook or
+#: protected-branch decline prints its reason instead of ``(failed)``.
+_REMOTE_REJECT_FAILED = re.compile(r"remote rejected.*\(failed\)", re.IGNORECASE)
+
+
+def _push_retryable(log: Path) -> bool:
+    """Whether a failed ship's log carries the transient push class worth
+    one retry (gr574979)."""
+    try:
+        text = log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return bool(_REMOTE_REJECT_FAILED.search(text))
+
+
 def cmd_land(f: Fleet, a: argparse.Namespace) -> int:
     """Land a builder tree's own branch by running ship in that tree.
 
@@ -2655,9 +2718,22 @@ def cmd_land(f: Fleet, a: argparse.Namespace) -> int:
         )
         return 3
     if live := _live_session(trees[tree]):
+        if _own_session_lock(trees[tree]):
+            print(
+                f"note: {a.tree} is locked to this session ({live}) — left "
+                "by a previous land's ship, not a builder; proceeding"
+            )
+        else:
+            print(
+                f"fleet-wave: REFUSED {a.tree}: live session {live} holds the tree; "
+                "let the builder exit first",
+                file=sys.stderr,
+            )
+            return 3
+    if ship_pid := _ship_lock_pid(tree):
         print(
-            f"fleet-wave: REFUSED {a.tree}: live session {live} holds the tree; "
-            "let the builder exit first",
+            f"fleet-wave: REFUSED {a.tree}: ship already running in the tree "
+            f"(pid {ship_pid})",
             file=sys.stderr,
         )
         return 3
@@ -2680,18 +2756,32 @@ def cmd_land(f: Fleet, a: argparse.Namespace) -> int:
     logdir = f.state / "land"
     logdir.mkdir(parents=True, exist_ok=True)
     log = logdir / f"{tree.name}-{utc_stamp().replace(':', '')}.log"
-    with log.open("w", encoding="utf-8") as fh:
-        proc = subprocess.run(
+
+    def run_ship() -> int:
+        return subprocess.run(
             argv,
             cwd=tree,
             stdin=subprocess.DEVNULL,
             stdout=fh,
             stderr=subprocess.STDOUT,
             check=False,
-        )
+        ).returncode
+
+    with log.open("w", encoding="utf-8") as fh:
+        rc = run_ship()
+        fh.flush()
+        if rc and _push_retryable(log):
+            # gr574979: ship is idempotent — a failed run's fix is re-run.
+            print(
+                "fleet-wave: remote rejected (failed) is the transient "
+                f"push class — retrying {a.tree}'s ship once"
+            )
+            fh.write("\n── fleet-wave retry: remote rejected (failed) ──\n")
+            fh.flush()
+            rc = run_ship()
     print(f"log: {log}")
-    print(f"exit: {proc.returncode}")
-    return proc.returncode
+    print(f"exit: {rc}")
+    return rc
 
 
 def parser() -> argparse.ArgumentParser:
