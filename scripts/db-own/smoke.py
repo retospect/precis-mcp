@@ -50,11 +50,12 @@ def _cli(dsn: str, *argv: str, stdin: str | None = None) -> subprocess.Completed
         encoding="utf-8",
         env={"PRECIS_DATABASE_URL": dsn, "PATH": "/opt/venv/bin:/usr/bin:/bin"},
         check=False,
+        timeout=300,
     )
 
 
 def _expect_denied(dsn: str, stmt: str) -> None:
-    with psycopg.connect(dsn) as conn:
+    with psycopg.connect(dsn, connect_timeout=15) as conn:
         try:
             conn.execute(stmt)
         except psycopg.errors.InsufficientPrivilege:
@@ -131,7 +132,7 @@ def main(base: str) -> int:
         assert r.returncode == 0, r.stderr[-300:]
 
     def vacuum_rw() -> None:
-        with psycopg.connect(rw, autocommit=True) as conn:
+        with psycopg.connect(rw, autocommit=True, connect_timeout=15) as conn:
             conn.execute("VACUUM ANALYZE refs")
             row = conn.execute(
                 "SELECT last_vacuum IS NOT NULL OR last_autovacuum IS NOT NULL "
@@ -146,15 +147,15 @@ def main(base: str) -> int:
         )
 
     def owner_ddl_grants() -> None:
-        with psycopg.connect(own) as conn:
+        with psycopg.connect(own, connect_timeout=15) as conn:
             conn.execute("CREATE TABLE dbown_smoke_new (id serial, x int)")
             conn.commit()
         try:
-            with psycopg.connect(rw) as conn:
+            with psycopg.connect(rw, connect_timeout=15) as conn:
                 conn.execute("INSERT INTO dbown_smoke_new (x) VALUES (1)")
                 conn.commit()
         finally:
-            with psycopg.connect(own) as conn:
+            with psycopg.connect(own, connect_timeout=15) as conn:
                 conn.execute("DROP TABLE dbown_smoke_new")
                 conn.commit()
 

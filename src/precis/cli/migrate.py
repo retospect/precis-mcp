@@ -80,7 +80,7 @@ def run(args: argparse.Namespace) -> None:
 
     from precis.store.ownership import owner_refusal
 
-    with psycopg.connect(dsn, autocommit=True) as probe:
+    with psycopg.connect(dsn, autocommit=True, connect_timeout=15) as probe:
         refusal = owner_refusal(probe, "public._migrations", purpose="precis migrate")
     if refusal is not None:
         raise SystemExit(f"migrate: {refusal} Nothing was applied.")
