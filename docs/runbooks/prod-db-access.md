@@ -49,12 +49,18 @@ see [`prod-one-off-cli`](./prod-one-off-cli.md).
   exist on prod; use its `source/event/payload` columns to diagnose chase
   spin-loops), `worker_logs`, `tags`/`ref_tags`, `cluster_*`, …
 - Roles: `agent_rw` (read+write, owner of the precis tables), `agent_ro`
-  (read-only — broken for the precis tables, above), `admin` (DDL/grants),
+  (read-only — broken for the precis tables, above), `precis_system`
+  (service principal — workers/agent launchers; member of agent_rw;
+  the only role the vault's `infra` class reveals to, migration 0285),
+  `precis_ingress` (the web daemon; member of agent_rw; the one role that
+  writes `web_users`), `precis_owner` (the owner DSN: owns every object, runs
+  DDL and `precis migrate`; never a daemon's login; password on the gateway
+  only), `admin` (DDL/grants),
   `cluster_app`, `prometheus_reader`. Defined as `postgres_roles` in the
   overlay's `group_vars/all/main.yml`. (`litellm_app` was dropped 2026-08-06Z
   with the litellm teardown.)
 - The db-own cutover (`scripts/db-own-cutover`, built on the db-own tree,
-  pending — its migration numbers re-assign when it lands through
+  pending — migrations 0285/0286; rebased 2026-11-06, lands through
   builder-ce) adds three roles: `precis_system` (service principal —
   workers/agent launchers; member of `agent_rw`; the only role the vault's
   `infra` class reveals to), `precis_ingress` (the web daemon; member of

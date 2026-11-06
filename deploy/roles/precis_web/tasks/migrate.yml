@@ -29,7 +29,7 @@
   # §L: the DSN is password-free — libpq needs ~deploy/.pgpass, so this must
   # run as deploy with HOME set (root has no pgpass; fe_sendauth otherwise).
   environment:
-    PRECIS_DATABASE_URL: "{{ precis_web_dsn }}"
+    PRECIS_DATABASE_URL: "{{ precis_migrate_dsn | default(precis_web_dsn) }}"
     HOME: "{{ '/Users/deploy' if os_family == 'darwin' else '/home/deploy' }}"
   become: true
   become_user: deploy

@@ -11,6 +11,29 @@
 {{ pgpass_host }}:{{ pgpass_port }}:{{ pgpass_database }}:agent_ro:{{ vault_pg_agent_ro_pass }}
 {{ pgpass_host }}:{{ pgpass_port }}:*:agent_ro:{{ vault_pg_agent_ro_pass }}
 
+# Service principal (multi-user S1): workers / migrate / agent launchers —
+# the only role that may reveal vault svc/infra/* names (migration 0285).
+{% if vault_pg_precis_system_pass is defined %}
+{{ pgpass_host }}:{{ pgpass_port }}:{{ pgpass_database }}:precis_system:{{ vault_pg_precis_system_pass }}
+{{ pgpass_host }}:{{ pgpass_port }}:*:precis_system:{{ vault_pg_precis_system_pass }}
+{% endif %}
+
+# Web daemon (db-own): member of agent_rw plus the login roster (web_users).
+# Gateway only, where precis-web runs: elsewhere a deploy-user shell would
+# hold the one password that may write web_users.
+{% if vault_pg_precis_ingress_pass is defined and 'gateway' in group_names %}
+{{ pgpass_host }}:{{ pgpass_port }}:{{ pgpass_database }}:precis_ingress:{{ vault_pg_precis_ingress_pass }}
+{{ pgpass_host }}:{{ pgpass_port }}:*:precis_ingress:{{ vault_pg_precis_ingress_pass }}
+{% endif %}
+
+# Owner DSN (db-own): precis_owner owns every object — DDL, `precis migrate`.
+# Only on the gateway, where migrate runs: a worker node's deploy user (and
+# any agent shell it launches) never holds the owner password.
+{% if vault_pg_precis_owner_pass is defined and 'gateway' in group_names %}
+{{ pgpass_host }}:{{ pgpass_port }}:{{ pgpass_database }}:precis_owner:{{ vault_pg_precis_owner_pass }}
+{{ pgpass_host }}:{{ pgpass_port }}:*:precis_owner:{{ vault_pg_precis_owner_pass }}
+{% endif %}
+
 # Admin — rare, for schema changes / role grants / DDL. `psql -U admin`.
 {{ pgpass_host }}:{{ pgpass_port }}:{{ pgpass_database }}:admin:{{ vault_pg_admin_pass }}
 {{ pgpass_host }}:{{ pgpass_port }}:*:admin:{{ vault_pg_admin_pass }}

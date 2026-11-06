@@ -980,6 +980,9 @@ def _prepare_agent_env(
         from precis.workers import envelope as _envelope
 
         proc_env["PRECIS_MCP_DB_ROLE"] = _envelope.db_role(active_env)
+        # S1: the spawned precis serve binds the role per transaction
+        # (SET LOCAL ROLE — safe through the pgbouncer pool).
+        proc_env["PRECIS_MCP_DB_ROLE_ENFORCE"] = "1"
         # Verb-level deny, enforced in the server's dispatch under either MCP
         # profile. Always reset so an ambient value can't leak in.
         proc_env.pop(_envelope.DENY_VERBS_ENV, None)

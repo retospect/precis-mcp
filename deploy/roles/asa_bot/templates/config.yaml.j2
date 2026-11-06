@@ -70,13 +70,13 @@ precis:
   # tuple. ACATOME_PG_PASSWORD below is a SEPARATE, raw-password
   # contract acatome-meta's own config.py reads directly (not a libpq
   # DSN it can resolve via pgpass) — left as-is, out of scope here.
-  database_url: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+  database_url: "postgresql://precis_system@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
   env:
     ACATOME_PG_HOST: "{{ hostvars[postgres_host]['ansible_host'] }}"
     ACATOME_PG_PORT: "{{ postgres_port }}"
     ACATOME_PG_DATABASE: "precis_prod"
-    ACATOME_PG_USER: "agent_rw"
-    ACATOME_PG_PASSWORD: "{{ vault_pg_agent_rw_pass }}"
+    ACATOME_PG_USER: "precis_system"
+    ACATOME_PG_PASSWORD: "{{ vault_pg_precis_system_pass }}"
   health_check_interval_seconds: 30
 
 preamble:

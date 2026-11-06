@@ -12,7 +12,7 @@
   vars:
     args: ""
     precis_worker_venv: /opt/precis/venv
-    precis_worker_dsn: "postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+    precis_worker_dsn: "postgresql://precis_system:{{ vault_pg_precis_system_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
   tasks:
     - name: Invoke precis reconcile-duplicates
       ansible.builtin.command:

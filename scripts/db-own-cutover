@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# scripts/db-own-cutover — move precis_prod off agent_rw ownership (Reto-run).
+#
+# db-own (Fable findings 1 and 3, Reto 2026-10-22): agent_rw owns every object
+# in precis_prod, so any agent_rw shell can read vault.secrets and make itself
+# web admin. The cutover, in ONE transaction:
+#
+#   1. scripts/db-own/cutover.sql   superuser: precis_owner/precis_ingress
+#                                   roles, ALTER DATABASE OWNER,
+#                                   REASSIGN OWNED BY agent_rw TO precis_owner
+#   2. migrations/0286_db_ownership the privilege layout (grants back to
+#                                   agent_rw, roster to precis_ingress, vault
+#                                   tables owner-only, default privileges)
+#   3. scripts/db-own/verify.sql    the canary as a gate: any red check →
+#                                   ROLLBACK, exit 3; all green → COMMIT
+#
+# REASSIGN takes an ACCESS EXCLUSIVE lock on every table, so it queues behind
+# live queries. lock_timeout (default 5s) makes a busy table abort the whole
+# cutover cleanly instead of stalling every client behind it; re-run when quiet
+# (idempotent). Run it in the agent_rw pause window, after the backup.
+#
+# Usage:
+#   scripts/db-own-cutover                # dry run on prod: inventory + canary,
+#                                         #   read-only as agent_ro; prints the plan
+#   scripts/db-own-cutover --print        # print the exact SQL --apply would send
+#   scripts/db-own-cutover --apply        # apply on prod as the superuser
+#   scripts/db-own-cutover --verify       # canary only (read-only, agent_ro)
+#   scripts/db-own-cutover --dsn URL ...  # any other DB (drill container, dev):
+#                                         #   URL must be a superuser for --apply
+#
+# Prod superuser path: the `deploy` role over the DB node's unix socket (trust,
+# pg_hba local line), reached by ssh to the overlay's `postgres_host`. Override
+# the whole command with PRECIS_SUPERUSER_PSQL (e.g. "ssh <node> psql -X -h /tmp
+# -U deploy -d precis_prod"). PRECIS_CUTOVER_LOCK_TIMEOUT overrides the 5s.
+#
+# After --apply, in order: overlay postgres_roles + vault passwords for
+# precis_owner/precis_ingress and `precis_db_own_cutover_done: true`; the
+# postgres play (LOGIN + passwords, pgbouncer userlist); the pgpass play; then
+# the release deploy (web on precis_ingress, migrate on precis_owner).
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$HERE/.." && pwd)"
+CUTOVER_SQL="$HERE/db-own/cutover.sql"
+VERIFY_SQL="$HERE/db-own/verify.sql"
+INVENTORY_SQL="$HERE/db-own/inventory.sql"
+LAYOUT_SQL="$REPO/src/precis/migrations/0286_db_ownership.sql"
+LOCK_TIMEOUT="${PRECIS_CUTOVER_LOCK_TIMEOUT:-5s}"
+
+MODE=dry
+DSN=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --apply) MODE=apply ;;
+        --verify) MODE=verify ;;
+        --print) MODE=print ;;
+        --dsn) DSN="${2:?--dsn needs a URL}"; shift ;;
+        -h|--help) sed -n '2,38p' "$0"; exit 0 ;;
+        *) echo "db-own-cutover: unknown argument $1 (see --help)" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+for f in "$CUTOVER_SQL" "$VERIFY_SQL" "$INVENTORY_SQL" "$LAYOUT_SQL"; do
+    [[ -f "$f" ]] || { echo "db-own-cutover: missing $f" >&2; exit 2; }
+done
+
+# The single transaction --apply sends. Built here so --print shows exactly it.
+apply_sql() {
+    echo '\set ON_ERROR_STOP 1'
+    echo '\timing on'
+    echo 'BEGIN;'
+    echo "SET LOCAL lock_timeout = '${LOCK_TIMEOUT}';"
+    echo 'SET LOCAL statement_timeout = 0;'
+    echo "SELECT clock_timestamp() AS cutover_start, current_user, current_database();"
+    echo '\echo == 1/3 cutover.sql (roles, database owner, REASSIGN OWNED)'
+    cat "$CUTOVER_SQL"
+    echo '\echo == 2/3 0286_db_ownership.sql (privilege layout)'
+    cat "$LAYOUT_SQL"
+    echo '\echo == 3/3 verify.sql (canary gate)'
+    cat "$VERIFY_SQL"
+    echo "SELECT bool_and(ok) AS db_own_ok,"
+    echo "       coalesce(string_agg(check_name, '; ') FILTER (WHERE NOT ok), '') AS db_own_red"
+    echo "  FROM ("
+    # $(…) drops trailing blank lines, so the last line is the final SELECT.
+    printf '%s\n' "$(cat "$VERIFY_SQL")" | sed '$ s/;[[:space:]]*$//'
+    echo ") v \\gset"
+    echo '\if :db_own_ok'
+    echo '\echo db-own: canary green — COMMIT'
+    echo 'COMMIT;'
+    echo "SELECT clock_timestamp() AS cutover_end;"
+    echo '\else'
+    echo '\echo db-own: canary RED — ROLLBACK. Red: :db_own_red'
+    echo 'ROLLBACK;'
+    echo "DO \$\$ BEGIN RAISE EXCEPTION 'db-own cutover rolled back: canary red'; END \$\$;"
+    echo '\endif'
+}
+
+# Read-only runner: agent_ro on prod, or the given DSN.
+ro_psql() {
+    if [[ -n "$DSN" ]]; then
+        psql -X -v ON_ERROR_STOP=1 -P pager=off "$DSN" -f "$1"
+    else
+        "$HERE/prod-psql" --ro < "$1"
+    fi
+}
+
+# Superuser runner for --apply: reads the SQL on stdin.
+su_psql() {
+    if [[ -n "$DSN" ]]; then
+        psql -X -v ON_ERROR_STOP=1 -P pager=off "$DSN"
+        return
+    fi
+    if [[ -n "${PRECIS_SUPERUSER_PSQL:-}" ]]; then
+        # Word-split on purpose: it is a command line.
+        # shellcheck disable=SC2086
+        ${PRECIS_SUPERUSER_PSQL} -v ON_ERROR_STOP=1 -P pager=off
+        return
+    fi
+    . "$HERE/lib/pgb-host.sh"
+    local node
+    node="$(resolve_inventory_var postgres_host)"
+    ssh -o IdentityAgent=none "$node" \
+        "psql -X -h /tmp -U deploy -d precis_prod -v ON_ERROR_STOP=1 -P pager=off"
+}
+
+case "$MODE" in
+    print)
+        apply_sql
+        ;;
+    verify)
+        ro_psql "$VERIFY_SQL"
+        ;;
+    dry)
+        echo "db-own-cutover: DRY RUN — read-only; nothing changes."
+        echo "== objects agent_rw owns (REASSIGN moves all of them to precis_owner)"
+        ro_psql "$INVENTORY_SQL"
+        echo "== canary now (expect red before the cutover)"
+        ro_psql "$VERIFY_SQL"
+        echo "== --apply would run, in one transaction (lock_timeout ${LOCK_TIMEOUT}):"
+        echo "   $CUTOVER_SQL"
+        echo "   $LAYOUT_SQL"
+        echo "   $VERIFY_SQL as a gate (red → ROLLBACK, exit 3)"
+        echo "   Full text: scripts/db-own-cutover --print"
+        ;;
+    apply)
+        echo "db-own-cutover: APPLY on ${DSN:-prod (superuser via postgres_host)} at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        set +e
+        apply_sql | su_psql
+        rc=$?
+        set -e
+        if [[ $rc -ne 0 ]]; then
+            echo "db-own-cutover: FAILED (psql exit $rc) — the transaction rolled back; nothing changed." >&2
+            exit 3
+        fi
+        echo "db-own-cutover: committed at $(date -u +%Y-%m-%dT%H:%M:%SZ)."
+        ;;
+esac

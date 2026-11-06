@@ -12,7 +12,7 @@
 precis_worker_agent_venv: /opt/mcps/venv
 # §L (gr171431 §1): password-free — this daemon runs as `deploy` (UserName
 # below); ~deploy/.pgpass (pgpass role) already supplies the password.
-precis_worker_agent_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+precis_worker_agent_dsn: "postgresql://precis_system@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
 precis_worker_agent_batch_size: 2
 precis_worker_agent_idle_seconds: 60
 

@@ -49,11 +49,15 @@ def test_set_role_issues_safely_quoted_statement(store, monkeypatch) -> None:
     actual privilege check (fail-closed on missing membership) is Postgres's own
     and is the documented deploy prerequisite."""
     monkeypatch.setenv("PRECIS_MCP_DB_ROLE_ENFORCE", "1")
-    monkeypatch.setenv("PRECIS_MCP_DB_ROLE", "agent_ro")
+    # pg_monitor: exists on every Postgres and the superuser test session can
+    # assume it — so the real checkout below exercises SET LOCAL ROLE live.
+    monkeypatch.setenv("PRECIS_MCP_DB_ROLE", "pg_monitor")
 
     captured: list[object] = []
 
     class _Capture:
+        autocommit = False
+
         def execute(self, query, *a, **k):
             captured.append(query)
 
@@ -61,7 +65,15 @@ def test_set_role_issues_safely_quoted_statement(store, monkeypatch) -> None:
     assert len(captured) == 1
     with store.pool.connection() as conn:
         rendered = captured[0].as_string(conn)  # type: ignore[attr-defined]
-    assert rendered == 'SET ROLE "agent_ro"'
+    assert rendered == 'SET LOCAL ROLE "pg_monitor"'
+
+
+def test_local_role_applies_for_the_transaction(store, monkeypatch) -> None:
+    """Enforce ON → every checkout assumes the role for its transaction."""
+    monkeypatch.setenv("PRECIS_MCP_DB_ROLE_ENFORCE", "1")
+    monkeypatch.setenv("PRECIS_MCP_DB_ROLE", "pg_monitor")
+    with store.pool.connection() as conn:
+        assert _current_role(conn) == "pg_monitor"
 
 
 def test_enforced_but_no_role_is_noop(store, monkeypatch) -> None:

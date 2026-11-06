@@ -197,6 +197,11 @@ def disallowed_tools(env: Envelope) -> tuple[str, ...]:
     deny: list[str] = []
     if env.write == "none":
         deny.extend(_PRECIS_WRITE_VERBS)
+        # Reto 2026-10-21 (review-container): ``put`` stays callable so the
+        # box can file gripes — dispatch carves ``put(kind='gripe')`` out of
+        # the deny, and Postgres (agent_ro + file_gripe_readonly) refuses
+        # every other put. Non-gripe puts still fail, just one layer deeper.
+        deny.remove("mcp__precis__put")
         deny.extend(_FS_WRITE_TOOLS)
     elif env.write == "scoped":
         # Scoped still writes (agent_rw at the DB) but not the destructive

@@ -18,6 +18,13 @@
 vault_pg_cluster_pass: "CHANGEME"
 vault_pg_agent_rw_pass: "CHANGEME"
 vault_pg_agent_ro_pass: "CHANGEME"
+# Service principal (multi-user S1): workers / migrate / agent launchers —
+# the only vault svc/infra/* reader (migration 0285 ACL).
+vault_pg_precis_system_pass: "CHANGEME"
+# db-own: the web daemon (writes web_users) and the owner DSN (owns every
+# object; DDL and `precis migrate` only). Add both to postgres_roles too.
+vault_pg_precis_ingress_pass: "CHANGEME"
+vault_pg_precis_owner_pass: "CHANGEME"
 vault_pg_pgboss_pass: "CHANGEME"
 vault_pg_prometheus_pass: "CHANGEME"
 # db_exporters DSNs (read-only monitoring login; see roles/db_exporters)

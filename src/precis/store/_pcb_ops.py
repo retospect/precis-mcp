@@ -83,6 +83,7 @@ from precis.pcb.rows import (
     rot_deg as _rot_deg,
 )
 from precis.pcb.snapshot import ALIASES as _SNAPSHOT_ALIASES
+from precis.store.ownership import require_owner
 from precis.store.types import ActorSlug, Ref
 
 log = logging.getLogger(__name__)
@@ -6690,6 +6691,8 @@ class PcbMixin:
         # its dynamic column list.
         staging = "parts_staging"
         with self._pcb_tx() as conn:
+            # The swap drops and renames ``parts``: owner DSN only (db-own).
+            require_owner(conn, "public.parts", purpose="parts_bulk_replace")
             conn.execute(f"DROP TABLE IF EXISTS {staging}")
             conn.execute(f"CREATE TABLE {staging} (LIKE parts INCLUDING ALL)")
             it = iter(rows)

@@ -405,6 +405,11 @@ def container_env(
         values={
             **run_context_env(run_context),
             "PRECIS_MCP_DB_ROLE": _envelope.db_role(env),
+            # S1 (multi-user-overhaul): the role now binds per transaction
+            # (``SET LOCAL ROLE``, pgbouncer-safe). For a ``write:none``
+            # envelope this resolves ``agent_ro`` — the review container's
+            # write refusal is enforced by Postgres itself, not the tool list.
+            "PRECIS_MCP_DB_ROLE_ENFORCE": "1",
             **({_envelope.DENY_VERBS_ENV: ",".join(deny_verbs)} if deny_verbs else {}),
             "PRECIS_AGENT_MODE": mode,
             "PRECIS_AGENT_MODEL": model,

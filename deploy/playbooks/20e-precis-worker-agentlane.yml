@@ -184,7 +184,7 @@
     # roles/precis_worker/defaults/main.yml sets and 20b/43/20d already
     # duplicate the same way.
     _agentlane_venv: /opt/precis/venv
-    _agentlane_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+    _agentlane_dsn: "postgresql://precis_system@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
     # Mirrors roles/precis_worker_agent/defaults/main.yml's
     # precis_worker_agent_mcp_config default — the file 20b's own collapsed
     # unit's PRECIS_MCP_CONFIG already points at on the gateway (provisioned

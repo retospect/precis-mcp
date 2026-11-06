@@ -1095,6 +1095,16 @@ def _maybe_validate_doi_constraint(conn: Any) -> bool:
     ).fetchone()
     if remaining is not None:
         return False
+    # VALIDATE is DDL: owner DSN only since db-own. The nightly reconcile runs
+    # as precis_system, so it reports instead of failing on "must be owner".
+    from precis.store.ownership import owner_refusal
+
+    refusal = owner_refusal(
+        conn, "public.ref_identifiers", purpose="validating ref_identifiers_doi_lc"
+    )
+    if refusal is not None:
+        log.info("reconcile: constraint ready to validate, skipped — %s", refusal)
+        return False
     conn.execute(
         "ALTER TABLE ref_identifiers VALIDATE CONSTRAINT ref_identifiers_doi_lc"
     )

@@ -160,8 +160,8 @@ never by a migration (`agent_rw` has no `CREATEROLE`).
   argument (`vault.reveal(p_name, p_user_id)`) the ingress daemon passes
   from its authenticated principal — never read from a GUC. No rename, no
   ACL table, no compatibility view: names stay as they are, only the reveal
-  is gated. Ruled (Reto 2026-10-22): `0231` builds the column directly, no
-  pattern table lands. As built (`0231_vault_class.sql`, db-own): the class
+  is gated. Ruled (Reto 2026-10-22): `0285` builds the column directly, no
+  pattern table lands. As built (`0285_vault_class.sql`, db-own): the class
   is stamped from the name on every write (trigger; legacy infra list:
   `CLAUDE_CODE_OAUTH_TOKEN`, `MELUXINA_SSH_*`, `ANKI_PASSWORD:*`,
   `email.*.password`; any other name → `api`, today's reach minus
@@ -206,18 +206,19 @@ never by a migration (`agent_rw` has no `CREATEROLE`).
 
 Fable findings 1 and 3 (2026-10-22), built on the `db-own` tree on top of
 S1; deploy pending (Reto's sitting: backup → this → key rotation, through
-builder-ce). The migration numbers below re-assign at that landing — main
-has moved past `0231`/`0234`. As built:
+builder-ce). Migration numbers were re-assigned to 0285/0286 at the 2026-11-06 rebase; main
+was at 0284 then (0278/0279 on 2026-11-05, briefly 0281/0282 — each
+overtaken by main before the tree shipped). As built:
 
 - **Cutover** — `scripts/db-own-cutover` (Reto-run, superuser; dry run by
   default, `--print` shows the exact SQL): one transaction running
   `scripts/db-own/cutover.sql` (creates `precis_owner` and `precis_ingress`
   NOLOGIN when missing, `ALTER DATABASE … OWNER TO precis_owner`, `REASSIGN
   OWNED BY agent_rw TO precis_owner`, refuses if `agent_rw` owns anything
-  outside public/vault), then migration `0234_db_ownership.sql` (the
+  outside public/vault), then migration `0286_db_ownership.sql` (the
   privilege layout), then `scripts/db-own/verify.sql` as a gate — red →
   ROLLBACK. `lock_timeout` 5s: a busy table aborts it cleanly; re-run.
-- **Layout (0234)** — `agent_rw`: DML (+`MAINTAIN`) on every public table,
+- **Layout (0286)** — `agent_rw`: DML (+`MAINTAIN`) on every public table,
   sequence use, no CREATE, `web_users` and `_migrations` read-only, nothing
   on `vault.*` tables or `vault._key()`; keys flow through `vault.reveal`.
   `web_users.password_hash` is unreadable to `agent_rw` and `agent_ro`
@@ -237,7 +238,7 @@ has moved past `0231`/`0234`. As built:
   `precis users` writes refuse on `agent_rw` naming it. Both passwords go to
   the gateway's pgpass only; deploy switches the two DSNs only once the
   overlay sets `precis_db_own_cutover_done: true`.
-- **Vault write gate (0231, Reto 2026-10-22)** — `set_secret`/`delete_secret`
+- **Vault write gate (0285, Reto 2026-10-22)** — `set_secret`/`delete_secret`
   check the written name's class: infra → `precis_system` or
   `precis_ingress` (the `/account` AnkiWeb password, the write-only admin
   vault editor), api → `agent_rw`, user → `precis_ingress`; the owner of
@@ -277,8 +278,8 @@ Cost = builder days (Sonnet/Opus) excluding Reto's windows.
 
 | Slice | Delivers | Cost | Blast radius | Closes |
 |---|---|---|---|---|
-| **S1** vault classes + `precis_system` — built on `db-own`, deploy pending | migration `0231_vault_class.sql` (`vault.secrets.class` stamped from the name, `vault.reveal(p_name, p_user_id)` gate; the S1b shape, no pattern table); deploy: `precis_system`, workers + migrate switch DSN; `pool.py` `SET LOCAL ROLE`; review containers bind a real `agent_ro` login; gated now: HPC key+passphrase, Claude OAuth token, anki password, mailbox → `precis_system` | 3 d + one agent_rw pause window (ride `rotate-credentials.md`) | every `get_secret` path; `/secrets` probe becomes presence-only for `svc/infra/*`; worker DSN rotation | HPC D1 (full: add a controller-only class once a second worker host exists), #16–#22, #24 |
-| **S1b** folded into S1 | the class column and `vault.reveal(p_name, p_user_id)` ship in `0231_vault_class.sql`; left: move per-user legacy names (`ANKI_USER:*`, `PRECIS_WEB_FEED_TOKEN:*`, `REMARKABLE_RMAPI_CONFIG:*`) to `user/<id>/*` (S7) | — | — | #20 |
+| **S1** vault classes + `precis_system` — built on `db-own`, deploy pending | migration `0285_vault_class.sql` (`vault.secrets.class` stamped from the name, `vault.reveal(p_name, p_user_id)` gate; the S1b shape, no pattern table); deploy: `precis_system`, workers + migrate switch DSN; `pool.py` `SET LOCAL ROLE`; review containers bind a real `agent_ro` login; gated now: HPC key+passphrase, Claude OAuth token, anki password, mailbox → `precis_system` | 3 d + one agent_rw pause window (ride `rotate-credentials.md`) | every `get_secret` path; `/secrets` probe becomes presence-only for `svc/infra/*`; worker DSN rotation | HPC D1 (full: add a controller-only class once a second worker host exists), #16–#22, #24 |
+| **S1b** folded into S1 | the class column and `vault.reveal(p_name, p_user_id)` ship in `0285_vault_class.sql`; left: move per-user legacy names (`ANKI_USER:*`, `PRECIS_WEB_FEED_TOKEN:*`, `REMARKABLE_RMAPI_CONFIG:*`) to `user/<id>/*` (S7) | — | — | #20 |
 | **S2** settings scopes | registry `scope`, `set_operator_setting()`, trigger refusing operator keys from plain `agent_rw`; `/settings`, `/budget`, `/factory` writes gated on admin (needs S3) | 2 d | every `set_setting` caller (37 sites; state keys unchanged) | HPC D2, #3, #25 |
 | **S3** roster role + web gate | migration `web_users.role` (backfill admin; empty-roster add → admin); `precis users add --role`, `precis users role`; `auth.py` route classes (admin prefixes, reader GET-only); admin POSTs verify the request's own Basic header password; `/console` read-only verbs for `user`/`reader` | 2.5 d | every web route; CLI roster | #1, #2, #4, #5, #7, #32; unblocks `out-of-box-setup.md` O6 |
 | **S4** `precis_ingress` + human actor | deploy: `precis_ingress` login for web + shared MCP server (role itself from db-own); migration: BEFORE triggers on `reviews`/`revisions` checking `pg_has_role(session_user, 'precis_ingress', 'MEMBER')`, rewriting a non-ingress human claim to `agent` | 1.5 d | trust 2b admit gate (human approvals must come via web or a per-user S10a credential); `revisions.actor` semantics | trust Q2, #26, #27 |
@@ -507,7 +508,7 @@ it → reconnect (`out-of-box-setup.md` O2). Findings 1 and 3 (ownership
 split) → §DB ownership, built by db-own.
 
 Cuts: `assert_human_actor` (dropped); the `vault.acl` table, name rename
-and compatibility view (one `class` column, built directly in 0231;
+and compatibility view (one `class` column, built directly in 0285;
 Reto 2026-10-22); the sudo window (Q4 → Basic header verified on every admin POST);
 S5 as a slice (folded into S10a's `agent_credentials`); S10b (deferred
 until `context-navigation.md` §7 is scheduled); `precis setup --roles`
