@@ -548,3 +548,14 @@ def test_chemical_blocker_cannot_claim_a_viable_limiting_potential(
     assert "blocked by B->C" in text
     assert "U-flat" in text
     assert "U_L = -0.4" not in text
+
+
+def test_joint_optimum_caveat_names_no_shipped_deliverable(
+    store: MagicMock,
+) -> None:
+    text = optimum.optimum_text(store, _ref({}))
+
+    assert "awaits a U axis on the kinetics sweep (not yet specified" in text
+    assert "slab-environment-optimizer" in text
+    assert "kinetics-engine-v2" in text
+    assert "slice" not in text

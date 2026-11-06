@@ -321,6 +321,7 @@ def optimum_text(store: Any, ref: Any) -> str:
             *_kinetic_lines(_record(ref.meta), handle),
             "",
             "No joint optimum: CHE is thermodynamic post-processing. A joint "
-            "objective awaits a U axis on the kinetics sweep (kinetics-engine-v2 slice 8).",
+            "objective awaits a U axis on the kinetics sweep (not yet specified; "
+            "see the slab-environment-optimizer and kinetics-engine-v2 specs).",
         ]
     )
