@@ -27,9 +27,12 @@ def _play() -> dict[str, Any]:
 
 
 def _unit_vars() -> dict[str, Any]:
-    tasks = [t for t in _play()["tasks"] if "ansible.builtin.import_role" in t]
+    tasks = [
+        t
+        for t in _play()["tasks"]
+        if t.get("ansible.builtin.import_role", {}).get("name") == "service_unit"
+    ]
     assert len(tasks) == 1
-    assert tasks[0]["ansible.builtin.import_role"]["name"] == "service_unit"
     return tasks[0]["vars"]
 
 
