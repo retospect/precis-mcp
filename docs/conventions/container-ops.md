@@ -262,11 +262,15 @@ that gap (never blocks on it):
   last deploy never went green, unless its outcome is `refused` (see below),
   in which case no host was ever touched.
 - **Rollback guard** (gr338201): before touching anything, `scripts/deploy`
-  refuses when the resolved target sha is a strict ancestor of either the
-  deployed-state marker's sha or a freshly-fetched `origin/main` — the real
-  incident this fixes was a stale worktree pinned to an old sha rolling the
-  whole fleet backward. Equal-sha (no-op redeploy) and a missing marker
-  (first-ever deploy) both proceed; `--force-rollback` is the sole override.
+  refuses when the resolved target sha is a strict ancestor of the
+  deployed-state marker's sha, a freshly-fetched `origin/prod`, or a
+  freshly-fetched `origin/main` — the real incident this fixes was a stale
+  worktree pinned to an old sha rolling the whole fleet backward. Equal-sha
+  (no-op redeploy) and a missing marker (first-ever deploy) both proceed;
+  `--force-rollback` is the sole override. `--pinned` drops the `origin/main`
+  leg; with no marker (a clone that never deployed, gr575614) it checks
+  direction against `origin/prod` and prints which source it used, and with
+  neither a marker nor `origin/prod` it refuses.
 - **Backup-window guard**: inside the nightly backup window (03:00–04:20
   UTC; bounds next to the pg_dump cron in
   `deploy/roles/backups/defaults/main.yml`) `scripts/deploy` refuses a

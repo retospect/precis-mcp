@@ -1183,21 +1183,39 @@ if [[ "$FORCE_ROLLBACK" != 1 ]]; then
         git_network -C "$REPO_ROOT" fetch -q origin main || true
         _rb_origin_main="$(git -C "$REPO_ROOT" rev-parse -q --verify origin/main 2>/dev/null || true)"
 
+        # origin/prod is the shared, fast-forward-only record of what the
+        # cluster runs (_move_prod_pointer); the marker is only this clone's
+        # copy of it. A clone that never deployed (the release factory's own
+        # checkout) has no marker — gr575614.
+        git_network -C "$REPO_ROOT" fetch -q origin prod || true
+        _rb_prod="$(git -C "$REPO_ROOT" rev-parse -q --verify "origin/prod^{commit}" 2>/dev/null || true)"
+        _rb_deployed_src="deploy-state marker"
+
         # --pinned: the target is deliberately behind origin/main (it is the sha
         # a full gate validated; siblings have qlanded ungated commits on top
         # since). Drop ONLY the origin/main leg — the deployed-sha leg below
         # still catches the actual gr338201 incident shape, which was a stale
         # worktree deploying an ancestor of WHAT WAS ALREADY LIVE. With no
-        # marker that leg has nothing to compare against, so fail closed rather
-        # than let --pinned degrade into a guard-free deploy.
+        # marker that leg compares against origin/prod instead; with neither,
+        # fail closed rather than let --pinned degrade into a guard-free deploy.
         if [[ "$PINNED" == 1 && -z "$_rb_deployed" ]]; then
-            die "--pinned needs the deploy-state marker to check direction, and there is none (no successful deploy on record). Deploy the branch normally first, or pass --force-rollback if you know this target is correct."
+            if [[ -z "$_rb_prod" ]]; then
+                die "--pinned has nothing to check direction against: no local deploy-state marker (no successful deploy from this clone) and origin/prod could not be fetched or does not exist. Fetch it (git fetch origin prod), deploy the branch normally first, or pass --force-rollback if you know this target is correct."
+            fi
+            _rb_deployed="$_rb_prod"
+            _rb_deployed_src="origin/prod"
+            echo "no local deploy-state marker; direction checked against origin/prod ${_rb_prod:0:12}"
         fi
 
         _rb_against=""
         if [[ -n "$_rb_deployed" && "$_rb_target" != "$_rb_deployed" ]] \
             && git -C "$REPO_ROOT" merge-base --is-ancestor "$_rb_target" "$_rb_deployed" 2>/dev/null; then
-            _rb_against="the currently-deployed sha ${_rb_deployed:0:8} (deploy-state marker)"
+            _rb_against="the currently-deployed sha ${_rb_deployed:0:8} (${_rb_deployed_src})"
+        elif [[ -n "$_rb_prod" && "$_rb_target" != "$_rb_prod" ]] \
+            && git -C "$REPO_ROOT" merge-base --is-ancestor "$_rb_target" "$_rb_prod" 2>/dev/null; then
+            # The marker passed but the shared record is ahead of the target:
+            # a stale marker must not wave a rollback through.
+            _rb_against="origin/prod (${_rb_prod:0:8})"
         elif [[ "$PINNED" != 1 ]] && [[ -n "$_rb_origin_main" && "$_rb_target" != "$_rb_origin_main" ]] \
             && git -C "$REPO_ROOT" merge-base --is-ancestor "$_rb_target" "$_rb_origin_main" 2>/dev/null; then
             _rb_against="origin/main (${_rb_origin_main:0:8})"

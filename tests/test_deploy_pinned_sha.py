@@ -13,7 +13,8 @@ than a rollback, which collides with the gr338201 rollback guard. ``--pinned``
 therefore drops *only* that leg and keeps the currently-deployed-sha leg —
 the one that actually catches the 2026-09-13 incident shape (a stale worktree
 deploying an ancestor of what was already live). With no deploy-state marker
-that leg has nothing to compare against, so ``--pinned`` fails closed.
+that leg compares against origin/prod (the shared record of what runs); with
+neither a marker nor origin/prod, ``--pinned`` fails closed.
 
 Pinning also makes a literal-sha REF the common path, which exposed a
 pre-existing hole the gr338201 header already admitted: the freshness guard
@@ -25,7 +26,9 @@ Cases:
   (a) --pinned, target behind origin/main but not behind the deployed sha →
       ALLOWED, and the marker records the pinned sha (not origin/main).
   (b) --pinned, target behind the DEPLOYED sha → still refused (gr338201).
-  (c) --pinned with no deploy-state marker → refused, fail closed.
+  (c) --pinned with no deploy-state marker → direction checked against
+      origin/prod (gr575614): forward pin allowed, pin behind it refused, and
+      with no origin/prod either → refused, fail closed.
   (d) no --pinned, target behind origin/main → still refused (non-regression:
       --pinned must not become the ambient behaviour).
   (e) --pinned prints how far behind origin/main the pin is — the ungated
@@ -339,10 +342,56 @@ def test_pinned_still_refuses_a_target_behind_the_deployed_sha(
     assert fx.marker_sha() == fx.sibling1, "a refused deploy must not move the marker"
 
 
-def test_pinned_without_a_marker_fails_closed(fx: Fixture, tmp_path: Path) -> None:
-    """Case (c): with no deploy-state marker the surviving leg has nothing to
-    compare against, so --pinned would degrade into a guard-free deploy.
-    Refuse instead."""
+def _push_prod(fx: Fixture, sha: str) -> None:
+    """Publish `sha` as origin's `prod` ref, the shared record a successful
+    deploy fast-forwards (scripts/lib/env-pointers.sh)."""
+    _git(fx.repo, "push", "-q", "origin", f"{sha}:refs/heads/prod")
+
+
+def test_pinned_without_a_marker_checks_direction_against_origin_prod(
+    fx: Fixture, tmp_path: Path
+) -> None:
+    """Case (c1), gr575614: a clone that never deployed (the release factory's
+    own checkout) has no marker, yet origin/prod is the shared record of what
+    runs. The guard falls back to it, says so, and lets a forward pin go."""
+    fakebin = _make_fake_bin(tmp_path)
+    _push_prod(fx, fx.base)
+    assert fx.marker_sha() is None
+
+    result = _run_deploy(fx, fakebin, fx.gated, "--pinned")
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert (
+        "no local deploy-state marker; direction checked against origin/prod "
+        f"{fx.base[:12]}"
+    ) in result.stdout, result.stdout
+    assert fx.marker_sha() == fx.gated
+
+
+def test_pinned_without_a_marker_refuses_a_target_behind_origin_prod(
+    fx: Fixture, tmp_path: Path
+) -> None:
+    """Case (c2): the fallback is a real guard, not a pass-through — a pin
+    that is an ancestor of origin/prod is a rollback, refused without
+    --force-rollback."""
+    fakebin = _make_fake_bin(tmp_path)
+    _push_prod(fx, fx.sibling1)
+
+    result = _run_deploy(fx, fakebin, fx.gated, "--pinned")
+
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert "REFUSING TO DEPLOY" in combined, combined
+    assert "origin/prod" in combined
+    assert "--force-rollback" in combined
+    assert fx.marker_sha() is None, "a refused deploy must not write the marker"
+
+
+def test_pinned_without_a_marker_and_without_origin_prod_fails_closed(
+    fx: Fixture, tmp_path: Path
+) -> None:
+    """Case (c3): neither source exists, so there is nothing to check
+    direction against. Refuse, naming both missing sources and a next step."""
     fakebin = _make_fake_bin(tmp_path)
     assert fx.marker_sha() is None
 
@@ -350,10 +399,28 @@ def test_pinned_without_a_marker_fails_closed(fx: Fixture, tmp_path: Path) -> No
 
     assert result.returncode != 0
     combined = result.stdout + result.stderr
-    assert "--pinned needs the deploy-state marker" in combined, (
-        f"expected the fail-closed refusal, got:\n{combined}"
-    )
+    assert "no local deploy-state marker" in combined, combined
+    assert "origin/prod" in combined
+    assert "--force-rollback" in combined, "the refusal must name a next step"
     assert fx.marker_sha() is None
+
+
+def test_pinned_with_a_marker_still_refuses_a_target_behind_origin_prod(
+    fx: Fixture, tmp_path: Path
+) -> None:
+    """The marker stays the primary source, but origin/prod is the shared
+    record: a stale marker must not let a pin behind origin/prod through."""
+    fakebin = _make_fake_bin(tmp_path)
+    fx.set_marker(fx.base)
+    _push_prod(fx, fx.sibling1)
+
+    result = _run_deploy(fx, fakebin, fx.gated, "--pinned")
+
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert "REFUSING TO DEPLOY" in combined, combined
+    assert "origin/prod" in combined
+    assert fx.marker_sha() == fx.base
 
 
 def test_pinned_with_nothing_behind_main_still_succeeds(
