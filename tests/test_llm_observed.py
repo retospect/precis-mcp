@@ -177,6 +177,67 @@ def test_result_from_agent_fingerprints_the_primary_model() -> None:
     }
 
 
+def test_result_from_agent_fingerprint_tie_picks_greater_model_id() -> None:
+    """Equal ``outputTokens``: the pick is deterministic — the greater
+    model id under the ``(tokens, id)`` max key wins."""
+    res = AgentResult(
+        final_text="done",
+        cost_usd=0.01,
+        duration_s=1.0,
+        turns_used=2,
+        raw_stdout=_agent_stdout_usage(
+            {
+                "claude-haiku-4-5": {"inputTokens": 2, "outputTokens": 7},
+                "claude-opus-4-8-20260101": {"inputTokens": 3, "outputTokens": 7},
+            }
+        ),
+    )
+    out = router.result_from_agent(res, model="claude-haiku-4-5", tier=Tier.MEDIUM)
+    assert out.observed == {
+        "model": "claude-opus-4-8-20260101",
+        "models": ["claude-haiku-4-5", "claude-opus-4-8-20260101"],
+        "provider": None,
+        "quant": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"inputTokens": 9},
+        {"inputTokens": 9, "outputTokens": None},
+        {"inputTokens": 9, "outputTokens": True},
+        {"inputTokens": 9, "outputTokens": "900"},
+        {"inputTokens": 9, "outputTokens": [5]},
+    ],
+    ids=["missing", "none", "bool", "string", "list"],
+)
+def test_result_from_agent_malformed_output_tokens_counts_as_zero(
+    entry: dict[str, Any],
+) -> None:
+    """A missing/``None``/bool/non-numeric ``outputTokens`` counts as 0
+    and never raises, so the other billed model wins the fingerprint."""
+    res = AgentResult(
+        final_text="done",
+        cost_usd=0.01,
+        duration_s=1.0,
+        turns_used=2,
+        raw_stdout=_agent_stdout_usage(
+            {
+                "claude-haiku-4-5": entry,
+                "claude-opus-4-8-20260101": {"outputTokens": 5},
+            }
+        ),
+    )
+    out = router.result_from_agent(res, model="m", tier=Tier.MEDIUM)
+    assert out.observed == {
+        "model": "claude-opus-4-8-20260101",
+        "models": ["claude-haiku-4-5", "claude-opus-4-8-20260101"],
+        "provider": None,
+        "quant": None,
+    }
+
+
 def test_result_from_agent_without_stream_leaves_observed_none() -> None:
     res = AgentResult(final_text="done", cost_usd=0.01, duration_s=1.0, turns_used=None)
     out = router.result_from_agent(res, model="m", tier=Tier.MEDIUM)
