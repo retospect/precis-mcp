@@ -1607,6 +1607,32 @@ def test_reassign_batch_clears_points_and_assigns(
     assert _run(env, "reassign", "x").returncode == 2
 
 
+def test_reassign_brief_stages_the_file_in_the_builder_tree(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    # gr570390: the pane resolves the path inside its own tree, so a
+    # coordinator-relative --brief must be staged under <tree>/scratch/.
+    _windows(env, {"devin-x": IDLE})
+    tree = _worktree(env, "x")
+    brief = Path(env["CWD"]) / "scratch" / "brief-r2.md"
+    brief.parent.mkdir()
+    brief.write_text("Round 2: redo it.\n", encoding="utf-8")
+    proc = _run(env, "reassign", "x", "--brief", "scratch/brief-r2.md", "--pause", "0")
+    assert proc.returncode == 0, proc.stderr
+    sends = [c[-1] for c in _tmux_calls(env) if c[0] == "send-keys" and "-l" in c]
+    assert sends == ["/clear", "Read scratch/brief-r2.md and do it."]
+    staged = tree / "scratch" / "brief-r2.md"
+    assert staged.read_text(encoding="utf-8") == "Round 2: redo it.\n"
+
+
+def test_reassign_brief_refuses_an_unreadable_file(env: dict[str, str]) -> None:
+    _windows(env, {"devin-x": IDLE})
+    proc = _run(env, "reassign", "x", "--brief", "scratch/missing.md", "--pause", "0")
+    assert proc.returncode == 2 and "missing.md" in proc.stderr
+    # Refuse before /clear: a dead brief must not wipe the builder's context.
+    assert not any(c[0] == "send-keys" for c in _tmux_calls(env))
+
+
 def test_cites_lists_unlanded_commits_naming_a_gripe(env: dict[str, str]) -> None:
     repo = Path(env["CWD"])
     (repo / "f.txt").write_text("x\n", encoding="utf-8")

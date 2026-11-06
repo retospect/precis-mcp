@@ -190,9 +190,11 @@ exits at once on a bad flag set.
 
 ``reassign``, ``handoff-wait`` and ``cites`` replace the GRIPE_FIX
 coordinator's scratch scripts (reassign.sh, handoff-wait.sh,
-dupcheck.sh): a builder re-pointed at a new batch, a Devin that printed
-``DONE-HANDOFF`` at its context ceiling resumed after ``/clear``, and a
-check whether some unlanded branch already names a gripe.
+dupcheck.sh): a builder re-pointed at a new batch or a ``--brief``
+staged under ``<tree>/scratch/`` (the pane resolves paths inside its
+own tree), a Devin that printed ``DONE-HANDOFF`` at its context
+ceiling resumed after ``/clear``, and a check whether some unlanded
+branch already names a gripe.
 
 Configuration (env, or the matching flag before the subcommand):
   FLEET_TMUX_SESSION  --session   tmux session (default: the current one)
@@ -1433,6 +1435,28 @@ def cmd_handoff_wait(f: Fleet, a: argparse.Namespace) -> int:
     return 0
 
 
+def _stage_brief(f: Fleet, path: str, name: str) -> str | None:
+    """Copy a coordinator-side brief into ``<tree>/scratch/`` and return the
+    tree-relative path the pane reads, or ``None`` after a printed refusal.
+    The pane resolves the path inside its own tree, so a
+    coordinator-relative ``--brief`` never reaches it (gr570390)."""
+    src = Path(path)
+    try:
+        text = src.read_text(encoding="utf-8")
+    except OSError as e:
+        print(f"fleet-wave: brief {path} unreadable: {e}", file=sys.stderr)
+        return None
+    tree = f.worktrees / name
+    if not tree.is_dir():
+        # No tree to stage into (a window launched by hand): the absolute
+        # path is still readable for a same-host builder.
+        return str(src.resolve())
+    scratch = tree / "scratch"
+    scratch.mkdir(exist_ok=True)
+    (scratch / src.name).write_text(text, encoding="utf-8")
+    return f"scratch/{src.name}"
+
+
 def cmd_reassign(f: Fleet, a: argparse.Namespace) -> int:
     """``/clear`` a builder and point it at a new brief or batch."""
     if bool(a.brief) == bool(a.batch):
@@ -1445,7 +1469,12 @@ def cmd_reassign(f: Fleet, a: argparse.Namespace) -> int:
         return 2
     vendor = win.split("-", 1)[0]
     name = win.split("-", 1)[1]
-    brief = a.brief or str(_render_batch_brief(f, a.batch, win))
+    if a.brief:
+        brief = _stage_brief(f, a.brief, name)
+        if brief is None:
+            return 2
+    else:
+        brief = str(_render_batch_brief(f, a.batch, win))
     if rc := _send(f, win, "/clear", pause=a.pause):
         return rc
     time.sleep(a.pause)
@@ -2346,8 +2375,7 @@ def cmd_event_watch(f: Fleet, a: argparse.Namespace) -> int:
     except OSError:
         os.close(lock_fd)
         print(
-            "event-watch: another watcher already holds "
-            f"{f.state}/event-watch.lock",
+            f"event-watch: another watcher already holds {f.state}/event-watch.lock",
             file=sys.stderr,
         )
         return 1
