@@ -487,7 +487,7 @@ def _tag_string_set(tags: list[Any]) -> set[str]:
     [
         (None, ()),
         ("fbproj", ("fbproj",)),
-        ("fbproj,scratch", ("fbproj", "scratch")),
+        ("fbproj,sidebox", ("fbproj", "sidebox")),
     ],
 )
 def test_default_tags_layer_with_workspace_on_prose_handlers(
