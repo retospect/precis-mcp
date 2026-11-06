@@ -37,6 +37,11 @@ The ``email`` column is for display and future notification, not auth.
 The ``orcid`` column is neither: it is the identity a nanopub signed by
 this person is attributed to (:mod:`precis.nanopub.keys`), validated
 (ISO 7064 checksum included) on the way in.
+
+**Which DSN.** On a cluster install the roster is writable only by the web
+daemon's role ``precis_ingress`` (db-own, migration 0279): an ``agent_rw``
+shell must not be able to mint itself a login. ``list`` works on any DSN;
+the writing subcommands refuse on ``agent_rw`` with the DSN to use instead.
 """
 
 from __future__ import annotations
@@ -188,27 +193,40 @@ def _check_policy(password: str) -> None:
 
 
 def run(args: argparse.Namespace) -> None:
+    import psycopg
+
     from precis.store import Store
 
     store = Store.connect(resolve_dsn(getattr(args, "database_url", None)))
     try:
-        cmd = args.users_cmd
-        if cmd == "add":
-            _add(args, store)
-        elif cmd == "list":
-            _list(store)
-        elif cmd == "passwd":
-            _passwd(args, store)
-        elif cmd == "edit":
-            _edit(args, store)
-        elif cmd in ("disable", "enable"):
-            _toggle(args, store, disabled=(cmd == "disable"))
-        elif cmd == "rm":
-            _rm(args, store)
-        elif cmd == "feed-token":
-            _feed_token(args, store)
+        _dispatch(args, store)
+    except psycopg.errors.InsufficientPrivilege as exc:
+        raise SystemExit(
+            f"users {args.users_cmd}: this DSN may not write the login roster "
+            f"({exc.diag.message_primary}). Re-run with the web daemon's role: "
+            "PRECIS_DATABASE_URL=postgresql://precis_ingress@…/precis_prod "
+            "(docs/runbooks/prod-db-access.md §Roles). Nothing was changed."
+        ) from exc
     finally:
         store.close()
+
+
+def _dispatch(args: argparse.Namespace, store: Store) -> None:
+    cmd = args.users_cmd
+    if cmd == "add":
+        _add(args, store)
+    elif cmd == "list":
+        _list(store)
+    elif cmd == "passwd":
+        _passwd(args, store)
+    elif cmd == "edit":
+        _edit(args, store)
+    elif cmd in ("disable", "enable"):
+        _toggle(args, store, disabled=(cmd == "disable"))
+    elif cmd == "rm":
+        _rm(args, store)
+    elif cmd == "feed-token":
+        _feed_token(args, store)
 
 
 def _pepper_for_write(args: argparse.Namespace, store: Store) -> str | None:

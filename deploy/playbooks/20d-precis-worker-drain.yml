@@ -80,7 +80,7 @@
     # DEPENDENCIES). Cluster-stable, same values roles/precis_worker/defaults/
     # main.yml sets and every precis-* worker template builds from.
     _drain_venv: /opt/precis/venv
-    _drain_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+    _drain_dsn: "postgresql://precis_system@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
     _drain_hf_home: /var/lib/precis/hf-cache
     _drain_embedder: remote
     _drain_embedder_url: "http://127.0.0.1:{{ embedder_port | default(8181) }}"

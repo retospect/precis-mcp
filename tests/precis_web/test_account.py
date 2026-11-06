@@ -262,6 +262,8 @@ def vault(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     monkeypatch.setattr(
         vault_mod, "delete_secret", lambda n, *, store: box.pop(n, None)
     )
+    # Presence (/account's anki indicator, 0278): never a reveal.
+    monkeypatch.setattr(vault_mod, "vault_present", lambda n, *, store=None: n in box)
     return box
 
 

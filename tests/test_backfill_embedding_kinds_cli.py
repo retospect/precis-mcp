@@ -35,6 +35,11 @@ def _args(**kw: Any) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
+class _Cur:
+    def fetchone(self) -> None:
+        return None  # the owner-DSN probe: "no such table" passes
+
+
 class _Conn:
     def __enter__(self) -> _Conn:
         return self
@@ -42,8 +47,8 @@ class _Conn:
     def __exit__(self, *a: object) -> None:
         return None
 
-    def execute(self, *a: object, **k: object) -> None:
-        return None
+    def execute(self, *a: object, **k: object) -> _Cur:
+        return _Cur()
 
 
 @pytest.fixture

@@ -599,6 +599,19 @@ def run(args: argparse.Namespace) -> None:
         # build holds only SHARE UPDATE EXCLUSIVE, so waiting blocks no DML.
         connect_kw["options"] = "-c statement_timeout=0 -c lock_timeout=0"
     with psycopg.connect(dsn, **connect_kw) as conn:
+        if args.apply:
+            # VALIDATE CONSTRAINT and the index builds are DDL: owner DSN only
+            # (db-own). Refuse before the fill, not after an hour of it.
+            from precis.store.ownership import owner_refusal
+
+            refusal = owner_refusal(
+                conn,
+                "public.chunk_embeddings",
+                purpose="backfill-embedding-kinds --apply",
+            )
+            if refusal is not None:
+                print(f"{refusal} Nothing was changed.", file=sys.stderr)
+                sys.exit(2)
         pause = autovacuum_paused(conn) if args.apply else nullcontext()
         with pause:
             if needs_direct:

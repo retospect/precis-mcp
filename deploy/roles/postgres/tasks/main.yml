@@ -183,18 +183,85 @@
 # for retirement) and its research/memory/jobs/schedule/sortie/papers schemas
 # — none of which exist in precis_prod — so they were removed.
 
-- name: Grant CREATE on public schema to agent_rw
-  community.postgresql.postgresql_privs:
-    database: precis_prod
-    objs: public
-    type: schema
-    privs: CREATE,USAGE
-    role: agent_rw
-    state: present
+# precis_system (multi-user S1): the service-principal role — workers,
+# `precis migrate`, agent launchers. Member of agent_rw so it inherits every
+# app privilege; the extra authority it gets is the vault's `infra` class
+# (migration 0278: the connection role IS the gate). NOLOGIN is fine at creation
+# — postgres_roles in the overlay gives it LOGIN + password.
+- name: Grant precis_system membership of agent_rw
+  community.postgresql.postgresql_query:
+    db: precis_prod
+    query: |
+      DO $$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'precis_system')
+           AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'agent_rw') THEN
+          EXECUTE 'GRANT agent_rw TO precis_system';
+        END IF;
+      END $$;
+    autocommit: true
     login_user: "{{ pg_user }}"
     login_unix_socket: /tmp
   become: true
   become_user: "{{ pg_user }}"
+  changed_when: false
+  check_mode: false
+
+# db-own (Fable findings 1+3): precis_owner owns every object and is the owner
+# DSN (DDL, `precis migrate`; never a daemon's login); precis_ingress is the
+# web daemon. scripts/db-own-cutover creates both and moves ownership — a
+# superuser step Reto runs once; postgres_roles in the overlay gives them
+# LOGIN + password; this keeps precis_ingress's membership true on every
+# play. Guarded: a no-op until the cutover has created the role.
+- name: Grant precis_ingress membership of agent_rw
+  community.postgresql.postgresql_query:
+    db: precis_prod
+    query: |
+      DO $$
+      BEGIN
+        IF to_regrole('precis_ingress') IS NOT NULL
+           AND to_regrole('agent_rw') IS NOT NULL THEN
+          EXECUTE 'GRANT agent_rw TO precis_ingress';
+        END IF;
+      END $$;
+    autocommit: true
+    login_user: "{{ pg_user }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ pg_user }}"
+  changed_when: false
+  check_mode: false
+
+# Before the db-own cutover agent_rw is the migrating role and needs CREATE on
+# public; after it (precis_owner owns _migrations) agent_rw never creates —
+# new objects come from migrations on the owner DSN, and no CREATE also
+# closes search_path hijacks of precis_owner's SECURITY DEFINER functions.
+# Keyed on DB state, so a play before or after the cutover does the right one.
+- name: Schema public privileges for agent_rw (CREATE only before db-own)
+  community.postgresql.postgresql_query:
+    db: precis_prod
+    query: |
+      DO $$
+      BEGIN
+        IF to_regrole('agent_rw') IS NULL THEN
+          RETURN;
+        END IF;
+        GRANT USAGE ON SCHEMA public TO agent_rw;
+        IF EXISTS (SELECT 1 FROM pg_class
+                    WHERE oid = to_regclass('public._migrations')
+                      AND relowner = to_regrole('precis_owner')) THEN
+          REVOKE CREATE ON SCHEMA public FROM agent_rw;
+        ELSE
+          GRANT CREATE ON SCHEMA public TO agent_rw;
+        END IF;
+      END $$;
+    autocommit: true
+    login_user: "{{ pg_user }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ pg_user }}"
+  changed_when: false
+  check_mode: false
 
 # pg_stat_statements: cluster-wide query performance history. The library is
 # loaded via shared_preload_libraries (postgresql.conf.j2); the flush_handlers
@@ -257,6 +324,21 @@
           EXECUTE 'ALTER ROLE agent_ro SET statement_timeout = ''120s''';
           EXECUTE 'ALTER ROLE agent_ro SET idle_in_transaction_session_timeout = ''300s''';
           EXECUTE 'ALTER ROLE agent_ro SET lock_timeout = ''5s''';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'precis_system') THEN
+          EXECUTE 'ALTER ROLE precis_system SET statement_timeout = ''120s''';
+          EXECUTE 'ALTER ROLE precis_system SET idle_in_transaction_session_timeout = ''300s''';
+          EXECUTE 'ALTER ROLE precis_system SET lock_timeout = ''5s''';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'precis_ingress') THEN
+          EXECUTE 'ALTER ROLE precis_ingress SET statement_timeout = ''120s''';
+          EXECUTE 'ALTER ROLE precis_ingress SET idle_in_transaction_session_timeout = ''300s''';
+          EXECUTE 'ALTER ROLE precis_ingress SET lock_timeout = ''5s''';
+        END IF;
+        -- The owner DSN runs long DDL on purpose; only reclaim a wedged
+        -- transaction (it would hold ACCESS EXCLUSIVE locks).
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'precis_owner') THEN
+          EXECUTE 'ALTER ROLE precis_owner SET idle_in_transaction_session_timeout = ''300s''';
         END IF;
       END $$;
     autocommit: true

@@ -192,15 +192,22 @@ def _render(
     mcp_tokens = []
     if user is not None:
         from precis import profiles
-        from precis.anki.creds import get_user_credentials
+        from precis import secrets as _secrets
+        from precis.anki.creds import user_anki_configured, user_secret
         from precis.export.remarkable import user_remarkable_configured
 
         store = get_store(request)
         mcp_tokens = list_user_tokens(store, user.id)
         remarkable_paired = user_remarkable_configured(store, user.login)
-        creds = get_user_credentials(store, user.login)
-        anki_connected = creds is not None
-        anki_email = creds[0] if creds is not None else None
+        # Presence, not reveal: ANKI_PASSWORD:<login> is class infra (0278,
+        # precis_system-only) — this role can't decrypt it, and must not.
+        # The email name stays unclassed so the configured address still shows.
+        anki_connected = user_anki_configured(store, user.login)
+        anki_email = (
+            _secrets.get_secret(user_secret(user.login), store=store)
+            if anki_connected
+            else None
+        )
         default_ref = profiles.owner_default(store, user.login)
         if default_ref is not None:
             poster_profile = profiles.payload_of(default_ref)

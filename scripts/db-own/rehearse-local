@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# scripts/db-own/rehearse-local — rehearse the db-own cutover on a throwaway
+# DB in this worktree's precis-test-db container, shaped like prod.
+#
+# Run inside the dev container (it needs psql and the venv):
+#   scripts/dev bash scripts/db-own/rehearse-local [slice.jsonl]
+#
+# 1. Fresh DB `precis_dbown_rehearse` OWNED BY agent_rw, vector created by the
+#    superuser, CREATE on public granted to agent_rw — prod's 2026-10-22 shape.
+# 2. Migrated AS agent_rw, so every object is agent_rw's exactly as on prod
+#    (0279 runs as a no-op there), then seeded with the anonymized prod slice
+#    from `scripts/dev seed-prod-shaped` (scripts/_seed_prod_shaped.py load).
+# 3. Canary before (expect red), scripts/db-own-cutover --apply (timed), canary
+#    after, the cutover again (idempotence), then scripts/db-own/smoke.py.
+# The DB and precis_owner are dropped at the end; the other cluster-global
+# roles stay (NOLOGIN/trust, local container only).
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$HERE/../.." && pwd)"
+SLICE="${1:-$REPO/.scratch/dev-seed/slice.jsonl}"
+SERVER="postgresql://postgres@precis-test-db:5432"
+DB=precis_dbown_rehearse
+SU="$SERVER/$DB"
+KEY="rehearse-vault-key-0123456789abcdef"
+
+now() { date -u +%s.%N; }
+elapsed() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.2f s", b - a }'; }
+q() { psql -X -q -v ON_ERROR_STOP=1 "$1" -c "$2"; }
+
+echo "== reset roles + DB ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+q "$SERVER/postgres" "DROP DATABASE IF EXISTS $DB WITH (FORCE)"
+q "$SERVER/postgres" "DO \$\$ BEGIN
+  -- precis_ingress may hold grants in the test DBs (tests create it): keep
+  -- the role, drop only its prod-absent membership; the cutover re-grants it.
+  IF to_regrole('precis_ingress') IS NOT NULL THEN
+    REVOKE agent_rw FROM precis_ingress; ALTER ROLE precis_ingress NOLOGIN;
+  END IF;
+  IF to_regrole('precis_owner') IS NOT NULL THEN DROP ROLE precis_owner; END IF;
+  IF to_regrole('agent_rw') IS NULL THEN CREATE ROLE agent_rw; END IF;
+  IF to_regrole('agent_ro') IS NULL THEN CREATE ROLE agent_ro; END IF;
+  IF to_regrole('precis_system') IS NULL THEN CREATE ROLE precis_system; END IF;
+  ALTER ROLE agent_rw LOGIN; ALTER ROLE agent_ro LOGIN; ALTER ROLE precis_system LOGIN;
+END \$\$"
+q "$SERVER/postgres" "GRANT agent_rw TO precis_system"
+q "$SERVER/postgres" "CREATE DATABASE $DB OWNER agent_rw"
+q "$SU" "CREATE EXTENSION IF NOT EXISTS vector"
+q "$SU" "GRANT CREATE, USAGE ON SCHEMA public TO agent_rw"
+q "$SU" "ALTER DATABASE $DB SET app.secret_key = '$KEY'"
+
+echo "== migrate + seed as agent_rw"
+t0="$(now)"
+PRECIS_DATABASE_URL="$SERVER/$DB?user=agent_rw" uv run --no-sync precis migrate | tail -1
+# Rows have no owner: the load may run as the superuser (it needs
+# session_replication_role); the tables stay agent_rw's.
+uv run --no-sync python scripts/_seed_prod_shaped.py load --slice "$SLICE" \
+    --dsn "$SU" | tail -3
+t1="$(now)"
+echo "   migrate + seed: $(elapsed "$t0" "$t1")"
+q "$SU" "ALTER DEFAULT PRIVILEGES FOR ROLE agent_rw IN SCHEMA public GRANT SELECT ON TABLES TO agent_ro"
+q "$SU" "GRANT SELECT ON ALL TABLES IN SCHEMA public TO agent_ro"
+q "$SU" "SELECT vault.set_secret('svc/infra/rehearse_key', 'v-infra-rehearse-123456')"
+
+echo "== inventory + canary BEFORE (dry run, expect red)"
+"$REPO/scripts/db-own-cutover" --dsn "$SERVER/$DB?user=agent_ro"
+
+echo "== APPLY with a red gate (precis_owner pre-made CREATEROLE) → must roll back"
+q "$SERVER/postgres" "CREATE ROLE precis_owner NOLOGIN CREATEROLE"
+if "$REPO/scripts/db-own-cutover" --apply --dsn "$SU" > /tmp/dbown-red.log 2>&1; then
+    echo "red gate COMMITTED — WRONG"; exit 4
+fi
+grep -E 'canary RED|rolled back' /tmp/dbown-red.log | head -2
+owned="$(psql -X -At "$SU" -c "SELECT count(*) FROM pg_class WHERE relowner = 'agent_rw'::regrole")"
+echo "   after the rollback agent_rw still owns $owned relations"
+[[ "$owned" -gt 0 ]] || { echo "rollback incomplete — WRONG"; exit 4; }
+q "$SERVER/postgres" "DROP ROLE precis_owner"
+
+echo "== APPLY"
+t0="$(now)"
+"$REPO/scripts/db-own-cutover" --apply --dsn "$SU"
+t1="$(now)"
+echo "   cutover wall time (incl. psql start): $(elapsed "$t0" "$t1")"
+
+echo "== APPLY again (idempotent)"
+t0="$(now)"
+"$REPO/scripts/db-own-cutover" --apply --dsn "$SU" > /dev/null
+t1="$(now)"
+echo "   second run: $(elapsed "$t0" "$t1")"
+
+echo "== the overlay's part: LOGIN for the two new roles"
+q "$SERVER/postgres" "ALTER ROLE precis_owner LOGIN"
+q "$SERVER/postgres" "ALTER ROLE precis_ingress LOGIN"
+
+echo "== canary AFTER"
+"$REPO/scripts/db-own-cutover" --verify --dsn "$SERVER/$DB?user=agent_ro"
+
+echo "== reveal class gate after the owner change"
+psql -X -At "$SERVER/$DB?user=precis_system" -c "SELECT vault.reveal('svc/infra/rehearse_key') IS NOT NULL AS precis_system_reveals"
+if psql -X -At "$SERVER/$DB?user=agent_rw" -c "SELECT vault.reveal('svc/infra/rehearse_key')" \
+        > /dev/null 2>&1; then
+    echo "agent_rw revealed svc/infra/* — WRONG"; exit 4
+fi
+echo "agent_rw reveal of svc/infra/* refused"
+if psql -X -At "$SERVER/$DB?user=agent_rw" \
+        -c "SELECT vault.set_secret('svc/infra/rehearse_key', 'v-evil-rehearse-123456')" \
+        > /dev/null 2>&1; then
+    echo "agent_rw overwrote svc/infra/* — WRONG"; exit 4
+fi
+echo "agent_rw overwrite of svc/infra/* refused"
+psql -X -At "$SERVER/$DB?user=precis_ingress" \
+    -c "SELECT vault.set_secret('ANKI_PASSWORD:rehearse', 'v-ingress-rehearse-1234')" > /dev/null
+echo "precis_ingress writes ANKI_PASSWORD:* (the /account path)"
+if psql -X -At "$SERVER/$DB?user=agent_rw" -c "SELECT password_hash FROM web_users LIMIT 1" \
+        > /dev/null 2>&1; then
+    echo "agent_rw read web_users.password_hash — WRONG"; exit 4
+fi
+echo "agent_rw read of web_users.password_hash refused"
+psql -X -At "$SERVER/$DB?user=precis_ingress" -c "SELECT count(password_hash) FROM web_users" > /dev/null
+echo "precis_ingress reads password_hash (login)"
+
+echo "== smoke"
+t0="$(now)"
+set +e
+uv run --no-sync python "$HERE/smoke.py" "$SERVER/$DB"
+smoke=$?
+set -e
+t1="$(now)"
+echo "   smoke: $(elapsed "$t0" "$t1")"
+
+echo "== teardown"
+q "$SERVER/postgres" "DROP DATABASE IF EXISTS $DB WITH (FORCE)"
+q "$SERVER/postgres" "ALTER ROLE precis_ingress NOLOGIN"
+q "$SERVER/postgres" "DROP ROLE IF EXISTS precis_owner"
+q "$SERVER/postgres" "ALTER ROLE agent_rw NOLOGIN"
+q "$SERVER/postgres" "ALTER ROLE agent_ro NOLOGIN"
+q "$SERVER/postgres" "ALTER ROLE precis_system NOLOGIN"
+exit "$smoke"

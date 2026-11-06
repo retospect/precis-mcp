@@ -52,17 +52,19 @@ _ROLE_NAME_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
 
 def _db_role_enforced() -> bool:
-    """Whether a session should ``SET ROLE`` to ``PRECIS_MCP_DB_ROLE`` (tier-2 of
-    the per-todo envelope, §13). DARK default: OFF.
+    """Whether connections should ``SET LOCAL ROLE`` to ``PRECIS_MCP_DB_ROLE``
+    (tier-2 of the per-todo envelope, §13). DARK default: OFF.
 
     Reads a SEPARATE flag from the role var itself: ``PRECIS_MCP_DB_ROLE`` is
     already exported to every agentic ``claude -p`` subprocess today (harmless,
     unconsumed), so keying enforcement on its mere presence would silently turn
     write-isolation on across the fleet at deploy. ``PRECIS_MCP_DB_ROLE_ENFORCE``
-    is the explicit opt-in flipped in the Phase-2 window — and ONLY where
-    ``precis serve`` connects DIRECT to Postgres (session pooling): under a
-    pgbouncer *transaction* pool a session ``SET ROLE`` both fails to persist and
-    leaks across tenants, so it must not be enabled on a pgbouncer DSN.
+    is the explicit opt-in.
+
+    Since migration slice S1 (multi-user-overhaul) the role is applied
+    **per transaction** via ``SET LOCAL ROLE`` — safe under pgbouncer
+    *transaction* pooling (a session ``SET ROLE`` both failed to persist and
+    leaked across tenants, which is why the flag used to require a direct DSN).
     """
     return os.environ.get("PRECIS_MCP_DB_ROLE_ENFORCE", "").strip().lower() in (
         "1",
@@ -72,17 +74,22 @@ def _db_role_enforced() -> bool:
 
 
 def _apply_db_role(conn: Connection) -> None:
-    """Issue ``SET ROLE <PRECIS_MCP_DB_ROLE>`` when enforcement is on (tier-2).
+    """Issue ``SET LOCAL ROLE <PRECIS_MCP_DB_ROLE>`` inside the transaction.
+
+    ``SET LOCAL`` scopes the role to the current transaction — valid under
+    pgbouncer transaction pooling (unlike the old session ``SET ROLE``). The
+    first ``execute`` opens the psycopg transaction, so calling this at
+    checkout applies the role to everything the caller then runs until
+    commit/rollback.
 
     Fails CLOSED: if the flag is on and the connecting role can't assume the
     target (the ``agent_rw`` → ``agent_ro`` membership isn't granted), the
-    ``SET ROLE`` raises and the connection is refused — a write-isolation
-    boundary must break loudly, never silently run over-privileged. No-op (and
-    byte-identical to today) whenever the flag is off or the var is unset.
+    ``SET LOCAL ROLE`` raises and the checkout is refused — a write-isolation
+    boundary must break loudly, never silently run over-privileged. No-op
+    whenever the flag is off or the var is unset.
 
-    PREREQUISITE for turning this on: the connecting role must be a member of the
-    target role (``GRANT agent_ro TO agent_rw``), provisioned out-of-tree in the
-    prod DB before the window flips the flag.
+    PREREQUISITE: the connecting role must be a member of the target role
+    (``GRANT agent_ro TO agent_rw``), provisioned out-of-tree in prod.
     """
     if not _db_role_enforced():
         return
@@ -91,7 +98,12 @@ def _apply_db_role(conn: Connection) -> None:
         return
     if not _ROLE_NAME_RE.match(role):
         raise ValueError(f"PRECIS_MCP_DB_ROLE {role!r} is not a valid role name")
-    conn.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role)))
+    if conn.autocommit:
+        raise ValueError(
+            "PRECIS_MCP_DB_ROLE_ENFORCE=1 on an autocommit connection — "
+            "SET LOCAL ROLE needs a transaction; refusing (fail closed)"
+        )
+    conn.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(role)))
 
 
 def _configure_connection(conn: Connection) -> None:
@@ -119,12 +131,10 @@ def _configure_connection(conn: Connection) -> None:
             from pgvector.psycopg import register_vector
 
             register_vector(conn)
-        # Tier-2 write-isolation (§13): assume the envelope's DB role for the
-        # session's life. Session-level (survives the commit below), so a
-        # dedicated per-call ``precis serve`` binds e.g. ``agent_ro`` for every
-        # query. Dark unless PRECIS_MCP_DB_ROLE_ENFORCE is set. Runs LAST so the
-        # introspection above executes as the full connecting role.
-        _apply_db_role(conn)
+        # Tier-2 write-isolation moved to :meth:`PrecisPool.connection`
+        # (``SET LOCAL ROLE`` per transaction at checkout). A session
+        # ``SET ROLE`` here was broken under pgbouncer transaction pooling
+        # — it failed to persist and leaked across tenants.
     finally:
         conn.commit()
 
@@ -251,6 +261,11 @@ class PrecisPool(ConnectionPool):
                 yield pinned
             return
         with super().connection(timeout=timeout) as conn:
+            # Tier-2: ``SET LOCAL ROLE`` opens the transaction the caller's
+            # statements then run in — same seam apply_revision_context uses.
+            # Runs BEFORE the context so the writes after it are already
+            # scoped to the envelope role.
+            _apply_db_role(conn)
             apply_revision_context(conn)
             yield conn
 

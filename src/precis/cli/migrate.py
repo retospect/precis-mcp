@@ -74,6 +74,17 @@ def run(args: argparse.Namespace) -> None:
         print("migrate: nothing to apply")
         return
 
+    # Migrations are DDL: the owner DSN only (db-own). Refuse up front rather
+    # than half-way through the first CREATE/ALTER with "must be owner".
+    import psycopg
+
+    from precis.store.ownership import owner_refusal
+
+    with psycopg.connect(dsn, autocommit=True) as probe:
+        refusal = owner_refusal(probe, "public._migrations", purpose="precis migrate")
+    if refusal is not None:
+        raise SystemExit(f"migrate: {refusal} Nothing was applied.")
+
     applied = m.apply_all()
     print(f"migrate: applied {len(applied)} migration(s):")
     for plugin, version in applied:

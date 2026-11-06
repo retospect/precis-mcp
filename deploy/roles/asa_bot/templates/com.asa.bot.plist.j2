@@ -37,7 +37,7 @@
        pgpass matrix for one direct-tunnel consumer. Discord-only: asa-slack
        has no message-queue LISTEN. #}
     <key>PRECIS_NOTIFY_DATABASE_URL</key>
-    <string>postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@127.0.0.1:5433/precis_prod</string>
+    <string>postgresql://agent_rw:{{ vault_pg_precis_system_pass }}@127.0.0.1:5433/precis_prod</string>
   </dict>
 
   <key>RunAtLoad</key>

@@ -67,10 +67,17 @@ def clear_user_credentials(store: Store, login: str) -> bool:
 
 
 def user_anki_configured(store: Store, login: str) -> bool:
-    """True when ``login`` has both an AnkiWeb email and password stored."""
-    return secrets.is_available(
-        user_secret(login), store=store
-    ) and secrets.is_available(password_secret(login), store=store)
+    """True when ``login`` has both an AnkiWeb email and password stored.
+
+    Presence check (:func:`precis.secrets.is_stored`), not a reveal: the
+    ``ANKI_PASSWORD:*`` names are class ``infra`` by migration 0278
+    (``precis_system``-only), so a role denied at the vault class gate (the
+    web daemon until precis_ingress ships, S4) must still render
+    "configured" on ``/account`` without ever decrypting.
+    """
+    return secrets.is_stored(user_secret(login), store=store) and secrets.is_stored(
+        password_secret(login), store=store
+    )
 
 
 def get_user_credentials(store: Store, login: str) -> tuple[str, str] | None:

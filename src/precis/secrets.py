@@ -20,10 +20,11 @@ behalf by the SECURITY DEFINER verbs — a GUC can't be ACL'd, and the old
 share (ciphertext + DDL, never the key); the deploy play re-provisions it
 on a rebuild. Physical
 backups (``pg_basebackup`` / WAL) copy the key row with everything else;
-the guarantee is logical-dump-only. Trust model v1 (migration 0059): the functions are
-granted to PUBLIC — holding a DSN *is* the boundary; the per-role split +
-per-name ACL (a ``vault.acl`` table) are designed and deferrable
-one-liners. The
+the guarantee is logical-dump-only. Trust model (migrations 0059, 0278): the
+functions are granted to PUBLIC, and ``vault.reveal`` gates each name by its
+class (``vault.secrets.class``, stamped from the name): ``infra`` reveals only
+to members of ``precis_system``, ``api`` to members of ``agent_rw``, ``user``
+to ``precis_ingress`` for the ``user/<id>/`` it passes as ``p_user_id``. The
 secrets TCB is therefore every package imported into a DSN-holding process:
 keep those processes to hash-pinned, audited deps, and push heavy/untrusted
 code out-of-process (:func:`adopt_process_store` scrubs the DSN from env so
@@ -712,7 +713,7 @@ def is_available(name: str, *, store: Store | None = None) -> bool:
 
 
 #: db-own's vault name-class rule (docs/backlog/multi-user-overhaul.md §S1,
-#: migration 0231): ``svc/infra/*`` names carry class ``infra`` — credentials
+#: migration 0278): ``svc/infra/*`` names carry class ``infra`` — credentials
 #: only ``precis_system`` members may reveal. Until that column exists the
 #: prefix *is* the class: callers must never probe an infra name with a live
 #: call — presence checks (``present`` / ``list_secrets``) only.
@@ -757,6 +758,41 @@ def present(
     if name in names:
         return True
     return _from_file(name) is not None
+
+
+def vault_present(name: str, *, store: Store | None = None) -> bool:
+    """True iff ``name`` exists in the vault — presence only, never decrypts.
+
+    Uses ``vault.mask`` (hint + timestamps, PUBLIC-granted) instead of reveal,
+    so a role denied by the vault class gate (migration 0278) can still answer
+    "is this configured?" without ever touching the value — exactly what the
+    ``/secrets`` probe and ``/account`` indicators need under the multi-user
+    overhaul ("the probe becomes presence-only for classed names").
+    """
+    st = store if store is not None else _STORE
+    if st is None:
+        return False
+    try:
+        with st.pool.connection() as conn:
+            row = conn.execute("SELECT vault.mask(%s)", (name,)).fetchone()
+        return bool(row and row[0] is not None)
+    except Exception:
+        return False
+
+
+def is_stored(name: str, *, store: Store | None = None) -> bool:
+    """True iff ``name`` exists anywhere — env, file, or a vault row.
+
+    Presence, not resolvability: unlike :func:`is_available` this is True
+    even when this role may not decrypt the value (ACL-denied names). Use
+    for "is it configured?" UI; use :func:`is_available` for "can this
+    process actually use it?".
+    """
+    if os.environ.get(name):
+        return True
+    if _from_file(name) is not None:
+        return True
+    return vault_present(name, store=store)
 
 
 def client_identity() -> tuple[str, str, int, int, str]:
@@ -852,6 +888,7 @@ __all__ = [
     "invalidate",
     "is_available",
     "is_infra_secret",
+    "is_stored",
     "list_secrets",
     "mounted_secret",
     "present",
@@ -859,4 +896,5 @@ __all__ = [
     "require_vault_secret",
     "set_secret",
     "set_secret_if_absent",
+    "vault_present",
 ]
