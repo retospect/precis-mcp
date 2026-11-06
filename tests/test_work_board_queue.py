@@ -125,4 +125,8 @@ def test_batched_queries(handler: TodoHandler, store: Store) -> None:
             ) as fields,
         ):
             work_view.work_model(store)
-        assert blockers.call_count == fields.call_count == 1
+        # One batch per root block; _job_fields runs a second time for
+        # the job → quest resolver's line rows (td573299). Row count
+        # (5 vs 50) must not move either number.
+        assert blockers.call_count == 1
+        assert fields.call_count == 2

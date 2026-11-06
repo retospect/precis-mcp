@@ -263,6 +263,32 @@ def test_work_page_lists_only_the_truly_unassigned_job(
     assert q.running_jobs == 0 and q.queued_jobs == 0
 
 
+def test_render_work_lists_a_meta_resolved_job_on_an_idle_quest(
+    store: Store,
+) -> None:
+    """td573854: a parentless live job resolved through meta joins
+    ``q.jobs`` without moving run_state — the quest stays idle, and the
+    text view still renders the job line (it used to skip ``q.jobs``
+    for the whole idle group)."""
+    quest = _quest(store, "Idle quest")
+    jid = _job(
+        store,
+        None,
+        "running",
+        {"job_type": "quest_tick", "params": {"quest_id": quest}},
+    )
+    model = work_view.work_model(store)
+    q = next(b for b in model.quests if b.ref_id == quest)
+    assert q.run_state == "idle"
+    assert any(f"jo{jid}" in ln for ln in q.jobs)
+
+    out = work_view.render_work(store).body
+    idle_block = out.split("idle (1)", 1)[1]
+    lines = idle_block.splitlines()
+    quest_row = next(i for i, ln in enumerate(lines) if f"qu{quest} " in ln)
+    assert f"jo{jid} [running]" in lines[quest_row + 1]
+
+
 def test_unassigned_line_names_the_todo_parent(store: Store) -> None:
     """An unassigned job under a live todo still says ``under td<id>``."""
     parent = _todo(store, "Parent")

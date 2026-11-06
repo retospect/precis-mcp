@@ -1152,16 +1152,19 @@ def render_work(store: Store, *, now: datetime | None = None) -> Response:
         out += ["", f"{state} ({len(group)})"]
         for q in group:
             out.append(_quest_line(q, now))
-            if state == "idle":
-                continue
-            for root in q.roots:
-                out.extend(_format_row(r) for r in root.rows)
-                if root.hidden:
-                    out.append(
-                        f"    … +{root.hidden} more — "
-                        f"get(kind='todo', id={root.root_id}, view='tree')"
-                    )
-                out.extend(work_gripes.render_root_gripes(root.gripes))
+            if state != "idle":
+                for root in q.roots:
+                    out.extend(_format_row(r) for r in root.rows)
+                    if root.hidden:
+                        out.append(
+                            f"    … +{root.hidden} more — "
+                            f"get(kind='todo', id={root.root_id}, view='tree')"
+                        )
+                    out.extend(work_gripes.render_root_gripes(root.gripes))
+            # Idle keeps its roots collapsed, but a job that joined
+            # q.jobs through meta resolution (outside the served trees,
+            # so it never moved run_state) still lists — else the line
+            # would vanish from the text view (td573854).
             out.extend(q.jobs)
 
     if model.unassigned:
