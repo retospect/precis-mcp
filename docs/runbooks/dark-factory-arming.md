@@ -157,7 +157,7 @@ The probes, re-run every heartbeat:
   unset, the worker's code sits inside a git checkout. A venv install
   (`site-packages`) has none: set `PRECIS_SLICE_ROOT`. The deploy renders it
   on the gateway from `precis_slice_root` (default `precis_fix_repo_dir`,
-  `/Users/deploy/precis-fix-repo`) in playbook 20b — the heartbeating unit
+  the deploy user's `precis-fix-repo` checkout) in playbook 20b — the heartbeating unit
   whose probe writes the row — and in 20g, the lane that runs the jobs. Set
   the variable, not the plist: a redeploy re-renders every plist from the
   templates, and a hand-added value vanishes with it (2026-11-05, r222:

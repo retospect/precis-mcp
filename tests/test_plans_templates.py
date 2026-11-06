@@ -563,6 +563,31 @@ def test_put_mode_plan_direct_passes_lane(handler: TodoHandler, store: Store) ->
     assert _meta(store, int(match.group(1)))["op"]["params"] == {"lane": "codex"}
 
 
+def test_put_mode_plan_route_loop_passes_its_args(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The handler passes the route-loop's optional args through
+    (``iterations``, ``after``, ``context``). Shipped without them in the
+    put signatures (handler and verb), the MCP layer refused the keys
+    before the handler ran and the template could not be used."""
+    before = id_of(handler.put(text="Stage.", meta={"rotation_root": True}).body)
+    resp = handler.put(
+        mode="plan",
+        template="route-loop",
+        iterations=2,
+        after=f"td{before}",
+        context="Route in math space first.",
+    )
+    assert "route-loop" in resp.body
+    tree = handler.get(id=id_of(resp.body), view="tree").body
+    match = re.search(r"td(\d+) \S+ Example boards", tree)
+    assert match is not None, tree
+    loop = int(match.group(1))
+    assert _meta(store, loop)["loop"]["max"] == 2
+    assert _external_blockers(store, loop) == [before]
+    assert "Route in math space first." in handler.get(id=loop).body
+
+
 def test_put_mode_plan_under_parent(handler: TodoHandler, store: Store) -> None:
     parent = id_of(handler.put(text="Umbrella.", meta={"rotation_root": True}).body)
     resp = handler.put(mode="plan", template="release-pass", parent_id=parent)

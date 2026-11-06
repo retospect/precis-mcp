@@ -789,6 +789,9 @@ class TodoHandler(NumericRefHandler):
         section: str | None = None,
         board: str | None = None,
         lane: str | None = None,
+        iterations: int | None = None,
+        after: str | None = None,
+        context: str | None = None,
         **_kw: Any,
     ) -> Response:
         text, body = mask_secrets(text), mask_secrets(body)
@@ -896,6 +899,9 @@ class TodoHandler(NumericRefHandler):
                     "section": section,
                     "board": board,
                     "lane": lane,
+                    "iterations": iterations,
+                    "after": after,
+                    "context": context,
                 },
                 parent_id=parent_int,
                 refused={

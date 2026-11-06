@@ -1647,7 +1647,8 @@ def put(
     force: bool | None = None,
     # todo plan mint (put(kind='todo', mode='plan'), see precis-plan-help):
     # template= names the plan template, gripe_id=/section=/board= are its
-    # arguments, lane= the optional build-lane pin of the gripe-fix forms.
+    # arguments, lane= the optional build-lane pin of the gripe-fix forms,
+    # iterations=/after=/context= the route-loop's.
     # Declared at the verb level (the gr262482 pattern) so strict-schema MCP
     # clients don't strip them; read only under mode='plan'.
     template: str | None = None,
@@ -1655,6 +1656,9 @@ def put(
     section: str | None = None,
     board: str | None = None,
     lane: str | None = None,
+    iterations: int | None = None,
+    after: str | None = None,
+    context: str | None = None,
     # presentation (see precis-pres-help):
     pos: int | None = None,
     meta: dict[str, Any] | None = None,
@@ -1973,6 +1977,9 @@ def put(
                 "section": section,
                 "board": board,
                 "lane": lane,
+                "iterations": iterations,
+                "after": after,
+                "context": context,
                 "pos": pos,
                 "meta": meta,
                 "ref_meta": ref_meta,

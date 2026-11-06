@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Iterator
 from typing import Any
 
@@ -195,7 +196,9 @@ def test_title_on_a_text_kind_points_at_text(mcp_runtime: None) -> None:
     out = _call("put", {"kind": "todo", "title": "x"})
     assert "[error:BadInput]" in out, out
     assert "todo: the title is the first line of text=" in out, out
-    assert "text: " not in out, out
+    # ``text`` itself must not be listed as an args= key; a key that merely
+    # ends in "text" (the route-loop's ``context``) may.
+    assert not re.search(r"(?<![a-z_])text: ", out), out
 
 
 def test_legacy_top_level_json_string_list_is_parsed(
