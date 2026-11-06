@@ -253,6 +253,7 @@
              'PRECIS_AUTOCATPATH_KINETICS_SECONDS': precis_autocatpath_kinetics_seconds | string,
            })
          | combine({'PRECIS_JOB_CPUSET': precis_job_cpuset | default('')} if os_family == 'linux' else {})
+         | combine({'PRECIS_COVERAGE_DB_DIR': precis_coverage_db_dir} if os_family == 'darwin' else {})
          | combine({'PRECIS_EMBEDDER': precis_worker_embedder, 'PRECIS_EMBEDDER_URL': precis_worker_embedder_url})
          | combine({'PGPASSFILE': ('/home/deploy/.pgpass' if os_family == 'linux' else '/Users/deploy/.pgpass')})
          | combine(

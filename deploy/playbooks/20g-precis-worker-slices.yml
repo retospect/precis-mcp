@@ -74,6 +74,9 @@
     # Local constants — role defaults aren't in scope (no role imported).
     _slices_venv: /opt/precis/venv
     _slices_home: /Users/deploy
+    # gr567471: the lander's coverage map dir (land_slice -> scripts/ship ->
+    # impacted-tests reads $PRECIS_COVERAGE_DB_DIR/.coverage).
+    _slices_coverage_dir: /Users/deploy/.cache/precis/coverage-db
     _slices_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
   tasks:
     - name: render + load the slice poll lane unit
@@ -112,6 +115,7 @@
                  'DOCKER_HOST': 'unix://' + _slices_home + '/.colima/docker.sock',
                  'PRECIS_DATABASE_URL': _slices_dsn,
                  'PRECIS_PROCESS': 'precis-worker-slices',
+                 'PRECIS_COVERAGE_DB_DIR': _slices_coverage_dir,
                  'PRECIS_SOURCE': 'precis-worker-slices',
                  'PRECIS_MAX_TICKS': (precis_max_ticks | default(25)) | string,
                  'PRECIS_MAX_TODO_USD': (precis_max_todo_usd | default(5.0)) | string,
@@ -137,6 +141,16 @@
                  {'PRECIS_MCP_SLICE_TOKEN_DIR': precis_mcp_slice_token_dir}
                  if ((precis_mcp_slice_token_dir | default('')) | length > 0) else {}
                ) }}
+
+    # gr567471: copy the controller's nightly coverage map to the lander so
+    # `scripts/ship --checked` selects by it. Skips (never fails) when the
+    # controller has no map; the env var above is inert without the files.
+    - name: Copy the coverage map for the slice lander (best-effort)
+      ansible.builtin.import_role:
+        name: precis_worker
+        tasks_from: coverage_map
+      vars:
+        precis_coverage_db_dir: "{{ _slices_coverage_dir }}"
 
     # Code-refresh bounce for the site.yml path ONLY: redeploy defines
     # `precis_deploy_changed` and its blanket plist bounce already restarted

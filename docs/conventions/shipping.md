@@ -368,6 +368,11 @@ wire protocol (`testmon=N` then bare targets) for `ship --checked` /
   `$PRECIS_COVERAGE_DB_DIR`, default `~/.cache/precis/coverage-db`). Used
   only when fresh (< 48h, not older than the base) and a file's manifest
   hash matches its BASE blob — coverage line numbers are base-side.
+  The slice lander's deploy account has no GitHub credential: `scripts/deploy`
+  runs `--fetch-db` on the controller (best-effort, warns on failure) and
+  the 20g play copies the map to the lander's `PRECIS_COVERAGE_DB_DIR`
+  (`precis_coverage_db_dir`), set in the 20b/20g worker unit env that
+  `land_slice` → `scripts/ship` inherits. No local map: copy skipped.
 - **static** — the python index's call graph and imports: `discover_tests`
   per changed symbol, test modules importing the changed module, test
   files named `test_<stem>`, test sources naming the changed path or

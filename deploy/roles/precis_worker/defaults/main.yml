@@ -144,3 +144,8 @@ precis_worker_nanopub_ots: true
 # but also off NAS so workers don't drag bge-m3 over the network each load.
 # Local disk per node is the right place; ~/.cache/huggingface is fine.
 precis_worker_hf_home: /var/lib/precis/hf-cache
+
+# Slice-lander coverage map (gr567471): where deploy's copy of the nightly
+# per-test coverage DB lands, and the PRECIS_COVERAGE_DB_DIR the lander's
+# scripts/ship sees (20b/20g unit env). Missing map => static-wide selection.
+precis_coverage_db_dir: /Users/deploy/.cache/precis/coverage-db

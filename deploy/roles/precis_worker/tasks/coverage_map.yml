@@ -1,0 +1,56 @@
+---
+# Slice-lander coverage map (gr567471 a). `scripts/ship --checked` in a slice
+# tree selects tests through scripts/impacted-tests, which reads
+# $PRECIS_COVERAGE_DB_DIR/.coverage. The lander host's deploy account has no
+# GitHub credential for `--fetch-db`, so the controller (which has gh)
+# refreshes its own copy during scripts/deploy (best-effort) and this file
+# copies it to the lander. Included from 20g (gateway) via
+# `import_role ... tasks_from: coverage_map`.
+#
+# Missing local map: the copy tasks skip, never fail. A stale map is not this
+# file's concern: scripts/impacted-tests judges age itself and falls back to
+# its static selection.
+- name: Resolve the controller-side coverage map directory
+  ansible.builtin.set_fact:
+    # lookup('env') runs on the controller: the same dir scripts/deploy's
+    # `impacted-tests --fetch-db` refreshed.
+    _coverage_src_dir: >-
+      {{ (lookup('env', 'PRECIS_COVERAGE_DB_DIR') | default('', true))
+         or (lookup('env', 'HOME') ~ '/.cache/precis/coverage-db') }}
+
+- name: Stat the controller's coverage map
+  ansible.builtin.stat:
+    path: "{{ _coverage_src_dir }}/{{ item }}"
+  loop: [.coverage, .coverage.precis.json]
+  register: _coverage_src
+  delegate_to: localhost
+  become: false
+
+- name: Coverage map directory for the slice lander (macOS)
+  when: >-
+    os_family == "darwin"
+    and (_coverage_src.results | map(attribute='stat.exists')
+         | select('equalto', false) | list | length == 0)
+  ansible.builtin.file:
+    path: "{{ precis_coverage_db_dir }}"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0755"
+  become: true
+
+# The manifest goes last: it is what makes the DB "verified" to the selector,
+# and a copy that dies mid-way must not pair a new manifest with an old map.
+- name: Copy the coverage map to the slice lander (macOS)
+  when: >-
+    os_family == "darwin"
+    and (_coverage_src.results | map(attribute='stat.exists')
+         | select('equalto', false) | list | length == 0)
+  ansible.builtin.copy:
+    src: "{{ _coverage_src_dir }}/{{ item }}"
+    dest: "{{ precis_coverage_db_dir }}/{{ item }}"
+    owner: deploy
+    group: staff
+    mode: "0644"
+  loop: [.coverage, .coverage.precis.json]
+  become: true

@@ -1434,6 +1434,19 @@ if [[ -n "${SKIPPED_HOSTS[@]+"${SKIPPED_HOSTS[*]}"}" ]]; then
     fi
 fi
 
+# ── 1-pre. coverage map refresh (gr567471) ──────────────────────────────
+# The slice lander's deploy account has no GitHub credential, so it cannot
+# run `impacted-tests --fetch-db`; this controller (which has gh) refreshes
+# its copy here and the 20g play copies it across. Best-effort by design: a
+# fetch failure warns and the last good map stays in use — it must never
+# fail or delay a deploy beyond the one gh call. PRECIS_DEPLOY_SKIP_COVERAGE_FETCH=1
+# skips it.
+if [[ -z "${PRECIS_DEPLOY_SKIP_COVERAGE_FETCH:-}" ]]; then
+    say "refreshing the coverage map for the slice lander (best-effort)"
+    "${REPO_ROOT}/scripts/impacted-tests" --fetch-db \
+        || say "WARNING: coverage map fetch failed — the last good map stays in use (or none: slice lands fall back to the wide static selection)"
+fi
+
 # ── 1a. autocatpath wheel (gr263082) ────────────────────────────────────
 # Same reason the ping above aborts: a partial redeploy mixes code versions.
 # autocatpath is release-gated off PyPI past 0.13.0, so the only channel to a
