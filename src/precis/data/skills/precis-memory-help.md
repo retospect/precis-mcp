@@ -653,7 +653,8 @@ delete(kind='memory', id='me42', dry_run=True)
 delete(kind='memory', id='me42', args={'superseded_by': 'me77'})
 ```
 
-The preview finds prose mentions even without links. With no successor,
+The preview finds prose mentions through the word index at any corpus
+size, even without links. With no successor,
 live claims refuse retirement unless `args={'force': True}` is explicit;
 dated history mentions are listed but exempt. A retired handle redirects
 to its successor; `view='retired'` reads the tombstone. Full recipe:

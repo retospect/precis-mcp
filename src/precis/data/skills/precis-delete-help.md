@@ -94,10 +94,10 @@ delete(kind='memory', id='me42', args={'force': True}, reason='claim withdrawn')
 
 Forced mentions remain for review as successor-less dangling mentions.
 The preview writes nothing, including when the real delete would refuse.
-The scan covers at most 10,000 other live memory nodes in one window.
-Above that capacity, both preview and delete refuse without writing,
-including with `force=True`: ask the service owner to raise the scan
-capacity or add an indexed handle lookup, then retry the preview.
+The mention scan is an indexed whole-handle lookup, complete at any
+corpus size. A handle glued inside a dotted or slashed token —
+`docs/me<N>`, `me<N>.md`, a URL path — is one lexeme and is not found;
+cite such neighbours with an explicit link instead.
 
 ## Hide a stale comment on a gripe or todo
 

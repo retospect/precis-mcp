@@ -555,28 +555,68 @@ def test_full_handle_successor_cycle_does_not_redirect(store: Store) -> None:
     assert store.resolve_handle(f"me{first}") is None
 
 
-@pytest.mark.parametrize("mode", ["dry_run", "force", "successor"])
-def test_incomplete_scan_refuses_every_retirement_mode_without_writes(
-    hub: Hub, monkeypatch: pytest.MonkeyPatch, mode: str
-) -> None:
-    from precis.handlers import _memory_retire
-
-    monkeypatch.setattr(_memory_retire, "MENTION_SCAN_CAP", 2)
+def test_retirement_ignores_live_corpus_size(hub: Hub) -> None:
     store, handler = hub.live_store, MemoryHandler(hub=hub)
     old = _memory(store, "Old procedure.")
     _memory(store, "First other live memory, without a mention.")
     _memory(store, "Second other live memory, without a mention.")
     successor = _memory(store, "Third other live memory, without a mention.")
+    source = _memory(store, f"Use me{old} for the current build procedure.")
     before = _snapshot(store, old)
-    options: dict[str, Any] = {
-        "dry_run": mode == "dry_run",
-        "force": mode == "force",
-        "superseded_by": f"me{successor}" if mode == "successor" else None,
-    }
 
-    with pytest.raises(BadInput, match="scan"):
-        handler.delete(id=old, **options)
+    preview = handler.delete(id=old, dry_run=True).body
+
+    assert f"me{source}" in preview
     assert _snapshot(store, old) == before
+    handler.delete(id=old, superseded_by=f"me{successor}")
+    assert store.fetch_refs_by_ids([old])[old].retired_at is not None
+
+
+def test_mention_forms_found_through_word_index(hub: Hub) -> None:
+    """Whole-token handle forms reach the receipt; glued compounds do not."""
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    old = _memory(store, "Old procedure.")
+    found = [
+        f"Use me{old} for the current build procedure.",
+        f"Bracketed [me{old}] still counts.",
+        f"Parenthesised (me{old}) still counts.",
+        f"Backticked `me{old}` still counts.",
+        f'Quoted "me{old}" still counts.',
+        f"The selector form me{old}~3 still counts.",
+        f"The possessive me{old}'s still counts.",
+        f"The hyphenated me{old}-based approach counts.",
+        f"The addressed foo@me{old} still counts.",
+        f"One leading zero me0{old} still counts.",
+        f"Two leading zeros me00{old} still counts.",
+        f"me{old} may start a line.",
+        f"A line may end with me{old}",
+    ]
+    # Word-index gaps: each compound is one lexeme, so a glued handle is
+    # never a candidate even though the sentence verifier would count it.
+    gaps = [
+        f"See docs/me{old} for the procedure.",
+        f"See me{old}.md for the procedure.",
+        f"See src/me{old}.py for the procedure.",
+        f"See https://example.com/me{old} for the procedure.",
+    ]
+    negatives = [
+        f"Glued digit me{old}9 names a different handle.",
+        f"Glued prefix xme{old} names a different handle.",
+        f"Glued plural me{old}s names a different handle.",
+        # The index nominates x_me{old} (underscore splits the token);
+        # the verifier rejects it, so it stays off the receipt.
+        f"Underscore prefix x_me{old} names a different handle.",
+    ]
+    reported = [_memory(store, body) for body in found]
+    silent = [_memory(store, body) for body in [*gaps, *negatives]]
+
+    preview = handler.delete(id=old, dry_run=True).body
+
+    assert f"Also update: {len(reported)} mentioning" in preview
+    for ref_id in reported:
+        assert f"me{ref_id}:" in preview
+    for ref_id in silent:
+        assert f"me{ref_id}:" not in preview
 
 
 def test_repeated_sentence_anchor_selects_current_occurrence(hub: Hub) -> None:
