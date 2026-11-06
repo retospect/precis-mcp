@@ -1230,7 +1230,8 @@ def run_stall_pass(store: Store, now: datetime, dry_run: bool = False) -> StallR
 # leaves the node alone while it waits (``rescue:`` is not in
 # ``_DOABLE_EXCLUSION_TAGS``). The session's verdict rides its final
 # message: ``rescue: REARM — <corrected brief>`` re-arms the node once
-# (tag off, ``meta.rescue`` plus the ``rearmed_*`` floor stamps, a
+# (tag off, ``STATUS:doing`` back to ``open``, ``meta.rescue`` plus the
+# ``rearmed_*`` floor stamps, a
 # ``brief:`` comment the rebuilt run reads back through
 # ``run_slice._brief_parts``, resuming on ``slice/<id>`` — the tree and
 # branch are reused; nothing pins the run to the host holding the tree,
@@ -1793,10 +1794,13 @@ def _rearm_node(
     brief: str,
     pd: Any,
 ) -> None:
-    """REARM, one transaction: the ``rescue:<cls>`` tag off,
-    ``meta.rescue`` plus the re-arm floor stamps (``rearmed_after_job``
-    floors the attempt count at the newest ended job; ``rearmed_ask_at``
-    + a non-"land again" ``rearmed_answer`` keep
+    """REARM, one transaction: the ``rescue:<cls>`` tag off, a
+    ``STATUS:doing`` node back to ``open`` (``_rescued_nodes`` selects
+    doing nodes, but ``plan_dispatch._step_dispatch`` only runs
+    ``STATUS:open`` — without the reset the cleared rescue leaves the
+    node unrunnable), ``meta.rescue`` plus the re-arm floor stamps
+    (``rearmed_after_job`` floors the attempt count at the newest ended
+    job; ``rearmed_ask_at`` + a non-"land again" ``rearmed_answer`` keep
     ``plan_dispatch._reland_params`` from re-minting a land of the old
     branch), the audit comment, then the corrected ``brief:`` comment
     LAST — the newest ``brief:``/``handoff:`` is what the rebuilt run
@@ -1833,15 +1837,28 @@ def _rearm_node(
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (_RESCUE_PASS_LOCK_KEY,))
         # Recheck under the lock: a racer that removed the tag (or
         # re-armed) while this pass read wins; this pass writes nothing.
-        current = [
-            str(t.value)
-            for t in store.tags_for(n.id, conn=conn)
-            if t.namespace == "open"
-        ]
+        tags_now = store.tags_for(n.id, conn=conn)
+        current = [str(t.value) for t in tags_now if t.namespace == "open"]
         if f"rescue:{cls}" not in current:
             res.notes.append(f"td{n.id}: rescue tag gone under the lock; not re-armed")
             return
+        # The same for a racer that moved the node off the statuses
+        # ``_rescued_nodes`` selects (a close, a pause) — and a ``doing``
+        # node must come back ``open`` or the cleared rescue still
+        # leaves it undispatchable.
+        status = next((str(t.value) for t in tags_now if t.prefix == "STATUS"), "open")
+        if status not in ("open", "doing"):
+            res.notes.append(f"td{n.id}: STATUS {status} under the lock; not re-armed")
+            return
         store.remove_tag(n.id, Tag.open(f"rescue:{cls}"), conn=conn)
+        if status == "doing":
+            store.add_tag(
+                n.id,
+                Tag.closed("STATUS", "open"),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )
         store.stamp_ref_meta(n.id, stamp, conn=conn)
         _comment(
             store,

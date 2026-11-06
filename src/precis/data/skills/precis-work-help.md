@@ -385,7 +385,9 @@ and the node is `blocked-by` it while it waits. The session reads the
 node's brief, the `rescue:` evidence comment, the signature gripe, the
 newest job's tail and the branch, then replies with one first line:
 
-- `rescue: REARM — <corrected brief>` — the tag comes off, `meta.rescue`
+- `rescue: REARM — <corrected brief>` — the tag comes off, a
+  `STATUS:doing` node returns to `open` (the tick only dispatches
+  `open`), `meta.rescue`
   (`n`, `at`, `diagnose`, `cls`) and the re-arm floor are stamped, and
   the corrected `brief:` comment goes on the node; the rebuilt run
   resumes on `slice/<id>` — the worktree and branch are reused.

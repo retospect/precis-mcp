@@ -222,7 +222,13 @@ def _rescued(store: Store, root: int, *, cls: str = "builder", **kw: Any) -> int
     """A task node rescued through the real entry point (``rescue:<cls>``
     tag, signature gripe, evidence comment) behind one failed
     ``run_slice`` job that left a commit on ``slice/<id>``."""
-    task = _node(store, root, title=kw.pop("title", "a task"), tags=kw.pop("tags", ()))
+    task = _node(
+        store,
+        root,
+        title=kw.pop("title", "a task"),
+        status=kw.pop("status", "open"),
+        tags=kw.pop("tags", ()),
+    )
     job = _job(
         store,
         task,
@@ -347,6 +353,28 @@ def test_rearm_once_rearms_and_clears_the_tag(store: Store) -> None:
     # a second rescue pass writes nothing: no tag, nothing to judge
     second = fr.run_rescue_pass(store, NOW + timedelta(minutes=2))
     assert second.diagnosing == [] and second.rearmed == [] and second.asked == []
+
+
+def test_rearm_of_a_doing_node_returns_it_to_open(store: Store) -> None:
+    """A node rescued while ``STATUS:doing`` (its run died before
+    ``release_todo``) must come back ``STATUS:open`` on REARM: the
+    rescue tag alone cleared leaves it invisible to
+    ``plan_dispatch._step_dispatch``, which only dispatches ``open``
+    (review td575437)."""
+    root = _root(store)
+    task = _rescued(store, root, status="doing")
+    diag = _minted_diagnose(store, task, root)
+    _job(store, diag, status="succeeded")
+    _comment(store, diag, "rescue: REARM — rebuild on the corrected brief")
+
+    res = fr.run_rescue_pass(store, NOW + timedelta(minutes=1))
+
+    assert res.rearmed == [task]
+    assert _status(store, task) == "open"
+    assert _rescue_tags(store, task) == []
+    assert _status(store, diag) == "done"
+    pres = pd.run_pass(store, dry_run=True)
+    assert any(f"td{task}: would dispatch run_slice" in note for note in pres.notes)
 
 
 def test_rearm_after_infra_red_land_mints_a_builder_not_a_reland(

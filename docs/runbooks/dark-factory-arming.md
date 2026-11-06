@@ -306,6 +306,7 @@ takes a todo handle only).
 The session replies on the task with one first line: `rescue: REARM —
 <corrected brief>` or `rescue: NOFIX — <why>` (a `handoff:` prefix
 counts; anything else is unparsable). REARM removes the `rescue:` tag,
+returns `STATUS:doing` to `open` (the tick only dispatches `open`),
 stamps `meta.rescue` (`n`, `at`, `diagnose`, `cls`) and the re-arm floor
 (`rearmed_after_job` on the newest ended job, `rearmed_ask_at`,
 `rearmed_answer` — so an infra-red land's re-land stays off), and posts
