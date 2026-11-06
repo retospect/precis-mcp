@@ -1517,6 +1517,125 @@ def render_ask_user(store: Store) -> Response:
     return Response(body=body)
 
 
+# ── view: rescue ───────────────────────────────────────────────
+
+
+#: STATUS values that take a rescued node off the queue, todo and gripe
+#: terminals in one set — a closed node leaves whatever its kind.
+_RESCUE_TERMINAL = ("done", "won't-do", "abandoned", "wontfix", "auto-timeout")
+
+
+def _sig_gripes_for(store: Store, ref_ids: list[int]) -> dict[int, int]:
+    """todo id → the live signature gripe it is ``related-to``
+    (``rescue-sig:*``-tagged), the lowest id winning."""
+    if not ref_ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT l.src_ref_id, l.dst_ref_id
+              FROM links l
+              JOIN refs g ON g.ref_id = l.dst_ref_id AND g.kind = 'gripe'
+             WHERE l.src_ref_id = ANY(%s) AND l.relation = 'related-to'
+               AND g.retired_at IS NULL
+               AND EXISTS (SELECT 1 FROM ref_tags rt
+                             JOIN tags t ON t.tag_id = rt.tag_id
+                            WHERE rt.ref_id = g.ref_id AND t.namespace = 'OPEN'
+                              AND t.value LIKE 'rescue-sig:%%')
+             ORDER BY l.dst_ref_id
+            """,
+            (ref_ids,),
+        ).fetchall()
+    out: dict[int, int] = {}
+    for src, dst in rows:
+        out.setdefault(int(src), int(dst))
+    return out
+
+
+def _rescue_rows(store: Store) -> list[dict[str, Any]]:
+    """Every live todo or gripe carrying an open ``rescue:<class>`` tag,
+    class then id order. ``cls`` is the tag's class; ``sig`` is the
+    linked signature gripe for a todo (``None`` for a gripe — it is its
+    own signature gripe, and for a plan root, which is never linked)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.kind, r.title, min(t.value) AS rescue_tag
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind IN ('todo', 'gripe') AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value LIKE 'rescue:%%'
+               AND COALESCE(
+                     (SELECT s.value FROM ref_tags rs
+                        JOIN tags s ON s.tag_id = rs.tag_id
+                       WHERE rs.ref_id = r.ref_id AND s.namespace = 'STATUS'
+                       LIMIT 1),
+                     'open'
+                   ) <> ALL(%s)
+             GROUP BY r.ref_id, r.kind, r.title
+             ORDER BY rescue_tag, r.ref_id
+            """,
+            (list(_RESCUE_TERMINAL),),
+        ).fetchall()
+    out: list[dict[str, Any]] = [
+        {
+            "id": int(ref_id),
+            "kind": str(kind),
+            "cls": str(rescue_tag)[len("rescue:") :],
+            "title": str(title or ""),
+        }
+        for ref_id, kind, title, rescue_tag in rows
+    ]
+    sigs = _sig_gripes_for(store, [r["id"] for r in out if r["kind"] == "todo"])
+    for r in out:
+        r["sig"] = sigs.get(r["id"])
+    return out
+
+
+def _rescue_line(r: dict[str, Any]) -> str:
+    """``<handle> <class> — <title> · sig gr<id>`` (the sig cell only
+    when the row is linked to a signature gripe)."""
+    first = r["title"].split("\n", 1)[0]
+    if len(first) > 56:
+        first = first[:56].rstrip() + "…"
+    sig = f" · sig {_h(r['sig'], 'gripe')}" if r.get("sig") else ""
+    return f"{_h(r['id'], r['kind']):<6} {r['cls']:<14} — {first}{sig}"
+
+
+def render_rescue(store: Store) -> Response:
+    """``search(kind='todo', view='rescue')`` — the rescue queue
+    (td574946 S1): every live node in rescue grouped by class, a todo's
+    line naming the signature gripe it joined."""
+    rows = _rescue_rows(store)
+    if not rows:
+        body = "no node in rescue"
+        body += render_next_section(
+            [
+                ("search(kind='todo', view='work')", "the board these sit in"),
+            ]
+        )
+        return Response(body=body)
+    lines = [f"# rescue ({len(rows)})"]
+    for cls in dict.fromkeys(r["cls"] for r in rows):
+        group = [r for r in rows if r["cls"] == cls]
+        lines.append("")
+        lines.append(f"{cls} ({len(group)})")
+        lines.extend(f"  {_rescue_line(r)}" for r in group)
+    body = "\n".join(lines)
+    first = rows[0]
+    body += render_next_section(
+        [
+            (
+                f"get(kind='{first['kind']}', id={first['id']})",
+                "a rescued node with its evidence comment",
+            ),
+            ("get(kind='gripe', id=N)", "the signature gripe a row names"),
+        ]
+    )
+    return Response(body=body)
+
+
 # ── view: attention (ask-user + child-failed parents) ──────────
 
 
@@ -1921,6 +2040,7 @@ __all__ = [
     "render_attention",
     "render_blocked",
     "render_doable",
+    "render_rescue",
     "render_roots",
     "render_strategic",
     "render_tree",

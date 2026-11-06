@@ -209,6 +209,60 @@ def test_enabled_resolves_per_host(store: Store) -> None:
     assert not gd.gripe_dispatch_enabled(store, host="dim")
 
 
+def test_hold_tags_contain_cluster_dark_factory() -> None:
+    # td574946 S1 (ruling 10): rescue-filed engine gripes and a gripe
+    # rescued at intake stay out of the lane by the candidates tuple.
+    assert "cluster:dark-factory" in gd.HOLD_TAGS
+    assert "rescue:intake" in gd.HOLD_TAGS
+
+
+def test_read_only_reason_mints_nothing(store: Store, two_lanes: Any) -> None:
+    _light(store)
+    _gripe(store, "a")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO service_config (host, service, prio) "
+            "VALUES ('*', 'plan_dispatch', 0)"
+        )
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.claimed, res.ok, res.failed) == (0, 0, 0)
+    assert res.extra["read_only"]
+    with store.pool.connection() as conn:
+        n_links = conn.execute(
+            "SELECT count(*) FROM links WHERE relation = 'related-to'"
+        ).fetchone()
+    assert n_links is not None and int(n_links[0]) == 0
+
+
+def test_three_failed_mints_rescue_the_gripe(
+    store: Store, two_lanes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _light(store)
+    g = _gripe(store, "always fails")
+    calls: list[int] = []
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        raise RuntimeError("mint blew up")
+
+    monkeypatch.setattr(gd, "mint_gripe_fix_direct", boom)
+    for _ in range(3):
+        res = gd.run_gripe_dispatch_pass(store, host="h1")
+        assert (res.claimed, res.ok, res.failed) == (1, 0, 1)
+    assert len(calls) == 3
+
+    open_tags = [str(t.value) for t in store.tags_for(g) if t.namespace == "open"]
+    assert "rescue:intake" in open_tags
+    fails = [c for c in _comments(store, g) if c.startswith("dispatch: mint failed:")]
+    assert len(fails) == 3
+    assert any(c.startswith("rescue: intake") for c in _comments(store, g))
+
+    # rescue:intake is a hold tag: the gripe leaves candidates, so a
+    # fourth pass never reaches the mint
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.claimed == 0 and len(calls) == 3
+
+
 def test_cadence_and_service_spec() -> None:
     from precis.workers.registry import SERVICES_BY_NAME, ServiceKind
     from precis.workers.scheduler import CADENCES

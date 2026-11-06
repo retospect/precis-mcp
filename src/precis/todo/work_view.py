@@ -1361,6 +1361,18 @@ def render_work(store: Store, *, now: datetime | None = None) -> Response:
             # would vanish from the text view (td573854).
             out.extend(q.jobs)
 
+    # The rescue queue (td574946 S1), after the quest groups and before
+    # unassigned roots; omitted entirely when nothing is in rescue.
+    rescue = views._rescue_rows(store)
+    if rescue:
+        out += ["", f"rescue ({len(rescue)}) — failed nodes held for diagnosis"]
+        for r in rescue[:20]:
+            out.append(f"  {views._rescue_line(r)}")
+        if len(rescue) > 20:
+            out.append(
+                f"  … +{len(rescue) - 20} more — search(kind='todo', view='rescue')"
+            )
+
     if model.unassigned:
         out += ["", f"unassigned roots ({len(model.unassigned)}) — serve no quest"]
         for u in model.unassigned:

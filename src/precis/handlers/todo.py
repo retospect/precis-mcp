@@ -234,6 +234,9 @@ class TodoView(StrEnum):
     # Dark-factory step 1b (td540847): the asks list in three classes,
     # grouped by quest (:mod:`precis.todo.asks_view`).
     ASKS = "asks"
+    # td574946 S1: the rescue queue — every live node carrying an open
+    # ``rescue:<class>`` tag, grouped by class.
+    RESCUE = "rescue"
 
 
 def _view_doable(
@@ -301,6 +304,7 @@ _TREE_SEARCH_VIEWS: dict[
     TodoView.INDEX: lambda store, args, ps: views.render_flat(store, limit=ps or 200),
     TodoView.WORK: lambda store, args, ps: work_view.render_work(store),
     TodoView.ASKS: lambda store, args, ps: asks_view.render_asks(store),
+    TodoView.RESCUE: lambda store, args, ps: views.render_rescue(store),
 }
 
 #: Single-source-of-truth guard: every view in the vocabulary must have

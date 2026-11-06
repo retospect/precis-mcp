@@ -10,6 +10,7 @@ answers:
   - how do I ask the owner a question, and how is it answered?
   - how do I claim a slice before working it, and how do I release it?
   - where does a gripe land in the work tree, and what does its stage mean?
+  - what does a rescue:<class> tag mean, and how do I read the rescue queue?
   - what is a pillar quest, and why is a paper a month todo and not a quest?
 applies-to: search(kind='todo', view='work'); get(kind='todo', id=N, extent='fisheye+1hop'); tag(kind='todo', add=['claimed-by:…'])
 tags: [workflow]
@@ -325,6 +326,55 @@ tag(kind="gripe", id=564261, add=["hold:no-dispatch"])
 
 A hand-minted chain also counts: the `related-to` link is the marker.
 Each mint leaves a `dispatch: minted gripe-fix-direct td<root>` comment.
+
+## What does a rescue:<class> tag mean?
+## How do I read the rescue queue?
+
+Every factory failure ends in done or rescue. A node that burned its
+retry budget — a build that kept failing, a mint that kept raising —
+carries the open tag `rescue:<class>` and waits for diagnosis instead of
+retrying forever. The class says what failed: `builder`, `land`,
+`review`, `release`, `intake`, `lane`, or an engine class (`stalled`,
+`cancelled`, `tick-raises`, `post-land-write`, `wait-deadline`, `infra`)
+when the factory's own machinery broke rather than the task.
+
+One gripe collects every node the same failure defeated: the signature —
+class plus a normalised failing test, error line, or last log line —
+tags the gripe `rescue-sig:<hash>`, and each rescued todo links
+`related-to` it. An engine-class signature gripe also carries
+`cluster:dark-factory`, a dispatch hold tag, so an engine gripe never
+re-enters a build lane by the intake door. A rescued gripe (three failed
+mints → `rescue:intake`) is its own signature gripe. The failure's
+evidence — job, step, branch, head sha, log tail, diff stat — sits as a
+comment on the rescued node, and later nodes on one signature leave a
+line each on the shared gripe.
+
+```python
+search(kind="todo", view="rescue")
+```
+
+```
+# rescue (3)
+
+builder (2)
+  td540990 builder       — Fix the flake · sig gr574801
+  td541002 builder       — Port the shim · sig gr574801
+intake (1)
+  gr574810 intake        — [rescue] intake: mint blew up
+```
+
+The work view carries the same queue as a `rescue (N)` group after the
+quest groups (twenty rows, then a `… +K more` pointer here); the asks
+view files every rescued node as a showstopper with `rescue:<class>` as
+its reason.
+
+Rescue is a machine verdict, not a human hold: a node parked on a human
+(`waiting-for:`, an open blocking `ask-user`, `halt`, `STATUS:paused`,
+`won't-do`) is not in rescue, and a `rescue-sig:<hash>` tag marks a
+signature gripe — the collector — never a rescued node (the colon
+matters). A node in rescue keeps its worktree and branch: the thing
+being rescued is the branch commit, named on the node's evidence
+comment.
 
 ## What does the transcript_audit pass sample, and how is it lit?
 

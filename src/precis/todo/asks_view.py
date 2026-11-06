@@ -11,9 +11,11 @@ Classes (the highest one a row qualifies for wins):
 
 * **showstopper** — a lane is stopped: ``waiting-for:reto`` on a claimed
   slice (``claimed-by:`` lease), an ``ask-user`` todo whose
-  ``meta.ask.blocks`` names a slice, or an explicit ``showstopper`` tag. A
-  tripped breaker and a red open release join here when dark-factory
-  step 4 gives them a source; today neither exists to read.
+  ``meta.ask.blocks`` names a slice, an explicit ``showstopper`` tag, or a
+  node in rescue (``rescue:<class>``, td574946 S1 — a factory failure
+  parked for diagnosis). A tripped breaker and a red open release join
+  here when dark-factory step 4 gives them a source; today neither
+  exists to read.
 * **decision** — a next slice waits: ``ask-user`` / ``ask-user:`` todos,
   an unclaimed ``waiting-for:reto``, gripes tagged ``needs:ruling``.
 * **discussion** — a shape question: tag ``discussion`` (todo or gripe).
@@ -53,8 +55,9 @@ CLASS_HINTS: dict[str, str] = {
 
 #: STATUS values that close a todo or a gripe.
 _TERMINAL = ("done", "won't-do", "abandoned", "wontfix")
-#: Open tags that put a todo or gripe on the list (``ask-user:<q>`` is
-#: matched by prefix in the query).
+#: Open tags that put a todo or gripe on the list (``ask-user:<q>`` and
+#: ``rescue:<class>`` are matched by prefix in the query — the colon
+#: keeps ``rescue-sig:<hash>`` off the list).
 _TAGS = (
     "ask-user",
     "waiting-for:reto",
@@ -313,6 +316,10 @@ def _classify(
     if "discussion" in tags:
         classes.append(DISCUSSION)
         reasons.append("discussion")
+    rescue = next((t for t in tags if t.startswith("rescue:")), None)
+    if rescue is not None:
+        classes.append(SHOWSTOPPER)
+        reasons.append(rescue)
     if not classes:
         return None
     return min(classes, key=_RANK.__getitem__), tuple(reasons)
@@ -338,7 +345,8 @@ def _ref_rows(store: Store) -> list[AskRow]:
                AND EXISTS (
                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
-                      AND (t.value = ANY(%s) OR t.value LIKE 'ask-user:%%'))
+                      AND (t.value = ANY(%s) OR t.value LIKE 'ask-user:%%'
+                           OR t.value LIKE 'rescue:%%'))
                AND COALESCE(
                      (SELECT t2.value FROM ref_tags rt2
                         JOIN tags t2 ON t2.tag_id = rt2.tag_id

@@ -25,7 +25,8 @@ Each fire:
   (the dedup and triage passes get their turn first), with no live todo
   ``related-to`` them (a chain, hand-minted or ours, already exists), none
   of the hold tags (``fix:reto``, ``reto:ask``, ``disagreement``,
-  ``flood``, ``hold:no-dispatch``, ``hold:no-autoclose``), and **filed by a
+  ``flood``, ``hold:no-dispatch``, ``hold:no-autoclose``,
+  ``cluster:dark-factory``, ``rescue:intake``), and **filed by a
   Claude Code client
   or a human account** — BUILDER's condition (2026-11-04): the gripe
   text rides the build body verbatim and lands on main with no triage in
@@ -69,7 +70,9 @@ _BUILD_TASK_CLASS = "code"
 #: Tags that keep a gripe out of the lane by this door. ``hold:no-autoclose``
 #: marks Reto's never-close gripes (me547530): a land would write
 #: ``resolved:`` on one, so they never enter a chain by this door (BUILDER
-#: 2026-11-05).
+#: 2026-11-05). ``cluster:dark-factory`` marks an engine-failure gripe and
+#: ``rescue:intake`` a gripe that failed three mints — both are rescue
+#: state, not dispatchable work (td574946 S1, ruling 10).
 HOLD_TAGS: tuple[str, ...] = (
     "fix:reto",
     "reto:ask",
@@ -77,6 +80,8 @@ HOLD_TAGS: tuple[str, ...] = (
     "flood",
     "hold:no-dispatch",
     "hold:no-autoclose",
+    "cluster:dark-factory",
+    "rescue:intake",
 )
 #: STATUS values a gripe may carry to be dispatched.
 _DISPATCH_STATUSES: tuple[str, ...] = ("open", "triaged")
@@ -197,6 +202,18 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     if not gripe_dispatch_enabled(store, host=host):
         log.info("gripe_dispatch: dark — no live service_config row; no-op")
         return BatchResult(handler=SERVICE_NAME, claimed=0, ok=0, failed=0)
+    from precis.workers.job_types.plan_dispatch import read_only_reason
+
+    reason = read_only_reason(store)
+    if reason is not None:
+        log.info("gripe_dispatch: read-only (%s) — minting nothing", reason)
+        return BatchResult(
+            handler=SERVICE_NAME,
+            claimed=0,
+            ok=0,
+            failed=0,
+            extra={"read_only": reason},
+        )
     capacity = lane_capacity(store)
     open_chains = open_chain_count(store)
     slots = min(_MAX_PER_TICK, max(capacity - open_chains, 0))
@@ -214,6 +231,26 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
         except Exception as exc:
             failed += 1
             log.warning("gripe_dispatch: mint for gr%d failed: %s", c.gripe_id, exc)
+            try:
+                fails = _record_mint_failure(store, c.gripe_id, exc)
+            except Exception:
+                log.warning(
+                    "gripe_dispatch: failure note on gr%d failed",
+                    c.gripe_id,
+                    exc_info=True,
+                )
+                fails = []
+            # Three failed mints rescue the gripe (td574946 S1): without
+            # this the stateless pass retried the same mint forever.
+            if len(fails) >= 3:
+                try:
+                    _rescue_intake(store, c.gripe_id, exc, fails)
+                except Exception:
+                    log.warning(
+                        "gripe_dispatch: rescue for gr%d failed",
+                        c.gripe_id,
+                        exc_info=True,
+                    )
             continue
         ok += 1
         extra["minted"].append({"gripe": c.gripe_id, "root": mint.root_id})
@@ -236,13 +273,9 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     )
 
 
-def _comment(store: Store, gripe_id: int, root_id: int) -> None:
+def _append_comment(store: Store, gripe_id: int, text: str) -> None:
     from precis.store.types import ChunkInsert
 
-    text = (
-        f"dispatch: minted gripe-fix-direct td{root_id} (build picks its lane at "
-        "dispatch, devin first; the land writes `resolved: <sha>` here)"
-    )
     with store.tx() as conn:
         ords = conn.execute(
             "SELECT coalesce(max(ord), -1) + 1 FROM chunks WHERE ref_id = %s",
@@ -259,6 +292,54 @@ def _comment(store: Store, gripe_id: int, root_id: int) -> None:
             ],
             conn=conn,
         )
+
+
+def _comment(store: Store, gripe_id: int, root_id: int) -> None:
+    _append_comment(
+        store,
+        gripe_id,
+        f"dispatch: minted gripe-fix-direct td{root_id} (build picks its lane at "
+        "dispatch, devin first; the land writes `resolved: <sha>` here)",
+    )
+
+
+#: Prefix of the mint-failure comments; the count of comments carrying
+#: it is the failure count (the pass is stateless — the gripe's own
+#: comment trail is the only ledger).
+_MINT_FAIL_PREFIX = "dispatch: mint failed:"
+
+
+def _record_mint_failure(store: Store, gripe_id: int, exc: Exception) -> list[str]:
+    """Append this failure as a ``gripe_comment`` and return every
+    ``dispatch: mint failed:`` comment text on the gripe, oldest first."""
+    _append_comment(store, gripe_id, f"{_MINT_FAIL_PREFIX} {exc}")
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s "
+            "AND chunk_kind = 'gripe_comment' AND text LIKE %s ORDER BY ord",
+            (gripe_id, _MINT_FAIL_PREFIX + "%"),
+        ).fetchall()
+    return [str(r[0]) for r in rows]
+
+
+def _rescue_intake(
+    store: Store, gripe_id: int, exc: Exception, fails: list[str]
+) -> None:
+    """A gripe that failed three mints enters rescue itself (class
+    ``intake``): it is its own signature gripe and ``rescue:intake`` is a
+    hold tag, so it leaves ``candidates``."""
+    from precis.workers import factory_rescue
+
+    factory_rescue.enter_rescue(
+        store,
+        gripe_id,
+        "intake",
+        factory_rescue.RescueEvidence(
+            step="gripe_dispatch mint",
+            error_line=f"{type(exc).__name__}: {exc}",
+            log_tail="\n".join(fails),
+        ),
+    )
 
 
 __all__ = [
