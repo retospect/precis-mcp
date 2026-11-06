@@ -10,11 +10,58 @@ seeded pool key behave like any other carrier row (acceptance e). Real PG.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from psycopg import sql
+from psycopg.types.json import Jsonb
 
 from precis.errors import BadInput
+
+
+@pytest.fixture(autouse=True)
+def _restore_pool_rows(store: Any) -> Iterator[None]:
+    """Both ledger tables persist, including put and park/acquire mutations."""
+    snapshots: list[tuple[str, str, list[str], list[Any]]] = []
+    for table, key, predicate in (
+        ("llm_account", "name", "TRUE"),
+        ("external_rate_limits", "provider", "provider LIKE 'llm:%%'"),
+    ):
+        with store.pool.connection() as conn:
+            cursor = conn.execute(
+                sql.SQL("SELECT * FROM {} WHERE " + predicate).format(
+                    sql.Identifier(table)
+                )
+            )
+            columns = [column.name for column in cursor.description]
+            snapshots.append((table, key, columns, cursor.fetchall()))
+    yield
+    with store.pool.connection() as conn:
+        for table, key, columns, rows in snapshots:
+            assignments = sql.SQL(", ").join(
+                sql.SQL("{} = %s").format(sql.Identifier(column)) for column in columns
+            )
+            key_index = columns.index(key)
+            keys = [row[key_index] for row in rows]
+            predicate = "" if table == "llm_account" else "provider LIKE 'llm:%%' AND "
+            conn.execute(
+                sql.SQL(
+                    "DELETE FROM {} WHERE " + predicate + "NOT ({} = ANY(%s))"
+                ).format(sql.Identifier(table), sql.Identifier(key)),
+                (keys,),
+            )
+            for row in rows:
+                values = tuple(
+                    Jsonb(value) if isinstance(value, dict) else value for value in row
+                )
+                conn.execute(
+                    sql.SQL("UPDATE {} SET {} WHERE {} = %s").format(
+                        sql.Identifier(table), assignments, sql.Identifier(key)
+                    ),
+                    (*values, row[key_index]),
+                )
 
 
 def _handler(store: Any) -> Any:
@@ -75,6 +122,30 @@ class TestPoolsView:
         for line in body.splitlines():
             if line.strip().startswith("llm:"):
                 assert "pacing=n/a" in line
+
+    def test_retry_at_and_stale_render(self, store: Any) -> None:
+        body = _handler(store).get(id="/pools").body
+        lines = [line for line in body.splitlines() if line.strip().startswith("llm:")]
+        assert len(lines) == 6
+        for line in lines:
+            assert "retry_at=" in line
+            assert "stale=true" in line
+
+    def test_known_retry_and_fresh_report_render(self, store: Any) -> None:
+        from precis.utils.llm.accounts import record_pool_failure, record_pool_report
+
+        key = "llm:codex:weekly"
+        retry = datetime(2099, 1, 1, tzinfo=UTC)
+        record_pool_report(
+            store, key, used=37, source="provider", reported_at=datetime.now(UTC)
+        )
+        record_pool_failure(
+            store, key, reason_class="quota", retry_at=retry, notice="provider"
+        )
+        body = _handler(store).get(id="/pools").body
+        line = next(line for line in body.splitlines() if line.strip().startswith(key))
+        assert "retry_at=2099-01-01T00:00:00Z" in line
+        assert "stale=false" in line
 
     def test_unreported_fields_render_unknown(self, store: Any) -> None:
         h = _handler(store)

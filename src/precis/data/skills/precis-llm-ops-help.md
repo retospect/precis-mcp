@@ -83,5 +83,10 @@ inference — the daemon behind the local rungs.
 
 ## See also
 
+`pool_refresh` copies Codex weekly usage from fleet host reports and Devin's
+session pause into the pool ledger every 600 seconds, without model calls.
+It is dark until `service_config` lights it. Claude subscription pools receive
+stream and quota-probe reports; Kimi and OpenRouter have no refresh leg here.
+
 - [[precis-llm-help]] — the model catalog: choose, compare, review
 - [[precis-minter-help]] — meta.llm_tier → minter worker → model

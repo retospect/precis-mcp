@@ -115,6 +115,32 @@ def run_quota_check_pass(store: Store, *, limit: int = 1) -> BatchResult:
     if snapshot is None:
         log.info("quota_check: refresh returned no snapshot (outcome=%s)", outcome)
         return BatchResult(handler="quota_check", claimed=1, ok=0, failed=1)
+    # The pool ledger is a side channel: the snapshot above is already stored,
+    # so a failed pool write (DB error, odd resets_at) must not fail the pass.
+    try:
+        from precis.utils.llm.accounts import record_pool_report
+
+        for window, key in (
+            ("five_hour", "llm:claude-sub:5h"),
+            ("seven_day", "llm:claude-sub:7d"),
+        ):
+            bucket = snapshot.windows.get(window, {})
+            used = bucket.get("used_percentage")
+            if used is None:
+                continue
+            reset = bucket.get("resets_at")
+            record_pool_report(
+                store,
+                key,
+                used=used,
+                remaining=100 - used,
+                limit=100,
+                source="provider",
+                reported_at=snapshot.ts,
+                resets_at=datetime.fromisoformat(reset) if reset else None,
+            )
+    except Exception:
+        log.warning("quota_check: pool report failed", exc_info=True)
     log.info(
         "quota_check: snapshot updated (windows=%s)",
         sorted(snapshot.windows.keys()),

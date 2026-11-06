@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 from email.message import Message
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 from urllib.error import HTTPError, URLError
 
 import pytest
@@ -7772,3 +7773,477 @@ def test_error_result_plain_stdout_still_passes_through() -> None:
     )
     res = _error_result(exc, model="m", tier=Tier.BIG)
     assert res.text == "partial"
+
+
+@pytest.fixture
+def pool_stream() -> str:
+    """Unified-windows event from test_claude_quota's parser contract."""
+    return json.dumps(
+        {
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": "allowed",
+                "resetsAt": 1791915000,
+                "rateLimitType": "five_hour",
+                "unifiedWindows": {
+                    "five_hour": {"utilization": 0.55, "resetsAt": 1791915000},
+                    "seven_day": {"utilization": 0.5, "resetsAt": 1792126800},
+                    "seven_day_sonnet": {"utilization": 0.8},
+                },
+            },
+        }
+    )
+
+
+def test_pool_stream_harvest(monkeypatch: pytest.MonkeyPatch, pool_stream: str) -> None:
+    from precis.utils.llm import accounts
+
+    report = Mock()
+    snapshot_write = Mock()
+    store = Mock()
+    monkeypatch.setattr("precis.budget.meter.active_store", lambda: store)
+    monkeypatch.setattr(accounts, "record_pool_report", report)
+    monkeypatch.setattr("precis.budget.quota.stamp_exhausted", snapshot_write)
+    router._harvest_pool_signals(
+        LlmResult(
+            text="ok",
+            raw_text=pool_stream,
+            cost_usd=None,
+            turns_used=None,
+            model="test",
+            tier=Tier.BIG,
+        ),
+        transport=Transport.CLAUDE_AGENT,
+        bare=False,
+    )
+    assert [call.args[1] for call in report.call_args_list] == [
+        "llm:claude-sub:5h",
+        "llm:claude-sub:7d",
+    ]
+    assert [call.kwargs["used"] for call in report.call_args_list] == [55.0, 50.0]
+    assert [call.kwargs["remaining"] for call in report.call_args_list] == [45.0, 50.0]
+    assert all(call.kwargs["source"] == "provider" for call in report.call_args_list)
+    assert all(call.kwargs["resets_at"] is not None for call in report.call_args_list)
+    snapshot_write.assert_not_called()
+
+
+@pytest.mark.parametrize("bare", [False, True])
+def test_pool_stream_legacy_or_bare_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, pool_stream: str, bare: bool
+) -> None:
+    from precis.utils.llm import accounts
+
+    report = Mock()
+    monkeypatch.setattr("precis.budget.meter.active_store", Mock())
+    monkeypatch.setattr(accounts, "record_pool_report", report)
+    legacy = json.dumps(
+        {
+            "type": "rate_limit_event",
+            "rateLimitType": "five_hour",
+            "resetsAt": 1791915000,
+        }
+    )
+    router._harvest_pool_signals(
+        LlmResult(
+            text="ok",
+            raw_text=pool_stream if bare else legacy,
+            cost_usd=None,
+            turns_used=None,
+            model="test",
+            tier=Tier.BIG,
+        ),
+        transport=Transport.CLAUDE_AGENT,
+        bare=bare,
+    )
+    report.assert_not_called()
+
+
+# The DB-backed refusal test below writes the seeded pool rows.
+from tests.test_llm_accounts import restore_seeded_pools  # noqa: F401  fixture
+
+#: Unix-epoch resets the ``pool_stream`` windows carry.
+_POOL_RESETS = {"five_hour": 1791915000, "seven_day": 1792126800}
+_POOL_RESET_AT = {
+    "llm:claude-sub:5h": datetime.fromtimestamp(_POOL_RESETS["five_hour"], UTC),
+    "llm:claude-sub:7d": datetime.fromtimestamp(_POOL_RESETS["seven_day"], UTC),
+}
+
+
+def _pool_event(window: str, status: str) -> str:
+    """The ``rate_limit_event`` a refusal rides on: ``window`` is the event's
+    ``rateLimitType`` carrying ``status`` (``rejected`` when refused), over the
+    same live windows as ``pool_stream``."""
+    return json.dumps(
+        {
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": status,
+                "resetsAt": _POOL_RESETS.get(window, _POOL_RESETS["seven_day"]),
+                "rateLimitType": window,
+                "unifiedWindows": {
+                    "five_hour": {
+                        "utilization": 0.55,
+                        "resetsAt": _POOL_RESETS["five_hour"],
+                    },
+                    "seven_day": {
+                        "utilization": 0.5,
+                        "resetsAt": _POOL_RESETS["seven_day"],
+                    },
+                    "seven_day_sonnet": {"utilization": 0.8},
+                },
+            },
+        }
+    )
+
+
+def _refusal(raw_text: str) -> LlmResult:
+    """A claude quota refusal carrying the stream it rode on."""
+    return LlmResult(
+        text="",
+        raw_text=raw_text,
+        error="You've hit your limit",
+        reason_class="quota",
+        cost_usd=None,
+        turns_used=None,
+        model="test",
+        tier=Tier.BIG,
+    )
+
+
+@pytest.mark.usefixtures("restore_seeded_pools")
+def test_pool_stream_quota_refusal_parks_provider_resets(
+    monkeypatch: pytest.MonkeyPatch, store: Any
+) -> None:
+    """A 5-hour refusal parks the 5-hour pool until the provider's reset and
+    leaves the 7-day pool's ``parked_until`` NULL: a park only ever extends,
+    so parking both would hold the weekly pool to the weekly reset."""
+    from precis.utils.llm.accounts import list_pools
+
+    snapshot_write = Mock()
+    monkeypatch.setattr("precis.budget.meter.active_store", lambda: store)
+    monkeypatch.setattr("precis.budget.quota.stamp_exhausted", snapshot_write)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE external_rate_limits SET parked_until = NULL "
+            "WHERE provider = ANY(%s)",
+            (list(_POOL_RESET_AT),),
+        )
+
+    router._harvest_pool_signals(
+        _refusal(_pool_event("five_hour", "rejected")),
+        transport=Transport.CLAUDE_AGENT,
+        bare=False,
+    )
+
+    pools = {pool.provider: pool for pool in list_pools(store)}
+    assert (
+        pools["llm:claude-sub:5h"].parked_until == _POOL_RESET_AT["llm:claude-sub:5h"]
+    )
+    assert pools["llm:claude-sub:5h"].source == "provider"
+    assert pools["llm:claude-sub:7d"].parked_until is None
+    # The usage reports still land for both windows.
+    assert pools["llm:claude-sub:5h"].used_reported == 55
+    assert pools["llm:claude-sub:7d"].used_reported == 50
+    snapshot_write.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("stream", "parked"),
+    [
+        (_pool_event("five_hour", "rejected"), ["llm:claude-sub:5h"]),
+        (_pool_event("seven_day", "rejected"), ["llm:claude-sub:7d"]),
+        # No window marked refused: which one binds is unknown, so only the
+        # shorter (five_hour) parks.
+        (_pool_event("five_hour", "allowed"), ["llm:claude-sub:5h"]),
+        # The refused window is not a pooled one: neither pool parks.
+        (_pool_event("seven_day_sonnet", "rejected"), []),
+    ],
+    ids=["five-hour-rejected", "seven-day-rejected", "none-marked", "unpooled-window"],
+)
+def test_pool_stream_refusal_parks_only_binding_window(
+    monkeypatch: pytest.MonkeyPatch, stream: str, parked: list[str]
+) -> None:
+    from precis.utils.llm import accounts
+
+    failure = Mock()
+    monkeypatch.setattr("precis.budget.meter.active_store", Mock())
+    monkeypatch.setattr(accounts, "record_pool_report", Mock())
+    monkeypatch.setattr(accounts, "record_pool_failure", failure)
+    router._harvest_pool_signals(
+        _refusal(stream), transport=Transport.CLAUDE_AGENT, bare=False
+    )
+    assert [call.args[1] for call in failure.call_args_list] == parked
+    assert all(call.kwargs["notice"] == "provider" for call in failure.call_args_list)
+    assert [call.kwargs["retry_at"] for call in failure.call_args_list] == [
+        _POOL_RESET_AT[key] for key in parked
+    ]
+
+
+def test_react_to_quota_stamps_snapshot_and_leaves_pools_alone(
+    monkeypatch: pytest.MonkeyPatch, pool_stream: str
+) -> None:
+    """``_react_to_quota`` is the stamp alone: a refusal stamps the snapshot
+    from its own ``retry_at`` / ``error`` and never touches the pool ledger,
+    which ``_harvest_pool_signals`` owns; a clean result stamps nothing."""
+    from precis.utils.llm import accounts
+
+    store, stamp = Mock(), Mock()
+    report, failure = Mock(), Mock()
+    monkeypatch.setattr("precis.budget.meter.active_store", lambda: store)
+    monkeypatch.setattr("precis.budget.quota.stamp_exhausted", stamp)
+    monkeypatch.setattr(accounts, "record_pool_report", report)
+    monkeypatch.setattr(accounts, "record_pool_failure", failure)
+    refusal = _refusal(_pool_event("five_hour", "rejected"))
+
+    router._react_to_quota(refusal, transport=Transport.CLAUDE_AGENT, bare=False)
+    stamp.assert_called_once_with(
+        store, resets_at=refusal.retry_at, notice=refusal.error
+    )
+
+    stamp.reset_mock()
+    router._react_to_quota(
+        router._replace(_ok("fine"), raw_text=pool_stream),
+        transport=Transport.CLAUDE_AGENT,
+        bare=False,
+    )
+    stamp.assert_not_called()
+    report.assert_not_called()
+    failure.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("first_transport", "first_bare", "last_bare", "expected_reports"),
+    [
+        (Transport.OPENAI_TOOLS, False, False, 2),
+        (Transport.CLAUDE_AGENT, True, False, 2),
+        (Transport.CLAUDE_AGENT, False, True, 0),
+    ],
+    ids=["openai-to-oauth", "bare-to-oauth", "oauth-to-bare"],
+)
+def test_pool_stream_route_follows_actual_failover_rung(
+    monkeypatch: pytest.MonkeyPatch,
+    pool_stream: str,
+    first_transport: Transport,
+    first_bare: bool,
+    last_bare: bool,
+    expected_reports: int,
+) -> None:
+    """An outer route must neither misattribute nor double-harvest a ladder."""
+    from precis.utils.llm import accounts
+
+    report = Mock()
+    ladder = [
+        Rung(first_transport, bare=first_bare),
+        Rung(Transport.CLAUDE_AGENT, bare=last_bare),
+    ]
+    providers = iter(
+        [
+            _FakeProv(_err("backend down")),
+            _FakeProv(router._replace(_ok("fallback"), raw_text=pool_stream)),
+        ]
+    )
+    monkeypatch.setattr(router, "resolve_chain", lambda *args, **kwargs: ladder)
+    monkeypatch.setattr(
+        router, "_drop_unavailable_rungs", lambda rungs, model: (rungs, [])
+    )
+    monkeypatch.setattr(router, "_apply_cloud_throttle", lambda rungs: rungs)
+    monkeypatch.setattr(router, "provider_for", lambda *args, **kwargs: next(providers))
+    monkeypatch.setattr(router, "_record_dispatch", Mock(return_value=None))
+    monkeypatch.setattr("precis.budget.breaker.gate_tier", Mock(return_value=None))
+    monkeypatch.setattr("precis.budget.meter.active_store", Mock())
+    monkeypatch.setattr(
+        "precis.utils.llm.admit.check_dispatch", Mock(return_value=None)
+    )
+    monkeypatch.setattr(
+        "precis.utils.llm.local_serving.acquire", Mock(return_value=None)
+    )
+    monkeypatch.setattr(accounts, "record_pool_report", report)
+
+    result = route(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
+
+    assert result.text == "fallback"
+    assert report.call_count == expected_reports
+    if expected_reports:
+        assert [call.kwargs["used"] for call in report.call_args_list] == [55.0, 50.0]
+
+
+def _patch_pool_route(
+    monkeypatch: pytest.MonkeyPatch, ladder: list[Rung]
+) -> SimpleNamespace:
+    """Route over ``ladder`` with every gate dark; the pool writers and the
+    quota-snapshot stamp are probes the caller asserts on."""
+    from precis.utils.llm import accounts
+
+    probes = SimpleNamespace(report=Mock(), failure=Mock(), stamp=Mock())
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.setattr(router, "resolve_chain", lambda *args, **kwargs: ladder)
+    monkeypatch.setattr(
+        router, "_drop_unavailable_rungs", lambda rungs, model: (rungs, [])
+    )
+    monkeypatch.setattr(router, "_apply_cloud_throttle", lambda rungs: rungs)
+    monkeypatch.setattr(router, "_record_dispatch", Mock(return_value=None))
+    monkeypatch.setattr("precis.budget.breaker.gate_tier", Mock(return_value=None))
+    monkeypatch.setattr("precis.budget.meter.active_store", Mock())
+    monkeypatch.setattr(
+        "precis.utils.llm.admit.check_dispatch", Mock(return_value=None)
+    )
+    monkeypatch.setattr(
+        "precis.utils.llm.local_serving.acquire", Mock(return_value=None)
+    )
+    monkeypatch.setattr("precis.budget.quota.stamp_exhausted", probes.stamp)
+    monkeypatch.setattr(accounts, "record_pool_report", probes.report)
+    monkeypatch.setattr(accounts, "record_pool_failure", probes.failure)
+    return probes
+
+
+def _route_pool(
+    monkeypatch: pytest.MonkeyPatch, ladder: list[Rung], results: list[LlmResult]
+) -> tuple[LlmResult, SimpleNamespace]:
+    """``route`` over ``ladder``; each provider lookup replays the next result."""
+    probes = _patch_pool_route(monkeypatch, ladder)
+    providers = iter([_FakeProv(result) for result in results])
+    monkeypatch.setattr(router, "provider_for", lambda *args, **kwargs: next(providers))
+    out = route(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
+    return out, probes
+
+
+def test_pool_stream_ladder_refusal_then_success_does_not_stamp_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A claude rung's refusal parks its pool, but the chain's result is
+    clean, so the quota snapshot is not stamped: the stamp follows the final
+    result, never a rung the ladder walked past."""
+    refusal = _refusal(_pool_event("five_hour", "rejected"))
+    out, probes = _route_pool(
+        monkeypatch,
+        [Rung(Transport.CLAUDE_AGENT), Rung(Transport.OPENAI_TOOLS)],
+        [refusal, _ok("fallback")],
+    )
+    assert out.text == "fallback"
+    probes.stamp.assert_not_called()
+    assert [call.args[1] for call in probes.failure.call_args_list] == [
+        "llm:claude-sub:5h"
+    ]
+
+
+def test_pool_stream_ladder_ending_in_refusal_stamps_per_rung_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The final claude refusal parks its pool, but the snapshot stamp keys on
+    rung 0's transport as before: an OpenAI rung 0 is not subscription quota."""
+    refusal = _refusal(_pool_event("five_hour", "rejected"))
+    out, probes = _route_pool(
+        monkeypatch,
+        [Rung(Transport.OPENAI_TOOLS), Rung(Transport.CLAUDE_AGENT)],
+        [_err("backend down"), refusal],
+    )
+    assert out.reason_class == "quota"
+    probes.stamp.assert_not_called()
+    assert [call.args[1] for call in probes.failure.call_args_list] == [
+        "llm:claude-sub:5h"
+    ]
+
+
+@pytest.mark.parametrize(
+    "ladder",
+    [
+        [Rung(Transport.CLAUDE_AGENT, model="claude-x")],
+        [Rung(Transport.CLAUDE_AGENT)],
+    ],
+    ids=["failover-ladder", "direct"],
+)
+def test_pool_stream_single_rung_refusal_stamps_and_harvests_once(
+    monkeypatch: pytest.MonkeyPatch, ladder: list[Rung]
+) -> None:
+    """One claude rung (through FailoverProvider when it pins a model, straight
+    to the provider otherwise): stamped once, each window harvested once."""
+    refusal = _refusal(_pool_event("five_hour", "rejected"))
+    out, probes = _route_pool(monkeypatch, ladder, [refusal])
+    assert out.reason_class == "quota"
+    probes.stamp.assert_called_once()
+    assert [call.args[1] for call in probes.report.call_args_list] == [
+        "llm:claude-sub:5h",
+        "llm:claude-sub:7d",
+    ]
+    assert [call.args[1] for call in probes.failure.call_args_list] == [
+        "llm:claude-sub:5h"
+    ]
+
+
+def test_pool_stream_dispatch_async_harvests_direct_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The streaming leg dispatches straight to its one claude rung, so its
+    stream is harvested once there, and the snapshot stamp is unchanged."""
+    import asyncio
+
+    from precis.utils.llm.router import dispatch_async
+
+    probes = _patch_pool_route(monkeypatch, [Rung(Transport.CLAUDE_AGENT)])
+    refusal = _refusal(_pool_event("five_hour", "rejected"))
+
+    async def fake_agent_async(req: LlmRequest, model: str) -> LlmResult:
+        return refusal
+
+    async def on_event(evt: dict) -> None:
+        pass
+
+    monkeypatch.setattr(router, "_dispatch_claude_agent_async", fake_agent_async)
+    out = asyncio.run(
+        dispatch_async(
+            LlmRequest(tier=Tier.BIG, prompt="hi", tools_needed=True, on_event=on_event)
+        )
+    )
+    assert out.reason_class == "quota"
+    probes.stamp.assert_called_once()
+    assert [call.args[1] for call in probes.report.call_args_list] == [
+        "llm:claude-sub:5h",
+        "llm:claude-sub:7d",
+    ]
+    assert [call.args[1] for call in probes.failure.call_args_list] == [
+        "llm:claude-sub:5h"
+    ]
+
+
+def test_pool_stream_op_chain_escape_rung_stamps_once_and_harvests_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The saturated-local escape walks ``ladder[1:]`` through its own
+    FailoverProvider; that site stamps the snapshot from the escape rung's
+    result, and the rung's stream is harvested once."""
+    from precis.utils.llm import accounts
+    from precis.utils.llm import local_serving as ls
+
+    chain = [
+        {"transport": "local", "model": "glm-4.7-flash", "placement": "local"},
+        {"transport": "claude_agent", "model": "claude-x", "placement": "cloud"},
+    ]
+    _op_chain_setup(monkeypatch, {"llm_summarize": {"chain": chain}})
+    refusal = _refusal(_pool_event("five_hour", "rejected"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_AGENT, _FakeProv(refusal))
+    _serving(
+        monkeypatch,
+        served=True,
+        slot=ls.LocalSlot(
+            host="h", resource="llm:glm-4.7-flash", reserved=False, paused=True
+        ),
+    )
+    probes = SimpleNamespace(report=Mock(), failure=Mock(), stamp=Mock())
+    monkeypatch.setattr("precis.budget.breaker.gate_tier", lambda tier, **kw: None)
+    monkeypatch.setattr("precis.utils.llm.admit.check_dispatch", lambda req, **kw: None)
+    monkeypatch.setattr("precis.budget.meter.active_store", Mock())
+    monkeypatch.setattr("precis.budget.quota.stamp_exhausted", probes.stamp)
+    monkeypatch.setattr(accounts, "record_pool_report", probes.report)
+    monkeypatch.setattr(accounts, "record_pool_failure", probes.failure)
+
+    out = route(_summ())
+
+    assert out.reason_class == "quota"
+    probes.stamp.assert_called_once()
+    assert [call.args[1] for call in probes.report.call_args_list] == [
+        "llm:claude-sub:5h",
+        "llm:claude-sub:7d",
+    ]
+    assert [call.args[1] for call in probes.failure.call_args_list] == [
+        "llm:claude-sub:5h"
+    ]

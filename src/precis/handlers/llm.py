@@ -934,7 +934,9 @@ class LlmHandler(NumericRefHandler):
                 f"used={fmt(p.used_reported)} remaining={fmt(p.remaining_reported)} "
                 f"reported_at={fmt_ts(p.reported_at)} source={fmt(p.source)} "
                 f"reset_rule={fmt(p.reset_rule)} resets_at={fmt_ts(p.resets_at)} "
-                f"expires_at={fmt_ts(p.expires_at)} pacing=n/a"
+                f"expires_at={fmt_ts(p.expires_at)} "
+                f"retry_at={fmt_ts(p.parked_until)} stale={str(p.stale).lower()} "
+                "pacing=n/a"
             )
         return "\n".join(lines)
 

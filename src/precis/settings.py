@@ -100,6 +100,13 @@ REGISTRY: dict[str, SettingSpec] = {
     spec.key: spec
     for spec in (
         SettingSpec(
+            key="llm.pool_stale_after_s",
+            type="int",
+            env_var=None,
+            default=7200,
+            doc="Age in seconds after which a pool usage report is stale.",
+        ),
+        SettingSpec(
             key="llm.local_first.enabled",
             type="bool",
             env_var="PRECIS_LOCAL_FIRST",

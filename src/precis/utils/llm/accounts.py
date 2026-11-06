@@ -1,11 +1,11 @@
-"""The ``llm_account`` / pool ledger reader (migration 0280, S1a).
+"""The ``llm_account`` / pool ledger and usage-signal writer.
 
 Two of the five offering records (memory me568184): **account** (one
 credential at one provider under one plan, ``llm_account``) and **pool**
 (a rate bucket with a reset rule and explicit scope, a row of
 ``external_rate_limits`` whose ``provider`` starts with ``llm:``). This
-module is read-only plumbing for :mod:`precis.handlers.llm`'s ``/accounts``
-and ``/pools`` views; the owner-only write path lives in the handler's
+module supplies typed reads and the single UPDATE-only usage-signal writer
+for existing pools; the owner-only account write path lives in the handler's
 ``put`` (validation needs :mod:`precis.todo.guards` and
 :mod:`precis.secret_status`, which would make this module import the
 handler layer if the upsert lived here too).
@@ -20,16 +20,20 @@ every month has one); ``expires:<ISO UTC>``. Garbage refuses with
 
 No routing behaviour changes here: ``pick_lane``, ``ladder``,
 ``resolve_profile`` and ``rate_limit.acquire``/``park``/``_record_refusal``
-read ``external_rate_limits`` exactly as before — this module only adds a
-typed read over the same rows, plus the new nullable reporting columns.
+read ``external_rate_limits`` exactly as before. Reporting never changes a
+pool's unit or reset rule, and older reports cannot overwrite newer ones.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
+
+from precis import settings
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -37,6 +41,7 @@ if TYPE_CHECKING:
 #: Pool keys this account/pool ledger reads: ``llm:<account>:<window>``,
 #: never ``host:`` (the existing per-netloc outbound-policy rows).
 POOL_PREFIX = "llm:"
+log = logging.getLogger(__name__)
 
 #: Calendar weekday tokens, Monday-first (``datetime.weekday()`` order) —
 #: the grammar's ``<mon|tue|...>`` anchor vocabulary.
@@ -77,8 +82,9 @@ class Pool:
     with a reset rule and explicit scope. Includes the token-bucket carrier
     columns (0121/0233) alongside the reporting columns this migration adds;
     the carrier columns keep ``rate_limit.acquire``/``park`` working and are
-    not surfaced on the ``/pools`` view, which reads only the reported half
-    plus ``reset_rule``/``resets_at``/``expires_at``."""
+    not surfaced on the ``/pools`` view except for ``parked_until`` as
+    ``retry_at``. Freshness derives from the last usage report, so a pause
+    alone cannot make unknown utilisation look current."""
 
     provider: str
     capacity: int
@@ -96,6 +102,8 @@ class Pool:
     reset_rule: str | None
     resets_at: datetime | None
     expires_at: datetime | None
+    parked_until: datetime | None
+    stale: bool
 
 
 _ACCOUNT_COLS = (
@@ -147,11 +155,11 @@ def get_account(store: Store, name: str) -> Account | None:
 _POOL_COLS = (
     'provider, capacity, refill_per_sec, tokens, daily_cap, "class", unit, '
     "limit_reported, used_reported, remaining_reported, reported_at, "
-    "source, confidence, reset_rule, resets_at, expires_at"
+    "source, confidence, reset_rule, resets_at, expires_at, parked_until"
 )
 
 
-def _pool_from_row(row: tuple[Any, ...]) -> Pool:
+def _pool_from_row(row: tuple[Any, ...], *, now: datetime, stale_after_s: int) -> Pool:
     return Pool(
         provider=row[0],
         capacity=row[1],
@@ -160,15 +168,17 @@ def _pool_from_row(row: tuple[Any, ...]) -> Pool:
         daily_cap=row[4],
         cls=row[5],
         unit=row[6],
-        limit_reported=row[7],
-        used_reported=row[8],
-        remaining_reported=row[9],
+        limit_reported=float(row[7]) if row[7] is not None else None,
+        used_reported=float(row[8]) if row[8] is not None else None,
+        remaining_reported=float(row[9]) if row[9] is not None else None,
         reported_at=row[10],
         source=row[11],
         confidence=row[12],
         reset_rule=row[13],
         resets_at=row[14],
         expires_at=row[15],
+        parked_until=row[16],
+        stale=row[10] is None or now - row[10] > timedelta(seconds=stale_after_s),
     )
 
 
@@ -183,7 +193,87 @@ def list_pools(store: Store) -> list[Pool]:
             "WHERE provider LIKE %s ORDER BY provider",
             (POOL_PREFIX + "%",),
         ).fetchall()
-    return [_pool_from_row(r) for r in rows]
+    stale_after_s = settings.get_int("llm.pool_stale_after_s", store=store)
+    if stale_after_s is None:
+        stale_after_s = 7200
+    now = datetime.now(UTC)
+    return [_pool_from_row(r, now=now, stale_after_s=stale_after_s) for r in rows]
+
+
+def record_pool_report(
+    store: Store,
+    key: str,
+    *,
+    used: float | Decimal | None = None,
+    remaining: float | Decimal | None = None,
+    limit: float | Decimal | None = None,
+    source: str,
+    reported_at: datetime,
+    resets_at: datetime | None = None,
+) -> bool:
+    """Record an existing pool's report, ignoring older observations.
+
+    A ``None`` ``used`` / ``remaining`` / ``resets_at`` keeps the stored
+    value (the report just did not carry it); the report still stamps
+    ``reported_at``. Limits fill NULL once; seeded limits (notably Devin's
+    one session) survive every report. Unknown keys never create carrier
+    rows.
+    """
+    if not key.startswith(POOL_PREFIX):
+        log.warning("pool report: unknown pool key %s", key)
+        return False
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "UPDATE external_rate_limits SET "
+            "used_reported = COALESCE(%s, used_reported), "
+            "remaining_reported = COALESCE(%s, remaining_reported), "
+            "limit_reported = COALESCE(limit_reported, %s), "
+            "source = %s, reported_at = %s, "
+            "resets_at = COALESCE(%s, resets_at) WHERE provider = %s "
+            "AND (reported_at IS NULL OR reported_at <= %s) RETURNING provider",
+            (used, remaining, limit, source, reported_at, resets_at, key, reported_at),
+        ).fetchone()
+        if row is not None:
+            return True
+        known = conn.execute(
+            "SELECT 1 FROM external_rate_limits WHERE provider = %s", (key,)
+        ).fetchone()
+    if known is None:
+        log.warning("pool report: unknown pool key %s", key)
+    return False
+
+
+def record_pool_failure(
+    store: Store,
+    key: str,
+    *,
+    reason_class: str,
+    retry_at: datetime,
+    notice: str | None = None,
+) -> bool:
+    """Extend an existing pool's park without shortening its horizon.
+
+    ``notice='provider'`` identifies an explicit provider reset/pause;
+    absent that evidence the horizon is an estimate. Provenance follows
+    the horizon retained, including when a shorter failure arrives later.
+    """
+    if not key.startswith(POOL_PREFIX):
+        log.warning("pool failure: unknown pool key %s (%s)", key, reason_class)
+        return False
+    source = "provider" if notice == "provider" else "estimate"
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "UPDATE external_rate_limits SET "
+            "source = CASE WHEN parked_until IS NULL OR parked_until <= %s "
+            "THEN %s ELSE source END, "
+            "parked_until = GREATEST(parked_until, %s) "
+            "WHERE provider = %s RETURNING provider",
+            (retry_at, source, retry_at, key),
+        ).fetchone()
+    if row is None:
+        log.warning("pool failure: unknown pool key %s (%s)", key, reason_class)
+        return False
+    return True
 
 
 # ── reset-rule grammar ──────────────────────────────────────────────────
@@ -397,4 +487,6 @@ __all__ = [
     "list_pools",
     "next_reset",
     "parse_reset_rule",
+    "record_pool_failure",
+    "record_pool_report",
 ]

@@ -31,6 +31,12 @@ def _clean_state() -> Any:
 # ── fakes ──────────────────────────────────────────────────────────────────
 
 
+def test_pool_staleness_default_and_override() -> None:
+    assert psettings.get_int("llm.pool_stale_after_s") == 7200
+    store = cast(Any, _FakeStore(_FakeConn(value="60")))
+    assert psettings.get_int("llm.pool_stale_after_s", store=store) == 60
+
+
 class _Cursor:
     def __init__(self, row: tuple | None) -> None:
         self._row = row

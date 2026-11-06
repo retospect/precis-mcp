@@ -2331,6 +2331,7 @@ class FailoverProvider:
                         )
                     )
                 )
+                _harvest_pool_signals(last, transport=rung.transport, bare=rung.bare)
                 if rung_profile is not None and rung_profile.kind == "subscription":
                     _subscription_tally(rung_profile, last)
             # Stamp the rung that actually ran. Done per-iteration (not once at
@@ -3298,6 +3299,79 @@ def _react_to_quota(result: LlmResult, *, transport: Transport, bare: bool) -> N
         log.debug("route: reactive quota stamp failed", exc_info=True)
 
 
+def _harvest_pool_signals(
+    result: LlmResult, *, transport: Transport, bare: bool
+) -> None:
+    """Copy a claude agent stream's rate-limit windows into the pool ledger:
+    a utilisation report per window, and on a ``quota`` refusal a park of the
+    window the stream marks refused. Writes the pool ledger only — never the
+    claude quota snapshot, which :func:`_react_to_quota` alone stamps from the
+    final result — so it runs per rung, each rung's stream harvested once.
+    Same OAuth / non-``bare`` guard as there (a ``bare`` rung spends dollars,
+    not subscription quota); dark when no store is bound. Never raises."""
+    from precis.budget import meter as _meter
+
+    if transport.value not in _meter.OAUTH_TRANSPORTS or bare:
+        return
+    if transport is not Transport.CLAUDE_AGENT or not result.raw_text:
+        return
+    try:
+        from precis.budget import quota as _quota
+        from precis.utils.claude_quota import parse_rate_limits
+        from precis.utils.llm.accounts import record_pool_failure, record_pool_report
+
+        store = _meter.active_store()
+        snapshot = parse_rate_limits(result.raw_text)
+        if store is None or snapshot is None:
+            return
+        # Only a window the stream itself marks refused is parked: the parser
+        # sets ``status`` solely on the window a ``rateLimitType`` names, and
+        # the quota gate reads the same blocking set. A 5-hour refusal must
+        # not park the 7-day pool (a park only ever extends, so it would hold
+        # to the weekly reset). A refusal whose stream marks no window cannot
+        # say which one is binding; park five_hour, the shorter, then.
+        refused = {
+            name
+            for name, bucket in snapshot.windows.items()
+            if str(bucket.get("status", "")).strip().lower()
+            in _quota._BLOCKING_STATUSES
+        }
+        binding = refused or {"five_hour"}
+        for window, key in (
+            ("five_hour", "llm:claude-sub:5h"),
+            ("seven_day", "llm:claude-sub:7d"),
+        ):
+            bucket = snapshot.windows.get(window, {})
+            reset = bucket.get("resets_at")
+            resets_at = datetime.fromisoformat(reset) if reset else None
+            used = bucket.get("used_percentage")
+            if used is not None:
+                record_pool_report(
+                    store,
+                    key,
+                    used=used,
+                    remaining=100 - used,
+                    limit=100,
+                    source="provider",
+                    reported_at=snapshot.ts,
+                    resets_at=resets_at,
+                )
+            if (
+                result.reason_class == "quota"
+                and window in binding
+                and resets_at is not None
+            ):
+                record_pool_failure(
+                    store,
+                    key,
+                    reason_class="quota",
+                    retry_at=resets_at,
+                    notice="provider",
+                )
+    except Exception:
+        log.debug("route: stream pool report failed", exc_info=True)
+
+
 def _trip_class(transport: Transport, *, bare: bool) -> _failure.FailureClass:
     """The class of a breaker trip for the rung that was gated: the
     claude-OAuth transports (not ``bare``) are gated on subscription quota,
@@ -4195,6 +4269,9 @@ def _route_inner(req: LlmRequest) -> LlmResult:
     finally:
         _local.release(slot)
     _react_to_quota(result, transport=transport, bare=ladder[0].bare)
+    if not isinstance(provider, FailoverProvider):
+        # A ladder's rungs were harvested one by one inside its run().
+        _harvest_pool_signals(result, transport=transport, bare=ladder[0].bare)
     # The direct (non-FailoverProvider) path has exactly one rung, so nothing
     # stamped placement above. A reserved `served_by` slot is local by
     # definition regardless of how the rung classifies — that IS the local
@@ -4442,6 +4519,9 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     finally:
         _local.release(slot)
     _react_to_quota(result, transport=transport, bare=ladder[0].bare)
+    # Streaming dispatches straight to the one rung (no FailoverProvider), so
+    # its stream is harvested here, once.
+    _harvest_pool_signals(result, transport=transport, bare=ladder[0].bare)
     # The direct (non-FailoverProvider) path has exactly one rung, so nothing
     # stamped placement above. A reserved `served_by` slot is local by
     # definition regardless of how the rung classifies — that IS the local

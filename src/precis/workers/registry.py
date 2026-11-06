@@ -1539,6 +1539,15 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-gripe-help",
     ),
     ServiceSpec(
+        name="pool_refresh",
+        label="Pool refresh",
+        category="health",
+        kind=ServiceKind.PASS,
+        one_line="10-minute model-free Codex fleet usage and Devin pause refresh; "
+        "dark until service_config lights it.",
+        doc_skill="precis-llm-ops-help",
+    ),
+    ServiceSpec(
         name="transcript_audit",
         label="Transcript audit",
         category="health",

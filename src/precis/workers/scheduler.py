@@ -312,6 +312,20 @@ def _run_gripe_triage(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_pool_refresh(store: Store, batch_size: int) -> None:
+    """Copy pool signals; the pass checks its dark-by-default gate."""
+    del batch_size
+    from precis.workers.pool_refresh import run_pool_refresh_pass
+
+    result = run_pool_refresh_pass(store)
+    log.info(
+        "scheduler: pool_refresh inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_transcript_audit(store: Store, batch_size: int) -> None:
     """Mint one sampled chain audit; the pass checks its dark-by-default gate."""
     del batch_size
@@ -1223,6 +1237,11 @@ CADENCES: tuple[Cadence, ...] = (
         eligible=_gripe_triage_eligible,
         service="gripe_triage",
         spends=True,
+    ),
+    Cadence(
+        name="pool_refresh",
+        interval_s=600,
+        run=_run_pool_refresh,
     ),
     # Model-free audits: advance the lease even while the pass reads dark.
     Cadence(

@@ -8,10 +8,13 @@ including across a UTC/local day boundary (acceptance d). Real PG.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
+from psycopg import sql
 
 from precis.utils.llm.accounts import (
     CalendarReset,
@@ -23,7 +26,232 @@ from precis.utils.llm.accounts import (
     list_pools,
     next_reset,
     parse_reset_rule,
+    record_pool_failure,
+    record_pool_report,
 )
+
+
+@pytest.fixture
+def restore_seeded_pools(store: Any) -> Iterator[None]:
+    """Preserved tables must be restored even when randomly ordered."""
+    with store.pool.connection() as conn:
+        cursor = conn.execute(
+            "SELECT * FROM external_rate_limits WHERE provider = ANY(%s)",
+            (
+                [
+                    "llm:claude-sub:5h",
+                    "llm:claude-sub:7d",
+                    "llm:codex:weekly",
+                    "llm:kimi:monthly",
+                    "llm:devin:sessions",
+                    "llm:openrouter:credits",
+                ],
+            ),
+        )
+        rows = cursor.fetchall()
+        assert cursor.description is not None
+        columns = [column.name for column in cursor.description]
+    try:
+        yield
+    finally:
+        assignments = sql.SQL(", ").join(
+            sql.SQL("{} = %s").format(sql.Identifier(column)) for column in columns
+        )
+        statement = sql.SQL(
+            "UPDATE external_rate_limits SET {} WHERE provider = %s"
+        ).format(assignments)
+        key_index = columns.index("provider")
+        with store.pool.connection() as conn:
+            for row in rows:
+                conn.execute(statement, (*row, row[key_index]))
+
+
+@pytest.mark.usefixtures("restore_seeded_pools")
+class TestPoolReport:
+    def test_monotone_guard(self, store: Any) -> None:
+        now = datetime.now(UTC)
+        key = "llm:claude-sub:5h"
+        assert record_pool_report(
+            store,
+            key,
+            used=55,
+            remaining=45,
+            limit=100,
+            source="provider",
+            reported_at=now,
+        )
+        assert not record_pool_report(
+            store,
+            key,
+            used=12,
+            source="estimate",
+            reported_at=now - timedelta(seconds=1),
+        )
+        pool = next(p for p in list_pools(store) if p.provider == key)
+        assert pool.used_reported == 55
+        assert pool.remaining_reported == 45
+        assert pool.reported_at == now
+        assert pool.source == "provider"
+
+    def test_none_keeps_stored_values_and_advances_reported_at(
+        self, store: Any
+    ) -> None:
+        """A report that does not carry used / remaining / resets_at must not
+        null what an earlier full report stored; a later value still wins."""
+        key = "llm:claude-sub:5h"
+        first = datetime.now(UTC)
+        reset = first + timedelta(hours=3)
+        assert record_pool_report(
+            store,
+            key,
+            used=55,
+            remaining=45,
+            limit=100,
+            source="provider",
+            reported_at=first,
+            resets_at=reset,
+        )
+        second = first + timedelta(seconds=30)
+        assert record_pool_report(
+            store, key, used=None, source="provider", reported_at=second
+        )
+        pool = next(p for p in list_pools(store) if p.provider == key)
+        assert pool.used_reported == 55
+        assert pool.remaining_reported == 45
+        assert pool.limit_reported == 100
+        assert pool.resets_at == reset
+        assert pool.reported_at == second
+        third = second + timedelta(seconds=30)
+        new_reset = reset + timedelta(hours=1)
+        assert record_pool_report(
+            store,
+            key,
+            used=60,
+            remaining=40,
+            source="provider",
+            reported_at=third,
+            resets_at=new_reset,
+        )
+        pool = next(p for p in list_pools(store) if p.provider == key)
+        assert pool.used_reported == 60
+        assert pool.remaining_reported == 40
+        assert pool.resets_at == new_reset
+        assert pool.reported_at == third
+
+    def test_park_only_extends_and_tracks_provenance(self, store: Any) -> None:
+        key = "llm:devin:sessions"
+        until = datetime.now(UTC) + timedelta(days=1)
+        assert record_pool_failure(
+            store, key, reason_class="paused", retry_at=until, notice="provider"
+        )
+        assert record_pool_failure(
+            store, key, reason_class="paused", retry_at=until - timedelta(hours=1)
+        )
+        pool = next(p for p in list_pools(store) if p.provider == key)
+        assert pool.parked_until == until
+        assert pool.source == "provider"
+        later = until + timedelta(hours=1)
+        assert record_pool_failure(store, key, reason_class="paused", retry_at=later)
+        pool = next(p for p in list_pools(store) if p.provider == key)
+        assert pool.parked_until == later
+        assert pool.source == "estimate"
+
+    @pytest.mark.parametrize(
+        "key", ["llm:missing:weekly", "host:pool-writer-unknown.example"]
+    )
+    def test_unknown_key_refuses_without_inserting(
+        self, store: Any, caplog: pytest.LogCaptureFixture, key: str
+    ) -> None:
+        now = datetime.now(UTC)
+        assert not record_pool_report(store, key, source="provider", reported_at=now)
+        assert not record_pool_failure(store, key, reason_class="quota", retry_at=now)
+        assert "unknown pool key" in caplog.text
+        with store.pool.connection() as conn:
+            assert (
+                conn.execute(
+                    "SELECT 1 FROM external_rate_limits WHERE provider = %s", (key,)
+                ).fetchone()
+                is None
+            )
+
+    def test_limit_only_fills_null_and_decimal_readback(self, store: Any) -> None:
+        now = datetime.now(UTC)
+        key = "llm:codex:weekly"
+        assert record_pool_report(
+            store,
+            key,
+            used=Decimal("37.25"),
+            remaining=Decimal("62.75"),
+            limit=100,
+            source="provider",
+            reported_at=now,
+        )
+        assert record_pool_report(
+            store,
+            key,
+            used=Decimal("37.25"),
+            remaining=Decimal("62.75"),
+            limit=200,
+            source="provider",
+            reported_at=now,
+        )
+        assert record_pool_report(
+            store,
+            "llm:devin:sessions",
+            limit=100,
+            source="provider",
+            reported_at=now,
+        )
+        pools = {p.provider: p for p in list_pools(store)}
+        assert pools[key].limit_reported == 100
+        assert pools[key].used_reported == 37.25
+        assert pools[key].remaining_reported == 62.75
+        assert pools["llm:devin:sessions"].limit_reported == 1
+        assert pools[key].unit == "percent"
+        assert pools["llm:claude-sub:5h"].reset_rule == "rolling:18000"
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT used_reported FROM external_rate_limits WHERE provider = %s",
+                (key,),
+            ).fetchone()
+        assert row is not None
+        assert row[0] == Decimal("37.25")
+
+    def test_stale_boundary(self, store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        from precis.utils.llm import accounts
+
+        now = datetime(2026, 11, 6, tzinfo=UTC)
+
+        class FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz: Any = None) -> FixedDatetime:
+                return cls(2026, 11, 6, tzinfo=UTC)
+
+        monkeypatch.setattr(accounts, "datetime", FixedDatetime)
+        monkeypatch.setattr(accounts.settings, "get_int", lambda *args, **kwargs: 7200)
+        keys = ("llm:claude-sub:5h", "llm:claude-sub:7d", "llm:codex:weekly")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE external_rate_limits SET reported_at = NULL "
+                "WHERE provider = ANY(%s)",
+                (list(keys),),
+            )
+        record_pool_report(
+            store,
+            keys[0],
+            source="provider",
+            reported_at=now - timedelta(seconds=7200),
+        )
+        record_pool_report(
+            store,
+            keys[1],
+            source="provider",
+            reported_at=now - timedelta(seconds=7200, microseconds=1),
+        )
+        pools = {p.provider: p for p in list_pools(store)}
+        assert pools[keys[0]].stale is False
+        assert pools[keys[1]].stale is True
+        assert pools[keys[2]].stale is True
 
 
 class TestSeededAccounts:
