@@ -4724,6 +4724,7 @@ def test_dispatch_async_records_route_log(monkeypatch: pytest.MonkeyPatch) -> No
         transport: object,
         duration_ms: object,
         routed: object = None,
+        decision: object = None,
     ) -> None:
         recorded["transport"] = transport
         recorded["routed"] = routed
