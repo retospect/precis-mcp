@@ -678,18 +678,19 @@ def _note_body(store: Store, ref: Any, kind: str, *, cap: int) -> tuple[str, int
 
 
 def _todo_state(store: Store, ref: Any) -> str:
-    """``status: <STATUS>`` for a todo's focal card, plus ``· prio: <N>`` when
-    the ``refs.prio`` column is set. Neither field rides the chip row:
-    ``STATUS:open`` drops there as context-restating (the default), and prio
-    is a sort column, never a stored tag — ``PRIO:`` spellings split into the
-    column at write time (``handlers._prio_tag``)."""
+    """``status: <STATUS> · prio: <N>`` for a todo's focal card. Prio is the
+    effective sort value: a NULL column rides as the default 5 — the same
+    ``COALESCE(prio, 5)`` every todo sort applies — so the line always names
+    a number (gr568413). Neither field rides the chip row: ``STATUS:open``
+    drops there as context-restating (the default), and prio is a sort
+    column, never a stored tag — ``PRIO:`` spellings split into the column
+    at write time (``handlers._prio_tag``)."""
     from precis.todo import views
 
     ref_id = int(ref.id)
     status = views._status_of_many(store, [ref_id]).get(ref_id, "open")
-    out = f"status: {status}"
     prio = getattr(ref, "prio", None)
-    return f"{out} · prio: {prio}" if prio is not None else out
+    return f"status: {status} · prio: {prio if prio is not None else 5}"
 
 
 def _render_note_eye(
@@ -1934,7 +1935,9 @@ def _rings(
     ``fisheye+2hop``, recall when asked. ``ring`` narrows all three.
     An empty requested hop names the explicit recall call; never run the
     extra search without the caller's ``+recall`` opt-in. Todo trees use
-    ``refs.parent_id`` rather than links, but still fill the first hop.
+    ``refs.parent_id`` rather than links, but still fill the first hop —
+    and the ``— tree —`` ring renders even when empty, as an explicit
+    lone-leaf line (gr568413).
     """
     sections: list[str] = []
     tree = ""
@@ -2005,6 +2008,9 @@ def _rings(
         sections.insert(0, courtesy)
     if recall:
         sections.append(_recall(store, ref_id, kind, ring=ring))
-    if tree:
-        sections.append(tree)
+    if kind == "todo" and ext >= Extent.HOP1:
+        # The ``— tree —`` ring is promised on every todo eye at ≥1hop
+        # (gr568413): a lone leaf gets an explicit empty-ring line, so a
+        # missing ring can't be mistaken for an unimplemented one.
+        sections.append(tree or "— tree —\nlone leaf — no parent, peers or children")
     return [s for s in sections if s]

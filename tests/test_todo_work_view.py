@@ -482,17 +482,38 @@ def test_bare_fisheye_renders_only_the_focal_card(
 
 
 def test_eye_1hop_on_a_lone_todo_offers_recall(handler: TodoHandler, hub: Hub) -> None:
-    """A lone todo keeps the empty-hop hint and its focal card."""
+    """A lone todo keeps the empty-hop hint and its focal card — plus the
+    promised ``· prio: <N>`` (effective default) and an explicit empty
+    ``— tree —`` ring (gr568413)."""
     lone = id_of(handler.put(text="Lone leaf.").body)
     out = handler.get(id=lone, view="fisheye+1hop").body
     assert f"td{lone} [todo] Lone leaf." in out
-    assert "status: open" in out
-    assert "prio" not in out
-    assert "— linked" not in out and "— tree —" not in out
+    assert "status: open · prio: 5" in out
+    assert "— linked" not in out
+    assert "— tree —\nlone leaf — no parent, peers or children" in out
     assert (
         "no structural neighbours at 1 hop; wider: "
         f"get(kind='todo', id='td{lone}', extent='fisheye+1hop+recall')"
     ) in out
+
+
+def test_eye_1hop_names_the_empty_tree_ring_on_a_linked_lone_todo(
+    handler: TodoHandler, hub: Hub
+) -> None:
+    """gr568413: a todo with link neighbours but no parent/children still
+    gets its ``— tree —`` ring — an explicit lone-leaf line — so the
+    missing ring can't be mistaken for an unimplemented one."""
+    store = hub.live_store
+    focus = id_of(handler.put(text="Treeless but linked.").body)
+    gripe = insert_gripe(store, "A linked gripe")
+    store.add_link(src_ref_id=focus, dst_ref_id=gripe.id, relation="related-to")
+
+    out = handler.get(id=focus, view="fisheye+1hop").body
+
+    assert "status: open · prio: 5" in out
+    assert f"related-to: gr{gripe.id}" in out
+    assert "no structural neighbours" not in out
+    assert "— tree —\nlone leaf — no parent, peers or children" in out
 
 
 def test_eye_body_stays_under_the_verbatim_cap(handler: TodoHandler, hub: Hub) -> None:

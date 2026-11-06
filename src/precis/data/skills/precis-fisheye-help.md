@@ -187,10 +187,11 @@ A **quest** eye opens with its gist — the striving statement +
 `rubric:`/`demand:`/`supply:` lines from meta — not its logbook; the
 lab notebook stays at `view='logbook'`.
 
-A **todo** eye adds `status: <STATUS> · prio: <N>` to the focal card and
-a `— tree —` ring (parent, peers, children from `parent_id`) at
-`fisheye+1hop`, alongside its `Dependencies:` and other link groups
-(`precis-todo-help`).
+A **todo** eye adds `status: <STATUS> · prio: <N>` to the focal card
+(prio is the effective sort value — unset rides as the default 5) and a
+`— tree —` ring at `fisheye+1hop`: parent, peers, children from
+`parent_id`, or a `lone leaf` line when it has none. These sit alongside
+its `Dependencies:` and other link groups (`precis-todo-help`).
 
 ## Memory rings
 
