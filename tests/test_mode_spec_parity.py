@@ -200,7 +200,7 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     # -- edit: numeric-ref kinds that only accept a full-body rewrite ---
     ("todo", "edit"): ("replace", "find-replace", "insert", "delete"),
     ("memory", "edit"): ("replace", "find-replace", "insert", "append", "delete"),
-    ("quest", "edit"): ("replace",),
+    ("quest", "edit"): ("replace", "pause", "resume"),
     # finding body edits: whole-body replace or find-replace (gr509620)
     ("finding", "edit"): ("replace", "find-replace"),
     # checklist's edit() selector is op=, a distinct kwarg from mode=

@@ -226,11 +226,12 @@ def test_describer_failure_falls_back_to_generic() -> None:
 def test_job_sentence_dict_error_is_coerced() -> None:
     """``meta.error`` is not always a str (handlers/job.py guards the same
     shape); a dict must render, not crash ``_first_line``."""
+    dict_error: Any = {"code": 8, "detail": "claude exploded"}
     s = job_sentence(
         "fix_gripe",
         params={"gripe_id": 5},
         status="failed",
-        error={"code": 8, "detail": "claude exploded"},  # type: ignore[arg-type]
+        error=dict_error,
     )
     assert "fixing gr5" in s
     assert "claude exploded" in s
@@ -241,10 +242,11 @@ def test_job_sentence_missing_and_wrong_type_params() -> None:
     s = job_sentence("struct_relax", params={}, status="running")
     assert "a structure" in s
     # params not even a dict degrade to the empty-params sentence
-    for bad in ("not-a-dict", ["x"]):
+    bad_params: list[Any] = ["not-a-dict", ["x"]]
+    for bad in bad_params:
         s = job_sentence(
             "struct_relax",
-            params=bad,  # type: ignore[arg-type]
+            params=bad,
             status="running",
             last_event="relax started",
         )
