@@ -689,6 +689,15 @@ def test_reviewer_brief_posts_one_verdict_and_mints_nothing(
     assert "Mint nothing" in tail
     assert "Commit nothing" in tail
     assert "Do not land" in tail
+    # read-only review lane (gr573555): the verdict ends with the marker,
+    # and the lane runs nothing — it reads the squash diff and the files.
+    assert "(read-only, tests not run)" in tail
+    assert "run no tests" in tail
+    assert "no typecheck" in tail
+    assert "no lint" in tail
+    assert "`uv`" in tail
+    assert "scripts/test" in tail
+    assert "git show" in tail
     # not the slicer's closing
     assert "create the child todos" not in brief
     assert "args={'parent_id': 42}" not in brief

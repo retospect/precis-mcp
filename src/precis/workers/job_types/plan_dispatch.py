@@ -37,11 +37,14 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    suppresses every LAND in it. Grammar, verdict word
    case-insensitive, any of ``—`` / ``–`` / ``-`` as the dash::
 
-       review: LAND
-       review: FIX — <the list of findings>
-       review: REVERT — <why>
+       review: LAND (read-only, tests not run)
+       review: FIX — <the list of findings> (read-only, tests not run)
+       review: REVERT — <why> (read-only, tests not run)
 
-   ``LAND`` closes the node. ``FIX`` mints one ``run_slice`` task
+   The ``(read-only, tests not run)`` marker is stripped where it ends a
+   line before matching — accepted, never required, so a forgotten
+   marker never strands a review. A LAND is a diff read, never a test
+   result. ``LAND`` closes the node. ``FIX`` mints one ``run_slice`` task
    ``Fix review findings for td<id>`` (body = the list) under the plan root
    and closes the node. ``REVERT`` mints one ``run_slice`` task ``Revert
    <sha> on main`` (the ``landed: <sha>`` comment of each reviewed node --
@@ -54,8 +57,11 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    if it had opened) with a ``sha reset after review REVERT`` comment. A missing or malformed
    verdict reopens the node for one retry (``meta.retries`` default 2) —
    on the picked lane, a format miss never climbs the ladder (gr573564) —
-   then the hygiene ask-user path. ``meta.review = {verdict, job, at}`` records
-   the job judged, so a pass never acts twice on one job.
+   then the hygiene ask-user path. ``meta.review = {verdict, job, at,
+   tests_run}`` records the job judged, so a pass never acts twice on one
+   job; ``tests_run`` is always ``False`` — the reviewer is read-only —
+   and only this step and its retry path read the record, so nothing
+   reads a verdict as test evidence.
 3. **phases** — first reopens a generator that is ``STATUS:done`` while a
    child is still open (a generator's session mints children, it does not
    close the node; counted as ``reopened``). Then closes every node whose work
@@ -240,6 +246,17 @@ _VERDICT_TEMPLATE_RE = re.compile(r"review:\s*(?:FIX|REVERT)\b", re.IGNORECASE)
 #: The ``[\s:]*`` + optional dashes lead ``_VERDICT_RE`` allows between
 #: the verdict word and its rest — applied after a glued token.
 _VERDICT_LEAD_RE = re.compile(r"[\s:]*(?:[—–-]+\s*)?")
+#: The read-only reviewer's verdict-line marker (gr573555): stripped
+#: where it ends a line (optional trailing ``.``, CRLF tolerated) before
+#: matching — accepted, never required, and never the findings.
+_READONLY_MARKER_RE = re.compile(
+    re.escape(_templates.REVIEW_READONLY_MARKER) + r"\.?[ \t]*\r?$",
+    re.IGNORECASE | re.MULTILINE,
+)
+#: A ``review:`` verdict token anywhere; :func:`_verdict_lines` keeps the
+#: line-start ones — including REVERT, which is only ever a verdict line
+#: (never a fallback token).
+_VERDICT_LINE_RE = re.compile(r"review:\s*(LAND|FIX|REVERT)\b", re.IGNORECASE)
 #: Sentence-final punctuation a glued token may directly follow.
 _SENTENCE_END = frozenset(".!?")
 #: Markdown line-start markers a fallback token may directly follow
@@ -880,18 +897,39 @@ def _verdict_candidates(body: str) -> list[tuple[str, str]]:
     return out
 
 
+def _verdict_lines(body: str) -> list[str]:
+    """The verdict words of ``body``'s verdict LINES — a ``review:``
+    token at a line start, markdown ``- ``/``* ``/``**``/``#``/``> ``
+    markers allowed before it (the line-start half of
+    :func:`_token_boundary`). A token glued mid-line after sentence-final
+    punctuation is narration here, not a verdict line (gr574380)."""
+    out: list[str] = []
+    for m in _VERDICT_LINE_RE.finditer(body):
+        i = m.start() - 1
+        while i >= 0 and body[i] in _MD_MARKERS:
+            i -= 1
+        if i < 0 or body[i] == "\n":
+            out.append(m.group(1).upper())
+    return out
+
+
 def parse_verdict(text: str) -> tuple[str, str] | None:
     """``(LAND|FIX|REVERT, rest)`` of one ``review:`` line, or ``None``
     when it is not a verdict. ``FIX`` and ``REVERT`` need a non-empty rest
-    (the list / the why); a ``handoff:`` prefix is stripped first. When the
-    text as a whole is no verdict line — a hand-off that glues the token
-    to its narration (``… on landed main.review: FIX — …``, gr573564) —
-    the fallback's surviving candidates rule: a FIX with findings wins
-    over a LAND; REVERT never comes from a token; anything else is a
-    miss."""
+    (the list / the why); a ``handoff:`` prefix is stripped first. Verdict
+    lines that disagree are no verdict — a later ``review:`` line is
+    never swallowed into the rest (gr574380); lines that agree keep it.
+    When the text as a whole is no verdict line — a hand-off that glues
+    the token to its narration (``… on landed main.review: FIX — …``,
+    gr573564) — the fallback's surviving candidates rule: a FIX with
+    findings wins over a LAND; REVERT never comes from a token; anything
+    else is a miss."""
     body = text.strip()
     if body.lower().startswith("handoff:"):
         body = body[len("handoff:") :].strip()
+    body = _READONLY_MARKER_RE.sub("", body)
+    if len(set(_verdict_lines(body))) > 1:
+        return None
     m = _VERDICT_RE.fullmatch(body)
     if m is not None:
         verdict, rest = m.group(1).upper(), m.group(2).strip()
@@ -1121,7 +1159,13 @@ def _step_reviews(
         claims = _claims(n)
         if claims:
             w.remove_tags(n, claims)
-        record: dict[str, Any] = {"job": newest.id, "at": _iso(now)}
+        # The reviewer is read-only: every verdict is a diff read, never
+        # test evidence — the dispatcher stamps that fact itself.
+        record: dict[str, Any] = {
+            "job": newest.id,
+            "at": _iso(now),
+            "tests_run": False,
+        }
         target_id = _review_from(n)
         handle = f"td{target_id if target_id is not None else n.id}"
         if verdict is None:
@@ -1143,15 +1187,16 @@ def _step_reviews(
             continue
         kind, rest = verdict
         record["verdict"] = kind
+        marker = _templates.REVIEW_READONLY_MARKER
         if kind == "LAND":
             w.set_status(n, "done")
-            res.notes.append(f"td{n.id}: review LAND for {handle}; closed")
+            res.notes.append(f"td{n.id}: review LAND for {handle} {marker}; closed")
         elif kind == "FIX":
             fix_id = _review_fix(store, plan, w, n, handle, rest, now)
             record["task"] = fix_id
             w.set_status(n, "done")
             res.notes.append(
-                f"td{n.id}: review FIX for {handle}; minted td{fix_id}, closed"
+                f"td{n.id}: review FIX for {handle} {marker}; minted td{fix_id}, closed"
             )
         else:
             revert_id = _review_revert(store, plan, w, res, n, handle, rest, now)
@@ -1160,7 +1205,8 @@ def _step_reviews(
             if n.status != "open":
                 w.set_status(n, "open")
             res.notes.append(
-                f"td{n.id}: review REVERT for {handle}; minted td{revert_id}, "
+                f"td{n.id}: review REVERT for {handle} {marker}; "
+                f"minted td{revert_id}, "
                 "reviewer stays open for the rebuild"
             )
         w.stamp_meta(n, {"review": record})

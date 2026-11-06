@@ -1650,6 +1650,97 @@ def test_parse_verdict(text: str, want: tuple[str, str] | None) -> None:
     assert pd.parse_verdict(text) == want
 
 
+def test_parse_verdict_accepts_readonly_marker() -> None:
+    """gr573555 / td573921: the read-only reviewer's verdict line ends
+    with ``(read-only, tests not run)``; the parser strips it wherever it
+    ends a line, so it never lands in the findings or the rest."""
+    marker = "(read-only, tests not run)"
+    assert pd.parse_verdict(f"review: LAND {marker}") == ("LAND", "")
+    assert pd.parse_verdict(f"handoff: review: LAND {marker}") == ("LAND", "")
+    assert pd.parse_verdict(f"all done.review: LAND {marker}") == ("LAND", "")
+    assert pd.parse_verdict(f"review: FIX — a.py misses the empty case {marker}") == (
+        "FIX",
+        "a.py misses the empty case",
+    )
+    assert pd.parse_verdict(f"review: REVERT — breaks the API {marker}") == (
+        "REVERT",
+        "breaks the API",
+    )
+    # Marker ends the first line; the narration after it stays the rest.
+    assert pd.parse_verdict(f"review: LAND {marker}\nChecked the diff.") == (
+        "LAND",
+        "Checked the diff.",
+    )
+
+
+def test_parse_verdict_marker_is_not_findings() -> None:
+    """The marker alone after FIX/REVERT is no reason: a verdict still
+    needs its findings / its why — a marker-only REVERT must not read as
+    a REVERT whose why is the marker."""
+    assert pd.parse_verdict("review: FIX (read-only, tests not run)") is None
+    assert pd.parse_verdict("review: REVERT (read-only, tests not run)") is None
+
+
+def test_parse_verdict_marker_in_grammar_echo_is_not_a_verdict() -> None:
+    """The new grammar echoed back — marker on each line, ``<…>``
+    placeholders — is still no verdict."""
+    echo = (
+        "handoff: the brief's grammar:\n"
+        "review: LAND (read-only, tests not run)\n"
+        "review: FIX — <findings> (read-only, tests not run)\n"
+        "review: REVERT — <why> (read-only, tests not run)\n"
+        "Checking now."
+    )
+    assert pd.parse_verdict(echo) is None
+
+
+def test_parse_verdict_disagreeing_verdict_lines_is_no_verdict() -> None:
+    """gr574380: verdict lines that disagree are no verdict — the DOTALL
+    tail must not swallow a later ``review:`` line. Lines that all agree
+    keep the verdict."""
+    assert (
+        pd.parse_verdict("review: LAND\nreview: FIX — a.py misses the empty case")
+        is None
+    )
+    assert (
+        pd.parse_verdict("review: FIX — a.py misses the empty case\nreview: LAND")
+        is None
+    )
+    got = pd.parse_verdict("review: LAND\nreview: LAND")
+    assert got is not None and got[0] == "LAND"
+
+
+def test_parse_verdict_marker_edge_cases() -> None:
+    """The marker is stripped wherever it ends a line — any case, an
+    optional trailing period, CRLF endings — and a message that is only
+    the marker (or empty) is no verdict."""
+    assert pd.parse_verdict("(read-only, tests not run)") is None
+    assert pd.parse_verdict("") is None
+    assert pd.parse_verdict("review: LAND (READ-ONLY, TESTS NOT RUN)") == (
+        "LAND",
+        "",
+    )
+    assert pd.parse_verdict("review: LAND (read-only, tests not run).") == (
+        "LAND",
+        "",
+    )
+    assert pd.parse_verdict(
+        "handoff: review: FIX — a.py misses the empty case (read-only, tests not run)"
+    ) == ("FIX", "a.py misses the empty case")
+    assert pd.parse_verdict(
+        "handoff: review: REVERT — breaks the API (read-only, tests not run)"
+    ) == ("REVERT", "breaks the API")
+    # CRLF: the marker ends the line before the ``\r\n``.
+    assert pd.parse_verdict("review: LAND (read-only, tests not run)\r\n") == (
+        "LAND",
+        "",
+    )
+    assert pd.parse_verdict("review: LAND (read-only, tests not run)\r\nChecked.") == (
+        "LAND",
+        "Checked.",
+    )
+
+
 # Verbatim glued tails of the hand-off comments the td573503/td573504
 # reviewer jobs posted (jo573513 and jo573551 on td573503, jo573561 and
 # jo573574 on td573504) — the exact texts the parser missed (gr573564).
@@ -1777,6 +1868,24 @@ def test_review_land_closes_the_reviewer(store: Store) -> None:
     assert pd.run_pass(store).reviews == 0
 
 
+def test_review_land_records_tests_not_run(store: Store) -> None:
+    """gr573555: the reviewer is read-only — a LAND is a diff read, never
+    test evidence. ``meta.review`` stamps ``tests_run: False`` and the
+    pass note carries the marker."""
+    mint = _reviewed(store, "review: LAND (read-only, tests not run)")
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, review) == "done"
+    meta = _meta(store, review)["review"]
+    assert meta["verdict"] == "LAND"
+    assert meta["tests_run"] is False
+    assert any(
+        n.endswith(f"review LAND for td{build} (read-only, tests not run); closed")
+        for n in res.notes
+    )
+
+
 def test_review_fix_mints_one_fix_task_under_the_root(store: Store) -> None:
     mint = _reviewed(store, "review: FIX — a.py misses the empty case")
     build, review = mint.ids["build"], mint.ids["review"]
@@ -1801,6 +1910,7 @@ def test_review_fix_mints_one_fix_task_under_the_root(store: Store) -> None:
         "job": _meta(store, review)["review"]["job"],
         "at": _meta(store, review)["review"]["at"],
         "task": fix,
+        "tests_run": False,
     }
     # The root stays open for the fix, which is dispatched in the same pass.
     assert _status(store, mint.root_id) == "open"

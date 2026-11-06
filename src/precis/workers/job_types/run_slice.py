@@ -792,6 +792,8 @@ def _reviewer_close(todo_id: int, mcp: bool = True) -> list[str]:
     ``plan_dispatch._VERDICT_RE`` parses; it reads a ``handoff: review: …``
     the same as a bare comment, so a lane without the precis MCP (``mcp``
     false) delivers the verdict as the first line of its final message."""
+    from precis.plans.templates import REVIEW_READONLY_MARKER
+
     where = (
         f"Post exactly one comment on td{todo_id} (the node you were given), "
         "or make it the FIRST line of your final message (posted as the "
@@ -819,6 +821,11 @@ def _reviewer_close(todo_id: int, mcp: bool = True) -> list[str]:
         "dispatcher turns your verdict into those. Commit nothing. Do not "
         "land, push or ship. Do not tag this todo done: the dispatcher "
         "closes it on your verdict.",
+        "",
+        "You are read-only: run no tests, no typecheck, no lint and no "
+        "`uv` or `scripts/test` command — read the squash diff "
+        "(`git show <sha>`) and the files. End your verdict line with "
+        f"`{REVIEW_READONLY_MARKER}`.",
         "",
         "The rest of your final message: what you checked, in a line or two.",
     ]

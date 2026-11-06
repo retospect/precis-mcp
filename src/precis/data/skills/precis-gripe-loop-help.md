@@ -209,7 +209,7 @@ The reviewer's verdict is one word plus findings, a comment on the
 todo:
 
 ```python
-put(kind="todo", id=T, text="review: LAND — selectors + tests ok; typecheck clean")
+put(kind="todo", id=T, text="review: LAND (read-only, tests not run) — selectors read against the brief, no defect found")
 put(kind="todo", id=T, text="review: FIX — mypy red in tests/test_draft.py")
 ```
 
@@ -221,7 +221,9 @@ allowed before it) or after sentence-final punctuation counts too
 (never REVERT; a reasoned FIX beats a stray LAND, and a LAND glossed
 `(clean` or `|` — or sharing the comment with a placeholder
 `review: FIX|REVERT — <…>` template line — is the grammar echo, not a
-verdict). A fix round is the next
+verdict). A `(read-only, tests not run)` marker ending a line is
+accepted — `parse_verdict` strips it before matching; it is never
+required. A fix round is the next
 `brief:` comment on the same todo — no new todo, just the attempt bump
 above.
 

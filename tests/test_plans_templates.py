@@ -197,6 +197,10 @@ def test_gripe_fix_shape(handler: TodoHandler, store: Store) -> None:
     assert _body(store, mint.ids["review"]).count("review: LAND") == 1
     assert "Mint nothing yourself" in _body(store, mint.ids["review"])
     assert f"td{mint.ids['build']}" in _body(store, mint.ids["review"])
+    # Read-only reviewer (gr573555): the body names the marker and the
+    # no-tests rule without repeating the ``review: LAND`` line.
+    assert "(read-only, tests not run)" in _body(store, mint.ids["review"])
+    assert "run no tests" in _body(store, mint.ids["review"])
     assert _meta(store, mint.ids["gate"])["gate"] == {
         "kind": "sha-in-prod",
         "args": {"sha": "0000000"},

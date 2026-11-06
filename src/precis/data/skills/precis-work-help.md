@@ -351,13 +351,15 @@ twice.
 Yes for both. A reviewer mints nothing: its one verdict is the first line
 of its final message (`review: LAND`, `review: FIX — <findings>`,
 `review: REVERT — <why>`), which `run_slice` posts as the `handoff:`
-comment and `plan_dispatch` reads there; the reviewed todo's `landed:`
-sha and brief are inlined in the reviewer's brief, so `git show <sha>`
-in the slice worktree is all it needs. A validate's `validated: <why>`
-first line closes it the same way, and a gripe chain's validate body
-carries the gripe report verbatim. Devin therefore fits `code`,
-`review` and `validate`; codex takes `review` and `validate` only
-(gr573563), and the review is still picked off the builder's vendor. Nodes that mint or post through the MCP stay on a
+comment and `plan_dispatch` reads there; a reviewer is read-only and
+ends its verdict with `(read-only, tests not run)`. The reviewed todo's
+`landed:` sha and brief are inlined in the reviewer's brief, so `git
+show <sha>` in the slice worktree is all it needs. A validate's
+`validated: <why>` first line closes it the same way, and a gripe
+chain's validate body carries the gripe report verbatim. Devin therefore
+fits `code`, `review` and `validate`; codex takes `review` and
+`validate` only (gr573563), and the review is still picked off the
+builder's vendor. Nodes that mint or post through the MCP stay on a
 Claude lane: a triage or slicer (mints children), a brief writer (posts
 `brief:`), a pcb fix (drives the pcb kind). `run_slice` refuses a
 child-minting generator on an MCP-less lane before the claim.

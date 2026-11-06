@@ -253,6 +253,12 @@ REVIEW_GRAMMAR = (
     "`review: REVERT — <why>`"
 )
 
+#: The marker a read-only reviewer ends its verdict line with (gr573555):
+#: it runs no tests, so the verdict carries this, not a test claim.
+#: ``plan_dispatch`` strips it where it ends a line — accepted, never
+#: required.
+REVIEW_READONLY_MARKER = "(read-only, tests not run)"
+
 
 def _reviewer(target_id: int) -> dict[str, Any]:
     """A reviewer generator over the land of ``td<target_id>``."""
@@ -283,6 +289,9 @@ def _reviewer_brief(target_id: int, *, slices: bool = False) -> str:
         "`put(kind='todo', id=<this todo>, text=...)`, as one of: "
         f"{REVIEW_GRAMMAR}. The text after the dash is what the fix or the "
         "revert slice is built from: name files and the concrete problem.\n\n"
+        "You are read-only: run no tests, no typecheck, no lint and no "
+        "`uv` command; read the squash diff and the files. End your "
+        f"verdict line with `{REVIEW_READONLY_MARKER}`.\n\n"
         "Mint nothing yourself: no child todos, no fix, no revert, no commit, "
         "no land, and do not tag this todo done. The plan tick reads the "
         "verdict: LAND closes this review, FIX mints the fix slice, REVERT "
