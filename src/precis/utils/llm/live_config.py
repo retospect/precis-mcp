@@ -100,6 +100,13 @@ CODEX_EXEC_KEY = "llm.codex_exec"
 #: switch over a lit DB row (a safety flag favours off).
 ENV_CODEX_EXEC_VAR = "PRECIS_CODEX_EXEC"
 
+#: app_settings key for the fleet-wide decide() default mode —
+#: ``"legacy"`` | ``"shadow"`` | ``"on"``; per-prefix ``llm.decide.<prefix>``
+#: rows win over it. Read through :func:`decide_default` so the legacy hot
+#: path rides the same negative cache instead of a settings lookup whose
+#: misses are never cached (gr572666).
+DECIDE_MODE_KEY = "llm.decide.mode"
+
 _TRUTHY = {"1", "true", "yes", "on"}
 
 #: Per-process env overrides (one-off runs on a different model/transport
@@ -355,6 +362,11 @@ def decide_override(prefix: str) -> str | None:
     return _cached_setting(f"llm.decide.{prefix}")
 
 
+def decide_default() -> str | None:
+    """The fleet-wide decide() mode row, using the shared negative cache."""
+    return _cached_setting(DECIDE_MODE_KEY)
+
+
 def cloud_enabled() -> bool:
     """Whether cloud rungs are currently enabled (throttle).
 
@@ -433,6 +445,7 @@ __all__ = [
     "CHAIN_KEY_PREFIX",
     "CLOUD_ENABLED_KEY",
     "CODEX_EXEC_KEY",
+    "DECIDE_MODE_KEY",
     "ENV_CHAIN_PREFIX",
     "ENV_CODEX_EXEC_VAR",
     "ENV_MODEL_PREFIX",
@@ -448,6 +461,7 @@ __all__ = [
     "chain_override",
     "cloud_enabled",
     "codex_exec_enabled",
+    "decide_default",
     "decide_override",
     "model_env_var",
     "model_key",

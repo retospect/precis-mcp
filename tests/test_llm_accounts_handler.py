@@ -152,12 +152,52 @@ class TestDecisionsView:
         row = rows[0]
         assert (row.task_kind, row.calls, row.agree) == ("test.decisions", 2, 1)
         assert (row.legacy_claude, row.shadow_claude, row.projected_known) == (2, 1, 1)
-        assert row.actual_usd == pytest.approx(1.0)
+        assert row.actual_usd == pytest.approx(0.5)
         assert row.projected_usd == pytest.approx(0.25)
         body = _handler(store).get(id="/decisions").body
         assert "# llm decisions (2 calls, 7 d)" in body
         assert "test.decisions: calls=2 agree=50% claude legacy=2 shadow=1" in body
-        assert "usd actual=1.000000 projected=0.250000 (1/2 priced)" in body
+        assert "usd actual=0.500000 projected=0.250000 (1/2 priced)" in body
+
+    def test_rollup_actual_covers_only_priced_rows(self, store: Any) -> None:
+        """actual_usd sums cost over the same rows projected_usd covers —
+        an unpriced row's spend never inflates the comparison."""
+        from precis import llm_catalog, route_log
+
+        for cost, projected in ((0.5, 0.4), (2.0, None)):
+            decision: dict[str, Any] = {
+                "agree": True,
+                "claude_window": {"legacy": False, "shadow": False},
+            }
+            if projected is not None:
+                decision["projected_usd"] = projected
+            route_log.record_call(
+                route_log.LlmCallRecord(
+                    source="test:rollup",
+                    tier="small",
+                    transport="local",
+                    model="rollup-test",
+                    tools_needed=False,
+                    request_text="request",
+                    response_text="response",
+                    cost_usd=cost,
+                    turns_used=None,
+                    duration_ms=1,
+                    errored=False,
+                    error=None,
+                    data_parsed=None,
+                    features={
+                        "task_kind": "test.rollup",
+                        "decision": decision,
+                    },
+                    store_blobs=False,
+                ),
+                store=store,
+            )
+        (row,) = llm_catalog.decision_rollup(store)
+        assert row.actual_usd == pytest.approx(0.5)
+        assert row.projected_usd == pytest.approx(0.4)
+        assert (row.calls, row.projected_known) == (2, 1)
 
 
 class TestPoolsView:

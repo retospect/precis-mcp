@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 import time
 from collections import Counter
@@ -87,6 +88,25 @@ class Rejected:
     reason: str
 
 
+#: Fields a logged decision keeps per offering — identity, lane and price.
+#: The full dataclass (capability map, pool keys, window) made one
+#: /decisions row ~6.7 KB; this subset covers every consumer.
+_OFFERING_LOG_FIELDS = (
+    "key",
+    "model",
+    "adapter",
+    "account",
+    "billing",
+    "price_in",
+    "price_out",
+)
+
+
+def compact_offering(o: Offering) -> dict[str, Any]:
+    """The log form of an offering (:data:`_OFFERING_LOG_FIELDS` only)."""
+    return {k: getattr(o, k) for k in _OFFERING_LOG_FIELDS}
+
+
 def _json(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
@@ -117,7 +137,19 @@ class Decision:
     def explain(self) -> dict[str, Any]:
         """Bounded JSON-safe evidence; totals retain every rejection."""
         result = asdict(self)
-        result["ranked"] = [asdict(r) for r in self.ranked[:5]]
+        result["chosen"] = (
+            compact_offering(self.chosen) if self.chosen is not None else None
+        )
+        result["ranked"] = [
+            {
+                **compact_offering(r.offering),
+                "band": r.band,
+                "capacity_class": r.capacity_class,
+                "pool_state": r.pool_state,
+                "reason": r.reason,
+            }
+            for r in self.ranked[:5]
+        ]
         result["rejected"] = [asdict(r) for r in self.rejected[:10]]
         return dict(_json(result))
 
@@ -365,6 +397,16 @@ def legacy_decision(ladder: Sequence[Rung], model: str, ledger: Ledger) -> Decis
     )
 
 
+#: Adapters that serve the same lane — a legacy claude_p rung and a shadow
+#: claude_agent pick on the same model agree; the openai wires likewise.
+_ADAPTER_FAMILY = {
+    "claude_p": "claude",
+    "claude_agent": "claude",
+    "openai_compat": "openai",
+    "openai_tools": "openai",
+}
+
+
 def compare(shadow: Decision, legacy: Decision) -> dict[str, Any]:
     def claude(d: Decision) -> bool:
         return bool(
@@ -372,43 +414,202 @@ def compare(shadow: Decision, legacy: Decision) -> dict[str, Any]:
             and any(k.startswith("llm:claude-sub:") for k in d.chosen.pool_keys)
         )
 
+    def lane(d: Decision) -> tuple[str, str] | None:
+        if d.chosen is None:
+            return None
+        return (
+            d.chosen.model,
+            _ADAPTER_FAMILY.get(d.chosen.adapter, d.chosen.adapter),
+        )
+
     return {
-        "agree": bool(
-            shadow.chosen
-            and legacy.chosen
-            and (shadow.chosen.model, shadow.chosen.adapter)
-            == (legacy.chosen.model, legacy.chosen.adapter)
-        ),
+        "agree": bool(shadow.chosen and legacy.chosen and lane(shadow) == lane(legacy)),
         "claude_window": {"legacy": claude(legacy), "shadow": claude(shadow)},
     }
 
 
 _bad_modes: set[str] = set()
 
+#: ``prefix -> (expiry_monotonic, mode)``. The memo stores the final
+#: validated mode, so the default legacy hot path is one dict lookup —
+#: no ``app_settings`` read per route() (gr572666; settings misses are
+#: never cached, so ``precis.settings.get_str`` would query every call).
+_mode_memo: dict[str, tuple[float, str]] = {}
+_MODE_MEMO_TTL_S = 15.0
+
+
+def reset_mode_cache() -> None:
+    """Drop the per-prefix mode memo (tests, and the decide-mode CLI write)."""
+    _mode_memo.clear()
+
 
 def mode_for(task_kind: str | None) -> str:
-    from precis import settings
     from precis.utils.llm import live_config
 
     prefix = re.split(r"[.:]", task_kind or "unknown", maxsplit=1)[0]
-    override = live_config.decide_override(prefix)
-    mode = (
-        override
-        if override is not None
-        else settings.get_str("llm.decide.mode", default="legacy")
-    )
+    stamp = time.monotonic()
+    hit = _mode_memo.get(prefix)
+    if hit is not None and hit[0] > stamp:
+        return hit[1]
+    mode = live_config.decide_override(prefix)
+    if mode is None:
+        mode = live_config.decide_default()
+    if mode is None:
+        mode = (os.environ.get("PRECIS_LLM_DECIDE") or "").strip() or None
     if mode is None:
         mode = "legacy"
     if mode not in {"legacy", "shadow", "on"}:
         if mode not in _bad_modes:
             _bad_modes.add(mode)
             log.warning("invalid llm.decide mode %r; using legacy", mode)
-        return "legacy"
+        mode = "legacy"
+    _mode_memo[prefix] = (stamp + _MODE_MEMO_TTL_S, mode)
     return mode
 
 
-_ledger_cache: dict[int, tuple[float, list[accounts.Account], list[accounts.Pool]]] = {}
+#: ``id(store) -> (stamp, accounts, pools, offerings)``. Offerings ride the
+#: same 15 s entry as the account/pool snapshot — a rebuild is the only time
+#: the catalog is walked or a heartbeat is probed; per call stays a dict
+#: lookup plus a pure :func:`accounts.pacing` per pool.
+_ledger_cache: dict[
+    int,
+    tuple[float, list[accounts.Account], list[accounts.Pool], tuple[Offering, ...]],
+] = {}
 _loader_error_at = -math.inf
+
+#: Transports that ride a subscription credential — an offering on one of
+#: these with no explicit ``billing`` is a subscription operating point,
+#: never the metered default (prod cards carry no billing key, td568207).
+_SUBSCRIPTION_ADAPTERS = frozenset({"claude_p", "claude_agent", "codex_exec"})
+
+#: Adapter a subscription offering's account lookup uses when it differs
+#: from the wire adapter — claude_agent runs on the claude_p credential.
+_ACCOUNT_ADAPTER = {"claude_agent": "claude_p"}
+
+
+def _build_offerings(
+    store: Store, accts: list[accounts.Account]
+) -> tuple[Offering, ...]:
+    """Catalog cards → offerings; host heartbeats only for a card that
+    carries a local operating point."""
+    offerings: list[Offering] = []
+    for model, meta in admit._catalog(store).items():
+        try:
+            if not policy._runnable(meta):
+                continue
+            curated = meta.get("offerings") or []
+            endpoints = meta.get("endpoints") or []
+            entries = curated or endpoints or [meta.get("facts_openrouter") or {}]
+            live_hosts = (
+                policy._live_served_hosts(store, meta)
+                if any(
+                    isinstance(e, dict) and policy._is_local_offering(e)
+                    for e in entries
+                )
+                else frozenset()
+            )
+            for entry in entries:
+                adapter = str(entry.get("transport") or "openai_compat")
+                local = policy._is_local_offering(entry)
+                billing = (
+                    "local"
+                    if local
+                    else str(entry["billing"])
+                    if entry.get("billing") is not None
+                    else "subscription"
+                    if adapter in _SUBSCRIPTION_ADAPTERS
+                    else "metered"
+                )
+                account = None
+                if billing == "subscription":
+                    account_adapter = _ACCOUNT_ADAPTER.get(adapter, adapter)
+                    account = (
+                        next(
+                            (
+                                a
+                                for a in accts
+                                if a.enabled and a.adapter == account_adapter
+                            ),
+                            None,
+                        )
+                        or next((a for a in accts if model in a.models), None)
+                        or next(
+                            (a for a in accts if a.adapter == account_adapter),
+                            None,
+                        )
+                    )
+                price_in = (
+                    float(entry["price_in"])
+                    if entry.get("price_in") is not None
+                    else None
+                )
+                price_out = (
+                    float(entry["price_out"])
+                    if entry.get("price_out") is not None
+                    else None
+                )
+                if billing == "metered" and price_in == 0 and price_out == 0:
+                    billing = "free"
+                variant = (
+                    str(entry.get("effort") or "")
+                    or (
+                        "/".join(
+                            str(entry[k]) for k in ("provider", "quant") if entry.get(k)
+                        )
+                        if not curated
+                        else ""
+                    )
+                    or None
+                )
+                account_name = account.name if account else "local" if local else None
+                key = f"{model}@{adapter}/{account_name or 'none'}" + (
+                    f"/{variant}" if variant else ""
+                )
+                params = entry.get("supported_parameters")
+                tools_params = params
+                if tools_params is None and entry.get("tools") is None:
+                    tools_params = (meta.get("facts_openrouter") or {}).get(
+                        "supported_parameters"
+                    )
+                capabilities = {
+                    axis: policy._axis_ordinal(meta, axis, entry)
+                    for axis in set(meta.get("capability") or {})
+                    | set(entry.get("capability") or {})
+                }
+                offerings.append(
+                    Offering(
+                        key,
+                        model,
+                        str(entry.get("provider") or entry.get("endpoint") or ""),
+                        account_name,
+                        adapter,
+                        variant,
+                        billing,
+                        billing,
+                        price_in,
+                        price_out,
+                        "local" if local else "cloud",
+                        int(entry["max_input"])
+                        if entry.get("max_input")
+                        else admit.window_for(meta, adapter),
+                        entry.get("tools")
+                        if tools_params is None
+                        else "tools" in tools_params,
+                        entry.get("structured")
+                        if params is None
+                        else bool(
+                            {"structured_outputs", "response_format"} & set(params)
+                        ),
+                        policy._offering_live(entry, meta, live_hosts)
+                        if local
+                        else None,
+                        account.pools if account else (),
+                        capability=capabilities,
+                    )
+                )
+        except Exception:
+            log.debug("decide: malformed catalog card %s skipped", model, exc_info=True)
+    return tuple(offerings)
 
 
 def ledger_from_store(
@@ -420,116 +621,13 @@ def ledger_from_store(
         stamp = time.monotonic()
         cached = _ledger_cache.get(id(store))
         if cached is None or stamp - cached[0] >= 15:
-            cached = (stamp, accounts.list_accounts(store), accounts.list_pools(store))
+            accts = accounts.list_accounts(store)
+            pools = accounts.list_pools(store)
+            cached = (stamp, accts, pools, _build_offerings(store, accts))
             _ledger_cache[id(store)] = cached
         account_map = {a.name: a for a in cached[1]}
         pool_map = {p.provider: accounts.pacing(p, now) for p in cached[2]}
-        offerings: list[Offering] = []
-        for model, meta in admit._catalog(store).items():
-            try:
-                if not policy._runnable(meta):
-                    continue
-                live_hosts = policy._live_served_hosts(store, meta)
-                curated = meta.get("offerings") or []
-                endpoints = meta.get("endpoints") or []
-                entries = curated or endpoints or [meta.get("facts_openrouter") or {}]
-                for entry in entries:
-                    adapter = str(entry.get("transport") or "openai_compat")
-                    local = policy._is_local_offering(entry)
-                    billing = (
-                        "local" if local else str(entry.get("billing") or "metered")
-                    )
-                    account = None
-                    if billing == "subscription":
-                        account = (
-                            next(
-                                (
-                                    a
-                                    for a in cached[1]
-                                    if a.enabled and a.adapter == adapter
-                                ),
-                                None,
-                            )
-                            or next((a for a in cached[1] if model in a.models), None)
-                            or next(
-                                (a for a in cached[1] if a.adapter == adapter), None
-                            )
-                        )
-                    elif not local:
-                        account = account_map.get("metered")
-                    price_in = (
-                        float(entry["price_in"])
-                        if entry.get("price_in") is not None
-                        else None
-                    )
-                    price_out = (
-                        float(entry["price_out"])
-                        if entry.get("price_out") is not None
-                        else None
-                    )
-                    if billing == "metered" and price_in == 0 and price_out == 0:
-                        billing = "free"
-                    variant = (
-                        str(entry.get("effort") or "")
-                        or (
-                            "/".join(
-                                str(entry[k])
-                                for k in ("provider", "quant")
-                                if entry.get(k)
-                            )
-                            if not curated
-                            else ""
-                        )
-                        or None
-                    )
-                    account_name = (
-                        account.name if account else "local" if local else None
-                    )
-                    key = f"{model}@{adapter}/{account_name or 'none'}" + (
-                        f"/{variant}" if variant else ""
-                    )
-                    params = entry.get("supported_parameters")
-                    capabilities = {
-                        axis: policy._axis_ordinal(meta, axis, entry)
-                        for axis in set(meta.get("capability") or {})
-                        | set(entry.get("capability") or {})
-                    }
-                    offerings.append(
-                        Offering(
-                            key,
-                            model,
-                            str(entry.get("provider") or entry.get("endpoint") or ""),
-                            account_name,
-                            adapter,
-                            variant,
-                            billing,
-                            billing,
-                            price_in,
-                            price_out,
-                            "local" if local else "cloud",
-                            int(entry["max_input"])
-                            if entry.get("max_input")
-                            else admit.window_for(meta, adapter),
-                            entry.get("tools") if params is None else "tools" in params,
-                            entry.get("structured")
-                            if params is None
-                            else bool(
-                                {"structured_outputs", "response_format"} & set(params)
-                            ),
-                            policy._offering_live(entry, meta, live_hosts)
-                            if local
-                            else None,
-                            account.pools if account else (),
-                            capability=capabilities,
-                        )
-                    )
-            except Exception:
-                log.debug(
-                    "decide: malformed catalog card %s skipped", model, exc_info=True
-                )
-        return Ledger(
-            tuple(offerings), account_map, pool_map, unavailable_transports, now
-        )
+        return Ledger(cached[3], account_map, pool_map, unavailable_transports, now)
     except Exception:
         stamp = time.monotonic()
         if stamp - _loader_error_at >= 60:

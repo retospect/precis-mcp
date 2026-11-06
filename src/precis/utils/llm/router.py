@@ -3844,7 +3844,12 @@ def shadow_decision(
         legacy = decide.legacy_decision(ladder, model, ledger)
         return {
             **shadow.explain(),
-            "legacy": legacy.explain(),
+            "legacy": {
+                "chosen": decide.compact_offering(legacy.chosen)
+                if legacy.chosen is not None
+                else None,
+                "keys": [r.offering.key for r in legacy.ranked],
+            },
             **decide.compare(shadow, legacy),
             "executed": "legacy",
         }

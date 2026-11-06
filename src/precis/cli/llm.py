@@ -155,6 +155,19 @@ def add_parser(subparsers: Any) -> None:
     )
     dec.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
+    dm = lsub.add_parser(
+        "decide-mode",
+        help="Set or clear a decide() mode row — 'default' writes "
+        "llm.decide.mode, a prefix writes llm.decide.<prefix>.",
+    )
+    dm.add_argument(
+        "prefix",
+        help="'default' or a task-kind prefix (e.g. code — the segment "
+        "before the first dot or colon).",
+    )
+    dm.add_argument("mode", help="legacy | shadow | on | clear")
+    dm.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
     co = lsub.add_parser(
         "cost",
         help="Mine llm_call_log — per lane / pass / ref / model: calls, real-$, "
@@ -508,6 +521,31 @@ def _cmd_decide(store: Store, args: argparse.Namespace) -> None:
         )
     model = router.resolve_model(req.tier)
     print("legacy: " + ", ".join(decide.rung_key(rung, model) for rung in ladder))
+
+
+def _cmd_decide_mode(store: Store, args: argparse.Namespace) -> None:
+    from precis.budget import settings as budget_settings
+    from precis.utils.llm import decide, live_config
+
+    prefix = str(args.prefix)
+    if prefix == "mode":
+        raise SystemExit(
+            "llm decide-mode: 'mode' is reserved — 'default' writes llm.decide.mode"
+        )
+    key = live_config.DECIDE_MODE_KEY if prefix == "default" else f"llm.decide.{prefix}"
+    mode = str(args.mode)
+    if mode == "clear":
+        budget_settings.clear_setting(store, key)
+        print(f"cleared {key}")
+    else:
+        if mode not in {"legacy", "shadow", "on"}:
+            raise SystemExit(
+                f"llm decide-mode: invalid mode {mode!r} (legacy|shadow|on|clear)"
+            )
+        budget_settings.set_setting(store, key, mode)
+        print(f"set {key} = {mode}")
+    live_config.bust_cache()
+    decide.reset_mode_cache()
 
 
 def _fmt_int(n: int) -> str:
@@ -934,6 +972,8 @@ def run(args: argparse.Namespace) -> None:
         _cmd_choose(store, args)
     elif args.llm_cmd == "decide":
         _cmd_decide(store, args)
+    elif args.llm_cmd == "decide-mode":
+        _cmd_decide_mode(store, args)
     elif args.llm_cmd == "cost":
         _cmd_cost(store, args)
     elif args.llm_cmd == "eval":

@@ -43,6 +43,57 @@ def test_decide_cli_json_and_legacy(
     assert "test-model@local/local" in legacy
 
 
+def test_decide_mode_set_read_clear(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``llm decide-mode`` writes the app_settings row mode_for reads."""
+    from precis.budget import meter
+    from precis.budget import settings as budget_settings
+
+    rows: dict[str, str] = {}
+    store = cast("Any", object())
+    monkeypatch.setattr(meter, "active_store", lambda: store)
+    monkeypatch.setattr(budget_settings, "get_setting", lambda _s, key: rows.get(key))
+    monkeypatch.setattr(
+        budget_settings,
+        "set_setting",
+        lambda _s, key, value: rows.__setitem__(key, value),
+    )
+    monkeypatch.setattr(
+        budget_settings, "clear_setting", lambda _s, key: rows.pop(key, None)
+    )
+    monkeypatch.delenv("PRECIS_LLM_DECIDE", raising=False)
+    live_config.bust_cache()
+    decide.reset_mode_cache()
+    try:
+        ns = argparse.Namespace(prefix="default", mode="shadow")
+        llm_cli._cmd_decide_mode(store, ns)
+        assert rows["llm.decide.mode"] == "shadow"
+        assert decide.mode_for("code.review") == "shadow"
+
+        llm_cli._cmd_decide_mode(store, argparse.Namespace(prefix="code", mode="on"))
+        assert rows["llm.decide.code"] == "on"
+        assert decide.mode_for("code.review") == "on"
+        assert decide.mode_for("other.task") == "shadow"
+
+        llm_cli._cmd_decide_mode(
+            store, argparse.Namespace(prefix="default", mode="clear")
+        )
+        assert "llm.decide.mode" not in rows
+        assert decide.mode_for("other.task") == "legacy"
+
+        with pytest.raises(SystemExit, match="reserved"):
+            llm_cli._cmd_decide_mode(
+                store, argparse.Namespace(prefix="mode", mode="on")
+            )
+        with pytest.raises(SystemExit, match="invalid mode"):
+            llm_cli._cmd_decide_mode(
+                store, argparse.Namespace(prefix="default", mode="bogus")
+            )
+        assert "llm.decide.mode" not in rows
+    finally:
+        live_config.bust_cache()
+        decide.reset_mode_cache()
+
+
 def test_decide_override_shares_negative_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     rows: dict[str, str] = {}
     reads: list[str] = []

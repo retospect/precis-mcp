@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -261,10 +262,23 @@ def test_explanation_bounded_and_json_safe() -> None:
         LlmRequest(Tier.SMALL), Requirement(Tier.SMALL), ledger(*items), "shadow"
     )
     explanation = decision.explain()
-    json.dumps(explanation, allow_nan=False)
+    assert len(json.dumps(explanation, allow_nan=False)) < 3500
     assert len(explanation["ranked"]) == 5
     assert len(explanation["rejected"]) == 10
     assert explanation["rejected_counts"] == {"entitlement": 17}
+    assert set(explanation["ranked"][0]) == {
+        "key",
+        "model",
+        "adapter",
+        "account",
+        "billing",
+        "price_in",
+        "price_out",
+        "band",
+        "capacity_class",
+        "pool_state",
+        "reason",
+    }
 
 
 @pytest.mark.parametrize(
@@ -292,8 +306,92 @@ def test_legacy_keys_and_compare(
     assert d.compare(replace(legacy, chosen=None), legacy)["agree"] is False
 
 
-def test_mode_prefix_and_bad_values(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_compare_agrees_within_adapter_family() -> None:
+    def picked(model: str, adapter: str) -> d.Decision:
+        o = d.Offering(f"{model}@{adapter}/acct", model, adapter=adapter)
+        return d.Decision("x", o, False, (), (), {}, {}, None, Requirement(Tier.SMALL))
+
+    same_model = picked("m", "claude_agent")
+    legacy_lane = picked("m", "claude_p")
+    assert d.compare(same_model, legacy_lane)["agree"] is True
+    assert d.compare(picked("other", "claude_agent"), legacy_lane)["agree"] is False
+    assert (
+        d.compare(picked("m", "openai_tools"), picked("m", "openai_compat"))["agree"]
+        is True
+    )
+    assert d.compare(picked("m", "codex_exec"), legacy_lane)["agree"] is False
+
+
+def test_mode_for_legacy_reads_nothing_per_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default legacy mode costs no DB read per route() (gr572666)."""
     from precis import settings
+    from precis.utils.llm import live_config
+
+    settings.bind_store(cast("Any", object()))
+    monkeypatch.delenv("PRECIS_LLM_DECIDE", raising=False)
+    counts = {"settings": 0, "live": 0}
+
+    def db_read(*args: Any) -> None:
+        counts["settings"] += 1
+        return None
+
+    def read_setting(*args: Any) -> None:
+        counts["live"] += 1
+        return None
+
+    monkeypatch.setattr(settings, "_db_read", db_read)
+    monkeypatch.setattr(live_config, "_read_setting", read_setting)
+    live_config.bust_cache()
+    try:
+        assert [d.mode_for("code.review") for _ in range(5)] == ["legacy"] * 5
+        assert counts["settings"] == 0
+        assert counts["live"] <= 2
+    finally:
+        settings.bind_store(None)
+        live_config.bust_cache()
+
+
+def test_mode_for_rereads_after_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each mode key re-reads only once its 15 s cache window has passed."""
+    from precis import settings
+    from precis.utils.llm import live_config
+
+    settings.bind_store(cast("Any", object()))
+    monkeypatch.delenv("PRECIS_LLM_DECIDE", raising=False)
+    reads: list[str] = []
+
+    def read(key: str) -> None:
+        reads.append(key)
+        return None
+
+    monkeypatch.setattr(live_config, "_read_setting", read)
+    monkeypatch.setattr(settings, "_db_read", lambda *a: None)
+    clock = [1000.0]
+    monkeypatch.setattr(d.time, "monotonic", lambda: clock[0])
+    live_config.bust_cache()
+    try:
+        assert d.mode_for("code.review") == "legacy"
+        assert sorted(reads) == ["llm.decide.code", "llm.decide.mode"]
+        d.mode_for("code.review")
+        assert len(reads) == 2
+        clock[0] += 16
+        d.mode_for("code.review")
+        assert sorted(reads[2:]) == ["llm.decide.code", "llm.decide.mode"]
+    finally:
+        settings.bind_store(None)
+        live_config.bust_cache()
+
+
+@pytest.fixture(autouse=True)
+def _reset_mode_cache() -> Iterator[None]:
+    d.reset_mode_cache()
+    yield
+    d.reset_mode_cache()
+
+
+def test_mode_prefix_and_bad_values(monkeypatch: pytest.MonkeyPatch) -> None:
     from precis.utils.llm import live_config
 
     seen: list[str] = []
@@ -303,12 +401,12 @@ def test_mode_prefix_and_bad_values(monkeypatch: pytest.MonkeyPatch) -> None:
         return "shadow" if prefix == "code" else None
 
     monkeypatch.setattr(live_config, "decide_override", override)
-    monkeypatch.setattr(settings, "get_str", lambda *a, **k: "on")
+    monkeypatch.setattr(live_config, "decide_default", lambda: "on")
     assert d.mode_for("code.review") == "shadow"
     assert d.mode_for("code:review") == "shadow"
     assert d.mode_for(None) == "on"
-    assert seen == ["code", "code", "unknown"]
-    monkeypatch.setattr(settings, "get_str", lambda *a, **k: "bogus")
+    assert seen == ["code", "unknown"]
+    monkeypatch.setattr(live_config, "decide_default", lambda: "bogus")
     assert d.mode_for("other") == "legacy"
 
 
@@ -377,7 +475,7 @@ def test_loader_real_catalog_and_cache(
     )
     free = next(o for o in first.offerings if o.model == "shadow-free")
     assert free.billing == "free" and free.variant == "sample/fp8"
-    assert free.window == 2000 and free.account == "metered"
+    assert free.window == 2000 and free.account is None
     local = next(o for o in first.offerings if o.model == "shadow-local")
     assert local.billing == "local" and local.live is True and local.window == 3000
     disabled = next(o for o in first.offerings if o.model == "shadow-disabled")
@@ -394,5 +492,170 @@ def test_loader_real_catalog_and_cache(
     clock[0] += 16
     assert d.ledger_from_store(store, now=NOW) is not None
     assert len(reads) == 2
+    d.admit.reset_cache()
+    d._ledger_cache.clear()
+
+
+def test_loader_caches_offerings_and_heartbeats(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 15 s ledger entry carries built offerings; host heartbeats probe
+    only cards with a local operating point, and only on a rebuild."""
+    from precis import llm_catalog
+
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET retired_at = now() WHERE kind = 'llm' AND retired_at IS NULL"
+        )
+    llm_catalog.upsert_card(
+        store,
+        model_id="cache-local",
+        text="test",
+        offerings=[{"transport": "local", "max_input": 3000}],
+    )
+    llm_catalog.upsert_card(
+        store,
+        model_id="cache-cloud",
+        text="test",
+        offerings=[{"transport": "claude_p", "billing": "subscription"}],
+    )
+    d.admit.reset_cache()
+    d._ledger_cache.clear()
+    clock = [10.0]
+    monkeypatch.setattr(d.time, "monotonic", lambda: clock[0])
+    catalogs: list[int] = []
+    heartbeats: list[int] = []
+    real_catalog = d.admit._catalog
+
+    def catalog(bound: Any) -> Any:
+        catalogs.append(1)
+        return real_catalog(bound)
+
+    real_hosts = d.policy._live_served_hosts
+
+    def hosts(bound: Any, meta: Any) -> Any:
+        heartbeats.append(1)
+        return real_hosts(bound, meta)
+
+    monkeypatch.setattr(d.admit, "_catalog", catalog)
+    monkeypatch.setattr(d.policy, "_live_served_hosts", hosts)
+    assert d.ledger_from_store(store, now=NOW) is not None
+    assert d.ledger_from_store(store, now=NOW) is not None
+    assert len(catalogs) == 1
+    assert len(heartbeats) == 1
+    clock[0] += 16
+    assert d.ledger_from_store(store, now=NOW) is not None
+    assert len(catalogs) == 2
+    assert len(heartbeats) == 2
+    d.admit.reset_cache()
+    d._ledger_cache.clear()
+
+
+def test_loader_infers_billing_from_adapter(store: Any) -> None:
+    """A card with no ``billing`` key prices by transport: the subscription
+    adapters bind their enabled account, openai_compat meters, 0/0 is free."""
+    from precis import llm_catalog
+
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET retired_at = now() WHERE kind = 'llm' AND retired_at IS NULL"
+        )
+    llm_catalog.upsert_card(
+        store,
+        model_id="infer-claude-p",
+        text="test",
+        offerings=[{"transport": "claude_p"}],
+    )
+    llm_catalog.upsert_card(
+        store,
+        model_id="infer-claude-agent",
+        text="test",
+        offerings=[{"transport": "claude_agent"}],
+    )
+    llm_catalog.upsert_card(
+        store,
+        model_id="infer-codex",
+        text="test",
+        offerings=[{"transport": "codex_exec"}],
+    )
+    llm_catalog.upsert_card(
+        store,
+        model_id="infer-metered",
+        text="test",
+        offerings=[{"transport": "openai_compat", "price_in": 1, "price_out": 2}],
+    )
+    llm_catalog.upsert_card(
+        store,
+        model_id="infer-free",
+        text="test",
+        offerings=[{"transport": "openai_compat", "price_in": 0, "price_out": 0}],
+    )
+    d.admit.reset_cache()
+    d._ledger_cache.clear()
+    ledger = d.ledger_from_store(store, now=NOW)
+    assert ledger is not None
+    by_model = {o.model: o for o in ledger.offerings}
+    expected = {
+        "infer-claude-p": ("subscription", "claude-sub"),
+        "infer-claude-agent": ("subscription", "claude-sub"),
+        "infer-codex": ("subscription", "codex"),
+        "infer-metered": ("metered", None),
+        "infer-free": ("free", None),
+    }
+    for model, want in expected.items():
+        o = by_model[model]
+        assert (o.billing, o.account) == want, model
+    decision = d.decide(
+        LlmRequest(Tier.SMALL), Requirement(Tier.SMALL), ledger, "shadow"
+    )
+    entitled = {r.offering_key for r in decision.rejected if r.filter == "entitlement"}
+    assert not [o for o in ledger.offerings if o.key in entitled]
+    assert decision.chosen is not None
+    d.admit.reset_cache()
+    d._ledger_cache.clear()
+
+
+def test_loader_tools_flag_falls_back_to_facts(store: Any) -> None:
+    """A curated offering with no tools data reads the card's
+    ``facts_openrouter.supported_parameters``; absent both, tools is None."""
+    from precis import llm_catalog
+
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET retired_at = now() WHERE kind = 'llm' AND retired_at IS NULL"
+        )
+    ref_id, _ = llm_catalog.upsert_card(
+        store,
+        model_id="tools-no",
+        text="test",
+        offerings=[{"transport": "claude_p", "billing": "subscription"}],
+    )
+    store.update_ref(
+        ref_id,
+        meta_patch={"facts_openrouter": {"supported_parameters": ["max_tokens"]}},
+    )
+    llm_catalog.upsert_card(
+        store,
+        model_id="tools-unknown",
+        text="test",
+        offerings=[{"transport": "claude_p", "billing": "subscription"}],
+    )
+    d.admit.reset_cache()
+    d._ledger_cache.clear()
+    ledger = d.ledger_from_store(store, now=NOW)
+    assert ledger is not None
+    by_model = {o.model: o for o in ledger.offerings}
+    assert by_model["tools-no"].tools is False
+    assert by_model["tools-unknown"].tools is None
+    decision = d.decide(
+        LlmRequest(Tier.SMALL, tools_needed=True),
+        Requirement(Tier.SMALL, needs_tools=True),
+        ledger,
+        "shadow",
+    )
+    rejected = {r.offering_key: r.filter for r in decision.rejected}
+    assert rejected.get(by_model["tools-no"].key) == "capability"
+    assert by_model["tools-unknown"].key not in rejected
+    assert decision.chosen == by_model["tools-unknown"]
     d.admit.reset_cache()
     d._ledger_cache.clear()

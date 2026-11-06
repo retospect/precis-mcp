@@ -116,7 +116,9 @@ showing agreement, legacy and shadow Claude-window counts, actual and projected
 USD, and how many calls have known projected prices. Reto sets the global
 `llm.decide.mode` row and optional `llm.decide.<prefix>` rows, where the prefix
 ends at the first dot or colon in the task kind; `legacy`, `shadow`, and `on`
-are the accepted values. `precis llm decide` previews a choice without an LLM call.
+are the accepted values. `precis llm decide` previews a choice without an LLM call;
+`precis llm decide-mode <prefix|default> <legacy|shadow|on|clear>` writes or
+clears those rows.
 
 ## See also
 
