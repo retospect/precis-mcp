@@ -16,7 +16,16 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
 2a. **reviews** — a reviewer generator (``meta.generate.role ==
    'reviewer'``, ``from: 'td<id>'``) whose newest job succeeded is judged by
    its newest comment starting ``review:`` posted since that job was minted
-   (a ``handoff: review: …`` counts too). Grammar, verdict word
+   — a ``review:``-starting comment always wins — else its newest
+   ``handoff:`` carrying a ``review: LAND|FIX`` token at a line start
+   (markdown ``- ``/``* ``/``**``/``#``/``> `` markers may sit between
+   the line start and the token) or right after sentence-final
+   punctuation, outside backticks/parens, no ``<…>`` rest (a lane gluing
+   the verdict to its narration, gr573564; on disagreement a reasoned
+   FIX beats a LAND; REVERT never comes from a token). A LAND rest
+   opening ``(clean`` or ``|`` is the grammar echo, and a placeholder
+   ``review: FIX|REVERT — <…>`` template line anywhere in the comment
+   suppresses every LAND in it. Grammar, verdict word
    case-insensitive, any of ``—`` / ``–`` / ``-`` as the dash::
 
        review: LAND
@@ -34,8 +43,9 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    fresh retry budget (``meta.rearmed_after_job``). Each ``sha-in-prod``
    gate of the plan on a reverted sha goes back to ``PENDING_SHA`` (reopened
    if it had opened) with a ``sha reset after review REVERT`` comment. A missing or malformed
-   verdict reopens the node for one retry (``meta.retries`` default 2), then
-   the hygiene ask-user path. ``meta.review = {verdict, job, at}`` records
+   verdict reopens the node for one retry (``meta.retries`` default 2) —
+   on the picked lane, a format miss never climbs the ladder (gr573564) —
+   then the hygiene ask-user path. ``meta.review = {verdict, job, at}`` records
    the job judged, so a pass never acts twice on one job.
 3. **phases** — first reopens a generator that is ``STATUS:done`` while a
    child is still open (a generator's session mints children, it does not
@@ -210,6 +220,22 @@ _VERDICT_RE = re.compile(
     r"review:\s*(LAND|FIX|REVERT)\b[\s:]*(?:[—–-]+\s*)?(.*)",
     re.IGNORECASE | re.DOTALL,
 )
+#: A verdict token for the hand-off fallback (gr573564, coordinator
+#: ruling): only LAND or FIX — a REVERT is destructive and is never taken
+#: from a token glued into narration; it needs the line-start comment.
+_VERDICT_TOKEN_RE = re.compile(r"review:\s*(LAND|FIX)\b", re.IGNORECASE)
+#: A placeholder template line (``review: FIX — <list>`` / ``REVERT —
+#: <why>``) marks a grammar echo — it suppresses every LAND in the same
+#: hand-off.
+_VERDICT_TEMPLATE_RE = re.compile(r"review:\s*(?:FIX|REVERT)\b", re.IGNORECASE)
+#: The ``[\s:]*`` + optional dashes lead ``_VERDICT_RE`` allows between
+#: the verdict word and its rest — applied after a glued token.
+_VERDICT_LEAD_RE = re.compile(r"[\s:]*(?:[—–-]+\s*)?")
+#: Sentence-final punctuation a glued token may directly follow.
+_SENTENCE_END = frozenset(".!?")
+#: Markdown line-start markers a fallback token may directly follow
+#: (``- ``/``* `` bullets, ``**`` bold, ``#`` heading, ``> `` quote).
+_MD_MARKERS = " \t-*#>"
 _LANDED_RE = re.compile(r"landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
 _TD_FROM_RE = re.compile(r"\s*td(\d+)\s*")
 
@@ -753,40 +779,128 @@ def _comments(store: Any, todo_id: int) -> list[Any]:
     )
 
 
+def _token_boundary(text: str, start: int) -> bool:
+    """A fallback token counts only at a line start or directly after
+    sentence-final punctuation (``…main.review: FIX — …``); a token
+    mid-sentence (``I will post review: LAND if…``) is narration. Markdown
+    line-start markers — ``- ``/``* `` bullets, ``**`` bold, ``#``
+    headings, ``> `` quotes — may sit between the line start and the
+    token."""
+    i = start - 1
+    while i >= 0 and text[i] in " \t":
+        i -= 1
+    if i < 0 or text[i] == "\n" or text[i] in _SENTENCE_END:
+        return True
+    j = i
+    while j >= 0 and text[j] in _MD_MARKERS:
+        j -= 1
+    return j < 0 or text[j] == "\n"
+
+
+def _token_enclosed(text: str, start: int) -> bool:
+    """Inside backticks or parens the token quotes the grammar (the
+    brief's ``review: LAND | review: FIX — <list>`` echo), it is not a
+    verdict."""
+    head = text[:start]
+    return bool(head.count("`") % 2) or head.count("(") > head.count(")")
+
+
+def _verdict_template(body: str) -> bool:
+    """``body`` holds a placeholder ``review: FIX|REVERT — <…>`` template
+    line — the grammar echoed back, which suppresses every LAND in the
+    same hand-off."""
+    for m in _VERDICT_TEMPLATE_RE.finditer(body):
+        lead = _VERDICT_LEAD_RE.match(body, m.end())
+        if body[lead.end() if lead else m.end() :].strip().startswith("<"):
+            return True
+    return False
+
+
+def _verdict_candidates(body: str) -> list[tuple[str, str]]:
+    """The surviving fallback ``(verdict, rest)`` tokens in ``body``, in
+    order — the strict set the coordinator ruled on (a wrong LAND hides a
+    bug, a wrong REVERT is destructive)."""
+    out: list[tuple[str, str]] = []
+    suppress_land = _verdict_template(body)
+    for m in _VERDICT_TOKEN_RE.finditer(body):
+        if not _token_boundary(body, m.start()) or _token_enclosed(body, m.start()):
+            continue
+        lead = _VERDICT_LEAD_RE.match(body, m.end())
+        rest = body[lead.end() if lead else m.end() :].strip()
+        if rest.startswith("<"):  # a grammar placeholder, not findings
+            continue
+        if m.group(1).upper() == "LAND" and (
+            suppress_land
+            or rest.lower().startswith("(clean")  # the grammar's own gloss
+            or rest.startswith("|")  # echo of the ``A | B`` grammar line
+        ):
+            continue
+        out.append((m.group(1).upper(), rest))
+    return out
+
+
 def parse_verdict(text: str) -> tuple[str, str] | None:
     """``(LAND|FIX|REVERT, rest)`` of one ``review:`` line, or ``None``
     when it is not a verdict. ``FIX`` and ``REVERT`` need a non-empty rest
-    (the list / the why); a ``handoff:`` prefix is stripped first."""
+    (the list / the why); a ``handoff:`` prefix is stripped first. When the
+    text as a whole is no verdict line — a hand-off that glues the token
+    to its narration (``… on landed main.review: FIX — …``, gr573564) —
+    the fallback's surviving candidates rule: a FIX with findings wins
+    over a LAND; REVERT never comes from a token; anything else is a
+    miss."""
     body = text.strip()
     if body.lower().startswith("handoff:"):
         body = body[len("handoff:") :].strip()
     m = _VERDICT_RE.fullmatch(body)
-    if m is None:
-        return None
-    verdict, rest = m.group(1).upper(), m.group(2).strip()
-    if verdict != "LAND" and not rest:
-        return None
-    return verdict, rest
+    if m is not None:
+        verdict, rest = m.group(1).upper(), m.group(2).strip()
+        if verdict != "LAND" and not rest:
+            return None
+        return verdict, rest
+    candidates = _verdict_candidates(body)
+    fixes = [rest for verdict, rest in candidates if verdict == "FIX" and rest]
+    if fixes:
+        return "FIX", fixes[-1]
+    if candidates and all(verdict == "LAND" for verdict, _ in candidates):
+        return "LAND", candidates[-1][1]
+    return None
 
 
 def _is_review_line(text: str) -> bool:
+    """A comment the verdict is read from: one starting ``review:``, or a
+    ``handoff:`` whose own body starts ``review:`` or carries a surviving
+    fallback token (gr573564). Any other comment is never scanned — the
+    dispatcher's own retry note quotes the grammar."""
     body = text.strip().lower()
-    if body.startswith("handoff:"):
-        body = body[len("handoff:") :].strip()
-    return body.startswith("review:")
+    if body.startswith("review:"):
+        return True
+    if not body.startswith("handoff:"):
+        return False
+    inner = body[len("handoff:") :].strip()
+    return inner.startswith("review:") or bool(_verdict_candidates(inner))
 
 
 def _read_verdict(
     store: Any, todo_id: int, since: datetime
 ) -> tuple[tuple[str, str] | None, str | None]:
-    """``(verdict, raw line)`` from the newest ``review:`` comment posted at
-    or after ``since``; ``(None, None)`` when there is none, ``(None, line)``
-    when it is malformed."""
+    """``(verdict, raw line)`` from the comments posted at or after
+    ``since``; ``(None, None)`` when there is none, ``(None, line)`` when
+    it is malformed. A comment STARTING ``review:`` — the reviewer's own
+    verdict — always wins over a token glued inside a ``handoff:``, newest
+    first within each class."""
+    comments: list[Any] = []
     for c in _comments(store, todo_id):
         if c.created_at < since:
             break
-        if _is_review_line(str(c.text)):
-            return parse_verdict(str(c.text)), str(c.text).strip()
+        comments.append(c)
+    for c in comments:
+        text = str(c.text)
+        if text.strip().lower().startswith("review:"):
+            return parse_verdict(text), text.strip()
+    for c in comments:
+        text = str(c.text)
+        if _is_review_line(text):
+            return parse_verdict(text), text.strip()
     return None, None
 
 
@@ -1431,6 +1545,21 @@ def _escalate(
     job is minted — and ``note`` is the action line for the summary.
     """
     if "model" in params:
+        return True, None
+    # A reviewer whose newest job left no readable verdict retries on the
+    # lane ``_review_lane`` picked: a format miss says nothing about the
+    # lane's strength, and the climb pinned swe-2-max while the verdict
+    # itself was lost to a parse miss (gr573564). The attempt still
+    # counts, so the retry cap and its ask are unchanged.
+    seen = n.meta.get("review")
+    jobs = plan.jobs(n)
+    if (
+        _is_reviewer(n)
+        and isinstance(seen, dict)
+        and seen.get("verdict") is None
+        and jobs
+        and seen.get("job") == jobs[-1].id
+    ):
         return True, None
     attempts = _attempts(plan, n)
     if attempts <= 0:

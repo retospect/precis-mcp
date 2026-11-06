@@ -1650,6 +1650,117 @@ def test_parse_verdict(text: str, want: tuple[str, str] | None) -> None:
     assert pd.parse_verdict(text) == want
 
 
+# Verbatim glued tails of the hand-off comments the td573503/td573504
+# reviewer jobs posted (jo573513 and jo573551 on td573503, jo573561 and
+# jo573574 on td573504) — the exact texts the parser missed (gr573564).
+_TD573503_JO573513 = """handoff: Let me also run the typecheck to complete verification.review: FIX — tests/test_work_board_queue.py::test_blocked_row_shows_after_marker fails on landed main: a quest whose only leaf is blocked-by reads `idle`, and `render_work` skips row expansion for idle quests (`work_view.py:823`), so `after td<N>` never reaches `search(view='work')` text. Fix the test by adding a free doable sibling leaf (e.g. a second leaf under the root) so the quest is `queued` and the blocked row's marker expands — same for any assertion that needs the text view.
+
+Checked: diff of 17897effe vs the brief item by item. Implementation is faithful — batched `_open_blockers`/`_job_fields` once per `_render_root`, hold precedence waiting-for → ask-user → stored `gate_result` (no gate evaluate), preview gated on plan-tagged block + leaf + open + unclaimed + no jobs + node in ("","task") via `ladder()`, `_job_line` leading text untouched with ` · lane=… model=… host=…` appended, template edit confined to the item cell. Verified in-container: ruff clean, mypy clean (4339 files), 53/53 existing tests pass, 6/7 new tests pass — only the one assertion above is red. No prohibited paths touched."""
+
+_TD573503_JO573551 = """handoff: Running the brief's other test files to confirm nothing else is red on landed main.review: FIX — tests/test_work_board_queue.py::test_blocked_row_shows_after_marker fails on landed main (reproduced in-container): a quest whose only leaf is blocked-by reads `idle`, and `render_work` skips row expansion for idle quests (`work_view.py:823`), so `after td<N>` never reaches `search(view='work')` text — only that one assertion is red; the model-level `row.after` and the HTML `href="/eye/td<N>"` assertions pass. Fix the test by adding a free doable sibling leaf under the root so the quest is `queued` and the blocked row's marker expands.
+
+Checked `17897effe` against the brief item by item: batched `_open_blockers`/`_job_fields` once per `_render_root`, hold precedence waiting-for → ask-user → stored `gate_result` (no gate evaluate), preview gated on plan-tagged block + leaf + open + unclaimed + zero jobs + node in ("","task") via `ladder()`, `_job_line` leading text byte-preserved with ` · lane=… model=… host=…` appended, template edit confined to the item cell. Verified in-container: 6/7 new tests pass, 53/53 existing tests pass, no prohibited paths touched."""
+
+_TD573504_JO573561 = """handoff: Waiting on mypy.Typecheck clean. Two last API checks: `current_revision_context` and `actor_for` (the logbook actor path).review: LAND
+
+Checked `b98653e38` against the td573297 brief, end to end:
+
+- **Handler** (`quest.py`): `edit_modes` extended to `("replace","pause","resume")`; pause/resume branches reject `text=`/`meta=`, resolve the live ref, and delegate. `_strategic_roots` mirrors `work_view._todo_servers` (`links_for(direction="in", relation="serves")` + `rotation_root` meta). Pause skips done/won't-do/alread"""
+
+_TD573504_JO573574 = """handoff: Docs updated. Checking the two nits the prior review noted.review: LAND
+
+Independently re-verified `b98653e38` against the td573297 brief: the prior review's claims hold. `QuestHandler.edit` accepts pause/resume (validated via `edit_modes` at dispatch layer, `runtime/dispatch.py:3862`), rejects `text=`/`meta=`, stamps `STATUS:paused`+`paused-by:quest` on live `serves`-linked `rotation_root` todos through `TodoHandler.tag`, and is idempotent. Closed-axis `"""
+
+
+@pytest.mark.parametrize(
+    ("text", "verdict", "rest_prefix"),
+    [
+        (
+            _TD573503_JO573513,
+            "FIX",
+            "tests/test_work_board_queue.py::test_blocked_row_shows_after_marker "
+            "fails on landed main: a quest whose only leaf is blocked-by reads `idle`",
+        ),
+        (
+            _TD573503_JO573551,
+            "FIX",
+            "tests/test_work_board_queue.py::test_blocked_row_shows_after_marker "
+            "fails on landed main (reproduced in-container)",
+        ),
+        (_TD573504_JO573561, "LAND", "Checked `b98653e38`"),
+        (_TD573504_JO573574, "LAND", "Independently re-verified `b98653e38`"),
+    ],
+)
+def test_parse_verdict_verbatim_glued_tails(
+    text: str, verdict: str, rest_prefix: str
+) -> None:
+    got = pd.parse_verdict(text)
+    assert got is not None
+    assert got[0] == verdict
+    assert got[1].startswith(rest_prefix)
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        # td573578, coordinator ruling: a fallback token counts only at a
+        # line start or right after sentence-final punctuation (the glued
+        # shape ``...main.review: FIX — ...``), outside backticks/parens,
+        # with a non-placeholder rest; REVERT never comes from a token.
+        ("all done.review: LAND", ("LAND", "")),
+        ("wrapped up\nreview: LAND", ("LAND", "")),
+        # Markdown line-start markers still count as a line start.
+        ("**review: LAND**", ("LAND", "**")),
+        ("- review: FIX — x", ("FIX", "x")),
+        ("all checked.\n* review: FIX — x", ("FIX", "x")),
+        ("all checked.\n> review: LAND", ("LAND", "")),
+        ("## findings\n# review: LAND", ("LAND", "")),
+        # … but a marker that does not reach a line start is narration.
+        ("saw it - review: LAND", None),
+        # The grammar echo: every token sits inside backticks or carries a
+        # <...> placeholder rest — none is a verdict.
+        (
+            "Brief wants `review: LAND` (clean) | `review: FIX — <list>` | "
+            "`review: REVERT — <why>`. Checking now.",
+            None,
+        ),
+        # … and the same echo un-backticked, one template per line.
+        (
+            "handoff: the brief's grammar:\nreview: LAND (clean)\n"
+            "review: FIX — <list>\nreview: REVERT — <why>\nChecking now.",
+            None,
+        ),
+        # A LAND glossed ``(clean)`` or continued ``|`` is the template.
+        ("all done.review: LAND (clean)", None),
+        ("one of:\nreview: LAND | review: FIX — <list>", None),
+        # A placeholder FIX/REVERT template line suppresses LANDs nearby.
+        ("echo below.\nreview: FIX — <list>\nreview: LAND", None),
+        # A real FIX; the later LAND is quoted inside parens.
+        (
+            "Checked it.review: FIX — a.py is wrong (the prior review said "
+            "review: LAND)",
+            ("FIX", "a.py is wrong (the prior review said review: LAND)"),
+        ),
+        # A mid-sentence token is narration, not a verdict.
+        ("I will post review: LAND if tests pass.", None),
+        # Surviving candidates disagree: a reasoned FIX beats a LAND.
+        (
+            "Read it.review: LAND. Actually.review: FIX — a.py is wrong",
+            ("FIX", "a.py is wrong"),
+        ),
+        # … but a bare FIX disagrees with a LAND: a miss, never a guess.
+        ("Read it.review: LAND. Actually.review: FIX", None),
+        # REVERT needs the line-start comment, never a glued token.
+        ("all done.review: REVERT — breaks the API", None),
+        ("handoff: review: REVERT — breaks the API", ("REVERT", "breaks the API")),
+        ("all done.review: FIX", None),
+        ("…the review: landed step", None),
+    ],
+)
+def test_parse_verdict_glued_narration(text: str, want: tuple[str, str] | None) -> None:
+    assert pd.parse_verdict(text) == want
+
+
 def test_review_land_closes_the_reviewer(store: Store) -> None:
     mint = _reviewed(store, "review: LAND")
     review = mint.ids["review"]
@@ -1831,6 +1942,87 @@ def test_review_without_verdict_retries_once_then_asks(store: Store) -> None:
     )
     asks = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
     assert len(asks) == 1
+
+
+def test_review_reads_a_glued_handoff(store: Store) -> None:
+    """td573578: a ``handoff:`` that glues ``review: FIX — …`` to the
+    narration is the verdict (the LAST token in the comment). The fixture
+    is the verbatim td573503 review tail the parser missed (gr573564)."""
+    mint = _reviewed(store, _TD573503_JO573551)
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, review) == "done"
+    (fix,) = [c for c in _children(store, mint.root_id) if c not in (build, review)]
+    ref = store.get_ref(kind="todo", id=fix)
+    assert ref is not None
+    assert ref.title == f"Fix review findings for td{build}"
+    body = [
+        c.text
+        for c in store.chunks.list_chunks_for_ref(fix)
+        if c.chunk_kind == "todo_body"
+    ]
+    assert body and str(body[0]).startswith(
+        "tests/test_work_board_queue.py::test_blocked_row_shows_after_marker "
+        "fails on landed main (reproduced in-container)"
+    )
+
+
+def test_review_line_comment_beats_a_glued_handoff_token(store: Store) -> None:
+    """Coordinator ruling: a comment STARTING ``review:`` always wins over
+    a token inside a ``handoff:`` — here posted newer, so a newest-first
+    scan alone would read the LAND."""
+    mint = _reviewed(store, "review: FIX — a.py misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    _todo_comment(store, review, "handoff: narration done.review: LAND")
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, review) == "done"
+    assert _meta(store, review)["review"]["verdict"] == "FIX"
+    (fix,) = [c for c in _children(store, mint.root_id) if c not in (build, review)]
+    ref = store.get_ref(kind="todo", id=fix)
+    assert ref is not None and ref.title == f"Fix review findings for td{build}"
+
+
+def test_review_glued_revert_is_a_miss(store: Store) -> None:
+    """A REVERT glued into a ``handoff:`` is never taken — the reviewer
+    retries instead of reverting a good land."""
+    mint = _reviewed(store, "handoff: checked the diff.review: REVERT — breaks it")
+    review = mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 0
+    assert _status(store, review) == "open"
+    assert _meta(store, review)["review"]["verdict"] is None
+    # No revert (or fix) task minted.
+    assert sorted(_children(store, mint.root_id)) == sorted([mint.ids["build"], review])
+
+
+def test_review_miss_retry_is_not_escalated(store: Store) -> None:
+    """gr573564: a review job that left no readable verdict retries on the
+    lane ``_review_lane`` picked — no climb, no ``swe-2-max`` model pin."""
+    mint = _reviewed(store, "review: looks fine to me")
+    review = mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    (_old, (retry, meta)) = _jobs_under(store, review)
+    assert meta["params"]["todo_id"] == review
+    assert meta["params"]["lane"] == "devin"
+    assert "model" not in meta["params"]
+
+
+def test_review_ignores_the_dispatchers_own_grammar_note(store: Store) -> None:
+    """The dispatcher's retry note quotes the grammar — a comment that is
+    not ``review:``/``handoff:``-prefixed is never scanned for a token."""
+    mint = _reviewed(
+        store,
+        "plan_dispatch: job:9 succeeded with no `review:` comment; want "
+        "review: LAND (clean) | review: FIX — <findings>",
+    )
+    review = mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 0
+    assert _meta(store, review)["review"]["verdict"] is None
+    assert _status(store, review) == "open"
 
 
 def test_dispatch_orders_by_prio_across_roots(store: Store) -> None:

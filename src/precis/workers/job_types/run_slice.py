@@ -167,6 +167,10 @@ LANE_WAIT_PARK_CAP = 36
 _REFUSAL_ALERT_SOURCE = RULES_BY_ID["run_slice/lane-host-refusal:{lane}"].rule
 #: Cap on the handoff comment and the failure tail.
 _HANDOFF_CAP = 6000
+#: Head kept when a handoff is clipped: a first-line verdict rides the
+#: head (``moot:``, ``review:`` on the claude lane), a verdict glued to
+#: the end of a devin transcript rides the tail (td573578).
+_HANDOFF_HEAD = 1500
 _TAIL_CAP = 2000
 
 _ATTEMPT_RE = re.compile(r"^attempt:(\d+)$")
@@ -2147,7 +2151,11 @@ def poll(ctx: Any, handle: Any) -> bool:
         handoff = f"attempt FAILED, {denied}.\n\n{handoff}".strip()
     if handoff:
         if len(handoff) > _HANDOFF_CAP:
-            handoff = handoff[:_HANDOFF_CAP].rstrip() + " …(clipped)"
+            handoff = (
+                handoff[:_HANDOFF_HEAD].rstrip()
+                + " …(clipped)… "
+                + handoff[-(_HANDOFF_CAP - _HANDOFF_HEAD) :].lstrip()
+            )
         try:
             _append_comment(ctx.store, todo_id, f"handoff: {handoff}")
         except Exception:  # pragma: no cover — the job outcome still lands

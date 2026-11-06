@@ -3149,6 +3149,38 @@ def test_poll_devin_legacy_lane_fallback_and_exit_failure(
         assert seams["lands"] == [(42, Path(handle["worktree"]), "devin")]
 
 
+def test_poll_handoff_clip_keeps_the_tail(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td573578: a clipped handoff keeps head AND tail — a trailing
+    ``review:`` verdict glued to a devin transcript survives the cap."""
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    use_lanes(
+        monkeypatch,
+        _vendor_lane("devin", "devin_tree"),
+    )
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, lane="devin")
+    assert handle is not None
+    seams["ahead"] = "abc1234 feat(x): build\n"
+    result = (
+        "Reviewing the landed squash `17897effe`, narration first. "
+        + "narration " * 1000
+        + "review: FIX — x"
+    )
+    assert len(result) > run_slice._HANDOFF_CAP
+    _finish(handle, 0, result)
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    posted = store.comments(42)[-1]
+    assert posted.startswith("handoff: " + result[:40])
+    assert posted.endswith("review: FIX — x")
+    assert len(posted) <= len("handoff: ") + run_slice._HANDOFF_CAP + len(
+        " …(clipped)… "
+    )
+
+
 def test_launch_none_stdin_uses_devnull(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

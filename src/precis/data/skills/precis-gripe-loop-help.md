@@ -215,7 +215,13 @@ put(kind="todo", id=T, text="review: FIX — mypy red in tests/test_draft.py")
 
 `review: LAND|FIX|REVERT — <findings>` is the line
 `plan_dispatch.parse_verdict` accepts (`FIX` and `REVERT` need the
-rest), so phase 2 reads phase 1 history. A fix round is the next
+rest), so phase 2 reads phase 1 history — and a `handoff:` carrying
+the token at a line start (markdown `- `/`* `/`**`/`#`/`> ` markers
+allowed before it) or after sentence-final punctuation counts too
+(never REVERT; a reasoned FIX beats a stray LAND, and a LAND glossed
+`(clean` or `|` — or sharing the comment with a placeholder
+`review: FIX|REVERT — <…>` template line — is the grammar echo, not a
+verdict). A fix round is the next
 `brief:` comment on the same todo — no new todo, just the attempt bump
 above.
 
