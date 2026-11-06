@@ -11,6 +11,7 @@ target exempt a node."""
 
 from __future__ import annotations
 
+import sys
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -26,7 +27,18 @@ from precis.workers._mint import mint_background_job
 from precis.workers.job_types import get_job_type, known_job_types
 from tests._lane_rows import use_lanes
 
-NOW = datetime.now(UTC)
+# Rows carry database-stamped times (``now()`` at insert), so ``NOW`` must be
+# the instant the test runs, not the import: a long xdist shard collects
+# minutes before this file runs, which aged every "21 minutes past" row by
+# the shard's elapsed time. The ``_now`` fixture re-stamps it per test; the
+# import-time value is stale on purpose, so a test that escapes the fixture
+# fails here without a slow CI shard.
+NOW = datetime.now(UTC) - timedelta(hours=1)
+
+
+@pytest.fixture(autouse=True)
+def _now(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys.modules[__name__], "NOW", datetime.now(UTC))
 
 
 @pytest.fixture(autouse=True)

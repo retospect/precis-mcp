@@ -378,12 +378,9 @@ comment.
 
 ## What happens to a node in rescue?
 
-The `factory_rescue_tick` job's second pass acts on it. A node rescued
-under a task class gets ONE diagnose task minted under its plan root,
-pinned to lane `claude-sub` (one attempt, read-only by instruction),
-and the node is `blocked-by` it while it waits. The session reads the
-node's brief, the `rescue:` evidence comment, the signature gripe, the
-newest job's tail and the branch, then replies with one first line:
+The `factory_rescue_tick` job's second pass: a task-class rescue gets
+ONE read-only diagnose task (lane `claude-sub`); the node is `blocked-by`
+it meanwhile. The session reads the node and replies with one first line:
 
 - `rescue: REARM — <corrected brief>` — the tag comes off, `meta.rescue`
   (`n`, `at`, `diagnose`, `cls`) and the re-arm floor are stamped, and
@@ -391,25 +388,12 @@ newest job's tail and the branch, then replies with one first line:
   resumes on `slice/<id>` — the worktree and branch are reused.
 - `rescue: NOFIX — <why>` — the cause is outside the brief.
 
-Read the outcome on the node (`get(kind='todo', id=N)`): the `rescue:`
-comments (`re-armed from td…`, `asked td…`), `meta.rescue`, and the new
-`brief:` comment; the diagnose task's own comments hold the session's
-reply. `search(kind='todo', view='rescue')` still lists the queue.
-
 ## When does a rescued node get a diagnose task, and when an ask?
 
-A task-class rescue (`builder`, `land`, `review`, `release`, `lane`,
-`intake`) with `meta.rescue.n < 1` gets the diagnose task. Everything
-else goes straight to one `ask-user` + `showstopper` ruling todo
-blocking the node: a `rescue: NOFIX`, a diagnose whose job failed or
-whose reply is unparsable, a second rescue (`meta.rescue.n >= 1`), and
-every engine class (`stalled`, `cancelled`, `terminal-root`,
-`tick-raises`, `tick-silent`, `post-land-write`, `wait-deadline`,
-`infra`) — the factory's machinery is never a brief problem. A rescued
-gripe is skipped with a note. The ask names the options (`retry with a
-different lane/model`, `rewrite the brief`, `won't do`); closing it
-re-arms the node, and clearing the `rescue:<class>` tag afterwards
-stays the human's step — the pass never clears it.
+A task-class rescue with `meta.rescue.n < 1` gets the diagnose task.
+Anything else — a `rescue: NOFIX`, a failed or unparsable diagnose, a
+second rescue, every engine class — files one `ask-user` +
+`showstopper` ruling todo blocking the node; closing it re-arms it.
 
 ## What does the transcript_audit pass sample, and how is it lit?
 
