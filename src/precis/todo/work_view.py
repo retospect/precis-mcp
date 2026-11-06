@@ -20,6 +20,12 @@ this tree.
 ``/work`` web page (``precis_web.routes.work``) formats the same model as
 HTML, so the two surfaces cannot drift (td540843).
 
+Queue rows show open dependencies and stored hold reasons. Placement
+previews use the first configured ladder rung only for undispatched plan
+leaves; they are advisory, while live job lines show stored placement.
+Dependencies and job fields are fetched once per root, and gate reasons
+come from stored results so rendering never evaluates a gate (td573296).
+
 :func:`render_tree_ring` is the todo tree as an eye ring — parent,
 siblings, children off ``refs.parent_id`` — appended by
 :meth:`precis.handlers.todo.TodoHandler.eye` at ``fisheye+1hop`` and up,
@@ -37,9 +43,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from precis.plans.lanes import ladder
 from precis.plans.nodes import node_kind
 from precis.response import Response
-from precis.todo import views, work_gripes
+from precis.todo import blocker_terminal_sql, views, work_gripes
 from precis.todo.work_gripes import GripeBlock
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
@@ -156,6 +163,12 @@ class WorkRow:
     lane: str = ""
     #: ``N`` from an ``attempt:<N>`` tag.
     attempt: int | None = None
+    #: Open blocked-by target handles, in id order.
+    after: tuple[str, ...] = ()
+    #: Waiting tag, ask-user, or the stored closed gate's explanation.
+    hold: str = ""
+    #: Advisory first ladder rung for an undispatched plan leaf.
+    preview: str = ""
 
     @property
     def stage(self) -> str:
@@ -327,6 +340,8 @@ def _row(
     jobs: tuple[int, int] = (0, 0),
     metas: dict[int, dict[str, Any]] | None = None,
     lanes: dict[int, str] | None = None,
+    blockers: dict[int, tuple[int, ...]] | None = None,
+    preview_leaf: bool = False,
 ) -> WorkRow:
     rid = int(node["id"])
     tags = tags_by_ref.get(rid, [])
@@ -337,6 +352,27 @@ def _row(
     kind = node.get("kind") or "todo"
     meta = (metas or {}).get(rid) or {}
     plan = node_kind(meta) or ""
+    result = meta.get("gate_result")
+    hold = waiting or ("ask-user" if asking else "")
+    if (
+        not hold
+        and plan == "gate"
+        and isinstance(result, dict)
+        and result.get("open") is False
+    ):
+        hold = _node_text(plan, meta)
+    preview = ""
+    if (
+        preview_leaf
+        and kind == "todo"
+        and status == "open"
+        and not claimed
+        and not jobs[0]
+        and plan in ("", "task")
+    ):
+        rungs = ladder(meta.get("task_class") or "code")
+        if rungs:
+            preview = f"{rungs[0].lane} {rungs[0].model or ''}".strip()
     return WorkRow(
         ref_id=rid,
         kind=kind,
@@ -358,6 +394,9 @@ def _row(
         node_text=_node_text(plan, meta),
         lane=(lanes or {}).get(rid, ""),
         attempt=_attempt(tags),
+        after=tuple(_h("todo", i) for i in (blockers or {}).get(rid, ())),
+        hold=hold,
+        preview=preview,
     )
 
 
@@ -376,6 +415,12 @@ def _format_row(r: WorkRow) -> str:
         )
     if r.lane:
         cells.append(f"lane={r.lane}")
+    if r.after:
+        cells.append(f"after {','.join(r.after)}")
+    if r.hold:
+        cells.append(r.hold)
+    if r.preview:
+        cells.append(f"preview: {r.preview}")
     if r.attempt is not None:
         cells.append(f"attempt:{r.attempt}")
     line = f"{'  ' * r.depth}{' '.join(cells)} — {r.title}"
@@ -437,11 +482,61 @@ def _prios_for(store: Store, ref_ids: list[int]) -> dict[int, int | None]:
     return {int(r[0]): r[1] for r in rows}
 
 
-def _job_line(job_id: int, status: str, title: str | None, parent_handle: str) -> str:
+def _job_line(
+    job_id: int,
+    status: str,
+    title: str | None,
+    parent_handle: str,
+    fields: tuple[str, str, str] = ("", "", ""),
+) -> str:
     """One live job's board line: handle, STATUS, title, parent todo."""
-    return (
+    line = (
         f"  {_h('job', job_id)} [{status}] {_first_line(title)} · under {parent_handle}"
     )
+    parts = [
+        f"{key}={value}"
+        for key, value in zip(("lane", "model", "host"), fields, strict=True)
+        if value
+    ]
+    return line + (" · " + " ".join(parts) if parts else "")
+
+
+def _open_blockers(store: Store, ref_ids: list[int]) -> dict[int, tuple[int, ...]]:
+    """Read dependencies once per block, using the doable view's terminal policy."""
+    if not ref_ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            f"""SELECT l.src_ref_id, l.dst_ref_id FROM links l
+                JOIN refs b ON b.ref_id = l.dst_ref_id
+                WHERE l.src_ref_id = ANY(%s) AND l.relation = 'blocked-by'
+                  AND b.retired_at IS NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
+                      AND t.value IN {blocker_terminal_sql()})
+                ORDER BY l.src_ref_id, l.dst_ref_id""",
+            (ref_ids,),
+        ).fetchall()
+    grouped: dict[int, list[int]] = {}
+    for src, dst in rows:
+        grouped.setdefault(int(src), []).append(int(dst))
+    return {src: tuple(targets) for src, targets in grouped.items()}
+
+
+def _job_fields(store: Store, job_ids: list[int]) -> dict[int, tuple[str, str, str]]:
+    """Stored execution placement, batched independently of the row count."""
+    if not job_ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, meta->>'lane', meta->>'model', meta->>'lease_host' "
+            "FROM refs WHERE ref_id = ANY(%s)",
+            (job_ids,),
+        ).fetchall()
+    return {
+        int(i): (lane or "", model or "", host or "") for i, lane, model, host in rows
+    }
 
 
 def _newest_job_lanes(store: Store, job_ids: list[int]) -> dict[int, str]:
@@ -482,6 +577,9 @@ def _render_root(
         for i in todo_ids
     }
     metas = {i: dict(refs[i].meta or {}) for i in todo_ids if i in refs}
+    blockers = _open_blockers(store, ids)
+    job_fields = _job_fields(store, [r["id"] for r in rows if r["kind"] == "job"])
+    planned = any(t.startswith("plan:") for tags in tags_by_ref.values() for t in tags)
     lanes = _newest_job_lanes(store, [r["id"] for r in rows if r["kind"] == "job"])
     by_parent: dict[int | None, list[dict[str, Any]]] = {}
     job_counts: dict[int, tuple[int, int]] = {}
@@ -499,7 +597,13 @@ def _render_root(
                 claimable_jobs += 1
             if status in _BOARD_JOB:
                 job_lines.append(
-                    _job_line(r["id"], status, r["title"], _h("todo", r["parent_id"]))
+                    _job_line(
+                        r["id"],
+                        status,
+                        r["title"],
+                        _h("todo", r["parent_id"]),
+                        job_fields.get(r["id"], ("", "", "")),
+                    )
                 )
             continue
         by_parent.setdefault(r["parent_id"], []).append(r)
@@ -530,6 +634,8 @@ def _render_root(
                     jobs=job_counts.get(node["id"], (0, 0)),
                     metas=metas,
                     lanes=lanes,
+                    blockers=blockers,
+                    preview_leaf=planned and not by_parent.get(node["id"]),
                 )
             )
         for c in by_parent.get(node["id"], []):

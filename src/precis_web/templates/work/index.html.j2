@@ -92,6 +92,11 @@
           {% if r.jobs %}<span class="text-xs text-fg-faint">jobs {{ r.jobs }}{% if r.jobs_live %} ({{ r.jobs_live }} live){% endif %}</span>{% endif %}
           {# plan node line (td542097): gate predicate + last reason, loop count, generator source #}
           {% if r.node_text %}<div class="text-xs text-fg-faint truncate" title="{{ r.node_text }}">{{ r.node_text }}</div>{% endif %}
+          {% if r.after or r.hold or r.preview %}<div class="text-xs text-fg-faint truncate">
+            {% for handle in r.after %}<a href="/eye/{{ handle }}" class="hover:underline">after {{ handle }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+            {% if r.hold %}{{ r.hold }}{% endif %}
+            {% if r.preview %}preview: {{ r.preview }}{% endif %}
+          </div>{% endif %}
         </div>
         <div class="w-40 shrink-0 text-xs text-fg-secondary truncate" title="{{ r.icon }}">{{ r.icon }}</div>
         <div class="w-14 shrink-0 text-right text-xs">{% if r.agents %}<span class="text-success-strong font-semibold">{{ r.agents }}</span>{% else %}<span class="text-fg-ghost">0</span>{% endif %}</div>
