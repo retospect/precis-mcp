@@ -256,3 +256,32 @@ def test_concurrent_callers_on_one_signature_file_one_gripe(
 
     assert len(_sig_gripes(store)) == 1
     assert sum(r.gripe_created for r in results) == 1
+
+
+def test_concurrent_calls_on_one_node_rescue_once(store: Store) -> None:
+    n = _todo(store, "raced node")
+    barrier = threading.Barrier(2)
+    results: list[fr.RescueResult] = []
+
+    def work(cls: str) -> None:
+        barrier.wait()
+        results.append(fr.enter_rescue(store, n, cls, _ev()))
+
+    # Two different classes race the same node: whoever loses the
+    # advisory lock sees the winner's rescue: tag and writes nothing.
+    threads = [
+        threading.Thread(target=work, args=(cls,)) for cls in ("builder", "review")
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+        assert not t.is_alive()
+
+    assert sum(r.tagged for r in results) == 1
+    assert sum(bool(r.skipped) for r in results) == 1
+    rescue_tags = [t for t in _open_tags(store, n) if t.startswith("rescue:")]
+    assert len(rescue_tags) == 1
+    assert len(_sig_gripes(store)) == 1
+    assert len(_links(store, n)) == 1
+    assert len(_comments(store, n, "todo_comment")) == 1

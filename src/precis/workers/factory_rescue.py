@@ -303,7 +303,9 @@ def enter_rescue(
     signature gripe is found-or-filed under one transaction and the
     advisory lock, so N nodes on one signature share exactly one gripe;
     a node that IS a gripe (class ``intake``) is its own signature
-    gripe — nothing is filed and no self-link is attempted.
+    gripe — nothing is filed and no self-link is attempted. The tag
+    check runs twice: once unlocked as a fast path, then again under
+    the advisory lock so two racing calls on one node cannot both tag.
     """
     from precis.workers.job_types.plan_dispatch import read_only_reason
 
@@ -346,6 +348,19 @@ def enter_rescue(
 
     with store.atomic() as conn:
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (_SIG_LOCK_KEY,))
+        # Recheck under the lock: a racer that passed the unlocked check
+        # while the winner was mid-transaction sees its committed
+        # ``rescue:`` tag here (READ COMMITTED snapshots per statement).
+        held = next(
+            (
+                str(t.value)
+                for t in store.tags_for(node, conn=conn)
+                if t.namespace == "open" and str(t.value).startswith("rescue:")
+            ),
+            None,
+        )
+        if held is not None:
+            return RescueResult(skipped=f"already in rescue ({held})")
         if is_gripe:
             gripe_id, gripe_created = node, False
         else:
