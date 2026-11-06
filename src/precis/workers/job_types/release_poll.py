@@ -27,8 +27,13 @@ the unauthenticated api.github.com budget (60/h) is shared with
 2. The DB: a live todo tagged ``release-pass`` whose STATUS is not in
    ``precis.todo.TERMINAL_TODO_STATUSES`` is a pass already in flight,
    and the shared ``release.round`` record names a round still open
-   (``state`` not in :data:`_ROUND_TERMINAL_STATES`, any owner). No
-   GitHub read has happened yet.
+   (``state`` not in :data:`_ROUND_TERMINAL_STATES`, any owner — one
+   exception: a ``cut`` row whose recorded ``pass`` root is terminal
+   with no deploy evidence is a dropped pass and the poll abandons the
+   row itself, through ``update_round`` — never while a non-terminal
+   ``release_deploy`` job sits under the pass, and a dry run or
+   ``PRECIS_FACTORY=off`` reports the would-abandon and writes nothing,
+   gr575362). No GitHub read has happened yet.
 3. The repo: ``params.repo``, else ``release.repo``, else the checkout's
    ``origin`` (:func:`precis.plans.pr_class.resolve_repo`).
 4. ``GET /repos/<repo>/compare/prod...main``: ``behind_by > 0`` or
@@ -277,11 +282,163 @@ def _round_raw(store: Any) -> str | None:
     return None if row is None else str(row[0])
 
 
-def _round_blocker(store: Any) -> str | None:
+#: The ``pass`` handle ``release_cut`` writes on the row it creates — a
+#: ``td<root>`` naming the pass's plan root. Script-published rows carry
+#: none: their round belongs to a checkout's journal, not a factory pass.
+_PASS_REF_RE = re.compile(r"^td(\d+)$")
+
+
+def _pass_ref(store: Any, rec: dict[str, Any]) -> tuple[int, str] | None:
+    """``(pass root id, its STATUS)`` when the row's ``pass`` handle
+    names a live todo, else ``None`` — a row without one, or naming a
+    todo that no longer exists, cannot be judged this way."""
+    m = _PASS_REF_RE.fullmatch(str(rec.get("pass") or ""))
+    if m is None:
+        return None
+    rid = int(m.group(1))
+    if store.get_ref(kind="todo", id=rid) is None:
+        return None
+    status = next(
+        (str(t.value) for t in store.tags_for(rid) if t.prefix == "STATUS"),
+        "open",
+    )
+    return rid, status
+
+
+def _deploy_evidence(store: Any, rec: dict[str, Any], pass_id: int) -> bool:
+    """Something may already have rolled out: ``meta.release.confirmed``
+    on the pass root, a ``deploy.sha`` already on the row, or
+    ``release.prod_head`` naming the row's base sha."""
+    ref = store.get_ref(kind="todo", id=pass_id)
+    rel = (ref.meta or {}).get("release") if ref is not None else None
+    if isinstance(rel, dict) and isinstance(rel.get("confirmed"), dict):
+        return True
+    dep = rec.get("deploy")
+    if isinstance(dep, dict) and dep.get("sha"):
+        return True
+    base = str(rec.get("base") or "").lower()[: _release.LANDED_SHA_LEN]
+    head = _release.read_prod_head(store)
+    return bool(
+        len(base) == _release.LANDED_SHA_LEN
+        and head is not None
+        and str(head.get("head") or "").lower().startswith(base)
+    )
+
+
+def _live_deploy_job(store: Any, pass_id: int) -> bool:
+    """A non-terminal ``release_deploy`` job under the pass's plan
+    members — its own ``deployed`` write may still land, so the row
+    must not be abandoned out from under it (gr575362)."""
+    from precis.workers._mint import JOB_TERMINAL_STATUSES
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT j.ref_id FROM refs j
+              JOIN refs m ON m.ref_id = j.parent_id
+              JOIN ref_tags rt ON rt.ref_id = m.ref_id
+              JOIN tags t USING (tag_id)
+             WHERE j.kind = 'job' AND j.retired_at IS NULL
+               AND j.meta ->> 'job_type' = 'release_deploy'
+               AND m.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = %s
+            """,
+            (f"plan:{pass_id}",),
+        ).fetchall()
+    for (jid,) in rows:
+        status = next(
+            (str(t.value) for t in store.tags_for(int(jid)) if t.prefix == "STATUS"),
+            "open",
+        )
+        if status not in JOB_TERMINAL_STATUSES:
+            return True
+    return False
+
+
+def _abandon_dropped_round(
+    store: Any, rec: dict[str, Any], pass_id: int, status: str, now: datetime
+) -> list[str]:
+    """The cut row of a pass that ended before any deploy: ``abandoned``
+    through :func:`precis.plans.release.update_round`'s merge — a fresh
+    read under the rank rules, so a concurrent ``deployed`` write
+    survives. Returns the write's note."""
+    return _release.update_round(
+        store,
+        {
+            "n": rec.get("n"),
+            "state": "abandoned",
+            "abandoned_why": (
+                f"pass td{pass_id} ended {status} with no deploy recorded; "
+                f"release_poll abandoned the row"
+            ),
+        },
+        now=now,
+    )
+
+
+def _terminal_pass_blocker(
+    rec: dict[str, Any], state: str, pass_id: int, status: str
+) -> str:
+    n = rec.get("n", "?")
+    return (
+        f"release round r{n} in flight ({state}) but pass td{pass_id} is "
+        f"{status} — nothing will move the row; next: `scripts/round "
+        f"supersede r{n}` run where the publish works, or "
+        f"`scripts/prod-precis settings set release.round` a row with a "
+        f"terminal state"
+    )
+
+
+def _rejudge_after_abandon(store: Any, pass_id: int, status: str) -> str | None:
+    """What the fresh row says after the abandon write: a terminal state
+    (the write landed) is no block; a row a concurrent write moved
+    reads like a same-shape row whose pass ended — ``cut`` the generic
+    blocker, anything later the hand-verb one. An absent fresh row is
+    "no round"; an unreadable one blocks — when unsure, do not mint."""
+    try:
+        raw = _round_raw(store)
+    except Exception as exc:
+        return f"{_release.ROUND_KEY} unreadable ({type(exc).__name__}): nothing minted"
+    rec: dict[str, Any] | None = None
+    if raw and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            return f"{_release.ROUND_KEY} is unparsable: nothing minted"
+        if isinstance(parsed, dict):
+            rec = parsed
+    if rec is None:
+        return None
+    state = rec.get("state")
+    if not isinstance(state, str) or not state:
+        return f"{_release.ROUND_KEY} carries no state: nothing minted"
+    if state in _ROUND_TERMINAL_STATES:
+        return None
+    if state == "cut":
+        return f"release round r{rec.get('n', '?')} in flight (cut)"
+    return _terminal_pass_blocker(rec, state, pass_id, status)
+
+
+def _round_blocker(
+    store: Any, now: datetime, *, dry_run: bool, notes: list[str]
+) -> str | None:
     """The shared ``release.round`` record as a blocker line — ``None``
-    only for an absent record ("no round") or a closed one (terminal
-    state). A record that cannot be read or parsed blocks: when unsure,
+    only for an absent record ("no round"), a closed one (terminal
+    state), or a ``cut`` row whose recorded ``pass`` root ended before
+    any deploy: the poll abandons that row itself, a dropped pass would
+    otherwise block every later mint (gr575362). Three exceptions keep
+    the row: ``dry_run`` or ``PRECIS_FACTORY=off`` notes the
+    would-abandon and writes nothing (``watch_stuck``'s rule); a live
+    ``release_deploy`` job under the pass keeps blocking — its own
+    ``deployed`` write may still land. The abandon goes through
+    ``update_round``'s fresh read and the row is re-judged on what the
+    write left. A later-state row whose pass ended keeps blocking —
+    something may have rolled out — and the blocker names the hand
+    verbs. A record that cannot be read or parsed blocks: when unsure,
     do not mint."""
+    from precis.todo import TERMINAL_TODO_STATUSES
+    from precis.workers.job_types import run_slice
+
     try:
         raw = _round_raw(store)
     except Exception as exc:
@@ -297,9 +454,40 @@ def _round_blocker(store: Any) -> str | None:
     state = rec.get("state")
     if not isinstance(state, str) or not state:
         return f"{_release.ROUND_KEY} carries no state: nothing minted"
-    if state not in _ROUND_TERMINAL_STATES:
-        return f"release round r{rec.get('n', '?')} in flight ({state})"
-    return None
+    if state in _ROUND_TERMINAL_STATES:
+        return None
+    n = rec.get("n", "?")
+    pass_ref = _pass_ref(store, rec)
+    if pass_ref is not None:
+        pass_id, status = pass_ref
+        if status in TERMINAL_TODO_STATUSES:
+            if state == "cut" and not _deploy_evidence(store, rec, pass_id):
+                if _live_deploy_job(store, pass_id):
+                    return (
+                        f"release round r{n} in flight (cut); pass "
+                        f"td{pass_id} is {status} but a release_deploy job "
+                        "is still live — it may advance the row itself"
+                    )
+                if dry_run or run_slice.factory_off():
+                    notes.append(
+                        f"would abandon release round r{n}: pass td{pass_id} "
+                        f"ended {status} with no deploy recorded"
+                    )
+                    return None
+                try:
+                    notes.extend(
+                        _abandon_dropped_round(store, rec, pass_id, status, now)
+                    )
+                except Exception as exc:
+                    log.warning("release_poll: abandon row write failed", exc_info=True)
+                    return (
+                        f"release round r{n} in flight (cut) but pass "
+                        f"td{pass_id} is {status}; the abandon write failed "
+                        f"({type(exc).__name__})"
+                    )
+                return _rejudge_after_abandon(store, pass_id, status)
+            return _terminal_pass_blocker(rec, state, pass_id, status)
+    return f"release round r{n} in flight ({state})"
 
 
 # ── the observation-only stuck watchdog (td574370) ──────────────────
@@ -793,7 +981,7 @@ def run_pass(
     if open_id is not None:
         res.blocker = f"release-pass td{open_id} is open"
         return res
-    blocked = _round_blocker(store)
+    blocked = _round_blocker(store, now, dry_run=dry_run, notes=res.notes)
     if blocked is not None:
         res.blocker = blocked
         return res

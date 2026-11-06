@@ -104,3 +104,239 @@ def test_read_round_tolerates_unset_and_garbage(store: Store) -> None:
     for bad in ("{not json", "[1, 2]", '"just a string"', "null", "7"):
         psettings.set_setting(plans_release.ROUND_KEY, bad, store=store)
         assert plans_release.read_round(store) is None, bad
+
+
+# ── update_round: the job types' writer (gr575362) ──────────────────
+#
+# ``release_cut`` creates (or replaces a lower-n row), ``release_deploy``
+# advances the same-n row's state. A write never lowers the state's rank,
+# never touches a higher ``n``, and never overwrites a row it cannot
+# parse — the script's own publish wins where it wrote first.
+
+
+def _fields(n: int = 1, state: str = "cut", **over: object) -> dict:
+    fields: dict[str, object] = {
+        "n": n,
+        "branch": f"release/r{n}",
+        "base": BASE,
+        "state": state,
+        "owner": OWNER,
+    }
+    fields.update(over)
+    return fields
+
+
+def _seed(store: Store, row: dict) -> dict:
+    plans_release.record_round(store, row)
+    return row
+
+
+def test_update_round_create_writes_a_stamped_row(store: Store) -> None:
+    notes = plans_release.update_round(store, _fields(), create=True, now=NOW)
+    assert notes == ["release.round: wrote r1 cut"]
+    assert plans_release.read_round(store) == {
+        "n": 1,
+        "branch": "release/r1",
+        "base": BASE,
+        "state": "cut",
+        "owner": OWNER,
+        "state_at": "2026-11-06T12:00:00Z",
+        "cut_at": "2026-11-06T12:00:00Z",
+    }
+
+
+def test_update_round_create_keeps_a_caller_stamp(store: Store) -> None:
+    plans_release.update_round(
+        store,
+        _fields(state_at="2026-11-06T09:00:00Z"),
+        create=True,
+        now=NOW,
+    )
+    row = plans_release.read_round(store)
+    assert row is not None
+    assert row["state_at"] == "2026-11-06T09:00:00Z"
+    assert row["cut_at"] == "2026-11-06T12:00:00Z"
+
+
+def test_update_round_same_n_create_leaves_the_row(store: Store) -> None:
+    """A same-n row is the script's own publish; the job leaves it."""
+    seeded = _seed(store, _fields(state="deployed"))
+    notes = plans_release.update_round(store, _fields(), create=True, now=NOW)
+    assert "already on record (deployed)" in notes[0]
+    assert plans_release.read_round(store) == seeded
+
+
+def test_update_round_same_n_create_stamps_the_pass(store: Store) -> None:
+    """The script's publish wrote the same-n ``cut`` row first — it has
+    no ``pass``: the job stamps just that key so the dropped-pass
+    abandon in ``release_poll`` can still fire."""
+    seeded = _seed(store, _fields(state="cut"))
+    fields = _fields()
+    fields["pass"] = "td42"
+    notes = plans_release.update_round(store, fields, create=True, now=NOW)
+    assert "stamped td42" in notes[0]
+    assert plans_release.read_round(store) == {**seeded, "pass": "td42"}
+
+
+def test_update_round_same_n_create_keeps_a_recorded_pass(store: Store) -> None:
+    seeded = _seed(store, {**_fields(state="cut"), "pass": "td41"})
+    fields = _fields()
+    fields["pass"] = "td99"
+    notes = plans_release.update_round(store, fields, create=True, now=NOW)
+    assert "already on record (cut)" in notes[0]
+    assert plans_release.read_round(store) == seeded
+
+
+def test_update_round_same_n_create_stamps_no_pass_on_a_later_state(
+    store: Store,
+) -> None:
+    seeded = _seed(store, _fields(state="deployed"))
+    fields = _fields()
+    fields["pass"] = "td42"
+    notes = plans_release.update_round(store, fields, create=True, now=NOW)
+    assert "already on record (deployed)" in notes[0]
+    assert plans_release.read_round(store) == seeded
+
+
+def test_update_round_recut_moves_a_lower_n_row(store: Store) -> None:
+    _seed(store, _fields(n=1, state="confirmed"))
+    notes = plans_release.update_round(store, _fields(n=2), create=True, now=NOW)
+    assert notes == ["release.round: wrote r2 cut"]
+    row = plans_release.read_round(store)
+    assert row is not None
+    assert row["n"] == 2 and row["state"] == "cut"
+    assert row["cut_at"] == "2026-11-06T12:00:00Z"
+
+
+def test_update_round_never_touches_a_higher_n_row(store: Store) -> None:
+    seeded = _seed(store, _fields(n=2, state="cut"))
+    notes = plans_release.update_round(store, _fields(n=1), create=True, now=NOW)
+    assert "the row is r2, not r1" in notes[0]
+    assert plans_release.read_round(store) == seeded
+
+
+def test_update_round_never_overwrites_an_unreadable_row(store: Store) -> None:
+    for bad in ("{not json", "[1,2]"):
+        psettings.set_setting(plans_release.ROUND_KEY, bad, store=store)
+        notes = plans_release.update_round(store, _fields(), create=True, now=NOW)
+        assert "nothing written" in notes[0], bad
+        assert plans_release.read_round(store) is None
+        assert psettings.get_str(plans_release.ROUND_KEY, store=store) == bad
+
+
+def test_update_round_survives_a_db_error(store: Store, monkeypatch) -> None:
+    def boom(s: Store) -> str | None:
+        raise OSError("db gone")
+
+    monkeypatch.setattr(plans_release, "_round_raw", boom)
+    notes = plans_release.update_round(store, _fields(), create=True, now=NOW)
+    assert notes == ["release.round: unreadable (OSError); nothing written"]
+
+
+def test_update_round_needs_an_n(store: Store) -> None:
+    notes = plans_release.update_round(store, {"state": "cut"}, create=True, now=NOW)
+    assert "nothing written" in notes[0]
+    assert plans_release.read_round(store) is None
+
+
+def test_update_round_non_create_never_creates(store: Store) -> None:
+    notes = plans_release.update_round(store, _fields(state="deployed"), now=NOW)
+    assert "no row on record" in notes[0]
+    assert plans_release.read_round(store) is None
+
+
+def test_update_round_advance_merges_deploy_and_records_keys_win(
+    store: Store,
+) -> None:
+    """The deploy merge: state moves forward, ``state_at`` is stamped,
+    ``deploy`` keys the script already published are kept (setdefault)."""
+    _seed(
+        store,
+        _fields(
+            state="deploying",
+            state_at="2026-11-06T10:00:00Z",
+            deploy={"sha": "a" * 40, "rollout_at": "2026-11-06T10:30:00Z"},
+        ),
+    )
+    notes = plans_release.update_round(
+        store,
+        {
+            "n": 1,
+            "state": "deployed",
+            "deploy": {"sha": "b" * 40, "evidence": "job evidence"},
+        },
+        now=NOW,
+    )
+    assert notes == ["release.round: r1 deploying -> deployed"]
+    row = plans_release.read_round(store)
+    assert row is not None
+    assert row["state"] == "deployed"
+    assert row["state_at"] == "2026-11-06T12:00:00Z"
+    assert row["deploy"] == {
+        "sha": "a" * 40,  # the script's publish wins
+        "rollout_at": "2026-11-06T10:30:00Z",
+        "evidence": "job evidence",  # an absent key is filled
+    }
+
+
+@pytest.mark.parametrize("state", ["confirmed", "superseded", "abandoned"])
+def test_update_round_never_lowers_a_terminal_state(store: Store, state: str) -> None:
+    seeded = _seed(store, _fields(state=state))
+    notes = plans_release.update_round(store, {"n": 1, "state": "deployed"}, now=NOW)
+    assert "not a move forward" in notes[0]
+    assert plans_release.read_round(store) == seeded
+
+
+def test_update_round_same_state_is_not_a_move_forward(store: Store) -> None:
+    seeded = _seed(store, _fields(state="deployed"))
+    notes = plans_release.update_round(
+        store,
+        {"n": 1, "state": "deployed", "deploy": {"sha": "b" * 40}},
+        now=NOW,
+    )
+    assert "not a move forward" in notes[0]
+    assert plans_release.read_round(store) == seeded
+
+
+def test_update_round_needs_a_known_want_state(store: Store) -> None:
+    seeded = _seed(store, _fields(state="cut"))
+    notes = plans_release.update_round(store, {"n": 1, "state": "bogus"}, now=NOW)
+    assert "not a move forward" in notes[0]
+    assert plans_release.read_round(store) == seeded
+
+
+@pytest.mark.parametrize("state", ["deploying", "deployed"])
+def test_update_round_a_terminal_write_needs_a_pre_deploy_row(
+    store: Store, state: str
+) -> None:
+    """The dropped-pass abandon goes through the same rank rules: a
+    job-side terminal write may take a rank-0 row, never a row that
+    reads as rolled out — a concurrent ``deployed`` write survives."""
+    seeded = _seed(store, _fields(state=state))
+    notes = plans_release.update_round(store, {"n": 1, "state": "abandoned"}, now=NOW)
+    assert "terminal write" in notes[0]
+    assert plans_release.read_round(store) == seeded
+
+
+def test_update_round_advance_merges_extra_fields(store: Store) -> None:
+    """The abandon's ``abandoned_why`` rides along: non-reserved fields
+    merge with the recorded keys winning, like ``deploy``."""
+    _seed(store, _fields(state="cut"))
+    notes = plans_release.update_round(
+        store,
+        {"n": 1, "state": "abandoned", "abandoned_why": "pass td9 ended"},
+        now=NOW,
+    )
+    assert notes == ["release.round: r1 cut -> abandoned"]
+    row = plans_release.read_round(store)
+    assert row is not None
+    assert row["state"] == "abandoned"
+    assert row["state_at"] == "2026-11-06T12:00:00Z"
+    assert row["abandoned_why"] == "pass td9 ended"
+
+
+def test_update_round_a_string_n_is_not_this_round(store: Store) -> None:
+    seeded = _seed(store, {**_fields(), "n": "1"})
+    notes = plans_release.update_round(store, _fields(), create=True, now=NOW)
+    assert "not r1" in notes[0]
+    assert plans_release.read_round(store) == seeded

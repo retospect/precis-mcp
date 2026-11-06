@@ -14,8 +14,16 @@ detached submit/poll pair under ``ssh_node``:
   (:func:`precis.plans.release.record_cut`: ``meta.release`` on the plan
   root with the ``host`` and ``checkout`` it ran in, the real range on the
   plan's ``tests-green`` gate and loop, ``deploy r<N>`` on the approval
-  ask) and succeeds with r<N> and the sha in the
-  summary and ``meta.release_cut``. No ``RELEASE_CUT`` line (S already live,
+  ask), writes the shared ``release.round`` row through
+  :func:`precis.plans.release.update_round` (``create=True`` — the
+  script's own per-clone publish may have skipped on this host; the row
+  carries ``pass: td<root>`` so ``release_poll`` can abandon it when
+  the pass is dropped), and
+  succeeds with r<N> and the sha in the
+  summary and ``meta.release_cut``. The round write is best-effort:
+  skipped when the cut's host is unknown, a failure a log warning plus a
+  summary note — never a job failure, the cut happened. No
+  ``RELEASE_CUT`` line (S already live,
   a release in flight elsewhere) or a non-zero exit fails the job with the
   log tail; the plan tick's retry cap then files the ask.
 
@@ -268,6 +276,7 @@ def poll(ctx: Any, handle: Any) -> bool:
     host = run_host(params)
     notes: list[str] = []
     if isinstance(todo_id, int):
+        now = datetime.now(UTC)
         try:
             notes = _release.record_cut(
                 ctx.store,
@@ -278,6 +287,7 @@ def poll(ctx: Any, handle: Any) -> bool:
                 repo=repo,
                 host=host,
                 checkout=checkout,
+                now=now,
             )
         except Exception as exc:
             log.warning("%s: record_cut on td%s failed", NAME, todo_id, exc_info=True)
@@ -288,6 +298,28 @@ def poll(ctx: Any, handle: Any) -> bool:
                 log_text,
             )
             return True
+        if host is None:
+            notes.append("release.round not written: the cut's host is unknown")
+        else:
+            try:
+                notes += _release.update_round(
+                    ctx.store,
+                    {
+                        "n": int(rn[1:]),
+                        "branch": f"release/{rn}",
+                        "base": sha,
+                        "state": "cut",
+                        "owner": {"host": host, "checkout": checkout},
+                        "pass": f"td{_release.plan_root(ctx.store, todo_id)}",
+                    },
+                    create=True,
+                    now=now,
+                )
+            except Exception as exc:
+                # The cut happened; like record_prod_head this write is
+                # best-effort — a warning plus a summary note, not a failure.
+                log.warning("%s: release.round write failed", NAME, exc_info=True)
+                notes.append(f"release.round not written: {type(exc).__name__}")
     ctx.set_meta(
         release_cut={
             "rN": rn,

@@ -548,6 +548,232 @@ def test_release_deploy_fails_on_a_refused_deploy(
     assert gates.read_prod_head(store) is None
 
 
+# ── the job types write the shared release.round row (gr575362) ────
+
+
+def _cut_log(rn: str = "r7", sha: str = SHA) -> str:
+    return (
+        f"release/{rn} cut at {sha[:9]}\n"
+        f"RELEASE_CUT: {rn} {sha}\n"
+        f"RELEASE_RANGE: {PREV}..{sha[:12]}\n"
+    )
+
+
+def _seed_round(store: Store, n: int, state: str, **over: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "n": n,
+        "branch": f"release/r{n}",
+        "base": SHA,
+        "state": state,
+        "owner": {"host": "node-b", "checkout": "/elsewhere"},
+        "state_at": "2026-01-01T00:00:00Z",
+    }
+    row.update(over)
+    R.record_round(store, row)
+    return row
+
+
+def _run_cut(
+    store: Store, checkout: dict[str, Any], todo_id: int, out: str | None = None
+) -> Ctx:
+    ctx = Ctx(store, {"todo_id": todo_id})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and ctx.failures == []
+    _exit(checkout, 0, out or _cut_log())
+    assert rc.poll(ctx, handle) is True
+    return ctx
+
+
+def test_release_cut_poll_writes_the_shared_round_row(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    mint = T.mint_release_pass(store)
+    ctx = _run_cut(store, checkout, mint.ids["cut"])
+    assert ctx.status == "succeeded", ctx.failures
+    row = R.read_round(store)
+    rel = _meta(store, mint.root_id)["release"]
+    assert row == {
+        "n": 7,
+        "branch": "release/r7",
+        "base": SHA,
+        "state": "cut",
+        "owner": {"host": "node-a", "checkout": str(checkout["root"])},
+        "pass": f"td{mint.root_id}",
+        "state_at": rel["cut_at"],
+        "cut_at": rel["cut_at"],
+    }
+    assert "wrote r7 cut" in ctx.chunks[-1][1]
+
+
+def test_release_cut_poll_leaves_a_same_n_row_with_a_later_state(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The script's own publish already wrote r7: the job leaves it."""
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    mint = T.mint_release_pass(store)
+    seeded = _seed_round(store, 7, "deployed")
+    ctx = _run_cut(store, checkout, mint.ids["cut"])
+    assert ctx.status == "succeeded", ctx.failures
+    assert R.read_round(store) == seeded
+    assert "already on record" in ctx.chunks[-1][1]
+
+
+def test_release_cut_poll_leaves_a_higher_n_row(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    mint = T.mint_release_pass(store)
+    seeded = _seed_round(store, 8, "cut")
+    ctx = _run_cut(store, checkout, mint.ids["cut"])
+    assert ctx.status == "succeeded", ctx.failures
+    assert R.read_round(store) == seeded
+    assert "the row is r8" in ctx.chunks[-1][1]
+
+
+def test_release_cut_poll_recut_moves_a_lower_n_row(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A re-cut r<N+1> moves the row — the old round is over."""
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    mint = T.mint_release_pass(store)
+    _seed_round(store, 6, "confirmed")
+    ctx = _run_cut(store, checkout, mint.ids["cut"])
+    assert ctx.status == "succeeded", ctx.failures
+    row = R.read_round(store)
+    assert row is not None
+    assert row["n"] == 7 and row["state"] == "cut"
+    assert row["owner"]["host"] == "node-a"
+
+
+def test_release_cut_poll_unknown_host_writes_no_row(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    mint = T.mint_release_pass(store)
+    ctx = _run_cut(store, checkout, mint.ids["cut"])
+    assert ctx.status == "succeeded", ctx.failures
+    assert R.read_round(store) is None
+    assert "host is unknown" in ctx.chunks[-1][1]
+
+
+def _deploy_handle(store: Store, mint: T.PlanMint) -> tuple[Ctx, dict[str, Any]]:
+    _comment(store, mint.ids["approval"], "answer: deploy r7")
+    ctx = Ctx(store, {"todo_id": mint.ids["deploy"], "target_node": "node-a"})
+    handle = rd.submit(ctx, None)
+    assert handle is not None, ctx.failures
+    return ctx, handle
+
+
+def _cut_round_row(store: Store, checkout: dict[str, Any], mint: T.PlanMint) -> None:
+    """The row ``release_cut.poll`` writes for the ``_cut`` pass."""
+    R.update_round(
+        store,
+        {
+            "n": 7,
+            "branch": "release/r7",
+            "base": SHA,
+            "state": "cut",
+            "owner": {"host": "node-a", "checkout": str(checkout["root"])},
+            "pass": f"td{mint.root_id}",
+        },
+        create=True,
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+
+@pytest.mark.parametrize("code", [0, 3], ids=["exit0", "exit3"])
+def test_release_deploy_poll_advances_the_row(
+    store: Store,
+    checkout: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    code: int,
+) -> None:
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    mint = _cut(store, host="node-a", checkout=str(checkout["root"]))
+    _cut_round_row(store, checkout, mint)
+    ctx, handle = _deploy_handle(store, mint)
+    _exit(checkout, code, f"RELEASE_DEPLOYED: r7 {SHA} {PREV}\n")
+    assert rd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    row = R.read_round(store)
+    assert row is not None
+    assert row["state"] == "deployed"
+    assert row["state_at"] > "2026-01-01T00:00:00Z"
+    assert row["deploy"]["sha"] == SHA
+    assert row["deploy"]["rollout_at"].endswith("Z")
+    assert row["owner"] == {"host": "node-a", "checkout": str(checkout["root"])}
+
+
+def test_release_deploy_poll_never_creates_a_row(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    mint = _cut(store, host="node-a", checkout=str(checkout["root"]))
+    ctx, handle = _deploy_handle(store, mint)
+    _exit(checkout, 0, f"RELEASE_DEPLOYED: r7 {SHA} {PREV}\n")
+    assert rd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    assert R.read_round(store) is None
+    assert "no row on record" in ctx.chunks[-1][1]
+
+
+def test_release_deploy_poll_never_lowers_a_terminal_row(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    mint = _cut(store, host="node-a", checkout=str(checkout["root"]))
+    seeded = _seed_round(store, 7, "confirmed")
+    ctx, handle = _deploy_handle(store, mint)
+    _exit(checkout, 0, f"RELEASE_DEPLOYED: r7 {SHA} {PREV}\n")
+    assert rd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    assert R.read_round(store) == seeded
+    assert "not a move forward" in ctx.chunks[-1][1]
+
+
+def test_release_deploy_poll_omits_a_guessed_sha_without_a_deployed_line(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``RELEASE_DEPLOYED`` line: the row still advances to ``deployed``
+    (the rollout did happen), but it guesses no ``deploy.sha`` — the plan's
+    sha is not the deployed head — and writes no ``rollout_at`` that is
+    really the poll time. ``pinned_deploy_sha`` then falls back to the
+    prod head."""
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    mint = _cut(store, host="node-a", checkout=str(checkout["root"]))
+    _cut_round_row(store, checkout, mint)
+    ctx, handle = _deploy_handle(store, mint)
+    _exit(checkout, 3, "rollout already done\n")
+    assert rd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    row = R.read_round(store)
+    assert row is not None
+    assert row["state"] == "deployed"
+    assert row["state_at"] > "2026-01-01T00:00:00Z"
+    dep = row.get("deploy") or {}
+    assert "sha" not in dep and "rollout_at" not in dep
+
+
+def test_release_deploy_poll_survives_a_release_of_db_error(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``release_of`` sits inside the round write's try: a database error
+    there is a summary note, never a job failure after a rollout."""
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    mint = _cut(store, host="node-a", checkout=str(checkout["root"]))
+    _cut_round_row(store, checkout, mint)
+    ctx, handle = _deploy_handle(store, mint)
+    _exit(checkout, 3, "rollout already done\n")
+
+    def boom(store: Store, todo_id: int) -> None:
+        raise OSError("db gone")
+
+    monkeypatch.setattr(R, "release_of", boom)
+    assert rd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    assert "release.round not advanced" in ctx.chunks[-1][1]
+
+
 # ── the deploy is pinned to the cut's host and checkout ──────────────
 
 
@@ -1220,6 +1446,7 @@ def _walk_to_confirm(
         host="node-a",
         checkout=str(checkout["root"]),
     )
+    _cut_round_row(store, checkout, mint)  # the row release_cut.poll writes
     _succeed(store, job)
     pd.run_pass(store)
     job, _ = _only_job(store, ids["poll"])
@@ -1440,6 +1667,61 @@ def test_confirm_close_launch_failure_still_succeeds(
     assert "deployed/r7" in summary
 
 
+def test_release_confirm_advances_the_row_to_confirmed(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The walk's own deploy write left the row ``deployed``; the
+    confirm moves it to ``confirmed`` with a fresh ``state_at``."""
+    _round_script(checkout)
+    _mint, _job, params = _walk_to_confirm(store, checkout, monkeypatch)
+    store.record_heartbeat("node-a", meta={"code_sha": SHA})
+    row = R.read_round(store)
+    assert row is not None and row["state"] == "deployed"
+    assert row["deploy"]["sha"] == SHA and row["deploy"]["rollout_at"]
+    row["state_at"] = "2026-01-01T00:00:00Z"  # date it so the new stamp shows
+    R.record_round(store, row)
+    ctx = Ctx(store, params)
+    handle = rcf.submit(ctx, None)
+    assert handle is not None, ctx.failures
+    _exit(checkout, 0, "confirmed\n")
+    assert rcf.poll(ctx, handle) is False
+    _exit(checkout, 0, "closed\n")
+    assert rcf.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    row = R.read_round(store)
+    assert row is not None and row["state"] == "confirmed"
+    assert row["state_at"] > "2026-01-01T00:00:00Z"
+    assert row["deploy"]["confirmed_at"].endswith("Z")
+
+
+def test_record_confirm_takes_the_sha_from_the_prod_head(
+    store: Store,
+) -> None:
+    """gr575362 review round 3: a fallback deploy (no ``RELEASE_DEPLOYED``
+    line) left the row ``deployed`` with no ``deploy.sha``, and the confirm
+    skipped it forever. When the prod head names the confirmed sha the row
+    takes it as the deployed sha and moves to ``confirmed``; a prod head on
+    another sha keeps the skip."""
+    mint = _cut(store)
+    _seed_round(store, 7, "deployed", deploy={"rollout_at": "2026-01-01T00:30:00Z"})
+    R.record_prod_head(store, SHA, [])
+    notes = R.record_confirm(store, mint.ids["deploy"], SHA, "evidence")
+    assert any("confirmed" in n for n in notes)
+    row = R.read_round(store)
+    assert row is not None and row["state"] == "confirmed"
+    assert row["deploy"]["sha"] == SHA
+    assert row["deploy"]["rollout_at"] == "2026-01-01T00:30:00Z"
+
+    # The prod head on another sha is not deploy evidence for this one.
+    _seed_round(store, 7, "deployed", deploy={"rollout_at": "2026-01-01T00:30:00Z"})
+    R.record_prod_head(store, SHA2, [])
+    notes = R.record_confirm(store, mint.ids["deploy"], SHA, "evidence")
+    assert any("deploy.sha absent" in n for n in notes)
+    row = R.read_round(store)
+    assert row is not None and row["state"] == "deployed"
+    assert "sha" not in row["deploy"]
+
+
 def _stale_beat(store: Store, host: str, code_sha: str, minutes: int = 10) -> None:
     """A heartbeat at ``code_sha`` written *before* the deploy finished:
     the host has not restarted since the rollout. ``minutes`` backdates
@@ -1500,7 +1782,14 @@ def test_probe_still_stale_at_the_deadline_files_an_ask(
     assert checkout["argv"] == launches
     # Re-date the deploy 11 minutes back — still after the beat, but the
     # 10-minute window has passed: the wait is over, the host failed.
-    R.record_prod_head(store, SHA, [], now=datetime.now(UTC) - timedelta(minutes=11))
+    # _deployed_at prefers the round row's deploy.rollout_at, which the
+    # walk's release_deploy.poll wrote.
+    row = R.read_round(store)
+    assert row is not None and row["state"] == "deployed"
+    old = (datetime.now(UTC) - timedelta(minutes=11)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    row["deploy"]["rollout_at"] = old
+    row["state_at"] = old
+    R.record_round(store, row)
     handle["not_before"] = "2000-01-01T00:00:00Z"
     assert rcf.poll(ctx, handle) is True
     reason = ctx.failures[0]

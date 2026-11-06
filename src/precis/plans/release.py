@@ -27,9 +27,17 @@ what lives here:
   the active release's row (``{n, branch, base, state, owner, cut_at,
   deploy?}``) so a second clone and the release loop read the same
   lifecycle state the coordinator's ``round.json`` tracks.
+  :func:`update_round` is the release job types' write path (gr575362):
+  ``release_cut`` creates the row (stamping just ``pass`` on a same-n
+  ``cut`` row the script published first), ``release_deploy`` merges it
+  forward to ``deployed``, and ``release_poll``'s dropped-pass abandon
+  takes the same merge — a rank-ordered move that never lowers a state,
+  lets a job-side terminal write take a rank-0 row only, never touches
+  a higher ``n`` and never overwrites an unreadable row.
   :func:`pinned_deploy_sha` resolves the sha the runtime must serve (the
   round row's ``deploy.sha`` for this release, else the prod head);
-  :func:`record_confirm` merges the runtime confirmation into the row and
+  :func:`record_confirm` merges the runtime confirmation into the row
+  (stamping ``state_at``) and
   ``meta.release.confirmed``, deferring to the script's own publish where
   it wrote first (td573432).
 - **The approval check** (:func:`approval`): the deploy runs only when the
@@ -704,6 +712,21 @@ def pinned_deploy_sha(store: Store, rn: str) -> str | None:
 #: the release lifecycle's terminal states (``scripts/round`` §states).
 _CONFIRM_TERMINAL = frozenset({"confirmed", "superseded", "abandoned"})
 
+#: Lifecycle ``state`` order for a job-side :func:`update_round` write:
+#: the open states rank 0, ``deploying`` 1, ``deployed`` 2, the terminal
+#: states 3 — a job-side write never lowers the rank (gr575362).
+_ROUND_STATE_RANK = {
+    "cut": 0,
+    "gating": 0,
+    "fixing": 0,
+    "green": 0,
+    "deploying": 1,
+    "deployed": 2,
+    "confirmed": 3,
+    "superseded": 3,
+    "abandoned": 3,
+}
+
 
 def record_confirm(
     store: Store,
@@ -724,7 +747,11 @@ def record_confirm(
     ``confirmed_at`` or ``evidence``. The row is skipped (with a note)
     when its ``n`` differs from the plan's release or its ``deploy.sha``
     differs from ``sha``; no row is ever written from nothing. ``state``
-    moves to ``confirmed`` only when it is not already terminal. On the
+    moves to ``confirmed`` only when it is not already terminal. A row
+    whose ``deploy`` carries no ``sha`` — a fallback deploy wrote none —
+    takes ``sha`` from ``release.prod_head`` when the head names it, so
+    the confirm does not skip forever (gr575362); a prod head on
+    another sha keeps the skip. On the
     plan root ``meta.release.confirmed = {sha, at, evidence}`` is
     stamped, every other key kept, only while ``confirmed`` is absent or
     names a different sha — so the call is idempotent and a repeat call
@@ -748,14 +775,29 @@ def record_confirm(
         )
     else:
         dep = row.get("deploy")
-        dep_sha = dep.get("sha") if isinstance(dep, dict) else None
+        if not isinstance(dep, dict):
+            dep = {}
+        dep_sha = dep.get("sha")
+        if dep_sha is None:
+            # A fallback deploy (no RELEASE_DEPLOYED line) left the row
+            # deployed with no deploy.sha: the prod head is the record of
+            # what actually rolled out — when it names the confirmed sha,
+            # fill it in and confirm.
+            settings.invalidate(PROD_HEAD_KEY)
+            head = read_prod_head(store)
+            if (
+                head is not None
+                and str(head.get("head") or "").lower()[:LANDED_SHA_LEN]
+                == sha.lower()[:LANDED_SHA_LEN]
+            ):
+                dep["sha"] = sha
+                dep_sha = sha
         if dep_sha != sha:
             notes.append(
                 f"release.round: skipped — deploy.sha "
                 f"{str(dep_sha)[:12] if dep_sha else 'absent'} is not {sha[:12]}"
             )
         else:
-            assert isinstance(dep, dict)
             updates = {
                 k: v
                 for k, v in (("confirmed_at", when), ("evidence", evidence))
@@ -766,6 +808,7 @@ def record_confirm(
                 new_row["deploy"] = {**dep, **updates}
                 if str(row.get("state")) not in _CONFIRM_TERMINAL:
                     new_row["state"] = "confirmed"
+                    new_row["state_at"] = when
                 settings.invalidate(ROUND_KEY)
                 settings.set_setting(
                     ROUND_KEY,
@@ -781,6 +824,115 @@ def record_confirm(
             store.stamp_ref_meta(root, {"release": {**rel, "confirmed": stamp}})
             notes.append(f"td{root}: meta.release.confirmed = {sha[:12]}")
     return notes
+
+
+def update_round(
+    store: Store,
+    fields: dict[str, Any],
+    *,
+    create: bool = False,
+    now: datetime | None = None,
+) -> list[str]:
+    """Write the shared ``release.round`` row from a job type (gr575362);
+    one note per call, written or skipped.
+
+    ``fields`` carries the row literal — ``n`` (int) required, plus
+    ``branch`` / ``base`` / ``owner`` / ``pass`` for a create and
+    ``state`` / ``deploy`` for an advance. ``create=True`` is the cut's write: it
+    fills ``state_at`` and ``cut_at`` with ``now`` when the fields do not
+    carry them, writes ``fields`` whole when no row exists or the row is
+    a lower ``n`` (a re-cut r<N+1> moves the row), and leaves a row for
+    the same or a higher ``n`` alone — a same-``n`` row is the script's
+    own publish, which wins; the one exception is a same-``n`` ``cut``
+    row lacking ``pass``, where the field's ``pass`` is stamped in and
+    nothing else changes, so ``release_poll``'s dropped-pass abandon can
+    still fire on it. ``create=False`` is the deploy's merge — and the
+    dropped-pass abandon's: same ``n`` only, ``state`` must be a forward
+    move under :data:`_ROUND_STATE_RANK`, a job-side terminal target
+    (``confirmed`` / ``superseded`` / ``abandoned``) takes a rank-0 row
+    only so a concurrent ``deploying`` / ``deployed`` write survives,
+    ``state_at`` is stamped, and ``deploy`` plus any other non-reserved
+    keys merge with the recorded keys winning. An unreadable,
+    unparsable or non-dict row is never overwritten. Nothing is written
+    on a missing ``n``; a database error answers one note, never a
+    raise."""
+    when = _stamp(now or datetime.now(UTC))
+    n = fields.get("n")
+    if not isinstance(n, int) or isinstance(n, bool):
+        return ["release.round: the update carries no n; nothing written"]
+    try:
+        raw = _round_raw(store)
+    except Exception as exc:
+        return [f"release.round: unreadable ({type(exc).__name__}); nothing written"]
+    row: dict[str, Any] | None = None
+    if raw and raw.strip():
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            return ["release.round: unparsable; nothing written"]
+        if not isinstance(rec, dict):
+            return ["release.round: not a record; nothing written"]
+        row = rec
+
+    def _create() -> str:
+        new_row = dict(fields)
+        if "state" in fields:
+            new_row.setdefault("state_at", when)
+            new_row.setdefault("cut_at", when)
+        record_round(store, new_row)
+        return f"release.round: wrote r{n} {new_row.get('state', '?')}"
+
+    if row is None:
+        if not create:
+            return ["release.round: no row on record; nothing written"]
+        return [_create()]
+    have_n = row.get("n")
+    if have_n != n:
+        if create and type(have_n) is int and have_n < n:
+            return [_create()]
+        label = f"r{have_n}" if isinstance(have_n, int) else repr(have_n)
+        return [f"release.round: skipped — the row is {label}, not r{n}"]
+    if create:
+        stamped = fields.get("pass")
+        if row.get("state") == "cut" and "pass" not in row and stamped:
+            record_round(store, {**row, "pass": stamped})
+            return [f"release.round: r{n} already on record (cut); stamped {stamped}"]
+        return [
+            f"release.round: r{n} already on record "
+            f"({row.get('state', '?')}); the script's publish wins"
+        ]
+    want = str(fields.get("state") or "")
+    have = str(row.get("state") or "")
+    want_rank = _ROUND_STATE_RANK.get(want)
+    have_rank = _ROUND_STATE_RANK.get(have)
+    if want_rank is None or have_rank is None or want_rank <= have_rank:
+        return [
+            f"release.round: r{n} is {have or '?'}; {want or '?'} is not a move forward"
+        ]
+    if want in _CONFIRM_TERMINAL and have_rank != 0:
+        # The dropped-pass abandon goes through here too: a row that
+        # reads as rolled out must survive it — a concurrent deployed
+        # write always wins.
+        return [
+            f"release.round: r{n} is {have}; a job-side terminal write "
+            f"takes a rank-0 row only"
+        ]
+    new_row = dict(row)
+    new_row["state"] = want
+    new_row["state_at"] = when
+    for key, value in fields.items():
+        if key not in {"n", "state", "state_at", "deploy"}:
+            new_row.setdefault(key, value)
+    dep = row.get("deploy")
+    merged = dict(dep) if isinstance(dep, dict) else {}
+    add = fields.get("deploy")
+    if isinstance(add, dict):
+        for k, v in add.items():
+            merged.setdefault(k, v)
+    if merged:
+        new_row["deploy"] = merged
+    record_round(store, new_row)
+    return [f"release.round: r{n} {have} -> {want}"]
 
 
 __all__ = [
@@ -808,5 +960,6 @@ __all__ = [
     "release_of",
     "repo_from_remote",
     "round_record",
+    "update_round",
     "valid_repo",
 ]

@@ -11,7 +11,7 @@ import json
 import re
 import sys
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -20,6 +20,7 @@ import pytest
 
 from precis import settings as psettings
 from precis.plans import pr_class as P
+from precis.plans import release as R
 from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import Tag
@@ -111,6 +112,16 @@ def _tags(store: Store, ref_id: int) -> set[str]:
 def _close(store: Store, ref_id: int) -> None:
     store.add_tag(
         ref_id, Tag.closed("STATUS", "done"), set_by="agent", replace_prefix=True
+    )
+
+
+def _drop(store: Store, ref_id: int) -> None:
+    """A pass dropped mid-flight: the root closes ``won't-do``."""
+    store.add_tag(
+        ref_id,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="agent",
+        replace_prefix=True,
     )
 
 
@@ -444,6 +455,259 @@ def test_a_failed_round_read_blocks(
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.blocker == "release.round unreadable (OSError): nothing minted"
     assert calls == [] and res.minted is None
+
+
+def test_the_job_written_row_blocks_then_the_confirm_clears(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The row ``release_cut.poll`` writes blocks the mint (``cut``,
+    then ``deployed``); the confirm's ``record_confirm`` moves it to a
+    terminal state and the pass mints again (gr575362)."""
+    mint = T.mint_release_pass(store)
+    R.record_cut(store, mint.ids["cut"], "r7", HEAD_SHA, f"{'9' * 12}..{HEAD_SHA[:12]}")
+    _close(store, mint.root_id)  # the open-pass gate would stop first
+    calls = _fake_github(monkeypatch)
+    R.update_round(  # what release_cut.poll writes after record_cut
+        store,
+        {
+            "n": 7,
+            "branch": "release/r7",
+            "base": HEAD_SHA,
+            "state": "cut",
+            "owner": {"host": "node-a", "checkout": "/srv/repo"},
+        },
+        create=True,
+        now=NOW,
+    )
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.blocker == "release round r7 in flight (cut)"
+    R.update_round(  # what release_deploy.poll writes on exit 0/3
+        store,
+        {
+            "n": 7,
+            "state": "deployed",
+            "deploy": {"sha": HEAD_SHA, "rollout_at": "2026-11-03T11:55:00Z"},
+        },
+        now=NOW,
+    )
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.blocker == "release round r7 in flight (deployed)"
+    assert calls == []  # the round gate stops before any GitHub read
+    R.record_confirm(store, mint.ids["deploy"], HEAD_SHA, "evidence", now=NOW)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None
+    assert calls == [
+        f"{API}/compare/prod...main",
+        f"{API}/git/matching-refs/heads/release/",
+        f"{API}/git/ref/heads/main",
+    ]
+
+
+def _cut_row_for(store: Store, mint: T.PlanMint, **over: Any) -> dict[str, Any]:
+    """The row ``release_cut.poll`` writes: ``state: cut`` with the pass
+    root on it (``update_round(create=True)``)."""
+    row: dict[str, Any] = {
+        "n": 7,
+        "branch": "release/r7",
+        "base": "c" * 40,
+        "state": "cut",
+        "owner": {"host": "node-a", "checkout": "/srv/repo"},
+        "pass": f"td{mint.root_id}",
+    }
+    row.update(over)
+    R.update_round(store, row, create=True, now=NOW)
+    return row
+
+
+@pytest.mark.parametrize("status", ["won't-do", "done"], ids=["wont-do", "done"])
+def test_a_dropped_pass_abandons_its_cut_row(
+    store: Store, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    """gr575362 review: a pass dropped after its cut left the shared row
+    at ``cut`` and blocked every later poll. The row records the pass
+    root; a terminal pass with no deploy evidence means nothing will
+    move the row — the poll abandons it and mints."""
+    mint = T.mint_release_pass(store)
+    _cut_row_for(store, mint)
+    if status == "done":
+        _close(store, mint.root_id)
+    else:
+        _drop(store, mint.root_id)
+    _fake_github(monkeypatch)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None and res.blocker == ""
+    row = R.read_round(store)
+    assert row is not None and row["state"] == "abandoned"
+    assert row["state_at"] == "2026-11-03T12:00:00Z"
+    assert f"td{mint.root_id}" in row["abandoned_why"]
+    assert status in row["abandoned_why"]
+
+
+def test_a_cut_row_whose_pass_closed_after_a_rollout_keeps_blocking(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Done *with* a deploy: the prod head names the cut sha, so the row
+    stays — a human supersedes it where the publish works."""
+    mint = T.mint_release_pass(store)
+    _cut_row_for(store, mint)
+    _close(store, mint.root_id)
+    R.record_prod_head(store, "c" * 40, [], now=NOW)
+    calls = _fake_github(monkeypatch)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None and calls == []
+    assert f"release round r7 in flight (cut) but pass td{mint.root_id} is done" in (
+        res.blocker
+    )
+    assert "scripts/round supersede r7" in res.blocker
+    assert "prod-precis settings set release.round" in res.blocker
+    row = R.read_round(store)
+    assert row is not None and row["state"] == "cut"
+
+
+def test_a_cut_row_whose_pass_is_confirmed_keeps_blocking(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``meta.release.confirmed`` on the root is deploy evidence too."""
+    mint = T.mint_release_pass(store)
+    _cut_row_for(store, mint)
+    _close(store, mint.root_id)
+    store.stamp_ref_meta(
+        mint.root_id,
+        {
+            "release": {
+                "rN": "r7",
+                "confirmed": {"sha": "c" * 40, "at": "t", "evidence": "e"},
+            }
+        },
+    )
+    calls = _fake_github(monkeypatch)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None and calls == []
+    assert "in flight (cut) but pass" in res.blocker
+
+
+@pytest.mark.parametrize("state", ["deploying", "deployed"])
+def test_a_rolled_out_row_whose_pass_is_terminal_keeps_blocking(
+    store: Store, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    """``deploying``/``deployed`` with a terminal pass: something may have
+    rolled out, so the row stays — the blocker names the hand verb."""
+    mint = T.mint_release_pass(store)
+    _cut_row_for(store, mint, state=state)
+    _drop(store, mint.root_id)
+    calls = _fake_github(monkeypatch)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None and calls == []
+    assert f"release round r7 in flight ({state})" in res.blocker
+    assert "scripts/round supersede r7" in res.blocker
+    row = R.read_round(store)
+    assert row is not None and row["state"] == state
+
+
+def test_a_cut_row_with_an_open_pass_blocks_normally(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An open pass is caught by the open-pass gate first; the row is
+    untouched either way."""
+    mint = T.mint_release_pass(store)
+    _cut_row_for(store, mint)
+    _fake_github(monkeypatch)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.blocker == f"release-pass td{mint.root_id} is open"
+    row = R.read_round(store)
+    assert row is not None and row["state"] == "cut"
+
+
+def test_a_dropped_pass_abandon_honours_dry_run(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dry run reports the would-abandon and writes nothing."""
+    mint = T.mint_release_pass(store)
+    _cut_row_for(store, mint)
+    _drop(store, mint.root_id)
+    _fake_github(monkeypatch)
+    res = rp.run_pass(store, repo=REPO, dry_run=True, now=NOW)
+    assert res.would_mint is True
+    assert any("would abandon" in n for n in res.notes)
+    row = R.read_round(store)
+    assert row is not None and row["state"] == "cut"
+
+
+def test_a_dropped_pass_abandon_honours_factory_off(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The kill switch holds the write the same way: report, no write."""
+    monkeypatch.setenv("PRECIS_FACTORY", "off")
+    mint = T.mint_release_pass(store)
+    _cut_row_for(store, mint)
+    _drop(store, mint.root_id)
+    _fake_github(monkeypatch)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None
+    assert any("would abandon" in n for n in res.notes)
+    row = R.read_round(store)
+    assert row is not None and row["state"] == "cut"
+
+
+def _live_job(store: Store, todo_id: int, job_type: str) -> None:
+    store.insert_ref(
+        kind="job",
+        slug=None,
+        title=f"{job_type} job",
+        meta={"job_type": job_type},
+        parent_id=todo_id,
+    )
+
+
+def _jobs_under(store: Store, todo_id: int) -> list[tuple[int, dict[str, Any]]]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE kind = 'job' AND parent_id = %s "
+            "AND retired_at IS NULL ORDER BY ref_id",
+            (todo_id,),
+        ).fetchall()
+    return [(int(r[0]), dict(r[1])) for r in rows]
+
+
+def test_a_cut_row_is_not_abandoned_while_a_deploy_job_runs(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The root was dropped but the deploy job is still live: the rollout
+    may be in flight and the job's own ``deployed`` write is coming —
+    the row stays."""
+    mint = T.mint_release_pass(store)
+    _cut_row_for(store, mint)
+    _live_job(store, mint.ids["deploy"], "release_deploy")
+    _drop(store, mint.root_id)
+    calls = _fake_github(monkeypatch)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None and calls == []
+    assert "release_deploy job is still live" in res.blocker
+    row = R.read_round(store)
+    assert row is not None and row["state"] == "cut"
+
+
+def test_a_finished_deploy_job_does_not_save_the_row(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A terminal deploy job is not deploy evidence on its own."""
+    mint = T.mint_release_pass(store)
+    _cut_row_for(store, mint)
+    _live_job(store, mint.ids["deploy"], "release_deploy")
+    _live_job(store, mint.ids["cut"], "release_cut")
+    _drop(store, mint.root_id)
+    for job_id, _meta in _jobs_under(store, mint.ids["deploy"]):
+        store.add_tag(
+            job_id,
+            Tag.closed("STATUS", "succeeded"),
+            set_by="system",
+            replace_prefix=True,
+        )
+    _fake_github(monkeypatch)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None
+    row = R.read_round(store)
+    assert row is not None and row["state"] == "abandoned"
 
 
 def test_round_terminal_states_match_the_script() -> None:
@@ -840,6 +1104,33 @@ def test_red_on_an_older_head_is_fixing_until_the_current_head_has_a_verdict(
     assert len(asks) == 1
     assert "release-stuck:r5:fixing" in _tags(store, asks[0])
     assert calls == []
+
+
+def test_a_factory_cut_row_is_judged_like_a_script_row(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The row ``release_cut.poll`` writes carries ``state_at`` — the
+    watchdog judges a factory-cut round like a script-published one
+    (gr575362)."""
+    psettings.set_setting("release.repo", REPO, store=store)
+    calls = _fake_github(monkeypatch, runs={"workflow_runs": []})
+    R.update_round(
+        store,
+        {
+            "n": 7,
+            "branch": "release/r7",
+            "base": STUCK_BASE,
+            "state": "cut",
+            "owner": {"host": "node-a", "checkout": "/srv/repo"},
+        },
+        create=True,
+        now=NOW - timedelta(minutes=45),
+    )
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    assert "release-stuck:r7:cut" in _tags(store, asks[0])
+    assert calls == [f"{API}/actions/runs"]
 
 
 def test_no_state_at_never_asks(store: Store, monkeypatch: pytest.MonkeyPatch) -> None:

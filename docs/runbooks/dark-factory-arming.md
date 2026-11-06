@@ -57,6 +57,14 @@ and a third never starts by itself) → `approval` → `deploy` (`release_deploy
 `scripts/release --deploy-only r<N>`, pinned) → `confirm`
 (`release_confirm`: the runtime attestation below).
 
+The job types also write the shared `release.round` record through the
+store (gr575362): the cut creates the row (`state: cut`, the script's own
+per-clone publish may have skipped on the slice host), the deploy merges
+it forward to `deployed` with `deploy.rollout_at`/`deploy.sha`, and the
+confirm's `record_confirm` moves it to `confirmed` — rank-ordered
+forward moves only, best-effort, never a job failure. This row is what
+`release.auto_deploy`'s open-round check and the stuck watchdog read.
+
 The `approval` node is an `ask-user` todo (`meta.ask.kind = approval`,
 options `deploy r<N>` | `hold`); it shows on `/asks` once the plan exists
 and opens once the gate is green and it is answered. To deploy:
@@ -197,9 +205,17 @@ main-equals-prod steady state costs a single api.github.com request:
    `scripts/prod-precis settings set release.no_release_windows
    03:00-04:20,21:30-23:30`. An unparsable value blocks the pass.
 2. No live `release-pass`-tagged todo still open.
-3. The shared `release.round` record (`scripts/round` publishes it)
+3. The shared `release.round` record (`scripts/round` and the release
+   job types write it)
    names no open round — a non-terminal state, any owner, is in flight;
-   an absent record is "no round", an unreadable one blocks.
+   an absent record is "no round", an unreadable one blocks. One
+   exception: a `cut` row whose recorded `pass` root is terminal with
+   no deploy evidence (no `meta.release.confirmed`, the prod head does
+   not name the cut sha) is a dropped pass — the poll writes it
+   `abandoned` itself and goes on. `deploying`/`deployed` with a
+   terminal pass keeps blocking and the blocker names
+   `scripts/round supersede r<N>` (run where the publish works) or a
+   hand `settings set release.round` with a terminal state.
 4. `compare/prod...main` on GitHub reports `ahead_by > 0` with
    `behind_by == 0`: `diverged` or `behind` (prod holds commits main
    lacks, e.g. a hand hotfix) never mints.

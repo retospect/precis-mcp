@@ -31,7 +31,14 @@ that host, :func:`validate_submit` refuses any other (or no) node, and
   pending — that stays a session's ``scripts/round deploy
   --confirm-runtime``) succeeds; the ``RELEASE_DEPLOYED: r<N> <head> <prev>``
   line is recorded into ``release.prod_head`` through the store (the
-  script's own write needs a prod DSN on the host and may have skipped), and
+  script's own write needs a prod DSN on the host and may have skipped),
+  this release's ``release.round`` row is advanced to ``deployed`` with
+  ``deploy.rollout_at`` and ``deploy.sha`` through
+  :func:`precis.plans.release.update_round` (same ``n`` only — it never
+  creates a row, recorded keys win; best-effort like the prod-head
+  write; with no ``RELEASE_DEPLOYED`` line both keys stay off — the
+  plan's sha is not the deployed head and the poll time is not the
+  rollout time), and
   the ``next:`` line lands in the summary. Any other exit fails with the log
   tail.
 """
@@ -40,6 +47,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -171,6 +179,36 @@ def poll(ctx: Any, handle: Any) -> bool:
         ctx.set_meta(release_deploy={"rN": rn, "head": head, "prev": prev})
     else:
         lines.append("no RELEASE_DEPLOYED line (rollout was already done)")
+    now = datetime.now(UTC)
+    params = (ctx.meta or {}).get("params") or {}
+    todo_id = params.get("todo_id")
+    try:
+        rel = (
+            _release.release_of(ctx.store, todo_id)
+            if isinstance(todo_id, int)
+            else None
+        )
+        rn = deployed[0] if deployed else str((rel or {}).get("rN") or "")
+        deploy: dict[str, Any] = {}
+        if deployed is not None:
+            deploy["rollout_at"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+            if deployed[1]:
+                deploy["sha"] = deployed[1]
+        # With no RELEASE_DEPLOYED line the rollout was already done:
+        # ``deploy.sha`` is left off rather than guessed from the plan's
+        # cut sha (``pinned_deploy_sha`` falls back to the prod head and
+        # the pinned-sha check can still fire) and no ``rollout_at`` is
+        # written — now is the poll time, not the rollout time.
+        if rn.startswith("r") and rn[1:].isdigit():
+            fields: dict[str, Any] = {"n": int(rn[1:]), "state": "deployed"}
+            if deploy:
+                fields["deploy"] = deploy
+            lines += _release.update_round(ctx.store, fields, now=now)
+    except Exception as exc:
+        # The rollout happened; like record_prod_head the shared
+        # record's write is best-effort — a note, not a failure.
+        log.warning("%s: release.round advance failed", NAME, exc_info=True)
+        lines.append(f"release.round not advanced: {type(exc).__name__}")
     lines += [ln for ln in log_text.splitlines() if ln.startswith("next:")][-1:]
     ctx.append_chunk("job_summary", "\n".join(lines))
     ctx.set_status("succeeded")

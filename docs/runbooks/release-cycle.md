@@ -100,14 +100,23 @@ ahead" first, that the heartbeat race did not trip, and that nothing
 hand-edited the release branch meanwhile.
 
 **Stop procedure.** Pause the tick todo and set `release.auto_deploy
-false`; halt a minted pass by answering `hold` on its approval. A
-stopped pass leaves the round open: finish it by hand with
-`scripts/release --adopt` or `scripts/round cut --abandon`, then cancel
-the pass root.
+false`; halt a minted pass by answering `hold` on its approval. To
+drop a minted pass, cancel its root: while the round row is still
+`cut` the next `release_poll` abandons the row itself — the row
+records `pass: td<root>`, and a terminal pass with no deploy evidence
+cannot move it. Once the row is `deploying` or `deployed` the poll
+keeps blocking (something may have rolled out) and a human finishes
+it with `scripts/round supersede r<N>` run where the publish works,
+or `scripts/prod-precis settings set release.round` with a terminal
+state. A hand (script-driven) round stays the hand verbs:
+`scripts/release --adopt` or `scripts/round cut --abandon`.
 
 **Known gaps.** The loop never commits to the release branch — a fix
-lands on main and recuts r<N+1>. If `release.auto_deploy` is on, a
-hand-moved release head is refused by `_open_round_record`.
+lands on main and recuts r<N+1>. If `release.auto_deploy` is on, the
+auto-answer needs `release.round` to name this release's open round on
+the cut's head — the job types write the record themselves now
+(gr575362: the cut creates the row, the deploy advances it), and a
+stale or hand-moved head is still refused by `_open_round_record`.
 `release_confirm` has zero margin for a worker heartbeat still at the
 old sha just after a rollout finishes — a false trip files an ask, not
 a bad deploy. Re-creating the session MCP and `fleet say` stay manual.

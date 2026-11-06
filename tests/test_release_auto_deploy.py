@@ -375,6 +375,31 @@ def test_an_open_round_naming_the_head_sha_is_answered(
     assert len(comments) == 1 and comments[0].startswith("answer: deploy r7")
 
 
+def test_the_cut_written_row_arms_the_auto_answer(store: Store) -> None:
+    """gr575362: the row ``release_cut.poll`` writes is exactly what
+    ``_open_round_record`` needs — open state, same ``n``, ``base`` the
+    cut's head sha — so the tick can answer without the script's
+    publish ever having reached prod."""
+    mint = _green_pass(store)
+    R.update_round(
+        store,
+        {
+            "n": 7,
+            "branch": "release/r7",
+            "base": SHA,
+            "state": "cut",
+            "owner": {"host": "node-a", "checkout": "/srv/repo"},
+        },
+        create=True,
+    )
+    psettings.set_setting("release.auto_deploy", "true", store=store)
+    ok, why = R.auto_answer_approval(store, mint.ids["approval"])
+    assert ok, why
+    comments = _comments(store, mint.ids["approval"])
+    assert len(comments) == 1
+    assert comments[0].startswith("answer: deploy r7")
+
+
 def test_non_release_approval_is_untouched(store: Store) -> None:
     psettings.set_setting("release.auto_deploy", "true", store=store)
     with store.tx() as conn:

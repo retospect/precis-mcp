@@ -2543,3 +2543,20 @@ def test_rig_run_never_contacts_the_transport(rig: Rig, tmp_path: Path) -> None:
     assert rig.round("cut", **env, **_fresh(rig)).returncode == 0
     assert rig.round("status", **env).returncode == 0
     assert not marker.exists()
+
+
+def test_a_skipped_transport_prints_the_reason_once(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``_record_skip_reason`` set (this rig: the script copy's parent is
+    not ``PRECIS_ROUND_ROOT``): one stderr line, then the process stops
+    trying — the publish is best-effort, never silent (gr575362)."""
+    mod = _load_round(rig, monkeypatch)
+    reason = mod._record_skip_reason()
+    assert reason is not None
+    data = _round_data(rig, _record(1, rig.shas["c2"], "cut"))
+    mod._publish_round(data)
+    mod._publish_round(data)
+    err = capsys.readouterr().err
+    assert err.count("round record not published:") == 1
+    assert reason in err

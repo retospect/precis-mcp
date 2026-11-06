@@ -389,8 +389,8 @@ def _publish_round(data: dict[str, Any], *, transport: Transport | None = None) 
     """Best-effort publish of the active (else newest) release's row for a
     finished verb: never raises, never changes an exit code, sends nothing
     when the row is unchanged or after one failed attempt. Every failure —
-    a malformed record included — is one stderr line, then the process
-    stops trying."""
+    a malformed record or a skipped transport included — is one stderr
+    line naming the reason, then the process stops trying."""
     global _last_row, _publish_dead
     try:
         rel = _active_rel(data) or max(
@@ -406,7 +406,12 @@ def _publish_round(data: dict[str, Any], *, transport: Transport | None = None) 
     if row == _last_row:
         return
     if transport is None:
-        if _publish_dead or _record_skip_reason():
+        if _publish_dead:
+            return
+        reason = _record_skip_reason()
+        if reason:
+            print(f"round record not published: {reason}", file=sys.stderr)
+            _publish_dead = True
             return
     send = transport or _prod_precis
     try:
