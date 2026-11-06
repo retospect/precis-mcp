@@ -282,6 +282,25 @@ tag(kind="gripe", id=564261, add=["hold:no-dispatch"])
 A hand-minted chain also counts: the `related-to` link is the marker.
 Each mint leaves a `dispatch: minted gripe-fix-direct td<root>` comment.
 
+## What does the transcript_audit pass sample, and how is it lit?
+
+The `transcript_audit` worker pass (every 30 minutes, dark until
+`service_config` lights it for a host, the same switch as
+`gripe_dispatch`) samples closed factory chains: plan roots `done` or
+`won't-do` within the last seven days that ran a `run_slice` or
+`land_slice` job, taken at ten percent by root id
+(`PRECIS_TRANSCRIPT_AUDIT_PERCENT` overrides), one mint per fire. For
+each it mints an audit plan: a root tagged `audit:transcript` and
+`thread:factory`, linked `related-to` the chain root, and one task node
+pinned to lane `claude-sub` whose brief lists the chain's job handles,
+the reading rule (read the job cards; a transcript the MCP cannot reach
+is one gripe and a stop) and the bar for a gripe: a blatant skill- or
+MCP-rooted waste of five or more calls or two identical retries, at most
+three gripes per audit, checked against open gripes first. The pass
+calls no model. The chain root gets one `audit: td<root> samples this
+chain's transcripts` comment; a root with an audit is never sampled
+twice.
+
 ## Can a review or a validate run on a lane without the precis MCP?
 ## Which plan nodes still need a Claude lane?
 
