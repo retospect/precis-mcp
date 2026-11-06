@@ -1253,6 +1253,15 @@ class TopoRun:
     def summary(self) -> str:
         return str(self.files["summary.txt"])
 
+    @property
+    def ref_values(self) -> dict[str, float]:
+        """This run's R_i vector (pcb-intent-api §Weights) — what a
+        later ``pcb.objective(ref=this_run, ...)`` reuses for cross-run
+        comparability. A thin passthrough to :attr:`TopoPlaceResult.
+        ref_values`, so ``ref=<run>`` can duck-type on the run object a
+        script actually holds rather than its inner result."""
+        return self.result.ref_values
+
 
 def _objective_shares(objective: Any, preset: str) -> Any:
     """``objective=`` resolved to an ``ObjectiveShares`` — ``None`` keeps
@@ -1277,6 +1286,26 @@ def _objective_shares(objective: Any, preset: str) -> Any:
     if unknown:
         raise LocalError(f"unknown objective term(s) {unknown} — known: {terms}")
     return _tp.ObjectiveShares(**{k: float(objective.get(k, 0.0)) for k in terms})
+
+
+def _objective_ref_values(objective: Any) -> dict[str, float] | None:
+    """The fixed R_i vector ``objective``'s ``ref=`` names, or ``None``
+    for the default ``ref="seed"`` (self-measure, today's behaviour).
+    ``objective`` is whatever a script handed ``topo_place``: a plain
+    mapping has no ``.ref`` (duck-typed, defaults to ``"seed"``); a
+    :func:`precis_geom.pcb.objective` result carries ``.ref`` —
+    ``"seed"`` or an earlier run object exposing ``.ref_values``
+    (:func:`precis_geom.pcb.objective` already refused anything else)."""
+    ref = getattr(objective, "ref", "seed")
+    if ref == "seed":
+        return None
+    ref_values = getattr(ref, "ref_values", None)
+    if ref_values is None:
+        raise LocalError(
+            f"pcb.objective: ref={ref!r} carries no reference values — "
+            'pass "seed" or an earlier pcb.local.topo_place/route result'
+        )
+    return dict(ref_values)
 
 
 @pcb_diag.op("topo_place")
@@ -1317,6 +1346,7 @@ def topo_place(
     from precis.pcb.topoplace import summary as _tpsummary
 
     obj = _objective_shares(objective, preset)
+    ref_values = _objective_ref_values(objective)
 
     design = _design(board, catalog)
     pcb_session.require_layout_ready(design.graph, design.features)
@@ -1342,7 +1372,14 @@ def topo_place(
         # gr520546: authored measures steer the anneal — priced in only
         # when the design carries resolvable specs.
         obj = dataclasses.replace(obj, measures=0.2)
-    result = _tp.topo_place(td, objective=obj, effort=effort, seed=seed, event=progress)
+    result = _tp.topo_place(
+        td,
+        objective=obj,
+        effort=effort,
+        seed=seed,
+        event=progress,
+        ref_values=ref_values,
+    )
     # Post-anneal repairs — the same deterministic passes the pcb_place
     # job runs (hard measures met, labels adjacent, nothing edge-squished).
     result = dataclasses.replace(

@@ -29,8 +29,8 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -88,6 +88,11 @@ class TopoPlaceResult:
     #: so ``best_pose`` is the start (settled) — gr520372: a re-place
     #: keeps the stored placement rather than write a worse one.
     kept_start: bool = False
+    #: The run's R_i vector (pcb-intent-api §Weights) — either
+    #: self-measured at the authored seed pose, or (``ref=<run>``) the
+    #: fixed vector the caller handed in. Recorded on the manifest so a
+    #: later ``ref=<run>`` can reuse it (cross-run comparability).
+    ref_values: dict[str, float] = field(default_factory=dict)
 
     def elites_json(self) -> bytes:
         """Canonical ``elites.json`` bytes — the determinism contract:
@@ -245,13 +250,28 @@ def topo_place(
     archive_size: int = 8,
     ladder: Ladder | None = None,
     event: Callable[[str], None] | None = None,
+    ref_values: Mapping[str, float] | None = None,
 ) -> TopoPlaceResult:
     """Spec §1a signature — phase-0 placer over the proxy metric.
 
     ``event`` (gr513870's per-round progress) receives one line per
     anneal restart plus a final line — ``None`` keeps the library
     silent; the job wires it to ``job_event`` chunks and the laptop
-    path exposes it as ``progress=``."""
+    path exposes it as ``progress=``.
+
+    ``ref_values`` (pcb-intent-api §Weights, ``ref=<run>``) fixes every
+    ``ProxyState`` in this run to an earlier run's R_i instead of each
+    self-measuring — ``None`` (every caller but an explicit ``ref=``)
+    keeps today's self-measured-at-the-seed-pose behaviour bit-for-bit.
+    ``TopoPlaceResult.ref_values`` always carries the vector this run
+    actually used, self-measured or not, so a later run can chain off
+    it."""
+    # ``None`` here means "self-measured": filled from the first
+    # ``ProxyState`` this run builds (``d.pose0`` itself can hold NaN for
+    # a part ``place=True`` has not placed yet, so it cannot be measured).
+    reported_ref_values: dict[str, float] = (
+        dict(ref_values) if ref_values is not None else {}
+    )
     rng = np.random.default_rng(seed)
     n_parts = len(d.parts)
     movable = np.flatnonzero(~d.fixed)
@@ -330,8 +350,10 @@ def topo_place(
         # result; ranked_edits still probes unlocks at a lighter effort
         # (summary.py) since that is the only lever left on such a board.
         settled_pose, shoved, legal = _settle_pose(d, d.pose0.copy())
-        final = ProxyState(d, settled_pose, objective)
+        final = ProxyState(d, settled_pose, objective, ref_values=ref_values)
         archive.admit(settled_pose, final.cost)
+        if ref_values is None:
+            reported_ref_values = final.reference_values()
         return TopoPlaceResult(
             best_pose=settled_pose,
             best_cost=float(final.cost),
@@ -345,6 +367,7 @@ def topo_place(
             last_improve_eval=0,
             legalize=legal,
             shove=shoved,
+            ref_values=reported_ref_values,
         )
 
     best_pose: np.ndarray | None = None
@@ -391,7 +414,9 @@ def topo_place(
                 pose[mm, :2] = anchor[mm, :2] + delta
             pose[d.fixed] = anchor[d.fixed]
 
-        proxy = ProxyState(d, pose, objective)
+        proxy = ProxyState(d, pose, objective, ref_values=ref_values)
+        if restart == 0 and ref_values is None:
+            reported_ref_values = proxy.reference_values()
         anchor_xy = anchor[:, :2] if anchor is not None else None
         budget = per_restart if restart < n_restarts - 1 else max(1, effort - evals)
         if event is not None:
@@ -609,19 +634,19 @@ def topo_place(
 
     if best_pose is None:
         best_pose = _scatter(d, d.pose0, rng, xy_lo, xy_hi)
-        final = ProxyState(d, best_pose, objective)
+        final = ProxyState(d, best_pose, objective, ref_values=ref_values)
         best_rank = (final.crossings, final.cost)
 
     assert best_pose is not None
     # A shoved pose re-enters the archive as an elite (spec §4).
     best_pose, shoved, legal = _settle_pose(d, best_pose)
-    final = ProxyState(d, best_pose, objective)
+    final = ProxyState(d, best_pose, objective, ref_values=ref_values)
     if start_pose is not None and not kept_start:
         # gr520372: the settle passes can cost the anneal's best its edge
         # over the stored placement; settled the same way, the stored
         # pose stands while it still ranks ahead.
         s_pose, s_shoved, s_legal = _settle_pose(d, start_pose)
-        s_final = ProxyState(d, s_pose, objective)
+        s_final = ProxyState(d, s_pose, objective, ref_values=ref_values)
         if (s_final.crossings, s_final.cost) < (final.crossings, final.cost):
             best_pose, shoved, legal, final = s_pose, s_shoved, s_legal, s_final
             kept_start = True
@@ -647,6 +672,7 @@ def topo_place(
         legalize=legal,
         shove=shoved,
         kept_start=kept_start,
+        ref_values=reported_ref_values,
     )
 
 

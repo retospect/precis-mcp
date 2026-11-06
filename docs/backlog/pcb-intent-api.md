@@ -178,7 +178,7 @@ print(rt.summary())
 
 | intent | exists today | status |
 |---|---|---|
-| objective terms | `cost.py` USD terms (`crossings`, `routing_area`, `via_usd`, bbox area), `CostConfig` | topo-place shares: `pcb.objective(**shares)` over `ObjectiveShares`, R_i at the seed pose in the proxy (exists); `CostConfig` shares, `ref=<run>`, R_i on the run: **GAP** (small) |
+| objective terms | `cost.py` USD terms (`crossings`, `routing_area`, `via_usd`, bbox area), `CostConfig` | topo-place shares: `pcb.objective(**shares)` over `ObjectiveShares`, R_i at the seed pose in the proxy, `ref=<run>` and `result.ref_values` on the run manifest (exist); `CostConfig` shares (`wirelength`/USD terms): **GAP** (small) |
 | place budgets/seed | `pcb_place` params `iters`, `seed`, `snap`, `groups` (`field_polish` accepted-ignored, engine deleted 2026-10-25) | exists |
 | route budgets | `RealizeConfig.max_expansions` (60k), `vroute` 6k, `budget_s` (`loop`/`expansion_caps` accepted-ignored, deleted 2026-10-25) | exists; `pcb.budget` is a rename |
 | in-script route | job-only; `bench.py` knows sanity/power; no DB-free Board→IR | **GAP** (gr513867) |
@@ -193,14 +193,14 @@ print(rt.summary())
 | measures near/apart/align | `MeasureSpec`, only pair measures steer placement | partial |
 | pin/plane affinity | `plane_affinity` term specced | **GAP** (stackup-regions slice 6) |
 | lazy geometry refs | none; features are literal polygons | **GAP** |
-| intent on the run | trace frames specced (pcb-workspace-code §Construction traces) | **GAP** (intent block, R_i, digest of binding constraints) |
+| intent on the run | trace frames specced (pcb-workspace-code §Construction traces); the topo-place manifest's `result.ref_values` (R_i, slice 1) | **GAP** (intent block, digest of binding constraints) |
 | pr engine | `precis.pcb.pr` v1 (free parts, beliefs) — deleted Reto 2026-10-25; vroute stays production | n/a |
 
 ## Slices
 
 | # | slice | size | tier |
 |---|---|---|---|
-| 1 | remainder of slice 1 (the `pcb.objective(**shares)` builder over the ten `ObjectiveShares` terms and the seed-pose R_i inside the topo-place proxy shipped): `ref=<run>` cross-run R_i, shares → `CostConfig` scaling for the `wirelength`/USD terms, R_i and per-term table on the run manifest; `objective=None` stays bit-for-bit | S | Sonnet/Devin |
+| 1 | remainder of slice 1 (the `pcb.objective(**shares)` builder over the ten `ObjectiveShares` terms, the seed-pose R_i inside the topo-place proxy, `ref=<run>` cross-run R_i and the `result.ref_values` table on the run manifest shipped — an earlier `pcb.local.place`/`topo_place`/`route` result, anything carrying `.ref_values`, names the reference; `objective=None` stays bit-for-bit): shares → `CostConfig` scaling for the `wirelength`/USD terms | S | Sonnet/Devin |
 | 2 | geometry ref expressions (`outline`, `courtyard`, `center`, pin centre, boolean/buffer/offset) resolved by shapely against an IR pose snapshot; `b.check()` validation | M | Sonnet |
 | 3 | intent block in manifest + request key + service-frame args + `view='trace' against` diff | S | Sonnet |
 | 4 | binding-constraint digest on `summary()`/`route-status` (hard-at-bound, soft shares, unmet rules, frame column) | M | Opus (needs judgement on "binding") |

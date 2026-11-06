@@ -506,8 +506,10 @@ def test_objective_shares() -> None:
     """``pcb.objective(...)`` (pcb-intent-api §Weights, slice 1): a plain
     shares mapping over the terms the topo-place objective actually
     prices today — an unknown term, a CostConfig term (``wirelength`` is
-    not a share term), a non-seed ``ref=``, or no terms at all raise;
-    a valid call carries the kwargs through unchanged."""
+    not a share term), a ``ref=`` that is not ``"seed"`` and not an
+    earlier run (``ref_values``-carrying) object, or no terms at all
+    raise; a valid call carries the kwargs through unchanged (``==`` a
+    plain dict, slice 1's original contract)."""
     assert pcb.objective(ratsnest=0.8, crossings=0.2) == {
         "ratsnest": 0.8,
         "crossings": 0.2,
@@ -518,6 +520,23 @@ def test_objective_shares() -> None:
         pcb.objective()
     with pytest.raises(PcbBuilderError, match="ref="):
         pcb.objective(ratsnest=1.0, ref="run-42")
+
+
+def test_objective_ref_accepts_an_earlier_run_result() -> None:
+    """``ref=<run>`` (pcb-intent-api §Weights, slice 1 remainder):
+    anything carrying ``.ref_values`` — the object
+    ``pcb.local.place``/``topo_place``/``route`` returns — is accepted
+    and carried through on ``.ref`` for ``pcb.local.topo_place`` to
+    resolve; the dict equality a plain shares mapping relies on still
+    holds (the run object rides an attribute, not a key)."""
+
+    class _Run:
+        ref_values = {"ratsnest": 12.0}
+
+    run = _Run()
+    obj = pcb.objective(ratsnest=0.8, crossings=0.2, ref=run)
+    assert obj == {"ratsnest": 0.8, "crossings": 0.2}
+    assert obj.ref is run
 
 
 def test_objective_terms_match_shares() -> None:

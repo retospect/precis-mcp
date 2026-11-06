@@ -1164,6 +1164,72 @@ def test_determinism_same_seed_identical_elites_json() -> None:
     assert (a.best_pose == b.best_pose).all()
 
 
+def test_proxy_state_ref_values_override_wins_over_self_measurement() -> None:
+    """pcb-intent-api §Weights, ``ref=<run>``: a caller-supplied
+    ``ref_values`` fixes R_i term by term instead of this instance
+    self-measuring at its own pose — the point of a named reference is
+    that it does NOT depend on what pose the new instance happens to
+    start from. ``None`` (every call site but an explicit ``ref=``)
+    stays exactly the self-measured floor, so an unrelated term the
+    override never names falls back to self-measurement too."""
+    d, _inst, _nets = synth_design(seed=0)
+    unset = ProxyState(d, d.pose0, W)
+    assert unset.reference_values() == {
+        "crossings": max(float(unset.crossings), 1.0),
+        "ratsnest": max(unset.length, 1.0),
+        "vias": 1.0,
+        "overlap": 1.0,
+        "spread": 1.0,
+        "measures": 1.0,
+        "backtrack": 1.0,
+        "direction": 1.0,
+        "silkroom": 1.0,
+        "margin": 1.0,
+        "fanout": 1.0,
+        "cutcap": 1.0,
+    }
+
+    fixed = ProxyState(d, d.pose0, W, ref_values={"crossings": 50.0})
+    assert fixed.reference_values()["crossings"] == 50.0
+    # a term the override never named still self-measures (ratsnest here,
+    # the only other share ``W`` prices).
+    assert fixed.reference_values()["ratsnest"] == unset.reference_values()["ratsnest"]
+    # the override actually feeds ``cost``, not just the report:
+    ratsnest_ref = fixed.reference_values()["ratsnest"]
+    assert fixed.cost == pytest.approx(
+        W.crossings * fixed.crossings / 50.0 + W.ratsnest * fixed.length / ratsnest_ref
+    )
+
+
+def test_topo_place_ref_values_param_overrides_every_restart() -> None:
+    """``topo_place(ref_values=...)`` threads the fixed reference into
+    every restart's ``ProxyState`` (not just the first) and the result
+    carries it verbatim — ``None`` (every caller but an explicit
+    ``ref=``) keeps the seed-pose self-measurement, recorded on the
+    result for a LATER run's ``ref=`` to reuse."""
+    d, _inst, _nets = synth_design(seed=0)
+    auto = topo_place(d, objective=W, effort=500, seed=1)
+    assert auto.ref_values == ProxyState(d, d.pose0, W).reference_values()
+
+    forced = {
+        "crossings": 7.0,
+        "ratsnest": 7.0,
+        "vias": 7.0,
+        "overlap": 7.0,
+        "spread": 7.0,
+        "measures": 7.0,
+        "backtrack": 7.0,
+        "direction": 7.0,
+        "silkroom": 7.0,
+        "margin": 7.0,
+    }
+    pinned = topo_place(d, objective=W, effort=500, seed=1, ref_values=forced)
+    assert pinned.ref_values == forced
+    assert pinned.best_cost == pytest.approx(
+        W.crossings * pinned.crossings / 7.0 + W.ratsnest * pinned.length / 7.0
+    )
+
+
 def test_replace_never_ends_worse_than_the_stored_placement() -> None:
     """gr520372: a re-place starts from the stored placement, and that
     pose is the one to beat. The incumbent race used to rank only

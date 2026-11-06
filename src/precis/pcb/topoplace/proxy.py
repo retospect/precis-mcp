@@ -2706,9 +2706,23 @@ class ProxyState:
     drops them. Staged ``try_move`` calls compose — the second sees the
     first's staged wires, so a two-part swap is one atomic decision."""
 
-    def __init__(self, d: TopoDesign, pose: np.ndarray, w: ObjectiveShares) -> None:
+    def __init__(
+        self,
+        d: TopoDesign,
+        pose: np.ndarray,
+        w: ObjectiveShares,
+        ref_values: Mapping[str, float] | None = None,
+    ) -> None:
         self.d = d
         self.w = w
+        #: pcb-intent-api §Weights "ref=<run>": a caller-supplied fixed
+        #: reference vector overrides this instance's own self-measured
+        #: R_i (below) term by term, so every ProxyState in a run can
+        #: share one earlier run's reference magnitudes instead of each
+        #: re-measuring its own. ``None`` (every call site but an
+        #: explicit ``ref=<run>``) keeps today's self-measurement
+        #: bit-for-bit.
+        self._ref_override = dict(ref_values) if ref_values else {}
         self.pose = np.asarray(pose, dtype=np.float64).copy()
         self._pw = all_pin_world(d, self.pose)
         #: committed wires per net: (E, 4) rows
@@ -2863,13 +2877,16 @@ class ProxyState:
             )
         #: reference magnitudes for share-normalised cost (floors keep a
         #: zero-crossing seed from dividing by zero — same "one per term
-        #: in code" fallback the intent-api spec gives R_i ≈ 0).
-        self._ref_cross = max(float(self._cross), 1.0)
-        self._ref_len = max(self._len, 1.0)
-        self._ref_ov = max(self._ov, 1.0)
-        self._ref_sp = max(self._sp, 1.0)
-        self._ref_sk = max(self._sk, 1.0)
-        self._ref_mg = max(self._mg, 1.0)
+        #: in code" fallback the intent-api spec gives R_i ≈ 0). An
+        #: entry in ``_ref_override`` wins over this instance's own
+        #: pose — ``ref=<run>``'s cross-run comparability.
+        ro = self._ref_override
+        self._ref_cross = max(float(ro.get("crossings", self._cross)), 1.0)
+        self._ref_len = max(float(ro.get("ratsnest", self._len)), 1.0)
+        self._ref_ov = max(float(ro.get("overlap", self._ov)), 1.0)
+        self._ref_sp = max(float(ro.get("spread", self._sp)), 1.0)
+        self._ref_sk = max(float(ro.get("silkroom", self._sk)), 1.0)
+        self._ref_mg = max(float(ro.get("margin", self._mg)), 1.0)
         #: authored-measure pull (gr520546): per-part spec index list for
         #: the try_move delta, the committed violation total and its
         #: reference magnitude. Built only when the design carries
@@ -2892,7 +2909,7 @@ class ProxyState:
             if self.w.measures and d.measures
             else 0.0
         )
-        self._ref_meas = max(self._meas, 1.0)
+        self._ref_meas = max(float(ro.get("measures", self._meas)), 1.0)
         #: fanout term (td569573): per-needing-pin walled/open status —
         #: a dict so ``try_move`` re-tests only the TOUCHED pins (its own
         #: part's, plus any OTHER part's needing pin close enough to the
@@ -2945,7 +2962,7 @@ class ProxyState:
                 )
                 self._fo_status[int(p)] = not ok
             self._fo = float(sum(self._fo_status.values()))
-        self._ref_fo = max(self._fo, 1.0)
+        self._ref_fo = max(float(ro.get("fanout", self._fo)), 1.0)
         #: cut-capacity term (td569573): per tight body-to-body channel,
         #: the cached ``(free, cap)`` geometry and committed demand —
         #: ``try_move`` re-derives channels touching the moved part in
@@ -2967,7 +2984,7 @@ class ProxyState:
                 dem = _channel_demand(gate, self._flat, self._flat_net, exempt)
                 self._cc_demand[key] = dem
                 self._cc += max(0.0, dem - cap)
-        self._ref_cc = max(self._cc, 1.0)
+        self._ref_cc = max(float(ro.get("cutcap", self._cc)), 1.0)
         #: slice-5 route proxies (the flow rung): the via estimate, the
         #: fold-back mileage and the direction mix over the same wires.
         #: Each is built only when its share is on — a zero share keeps
@@ -2985,9 +3002,9 @@ class ProxyState:
             if self.w.direction
             else 0.0
         )
-        self._ref_via = max(float(self._via), 1.0)
-        self._ref_back = max(self._back, 1.0)
-        self._ref_dir = max(self._dir, 1.0)
+        self._ref_via = max(float(ro.get("vias", self._via)), 1.0)
+        self._ref_back = max(float(ro.get("backtrack", self._back)), 1.0)
+        self._ref_dir = max(float(ro.get("direction", self._dir)), 1.0)
         self._stage: dict[int, np.ndarray] = {}
         self._stage_wires: dict[int, np.ndarray] = {}
         self._stage_rings: dict[int, Any] = {}
@@ -3094,6 +3111,27 @@ class ProxyState:
         """Maximin margin: softmin over parts of each part's worst
         (edge / pair / hole) margin shortfall, mm."""
         return self._mg + self._d_mg
+
+    def reference_values(self) -> dict[str, float]:
+        """This instance's R_i vector (pcb-intent-api §Weights), keyed by
+        the same term names :data:`precis_geom.pcb.OBJECTIVE_TERMS` uses —
+        either self-measured at construction or (``ref=<run>``) the
+        caller's override, floored. What a run records as its reference
+        and what a later ``ref=<run>`` call reuses."""
+        return {
+            "crossings": self._ref_cross,
+            "ratsnest": self._ref_len,
+            "vias": self._ref_via,
+            "overlap": self._ref_ov,
+            "spread": self._ref_sp,
+            "measures": self._ref_meas,
+            "backtrack": self._ref_back,
+            "direction": self._ref_dir,
+            "silkroom": self._ref_sk,
+            "margin": self._ref_mg,
+            "fanout": self._ref_fo,
+            "cutcap": self._ref_cc,
+        }
 
     @property
     def fanout(self) -> float:

@@ -244,6 +244,65 @@ def test_objective_shares_mapping_fills_unset_terms_with_zero() -> None:
     assert _objective_shares(None, "compact") is tp.PRESETS["compact"]
 
 
+def test_objective_ref_values_resolves_the_named_run() -> None:
+    """``_objective_ref_values`` (pcb-intent-api §Weights, ``ref=<run>``):
+    ``ref="seed"`` (a plain mapping's implicit default, or an explicit
+    one) is ``None`` — self-measure, today's behaviour; a
+    ``pcb.objective``-built mapping's ``.ref`` resolves against the run
+    object it names; a ref naming something without ``ref_values``
+    raises rather than silently measuring from the seed."""
+    from precis.pcb.local import LocalError, _objective_ref_values
+
+    assert _objective_ref_values({"ratsnest": 1.0}) is None
+    assert _objective_ref_values(pcb.objective(ratsnest=1.0)) is None
+
+    class _Run:
+        ref_values = {"ratsnest": 9.0, "crossings": 3.0}
+
+    assert (
+        _objective_ref_values(pcb.objective(ratsnest=1.0, ref=_Run()))
+        == _Run.ref_values
+    )
+
+    class _NoRefValues:
+        pass
+
+    class _HandBuiltObjective(dict):
+        """``pcb.objective`` itself refuses a ``ref=`` without
+        ``ref_values`` (``test_objective_shares``) — this stands in for
+        a mapping that reached ``_objective_ref_values`` some other way
+        (hand-built, not through the builder), so the defensive raise
+        here has a caller to catch."""
+
+        ref = _NoRefValues()
+
+    with pytest.raises(LocalError, match="ref="):
+        _objective_ref_values(_HandBuiltObjective(ratsnest=1.0))
+
+
+def test_topo_place_ref_run_reuses_its_reference_values(tmp_path: Path) -> None:
+    """End to end (pcb-intent-api §Weights slice 1 remainder):
+    ``pcb.objective(ref=<an earlier run>)`` makes THIS run's R_i the
+    named run's recorded vector, not its own seed-pose measurement —
+    exactly 42.0 for every term could never arise from self-measuring a
+    real board, so a match proves the override actually reached the
+    placer, not just the manifest."""
+
+    class _FakeRun:
+        ref_values = dict.fromkeys(pcb.OBJECTIVE_TERMS, 42.0)
+
+    run = pcb.local.topo_place(
+        _example("sanity"),
+        objective=pcb.objective(ratsnest=0.8, crossings=0.2, ref=_FakeRun()),
+        effort=200,
+        seed=1,
+        out=str(tmp_path / "topo"),
+    )
+    assert run.ref_values == _FakeRun.ref_values
+    manifest = json.loads((Path(run.out) / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["result"]["ref_values"] == _FakeRun.ref_values
+
+
 def test_board_default_stackup_is_four_routable_layers() -> None:
     """gr514459: ``Board()`` emits no stackup key and resolves to the
     semantic default — 4 routable copper layers

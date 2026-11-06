@@ -2035,25 +2035,41 @@ OBJECTIVE_TERMS = (
 )
 
 
-def objective(*, ref: str = "seed", **shares: float) -> dict[str, float]:
+class _ObjectiveShares(dict[str, float]):
+    """``objective()``'s return value — a plain ``dict`` of shares (so
+    ``pcb.objective(...) == {...}`` still holds, slice 1's original
+    contract) that also carries ``.ref`` for ``pcb.local.topo_place`` to
+    read. ``dict.__eq__`` compares key/value pairs only, so the extra
+    attribute is invisible to anything that doesn't look for it by
+    name."""
+
+    ref: Any = "seed"
+
+
+def objective(*, ref: Any = "seed", **shares: float) -> _ObjectiveShares:
     """A named share vector for ``pcb.local.topo_place(objective=...)``
     (pcb-intent-api §Weights, Decision 18): each kwarg is that term's
-    SHARE of the total AT THE SEED REFERENCE POSE — ``ratsnest=0.8,
+    SHARE of the total AT THE REFERENCE POSE — ``ratsnest=0.8,
     crossings=0.2`` means literally 80%/20%, not a raw weight across
     units. The placer normalises the shares to sum to 1 and measures
-    each term's reference value once at the seed pose
-    (``ObjectiveShares.__post_init__``); this function only validates
-    the kwargs and carries them through — it does no measuring itself.
+    each term's reference value once (``ObjectiveShares.__post_init__``);
+    this function only validates the kwargs and carries them through —
+    it does no measuring itself.
 
-    ``ref="seed"`` is the only reference this supports today — a named
-    earlier run (``ref=<run>``, cross-run comparability) is a GAP. At
-    least one term is required, and an unknown term name raises rather
-    than silently falling back to that term's class default (a typo'd
-    kwarg would otherwise mean something other than what was written)."""
-    if ref != "seed":
+    ``ref="seed"`` (default) measures R_i at the design's own seed pose.
+    ``ref=<run>`` — an earlier ``pcb.local.place``/``topo_place``/
+    ``route`` result (anything carrying ``.ref_values``) — reuses THAT
+    run's R_i instead, so the same share means the same priority across
+    runs (cross-run comparability). Anything else (a bare string, an
+    unrelated object) raises. At least one term is required, and an
+    unknown term name raises rather than silently falling back to that
+    term's class default (a typo'd kwarg would otherwise mean something
+    other than what was written)."""
+    if ref != "seed" and not hasattr(ref, "ref_values"):
         raise PcbBuilderError(
-            f"pcb.objective: ref={ref!r} not supported — only the seed-pose "
-            "reference exists today (a named earlier run is a GAP)"
+            f'pcb.objective: ref={ref!r} not supported — pass "seed" or '
+            "an earlier place/topo_place/route result (an object with "
+            "ref_values); a run id or path string is not enough"
         )
     unknown = sorted(set(shares) - set(OBJECTIVE_TERMS))
     if unknown:
@@ -2064,7 +2080,9 @@ def objective(*, ref: str = "seed", **shares: float) -> dict[str, float]:
         )
     if not shares:
         raise PcbBuilderError("pcb.objective: at least one term weight is required")
-    return dict(shares)
+    result = _ObjectiveShares(shares)
+    result.ref = ref
+    return result
 
 
 # --------------------------------------------------------------------------

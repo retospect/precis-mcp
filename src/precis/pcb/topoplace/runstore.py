@@ -37,8 +37,9 @@ from precis.pcb.topoplace.writeback import lock_payload
 
 #: ``manifest.json``'s schema tag — bump on any shape change (the
 #: objective dict gained ``silkroom`` at /2, ``margin`` at /3,
-#: ``measures`` at /4, 2026-11-01).
-RUN_SCHEMA = "precis.topo-run/4"
+#: ``measures`` at /4, 2026-11-01; ``result.ref_values`` — the run's R_i
+#: vector, pcb-intent-api §Weights — at /5).
+RUN_SCHEMA = "precis.topo-run/5"
 #: Kernel version stamped on every manifest: bump when the solver's
 #: output changes for equal inputs (the route job's ``CODE_VERSION``
 #: convention — a stored run must name the code that made it).
@@ -120,6 +121,11 @@ def manifest(
             "evals": int(result.evals),
             "restarts": int(result.restarts),
             "last_improve_eval": int(result.last_improve_eval),
+            # R_i (pcb-intent-api §Weights): this run's reference
+            # magnitudes, self-measured at the seed pose or (``ref=
+            # <run>``) carried over from an earlier run — what a later
+            # ``ref=<this run>`` reuses for cross-run comparability.
+            "ref_values": {k: float(v) for k, v in result.ref_values.items()},
             # post-pass reports (additive — readers ignore absent keys)
             "legalize": (
                 {
