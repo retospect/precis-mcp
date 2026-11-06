@@ -140,6 +140,21 @@ def add_parser(subparsers: Any) -> None:
     ch.add_argument("--tier", default="frontier", help="Tier floor / degrade target.")
     ch.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
+    dec = lsub.add_parser(
+        "decide", help="Explain a shadow routing decision; no LLM call."
+    )
+    dec.add_argument("prompt", help="Prompt whose routing requirements to inspect.")
+    dec.add_argument("--source", required=True, help="Operation source tag.")
+    dec.add_argument("--tier", required=True, help="Tier floor / degrade target.")
+    dec.add_argument("--tools", action="store_true", help="Require tool support.")
+    dec.add_argument("--privacy", choices=["default", "local-only"], default="default")
+    dec.add_argument(
+        "--work-class",
+        choices=["background", "deliverable", "interactive"],
+        default=None,
+    )
+    dec.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
     co = lsub.add_parser(
         "cost",
         help="Mine llm_call_log — per lane / pass / ref / model: calls, real-$, "
@@ -448,6 +463,51 @@ def _cmd_choose(store: Store, args: argparse.Namespace) -> None:
         )
     if sel.next_better:
         print(f"next better: {sel.next_better}")
+
+
+def _cmd_decide(store: Store, args: argparse.Namespace) -> None:
+    from dataclasses import replace
+    from datetime import UTC, datetime
+
+    from precis.utils.llm import decide, operations, recipes, router
+
+    try:
+        req = router.LlmRequest(
+            tier=router.Tier(args.tier),
+            prompt=args.prompt,
+            source=args.source,
+            tools_needed=args.tools,
+            privacy_class=args.privacy,
+            work_class=args.work_class,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"llm decide: {exc}") from exc
+    demand = recipes.resolve(
+        req.source, req.task_kind, req.consequence, req.privacy_class
+    )
+    req = replace(
+        req,
+        task_kind=demand.task_kind,
+        consequence=demand.consequence,
+        privacy_class=demand.privacy_class,
+    )
+    ledger = decide.ledger_from_store(store, now=datetime.now(UTC))
+    if ledger is None:
+        raise SystemExit(
+            "llm decide: routing ledger unavailable; retry the catalog read"
+        )
+    result = decide.decide(req, decide.requirement_for(req), ledger, "shadow")
+    print(json.dumps(result.explain(), indent=2))
+    backend = router.resolve_backend()
+    ladder = operations.resolve_op_chain(
+        req.source, tools_needed=req.tools_needed, backend=backend
+    )
+    if ladder is None:
+        ladder = router.resolve_chain(
+            req.tier, tools_needed=req.tools_needed, backend=backend
+        )
+    model = router.resolve_model(req.tier)
+    print("legacy: " + ", ".join(decide.rung_key(rung, model) for rung in ladder))
 
 
 def _fmt_int(n: int) -> str:
@@ -872,6 +932,8 @@ def run(args: argparse.Namespace) -> None:
         _cmd_select(store, args)
     elif args.llm_cmd == "choose":
         _cmd_choose(store, args)
+    elif args.llm_cmd == "decide":
+        _cmd_decide(store, args)
     elif args.llm_cmd == "cost":
         _cmd_cost(store, args)
     elif args.llm_cmd == "eval":

@@ -37,6 +37,14 @@ def test_pool_staleness_default_and_override() -> None:
     assert psettings.get_int("llm.pool_stale_after_s", store=store) == 60
 
 
+def test_decide_mode_registered_legacy_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PRECIS_LLM_DECIDE", raising=False)
+    spec = psettings.REGISTRY["llm.decide.mode"]
+    assert spec.default == "legacy"
+    assert spec.env_var == "PRECIS_LLM_DECIDE"
+    assert psettings.get_str("llm.decide.mode") == "legacy"
+
+
 class _Cursor:
     def __init__(self, row: tuple | None) -> None:
         self._row = row

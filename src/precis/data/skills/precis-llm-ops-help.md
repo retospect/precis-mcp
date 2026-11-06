@@ -107,6 +107,17 @@ profile's window cap counts in its own pools, `llm:<profile>:calls` and
 an exhausted row skips the profile's rung, an ahead one skips it for
 background calls (`subscription_cap`).
 
+## What would the new router have chosen? /decisions and llm.decide
+
+`llm.decide.mode` defaults to `legacy`; `shadow` and `on` compute and log
+the decision while executing the legacy chain in this slice. Shadow changes
+nothing executed. `get(kind='llm', id='/decisions')` groups calls by task kind,
+showing agreement, legacy and shadow Claude-window counts, actual and projected
+USD, and how many calls have known projected prices. Reto sets the global
+`llm.decide.mode` row and optional `llm.decide.<prefix>` rows, where the prefix
+ends at the first dot or colon in the task kind; `legacy`, `shadow`, and `on`
+are the accepted values. `precis llm decide` previews a choice without an LLM call.
+
 ## See also
 
 `pool_refresh` copies Codex weekly usage from fleet host reports and Devin's

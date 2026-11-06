@@ -20,6 +20,7 @@ this handler's store, not the process-global routing cache. These are
 configuration reads, never LLM calls or claims about effective runtime
 routing: request pins and runtime gates can change where a call lands.
 
+``/decisions`` compares shadow routing with executed legacy calls per task kind.
 ``/accounts`` and ``/pools`` (migration 0280, S1a) read the owned-capacity
 ledger: an account is one credential at one provider under one plan
 (``llm_account``); a pool is a rate bucket with a reset rule and explicit
@@ -170,6 +171,7 @@ class LlmHandler(NumericRefHandler):
             "get(kind='llm', id='/accounts') lists owned LLM credentials "
             "(name/vendor/plan/adapter/key presence/pools); id='/pools' "
             "lists their rate buckets (unit/limit/used/remaining/reset_rule). "
+            "id='/decisions' compares shadow decisions with executed routes per task kind. "
             "put(kind='llm', args={'account': {...}}) is owner-only. "
             "Never exported. See ``llm-catalog`` (git-only)."
         ),
@@ -288,6 +290,8 @@ class LlmHandler(NumericRefHandler):
             return Response(body=self._render_accounts())
         if view == "pools":
             return Response(body=self._render_pools())
+        if view == "decisions":
+            return Response(body=self._render_decisions())
         return super()._list_view(view)
 
     def _supported_list_views(self) -> tuple[str, ...]:
@@ -297,6 +301,7 @@ class LlmHandler(NumericRefHandler):
             "placement",
             "accounts",
             "pools",
+            "decisions",
         )
 
     def _op_route(self, source: str) -> Response | None:
@@ -907,6 +912,22 @@ class LlmHandler(NumericRefHandler):
                 f"task_classes={','.join(a.task_classes) or 'unknown'} "
                 f"default_model={a.default_model or 'unknown'} key={key} "
                 f"pools={','.join(a.pools) or 'unknown'}"
+            )
+        return "\n".join(lines)
+
+    def _render_decisions(self, *, window_days: int = 7) -> str:
+        """Summarize shadow agreement and projected spend for executed calls."""
+        rows = llm_catalog.decision_rollup(self.store, window_days=window_days)
+        lines = [
+            f"# llm decisions ({sum(row.calls for row in rows)} calls, {window_days} d)"
+        ]
+        for row in rows:
+            agreement = 100 * row.agree / row.calls if row.calls else 0
+            lines.append(
+                f"  {row.task_kind}: calls={row.calls} agree={agreement:.0f}% "
+                f"claude legacy={row.legacy_claude} shadow={row.shadow_claude} "
+                f"usd actual={row.actual_usd:.6f} projected={row.projected_usd:.6f} "
+                f"({row.projected_known}/{row.calls} priced)"
             )
         return "\n".join(lines)
 

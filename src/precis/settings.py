@@ -113,6 +113,14 @@ REGISTRY: dict[str, SettingSpec] = {
             default=False,
             doc="Master switch for local-first LLM attempts; off preserves callers.",
         ),
+        SettingSpec(
+            key="llm.decide.mode",
+            type="str",
+            env_var="PRECIS_LLM_DECIDE",
+            default="legacy",
+            doc="Default decide() mode for every task-kind prefix: legacy, shadow "
+            "or on; llm.decide.<prefix> rows override it.",
+        ),
         *(
             SettingSpec(
                 key=f"llm.local_first.set.{name}.mode",

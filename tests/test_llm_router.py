@@ -12,6 +12,7 @@ the corresponding call site resolves to today.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections.abc import Callable
@@ -44,6 +45,176 @@ from precis.utils.llm.router import (
     tier_from_str,
     transport_for_profile,
 )
+
+
+@pytest.mark.parametrize("mode", ["shadow", "on", "legacy", "broken"])
+@pytest.mark.parametrize("gated", [False, True])
+def test_decision_shadow_preserves_route_and_hash(
+    monkeypatch: pytest.MonkeyPatch, mode: str, gated: bool
+) -> None:
+    """Shadow telemetry changes neither the provider nor the request blob."""
+    from precis import route_log
+    from precis.budget import meter
+    from precis.utils.llm import decide, recipes
+
+    req = LlmRequest(tier=Tier.SMALL, prompt="same request", source="shadow-test")
+    rung = router.Rung(Transport.LOCAL, model="same-model")
+    answer = LlmResult(
+        text="same answer",
+        model="same-model",
+        tier=Tier.SMALL,
+        cost_usd=0.125,
+        turns_used=1,
+        input_tokens=20,
+        output_tokens=10,
+    )
+    provider = _FakeProv(answer)
+    monkeypatch.setattr(router, "resolve_chain", lambda *a, **kw: [rung])
+    monkeypatch.setattr(router, "_provider_for_ladder", lambda ladder: provider)
+    monkeypatch.setattr(
+        router, "_skip_unserved_local_rung", lambda ladder, model: ladder
+    )
+    monkeypatch.setattr(
+        router, "_drop_unavailable_rungs", lambda ladder, model: (ladder, [])
+    )
+    monkeypatch.setattr(router, "_apply_cloud_throttle", lambda ladder: ladder)
+    monkeypatch.setattr("precis.utils.llm.local_serving.acquire", lambda model: None)
+    monkeypatch.setattr("precis.utils.llm.admit.check_dispatch", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "precis.budget.breaker.gate_tier", lambda *a, **kw: "cap" if gated else None
+    )
+    monkeypatch.setattr(meter, "active_store", lambda: object())
+    monkeypatch.setattr(recipes, "lookup", lambda source: None)
+    monkeypatch.setattr(route_log, "enabled", lambda: True)
+    recorded: list[Any] = []
+
+    def record(rec: Any) -> str:
+        recorded.append(rec)
+        return hashlib.sha256(rec.request_text.encode()).hexdigest()
+
+    monkeypatch.setattr(route_log, "record_call", record)
+    monkeypatch.setattr(decide, "mode_for", lambda task: "legacy")
+    baseline = route(req)
+    ledger = decide.Ledger((), {}, {}, frozenset(), datetime.now(UTC))
+    loads: list[object] = []
+
+    def load(store: object, **kwargs: Any) -> Any:
+        assert mode != "legacy", "legacy must not load the decision ledger"
+        loads.append(store)
+        return ledger
+
+    monkeypatch.setattr(decide, "ledger_from_store", load)
+    monkeypatch.setattr(
+        decide, "mode_for", lambda task: "shadow" if mode == "broken" else mode
+    )
+    if mode == "broken":
+
+        def fail(*args: Any, **kwargs: Any) -> Any:
+            raise ValueError("bad shadow")
+
+        monkeypatch.setattr(decide, "decide", fail)
+    result = route(req)
+    assert (
+        result.model,
+        result.text,
+        result.cost_usd,
+        result.error,
+        result.paused,
+    ) == (
+        baseline.model,
+        baseline.text,
+        baseline.cost_usd,
+        baseline.error,
+        baseline.paused,
+    )
+    assert result.request_hash == baseline.request_hash
+    assert recorded[0].transport == recorded[1].transport
+    assert req.features is None
+    assert recorded[0].request_text == recorded[1].request_text
+    assert provider.calls == (0 if gated else 2)
+    stamp = recorded[1].features.get("decision")
+    if mode in {"legacy", "broken"}:
+        assert stamp is None
+    else:
+        assert stamp["mode"] == mode
+        assert stamp["executed"] == "legacy"
+        assert "agree" in stamp and "claude_window" in stamp
+        assert bool(recorded[1].features.get("gated")) == gated
+
+
+def test_decision_projected_cost_does_not_mutate_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis import route_log
+
+    request = LlmRequest(Tier.SMALL, prompt="cost", features={"caller": "kept"})
+    answer = LlmResult(
+        text="answer",
+        model="m",
+        tier=Tier.SMALL,
+        cost_usd=0.5,
+        turns_used=1,
+        input_tokens=100,
+        output_tokens=50,
+    )
+    decision: dict[str, Any] = {"chosen": {"price_in": 2.0, "price_out": 4.0}}
+    records: list[Any] = []
+    monkeypatch.setattr(route_log, "enabled", lambda: True)
+    monkeypatch.setattr(route_log, "record_call", lambda rec: records.append(rec))
+    before = router._serialize_request(request)
+    router._record_dispatch(
+        request, answer, transport=Transport.LOCAL, duration_ms=1, decision=decision
+    )
+    stamp = records[0].features["decision"]
+    assert stamp["projected_usd"] == pytest.approx(0.0004)
+    assert stamp["actual_usd"] == pytest.approx(0.5)
+    assert "projected_usd" not in decision
+    assert router._serialize_request(request) == before
+
+
+@pytest.mark.parametrize("gated", [False, True])
+def test_decision_streaming_logs_shadow(
+    monkeypatch: pytest.MonkeyPatch, gated: bool
+) -> None:
+    import asyncio
+
+    from precis import route_log
+
+    rung = router.Rung(Transport.CLAUDE_AGENT, model="stream-model")
+    monkeypatch.setattr(router, "resolve_chain", lambda *a, **kw: [rung])
+    monkeypatch.setattr(
+        router, "_drop_unavailable_rungs", lambda ladder, model: (ladder, [])
+    )
+    monkeypatch.setattr(router, "_apply_cloud_throttle", lambda ladder: ladder)
+    monkeypatch.setattr(router, "_quota_fallback_ladder", lambda *a: None)
+    monkeypatch.setattr("precis.utils.llm.local_serving.acquire", lambda model: None)
+    monkeypatch.setattr("precis.utils.llm.admit.check_dispatch", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "precis.budget.breaker.gate_tier", lambda *a, **kw: "cap" if gated else None
+    )
+    stamp: dict[str, Any] = {"executed": "legacy", "mode": "shadow"}
+    monkeypatch.setattr(router, "_shadow_decision", lambda *a: stamp)
+    records: list[Any] = []
+    monkeypatch.setattr(route_log, "enabled", lambda: True)
+    monkeypatch.setattr(route_log, "record_call", lambda rec: records.append(rec))
+
+    async def stream(req: LlmRequest, *, model: str) -> LlmResult:
+        assert not gated
+        return LlmResult("streamed", 0.1, 1, model, Tier.BIG)
+
+    async def on_event(event: dict[str, Any]) -> None:
+        pass
+
+    monkeypatch.setattr(router, "_dispatch_claude_agent_async", stream)
+    result = asyncio.run(
+        router.dispatch_async(
+            LlmRequest(Tier.BIG, prompt="stream", tools_needed=True, on_event=on_event)
+        )
+    )
+    assert result.paused is gated
+    assert len(records) == 1
+    assert records[0].features["decision"] == stamp
+
 
 # ── tier_from_str: stored-value degrade over the capability tiers + placement chains Phase C removal ──
 

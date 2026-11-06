@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 from precis.errors import BadInput
 from precis.store import Store
@@ -518,6 +518,50 @@ _TOTE_COLS = (
 #: rows are ~0 ms). The tote measures calls that ran; the pause volume is
 #: answerable from the gated rows themselves when needed.
 _NOT_GATED = "(features->>'gated') IS DISTINCT FROM 'true'"
+
+
+class DecisionRow(NamedTuple):
+    """Shadow agreement and comparable spend for one resolved task kind."""
+
+    task_kind: str
+    calls: int
+    agree: int
+    legacy_claude: int
+    shadow_claude: int
+    actual_usd: float
+    projected_usd: float
+    projected_known: int
+
+
+def decision_rollup(store: Store, *, window_days: int = 7) -> list[DecisionRow]:
+    """Compare shadow decisions with executed legacy routes, excluding gates."""
+    query = (
+        "SELECT COALESCE(features->>'task_kind', 'unknown'), count(*), "
+        "count(*) FILTER (WHERE features->'decision'->>'agree' = 'true'), "
+        "count(*) FILTER (WHERE features->'decision'->'claude_window'->>'legacy' = 'true'), "
+        "count(*) FILTER (WHERE features->'decision'->'claude_window'->>'shadow' = 'true'), "
+        "COALESCE(sum(cost_usd), 0), "
+        "COALESCE(sum((features->'decision'->>'projected_usd')::double precision), 0), "
+        "count(features->'decision'->>'projected_usd') "
+        "FROM llm_call_log WHERE ts > now() - (%s * interval '1 day') "
+        "AND features ? 'decision' "
+        f"AND {_NOT_GATED} GROUP BY 1 ORDER BY count(*) DESC, 1"
+    )
+    with store.pool.connection() as conn:
+        rows = conn.execute(query, (window_days,)).fetchall()
+    return [
+        DecisionRow(
+            str(row[0]),
+            int(row[1]),
+            int(row[2]),
+            int(row[3]),
+            int(row[4]),
+            float(row[5]),
+            float(row[6]),
+            int(row[7]),
+        )
+        for row in rows
+    ]
 
 
 def _tote_row(row: tuple[Any, ...]) -> ToteRow:
@@ -1337,10 +1381,12 @@ __all__ = [
     "REVIEW_TYPES",
     "SERVED_BY_KEYS",
     "SERVED_BY_SOURCES",
+    "DecisionRow",
     "PlacementShareRow",
     "ToteRow",
     "append_review",
     "build_meta",
+    "decision_rollup",
     "derive_observed_axes",
     "list_reviews",
     "llm_op_models",

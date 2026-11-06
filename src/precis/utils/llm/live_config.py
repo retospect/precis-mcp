@@ -350,6 +350,11 @@ def op_override(source: str) -> dict | None:
     return parsed
 
 
+def decide_override(prefix: str) -> str | None:
+    """The task-kind prefix's decision mode, using the shared negative cache."""
+    return _cached_setting(f"llm.decide.{prefix}")
+
+
 def cloud_enabled() -> bool:
     """Whether cloud rungs are currently enabled (throttle).
 
@@ -443,6 +448,7 @@ __all__ = [
     "chain_override",
     "cloud_enabled",
     "codex_exec_enabled",
+    "decide_override",
     "model_env_var",
     "model_key",
     "model_override",

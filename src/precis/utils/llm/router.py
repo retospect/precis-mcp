@@ -55,7 +55,7 @@ import random
 import re
 import threading
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from dataclasses import replace as _replace
 from datetime import UTC, datetime, timedelta
@@ -3721,6 +3721,7 @@ def _gate_result(
     entered: float,
     transport: Transport | None,
     routed: str | None = None,
+    decision: dict[str, Any] | None = None,
 ) -> LlmResult:
     """Log + return a gate early-out — a breaker trip, an admission refusal,
     a saturated-slot pause, an emptied chain — so a call refused *before* the
@@ -3744,6 +3745,7 @@ def _gate_result(
             duration_ms=int((time.monotonic() - entered) * 1000),
             routed=routed,
             gated=True,
+            decision=decision,
         ),
     )
 
@@ -3800,6 +3802,58 @@ def route(req: LlmRequest) -> LlmResult:
             _autoskill.record(plan, req, result, started)
             return result
     return _route_inner(req)
+
+
+def shadow_decision(
+    req: LlmRequest,
+    ladder: Sequence[Rung],
+    model: str,
+    unavailable: Sequence[tuple[Rung, str]],
+) -> dict[str, Any] | None:
+    """Compute telemetry only; a failed shadow can never prevent dispatch."""
+    try:
+        from precis.budget import meter
+        from precis.utils.llm import decide, recipes
+
+        demand = recipes.resolve(
+            req.source, req.task_kind, req.consequence, req.privacy_class
+        )
+        mode = decide.mode_for(demand.task_kind)
+        if mode == "legacy":
+            return None
+        store = meter.active_store()
+        if store is None:
+            return None
+        ledger = decide.ledger_from_store(
+            store,
+            now=datetime.now(UTC),
+            unavailable_transports=frozenset(r.transport.value for r, _ in unavailable),
+        )
+        if ledger is None:
+            return None
+        ledger = _replace(
+            ledger, legacy_adapter=ladder[0].transport.value if ladder else None
+        )
+        effective = _replace(
+            req,
+            task_kind=demand.task_kind,
+            consequence=demand.consequence,
+            privacy_class=demand.privacy_class,
+        )
+        shadow = decide.decide(effective, decide.requirement_for(req), ledger, mode)
+        legacy = decide.legacy_decision(ladder, model, ledger)
+        return {
+            **shadow.explain(),
+            "legacy": legacy.explain(),
+            **decide.compare(shadow, legacy),
+            "executed": "legacy",
+        }
+    except Exception:
+        log.debug("llm-router: shadow decision failed", exc_info=True)
+        return None
+
+
+_shadow_decision = shadow_decision
 
 
 def _route_inner(req: LlmRequest) -> LlmResult:
@@ -4057,6 +4111,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                 transport=_unavail[0][0].transport,
                 routed=_routed_placement(routed_rung, None),
             )
+    decision = _shadow_decision(req, ladder, model, _unavail if ladder else [])
     transport = ladder[0].transport
     provider: LlmProvider = _provider_for_ladder(ladder)
     # Global circuit breaker: refuse a *new paid* call once its resource is
@@ -4158,6 +4213,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
             entered=entered,
             transport=transport,
             routed=_routed_placement(routed_rung, None),
+            decision=decision,
         )
     # Window admission (llm-catalog slice 2): refuse a doomed (context, model)
     # pairing loudly — with the numbers — after the budget gate, before spending
@@ -4181,6 +4237,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
             entered=entered,
             transport=transport,
             routed=_routed_placement(routed_rung, None),
+            decision=decision,
         )
     # Local serving slot: if this host declares `served_by` for the model,
     # hold one of its local slots for the call's duration so concurrent local
@@ -4262,6 +4319,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                     entered=entered,
                     transport=nxt.transport,
                     routed=routed,
+                    decision=decision,
                 )
             esc_refusal = _admit.check_dispatch(
                 req, model=nxt.model or model, transport=nxt.transport
@@ -4280,6 +4338,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                     entered=entered,
                     transport=nxt.transport,
                     routed=routed,
+                    decision=decision,
                 )
             started = time.monotonic()
             result = _classified(FailoverProvider(ladder[1:]).run(req, model=model))
@@ -4292,6 +4351,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                     transport=ladder[1].transport,
                     duration_ms=int((time.monotonic() - started) * 1000),
                     routed=routed,
+                    decision=decision,
                 ),
             )
             return result
@@ -4336,6 +4396,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                     transport=transport,
                     duration_ms=int((time.monotonic() - started) * 1000),
                     routed=routed,
+                    decision=decision,
                 ),
             )
             return result
@@ -4356,6 +4417,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
             entered=entered,
             transport=transport,
             routed=routed,
+            decision=decision,
         )
     # A reserved slot that declares a direct `endpoint` (llama-swap) routes
     # the local transport there instead of the default, using the
@@ -4408,6 +4470,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
             transport=transport,
             duration_ms=int((time.monotonic() - started) * 1000),
             routed=routed,
+            decision=decision,
         ),
     )
 
@@ -4518,11 +4581,13 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     # Host-availability parity with sync route() (gr500371): an emptied chain
     # likewise delegates to route(), which re-prunes and returns the same
     # paused degrade result.
-    ladder, _ = _drop_unavailable_rungs(ladder, model)
+    ladder, _unavail = _drop_unavailable_rungs(ladder, model)
     transport = ladder[0].transport if ladder else None
 
     if transport is not Transport.CLAUDE_AGENT or req.on_event is None:
         return route(req)
+
+    decision = _shadow_decision(req, ladder, model, _unavail)
 
     # Same budget-breaker / window-admission / local-serving-slot gate
     # route() runs, ahead of the (here: async) provider call.
@@ -4573,6 +4638,7 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
             entered=entered,
             transport=transport,
             routed=_routed_placement(ladder[0], None),
+            decision=decision,
         )
 
     from precis.utils.llm import admit as _admit
@@ -4592,6 +4658,7 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
             entered=entered,
             transport=transport,
             routed=_routed_placement(ladder[0], None),
+            decision=decision,
         )
 
     from precis.utils.llm import local_serving as _local
@@ -4620,6 +4687,7 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
             entered=entered,
             transport=transport,
             routed=_routed_placement(ladder[0], slot),
+            decision=decision,
         )
     call_req = req
     call_model = model
@@ -4659,6 +4727,7 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
             transport=transport,
             duration_ms=int((time.monotonic() - started) * 1000),
             routed=_routed_placement(ladder[0], slot),
+            decision=decision,
         ),
     )
 
@@ -4974,6 +5043,7 @@ def _record_dispatch(
     duration_ms: int,
     routed: str | None = None,
     gated: bool = False,
+    decision: dict[str, Any] | None = None,
 ) -> str | None:
     """Best-effort: record the full call to the route-log. Dark (no-op) unless a
     store is bound at boot; any failure is swallowed so it can't break dispatch.
@@ -4998,6 +5068,22 @@ def _record_dispatch(
     if not req.log_call or not route_log.enabled():
         return None
     feats = _route_features(req, result)
+    if decision is not None:
+        # Never stamp req.features: those are part of the request hash.
+        decision = dict(decision)
+        chosen = decision.get("chosen") or {}
+        if (
+            result.input_tokens is not None
+            and result.output_tokens is not None
+            and chosen.get("price_in") is not None
+            and chosen.get("price_out") is not None
+        ):
+            decision["projected_usd"] = (
+                result.input_tokens * chosen["price_in"]
+                + result.output_tokens * chosen["price_out"]
+            ) / 1e6
+            decision["actual_usd"] = result.cost_usd
+        feats["decision"] = decision
     if gated:
         feats["gated"] = True
     try:

@@ -93,7 +93,7 @@ Resolution, per dispatch (in order)
    chain's next non-subscription rung (``llm.quota_fallback_daily_usd``
    caps it daily).
 
-Local serving: a host that declares ``served_by`` for the model holds one
+Local serving: a ``served_by`` host holds one
 of its ``resource_slots`` for the call (``local_serving.acquire``); a
 reserved slot's ``endpoint`` repoints the local wire at llama-swap
 directly. **Cluster-scoped:** on a local-serve miss, a ``served_by`` entry
@@ -183,6 +183,7 @@ The ``llm`` model catalog (ships dark) layers on this seam — facts/writer in
 
 Demand metadata — task kind, consequence, privacy; never a routing input — is
 :mod:`~precis.utils.llm.recipes`.
+``decide.py`` logs shadow choices without changing execution.
 
 Invariant: empty catalog / nothing-fits ⇒ ``resolve_model(tier_floor)``,
 byte-identical to routing without a catalog.

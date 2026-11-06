@@ -102,6 +102,64 @@ class TestAccountsView:
         assert "key=none" in lines[0]
 
 
+class TestDecisionsView:
+    def test_empty_window_and_supported_view(self, store: Any) -> None:
+        handler = _handler(store)
+        assert "decisions" in handler._supported_list_views()
+        assert handler.get(id="/decisions").body == "# llm decisions (0 calls, 7 d)"
+
+    def test_rollup_agreement_prices_and_excludes_gates(self, store: Any) -> None:
+        from precis import llm_catalog, route_log
+
+        cases: tuple[tuple[bool, float | None, bool], ...] = (
+            (True, 0.25, False),
+            (False, None, False),
+            (True, 9.0, True),
+        )
+        for agree, projected, gated in cases:
+            decision: dict[str, Any] = {
+                "agree": agree,
+                "claude_window": {"legacy": True, "shadow": agree},
+            }
+            if projected is not None:
+                decision["projected_usd"] = projected
+            route_log.record_call(
+                route_log.LlmCallRecord(
+                    source="test:decisions",
+                    tier="small",
+                    transport="local",
+                    model="decision-test",
+                    tools_needed=False,
+                    request_text="request",
+                    response_text="response",
+                    cost_usd=0.5,
+                    turns_used=None,
+                    duration_ms=1,
+                    errored=False,
+                    error=None,
+                    data_parsed=None,
+                    features={
+                        "task_kind": "test.decisions",
+                        "decision": decision,
+                        "gated": gated,
+                    },
+                    store_blobs=False,
+                ),
+                store=store,
+            )
+        rows = llm_catalog.decision_rollup(store)
+        assert len(rows) == 1
+        row = rows[0]
+        assert (row.task_kind, row.calls, row.agree) == ("test.decisions", 2, 1)
+        assert (row.legacy_claude, row.shadow_claude, row.projected_known) == (2, 1, 1)
+        assert row.actual_usd == pytest.approx(1.0)
+        assert row.projected_usd == pytest.approx(0.25)
+        body = _handler(store).get(id="/decisions").body
+        assert "# llm decisions (2 calls, 7 d)" in body
+        assert "test.decisions: calls=2 agree=50% claude legacy=2 shadow=1" in body
+        assert "usd actual=1.000000 projected=0.250000 (1/2 priced)" in body
+
+
 class TestPoolsView:
     def test_renders_every_seed_pool(self, store: Any) -> None:
         h = _handler(store)
