@@ -8,8 +8,9 @@ image that every ``gpaw`` rung of ``struct_relax`` executes, built from that
 unbacked checkout. Folding it in makes the image source deployable from the
 same tree as the host side that invokes it; see ``docker/precis-dft/``.
 
-The standalone checkout is kept as an archive and is **not** the source of
-truth any more — do not build from it.
+The in-repo subtree (``src/precis_dft``, ``tests/precis_dft``,
+``docker/precis-dft``) is the only copy and the source of truth; the image
+builds from it, never from a standalone checkout.
 
 **What was dropped on the way in**, as superseded by precis-mcp's own job
 lane: ``job_types/``, ``campaign/``, ``retry/``, ``workers/``, ``migrations/``,

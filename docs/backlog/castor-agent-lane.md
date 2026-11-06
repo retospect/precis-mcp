@@ -471,5 +471,6 @@ option for more coding capacity. EAGLE3 stays off. Slice 0 starts now.
 6. **Tier W scope.** Recommend ruff/mypy residuals and doc sync first;
    test-from-spec stays R until slice 5's selection numbers exist.
 7. **Who lands castor commits in a wave.** Recommend the coordinator (not
-   the release owner) with `--checked`, in batches of ≤3 per authority
-   v2, because the Claude read happens there anyway.
+   the release owner) with `--checked` (an opt-in: the authority's default
+   lane is `--quick`, with no batch limit), because the Claude read happens
+   there anyway.

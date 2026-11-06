@@ -23,7 +23,7 @@ commit in the primary `main` checkout. Mechanics: `docs/conventions/shipping.md`
   gate it, deploy that head pinned.
 - `/qland` — `scripts/ship --quick`: lint only, no pytest; the default lane
   for every non-harness diff. `--checked` adds the selected pytest
-  (recommended burst lane). Burst-land many trees, then one `/go`.
+  (opt-in). Burst-land many trees, then one `/go`.
 - `/qgo` — qland + ungated deploy; never for `*/migrations/*.sql` or
   `safe_fetch.py`.
 
@@ -66,9 +66,9 @@ Co-Authored-By/session footer; write it to a file and `git commit -F <file>`
   (`scripts/dev`). Ad-hoc SQL: `scripts/prod-psql` (read-only preferred);
   `scripts/db` is local-only.
 - Agent-supplied URLs → `safe_get`/`safe_stream`.
-- The repo is PUBLIC: no cluster addresses anywhere (gated tree-wide); real
-  node hostnames only under `deploy/`; prod coordinates via
-  `scripts/lib/pgb-host.sh`. Genuine samples take
+- The repo is PUBLIC: no cluster addresses anywhere (gated tree-wide); no
+  node hostnames in portable `deploy/` (inventory vars); prod coordinates
+  via `scripts/lib/pgb-host.sh`. Genuine samples take
   `secret-gate: allow — <reason>`.
 - Embeddings come from the worker, never ingest (`fill_embeddings`).
 - `uv` for everything; tests via `scripts/test` — never bare

@@ -1,7 +1,13 @@
 # Distributed llama.cpp across castor + pollux
 
+**Retired.** No RPC pair is wired in `deploy/`. The GB10 serving stack is
+now one fully resident model per host (gpt-oss-120b) under SGLang: role
+`deploy/roles/sglang/README.md`, playbook `deploy/playbooks/49a-sglang.yml`,
+inventory group `sglang_serving`. The recipe below is the historical
+2026-08 one.
+
 **What.** Big-model inference sharded across the two paired DGX Sparks via
-**llama.cpp RPC over the 200G ConnectX/RoCE link**. Live since 2026-08-05Z.
+**llama.cpp RPC over the 200G ConnectX/RoCE link**. Brought up 2026-08-05Z.
 Node bringup and the interconnect:
 [`dgx-spark-node-bringup`](./dgx-spark-node-bringup.md).
 

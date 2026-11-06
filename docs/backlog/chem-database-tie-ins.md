@@ -32,9 +32,10 @@ open questions on 2026-10-02 (see Decided).
   key from `PRECIS_MP_API_KEY`. Tested on a hand-built fixture shaped like
   the mp-api docs; verify the field names against one live record when the
   key is provisioned.
-- **A pending source pick.** `structure-import.md` § bulk corpus has been
-  waiting on Reto: the first open bulk source, OC20 or AQCat25. Decision
-  `chemistry-3` below settles it.
+- **The bulk-source pick.** `structure-import.md` § bulk corpus waited on
+  Reto for the first open bulk source; he ruled 2026-10-10: OC20 first,
+  then AQCat25 (see Decided). No `oc20` or `aqcat25` adapter exists in
+  `structure/importers/` yet.
 - **BEAST DB** (grand-canonical DFT on HER/OER/CO2R/NRR, 2,000+
   catalysts, corpus pa254046). Proposed as one more adapter in
   `capability-landscape-steals.md`; its licence and download format are
@@ -87,9 +88,16 @@ The three uses:
 - **MOFs (chemistry-2):** a MOF structure library (CoRE MOF and/or QMOF)
   plus ODAC23 adsorption energies as reference values. MOFs as catalyst
   candidates in the engine are out of scope until a quest asks for them.
-- **Catalyst source (chemistry-3):** Catalysis-Hub first. Reto is
-  requesting the SUNCAT credentials himself. BEAST DB is the fallback if
-  the credentials stall; Materials Project comes second.
+- **Catalyst source (chemistry-3):** Catalysis-Hub first, pending the
+  SUNCAT credentials Reto is requesting himself; BEAST DB the fallback if
+  they stall; Materials Project second. **Superseded for the bulk
+  corpus, Reto 2026-10-10: OC20 first, then AQCat25.** The OC20 adapter
+  ships first (fairchem, `dl.fbaipublicfiles.com`, anonymous; carries
+  `*N`, `*NO`, `*NH_x` adsorbates). AQCat25 (Hugging Face
+  `SandboxAQ/aqcat25-dataset`, gated:auto, spin-aware Parquet) follows
+  once an HF token is stored as a cluster secret. Then an `oc20` or
+  `aqcat25` adapter batch-mirrors a filtered Pd, Cu, Ni by N, O slice.
+  Catalysis-Hub stays built and waits on the credentials.
 - **Storage (chemistry-4):** look up on demand and import on use. Only
   small calibration slices are bulk-imported.
 - **Quest hook (chemistry-5):** show and flag only. The candidate shows its

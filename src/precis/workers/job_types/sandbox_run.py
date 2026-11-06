@@ -11,9 +11,9 @@ resolve through :mod:`precis.workers.executors._sandbox_inputs`); and
 read-only MCP on a bind-mounted unix socket, gated by
 ``PRECIS_SANDBOX_READ_MCP`` and built by
 :mod:`precis.workers.executors._sandbox_read_mcp`). Ships **dark** — the
-executor pass is registered only under ``PRECIS_SANDBOX_ENABLED``, so a
-merge/deploy touches nothing in prod until a human enables it on a
-sandbox host.
+executor pass runs only where a ``service_config`` (``service prio``) row
+lights ``job_claude_docker``, so a merge/deploy touches nothing in prod
+until a human enables it on a sandbox host.
 
 The job_type module is a pure declaration + helpers:
 
@@ -194,7 +194,7 @@ DESCRIPTION: str = (
     "container on an agent_sandbox_host and keep minimal forensics. "
     "precis_access:read (mode:script only) gives the script a per-run, "
     "token'd, read-only MCP on a unix socket when PRECIS_SANDBOX_READ_MCP=1. "
-    "Registered only under PRECIS_SANDBOX_ENABLED."
+    "Drained only on hosts whose service prio row lights job_claude_docker."
 )
 
 

@@ -15,8 +15,9 @@ groomer → `backlog-groomer-items-half.md`, cost ceiling →
 `daily-cost-ceiling-tuning.md`). Compact: feature → switch → step.
 
 - **Sandbox-run lane** (`sandbox_run` job_type, slices 1–4) →
-  `PRECIS_SANDBOX_ENABLED=1` on the sandbox hosts (the `code-sandbox`
-  container alone never registers the pass) → deploy, install podman on
+  a `service prio` row lighting `job_claude_docker` on the sandbox hosts
+  (`PRECIS_SANDBOX_ENABLED` is no longer a live gate; the `code-sandbox`
+  container alone never runs the pass) → deploy, install podman on
   those hosts, set the §5 companions (`PRECIS_SANDBOX_ARTIFACT_ROOT` →
   shared NAS mount; `PRECIS_SANDBOX_READ_MCP=1` if `precis_access:read`
   callbacks are wanted — `semantic_rejection` fails closed without it).

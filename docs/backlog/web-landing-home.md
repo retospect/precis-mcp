@@ -16,8 +16,6 @@ pillar: platform
   `2:28` (Kind badge `2:29`, Item row `2:31`, Continue card `2:39`,
   Attention card `2:46`); Tailwind colour variables
   `VariableCollectionId:2:2`.
-- **Worktree:** `figma` (was `unified-floating-cocke`, 2026-10-07; no
-  template code changed, tree clean).
 - **Builds:** request log 1 build; Home page 2 builds; general chat 2–3
   builds (unknown until the write-guardrail decision).
 

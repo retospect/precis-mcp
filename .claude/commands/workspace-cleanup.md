@@ -43,9 +43,11 @@ Live census at invocation:
    (real tracked changes), `clean+unmerged` worktrees and `unique`
    branches are informational, not candidates: a live lock means a
    session is in there, and unique commits are unshipped work. If Reto
-   asks about a dirty tree, look at the real diff (`git -C <path>
-   diff`) and form a view — disposable scratch vs. real unshipped work
-   — before offering anything. Never discard uncommitted changes
+   asks about a dirty tree, read its capped `diffstat` from
+   `scripts/inflight --json` (the harness refuses `git -C` into another
+   tree; `docs/conventions/container-ops.md`) and form a view —
+   disposable scratch vs. real unshipped work — before offering
+   anything. Never discard uncommitted changes
    without an explicit yes.
 
 4. **Summarize.** One short list: removed / left-live / still-open.

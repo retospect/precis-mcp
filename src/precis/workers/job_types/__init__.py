@@ -569,7 +569,8 @@ def _load_cad_discuss() -> JobTypeSpec:
 def _load_sandbox_run() -> JobTypeSpec:
     # Open-ended coding task in a throwaway container, run by the
     # claude_docker poll executor.
-    # The executor pass is gated on PRECIS_SANDBOX_ENABLED, but the
+    # The executor pass runs only where a service prio row lights
+    # job_claude_docker (cli/_worker_passes.py), but the
     # job_type registers unconditionally so put/dispatch validation and
     # error messages work everywhere (a put on a non-sandbox host is
     # rejected by validate_submit, not by an unknown-job_type error).

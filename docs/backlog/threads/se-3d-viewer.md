@@ -7,7 +7,7 @@ effort: medium
 
 ## Resume
 
-- **Next:** The print dialog when writer scale lands, otherwise fastener_insertion_path.
+- **Next:** The print dialog when writer scale lands, otherwise the declared install-order exception (`fastener_install_order`, Do-next 5; `fastener_insertion_path` itself is built).
 - **Blocked by:** [se-machine-design](se-machine-design.md#resume)’s writer scale for the print dialog.
 - **Unblocks:** A human inspection surface for machine designs.
 - **Acceptance:** Use [the latest handoff](#thread-context); preserve the standing viewer rulings and use [ranked work](#do-next) for the next build.
@@ -77,7 +77,8 @@ only the web render path is envelope-only.
 - **Next:**
   - Do-next 7, the print dialog, once se-machine-design confirms their
     writer scale has landed;
-  - otherwise Do-next 5, fastener_insertion_path.
+  - otherwise Do-next 5, the install-order exception (`fastener_insertion_path`
+    is built).
 - **Waits on:** se-machine-design's writer scale (the dialog).
 
 **Prod dogfood, round 3 (deployed 929107f3, 2026-10-03) → pass.** Against
@@ -150,8 +151,10 @@ up:
    nightly — the seed mints the fixture's bound ISO fasteners first,
    because `set_binding` stores only a slug and `attach_catalog` derives
    at load, so a bare replay leaves `fasten` seeing no screw at all (0
-   findings where prod shows 2). What is left there needs Reto (a fastener
-   blocked only by another fastener) or waits on 3 below (phase 2).
+   findings where prod shows 2). What is left there: the per-fastener
+   install-order exception for a fastener blocked only by another fastener
+   (ruled 2026-10-21, buildable now; `fastener_install_order` is not in the
+   code yet), and phase 2, which waits on Horizon 3.
    Budget: the insertion check took `fasten` on unicycle-c1 from 0.35 s
    to 1.39 s; the render slice must not add to that. The flange_bolt_left
    error is an assembly-order fact (it goes in before the pinch bolt);
@@ -365,12 +368,14 @@ and for a text field that is focus and caret, not just the value.
 
 ## Seam
 
-`src/precis/_pagination.py` is adopted here, not owned here. The chunking bug was
-fixed under this thread because no thread owned core response chunking and
-this thread's dogfooding found it. Reto's call (2026-09-30): re-home it to
-a runtime/platform thread deliberately when one exists — a file every MCP
-response passes through should not be inherited by a 3D-viewer thread by
-accident.
+Core response bounding (`src/precis/_result_budget.py::fit_result_body`;
+it replaced the removed `_pagination.py`, see
+[block-navigation](../block-navigation.md#what-exists-code-view-2026-10-28))
+is not owned here. This thread once adopted the old chunking file because
+no thread owned core response chunking and its dogfooding found the bug.
+Reto's call (2026-09-30): that code belongs to a runtime/platform thread,
+deliberately — a file every MCP response passes through should not be
+inherited by a 3D-viewer thread by accident.
 
 
 The non-geometric property layer (hydrophobic, charge, field, optical) is

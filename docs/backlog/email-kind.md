@@ -219,7 +219,7 @@ that reached the composing context is still `untrusted`. Deferred deliberately.
    `0076_email_scan.sql` (verdict rows, keyed `(account,folder,uidvalidity,uid)`;
    no body stored — only the verdict + evidence; + poll-bookkeeping columns on
    `email_account`). `workers/mail_poll.py` = registered compute pass
-   (`PRECIS_MAIL_POLL_ENABLED`, **dark**, no default profile so it doesn't poll
+   (**dark** behind a `service prio` row, no default profile so it doesn't poll
    the same mailbox from every node — the every-node lease is the §15i
    scheduler, still dark). Per-account cadence (`config.poll_seconds`) + IMAP
    exponential backoff on `consecutive_errors`, the news_poll/fetch/chase
@@ -236,7 +236,7 @@ that reached the composing context is still `untrusted`. Deferred deliberately.
 4. **`inject_scan` pass (tiers 1–2) + quarantine ladder.** ✅ **BUILT** — no
    migration (the 0076 `email_scan` table already carries `tier`/`verdict`/
    `evidence` + the `tier < 1` pending index). `workers/inject_scan.py` =
-   registered compute pass (`PRECIS_INJECT_SCAN_ENABLED`, **dark**, no default
+   registered compute pass (**dark** behind a `service prio` row, no default
    profile — enabled on the agent host where the local model proxy resolves,
    alongside `mail_poll`). Each tick: claim tier-0 verdicts a deeper scan
    hasn't reached (`store.pending_email_scans`, the pending index), **re-fetch
@@ -267,15 +267,18 @@ Send is a later slice, gated separately.
 
 ## Residuals (from OPEN-ITEMS)
 
-Slices 1–4 shipped (slice 4 inject_scan dark behind
-PRECIS_INJECT_SCAN_ENABLED).
-- Deploy slice-4 + enable mail_poll (Reto's Phase-2 window): the earlier prep
-  was reverted and the cluster repo retired — redo in-repo: add
-  `precis_worker_mail_poll: true` to the melchior overlay + the gate block
-  to precis-worker.plist.j2 (mirror precis_worker_classify), then
-  scripts/deploy starts polling from melchior.
-- Enable inject_scan (`precis_worker_inject_scan: true`, melchior) only after
-  mail_poll's tier-0 verdicts look right in prod.
+Slices 1–4 shipped; `mail_poll` and `inject_scan` are dark, gated by
+`service prio` rows (the `PRECIS_MAIL_POLL_ENABLED` /
+`PRECIS_INJECT_SCAN_ENABLED` env flags are retired as live gates; they
+survive only as `enable_env` names for the deploy-time seed task —
+`src/precis/cli/_worker_passes.py` `_register("mail_poll")`,
+`src/precis/workers/registry.py` `ServiceSpec(name="mail_poll")`).
+- Enable mail_poll (Reto's Phase-2 window): light one host's row, e.g.
+  `precis service prio melchior mail_poll 1`; no overlay variable or plist
+  gate block is involved. Enable on a single host so the mailbox is not
+  polled from every node.
+- Enable inject_scan the same way (`precis service prio melchior
+  inject_scan 1`) only after mail_poll's tier-0 verdicts look right in prod.
 - Slice 5 (design-only): opt-in promotion of a chosen clean message + wire
   the morning brief to read clean, non-quarantined, summarized email rows;
   SMTP send is a later slice behind a confirm-gate.

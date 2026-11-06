@@ -47,11 +47,11 @@ The thread-session fleet (one window per roadmap thread) is
                                         only — the peer main-loop form
     fleet-wave close NAME...            kill window, remove tree, drop branch;
                                         refuses a tree with unlanded commits
-    fleet-wave land TREE [--checked|--quick|--remote] [-m MSG]
+    fleet-wave land TREE [--quick|--checked|--remote] [-m MSG]
                                         run TREE's own scripts/ship (default
-                                        --checked; --quick is lint only, no
-                                        pytest) in TREE; coordinator tree
-                                        only; refuses a live session
+                                        --quick: lint only, pytest runs in
+                                        the release gate) in TREE; coordinator
+                                        tree only; refuses a live session
     fleet-wave approve TREE SHA[,SHA...] [--note ".."]   grant landing these shas
     fleet-wave approve --list [TREE]    print the approval ledger
     fleet-wave approve --revoke TREE SHA[,SHA...]        append a revoke line
@@ -144,9 +144,9 @@ restores the pre-v2 launch for one release: footers/<readonly|qland>.txt
 
 Landing (``land``). A branch lands only by ship run in its own tree, so
 a tier-R builder's work is landed by ``fleet-wave land TREE``, which runs
-``TREE/scripts/ship`` in one of its gate modes — ``--checked`` (the
-default), ``--quick`` (lint only, no pytest) or ``--remote`` (harness
-diffs) — with cwd=TREE and the
+``TREE/scripts/ship`` in one of its gate modes — ``--quick`` (the
+default: lint only, no pytest), ``--checked`` (opt-in, adds the selected
+pytest) or ``--remote`` (harness diffs) — with cwd=TREE and the
 output in ``$FLEET_STATE/land/<tree>-<stamp>.log``; it prints the log path
 and ship's exit code and returns it. It never cherry-picks or creates a
 branch (a copy leaves the builder's branch looking unmerged forever), and
@@ -2562,11 +2562,11 @@ def cmd_land(f: Fleet, a: argparse.Namespace) -> int:
     if not ship.is_file():
         print(f"fleet-wave: {ship} not found", file=sys.stderr)
         return 2
-    mode = "--checked"
+    mode = "--quick"
     if a.remote:
         mode = "--remote"
-    elif a.quick:
-        mode = "--quick"
+    elif a.checked:
+        mode = "--checked"
     argv = [str(ship), mode, *(["-m", a.message] if a.message else [])]
     logdir = f.state / "land"
     logdir.mkdir(parents=True, exist_ok=True)
@@ -2845,18 +2845,20 @@ def parser() -> argparse.ArgumentParser:
     s = sub.add_parser(
         "land",
         help="land a builder tree's own branch: run its scripts/ship in it "
-        "(coordinator tree only; --checked default, --quick lint-only, "
+        "(coordinator tree only; --quick default, --checked opt-in, "
         "--remote for harness diffs; no cherry-pick, no new branch)",
     )
     s.add_argument("tree", help="wave NAME under the worktrees root, or a path")
     mode = s.add_mutually_exclusive_group()
     mode.add_argument(
-        "--checked", action="store_true", help="scripts/ship --checked (default)"
+        "--checked",
+        action="store_true",
+        help="scripts/ship --checked (opt-in: adds the selected pytest)",
     )
     mode.add_argument(
         "--quick",
         action="store_true",
-        help="scripts/ship --quick (lint only, no pytest — the qland lane)",
+        help="scripts/ship --quick (default: lint only, no pytest — the qland lane)",
     )
     mode.add_argument(
         "--remote",

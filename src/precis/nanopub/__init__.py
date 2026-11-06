@@ -77,7 +77,7 @@ Slices 1-3 — local, reversible:
 - :mod:`.ots` — OpenTimestamps: nightly Merkle batch over signed
   artifacts, pending->upgraded sweep, recompute audit.
 
-Slices 4-5 — publish path (POST gated, nothing published yet):
+Slices 4-5 — publish path (POST gated, CLI-only):
 
 - :mod:`.preflight` — publish-time gates run before every POST
   (withheld edges, trust allowlist, state/drift/dependency order,
@@ -148,8 +148,9 @@ Read surface: ``get(kind='finding', view='nanopub')``
 (placeholder URI, draft comments allowed, stripped at mint), exact frozen
 bytes once signed.
 
-NOT built / not run: no artifact has been POSTed anywhere (Reto's call,
-via the CLI door). OTS and the registry mirror are dark switches
+Publishing is live but sparse: some artifacts are in state ``published``
+(fi211520 is one), the rest are signed/anchored; every POST is Reto's call
+via the CLI door. Not built / not run: OTS and the registry mirror are dark switches
 (``PRECIS_OTS_ENABLED`` / ``PRECIS_MIRROR_ENABLED``); the deploy tree sets
 both ON cluster-wide on the collapsed worker
 (``precis_worker_nanopub_{mirror,ots}`` — cluster-wide because the daily

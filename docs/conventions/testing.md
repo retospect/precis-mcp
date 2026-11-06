@@ -218,8 +218,9 @@ run's cancelled check-runs do not disqualify the sha either
 (scripts/last-gated-main-sha drops them — a release gate or nightly verdict
 on the same sha still counts). Don't expect a
 specific main sha to be gated; to gate a fixed sha, cut `release/r<N>`
-(`scripts/round cut --sha S`) — release refs get a group per sha and are never
-replaced. Keying main by sha would give every push a verdict but cost a full
+(`scripts/round cut --sha S`) — a release branch gets one group per ref with
+`cancel-in-progress` on, so a fix push to the same `release/r<N>` cancels the
+older run (only the newest head can deploy). Keying main by sha would give every push a verdict but cost a full
 run per push (see the check.yml concurrency note).
 
 Tiers, fastest to most complete — pick by what you changed:

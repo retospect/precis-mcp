@@ -32,8 +32,9 @@ a candidate that already reads as a claim needs no rewrite there. See
 sentence is a claim at all, this grammar governs its shape once it is.
 
 The claim sentence IS the claim — it carries all the meaning and is
-as long as it needs to be, but over 250 characters the lint warns
-(corpus median 147, p90 249): keep it terse. One plain prose
+as long as it needs to be, but over 250 characters `over-long` fires
+(warns while authoring, blocks at approve; corpus median 147, p90 249):
+keep it terse. One plain prose
 sentence, shaped **general → specific**: `[epistemic mode + method] +
 [system] + evidence verb + finding`.
 

@@ -17,8 +17,11 @@ run fully serialized under the session advisory lock (the last worker waits
 behind all prior clones). Options, none free: cap gate workers; shrink the
 template; let clones proceed with less lock overlap — measure before
 touching (real correctness/speed tradeoff). The per-test TRUNCATE base is
-already the cheap isolation choice. Separate gap: no coverage is measured
-anywhere (no pytest-cov). Owner `tests/conftest.py::_initialise_test_db`.
+already the cheap isolation choice. Coverage is measured, not a gap:
+`pytest-cov` is a dev dependency, the full-suite `scripts/ship` path runs
+pytest under it and gates changed lines with diff-cover (`PRECIS_DIFF_COVER_MIN`,
+default 90), and the nightly `coverage-db` job in `.github/workflows/check.yml`
+records per-test contexts. Owner `tests/conftest.py::_initialise_test_db`.
 
 ## Ship gate: test-db 100-connection ceiling saturates full-suite -n6
 

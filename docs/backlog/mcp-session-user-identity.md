@@ -1,5 +1,5 @@
 ---
-status: idea
+status: draft
 title: Bind an MCP session to a web user via a per-user token minted at /account
 pillar: personal
 prio: normal
@@ -9,58 +9,65 @@ prio: normal
 
 ## Motivation / why
 
-MCP sessions carry no requesting-user identity. The HTTP transport is gated
-by one install-wide bearer token (`src/precis/server.py::_install_token_auth`,
-`_check_bearer_token`; minted by `deploy/mcp-http/precis-mcp-http-ensure.sh`
-into `PRECIS_MCP_TOKEN` and written into the client's `mcp.json`
-`Authorization` header), and every session runs as the shared `agent_rw` DB
-role. Authentication says "a legitimate client", never "which person".
-Per-user features that start on the web side therefore stop at the MCP
-boundary: `email-per-user-credentials.md` (mailbox resolved through the
-requesting user) and `per-user-library-link.md` (MCP-triggered exports fall
-back to the install default).
+Install and slice callers carry no requesting-user identity. The HTTP
+transport is gated by one install-wide bearer token
+(`src/precis/server.py::_install_token_auth`, `_check_bearer_token`; minted
+by `deploy/mcp-http/precis-mcp-http-ensure.sh` into `PRECIS_MCP_TOKEN` and
+written into the client's `mcp.json` `Authorization` header), and every
+session runs as the shared `agent_rw` DB role. That token says "a legitimate
+client", never "which person". Per-user features that start on the web side
+still stop at the MCP boundary for every kind except `learning`:
+`email-per-user-credentials.md` (mailbox resolved through the requesting
+user) and `per-user-library-link.md` (MCP-triggered exports fall back to the
+install default).
+
+## Shipped
+
+Per-user MCP tokens exist; only the `learning` kind accepts them.
+
+- Storage: migration `0275_web_user_mcp_tokens.sql`, table
+  `web_user_mcp_tokens` (many labelled tokens per `web_users.id`, SHA-256
+  digest only, `revoked_at`). Plaintext is shown once and never vaulted.
+  Helpers: `src/precis/mcp_identity.py::mint_user_token`,
+  `list_user_tokens`, `revoke_user_token`, `resolve_user_token`.
+- Mint/revoke at `/account` (`src/precis_web/routes/account.py::create_mcp_token`,
+  `revoke_mcp_token`); rotate is mint-then-revoke.
+- Transport: `src/precis/server.py::_install_token_auth` resolves a
+  `precis_user_` bearer token per request (not per MCP session), stamps the ASGI
+  scope, and answers 401 for an unknown or revoked token. Personal tokens are
+  accepted only on the streamable-HTTP path.
+- Context: `src/precis/user_context.py::current_principal`, `user_scope`,
+  `require_user` (re-checks account and token on every call, so revocation
+  bites mid-session); no env, config or literal login supplies an owner.
+- Scope gate: `src/precis/tools/core.py::_personal_call_allowed` lets a
+  personal principal call only `learning` and `get skill precis-learning-help`;
+  every other kind refuses.
 
 Ruling (Reto, 2026-10-06): the owner is Reto, but the identity is never
 hardcoded; the binding is a per-user credential the user manages on their own
 account page, `/account`.
 
-## In scope
+## In scope (still open)
 
 Orchestrator proposal, inside Reto's ruling (not yet reviewed by Reto):
 
-1. **Mint at /account.** `src/precis_web/routes/account.py` already manages
-   password, profile, logout, the podcast feed token (minted/rotated/revoked;
-   plaintext vaulted, digest in `web_users.feed_token_sha256`, via
-   `precis.users.mint_feed_token` / `remember_feed_token` /
-   `recall_feed_token` / `forget_feed_token`) and the reMarkable device token.
-   Add an "MCP identity" section on the same pattern: mint, show once, rotate,
-   revoke. Digest stored keyed on `web_users.id` (bigint identity PK,
-   migration 0131; `login`/`abbrev` stay display-only); plaintext in the vault
-   under a colon-bearing name so an env var cannot shadow it (cf.
-   `precis.users.feed_token_secret_name`). A user may hold several tokens (one
-   per machine) so revoking a laptop does not break the desktop.
-2. **Session binding.** The HTTP MCP layer accepts the install bearer token
-   (unchanged: infra callers stay anonymous) or a per-user token; a per-user
-   token resolves by digest to `web_users.id`, bound for the whole session and
-   held in the session/request context.
-3. **Tools read the user from context only.** A `requesting_user()` accessor
-   is the single source; never config, env, or a literal login. Returns
-   `web_users.id`.
-4. **Anonymous refuses with a hint.** A session without a per-user token is
-   anonymous; any per-user feature (mailbox, library link, per-user vault
-   names) returns a refusal naming `/account` ("mint an MCP token at /account
-   and add it to your MCP client config").
-5. **Client carriage.** The token travels in the header the install token
-   already uses: `"headers": {"Authorization": "Bearer <per-user token>"}` in
-   the client's `mcp.json`. `scripts/mcp-http-install` and the ensure script
-   keep emitting the install-token config for infra; the local HTTP proxy
-   forwards the client `Authorization` header unchanged. /account shows a
-   copy-paste `mcp.json` snippet (the URL comes from the deployment overlay,
-   never the repo).
-6. **Callers adopt it.** `email-per-user-credentials.md` (scope check and the
+1. **Widen the scope gate.** `_personal_call_allowed` admits only
+   `learning`; per-user kinds beyond it (mailbox, library link, per-user vault
+   names) need an allow-list decision per kind. A personal principal calling
+   anything else is refused by `_require_personal_scope` ("personal MCP
+   tokens permit learning calls and learning help only"). An anonymous call
+   to a per-user feature already refuses naming `/account`
+   (`user_context.py::_require_account`).
+2. **Client carriage snippet.** The token travels in the `Authorization`
+   header the install token already uses. `/account` shows only the
+   one-time token and a bearer-setting hint, not a copy-paste `mcp.json`
+   snippet (the URL comes from the deployment overlay, never the repo).
+   `scripts/mcp-http-install` and the ensure script keep emitting the
+   install-token config for infra.
+3. **Callers adopt it.** `email-per-user-credentials.md` (scope check and the
    `vault.acl` per-name ACL key on `web_users.id`) and
    `per-user-library-link.md` (MCP-triggered exports carry the bound id) read
-   the accessor once it exists.
+   `current_principal()` / `require_user`.
 
 ## Explicitly NOT in scope
 
@@ -74,28 +81,23 @@ Orchestrator proposal, inside Reto's ruling (not yet reviewed by Reto):
 
 ## Acceptance criteria
 
-- /account mints a per-user MCP token, shows it once, and can rotate and
-  revoke it; revoke takes effect on the next request.
-- Only the digest is in the DB; plaintext is recoverable only through the
-  vault; a `pg_dump` yields no working token.
-- A session presenting a user's token reports that user's `web_users.id` from
-  `requesting_user()` for every call in the session; a rotated or revoked
-  token gets 401.
-- A session with only the install token (or none) is anonymous; a per-user
-  feature call returns a refusal containing `/account`.
-- No hardcoded login or id serves as an identity default anywhere in `src/`
-  (grep-checked).
-- Two users' tokens in two concurrent sessions never see each other's
-  identity (test with interleaved calls).
-- `scripts/mcp-http-install` output for infra is unchanged.
+Met by the shipped slice: /account mints, shows once and revokes; only the
+digest is stored; a revoked token gets 401; an anonymous per-user call
+refuses naming `/account`; no hardcoded identity.
+
+Open:
+
+- Each adopting kind (mailbox, library link) reads the principal via
+  `require_user` and is exercised by a test with two users' tokens in
+  interleaved concurrent sessions.
+- `scripts/mcp-http-install` output for infra stays unchanged.
 
 ## Target + blast radius
 
-`src/precis_web/routes/account.py` (new section + route) ·
-`src/precis/users.py` (mint/digest/vault helpers, mirrors the feed token) ·
-new migration (token digest storage; forward-only) ·
-`src/precis/server.py` (`_install_token_auth`: per-user token resolution,
-session context) · `src/precis/secrets.py` (vault names) ·
+Remaining work touches `src/precis/tools/core.py::_personal_call_allowed`
+(per-kind allow-list) · the adopting kinds (email, library link) ·
+`src/precis_web/templates/account/index.html.j2` (`mcp.json` snippet) ·
+`src/precis/secrets.py` (per-user vault names) ·
 `deploy/mcp-http/precis-mcp-http-ensure.sh` and `scripts/mcp-http-install`
 (snippet/docs only) · skill `precis-overview` (anonymous-refusal hint).
 Related: `email-per-user-credentials.md`, `per-user-library-link.md`,
@@ -105,8 +107,6 @@ Related: `email-per-user-credentials.md`, `per-user-library-link.md`,
 
 - 2026-10-06 (Reto): "It's my thing, reto. But don't hardcode that. It goes
   here: /account."
-- Open (orchestrator): digest column on `web_users` (one token) vs a
-  `web_user_mcp_tokens` table (many, labelled, last-used). Proposal: table.
-- Open (orchestrator): the shared session server is one process serving many
-  clients; resolve identity per request from the header, not per MCP session
-  id. Proposal: per request.
+- Decided in the shipped code: a `web_user_mcp_tokens` table (many,
+  labelled; no last-used column), identity resolved per request from the
+  header, not per MCP session id.

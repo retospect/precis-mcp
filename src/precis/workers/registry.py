@@ -1757,9 +1757,10 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
-        # email-kind slice 3. Dark until PRECIS_MAIL_POLL_ENABLED is set on one
-        # host — no default profile, so it doesn't poll the same mailbox from
-        # every node (a per-account lease that would make every-node safe is the
+        # email-kind slice 3. Dark until a `service prio` row lights it on one
+        # host (PRECIS_MAIL_POLL_ENABLED is not read live and the deploy seed
+        # task does not seed it) — no default profile, so it doesn't poll the
+        # same mailbox from every node (a per-account lease that would make every-node safe is the
         # §15i scheduler, still dark). Per-account cadence + IMAP-error backoff
         # live in the pass; it fetches new bodies (BODY.PEEK) + depth-0 scans.
         name="mail_poll",
@@ -1776,9 +1777,10 @@ SERVICES: tuple[ServiceSpec, ...] = (
         # email slice 4: the deep rung of the injection cascade. Leases depth-0
         # verdicts (email_scan_pending_idx), re-fetches the body from IMAP,
         # scores it with a local model (+ optional depth-2 escalate), and raises
-        # an alert on `high`. DARK — no default profile + PRECIS_INJECT_SCAN_
-        # ENABLED unset; enabled on the agent host (melchior) where the local
-        # model proxy resolves, alongside mail_poll.
+        # an alert on `high`. DARK — no default profile; lit by a `service
+        # prio` row (PRECIS_INJECT_SCAN_ENABLED is not read live and the deploy
+        # seed task does not seed it) on the agent host (melchior) where the
+        # local model proxy resolves, alongside mail_poll.
         name="inject_scan",
         label="Email injection scan (depth 1/2)",
         category="acquisition",

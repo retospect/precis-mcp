@@ -25,15 +25,17 @@ reason its author did not write.
 `/qland`, `main` may be red *at the test, type and import-contract level* — no pytest, mypy or lint-imports ran. That is
 accepted and temporary; the debt is settled by the next full gate.
 
-**Prefer `scripts/ship --checked` when the tree carries more than docs.**
-The checked mode is the recommended burst lane (gr485791): same machinery
+**`scripts/ship --checked` is an opt-in, not the default lane** (Reto
+2026-10-30, reaffirmed 2026-11-05: land with plain `--quick` as each tree
+finishes, no batching; pytest runs once, in the release gate). The checked
+mode (gr485791) is the same machinery
 as `--quick`, but its lint adds mypy, import contracts and the hygiene tests, and it runs a selected pytest — the
 contract invariants (audited tables, closed registries, ratchets,
 vocab/secret scans) plus corpus-coupled tests for data files and the
 index/testmon set for Python changes — all selected by
 `scripts/impacted-tests`, the same selector the release lane uses. That is
 a couple of minutes instead
-of nothing. Every r35 red was a `--quick` land this would have caught.
+of nothing; use it when the diff touches something those tests guard.
 `/qland` itself keeps running `--quick`; invoke `scripts/ship --checked`
 directly, and check the same selection beforehand with
 `scripts/test --selected`.

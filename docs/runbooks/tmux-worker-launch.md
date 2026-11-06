@@ -48,8 +48,11 @@ launcher is `scripts/fleet-codex` (`codex-fleet.md`); Devin launch is
   `scripts/devin-tree --tmux [SESSION]` (without `--tmux` it runs Devin in
   the calling terminal, not a window) exports PATH, creates the tree + `worktree-NAME`
   branch, locks the tree to Devin's pid and writes `.claude/purpose`.
-- Devin starts on a "trust this directory" prompt that only Reto
-  answers; NEVER `tmux send-keys` into a window showing it — Enter
+- `scripts/devin-tree` pre-trusts `<repo>/.claude/worktrees` in Devin's
+  `trusted_workspaces.json` (`scripts/lib/devin_trust.py`) before launch,
+  so a tree it creates starts without the "trust this directory" prompt. If
+  the trust step fails it only warns and Devin shows the prompt; only Reto
+  answers it — NEVER `tmux send-keys` into a window showing it, Enter
   selects "No, exit".
 - `devin -p` non-interactive took >30 min on a smoke prompt; use the
   TUI window.
@@ -61,8 +64,10 @@ launcher is `scripts/fleet-codex` (`codex-fleet.md`); Devin launch is
 
 - Worker sessions in auto mode: `scripts/ship --quick` is denied for
   some ("CI Bypass") — workers commit, the coordinator/release owner
-  lands. `--impacted` crashed on a testmon IndexError; the full gate
-  runs detached with `nohup … &` and a polled log (about 3 h).
+  lands. `--impacted` can still hit testmon's `get_file` IndexError;
+  `scripts/lib/testmon-exit-guard.py` turns that into exit 0 with a warning
+  when pytest's summary was clean, else exit 75 (result unknown) and
+  `scripts/test` re-runs plain; the full gate runs detached with `nohup … &` and a polled log (about 3 h).
 - Master classifier denials seen, each routed to Reto and cleared only
   by his explicit authorization by name: killing another session's
   Devin windows or removing sessionless trees ("Interfere With

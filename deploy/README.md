@@ -258,12 +258,12 @@ plays).
 
 Claude Code spawns a stdio MCP server with just the `env` block of its mcp
 config, not the parent `claude -p` environment. A var set on the claude
-process (e.g. `PRECIS_CURRENT_AGENTLOG`) reaches the MCP server only through
-an explicit passthrough entry, `"VAR": "${VAR:-}"`, in
-`deploy/roles/asa_bot/templates/claude_mcp.json.j2` (rendered by
-`31-asa-bot.yml`, not by `scripts/deploy`). `PRECIS_CURRENT_TODO`,
-`PRECIS_WORKSPACE`, `PRECIS_CURRENT_MODEL` and `PRECIS_KINDS_DISABLED` are not
-passed through, so subprocess-spawned agents (dream, `claude -p` plan ticks)
+process reaches the MCP server only through an explicit passthrough entry,
+`"VAR": "${VAR:-}"`, in `deploy/roles/asa_bot/templates/claude_mcp.json.j2`
+(rendered by `31-asa-bot.yml`, not by `scripts/deploy`). The template passes
+`PRECIS_CURRENT_AGENTLOG`, `PRECIS_CURRENT_SOURCE`, `PRECIS_CURRENT_MODEL` and
+`PRECIS_ACTING_USER`. `PRECIS_CURRENT_TODO`, `PRECIS_WORKSPACE` and
+`PRECIS_KINDS_DISABLED` are not passed through, so subprocess-spawned agents (dream, `claude -p` plan ticks)
 do not see them; in-process ticks use the `inproc_context` ContextVar instead.
 
 ## claude runs as a non-admin user on mac workers

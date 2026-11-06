@@ -9,14 +9,19 @@ pillar: memory-graph
 An audit on 2026-08-19 found the claim corpus is broadly unpublishable, in
 ways notation normalization does not touch. This is the plan to fix it.
 
-**The reframing that makes this tractable: nothing has been published.** Of
-1,527 live claim hubs, 1 is `signed`, 138 are `reviewed`, and 1,388 have no
-`nanopub_publish` row at all. Zero are `published`. So the freeze-at-review
-semantics — which constrained every repair made during the audit, and which
-produced the 77 stuck drift rows — **do not actually bind us**. We can reset
-reviewed rows to candidate and re-approve under a corrected standard. Treat
-this as pre-launch cleanup, not a live-corpus migration. That choice expires
-the moment the first artifact is published.
+**The reframing that makes this tractable (2026-08-19 audit): nothing was
+published.** Of 1,527 live claim hubs, 1 was `signed`, 138 were `reviewed`,
+and 1,388 had no `nanopub_publish` row at all. Zero were `published`. So the
+freeze-at-review semantics — which constrained every repair made during the
+audit, and which produced the 77 stuck drift rows — did not bind us. We could
+reset reviewed rows to candidate and re-approve under a corrected standard.
+That choice has expired for the hubs signed since: the signing pass of
+2026-10 left signed and anchored hubs (e.g. fi191121 `anchored`), and fi211520
+is `published`. Repairs that change `pub_id` or `refs.title` are free only for
+hubs with no signed artifact (`candidate`/`reviewed`); for a signed, anchored
+or published hub they need a supersede, never a reset. Read "reset, don't
+backfill", the step-1 reopen and the Phase 3/5 ordering constraints below as
+applying to the unsigned cohort.
 
 ## Position, verified against prod 2026-08-19 (read-only)
 

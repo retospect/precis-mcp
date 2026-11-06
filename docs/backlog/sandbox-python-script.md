@@ -28,7 +28,7 @@ only IN/OUT bus, no DB creds in the container, cgroup caps
 per-run token'd read-only MCP on a unix socket (`_sandbox_read_mcp`,
 `mode:script` only). It ships
 default-off: a `service prio` row enables the `job_claude_docker` lane
-(`PRECIS_SANDBOX_ENABLED` is the legacy env gate, `cli/_worker_passes.py`).
+(`PRECIS_SANDBOX_ENABLED` only seeds that row at deploy, `cli/_worker_passes.py`).
 Modes:
 
 - `mode:build` — Claude writes code; blocked in prod on gr329258 (the vault

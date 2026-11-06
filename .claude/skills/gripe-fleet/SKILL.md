@@ -93,7 +93,7 @@ name the allowed functions, what a cap measures) are in
    --quick` (`--remote` for harness diffs; step 6), never by
    cherry-picking or pinning the commit into another branch.
    `W` (alias `qland`): builders land their own slice with
-   `scripts/ship --checked`/`--remote`. Launch applies the tier's
+   `scripts/ship --quick` (`--remote` for a harness diff). Launch applies the tier's
    permissions to the new tree (`scripts/fleet-authority apply`) and appends
    `.claude/fleet/generated/footer-<tier>.txt` plus
    `.claude/fleet/builder-workflow.txt`. `FLEET_LEGACY_FOOTERS=1` restores
@@ -126,9 +126,9 @@ name the allowed functions, what a cap measures) are in
    with `scripts/fleet-wave send-line WIN TEXT`. It refuses a window with a
    dialog open or unsent text in its input box. A tier-R builder's work
    lands from the coordinator tree with `scripts/fleet-wave land <tree>
-   [--checked|--quick|--remote] [-m MSG]` (default `--checked`; `--quick`
-   is lint only, no pytest — the lane a LAND verdict takes; `--remote`
-   for a harness diff): it runs that tree's own `scripts/ship` with the
+   [--quick|--checked|--remote] [-m MSG]` (default `--quick`: lint only,
+   no pytest — the lane a LAND verdict takes; `--checked` is an opt-in;
+   `--remote` for a harness diff): it runs that tree's own `scripts/ship` with the
    tree as cwd, so the builder's branch is the one that lands. Run it in the
    background; it prints the log path under `$FLEET_STATE/land/` and ship's
    exit code. It refuses a tree whose session is still live (let the builder

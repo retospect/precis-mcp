@@ -1,8 +1,11 @@
 """claude_docker executor — launch a container, poll it, reap by name.
 
 Sibling of :mod:`claude_inproc` / :mod:`ssh_node` / :mod:`coordinator`: a ``run_claude_docker_pass`` function the CLI registers as a
-``RefPass`` — but **only where ``PRECIS_SANDBOX_ENABLED=1``** (mirrors
-``classify`` default-OFF), so the pass never runs on a non-sandbox host.
+``RefPass`` — but **default-OFF**: it runs only where a ``service_config``
+(``service prio``) row lights ``job_claude_docker`` (or an explicit
+``--only job_claude_docker``), so the pass never runs on a non-sandbox host.
+``PRECIS_SANDBOX_ENABLED`` is no longer a live gate; the deploy-time seed
+task only mirrors it into a row.
 
 Unlike the blocking executors, this one is **detached + poll** (compute-lane shape / the ComputeBackend seam): each tick is a cheap
 ``inspect`` + heartbeat, the heavy work is out-of-process in the

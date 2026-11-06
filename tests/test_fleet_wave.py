@@ -1668,7 +1668,7 @@ def _all_branches(env: dict[str, str]) -> str:
     ).stdout
 
 
-def test_land_runs_the_trees_own_ship_checked_by_default(
+def test_land_runs_the_trees_own_ship_quick_by_default(
     env: dict[str, str], tmp_path: Path
 ) -> None:
     wt = _ship_tree(env, "b1")
@@ -1678,7 +1678,7 @@ def test_land_runs_the_trees_own_ship_checked_by_default(
     assert proc.returncode == 0, proc.stderr
     call = _ship_call(tmp_path)
     assert call is not None
-    assert call["argv"] == ["--checked"]
+    assert call["argv"] == ["--quick"]
     assert Path(str(call["cwd"])).resolve() == wt.resolve()
     log = Path(proc.stdout.split("log: ", 1)[1].splitlines()[0])
     assert log.parent == Path(env["FLEET_STATE"]) / "land"
@@ -1710,6 +1710,15 @@ def test_land_quick_runs_ship_quick(env: dict[str, str], tmp_path: Path) -> None
     call = _ship_call(tmp_path)
     assert call is not None
     assert call["argv"] == ["--quick"]
+
+
+def test_land_checked_runs_ship_checked(env: dict[str, str], tmp_path: Path) -> None:
+    _ship_tree(env, "b9")
+    proc = _run(_land_env(env, tmp_path), "land", "b9", "--checked")
+    assert proc.returncode == 0, proc.stderr
+    call = _ship_call(tmp_path)
+    assert call is not None
+    assert call["argv"] == ["--checked"]
 
 
 def test_land_modes_are_mutually_exclusive(env: dict[str, str], tmp_path: Path) -> None:

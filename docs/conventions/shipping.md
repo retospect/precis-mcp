@@ -327,7 +327,12 @@ the canonical list, see /land above) is refused before any gate and takes
 `/land`.
 The same refusal covers `--checked`.
 
-## --checked — the qland burst lane with a selected pytest
+## --checked — opt-in: qland plus a selected pytest
+
+Not the default: builders and sessions land with plain `--quick` as each tree
+finishes, with no batch plan and no batch-size counting (Reto 2026-10-30,
+reaffirmed 2026-10-31 and 2026-11-05). Pytest runs once, in the release
+branch gate; a red release is fixed forward.
 
 `scripts/ship --checked` is `--quick`'s merge machinery plus one more gate
 leg: after the pre-qland lint it runs the selection from
@@ -348,9 +353,9 @@ It lands like a qland: no `.ship-sha`, no diff-coverage, forward-merge
 trailer `Gate: lint + selected pytest` when it races main.
 
 It exists because every r35 red was a lint-only land whose failure a cheap
-invariant/snapshot/table test would have caught (gr485791). For the burst
-lane it is the recommended default over bare `--quick`; the suite debt is
-still settled by the next full gate. Run the same selection without landing
+invariant/snapshot/table test would have caught (gr485791). Use it when a
+diff touches something those tests guard; the suite debt is still settled by
+the release gate. Run the same selection without landing
 via `scripts/test --selected` (or `scripts/impacted-tests` bare). Refused
 with `--remote`, `--impacted`,
 `--full`, `--mutate`, `--release` (also via `PRECIS_SHIP_CHECKED=1`).
@@ -592,10 +597,11 @@ branches in a dedicated integration worktree.
   release-train default lane for every non-harness diff — `uv.lock`,
   `pyproject.toml`, migrations and schema included; a harness diff is
   refused, name `--remote`. Burst-land many trees, then one `/go`.
-  `--checked` is the same machinery plus a cheap selected pytest
+  Land each tree with plain `--quick` as it finishes; no batching plan.
+  `--checked` is an opt-in: the same machinery plus a cheap selected pytest
   (`scripts/impacted-tests`: contract invariants + corpus/import map + index
-  evidence, testmon when a map exists) — the recommended burst lane
-  (gr485791); preview the selection with `scripts/test --selected`.
+  evidence, testmon when a map exists; gr485791); preview the selection with
+  `scripts/test --selected`.
 - **`/qgo`** — qland + ungated deploy. Never for `*/migrations/*.sql` or
   `safe_fetch.py` (`scripts/qgo-guard` refuses; those take `/go`).
 

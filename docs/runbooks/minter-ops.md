@@ -63,7 +63,7 @@ Executors today: `claude_inproc` (offline `claude -p`, provides
 `ssh_node` (remote GPU-node compute, provides `{has_gpaw}`),
 `claude_docker` (sandboxed detached container run, provides
 `{podman, claude_oauth}` — only satisfiable on
-`PRECIS_SANDBOX_ENABLED=1` hosts), `job_inproc` (in-process bounded
+hosts where a `service prio` row lights `job_claude_docker`), `job_inproc` (in-process bounded
 compute with slot reservation, empty PROVIDES — gated by
 `resource_slots`, not this capability check), and `coordinator`
 (yield/resume phase machines — provides `{claude_bin}`, needed by

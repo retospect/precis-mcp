@@ -1,5 +1,5 @@
 """Taproot atomic-claims migration — Phase 2 (apply), the quiet-window
-write pass over ``docs/backlog/taproot-atomic-claims.md``'s Strategy.
+write pass over ``docs/backlog/taproot-compound-migration.md``'s Strategy.
 :mod:`precis.taproot.migrate` (Phase 0/1) is strictly read-only; this
 module is the one place that pass's dry-run outcomes turn into writes —
 one hub per transaction, resumable, via :func:`apply_dry_run` (per-verdict
@@ -8,7 +8,7 @@ routing: its own docstring).
 **Quiet window (an operator step, not code)**: pause ``hub_refine``/
 ``chase_trigger`` and avoid 02:00-03:30 UTC (nightly backup + caspar's
 reboot) before ``precis taproot-migrate apply``
-(``docs/backlog/taproot-atomic-claims.md`` §"Quiet window definition").
+(``docs/backlog/taproot-compound-migration.md`` §Strategy, "Quiet window").
 :func:`apply_dry_run` has no opinion on *when*; it only assumes nothing
 else mutates the same hubs concurrently.
 
@@ -22,7 +22,8 @@ in two different ways:
 
 * **Inbound evidence** (:data:`~precis.taproot.hub.HUB_ROLES`) — every
   live edge is re-pointed via the **add-first invariant**
-  (``docs/backlog/taproot-reground-add-first-invariant.md``): verify each
+  (``docs/backlog/taproot-compound-migration.md`` §Strategy, Phase 2;
+  the same contract as ``precis.workers.hub_refine``'s applier): verify each
   atom against the edge's grounding passage, add-and-read-back-confirm
   before ever pruning, never prune with zero confirmed replacement adds.
   A *verified*, per-atom re-point, never a blanket copy.
@@ -52,8 +53,8 @@ the placement cascade (LLM) and ``extract_verify_fn`` (LLM) both run
 pool-exhaustion-deadlock reasoning as
 :func:`~precis.taproot.hub.attach_evidence`'s retraction check.
 
-**Atom re-grounding** (``docs/backlog/taproot-atom-regrounding.md``, "no
-source, no atom"): :mod:`precis.taproot.reground`'s CLI stage runs
+**Atom re-grounding** (``docs/backlog/taproot-compound-migration.md``
+§"Apply prerequisite — atom re-grounding", "no source, no atom"): :mod:`precis.taproot.reground`'s CLI stage runs
 *before* apply and writes an optional ``row["grounding"]`` key (this
 module never imports :mod:`precis.taproot.reground` — one-directional,
 see :func:`_parse_grounding`). When present:
@@ -199,7 +200,7 @@ class ApplyReport:
     #: Atoms withheld from placement entirely because a *regrounded* row
     #: (``row["grounding"]``, :mod:`precis.taproot.reground`) marked them
     #: ungrounded on a hub that has candidate source papers — "no source,
-    #: no atom" (``docs/backlog/taproot-atom-regrounding.md``). Zero on any
+    #: no atom" (``docs/backlog/taproot-compound-migration.md``). Zero on any
     #: row without a ``"grounding"`` key (plain, un-regrounded dry-run
     #: input) or on a hanging hub (no candidate papers at all) — see
     #: :func:`_withheld_atoms`. A withheld atom mints no hub, gets no
@@ -468,7 +469,7 @@ def _atom_paper_ref_count(conn: Any, atom_hub_id: int) -> int:
 def _live_evidence_count(store: Store, conn: Any, hub_ref_ids: list[int]) -> int:
     """Total live evidence edges landing on any of ``hub_ref_ids`` — the
     add-first invariant's post-write backstop
-    (``docs/backlog/taproot-reground-add-first-invariant.md`` step 3):
+    (``docs/backlog/taproot-compound-migration.md`` §Strategy, Phase 2):
     "re-check count(live evidence edges) > 0" after the transaction's adds
     and prunes are staged, still inside the same connection so it sees
     them. Runs against the SAME ``conn`` the writes used (not a fresh
@@ -848,7 +849,9 @@ def apply_dry_run(
         if verdict != "split":
             # "lossy" / "nested" / "error" / anything this build doesn't
             # recognize — never stamp a still-possibly-composite hub
-            # (docs/backlog/taproot-atomic-claims.md P2-12 invariant).
+            # (docs/backlog/taproot-compound-migration.md §"Quality
+            # gates"; the P2-12 invariant is stated in
+            # ``precis.taproot.migrate``).
             skipped_verdict += 1
             hub_rows.append(
                 HubApplyOutcome(hub_ref_id, "skipped_verdict", detail=str(verdict))
@@ -1016,7 +1019,7 @@ def apply_dry_run(
                         # Withheld: re-grounding found this atom ungrounded
                         # on a hub that has candidate source papers — "no
                         # source, no atom" (docs/backlog/
-                        # taproot-atom-regrounding.md). No hub minted, no
+                        # taproot-compound-migration.md). No hub minted, no
                         # conjunct-of link, no cascade ever ran for it.
                         atom_hub_ids.append(None)
                         reason = withheld_reasons_by_idx[i]

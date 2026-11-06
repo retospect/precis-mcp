@@ -194,9 +194,10 @@ EXECUTOR_PROVIDES: dict[str, frozenset[str]] = {
     # ``claude_docker`` runs a ``sandbox_run`` job as a detached,
     # cgroup-capped container on an ``agent_sandbox_host`` — launch,
     # poll by name, reap. The
-    # pass is registered only where ``PRECIS_SANDBOX_ENABLED=1`` (the
-    # sandbox hosts), so this capability set is only *satisfiable*
-    # there; a data host without podman + the OAuth token can't run it.
+    # pass runs only where a ``service prio`` row lights
+    # ``job_claude_docker`` (seeded at deploy for the sandbox hosts), so
+    # this capability set is only *satisfiable* there; a data host without
+    # podman + the OAuth token can't run it.
     "claude_docker": frozenset({"podman", "claude_oauth"}),
     # ``job_inproc`` (§F cycle a) runs a BOUNDED job_type's plugin
     # ``dispatch`` in-process, synchronously, one per pass tick — the

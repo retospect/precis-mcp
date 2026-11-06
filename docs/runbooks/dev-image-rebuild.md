@@ -8,18 +8,25 @@ of models, or dev tooling re-runs on every source edit. Gate usage:
 
 - `scripts/build-image precis-dev` → tag `precis-dev`. **This is what the gate
   uses** (`scripts/test`, `scripts/ship`, via `docker/dev/compose.yaml`). It
-  exports `GH_TOKEN` (from `gh auth token`, caller-set `GH_TOKEN` wins) as the
-  BuildKit secret `gh_token`. It does **not** seed `premodels`, so every
-  `uv.lock` change cascades into a full ~3.8 GB model re-bake (~10 min) —
-  expected here, not a wrong-flag mistake.
-- `scripts/precis-shell --rebuild` → tag `precis-mcp:dev`. Seeds `premodels`
-  and now also threads `GH_TOKEN` as `--secret id=gh_token` (current
-  `scripts/precis-shell`). The private-repo `autocatpath` layer used to die on
-  `could not read Username for 'https://github.com'` when this path passed no
-  secret (2026-08-19Z; the rebuild-paths fix shipped 2026-08-22Z). If that
-  error reappears, a missing `gh` login / empty `GH_TOKEN` is the cause.
-  (`scripts/build-image` targets a compose *service* in `docker/dev`; it is not
-  the MCP-image path.)
+  builds the compose *service* named by its argument, exports `GH_TOKEN` (from
+  `gh auth token`, caller-set `GH_TOKEN` wins) as the BuildKit secret
+  `gh_token`, and seeds `premodels` from the local `precis-mcp:premodels` tag
+  (`additional_contexts` in the compose file; the script retags a local
+  `precis-mcp:latest` / `:dev` / `precis-dev` as the seed, or builds it once,
+  when the tag is missing). It refuses below `PRECIS_BUILD_MIN_FREE_GB` (60),
+  builds to a temp tag, smoke-imports `autocatpath`, and retags `precis-dev`
+  only on success.
+- `scripts/precis-shell --rebuild` → tag `precis-mcp:dev`, the operator shell
+  image. Seeds `premodels` and threads `GH_TOKEN` as `--secret id=gh_token`
+  (the private-repo `autocatpath` layer dies on `could not read Username for
+  'https://github.com'` without it; a missing `gh` login / empty `GH_TOKEN` is
+  the cause if that error appears).
+- `scripts/mcp-image-refresh` → the session MCP's image. The MCP
+  (`precis-mcp-http`) runs from `precis-mcp:dev`; when its `uv.lock` /
+  autocatpath labels trail the served tree (or with `--force`) the script runs
+  `scripts/build-image precis-dev`, tags the result `precis-mcp:dev`, then
+  recreates the backend blue-green. So `scripts/build-image` is the build step
+  of the MCP-image path too; `--dry-run` prints the plan.
 
 Everything below describes the `precis-mcp:*` lineage and its seed mechanism.
 

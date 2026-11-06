@@ -20,8 +20,9 @@ live, and nothing in it persists between runs:
 - **`sandbox_run`** (job_type + `claude_docker` executor): throwaway
   container per job, `/work` volume as the whole IN/OUT bus, container has
   NO DB creds (read-only token'd MCP callback at most), melchior
-  hard-excluded, cgroup-capped. Ships **dark** — registered only under
-  `PRECIS_SANDBOX_ENABLED`; no host has it on.
+  hard-excluded, cgroup-capped. Ships **dark** — drained only where a
+  `service prio` row lights `job_claude_docker`; the lane is lit on at
+  least one host (a `sandbox_run` job has succeeded on a cluster host).
 - **`agent_container`** (containerized plan_tick): shipped, but the
   capability probe + unhealthy-latch that make the flip safe are NOT
   deployed (`agent-container-capability-probe.md`) — flipping

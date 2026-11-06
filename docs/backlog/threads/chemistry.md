@@ -7,7 +7,7 @@ effort: medium
 
 ## Resume
 
-- **Next:** Tick qu164903: Reto ruled 2026-10-07 (via chat-interface) that the re-mint of the 23 failed verify seeds is NOT a re-run, so chemistry may tick; then the timed MPI GPAW run.
+- **Next:** Tick qu164903: Reto ruled 2026-10-07 (via chat-interface) that the re-mint of the 23 failed verify seeds is NOT a re-run, so chemistry may tick.
 - **Blocked by:** Nothing for the tick. Catalysis items 25 (re-runs) and 23 (hydride pilot) stay held; the surface-Pourbaix optimizer that 23 waits on got its q3 ruling 2026-10-12 (oxide corrections on bulk references only, surface anchors uncorrected, oxide boundaries a labelled uncertain layer) and a viewer ask (the layered map; see the item's slices).
 - **Unblocks:** Healthy pathway engine output for [catalysis](catalysis-selectivity.md#resume).
 - **Acceptance:** After the hold question is resolved, follow [the latest handoff](#thread-context): verify wall 28800, cpuset, retry stamp and child taskset on castor/pollux; inspect the content-key change first.
@@ -55,22 +55,12 @@ Reto 2026-10-01). Skeleton draft `catpath-methods` exists, with a plan
 paragraph per section; next comes importing the missing methods papers.
 **No GPAW relax has ever completed in prod** (the two DFT-rung jobs ever
 dispatched both failed; the 09-18 serial run measured 10–18 min per ionic
-step). So the timed MPI run is also the first completion test: if
-it fails for any reason other than speed, chemistry reports and stops.
-Ruled 2026-10-02 (chemistry-6, option 1): the orchestrator rebuilds the MPI
-image on pollux in the round-2 window; pollux stays the `dft` host
-(local-compute). The pollux image (2026-06-21) has no MPI. Branch
-`chemistry-dft-mpi-env` (324559cda, with the orchestrator to gate) renders
-`PRECIS_DFT_MPI_RANKS`, `PRECIS_DFT_OMP_THREADS`, `PRECIS_DFT_CPUSET` and
-`PRECIS_DFT_PAW_DIR` from the dft role; all default to today's behaviour.
-Setting values on pollux (8 ranks, 1 thread, the fast cores, node-local
-scratch while `/mnt/cluster` is hung) is a prod config change the
-orchestrator takes with the round-2 deploy and lists for Reto. Before the
-build: the new Dockerfile bakes no PAW datasets and nothing mounts them, so
-copy them out of the June image first and point `dft_paw_dir` at them.
-Measure: wall per SCF iteration; one ionic step at 1 rank on the new image
-first, then 8 ranks (review note §5). Rank the items below by what that
-paper needs.
+step). Reto dropped the timed MPI GPAW run and the MPI image rebuild on
+2026-10-10: the image is rebuilt only if someone needs the gpaw rung, and
+nothing requests it today. The dft role renders `PRECIS_DFT_MPI_RANKS`,
+`PRECIS_DFT_OMP_THREADS`, `PRECIS_DFT_CPUSET` and `PRECIS_DFT_PAW_DIR`; all
+default to today's behaviour, and MPI ranks stay 0 (off) against the
+image, which has no MPI. Rank the items below by what that paper needs.
 
 1. **backlog/qu164903-campaign.md** residuals are ops/Reto
    (st164913 un-rule-out, kinetics cutover prod write, presentation items).
@@ -168,8 +158,9 @@ at five; engine-over-UI still holds.
 5. **backlog/chem-database-tie-ins.md** — MOF and catalyst database
    tie-ins (Reto, 2026-10-02): structure seeds, reference energies,
    screening. Decided 2026-10-02: MOF library + ODAC23 references,
-   Catalysis-Hub first (Reto requests the SUNCAT credentials), on-demand
-   import, show-and-flag only. Step 1 (CIF import, QMOF/CoRE MOF adapters,
+   on-demand import, show-and-flag only; bulk catalyst source OC20 first,
+   then AQCat25 (Reto 2026-10-10), Catalysis-Hub waits on the SUNCAT
+   credentials. Step 1 (CIF import, QMOF/CoRE MOF adapters,
    NAS bundle index) shipped; its bundle download is an ops step. Next is
    the reference-comparison hook. Ranked here because the
    November trust-demo paper needs reference energies UMA was not trained

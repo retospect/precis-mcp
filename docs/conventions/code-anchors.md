@@ -76,4 +76,7 @@ Never write a commit sha into `docs/`, backlog items, docstrings or
 churny"). State status qualitatively ("shipped", "landed", "shipped (dark)");
 `git blame`/`git log` carry provenance. A sha rots when the line moves or the
 item is squash-merged. Dependencies that move fast resolve live at build time,
-no sha pins.
+no sha pins in prose. Exception: `autocatpath` is pinned by full git `rev` in
+`pyproject.toml` (`[tool.uv.sources]`); `scripts/build-image` reads the locked
+sha from `uv.lock` as `AUTOCATPATH_REV`. The catpath agents bump that pin
+(`.claude/fleet/authority.md`).

@@ -63,8 +63,8 @@ atom↔composite structure yet, blocking for phase 3.
   first with `links` read-back, prunes only for confirmed adds,
   post-transaction `count(live edges) > 0` re-check, partial-failure counts
   in the result, intent-vs-committed diff as the repair mode) — the same
-  contract as `hub_refine`'s (`docs/backlog/taproot-reground.md`'s
-  "Applier must enforce add-first in code" section); one code path, not two.
+  contract as `hub_refine`'s applier (`src/precis/workers/hub_refine.py`,
+  "the applier: add-first, in code"); one code path, not two.
 - **Phase 3 — human review, triaged not exhaustive.** At 1,346 hubs a full
   pass isn't plausible: review only `needs_review` placements, low-confidence
   splits, and a ~5% random QA sample of auto-applied hubs. Fisheye (pre-req
@@ -89,10 +89,12 @@ keeps the old as an alias).
 scoring, `--json` persist, seeded random controls, `junk_candidate`,
 `escalate_fn`) + `taproot/canon.py` (P1/P2-13: enumerate-then-emit, modality
 + mechanism rules, composite synthesis, scope validation,
-`extract_claim_strict_big`/`_strict_haiku`). Calibration fixture:
-`tests/fixtures/taproot/migration_pilot_25.jsonl` (22/25 exact, 3 documented
-xfail). haiku is the primary extractor (`extract_claim_strict_haiku`,
-selective BIG escalation for `lossy`/`nested`/`no-claim` only — not a
+`extract_claim_strict_big`/`_strict_medium`). Calibration fixture:
+`tests/fixtures/taproot/migration_pilot_25.jsonl` (25 rows; 4 documented
+known false positives, `lossy` on correct pass-throughs, marked xfail in
+`tests/test_taproot_migrate_gates.py::_KNOWN_FALSE_POSITIVES`). haiku is the
+primary extractor (`--tier haiku` = `extract_claim_strict_medium`, MEDIUM
+tier; selective BIG escalation for `lossy`/`nested`/`no-claim` only — not a
 blanket tier bump); a 100-hub run against the deployed gates re-classified
 clean (49 split / 1 pass-through / 6 no-claim / 23 lossy / 15 nested / 6
 error — the 6 errors are persistent local `claude -p` exit-1s, re-run or
