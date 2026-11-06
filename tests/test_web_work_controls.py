@@ -93,7 +93,8 @@ class TestControlsVisibility:
         t = _tree(handler, store)
         handler.tag(id=t["b"], add=["STATUS:done"])
         _sign_in(monkeypatch)
-        html = client.get("/work").text
+        # completed rows are hidden unless ?done=1 (td573298)
+        html = client.get("/work?done=1").text
         tags = _row_tags(html)
         b_start = html.index(tags[f"td{t['b']}"])
         b_row = html[b_start : html.index("</li>", b_start)]
