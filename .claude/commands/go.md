@@ -94,8 +94,8 @@ Optional ship message from the user: `$ARGUMENTS`
    | 0 | S already in `origin/prod`, or the in-flight release contains S (`riding …`) | nothing to deploy; that release ships it |
    | 1 | refused: S off main's first-parent line, or a cut guard (migration-number collision, `gated`/`prod` cannot fast-forward) | read the refusal; fix on main, re-run |
    | 2 | release CI red, or not green by the timeout | see below |
-   | 3 | rollout succeeded; runtime confirmation pending | step 8 |
-   | 4 | another session's release stayed in flight past the queue timeout | S is on main; re-run `scripts/release` later |
+   | 3 | live rollout succeeded; runtime confirmation pending | step 8 |
+   | 4 | the in-flight record is stale — origin/prod moved past its pin (your own record counts too) | run `scripts/round supersede r<N>` (the line names it), then re-run `scripts/release` |
    | other | `scripts/deploy` failed; the pin is retained | surface the failing ansible task verbatim — the cluster may be on mixed versions. Fix, re-run `scripts/release`; it resumes |
 
    **Red release (exit 2).** The log names the failing jobs and the

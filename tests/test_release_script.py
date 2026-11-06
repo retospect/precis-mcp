@@ -28,7 +28,7 @@ from tests.test_round_gate import (
     _round_json,
 )
 from tests.test_round_gate import rig as rig
-from tests.test_round_release import _verdict
+from tests.test_round_release import _hook, _verdict
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only: execs shebang'd scripts"
@@ -166,6 +166,63 @@ def test_unrecorded_release_branch_off_main_still_blocks(rig: Rig) -> None:
     assert f"{rig.shas['c3'][:9]} rides the next cut" in out.stdout
     assert "RELEASE_CUT:" not in out.stdout
     assert rig.origin_ref("release/r1") == ""
+
+
+def _stale_deployed(rig: Rig, *, drop_marker: bool = True) -> str:
+    """A deployed-unconfirmed r1 that origin/prod moved past — the
+    dead-clone record a second worktree trips on (gr573151). With
+    drop_marker=False this tree keeps owning it. Returns the new
+    origin/main tip."""
+    assert _release(rig, "--cut-only", *FAST).returncode == 0  # r1 at c3
+    out = rig.round("deploy", DEPLOY_STUB_VERIFY="1", **_verdict(rig.shas["c3"]))
+    assert out.returncode == 3, out.stdout + out.stderr  # pinned, unconfirmed
+    c4 = _commit(rig.root, "src/c4.py", "c4 code")
+    _git(rig.root, "push", "-q", "origin", "main")
+    _push_branch(rig, "prod", c4)  # a later deploy moved prod past the pin
+    tip = _commit(rig.root, "src/c5.py", "c5 code")
+    _git(rig.root, "push", "-q", "origin", "main")
+    if drop_marker:
+        (rig.root / ".release-owner").unlink()
+    return tip
+
+
+def test_stale_deployed_record_exits_four_and_names_the_clear_command(
+    rig: Rig,
+) -> None:
+    """gr573151: the only in-flight record is a corpse prod already moved
+    past — a blocker, not a ride: exit 4 naming `round supersede r<N>`."""
+    _stale_deployed(rig)
+    out = _release(rig, *FAST)
+    assert out.returncode == 4, out.stdout + out.stderr
+    assert "release/r1" in out.stderr
+    assert "scripts/round supersede r1" in out.stderr
+    assert "rides the next cut" not in out.stdout
+    assert rig.deploy_log() == [f"{rig.shas['c3']} --pinned"]  # only the setup's
+
+
+def test_stale_record_with_a_live_foreign_branch_rides(rig: Rig) -> None:
+    """A live owner still in flight keeps the ride — exit 0 naming the
+    branch; only an all-stale in-flight set is exit 4."""
+    tip = _stale_deployed(rig)
+    work = _child(rig, rig.shas["c0"], "unshipped release work")
+    _push_branch(rig, "release/r7", work)
+    out = _release(rig, *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "release in flight: release/r7" in out.stdout
+    assert f"{tip[:9]} rides the next cut" in out.stdout
+    assert "RELEASE_CUT:" not in out.stdout
+
+
+def test_stale_owned_record_exits_four_not_three(rig: Rig) -> None:
+    """gr573151 review: ownership does not revive a corpse — an owned
+    record prod moved past is exit 4 like a foreign one; exit 3 stays for
+    a live rollout that genuinely awaits runtime confirmation."""
+    _stale_deployed(rig, drop_marker=False)
+    out = _release(rig, *FAST)
+    assert out.returncode == 4, out.stdout + out.stderr
+    assert "release/r1" in out.stderr
+    assert "scripts/round supersede r1" in out.stderr
+    assert "confirm-runtime" not in out.stdout
 
 
 def test_fresh_path_opens_cuts_waits_and_deploys(rig: Rig) -> None:
@@ -316,6 +373,113 @@ def test_cut_only_dry_run_stops_after_the_cut(rig: Rig) -> None:
     assert "would stop after the cut (--cut-only)" in out.stdout
     assert "would deploy" not in out.stdout
     assert rig.origin_ref("release/r1") == ""
+
+
+# 4-column canned check-runs satisfy both readers: release::ci_red needs
+# >=3 tabs, round::_red_verdict needs exactly 3 (gr573151).
+_RED_RUNS = (
+    "lint\tcompleted\tfailure\thttps://ci.invalid/actions/runs/42\n"
+    "test-linux (1)\tcompleted\tskipped\thttps://ci.invalid/actions/runs/42\n"
+)
+
+
+def test_cut_only_recuts_a_red_owned_release_once_the_fix_is_on_main(
+    rig: Rig,
+) -> None:
+    """gr573151: --cut-only resuming our own release that went red with its
+    head fully on main supersedes it and re-cuts at S — the fix landed."""
+    c2 = rig.shas["c2"]
+    out = _release(rig, "--cut-only", "--sha", c2, *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr  # r1 at c2
+    (rig.gh_dir / c2).write_text(_RED_RUNS, encoding="utf-8")
+    c3 = rig.shas["c3"]
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert (
+        f"release release/r1 is red and its head is on main: "
+        f"re-cutting at {c3[:9]}" in out.stdout
+    )
+    assert f"RELEASE_CUT: r2 {c3}" in out.stdout.splitlines()
+    rel1 = _rel(_round_json(rig), 1)
+    assert rel1["state"] == "superseded"
+    assert rel1["superseded_by"] == 2
+    assert rig.origin_ref("release/r1") == c2  # Reto prunes, never the script
+    assert rig.origin_ref("release/r2") == c3
+    mark = json.loads(_marker(rig).read_text(encoding="utf-8"))
+    assert (mark["branch"], mark["base"]) == ("release/r2", c3)
+
+
+def test_cut_only_reports_an_owned_green_release_without_recutting(
+    rig: Rig,
+) -> None:
+    """Only a RED head-on-main release re-cuts; a green one reports."""
+    c2 = rig.shas["c2"]
+    assert _release(rig, "--cut-only", "--sha", c2, *FAST).returncode == 0
+    (rig.gh_dir / c2).write_text(
+        "lint\tcompleted\tsuccess\thttps://ci.invalid/actions/runs/42\n",
+        encoding="utf-8",
+    )
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "re-cutting" not in out.stdout
+    assert f"RELEASE_CUT: r1 {c2}" in out.stdout.splitlines()
+    assert _rel(_round_json(rig), 1)["state"] == "cut"
+    assert rig.origin_ref("release/r2") == ""
+
+
+def test_cut_only_a_failed_recut_keeps_the_pending_cut_owned(rig: Rig) -> None:
+    """A refused re-cut push leaves r1 superseded + r2 cut_pending: the
+    marker stays r2 (the pending cut's owner); the re-run reconciles."""
+    c2 = rig.shas["c2"]
+    assert _release(rig, "--cut-only", "--sha", c2, *FAST).returncode == 0
+    (rig.gh_dir / c2).write_text(_RED_RUNS, encoding="utf-8")
+    hook = _hook(
+        rig,
+        "while read old new ref; do\n"
+        '  if [ "$ref" = refs/heads/release/r2 ]; then\n'
+        '    echo "push of release/r2 refused" >&2\n'
+        "    exit 1\n"
+        "  fi\n"
+        "done\n",
+    )
+    out = _release(rig, "--cut-only", *FAST)
+    hook.unlink()
+    assert out.returncode == 1
+    assert _rel(_round_json(rig), 1)["state"] == "superseded"
+    assert _rel(_round_json(rig), 2).get("cut_pending")
+    mark = json.loads(_marker(rig).read_text(encoding="utf-8"))
+    assert mark["branch"] == "release/r2"
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    c3 = rig.shas["c3"]
+    assert f"RELEASE_CUT: r2 {c3}" in out.stdout.splitlines()
+    assert rig.origin_ref("release/r2") == c3
+
+
+def test_cut_only_a_refused_recut_restores_the_r1_marker(rig: Rig) -> None:
+    """gr573151 review: ANY non-zero re-cut restores the marker — one left
+    naming a branch that was never recorded makes our red release look
+    foreign, and the next run rides it instead of reporting it."""
+    c2 = rig.shas["c2"]
+    assert _release(rig, "--cut-only", "--sha", c2, *FAST).returncode == 0
+    marker_before = _marker(rig).read_bytes()
+    round_before = (rig.root / ".git/precis-round/round.json").read_bytes()
+    (rig.gh_dir / c2).write_text(_RED_RUNS, encoding="utf-8")
+    # origin/prod sits off main's line: the re-cut's fast-forward guard
+    # refuses before any record is written (a die(1), not a race -1).
+    side = _child(rig, rig.shas["c0"], "prod side")
+    _push_branch(rig, "prod", side)
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 1
+    assert "fast-forward" in out.stderr
+    assert _marker(rig).read_bytes() == marker_before
+    assert (rig.root / ".git/precis-round/round.json").read_bytes() == round_before
+    # The re-run still owns r1: it attempts the re-cut again — never a
+    # foreign "release in flight" ride.
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 1
+    assert "release release/r1 is red" in out.stdout
+    assert "release in flight" not in out.stdout
 
 
 def test_deploy_only_deploys_the_cut_pinned(rig: Rig) -> None:
@@ -830,15 +994,28 @@ def test_reconciling_anothers_pending_cut_does_not_claim_ownership(
         assert mod.cut_and_finish(args, sha) == 77
 
 
-def test_stale_round_number_cut_refusal_exits_one_and_clears_marker(rig: Rig) -> None:
+def test_stale_round_number_mints_the_origin_number(rig: Rig) -> None:
+    """gr573151: a stale local record used to refuse a deployed/r<N> it did
+    not take; the cut now numbers past origin and the marker names r2."""
     assert rig.round("open").returncode == 0
     _git(rig.root, "push", "-q", "origin", f"{rig.shas['c0']}:refs/tags/deployed/r1")
-    out = _release(rig, *FAST)
-    assert out.returncode == 1, out.stdout + out.stderr
-    assert "deployed/r1 is already tagged on origin" in out.stderr
-    assert not _marker(rig).exists()
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert f"RELEASE_CUT: r2 {rig.shas['c3']}" in out.stdout.splitlines()
+    mark = json.loads(_marker(rig).read_text(encoding="utf-8"))
+    assert mark["branch"] == "release/r2"
     assert rig.origin_ref("release/r1") == ""
-    assert not _live(_round_json(rig))
+    assert rig.origin_ref("release/r2") == rig.shas["c3"]
+
+
+def test_dry_run_names_the_origin_numbered_release(rig: Rig) -> None:
+    assert rig.round("open").returncode == 0
+    _git(rig.root, "push", "-q", "origin", f"{rig.shas['c0']}:refs/tags/deployed/r1")
+    out = _release(rig, "--dry-run", *FAST)
+    assert out.returncode == 0, out.stderr
+    assert "would cut release/r2" in out.stdout
+    assert rig.origin_ref("release/r1") == ""
+    assert rig.origin_ref("release/r2") == ""
 
 
 # ── stale-verdict re-gate (release re-runs CI instead of refusing) ──────────

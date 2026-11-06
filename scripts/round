@@ -35,6 +35,10 @@ and nothing is tracked or pushed.
   scripts/round cut --abandon         coordinator: delete the open release branch (every commit on main)
   scripts/round cut --supersede [--dry-run]  coordinator: mark the open release superseded in the
                                       record (no remote delete) and cut the next at origin/main
+  scripts/round supersede [r<N>] [--dry-run]   coordinator: mark a deploying/deployed release
+                                      superseded when origin/prod already moved past its
+                                      pinned sha (record only; keeps the journal, touches
+                                      no remote ref; default: the one live deploying record)
 
 A peer is named by its worktree directory (`PRECIS_ROUND_PEER` overrides).
 Marks carry the open release's number (the round number when no release is
@@ -122,7 +126,9 @@ and resumes the existing runtime-confirmation/retirement path. A convergence
 receipt alone cannot prove that the session MCP clone moved to the pinned SHA.
 
 Round numbers are global: `open` takes max(local n, highest deployed/r<N> tag
-or release/r<N> branch on origin) + 1, and `cut` refuses if deployed/r<N> exists.
+or release/r<N> branch on origin) + 1, and `cut` mints max(local successor,
+that same origin max + 1) — a second clone's stale record cannot collide with
+numbers another clone already took.
 
 `good` (gr517170) pushes immutable good/r<N> onto a deployed/r<N> tag once it
 has run ~24h clean — the coordinator's sweep makes the clean-runtime call,
@@ -395,6 +401,22 @@ def _origin_round_max(root: Path) -> int | None:
     return max(nums, default=0)
 
 
+def _next_cut_n(root: Path, cur: dict[str, Any]) -> int | None:
+    """The N the next `cut` mints; None when origin's refs are unreadable.
+
+    With no round open or a round that already deployed, the next cut happens
+    in a new round, so `open`'s renumbering is part of the answer.
+    """
+    taken = _origin_round_max(root)
+    if taken is None:
+        return None
+    if not cur.get("open") or cur.get("deployed"):
+        return max(int(cur.get("n") or 0), taken) + 1
+    prev = max(_releases(cur), key=lambda r: r["n"], default=None)
+    local = int(prev["n"]) + 1 if prev is not None else int(cur["n"])
+    return max(local, taken + 1)
+
+
 def cmd_open(state: Path, args: argparse.Namespace) -> int:
     prev = _read_round(state)
     if prev.get("open") or _live(prev):
@@ -513,7 +535,15 @@ def cmd_status(state: Path, args: argparse.Namespace) -> int:
     if cur is None:
         last = _read_round(state)
         if args.json:
-            print(json.dumps({"round": last, "peers": []}))
+            print(
+                json.dumps(
+                    {
+                        "round": last,
+                        "peers": [],
+                        "next_n": _next_cut_n(_root(), last),
+                    }
+                )
+            )
         else:
             print(f"no round open (last: {last['n']})" if last else "no round open")
             print(_good_line(_root()))
@@ -532,7 +562,11 @@ def cmd_status(state: Path, args: argparse.Namespace) -> int:
                     )
                     is not None
                 )
-        print(json.dumps({"round": cur, "peers": rows}))
+        print(
+            json.dumps(
+                {"round": cur, "peers": rows, "next_n": _next_cut_n(_root(), cur)}
+            )
+        )
         return 0
     print(
         f"round {cur['n']} — opened {cur.get('opened', '?')} by {cur.get('by', '?')}, base {cur.get('base', '')[:8] or 'unknown'}"
@@ -957,14 +991,14 @@ def _refresh_release_pointers(
         return False
     gated, main, prod = (facts[f"origin_{name}"] for name in ("gated", "main", "prod"))
     facts["candidate_in_main"] = bool(cand) and _ancestor(root, cand, main)
-    facts["gated_is_ancestor"] = not gated or _ancestor(root, gated, cand)
+    facts["gated_is_ancestor"] = not gated or not cand or _ancestor(root, gated, cand)
     facts["gated_is_descendant_in_main"] = (
         bool(facts.get("release_branch") and cand and gated)
         and not facts["gated_is_ancestor"]
         and _ancestor(root, cand, gated)
         and _ancestor(root, gated, main)
     )
-    facts["prod_is_ancestor"] = not prod or _ancestor(root, prod, cand)
+    facts["prod_is_ancestor"] = not prod or not cand or _ancestor(root, prod, cand)
     return True
 
 
@@ -1088,7 +1122,13 @@ def cmd_gate(args: argparse.Namespace) -> int:
             print(f"  {red['url']}")
             if red["run_id"]:
                 print(f"  scripts/ci-failed {red['run_id']}")
-    return 0 if f["candidate"] else 1
+    # --json is a fact dump: a not-yet-green release head is a legitimate
+    # answer (gr573219), while a missing candidate stays an error.
+    return (
+        0
+        if f["candidate"] or (args.json and f["candidate_state"] == "release_not_green")
+        else 1
+    )
 
 
 def _refusal(root: Path, f: dict[str, Any]) -> str:
@@ -1876,6 +1916,7 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
     n = cur["n"]
     records = _releases(cur)
     open_rel = _open_rel(cur)
+    open_state = open_rel["state"] if open_rel is not None else ""
     auto_superseded = False
     if open_rel is not None:
         rel = open_rel
@@ -1946,17 +1987,18 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             "this round already deployed — close and open the next round"
         )
     n_new = prev["n"] + 1 if prev is not None else n
+    origin_max = _origin_round_max(root)
+    if origin_max is None:
+        return _cut_refuse(
+            "could not read origin's deployed/release refs (git ls-remote"
+            " failed); release numbers are global on origin"
+        )
+    # The record is per clone (gr573151): number past whatever origin shows,
+    # or a second clone's stale record blocks every cut.
+    n_new = max(n_new, origin_max + 1)
     if open_rel is not None and open_rel["state"] == "superseded":
         open_rel["superseded_by"] = n_new
     branch = f"release/r{n_new}"
-    taken = _remote(root, f"refs/tags/deployed/r{n_new}")
-    if taken is None:
-        return _cut_refuse("could not read origin's tags (git ls-remote failed)")
-    if taken:
-        return _cut_refuse(
-            f"deployed/r{n_new} is already tagged on origin (another checkout used"
-            " this number) — `scripts/round close` then `scripts/round open` to renumber"
-        )
     existing = _release_branches(root)
     if existing is None:
         return _cut_refuse("could not read origin's branches (git ls-remote failed)")
@@ -2076,10 +2118,27 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
         f"{sha}:refs/heads/{branch}",
     )
     if push is None:
-        if _remote(root, f"refs/heads/{branch}") == sha:
+        remote = _remote(root, f"refs/heads/{branch}")
+        if remote == sha:
             print(
                 "scripts/round: cut push acknowledgement failed, remote SHA confirmed",
                 file=sys.stderr,
+            )
+        elif remote:
+            # The expect-absent lease lost: a racing lane pushed {branch}
+            # first. Drop our intent and the superseded marking so the next
+            # run sees a foreign branch, not a wedged pending cut. The
+            # "exists on origin" wording maps to -1 (retry) in
+            # scripts/release's cut_and_finish.
+            cur["releases"].remove(rel)
+            if open_rel is not None and open_rel["state"] == "superseded":
+                open_rel["state"] = open_state
+                open_rel.pop("superseded_by", None)
+                open_rel.pop("superseded_why", None)
+            _write(state / "round.json", cur)
+            return _cut_refuse(
+                f"release branch {branch} exists on origin at {remote[:9]}"
+                " — lost the cut race; re-run cut"
             )
         else:
             return _cut_refuse(
@@ -2185,6 +2244,95 @@ def _cut_abandon(root: Path, state: Path, args: argparse.Namespace) -> int:
     return 0
 
 
+def _sup_refuse(why: str) -> int:
+    print(f"scripts/round: supersede refused — {why}", file=sys.stderr)
+    return 1
+
+
+def cmd_supersede(state: Path, args: argparse.Namespace) -> int:
+    """Record a deploying/deployed release superseded once origin/prod has
+    moved past its pinned sha (gr573151): a dead clone's record is stale, not
+    a blocker. Record only — the journal stays and no remote ref moves."""
+    root = _root()
+    cur = _read_round(state)
+    if args.release:
+        m = re.match(r"^(?:release/)?r?(\d+)$", args.release.strip())
+        if m is None:
+            return _sup_refuse(f"{args.release!r} is not r<N>, release/r<N> or <N>")
+        want = int(m.group(1))
+        rel = next((r for r in _releases(cur) if int(r["n"]) == want), None)
+        if rel is None:
+            return _sup_refuse(f"no release r{want} is recorded in round.json")
+    else:
+        live = [r for r in _live(cur) if r["state"] in _DEPLOYING_STATES]
+        if not live:
+            return _sup_refuse("no live deploying/deployed record in round.json")
+        if len(live) > 1:
+            return _sup_refuse(
+                "several live deploying/deployed records — name one: "
+                + ", ".join(str(r["branch"]) for r in live)
+            )
+        rel = live[0]
+    n_rel = int(rel["n"])
+    st = str(rel.get("state") or "")
+    if st in _OPEN_STATES:
+        return _sup_refuse(
+            f"r{n_rel} is still open ({st}) — use `scripts/round cut"
+            " --supersede` (record only, next cut at origin/main) or `--abandon`"
+            " (deletes it on origin)"
+        )
+    dep = rel.get("deployment") or {}
+    if st in _TERMINAL_STATES or dep.get("runtime_confirmed_at"):
+        return _sup_refuse(
+            f"r{n_rel} is {st or 'terminal'} — `scripts/round deploy` finishes a"
+            " live record; nothing to supersede"
+        )
+    if st not in _DEPLOYING_STATES:
+        return _sup_refuse(f"r{n_rel} is in unknown state {st!r}")
+    pin = str(dep.get("sha") or "")
+    if not pin:
+        return _sup_refuse(
+            f"r{n_rel}'s journal pins no sha — resume `scripts/round deploy`"
+        )
+    prod = _remote(root, "refs/heads/prod")
+    if prod is None:
+        return _sup_refuse(
+            "could not read origin/prod (git ls-remote failed) — retry"
+            " `scripts/round supersede`"
+        )
+    if prod and _rgit(root, "fetch", "-q", "origin", "prod") is None:
+        return _sup_refuse(
+            "could not fetch origin/prod — retry `scripts/round supersede`"
+        )
+    if not _ref(root, f"{pin}^{{commit}}"):
+        # A second clone's object store may lack the pinned commit: fetch it.
+        _rgit(root, "fetch", "-q", "origin", f"refs/heads/{rel['branch']}")
+        _rgit(root, "fetch", "-q", "origin", f"refs/tags/deployed/r{n_rel}")
+    if prod == pin:
+        return _sup_refuse(
+            f"origin/prod sits at r{n_rel}'s pinned sha {pin[:9]} — its rollout"
+            " completed; confirm runtime with `scripts/round deploy"
+            f" --confirm-runtime {pin}`"
+        )
+    if (
+        not prod
+        or not _ref(root, f"{pin}^{{commit}}")
+        or not _ancestor(root, pin, prod)
+    ):
+        return _sup_refuse(
+            f"origin/prod does not contain r{n_rel}'s pinned sha {pin[:9]} — a"
+            " partial rollout; resume `scripts/round deploy`"
+        )
+    if args.dry_run:
+        print(f"dry-run: would supersede r{n_rel}")
+        return 0
+    rel["state"] = "superseded"
+    rel["superseded_why"] = "origin/prod moved past it"
+    _write(state / "round.json", cur)
+    print(f"r{n_rel} superseded (origin/prod {prod[:9]} is past {pin[:9]})")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="scripts/round", description="Shared tally for a coordinated peer round."
@@ -2234,6 +2382,13 @@ def main(argv: list[str] | None = None) -> int:
     cut_mode = p_cut.add_mutually_exclusive_group()
     cut_mode.add_argument("--abandon", action="store_true")
     cut_mode.add_argument("--supersede", action="store_true")
+    p_sup = sub.add_parser(
+        "supersede",
+        help="mark a deploying/deployed release superseded once origin/prod "
+        "moved past its pinned sha (record only)",
+    )
+    p_sup.add_argument("release", nargs="?", default="", metavar="rN")
+    p_sup.add_argument("--dry-run", action="store_true")
     p_good = sub.add_parser(
         "good",
         help="mark a deployed release good/r<N> after 24h clean runtime",
@@ -2278,8 +2433,9 @@ def main(argv: list[str] | None = None) -> int:
         "pending": cmd_pending,
         "cut": cmd_cut,
         "good": cmd_good,
+        "supersede": cmd_supersede,
     }
-    if args.cmd in ("open", "close", "cut", "in", "none", "eta") or (
+    if args.cmd in ("open", "close", "cut", "in", "none", "eta", "supersede") or (
         args.cmd == "good" and not args.resolve
     ):
         # State is common-dir even when invoked by a linked peer worktree.

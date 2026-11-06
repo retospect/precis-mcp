@@ -720,6 +720,25 @@ def test_release_gate_ignores_newer_green_main_and_selects_exact_head(rig: Rig) 
     assert f"release release/r1 at {fix[:9]}" in status.stdout
 
 
+def test_release_gate_json_on_a_not_green_head_is_facts_not_errors(
+    rig: Rig,
+) -> None:
+    """gr573219: an empty candidate must not reach merge-base, and --json on
+    a not-yet-green head is a fact dump (exit 0), not a refusal."""
+    head = _cut(rig)
+    _push_branch(rig, "gated", rig.shas["c0"])
+    _push_branch(rig, "prod", rig.shas["c0"])
+    out = rig.round("gate", "--json", **_verdict(head, state="release_not_green"))
+    assert out.returncode == 0, out.stderr
+    assert "merge-base" not in out.stderr
+    facts = json.loads(out.stdout)
+    assert facts["candidate"] == ""
+    assert facts["candidate_state"] == "release_not_green"
+    out = rig.round("gate", **_verdict(head, state="release_not_green"))
+    assert out.returncode == 1
+    assert "no full green CI verdict" in out.stdout
+
+
 @pytest.mark.parametrize("state", ["release_not_green", "unreadable"])
 def test_release_never_falls_back_to_green_main(rig: Rig, state: str) -> None:
     head = _cut(rig)
@@ -1169,6 +1188,34 @@ def test_cut_intent_recovers_remote_creation_without_local_ack(rig: Rig) -> None
     assert rig.origin_ref("release/r1") == head
 
 
+def test_cut_race_loser_drops_its_pending_record(rig: Rig) -> None:
+    """gr573151: when the expect-absent lease loses the cut push, the loser's
+    own record must go — the next run sees a foreign branch, not a wedge."""
+    _open_round(rig)
+    foreign = _child(rig, rig.shas["c0"], "foreign winner")
+    # Quarantine forbids update-ref inside pre-receive, so the hook pushes
+    # the winner's ref from this clone instead (marker file stops recursion).
+    mark = rig.origin.parent / "hook-once"
+    _hook(
+        rig,
+        f'[ -f "{mark}" ] && exit 0\n'
+        f'touch "{mark}"\n'
+        "env -u GIT_DIR -u GIT_OBJECT_DIRECTORY"
+        " -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_QUARANTINE_PATH"
+        f' git -C "{rig.root}" push -q origin'
+        f" {foreign}:refs/heads/release/r1 >&2 || true\n"
+        "exit 1\n",
+    )
+    out = rig.round("cut", **_fresh(rig))
+    assert out.returncode == 1
+    assert "exists on origin" in out.stderr
+    assert rig.origin_ref("release/r1") == foreign
+    assert not _live(_round_json(rig))
+    out = rig.round("cut", **_fresh(rig))
+    assert out.returncode == 1
+    assert "one open release at a time" in out.stderr
+
+
 def _publish_main_gated(rig: Rig, sha: str) -> subprocess.CompletedProcess[str]:
     repo = Path(__file__).resolve().parents[1]
     code = f'. "{repo}/scripts/lib/round-lock.sh"; . "{repo}/scripts/lib/env-pointers.sh"; if acquire_main_gated_publication; then env_pointer_move "$PWD" gated "$1"; release_round_lock; fi'
@@ -1299,15 +1346,32 @@ def test_open_numbers_past_foreign_release_branch(rig: Rig) -> None:
     assert "round 21 open" in rig.round("open").stdout
 
 
-def test_cut_refuses_when_deployed_tag_exists_for_open_round(rig: Rig) -> None:
+def test_cut_numbers_past_a_foreign_deployed_tag(rig: Rig) -> None:
+    """gr573151: the round record is per clone — a deployed tag another clone
+    pushed must move the next cut's number, never refuse the cut."""
     _open_round(rig)
     _foreign_tag(rig, 1)
+    status = rig.round("status", "--json")
+    assert status.returncode == 0, status.stderr
+    assert json.loads(status.stdout)["next_n"] == 2
+    out = rig.round("cut", **_fresh(rig))
+    assert out.returncode == 0, out.stderr
+    assert rig.origin_ref("release/r2") == rig.shas["c2"]
+    assert rig.origin_ref("release/r1") == ""
+    assert _rel(_round_json(rig), 2)["n"] == 2
+    status = rig.round("status", "--json")
+    assert json.loads(status.stdout)["next_n"] == 3
+
+
+def test_cut_refuses_when_origin_is_unreadable(rig: Rig) -> None:
+    _open_round(rig)
+    _git(rig.root, "remote", "set-url", "origin", str(rig.root / "nonexistent.git"))
     out = rig.round("cut", **_fresh(rig))
     assert out.returncode == 1
-    assert "deployed/r1 is already tagged on origin" in out.stderr
-    assert "scripts/round close" in out.stderr
+    assert "ls-remote failed" in out.stderr
     assert not _live(_round_json(rig))
-    assert rig.origin_ref("release/r1") == ""
+    status = rig.round("status", "--json")
+    assert json.loads(status.stdout)["next_n"] is None
 
 
 def test_open_refuses_when_origin_unreadable(rig: Rig) -> None:
@@ -1822,6 +1886,95 @@ def test_deploy_resumes_the_journal_record_with_an_open_release(rig: Rig) -> Non
     assert rig.deploy_log() == [f"{head} --pinned", f"{head} --pinned"]
     assert _rel(_round_json(rig), 1)["state"] == "deployed"
     assert _rel(_round_json(rig), 2)["state"] == "cut"
+
+
+# ── supersede (gr573151): a record prod already moved past is stale ────────
+
+
+def _prod_moved_past(rig: Rig) -> str:
+    """A deployed-unconfirmed record whose prod already moved past the pin."""
+    head = _cut(rig)
+    out = rig.round("deploy", DEPLOY_STUB_VERIFY="1", **_verdict(head))
+    assert out.returncode == 3, out.stdout + out.stderr
+    _push_branch(rig, "prod", rig.shas["c3"])
+    return head
+
+
+def test_supersede_marks_the_record_prod_moved_past(rig: Rig) -> None:
+    """gr573151: a deployed-unconfirmed record prod moved past is stale —
+    supersede retires it, keeps the journal and touches no remote ref."""
+    head = _prod_moved_past(rig)
+    out = rig.round("supersede")
+    assert out.returncode == 0, out.stderr
+    assert (
+        f"r1 superseded (origin/prod {rig.shas['c3'][:9]} is past {head[:9]})"
+        in out.stdout
+    )
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "superseded"
+    assert rel["superseded_why"] == "origin/prod moved past it"
+    assert rel["deployment"]["sha"] == head
+    assert rig.origin_ref("release/r1") == head
+    assert rig.origin_ref("prod") == rig.shas["c3"]
+    assert rig.round("close").returncode == 0
+    assert rig.round("open").returncode == 0
+    # prod sits at c3: only a cut at or past it can fast-forward prod.
+    assert rig.round("cut", **_fresh(rig, "c3")).returncode == 0
+
+
+def test_supersede_dry_run_leaves_the_record_untouched(rig: Rig) -> None:
+    _prod_moved_past(rig)
+    path = rig.root / ".git/precis-round/round.json"
+    before = path.read_bytes()
+    out = rig.round("supersede", "--dry-run")
+    assert out.returncode == 0, out.stderr
+    assert "dry-run: would supersede r1" in out.stdout
+    assert path.read_bytes() == before
+
+
+def test_supersede_refuses_when_prod_sits_at_the_pin(rig: Rig) -> None:
+    head = _cut(rig)
+    out = rig.round("deploy", DEPLOY_STUB_VERIFY="1", **_verdict(head))
+    assert out.returncode == 3
+    out = rig.round("supersede")
+    assert out.returncode == 1
+    assert "--confirm-runtime" in out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "deployed"
+
+
+def test_supersede_refuses_a_runtime_confirmed_record(rig: Rig) -> None:
+    head = _cut(rig)
+    assert _deploy(rig, DEPLOY_STUB_VERIFY="1", **_verdict(head)).returncode == 0
+    out = rig.round("supersede", "r1")
+    assert out.returncode == 1
+    assert "round deploy" in out.stderr
+
+
+def test_supersede_refuses_an_open_record_and_an_unknown_one(rig: Rig) -> None:
+    _cut(rig)
+    out = rig.round("supersede", "r1")
+    assert out.returncode == 1
+    assert "cut --supersede" in out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "cut"
+    out = rig.round("supersede", "release/r9")
+    assert out.returncode == 1
+    assert "r9" in out.stderr
+
+
+def test_supersede_refuses_a_partial_rollout(rig: Rig) -> None:
+    _deploying(rig)
+    out = rig.round("supersede")
+    assert out.returncode == 1
+    assert "partial" in out.stderr
+    assert "round deploy" in out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "deploying"
+
+
+def test_supersede_needs_a_live_record_or_a_name(rig: Rig) -> None:
+    _open_round(rig)
+    out = rig.round("supersede")
+    assert out.returncode == 1
+    assert "no live deploying/deployed" in out.stderr
 
 
 # ── good/r<N> (gr517170) ──────────────────────────────────────────────────
