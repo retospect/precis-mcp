@@ -29,6 +29,10 @@ def test_blocked_row_shows_after_marker(
     store.add_link(
         src_ref_id=tree["leaf"], dst_ref_id=blocker.id, relation="blocked-by"
     )
+    # A free sibling keeps the quest non-idle: view='work' collapses idle quests.
+    store.insert_ref(
+        kind="todo", slug=None, title="Free sibling", parent_id=tree["root"]
+    )
     assert _rows(store, tree)[tree["leaf"]].after == (f"td{blocker.id}",)
     assert f"after td{blocker.id}" in handler.search(view="work").body
     html = client.get("/work").text
