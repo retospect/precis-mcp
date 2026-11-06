@@ -157,7 +157,10 @@ def test_decision_projected_cost_does_not_mutate_request(
         input_tokens=100,
         output_tokens=50,
     )
-    decision: dict[str, Any] = {"chosen": {"price_in": 2.0, "price_out": 4.0}}
+    decision: dict[str, Any] = {
+        "chosen": {"price_in": 2.0, "price_out": 4.0},
+        "legacy": {"chosen": {"price_in": 1.0, "price_out": 2.0}, "keys": []},
+    }
     records: list[Any] = []
     monkeypatch.setattr(route_log, "enabled", lambda: True)
     monkeypatch.setattr(route_log, "record_call", lambda rec: records.append(rec))
@@ -168,8 +171,104 @@ def test_decision_projected_cost_does_not_mutate_request(
     stamp = records[0].features["decision"]
     assert stamp["projected_usd"] == pytest.approx(0.0004)
     assert stamp["actual_usd"] == pytest.approx(0.5)
+    assert stamp["legacy"]["projected_usd"] == pytest.approx(0.0002)
     assert "projected_usd" not in decision
+    assert "projected_usd" not in decision["legacy"]
     assert router._serialize_request(request) == before
+
+
+def test_actual_usd_without_price(monkeypatch: pytest.MonkeyPatch) -> None:
+    """actual_usd rides the logged decision whenever the wire reported a
+    cost — a missing price card must not strip it."""
+    from precis import route_log
+
+    request = LlmRequest(Tier.SMALL, prompt="cost")
+    answer = LlmResult(
+        text="answer",
+        model="m",
+        tier=Tier.SMALL,
+        cost_usd=0.5,
+        turns_used=1,
+        input_tokens=100,
+        output_tokens=50,
+    )
+    decision: dict[str, Any] = {"chosen": {"price_in": None, "price_out": None}}
+    records: list[Any] = []
+    monkeypatch.setattr(route_log, "enabled", lambda: True)
+    monkeypatch.setattr(route_log, "record_call", lambda rec: records.append(rec))
+    router._record_dispatch(
+        request, answer, transport=Transport.LOCAL, duration_ms=1, decision=decision
+    )
+    stamp = records[0].features["decision"]
+    assert stamp["actual_usd"] == pytest.approx(0.5)
+    assert "projected_usd" not in stamp
+
+
+def test_local_decision_projected_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A priced-at-0 local lane projects 0.0 — never drops the key — and an
+    unreported cost stays absent."""
+    from precis import route_log
+
+    request = LlmRequest(Tier.SMALL, prompt="cost")
+    answer = LlmResult(
+        text="answer",
+        model="m",
+        tier=Tier.SMALL,
+        cost_usd=None,
+        turns_used=1,
+        input_tokens=100,
+        output_tokens=50,
+    )
+    decision: dict[str, Any] = {
+        "chosen": {"price_in": 0.0, "price_out": 0.0},
+        "legacy": {"chosen": {"price_in": 0.0, "price_out": 0.0}, "keys": []},
+    }
+    records: list[Any] = []
+    monkeypatch.setattr(route_log, "enabled", lambda: True)
+    monkeypatch.setattr(route_log, "record_call", lambda rec: records.append(rec))
+    router._record_dispatch(
+        request, answer, transport=Transport.LOCAL, duration_ms=1, decision=decision
+    )
+    stamp = records[0].features["decision"]
+    assert stamp["projected_usd"] == 0.0
+    assert stamp["legacy"]["projected_usd"] == 0.0
+    assert "actual_usd" not in stamp
+
+
+def test_shadow_pin_alias_remapped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pinned local-only alias is remapped onto the hosted small model the
+    rung will actually call — shadow and legacy then land on the same lane."""
+    from precis.budget import meter
+    from precis.utils.llm import decide, recipes
+
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://hosted.example/v1")
+    monkeypatch.setenv("PRECIS_LOCAL_SMALL_HOSTED_MODEL", "z-ai/glm-4.7-flash")
+    monkeypatch.delenv("PRECIS_LLM_MODEL_SMALL", raising=False)
+    hosted = decide.Offering(
+        "z-ai/glm-4.7-flash@openai_compat/metered",
+        "z-ai/glm-4.7-flash",
+        adapter="openai_compat",
+        price_in=0.06,
+        price_out=0.06,
+    )
+    local = decide.Offering(
+        "summarizer@local/local",
+        "summarizer",
+        adapter="local",
+        billing="local",
+        locality="local",
+        live=True,
+    )
+    led = decide.Ledger((hosted, local), {}, {}, frozenset(), datetime.now(UTC))
+    monkeypatch.setattr(meter, "active_store", lambda: object())
+    monkeypatch.setattr(decide, "ledger_from_store", lambda *a, **kw: led)
+    monkeypatch.setattr(decide, "mode_for", lambda task: "shadow")
+    monkeypatch.setattr(recipes, "lookup", lambda source: None)
+    rung = router.Rung(Transport.OPENAI_COMPAT, model="z-ai/glm-4.7-flash")
+    req = LlmRequest(Tier.SMALL, prompt="pin", source="shadow-test", model="summarizer")
+    stamp = router.shadow_decision(req, [rung], "summarizer", [])
+    assert stamp is not None
+    assert stamp["agree"] is True
 
 
 @pytest.mark.parametrize("gated", [False, True])
@@ -213,7 +312,9 @@ def test_decision_streaming_logs_shadow(
     )
     assert result.paused is gated
     assert len(records) == 1
-    assert records[0].features["decision"] == stamp
+    assert records[0].features["decision"] == (
+        stamp if gated else {**stamp, "actual_usd": 0.1}
+    )
 
 
 # ── tier_from_str: stored-value degrade over the capability tiers + placement chains Phase C removal ──

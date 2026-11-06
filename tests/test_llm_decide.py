@@ -19,7 +19,12 @@ NOW = datetime(2026, 11, 6, tzinfo=UTC)
 
 
 def offering(key: str = "m@api/none", **kwargs: Any) -> d.Offering:
-    return d.Offering(key, kwargs.pop("model", "m"), adapter="api", **kwargs)
+    return d.Offering(
+        key,
+        kwargs.pop("model", "m"),
+        adapter=kwargs.pop("adapter", "api"),
+        **kwargs,
+    )
 
 
 def ledger(*items: d.Offering, **kwargs: Any) -> d.Ledger:
@@ -659,3 +664,108 @@ def test_loader_tools_flag_falls_back_to_facts(store: Any) -> None:
     assert decision.chosen == by_model["tools-unknown"]
     d.admit.reset_cache()
     d._ledger_cache.clear()
+
+
+def test_legacy_rung_resolves_priced_offering() -> None:
+    """A legacy rung finds its priced catalog offering by (model, adapter):
+    the catalog key carries account-or-none + a variant the rung key never
+    has, so a key-equality lookup can never bind the price."""
+    rung = Rung(Transport.OPENAI_COMPAT, model="z-ai/glm-4.7-flash")
+    priced = offering(
+        "z-ai/glm-4.7-flash@openai_compat/none/host",
+        model="z-ai/glm-4.7-flash",
+        adapter="openai_compat",
+        variant="host",
+        price_in=0.06,
+    )
+    legacy = d.legacy_decision([rung], "summarizer", ledger(priced))
+    assert legacy.chosen is not None
+    assert legacy.chosen.price_in == 0.06
+
+
+def test_local_offering_prices_at_zero(store: Any) -> None:
+    """A local operating point with no card price prices at 0 — the
+    catalog-built offering and the synthesized legacy one alike."""
+    from precis import llm_catalog
+
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET retired_at = now() WHERE kind = 'llm' AND retired_at IS NULL"
+        )
+    llm_catalog.upsert_card(
+        store,
+        model_id="local-zero",
+        text="test",
+        offerings=[{"transport": "local", "max_input": 3000}],
+    )
+    d.admit.reset_cache()
+    d._ledger_cache.clear()
+    built = d.ledger_from_store(store, now=NOW)
+    assert built is not None
+    local = next(o for o in built.offerings if o.model == "local-zero")
+    assert local.billing == "local"
+    assert local.price_in == 0.0 and local.price_out == 0.0
+    d.admit.reset_cache()
+    d._ledger_cache.clear()
+    legacy = d.legacy_decision([Rung(Transport.LOCAL, model="m")], "m", ledger())
+    assert legacy.chosen is not None
+    assert legacy.chosen.billing == "local"
+    assert legacy.chosen.price_in == 0.0 and legacy.chosen.price_out == 0.0
+
+
+def test_tier_floor_rejects_smaller_offering() -> None:
+    """A demand's tier floor rejects a lower-floor offering as capability."""
+    small = offering("small-card", model="small-card", tier_floor="small")
+    big = offering("big-card", model="big-card", tier_floor="big")
+    decision = d.decide(
+        LlmRequest(Tier.BIG), Requirement(Tier.BIG), ledger(small, big), "shadow"
+    )
+    assert decision.chosen == big
+    rejected = {r.offering_key: (r.filter, r.reason) for r in decision.rejected}
+    assert rejected["small-card"] == (
+        "capability",
+        "offering tier below demanded tier floor",
+    )
+
+
+def test_unset_tier_floor_passes_with_note() -> None:
+    """A card carrying no floor value survives any demand — the miss is
+    explained on the ranked row, never a rejection (a missing field must not
+    end a demand in "no offering survives")."""
+    no_floor = offering("no-floor", model="no-floor")
+    decision = d.decide(
+        LlmRequest(Tier.BIG), Requirement(Tier.BIG), ledger(no_floor), "shadow"
+    )
+    assert decision.chosen == no_floor
+    assert "tier floor unknown" in decision.ranked[0].reason
+    explanation = decision.explain()
+    assert "tier floor unknown" in explanation["ranked"][0]["reason"]
+
+
+def test_ties_prefer_legacy_lane() -> None:
+    """Equal band/capacity/price picks prefer the model the legacy lane ran."""
+    earlier = offering(
+        "aaa@local/local",
+        model="aaa",
+        adapter="local",
+        billing="local",
+        locality="local",
+        live=True,
+        price_in=0.0,
+        price_out=0.0,
+    )
+    later = offering(
+        "zzz@local/local",
+        model="zzz",
+        adapter="local",
+        billing="local",
+        locality="local",
+        live=True,
+        price_in=0.0,
+        price_out=0.0,
+    )
+    led = ledger(earlier, later, legacy_adapter="local", legacy_model="zzz")
+    decision = d.decide(LlmRequest(Tier.SMALL), Requirement(Tier.SMALL), led, "shadow")
+    assert decision.chosen is not None and decision.chosen.model == "zzz"
+    legacy = d.legacy_decision([Rung(Transport.LOCAL, model="zzz")], "zzz", led)
+    assert d.compare(decision, legacy)["agree"] is True

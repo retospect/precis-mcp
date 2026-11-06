@@ -3895,14 +3895,38 @@ def shadow_decision(
         )
         if ledger is None:
             return None
+        rung0 = ladder[0] if ladder else None
+        # Dispatch remaps a local-only alias (summarizer et al.) onto the
+        # hosted small model at call time; the shadow must judge the model
+        # the wire will actually run, so the resolved model and a caller's
+        # pin get the same remap here.
+        if rung0 is not None:
+            model = _hosted_small_remap(
+                model,
+                rung0.transport,
+                has_local_slot=False,
+                profile=rung0.profile,
+            )
         ledger = _replace(
-            ledger, legacy_adapter=ladder[0].transport.value if ladder else None
+            ledger,
+            legacy_adapter=rung0.transport.value if rung0 is not None else None,
+            legacy_model=(rung0.model or model) if rung0 is not None else None,
         )
         effective = _replace(
             req,
             task_kind=demand.task_kind,
             consequence=demand.consequence,
             privacy_class=demand.privacy_class,
+            model=(
+                _hosted_small_remap(
+                    req.model,
+                    rung0.transport,
+                    has_local_slot=False,
+                    profile=rung0.profile,
+                )
+                if req.model is not None and rung0 is not None
+                else req.model
+            ),
         )
         shadow = decide.decide(effective, decide.requirement_for(req), ledger, mode)
         legacy = decide.legacy_decision(ladder, model, ledger)
@@ -5182,18 +5206,38 @@ def _record_dispatch(
     if decision is not None:
         # Never stamp req.features: those are part of the request hash.
         decision = dict(decision)
+        if result.cost_usd is not None:
+            decision["actual_usd"] = result.cost_usd
+        tokens = (
+            (result.input_tokens, result.output_tokens)
+            if result.input_tokens is not None and result.output_tokens is not None
+            else None
+        )
         chosen = decision.get("chosen") or {}
         if (
-            result.input_tokens is not None
-            and result.output_tokens is not None
+            tokens is not None
             and chosen.get("price_in") is not None
             and chosen.get("price_out") is not None
         ):
             decision["projected_usd"] = (
-                result.input_tokens * chosen["price_in"]
-                + result.output_tokens * chosen["price_out"]
+                tokens[0] * chosen["price_in"] + tokens[1] * chosen["price_out"]
             ) / 1e6
-            decision["actual_usd"] = result.cost_usd
+        legacy = decision.get("legacy")
+        if isinstance(legacy, dict):
+            legacy_chosen = legacy.get("chosen") or {}
+            if (
+                tokens is not None
+                and legacy_chosen.get("price_in") is not None
+                and legacy_chosen.get("price_out") is not None
+            ):
+                decision["legacy"] = {
+                    **legacy,
+                    "projected_usd": (
+                        tokens[0] * legacy_chosen["price_in"]
+                        + tokens[1] * legacy_chosen["price_out"]
+                    )
+                    / 1e6,
+                }
         feats["decision"] = decision
     if gated:
         feats["gated"] = True

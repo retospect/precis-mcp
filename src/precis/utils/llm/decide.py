@@ -50,6 +50,10 @@ class Offering:
     lane: str | None = None
     capability: Mapping[str, int] = field(default_factory=dict)
     enabled: bool = True
+    #: The card's ``tier_floor`` (``policy._tier_of``), as the tier value
+    #: string — the smallest demand the offering can serve. ``None`` = the
+    #: card doesn't say; the capability filter must then pass it, not reject.
+    tier_floor: str | None = None
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,11 @@ class Ledger:
     unavailable_transports: frozenset[str]
     now: datetime
     legacy_adapter: str | None = None
+    #: The model the legacy ladder's rung 0 resolved to — a rank tie-break
+    #: (:func:`decide`), so an otherwise-equal offering matching the lane the
+    #: legacy path actually ran wins and ``compare`` agrees. ``None`` leaves
+    #: the ranked order unchanged.
+    legacy_model: str | None = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +95,16 @@ class Rejected:
     offering_key: str
     filter: str
     reason: str
+
+
+#: Capability rank by tier value — SMALL < MEDIUM < BIG < FRONTIER — for the
+#: tier-floor capability filter in :func:`_rejection`. A tier string absent
+#: here (a Requirement field type can't produce one, but a hand-built one
+#: could) reads as no demand floor: nothing is rejected on it.
+_TIER_ORDER = {
+    tier.value: rank
+    for rank, tier in enumerate((Tier.SMALL, Tier.MEDIUM, Tier.BIG, Tier.FRONTIER))
+}
 
 
 #: Fields a logged decision keeps per offering — identity, lane and price.
@@ -214,6 +233,9 @@ def _rejection(
         return "capability", "tools unsupported"
     if r.needs_structured and o.structured is False:
         return "capability", "structured output unsupported"
+    floor = _TIER_ORDER.get(o.tier_floor) if o.tier_floor is not None else None
+    if floor is not None and floor < _TIER_ORDER.get(r.tier_floor, 0):
+        return "capability", "offering tier below demanded tier floor"
     ordinal = o.capability.get(r.axis, 0) if r.axis else 0
     if ordinal and ordinal < r.min_ordinal - 1:
         return "capability", "axis ordinal below marginal"
@@ -270,7 +292,14 @@ def decide(
         )
         state, _ = _pool_state(o, ledger)
         ranked.append(
-            Ranked(o, band, o.capacity_class, state, f"{band}; {o.billing}; {state}")
+            Ranked(
+                o,
+                band,
+                o.capacity_class,
+                state,
+                f"{band}; {o.billing}; {state}"
+                + ("; tier floor unknown" if o.tier_floor is None else ""),
+            )
         )
     if any(r.band in {"strong", "adequate"} for r in ranked):
         for r in ranked:
@@ -282,7 +311,7 @@ def decide(
                 )
         ranked = [r for r in ranked if r.band != "marginal"]
 
-    def rank(r: Ranked) -> tuple[int, int, float, float, str]:
+    def rank(r: Ranked) -> tuple[int, int, float, float, int, str]:
         o = r.offering
         state, deficit = _pool_state(o, ledger)
         capacity = (
@@ -296,11 +325,26 @@ def decide(
             if o.billing == "subscription"
             else 4
         )
+        # A dead-even pick (band, capacity class, deficit, price) lands on
+        # the lane the legacy ladder actually ran — shadow telemetry then
+        # measures real disagreement, not an alphabetical coin flip.
+        legacy_match = (
+            0
+            if (
+                ledger.legacy_model is not None
+                and ledger.legacy_adapter is not None
+                and o.model == ledger.legacy_model
+                and _ADAPTER_FAMILY.get(o.adapter, o.adapter)
+                == _ADAPTER_FAMILY.get(ledger.legacy_adapter, ledger.legacy_adapter)
+            )
+            else 1
+        )
         return (
             {"strong": 0, "adequate": 1, "unknown": 2, "marginal": 3}[r.band],
             capacity,
             -deficit if capacity in {0, 2} else 0,
             o.price_in if o.price_in is not None else math.inf,
+            legacy_match,
             o.key,
         )
 
@@ -336,6 +380,15 @@ def decide(
     )
 
 
+def offering_key(
+    model: str, adapter: str, account: str | None, variant: str | None = None
+) -> str:
+    """The one offering identity — ``model@adapter/account-or-none[/variant]``
+    — shared by the catalog builder and the legacy rung synthesis so a key
+    means the same operating point on both sides of a comparison."""
+    return f"{model}@{adapter}/{account or 'none'}" + (f"/{variant}" if variant else "")
+
+
 def rung_key(rung: Rung, model: str) -> str:
     """Stable offering identity for a legacy rung."""
     if rung.transport in {Transport.CLAUDE_P, Transport.CLAUDE_AGENT}:
@@ -346,7 +399,7 @@ def rung_key(rung: Rung, model: str) -> str:
         account = "local"
     else:
         account = rung.profile or "metered"
-    return f"{rung.model or model}@{rung.transport.value}/{account}"
+    return offering_key(rung.model or model, rung.transport.value, account)
 
 
 def legacy_decision(ladder: Sequence[Rung], model: str, ledger: Ledger) -> Decision:
@@ -355,9 +408,20 @@ def legacy_decision(ladder: Sequence[Rung], model: str, ledger: Ledger) -> Decis
     ranked: list[Ranked] = []
     for rung in ladder:
         key = rung_key(rung, model)
-        o = next((o for o in ledger.offerings if o.key == key), None)
+        account = key.rsplit("/", 1)[1]
+        rung_model = rung.model or model
+        # The catalog key carries account-or-none and often a variant the rung
+        # can't know — bind by (model, adapter), preferring the rung's own
+        # account, so the legacy lane inherits the catalog price and flags.
+        candidates = [
+            o
+            for o in ledger.offerings
+            if o.model == rung_model and o.adapter == rung.transport.value
+        ]
+        o = next((c for c in candidates if c.account == account), None)
+        if o is None and candidates:
+            o = candidates[0]
         if o is None:
-            account = key.rsplit("/", 1)[1]
             local = not _rung_is_cloud(rung)
             pools = (
                 ledger.accounts[account].pools
@@ -368,7 +432,7 @@ def legacy_decision(ladder: Sequence[Rung], model: str, ledger: Ledger) -> Decis
             )
             o = Offering(
                 key,
-                rung.model or model,
+                rung_model,
                 account=account,
                 adapter=rung.transport.value,
                 billing="local"
@@ -376,6 +440,8 @@ def legacy_decision(ladder: Sequence[Rung], model: str, ledger: Ledger) -> Decis
                 else "subscription"
                 if account in {"claude-sub", "codex"}
                 else "metered",
+                price_in=0.0 if local else None,
+                price_out=0.0 if local else None,
                 locality="local" if local else "cloud",
                 pool_keys=pools,
             )
@@ -508,6 +574,7 @@ def _build_offerings(
                 )
                 else frozenset()
             )
+            floor_tier = policy._tier_of(meta)
             for entry in entries:
                 adapter = str(entry.get("transport") or "openai_compat")
                 local = policy._is_local_offering(entry)
@@ -548,6 +615,14 @@ def _build_offerings(
                     if entry.get("price_out") is not None
                     else None
                 )
+                # A local operating point spends no dollars: absent a card
+                # price it books at 0 so projected cost and the metered sort
+                # both see the real number. Subscription stays unpriced.
+                if billing == "local":
+                    if price_in is None:
+                        price_in = 0.0
+                    if price_out is None:
+                        price_out = 0.0
                 if billing == "metered" and price_in == 0 and price_out == 0:
                     billing = "free"
                 variant = (
@@ -562,9 +637,7 @@ def _build_offerings(
                     or None
                 )
                 account_name = account.name if account else "local" if local else None
-                key = f"{model}@{adapter}/{account_name or 'none'}" + (
-                    f"/{variant}" if variant else ""
-                )
+                key = offering_key(model, adapter, account_name, variant)
                 params = entry.get("supported_parameters")
                 tools_params = params
                 if tools_params is None and entry.get("tools") is None:
@@ -605,6 +678,7 @@ def _build_offerings(
                         else None,
                         account.pools if account else (),
                         capability=capabilities,
+                        tier_floor=floor_tier.value if floor_tier else None,
                     )
                 )
         except Exception:
