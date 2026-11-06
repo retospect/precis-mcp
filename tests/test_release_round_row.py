@@ -10,6 +10,7 @@ import pytest
 from precis import settings as psettings
 from precis.plans import release as plans_release
 from precis.store import Store
+from precis.store.types import Tag
 
 NOW = datetime(2026, 11, 6, 12, 0, 0, tzinfo=UTC)
 OWNER = {"host": "fake-node", "checkout": "/fake/checkout"}
@@ -340,3 +341,60 @@ def test_update_round_a_string_n_is_not_this_round(store: Store) -> None:
     notes = plans_release.update_round(store, _fields(), create=True, now=NOW)
     assert "not r1" in notes[0]
     assert plans_release.read_round(store) == seeded
+
+
+# ── round_confirmed / live_deploy_job: release_cut's stale-local reads ──
+# (td575911 — the cut supersedes the clone's own deploying/deployed
+# round.json record only when the shared row proves prod moved past it
+# and no release_deploy job may still write.)
+
+
+def test_round_confirmed_needs_confirmed_at_n_or_later() -> None:
+    """``confirmed`` is the only terminal state that proves a rollout;
+    a later confirmed round proves prod moved past r<n> too, a smaller
+    number never does."""
+    assert plans_release.round_confirmed({"n": 7, "state": "confirmed"}, 7)
+    assert plans_release.round_confirmed({"n": 8, "state": "confirmed"}, 7)
+    assert not plans_release.round_confirmed({"n": 6, "state": "confirmed"}, 7)
+    assert not plans_release.round_confirmed(None, 7)
+    assert not plans_release.round_confirmed({"n": "7", "state": "confirmed"}, 7)
+    assert not plans_release.round_confirmed({"n": True, "state": "confirmed"}, 7)
+    assert not plans_release.round_confirmed({"n": 7, "state": "confirmed"}, True)
+    for state in (
+        "cut",
+        "gating",
+        "fixing",
+        "green",
+        "deploying",
+        "deployed",
+        "superseded",
+        "abandoned",
+    ):
+        assert not plans_release.round_confirmed({"n": 7, "state": state}, 7), state
+
+
+def _deploy_job(store: Store, job_type: str = "release_deploy") -> int:
+    return int(
+        store.insert_ref(
+            kind="job",
+            slug=None,
+            title=f"{job_type} job",
+            meta={"job_type": job_type},
+            parent_id=None,
+        ).id
+    )
+
+
+def test_live_deploy_job(store: Store) -> None:
+    assert plans_release.live_deploy_job(store) is False
+    job = _deploy_job(store)
+    assert plans_release.live_deploy_job(store) is True  # no STATUS tag = live
+    store.add_tag(
+        job, Tag.closed("STATUS", "succeeded"), set_by="system", replace_prefix=True
+    )
+    assert plans_release.live_deploy_job(store) is False
+    _deploy_job(store, job_type="release_cut")  # another type is not a deploy
+    assert plans_release.live_deploy_job(store) is False
+    gone = _deploy_job(store)
+    store.retire_ref(gone)
+    assert plans_release.live_deploy_job(store) is False

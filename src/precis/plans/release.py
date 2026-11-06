@@ -39,7 +39,12 @@ what lives here:
   :func:`record_confirm` merges the runtime confirmation into the row
   (stamping ``state_at``) and
   ``meta.release.confirmed``, deferring to the script's own publish where
-  it wrote first (td573432).
+  it wrote first (td573432). ``release_cut`` also reads the row before
+  cutting: :func:`round_confirmed` is the proof prod moved past the
+  clone's own stale local record (``confirmed`` at its number or later —
+  only ``confirmed`` means the release actually rolled out), and
+  :func:`live_deploy_job` is the store-wide live ``release_deploy``
+  check that blocks the local supersede.
 - **The approval check** (:func:`approval`): the deploy runs only when the
   approval ask that blocks it carries an ``answer:`` comment naming
   ``deploy r<N>`` for the release the plan cut. The ``answer`` gate opens on
@@ -826,6 +831,52 @@ def record_confirm(
     return notes
 
 
+def round_confirmed(row: dict[str, Any] | None, n: int) -> bool:
+    """The shared ``release.round`` row proves prod moved past a clone's
+    local ``r<n>`` record: ``state`` is ``confirmed`` — the only state
+    that means the release actually rolled out and was runtime-confirmed
+    (``superseded`` and ``abandoned`` prove nothing about prod) — at
+    ``n`` or a later number (a coordinator may have released r<n+1> by
+    hand too). A smaller number or any other state answers ``False``."""
+    if not isinstance(row, dict):
+        return False
+    have = row.get("n")
+    return bool(
+        type(have) is int
+        and type(n) is int
+        and have >= n
+        and row.get("state") == "confirmed"
+    )
+
+
+def live_deploy_job(store: Store) -> bool:
+    """A non-terminal ``release_deploy`` job anywhere in the store — its
+    own ``deployed`` write may still land, so a stale local record must
+    not be superseded out from under it (td575911).
+    ``release_poll._live_deploy_job``'s check without the plan join; the
+    newest 50 such jobs are enough."""
+    from precis.workers._mint import JOB_TERMINAL_STATUSES
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT j.ref_id FROM refs j
+             WHERE j.kind = 'job' AND j.retired_at IS NULL
+               AND j.meta ->> 'job_type' = 'release_deploy'
+             ORDER BY j.ref_id DESC
+             LIMIT 50
+            """
+        ).fetchall()
+    for (jid,) in rows:
+        status = next(
+            (str(t.value) for t in store.tags_for(int(jid)) if t.prefix == "STATUS"),
+            "open",
+        )
+        if status not in JOB_TERMINAL_STATUSES:
+            return True
+    return False
+
+
 def update_round(
     store: Store,
     fields: dict[str, Any],
@@ -944,6 +995,7 @@ __all__ = [
     "approval_options",
     "auto_answer_approval",
     "ci_verdict_rows",
+    "live_deploy_job",
     "parse_cut",
     "parse_deployed",
     "pin_refusal",
@@ -959,6 +1011,7 @@ __all__ = [
     "record_round",
     "release_of",
     "repo_from_remote",
+    "round_confirmed",
     "round_record",
     "update_round",
     "valid_repo",

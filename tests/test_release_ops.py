@@ -409,10 +409,18 @@ def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     (root / "scripts" / "release").write_text("#!/bin/sh\n", encoding="utf-8")
     runs = tmp_path / "runs"
     runs.mkdir()
-    seen: dict[str, Any] = {"argv": []}
+    seen: dict[str, Any] = {"argv": [], "env": []}
 
-    def launch(argv: list[str], *, cwd: Path, log_path: Path, exit_file: Path) -> int:
+    def launch(
+        argv: list[str],
+        *,
+        cwd: Path,
+        log_path: Path,
+        exit_file: Path,
+        extra_env: dict[str, str] | None = None,
+    ) -> int:
         seen["argv"].append(argv)
+        seen["env"].append(extra_env)
         seen["cwd"], seen["log"], seen["exit"] = cwd, log_path, exit_file
         return 999_999
 
@@ -773,6 +781,374 @@ def test_release_deploy_poll_survives_a_release_of_db_error(
     assert rd.poll(ctx, handle) is True
     assert ctx.status == "succeeded", ctx.failures
     assert "release.round not advanced" in ctx.chunks[-1][1]
+
+
+# ── release_cut supersedes the clone's stale local round (td575911) ──
+
+
+def _local_round(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    releases: Any = (),
+    *,
+    open_: bool = True,
+    write: bool = True,
+) -> None:
+    """The clone's own ``precis-round/round.json``, patched in through the
+    ``rc._round_json_path`` seam: ``releases=None`` is no git answer (no
+    local record), a ``str`` is written raw (an unparsable file),
+    ``write=False`` returns the path but leaves the file missing."""
+    if releases is None:
+        monkeypatch.setattr(rc, "_round_json_path", lambda root: None)
+        return
+    path = tmp_path / "precis-round" / "round.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if write:
+        text = (
+            releases
+            if isinstance(releases, str)
+            else json.dumps({"n": 1, "open": open_, "releases": releases})
+        )
+        path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(rc, "_round_json_path", lambda root: path)
+
+
+def _stale_record(n: int = 7, **over: Any) -> dict[str, Any]:
+    """The local ``round.json`` record a dead deploy leaves behind —
+    ``scripts/round supersede``'s preconditions."""
+    rec: dict[str, Any] = {
+        "branch": f"release/r{n}",
+        "n": n,
+        "base": SHA,
+        "state": "deployed",
+        "deployment": {
+            "sha": SHA,
+            "started_at": "2026-11-06T10:00:00Z",
+            "rollout_at": "2026-11-06T10:05:00Z",
+        },
+    }
+    rec.update(over)
+    return rec
+
+
+def _walk_superseded_cut(
+    store: Store, checkout: dict[str, Any], mint: T.PlanMint
+) -> Ctx:
+    """The whole supersede -> cut walk: submit launches ``round
+    supersede``, exit 0 swaps the handle onto the ``--cut-only`` launch,
+    a cut log succeeds the job."""
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and handle.get("phase") == "supersede"
+    _exit(checkout, 0, "r7 superseded (origin/prod abc is past def)\n")
+    assert rc.poll(ctx, handle) is False
+    _exit(checkout, 0, _cut_log())
+    assert rc.poll(ctx, handle) is True
+    return ctx
+
+
+def test_stale_local_round_reads_the_one_supersedable_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _local_round(tmp_path, monkeypatch, [_stale_record()])
+    assert rc._stale_local_round(tmp_path) == 7
+    _local_round(tmp_path, monkeypatch, [_stale_record(), _stale_record(n=8)])
+    assert rc._stale_local_round(tmp_path) is None  # two candidates: not "the one"
+    _local_round(tmp_path, monkeypatch, "{not json")
+    assert rc._stale_local_round(tmp_path) is None
+
+
+def test_release_cut_supersedes_a_stale_local_round_when_prod_moved_past_it(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The clone's record says r7 deployed, the shared row says r7
+    confirmed by another clone — prod moved past it. The cut's first act
+    is the record-only ``scripts/round supersede r7`` (the shared row
+    untouched — ``PRECIS_GRIPE_NOTE=0`` skips the publish), then the cut."""
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    script = _round_script(checkout)
+    _local_round(tmp_path, monkeypatch, [_stale_record()])
+    _seed_round(store, 7, "confirmed")
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert ctx.failures == []
+    assert handle is not None and handle["phase"] == "supersede"
+    assert checkout["argv"] == [[str(script), "supersede", "r7"]]
+    assert checkout["env"] == [{"PRECIS_GRIPE_NOTE": "0"}]
+
+    _exit(checkout, 0, "r7 superseded (origin/prod abc is past def)\n")
+    assert rc.poll(ctx, handle) is False  # swapped onto the cut
+    assert checkout["argv"][-1] == [
+        str(checkout["root"] / "scripts" / "release"),
+        "--cut-only",
+    ]
+    assert "PRECIS_GRIPE_NOTE" not in (checkout["env"][-1] or {})
+    assert "superseded stale local r7" in ctx.chunks[-1][1]
+
+    _exit(checkout, 0, _cut_log())
+    assert rc.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    assert "superseded stale local r7, prod moved past it" in ctx.chunks[-1][1]
+    assert ctx.stamped["stale_round_superseded"] == {"n": 7}
+
+
+def test_release_cut_supersede_leaves_the_shared_row_unchanged(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    _round_script(checkout)
+    _local_round(tmp_path, monkeypatch, [_stale_record()])
+    _seed_round(store, 7, "confirmed")
+    before = R._round_raw(store)
+    mint = T.mint_release_pass(store)
+    ctx = _walk_superseded_cut(store, checkout, mint)
+    assert ctx.status == "succeeded", ctx.failures
+    assert R._round_raw(store) == before
+
+
+def test_release_cut_supersedes_when_a_later_round_is_confirmed(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A confirmed LATER round also proves prod moved past r7 — a
+    coordinator released r7 and r8 by hand. The supersede names the
+    local record's number."""
+    script = _round_script(checkout)
+    _local_round(tmp_path, monkeypatch, [_stale_record()])
+    _seed_round(store, 8, "confirmed")
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert ctx.failures == []
+    assert handle is not None and handle["phase"] == "supersede"
+    assert checkout["argv"] == [[str(script), "supersede", "r7"]]
+
+
+def test_release_cut_without_a_shared_row_launches_the_cut_as_today(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _local_round(tmp_path, monkeypatch, [_stale_record()])
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.submit(ctx, None) is not None
+    assert checkout["argv"] == [
+        [str(checkout["root"] / "scripts" / "release"), "--cut-only"]
+    ]
+
+
+def test_release_cut_with_a_smaller_shared_n_does_not_supersede(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _local_round(tmp_path, monkeypatch, [_stale_record()])
+    _seed_round(store, 6, "confirmed")
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.submit(ctx, None) is not None
+    assert checkout["argv"] == [
+        [str(checkout["root"] / "scripts" / "release"), "--cut-only"]
+    ]
+
+
+@pytest.mark.parametrize(
+    "state", ["cut", "deploying", "deployed", "superseded", "abandoned"]
+)
+def test_release_cut_with_a_non_terminal_shared_state_does_not_supersede(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+) -> None:
+    """Only ``confirmed`` proves the release rolled out elsewhere; every
+    other shared state — the open lifecycle, a rollout journal, the
+    non-proof terminals — launches the cut as today."""
+    _local_round(tmp_path, monkeypatch, [_stale_record()])
+    _seed_round(store, 7, state)
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.submit(ctx, None) is not None
+    assert checkout["argv"] == [
+        [str(checkout["root"] / "scripts" / "release"), "--cut-only"]
+    ]
+
+
+def test_release_cut_with_a_live_release_deploy_job_does_not_supersede(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live ``release_deploy`` job may still land its own ``deployed``
+    write — the supersede waits. A terminal one does not block."""
+    script = _round_script(checkout)
+    _local_round(tmp_path, monkeypatch, [_stale_record()])
+    _seed_round(store, 7, "confirmed")
+    mint = T.mint_release_pass(store)
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="release_deploy job",
+        meta={"job_type": "release_deploy"},
+        parent_id=mint.ids["deploy"],
+    )
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.submit(ctx, None) is not None
+    assert checkout["argv"] == [
+        [str(checkout["root"] / "scripts" / "release"), "--cut-only"]
+    ]
+
+    store.add_tag(
+        int(job.id),
+        Tag.closed("STATUS", "succeeded"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and handle["phase"] == "supersede"
+    assert checkout["argv"][-1] == [str(script), "supersede", "r7"]
+
+
+def test_release_cut_supersede_failure_fails_the_job_and_cuts_nothing(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _round_script(checkout)
+    _local_round(tmp_path, monkeypatch, [_stale_record()])
+    _seed_round(store, 7, "confirmed")
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and handle["phase"] == "supersede"
+    _exit(
+        checkout,
+        1,
+        "scripts/round: supersede refused — origin/prod does not contain "
+        "r7's pinned sha — a partial rollout\n",
+    )
+    assert rc.poll(ctx, handle) is True
+    assert len(ctx.failures) == 1
+    assert "no cut launched" in ctx.failures[0]
+    assert "does not contain" in ctx.failures[0]  # the log tail
+    assert len(checkout["argv"]) == 1  # only the supersede launch
+
+
+def test_release_cut_supersede_launch_failure_cuts_nothing(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _round_script(checkout)
+    _local_round(tmp_path, monkeypatch, [_stale_record()])
+    _seed_round(store, 7, "confirmed")
+    mint = T.mint_release_pass(store)
+
+    def boom(argv: list[str], **_kw: Any) -> int:
+        checkout["argv"].append(argv)
+        raise OSError("exec denied")
+
+    monkeypatch.setattr(rc, "_launch", boom)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.submit(ctx, None) is None
+    assert len(ctx.failures) == 1 and "launch failed" in ctx.failures[0]
+    assert checkout["argv"] == [[str(script), "supersede", "r7"]]  # one attempt
+
+
+def test_release_cut_factory_off_runs_nothing(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRECIS_FACTORY", "off")
+    _local_round(tmp_path, monkeypatch, [_stale_record()])
+    _seed_round(store, 7, "confirmed")
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.submit(ctx, None) is None
+    assert "factory is off" in ctx.failures[0]
+    assert checkout["argv"] == []
+
+
+@pytest.mark.parametrize(
+    ("releases", "open_", "write"),
+    [
+        pytest.param(None, True, True, id="no-local-record"),
+        pytest.param("{not json", True, True, id="unparsable"),
+        pytest.param([], True, False, id="file-missing"),
+        pytest.param([_stale_record()], False, True, id="closed-round"),
+        pytest.param([_stale_record(state="confirmed")], True, True, id="confirmed"),
+        pytest.param([_stale_record(state="superseded")], True, True, id="superseded"),
+        pytest.param([_stale_record(state="abandoned")], True, True, id="abandoned"),
+        pytest.param(
+            [
+                _stale_record(
+                    deployment={
+                        "sha": SHA,
+                        "rollout_at": "2026-11-06T10:05:00Z",
+                        "runtime_confirmed_at": "2026-11-06T11:00:00Z",
+                    }
+                )
+            ],
+            True,
+            True,
+            id="runtime-confirmed",
+        ),
+        pytest.param(
+            [_stale_record(state="deploying", cut_pending=True)],
+            True,
+            True,
+            id="cut-pending",
+        ),
+        pytest.param(
+            [{"branch": "release/r7", "n": 7, "base": SHA, "state": "cut"}],
+            True,
+            True,
+            id="open-cut-record",
+        ),
+    ],
+)
+def test_release_cut_leaves_a_local_record_that_is_not_stale(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    releases: Any,
+    open_: bool,
+    write: bool,
+) -> None:
+    """Every non-stale local shape — no record, a missing or unparsable
+    file, a closed round, a terminal or runtime-confirmed record, a
+    pending cut, and the deferred hazard of an open ``cut`` record — is
+    left alone: no supersede, the cut launches as today even with a
+    shared confirmed r7 row."""
+    _seed_round(store, 7, "confirmed")
+    _local_round(tmp_path, monkeypatch, releases, open_=open_, write=write)
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and handle.get("phase") is None
+    assert checkout["argv"] == [
+        [str(checkout["root"] / "scripts" / "release"), "--cut-only"]
+    ]
 
 
 # ── the deploy is pinned to the cut's host and checkout ──────────────

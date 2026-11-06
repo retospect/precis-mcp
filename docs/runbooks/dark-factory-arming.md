@@ -65,6 +65,19 @@ confirm's `record_confirm` moves it to `confirmed` — rank-ordered
 forward moves only, best-effort, never a job failure. This row is what
 `release.auto_deploy`'s open-round check and the stuck watchdog read.
 
+The cut also clears the clone's own stale record: before `--cut-only`
+launches, `release_cut` supersedes the checkout's local `round.json`
+record when it is the one `deploying`/`deployed` record (a pinned sha,
+no pending cut, no runtime confirm), the shared row proves prod moved
+past it (`confirmed` at the same or a later number), and no
+`release_deploy` job is live. It runs `scripts/round supersede r<N>`
+detached with `PRECIS_GRIPE_NOTE=0` — record-only, the shared row is
+never rewritten and the verb's own ancestor-of-prod gate is the proof —
+then launches the cut on exit 0; a refusal fails the job with the log
+tail so the retry-cap ask still fires. Any other shape (an open
+`cut`/`gating`/`fixing`/`green` local record, a shared row that does not
+prove the release) is left alone for the ask.
+
 The `approval` node is an `ask-user` todo (`meta.ask.kind = approval`,
 options `deploy r<N>` | `hold`); it shows on `/asks` once the plan exists
 and opens once the gate is green and it is answered. To deploy:

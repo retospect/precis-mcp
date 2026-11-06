@@ -27,6 +27,25 @@ detached submit/poll pair under ``ssh_node``:
   a release in flight elsewhere) or a non-zero exit fails the job with the
   log tail; the plan tick's retry cap then files the ask.
 
+Before ``--cut-only`` launches, :func:`submit` clears the checkout's
+stale local round when three preflight conditions hold: the clone's own
+``round.json`` has exactly one ``deploying``/``deployed`` record (an int
+``n``, a pinned sha, no pending cut, no runtime confirm), the shared
+``release.round`` row proves that release rolled out elsewhere
+(:func:`precis.plans.release.round_confirmed`: ``confirmed`` at ``n`` or
+a later number — a hand-cut r<n+1> supersedes it too, a smaller number
+never does), and no ``release_deploy`` job is live anywhere in the store
+(:func:`precis.plans.release.live_deploy_job`). The supersede runs as a
+detached ``supersede`` phase — ``scripts/round supersede r<n>`` with
+``PRECIS_GRIPE_NOTE=0`` so the shared row is never rewritten; the verb's
+own ancestor-of-prod gate is the proof, it touches no remote ref, and a
+refusal fails the job with the log tail (no cut launched). On exit 0 the
+handle swaps onto the usual ``--cut-only`` launch, the supersede note
+carried into the cut's summary. An open ``cut``/``gating``/``fixing``/
+``green`` local record is not covered — ``supersede`` refuses those, and
+the false-``RELEASE_CUT`` hazard they carry needs ``scripts/release``'s
+resume path, a later slice (td575911).
+
 The cut never waits for CI: ``ci_verdict_poll`` records the verdict and the
 ``tests-green`` gate reads it. Refused while ``PRECIS_FACTORY=off``. The
 helpers below (:func:`launch_script`, :func:`finish_run`) are shared with
@@ -35,11 +54,14 @@ helpers below (:func:`launch_script`, :func:`finish_run`) are shared with
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
 import subprocess
 import tempfile
+import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -90,19 +112,30 @@ def wall_seconds() -> float:
 # ── Shared detached-script helpers (release_deploy uses them too) ──
 
 
-def _launch(argv: list[str], *, cwd: Path, log_path: Path, exit_file: Path) -> int:
+def _launch(
+    argv: list[str],
+    *,
+    cwd: Path,
+    log_path: Path,
+    exit_file: Path,
+    extra_env: Mapping[str, str] | None = None,
+) -> int:
     """Seam: start ``argv`` detached (run_slice's launcher, stdin from
     /dev/null, the worker's own env plus the factory git token as git's
     credential helper — the cut and deploy push ``release/r<N>``, ``gated``
     and ``prod`` from a service account's checkout; ``scripts/deploy``
-    keeps the worker's own env for the rest)."""
+    keeps the worker's own env for the rest). ``extra_env`` merges over
+    that env (the stale-round supersede's ``PRECIS_GRIPE_NOTE=0``)."""
+    env = _factory_git.git_auth_env()
+    if extra_env:
+        env.update(extra_env)
     return _rs._launch(
         argv,
         cwd=cwd,
         stdin=Path(os.devnull),
         log=log_path,
         exit_file=exit_file,
-        env=_factory_git.git_auth_env(),
+        env=env,
     )
 
 
@@ -132,10 +165,16 @@ def todo_refusal(store: Any, name: str, todo_id: Any, *, required: bool) -> str 
 
 
 def launch_script(
-    ctx: Any, name: str, args: list[str], *, script: str = "release"
+    ctx: Any,
+    name: str,
+    args: list[str],
+    *,
+    script: str = "release",
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     """Run ``<root>/scripts/<script> <args>`` detached; the handle, or
-    ``None`` after failing the job."""
+    ``None`` after failing the job. ``env`` merges over the launcher's
+    factory-git env."""
     try:
         root = _rs.slice_root()
         path = root / "scripts" / script
@@ -146,7 +185,11 @@ def launch_script(
         exit_file = base.with_suffix(".exit")
         exit_file.unlink(missing_ok=True)
         pid = _launch(
-            [str(path), *args], cwd=root, log_path=log_path, exit_file=exit_file
+            [str(path), *args],
+            cwd=root,
+            log_path=log_path,
+            exit_file=exit_file,
+            extra_env=env or None,
         )
     except Exception as exc:
         log.warning("%s: launch failed", name, exc_info=True)
@@ -221,6 +264,83 @@ def origin_repo(root: Path) -> str | None:
     return _release.repo_from_remote(proc.stdout)
 
 
+# ── the stale local round record (read straight from the file, no net) ──
+
+
+def _round_json_path(root: Path) -> Path | None:
+    """Seam (tests patch it): the checkout's per-clone round record
+    ``<git-common-dir>/precis-round/round.json`` (``scripts/round``'s state
+    dir), else ``None`` when git cannot say."""
+    try:
+        proc = _rs._git(
+            ["rev-parse", "--path-format=absolute", "--git-common-dir"], root
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return Path(proc.stdout.strip()) / "precis-round" / "round.json"
+
+
+def _stale_local_round(root: Path) -> int | None:
+    """``n`` of the one local ``round.json`` record ``scripts/round
+    supersede r<n>`` would take — ``deploying``/``deployed``, an int
+    ``n``, no pending cut, a ``deployment`` dict pinning a non-empty
+    ``sha``, no ``runtime_confirmed_at`` — else ``None``. A missing or
+    unparsable file, a closed round, an open (``cut``/``gating``/
+    ``fixing``/``green`` — ``supersede`` refuses them) or terminal
+    record, and several candidates all answer ``None``."""
+    path = _round_json_path(root)
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not data.get("open"):
+        return None
+    candidates = []
+    for rel in data.get("releases") or []:
+        if not isinstance(rel, dict):
+            continue
+        n = rel.get("n")
+        if rel.get("state") not in ("deploying", "deployed") or type(n) is not int:
+            continue
+        if rel.get("cut_pending"):
+            continue
+        dep = rel.get("deployment")
+        if (
+            not isinstance(dep, dict)
+            or not isinstance(dep.get("sha"), str)
+            or not dep["sha"]
+            or dep.get("runtime_confirmed_at")
+        ):
+            continue
+        candidates.append(n)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _stale_supersede_n(ctx: Any) -> int | None:
+    """``n`` of the checkout's stale local record the cut supersedes
+    first — the three preflight conditions of the module docstring — or
+    ``None``. A read failure is a warning and "no": the cut launches as
+    today and the script's own ``stale_why`` gate decides."""
+    try:
+        root = _rs.slice_root()
+    except RuntimeError:
+        return None  # launch_script below reports the same failure
+    n = _stale_local_round(root)
+    if n is None:
+        return None
+    try:
+        confirmed = _release.round_confirmed(_release.read_round(ctx.store), n)
+        quiet = not _release.live_deploy_job(ctx.store)
+    except Exception:
+        log.warning("%s: stale-round preflight read failed", NAME, exc_info=True)
+        return None
+    return n if confirmed and quiet else None
+
+
 # ── release_cut ────────────────────────────────────────────────────
 
 
@@ -260,10 +380,66 @@ def submit(ctx: Any, spec: Any) -> Any:
     if blockers:
         ctx.record_failure(f"{NAME}: {'; '.join(blockers)}")
         return None
+    if ctx.store is not None:
+        n = _stale_supersede_n(ctx)
+        if n is not None:
+            # A launched phase, not a synchronous call: the verb needs
+            # the factory git env for its ls-remote/fetch, and a
+            # restarted worker still reads the verdict from the log and
+            # exit file. PRECIS_GRIPE_NOTE=0 skips its release.round
+            # publish — the other clone's confirmed row stays as it was.
+            handle = launch_script(
+                ctx,
+                f"{NAME}_supersede",
+                ["supersede", f"r{n}"],
+                script="round",
+                env={"PRECIS_GRIPE_NOTE": "0"},
+            )
+            if isinstance(handle, dict):
+                handle.update(phase="supersede", n=n)
+            return handle
     return launch_script(ctx, NAME, ["--cut-only"])
 
 
+def _superseded(ctx: Any, handle: dict[str, Any]) -> bool:
+    """The ``supersede`` phase's verdict: a refusal fails the job with
+    the log tail and cuts nothing; exit 0 swaps the handle in place onto
+    the ``--cut-only`` launch (``release_confirm._confirmed``'s pattern:
+    a fresh handle persisted as ``compute_handle`` with a fresh
+    deadline, the note carried into the cut's summary)."""
+    done = finish_run(ctx, handle, NAME)
+    if done is None:
+        return not isinstance(handle, dict)
+    exit_code, log_text = done
+    n = handle.get("n")
+    if exit_code != 0:
+        fail_with_tail(
+            ctx,
+            f"{NAME}: scripts/round supersede r{n} exit {exit_code}; no cut launched",
+            log_text,
+        )
+        return True
+    note = f"superseded stale local r{n}, prod moved past it"
+    tail = log_text.strip()[-300:]
+    fresh = launch_script(ctx, NAME, ["--cut-only"])
+    ctx.append_chunk("job_event", f"{NAME}: {note}" + (f" — {tail}" if tail else ""))
+    ctx.set_meta(stale_round_superseded={"n": n})
+    if fresh is None:
+        return True  # the launch failure is recorded; no cut
+    handle.clear()
+    handle.update(fresh)
+    handle["notes"] = [note]
+    ctx.set_meta(
+        compute_handle=handle,
+        compute_handle_released=False,
+        deadline=time.time() + wall_seconds(),
+    )
+    return False
+
+
 def poll(ctx: Any, handle: Any) -> bool:
+    if isinstance(handle, dict) and handle.get("phase") == "supersede":
+        return _superseded(ctx, handle)
     done = finish_run(ctx, handle, NAME)
     if done is None:
         return not isinstance(handle, dict)
@@ -284,11 +460,11 @@ def poll(ctx: Any, handle: Any) -> bool:
     checkout = str(handle.get("root") or ".")
     repo = origin_repo(Path(checkout))
     host = run_host(params)
-    notes: list[str] = []
+    notes: list[str] = list(handle.get("notes") or [])
     if isinstance(todo_id, int):
         now = datetime.now(UTC)
         try:
-            notes = _release.record_cut(
+            notes += _release.record_cut(
                 ctx.store,
                 todo_id,
                 rn,
