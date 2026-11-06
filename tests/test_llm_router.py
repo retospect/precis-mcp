@@ -5449,6 +5449,127 @@ def test_dispatch_placement_local_blocks_saturated_slot_hosted_escape(
     assert called.calls == 0
 
 
+# ── require_transport: the strict fenced-transport pin (td573740) ──────
+#
+# A ``params.envelope``-declared plan_tick pins
+# ``require_transport=CLAUDE_AGENT`` because the named envelope's facets
+# (the ``--tools`` allowlist, the write-kind env fence) exist only on that
+# wire. Strict like ``placement``: an emptied nonempty chain is an *error*
+# result, never a silent fall-through to an unboxed rung.
+
+
+def _stub_fenced_gates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dark-out every post-filter gate so the fenced-transport tests
+    observe only the require_transport pin."""
+    monkeypatch.setattr(
+        router, "_skip_unserved_local_rung", lambda ladder, model: ladder
+    )
+    monkeypatch.setattr(
+        router, "_drop_unavailable_rungs", lambda ladder, model: (ladder, [])
+    )
+    monkeypatch.setattr(router, "_apply_cloud_throttle", lambda ladder: ladder)
+    monkeypatch.setattr("precis.utils.llm.local_serving.acquire", lambda model: None)
+    monkeypatch.setattr("precis.utils.llm.admit.check_dispatch", lambda *a, **kw: None)
+    monkeypatch.setattr("precis.budget.breaker.gate_tier", lambda *a, **kw: None)
+
+
+def test_require_transport_keeps_only_matching_rungs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An OSS-first ladder under ``require_transport=CLAUDE_AGENT`` runs
+    the claude rung — the fenced fall-through the pin exists to close:
+    the OSS provider never runs, so the tick can't land unboxed."""
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    oss = _FakeProv(_ok("must not run"))
+    claude = _FakeProv(_ok("boxed run"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, oss)
+    monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_AGENT, claude)
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [Rung(Transport.OPENAI_TOOLS), Rung(Transport.CLAUDE_AGENT)],
+    )
+    _stub_fenced_gates(monkeypatch)
+
+    out = route(
+        LlmRequest(
+            tier=Tier.FRONTIER,
+            prompt="x",
+            require_transport=Transport.CLAUDE_AGENT,
+        )
+    )
+
+    assert out.error is None
+    assert out.text == "boxed run"
+    assert claude.calls == 1
+    assert oss.calls == 0
+
+
+def test_require_transport_emptied_chain_is_error_not_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A chain with no claude_agent rung under ``require_transport`` gets
+    an *error* result — not paused, and never a degrade onto the OSS
+    rung (which would run the fenced tick unboxed)."""
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    oss = _FakeProv(_ok("must not run"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, oss)
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [Rung(Transport.OPENAI_TOOLS)],
+    )
+    _stub_fenced_gates(monkeypatch)
+
+    out = route(
+        LlmRequest(
+            tier=Tier.FRONTIER,
+            prompt="x",
+            require_transport=Transport.CLAUDE_AGENT,
+        )
+    )
+
+    assert out.error is not None
+    assert "require_transport" in out.error
+    assert out.paused is False
+    assert oss.calls == 0
+
+
+def test_require_transport_empty_gate_logs_the_fenced_out_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The emptied-chain gate's log row names the rung the call was
+    fenced *out* of — ``ladder[0]`` captured before filtering — not the
+    required transport the chain lacked."""
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    monkeypatch.setitem(
+        router._PROVIDERS, Transport.OPENAI_TOOLS, _FakeProv(_ok("must not run"))
+    )
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [Rung(Transport.OPENAI_TOOLS), Rung(Transport.LOCAL)],
+    )
+    _stub_fenced_gates(monkeypatch)
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(
+        LlmRequest(
+            tier=Tier.FRONTIER,
+            prompt="x",
+            require_transport=Transport.CLAUDE_AGENT,
+        )
+    )
+
+    assert out.error is not None
+    assert len(recorded) == 1
+    assert recorded[0].transport == "openai_tools"
+    assert recorded[0].features.get("gated") is True
+
+
 # ── placement_routed (migration 0179): routed intent beside landed rung ──
 
 

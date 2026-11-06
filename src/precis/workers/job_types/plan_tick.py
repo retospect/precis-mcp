@@ -40,7 +40,7 @@ import logging
 import os
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -56,6 +56,7 @@ from precis.utils.llm.router import (
 from precis.utils.llm.router import (
     PLANNER_TIER_BY_ALIAS as _TIER_BY_ALIAS,
 )
+from precis.workers.envelope import ENVELOPES
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -143,6 +144,28 @@ PARAMS_SCHEMA: dict[str, Any] = {
             "('low'/'medium'/'high'), temperature (0..2). Read defensively: a "
             "malformed dict degrades to no override rather than failing the tick.",
         },
+        "envelope": {
+            "type": "string",
+            "enum": sorted(ENVELOPES),
+            "description": "Named permission envelope the tick runs boxed "
+            "inside (precis.workers.envelope.ENVELOPES — 'scout': --tools "
+            "WebSearch and no MCP server at all). Declared means "
+            "required: an unknown name fails the job closed, and a "
+            "fenced tick is pinned to the claude_agent transport — the "
+            "envelope's facets exist only on that wire.",
+        },
+        "scout": {
+            "type": "object",
+            "properties": {
+                "folder": {"type": "integer", "minimum": 1},
+                "quest": {"type": "integer", "minimum": 1},
+            },
+            "required": ["folder", "quest"],
+            "additionalProperties": False,
+            "description": "Required with envelope='scout': the todo the "
+            "tick files 'scout lead: …' children under and the quest "
+            "whose logbook takes one line per pass.",
+        },
     },
     "required": ["model"],
     "additionalProperties": False,
@@ -182,6 +205,13 @@ class PlanTickOutcome:
     #: saturated local slot); the executor parks the job until it
     #: (gr482938). ``None`` on every other outcome.
     retry_at: datetime | None = None
+    #: Worker-written fixed-format line for a fenced (envelope) tick —
+    #: ``scout: N leads accepted`` or ``scout pass rejected: <token>``
+    #: (td573740 round 4). The runner stores it as ``job_summary`` in
+    #: place of the agent's final text, so the raw reply is stored
+    #: nowhere a later prompt builds from. ``None`` on every unfenced
+    #: outcome — those keep the final text as before.
+    worker_summary: str | None = None
 
 
 def validate_submit(
@@ -202,6 +232,38 @@ def validate_submit(
         return (
             f"plan_tick: params.model must be one of "
             f"{list(PLANNER_MODEL_ALIASES)}, got {model!r}"
+        )
+    if "envelope" in params:
+        envelope = params["envelope"]
+        if not isinstance(envelope, str) or envelope not in ENVELOPES:
+            return (
+                f"plan_tick: params.envelope must be a registered envelope "
+                f"{sorted(ENVELOPES)}, got {envelope!r}"
+            )
+        # Declared means fully declared: a fenced tick's worker code
+        # needs its wiring params up front, and decompose is meaningless
+        # inside a box (and refused at mint time regardless).
+        if envelope == "scout":
+            from precis.workers import scout_tick
+
+            try:
+                scout_tick.parse_scout_params(params)
+            except scout_tick.ScoutConfigError as exc:
+                return f"plan_tick: {exc}"
+            if params.get("decompose"):
+                return (
+                    "plan_tick: params.decompose has no meaning inside a "
+                    "named envelope — a fenced tick runs the scout prompt, "
+                    "not the planner's"
+                )
+    if "scout" in params and params.get("envelope") != "scout":
+        # A scout config without its envelope is a dropped or mistyped
+        # key: the tick would run the scout procedure on the open
+        # planner path (prod MCP + Bash). Refuse here and again in run()
+        # for a hand-minted job (td573740 round 3).
+        return (
+            "plan_tick: params.scout requires params.envelope='scout', got "
+            f"envelope={params.get('envelope')!r}"
         )
     return None
 
@@ -294,14 +356,53 @@ def run(
         sel = {}
     timeout_s = int(params.get("timeout_s", 1800))
     started = time.monotonic()
+    fenced = "envelope" in params
+    scout_cfg: Any = None
 
-    # Patent tick: refresh the freedom-to-operate claims digest onto this
-    # tick's ``meta.working_set`` before the prompt is built, so the planner
-    # injects the prior-art claims the tick must design around. Best-effort.
-    _refresh_patent_claims_digest(store, parent_ref_id)
+    if "scout" in params and params.get("envelope") != "scout":
+        # A scout config without its envelope is a dropped or mistyped
+        # key: left alone the tick would run the scout procedure on the
+        # open planner path (prod MCP + Bash). Refuse closed before any
+        # prompt is built — validate_submit covers mint; this guards a
+        # hand-minted or edited job (td573740 round 3).
+        return PlanTickOutcome(
+            exit_code=1,
+            stdout="",
+            stderr=(
+                "plan_tick: params.scout requires params.envelope='scout', "
+                f"got envelope={params.get('envelope')!r}"
+            ),
+            duration_s=time.monotonic() - started,
+        )
 
-    prompts = build_planner_prompts(store, ref_id=parent_ref_id, model=model)
-    prompts = _apply_decompose_mode(prompts, params)
+    if fenced:
+        # Trusted worker assembly, not the planner prompt: the schedule
+        # root's body is the procedure, the folder's filed leads are the
+        # only other input, and none of the planner machinery (patent
+        # digest, decompose, workspace) applies. A bad scout config or an
+        # unresolvable id refuses the tick before any spawn.
+        from precis.workers import scout_tick
+
+        try:
+            scout_cfg = scout_tick.parse_scout_params(params)
+            prompts = scout_tick.build_scout_prompts(
+                store, tick_ref_id=parent_ref_id, cfg=scout_cfg
+            )
+        except scout_tick.ScoutConfigError as exc:
+            return PlanTickOutcome(
+                exit_code=1,
+                stdout="",
+                stderr=f"scout: {exc}",
+                duration_s=time.monotonic() - started,
+            )
+    else:
+        # Patent tick: refresh the freedom-to-operate claims digest onto this
+        # tick's ``meta.working_set`` before the prompt is built, so the planner
+        # injects the prior-art claims the tick must design around. Best-effort.
+        _refresh_patent_claims_digest(store, parent_ref_id)
+
+        prompts = build_planner_prompts(store, ref_id=parent_ref_id, model=model)
+        prompts = _apply_decompose_mode(prompts, params)
 
     # The FULL assembled prompt INPUT, the twin of the
     # ``meta.transcript`` output capture in ``claude_inproc`` — lets a
@@ -314,7 +415,9 @@ def run(
 
     persist_assembled_context(store, job_ref_id, getattr(prompts, "blocks", ()))
 
-    workspace = _load_parent_workspace(store, parent_ref_id)
+    # A fenced (no-MCP) tick's world is its prompt alone — the parent's
+    # workspace machinery is planner context it never sees.
+    workspace = None if fenced else _load_parent_workspace(store, parent_ref_id)
 
     # Open a run-attribution record (kind='agentlog') carrying the full
     # assembled prompt; the in-process tools loop threads its id via the tick
@@ -346,6 +449,22 @@ def run(
             log.warning("plan_tick: failed to finalize agentlog", exc_info=True)
 
     transport = _tick_transport(model, placement=_select_knobs(sel)[0])
+    if fenced and transport is not Transport.CLAUDE_AGENT:
+        # A named envelope's facets (--tools allowlist, the write-kind env
+        # fence) exist only on the claude_agent wire — routing a fenced
+        # tick anywhere else would run it unboxed. Fail closed; the router
+        # carries the matching require_transport pin for the same reason.
+        outcome = PlanTickOutcome(
+            exit_code=1,
+            stdout="",
+            stderr=(
+                f"params.envelope={params.get('envelope')!r} requires the "
+                f"claude_agent transport; resolved {transport.value}"
+            ),
+            duration_s=time.monotonic() - started,
+        )
+        _finalize(f"exit:{outcome.exit_code}")
+        return outcome
     if transport is Transport.CLAUDE_AGENT:
         outcome = _run_claude_tick(
             store=store,
@@ -359,7 +478,42 @@ def run(
             started=started,
             job_ref_id=job_ref_id,
             log_event=log_event,
+            fenced=fenced,
         )
+        if fenced and outcome.exit_code == 0 and scout_cfg is not None:
+            # The agent's only deliverable is its reply: worker code
+            # validates the whole object, files what survives, and —
+            # rejected or not — closes the tick done (a schema violation
+            # writes nothing but the logbook's fixed rejection token —
+            # COORDINATOR td573740). A nonzero outcome passes through
+            # untouched.
+            from precis.utils.claude_agent import stream_final_text
+
+            try:
+                lead_rows, note = scout_tick.parse_scout_reply(
+                    stream_final_text(outcome.stdout)
+                )
+            except scout_tick.ScoutReplyError as exc:
+                scout_tick.reject_scout_reply(
+                    store,
+                    tick_ref_id=parent_ref_id,
+                    cfg=scout_cfg,
+                    reason=exc.reason,
+                )
+                outcome = replace(
+                    outcome, worker_summary=f"scout pass rejected: {exc.reason}"
+                )
+            else:
+                written = scout_tick.apply_scout_reply(
+                    store,
+                    tick_ref_id=parent_ref_id,
+                    cfg=scout_cfg,
+                    lead_rows=lead_rows,
+                    note=note,
+                )
+                outcome = replace(
+                    outcome, worker_summary=f"scout: {written} leads accepted"
+                )
     else:
         outcome = _run_oss_tick(
             store=store,
@@ -554,6 +708,7 @@ def _run_claude_tick(
     started: float,
     job_ref_id: int,
     log_event: Any,
+    fenced: bool = False,
 ) -> PlanTickOutcome:
     """Run one planner tick as a ``claude -p`` agent through the router.
 
@@ -580,11 +735,32 @@ def _run_claude_tick(
     from precis.utils.llm.router import LlmRequest, route
 
     tier = _TIER_BY_ALIAS.get(model, Tier.FRONTIER)
-    mcp_config = os.environ.get("PRECIS_MCP_CONFIG", "")
-    if not mcp_config:
-        log.warning(
-            "plan_tick: PRECIS_MCP_CONFIG unset; the claude tick can't call back "
-            "via MCP — children/yield/done won't land"
+    mcp_config = ""
+    env_overlay: dict[str, str] | None = None
+    system_prompt = prompts.system
+    if fenced:
+        # A fenced tick runs with NO MCP server at all — the envelope's
+        # no-MCP argv is pinned downstream in
+        # ``claude_agent._resolve_agent_args`` — so there is no spawned
+        # ``precis serve`` to read the env back-doors, no PRECIS_MCP_CONFIG
+        # to warn about, and the fixed scout persona replaces the
+        # planner's.
+        from precis.workers import scout_tick
+
+        system_prompt = scout_tick.SCOUT_SYSTEM
+    else:
+        mcp_config = os.environ.get("PRECIS_MCP_CONFIG", "")
+        if not mcp_config:
+            log.warning(
+                "plan_tick: PRECIS_MCP_CONFIG unset; the claude tick can't call back "
+                "via MCP — children/yield/done won't land"
+            )
+        env_overlay = _tick_env_overlay(
+            store=store,
+            parent_ref_id=parent_ref_id,
+            model=model,
+            agentlog_id=agentlog_id,
+            workspace=workspace,
         )
     # Turn-taking persona threads — run from a neutral cwd so `claude -p` discovers no project
     # CLAUDE.md, and surface any ambient one (user file or up the cwd tree) that
@@ -597,13 +773,6 @@ def _run_claude_tick(
             "outside the assembler — remove it on agent hosts: %s",
             ambient,
         )
-    env_overlay = _tick_env_overlay(
-        store=store,
-        parent_ref_id=parent_ref_id,
-        model=model,
-        agentlog_id=agentlog_id,
-        workspace=workspace,
-    )
     if log_event:
         log_event(
             "plan_tick.spawn",
@@ -624,7 +793,7 @@ def _run_claude_tick(
             tier=tier,
             prompt=prompts.user,
             tools_needed=True,
-            system_prompt=prompts.system,
+            system_prompt=system_prompt,
             # Absolute so the neutral cwd can't strand a relative path.
             mcp_config=os.path.abspath(mcp_config) if mcp_config else None,
             max_turns=_max_turns(),
@@ -643,13 +812,16 @@ def _run_claude_tick(
             thinking=thinking,
             temperature=temperature,
             effort=effort,
+            # A fenced tick (params.envelope declared) may only ever run on
+            # this transport — fail over to nothing.
+            require_transport=Transport.CLAUDE_AGENT if fenced else None,
         )
     )
     duration = time.monotonic() - started
     from precis import agentlog as _agentlog
 
     _agentlog.stamp_result_meta(store, log_id=agentlog_id, res=result)
-    exit_code, resume_reason = _claude_exit(result)
+    exit_code, resume_reason = _claude_exit(result, fenced=fenced)
     return PlanTickOutcome(
         exit_code=exit_code,
         # The full stream-json stdout (``raw_text``) for the executor's transcript
@@ -704,7 +876,7 @@ def _precis_tools_used(result: Any) -> bool:
     return calls is not None and calls > 0
 
 
-def _claude_exit(result: Any) -> tuple[int, str | None]:
+def _claude_exit(result: Any, *, fenced: bool = False) -> tuple[int, str | None]:
     """Map a router ``LlmResult`` from the claude tick → ``(exit_code, resume_reason)``.
 
     A breaker / quota-window pause → a resumable ``'paused'`` (retry when the
@@ -724,6 +896,10 @@ def _claude_exit(result: Any) -> tuple[int, str | None]:
     filed work by construction, so treating it as success is never right.
     Resumable (the MCP usually comes back), bounded by the same streak cap, and
     bubbles a real ``child-failed:`` when it doesn't.
+
+    ``fenced`` skips the zero-calls check: a fenced (no-MCP) tick CANNOT call
+    a precis verb by construction — its output is the final text the caller
+    parses — so the check would fail every fenced tick.
     """
     if result.paused and not result.timed_out:
         return 1, "paused"
@@ -737,7 +913,7 @@ def _claude_exit(result: Any) -> tuple[int, str | None]:
     if tr is not None and "budget" in tr:
         return 1, "budget"
     if tr is None or tr == "completed":
-        if not _precis_tools_used(result):
+        if not fenced and not _precis_tools_used(result):
             return 1, "no-precis-tools"
         return 0, None
     return 1, None

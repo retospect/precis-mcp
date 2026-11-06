@@ -1573,6 +1573,14 @@ class LlmRequest:
     #: :func:`route` has no streaming path and ignores it. ``None`` ⇒ no
     #: callback, and :func:`dispatch_async` delegates to sync ``route``.
     on_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+    #: Strict transport pin (td573740): keep only rungs on this transport —
+    #: a ``params.envelope``-declared plan_tick sets
+    #: :data:`Transport.CLAUDE_AGENT` because the named envelope's facets
+    #: (the ``--tools`` allowlist, the write-kind env fence) exist only on
+    #: that wire. Strict like :attr:`placement`: an emptied nonempty chain
+    #: is an error result, never a silent fall-through to an unboxed rung.
+    #: ``None`` ⇒ no filter (the open default).
+    require_transport: Transport | None = None
 
     def __post_init__(self) -> None:
         if self.task_kind is not None and not isinstance(self.task_kind, str):
@@ -4127,6 +4135,35 @@ def _route_inner(req: LlmRequest) -> LlmResult:
             routed=_placement_of(ladder[0]),
         )
     ladder = _placed_ladder
+    # Fenced transport pin (td573740): a params.envelope-declared tick
+    # must run under claude_agent — the named envelope's facets exist only
+    # on that wire, so failing over to another transport would run it
+    # unboxed. Strict, same stance as placement above: an emptied nonempty
+    # chain is an error, not a degrade. ``routed_rung`` doesn't exist yet,
+    # so the gate args capture ladder[0] before filtering.
+    if req.require_transport is not None:
+        _fenced_rung = ladder[0] if ladder else None
+        ladder = [r for r in ladder if r.transport is req.require_transport]
+        if _fenced_rung is not None and not ladder:
+            return _gate_result(
+                req,
+                LlmResult(
+                    text="",
+                    cost_usd=None,
+                    turns_used=None,
+                    model=model,
+                    tier=req.tier,
+                    error=(
+                        f"require_transport={req.require_transport} requested "
+                        f"but the {_chain_name} has no "
+                        f"{req.require_transport} rung"
+                    ),
+                    paused=False,
+                ),
+                entered=entered,
+                transport=_fenced_rung.transport,
+                routed=_placement_of(_fenced_rung),
+            )
     # Cloud-throttle: with cloud disabled, prune the chain's
     # cloud rungs → local. A cloud-only tier (FRONTIER) prunes to empty and
     # pauses (skip-not-fail), never silently degrading to a local model. No-op
@@ -4690,6 +4727,12 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
             routed=_placement_of(ladder[0]),
         )
     ladder = _placed_ladder
+    # Fenced-transport parity with sync route() (td573740): filter, and on
+    # an emptied chain delegate — ``route`` owns the refusal shape.
+    if req.require_transport is not None:
+        ladder = [r for r in ladder if r.transport is req.require_transport]
+        if not ladder:
+            return route(req)
     # Cloud-throttle parity with sync route(): prune cloud rungs when disabled.
     # An empty result (a cloud-only tier under throttle) is delegated to the
     # sync route() below, which returns the paused result — so the streaming
@@ -5164,6 +5207,11 @@ def _serialize_request(req: LlmRequest) -> str:
             "temperature": req.temperature,
             "output_format": req.output_format,
             "disallowed_tools": list(req.disallowed_tools),
+            **(
+                {"require_transport": req.require_transport.value}
+                if req.require_transport is not None
+                else {}
+            ),
             **({"features": req.features} if req.features else {}),
         },
         ensure_ascii=False,

@@ -73,6 +73,7 @@ def _run_claude(
     with_workspace: bool = True,
     mcp_config: str | None = "mcp.json",
     params: dict[str, Any] | None = None,
+    apply_n: int = 0,
 ) -> tuple[pt.PlanTickOutcome, dict[str, Any]]:
     """Drive ``plan_tick.run`` on the ANTHROPIC backend with ``route``
     scripted; returns the outcome plus the captured ``LlmRequest``."""
@@ -94,6 +95,20 @@ def _run_claude(
     monkeypatch.setattr(
         planner_prompt, "build_planner_prompts", lambda *a, **k: _FakePrompts()
     )
+    # A fenced tick's prompt is the trusted scout assembly — stub it the
+    # same way (DB-free file); ``build_scout_prompts``'s own reads are
+    # covered in tests/test_scout_tick.py.
+    from precis.workers import scout_tick
+
+    monkeypatch.setattr(
+        scout_tick, "build_scout_prompts", lambda *a, **k: _FakePrompts()
+    )
+    # The post-tick reply writes (apply on a clean parse, reject on a
+    # schema violation) are stubbed likewise — their DB effects are
+    # covered in tests/test_scout_tick.py; here the store is a bare
+    # object() and these tests only inspect the routed LlmRequest.
+    monkeypatch.setattr(scout_tick, "apply_scout_reply", lambda *a, **k: apply_n)
+    monkeypatch.setattr(scout_tick, "reject_scout_reply", lambda *a, **k: None)
     monkeypatch.setattr(
         pt,
         "_load_parent_workspace",
@@ -317,6 +332,364 @@ def test_run_claude_breaker_pause_is_resumable(
     assert outcome.resume_reason == "paused"
 
 
+# ── params.envelope: the fenced tick pins claude_agent or refuses ──────
+#
+# A declared named envelope (td573740) boxes the tick — `--tools`
+# allowlist + the write-kind env fence — facets that exist only on the
+# claude_agent wire. run() therefore pins `require_transport` on the
+# LlmRequest (the router's strict filter) AND refuses up front when the
+# tick's own transport pick isn't claude_agent — routing a fenced tick
+# anywhere else would run it unboxed.
+
+
+def test_run_claude_envelope_pins_require_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``params.envelope='scout'`` → the LlmRequest carries
+    ``require_transport=CLAUDE_AGENT`` — the router-side copy of the same
+    pin, so a mid-resolution chain change can't slide the tick onto an
+    unboxed rung."""
+    _, seen = _run_claude(
+        monkeypatch,
+        result=_clean_result(),
+        params={
+            "model": "opus",
+            "envelope": "scout",
+            "scout": {"folder": 1, "quest": 2},
+        },
+    )
+    assert seen["req"].require_transport is router.Transport.CLAUDE_AGENT
+
+
+def test_run_claude_no_envelope_leaves_require_transport_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, seen = _run_claude(monkeypatch, result=_clean_result())
+    assert seen["req"].require_transport is None
+
+
+def test_run_claude_fenced_tick_passes_no_mcp_and_no_overlay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fenced tick runs with NO MCP server at all: the request carries
+    ``mcp_config=None`` (the envelope pins an inline empty server map
+    downstream, in ``claude_agent._resolve_agent_args``) and
+    ``env_overlay=None`` (no spawned ``precis serve`` exists to read the
+    env back-doors), and the fixed scout persona replaces the planner's."""
+    from precis.workers import scout_tick
+
+    _, seen = _run_claude(
+        monkeypatch,
+        result=_clean_result(),
+        params={
+            "model": "opus",
+            "envelope": "scout",
+            "scout": {"folder": 1, "quest": 2},
+        },
+    )
+    req = seen["req"]
+    assert req.mcp_config is None
+    assert req.env_overlay is None
+    assert req.system_prompt == scout_tick.SCOUT_SYSTEM
+    assert req.tools_needed is True
+
+
+def test_run_claude_unfenced_still_passes_mcp_and_overlay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control: an unfenced tick keeps the MCP config + the env back-doors
+    — the no-MCP/no-overlay shape is the fence, not the transport."""
+    _, seen = _run_claude(monkeypatch, result=_clean_result())
+    req = seen["req"]
+    assert req.mcp_config == str(Path("mcp.json").resolve())
+    assert req.env_overlay["PRECIS_CURRENT_TODO"] == "2"
+
+
+def test_run_claude_envelope_on_oss_transport_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fenced tick whose resolved transport isn't claude_agent fails
+    closed — exit 1 naming the required transport — and never reaches
+    ``route``: an envelope's facets don't exist on the OSS wire, so
+    running there would run the tick unboxed."""
+    import precis.workers.planner_prompt as planner_prompt
+
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", "mcp.json")
+    monkeypatch.setattr(
+        planner_prompt, "build_planner_prompts", lambda *a, **k: _FakePrompts()
+    )
+    from precis.workers import scout_tick
+
+    monkeypatch.setattr(
+        scout_tick, "build_scout_prompts", lambda *a, **k: _FakePrompts()
+    )
+    monkeypatch.setattr(pt, "_load_parent_workspace", lambda *a, **k: _FakeWorkspace())
+    monkeypatch.setattr(agentlog, "open_log", lambda *a, **k: 55)
+    monkeypatch.setattr(agentlog, "finalize_log", lambda *a, **k: None)
+    monkeypatch.setattr(
+        pt, "_tick_transport", lambda *a, **k: router.Transport.OPENAI_TOOLS
+    )
+    calls: list[Any] = []
+    monkeypatch.setattr(router, "route", lambda req: calls.append(req))
+
+    outcome = pt.run(
+        store=object(),
+        job_ref_id=1,
+        parent_ref_id=2,
+        params={
+            "model": "opus",
+            "envelope": "scout",
+            "scout": {"folder": 1, "quest": 2},
+        },
+    )
+    assert outcome.exit_code == 1
+    assert "claude_agent" in outcome.stderr
+    assert calls == []
+
+
+def test_run_oss_transport_without_envelope_still_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control: the refusal is the *fence*, not the OSS transport — an
+    unfenced tick on the same resolved transport dispatches normally."""
+    import precis.workers.planner_prompt as planner_prompt
+
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", "mcp.json")
+    monkeypatch.setattr(
+        planner_prompt, "build_planner_prompts", lambda *a, **k: _FakePrompts()
+    )
+    monkeypatch.setattr(pt, "_load_parent_workspace", lambda *a, **k: _FakeWorkspace())
+    monkeypatch.setattr(agentlog, "open_log", lambda *a, **k: 55)
+    monkeypatch.setattr(agentlog, "finalize_log", lambda *a, **k: None)
+    monkeypatch.setattr(
+        pt, "_tick_transport", lambda *a, **k: router.Transport.OPENAI_TOOLS
+    )
+    monkeypatch.setattr(
+        router,
+        "route",
+        lambda req: LlmResult(
+            text="tick output",
+            cost_usd=None,
+            turns_used=None,
+            model="m",
+            tier=Tier.FRONTIER,
+            stop_reason="stop",
+        ),
+    )
+
+    outcome = pt.run(
+        store=object(),
+        job_ref_id=1,
+        parent_ref_id=2,
+        params={"model": "opus"},
+    )
+    assert outcome.exit_code == 0
+
+
+def test_run_claude_fenced_outcome_stamps_the_worker_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """td573740 round-4: the fenced outcome carries a worker-written
+    fixed-format line the prompt-facing stores use instead of the
+    agent's raw message — ``scout: N leads accepted`` on a clean parse,
+    the fixed rejection line on a schema violation."""
+    from precis.workers import scout_tick
+
+    # Stubbed reply is not scout JSON → the reject path's fixed line.
+    outcome, _ = _run_claude(
+        monkeypatch,
+        result=_clean_result(),
+        params={
+            "model": "opus",
+            "envelope": "scout",
+            "scout": {"folder": 1, "quest": 2},
+        },
+    )
+    assert outcome.worker_summary == "scout pass rejected: not-json"
+
+    monkeypatch.setattr(
+        scout_tick,
+        "parse_scout_reply",
+        lambda *a, **k: ([], "n"),
+    )
+    outcome, _ = _run_claude(
+        monkeypatch,
+        result=_clean_result(),
+        params={
+            "model": "opus",
+            "envelope": "scout",
+            "scout": {"folder": 1, "quest": 2},
+        },
+        apply_n=3,
+    )
+    assert outcome.worker_summary == "scout: 3 leads accepted"
+
+
+def test_run_claude_unfenced_outcome_carries_no_worker_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Contrast pin: the planner path leaves ``worker_summary`` unset —
+    its job_summary still carries the tick's final text."""
+    outcome, _ = _run_claude(monkeypatch, result=_clean_result())
+    assert outcome.worker_summary is None
+
+
+def test_run_claude_fenced_bad_scout_config_refuses_before_spawn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fenced tick whose ``params['scout']`` doesn't parse fails the
+    tick before any spawn — the refusal is worker-side, so ``route``
+    never sees a request and no prompt is ever built."""
+    calls: list[Any] = []
+    monkeypatch.setattr(router, "route", lambda req: calls.append(req))
+
+    outcome = pt.run(
+        store=object(),
+        job_ref_id=1,
+        parent_ref_id=2,
+        params={"model": "opus", "envelope": "scout"},
+    )
+    assert outcome.exit_code == 1
+    assert "scout" in outcome.stderr
+    assert calls == []
+
+
+def test_run_scout_key_without_scout_envelope_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """td573740 round-3 MUST: a ``params['scout']`` block without
+    ``envelope='scout'`` is a dropped or mistyped key — left alone the
+    tick would run the scout procedure on the open planner path (prod
+    MCP + Bash). Refuse closed: no planner prompt built, no request
+    routed."""
+    import precis.workers.planner_prompt as planner_prompt
+
+    calls: list[Any] = []
+    planner_calls: list[Any] = []
+    monkeypatch.setattr(router, "route", lambda req: calls.append(req))
+
+    def _spy_prompts(*a: Any, **k: Any) -> _FakePrompts:
+        planner_calls.append((a, k))
+        return _FakePrompts()
+
+    monkeypatch.setattr(planner_prompt, "build_planner_prompts", _spy_prompts)
+
+    outcome = pt.run(
+        store=object(),
+        job_ref_id=1,
+        parent_ref_id=2,
+        params={"model": "opus", "scout": {"folder": 1, "quest": 2}},
+    )
+    assert outcome.exit_code == 1
+    assert "scout" in outcome.stderr
+    assert calls == []
+    assert planner_calls == []
+
+
+@pytest.mark.parametrize("bad", ["nope", "", 7, {}, [], None])
+def test_validate_submit_rejects_unknown_envelope(bad: Any) -> None:
+    """Declared means required: a present ``params.envelope`` key whose
+    value is empty, non-string, unregistered or ``None`` refuses at
+    submit time (the isinstance check leads so an unhashable value
+    can't TypeError on ``in``)."""
+    err = pt.validate_submit(None, params={"model": "opus", "envelope": bad})
+    assert err is not None
+    assert "envelope" in err
+
+
+@pytest.mark.parametrize(
+    "scout",
+    [
+        None,
+        {"folder": 0, "quest": 1},
+        {"folder": "5", "quest": 1},
+        {"folder": 1.5, "quest": 1},
+        {"folder": True, "quest": 1},
+        {"folder": 1},
+        {"quest": 2},
+        {"folder": 1, "quest": 2, "extra": 3},
+        "folder=1",
+        [1, 2],
+    ],
+)
+def test_validate_submit_rejects_bad_scout_params(scout: Any) -> None:
+    """``envelope='scout'`` without a valid ``params['scout']``
+    ({folder:int>=1, quest:int>=1}, exactly) refuses at submit — the
+    worker-side wiring can't be resolved mid-run."""
+    err = pt.validate_submit(
+        None, params={"model": "opus", "envelope": "scout", "scout": scout}
+    )
+    assert err is not None
+
+
+def test_validate_submit_rejects_scout_without_scout_params() -> None:
+    """A bare ``envelope='scout'`` (no ``params['scout']`` at all)
+    refuses the same way."""
+    err = pt.validate_submit(None, params={"model": "opus", "envelope": "scout"})
+    assert err is not None
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        "missing",  # sentinel: no envelope key at all
+        None,
+        "scout ",  # near-miss string is not the registered name
+    ],
+)
+def test_validate_submit_rejects_scout_params_without_scout_envelope(
+    envelope: Any,
+) -> None:
+    """td573740 round-3 MUST: a ``scout`` key whose ``envelope`` is
+    absent or anything but ``'scout'`` refuses at submit — one dropped
+    key must never re-open the scout procedure onto the planner path."""
+    params: dict[str, Any] = {
+        "model": "opus",
+        "scout": {"folder": 1, "quest": 2},
+    }
+    if envelope != "missing":
+        params["envelope"] = envelope
+    err = pt.validate_submit(None, params=params)
+    assert err is not None
+    if envelope == "missing":
+        # The scout-key refusal names its cause; the other cases are
+        # already refused by the envelope-name check above it.
+        assert "scout" in err
+
+
+def test_validate_submit_rejects_decompose_inside_envelope() -> None:
+    """``params.decompose`` has no meaning inside a named envelope —
+    a fenced tick runs the scout prompt, never the planner's."""
+    err = pt.validate_submit(
+        None,
+        params={
+            "model": "opus",
+            "envelope": "scout",
+            "scout": {"folder": 1, "quest": 2},
+            "decompose": True,
+        },
+    )
+    assert err is not None
+    assert "decompose" in err
+
+
+def test_validate_submit_accepts_absent_and_registered_envelope() -> None:
+    assert pt.validate_submit(None, params={"model": "opus"}) is None
+    assert (
+        pt.validate_submit(
+            None,
+            params={
+                "model": "opus",
+                "envelope": "scout",
+                "scout": {"folder": 1, "quest": 2},
+            },
+        )
+        is None
+    )
+
+
 # ── _claude_exit: the outcome mapping in isolation ─────────────────────
 
 
@@ -443,6 +816,24 @@ def test_claude_exit_all_tool_calls_errored_is_not_success() -> None:
         '"content":"fe_sendauth: no password supplied"}]}}'
     )
     assert pt._claude_exit(_res(terminal_reason="completed", raw_text=all_errored)) == (
+        1,
+        "no-precis-tools",
+    )
+
+
+def test_claude_exit_fenced_clean_without_precis_tools() -> None:
+    """A fenced (no-MCP) tick CANNOT call a precis verb by construction —
+    zero calls is the expected shape (its output is the final text the
+    caller parses), so the zombie-tick check would fail every fenced tick."""
+    assert pt._claude_exit(
+        _res(terminal_reason="completed", raw_text=""), fenced=True
+    ) == (0, None)
+
+
+def test_claude_exit_unfenced_still_fails_without_precis_tools() -> None:
+    """Unfenced unchanged: a clean planner tick that called no precis verb
+    is the MCP-never-registered failure."""
+    assert pt._claude_exit(_res(terminal_reason="completed", raw_text="")) == (
         1,
         "no-precis-tools",
     )

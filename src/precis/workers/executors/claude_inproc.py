@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Mapping
 from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
@@ -458,9 +459,21 @@ def _run_one(ctx: DispatchContext) -> None:
     # writes either" coupling, so it builds and passes its OWN explicit
     # envelope to ``call_claude_agent`` rather than picking up this
     # job-scoped one; see ``fix_gripe._spawn_claude``.)
-    from precis.workers.envelope import envelope_scope, parse_envelope
+    # ``meta.params.envelope`` names a *registered* box (td573740):
+    # declared means required — an unknown/empty name fails the job
+    # closed here rather than dispatching it unboxed.
+    from precis.workers.envelope import (
+        UnknownEnvelopeError,
+        envelope_for_job,
+        envelope_scope,
+    )
 
-    with envelope_scope(parse_envelope(meta)):
+    try:
+        job_envelope = envelope_for_job(meta)
+    except UnknownEnvelopeError as exc:
+        _record_failure(store, ref_id, str(exc), gripe_rollback=None)
+        return
+    with envelope_scope(job_envelope):
         # Plugin job_types declare their own ``dispatch`` callable.
         # Built-ins (fix_gripe, plan_tick) leave ``spec.dispatch`` as
         # ``None`` and fall through to the in-tree switch below.
@@ -700,7 +713,20 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
     # and job_summary continue to see the final text, as before.
     raw_stream = outcome.stdout or ""
     final_text = stream_final_text(raw_stream)
-    conclusion = parse_tick_conclusion(final_text)
+    # A fenced tick's reply is only ever parsed by the scout schema
+    # (``plan_tick.run``) — the runner ignores agent-declared control
+    # tokens in it (td573740 round 3): a ``verdict: halt`` block is
+    # data, not an instruction, and must not tag the parent
+    # halt:agent-declared.
+    conclusion = None if "envelope" in params else parse_tick_conclusion(final_text)
+    # Nor may the raw final message land anywhere a later prompt builds
+    # from (td573740 round 4): ``job_summary`` feeds the parent's
+    # completed-children digest, so a fenced tick stores the
+    # worker-written fixed-format line instead — ``scout: N leads
+    # accepted`` / ``scout pass rejected: <token>``, or the fixed
+    # fallback when the tick never reached the reply step.
+    if "envelope" in params:
+        final_text = outcome.worker_summary or "scout: no reply applied"
     # A tick cut off mid-flight by an *exhaustion* — the --max-turns
     # ceiling or the wall-clock timeout — is *resumable*, not failed: a
     # fresh tick continues with a new budget. Don't bubble it as a hard
@@ -859,6 +885,11 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
             if (
                 resume_reason is not None
                 and resume_reason != "no-precis-tools"
+                # A fenced tick gets no auto-decompose: splitting a scout
+                # pass is worker-side design, not a recovery the boxed
+                # agent can use — a fenced streak past the cap bubbles
+                # as a real failure (td573740).
+                and "envelope" not in params
                 and not _decompose_already_attempted(conn, parent_id)
             ):
                 child_id = _mint_auto_decompose(
@@ -868,6 +899,7 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
                     model=str(params.get("model") or "sonnet"),
                     streak=streak,
                     cap=cap,
+                    job_params=params,
                 )
                 _append_chunk(
                     store,
@@ -1387,10 +1419,17 @@ def _mint_auto_decompose(
     model: str,
     streak: int,
     cap: int,
+    job_params: Mapping[str, Any] | None = None,
 ) -> int:
     """Mint one narrowly-scoped ``plan_tick`` follow-up tick under
     ``parent_ref_id`` with ``params.decompose=True``, instead of bubbling a
     streak-exhaustion failure (gripe 168886 tier 2).
+
+    Refuses outright on a fenced tick (``'envelope' in job_params`` —
+    td573740): the minted child would carry ``params.decompose`` without
+    the scout box, and a fenced pass has no business recovering through
+    an unboxed tick. The caller's condition skips first, so reaching
+    this raise means a new call site forgot the guard.
 
     Reuses the ``plan_tick`` job_type as-is — no new registry entry, no
     executor wiring — the decompose tick is just a normal plan_tick job the
@@ -1409,6 +1448,9 @@ def _mint_auto_decompose(
     status flip.
     """
     from precis.workers._mint import mint_background_job
+
+    if job_params is not None and "envelope" in job_params:
+        raise ValueError("auto-decompose refused: fenced tick")
 
     # Propagate the parent's prio onto the minted job, same as the normal
     # dispatch.py mint path (``_claim_and_dispatch``) — otherwise an urgent

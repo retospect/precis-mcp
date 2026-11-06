@@ -32,7 +32,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -89,6 +89,13 @@ _DEFAULT_MAX_USD = 2.00
 # with deeper analysis can bump this per call.
 _DEFAULT_TIMEOUT_S = 600
 
+# The inline MCP config a ``builtin_tools`` envelope launches with (td573740):
+# an empty server map, so ambient user-scope MCP servers on the worker host
+# never load. ``_resolve_agent_args`` writes it into the argv and the
+# exec-boundary check ``_assert_fenced_argv`` re-verifies it — anything else
+# in that slot means something re-opened the box.
+_NO_MCP_CONFIG_JSON = '{"mcpServers":{}}'
+
 
 class ClaudeAgentError(ClaudeProcessError):
     """Raised when ``claude -p`` fails (exit code, timeout, binary missing).
@@ -120,6 +127,16 @@ class InertDenyListError(RuntimeError):
     durable fix (verb-level deny in ``runtime/dispatch.py``, which both
     profiles funnel through) is tracked in that doc, not implemented here.
     """
+
+
+class EnvelopeMcpError(ValueError):
+    """Raised by :func:`_resolve_agent_args` when a caller passes
+    ``mcp_config`` for a run boxed in a named envelope whose
+    ``builtin_tools`` allowlist means *no MCP server at all* (td573740 —
+    the ``scout`` envelope runs ``claude -p`` with an inline empty server
+    map ``--mcp-config {"mcpServers":{}} --strict-mcp-config``). Refusing
+    fails the job (``_run_plan_tick`` fails on an exception), never
+    silently runs the agent with a server the envelope forbids."""
 
 
 class ContainerRequiredError(RuntimeError):
@@ -333,6 +350,21 @@ def call_claude_agent(
     )
     cwd_str = str(cwd) if cwd is not None else None
 
+    # A ``builtin_tools`` envelope is an in-process-only box (td573740
+    # round 3): the container seam would rebase the empty inline
+    # ``--mcp-config`` onto the baked precis MCP
+    # (``agent_container._rebase_mcp_config``) and inject a DSN,
+    # silently re-opening it. A caller that requires the container
+    # can't be satisfied — refuse closed, never fall back to an
+    # unboxed host run.
+    no_mcp_box = active_env is not None and active_env.builtin_tools is not None
+    if no_mcp_box and require_container:
+        raise EnvelopeMcpError(
+            "call_claude_agent: require_container=True with a builtin_tools "
+            "envelope — a fenced run is in-process only (containerizing "
+            "would re-add the precis MCP and a DSN), refusing closed."
+        )
+
     started = time.monotonic()
     # ``stdin_devnull``: Claude Code reads stdin in non-interactive ``-p``
     # mode and waits up to 3s for data before proceeding; a CLI-spawned
@@ -359,7 +391,14 @@ def call_claude_agent(
     # caller that can't tolerate running unsandboxed.
     containerized = False
     container_enabled = _container.container_agent_enabled()
-    container_ok = container_enabled and _container.container_capability_ok()
+    # Fenced runs never take the container path — skip the capability
+    # probe entirely so no ``_rebase_mcp_config``/DSN-injection branch
+    # can run for them.
+    container_ok = (
+        False
+        if no_mcp_box
+        else (container_enabled and _container.container_capability_ok())
+    )
     if container_ok:
         import uuid as _uuid
 
@@ -414,7 +453,7 @@ def call_claude_agent(
         run_binary = run_argv[0]
         containerized = True
     else:
-        if container_enabled:
+        if container_enabled and not no_mcp_box:
             # Opted in but this host can't be *verified* to run the container
             # (no runtime / image / token, or the health latch is tripped
             # after a recent infra failure).
@@ -428,6 +467,13 @@ def call_claude_agent(
                 "in-process fallback rather than running unsandboxed."
             )
         # Run in-process rather than failing every pass.
+
+    # Exec-boundary check (td573740 round 3): however the final argv was
+    # assembled, a fenced run's ``--mcp-config`` may only carry the inline
+    # empty server map — a rewrite that re-added a server raises rather
+    # than exec-ing an unboxed agent.
+    if no_mcp_box:
+        _assert_fenced_argv(run_argv)
 
     # ``bootstrap_oauth=(env_base is None)``: an isolated-env caller built
     # its own auth already — re-injecting the worker's real OAuth token
@@ -596,6 +642,11 @@ async def call_claude_agent_async(
     )
     cwd_str = str(cwd) if cwd is not None else None
 
+    # This twin is in-process only, but check the boundary anyway: a
+    # fenced run's argv must carry the empty inline server map.
+    if active_env is not None and active_env.builtin_tools is not None:
+        _assert_fenced_argv(args)
+
     started = time.monotonic()
     res: Any
     try:
@@ -744,12 +795,27 @@ def _resolve_agent_args(
         # and forces ANTHROPIC_API_KEY. Used in containers where
         # OAuth isn't reachable. Same flag as workers/job_types/fix_gripe.
         args.append("--bare")
+    # A named envelope's ``builtin_tools`` allowlist means NO MCP server at
+    # all (td573740): passing a config refuses closed, and an absent one is
+    # still not enough — ambient user-scope MCP servers on the worker host
+    # would load, so the run carries an inline empty server map.
+    no_mcp = active_env is not None and active_env.builtin_tools is not None
     if mcp_config is not None:
+        if active_env is not None and active_env.builtin_tools is not None:
+            raise EnvelopeMcpError(
+                "call_claude_agent: the active envelope declares builtin_tools "
+                f"{active_env.builtin_tools} — a no-MCP box — but mcp_config="
+                f"{mcp_config!r} was passed; refusing rather than running a "
+                "fenced agent with a server the envelope forbids."
+            )
         args.extend(["--mcp-config", str(mcp_config)])
         # ``--strict-mcp-config`` rejects unknown MCP options at
         # parse time — same pattern as scripts/exercise-mcp/run.sh.
         # Without it a typo in mcp.json fails silently and the
         # agent runs without the tools it was supposed to have.
+        args.append("--strict-mcp-config")
+    elif no_mcp:
+        args.extend(["--mcp-config", _NO_MCP_CONFIG_JSON])
         args.append("--strict-mcp-config")
     if system_prompt_text:
         args.extend(["--append-system-prompt", system_prompt_text])
@@ -779,6 +845,12 @@ def _resolve_agent_args(
             settings_payload["permissions"] = {"deny": effective_deny}
         args.extend(["--settings", _json.dumps(settings_payload)])
     args.extend(extra_args)
+    if active_env is not None and active_env.builtin_tools:
+        # Named-envelope built-in allowlist (td573740): ``--tools`` takes
+        # one comma-joined value (variadic-safe after extra_args — the
+        # ``--`` sentinel below still guards the prompt). MCP tools are
+        # unaffected by it; the write boundary stays the deny/env path.
+        args.extend(["--tools", ",".join(active_env.builtin_tools)])
     if not gated:
         # ``--`` end-of-options sentinel, then the prompt as the sole trailing
         # positional. The prompt is UNTRUSTED (e.g. raw Discord messages), and
@@ -1226,6 +1298,49 @@ def _container_infra_failure(exc: ClaudeAgentError) -> bool:
         (getattr(exc, "stderr", "") or "") + "\n" + (getattr(exc, "stdout", "") or "")
     ).lower()
     return any(m in blob for m in _CONTAINER_INFRA_MARKERS)
+
+
+def _assert_fenced_argv(argv: Sequence[str]) -> None:
+    """Verify a fenced (``builtin_tools``) run's final argv before exec.
+
+    Whatever path assembled ``run_argv`` — the in-process args or any
+    future rewrite — a fenced run's MCP wiring is exactly one shape:
+    ``--mcp-config {_NO_MCP_CONFIG_JSON} --strict-mcp-config``.
+    Anything else raises ``EnvelopeMcpError`` rather than exec an agent
+    that quietly gained an MCP server the envelope forbids (td573740
+    round 4 — the check must not depend on today's callers assembling
+    the flag well):
+
+    * the joined form ``--mcp-config=<anything>``;
+    * a missing, bare-without-value, or repeated ``--mcp-config``;
+    * a value that isn't the inline empty server map (the CLI's flag is
+      variadic, so the NEXT token must also be ``--strict-mcp-config``
+      or a second value could ride the first);
+    * ``--strict-mcp-config`` missing, or present but not guarding the
+      flag.
+    """
+    for token in argv:
+        if token.startswith("--mcp-config") and token != "--mcp-config":
+            raise EnvelopeMcpError(
+                "call_claude_agent: fenced run's argv carries the joined "
+                f"form {token!r} — a fenced run spells the flag bare with "
+                f"the inline empty server map {_NO_MCP_CONFIG_JSON}; "
+                "refusing to exec."
+            )
+    idx = [i for i, token in enumerate(argv) if token == "--mcp-config"]
+    if (
+        len(idx) != 1
+        or idx[0] + 2 >= len(argv)
+        or argv[idx[0] + 1] != _NO_MCP_CONFIG_JSON
+        or argv[idx[0] + 2] != "--strict-mcp-config"
+    ):
+        raise EnvelopeMcpError(
+            "call_claude_agent: fenced run's argv must carry exactly "
+            f"--mcp-config {_NO_MCP_CONFIG_JSON} --strict-mcp-config — "
+            "refusing to exec; anything else would run the agent with an "
+            "MCP server the envelope forbids (or a flag that doesn't "
+            "guard the empty map)."
+        )
 
 
 #: Warn only once per process when opted-in-but-incapable (avoid per-pass spam).

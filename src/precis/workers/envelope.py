@@ -39,6 +39,13 @@ Rollout is **dark**: an absent or unparseable ``meta.envelope`` yields
 :data:`DEFAULT` (``open``/``full``/``full``) — byte-identical to today's
 behavior — so the substrate ships without changing any job until one opts in
 by declaring an envelope.
+
+**Named envelopes** (td573740): a job may instead declare
+``meta.params.envelope = '<name>'``, a key of :data:`ENVELOPES` — a
+registered box carrying the extra facets the axis grammar can't express:
+``builtin_tools`` (a ``--tools`` allowlist for ``claude -p``). Declared
+means *required*: an unknown/empty name fails the job closed
+(:class:`UnknownEnvelopeError`), never silently loosens.
 """
 
 from __future__ import annotations
@@ -82,6 +89,9 @@ class Envelope:
     egress: str = "open"
     write: str = "full"
     return_: str = "full"
+    #: ``claude -p`` ``--tools`` allowlist (built-in tools only — the precis
+    #: MCP verbs are unaffected by it). ``None`` ⇒ no flag (every built-in).
+    builtin_tools: tuple[str, ...] | None = None
 
 
 #: The dark default — everything permissive, identical to pre-slice-8.
@@ -108,6 +118,21 @@ DENY_VERBS_ENV = "PRECIS_MCP_DENY_VERBS"
 _FS_WRITE_TOOLS: tuple[str, ...] = ("Write", "Edit", "NotebookEdit")
 #: Built-in tools that reach the network — denied for a ``egress:none`` box.
 _FETCH_TOOLS: tuple[str, ...] = ("WebFetch", "WebSearch")
+#: Every ``claude -p`` built-in tool name — the complement pool a
+#: ``builtin_tools`` allowlist denies from (belt: the box holds even where
+#: ``--tools`` is ignored or the allowlist is stripped).
+_BUILTIN_TOOLS: tuple[str, ...] = (
+    "Bash",
+    "Write",
+    "Edit",
+    "NotebookEdit",
+    "Read",
+    "Glob",
+    "Grep",
+    "Agent",
+    "WebFetch",
+    "WebSearch",
+)
 
 
 def parse_envelope(meta: dict[str, Any] | None) -> Envelope:
@@ -179,6 +204,10 @@ def disallowed_tools(env: Envelope) -> tuple[str, ...]:
         deny.append("mcp__precis__delete")
     if env.egress == "none":
         deny.extend(_FETCH_TOOLS)
+    if env.builtin_tools is not None:
+        # ``--tools`` is the primary allowlist; denying every other built-in
+        # here keeps the box closed even if the flag is dropped or ignored.
+        deny.extend(t for t in _BUILTIN_TOOLS if t not in env.builtin_tools)
     return tuple(deny)
 
 
@@ -236,6 +265,56 @@ def drops_side_effects(env: Envelope) -> bool:
     return env.return_ == "output-only"
 
 
+# ── Named envelopes (params.envelope) ─────────────────────────────
+
+
+class UnknownEnvelopeError(ValueError):
+    """``params.envelope`` named a box that isn't registered — fail closed."""
+
+
+#: The registered boxes a ``meta.params.envelope`` name may resolve.
+#: ``'scout'`` — a reconnaissance tick: WebSearch as the whole built-in
+#: allowlist, and no MCP server at all. The write axis stays at the
+#: default because it is moot with no MCP — ``scoped`` would only add a
+#: dead ``mcp__precis__delete`` deny that trips the command-profile
+#: deny-list safety check. WebFetch is out on purpose: it would fetch
+#: from the worker host with no SSRF guard; reading a provider page in
+#: full is a later slice where trusted worker code fetches agent-named
+#: URLs through ``safe_get``.
+ENVELOPES: dict[str, Envelope] = {
+    "scout": Envelope(builtin_tools=("WebSearch",)),
+}
+
+
+def named_envelope(name: Any) -> Envelope:
+    """Resolve a registered envelope by name — raises, never defaults.
+
+    A ``params.envelope`` value must be a string key of :data:`ENVELOPES`;
+    ``None``, empty, a typo or a non-string raises
+    :class:`UnknownEnvelopeError` — a mis-declared box must fail the job
+    closed rather than silently run unboxed.
+    """
+    if isinstance(name, str) and name in ENVELOPES:
+        return ENVELOPES[name]
+    raise UnknownEnvelopeError(
+        f"unknown envelope {name!r}; registered: {sorted(ENVELOPES)}"
+    )
+
+
+def envelope_for_job(meta: dict[str, Any] | None) -> Envelope:
+    """The :class:`Envelope` a claimed job runs under.
+
+    A ``meta.params.envelope`` key — any value — resolves through
+    :func:`named_envelope` (declared ⇒ required ⇒ raise on unknown). No
+    key falls through to the legacy ``meta.envelope`` dict path
+    (:func:`parse_envelope` — dark default, byte-identical).
+    """
+    params = (meta or {}).get("params")
+    if isinstance(params, dict) and "envelope" in params:
+        return named_envelope(params["envelope"])
+    return parse_envelope(meta)
+
+
 # ── Executor-scoped active envelope ───────────────────────────────
 #
 # The executor claims a job, reads its ``meta.envelope``, and wraps the run
@@ -271,16 +350,20 @@ __all__ = [
     "DEFAULT",
     "DENY_VERBS_ENV",
     "EGRESS_VALUES",
+    "ENVELOPES",
     "PRECIS_WRITE_VERB_NAMES",
     "RETURN_VALUES",
     "WRITE_VALUES",
     "Envelope",
+    "UnknownEnvelopeError",
     "active_envelope",
     "db_role",
     "denied_verbs",
     "disallowed_tools",
     "drops_side_effects",
+    "envelope_for_job",
     "envelope_scope",
+    "named_envelope",
     "network_mode",
     "parse_envelope",
 ]

@@ -9,14 +9,20 @@ behavior; the wiring into ``call_claude_agent`` lives in
 
 from __future__ import annotations
 
+import pytest
+
 from precis.workers.envelope import (
     DEFAULT,
+    ENVELOPES,
     Envelope,
+    UnknownEnvelopeError,
     active_envelope,
     db_role,
     disallowed_tools,
     drops_side_effects,
+    envelope_for_job,
     envelope_scope,
+    named_envelope,
     network_mode,
     parse_envelope,
 )
@@ -153,3 +159,73 @@ def test_nested_scopes_restore_outer() -> None:
             assert active_envelope() is inner
         assert active_envelope() is outer
     assert active_envelope() is None
+
+
+# ── named envelopes (params.envelope, td573740) ───────────────────
+
+
+def test_named_envelope_scout_shape() -> None:
+    env = named_envelope("scout")
+    assert env is ENVELOPES["scout"]
+    # WebSearch alone — WebFetch is deliberately out (it would fetch from
+    # the worker host with no SSRF guard); the write axis stays at the
+    # default because with no MCP server at all it is moot.
+    assert env.builtin_tools == ("WebSearch",)
+
+
+@pytest.mark.parametrize("bad", ["bogus", "", None, 42, ["scout"], {"x": 1}])
+def test_named_envelope_fails_closed(bad: object) -> None:
+    """An unknown/empty/non-string name raises — never defaults open."""
+    with pytest.raises(UnknownEnvelopeError):
+        named_envelope(bad)
+
+
+def test_scout_disallowed_tools_cover_the_unlisted_builtins() -> None:
+    """``builtin_tools`` allowlists via ``--tools``; the deny list closes
+    the same gap belt-and-suspenders (an ignored flag must not open the
+    box) — every built-in not in the allowlist."""
+    deny = disallowed_tools(ENVELOPES["scout"])
+    assert set(deny) == {
+        "Bash",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+        "Read",
+        "Glob",
+        "Grep",
+        "Agent",
+        "WebFetch",
+    }
+
+
+def test_default_envelope_carries_no_named_facets() -> None:
+    """The open default must stay byte-identical: no allowlist, no fence."""
+    assert DEFAULT.builtin_tools is None
+    assert disallowed_tools(DEFAULT) == ()
+
+
+def test_envelope_for_job_dark_paths() -> None:
+    """No ``params.envelope`` key → the legacy meta.envelope resolver."""
+    assert envelope_for_job(None) is DEFAULT
+    assert envelope_for_job({}) is DEFAULT
+    assert envelope_for_job({"params": {}}) is DEFAULT
+    assert envelope_for_job({"params": "not-a-dict"}) is DEFAULT
+    # The meta.envelope dict path is untouched by a params dict without
+    # an 'envelope' key.
+    env = envelope_for_job(
+        {"params": {"model": "haiku"}, "envelope": {"write": "none"}}
+    )
+    assert env == Envelope(write="none")
+
+
+def test_envelope_for_job_named_wins() -> None:
+    env = envelope_for_job({"params": {"envelope": "scout"}})
+    assert env is ENVELOPES["scout"]
+
+
+@pytest.mark.parametrize("bad", ["bogus", "", None, 7])
+def test_envelope_for_job_declared_but_bad_raises(bad: object) -> None:
+    """A present ``params.envelope`` key is a *declaration* — a bad value
+    fails the job closed rather than falling back to the dark path."""
+    with pytest.raises(UnknownEnvelopeError):
+        envelope_for_job({"params": {"envelope": bad}})

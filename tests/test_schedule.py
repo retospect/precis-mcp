@@ -533,6 +533,38 @@ def test_schedule_pass_failed_previous_tick_does_not_wedge(
     assert n == 1, "a fresh tick should have been minted"
 
 
+def test_schedule_pass_copies_params_verbatim_onto_child(
+    handler: TodoHandler, store: Store
+) -> None:
+    """``meta.params`` rides verbatim onto every spawned tick child —
+    the seam a fenced tick's ``params.envelope`` (td573740) relies on:
+    a scout recurring declares its box once on the root and every tick
+    it mints carries the pin."""
+    params = {
+        "model": "haiku",
+        "envelope": "scout",
+        "scout": {"folder": 1, "quest": 2},
+    }
+    resp = handler.put(
+        text="Scout watch",
+        meta={"schedule": {"cron": "0 * * * *"}, "params": params},
+    )
+    rid = _id_of(resp.body)
+    _set_last_tick(store, rid, datetime.now(UTC) - timedelta(hours=1, minutes=5))
+
+    result = run_schedule_pass(store, limit=50)
+    assert result.ok == 1
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->'params' FROM refs "
+            "WHERE parent_id = %s AND retired_at IS NULL",
+            (rid,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == params
+
+
 def _spawn_open_child(
     store: Store, rid: int, *, status: str, created_at: datetime
 ) -> int:

@@ -332,14 +332,19 @@ def test_mcp_config_adds_flag_and_strict(stub_bin: Path, tmp_path: Path) -> None
     assert "--strict-mcp-config" in res.final_text
 
 
-def _argv_for(output_format: str, extra_args: tuple[str, ...] = ()) -> list[str]:
+def _argv_for(
+    output_format: str,
+    extra_args: tuple[str, ...] = (),
+    envelope: Any | None = None,
+    mcp_config: Any = None,
+) -> list[str]:
     from precis.utils.claude_agent import _resolve_agent_args
 
     _, args, *_ = _resolve_agent_args(
         prompt="hi",
         model="claude-opus-4-8",
         system_prompt=None,
-        mcp_config=None,
+        mcp_config=mcp_config,
         max_turns=5,
         timeout_s=10.0,
         max_usd=1.0,
@@ -347,7 +352,7 @@ def _argv_for(output_format: str, extra_args: tuple[str, ...] = ()) -> list[str]
         output_format=output_format,
         bare=False,
         disallowed_tools=(),
-        envelope=None,
+        envelope=envelope,
         extra_args=extra_args,
     )
     return args
@@ -370,6 +375,216 @@ def test_stream_json_verbose_not_duplicated() -> None:
 def test_text_output_omits_verbose() -> None:
     """The default ``text`` output format needs no ``--verbose``."""
     assert _argv_for("text").count("--verbose") == 0
+
+
+def test_scout_envelope_argv_carries_tools_allowlist() -> None:
+    """td573740: a named envelope's ``builtin_tools`` lands as one
+    comma-joined ``--tools`` value, placed before the ``--`` sentinel."""
+    from precis.workers.envelope import ENVELOPES
+
+    argv = _argv_for("text", envelope=ENVELOPES["scout"])
+    assert argv[argv.index("--tools") + 1] == "WebSearch"
+    assert argv.index("--tools") < argv.index("--")
+
+
+def test_scout_envelope_argv_names_no_tool_but_websearch() -> None:
+    """td573740 (COORDINATOR ruling): the scout allowlist is WebSearch
+    ALONE — WebFetch stays out because it fetches from the worker host
+    with no SSRF guard. Pin that no other tool name reaches the argv."""
+    from precis.workers.envelope import ENVELOPES
+
+    argv = _argv_for("text", envelope=ENVELOPES["scout"])
+    tools = argv[argv.index("--tools") + 1].split(",")
+    assert tools == ["WebSearch"]
+    assert "WebFetch" not in argv
+
+
+def test_scout_envelope_argv_pins_empty_mcp_config() -> None:
+    """td573740: a ``builtin_tools`` envelope runs with NO MCP server —
+    an inline empty server map under ``--strict-mcp-config``, so ambient
+    user-scope MCP servers on the worker host can't load either."""
+    import json
+
+    from precis.workers.envelope import ENVELOPES
+
+    argv = _argv_for("text", envelope=ENVELOPES["scout"])
+    assert json.loads(argv[argv.index("--mcp-config") + 1]) == {"mcpServers": {}}
+    assert "--strict-mcp-config" in argv
+    # ``--`` stays last: the prompt is still the sole trailing positional.
+    assert argv.index("--mcp-config") < argv.index("--")
+
+
+def test_scout_envelope_rejects_an_mcp_config() -> None:
+    """A ``builtin_tools`` envelope takes no MCP config — passing one
+    refuses closed rather than boxing the agent with a server the
+    envelope forbids."""
+    from precis.utils.claude_agent import EnvelopeMcpError
+    from precis.workers.envelope import ENVELOPES
+
+    with pytest.raises(EnvelopeMcpError):
+        _argv_for("text", envelope=ENVELOPES["scout"], mcp_config="x.json")
+
+
+def test_fenced_envelope_never_takes_the_container_path(
+    stub_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td573740 round-3 MUST: a ``builtin_tools`` envelope runs
+    in-process even with the container probe green — the container seam
+    would rebase the empty inline ``--mcp-config`` onto the baked
+    precis MCP and inject a DSN, silently re-opening the box."""
+    import precis.utils.claude_agent as ca
+    from precis.workers.envelope import ENVELOPES
+    from precis.workers.executors import agent_container
+
+    monkeypatch.setattr(agent_container, "container_agent_enabled", lambda: True)
+    monkeypatch.setattr(
+        agent_container, "container_capability_ok", lambda *a, **k: True
+    )
+    rebase_calls: list[list[str]] = []
+
+    def _spy_rebase(args: list[str]) -> list[str]:
+        rebase_calls.append(args)
+        return args
+
+    monkeypatch.setattr(agent_container, "_rebase_mcp_config", _spy_rebase)
+    monkeypatch.setattr(
+        agent_container,
+        "containerize_claude_argv",
+        lambda *a, **k: pytest.fail("container argv built for a fenced run"),
+    )
+    # No DSN in the ambient env; if the container branch ran anyway it
+    # would pull the adopted DSN and inject it — spy on that pull.
+    monkeypatch.delenv("PRECIS_DATABASE_URL", raising=False)
+    from precis import secrets as _secrets
+
+    monkeypatch.setattr(_secrets, "get_adopted_dsn", lambda: "postgresql://x@h/db")
+    _write_stub(stub_bin, stdout="done")
+    seen: dict[str, Any] = {}
+    real_run_claude = ca.run_claude
+
+    def _spy(argv: list[str], **kw: Any) -> Any:
+        seen["argv"] = argv
+        seen["env"] = kw.get("env")
+        return real_run_claude(argv, **kw)
+
+    monkeypatch.setattr(ca, "run_claude", _spy)
+    res = ca.call_claude_agent("do", envelope=ENVELOPES["scout"])
+    assert "done" in res.final_text
+    assert rebase_calls == []
+    # In-process argv: the stub binary, not a docker/podman wrapper.
+    assert seen["argv"][0] == str(stub_bin)
+    assert "PRECIS_DATABASE_URL" not in (seen["env"] or {})
+
+
+def test_fenced_envelope_with_require_container_fails_closed(
+    stub_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``builtin_tools`` run is in-process only — a caller that needs
+    the container can't be satisfied and the job refuses closed with a
+    fixed error, never falling back to an unboxed host run."""
+    import precis.utils.claude_agent as ca
+    from precis.utils.claude_agent import EnvelopeMcpError
+    from precis.workers.envelope import ENVELOPES
+    from precis.workers.executors import agent_container
+
+    monkeypatch.setattr(agent_container, "container_agent_enabled", lambda: True)
+    monkeypatch.setattr(
+        agent_container, "container_capability_ok", lambda *a, **k: True
+    )
+    _write_stub(stub_bin, stdout="done")
+    with pytest.raises(EnvelopeMcpError):
+        ca.call_claude_agent("do", envelope=ENVELOPES["scout"], require_container=True)
+
+
+def test_fenced_argv_check_rejects_a_rewritten_mcp_config() -> None:
+    """Exec-boundary check (td573740 round-3): whatever path assembled
+    the final argv, a fenced run's ``--mcp-config`` may only carry the
+    inline empty server map — a rewrite re-adding a server raises
+    ``EnvelopeMcpError`` instead of exec-ing."""
+    import precis.utils.claude_agent as ca
+    from precis.utils.claude_agent import EnvelopeMcpError
+
+    good = [
+        "claude",
+        "--mcp-config",
+        '{"mcpServers":{}}',
+        "--strict-mcp-config",
+        "--",
+        "p",
+    ]
+    ca._assert_fenced_argv(good)
+    for bad_argv in (
+        ["claude", "--mcp-config", "/etc/precis/agent-mcp.json", "--", "p"],
+        ["claude", "--mcp-config", "x.json", "--", "p"],
+        ["claude", "--strict-mcp-config", "--", "p"],  # flag missing
+        ["claude", "--mcp-config"],  # bare, no value
+        [
+            "claude",
+            "--mcp-config",
+            '{"mcpServers":{}}',
+            "--mcp-config",
+            "x.json",
+            "--",
+            "p",
+        ],
+        # td573740 round 4: the boundary check must not depend on
+        # today's callers assembling the flag well.
+        [  # joined form smuggled in after the empty config
+            "claude",
+            "--mcp-config",
+            '{"mcpServers":{}}',
+            "--strict-mcp-config",
+            "--mcp-config=/etc/precis/agent-mcp.json",
+            "--",
+            "p",
+        ],
+        [  # joined form as the only flag
+            "claude",
+            "--mcp-config=x.json",
+            "--strict-mcp-config",
+            "--",
+            "p",
+        ],
+        [  # the flag is variadic — a second value rides it
+            "claude",
+            "--mcp-config",
+            '{"mcpServers":{}}',
+            "extra.json",
+            "--strict-mcp-config",
+            "--",
+            "p",
+        ],
+        [  # missing --strict-mcp-config
+            "claude",
+            "--mcp-config",
+            '{"mcpServers":{}}',
+            "--",
+            "p",
+        ],
+        [  # strict present but not guarding the flag
+            "claude",
+            "--strict-mcp-config",
+            "--mcp-config",
+            '{"mcpServers":{}}',
+            "--",
+            "p",
+        ],
+    ):
+        with pytest.raises(EnvelopeMcpError):
+            ca._assert_fenced_argv(bad_argv)
+
+
+def test_no_envelope_no_mcp_config_leaves_argv_clean() -> None:
+    """Dark path: no envelope and no ``mcp_config`` → no MCP flag at all —
+    byte-identical to before the envelope machinery existed."""
+    argv = _argv_for("text")
+    assert "--mcp-config" not in argv
+    assert "--strict-mcp-config" not in argv
+
+
+def test_no_envelope_no_tools_flag() -> None:
+    """Open default stays byte-identical: no envelope → no ``--tools``."""
+    assert "--tools" not in _argv_for("text")
 
 
 def test_prompt_is_last_positional_after_sentinel() -> None:
