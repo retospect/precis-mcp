@@ -33,7 +33,7 @@ from typing import Any
 
 import psycopg
 
-from precis.identity import make_pdf_sha256, normalize_doi
+from precis.identity import is_placeholder_title, make_pdf_sha256, normalize_doi
 from precis.ingest.article_spread import mark_article_start
 from precis.ingest.claim import Claim
 from precis.ingest.db_writer import (
@@ -59,7 +59,7 @@ from precis.store import Store
 from precis.store._links_ops import _carry_notes_to_survivor
 from precis.store.revision_context import trust_door
 from precis.store.types import Tag
-from precis.utils.title_merge import _first_family
+from precis.utils.title_merge import first_author_agreement
 
 log = logging.getLogger(__name__)
 
@@ -1300,23 +1300,36 @@ def _warn_skipped_cite_key_match(conn: Any, *, stem: str, exclude_ref_id: int) -
 #: Leading body chunks of the survivor searched for the stub's title tokens.
 _FOLD_EVIDENCE_CHUNKS = 5
 
+#: Distinctive-token overlap a *title-less* stub's stored ``meta.abstract``
+#: needs against the survivor's title/leading body to corroborate —
+#: gr574291's "abstract or title similarity" fallback. An identical
+#: abstract shares dozens of tokens; a same-field neighbour a handful.
+_STUB_ABSTRACT_MIN_OVERLAP = 4
+
 
 def _stub_title_corroborated(conn: Any, stub_id: int, survivor_ref_id: int) -> bool:
     """True when the stub's title overlaps the survivor's title/leading body.
 
     Needs ``min(2, len(stub tokens))`` shared distinctive tokens
-    (:func:`~precis.ingest.verify_metadata.title_overlap`); a stub with no
-    usable title tokens cannot be corroborated and is not folded.
+    (:func:`~precis.ingest.verify_metadata.title_overlap`). A stub with no
+    usable title — blank or the ``(no title)`` sentinel — falls back to
+    its stored ``meta.abstract`` (gr574291): a title-less stub whose
+    registry abstract shares enough distinctive tokens with the
+    survivor's leading body still corroborates.
     """
     from precis.ingest.verify_metadata import content_tokens, title_overlap
 
     srow = conn.execute(
-        "SELECT title FROM refs WHERE ref_id = %s", (stub_id,)
+        "SELECT title, coalesce(meta->>'abstract', '') FROM refs WHERE ref_id = %s",
+        (stub_id,),
     ).fetchone()
     stub_title = (srow[0] if srow else None) or ""
-    need = min(2, len(content_tokens(stub_title)))
-    if need == 0:
-        return False
+    stub_abstract = (srow[1] if srow else None) or ""
+    need = (
+        0
+        if is_placeholder_title(stub_title)
+        else min(2, len(content_tokens(stub_title)))
+    )
     vrow = conn.execute(
         "SELECT title FROM refs WHERE ref_id = %s", (survivor_ref_id,)
     ).fetchone()
@@ -1329,7 +1342,13 @@ def _stub_title_corroborated(conn: Any, stub_id: int, survivor_ref_id: int) -> b
             (survivor_ref_id, _FOLD_EVIDENCE_CHUNKS),
         ).fetchall()
     ]
-    return title_overlap(stub_title, "\n".join(parts)) >= need
+    evidence = "\n".join(parts)
+    if need:
+        return title_overlap(stub_title, evidence) >= need
+    return (
+        len(content_tokens(stub_abstract) & content_tokens(evidence))
+        >= _STUB_ABSTRACT_MIN_OVERLAP
+    )
 
 
 #: Series-part markers recognised in a title (gr512169): ``…: I.``,
@@ -1400,18 +1419,21 @@ def _stub_identity_refusal(
     the token-overlap corroboration could not tell them apart. On top of
     that gate require (a) series-part markers to agree exactly — the part
     number is the reliable tell between siblings, and a marker on only
-    one side cannot be corroborated — and (b) first-author family names
-    to match whenever both sides carry one. Missing *author* evidence is
-    not a refusal: extraction gaps would strand legitimate stubs in the
-    re-fetch loop the reconcile exists to stop.
+    one side cannot be corroborated — and (b) first-author names to read
+    as the same person whenever both sides carry a usable one
+    (:func:`~precis.utils.title_merge.first_author_agreement`).
+
+    No usable *author* evidence is not a refusal — gr574291 flooded the
+    review queue when a stub's absent or unnormalised byline
+    (``chenyu zhang`` vs ``Chen-Yu Zhang``) read as ``author-mismatch``
+    rather than *no evidence*: names are now compared casefolded,
+    accent/hyphen-folded, order-insensitive and initial-tolerant, and an
+    empty/placeholder/collective first slot is "unknown" — the call then
+    stands on the title/abstract corroboration the callers already ran.
     """
     if _series_markers(stub_title) != _series_markers(held_title):
         return "series-marker-mismatch"
-    stub_first, held_first = (
-        _first_family(stub_authors),
-        _first_family(held_authors),
-    )
-    if stub_first and held_first and stub_first != held_first:
+    if first_author_agreement(stub_authors, held_authors) is False:
         return "author-mismatch"
     return None
 
@@ -1903,7 +1925,9 @@ def _fold_into_named_stub(
         return matched_ref_id
     # Identity (gr512169): a series sibling passes both the rendered-text
     # and token gates — it shares the stub's tokens. Require part markers
-    # + first author to agree before the twin's body lands on the stub.
+    # + first author to agree before the twin's body lands on the stub —
+    # with an absent/placeholder stub byline read as *no evidence*, never
+    # a mismatch (gr574291).
     stub_title, stub_authors = _ref_identity(conn, stub_id)
     twin_title, twin_authors = _ref_identity(conn, matched_ref_id)
     refusal = _stub_identity_refusal(stub_title, stub_authors, twin_title, twin_authors)
@@ -2057,8 +2081,10 @@ def _reconcile_orphan_stub(
     # siblings apart — Part II shares Part I's distinctive tokens — so a
     # sibling's PDF minted under the stub's cite_key name would take the
     # stub's DOI. Require part markers + first author to agree before
-    # the stub's identifiers move; on a mismatch quarantine the fetched
-    # ref for review instead of corrupting the stub's identity.
+    # the stub's identifiers move — an absent/placeholder stub byline is
+    # *no evidence*, never a mismatch (gr574291) — and on a mismatch
+    # quarantine the fetched ref for review instead of corrupting the
+    # stub's identity.
     stub_title, stub_authors = _ref_identity(conn, stub_id)
     surv_title, surv_authors = _ref_identity(conn, survivor_ref_id)
     refusal = _stub_identity_refusal(stub_title, stub_authors, surv_title, surv_authors)

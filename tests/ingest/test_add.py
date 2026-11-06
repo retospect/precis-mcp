@@ -25,6 +25,7 @@ from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
+from psycopg.types.json import Jsonb
 
 from precis.ingest.add import (
     ArxivInput,
@@ -1000,6 +1001,251 @@ class TestStubIdentityGate:
             ).fetchone()
         assert stub_row is not None and stub_row[0] is None
         assert event is not None and event[0] == "author-mismatch"
+
+    def test_stub_without_authors_reconciles(self, store):
+        """gr574291: a stub carrying no byline is *unknown* author
+        evidence, not a mismatch — the title corroboration decides."""
+        stub = self._doi_stub(
+            store,
+            "noauth26",
+            "Zebra finch neuroplasticity in changing climates",
+            doi="10.1234/noauth26",
+        )
+        survivor = store.insert_ref(
+            kind="paper",
+            slug="noauthhld",
+            title="Zebra finch neuroplasticity in changing climates",
+            authors=[{"name": "Alvarez, Maria"}],
+        )
+        with store.pool.connection() as conn:
+            merged = _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=survivor.id,
+                file_stem="noauth26",
+                conn=conn,
+            )
+            conn.commit()
+        assert merged == stub.id
+
+    def test_placeholder_author_reconciles(self, store):
+        """gr574291: an ``Anonymous`` byline slot is no person evidence —
+        it must not read as a different first author."""
+        stub = self._doi_stub(
+            store,
+            "anony26",
+            "Zebra finch neuroplasticity in changing climates",
+            authors=[{"name": "Anonymous"}],
+            doi="10.1234/anony26",
+        )
+        survivor = store.insert_ref(
+            kind="paper",
+            slug="anonyhld",
+            title="Zebra finch neuroplasticity in changing climates",
+            authors=[{"name": "Alvarez, Maria"}],
+        )
+        with store.pool.connection() as conn:
+            merged = _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=survivor.id,
+                file_stem="anony26",
+                conn=conn,
+            )
+            conn.commit()
+        assert merged == stub.id
+
+    def test_author_name_format_variants_reconcile(self, store):
+        """gr574291's pa487111/pa573636 shape: the same five authors in a
+        different string format (``chenyu zhang`` vs ``Chen-Yu Zhang``)
+        are the same people — not an author-mismatch."""
+        stub = self._doi_stub(
+            store,
+            "zhang26",
+            "Zebra finch neuroplasticity in changing climates",
+            authors=[
+                {"name": "chenyu zhang"},
+                {"name": "Zhifeng Liu"},
+            ],
+            doi="10.1234/zhang26",
+        )
+        survivor = store.insert_ref(
+            kind="paper",
+            slug="zhanghld",
+            title="Zebra finch neuroplasticity in changing climates",
+            authors=[
+                {"family": "Zhang", "given": "Chen-Yu"},
+                {"family": "Liu", "given": "Zhi-Feng"},
+            ],
+        )
+        with store.pool.connection() as conn:
+            merged = _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=survivor.id,
+                file_stem="zhang26",
+                conn=conn,
+            )
+            conn.commit()
+        assert merged == stub.id
+
+    def test_family_first_name_order_reconciles(self, store):
+        """A registry's ``Zhang Chenyu`` (family-first, no comma) is the
+        same person as ``{"family": "Zhang", "given": "Chen-Yu"}``."""
+        stub = self._doi_stub(
+            store,
+            "order26",
+            "Zebra finch neuroplasticity in changing climates",
+            authors=[{"name": "Zhang Chenyu"}],
+            doi="10.1234/order26",
+        )
+        survivor = store.insert_ref(
+            kind="paper",
+            slug="orderhld",
+            title="Zebra finch neuroplasticity in changing climates",
+            authors=[{"family": "Zhang", "given": "Chen-Yu"}],
+        )
+        with store.pool.connection() as conn:
+            merged = _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=survivor.id,
+                file_stem="order26",
+                conn=conn,
+            )
+            conn.commit()
+        assert merged == stub.id
+
+    def test_collective_led_byline_reconciles(self, store):
+        """A consortium heading the stub's byline is no person evidence —
+        the first *person* author decides."""
+        stub = self._doi_stub(
+            store,
+            "consort26",
+            "Zebra finch neuroplasticity in changing climates",
+            authors=[
+                {"name": "The Zebra Finch Consortium"},
+                {"name": "Alvarez, Maria"},
+            ],
+            doi="10.1234/consort26",
+        )
+        survivor = store.insert_ref(
+            kind="paper",
+            slug="consorthld",
+            title="Zebra finch neuroplasticity in changing climates",
+            authors=[{"family": "Alvarez", "given": "Maria"}],
+        )
+        with store.pool.connection() as conn:
+            merged = _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=survivor.id,
+                file_stem="consort26",
+                conn=conn,
+            )
+            conn.commit()
+        assert merged == stub.id
+
+    def test_titleless_stub_corroborated_by_abstract(self, store):
+        """gr574291's pa485604 shape: a ``(no title)`` stub corroborates
+        on its stored registry abstract against the survivor's body."""
+        stub = self._doi_stub(
+            store,
+            "titleless26",
+            "(no title)",
+            doi="10.1234/titleless26",
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+                (
+                    Jsonb(
+                        {
+                            "abstract": (
+                                "Semiconductor quantum dots have emerged "
+                                "as a premier solid-state platform for "
+                                "photonic quantum technologies."
+                            )
+                        }
+                    ),
+                    stub.id,
+                ),
+            )
+            conn.commit()
+        survivor = store.insert_ref(
+            kind="paper",
+            slug="titlelesshld",
+            title="Colloidal quantum dot photonics revisited",
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', %s)",
+                (
+                    survivor.id,
+                    "Semiconductor quantum dots (QDs) have emerged as a "
+                    "premier solid-state platform for photonic quantum "
+                    "technologies.",
+                ),
+            )
+            merged = _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=survivor.id,
+                file_stem="titleless26",
+                conn=conn,
+            )
+            conn.commit()
+        assert merged == stub.id
+
+    def test_titleless_stub_unrelated_abstract_not_reconciled(self, store):
+        """A title-less stub whose abstract shares nothing with the
+        survivor's body is still refused at the corroboration gate."""
+        stub = self._doi_stub(
+            store,
+            "titleless27",
+            "(no title)",
+            doi="10.1234/titleless27",
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+                (
+                    Jsonb(
+                        {
+                            "abstract": (
+                                "Enteric methane mitigation in grazing "
+                                "ruminants remains unresolved."
+                            )
+                        }
+                    ),
+                    stub.id,
+                ),
+            )
+            conn.commit()
+        survivor = store.insert_ref(
+            kind="paper",
+            slug="titlelesshld2",
+            title="Colloidal quantum dot photonics revisited",
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', %s)",
+                (
+                    survivor.id,
+                    "Semiconductor quantum dots (QDs) have emerged as a "
+                    "premier solid-state platform for photonic quantum "
+                    "technologies.",
+                ),
+            )
+            merged = _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=survivor.id,
+                file_stem="titleless27",
+                conn=conn,
+            )
+            conn.commit()
+        assert merged is None
+        with store.pool.connection() as conn:
+            retired = conn.execute(
+                "SELECT retired_at FROM refs WHERE ref_id = %s", (stub.id,)
+            ).fetchone()
+        assert retired is not None and retired[0] is None
 
     def test_minor_title_variant_still_reconciles(self, store):
         """The same paper, extracted with a case/punctuation-variant

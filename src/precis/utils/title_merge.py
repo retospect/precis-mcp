@@ -12,6 +12,7 @@ import re
 import unicodedata
 from typing import Any
 
+from precis.identity import _entry_is_collective, _entry_name_text, _entry_surname
 from precis.utils.title_views import title_plain
 
 # Common English stopwords — excluded from word-overlap scoring so it
@@ -132,6 +133,122 @@ def _first_family(authors: Any) -> str:
     fam = "".join(ch for ch in fam if not unicodedata.combining(ch)).lower()
     toks = re.sub(r"[^a-z0-9\s]", " ", fam).split()
     return toks[-1] if toks else ""
+
+
+#: "Names" that carry no person identity — a placeholder byline slot
+#: (``Anonymous``, ``et al``, ``unknown``) is *no evidence*, not a person
+#: the identity gate may mismatch on (gr574291: such rows refused
+#: same-paper stub reconciles as ``author-mismatch``).
+_NONAME_TOKENS = frozenset(
+    {
+        "anonymous",
+        "anon",
+        "unknown",
+        "various",
+        "et",
+        "al",
+        "author",
+        "authors",
+        "contributor",
+        "contributors",
+        "none",
+        "null",
+    }
+)
+
+#: A trailing ``et al`` / ``and others`` on a display name — dropped
+#: before tokenising so ``"Zhang et al"`` compares as ``Zhang``.
+_ET_AL_TAIL_RE = re.compile(r"\s+(?:et\s+al|and\s+others)\.?\s*$", re.IGNORECASE)
+
+
+def _name_tokens(name: str) -> frozenset[str]:
+    """Word tokens of one person's name, folded for comparison.
+
+    NFKD-folded and lowercased; hyphens and apostrophes fold *away* so
+    ``Chen-Yu`` → ``chenyu`` — the two sides' bylines come from different
+    tiers and differ on exactly that axis (gr574291: ``chenyu zhang``
+    vs ``Chen-Yu Zhang`` read as a mismatch).
+    """
+    name = unicodedata.normalize("NFKD", name)
+    name = "".join(ch for ch in name if not unicodedata.combining(ch)).lower()
+    name = re.sub(r"[-'’]", "", name)
+    return frozenset(re.findall(r"[a-z0-9]+", name))
+
+
+def _entry_label(entry: Any) -> str:
+    """First-author-comparable display text for one byline entry.
+
+    Whatever name fields the entry carries joined (``given`` +
+    ``family``, or a bare ``name``); a semicolon-packed byline is cut to
+    its first segment and a trailing ``et al`` dropped — some registries
+    deliver both shapes and the *first* name is the one compared.
+    """
+    text = _entry_name_text(entry).split(";", 1)[0].strip()
+    return _ET_AL_TAIL_RE.sub("", text)
+
+
+def _first_person(authors: Any) -> tuple[str, str]:
+    """``(label, surname)`` of the byline's first *person* author.
+
+    Entries carrying no person identity are skipped — empty slots,
+    placeholders (``Anonymous``/``et al`` — see :data:`_NONAME_TOKENS`),
+    collectives/orgs (:func:`precis.identity._entry_is_collective`) — so
+    a consortium-led or placeholder byline is *no evidence*, never a
+    name to mismatch on (gr574291). ``("", "")`` when none exists.
+    """
+    for entry in _author_list(authors):
+        label = _entry_label(entry)
+        if not label:
+            continue
+        if _name_tokens(label) <= _NONAME_TOKENS:
+            continue
+        if _entry_is_collective(entry):
+            continue
+        return label, _entry_surname(entry)
+    return "", ""
+
+
+def _name_tokens_agree(a: frozenset[str], b: frozenset[str]) -> bool:
+    """Token sets equal up to initials: one side's leftover tokens are all
+    single characters heading leftover tokens on the other side — so
+    ``Z. Chenyu`` ~ ``Chenyu Zhang`` (the family-initial case a plain
+    surname compare can't see) and ``M. Alvarez`` ~ ``Maria Alvarez``."""
+
+    def _covered(short: frozenset[str], long: frozenset[str]) -> bool:
+        return all(len(t) == 1 and any(o.startswith(t) for o in long) for t in short)
+
+    extra_a, extra_b = a - b, b - a
+    return _covered(extra_a, extra_b) or _covered(extra_b, extra_a)
+
+
+def first_author_agreement(stub_authors: Any, held_authors: Any) -> bool | None:
+    """Whether the two bylines' first person authors are the same person.
+
+    ``None`` when either side carries no usable first-author name —
+    absent, placeholder or collective bylines are *no evidence*, never a
+    mismatch (gr574291). Otherwise compares names as people, not strings:
+
+    - surnames agree under :func:`precis.identity._entry_surname`
+      (particles, trailing initials, honorifics all folded), or
+    - the whole name's normalised token set agrees — casefolded,
+      accent/hyphen-folded and order-insensitive, so ``"Zhang Chenyu"``
+      ~ ``"Chen-Yu Zhang"`` ~ ``"Zhang, Chen-Yu"`` — with single-char
+      leftovers read as initials (``C. Zhang`` ~ ``Chenyu Zhang``), or
+    - one side's entire evidence is a bare surname token
+      (``{"family": "Zhang"}``) contained in the other's name.
+    """
+    a_label, a_fam = _first_person(stub_authors)
+    b_label, b_fam = _first_person(held_authors)
+    a_toks, b_toks = _name_tokens(a_label), _name_tokens(b_label)
+    if not a_toks or not b_toks:
+        return None
+    if a_fam and a_fam == b_fam:
+        return True
+    if a_toks == b_toks or _name_tokens_agree(a_toks, b_toks):
+        return True
+    return (a_toks == {a_fam} and a_fam in b_toks) or (
+        b_toks == {b_fam} and b_fam in a_toks
+    )
 
 
 #: Minimum CONTENT-token count (:func:`content_tokens` — stopwords and

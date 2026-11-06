@@ -547,3 +547,34 @@ def test_first_family_normalisation() -> None:
         [{"name": "Hans Muller"}]
     )
     assert _first_family([{"name": "Smith, J."}]) == "smith"
+
+
+def test_first_author_agreement() -> None:
+    """gr574291: name *format* differences are not author-mismatches, and
+    absent/placeholder bylines are *no evidence* (``None``), never a
+    refusal."""
+    from precis.utils.title_merge import first_author_agreement as agree
+
+    # Same person, different string shapes.
+    assert agree([{"name": "chenyu zhang"}], [{"family": "Zhang", "given": "Chen-Yu"}])
+    assert agree([{"name": "Zhang Chenyu"}], [{"family": "Zhang"}])  # family-first
+    assert agree([{"name": "Zhang, Chen-Yu"}], [{"name": "Chenyu Zhang"}])
+    assert agree([{"name": "ZHANG Chen-Yu"}], [{"name": "Chenyu Zhang"}])
+    assert agree([{"name": "C. Zhang"}], [{"name": "Chenyu Zhang"}])
+    assert agree([{"name": "Z. Chenyu"}], [{"name": "Chenyu Zhang"}])
+    assert agree(["Zhang, Chenyu"], [{"name": "Zhang et al"}])
+    # Absent / placeholder / collective evidence → unknown, not a verdict.
+    assert agree(None, [{"family": "Zhang"}]) is None
+    assert agree([], [{"family": "Zhang"}]) is None
+    assert agree([{"name": "Anonymous"}], [{"family": "Zhang"}]) is None
+    assert agree([{"name": "et al"}], [{"family": "Zhang"}]) is None
+    assert agree([{"name": "The QD Consortium"}], [{"family": "Zhang"}]) is None
+    # A consortium heading the byline: the first *person* decides.
+    assert agree(
+        [{"name": "The QD Consortium"}, {"name": "Chenyu Zhang"}],
+        [{"family": "Zhang"}],
+    )
+    # Confidently different people still refuse.
+    assert agree([{"name": "Alvarez, Maria"}], [{"name": "Becker, Tom"}]) is False
+    assert agree([{"name": "Zhang Chenyu"}], [{"name": "Li Zhang"}]) is False
+    assert agree([{"family": "Müller"}], [{"name": "Anna Schmidt"}]) is False
