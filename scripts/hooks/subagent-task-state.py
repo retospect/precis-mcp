@@ -316,11 +316,15 @@ def _repo_probe(path: Path) -> tuple[Path, Path] | None:
 
 
 def _tree_lock_pid(git_dir: Path, path: Path) -> int | None:
-    """The pid <path>'s `git worktree lock` reason names — how the harness
-    records which session owns an agent child tree ("claude agent <id> (pid
-    <N>)"). Same `pid <N>` parse as scripts/inflight's session_field. A
-    locked-but-removed tree keeps its list entry until `worktree remove`/
-    `prune`, so this still answers for a gone path."""
+    """The pid <path>'s `git worktree lock` reason names — but ONLY for the
+    harness's agent-tree lock shape ("claude agent <id> (pid <N>)"), which
+    is how it records which session spawned an isolated agent child: that
+    pid is the task session's, so it may scope markers. A plain ``pid
+    <N>`` session lock names whatever session last held the tree — a
+    handed-off builder tree keeps the coordinator's — and must never
+    scope a marker here (gr573220). A locked-but-removed tree keeps its
+    list entry until `worktree remove`/`prune`, so this still answers
+    for a gone path."""
     blocks = _worktree_blocks(git_dir)
     if blocks is None:
         return None
@@ -330,6 +334,8 @@ def _tree_lock_pid(git_dir: Path, path: Path) -> int | None:
             continue
         for ln in lines[1:]:
             if ln.startswith("locked"):
+                if _LOCK_AGENT.search(ln) is None:
+                    return None
                 m = _LOCK_PID.search(ln)
                 return int(m.group(1)) if m else None
         return None
@@ -337,9 +343,11 @@ def _tree_lock_pid(git_dir: Path, path: Path) -> int | None:
 
 
 def _matches(marker: dict, real: str, lock_pid: int | None) -> bool:
-    """The asked-about tree only: the marker's own worktree, or a tree the
-    task's session holds (a worktree-isolated agent child is locked with the
-    parent session's pid — gr513174 cause 1 was ignoring this scope)."""
+    """The asked-about tree only: the marker's own worktree, or a harness
+    agent tree locked for that task's session pid (a worktree-isolated
+    agent child is locked "claude agent <id> (pid <parent-pid>)" —
+    gr513174 cause 1 was ignoring this scope; gr573220 was taking it for
+    every `pid <N>` lock)."""
     if os.path.realpath(marker["cwd"]) == real:
         return True
     pid = marker["pid"]

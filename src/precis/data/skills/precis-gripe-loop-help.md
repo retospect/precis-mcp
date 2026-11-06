@@ -158,15 +158,19 @@ When the builder session starts, record who and where on both refs:
 
 ```python
 tag(kind="todo", id=T, add=["claimed-by:fleet-draft-reads"])   # CAS lease, 4 h
-put(kind="todo", id=T, text="lane: devin:devin-draft-reads@<host>, tree draft-reads")
+put(kind="todo", id=T, text="lane: devin:devin-draft-reads@<host>, tree draft-reads, model swe-2")
 tag(kind="gripe", id=514335, add=["claimed-by:fleet-draft-reads"])  # → STATUS:fixing
 put(kind="gripe", id=514335, text="in progress draft-reads — covers all asks; work item td<T>")
 ```
 
 The `lane:` comment is one line — `<vendor>:<window>@<host>, tree
-<tree>` — so the fleet row `vendor:host:project:tree` resolves from its
-prefix. The claim is a lease, not a mark: `expires_at` is stamped 4 h
-out and re-claiming refreshes it (`guards.CLAIM_TTL_HOURS`,
+<tree>[, model <id>]` — so the fleet row `vendor:host:project:tree`
+resolves from its prefix. A devin launch prints the line verbatim,
+including the `, model <id>` tail when a model was set
+(`--devin-model`, else `--model`/`FLEET_MODEL`); event-watch reads the
+recorded id to keep its quota reflex off non-SWE models (td573330).
+The claim is a lease, not a mark: `expires_at` is stamped 4 h out and
+re-claiming refreshes it (`guards.CLAIM_TTL_HOURS`,
 `guards.stamp_claim_lease`) — re-issue the same tag at each coordinator
 poll while the build runs. A live lease held by someone else refuses
 the claim and names the holder. Keep the gripe's lease alive too:

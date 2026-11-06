@@ -1565,6 +1565,116 @@ def test_take_agent_refuses_a_live_subagent_task(
         _git(primary, "worktree", "unlock", str(agent))
 
 
+def test_check_plain_pid_lock_never_scopes_a_marker(
+    guard_repo: dict[str, Path], alive_pid: int
+) -> None:
+    """gr573220: a marker whose pid happens to equal the pid in a tree's
+    plain ``pid <N>`` session lock is NOT that tree's task — a builder
+    tree handed to the coordinator keeps exactly such a lock (naming the
+    coordinator's session pid), which would otherwise match every marker
+    the coordinator session writes and freeze the tree on any live
+    subagent. Only the harness agent lock ("claude agent <id> (pid N)")
+    may scope by pid."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    _git(primary, "worktree", "lock", str(b), "--reason", f"pid {alive_pid}")
+    _write_marker(
+        primary,
+        {
+            "agent_id": "task-elsewhere",
+            "cwd": str(primary.resolve()),
+            "pid": alive_pid,
+            "started_at": _utc_now_z(),
+        },
+    )
+    try:
+        # The marker is live and scopes to ITS tree (primary)…
+        assert _check_task(primary, primary) == (0, "task-elsewhere")
+        # …never to the plain-pid-locked B — check and inflight agree.
+        assert _check_task(primary, b) == (1, "")
+        row = _bucket_for(
+            _run([str(primary / "scripts" / "inflight"), "--json"], primary).stdout,
+            b,
+        )
+        assert row["session"] == f"live#{alive_pid}", row
+    finally:
+        _git(primary, "worktree", "unlock", str(b))
+
+
+def test_check_marker_in_tree_survives_an_unrelated_pid_lock(
+    guard_repo: dict[str, Path], alive_pid: int
+) -> None:
+    """The cwd clause is untouched: a marker whose cwd IS the locked tree
+    still marks it live, whatever ``pid <N>`` the lock reason carries."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    _git(primary, "worktree", "lock", str(b), "--reason", f"pid {alive_pid}")
+    _write_marker(
+        primary,
+        {
+            "agent_id": "task-in-b",
+            "cwd": str(b.resolve()),
+            "pid": os.getpid(),
+            "started_at": _utc_now_z(),
+        },
+    )
+    try:
+        assert _check_task(primary, b) == (0, "task-in-b")
+        row = _bucket_for(
+            _run([str(primary / "scripts" / "inflight"), "--json"], primary).stdout,
+            b,
+        )
+        assert row["session"] == "live-task#task-in-b", row
+    finally:
+        _git(primary, "worktree", "unlock", str(b))
+
+
+def test_check_agent_lock_pid_scopes_the_isolated_child(
+    guard_repo: dict[str, Path], alive_pid: int
+) -> None:
+    """The lock-pid clause's only legitimate user: a worktree-isolated
+    agent child locked ``claude agent <id> (pid <N>)`` — the harness
+    records the PARENT session's pid there, and that session's markers
+    (cwd: the parent tree) still scope to the agent's tree."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    agent = primary / ".claude" / "worktrees" / "agent-a1b2c3"
+    _git(
+        primary,
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "worktree-agent-a1b2c3",
+        str(agent),
+        "main",
+    )
+    _git(
+        primary,
+        "worktree",
+        "lock",
+        str(agent),
+        "--reason",
+        f"claude agent a1b2c3 (pid {alive_pid})",
+    )
+    _write_marker(
+        primary,
+        {
+            "agent_id": "task-isolated",
+            "cwd": str(primary.resolve()),
+            "pid": alive_pid,
+            "started_at": _utc_now_z(),
+        },
+    )
+    try:
+        assert _check_task(primary, agent) == (0, "task-isolated")
+        assert _check_task(primary, b) == (1, "")
+        row = _bucket_for(
+            _run([str(primary / "scripts" / "inflight"), "--json"], primary).stdout,
+            agent,
+        )
+        assert row["session"] == "live-task#task-isolated", row
+    finally:
+        _git(primary, "worktree", "unlock", str(agent))
+
+
 def test_untracked_agent_tree_needs_judgment(
     guard_repo: dict[str, Path],
 ) -> None:

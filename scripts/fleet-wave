@@ -8,7 +8,7 @@ The thread-session fleet (one window per roadmap thread) is
 ``scripts/fleet``; this is the per-wave kit beside it. Runbook: the
 ``gripe-fleet`` skill (.claude/skills/gripe-fleet/SKILL.md).
 
-    fleet-wave launch NAME --brief FILE [--tier R|W] [--devin]
+    fleet-wave launch NAME --brief FILE [--tier R|W] [--devin [--devin-model ID]]
     fleet-wave launch NAME --batch SLUG [--tier R|W] [--devin|--codex]
                                         brief = the batch dossier rendered from
                                         the gripes (precis gripe-fix brief); the
@@ -444,6 +444,28 @@ def _active_subagent_task(tree: Path) -> str:
     if proc.returncode == 0:
         return proc.stdout.strip() or "unknown"
     return "" if proc.returncode == 1 else "state-check-unavailable"
+
+
+def _ship_lock_pid(tree: Path) -> int | None:
+    """The pid of a live scripts/ship running inside <tree>, or None.
+
+    The per-worktree ship lock (scripts/lib/ship-lock.sh) sits at
+    ``<git rev-parse --absolute-git-dir>/precis-ship-worktree.lock.d`` and
+    its holder file is ``<cwd> pid=<N> host=<H>``. A missing lock dir, an
+    unparseable holder, or a dead pid is no guard."""
+    gitdir = git("rev-parse", "--absolute-git-dir", cwd=tree).strip()
+    if not gitdir:
+        return None
+    try:
+        text = (
+            Path(gitdir) / "precis-ship-worktree.lock.d" / "holder"
+        ).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = re.search(r"pid=(\d+)", text)
+    if m is None or not _pid_alive(int(m.group(1))):
+        return None
+    return int(m.group(1))
 
 
 def cmd_approve(f: Fleet, a: argparse.Namespace) -> int:
@@ -1146,6 +1168,17 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
     if a.devin and a.codex:
         print("fleet-wave: --devin and --codex are exclusive", file=sys.stderr)
         return 2
+    if a.devin_model:
+        if not a.devin:
+            print("fleet-wave: --devin-model needs --devin", file=sys.stderr)
+            return 2
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", a.devin_model):
+            print(
+                f"fleet-wave: bad --devin-model {a.devin_model!r} "
+                "(ids look like gemini-3-8-flash-high or swe-2-high)",
+                file=sys.stderr,
+            )
+            return 2
     vendor = "devin" if a.devin else "codex" if a.codex else "claude"
     win = f"{vendor}-{name}"
     if win in f.windows():
@@ -1226,12 +1259,37 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
         # Fleet waves always get a tmux window; devin-tree defaults to
         # running in the calling terminal.
         argv += ["--tmux"] + ([f.session] if f.session else [])
-        if f.model_set:
-            argv += ["--model", f.model_set]
+        # --devin-model wins over --model/FLEET_MODEL; the id is recorded
+        # at $FLEET_STATE/<win>.model so the watchers know what the pane
+        # runs (event-watch's quota reflex stays off non-SWE ids).
+        model_id = a.devin_model or f.model_set
+        if model_id:
+            argv += ["--model", model_id]
+        if model_id and not model_id.startswith("swe-"):
+            # swe-* is unmetered; every other id bills per token.
+            print(
+                f"warning: devin model {model_id} is billed per token "
+                "(SWE models are free)"
+            )
         if a.dry_run:
             print(" ".join(argv))
             return 0
         rc = subprocess.run(argv, check=False).returncode
+        if rc == 0:
+            model_file = f.state / f"{win}.model"
+            if model_id:
+                model_file.write_text(model_id + "\n", encoding="utf-8")
+            else:
+                model_file.unlink(missing_ok=True)
+            host = socket.gethostname().split(".")[0]
+            print(
+                f"launched {win} (model {model_id or 'default'}, "
+                f"tier {tier}, prompt {prompt_file})"
+            )
+            print(
+                f"lane: {vendor}:{win}@{host}, tree {name}, "
+                f"model {model_id or 'default'}"
+            )
         if rc == 0 and a.batch:
             _assign_batch(a.batch, win=win, name=name, vendor=vendor)
         return rc
@@ -2098,6 +2156,15 @@ def _ew_send(f: Fleet, win: str, text: str, a: argparse.Namespace) -> tuple[int,
     return _send_text(f, win, text, wait=a.wait, poll=a.poll, retries=2, pause=a.pause)
 
 
+def _model_record(f: Fleet, win: str) -> str:
+    """The model id launch recorded at ``$FLEET_STATE/<win>.model`` for a
+    devin window (``--devin-model``, or --model/FLEET_MODEL), else ""."""
+    try:
+        return (f.state / f"{win}.model").read_text(encoding="utf-8").split()[0]
+    except (OSError, IndexError):
+        return ""
+
+
 def _ew_error(
     f: Fleet,
     a: argparse.Namespace,
@@ -2128,48 +2195,56 @@ def _ew_error(
         if fresh:
             stage = marker.read_text(encoding="utf-8").split()[0]
         on_high = devin_model(plain) == "swe-2-high"
-        if not on_high:
-            if fresh and stage == "model":
-                owed = [a.resume]  # /model landed; the resume is still owed
-            elif fresh:
-                owed = []  # episode complete; only the cap is in force
-            else:
-                owed = ["/model swe-2-high", a.resume]
-            for text in owed:
-                rc, note = _ew_send(f, win, text, a)
-                if rc not in (0, 4):
-                    _ew_log(f, said, name, "quota", f"send refused ({note})")
-                    _ew_emit(
+        recorded = _model_record(f, win)
+        if recorded and not recorded.startswith("swe-"):
+            # A non-SWE Devin has no /model fallback — sending /model
+            # swe-2-high would silently switch it to SWE-2 (td573330).
+            # The .model file is launch's record of the pane's real
+            # model; trust it over the footer.
+            detail = f"quota exhausted (model {recorded}; no reflex)"
+        else:
+            if not on_high:
+                if fresh and stage == "model":
+                    owed = [a.resume]  # /model landed; the resume is still owed
+                elif fresh:
+                    owed = []  # episode complete; only the cap is in force
+                else:
+                    owed = ["/model swe-2-high", a.resume]
+                for text in owed:
+                    rc, note = _ew_send(f, win, text, a)
+                    if rc not in (0, 4):
+                        _ew_log(f, said, name, "quota", f"send refused ({note})")
+                        _ew_emit(
+                            name,
+                            win,
+                            st_dir,
+                            digest,
+                            f"reflex-fail:quota:{note}",
+                            f"reflex failed: quota send refused ({note})",
+                            urgent=True,
+                        )
+                        return
+                    stage = "model" if text.startswith("/") else "done"
+                    _ew_mark_write(marker, stage)
+                    _ew_log(
+                        f,
+                        said,
                         name,
-                        win,
-                        st_dir,
-                        digest,
-                        f"reflex-fail:quota:{note}",
-                        f"reflex failed: quota send refused ({note})",
-                        urgent=True,
+                        "quota",
+                        f"sent {text if text.startswith('/') else 'resume'}",
                     )
+                    time.sleep(a.pause)
+                if owed:
+                    # The send poll does not count — "uncleared within
+                    # --settle polls" means --settle polls after the send.
                     return
-                stage = "model" if text.startswith("/") else "done"
-                _ew_mark_write(marker, stage)
-                _ew_log(
-                    f,
-                    said,
-                    name,
-                    "quota",
-                    f"sent {text if text.startswith('/') else 'resume'}",
-                )
-                time.sleep(a.pause)
-            if owed:
-                # The send poll does not count — "uncleared within
-                # --settle polls" means --settle polls after the send.
-                return
-        detail = (
-            "quota exhausted (already swe-2-high)"
-            if on_high
-            else "quota exhausted (model switch sent)"
-            if fresh
-            else "quota exhausted"
-        )
+            detail = (
+                "quota exhausted (already swe-2-high)"
+                if on_high
+                else "quota exhausted (model switch sent)"
+                if fresh
+                else "quota exhausted"
+            )
     else:
         detail = (rep.last or "error").strip()
     err_n[name] = err_n.get(name, 0) + 1
@@ -2452,6 +2527,10 @@ def cmd_close(f: Fleet, a: argparse.Namespace) -> int:
             print(f"REFUSED {name}: active subagent task {task_id}; tree kept")
             rc = 1
             continue
+        if ship_pid := _ship_lock_pid(tree):
+            print(f"REFUSED {name}: ship running (pid {ship_pid}); tree kept")
+            rc = 1
+            continue
         for p in PREFIXES:
             if p + name in wins:
                 f.tmux("kill-window", "-t", f.target(p + name), check=False)
@@ -2635,6 +2714,12 @@ def parser() -> argparse.ArgumentParser:
     )
     s.add_argument("--tier", choices=("R", "W", *TIER_ALIASES), default="R")
     s.add_argument("--devin", action="store_true")
+    s.add_argument(
+        "--devin-model",
+        default="",
+        help="devin model id (`devin models`; wins over --model/FLEET_MODEL, "
+        "recorded at $FLEET_STATE/devin-NAME.model)",
+    )
     s.add_argument("--codex", action="store_true", help="a Codex builder (locked tree)")
     s.add_argument("--settle", type=float, default=3.0, help=argparse.SUPPRESS)
     s.add_argument("--coordinator", default="")

@@ -785,17 +785,44 @@ def test_launch_fills_footer_and_runs_claude_by_argv(
     assert "codex flags for tier W: --sandbox workspace-write" in proc.stdout
 
 
-def _devin_dry_run(env: dict[str, str], tmp_path: Path, *global_args: str) -> list[str]:
+def _devin_dry_run(
+    env: dict[str, str],
+    tmp_path: Path,
+    *global_args: str,
+    launch_args: tuple[str, ...] = (),
+) -> list[str]:
     _windows(env, {})
     brief = tmp_path / "brief.txt"
     brief.write_text("Task: x.\n", encoding="utf-8")
     env = {**env, "FLEET_COORDINATOR": "c", "FLEET_RELEASE_OWNER": "r",
            "FLEET_APPROVAL": "approved"}  # fmt: skip
     proc = _run(env, *global_args, "launch", "d-x", "--brief", str(brief),
-                "--tier", "qland", "--devin", "--dry-run")  # fmt: skip
+                "--tier", "qland", "--devin", *launch_args, "--dry-run")  # fmt: skip
     assert proc.returncode == 0, proc.stderr
     line = next(ln for ln in proc.stdout.splitlines() if "devin-tree" in ln)
     return line.split()
+
+
+def _fake_devin_tree(env: dict[str, str], tmp_path: Path) -> Path:
+    """A stub ``<repo>/scripts/devin-tree`` that logs its argv and exits 0;
+    returns the file the argv lands in."""
+    log = tmp_path / "devin-tree.json"
+    exe = Path(env["CWD"]) / "scripts" / "devin-tree"
+    exe.parent.mkdir()
+    exe.write_text(
+        f"#!{sys.executable}\n"
+        "import json, sys\n"
+        f"open({str(log)!r}, 'w', encoding='utf-8').write(\n"
+        "    json.dumps(sys.argv[1:]))\n",
+        encoding="utf-8",
+    )
+    exe.chmod(0o755)
+    return log
+
+
+def _devin_launch_fills(env: dict[str, str]) -> dict[str, str]:
+    return {**env, "FLEET_COORDINATOR": "c", "FLEET_RELEASE_OWNER": "r",
+            "FLEET_APPROVAL": "approved"}  # fmt: skip
 
 
 def test_devin_launch_passes_model_when_set(
@@ -812,6 +839,98 @@ def test_devin_launch_omits_model_when_unset(
     env: dict[str, str], tmp_path: Path
 ) -> None:
     assert "--model" not in _devin_dry_run(env, tmp_path)
+
+
+def test_devin_model_wins_over_model_and_fleet_model(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    argv = _devin_dry_run(
+        env,
+        tmp_path,
+        "--model",
+        "swe-2",
+        launch_args=("--devin-model", "gemini-3-8-flash-high"),
+    )
+    assert argv[argv.index("--model") + 1] == "gemini-3-8-flash-high"
+    env2 = {**env, "FLEET_MODEL": "swe-3"}
+    argv = _devin_dry_run(env2, tmp_path, launch_args=("--devin-model", "swe-2-high"))
+    assert argv[argv.index("--model") + 1] == "swe-2-high"
+
+
+def test_devin_model_requires_devin(env: dict[str, str], tmp_path: Path) -> None:
+    _windows(env, {})
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _devin_launch_fills(env)
+    for extra in ((), ("--codex",)):
+        proc = _run(env, "launch", "x", "--brief", str(brief), "--tier",
+                    "qland", "--devin-model", "swe-2", *extra)  # fmt: skip
+        assert proc.returncode == 2 and "--devin" in proc.stderr
+
+
+def test_devin_model_rejects_a_bad_id(env: dict[str, str], tmp_path: Path) -> None:
+    _windows(env, {})
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _devin_launch_fills(env)
+    proc = _run(env, "launch", "x", "--brief", str(brief), "--tier", "qland",
+                "--devin", "--devin-model", "bad id!")  # fmt: skip
+    assert proc.returncode == 2 and "bad --devin-model" in proc.stderr
+
+
+def test_devin_model_non_swe_warns_it_bills_per_token(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _windows(env, {})
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _devin_launch_fills(env)
+    for model, warns in (("gemini-3-8-flash-high", True), ("swe-2-high", False)):
+        proc = _run(env, "launch", "d-x", "--brief", str(brief), "--tier",
+                    "qland", "--devin", "--devin-model", model, "--dry-run")  # fmt: skip
+        assert proc.returncode == 0, proc.stderr
+        line = f"devin model {model} is billed per token"
+        assert (line in proc.stdout) is warns, proc.stdout
+
+
+def test_devin_launch_records_the_model_and_prints_the_lane(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    log = _fake_devin_tree(env, tmp_path)
+    _windows(env, {})
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _devin_launch_fills(env)
+    proc = _run(env, "launch", "d-x", "--brief", str(brief), "--tier",
+                "qland", "--devin", "--devin-model", "gemini-3-8-flash-high")  # fmt: skip
+    assert proc.returncode == 0, proc.stderr
+    argv = json.loads(log.read_text(encoding="utf-8"))
+    assert argv[argv.index("--model") + 1] == "gemini-3-8-flash-high"
+    assert "launched devin-d-x (model gemini-3-8-flash-high, tier W" in proc.stdout
+    lane = next(ln for ln in proc.stdout.splitlines() if ln.startswith("lane:"))
+    assert lane.startswith("lane: devin:devin-d-x@")
+    assert lane.endswith(", tree d-x, model gemini-3-8-flash-high")
+    rec = Path(env["FLEET_STATE"]) / "devin-d-x.model"
+    assert rec.read_text(encoding="utf-8").split() == ["gemini-3-8-flash-high"]
+
+
+def test_devin_launch_without_a_model_drops_a_stale_record(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    log = _fake_devin_tree(env, tmp_path)
+    st = Path(env["FLEET_STATE"])
+    st.mkdir(parents=True, exist_ok=True)
+    (st / "devin-d-x.model").write_text("swe-2\n", encoding="utf-8")
+    _windows(env, {})
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _devin_launch_fills(env)
+    proc = _run(env, "launch", "d-x", "--brief", str(brief), "--tier",
+                "qland", "--devin")  # fmt: skip
+    assert proc.returncode == 0, proc.stderr
+    assert "--model" not in json.loads(log.read_text(encoding="utf-8"))
+    assert "model default" in proc.stdout
+    assert not (st / "devin-d-x.model").exists()
 
 
 def test_launch_legacy_footers_behind_env_flag(
@@ -957,6 +1076,112 @@ def test_close_refuses_while_a_subagent_task_is_live(env: dict[str, str]) -> Non
         assert not wt.exists()
     finally:
         _subagent_event(env, "stop", "task-elsewhere")
+
+
+def test_close_ignores_a_subagent_of_the_session_that_locks_the_tree(
+    env: dict[str, str],
+) -> None:
+    """gr573220: a finished builder tree handed to the coordinator keeps a
+    plain ``pid <P>`` lock naming the coordinator's session pid — and every
+    subagent marker that session writes carries the same pid. The pid
+    clause exists for the harness's agent locks (``claude agent <id> (pid
+    N)``); a plain ``pid N`` lock must never scope a marker to the tree,
+    or the coordinator's own live subagents freeze every handed-off tree.
+    """
+    wt = _worktree(env, "handed-off")
+    _windows(env, {"claude-handed-off": IDLE})
+    subprocess.run(
+        ["git", "worktree", "lock", str(wt), "--reason", f"pid {os.getpid()}"],
+        cwd=env["CWD"],
+        check=True,
+    )
+    # A coordinator-session marker written directly: its cwd is the
+    # coordinator's tree (the repo root here), never the builder tree.
+    common = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=env["CWD"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
+    state = Path(common) / "precis-agent-tasks"
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    marker = state / "coord-task.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "agent_id": "coord-task",
+                "cwd": env["CWD"],
+                "pid": os.getpid(),
+                "started_at": datetime.now(UTC)
+                .isoformat(timespec="seconds")
+                .replace("+00:00", "Z"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        proc = _run(env, "close", "handed-off")
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "removed: handed-off" in proc.stdout
+        assert "active subagent task" not in proc.stdout
+        assert not wt.exists()
+    finally:
+        marker.unlink(missing_ok=True)
+        subprocess.run(
+            ["git", "worktree", "unlock", str(wt)], cwd=env["CWD"], check=False
+        )
+
+
+def _ship_lock(env: dict[str, str], wt: Path, pid: int) -> Path:
+    """Stand scripts/ship's per-worktree lock inside <wt> held by <pid>:
+    <absolute-git-dir>/precis-ship-worktree.lock.d/holder, the
+    scripts/lib/ship-lock.sh + lock-holder.sh format."""
+    gitdir = subprocess.run(
+        ["git", "rev-parse", "--absolute-git-dir"],
+        cwd=wt,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
+    lockdir = Path(gitdir) / "precis-ship-worktree.lock.d"
+    lockdir.mkdir(parents=True)
+    (lockdir / "holder").write_text(f"{wt} pid={pid} host=test\n", encoding="utf-8")
+    return lockdir
+
+
+def test_close_refuses_a_tree_with_a_running_ship(env: dict[str, str]) -> None:
+    """A ship running inside a builder tree rewrites its branch, index and
+    origin/main mid-close — the tree (and its window) stays until the
+    ship exits."""
+    wt = _worktree(env, "shipping")
+    _windows(env, {"claude-shipping": IDLE})
+    _ship_lock(env, wt, os.getpid())
+    proc = _run(env, "close", "shipping")
+    assert proc.returncode == 1
+    assert (
+        f"REFUSED shipping: ship running (pid {os.getpid()}); tree kept" in proc.stdout
+    )
+    assert wt.exists()
+    assert not [c for c in _tmux_calls(env) if c[0] == "kill-window"]
+
+
+def test_close_ignores_a_stale_or_missing_ship_lock(env: dict[str, str]) -> None:
+    """A dead holder pid (a crashed ship) and no lock at all are no guard."""
+    wt = _worktree(env, "stale-ship")
+    free = _worktree(env, "no-ship")
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    _ship_lock(env, wt, dead.pid)
+    _windows(env, {"claude-stale-ship": IDLE, "claude-no-ship": IDLE})
+    proc = _run(env, "close", "stale-ship", "no-ship")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "removed: stale-ship" in proc.stdout
+    assert "removed: no-ship" in proc.stdout
+    assert "ship running" not in proc.stdout
+    assert not wt.exists() and not free.exists()
 
 
 def test_close_refuses_unlanded_commit_and_carries_on(env: dict[str, str]) -> None:
@@ -1930,6 +2155,35 @@ def test_event_watch_quota_reflex_failure_prints(env: dict[str, str]) -> None:
     assert len(lines) == 1 and "reflex failed" in lines[0]
     assert "quota" in lines[0]
     assert "refused" in _ew_log(env)
+
+
+def test_event_watch_quota_skips_the_reflex_for_a_non_swe_model(
+    env: dict[str, str],
+) -> None:
+    """td573330: launch's .model record says this pane runs a non-SWE id —
+    /model swe-2-high would silently switch it to SWE-2, so the reflex
+    stands down and the quota becomes a coordinator event."""
+    st = Path(env["FLEET_STATE"])
+    st.mkdir(parents=True, exist_ok=True)
+    (st / "devin-q.model").write_text("gemini-3-8-flash-high\n", encoding="utf-8")
+    _windows(env, {"devin-q": DEVIN_QUOTA})
+    out = _run(env, *_EW, "q", "--ticks", "2").stdout
+    lines = [ln for ln in out.splitlines() if ln]
+    assert len(lines) == 1 and "no reflex" in lines[0]
+    assert "gemini-3-8-flash-high" in lines[0]
+    assert _sent_texts(env) == []
+
+
+def test_event_watch_quota_swe_record_keeps_the_reflex(
+    env: dict[str, str],
+) -> None:
+    st = Path(env["FLEET_STATE"])
+    st.mkdir(parents=True, exist_ok=True)
+    (st / "devin-q.model").write_text("swe-2\n", encoding="utf-8")
+    _windows(env, {"devin-q": DEVIN_QUOTA})
+    proc = _run(env, *_EW, "q", "--ticks", "1")
+    assert proc.stdout == "", proc.stdout + proc.stderr
+    assert _sent_texts(env)[0] == "/model swe-2-high"
 
 
 def test_event_watch_done_handoff_resumes_once(env: dict[str, str]) -> None:

@@ -174,12 +174,17 @@ if [ -f "$SCRIPT_DIR/hooks/subagent-task-state.py" ]; then
 fi
 
 # task_for <path> <lock-reason> — the marker matching check's scope: a task
-# belongs to the worktree its session runs in, and to a tree that session's
-# pid holds the `git worktree lock` on (a worktree-isolated agent child is
-# locked "claude agent <id> (pid <parent-pid>)"). Prints the first match.
+# belongs to the worktree its marker's cwd records, and to a harness agent
+# tree locked "claude agent <id> (pid <parent-pid>)" — the only lock shape
+# whose pid is the task session's. A plain `pid <N>` session lock names
+# whatever session last held the tree (a handed-off builder keeps the
+# coordinator's, gr573220) and must not scope a marker. Prints first match.
 task_for() {
   local p=$1 locked=$2 lpid='' i
-  [[ "$locked" =~ pid[[:space:]]+([0-9]+) ]] && lpid="${BASH_REMATCH[1]}"
+  if [[ "$locked" =~ agent[[:space:]]+[A-Za-z0-9_-]+ \
+     && "$locked" =~ pid[[:space:]]+([0-9]+) ]]; then
+    lpid="${BASH_REMATCH[1]}"
+  fi
   for i in "${!TASK_IDS[@]}"; do
     [ -z "${TASK_IDS[$i]:-}" ] && continue
     if [ "${TASK_CWDS[$i]:-}" = "$p" ]; then
