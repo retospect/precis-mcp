@@ -10,9 +10,15 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from collections.abc import Mapping
 from typing import Any
 
-from precis.identity import _entry_is_collective, _entry_name_text, _entry_surname
+from precis.identity import (
+    _entry_is_collective,
+    _entry_name_text,
+    _entry_surname,
+    _surname_from_string,
+)
 from precis.utils.title_views import title_plain
 
 # Common English stopwords — excluded from word-overlap scoring so it
@@ -204,18 +210,33 @@ def _first_person(authors: Any) -> tuple[str, str]:
             continue
         if _entry_is_collective(entry):
             continue
-        return label, _entry_surname(entry)
+        # A structured ``family`` field is authoritative; anything else is
+        # read from the cleaned label so a trailing ``et al`` the label
+        # dropped can't surname the entry ``al`` (``"Zhang et al"`` is
+        # Zhang — td575118 review fallout).
+        fam = (
+            _entry_surname(entry)
+            if isinstance(entry, Mapping) and (entry.get("family") or entry.get("last"))
+            else _surname_from_string(label)
+        )
+        return label, fam
     return "", ""
 
 
 def _name_tokens_agree(a: frozenset[str], b: frozenset[str]) -> bool:
-    """Token sets equal up to initials: one side's leftover tokens are all
-    single characters heading leftover tokens on the other side — so
-    ``Z. Chenyu`` ~ ``Chenyu Zhang`` (the family-initial case a plain
-    surname compare can't see) and ``M. Alvarez`` ~ ``Maria Alvarez``."""
+    """Token sets equal up to initials: the leftovers pair off — one side's
+    leftover tokens are all single characters and EVERY leftover token on
+    the other side is headed by one of them — so ``Z. Chenyu`` ~
+    ``Chenyu Zhang`` (the family-initial case a plain surname compare
+    can't see) and ``M. Alvarez`` ~ ``Maria Alvarez``. A leftover with no
+    initial to abbreviate it is a different name part, not an initial:
+    ``John Smith`` does NOT agree with ``John Smith Jones`` — an empty
+    short side covered vacuously and matched anyway (td575118 review)."""
 
-    def _covered(short: frozenset[str], long: frozenset[str]) -> bool:
-        return all(len(t) == 1 and any(o.startswith(t) for o in long) for t in short)
+    def _covered(initials: frozenset[str], names: frozenset[str]) -> bool:
+        return all(
+            len(t) == 1 and any(o.startswith(t) for o in names) for t in initials
+        ) and all(any(o.startswith(t) for t in initials) for o in names)
 
     extra_a, extra_b = a - b, b - a
     return _covered(extra_a, extra_b) or _covered(extra_b, extra_a)

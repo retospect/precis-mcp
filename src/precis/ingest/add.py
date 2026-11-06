@@ -1302,9 +1302,15 @@ _FOLD_EVIDENCE_CHUNKS = 5
 
 #: Distinctive-token overlap a *title-less* stub's stored ``meta.abstract``
 #: needs against the survivor's title/leading body to corroborate —
-#: gr574291's "abstract or title similarity" fallback. An identical
-#: abstract shares dozens of tokens; a same-field neighbour a handful.
+#: gr574291's "abstract or title similarity" fallback.
 _STUB_ABSTRACT_MIN_OVERLAP = 4
+
+#: Fraction of the stub abstract's distinctive tokens the shared set must
+#: cover on top of :data:`_STUB_ABSTRACT_MIN_OVERLAP`: an identical
+#: abstract is restated near-verbatim while a same-field neighbour shares
+#: only field vocabulary — four shared words let two unrelated
+#: quantum-dot papers fold (td575118 review).
+_STUB_ABSTRACT_MIN_COVERAGE = 0.5
 
 
 def _stub_title_corroborated(conn: Any, stub_id: int, survivor_ref_id: int) -> bool:
@@ -1345,9 +1351,10 @@ def _stub_title_corroborated(conn: Any, stub_id: int, survivor_ref_id: int) -> b
     evidence = "\n".join(parts)
     if need:
         return title_overlap(stub_title, evidence) >= need
-    return (
-        len(content_tokens(stub_abstract) & content_tokens(evidence))
-        >= _STUB_ABSTRACT_MIN_OVERLAP
+    abstract_tokens = content_tokens(stub_abstract)
+    shared = abstract_tokens & content_tokens(evidence)
+    return len(shared) >= _STUB_ABSTRACT_MIN_OVERLAP and len(shared) >= (
+        _STUB_ABSTRACT_MIN_COVERAGE * len(abstract_tokens)
     )
 
 

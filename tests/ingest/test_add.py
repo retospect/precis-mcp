@@ -1247,6 +1247,67 @@ class TestStubIdentityGate:
             ).fetchone()
         assert retired is not None and retired[0] is None
 
+    def test_titleless_stub_same_field_abstract_not_reconciled(self, store):
+        """td575118 review: a title-less, author-less stub must not fold on
+        field vocabulary alone — the abstract shares ``quantum``/``dots``/
+        ``semiconductor``/``photonic``/``platform`` with the survivor's
+        body, but under half its distinctive tokens is a neighbour, not
+        the same paper."""
+        stub = self._doi_stub(
+            store,
+            "titleless28",
+            "(no title)",
+            doi="10.1234/titleless28",
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+                (
+                    Jsonb(
+                        {
+                            "abstract": (
+                                "Semiconductor quantum dots and perovskite "
+                                "nanocrystal emitters compared as a photonic "
+                                "platform for display applications with "
+                                "tunable bandgap and narrow emission "
+                                "linewidths."
+                            )
+                        }
+                    ),
+                    stub.id,
+                ),
+            )
+            conn.commit()
+        survivor = store.insert_ref(
+            kind="paper",
+            slug="titlelesshld3",
+            title="Colloidal quantum dot photonics revisited",
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', %s)",
+                (
+                    survivor.id,
+                    "Semiconductor quantum dots (QDs) have emerged as a "
+                    "premier solid-state platform for photonic quantum "
+                    "technologies.",
+                ),
+            )
+            merged = _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=survivor.id,
+                file_stem="titleless28",
+                conn=conn,
+            )
+            conn.commit()
+        assert merged is None
+        with store.pool.connection() as conn:
+            retired = conn.execute(
+                "SELECT retired_at FROM refs WHERE ref_id = %s", (stub.id,)
+            ).fetchone()
+        assert retired is not None and retired[0] is None
+
     def test_minor_title_variant_still_reconciles(self, store):
         """The same paper, extracted with a case/punctuation-variant
         title, still folds its stub in."""

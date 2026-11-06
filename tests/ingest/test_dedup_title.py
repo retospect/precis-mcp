@@ -578,3 +578,14 @@ def test_first_author_agreement() -> None:
     assert agree([{"name": "Alvarez, Maria"}], [{"name": "Becker, Tom"}]) is False
     assert agree([{"name": "Zhang Chenyu"}], [{"name": "Li Zhang"}]) is False
     assert agree([{"family": "Müller"}], [{"name": "Anna Schmidt"}]) is False
+    # A token SUBSET is not agreement (td575118): the extra full token is
+    # a different explicit surname, not an initial — both directions.
+    assert agree([{"name": "John Smith"}], [{"name": "John Smith Jones"}]) is False
+    assert agree([{"name": "John Smith Jones"}], [{"name": "John Smith"}]) is False
+    assert (
+        agree(
+            [{"family": "Smith", "given": "John"}],
+            [{"name": "John Smith Jones"}],
+        )
+        is False
+    )
