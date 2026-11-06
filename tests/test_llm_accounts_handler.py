@@ -831,6 +831,24 @@ class TestPutHostedAccount:
                 }
             )
         )
+        bad.append(_hosted_payload(privacy={"training_use": "no"}))
+        bad.append(
+            _hosted_payload(
+                privacy={
+                    "training_use": "no",
+                    "source_url": "https://groq.com/privacy/",
+                }
+            )
+        )
+        bad.append(
+            _hosted_payload(
+                privacy={
+                    "training_use": "no",
+                    "source_url": "http://groq.com/privacy/",
+                    "verified_at": "2026-11-01T00:00:00Z",
+                }
+            )
+        )
         no_endpoint = _hosted_payload()
         del no_endpoint["endpoint"]
         bad.append(no_endpoint)
@@ -891,7 +909,12 @@ class TestPutHostedAccount:
             "api_key_ref": "GROQ_API_KEY",
             "kind": "metered",
         }
-        seed_account("doorless", privacy={"training_use": "no"}, models=["m"])
+        sourced_stance = {
+            "training_use": "no",
+            "source_url": "https://groq.com/privacy/",
+            "verified_at": "2026-11-01T00:00:00Z",
+        }
+        seed_account("doorless", privacy=sourced_stance, models=["m"])
         _write_profiles(store, {"unrelated": profile_entry})
         with pytest.raises(BadInput, match="profiles"):
             h.put(args={"account": {"name": "doorless", "enabled": True}})
@@ -899,7 +922,12 @@ class TestPutHostedAccount:
         _write_profiles(store, {"no-stance": profile_entry})
         with pytest.raises(BadInput, match="training_use"):
             h.put(args={"account": {"name": "no-stance", "enabled": True}})
-        seed_account("no-models", privacy={"training_use": "no"}, models=[])
+        bad_stance = {**sourced_stance, "training_use": "sometimes"}
+        seed_account("bad-stance", privacy=bad_stance, models=["m"])
+        _write_profiles(store, {"bad-stance": profile_entry})
+        with pytest.raises(BadInput, match="training_use"):
+            h.put(args={"account": {"name": "bad-stance", "enabled": True}})
+        seed_account("no-models", privacy=sourced_stance, models=[])
         _write_profiles(store, {"no-models": profile_entry})
         with pytest.raises(BadInput, match="models"):
             h.put(args={"account": {"name": "no-models", "enabled": True}})
@@ -911,6 +939,152 @@ class TestPutHostedAccount:
         after = get_account(store, "groq-free")
         assert after is not None and after.enabled is True
         assert replace(after, enabled=False, updated_at=before.updated_at) == before
+
+    def test_update_puts_revalidate_evidence(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The evidence contract is a property of the stored row, not of
+        the onboarding put: a later put on a hosted account can't land a
+        negative or unsourced price, nor a bare or out-of-vocab stance
+        (td573741)."""
+        from precis.utils.llm.accounts import get_account
+
+        monkeypatch.setenv("PRECIS_SOURCE", "cli")
+        h = _handler(store)
+        h.put(args={"account": _hosted_payload()})
+        stored = get_account(store, "groq-free")
+        assert stored is not None
+
+        bad_prices: list[dict[str, Any]] = []
+        negative = _hosted_payload()
+        del negative["endpoint"]
+        negative["entitlement"]["models"]["m-groq"]["price_in"] = -1
+        bad_prices.append(negative)
+        unsourced = _hosted_payload()
+        del unsourced["endpoint"]
+        del unsourced["entitlement"]["models"]["m-groq"]["source_url"]
+        bad_prices.append(unsourced)
+        unverified = _hosted_payload()
+        del unverified["endpoint"]
+        del unverified["entitlement"]["models"]["m-groq"]["verified_at"]
+        bad_prices.append(unverified)
+        bare_stance = _hosted_payload()
+        del bare_stance["endpoint"]
+        bare_stance["privacy"] = {"training_use": "no"}
+        bad_prices.append(bare_stance)
+        bad_stance = _hosted_payload()
+        del bad_stance["endpoint"]
+        bad_stance["privacy"] = {
+            "training_use": "sometimes",
+            "source_url": "https://groq.com/privacy/",
+            "verified_at": "2026-11-01T00:00:00Z",
+        }
+        bad_prices.append(bad_stance)
+        for payload in bad_prices:
+            with pytest.raises(BadInput):
+                h.put(args={"account": payload})
+
+        reprieved = get_account(store, "groq-free")
+        assert reprieved is not None
+        assert reprieved.entitlement == stored.entitlement
+        assert reprieved.privacy == stored.privacy
+
+        # A compliant price update lands.
+        h.put(
+            args={
+                "account": {
+                    "name": "groq-free",
+                    "entitlement": {
+                        "models": {
+                            "m-groq": {
+                                "allowed": True,
+                                "price_in": 0.05,
+                                "price_out": 0.08,
+                                "source_url": "https://groq.com/pricing/",
+                                "verified_at": "2026-11-06T00:00:00Z",
+                            }
+                        }
+                    },
+                }
+            }
+        )
+        updated = get_account(store, "groq-free")
+        assert updated is not None
+        assert updated.entitlement["models"]["m-groq"]["price_in"] == 0.05
+
+    def test_concurrent_first_creates_keep_both_profiles(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no llm.profiles row, two racing door puts must both land
+        their profile entry — the seed-then-lock serializes them
+        (td573741). Without it, FOR UPDATE locks nothing and the second
+        upsert overwrites the first."""
+        import threading
+
+        from precis.utils.llm.accounts import get_account
+
+        monkeypatch.setenv("PRECIS_SOURCE", "cli")
+        with store.pool.connection() as conn:
+            conn.execute("DELETE FROM app_settings WHERE key = 'llm.profiles'")
+        h = _handler(store)
+        errors: list[BaseException] = []
+
+        def create(payload: dict[str, Any]) -> None:
+            try:
+                h.put(args={"account": payload})
+            except Exception as exc:
+                errors.append(exc)
+
+        openrouter = _hosted_payload(
+            name="openrouter-free",
+            vendor="openrouter",
+            endpoint={"base_url": "https://openrouter.ai/api/v1"},
+            api_key_ref="OPENROUTER_API_KEY",
+            models=["m-or"],
+            privacy={
+                "training_use": "unknown",
+                "source_url": "https://openrouter.ai/privacy",
+                "verified_at": "2026-11-01T00:00:00Z",
+            },
+            entitlement={
+                "models": {
+                    "m-or": {
+                        "allowed": True,
+                        "price_in": 0,
+                        "price_out": 0,
+                        "source_url": "https://openrouter.ai/models",
+                        "verified_at": "2026-11-01T00:00:00Z",
+                    }
+                }
+            },
+            limits=[
+                {
+                    "pool": "llm:openrouter-free:rpd",
+                    "unit": "calls",
+                    "limit": 50,
+                    "reset_rule": "rolling:86400",
+                    "source_url": "https://openrouter.ai/docs/limits",
+                    "verified_at": "2026-11-01T00:00:00Z",
+                }
+            ],
+        )
+        threads = [
+            threading.Thread(target=create, args=(payload,))
+            for payload in (_hosted_payload(), openrouter)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert errors == []
+        assert get_account(store, "groq-free") is not None
+        assert get_account(store, "openrouter-free") is not None
+        profiles = _profiles_map(store)
+        assert profiles["groq-free"]["base_url"] == ("https://api.groq.com/openai/v1")
+        assert profiles["openrouter-free"]["base_url"] == (
+            "https://openrouter.ai/api/v1"
+        )
 
 
 class TestRateLimitUnaffected:

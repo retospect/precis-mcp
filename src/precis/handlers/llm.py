@@ -38,7 +38,10 @@ writes the account's own ``llm.profiles`` entry — binding the
 route a vault secret elsewhere — ``limits`` records the published
 free-tier rate limits on the account's pool rows, and
 ``entitlement.models.<id>`` + ``privacy.training_use`` carry price and
-stance with their sources. A hosted account is created disabled; a
+stance with their sources. That evidence contract is a property of the
+stored row, not of the onboarding put — every put on an ``openai_compat``
+account re-validates the merged row, so a later put can't land an
+unsourced price or stance. A hosted account is created disabled; a
 second put enables it. The profile entry is always ``kind='metered'`` —
 never ``cap``, ``adapter``, ``gate`` or ``ops``. No routing behaviour
 changes: ``pick_lane``, ``ladder``, ``resolve_profile`` and
@@ -209,6 +212,17 @@ INSERT INTO app_settings (key, value, updated_at, updated_by)
 VALUES (%s, %s, now(), %s)
 ON CONFLICT (key) DO UPDATE SET
     value = EXCLUDED.value, updated_at = now(), updated_by = EXCLUDED.updated_by
+"""
+
+#: Seed-then-lock for the ``llm.profiles`` row: ``SELECT … FOR UPDATE``
+#: on an absent row locks nothing, so two concurrent first creates could
+#: each read an empty map and have their upserts overwrite one another —
+#: one account lands without its profile (td573741). Inserting the row
+#: first pins it so the lock serializes the second create on the first.
+_PROFILES_SEED_SQL = """
+INSERT INTO app_settings (key, value, updated_at, updated_by)
+VALUES (%s, '{}', now(), %s)
+ON CONFLICT (key) DO NOTHING
 """
 
 
@@ -771,21 +785,39 @@ class LlmHandler(NumericRefHandler):
                 next="add endpoint={'base_url': 'https://<provider host>/v1'} "
                 "plus api_key_ref, privacy, entitlement and limits evidence",
             )
-        if existing is None and endpoint is not None:
-            if merged["enabled"]:
+        if existing is None and endpoint is not None and merged["enabled"]:
+            raise BadInput(
+                "a hosted account is created disabled",
+                next="create it, then enable with "
+                f"args={{'account': {{'name': {name!r}, 'enabled': True}}}} "
+                "once the key is in the vault",
+            )
+        if merged["adapter"] == "openai_compat":
+            # The door's evidence contract is a property of the stored row,
+            # not of the onboarding put: validate what this put would store
+            # so a later put can't land an unsourced price or stance
+            # (td573741). Every openai_compat account is door-created, so a
+            # compliant merged row is always reachable.
+            stance = merged["privacy"] or {}
+            if stance.get("training_use") not in _TRAINING_USE_VALUES:
                 raise BadInput(
-                    "a hosted account is created disabled",
-                    next="create it, then enable with "
-                    f"args={{'account': {{'name': {name!r}, 'enabled': True}}}} "
-                    "once the key is in the vault",
-                )
-            if (merged["privacy"] or {}).get(
-                "training_use"
-            ) not in _TRAINING_USE_VALUES:
-                raise BadInput(
-                    "an endpoint account records privacy.training_use as "
+                    "an openai_compat account records privacy.training_use as "
                     "'no', 'yes' or 'unknown'",
                     options=sorted(_TRAINING_USE_VALUES),
+                    next="args={'account': {'privacy': {'training_use': 'no', "
+                    "'source_url': 'https://<doc>', 'verified_at': '<ISO>'}}}",
+                )
+            if not _https_source(stance.get("source_url")):
+                raise BadInput(
+                    "privacy.source_url must be an https:// source URL for "
+                    "the recorded stance",
+                    next="args={'account': {'privacy': {'training_use': 'no', "
+                    "'source_url': 'https://<doc>', 'verified_at': '<ISO>'}}}",
+                )
+            if not _iso_stamp(stance.get("verified_at")):
+                raise BadInput(
+                    "privacy.verified_at must be an ISO timestamp for the "
+                    "recorded stance",
                     next="args={'account': {'privacy': {'training_use': 'no', "
                     "'source_url': 'https://<doc>', 'verified_at': '<ISO>'}}}",
                 )
@@ -909,6 +941,10 @@ class LlmHandler(NumericRefHandler):
         enabling = bool(merged["enabled"]) and merged["adapter"] == "openai_compat"
         with self.store.tx() as conn:
             if endpoint_entry is not None or enabling:
+                conn.execute(
+                    _PROFILES_SEED_SQL,
+                    (_PROFILES_KEY, "put:llm.account"),
+                )
                 row = conn.execute(
                     "SELECT value FROM app_settings WHERE key = %s FOR UPDATE",
                     (_PROFILES_KEY,),
@@ -950,7 +986,9 @@ class LlmHandler(NumericRefHandler):
                             next="create the account with endpoint= — the "
                             "door writes its own profile entry",
                         )
-                    if not (merged["privacy"] or {}).get("training_use"):
+                    if (merged["privacy"] or {}).get(
+                        "training_use"
+                    ) not in _TRAINING_USE_VALUES:
                         raise BadInput(
                             f"enabling {name!r} needs privacy.training_use "
                             "recorded ('no', 'yes' or 'unknown')",
