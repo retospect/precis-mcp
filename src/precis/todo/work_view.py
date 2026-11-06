@@ -26,6 +26,14 @@ leaves; they are advisory, while live job lines show stored placement.
 Dependencies and job fields are fetched once per root, and gate reasons
 come from stored results so rendering never evaluates a gate (td573296).
 
+Done / won't-do todos stay off the board — a finished row is history,
+not work — though the walk still descends past one to live children.
+The ``done=`` toggle (page-wide or per quest id) adds them back under
+each quest as :class:`CompletedRow` lines, joined by that subtree's
+terminal jobs, inside a seven-day window ending at ``now``; older
+history lives in the quest's logbook (td573298). An abandoned quest
+only boards when the toggle reaches it.
+
 :func:`render_tree_ring` is the todo tree as an eye ring — parent,
 siblings, children off ``refs.parent_id`` — appended by
 :meth:`precis.handlers.todo.TodoHandler.eye` at ``fisheye+1hop`` and up,
@@ -39,8 +47,9 @@ a ``get``. Gripes join the tree in slice td540842.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from precis.plans.lanes import ladder
@@ -201,6 +210,24 @@ class RootBlock:
 
 
 @dataclass(frozen=True)
+class CompletedRow:
+    """One completed todo or terminal job under a toggled quest
+    (td573298). ``outcome`` is the STATUS value (``done`` /
+    ``won't-do`` for a todo; ``succeeded`` / ``failed`` / ``cancelled``
+    for a job); ``detail`` the sha of a todo's newest ``landed:``
+    comment or a job's ``meta.lane``; ``at`` the STATUS tag's
+    ``ref_tags.created_at`` and ``when`` its age string."""
+
+    handle: str
+    kind: str
+    title: str
+    outcome: str
+    detail: str
+    when: str
+    at: datetime
+
+
+@dataclass(frozen=True)
 class QuestBlock:
     """One quest's collapsed board line plus its expansion (td573295).
 
@@ -208,7 +235,10 @@ class QuestBlock:
     live lease or a child job runs, else ``queued`` while a doable leaf
     or a claimable job waits, else ``idle``. ``jobs`` are the live job
     lines under the quest; ``next_doable`` the first doable leaf's
-    handle (``""`` when none); ``newest`` the freshest row stamp."""
+    handle (``""`` when none); ``newest`` the freshest row stamp.
+    ``completed`` holds the quest's done/won't-do todos and terminal
+    jobs inside the seven-day window — populated only when the
+    ``done=`` toggle names this quest or is page-wide (td573298)."""
 
     ref_id: int
     handle: str
@@ -223,6 +253,7 @@ class QuestBlock:
     next_doable: str
     newest: datetime | None
     jobs: tuple[str, ...]
+    completed: tuple[CompletedRow, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -436,6 +467,22 @@ def _format_row(r: WorkRow) -> str:
 #: Job STATUS values that count as live in the ``jobs=N(M live)`` cell.
 _LIVE_JOB = frozenset({"queued", "running"})
 
+#: STATUS values that take a todo off the board by default (td573298).
+_DONE_TODO = frozenset({"done", "won't-do"})
+
+#: Terminal job STATUS values listed by the completed toggle — mirrors
+#: ``store._tags_ops._JOB_TERMINAL``; local constant so this module
+#: stays out of the store import chain.
+_DONE_JOB = frozenset({"succeeded", "failed", "cancelled"})
+
+#: How far back the completed toggle looks (td573298); the quest's
+#: logbook holds the older history.
+_DONE_WINDOW = timedelta(days=7)
+
+#: The sha on a ``landed: <sha> — <subject>`` comment (``land_slice``).
+#: ``landed: nothing`` (a no-diff landing) deliberately does not match.
+_LANDED_RE = re.compile(r"landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
+
 #: Job STATUS values for the run-state derivation and the quest's live
 #: job lines — mirror ``precis.workers.executors._common.RUNNING`` /
 #: ``CLAIMABLE`` (queued, yielded); local constants so this module stays
@@ -642,6 +689,50 @@ def _newest_job_lanes(store: Store, job_ids: list[int]) -> dict[int, str]:
     return {int(pid): str(lane) for pid, lane in rows if lane}
 
 
+def _done_on(done: bool | frozenset[int], quest_id: int) -> bool:
+    """Whether the ``done=`` toggle covers ``quest_id`` (td573298)."""
+    return done is True or (isinstance(done, frozenset) and quest_id in done)
+
+
+def _terminal_status_times(
+    store: Store, ref_ids: list[int]
+) -> dict[int, tuple[str, datetime]]:
+    """``{ref_id: (STATUS value, ref_tags.created_at)}`` for the done /
+    terminal values — the tag's creation time is the completion time
+    (the ``_now_jobs`` trick, td573298). One query for the whole board."""
+    if not ref_ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT rt.ref_id, t.value, rt.created_at "
+            "FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = ANY(%s) AND t.namespace = 'STATUS' "
+            "AND t.value = ANY(%s)",
+            (ref_ids, sorted(_DONE_TODO | _DONE_JOB)),
+        ).fetchall()
+    return {int(r[0]): (str(r[1]), r[2]) for r in rows}
+
+
+def _landed_shas(store: Store, ref_ids: list[int]) -> dict[int, str]:
+    """``{ref_id: sha-or-""}`` — the sha on each todo's newest
+    ``landed:`` comment, one query for the board (td573298)."""
+    if not ref_ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT c.ref_id, c.text FROM chunks c "
+            "WHERE c.ref_id = ANY(%s) AND c.chunk_kind = 'todo_comment' "
+            "AND c.retired_at IS NULL AND c.text LIKE 'landed:%%' "
+            "ORDER BY c.ref_id, c.ord",
+            (ref_ids,),
+        ).fetchall()
+    out: dict[int, str] = {}
+    for rid, text in rows:  # ``ord`` ascending — the newest lands last
+        m = _LANDED_RE.match(str(text))
+        out[int(rid)] = m.group(1) if m else ""
+    return out
+
+
 def _render_root(
     store: Store,
     root: Ref,
@@ -716,25 +807,30 @@ def _render_root(
 
     def walk(node: dict[str, Any], depth: int) -> None:
         nonlocal hidden
-        if len(shown) >= MAX_ROWS_PER_ROOT:
-            hidden += 1
-        else:
-            shown.append(
-                _row(
-                    node,
-                    depth=depth,
-                    statuses=statuses,
-                    tags_by_ref=tags_by_ref,
-                    prios=prios,
-                    stamps=stamps,
-                    agents=agents,
-                    jobs=job_counts.get(node["id"], (0, 0)),
-                    metas=metas,
-                    lanes=lanes,
-                    blockers=blockers,
-                    preview_leaf=planned and not by_parent.get(node["id"]),
+        # A done / won't-do row leaves the board (td573298); its
+        # children still render at their own depth, and the skipped row
+        # counts against neither the cap nor the ``+N more`` tail.
+        done_row = statuses.get(node["id"], "open") in _DONE_TODO
+        if not done_row:
+            if len(shown) >= MAX_ROWS_PER_ROOT:
+                hidden += 1
+            else:
+                shown.append(
+                    _row(
+                        node,
+                        depth=depth,
+                        statuses=statuses,
+                        tags_by_ref=tags_by_ref,
+                        prios=prios,
+                        stamps=stamps,
+                        agents=agents,
+                        jobs=job_counts.get(node["id"], (0, 0)),
+                        metas=metas,
+                        lanes=lanes,
+                        blockers=blockers,
+                        preview_leaf=planned and not by_parent.get(node["id"]),
+                    )
                 )
-            )
         for c in by_parent.get(node["id"], []):
             walk(c, depth + 1)
 
@@ -751,10 +847,17 @@ def _render_root(
     )
 
 
-def work_model(store: Store, *, now: datetime | None = None) -> WorkModel:
-    """The board as data: every live quest (``abandoned`` stays off) one
-    collapsed line ordered run-state → prio → ref_id, its served roots'
-    rows as the expansion, the unassigned roots, the fleet hosts."""
+def work_model(
+    store: Store,
+    *,
+    now: datetime | None = None,
+    done: bool | frozenset[int] = False,
+) -> WorkModel:
+    """The board as data: every live quest one collapsed line ordered
+    run-state → prio → ref_id, its served roots' rows as the expansion,
+    the unassigned roots, the fleet hosts. ``abandoned`` quests stay off
+    unless the ``done=`` toggle reaches them (``True`` = every quest, a
+    frozenset = those quest ids, td573298)."""
     now = now or datetime.now(UTC)
     agents, hosts = _fleet_rows(store)
     quests = [
@@ -774,7 +877,7 @@ def work_model(store: Store, *, now: datetime | None = None) -> WorkModel:
     pending: list[dict[str, Any]] = []
     for q in quests:
         status = _quest_status(store, q.id)
-        if status == "abandoned":
+        if status == "abandoned" and not _done_on(done, q.id):
             continue
         roots = _todo_servers(store, q.id)
         served.update(r.id for r in roots)
@@ -799,6 +902,14 @@ def work_model(store: Store, *, now: datetime | None = None) -> WorkModel:
                 "q": q,
                 "status": status,
                 "ids": {row["id"] for rows in subtrees.values() for row in rows},
+                "kinds": {
+                    row["id"]: row["kind"] for rows in subtrees.values() for row in rows
+                },
+                "titles": {
+                    row["id"]: row["title"]
+                    for rows in subtrees.values()
+                    for row in rows
+                },
                 "roots": root_blocks,
             }
         )
@@ -807,6 +918,31 @@ def work_model(store: Store, *, now: datetime | None = None) -> WorkModel:
         e["leased"] = e["ids"] & leased_all
         e["doable"] = (e["ids"] & doable_ids) - e["leased"]
     dprios = _prios_for(store, sorted({i for e in pending for i in e["doable"]}))
+    # The completed toggle's inputs (td573298): one STATUS-times query,
+    # one landed-comment query and one job-meta query for the whole
+    # board — skipped entirely when no quest is toggled.
+    toggled = [e for e in pending if _done_on(done, e["q"].id)]
+    status_at: dict[int, tuple[str, datetime]] = {}
+    landed: dict[int, str] = {}
+    job_lanes: dict[int, str] = {}
+    if toggled:
+        status_at = _terminal_status_times(
+            store, sorted({i for e in toggled for i in e["ids"]})
+        )
+        landed = _landed_shas(
+            store,
+            sorted({i for e in toggled for i, k in e["kinds"].items() if k == "todo"}),
+        )
+        job_lanes = {
+            i: fields[0]
+            for i, fields in _job_fields(
+                store,
+                sorted(
+                    {i for e in toggled for i, k in e["kinds"].items() if k == "job"}
+                ),
+            ).items()
+        }
+    cutoff = now - _DONE_WINDOW
     blocks: list[tuple[tuple[int, int, int], QuestBlock]] = []
     for e in pending:
         q = e["q"]
@@ -823,6 +959,38 @@ def work_model(store: Store, *, now: datetime | None = None) -> WorkModel:
         run_state = _run_state(
             len(e["leased"]), running_n, claimable_n, len(quest_doable)
         )
+        completed: tuple[CompletedRow, ...] = ()
+        if _done_on(done, q.id):
+            rows_done: list[CompletedRow] = []
+            for rid, kind in e["kinds"].items():
+                hit = status_at.get(rid)
+                if hit is None:
+                    continue
+                outcome, at = hit
+                if at is None or at < cutoff:
+                    continue
+                if kind == "todo":
+                    if outcome not in _DONE_TODO:
+                        continue
+                    detail = landed.get(rid, "")
+                else:
+                    if outcome not in _DONE_JOB:
+                        continue
+                    detail = job_lanes.get(rid, "")
+                rows_done.append(
+                    CompletedRow(
+                        handle=_h(kind, rid),
+                        kind=kind,
+                        title=_first_line(e["titles"].get(rid)),
+                        outcome=outcome,
+                        detail=detail,
+                        when=_age(at, now),
+                        at=at,
+                    )
+                )
+            completed = tuple(
+                sorted(rows_done, key=lambda c: (c.at, c.handle), reverse=True)
+            )
         stamps = [
             r.updated_at for b in e["roots"] for r in b.rows if r.updated_at is not None
         ]
@@ -840,6 +1008,7 @@ def work_model(store: Store, *, now: datetime | None = None) -> WorkModel:
             next_doable=next_doable,
             newest=max(stamps) if stamps else (q.updated_at or q.created_at),
             jobs=tuple(j for b in e["roots"] for j in b.jobs),
+            completed=completed,
         )
         blocks.append(
             (

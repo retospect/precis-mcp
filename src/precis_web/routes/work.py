@@ -14,6 +14,11 @@ surface uses (:mod:`precis.handlers.todo`/:mod:`precis.handlers.quest`),
 so the web button and ``edit(kind='quest', mode='pause'|'resume')`` share
 one guard path. ``current_user`` is a module attribute (not inlined) so a
 test can monkeypatch it to simulate a signed-in/anonymous caller.
+
+``?done=1`` (page-wide) or ``?done=<id>,<id>`` (those quests) toggles the
+completed rows — a quest's done/won't-do todos and terminal jobs of the
+last seven days (td573298). The template turns the state back into
+toggle links, so it round-trips through the URL.
 """
 
 from __future__ import annotations
@@ -37,17 +42,35 @@ log = logging.getLogger(__name__)
 _SLICE_OPS: dict[str, str] = {"pause": "STATUS:paused", "resume": "STATUS:open"}
 
 
+def _done_param(request: Request) -> bool | frozenset[int]:
+    """The ``?done=`` toggle (td573298): ``1`` is page-wide, anything
+    else a comma list of quest ref ids; absent/empty is off."""
+    raw = (request.query_params.get("done") or "").strip()
+    if not raw:
+        return False
+    if raw == "1":
+        return True
+    return frozenset(int(t) for t in raw.split(",") if t.strip().isdigit())
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     """Render the hierarchy; the model is computed off the event loop."""
     store = get_store(request)
-    model = await asyncio.to_thread(work_model, store)
+    done = _done_param(request)
+    model = await asyncio.to_thread(work_model, store, done=done)
     can_write = current_user(request) is not None
     return templates.TemplateResponse(
         request,
         "work/index.html.j2",
-        {"active_tab": "status", "model": model, "can_write": can_write},
+        {
+            "active_tab": "status",
+            "model": model,
+            "can_write": can_write,
+            "done_all": done is True,
+            "done_ids": set(done) if isinstance(done, frozenset) else set(),
+        },
     )
 
 

@@ -6,7 +6,9 @@
    ``precis.todo.work_view.work_model`` the MCP ``view='work'`` formats as
    text. Every row carries ``data-handle`` so the step-5b list/click/chat
    surface can select rows later; every handle links to /eye/<handle>.
-   Pause/Resume controls (td573297) render only when ``can_write``. #}
+   Pause/Resume controls (td573297) render only when ``can_write``.
+   The ``done=`` toggle (td573298): done_all = ?done=1, done_ids the
+   comma-listed quest ids — every toggle link rebuilds the URL. #}
 {% set sc = {'done':'bg-success-muted text-success-strong','doing':'bg-warning-muted text-warning-strong','blocked':'bg-danger-muted text-danger-strong','paused':'bg-surface-emphasis text-fg-muted',"won't-do":'bg-surface-emphasis text-fg-subtle'} %}
 <h1 class="text-lg font-semibold mb-1">Work</h1>
 <p class="text-sm text-fg-subtle mb-3">
@@ -15,6 +17,9 @@
   {{ model.n_running }} running · {{ model.n_queued }} queued · {{ model.n_idle }} idle ·
   {{ model.n_agents }} live agent{{ '' if model.n_agents == 1 else 's' }}.
   Read-only; same data as <code>search(kind='todo', view='work')</code>.
+  <a href="{{ '/work' if done_all else '/work?done=1' }}" class="underline">
+    {{- 'Hide completed' if done_all else 'Completed (7d)' -}}
+  </a>
 </p>
 
 {# ── sub-tab nav (mirrors /status) ─────────────────────────────── #}
@@ -63,11 +68,22 @@
 
 {# Quest run-state chips (td573295): derived, not the quest STATUS. #}
 {% set rs = {'running':'bg-success-muted text-success-strong','queued':'bg-info-muted text-info-strong','idle':'bg-surface-emphasis text-fg-subtle'} %}
+{# Completed-row outcome chips (td573298): todo + job terminals. #}
+{% set oc = {'done':'bg-success-muted text-success-strong',"won't-do":'bg-surface-emphasis text-fg-subtle','succeeded':'bg-success-muted text-success-strong','failed':'bg-danger-muted text-danger-strong','cancelled':'bg-surface-emphasis text-fg-subtle'} %}
 {% for state, label in [('running', 'Running'), ('queued', 'Queued'), ('idle', 'Idle')] %}
 {% set group = model.quests | selectattr('run_state', 'equalto', state) | list %}
 {% if group %}
 <h2 class="text-sm font-semibold mb-2 mt-6">{{ label }} ({{ group | length }})</h2>
 {% for q in group %}
+{% set q_done = done_all or q.ref_id in done_ids %}
+{% if done_all %}
+  {% set q_done_url = '/work?done=1' %}
+{% elif q_done %}
+  {% set q_done_rest = done_ids | reject('equalto', q.ref_id) | sort | join(',') %}
+  {% set q_done_url = '/work?done=' ~ q_done_rest if q_done_rest else '/work' %}
+{% else %}
+  {% set q_done_url = '/work?done=' ~ (((done_ids | list) + [q.ref_id]) | sort | join(',')) %}
+{% endif %}
 <section class="mb-4 rounded-lg border border-line bg-surface" data-handle="{{ q.handle }}" data-kind="quest" data-run-state="{{ q.run_state }}">
   <details>
     <summary class="flex items-baseline gap-2 px-3 py-2 cursor-pointer">
@@ -80,6 +96,7 @@
       <span class="text-xs text-fg-faint">agents {{ q.agents }}</span>
       <span class="text-xs text-fg-faint">jobs {{ q.jobs | length }}{% if q.running_jobs %} ({{ q.running_jobs }} running){% endif %}</span>
       {% if q.next_doable %}<a href="/eye/{{ q.next_doable }}" class="font-mono text-xs text-fg-subtle hover:underline">next {{ q.next_doable }}</a>{% endif %}
+      <a href="{{ q_done_url }}" class="text-xs text-fg-subtle hover:underline" data-done-toggle="{{ q.ref_id }}">Completed{% if q_done %} ({{ q.completed | length }}){% endif %}</a>
       <span class="ml-auto text-xs text-fg-faint" title="{{ q.newest | abs_ts }}">{{ q.newest | ago }}</span>
       {% if can_write %}{{ quest_controls(q) }}{% endif %}
     </summary>
@@ -133,6 +150,35 @@
       <li class="px-3 py-1.5 text-xs font-mono text-fg-secondary" data-kind="job">{{ j }}</li>
       {% endfor %}
     </ul>
+    {# The completed toggle's rows (td573298): this quest's done /
+       won't-do todos and terminal jobs inside the window; the logbook
+       holds the older history. #}
+    {% if q_done %}
+    <div class="border-t border-line" data-kind="completed">
+      <div class="flex items-baseline gap-2 px-3 py-1.5 text-xs text-fg-faint">
+        <span class="font-semibold">Completed ({{ q.completed | length }}) — last 7 days</span>
+        <a href="/refs/quest/{{ q.ref_id }}/logbook" class="hover:underline">older → logbook</a>
+      </div>
+      <ul class="divide-y divide-line">
+        {% for c in q.completed %}
+        <li class="flex items-baseline gap-3 px-3 py-1.5 text-sm"
+            data-handle="{{ c.handle }}" data-kind="{{ c.kind }}" data-status="{{ c.outcome }}">
+          <div class="flex-1 min-w-0 truncate" style="padding-left: 1.25rem">
+            <a href="/eye/{{ c.handle }}" class="font-mono text-xs text-fg-subtle hover:underline">{{ c.handle }}</a>
+            <span title="{{ c.title }}">{{ c.title }}</span>
+          </div>
+          <div class="w-40 shrink-0">
+            <span class="text-xs px-1.5 py-0.5 rounded {{ oc.get(c.outcome, 'bg-surface-emphasis text-fg-subtle') }}">{{ c.outcome }}</span>
+          </div>
+          <div class="w-32 shrink-0 text-right text-xs font-mono text-fg-faint truncate">
+            {% if c.detail %}{{ 'lane=' ~ c.detail if c.kind == 'job' else c.detail }}{% endif %}
+          </div>
+          <div class="w-20 shrink-0 text-right text-xs text-fg-faint" title="{{ c.at | abs_ts }}">{{ c.when }}</div>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
   </details>
 </section>
 {% endfor %}
