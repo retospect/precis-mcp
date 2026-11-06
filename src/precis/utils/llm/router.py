@@ -4262,6 +4262,30 @@ def _route_inner(req: LlmRequest) -> LlmResult:
     slot = _local.acquire(serve_model)
     routed = _routed_placement(routed_rung, slot)
     if slot is not None and slot.paused:
+        # A drain refusal is not saturation: the worker is exiting and takes
+        # no slot anywhere, so neither escape below applies (advancing the
+        # ladder would bill a cloud rung the drain is trying to avoid; the
+        # hosted re-point would rerun a call the caller should retry after
+        # the new generation is up). Defer on the busy-gate shape instead.
+        if slot.draining:
+            return _gate_result(
+                req,
+                LlmResult(
+                    text="",
+                    cost_usd=None,
+                    turns_used=None,
+                    model=model,
+                    tier=req.tier,
+                    error=f"worker draining — no local slot for {model}; backing off",
+                    paused=True,
+                    reason_class="rate",
+                    retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["rate"],
+                ),
+                entered=entered,
+                transport=transport,
+                routed=routed,
+                decision=decision,
+            )
         # Local capacity is saturated, not down. Retrying `req` unmodified
         # (no `local_url` override) sends rung 0 to the *hosted* OSS endpoint
         # instead of the busy local slot, falling through to claude only if
@@ -4675,6 +4699,9 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     serve_model = ladder[0].model or model
     slot = _local.acquire(serve_model)
     if slot is not None and slot.paused:
+        # Same drain deferral as sync route() — the paused busy-gate, never
+        # an escape (there is none here to skip, but the message stays
+        # drain-aware so the two paths can't drift).
         return _gate_result(
             req,
             LlmResult(
@@ -4683,7 +4710,11 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
                 turns_used=None,
                 model=model,
                 tier=req.tier,
-                error=f"all local serving slots for {model} are busy — backing off",
+                error=(
+                    f"worker draining — no local slot for {model}; backing off"
+                    if slot.draining
+                    else f"all local serving slots for {model} are busy — backing off"
+                ),
                 paused=True,
                 # Capacity, not a fault: the shortest horizon.
                 reason_class="rate",

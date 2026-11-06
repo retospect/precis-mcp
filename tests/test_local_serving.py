@@ -747,3 +747,161 @@ def test_acquire_all_local_candidates_busy_pauses(store) -> None:
     assert third is not None and third.paused and not third.reserved
     local_serving.release(held_local)
     local_serving.release(spill)
+
+
+# ── drain (gr573250): a SIGTERM'd worker stops taking slots + releases ────
+# Holds of a SIGTERM'd worker used to sit until the 600s reaper floor or the
+# 3600s TTL: a drain batch acquired every free slot seconds after 'signal 15
+# received; draining' and orphaned all of them at exit (25 of 32 gpt-oss
+# slots pinned for 10 min on melchior). The drain flag must now refuse new
+# acquires — the caller sees the busy-slot outcome — and the worker's exit
+# hook must close this process's holds and refund their units.
+
+
+def _advertise_this_process(monkeypatch, boot_id: str = "deadbeef" * 4) -> str:
+    """Give ``worker_identity()`` a real (boot_id, process, host) triple —
+    the shape a deployed ``precis worker`` stamps onto its holds — without
+    minting a module-global boot id the rest of the suite would inherit."""
+    from precis.workers import heartbeat
+
+    monkeypatch.setenv("PRECIS_PROCESS", "precis-worker")
+    monkeypatch.setattr(heartbeat, "current_boot_id", lambda: boot_id)
+    return boot_id
+
+
+def _hold_count(store, boot_id: str) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM resource_slot_holds WHERE holder_boot_id = %s",
+            (boot_id,),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_draining_worker_acquire_is_refused_without_a_hold(store, monkeypatch) -> None:
+    """gr573250: after ``request_drain()`` (the SIGTERM handler's flag), a new
+    ``acquire`` on a served model is refused like a busy slot — paused, no
+    reservation, no hold row — even though a free unit remains."""
+    from precis.liveness import request_drain
+
+    _advertise_this_process(monkeypatch)
+    meter.bind_store(store)
+    _serve(store, "testnode", "qwen", 2)
+    first = local_serving.acquire("qwen")
+    assert first is not None and first.reserved and first.hold_id is not None
+
+    request_drain()
+    second = local_serving.acquire("qwen", wait_s=0)
+    assert second is not None and second.paused and not second.reserved
+    assert second.draining is True  # defer, never a saturation escape
+    assert second.hold_id is None
+    free = {s.resource: s.free for s in store.resource_slots_for_host("testnode")}
+    assert free["llm:qwen"] == 1  # only the in-flight hold still debits
+    local_serving.release(first)
+
+
+def test_draining_worker_unserved_model_stays_dark(store, monkeypatch) -> None:
+    """The drain refusal is the *busy-slot* outcome, not a blanket refusal:
+    a model served nowhere must still answer dark ``None`` — returning
+    ``paused`` for it would reroute the call instead of staying dark."""
+    from precis.liveness import request_drain
+
+    _advertise_this_process(monkeypatch)
+    meter.bind_store(store)
+    _serve(store, "testnode", "qwen", 2)
+    request_drain()
+    assert local_serving.acquire("unserved-model") is None
+
+
+def test_draining_worker_remote_acquire_is_refused(store, monkeypatch) -> None:
+    """The drain refusal covers the cluster-scoped path too — a draining
+    worker must not debit ANOTHER host's slot row either."""
+    from precis.liveness import request_drain
+
+    _advertise_this_process(monkeypatch)
+    meter.bind_store(store)
+    _serve_card(
+        store,
+        "otherhost",
+        "remote-big",
+        2,
+        endpoint="http://203.0.113.10:8080/v1",
+    )
+    request_drain()
+    slot = local_serving.acquire("remote-big", wait_s=0)
+    assert slot is not None and slot.paused and not slot.reserved
+    assert slot.draining is True
+    assert slot.hold_id is None
+    free = {s.resource: s.free for s in store.resource_slots_for_host("otherhost")}
+    assert free["llm:remote-big"] == 2  # nothing debited
+
+
+def test_worker_exit_releases_this_process_holds(store, monkeypatch) -> None:
+    """gr573250: the shutdown hook closes every hold THIS process opened
+    (matched on its holder/boot-id identity) and refunds their units —
+    nothing waits out the reaper floor or the TTL for a worker that's gone."""
+    _advertise_this_process(monkeypatch)
+    meter.bind_store(store)
+    _serve(store, "testnode", "qwen", 2)
+    first = local_serving.acquire("qwen")
+    second = local_serving.acquire("qwen")
+    assert first and second and first.reserved and second.reserved
+    assert _hold_count(store, "deadbeef" * 4) == 2
+
+    closed = local_serving.release_process_holds()
+    assert closed == 2
+    assert _hold_count(store, "deadbeef" * 4) == 0
+    free = {s.resource: s.free for s in store.resource_slots_for_host("testnode")}
+    assert free["llm:qwen"] == 2
+
+
+def test_exit_release_scoped_and_idempotent_with_release(store, monkeypatch) -> None:
+    """The exit hook is scoped to this process's identity — another process's
+    holds (different boot_id, different ``host:pid`` holder) are untouched —
+    and a router ``release`` landing after the hook is a no-op, never a
+    double refund (the same delete-wins-the-refund race a late release runs
+    against the TTL sweep)."""
+    from precis.store._resource_slots_ops import insert_slot_hold
+
+    _advertise_this_process(monkeypatch)
+    meter.bind_store(store)
+    _serve(store, "testnode", "qwen", 5)
+    # A foreign process's hold debiting one unit: different boot_id AND a
+    # different holder string — the exit hook must leave it alone.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE resource_slots SET free = free - 1 "
+            "WHERE host = 'testnode' AND resource = 'llm:qwen'"
+        )
+        foreign_hold = insert_slot_hold(
+            conn,
+            "testnode",
+            "llm:qwen",
+            1,
+            "testnode:99999",
+            3600.0,
+            holder_identity=("c0ffee00" * 4, "precis-worker", "testnode"),
+        )
+        conn.commit()
+    ours = local_serving.acquire("qwen")
+    assert ours is not None and ours.reserved and ours.hold_id is not None
+    free = {s.resource: s.free for s in store.resource_slots_for_host("testnode")}
+    assert free["llm:qwen"] == 3  # 5 - 1 foreign - 1 ours
+
+    closed = local_serving.release_process_holds()
+    assert closed == 1
+    free = {s.resource: s.free for s in store.resource_slots_for_host("testnode")}
+    assert free["llm:qwen"] == 4  # ours refunded, foreign still debits
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT holder_boot_id FROM resource_slot_holds WHERE id = %s",
+            (foreign_hold,),
+        ).fetchone()
+    assert row == ("c0ffee00" * 4,)  # foreign hold intact
+
+    # A late router-finally ``release`` of a hold the exit hook already
+    # closed: the delete misses → no second refund (free would read 5).
+    local_serving.release(ours)
+    free = {s.resource: s.free for s in store.resource_slots_for_host("testnode")}
+    assert free["llm:qwen"] == 4

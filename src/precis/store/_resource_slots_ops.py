@@ -247,6 +247,49 @@ def reclaim_expired_slot_holds(conn: Connection) -> int:
     return int(row[0]) if row is not None else 0
 
 
+# Bulk close for ONE process's own holds (the worker shutdown hook,
+# gr573250): same delete + grouped capped-refund discipline as
+# `_RECLAIM_EXPIRED_HOLDS`, keyed on the holder's identity instead of
+# expiry — `holder` is the `host:pid` string every insert path stamps,
+# `boot_id` additionally matches the epoch column (covers any row the
+# process stamped under its advertised generation; NULL-safe, an
+# unadvertised process just matches on `holder` alone).
+_DELETE_HOLDS_FOR_HOLDER = (
+    "WITH doomed AS ("
+    "  DELETE FROM resource_slot_holds "
+    "  WHERE holder = %(holder)s OR holder_boot_id = %(boot_id)s "
+    "  RETURNING host, resource, units"
+    "), grouped AS ("
+    "  SELECT host, resource, SUM(units) AS units_sum FROM doomed "
+    "  GROUP BY host, resource"
+    "), refunded AS ("
+    "  UPDATE resource_slots s SET free = LEAST(s.capacity, s.free + g.units_sum) "
+    "  FROM grouped g "
+    "  WHERE s.host = g.host AND s.resource = g.resource "
+    "  RETURNING s.host"
+    ") "
+    "SELECT (SELECT COUNT(*) FROM doomed)"
+)
+
+
+def delete_slot_holds_for_holder(
+    conn: Connection, holder: str, boot_id: str | None
+) -> int:
+    """Close every hold one process still owns and refund its units.
+
+    The worker's exit path: holds matched on ``holder`` (``host:pid`` —
+    also catches a stale row left by a crashed previous owner of the
+    recycled pid, that owner being provably dead) or on ``boot_id``
+    (``None`` for an unadvertised process). The refund follows the
+    sweep's capped-at-capacity discipline, so a normal ``release``
+    landing afterwards misses the deleted row and correctly skips its
+    own refund — never a double count. Returns holds closed."""
+    row = conn.execute(
+        _DELETE_HOLDS_FOR_HOLDER, {"holder": holder, "boot_id": boot_id}
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
 class ResourceSlotsMixin:
     """Mixin: assumes the concrete Store provides ``self.pool``."""
 
@@ -409,6 +452,7 @@ __all__ = [
     "ResourceSlot",
     "ResourceSlotsMixin",
     "delete_slot_hold",
+    "delete_slot_holds_for_holder",
     "insert_slot_hold",
     "reclaim_expired_slot_holds",
     "release_resource_slots",

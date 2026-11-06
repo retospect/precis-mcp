@@ -972,6 +972,13 @@ def run(args: argparse.Namespace) -> None:
             stop_flag,
             env_float(_SCHED_JOIN_ENV, _SCHED_JOIN_DEFAULT_S, lo=0.0),
         )
+        # gr573250: hand back every local-LLM slot hold this process still
+        # owns — a SIGTERM'd worker used to leave them orphaned until the
+        # 600s reaper floor / 3600s TTL. Scoped to this pid + boot_id;
+        # a no-op when nothing is held or no store is bound.
+        from precis.utils.llm import local_serving as _local_serving
+
+        _local_serving.release_process_holds()
         store.close()
 
 

@@ -4229,6 +4229,67 @@ def test_dispatch_paused_local_slot_without_failover_still_returns_paused(
     assert "busy" in (out.error or "")
 
 
+def test_dispatch_draining_local_slot_defers_never_escapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr573250: a drain refusal is not slot saturation — the worker is
+    exiting and takes no slot anywhere, so neither paused-slot escape may
+    fire: no ladder advance (it would bill a cloud rung the drain is
+    avoiding) and no hosted re-point. The call defers on the paused
+    busy-gate; the caller retries once the new generation is up."""
+    from precis.utils.llm import local_serving as ls
+
+    monkeypatch.setattr(
+        ls,
+        "acquire",
+        lambda model: ls.LocalSlot(
+            host="h",
+            resource=f"llm:{model}",
+            reserved=False,
+            paused=True,
+            draining=True,
+        ),
+    )
+
+    def _boom(*a: object, **kw: object) -> LlmResult:
+        raise AssertionError(
+            "no provider may run on a draining slot — defer, never spill"
+        )
+
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, _RunFn(_boom))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, _RunFn(_boom))
+    monkeypatch.setattr(router, "call_claude_agent", _boom)
+    # A 2-rung chain override with a pinned rung-0 model: without the drain
+    # gate the ladder-advance escape would run rung 1 here.
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda tier: (
+            [
+                {
+                    "placement": "local",
+                    "model": "oss-primary",
+                    "transport": "openai_tools",
+                },
+                {
+                    "placement": "cloud",
+                    "model": "claude-backup",
+                    "transport": "claude_agent",
+                },
+            ]
+            if tier is Tier.BIG
+            else None
+        ),
+    )
+    monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
+
+    assert out.paused is True
+    assert "drain" in (out.error or "")
+
+
 # ── FailoverProvider warns when a fallback rung runs (cost visibility) ──
 
 

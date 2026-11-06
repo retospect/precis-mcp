@@ -45,6 +45,14 @@ race against the heartbeat sweep (:meth:`Store.reclaim_expired_slot_holds`).
 So a process killed mid-call — the 2026-08-10 fleet-wide ``llm:*`` outage,
 every host wedged at ``free = 0`` — self-heals within one TTL instead of
 leaking the unit forever.
+
+**Drain discipline (gr573250).** Once the process drain flag is set
+(SIGTERM/SIGINT via :func:`precis.liveness.request_drain`), :func:`acquire`
+opens no hold and reserves nothing — it returns the same ``paused`` outcome
+the caller already handles for a busy slot — and the worker's shutdown
+``finally`` calls :func:`release_process_holds` to close this process's
+remaining holds and refund them. A bounced worker therefore never orphans
+its slots for the reaper floor or the TTL to rediscover.
 """
 
 from __future__ import annotations
@@ -146,6 +154,11 @@ class LocalSlot:
     resource: str
     reserved: bool
     paused: bool
+    #: ``paused`` because the process is draining, not because a row is
+    #: full — the router must defer (busy-gate), never escape to a hosted
+    #: rung: a draining worker takes no slot ANYWHERE, so spill would just
+    #: re-hit the same refusal or bill a cloud rung for a local-only call.
+    draining: bool = False
     endpoint: str | None = None
     served_model: str | None = None
     #: id of the crash-reclaim hold opened alongside a successful reserve
@@ -394,6 +407,7 @@ def acquire(
     if not model:
         return None
     from precis.budget import meter
+    from precis.liveness import drain_requested, drain_sleep
 
     store = meter.active_store()
     if store is None:
@@ -409,9 +423,14 @@ def acquire(
         until = min(until, deadline)
     while True:
         slot = _acquire_once(store, host, resource, model)
-        if slot is None or slot.reserved or time.monotonic() >= until:
+        if (
+            slot is None
+            or slot.reserved
+            or drain_requested()
+            or time.monotonic() >= until
+        ):
             return slot
-        time.sleep(min(_WAIT_POLL_S, until - time.monotonic()))
+        drain_sleep(min(_WAIT_POLL_S, until - time.monotonic()))
 
 
 def _acquire_once(
@@ -420,9 +439,23 @@ def _acquire_once(
     """One reservation attempt for ``resource``: this host's row first, then
     each remote candidate when the model is not served here *or the local
     row is full*. ``None`` = nothing to reserve anywhere (dark); ``paused``
-    = served somewhere but every candidate refused."""
+    = served somewhere but every candidate refused — OR the process is
+    draining (gr573250: a SIGTERM'd worker takes no new slot and opens no
+    hold; the caller sees the same busy-slot outcome it would for a full
+    row)."""
+    from precis.liveness import drain_requested
+
+    draining = drain_requested()
     served_resources = _served_resources(store, host)
     if resource in served_resources:
+        if draining:
+            return LocalSlot(
+                host=host,
+                resource=resource,
+                reserved=False,
+                paused=True,
+                draining=True,
+            )
         slot = _reserve_one(store, host, resource)
         if slot is None:
             return None  # reservation failure must never break dispatch
@@ -438,9 +471,9 @@ def _acquire_once(
                 )
             return slot
         # Local row full — spill to another serving host before pausing.
-        remote = _acquire_remote(store, resource)
+        remote = _acquire_remote(store, resource, draining=draining)
         return remote if remote is not None else slot
-    remote = _acquire_remote(store, resource)
+    remote = _acquire_remote(store, resource, draining=draining)
     if remote is not None:
         return remote
     _warn_family_mismatch(host, model, resource, served_resources)
@@ -491,16 +524,28 @@ def _reserve_one(store: object, host: str, resource: str) -> LocalSlot | None:
     )
 
 
-def _acquire_remote(store: object, resource: str) -> LocalSlot | None:
+def _acquire_remote(
+    store: object, resource: str, *, draining: bool = False
+) -> LocalSlot | None:
     """Try each LAN-routable ``served_by`` candidate for ``resource`` in
     declared-host order — reserve against THAT entry's host row (one shared
     semaphore in the DB, so ``max_parallel`` caps the fleet, not each host)
     and hand dispatch the remote endpoint exactly as a local slot would.
     First success wins; all-busy returns the first candidate's ``paused``
-    outcome; no candidates (or every attempt erroring) returns ``None``."""
+    outcome; no candidates (or every attempt erroring) returns ``None``.
+    ``draining`` short-circuits to the same ``paused`` outcome — a draining
+    worker debits nobody's row (gr573250)."""
     candidates = _remote_served(store).get(resource)
     if not candidates:
         return None
+    if draining:
+        return LocalSlot(
+            host=candidates[0][0],
+            resource=resource,
+            reserved=False,
+            paused=True,
+            draining=True,
+        )
     busy: LocalSlot | None = None
     for remote_host, remote_served in candidates:
         slot = _reserve_one(store, remote_host, resource)
@@ -630,4 +675,51 @@ def release(slot: LocalSlot | None) -> None:
         )
 
 
-__all__ = ["LocalSlot", "acquire", "release", "reset_cache", "served_locally"]
+def release_process_holds() -> int:
+    """Close every ``resource_slot_holds`` row THIS process still owns and
+    refund their units — the worker's shutdown hook (gr573250).
+
+    Called from ``cli/worker.py``'s exit ``finally``: holds still open then
+    belong to calls dying with the process (detached bounded passes,
+    aborted releases) and would otherwise sit until the 600s reaper floor
+    or the hold TTL — the gap that pinned gpt-oss at ``free = 0`` for ten
+    minutes after every deploy. The match is this process's identity —
+    its ``holder`` string (``host:pid``) plus its advertised ``boot_id`` —
+    never a fleet-wide sweep, and a crash (SIGKILL, no exit path) still
+    falls to the reaper/TTL arms. Each closed row's unit is refunded
+    capped at capacity, the same discipline as the TTL sweep, so a
+    router's per-slot :func:`release` landing after the hook misses the
+    deleted row and correctly skips its refund — idempotent, never a
+    double count. Returns holds closed; any failure degrades to ``0``,
+    never raised — shutdown must not break on bookkeeping.
+    """
+    from precis.budget import meter
+    from precis.liveness import reserve_host, worker_identity
+
+    store = meter.active_store()
+    if store is None:
+        return 0
+    from precis.store._resource_slots_ops import delete_slot_holds_for_holder
+
+    boot_id, _process, _host = worker_identity()
+    holder = f"{reserve_host()}:{os.getpid()}"
+    try:
+        with store.pool.connection() as conn:
+            with conn.transaction():
+                closed = delete_slot_holds_for_holder(conn, holder, boot_id)
+    except Exception:  # pragma: no cover — must never break shutdown
+        log.warning("local_serving: exit hold release failed", exc_info=True)
+        return 0
+    if closed:
+        log.info("local_serving: closed %d slot hold(s) on exit", closed)
+    return closed
+
+
+__all__ = [
+    "LocalSlot",
+    "acquire",
+    "release",
+    "release_process_holds",
+    "reset_cache",
+    "served_locally",
+]
