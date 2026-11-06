@@ -24,8 +24,7 @@ link `served-by` decision nodes; decisions link `derived-from` the facts
 and chunks they rest on; every node is anchored to refdes/net handles.
 
 Owner skills named per step below own their verb detail — this skill is
-the router. Still landing (a later slice of the same item): the budget
-`publish` helper (step 6's `est_current_a` hand-off).
+the router.
 
 ## The flow — eleven steps, each artifact homed
 
@@ -146,7 +145,14 @@ ON, RTC)`. A run does three things:
 3. writes each rail's `est_current_a` onto the pcb's nets — the hand-off
    to post-route widening, so budget and copper can't disagree.
 
-A failing assert blocks the publish.
+Steps 2–3 are a single call the budget script makes:
+`precis.workspace.budget.publish(draft=<slug>, pcb=<slug>,
+tables={caption: {'header': …, 'rows': …}}, nets={net: amps})`. It upserts
+each table chunk (a chunk with a matching caption is edited **in place**, so
+the figure's `plots` link survives and re-renders) and patches
+`est_current_a` on the named nets, validating every input before it writes
+anything. A failing margin assert raises in the model before `publish` is
+reached, so a blocked budget writes nothing.
 
 ## Where the BOM lives
 
