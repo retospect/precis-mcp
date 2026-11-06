@@ -5461,6 +5461,49 @@ def test_status_health_tab_renders_with_no_reserve_or_errors(client) -> None:
     assert "Machines" in resp.text
 
 
+def test_status_health_todo_done_links_focus_url(client, monkeypatch) -> None:
+    """gr573346: the "Recent todo work-done" panel links each row to the
+    per-todo reader ``/todo?focus=<id>``. The ``/todo#row-<id>`` fragment
+    it used to emit names no element on the todo page (no ``id="row-…"``
+    anchor exists, and a done todo is usually beyond the first page of 25
+    roots anyway), so the link dead-ended at the queue's top."""
+    from precis_web.routes import status as status_mod
+
+    monkeypatch.setattr(
+        status_mod,
+        "_recent_todo_done",
+        lambda store: [
+            {
+                "ts": None,
+                "ago": "2h ago",
+                "event": "status:done",
+                "ref_id": 573208,
+                "title": "ship the fix",
+            }
+        ],
+    )
+    resp = client.get("/status?tab=health")
+    assert resp.status_code == 200
+    assert "Recent todo work-done" in resp.text
+    assert 'href="/todo?focus=573208"' in resp.text
+    assert "/todo#row-" not in resp.text
+
+
+def test_no_template_emits_todo_row_fragment() -> None:
+    """No template links ``/todo#row-<id>``: nothing on the todo page
+    defines that anchor, so the fragment can never open the todo
+    (gr573346). The per-todo URL is ``/todo?focus=<id>``."""
+    from pathlib import Path
+
+    templates = Path(__file__).resolve().parents[2] / "src/precis_web/templates"
+    offenders = [
+        str(p.relative_to(templates))
+        for p in templates.rglob("*.j2")
+        if "/todo#row-" in p.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
+
+
 def test_status_now_tab_renders_lazy_shell(client) -> None:
     """``?tab=now`` renders the sub-tab nav + an htmx shell — the real
     content is a lazy-loaded fragment (``GET /status/now``), same pattern
