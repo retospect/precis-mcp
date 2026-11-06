@@ -83,6 +83,60 @@ checkout (its `.release-owner` marker makes the deploy the release's
 owner). `ci_verdict_poll` needs only the DB and api.github.com; set
 `release.repo` (`owner/repo`) on a host with no checkout.
 
+## Release loop (release_poll)
+
+The loop starts itself: one recurring todo; every 10 minutes
+`release_poll` mints one `release-pass` plan only when its gates pass,
+and the armed `plan_dispatch` tick then drives it:
+
+    put(kind='todo', text='release_poll tick',
+        meta={'schedule': {'every': '10m'}, 'executor': 'job_inproc',
+              'job_type': 'release_poll'})
+
+Before the first arm, check for an open release-pass root minted before
+the `release-pass` tag existed: the open-pass gate would miss it — close
+it or tag it.
+
+Disarm: close or pause that todo. Hand releases are that todo paused —
+never both armed (the in-flight check also catches a hand release
+already on origin). Dry run by hand: a `release_poll` job with
+`params={'dry_run': true}` reads every gate and reports `would mint`,
+minting nothing.
+
+The gates, checked in order — the pass stops at the first blocker and
+writes one `release_poll <repo>: blocked — <why>` line, so an idle
+main-equals-prod steady state costs a single api.github.com request:
+
+1. Clock: the `release.no_release_windows` setting — comma-separated UTC
+   `HH:MM-HH:MM` pairs, each half-open `[start, end)`; a start later
+   than the end crosses midnight (`23:00-01:00` covers 23:00-24:00 and
+   00:00-01:00). Default `03:00-04:20`, the nightly backup window
+   (`deploy/roles/backups/defaults/main.yml`); the 21:30-23:30Z
+   directory-backup window is deliberately not in it — add it with
+   `scripts/prod-precis settings set release.no_release_windows
+   03:00-04:20,21:30-23:30`. An unparsable value blocks the pass.
+2. No live `release-pass`-tagged todo still open.
+3. The shared `release.round` record (`scripts/round` publishes it)
+   names no open round — a non-terminal state, any owner, is in flight;
+   an absent record is "no round", an unreadable one blocks.
+4. `compare/prod...main` on GitHub reports `ahead_by > 0` with
+   `behind_by == 0`: `diverged` or `behind` (prod holds commits main
+   lacks, e.g. a hand hotfix) never mints.
+5. No `release/r<N>` head in flight on origin: a head is in flight
+   unless its `deployed/r<N>` tag exists AND prod contains it. The
+   `matching-refs` reads are explicitly bounded — over-cap heads read
+   as unreadable, over-cap tags as in flight.
+6. One pass per main sha: no `release-main:<sha12>`-tagged root exists
+   for main's head, in any state — a new pass needs main to move. The
+   claim check and the mint are one transaction under an advisory
+   lock, so two concurrent runners cannot both mint.
+
+Host needs: only the DB and api.github.com (`GH_TOKEN` lifts the 60/h
+unauthenticated limit, shared with `pr_poll` and `ci_verdict_poll`; set
+`release.repo` on a host with no checkout). Not covered by the kill
+switch — the job only mints; the plan runs when `plan_dispatch` is
+armed.
+
 ## Inbound pull requests (pr_poll)
 
 One recurring todo; every 15 minutes `pr_poll` lists the repo's open PRs

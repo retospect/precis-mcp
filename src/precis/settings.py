@@ -352,6 +352,22 @@ REGISTRY: dict[str, SettingSpec] = {
             "Unset: the cut's recorded repo, else the checkout's origin remote.",
         ),
         SettingSpec(
+            key="release.no_release_windows",
+            type="str",
+            env_var="PRECIS_RELEASE_NO_RELEASE_WINDOWS",
+            default="03:00-04:20",
+            doc="Comma-separated UTC HH:MM-HH:MM windows inside which "
+            "release_poll never mints a release-pass "
+            "(precis.workers.job_types.release_poll). Each pair is "
+            "half-open [start, end); a start later than the end crosses "
+            "midnight. The default restates the nightly backup window "
+            "(deploy/roles/backups/defaults/main.yml: "
+            "backup_window_start_utc / backup_window_end_utc); the "
+            "21:30-23:30Z directory-backup window is deliberately NOT in "
+            "the default — adding it is a settings change, not code. An "
+            "unparsable value blocks the pass (fail-safe).",
+        ),
+        SettingSpec(
             key="pr.factory_builders",
             type="str",
             env_var=None,

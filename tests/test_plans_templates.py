@@ -367,6 +367,7 @@ def test_release_pass_shape(store: Store) -> None:
     assert approval["ask"]["options"] == ["deploy r<N>", "hold"]
     assert approval["ask"]["blocks"] == f"td{mint.ids['deploy']}"
     assert "ask-user" in {t.value for t in store.tags_for(mint.ids["approval"])}
+    assert "release-pass" in {t.value for t in store.tags_for(mint.root_id)}
     _assert_plan_hygiene(store, mint)
 
 

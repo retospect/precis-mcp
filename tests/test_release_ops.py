@@ -133,6 +133,7 @@ def test_registry_and_executors() -> None:
         ("release_cut", "ssh_node"),
         ("ci_verdict_poll", "job_inproc"),
         ("release_deploy", "ssh_node"),
+        ("release_poll", "job_inproc"),
     ):
         spec = get_job_type(name)
         assert spec is not None, name
@@ -141,8 +142,9 @@ def test_registry_and_executors() -> None:
     for name in ("release_cut", "release_deploy"):
         spec = get_job_type(name)
         assert spec is not None and spec.submit is not None and spec.poll is not None
-    poll = get_job_type("ci_verdict_poll")
-    assert poll is not None and poll.dispatch is not None and poll.dedupe_pending
+    for name in ("ci_verdict_poll", "release_poll"):
+        poll = get_job_type(name)
+        assert poll is not None and poll.dispatch is not None and poll.dedupe_pending
 
 
 # ── the cut flows through the plan root ─────────────────────────────

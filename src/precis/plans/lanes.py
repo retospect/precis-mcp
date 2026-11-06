@@ -91,6 +91,7 @@ FACTORY_DENY_WRITE_PATHS: tuple[str, ...] = (
     "src/precis/workers/job_types/release_cut.py",
     "src/precis/workers/job_types/ci_verdict_poll.py",
     "src/precis/workers/job_types/ci_red_digest.py",
+    "src/precis/workers/job_types/release_poll.py",
     "src/precis/workers/job_types/release_deploy.py",
     "src/precis/workers/job_types/land_slice.py",
     "scripts/release",

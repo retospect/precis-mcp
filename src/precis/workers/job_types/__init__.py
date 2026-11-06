@@ -769,15 +769,17 @@ def _load_good_search_triage() -> JobTypeSpec:
     return good_search.TRIAGE_SPEC
 
 
-#: The dark release pass's mechanical ops (td543733, td573431): the cut,
-#: the deploy and the red-run digest are detached submit/poll pairs under
-#: ssh_node; the verdict poll is a plugin dispatch under job_inproc.
+#: The dark release pass's mechanical ops (td543733, td573431, td573430):
+#: the cut, the deploy and the red-run digest are detached submit/poll
+#: pairs under ssh_node; the verdict poll and the release_poll starter
+#: are plugin dispatches under job_inproc.
 #: PRECIS_FACTORY=off refuses the detached ops.
 _RELEASE_OPS: tuple[str, ...] = (
     "release_cut",
     "ci_verdict_poll",
     "release_deploy",
     "ci_red_digest",
+    "release_poll",
 )
 
 
@@ -786,6 +788,10 @@ def _load_release_op(name: str) -> JobTypeSpec:
         from precis.workers.job_types import ci_verdict_poll
 
         return ci_verdict_poll.SPEC
+    if name == "release_poll":
+        from precis.workers.job_types import release_poll
+
+        return release_poll.SPEC
     from importlib import import_module
 
     mod = import_module(f"precis.workers.job_types.{name}")
@@ -1015,6 +1021,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "ci_verdict_poll",
     "release_deploy",
     "ci_red_digest",
+    "release_poll",
     "pr_poll",
     "dep_check",
     "pr_action",

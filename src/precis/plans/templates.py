@@ -564,7 +564,22 @@ def _tag(m: _Minter, todo_id: int, value: str) -> None:
     )
 
 
-def mint_release_pass(store: Store, parent_id: int | None = None) -> PlanMint:
+#: The tag a release-pass root carries for the main head it was minted
+#: on — ``release-main:<sha12>`` (the ``pr-head:`` shape). ``release_poll``
+#: mints no second pass for a sha that already has a root in any state:
+#: a new pass needs main to move (td573430 fix round 1).
+RELEASE_MAIN_TAG_PREFIX = "release-main:"
+
+
+def release_main_tag(head_sha: Any) -> str | None:
+    """``release-main:<sha12>`` for a main head sha, else ``None``."""
+    sha = str(head_sha or "").strip().lower()
+    return f"{RELEASE_MAIN_TAG_PREFIX}{sha[:12]}" if sha else None
+
+
+def mint_release_pass(
+    store: Store, parent_id: int | None = None, *, main_sha: str | None = None
+) -> PlanMint:
     """cut -> poll -> gate tests-green -> approval ask -> deploy; a loop
     mints triage + fixer + re-cut + poll while red (td543733, td543855).
 
@@ -576,7 +591,11 @@ def mint_release_pass(store: Store, parent_id: int | None = None) -> PlanMint:
     closes it empty, red mints a fixer. ``approval`` is an ``answer`` gate
     that is also the ask-user todo Reto answers (``deploy r<N>`` | ``hold``);
     ``deploy`` (``release_deploy``) refuses unless that answer names
-    ``deploy r<N>`` (:func:`precis.plans.release.approval`)."""
+    ``deploy r<N>`` (:func:`precis.plans.release.approval`). The root is
+    tagged ``release-pass`` — the open-pass check
+    ``release_poll`` reads before minting the next one — and, when
+    ``main_sha`` is given, ``release-main:<sha12>``: the one-pass-per-sha
+    claim the poll makes under its advisory lock."""
     gate = {"kind": "tests-green", "args": {"range": _release.PENDING_RANGE}}
     ask: dict[str, Any] = {
         "kind": "approval",
@@ -586,7 +605,11 @@ def mint_release_pass(store: Store, parent_id: int | None = None) -> PlanMint:
     }
 
     def build(m: _Minter) -> None:
-        m.node("root", "Release pass", _phase())
+        root = m.node("root", "Release pass", _phase())
+        _tag(m, root, "release-pass")
+        stamped = release_main_tag(main_sha)
+        if stamped is not None:
+            _tag(m, root, stamped)
         m.node(
             "cut",
             "Cut the release",

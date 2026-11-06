@@ -1453,6 +1453,16 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        name="release_poll",
+        label="Release poll (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        uses_external=("github",),
+        one_line="Mint one release-pass plan when main is ahead of prod "
+        "and nothing is in flight.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
         name="gripe_validate",
         label="Gripe validate (job)",
         category="jobs",
