@@ -197,6 +197,7 @@ rule any producer can emit, grouped by source. The families:
 | `memory_recall` (`recall-dropped`) | weekly `memory_recall` cadence | k=5 recall on the packaged P4 question set fell below the last recorded score, or median index + fisheye+1hop estimated tokens rose >25% (`app_settings['memory_recall:last']`, prior runs in `history`; `precis memory index --set --curve` shows k=3/5/8/12 recall versus tokens, estimated by chars/4) |
 | `secret_check` (`failed:<name>`) | weekly `secret_check` cadence | the credential probe in `precis.secret_status` rejected a configured key — alert carries the name, HTTP status and key URL, never the value |
 | `plan_dispatch` (`plan-moot:<root>`) | `plan_dispatch` tick | a plan closed itself as moot — its open nodes were set to `won't-do`; the detail says why, reopen the root if the call was wrong |
+| `run_slice` (`lane-host-refusal:{lane}`) | `run_slice` launch preflight | a lane refused for a host reason (missing binary, dead login, failed trust seed); the lane backs off 30 minutes with no attempt, the detail carries the refusal's next step, and a successful launch on that lane resolves the alert |
 | `nanopub_ots` · `nanopub-demote` · `nanopub_mirror` · `watch:*` · `ingest:*` · `inject_scan` · `llm_reconcile:drift` · `scheduler` · `quest_tick` · `admit:oversize` · `fetch_oa:*` · `orcid_enrich` | their owning pass | one or two conditions each — see `/rules` |
 
 The producer surface is generic (`precis.alerts.raise_alert`); a new

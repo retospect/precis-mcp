@@ -78,6 +78,10 @@ _ALLOWLIST: dict[tuple[str, str], str] = {
         "validate_patch",
     ): "' | ' inside an error-prose session-format enumeration — not output rows",
     (
+        "_memory_retire.py",
+        "scan_mentions",
+    ): "' | ' is the tsquery OR operator, not output rows",
+    (
         "cad.py",
         "_render_mold",
     ): "' | ' inside an error-prose layout enumeration — not output rows",
