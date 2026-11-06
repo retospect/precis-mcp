@@ -15,6 +15,7 @@ from precis.errors import BadInput, NotFound
 from precis.graph.garden.candidates import dangling_mention_candidates
 from precis.handlers.md import MdHandler
 from precis.handlers.memory import MemoryHandler
+from precis.handlers.python import PythonHandler
 from precis.runtime import PrecisRuntime
 from precis.store import ChunkInsert, Store
 from precis.utils.handle_registry import format_handle
@@ -492,6 +493,117 @@ def test_md_successor_requires_an_existing_section(
 
     with pytest.raises(NotFound):
         handler.delete(id=old, superseded_by="md:main/docs/example.md~missing")
+    assert _snapshot(store, old) == before
+
+
+def _python_repo(root: Path) -> None:
+    pkg = root / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text('"""Package root."""\n', encoding="utf-8")
+    (pkg / "m.py").write_text(
+        '"""Module."""\n\n\n'
+        "def helper(x: int) -> int:\n"
+        '    """The replacement helper."""\n'
+        "    return x + 1\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {},
+        {"view": "fisheye+1hop+recall", "extent": "fisheye", "q": "memory:build"},
+    ],
+)
+@pytest.mark.parametrize(
+    "address,expected",
+    [
+        ("python:main::pkg.m.helper", "pkg.m.helper"),
+        ("python:main/pkg/m.py", "def helper"),
+    ],
+)
+def test_python_successor_redirects_and_preserves_tombstone(
+    runtime_with_store: PrecisRuntime,
+    tmp_path: Path,
+    address: str,
+    expected: str,
+    options: dict[str, str],
+) -> None:
+    runtime = runtime_with_store
+    store, handler = runtime.live_store, MemoryHandler(hub=runtime.hub)
+    _python_repo(tmp_path)
+    PythonHandler(hub=runtime.hub, roots={"main": tmp_path})._register_with(runtime.hub)
+    old = _memory(store, "Obsolete procedure kept for audit.")
+    source = _memory(store, f"Use me{old} for builds.")
+
+    ack = handler.delete(id=old, superseded_by=address).body
+
+    assert address in ack and f"me{source}" in ack
+    assert store.fetch_refs_by_ids([old])[old].meta["superseded_by"] == address
+    assert store.follow_supersede_address(old) == address
+    assert store.follow_supersede(old) is None
+    (candidate,) = dangling_mention_candidates(store)
+    assert candidate.target_id == source
+    assert candidate.evidence["mentions"][0]["successor"] == address
+    body, failed = runtime.dispatch_with_status(
+        "get", {"kind": "memory", "id": f"me{old}", **options}
+    )
+    assert not failed, body
+    assert expected in body
+    assert "Obsolete procedure kept for audit." not in body
+    if options:
+        assert body.startswith(
+            f"Dropped memory read options {', '.join(options)} "
+            "when redirecting to python."
+        )
+    else:
+        assert "Dropped memory read options" not in body
+    retired, failed = runtime.dispatch_with_status(
+        "get", {"kind": "memory", "id": f"me{old}", "view": "retired"}
+    )
+    assert not failed, retired
+    assert "Obsolete procedure kept for audit." in retired
+    assert address in retired
+
+
+@pytest.mark.parametrize(
+    "address,error",
+    [
+        ("python:main", BadInput),
+        ("python:main::pkg.m.missing", NotFound),
+        ("python:unknown::pkg.m.helper", NotFound),
+        ("python:main/pkg/absent.py", NotFound),
+    ],
+)
+def test_python_successor_requires_a_resolvable_symbol(
+    runtime_with_store: PrecisRuntime,
+    tmp_path: Path,
+    address: str,
+    error: type[Exception],
+) -> None:
+    runtime = runtime_with_store
+    store, handler = runtime.live_store, MemoryHandler(hub=runtime.hub)
+    _python_repo(tmp_path)
+    PythonHandler(hub=runtime.hub, roots={"main": tmp_path})._register_with(runtime.hub)
+    old = _memory(store, "Old procedure.")
+    before = _snapshot(store, old)
+
+    with pytest.raises(error):
+        handler.delete(id=old, superseded_by=address)
+    assert _snapshot(store, old) == before
+
+
+def test_python_successor_requires_the_python_handler(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    runtime = runtime_with_store
+    store, handler = runtime.live_store, MemoryHandler(hub=runtime.hub)
+    old = _memory(store, "Old procedure.")
+    before = _snapshot(store, old)
+
+    with pytest.raises(BadInput, match="requires the python handler"):
+        handler.delete(id=old, superseded_by="python:main::pkg.m.helper")
     assert _snapshot(store, old) == before
 
 

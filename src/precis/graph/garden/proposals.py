@@ -130,8 +130,8 @@ def memory_successor_refusal(
 ) -> str | None:
     """Refuse document successors until their content can be shown and pinned.
 
-    An ``md:`` route has no ref content SHA. Treating it like a missing handle
-    silently omits the evidence on which preservation depends.
+    An ``md:`` or ``python:`` route has no ref content SHA. Treating it like a
+    missing handle silently omits the evidence on which preservation depends.
     """
     successors = [payload.get("successor"), payload.get("delete_successor")]
     successors.extend(
@@ -139,10 +139,19 @@ def memory_successor_refusal(
         for mention in evidence.get("mentions", [])
         if isinstance(mention, dict)
     )
-    if any(isinstance(value, str) and value.startswith("md:") for value in successors):
+    matched = next(
+        (
+            value
+            for value in successors
+            if isinstance(value, str) and value.startswith(("md:", "python:"))
+        ),
+        None,
+    )
+    if matched is not None:
         return (
-            "md: successors are unsupported: their source content cannot be "
-            "shown and pinned; use a live ref successor and propose again"
+            f"{matched.split(':', 1)[0]}: successors are unsupported: their "
+            "source content cannot be shown and pinned; use a live ref "
+            "successor and propose again"
         )
     return None
 

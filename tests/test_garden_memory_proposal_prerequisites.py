@@ -29,13 +29,18 @@ from tests.test_garden_memory_apply import _memory, _proposal
 
 
 @pytest.mark.parametrize("location", ["payload", "mention"])
-def test_md_successor_refusal_names_missing_content_pin(location: str) -> None:
+@pytest.mark.parametrize(
+    "successor", ["md:main/docs/source.md", "python:main::pkg.m.helper"]
+)
+def test_md_successor_refusal_names_missing_content_pin(
+    location: str, successor: str
+) -> None:
     payload: dict[str, Any] = {}
     evidence: dict[str, Any] = {}
     if location == "payload":
-        payload["successor"] = "md:main/docs/source.md"
+        payload["successor"] = successor
     else:
-        evidence["mentions"] = [{"successor": "md:main/docs/source.md"}]
+        evidence["mentions"] = [{"successor": successor}]
     reason = memory_successor_refusal(payload, evidence)
     assert reason is not None
     assert "shown and pinned" in reason

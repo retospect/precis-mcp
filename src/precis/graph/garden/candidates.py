@@ -744,6 +744,8 @@ def _live_meta_successor(
         return None
     if address.startswith("md:") and "~" in address:
         return address
+    if address.startswith("python:") and ("::" in address or "/" in address):
+        return address
     parsed = parse_handle(address)
     return address if parsed is not None and not parsed[1] else None
 

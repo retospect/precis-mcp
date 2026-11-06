@@ -75,8 +75,9 @@ may leave the old claim false. The list shows at most 25 nodes, then
 
 An inbound `supersedes` edge supplies the successor. Without one, use
 `superseded_by=` or `args={'superseded_by': '<full handle>'}`: the
-successor can be any kind, including a skill, a todo, a gripe, or a docs
-section such as `md:main/docs/<file>.md~<heading>`.
+successor can be any kind, including a skill, a todo, a gripe, a docs
+section such as `md:main/docs/<file>.md~<heading>`, or a python symbol
+such as `python:<alias>::<qualname>` / `python:<alias>/<path>.py`.
 Chunk handles are refused; use their containing record or an `md:` section.
 Multiple live inbound successors require an explicit `superseded_by=` choice.
 Retirement preserves `supersedes` edges on the tombstone.

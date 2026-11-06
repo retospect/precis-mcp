@@ -779,8 +779,9 @@ class RefsMixin:
     ) -> str | None:
         """Resolve legacy numeric pointers and full successor addresses.
 
-        File-backed md sections have no refs row: retain their full address
-        for runtime routing instead of inventing a ref id. Record successors
+        File- and index-backed successors (md sections, python symbols)
+        have no refs row: retain their full address for runtime routing
+        instead of inventing a ref id. Record successors
         keep the same cycle/depth and kind checks as universal handles.
         """
 
@@ -815,7 +816,7 @@ class RefsMixin:
                     )
                 if sup is None:
                     return None
-                if kind == "memory" and str(sup).startswith("md:"):
+                if kind == "memory" and str(sup).startswith(("md:", "python:")):
                     return str(sup)
                 parsed = handle_registry.parse(str(sup))
                 if parsed is not None:

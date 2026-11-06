@@ -4435,10 +4435,11 @@ class DispatchMixin(RuntimeShape):
             )
 
     def _redirect_retired_memory(self, args: dict[str, Any]) -> None:
-        """Route memory tombstones to record or file-backed successor addresses.
+        """Route memory tombstones to record or file/index successor addresses.
 
         ``resolve_handle`` owns stored-record redirects. This small bridge also
-        covers numeric ids and md sections, which have no refs row to resolve.
+        covers numeric ids and non-ref successors (md sections, python
+        symbols), which have no refs row to resolve.
         It runs before normal kind routing, so target visibility gates still run.
         """
         if self.store is None or args.get("kind") not in (None, "memory"):
@@ -4457,22 +4458,23 @@ class DispatchMixin(RuntimeShape):
         target = self.store.follow_supersede_address(ref_id)
         if target is None:
             return
-        if target.startswith("md:"):
+        if target.startswith(("md:", "python:")):
             from precis.hints import merged_redirect_hint
 
-            # File targets cannot enter resolve_handle's sandbox recheck.
+            # File/index targets cannot enter resolve_handle's sandbox recheck.
             from precis.runtime.scope import current_scope
 
+            kind, _, address = target.partition(":")
             if current_scope() == "read":
                 from precis.workers.executors._sandbox_read_mcp import kind_refusal
 
-                refusal = kind_refusal("get", "md")
+                refusal = kind_refusal("get", kind)
                 if refusal is not None:
                     raise BadInput(
                         refusal.splitlines()[0].removeprefix("[error:BadInput] "),
                         next="read this successor outside the sandbox",
                     )
-            args["kind"], args["id"] = "md", target.removeprefix("md:")
+            args["kind"], args["id"] = kind, address
             self._drop_memory_read_options(args)
             self.store.emit_hint(merged_redirect_hint(f"me{ref_id}", target))
         else:

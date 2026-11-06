@@ -3895,7 +3895,7 @@ class MemoryHandler(NumericRefHandler):
     def _retire_successor(
         self, raw: str, ref_id: int, *, conn: Connection
     ) -> tuple[str, int | None, str]:
-        """Validate a replacement; file-backed md sections have no ref to migrate."""
+        """Validate a replacement; file- and index-backed successors have no ref."""
         if raw.startswith("md:"):
             address = raw.removeprefix("md:")
             if "~" not in address or not address.rsplit("~", 1)[1]:
@@ -3911,6 +3911,22 @@ class MemoryHandler(NumericRefHandler):
                 )
             handler.get(id=address)
             return raw, None, "md"
+        if raw.startswith("python:"):
+            address = raw.removeprefix("python:")
+            if "::" not in address and "/" not in address:
+                raise BadInput(
+                    "a python successor requires a symbol or file address",
+                    next="superseded_by='python:<alias>::<qualname>' or "
+                    "'python:<alias>/<path>.py'",
+                )
+            handler = self.hub.handler_for("python")
+            if handler is None:
+                raise BadInput(
+                    "python successor validation requires the python handler",
+                    next="use a live record handle or configure python roots",
+                )
+            handler.get(id=address)
+            return raw, None, "python"
         if raw.isdecimal():
             raw = f"me{raw}"
         try:
