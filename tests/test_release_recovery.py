@@ -103,7 +103,12 @@ def test_owner_without_receipt_preserves_finish_refusal(
     monkeypatch.setattr(mod, "rnd", refuse)
     assert mod.run(_args(mod)) == 1
     output = capsys.readouterr()
-    assert calls == [("deploy", "--finish-pointer")]
+    # stale_why probes `supersede --dry-run` first (rc 1 = not provably
+    # stale), then the owner's finish-pointer still runs (gr573151).
+    assert calls == [
+        ("supersede", "release/r1", "--dry-run"),
+        ("deploy", "--finish-pointer"),
+    ]
     assert "receipt missing: verify the served clone" in output.out
     assert "next:" in output.err
     assert "deploy failed" not in output.err
