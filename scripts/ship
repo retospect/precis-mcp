@@ -35,7 +35,7 @@
 #                             pointer gate instead). Red gate aborts (never red).
 #                             --impacted (/land) narrows pytest to testmon's
 #                             affected-tests set; full suite otherwise (/go);
-#                             --quick (/qland) runs ruff + the secret scan only (mypy, import contracts, all pytest wait for the release gate);
+#                             --quick (/qland) runs ruff + the secret scan + the fast DB-free guards (mypy, import contracts, all pytest wait for the release gate);
 #                             --checked runs lint + a cheap selected pytest
 #                             (scripts/impacted-tests) — the middle rung.
 #                    · ship   (under the lock) squash `commit-tree` onto
@@ -906,8 +906,9 @@ compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE"
 # Falls back to whatever PRECIS_TEST_PG_URL the container already carries (the
 # host DB) if the service can't start, so a broken test-db never blocks a ship.
 TEST_DB_ENV=()
-# The test DB exists for pytest. --quick runs ruff + the secret scan only (the pre-qland
-# lint below), so starting a RAM-backed pgvector for it is pure waste.
+# The test DB exists for pytest. --quick runs ruff + the secret scan + the fast
+# DB-free guards (the pre-qland lint below), so starting a RAM-backed pgvector
+# for it is pure waste.
 # --checked runs a selected pytest — it needs the DB.
 if [[ "$QUICK" != 1 || "$CHECKED" == 1 ]]; then
     say "starting co-located tmpfs test DB (precis-test-db)"
@@ -941,7 +942,7 @@ fi
 if [[ "$CHECKED" == 1 ]]; then
     say "checked ship (--checked) — pre-qland lint + a selected pytest (contract/corpus/import); merge machinery same as --quick"
 elif [[ "$QUICK" == 1 ]]; then
-    say "quick ship (--quick) — no pytest, no gate slot; ruff + secret scan still run; the rest waits for the release gate (pre-qland lint, below)"
+    say "quick ship (--quick) — no pytest, no gate slot; ruff + secret scan + fast DB-free guards still run; the rest waits for the release gate (pre-qland lint, below)"
 elif [[ "$REMOTE" == 1 && "$IMPACTED" != 1 ]]; then
     # Pure remote gate: no local containers on the quiet path — GitHub's
     # matrix is the gate. The hybrid race fallback calls setup_gate_infra
@@ -2466,7 +2467,7 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
             fi
         fi
 
-        # Pre-qland lint: ruff + secret scan (+ mypy, import contracts, hygiene tests on --checked/--release). /qland
+        # Pre-qland lint: ruff + secret scan + the fast DB-free guards (+ mypy, import contracts, hygiene tests on --checked/--release). /qland
         # exists so a burst of trees doesn't each pay the pytest suite, and
         # that trade stands — but the failures that actually cost hours are
         # not test failures. On 2026-09-25 a burst left main red four
@@ -2499,14 +2500,25 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         # seed rode a --quick land to a red r97 release gate (gr514386) —
         # DB-free and seconds, so the qland lane pays it like the ratchets.
         HYGIENE='uv run pytest -q -n0 tests/test_doc_pointers.py tests/test_skill_prose.py tests/test_deploy_tree_no_secrets.py tests/test_vocab_lint.py tests/test_paper_text_gate.py'
-        CODE_HYGIENE='tests/test_type_ignore_ratchet.py tests/test_posix_only_guards.py tests/test_text_io_encoding.py tests/test_extra_only_import_guards.py tests/test_store_mixin_guard.py tests/test_utc_time_convention.py tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings tests/test_skill_size.py tests/test_pcb_dead_exports.py tests/test_startup_skills.py tests/test_token_budget.py tests/test_baseline_seed_tables.py::test_every_seeded_table_is_classified'
-        # Plain --quick runs only ruff and this secret scan (Reto 2026-10-30:
-        # "don't even bother with python checks, we'll do it all as a batch in
-        # the release branch"). The repo is PUBLIC and a qland push to main
-        # publishes at once, so the secret-tree scan cannot wait for the
-        # release gate. Import contracts, mypy and the rest of the hygiene
-        # batch run in --checked / --release and at the release gate.
+        CODE_HYGIENE='tests/test_type_ignore_ratchet.py tests/test_posix_only_guards.py tests/test_text_io_encoding.py tests/test_extra_only_import_guards.py tests/test_store_mixin_guard.py tests/test_utc_time_convention.py tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings tests/test_skill_size.py tests/test_pcb_dead_exports.py tests/test_startup_skills.py tests/test_token_budget.py tests/test_baseline_seed_tables.py::test_every_seeded_table_is_classified tests/test_skill_vocabulary.py tests/test_render_dry_guard.py tests/test_mcp_raise_next_ratchet.py tests/test_skill_ingest.py::test_scan_oversized_chunk_becomes_failure tests/test_skill_ingest.py::test_scan_multiple_oversized_chunks_reported_in_one_pass tests/test_skill_ingest.py::test_scan_oversized_chunk_under_custom_budget tests/test_skill_ingest.py::test_builtin_corpus_scans_clean_without_plugin_roots'
+        # Plain --quick runs ruff, this secret scan and the fast DB-free
+        # hygiene guards (Reto 2026-10-30: "don't even bother with python
+        # checks, we'll do it all as a batch in the release branch"; the
+        # guards joined after r229-r231 each went red on a guard --quick
+        # had skipped — gr573555). The repo is PUBLIC and a qland push to
+        # main publishes at once, so the secret-tree scan cannot wait for
+        # the release gate. Import contracts, mypy and the rest of the
+        # hygiene batch run in --checked / --release and at the release
+        # gate.
         SECRET_SCAN='uv run pytest -q -n0 -p no:cacheprovider tests/test_deploy_tree_no_secrets.py'
+        # td573922: the raise-hint ratchet and the skill-ingest size/shape
+        # tests joined after r232/r233 reddened the same way (Reto's cap:
+        # the whole set under 45 s — the set measures ~31 s; the polite
+        # outbound ratchet stays out, its ~32 s sweep would double it).
+        # skill_ingest is all-DB-free, so only its size/shape members join
+        # by node id: the three oversized-chunk checker tests plus the two
+        # real-corpus scans that fail on a >4000-char skill section.
+        QUICK_GUARDS='uv run pytest -q -n0 -p no:cacheprovider -rfE tests/test_skill_vocabulary.py tests/test_render_dry_guard.py tests/test_type_ignore_ratchet.py tests/test_mcp_raise_next_ratchet.py tests/test_skill_ingest.py::test_scan_oversized_chunk_becomes_failure tests/test_skill_ingest.py::test_scan_multiple_oversized_chunks_reported_in_one_pass tests/test_skill_ingest.py::test_scan_oversized_chunk_under_custom_budget tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings tests/test_skill_ingest.py::test_builtin_corpus_scans_clean_without_plugin_roots'
         if [[ "${PRECIS_QLAND_LINT:-1}" == 0 ]]; then
             say "quick ship — pre-qland lint OFF (PRECIS_QLAND_LINT=0)"
         else
@@ -2534,17 +2546,20 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
                     say "pre-qland lint (docs/config-only: doc-pointer · skill-prose · secret-scan · vocab · paper-text tests) — ${GATE_MODE} gate, no gate slot"
                     QLAND_CMD="$HYGIENE"
                 else
-                    say "pre-qland lint (docs/config-only: secret-scan only; the rest runs at the release gate) — ${GATE_MODE} gate, no gate slot"
-                    QLAND_CMD="$SECRET_SCAN"
+                    say "pre-qland lint (docs/config-only: secret-scan · skill-vocabulary + skill-size guards; the rest runs at the release gate) — ${GATE_MODE} gate, no gate slot"
+                    QLAND_CMD="$SECRET_SCAN && uv run pytest -q -n0 -p no:cacheprovider -rfE tests/test_skill_vocabulary.py tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings"
                 fi
             else
-                # Plain --quick = ruff + secret scan only. mypy, import
-                # contracts and the hygiene batch (~5:45) are the slow legs;
-                # the release gate (check.yml lint job + full pytest) runs
-                # them. --checked and --release keep all of them.
+                # Plain --quick = ruff + secret scan + the fast DB-free
+                # guards (~31 s: skill vocabulary, render, type-ignore and
+                # raise-hint ratchets, skill-ingest size/shape — gr573555,
+                # td573922). mypy, import contracts and the rest of the
+                # hygiene batch (~5:45) are the slow legs; the release
+                # gate (check.yml lint job + full pytest) runs them.
+                # --checked and --release keep all of them.
                 QLAND_MYPY=""
-                QLAND_TAIL="$SECRET_SCAN"
-                QLAND_WHAT="ruff autofix · secret-scan; mypy, import contracts and the other tests run at the release gate"
+                QLAND_TAIL="$SECRET_SCAN && $QUICK_GUARDS"
+                QLAND_WHAT="ruff autofix · secret-scan · fast guards (skill-vocab, render, type-ignore, raise-hint, skill-size); mypy, import contracts and the other tests run at the release gate"
                 if [[ "$CHECKED" == 1 || "$RELEASE" == 1 ]]; then
                     QLAND_MYPY="uv run mypy src tests && "
                     QLAND_TAIL="uv run lint-imports && $HYGIENE $CODE_HYGIENE"
@@ -3011,7 +3026,7 @@ else
         elif [[ "$QLAND_LINT_RAN" != 1 ]]; then
             printf '\n\033[33m⚡ UNTESTED ship — no lint and no pytest ran on this merge. main is unvalidated\n  until the next full gate: run /go (full suite + deploy) after the qland burst.\033[0m\n'
         else
-            printf '\n\033[33m⚡ UNTESTED ship — only ruff and the secret scan passed; mypy, import contracts and\n  all pytest did NOT run. main is untested until the release gate (/go).\033[0m\n'
+            printf '\n\033[33m⚡ UNTESTED ship — only ruff, the secret scan and the fast DB-free guards passed; mypy,\n  import contracts and all pytest did NOT run. main is untested until the release gate (/go).\033[0m\n'
         fi
     fi
 fi

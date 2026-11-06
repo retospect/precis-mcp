@@ -275,7 +275,7 @@ Work you won't use: `scripts/take-agent --discard <agent-tree>`.
 
 ## /go — land, cut a release, gate it, deploy it
 
-`scripts/ship --quick` lands the tree on `main` (lint only), then
+`scripts/ship --quick` lands the tree on `main` (lint + fast DB-free guards), then
 `scripts/release` drives `scripts/round`: open a round if none is open,
 `round cut --sha S` pushes `release/r<N>` at S = `origin/main`, check.yml
 runs the full gate (lint + the shard matrix, never cancelled) on that exact head,
@@ -307,18 +307,22 @@ the next release.
 
 ## /qland — pytest-ungated burst-land (the default lane)
 
-`--quick`: ruff + secret scan; mypy, import contracts and all pytest run at
+`--quick`: ruff + secret scan + the fast DB-free guards (skill vocabulary,
+render, type-ignore ratchet); mypy, import contracts and all pytest run at
 the release gate (Reto 2026-10-30: "Don't even bother with python checks,
 we'll do it all as a batch in the release branch"). The secret scan
 (`tests/test_deploy_tree_no_secrets.py`) stays because the repo is public and
-a qland push publishes at once. `--checked` and `--release` keep mypy, import
-contracts and the hygiene tests in their lint.
+a qland push publishes at once; the guards joined after r229-r231 each went
+red on a guard `--quick` had skipped (gr573555) — ~22 s without the test
+stack. `--checked` and `--release` keep mypy, import contracts and the
+hygiene tests in their lint.
 
 `scripts/ship --quick`: refuse a dirty tree → sync → **drift guard** (warns when
 main's last all-green shard matrix is 24h old, refuses at 48h — a burst that
 outran its verdicts wants a `/go`, not another qland; never refuses on an age
-it could not look up) → **pre-qland lint** (ruff · secret scan — no
-mypy, import contracts, hygiene batch or pytest, no gate slot;
+it could not look up) → **pre-qland lint** (ruff · secret scan · fast
+DB-free guards — no mypy, import contracts, rest of the hygiene batch or
+pytest, no gate slot;
 `PRECIS_QLAND_LINT=0` to skip) → squash-merge. For when many trees are in
 flight — qland them one by one, then one `/go` releases the integrated
 `main` (ship lands nothing when the tree already equals main).
@@ -597,7 +601,7 @@ branches in a dedicated integration worktree.
   `release/r<N>` from main at a fixed sha, gate it on check.yml, deploy that
   head pinned. Later main pushes don't touch it; one release at a time, a
   second `/go` rides along or waits.
-- **`/qland`** — `scripts/ship --quick`: lint only, no pytest. The
+- **`/qland`** — `scripts/ship --quick`: lint + fast DB-free guards, no pytest. The
   release-train default lane for every non-harness diff — `uv.lock`,
   `pyproject.toml`, migrations and schema included; a harness diff is
   refused, name `--remote`. Burst-land many trees, then one `/go`.

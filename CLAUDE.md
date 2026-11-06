@@ -21,8 +21,8 @@ commit in the primary `main` checkout. Mechanics: `docs/conventions/shipping.md`
   diffs only (`scripts/ship`, `scripts/test`, `scripts/lib/*`, `.github/*`).
 - `/go` — `--quick` to main, then `scripts/release`: cut `release/r<N>`,
   gate it, deploy that head pinned.
-- `/qland` — `scripts/ship --quick`: lint only, no pytest; the default lane
-  for every non-harness diff. `--checked` adds the selected pytest
+- `/qland` — `scripts/ship --quick`: lint + fast guards, no DB; default lane
+  for non-harness diffs. `--checked` adds the selected pytest
   (opt-in). Burst-land many trees, then one `/go`.
 - `/qgo` — qland + ungated deploy; never for `*/migrations/*.sql` or
   `safe_fetch.py`.

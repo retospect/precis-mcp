@@ -49,8 +49,9 @@ The thread-session fleet (one window per roadmap thread) is
                                         refuses a tree with unlanded commits
     fleet-wave land TREE [--quick|--checked|--remote] [-m MSG]
                                         run TREE's own scripts/ship (default
-                                        --quick: lint only, pytest runs in
-                                        the release gate) in TREE; coordinator
+                                        --quick: lint + fast DB-free guards,
+                                        pytest runs in the release gate) in
+                                        TREE; coordinator
                                         tree only; refuses a live session
     fleet-wave approve TREE SHA[,SHA...] [--note ".."]   grant landing these shas
     fleet-wave approve --list [TREE]    print the approval ledger
@@ -145,7 +146,8 @@ restores the pre-v2 launch for one release: footers/<readonly|qland>.txt
 Landing (``land``). A branch lands only by ship run in its own tree, so
 a tier-R builder's work is landed by ``fleet-wave land TREE``, which runs
 ``TREE/scripts/ship`` in one of its gate modes — ``--quick`` (the
-default: lint only, no pytest), ``--checked`` (opt-in, adds the selected
+default: lint + fast DB-free guards, no pytest), ``--checked`` (opt-in,
+adds the selected
 pytest) or ``--remote`` (harness diffs) — with cwd=TREE and the
 output in ``$FLEET_STATE/land/<tree>-<stamp>.log``; it prints the log path
 and ship's exit code and returns it. It never cherry-picks or creates a
@@ -2971,7 +2973,7 @@ def parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--quick",
         action="store_true",
-        help="scripts/ship --quick (default: lint only, no pytest — the qland lane)",
+        help="scripts/ship --quick (default: lint + fast guards, no pytest — the qland lane)",
     )
     mode.add_argument(
         "--remote",

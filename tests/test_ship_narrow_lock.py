@@ -16,6 +16,7 @@ needed (no ``--remote``).
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import shutil
@@ -1296,12 +1297,33 @@ def test_gate_extras_keep_the_web_extra_in_the_locked_env() -> None:
     assert re.search(r"^fastapi==", r.stdout, re.MULTILINE)
 
 
-def test_quick_lint_is_ruff_and_secret_scan_only() -> None:
+_QUICK_GUARD_FILES = (
+    "tests/test_skill_vocabulary.py",
+    "tests/test_render_dry_guard.py",
+    "tests/test_type_ignore_ratchet.py",
+    "tests/test_mcp_raise_next_ratchet.py",
+)
+
+#: test_skill_ingest.py is all-DB-free; only its size/shape members ride
+#: the quick lane (td573922): the three oversized-chunk checker tests plus
+#: the two real-corpus scans that fail on a >4000-char skill section.
+_QUICK_GUARD_NODES = (
+    "tests/test_skill_ingest.py::test_scan_oversized_chunk_becomes_failure",
+    "tests/test_skill_ingest.py::test_scan_multiple_oversized_chunks_reported_in_one_pass",
+    "tests/test_skill_ingest.py::test_scan_oversized_chunk_under_custom_budget",
+    "tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings",
+    "tests/test_skill_ingest.py::test_builtin_corpus_scans_clean_without_plugin_roots",
+)
+
+
+def test_quick_lint_is_ruff_secret_scan_and_fast_guards() -> None:
     """Reto 2026-10-30: "Don't even bother with python checks, we'll do it
     all as a batch in the release branch". Plain --quick runs ruff + the
-    secret-tree scan (the repo is public; a qland push publishes at once).
-    mypy, lint-imports and the full hygiene batch are --checked/--release
-    only, and the release gate (check.yml) runs them. Pin every direction."""
+    secret-tree scan (the repo is public; a qland push publishes at once)
+    + the fast DB-free hygiene guards (gr573555: r229-r231 each went red on
+    a guard --quick had skipped). mypy, lint-imports and the rest of the
+    hygiene batch are --checked/--release only, and the release gate
+    (check.yml) runs them. Pin every direction."""
     ship = _SHIP_SRC.read_text(encoding="utf-8")
     cmds = re.findall(r'QLAND_CMD="([^"]+)"', ship)
     assert cmds, "scripts/ship lost its QLAND_CMD lint commands"
@@ -1311,15 +1333,22 @@ def test_quick_lint_is_ruff_and_secret_scan_only() -> None:
     assert not any("lint-imports" in c for c in cmds), cmds
     assert not any("CODE_HYGIENE" in c for c in cmds), cmds
     assert any("${QLAND_MYPY}" in c and "${QLAND_TAIL}" in c for c in cmds), cmds
-    # plain --quick defaults: no mypy, tail = the secret scan alone
+    # plain --quick defaults: no mypy, tail = secret scan + the fast guards
     assert 'QLAND_MYPY=""' in ship
-    assert 'QLAND_TAIL="$SECRET_SCAN"' in ship
+    assert 'QLAND_TAIL="$SECRET_SCAN && $QUICK_GUARDS"' in ship
     m = re.search(r"^\s*SECRET_SCAN='([^']+)'", ship, re.MULTILINE)
     assert m, "SECRET_SCAN definition missing"
     assert "tests/test_deploy_tree_no_secrets.py" in m.group(1)
     assert "lint-imports" not in m.group(1) and "mypy" not in m.group(1)
-    # docs/config-only plain --quick: secret scan only
-    assert 'QLAND_CMD="$SECRET_SCAN"' in ship
+    # docs/config-only plain --quick: secret scan + the vocabulary and
+    # skill-size guards (a skill .md diff is docs-only and can still drop
+    # a registry name or grow a section past the 4000-char cap)
+    assert (
+        'QLAND_CMD="$SECRET_SCAN && uv run pytest -q -n0 -p no:cacheprovider '
+        "-rfE tests/test_skill_vocabulary.py "
+        'tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings"'
+        in ship
+    )
     # --checked / --release keep mypy, import contracts and the full batch
     assert re.search(
         r'if \[\[ "\$CHECKED" == 1 \|\| "\$RELEASE" == 1 \]\]; then\s+'
@@ -1331,6 +1360,65 @@ def test_quick_lint_is_ruff_and_secret_scan_only() -> None:
     check = (REPO / ".github/workflows/check.yml").read_text(encoding="utf-8")
     assert "mypy src tests" in check
     assert "uv run lint-imports" in check
+
+
+def test_quick_lint_runs_the_fast_guards() -> None:
+    """gr573555 / td573922 (Reto 2026-11-06): the fast, database-free
+    guards run on every plain --quick land, in one ``-rfE`` pytest call so
+    a red names the failing test id. The mode-parity table stays out until
+    it can run without the test stack — its decisive tests take
+    ``full_hub`` → ``store`` and conftest marks them ``db``. The polite
+    outbound ratchet stays out on the 45 s budget: its ~32 s src sweep
+    alone would take the set past the cap (td573922 addendum)."""
+    ship = _SHIP_SRC.read_text(encoding="utf-8")
+    m = re.search(r"^\s*QUICK_GUARDS='([^']+)'", ship, re.MULTILINE)
+    assert m, "QUICK_GUARDS definition missing"
+    assert "-rfE" in m.group(1)
+    for path in _QUICK_GUARD_FILES:
+        assert path in m.group(1), path
+    for nodeid in _QUICK_GUARD_NODES:
+        assert nodeid in m.group(1), nodeid
+    assert "test_mode_spec_parity" not in ship
+    assert "test_outbound_polite_ratchet" not in m.group(1)
+    # a docs/config-only --quick carries the vocabulary and skill-size
+    # guards: a skill .md diff is docs-only and can still drop a registry
+    # name or grow a section past the 4000-char cap
+    docs_cmds = [c for c in re.findall(r'QLAND_CMD="([^"]+)"', ship) if "ruff" not in c]
+    assert any(
+        "$SECRET_SCAN" in c
+        and "tests/test_skill_vocabulary.py" in c
+        and "tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings"
+        in c
+        for c in docs_cmds
+    ), docs_cmds
+    # --checked/--release run each member once more via CODE_HYGIENE
+    code_hygiene = re.search(r"^\s*CODE_HYGIENE='([^']+)'", ship, re.MULTILINE)
+    assert code_hygiene
+    for path in _QUICK_GUARD_FILES:
+        assert path in code_hygiene.group(1), path
+    for nodeid in _QUICK_GUARD_NODES:
+        assert nodeid in code_hygiene.group(1), nodeid
+    # no quick-guard member takes a DB fixture — parse each file's AST
+    db_fixtures = {"store", "hub", "full_hub", "runtime_with_store", "fresh_db"}
+    for path in _QUICK_GUARD_FILES:
+        tree = ast.parse((REPO / path).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                args = {a.arg for a in (*node.args.args, *node.args.kwonlyargs)}
+                leaked = args & db_fixtures
+                assert not leaked, f"{path}::{node.name} takes {sorted(leaked)}"
+    for nodeid in _QUICK_GUARD_NODES:
+        path, _, test_name = nodeid.partition("::")
+        tree = ast.parse((REPO / path).read_text(encoding="utf-8"))
+        fn = next(
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and n.name == test_name
+        )
+        args = {a.arg for a in (*fn.args.args, *fn.args.kwonlyargs)}
+        leaked = args & db_fixtures
+        assert not leaked, f"{nodeid} takes {sorted(leaked)}"
 
 
 def _expanded_sync_flags(machine: str, tmp_path: Path) -> list[str]:
