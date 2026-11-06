@@ -26,6 +26,10 @@ the Eulerian wall coefficient (`_entry_distance` + `wall_sink_star`
 `entrance=`), the slice-1 `wall-flux-fraction` flag removed, and a kernel
 acceptance test. See slice 1b below.
 
+**Landed (slice 4 core), 2026-11-06** — `src/precis_flow/darcy.py`
+Darcy/Brinkman transmissivity kernel plus `regime.py` hooks; the
+rest of slice 4 (see its section) remains open.
+
 **Ready.** Slice 1 on 2026-10-21; slices 2, 4 and 5 on 2026-11-04
 (§Acceptance: slip, heat, Darcy), using the registrations in
 `src/precis_flow/physics.py::PHYSICS`. The other slices

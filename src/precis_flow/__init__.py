@@ -77,6 +77,12 @@ API
   a required argument.
 - :func:`nonuniformity` — evenness score over first-crossing points.
 - :func:`rasterize_holes` — blind-pocket topography -> ``depth*`` field.
+- :mod:`precis_flow.darcy` — Brinkman / Darcy face transmissivity for a
+  gap-filling porous region (se-multiphysics.md slice 4):
+  ``porous_t_factor(h*, κ*, region)`` builds the per-cell factor that
+  :func:`solve` multiplies onto ``h*^3``; ``None`` region cells stay open.
+  Imported directly (like :mod:`precis_flow.fv` / :mod:`precis_flow.species`),
+  not re-exported here.
 
 Modules
 -------

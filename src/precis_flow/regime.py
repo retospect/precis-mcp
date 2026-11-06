@@ -56,6 +56,13 @@ line's continuum bound from ``0.01`` to ``KN_SLIP_MAX = 0.1`` — the
 Navier/Maxwell slip boundary condition carries the continuum kernel
 through the slip regime, so a gas micro-gap with ``0.01 < Kn ≤ 0.1``
 routes ``continuum`` instead of refusing as transition.
+
+The **darcy group** (slice 4) is emitted when ``permeability`` (κ, m²) is
+supplied: ``kappa_ratio`` (``κ/h0²``, informational — the Brinkman closed
+form in :mod:`precis_flow.darcy` carries both the Darcy and Hele-Shaw
+limits, so this names the nearer one rather than gating), ``reynolds_pore``
+(``ρ u0 √κ/μ ≤ 1``, the creeping-flow admission check) and ``full_height``
+(a constant line stating the porous insert fills the local gap).
 """
 
 from __future__ import annotations
@@ -423,7 +430,7 @@ class RegimeCard:
             peclet=peclet,
             knudsen=knudsen,
             species=groups.pop("species", ()),
-            groups=tuple(groups.items()),
+            groups=tuple((name, lines) for name, lines in groups.items() if lines),
             slip=slip,
         )
 
@@ -581,4 +588,68 @@ register_group(
         "species_solver",
     ),
     build=_species_lines,
+)
+
+
+def _darcy_lines(
+    *,
+    permeability: float | None,
+    h0: float,
+    mu: float,
+    rho: float,
+    u0: float,
+) -> tuple[RegimeLine, ...]:
+    """The darcy group (kappa_ratio, reynolds_pore, full_height) — emitted
+    only when ``permeability`` (κ, m²) is supplied (se-multiphysics.md
+    slice 4). The Brinkman closed form carries both the Darcy and Hele-Shaw
+    limits, so κ/h² is informational, not a gate; the one admission check is
+    the pore Reynolds number."""
+    if permeability is None:
+        return ()
+    kappa = float(permeability)
+    if kappa <= 0.0:
+        raise ValueError("permeability must be > 0 (m²)")
+    kappa_ratio = kappa / (h0 * h0)
+    if kappa_ratio <= 6e-4:
+        near = "near the Darcy limit 12κh/h0³ (within 5%)"
+    elif kappa_ratio >= 1.0:
+        near = "near the Hele-Shaw limit h*³ (open gap)"
+    else:
+        near = "between the Darcy and Hele-Shaw limits (full Brinkman form)"
+    re_pore = rho * u0 * (kappa**0.5) / mu
+    return (
+        RegimeLine(
+            name="kappa_ratio",
+            value=kappa_ratio,
+            threshold=float("nan"),
+            ok=True,
+            holds_when="informational (κ/h0²)",
+            otherwise=f"κ/h0² = {kappa_ratio:g}: {near}",
+        ),
+        RegimeLine(
+            name="reynolds_pore",
+            value=re_pore,
+            threshold=1.0,
+            ok=re_pore <= 1.0,
+            holds_when="<= 1 (creeping pore flow)",
+            otherwise="pore inertia: the Darcy/Brinkman closed form is invalid",
+        ),
+        RegimeLine(
+            name="full_height",
+            value=float("nan"),
+            threshold=float("nan"),
+            ok=True,
+            holds_when="assumed (insert fills the local gap)",
+            otherwise=(
+                "a partial-height insert is not detectable here; it needs "
+                "the external 3-D backend (slice B)"
+            ),
+        ),
+    )
+
+
+register_group(
+    "darcy",
+    inputs=("permeability", "h0", "mu", "rho", "u0"),
+    build=_darcy_lines,
 )
