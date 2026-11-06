@@ -20,9 +20,10 @@ Enforced by
 migration present on `origin/main` or to `baseline/*`; escape hatch
 `ALLOW_SEALED_MIGRATION_EDIT=1`), the checksum ledger in
 `src/precis/store/migrate.py`, `tests/test_migrate.py`, and
-`scripts/migration-check` (duplicate numbers across sibling branches,
-worktrees and `origin/main`; `--taken` lists claimed numbers and the next
-free one — mint off that, not just this tree's directory listing).
+`scripts/migration-check` (duplicate numbers across worktrees, local and
+remote-tracking branches, and `origin/main`; `--taken` lists claimed
+numbers and the next free one — mint off that, not just this tree's
+directory listing).
 Migrations and `safe_fetch.py` also take the full gate: `scripts/qgo-guard`
 refuses them on the ungated deploy path (`tests/test_qgo_guard.py`).
 A migration that runs `DROP INDEX` must cite more than `pg_stat` `idx_scan`

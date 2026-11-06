@@ -7,7 +7,11 @@
 # routinely grab the SAME number for DIFFERENT migrations — the collision only
 # surfaces when the second one ships (duplicate number, ledger confusion). This
 # scans `main` and every sibling worktree and flags any number that maps to
-# 2+ distinct slugs. "main" is read three ways and unioned: the primary
+# 2+ distinct slugs. Unshipped claims come from every place a migration
+# file can sit: each worktree's disk, local branches with no worktree at
+# all, and remote-tracking branches with no local twin — a fetched rebase
+# target keeps claiming its stale numbers after its local tree is reaped
+# (gr574996). "main" is read three ways and unioned: the primary
 # checkout's working tree, its checked-out branch ref, and
 # refs/remotes/origin/main — a ship's update-ref fallback can move
 # refs/heads/main past a dirty checkout, and either can lag the last fetch,
@@ -89,8 +93,10 @@ done >> "$rows"
 # actually sitting on (LIVE_BRANCHES came free in the porcelain call above).
 
 n_branches=0
+LOCAL_HEADS=$'\n'
 while IFS= read -r branch; do
     [[ -z "$branch" ]] && continue
+    LOCAL_HEADS="${LOCAL_HEADS}${branch}"$'\n'
     case "$branch" in ci/*) continue ;; esac
     case $LIVE_BRANCHES in *$'\n'"$branch"$'\n'*) continue ;; esac
     have_any=0
@@ -107,6 +113,43 @@ while IFS= read -r branch; do
     done < <(git -C "$MAIN_ROOT" ls-tree -r --name-only "$branch" -- "$MIGDIR" 2>/dev/null)
     [[ "$have_any" == 1 ]] && n_branches=$((n_branches + 1))
 done < <(git -C "$MAIN_ROOT" for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null) >> "$rows"
+
+# Remote-only branches (gr574996): a branch that lives only at
+# refs/remotes/* — a pushed rebase target, a fetched review head — is
+# invisible to BOTH the disk walk and the refs/heads pass above, yet keeps
+# claiming its numbers after the local trees are reaped:
+# origin/rebase/db-own-renumbered still held 0281_vault_class/
+# 0282_db_ownership against main's 0281/0282 with no local branch left to
+# flag. `--no-merged origin/main` bounds the pass: a fully-merged remote
+# can only list migration filenames already on main (never a NEW slug —
+# its tree is a superseded snapshot), so scanning it buys nothing, and the
+# filter drops the ~100 landed release/* refs that would each pay an
+# ls-tree. Same skip list as the local pass, one level up: origin/HEAD
+# (the origin/main symref), origin/main itself (read as "main" below), and
+# ci/* throwaway gate pushes. A remote ref whose same-named LOCAL branch
+# exists is skipped too — the local tip is the same line of work at its
+# freshest, and a stale push must not flag a number the branch already
+# renumbered away.
+n_remote=0
+if git -C "$MAIN_ROOT" rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1; then
+    while IFS= read -r ref; do
+        [[ -z "$ref" ]] && continue
+        case "$ref" in
+            */HEAD | origin/main | */ci/*) continue ;;
+        esac
+        case $LOCAL_HEADS in *$'\n'"${ref#*/}"$'\n'*) continue ;; esac
+        have_any=0
+        while IFS= read -r rel; do
+            [[ -z "$rel" ]] && continue
+            base="${rel##*/}"
+            [[ "$rel" == "$MIGDIR/$base" ]] || continue
+            [[ "$base" =~ ^[0-9]{4}_ ]] || continue
+            have_any=1
+            printf '%s\t%s\t%s\n' "${base:0:4}" "$ref" "$base"
+        done < <(git -C "$MAIN_ROOT" ls-tree -r --name-only "$ref" -- "$MIGDIR" 2>/dev/null)
+        [[ "$have_any" == 1 ]] && n_remote=$((n_remote + 1))
+    done < <(git -C "$MAIN_ROOT" for-each-ref --no-merged refs/remotes/origin/main --format='%(refname:short)' refs/remotes 2>/dev/null) >> "$rows"
+fi
 
 # Committed "main" beyond the working tree: the primary checkout's files can
 # lag its own branch ref (ship's update-ref fallback moves the ref without
@@ -180,12 +223,13 @@ if [[ -n "$collisions" ]]; then
     echo "$collisions"
     echo
     echo "→ renumber the UNSHIPPED migration(s) to the next free number above"
-    echo "  main's max before that worktree ships."
+    echo "  main's max before that tree ships."
     exit 1
 fi
 
 if [[ "$QUIET" != 1 ]]; then
     msg="✓ migration numbers: no collisions across main + $((n_trees - 1)) worktree(s)"
     [[ "$n_branches" -gt 0 ]] && msg="$msg + $n_branches branchless branch(es)"
+    [[ "$n_remote" -gt 0 ]] && msg="$msg + $n_remote remote-tracking branch(es)"
     echo "$msg"
 fi

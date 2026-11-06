@@ -356,14 +356,20 @@ def _branchless_migration(primary: Path, branch: str, filename: str) -> None:
     _git(primary, "worktree", "remove", str(worktree))
 
 
-def _push_origin_migration(primary: Path, tmp_path: Path, filename: str) -> None:
-    """Stand up a bare `origin`, land `filename` on it via a second clone,
-    then fetch in `primary` — leaving primary's WORKTREE without the file
-    while refs/remotes/origin/main knows it."""
+def _init_bare_origin(primary: Path, tmp_path: Path) -> Path:
+    """Stand up a bare `origin` holding primary's current main."""
     origin = tmp_path / "origin.git"
     _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     _git(primary, "remote", "add", "origin", str(origin))
     _git(primary, "push", "-q", "-u", "origin", "main")
+    return origin
+
+
+def _push_origin_migration(primary: Path, tmp_path: Path, filename: str) -> None:
+    """Stand up a bare `origin`, land `filename` on it via a second clone,
+    then fetch in `primary` — leaving primary's WORKTREE without the file
+    while refs/remotes/origin/main knows it."""
+    origin = _init_bare_origin(primary, tmp_path)
 
     other = tmp_path / "other"
     _git(tmp_path, "clone", "-q", str(origin), str(other))
@@ -373,6 +379,26 @@ def _push_origin_migration(primary: Path, tmp_path: Path, filename: str) -> None
     _git(other, "add", "-A")
     _git(other, "commit", "-q", "-m", f"{filename} upstream")
     _git(other, "push", "-q", "origin", "main")
+    _git(primary, "fetch", "-q", "origin")
+
+
+def _push_origin_branch_migration(
+    primary: Path, tmp_path: Path, branch: str, filename: str
+) -> None:
+    """Stand up a bare `origin`, land `filename` on `branch` (never main)
+    via a second clone, then fetch in `primary` — leaving the claim only at
+    refs/remotes/origin/<branch>: primary's disk AND its refs/heads never
+    see it."""
+    origin = _init_bare_origin(primary, tmp_path)
+
+    other = tmp_path / "other-remote-branch"
+    _git(tmp_path, "clone", "-q", str(origin), str(other))
+    (other / "src" / "precis" / "migrations" / filename).write_text(
+        "select 9;\n", encoding="utf-8"
+    )
+    _git(other, "add", "-A")
+    _git(other, "commit", "-q", "-m", f"{filename} on {branch}")
+    _git(other, "push", "-q", "origin", f"HEAD:{branch}")
     _git(primary, "fetch", "-q", "origin")
 
 
@@ -432,6 +458,67 @@ def test_migration_check_taken_lists_claims_and_next_free(tmp_path: Path) -> Non
     assert "next free number: 0013" in result.stdout, result.stdout
     assert "0012_sibling_claim.sql" in result.stdout, result.stdout
     assert "feat/claimed" in result.stdout, result.stdout
+
+
+def test_migration_check_flags_collision_on_remote_only_branch(
+    tmp_path: Path,
+) -> None:
+    """gr574996: a branch that lives only at refs/remotes/origin/* — the
+    fetched rebase target `rebase/db-own-renumbered` kept claiming
+    0281_vault_class/0282_db_ownership after both local db-own trees were
+    reaped — is invisible to the disk walk and the refs/heads pass. Its
+    committed migrations are still live claims and must enter the scan.
+    """
+    primary = _primary_with_migrations(tmp_path)
+    migdir = primary / "src" / "precis" / "migrations"
+    (migdir / "0011_main_thing.sql").write_text("select 3;\n", encoding="utf-8")
+    _git(primary, "add", "-A")
+    _git(primary, "commit", "-q", "-m", "main migration, same number")
+
+    _push_origin_branch_migration(
+        primary, tmp_path, "rebase/db-own-renumbered", "0011_remote_claim.sql"
+    )
+    branches = _git(primary, "branch", "--format=%(refname:short)").stdout
+    assert "rebase/db-own-renumbered" not in branches.splitlines()
+
+    result = _run_migration_check(primary)
+    assert result.returncode == 1, result.stdout
+    assert "0011_remote_claim.sql" in result.stdout, result.stdout
+    assert "origin/rebase/db-own-renumbered" in result.stdout, result.stdout
+
+
+def test_migration_check_ignores_stale_remote_twin_of_local_branch(
+    tmp_path: Path,
+) -> None:
+    """The remote pass skips a ref whose same-named LOCAL branch exists:
+    origin/feat/twin is the stale PUSH of feat/twin — the local tip already
+    renumbered its colliding file away, so the pushed prefix must not flag.
+    """
+    primary = _primary_with_migrations(tmp_path)
+    migdir = primary / "src" / "precis" / "migrations"
+    (migdir / "0011_main_thing.sql").write_text("select 3;\n", encoding="utf-8")
+    _git(primary, "add", "-A")
+    _git(primary, "commit", "-q", "-m", "main migration, same number")
+    _init_bare_origin(primary, tmp_path)
+
+    _git(primary, "branch", "feat/twin")
+    wt = primary.parent / "wt-twin"
+    _git(primary, "worktree", "add", "-q", str(wt), "feat/twin")
+    wmig = wt / "src" / "precis" / "migrations"
+    (wmig / "0011_twin_stale.sql").write_text("select 2;\n", encoding="utf-8")
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-q", "-m", "stale mint")
+    # The remote twin now holds the colliding slug …
+    _git(wt, "push", "-q", "origin", "feat/twin")
+    # … but the local tip renumbers it away before shipping.
+    (wmig / "0011_twin_stale.sql").rename(wmig / "0012_twin_fixed.sql")
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-q", "-m", "renumber to next free")
+    _git(primary, "worktree", "remove", str(wt))
+
+    result = _run_migration_check(primary)
+    assert result.returncode == 0, result.stdout
+    assert "0011_twin_stale.sql" not in result.stdout, result.stdout
 
 
 def test_migration_check_scans_worktree_outside_dot_claude(tmp_path: Path) -> None:
