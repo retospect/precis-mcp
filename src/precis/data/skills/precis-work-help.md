@@ -116,6 +116,16 @@ one collapsed line per quest — click it to expand the rows in place —
 with columns status / agents / stage / age, each row linking to
 `/eye/<handle>`; it lands with td540843 (collapsed rows td573295).
 
+A signed-in caller also sees a **Pause**/**Resume** button on each slice
+row (open/doing/blocked → Pause; paused → Resume) and on each quest's
+collapsed line (active → Pause quest; dormant → Resume quest, td573297).
+They're the one-click twin of `tag(kind="todo", ..., add=["STATUS:paused"])`
+and `edit(kind="quest", ..., mode="pause"|"resume")`
+([[precis-quest-help]]) — pausing a quest also parks every live strategic
+root serving it. Neither button cancels a job. Without web write
+authority (no signed-in user) the buttons don't render — the row and the
+quest line are read-only.
+
 ## What blocks a lane, and what waits on the owner?
 ## Which questions are waiting for a human decision?
 

@@ -78,6 +78,7 @@ from precis.quest.logbook import StructureLinkReceipt
 from precis.quest.logbook import append_entry as _append_logbook_entry
 from precis.response import Response
 from precis.store import Ref, Tag
+from precis.store.revision_context import current_revision_context
 from precis.store.types import _KIND_STATUS_VALUES, ChunkRow
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
@@ -602,6 +603,29 @@ def _status_of(tags: list[Tag]) -> str | None:
     return None
 
 
+#: Free-form tag (``Tag.open`` — the whole string lives in ``.value``,
+#: namespace ``'open'``) stamped on a strategic root that
+#: ``edit(mode='pause')`` itself paused — td573297. ``edit(mode='resume')``
+#: only lifts ``STATUS:paused`` + this stamp from roots carrying it, so a
+#: root a human paused by hand before the quest pause is never touched
+#: either way.
+_PAUSED_BY_QUEST = "paused-by:quest"
+
+
+def _current_actor() -> str:
+    """The write's actor string (``user:<abbrev>`` / ``agent``) for naming
+    whoever paused/resumed a quest in its logbook entry — the same
+    ``RevisionContext.actor`` the web's ``human_write_context`` sets."""
+    ctx = current_revision_context()
+    return (ctx.actor if ctx else None) or "agent"
+
+
+def _logbook_by(actor: str) -> str:
+    """The logbook's closed ``by=`` vocabulary (:data:`precis.quest.logbook.BY_VALUES`)
+    for an ``actor`` string — human for a signed-in web user, agent otherwise."""
+    return "human" if actor.startswith("user:") else "agent"
+
+
 #: Quest-specific ``get(view=…)`` tokens on a concrete id, handled below
 #: before the base ``links/log/raw`` fall-through. Kept here so the
 #: unknown-view error can enumerate them — the base class only knows its own
@@ -868,10 +892,13 @@ class QuestHandler(NumericRefHandler):
         is_numeric=True,
         id_required=False,
         note_like=True,
-        # edit()'s only accepted mode — see todo.py's identical
-        # annotation (gr292913) for why an omitted mode= still needs
-        # this declaration.
-        edit_modes=("replace",),
+        # edit()'s accepted modes — see todo.py's identical annotation
+        # (gr292913) for why an omitted mode= still needs this declaration.
+        # 'pause'/'resume' (td573297) are the one-click MCP twin of the
+        # /work web buttons: they stamp/lift STATUS:paused on the quest's
+        # live strategic roots and flip the quest's own STATUS, never a
+        # text/meta rewrite.
+        edit_modes=("replace", "pause", "resume"),
     )
 
     kind: ClassVar[str] = "quest"
@@ -1158,11 +1185,36 @@ class QuestHandler(NumericRefHandler):
         — the incident-response path: ``edit(kind='quest', id=N,
         meta={'compute_lane': 'off'})`` needs no statement rewrite
         (``quest-tick-incident-fix.md``).
+
+        ``mode='pause'``/``mode='resume'`` (td573297, no ``text=``/``meta=``)
+        are the MCP twin of the /work web page's per-quest Pause/Resume
+        buttons: pause stamps ``STATUS:paused`` + a ``paused-by:quest`` tag
+        on every live strategic root (a ``serves``-linked todo with
+        ``meta.rotation_root`` true, not already ``done``/``won't-do``) that
+        isn't already paused by hand, moves the quest to
+        ``STATUS:dormant``, and appends one logbook line naming the actor
+        and the roots touched; resume lifts ``STATUS:paused`` + the stamp
+        only from roots carrying it, moves the quest back to
+        ``STATUS:active``, and appends the matching line. Neither cancels a
+        job. Both are idempotent — a second pause/resume touches nothing
+        and says so.
         """
         if id is None:
             raise BadInput(
                 "edit(kind='quest') requires id=",
                 next="edit(kind='quest', id=N, mode='replace', text='new striving statement')",
+            )
+        if mode in ("pause", "resume"):
+            if text is not None or meta is not None:
+                raise BadInput(
+                    f"edit(kind='quest', mode={mode!r}) accepts only id= — "
+                    "no text=/meta=",
+                    next=f"edit(kind='quest', id={id!r}, mode={mode!r})",
+                )
+            ref_id = self._coerce_id(id)
+            ref = self._resolve_live_ref(ref_id)
+            return (
+                self._pause_quest(ref) if mode == "pause" else self._resume_quest(ref)
             )
         # A meta-only patch rewrites no text, so mode= has nothing to select
         # and is not required. It cannot simply be validated either: the
@@ -1254,6 +1306,112 @@ class QuestHandler(NumericRefHandler):
                 f"replaced striving statement of {self._sense()} id={ref.id} "
                 f"({old_words} → {new_words} words).{meta_note} "
                 "logbook/links/tags untouched. view='log' for the full diff."
+            )
+        )
+
+    # ── edit(mode='pause'|'resume'): park/unpark the strategic roots ──
+
+    def _strategic_roots(self, quest_id: int) -> list[Ref]:
+        """Live-or-not todos ``serves``-linked to ``quest_id`` carrying
+        ``meta.rotation_root`` — the quest's strategic roots, the same set
+        :func:`precis.todo.work_view._todo_servers` renders as the quest's
+        expansion, narrowed to the rotation-root rows pause/resume acts on."""
+        links = self.store.links_for(quest_id, direction="in", relation="serves")
+        ids = {ln.src_ref_id for ln in links}
+        if not ids:
+            return []
+        refs = self.store.fetch_refs_by_ids(ids, include_deleted=False)
+        return [
+            r
+            for r in refs.values()
+            if r.kind == "todo" and (r.meta or {}).get("rotation_root")
+        ]
+
+    def _root_status(self, root_id: int) -> tuple[str, list[Tag]]:
+        tags = self.store.tags_for(root_id)
+        return (_status_of(tags) or "open"), tags
+
+    def _quest_log_pause_resume(
+        self, quest_id: int, *, verb: str, root_ids: list[int]
+    ) -> None:
+        actor = _current_actor()
+        roots_text = (
+            ", ".join(handle_registry.format_handle("todo", i) for i in root_ids)
+            or "none"
+        )
+        _append_logbook_entry(
+            self.store,
+            quest_id,
+            text=f"{verb} by {actor}: roots {roots_text}",
+            entry_type="decision",
+            by=_logbook_by(actor),
+        )
+
+    def _pause_quest(self, ref: Ref) -> Response:
+        """``STATUS:paused`` + :data:`_PAUSED_BY_QUEST` onto every live
+        strategic root not already paused (a root paused by hand is left
+        alone and not stamped), then the quest to ``STATUS:dormant``.
+        Idempotent: a second pause touches nothing."""
+        todos = self.hub.sibling("todo")
+        paused: list[int] = []
+        for root in sorted(self._strategic_roots(ref.id), key=lambda r: r.id):
+            status, _tags = self._root_status(root.id)
+            if status in ("done", "won't-do", "paused"):
+                continue
+            todos.tag(id=root.id, add=["STATUS:paused", _PAUSED_BY_QUEST])
+            paused.append(root.id)
+        already_dormant = _status_of(self.store.tags_for(ref.id)) == "dormant"
+        if not already_dormant:
+            self.tag(id=ref.id, add=["STATUS:dormant"])
+        if not paused and already_dormant:
+            return Response(
+                body=f"{self._sense()} id={ref.id} is already paused — no change"
+            )
+        self._quest_log_pause_resume(ref.id, verb="paused", root_ids=paused)
+        roots_text = (
+            ", ".join(handle_registry.format_handle("todo", i) for i in paused)
+            or "none"
+        )
+        return Response(
+            body=(
+                f"paused {self._sense()} id={ref.id}: {len(paused)} root(s) "
+                f"paused ({roots_text}); quest STATUS:dormant. logbook: see "
+                "view='logbook'."
+            )
+        )
+
+    def _resume_quest(self, ref: Ref) -> Response:
+        """Lift ``STATUS:paused`` + :data:`_PAUSED_BY_QUEST` only from roots
+        carrying that stamp — a root paused by hand before the quest pause
+        stays paused — then the quest back to ``STATUS:active``. Idempotent:
+        a second resume touches nothing."""
+        todos = self.hub.sibling("todo")
+        resumed: list[int] = []
+        for root in sorted(self._strategic_roots(ref.id), key=lambda r: r.id):
+            _status, tags = self._root_status(root.id)
+            if not any(
+                t.namespace == "open" and t.value == _PAUSED_BY_QUEST for t in tags
+            ):
+                continue
+            todos.tag(id=root.id, add=["STATUS:open"], remove=[_PAUSED_BY_QUEST])
+            resumed.append(root.id)
+        already_active = _status_of(self.store.tags_for(ref.id)) == "active"
+        if not already_active:
+            self.tag(id=ref.id, add=["STATUS:active"])
+        if not resumed and already_active:
+            return Response(
+                body=f"{self._sense()} id={ref.id} is already active — no change"
+            )
+        self._quest_log_pause_resume(ref.id, verb="resumed", root_ids=resumed)
+        roots_text = (
+            ", ".join(handle_registry.format_handle("todo", i) for i in resumed)
+            or "none"
+        )
+        return Response(
+            body=(
+                f"resumed {self._sense()} id={ref.id}: {len(resumed)} root(s) "
+                f"resumed ({roots_text}); quest STATUS:active. logbook: see "
+                "view='logbook'."
             )
         )
 

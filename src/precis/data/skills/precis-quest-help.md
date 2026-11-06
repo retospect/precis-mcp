@@ -68,6 +68,32 @@ tag(kind="quest", id=7, add=["STATUS:dormant"])  # set aside (may reawaken)
 tag(kind="quest", id=7, add=["STATUS:abandoned"])  # renounced
 ```
 
+## Pause / resume — park the strategic roots, not just the quest tag
+
+A plain `tag(..., add=["STATUS:dormant"])` sets the quest aside but leaves
+its served work live. `edit(kind="quest", id=7, mode="pause")` goes
+further — it also parks every **live strategic root** serving the quest
+(a `serves`-linked todo with `meta.rotation_root` true, not already `done`
+or `won't-do`): each gets `STATUS:paused` plus a `paused-by:quest` tag, the
+quest moves to `STATUS:dormant`, and one logbook line names who paused it
+and which roots. A root already `STATUS:paused` by hand is left alone and
+never stamped `paused-by:quest`.
+
+```python
+edit(kind="quest", id=7, mode="pause")   # park the quest + its roots
+edit(kind="quest", id=7, mode="resume")  # un-park only the roots it paused
+```
+
+`resume` lifts `STATUS:paused` and the stamp only from roots carrying
+`paused-by:quest` — a root you paused by hand before the quest pause stays
+paused — and moves the quest back to `STATUS:active`. Neither call cancels
+a running job; `plan_dispatch`'s doable filter already walks
+`STATUS:paused` up the tree, so a paused root's leaves leave
+`view='doable'` within one tick. Both calls are idempotent: calling either
+twice in a row writes no tag and no logbook line, and says so. This is the
+MCP twin of the per-slice and per-quest Pause/Resume buttons on the `/work`
+web page ([[precis-work-help]]).
+
 `STATUS:done` (and every other workflow value) is **rejected** on a
 quest — completing it would delete the "% done" axis as the wrong
 measure. Progress is a **ledger of deeds**, not a percentage.

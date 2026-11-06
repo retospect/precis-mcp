@@ -1,0 +1,37 @@
+{# Pause/Resume controls for /work (td573297) — one-click twin of the MCP
+   edit(kind='quest', mode='pause'|'resume') and tag(kind='todo', ...).
+   Callers gate both macros on ``can_write``; these macros render the
+   button only, never the surrounding cell (the caller keeps that so
+   column widths stay aligned for a row with no button). #}
+
+{% macro slice_controls(r) %}
+{% if r.status in ('open', 'doing', 'blocked') %}
+<form method="post" action="/work/slice/{{ r.ref_id }}/pause" class="inline">
+  <button type="submit"
+          class="text-xs px-1.5 py-0.5 rounded bg-surface-emphasis text-fg-subtle hover:bg-warning-muted hover:text-warning-strong"
+          title="Pause this slice">Pause</button>
+</form>
+{% elif r.status == 'paused' %}
+<form method="post" action="/work/slice/{{ r.ref_id }}/resume" class="inline">
+  <button type="submit"
+          class="text-xs px-1.5 py-0.5 rounded bg-surface-emphasis text-fg-subtle hover:bg-success-muted hover:text-success-strong"
+          title="Resume this slice">Resume</button>
+</form>
+{% endif %}
+{% endmacro %}
+
+{% macro quest_controls(q) %}
+{% if q.status == 'active' %}
+<form method="post" action="/work/quest/{{ q.ref_id }}/pause" class="inline">
+  <button type="submit" onclick="event.stopPropagation()"
+          class="text-xs px-1.5 py-0.5 rounded bg-surface-emphasis text-fg-subtle hover:bg-warning-muted hover:text-warning-strong"
+          title="Pause this quest and its strategic roots">Pause quest</button>
+</form>
+{% elif q.status == 'dormant' %}
+<form method="post" action="/work/quest/{{ q.ref_id }}/resume" class="inline">
+  <button type="submit" onclick="event.stopPropagation()"
+          class="text-xs px-1.5 py-0.5 rounded bg-surface-emphasis text-fg-subtle hover:bg-success-muted hover:text-success-strong"
+          title="Resume this quest and the roots it paused">Resume quest</button>
+</form>
+{% endif %}
+{% endmacro %}

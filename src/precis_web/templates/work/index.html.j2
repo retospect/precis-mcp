@@ -1,10 +1,12 @@
 {% extends "base.html.j2" %}
+{% from "work/_controls.html.j2" import slice_controls, quest_controls %}
 {% block title %}Work{% endblock %}
 {% block content %}
-{# /work — the read-only quest → root → slices hierarchy, the same
+{# /work — the quest → root → slices hierarchy, the same
    ``precis.todo.work_view.work_model`` the MCP ``view='work'`` formats as
    text. Every row carries ``data-handle`` so the step-5b list/click/chat
-   surface can select rows later; every handle links to /eye/<handle>. #}
+   surface can select rows later; every handle links to /eye/<handle>.
+   Pause/Resume controls (td573297) render only when ``can_write``. #}
 {% set sc = {'done':'bg-success-muted text-success-strong','doing':'bg-warning-muted text-warning-strong','blocked':'bg-danger-muted text-danger-strong','paused':'bg-surface-emphasis text-fg-muted',"won't-do":'bg-surface-emphasis text-fg-subtle'} %}
 <h1 class="text-lg font-semibold mb-1">Work</h1>
 <p class="text-sm text-fg-subtle mb-3">
@@ -36,6 +38,7 @@
   <div class="w-14 shrink-0 text-right">Agents</div>
   <div class="w-20 shrink-0">Stage</div>
   <div class="w-20 shrink-0 text-right">Age</div>
+  <div class="w-20 shrink-0 text-right"></div>
 </div>
 {% endmacro %}
 
@@ -54,6 +57,7 @@
   <div class="w-14 shrink-0 text-right text-xs"><span class="text-fg-ghost">–</span></div>
   <div class="w-20 shrink-0"><span class="text-xs px-1.5 py-0.5 rounded bg-info-muted text-info-strong">{{ g.stage }}</span></div>
   <div class="w-20 shrink-0 text-right text-xs text-fg-faint" title="{{ g.created_at | abs_ts }}">{{ g.created_at | ago }}</div>
+  <div class="w-20 shrink-0 text-right"></div>
 </li>
 {% endmacro %}
 
@@ -77,6 +81,7 @@
       <span class="text-xs text-fg-faint">jobs {{ q.jobs | length }}{% if q.running_jobs %} ({{ q.running_jobs }} running){% endif %}</span>
       {% if q.next_doable %}<a href="/eye/{{ q.next_doable }}" class="font-mono text-xs text-fg-subtle hover:underline">next {{ q.next_doable }}</a>{% endif %}
       <span class="ml-auto text-xs text-fg-faint" title="{{ q.newest | abs_ts }}">{{ q.newest | ago }}</span>
+      {% if can_write %}{{ quest_controls(q) }}{% endif %}
     </summary>
     {{ cols_header() }}
     <ul class="divide-y divide-line">
@@ -105,6 +110,7 @@
           {% if r.attempt is not none %}<div class="text-xs text-fg-faint">attempt:{{ r.attempt }}</div>{% endif %}
         </div>
         <div class="w-20 shrink-0 text-right text-xs text-fg-faint" title="{{ r.updated_at | abs_ts }}">{{ r.updated_at | ago }}</div>
+        <div class="w-20 shrink-0 text-right">{% if can_write %}{{ slice_controls(r) }}{% endif %}</div>
       </li>
       {% endfor %}
       {% if root.hidden %}
