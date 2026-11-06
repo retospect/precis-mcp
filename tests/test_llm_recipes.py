@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import replace
 from pathlib import Path
@@ -91,10 +92,67 @@ def test_cache_ttl_and_missing_table(monkeypatch: pytest.MonkeyPatch) -> None:
     assert conn.execute.call_count == 1
     clock[0] = 401.0
     conn.execute.side_effect = RuntimeError("missing table")
-    assert recipes.lookup("source") is None
+    assert recipes.lookup("source") is not None
     assert conn.execute.call_count == 2
     monkeypatch.setattr(route_log, "bound_store", lambda: None)
     assert recipes.lookup("source") is None
+
+
+def test_rows_failure_keeps_prior_rows(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failed reload serves the previous rows and retries in ~30 s."""
+    store = MagicMock()
+    conn = store.pool.connection.return_value.__enter__.return_value
+    conn.execute.return_value.fetchall.return_value = [
+        ("source", "chunk.rank", "none", "low", False, {}, None, []),
+    ]
+    clock: list[float] = [100.0]
+    monkeypatch.setattr(route_log, "bound_store", lambda: store)
+    monkeypatch.setattr(recipes, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(recipes, "_expires", 0.0)
+    monkeypatch.setattr(recipes, "_store_identity", None)
+    monkeypatch.setattr(recipes, "_cache", {})
+    assert recipes.lookup("source") is not None
+    conn.execute.side_effect = RuntimeError("pool timeout")
+    clock[0] = 401.0
+    assert recipes.lookup("source") is not None
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    clock[0] = 420.0
+    assert recipes.lookup("source") is not None
+    assert conn.execute.call_count == 2
+    conn.execute.side_effect = None
+    clock[0] = 432.0
+    assert recipes.lookup("source") is not None
+    assert conn.execute.call_count == 3
+
+
+def test_rows_failure_no_prior_retries_soon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With nothing cached a failed load retries in ~30 s, not the full TTL."""
+    store = MagicMock()
+    conn = store.pool.connection.return_value.__enter__.return_value
+    conn.execute.side_effect = RuntimeError("missing table")
+    clock: list[float] = [100.0]
+    monkeypatch.setattr(route_log, "bound_store", lambda: store)
+    monkeypatch.setattr(recipes, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(recipes, "_expires", 0.0)
+    monkeypatch.setattr(recipes, "_store_identity", None)
+    monkeypatch.setattr(recipes, "_cache", {})
+    assert recipes.lookup("source") is None
+    assert conn.execute.call_count == 1
+    clock[0] = 129.0
+    assert recipes.lookup("source") is None
+    assert conn.execute.call_count == 1
+    conn.execute.side_effect = None
+    conn.execute.return_value.fetchall.return_value = [
+        ("source", "chunk.rank", "none", "low", False, {}, None, []),
+    ]
+    clock[0] = 131.0
+    assert recipes.lookup("source") is not None
+    assert conn.execute.call_count == 2
 
 
 @pytest.mark.parametrize(

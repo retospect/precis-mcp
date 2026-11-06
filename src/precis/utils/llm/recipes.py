@@ -2,8 +2,12 @@
 
 Recipes share the route logger's boot-time store binding and are cached for
 ``_TTL`` seconds (300); a missing database or table yields an empty cache so
-telemetry cannot prevent an LLM call. A request's task kind, consequence and
-privacy ride along without touching routing, blob policy or request hashes;
+telemetry cannot prevent an LLM call. A failed reload is not cached as a
+hit: the previous rows keep serving (a different bound store keeps nothing)
+and the next attempt comes ``_RETRY`` seconds (30) later, logging once per
+failure window — one pool timeout must not stamp every source unknown for
+the full TTL. A request's task kind, consequence and privacy ride along
+without touching routing, blob policy or request hashes;
 ``route_log.record_call`` stamps every writer, including agent-cost records.
 The scheduler's six-hour ``recipe_gap`` scan reports unknown sources with
 daily deduplication instead of writing gripes from the router.
@@ -11,11 +15,14 @@ daily deduplication instead of writing gripes from the router.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from time import monotonic
 from typing import Any, NamedTuple
 
 from precis import route_log
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -42,6 +49,9 @@ class Resolution(NamedTuple):
 
 
 _TTL = 300.0
+#: Retry interval after a failed load — long enough to ride out a restart,
+#: short enough that a transient pool error cannot blank recipes for _TTL.
+_RETRY = 30.0
 _cache: dict[str, Recipe] = {}
 _expires = 0.0
 _store_identity: object = None
@@ -54,6 +64,7 @@ def _rows() -> dict[str, Recipe]:
     if store is _store_identity and now < _expires:
         return _cache
     rows: dict[str, Recipe] = {}
+    failed = False
     if store is not None:
         try:
             with store.pool.connection() as conn:
@@ -73,7 +84,14 @@ def _rows() -> dict[str, Recipe]:
                     )
                     rows[recipe.source] = recipe
         except Exception:
-            rows = {}
+            log.warning("task_recipes load failed", exc_info=True)
+            failed = True
+    if failed:
+        _expires = now + _RETRY
+        if store is _store_identity and _cache:
+            return _cache
+        _cache, _store_identity = rows, store
+        return rows
     _cache, _expires, _store_identity = rows, now + _TTL, store
     return rows
 
