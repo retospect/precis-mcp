@@ -175,6 +175,7 @@ def run_eval(
     effort: str | None = None,
     placement: str | None = None,
     record: bool = True,
+    account: str | None = None,
 ) -> EvalReport:
     """Evaluate ``model`` over a gold set and (optionally) record the ordinals.
 
@@ -188,13 +189,30 @@ def run_eval(
     ``placement`` is set (runs exactly the candidate), else the live
     :func:`router.route` (whose operator chain may override the model); tests
     inject a stub so no real model runs.
+
+    ``account`` pins the run to one hosted ``llm_account`` instead:
+    :func:`account_pin.resolve_account_pin` refuses (before any request) an
+    account that cannot serve the model, :func:`account_pin.check_budget`
+    refuses a run that would overrun a long-window pool, and recording goes
+    through :func:`account_pin.record_account_eval` — ``account_evals`` on
+    the card + an ``account:<name>`` review, never card-level ``capability``.
     """
-    if dispatch_fn is None and placement in ("local", "cloud"):
+    pin = None
+    if account is not None:
+        from precis.llm_eval.account_pin import (
+            account_pinned_dispatch,
+            check_budget,
+            resolve_account_pin,
+        )
+
+        pin = resolve_account_pin(store, account, model)
+        disp: Callable[[Any], Any] = account_pinned_dispatch(pin)
+    elif dispatch_fn is None and placement in ("local", "cloud"):
         # Pin the candidate itself: the live router's operator chain pins its
         # own rung models and would ignore ``req.model`` (gr464223).
         from precis.llm_eval.pinned import pinned_dispatch
 
-        disp: Callable[[Any], Any] = pinned_dispatch(model, placement)
+        disp = pinned_dispatch(model, placement)
     elif dispatch_fn is None:
         from precis.utils.llm.router import route as _live_dispatch
 
@@ -217,6 +235,11 @@ def run_eval(
             continue
         by_axis.setdefault(t.axis, []).append(t)
 
+    if pin is not None:
+        # Long-window pools bound TOTAL requests; refuse before the first
+        # one rather than voiding mid-run (td574812).
+        check_budget(pin, sum(len(v) for v in by_axis.values()))
+
     results: list[AxisResult] = []
     for axis, axis_tasks in by_axis.items():
         res = run_axis(
@@ -236,6 +259,26 @@ def run_eval(
                 axis,
                 res.errors,
             )
+        elif record and pin is not None:
+            from precis.llm_eval.account_pin import record_account_eval
+
+            try:
+                record_account_eval(
+                    store,
+                    pin,
+                    axis,
+                    res.ordinal,
+                    res.n,
+                    res.mean_score,
+                )
+                recorded = True
+            except Exception:
+                log.warning(
+                    "llm eval: record_account_eval failed for %s/%s",
+                    model,
+                    axis,
+                    exc_info=True,
+                )
         elif record:
             from precis.llm_catalog import record_eval
 

@@ -252,6 +252,16 @@ def add_parser(subparsers: Any) -> None:
         action="store_true",
         help="Score + print only; do not write measured-eval ordinals to the card.",
     )
+    ev.add_argument(
+        "--account",
+        default=None,
+        metavar="NAME",
+        help="Run every request on this hosted account's own endpoint + key "
+        "(never router.route), for this model only, and record per "
+        "(account, model). Works on a disabled account — the eval never "
+        "reads or changes `enabled`. Mutually exclusive with --compare, "
+        "--placement-a/-b and --endpoint-a/-b.",
+    )
     ev.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     op = lsub.add_parser(
@@ -716,6 +726,24 @@ def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
     from precis.utils.llm.router import Tier
 
     tier = Tier(args.tier)
+    account = getattr(args, "account", None)
+    if account:
+        clashing = [
+            f"--{name.replace('_', '-')}"
+            for name in (
+                "compare",
+                "placement_a",
+                "placement_b",
+                "endpoint_a",
+                "endpoint_b",
+            )
+            if getattr(args, name, None)
+        ]
+        if clashing:
+            raise BadInput(
+                f"--account cannot be combined with {', '.join(clashing)} — "
+                "an account pins the wire for a single model"
+            )
     if args.compare:
         endpoints: dict[str, dict[str, Any] | None] = {}
         for side in ("a", "b"):
@@ -783,8 +811,11 @@ def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
         tier=tier,
         gold_path=args.gold,
         record=not args.no_record,
+        account=account,
     )
-    print(f"golden eval — {args.model} (tier {args.tier})")
+    header = f"golden eval — {args.model} (tier {args.tier}"
+    header += f", account {account})" if account else ")"
+    print(header)
     for res in report.results:
         mark = "recorded" if res.recorded else "not recorded"
         if res.void:

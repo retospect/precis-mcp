@@ -182,6 +182,24 @@ yet, so the pools read `pacing=unknown` until a usage report lands.
 Discovery-found free models still enter through `offer_discovery` —
 never hand-seed a Groq/Cerebras/OpenRouter card.
 
+**Qualify a hosted account: `precis llm eval <model> --account <name>`.**
+A plain `llm eval` routes through the operator chain, which can swap the
+candidate model; `--account` instead sends every gold-task request to
+exactly that account's `llm.profiles` endpoint and key for exactly that
+model — never `router.route`. It refuses *before the first request* on
+an unknown account, a non-`openai_compat` adapter, a model outside the
+account's `models`/entitlement, a missing or unresolvable
+`api_key_ref` secret (never the host-keyed or `PRECIS_LLM_API_KEY`
+fallback), a missing llm card, or no `calls` pool with a reported limit
+applying to the pair; `enabled` is never a gate — a disabled account
+evaluates and stays disabled. Recorded limits ARE enforcement here:
+`rolling:` pools ≤1 h pace request starts, longer windows refuse a run
+whose task count would overrun, and a provider 429 halts the run (axis
+void). The result lands in card `meta.account_evals[<account>][<axis>]`
+plus a `measured-eval` review provenanced `account:<name>` — card-level
+`capability` is untouched. `get(kind='llm', id='/accounts')` lists the
+account names.
+
 ## See also
 
 `pool_refresh` copies Codex weekly usage from fleet host reports and Devin's
