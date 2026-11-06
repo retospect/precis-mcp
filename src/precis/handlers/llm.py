@@ -30,11 +30,20 @@ ledger: an account is one credential at one provider under one plan
 (``llm_account``); a pool is a rate bucket with a reset rule and explicit
 scope (an ``external_rate_limits`` row keyed ``llm:<account>:<window>``).
 Both are read-only here except ``put(kind='llm', args={'account': {...}})``,
-which is owner-only (:func:`precis.todo.guards.is_owner`) and never accepts
-a ``base_url`` — that stays on the ``llm.profiles`` entry an HTTP account
-names via ``profile=``. No routing behaviour changes: ``pick_lane``,
-``ladder``, ``resolve_profile`` and ``rate_limit.acquire``/``park``/
-``_record_refusal`` read the same rows as before this migration.
+which is owner-only (:func:`precis.todo.guards.is_owner`). For a hosted
+OpenAI-compatible provider (Groq, OpenRouter, Cerebras) the same put is
+the whole onboarding door (td573668): ``endpoint={'base_url': ...}``
+writes the account's own ``llm.profiles`` entry — binding the
+``api_key_ref`` to its one provider host so a re-purposed key can never
+route a vault secret elsewhere — ``limits`` records the published
+free-tier rate limits on the account's pool rows, and
+``entitlement.models.<id>`` + ``privacy.training_use`` carry price and
+stance with their sources. A hosted account is created disabled; a
+second put enables it. The profile entry is always ``kind='metered'`` —
+never ``cap``, ``adapter``, ``gate`` or ``ops``. No routing behaviour
+changes: ``pick_lane``, ``ladder``, ``resolve_profile`` and
+``rate_limit.acquire``/``park``/``_record_refusal`` read the same rows
+as before this migration.
 """
 
 from __future__ import annotations
@@ -44,8 +53,9 @@ import logging
 import re
 from datetime import UTC, datetime
 from typing import Any, ClassVar
+from urllib.parse import urlparse
 
-from precis import llm_catalog, secret_status
+from precis import llm_catalog, secret_status, settings
 from precis.errors import BadInput, NotFound
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import ArgsSpec, KindSpec
@@ -155,6 +165,68 @@ VALUES (%s, 1, 1.0, 1, NULL, 'llm-api')
 ON CONFLICT (provider) DO NOTHING
 """
 
+#: ``api_key_ref`` → the one endpoint host that vault secret may be sent
+#: to on a hosted OpenAI-compatible account (``endpoint=`` on the account
+#: put, td573668). The pair is what makes the door safe: a mistyped or
+#: re-purposed key can never point a credential at another provider.
+_ENDPOINT_KEY_HOSTS: dict[str, str] = {
+    "GROQ_API_KEY": "api.groq.com",
+    "OPENROUTER_API_KEY": "openrouter.ai",
+    "CEREBRAS_API_KEY": "api.cerebras.ai",
+}
+
+#: ``privacy.training_use`` vocabulary a hosted account must record.
+_TRAINING_USE_VALUES: frozenset[str] = frozenset({"no", "yes", "unknown"})
+
+#: Units a ``limits`` entry may declare — the recurring-reset subset of
+#: the column's CHECK constraint.
+_LIMIT_UNITS: frozenset[str] = frozenset({"calls", "tokens"})
+
+#: ``app_settings`` key of the provider-profile table an ``endpoint`` put
+#: writes into (the JSON name → profile map ``resolve_profile`` reads).
+_PROFILES_KEY = "llm.profiles"
+
+#: A ``limits`` entry's pool row — the reporting columns an
+#: owner-published free-tier limit carries. On conflict only those
+#: columns update: ``used_reported`` / ``reported_at`` / ``resets_at`` /
+#: ``parked_until`` are usage evidence the owner cannot know and the put
+#: never touches.
+_POOL_LIMIT_UPSERT_SQL = """
+INSERT INTO external_rate_limits (provider, capacity, refill_per_sec, tokens,
+                                   daily_cap, "class", unit, limit_reported,
+                                   reset_rule, source, confidence)
+VALUES (%s, 1, 1.0, 1, NULL, 'llm-api', %s, %s, %s, 'user', 'published')
+ON CONFLICT (provider) DO UPDATE SET
+    unit = EXCLUDED.unit,
+    limit_reported = EXCLUDED.limit_reported,
+    reset_rule = EXCLUDED.reset_rule,
+    source = EXCLUDED.source,
+    confidence = EXCLUDED.confidence
+"""
+
+_PROFILES_UPSERT_SQL = """
+INSERT INTO app_settings (key, value, updated_at, updated_by)
+VALUES (%s, %s, now(), %s)
+ON CONFLICT (key) DO UPDATE SET
+    value = EXCLUDED.value, updated_at = now(), updated_by = EXCLUDED.updated_by
+"""
+
+
+def _https_source(value: Any) -> bool:
+    """An evidence source URL — https only, like every fetched reference."""
+    return isinstance(value, str) and value.startswith("https://")
+
+
+def _iso_stamp(value: Any) -> bool:
+    """A ``verified_at``-style ISO timestamp."""
+    if not isinstance(value, str):
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
 
 class LlmHandler(NumericRefHandler):
     spec: ClassVar[KindSpec] = KindSpec(
@@ -178,7 +250,10 @@ class LlmHandler(NumericRefHandler):
             "id='/decisions' compares shadow decisions with executed routes per task kind. "
             "id='/suitability' shows per-offering outcome posteriors "
             "(label/n/interval) for the ten busiest task kinds. "
-            "put(kind='llm', args={'account': {...}}) is owner-only. "
+            "put(kind='llm', args={'account': {...}}) is owner-only — for a "
+            "hosted OpenAI-compatible provider, endpoint/limits/entitlement/"
+            "privacy evidence makes it the whole onboarding door (created "
+            "disabled; a second put enables). "
             "Never exported. See ``llm-catalog`` (git-only)."
         ),
         supports_get=True,
@@ -514,10 +589,14 @@ class LlmHandler(NumericRefHandler):
             raise BadInput(
                 "llm_account carries no base_url — that lives on the "
                 "llm.profiles entry an HTTP account names via profile=",
-                next="put the base_url through llm.profiles, then name it "
-                "here with args={'account': {'profile': '<profiles entry>'}}",
+                next="pass endpoint={'base_url': 'https://<provider host>/v1'} "
+                "— the door writes the llm.profiles entry itself",
             )
-        allowed_keys = frozenset(_ACCOUNT_MERGE_COLS) | {"name"}
+        allowed_keys = frozenset(_ACCOUNT_MERGE_COLS) | {
+            "name",
+            "endpoint",
+            "limits",
+        }
         unknown_keys = sorted(set(payload) - allowed_keys)
         if unknown_keys:
             raise BadInput(
@@ -627,7 +706,259 @@ class LlmHandler(NumericRefHandler):
                 next="add it to models=, or drop default_model",
             )
 
+        # ── the hosted-provider door (td573668) ──
+        # ``endpoint`` writes the account's own llm.profiles entry, binding
+        # its api_key_ref to the one provider host that secret may reach.
+        endpoint_entry: dict[str, Any] | None = None
+        endpoint = payload.get("endpoint")
+        if endpoint is not None:
+            if (
+                not isinstance(endpoint, dict)
+                or set(endpoint) != {"base_url"}
+                or not isinstance(endpoint.get("base_url"), str)
+            ):
+                raise BadInput(
+                    "endpoint must be an object carrying only a base_url string",
+                    next="args={'account': {'endpoint': {'base_url': "
+                    "'https://api.groq.com/openai/v1'}}}",
+                )
+            if merged["adapter"] != "openai_compat":
+                raise BadInput(
+                    "endpoint= applies only to adapter 'openai_compat'",
+                    options=["openai_compat"],
+                    next="args={'account': {'adapter': 'openai_compat', "
+                    "'endpoint': {'base_url': 'https://<provider host>/v1'}}}",
+                )
+            if payload.get("profile") not in (None, name):
+                raise BadInput(
+                    "a hosted account's profile is its own name — the door "
+                    "writes the llm.profiles entry itself",
+                    next="drop profile= (or pass the account name)",
+                )
+            key_ref = merged["api_key_ref"]
+            if key_ref not in _ENDPOINT_KEY_HOSTS:
+                raise BadInput(
+                    f"an endpoint account needs an api_key_ref from "
+                    f"{sorted(_ENDPOINT_KEY_HOSTS)}",
+                    options=sorted(_ENDPOINT_KEY_HOSTS),
+                    next="name the provider's vault secret in api_key_ref",
+                )
+            parsed = urlparse(endpoint["base_url"])
+            if (
+                parsed.scheme != "https"
+                or parsed.hostname != _ENDPOINT_KEY_HOSTS[key_ref]
+            ):
+                raise BadInput(
+                    f"endpoint base_url {endpoint['base_url']!r} must be https "
+                    f"on host {_ENDPOINT_KEY_HOSTS[key_ref]!r} for {key_ref}",
+                    next=f"endpoint={{'base_url': "
+                    f"'https://{_ENDPOINT_KEY_HOSTS[key_ref]}/<path>'}}",
+                )
+            merged["profile"] = name
+            endpoint_entry = {
+                "base_url": endpoint["base_url"],
+                "api_key_ref": key_ref,
+                "kind": "metered",
+            }
+
+        if (
+            existing is None
+            and merged["adapter"] == "openai_compat"
+            and endpoint is None
+        ):
+            raise BadInput(
+                "an openai_compat account is created through the endpoint door",
+                next="add endpoint={'base_url': 'https://<provider host>/v1'} "
+                "plus api_key_ref, privacy, entitlement and limits evidence",
+            )
+        if existing is None and endpoint is not None:
+            if merged["enabled"]:
+                raise BadInput(
+                    "a hosted account is created disabled",
+                    next="create it, then enable with "
+                    f"args={{'account': {{'name': {name!r}, 'enabled': True}}}} "
+                    "once the key is in the vault",
+                )
+            if (merged["privacy"] or {}).get(
+                "training_use"
+            ) not in _TRAINING_USE_VALUES:
+                raise BadInput(
+                    "an endpoint account records privacy.training_use as "
+                    "'no', 'yes' or 'unknown'",
+                    options=sorted(_TRAINING_USE_VALUES),
+                    next="args={'account': {'privacy': {'training_use': 'no', "
+                    "'source_url': 'https://<doc>', 'verified_at': '<ISO>'}}}",
+                )
+            ent_models = (merged["entitlement"] or {}).get("models") or {}
+            if not isinstance(ent_models, dict):
+                raise BadInput(
+                    "entitlement.models must be an object of model-id → "
+                    "{price_in, price_out, source_url, verified_at}",
+                    next="args={'account': {'entitlement': {'models': "
+                    "{'m': {'price_in': 0, 'price_out': 0, "
+                    "'source_url': 'https://<doc>', 'verified_at': '<ISO>'}}}}}",
+                )
+            for model_id, spec in ent_models.items():
+                if not isinstance(spec, dict):
+                    raise BadInput(
+                        f"entitlement.models.{model_id} must be an object",
+                        next="{price_in, price_out, source_url, verified_at}",
+                    )
+                for field in ("price_in", "price_out"):
+                    value = spec.get(field)
+                    if (
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or value < 0
+                    ):
+                        raise BadInput(
+                            f"entitlement.models.{model_id}.{field} must be a "
+                            "non-negative number (USD per 1M tokens)",
+                        )
+                if not _https_source(spec.get("source_url")):
+                    raise BadInput(
+                        f"entitlement.models.{model_id}.source_url must be an "
+                        "https:// source URL",
+                    )
+                if not _iso_stamp(spec.get("verified_at")):
+                    raise BadInput(
+                        f"entitlement.models.{model_id}.verified_at must be an "
+                        "ISO timestamp",
+                    )
+
+        # ── free-tier rate limits → pool rows ──
+        limit_rows: list[dict[str, Any]] = []
+        limits = payload.get("limits")
+        if limits is not None:
+            if not isinstance(limits, list) or not all(
+                isinstance(entry, dict) for entry in limits
+            ):
+                raise BadInput(
+                    "limits must be a list of {pool, unit, limit, reset_rule, "
+                    "source_url, verified_at} objects",
+                    next=f"args={{'account': {{'limits': [{{'pool': "
+                    f"'llm:{name}:rpm', 'unit': 'calls', 'limit': 30, "
+                    "'reset_rule': 'rolling:60', 'source_url': 'https://…', "
+                    "'verified_at': '<ISO>'}}]}}}}",
+                )
+            pool_re = re.compile(rf"^llm:{re.escape(name)}:[a-z0-9]+$")
+            for entry in limits:
+                pool = entry.get("pool")
+                if not isinstance(pool, str) or not pool_re.match(pool):
+                    raise BadInput(
+                        f"limit pool {pool!r} must be llm:{name}:<window> "
+                        "([a-z0-9]+ window)",
+                        next=f"pool 'llm:{name}:rpm'",
+                    )
+                if entry.get("unit") not in _LIMIT_UNITS:
+                    raise BadInput(
+                        f"limit unit {entry.get('unit')!r} is not a limit unit",
+                        options=sorted(_LIMIT_UNITS),
+                    )
+                limit = entry.get("limit")
+                if (
+                    isinstance(limit, bool)
+                    or not isinstance(limit, (int, float))
+                    or limit <= 0
+                ):
+                    raise BadInput(f"limit {limit!r} must be a positive number")
+                rule_text = entry.get("reset_rule")
+                try:
+                    rule = llm_accounts.parse_reset_rule(
+                        rule_text if isinstance(rule_text, str) else ""
+                    )
+                except ValueError as exc:
+                    raise BadInput(str(exc)) from exc
+                if not isinstance(
+                    rule, (llm_accounts.RollingReset, llm_accounts.CalendarReset)
+                ):
+                    raise BadInput(
+                        "a free-tier limit needs a recurring reset_rule "
+                        "(rolling: or calendar:), never expires:",
+                    )
+                if not _https_source(entry.get("source_url")):
+                    raise BadInput(
+                        "a limits entry needs an https:// source_url",
+                    )
+                if not _iso_stamp(entry.get("verified_at")):
+                    raise BadInput(
+                        "a limits entry needs an ISO verified_at",
+                    )
+                limit_rows.append(
+                    {
+                        "pool": pool,
+                        "unit": entry["unit"],
+                        "limit": limit,
+                        "reset_rule": llm_accounts.format_reset_rule(rule),
+                        "source_url": entry["source_url"],
+                        "verified_at": entry["verified_at"],
+                    }
+                )
+            pools = tuple(dict.fromkeys([*pools, *(e["pool"] for e in limit_rows)]))
+            merged["pools"] = pools
+            recorded = dict(entitlement.get("limits") or {})
+            for e in limit_rows:
+                recorded[e["pool"]] = {
+                    "unit": e["unit"],
+                    "limit": e["limit"],
+                    "source_url": e["source_url"],
+                    "verified_at": e["verified_at"],
+                }
+            entitlement = {**entitlement, "limits": recorded}
+
+        enabling = bool(merged["enabled"]) and merged["adapter"] == "openai_compat"
         with self.store.tx() as conn:
+            if endpoint_entry is not None or enabling:
+                row = conn.execute(
+                    "SELECT value FROM app_settings WHERE key = %s FOR UPDATE",
+                    (_PROFILES_KEY,),
+                ).fetchone()
+                try:
+                    profiles = json.loads(row[0]) if row else {}
+                except (TypeError, ValueError):
+                    profiles = {}
+                if not isinstance(profiles, dict):
+                    profiles = {}
+                if endpoint_entry is not None:
+                    current = profiles.get(name)
+                    if current is not None and current != endpoint_entry:
+                        raise BadInput(
+                            f"llm.profiles already holds a different {name!r} "
+                            "entry — the door never overwrites it",
+                            next="fix or remove the existing llm.profiles "
+                            f"entry for {name!r} first",
+                        )
+                    if current is None:
+                        profiles[name] = endpoint_entry
+                        conn.execute(
+                            _PROFILES_UPSERT_SQL,
+                            (
+                                _PROFILES_KEY,
+                                json.dumps(profiles, sort_keys=True),
+                                "put:llm.account",
+                            ),
+                        )
+                if enabling:
+                    profile_name = merged["profile"]
+                    if (
+                        not isinstance(profile_name, str)
+                        or profile_name not in profiles
+                    ):
+                        raise BadInput(
+                            f"enabling {name!r} needs an llm.profiles entry "
+                            f"named {profile_name!r}",
+                            next="create the account with endpoint= — the "
+                            "door writes its own profile entry",
+                        )
+                    if not (merged["privacy"] or {}).get("training_use"):
+                        raise BadInput(
+                            f"enabling {name!r} needs privacy.training_use "
+                            "recorded ('no', 'yes' or 'unknown')",
+                        )
+                    if not merged["models"]:
+                        raise BadInput(
+                            f"enabling {name!r} needs at least one model in models=",
+                        )
             conn.execute(
                 _ACCOUNT_UPSERT_SQL,
                 (
@@ -650,6 +981,16 @@ class LlmHandler(NumericRefHandler):
             )
             for pool_key in pools:
                 conn.execute(_POOL_CARRIER_SEED_SQL, (pool_key,))
+            for e in limit_rows:
+                conn.execute(
+                    _POOL_LIMIT_UPSERT_SQL,
+                    (e["pool"], e["unit"], e["limit"], e["reset_rule"]),
+                )
+        if endpoint_entry is not None:
+            from precis.utils.llm import live_config
+
+            settings.invalidate(_PROFILES_KEY)
+            live_config.bust_cache()
         verb = "created" if existing is None else "updated"
         return Response(
             body=f"{verb} llm_account {name!r} "

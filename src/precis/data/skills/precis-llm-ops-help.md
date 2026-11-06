@@ -154,6 +154,34 @@ writes `meta.suitability` on each model card plus one
 [--model M] [--days N] [--dry-run]` recomputes on demand. decide() never
 reads the ledger — it is reviewer-facing evidence, not routing input.
 
+## Add a hosted OpenAI-compatible provider
+
+`put(kind='llm', args={'account': {...}})` is the owner door for a hosted
+provider (Groq, OpenRouter, Cerebras). One put carries the whole ledger
+entry: `endpoint={'base_url': 'https://<provider host>/v1'}` (the door
+writes the matching `llm.profiles` entry itself — the endpoint host must
+be the one bound to `api_key_ref`, and a bare `base_url` key still
+refuses), `api_key_ref` naming the vault secret, `models`,
+`entitlement.models.<id>` with `price_in`/`price_out` in USD per 1M
+tokens, `privacy.training_use` (`no` / `yes` / `unknown`) and `limits` —
+`{pool, unit, limit, reset_rule, source_url, verified_at}` objects whose
+pool keys are `llm:<account>:<window>`. Every fact needs its `source_url`
+(https) and `verified_at`; a limit's `reset_rule` is `rolling:<seconds>`
+or a `calendar:` rule, never `expires:`.
+
+The account lands **disabled**. A second put —
+`{'name': '<account>', 'enabled': True}` — turns it on; enabling refuses
+while its `llm.profiles` entry, the `training_use` stance or a non-empty
+`models` list is missing. An enabled account adds one cloud offering per
+model to `decide()` — priced from the entitlement entry, `free` at 0/0,
+unpriced (never free) when the price is unknown — and a non-default
+privacy class rejects its offerings unless `training_use` is `no`.
+
+The recorded limits are evidence, not enforcement: nothing meters them
+yet, so the pools read `pacing=unknown` until a usage report lands.
+Discovery-found free models still enter through `offer_discovery` —
+never hand-seed a Groq/Cerebras/OpenRouter card.
+
 ## See also
 
 `pool_refresh` copies Codex weekly usage from fleet host reports and Devin's

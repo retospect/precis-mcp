@@ -10,7 +10,9 @@ seeded pool key behave like any other carrier row (acceptance e). Real PG.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -38,6 +40,11 @@ def _restore_pool_rows(store: Any) -> Iterator[None]:
             )
             columns = [column.name for column in cursor.description]
             snapshots.append((table, key, columns, cursor.fetchall()))
+    with store.pool.connection() as conn:
+        profiles_row = conn.execute(
+            "SELECT value, updated_at, updated_by FROM app_settings "
+            "WHERE key = 'llm.profiles'"
+        ).fetchone()
     yield
     with store.pool.connection() as conn:
         for table, key, columns, rows in snapshots:
@@ -63,6 +70,13 @@ def _restore_pool_rows(store: Any) -> Iterator[None]:
                     ),
                     (*values, row[key_index]),
                 )
+        conn.execute("DELETE FROM app_settings WHERE key = 'llm.profiles'")
+        if profiles_row is not None:
+            conn.execute(
+                "INSERT INTO app_settings (key, value, updated_at, updated_by) "
+                "VALUES ('llm.profiles', %s, %s, %s)",
+                (profiles_row[0], profiles_row[1], profiles_row[2]),
+            )
 
 
 def _handler(store: Any) -> Any:
@@ -568,6 +582,335 @@ class TestPutAccount:
                     }
                 }
             )
+
+
+def _hosted_payload(**overrides: Any) -> dict[str, Any]:
+    """A door-complete hosted-provider account payload (groq by default):
+    endpoint, per-model price, free-tier limits and the privacy stance,
+    each with a source URL and a verification date."""
+    payload: dict[str, Any] = {
+        "name": "groq-free",
+        "vendor": "groq",
+        "plan": "free",
+        "adapter": "openai_compat",
+        "endpoint": {"base_url": "https://api.groq.com/openai/v1"},
+        "api_key_ref": "GROQ_API_KEY",
+        "models": ["m-groq"],
+        "privacy": {
+            "training_use": "no",
+            "retention": "zdr",
+            "source_url": "https://groq.com/privacy/",
+            "verified_at": "2026-11-01T00:00:00Z",
+        },
+        "entitlement": {
+            "models": {
+                "m-groq": {
+                    "allowed": True,
+                    "price_in": 0,
+                    "price_out": 0,
+                    "source_url": "https://groq.com/pricing/",
+                    "verified_at": "2026-11-01T00:00:00Z",
+                }
+            }
+        },
+        "limits": [
+            {
+                "pool": "llm:groq-free:rpm",
+                "unit": "calls",
+                "limit": 30,
+                "reset_rule": "rolling:60",
+                "source_url": "https://groq.com/docs/rate-limits/",
+                "verified_at": "2026-11-01T00:00:00Z",
+            },
+            {
+                "pool": "llm:groq-free:rpd",
+                "unit": "calls",
+                "limit": 1000,
+                "reset_rule": "rolling:86400",
+                "source_url": "https://groq.com/docs/rate-limits/",
+                "verified_at": "2026-11-01T00:00:00Z",
+            },
+        ],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _profiles_map(store: Any) -> dict[str, Any]:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = 'llm.profiles'"
+        ).fetchone()
+    return json.loads(row[0]) if row else {}
+
+
+def _write_profiles(store: Any, entries: dict[str, Any]) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO app_settings (key, value, updated_at) "
+            "VALUES ('llm.profiles', %s, now()) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            (json.dumps(entries),),
+        )
+
+
+class TestPutHostedAccount:
+    """The owner door for a hosted OpenAI-compatible provider (td573668):
+    endpoint, per-model price, free-tier limits and the privacy stance
+    land in one put; the account is born disabled and enabled by a
+    second explicit put."""
+
+    def test_groq_account_created_disabled_with_profile_and_limits(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.utils.llm.accounts import get_account, list_pools
+        from precis.utils.llm.router import resolve_profile
+
+        monkeypatch.setenv("PRECIS_SOURCE", "cli")
+        h = _handler(store)
+        h.put(args={"account": _hosted_payload()})
+
+        acct = get_account(store, "groq-free")
+        assert acct is not None
+        assert acct.enabled is False
+        assert acct.profile == "groq-free"
+
+        profiles = _profiles_map(store)
+        assert profiles == {
+            "groq-free": {
+                "base_url": "https://api.groq.com/openai/v1",
+                "api_key_ref": "GROQ_API_KEY",
+                "kind": "metered",
+            }
+        }
+        monkeypatch.setenv("PRECIS_LLM_PROFILES", json.dumps(profiles))
+        assert resolve_profile("groq-free") is not None
+
+        pools = {p.provider: p for p in list_pools(store)}
+        for key, limit, rule in (
+            ("llm:groq-free:rpm", 30, "rolling:60"),
+            ("llm:groq-free:rpd", 1000, "rolling:86400"),
+        ):
+            pool = pools[key]
+            assert pool.unit == "calls"
+            assert pool.limit_reported == limit
+            assert pool.reset_rule == rule
+            assert pool.source == "user"
+            assert pool.used_reported is None
+        assert set(acct.pools) == {"llm:groq-free:rpm", "llm:groq-free:rpd"}
+        limits = acct.entitlement["limits"]
+        for key in ("llm:groq-free:rpm", "llm:groq-free:rpd"):
+            entry = limits[key]
+            assert entry["unit"] == "calls"
+            assert entry["limit"] > 0
+            assert entry["source_url"].startswith("https://")
+            assert entry["verified_at"]
+
+    def test_openrouter_account_created_beside_groq(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.utils.llm.accounts import get_account
+
+        monkeypatch.setenv("PRECIS_SOURCE", "cli")
+        h = _handler(store)
+        h.put(args={"account": _hosted_payload()})
+        groq_entry = _profiles_map(store)["groq-free"]
+        h.put(
+            args={
+                "account": _hosted_payload(
+                    name="openrouter-free",
+                    vendor="openrouter",
+                    endpoint={"base_url": "https://openrouter.ai/api/v1"},
+                    api_key_ref="OPENROUTER_API_KEY",
+                    models=["m-or"],
+                    privacy={
+                        "training_use": "unknown",
+                        "source_url": "https://openrouter.ai/privacy",
+                        "verified_at": "2026-11-01T00:00:00Z",
+                    },
+                    entitlement={
+                        "models": {
+                            "m-or": {
+                                "allowed": True,
+                                "price_in": 0,
+                                "price_out": 0,
+                                "source_url": "https://openrouter.ai/models",
+                                "verified_at": "2026-11-01T00:00:00Z",
+                            }
+                        }
+                    },
+                    limits=[
+                        {
+                            "pool": "llm:openrouter-free:rpd",
+                            "unit": "calls",
+                            "limit": 50,
+                            "reset_rule": "rolling:86400",
+                            "source_url": "https://openrouter.ai/docs/limits",
+                            "verified_at": "2026-11-01T00:00:00Z",
+                        }
+                    ],
+                )
+            }
+        )
+        acct = get_account(store, "openrouter-free")
+        assert acct is not None and acct.enabled is False
+        assert acct.profile == "openrouter-free"
+        profiles = _profiles_map(store)
+        assert profiles["groq-free"] == groq_entry
+        assert profiles["openrouter-free"] == {
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_ref": "OPENROUTER_API_KEY",
+            "kind": "metered",
+        }
+
+    def test_endpoint_host_must_match_key(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.utils.llm.accounts import get_account
+
+        monkeypatch.setenv("PRECIS_SOURCE", "cli")
+        h = _handler(store)
+        mismatched = _hosted_payload(
+            endpoint={"base_url": "https://openrouter.ai/api/v1"}
+        )
+        unlisted_key = _hosted_payload(api_key_ref="DEEPINFRA_API_KEY")
+        no_key = _hosted_payload()
+        del no_key["api_key_ref"]
+        http = _hosted_payload(endpoint={"base_url": "http://api.groq.com/openai/v1"})
+        for payload in (mismatched, unlisted_key, no_key, http):
+            with pytest.raises(BadInput):
+                h.put(args={"account": payload})
+            assert get_account(store, "groq-free") is None
+        assert _profiles_map(store) == {}
+
+    def test_existing_profile_entry_is_never_overwritten(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.utils.llm.accounts import get_account
+
+        monkeypatch.setenv("PRECIS_SOURCE", "cli")
+        h = _handler(store)
+        _write_profiles(
+            store,
+            {
+                "groq-free": {
+                    "base_url": "https://api.groq.com/other",
+                    "api_key_ref": "GROQ_API_KEY",
+                    "kind": "metered",
+                }
+            },
+        )
+        with pytest.raises(BadInput, match="profiles"):
+            h.put(args={"account": _hosted_payload()})
+        assert get_account(store, "groq-free") is None
+        assert (
+            _profiles_map(store)["groq-free"]["base_url"]
+            == "https://api.groq.com/other"
+        )
+        _write_profiles(store, {})
+        h.put(args={"account": _hosted_payload()})
+        h.put(args={"account": _hosted_payload()})
+        assert get_account(store, "groq-free") is not None
+
+    def test_create_refuses_enabled_and_missing_evidence(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.utils.llm.accounts import get_account
+
+        monkeypatch.setenv("PRECIS_SOURCE", "cli")
+        h = _handler(store)
+        bad: list[dict[str, Any]] = []
+        bad.append(_hosted_payload(enabled=True))
+        bad.append(_hosted_payload(privacy={}))
+        bad.append(
+            _hosted_payload(
+                privacy={
+                    "training_use": "maybe",
+                    "source_url": "https://groq.com/privacy/",
+                    "verified_at": "2026-11-01T00:00:00Z",
+                }
+            )
+        )
+        no_endpoint = _hosted_payload()
+        del no_endpoint["endpoint"]
+        bad.append(no_endpoint)
+        bad_unit = _hosted_payload()
+        bad_unit["limits"][0]["unit"] = "usd"
+        bad.append(bad_unit)
+        zero_limit = _hosted_payload()
+        zero_limit["limits"][0]["limit"] = 0
+        bad.append(zero_limit)
+        expiry = _hosted_payload()
+        expiry["limits"][0]["reset_rule"] = "expires:2027-01-01T00:00:00Z"
+        bad.append(expiry)
+        foreign_pool = _hosted_payload()
+        foreign_pool["limits"][0]["pool"] = "llm:other:rpm"
+        bad.append(foreign_pool)
+        no_source = _hosted_payload()
+        del no_source["limits"][0]["source_url"]
+        bad.append(no_source)
+        no_verified = _hosted_payload()
+        del no_verified["limits"][0]["verified_at"]
+        bad.append(no_verified)
+        no_model_source = _hosted_payload()
+        del no_model_source["entitlement"]["models"]["m-groq"]["source_url"]
+        bad.append(no_model_source)
+        no_model_verified = _hosted_payload()
+        del no_model_verified["entitlement"]["models"]["m-groq"]["verified_at"]
+        bad.append(no_model_verified)
+        negative_price = _hosted_payload()
+        negative_price["entitlement"]["models"]["m-groq"]["price_in"] = -1
+        bad.append(negative_price)
+        for payload in bad:
+            with pytest.raises(BadInput):
+                h.put(args={"account": payload})
+            assert get_account(store, "groq-free") is None
+
+    def test_enable_is_a_second_explicit_put(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.utils.llm.accounts import get_account
+
+        monkeypatch.setenv("PRECIS_SOURCE", "cli")
+        h = _handler(store)
+
+        def seed_account(
+            name: str, *, privacy: dict[str, Any], models: list[str]
+        ) -> None:
+            with store.pool.connection() as conn:
+                conn.execute(
+                    "INSERT INTO llm_account (name, vendor, plan, adapter, "
+                    "profile, api_key_ref, models, privacy) VALUES "
+                    "(%s, 'groq', 'free', 'openai_compat', %s, "
+                    "'GROQ_API_KEY', %s, %s::jsonb)",
+                    (name, name, models, json.dumps(privacy)),
+                )
+
+        profile_entry = {
+            "base_url": "https://api.groq.com/openai/v1",
+            "api_key_ref": "GROQ_API_KEY",
+            "kind": "metered",
+        }
+        seed_account("doorless", privacy={"training_use": "no"}, models=["m"])
+        _write_profiles(store, {"unrelated": profile_entry})
+        with pytest.raises(BadInput, match="profiles"):
+            h.put(args={"account": {"name": "doorless", "enabled": True}})
+        seed_account("no-stance", privacy={}, models=["m"])
+        _write_profiles(store, {"no-stance": profile_entry})
+        with pytest.raises(BadInput, match="training_use"):
+            h.put(args={"account": {"name": "no-stance", "enabled": True}})
+        seed_account("no-models", privacy={"training_use": "no"}, models=[])
+        _write_profiles(store, {"no-models": profile_entry})
+        with pytest.raises(BadInput, match="models"):
+            h.put(args={"account": {"name": "no-models", "enabled": True}})
+
+        h.put(args={"account": _hosted_payload()})
+        before = get_account(store, "groq-free")
+        assert before is not None and before.enabled is False
+        h.put(args={"account": {"name": "groq-free", "enabled": True}})
+        after = get_account(store, "groq-free")
+        assert after is not None and after.enabled is True
+        assert replace(after, enabled=False, updated_at=before.updated_at) == before
 
 
 class TestRateLimitUnaffected:

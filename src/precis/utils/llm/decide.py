@@ -221,6 +221,12 @@ def _rejection(
         return "entitlement", "local slot is not live"
     if req.privacy_class == "local-only" and o.locality != "local":
         return "privacy", "local-only demand requires local offering"
+    if (
+        account is not None
+        and req.privacy_class != "default"
+        and account.privacy.get("training_use") != "no"
+    ):
+        return "privacy", "account may train on prompts or has no stance recorded"
     if r.transport == "local" and o.locality != "local":
         return "privacy", "local placement requires local offering"
     if (
@@ -553,13 +559,93 @@ _SUBSCRIPTION_ADAPTERS = frozenset({"claude_p", "claude_agent", "codex_exec"})
 _ACCOUNT_ADAPTER = {"claude_agent": "claude_p"}
 
 
+def _account_offerings(
+    accts: list[accounts.Account], catalog: Mapping[str, dict[str, Any]]
+) -> tuple[Offering, ...]:
+    """One offering per model on each enabled ``openai_compat`` account
+    that names a profile — the metered/free side of the owner door
+    (td573668).
+
+    Price: the account's ``entitlement.models.<id>`` price wins; absent an
+    entry, the card's ``facts_openrouter`` price — ``0``/``0`` reads
+    ``free`` under the same rule the catalog loop uses, while an unknown
+    price stays ``metered`` and unpriced (a ``free`` plan never implies
+    free). Window, tier floor and capability come from the model's card
+    when one exists, expressed exactly as the catalog loop does.
+    """
+    offerings: list[Offering] = []
+    for acct in accts:
+        if not acct.enabled or acct.adapter != "openai_compat" or not acct.profile:
+            continue
+        ent_models = (acct.entitlement or {}).get("models") or {}
+        for model in acct.models:
+            try:
+                entry = ent_models.get(model)
+                if isinstance(entry, dict) and entry.get("allowed") is False:
+                    continue
+                price_in = price_out = None
+                meta = catalog.get(model) or {}
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("price_in") is not None
+                    and entry.get("price_out") is not None
+                ):
+                    price_in = float(entry["price_in"])
+                    price_out = float(entry["price_out"])
+                elif meta:
+                    facts = meta.get("facts_openrouter") or {}
+                    if (
+                        facts.get("price_in") is not None
+                        and facts.get("price_out") is not None
+                    ):
+                        price_in = float(facts["price_in"])
+                        price_out = float(facts["price_out"])
+                billing = "free" if price_in == 0 and price_out == 0 else "metered"
+                floor_tier = policy._tier_of(meta)
+                offerings.append(
+                    Offering(
+                        offering_key(model, "openai_compat", acct.name),
+                        model,
+                        acct.vendor,
+                        acct.name,
+                        "openai_compat",
+                        None,
+                        billing,
+                        billing,
+                        price_in,
+                        price_out,
+                        "cloud",
+                        admit.window_for(meta, "openai_compat") if meta else None,
+                        None,
+                        None,
+                        None,
+                        acct.pools,
+                        capability={
+                            axis: policy._axis_ordinal(meta, axis)
+                            for axis in set(meta.get("capability") or {})
+                        },
+                        tier_floor=floor_tier.value if floor_tier else None,
+                    )
+                )
+            except Exception:
+                log.debug(
+                    "decide: malformed account offering %s/%s skipped",
+                    acct.name,
+                    model,
+                    exc_info=True,
+                )
+    return tuple(offerings)
+
+
 def _build_offerings(
     store: Store, accts: list[accounts.Account]
 ) -> tuple[Offering, ...]:
     """Catalog cards → offerings; host heartbeats only for a card that
-    carries a local operating point."""
+    carries a local operating point. Enabled ``openai_compat`` accounts
+    append one offering per model (:func:`_account_offerings`)."""
     offerings: list[Offering] = []
-    for model, meta in admit._catalog(store).items():
+    catalog = admit._catalog(store)
+    for model, meta in catalog.items():
         try:
             if not policy._runnable(meta):
                 continue
@@ -683,7 +769,7 @@ def _build_offerings(
                 )
         except Exception:
             log.debug("decide: malformed catalog card %s skipped", model, exc_info=True)
-    return tuple(offerings)
+    return tuple(offerings) + _account_offerings(accts, catalog)
 
 
 def ledger_from_store(

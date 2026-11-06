@@ -769,3 +769,203 @@ def test_ties_prefer_legacy_lane() -> None:
     assert decision.chosen is not None and decision.chosen.model == "zzz"
     legacy = d.legacy_decision([Rung(Transport.LOCAL, model="zzz")], "zzz", led)
     assert d.compare(decision, legacy)["agree"] is True
+
+
+def _hosted_payload(**overrides: Any) -> dict[str, Any]:
+    """A door-complete hosted-provider account payload (groq by default)."""
+    payload: dict[str, Any] = {
+        "name": "groq-free",
+        "vendor": "groq",
+        "plan": "free",
+        "adapter": "openai_compat",
+        "endpoint": {"base_url": "https://api.groq.com/openai/v1"},
+        "api_key_ref": "GROQ_API_KEY",
+        "models": ["m-groq"],
+        "privacy": {
+            "training_use": "no",
+            "retention": "zdr",
+            "source_url": "https://groq.com/privacy/",
+            "verified_at": "2026-11-01T00:00:00Z",
+        },
+        "entitlement": {
+            "models": {
+                "m-groq": {
+                    "allowed": True,
+                    "price_in": 0,
+                    "price_out": 0,
+                    "source_url": "https://groq.com/pricing/",
+                    "verified_at": "2026-11-01T00:00:00Z",
+                }
+            }
+        },
+        "limits": [
+            {
+                "pool": "llm:groq-free:rpm",
+                "unit": "calls",
+                "limit": 30,
+                "reset_rule": "rolling:60",
+                "source_url": "https://groq.com/docs/rate-limits/",
+                "verified_at": "2026-11-01T00:00:00Z",
+            }
+        ],
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.fixture
+def _hosted_account(store: Any) -> Iterator[None]:
+    """Drop the door-created rows and restore the profiles map after."""
+    with store.pool.connection() as conn:
+        saved = conn.execute(
+            "SELECT value, updated_at, updated_by FROM app_settings "
+            "WHERE key = 'llm.profiles'"
+        ).fetchone()
+    yield
+    with store.pool.connection() as conn:
+        conn.execute("DELETE FROM llm_account WHERE name = 'groq-free'")
+        conn.execute(
+            "DELETE FROM external_rate_limits WHERE provider LIKE 'llm:groq-free:%%'"
+        )
+        conn.execute("DELETE FROM app_settings WHERE key = 'llm.profiles'")
+        if saved is not None:
+            conn.execute(
+                "INSERT INTO app_settings (key, value, updated_at, updated_by) "
+                "VALUES ('llm.profiles', %s, %s, %s)",
+                (saved[0], saved[1], saved[2]),
+            )
+
+
+def _put_account(store: Any, payload: dict[str, Any]) -> None:
+    from precis.dispatch import Hub
+    from precis.handlers.llm import LlmHandler
+
+    LlmHandler(hub=Hub(store=store)).put(args={"account": payload})
+
+
+def _hosted_ledger(store: Any) -> d.Ledger:
+    d.admit.reset_cache()
+    d._ledger_cache.clear()
+    led = d.ledger_from_store(store, now=NOW)
+    d.admit.reset_cache()
+    d._ledger_cache.clear()
+    assert led is not None
+    return led
+
+
+def test_account_offerings_empty_for_seed_accounts(store: Any) -> None:
+    """The five seed accounts alone add no account offering."""
+    d.admit.reset_cache()
+    accts = d.accounts.list_accounts(store)
+    assert d._account_offerings(accts, d.admit._catalog(store)) == ()
+
+
+@pytest.mark.usefixtures("_hosted_account")
+def test_disabled_account_yields_no_offering(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A door-created account starts disabled: no offering, nothing ranked."""
+    monkeypatch.setenv("PRECIS_SOURCE", "cli")
+    _put_account(store, _hosted_payload())
+    led = _hosted_ledger(store)
+    key = d.offering_key("m-groq", "openai_compat", "groq-free")
+    assert all(o.key != key for o in led.offerings)
+    decision = d.decide(LlmRequest(Tier.SMALL), Requirement(Tier.SMALL), led, "shadow")
+    assert all(r.offering.account != "groq-free" for r in decision.ranked)
+
+
+@pytest.mark.usefixtures("_hosted_account")
+def test_enabled_free_account_offerings_priced_zero(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One offering per account model — free-priced, cloud, on the
+    account's pools."""
+    monkeypatch.setenv("PRECIS_SOURCE", "cli")
+    _put_account(store, _hosted_payload())
+    _put_account(store, {"name": "groq-free", "enabled": True})
+    led = _hosted_ledger(store)
+    key = d.offering_key("m-groq", "openai_compat", "groq-free")
+    acct = led.accounts["groq-free"]
+    mine = [o for o in led.offerings if o.account == "groq-free"]
+    assert len(mine) == len(acct.models) == 1
+    o = mine[0]
+    assert o.key == key
+    assert o.billing == "free"
+    assert o.price_in == 0 and o.price_out == 0
+    assert o.pool_keys == acct.pools
+    assert o.locality == "cloud"
+    decision = d.decide(LlmRequest(Tier.SMALL), Requirement(Tier.SMALL), led, "shadow")
+    assert any(r.offering.key == key for r in decision.ranked)
+
+
+@pytest.mark.usefixtures("_hosted_account")
+def test_hosted_free_offering_rejected_for_local_only(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cloud account offering never serves a local-only demand."""
+    monkeypatch.setenv("PRECIS_SOURCE", "cli")
+    _put_account(store, _hosted_payload())
+    _put_account(store, {"name": "groq-free", "enabled": True})
+    led = _hosted_ledger(store)
+    key = d.offering_key("m-groq", "openai_compat", "groq-free")
+    decision = d.decide(
+        LlmRequest(Tier.SMALL, privacy_class="local-only"),
+        Requirement(Tier.SMALL),
+        led,
+        "shadow",
+    )
+    rejected = {r.offering_key: r.filter for r in decision.rejected}
+    assert rejected.get(key) == "privacy"
+
+
+def test_unlisted_price_is_unpriced_never_free() -> None:
+    """No entitlement entry and no card feed price: metered, prices
+    None. A card feed price of 0/0 without an entitlement entry: free —
+    a missing price is never free."""
+    acct = replace(
+        account(),
+        name="groq-free",
+        vendor="groq",
+        adapter="openai_compat",
+        profile="groq-free",
+        models=("m-unlisted",),
+        pools=("llm:groq-free:rpm",),
+    )
+    (unpriced,) = d._account_offerings([acct], {})
+    assert unpriced.billing == "metered"
+    assert unpriced.price_in is None and unpriced.price_out is None
+    catalog = {"m-unlisted": {"facts_openrouter": {"price_in": 0, "price_out": 0}}}
+    (free,) = d._account_offerings([acct], catalog)
+    assert free.billing == "free"
+    assert free.price_in == 0 and free.price_out == 0
+
+
+def test_local_only_rejects_training_account() -> None:
+    """A local-only demand refuses an account that may train on prompts —
+    or that records no stance. ``training_use='no'`` passes; the default
+    privacy class never reads the stance."""
+
+    def run(privacy: dict[str, Any], privacy_class: str) -> d.Decision:
+        acct = replace(account(), name="train", privacy=privacy)
+        o = offering(
+            "m@local/train",
+            model="m",
+            adapter="local",
+            billing="local",
+            locality="local",
+            live=True,
+            account="train",
+        )
+        return d.decide(
+            LlmRequest(Tier.SMALL, privacy_class=privacy_class),
+            Requirement(Tier.SMALL),
+            ledger(o, accounts={"train": acct}),
+            "shadow",
+        )
+
+    for stance in ({"training_use": "yes"}, {}):
+        decision = run(stance, "local-only")
+        assert decision.chosen is None
+        assert decision.rejected[0].filter == "privacy"
+    assert run({"training_use": "no"}, "local-only").chosen is not None
+    assert run({"training_use": "yes"}, "default").chosen is not None
