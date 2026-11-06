@@ -235,6 +235,11 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         run_slice, "_signal_group", lambda pgid, sig: calls["signals"].append(pgid)
     )
     monkeypatch.setattr(lanes, "live_lane_counts", lambda store: calls.get("live", {}))
+    # Host-refusal backoffs (gr571395): a test sets seams["backoff"] =
+    # {lane: until}; default none.
+    monkeypatch.setattr(
+        lanes, "lane_backoffs", lambda store, now=None: calls.get("backoff", {})
+    )
     # The devin lane's submit preflight (gr570688): binary resolves, the
     # CLI reports a login, and trust seeding records the dir it seeded.
     # raising=False keeps the rest of the suite green on a run_slice that
@@ -431,9 +436,24 @@ def test_pick_lane_honours_a_pinned_model() -> None:
     assert seed_sub.accepts_model("claude-opus-4-8")
 
 
+def test_pick_lane_skips_a_backed_off_lane() -> None:
+    """gr571395: a lane whose newest ``run_slice`` job refused the launch
+    for a host reason leaves the fit set until the stamped window ends —
+    the pick lands on the next lane rather than probing a dead host for
+    every task."""
+    future = datetime.now(UTC) + timedelta(minutes=30)
+    picked = pick_lane(None, "code", counts={}, backoff={"devin": future})
+    assert picked is not None and picked.name == "codex"
+    # An expired window no longer skips: the next submit is the probe.
+    past = datetime.now(UTC) - timedelta(minutes=1)
+    picked = pick_lane(None, "code", counts={}, backoff={"devin": past})
+    assert picked is not None and picked.name == "devin"
+
+
 def test_pick_lane_reads_live_counts(monkeypatch: pytest.MonkeyPatch) -> None:
     """The seed table: devin (cap 3), codex (cap 1) and claude-sub (cap 2)
     fit ``code``."""
+    monkeypatch.setattr(lanes, "lane_backoffs", lambda store: {})
     monkeypatch.setattr(
         lanes,
         "live_lane_counts",
@@ -2478,7 +2498,7 @@ def _devin_lane_submit(
     **params: Any,
 ) -> tuple[_Ctx, Any]:
     """Submit td42 on a pinned devin lane (the model guard's lane)."""
-    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL", raising=False)
     monkeypatch.setenv("PRECIS_DEVIN_BIN", "/vendor/devin")
     lane = _vendor_lane("devin", "devin_tree", models=("swe-2-high",))
     monkeypatch.setattr(lanes, "LANES", (lane,))
@@ -2590,6 +2610,25 @@ def test_devin_preflight_refuses_an_auth_status_timeout(
     assert seams["launch"] == []
 
 
+def test_host_refusal_stamps_a_lane_backoff(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr571395: a host refusal marks the failed job — ``meta.host_refusal``
+    carries the lane and the window's end, so :func:`lanes.lane_backoffs`
+    can skip it and ``plan_dispatch`` never counts the job as an attempt."""
+    seams["devin"]["bin_ok"] = False
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is None and ctx.status == "failed"
+    refusal = ctx.meta_set["host_refusal"]
+    assert refusal["lane"] == "devin"
+    until = datetime.fromisoformat(str(refusal["until"]))
+    assert until > datetime.now(UTC)
+    assert str(refusal["why"]).startswith("devin preflight:")
+
+
 def test_devin_preflight_refuses_when_trust_seeding_fails(
     seams: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
@@ -2608,6 +2647,132 @@ def test_devin_preflight_refuses_when_trust_seeding_fails(
     assert "devin_trust.py" in ctx.failure
     assert seams["launch"] == []
     assert store.tag_strings(42) == {"STATUS:open"}
+
+
+def test_pinned_lane_in_backoff_parks_until_the_window_ends(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr571395: a lane pinned by ``params.lane`` while backed off parks to
+    the stamped window end (not the 10-min lane-full horizon) — the next
+    launch on it is the probe, and no attempt is burned."""
+    until = datetime.now(UTC) + timedelta(minutes=25)
+    seams["backoff"] = {"devin": until}
+    store = _Store()
+    store.add_todo(42, "Build")
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    monkeypatch.setenv("PRECIS_DEVIN_BIN", "/vendor/devin")
+    monkeypatch.setattr(lanes, "LANES", (_vendor_lane("devin", "devin_tree"),))
+    ctx = _Ctx(store, {"todo_id": 42, "lane": "devin"})
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake: Any, note: str) -> bool:
+        deferred.append((wake, note))
+        return True
+
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    assert deferred and deferred[0][0] == until
+    assert "devin" in deferred[0][1] and "backed off" in deferred[0][1]
+    assert ctx.failure is None and seams["launch"] == []
+    assert store.tag_strings(42) == {"STATUS:open"}
+
+
+def test_empty_pick_names_the_backed_off_lanes(
+    seams: dict[str, Any],
+) -> None:
+    """An unpinned pick with every fit lane backed off says so in the park
+    note — the plain lane-full wording would mislead."""
+    seams["backoff"] = {"claude-sub": datetime.now(UTC) + timedelta(minutes=30)}
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _Ctx(store, {"todo_id": 42})
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake: Any, note: str) -> bool:
+        deferred.append((wake, note))
+        return True
+
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    assert deferred and "claude-sub" in deferred[0][1]
+    assert "backed off" in deferred[0][1]
+    assert ctx.failure is None and seams["launch"] == []
+
+
+def test_refusal_raises_one_deduped_alert(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr571395: each refusal raises the lane's fingerprint, so the alert
+    dedups to one open row per lane no matter how many todos probe it;
+    an alert failure never masks the refusal itself."""
+    seams["devin"]["bin_ok"] = False
+    raised: list[dict[str, Any]] = []
+
+    def fake_raise(store: Any, **kw: Any) -> tuple[int, bool]:
+        raised.append(kw)
+        return (1, True)
+
+    monkeypatch.setattr(run_slice, "raise_alert", fake_raise)
+    for tid in (42, 43):
+        store = _Store()
+        store.add_todo(tid, "Build")
+        ctx, handle = _devin_lane_submit(store, seams, monkeypatch, todo_id=tid)
+        assert handle is None and ctx.status == "failed"
+    assert len(raised) == 2
+    for kw in raised:
+        assert kw["source"] == "run_slice"
+        assert kw["fingerprint"] == "lane-host-refusal:devin"
+        assert kw["severity"] == "warn"
+        assert kw["title"] == "lane devin refused a launch (host)"
+        assert "next:" in kw["detail"] and "skipped until" in kw["detail"]
+
+    def boom(store: Any, **kw: Any) -> None:
+        raise RuntimeError("alert store down")
+
+    monkeypatch.setattr(run_slice, "raise_alert", boom)
+    store3 = _Store()
+    store3.add_todo(44, "Build")
+    ctx3, handle3 = _devin_lane_submit(store3, seams, monkeypatch, todo_id=44)
+    assert handle3 is None and ctx3.status == "failed"
+    assert ctx3.failure is not None and "devin preflight" in ctx3.failure
+
+
+def test_launch_after_backoff_resolves_the_alert(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successful launch on a lane that once refused is the probe that
+    clears the host: it resolves the open alert — and a resolve failure
+    never masks the launch."""
+    resolved: list[dict[str, Any]] = []
+
+    def fake_resolve(store: Any, **kw: Any) -> bool:
+        resolved.append(kw)
+        return True
+
+    monkeypatch.setattr(run_slice, "resolve_alert_by_fingerprint", fake_resolve)
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None and ctx.failure is None
+    assert resolved == [
+        {
+            "source": "run_slice",
+            "fingerprint": "lane-host-refusal:devin",
+            "resolved_by": "run_slice launch",
+        }
+    ]
+
+    def boom(store: Any, **kw: Any) -> None:
+        raise RuntimeError("alert store down")
+
+    monkeypatch.setattr(run_slice, "resolve_alert_by_fingerprint", boom)
+    store2 = _Store()
+    store2.add_todo(43, "Build")
+    ctx2, handle2 = _devin_lane_submit(store2, seams, monkeypatch, todo_id=43)
+    assert handle2 is not None and ctx2.failure is None
 
 
 @pytest.mark.parametrize(

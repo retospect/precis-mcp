@@ -27,7 +27,11 @@ that holds the lane's credentials with ``params.target_node``):
   gr570688): a refusal fails the job in seconds with the next step —
   a host problem (:class:`_HostRefusal`), so the todo's lease goes back
   clean with no ``attempt:`` burned — rather than burning a session that
-  dies at spawn or stalls on the trust prompt. A ``codex_exec`` launch grants its sandbox writable
+  dies at spawn or stalls on the trust prompt. The refusal also stamps
+  ``meta.host_refusal`` on the failed job, backing the lane off
+  :data:`precis.plans.lanes.HOST_REFUSAL_BACKOFF` in the pick, raising
+  one deduped alert, and counting as no attempt at the retry cap
+  (gr571395). A ``codex_exec`` launch grants its sandbox writable
   roots beyond the tree (:func:`_codex_writable_roots`): the shared git
   common dir — worktree index/refs, objects, and the gate queue the
   session's ``scripts/test`` writes — plus the Docker socket's parent
@@ -104,6 +108,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from precis.alert_ids import RULES_BY_ID
+from precis.alerts import raise_alert, resolve_alert_by_fingerprint
 from precis.plans import lanes as _lanes
 from precis.plans.nodes import MOOT_TAG, generator_verdict, node_kind
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
@@ -141,6 +147,10 @@ _DEFAULT_EFFORT = "high"
 #: instant ``ctx.defer`` falls to the executor's two-hour quota-window
 #: backoff, which idled a triage 86 minutes behind two finished builds.
 LANE_FULL_BACKOFF = timedelta(minutes=10)
+
+#: ``raise_alert`` source of the lane host-refusal alert (gr571395),
+#: bound to the registry: ``run_slice/lane-host-refusal:{lane}``.
+_REFUSAL_ALERT_SOURCE = RULES_BY_ID["run_slice/lane-host-refusal:{lane}"].rule
 #: Cap on the handoff comment and the failure tail.
 _HANDOFF_CAP = 6000
 _TAIL_CAP = 2000
@@ -1387,12 +1397,50 @@ def _fail_submit(ctx: Any, todo_id: int, lane: str | None, reason: str) -> None:
     ctx.record_failure(f"run_slice: {reason}{suffix}")
 
 
-def _park_lane_full(ctx: Any, note: str) -> None:
-    """Park the job :data:`LANE_FULL_BACKOFF` ahead (gr561491) when ``ctx``
-    can defer; fail it with ``note`` otherwise. The todo is not claimed yet,
-    so no release and no attempt is burned."""
+def _raise_lane_refusal(store: Any, lane: str, why: str, until: datetime) -> None:
+    """One deduped warn alert per lane on a host refusal (gr571395), so a
+    broken host reaches a human once — not once per parked todo.
+    Best-effort: an alert failure never masks the refusal."""
+    try:
+        raise_alert(
+            store,
+            source=_REFUSAL_ALERT_SOURCE,
+            fingerprint=f"lane-host-refusal:{lane}",
+            title=f"lane {lane} refused a launch (host)",
+            detail=(
+                f"{why} Lane skipped until {until.strftime('%Y-%m-%dT%H:%M:%SZ')}."
+            ),
+            severity="warn",
+        )
+    except Exception:
+        log.warning(
+            "run_slice: host-refusal alert for lane %s failed", lane, exc_info=True
+        )
+
+
+def _resolve_lane_refusal(store: Any, lane: str) -> None:
+    """A launch on a lane that once refused clears its open alert.
+    Best-effort: an alert failure never masks the launch."""
+    try:
+        resolve_alert_by_fingerprint(
+            store,
+            source=_REFUSAL_ALERT_SOURCE,
+            fingerprint=f"lane-host-refusal:{lane}",
+            resolved_by="run_slice launch",
+        )
+    except Exception:
+        log.warning(
+            "run_slice: host-refusal resolve for lane %s failed", lane, exc_info=True
+        )
+
+
+def _park_lane_full(ctx: Any, note: str, until: datetime | None = None) -> None:
+    """Park the job ``until`` (default :data:`LANE_FULL_BACKOFF` ahead —
+    gr561491) when ``ctx`` can defer; fail it with ``note`` otherwise. The
+    todo is not claimed yet, so no release and no attempt is burned."""
+    wake = until if until is not None else datetime.now(UTC) + LANE_FULL_BACKOFF
     defer = getattr(ctx, "defer", None)
-    if defer is not None and defer(datetime.now(UTC) + LANE_FULL_BACKOFF, note):
+    if defer is not None and defer(wake, note):
         return
     ctx.record_failure(note)
 
@@ -1439,7 +1487,19 @@ def submit(ctx: Any, spec: Any) -> Any:
             return None
         # A pinned lane (an escalated retry, a reviewer pick) is held to
         # its cap like a picked one (td562568): before this an escalated
-        # retry ran a free lane over its cap of 1.
+        # retry ran a free lane over its cap of 1. A lane backed off by a
+        # host refusal (gr571395) parks until the window ends — the next
+        # launch on it is the probe.
+        until = _lanes.lane_backoffs(store).get(lane.name)
+        if until is not None:
+            _park_lane_full(
+                ctx,
+                f"run_slice: lane {lane.name!r} pinned by params.lane is "
+                f"backed off until {until.strftime('%Y-%m-%dT%H:%M:%SZ')} "
+                "after a host refusal",
+                until=until,
+            )
+            return None
         live = _lanes.live_lane_counts(store).get(lane.name, 0)
         if live >= lane.cap:
             _park_lane_full(
@@ -1456,7 +1516,10 @@ def submit(ctx: Any, spec: Any) -> Any:
         pin = None if left_pin else params.get("model")
         model_pin = pin.strip() if isinstance(pin, str) and pin.strip() else None
         table = tuple(ln for ln in _lanes.LANES if not exclude or ln.vendor != exclude)
-        lane = _lanes.pick_lane(store, task_class, lanes=table, model=model_pin)
+        backoffs = _lanes.lane_backoffs(store)
+        lane = _lanes.pick_lane(
+            store, task_class, lanes=table, model=model_pin, backoff=backoffs
+        )
         if lane is None:
             if model_pin and not any(
                 ln.enabled and ln.fits(task_class) and ln.accepts_model(model_pin)
@@ -1469,10 +1532,22 @@ def submit(ctx: Any, spec: Any) -> Any:
                     "via params.lane or drop params.model"
                 )
                 return None
+            fit_names = [
+                ln.name
+                for ln in table
+                if ln.enabled
+                and ln.fits(task_class)
+                and (model_pin is None or ln.accepts_model(model_pin))
+            ]
+            backed = sorted(set(fit_names) & set(backoffs))
+            why = "every fit lane at its cap"
+            if backed:
+                why = f"lanes {', '.join(backed)} backed off after a host refusal"
+                if len(backed) < len(fit_names):
+                    why += "; the rest at their caps"
             _park_lane_full(
                 ctx,
-                f"run_slice: no lane free for task class {task_class!r} "
-                "(every fit lane at its cap)",
+                f"run_slice: no lane free for task class {task_class!r} ({why})",
             )
             return None
 
@@ -1577,9 +1652,21 @@ def submit(ctx: Any, spec: Any) -> Any:
         )
     except _HostRefusal as exc:
         # The host cannot run the lane right now; the task is uncharged —
-        # give the lease back clean, like the lane-table error path.
+        # give the lease back clean, like the lane-table error path. The
+        # refusal stamps the lane's backoff on this job (gr571395):
+        # lane_backoffs skips the lane until then, and plan_dispatch never
+        # counts the job as an attempt.
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         unclaim_todo(ctx.store, todo_id, lane.name)
+        until = datetime.now(UTC) + _lanes.HOST_REFUSAL_BACKOFF
+        ctx.set_meta(
+            host_refusal={
+                "lane": lane.name,
+                "until": until.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "why": str(exc)[:300],
+            }
+        )
+        _raise_lane_refusal(ctx.store, lane.name, str(exc), until)
         ctx.record_failure(f"run_slice: {exc}")
         return None
     except Exception as exc:
@@ -1597,6 +1684,9 @@ def submit(ctx: Any, spec: Any) -> Any:
         f"effort {effort}) pid {pid} in {tree} "
         f"(mcp token: {token_note})",
     )
+    # A launch on a lane that once refused is the probe that clears both
+    # the backoff (this job is newer than the marked one) and the alert.
+    _resolve_lane_refusal(ctx.store, lane.name)
     handle: dict[str, Any] = {
         "pid": pid,
         "pgid": pid,

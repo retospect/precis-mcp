@@ -75,7 +75,9 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    (``meta.ask`` kind ``ruling``, tags ``ask-user`` + ``showstopper``) that it
    is ``blocked-by``. Attempts count the ended jobs since the newest ask on
    the task (or the ``attempt:<n>`` tag ``run_slice`` writes, before any ask),
-   so answering the ask re-arms the task. A job still queued is never an
+   so answering the ask re-arms the task — except a job carrying
+   ``meta.host_refusal``: the lane's host refused the launch, so nothing
+   was tried (gr571395). A job still queued is never an
    attempt; one queued over 10 min whose ``ServiceSpec.placement``
    capabilities no live host advertises gets the note ``td<id>: job jo<N>
    queued <m> min — no host advertises {tokens}`` (td543917).
@@ -1179,7 +1181,9 @@ def _attempts(plan: _Plan, n: _Node) -> int:
     """Ended jobs since the newest ask on ``n`` (all of them, floored by the
     ``attempt:<n>`` tag, when there was never an ask). A REVERT verdict and
     an answered ask (:func:`_step_rearm`) re-arm a node: only jobs after
-    ``meta.rearmed_after_job`` count."""
+    ``meta.rearmed_after_job`` count. A job carrying ``meta.host_refusal``
+    never counts: the lane's host refused the launch, so nothing was tried
+    (gr571395)."""
     asks = [b for b in plan.blockers.get(n.id, []) if b.is_ask]
     since = max((b.created_at for b in asks), default=None)
     floor = _rearm_floor(n)
@@ -1190,6 +1194,7 @@ def _attempts(plan: _Plan, n: _Node) -> int:
         # Ended only: a job still queued — never claimed, e.g. waiting for
         # a host with its placement capabilities (td543917) — is no attempt.
         if j.status in _JOB_ENDED
+        and not j.meta.get("host_refusal")
         and (since is None or j.created_at > since)
         and (floor is None or j.id > floor)
         # A build that handed off to the lander is one attempt with its
@@ -1277,7 +1282,14 @@ def _escalate(w: _Writer, plan: _Plan, n: _Node, params: dict[str, Any]) -> str 
         rungs = tuple(r for r in rungs if r.lane == pinned_lane)
     if not rungs:
         return None
-    ended = [j for j in plan.jobs(n) if j.status in _JOB_ENDED]
+    # A host-refusal job is no rung to climb from either (gr571395): the
+    # lane's host refused before anything ran, so the retry starts from
+    # the newest job that actually attempted.
+    ended = [
+        j
+        for j in plan.jobs(n)
+        if j.status in _JOB_ENDED and not j.meta.get("host_refusal")
+    ]
     prev = (
         _lanes.rung_index(
             rungs, ended[-1].meta.get("lane"), ended[-1].meta.get("model")

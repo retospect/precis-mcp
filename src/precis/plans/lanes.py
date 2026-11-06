@@ -24,6 +24,16 @@ with the fewest live ``run_slice`` jobs carrying its ``meta.lane``, under
 its cap. Pacing (the lane most behind its window target) replaces the
 live-count order once the registry carries the window numbers.
 
+Backoff (:func:`lane_backoffs`): a launch the lane's host refuses (the
+adapter preflight — binary, login, trust seed) stamps
+``meta.host_refusal = {lane, until, why}`` on the failed job and backs the
+lane off :data:`HOST_REFUSAL_BACKOFF` (gr571395). A lane is backed off
+while its newest ``run_slice`` job carries a refusal ``until`` in the
+future; ``pick_lane`` skips it, the first submit after the window is the
+probe, and a probe job without the mark clears the lane by being newer.
+A broken host then costs one failed probe per window instead of a
+retry-cap ask per todo.
+
 Retry (:func:`ladder`): the table in order is also the escalation chain
 ``plan_dispatch`` climbs when a slice fails — each enabled fit lane's
 models from its default upward, free vendor lanes before the Claude
@@ -34,6 +44,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 #: Matches every task class in :attr:`Lane.task_classes`.
@@ -41,6 +52,12 @@ ANY_CLASS = "*"
 
 #: The job type whose live rows count against a lane's cap.
 RUN_SLICE = "run_slice"
+
+#: How long a lane stays out of the fit set after its host refused a
+#: launch (gr571395): long enough that a broken host costs one failed
+#: probe per window, short enough that a fixed login is picked up the
+#: same hour.
+HOST_REFUSAL_BACKOFF = timedelta(minutes=30)
 
 #: Job statuses that no longer hold a lane slot (mirrors
 #: ``precis.workers.executors._common.TERMINAL``; restated so this
@@ -252,6 +269,45 @@ def live_lane_counts(store: Any) -> dict[str, int]:
     return {str(r[0]): int(r[1]) for r in rows if r[0] is not None}
 
 
+def lane_backoffs(store: Any, now: datetime | None = None) -> dict[str, datetime]:
+    """``{lane name: backoff end}`` for lanes backed off by a host refusal.
+
+    A lane is backed off while its NEWEST ``run_slice`` job (by ref id,
+    per ``meta.lane``) carries ``meta.host_refusal.until`` in the future
+    (gr571395): a later job on the lane without the mark — a probe that
+    launched — clears the backoff by being newer, so no second write
+    path is needed.
+    """
+    now = now or datetime.now(UTC)
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT ON (r.meta->>'lane')
+                   r.meta->>'lane', r.meta->'host_refusal'->>'until'
+              FROM refs r
+             WHERE r.kind = 'job'
+               AND r.retired_at IS NULL
+               AND r.meta->>'job_type' = %s
+               AND r.meta ? 'lane'
+             ORDER BY r.meta->>'lane', r.ref_id DESC
+            """,
+            (RUN_SLICE,),
+        ).fetchall()
+    out: dict[str, datetime] = {}
+    for lane, raw in rows:
+        if not raw:
+            continue
+        try:
+            until = datetime.fromisoformat(str(raw))
+        except ValueError:
+            continue
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=UTC)
+        if until > now:
+            out[str(lane)] = until
+    return out
+
+
 def pick_lane(
     store: Any,
     task_class: str,
@@ -260,6 +316,7 @@ def pick_lane(
     counts: Mapping[str, int] | None = None,
     exclude_vendor: str | None = None,
     model: str | None = None,
+    backoff: Mapping[str, datetime] | None = None,
 ) -> Lane | None:
     """The lane a ``task_class`` slice launches on, or ``None`` when every
     fit lane is full (or none fits).
@@ -271,7 +328,11 @@ def pick_lane(
     ``run_slice`` jobs carrying that ``meta.lane``, only lanes under their
     cap; ties keep table order. ``lanes`` defaults to :data:`LANES` read at
     call time (like :func:`ladder`), so a table swap is seen; ``counts``
-    skips the DB read (tests, or a caller that already has them).
+    skips the DB read (tests, or a caller that already has them). Lanes
+    backed off by a host refusal leave the fit set: ``backoff`` carries
+    them explicitly, else they are read with :func:`lane_backoffs` — only
+    when ``counts`` is ``None`` (the same DB rule as ``counts``, so a
+    DB-free caller stays DB-free).
 
     ``exclude_vendor`` (the review rule: the reviewer never comes from the
     builder's vendor) drops fit lanes of that vendor. When no fit lane of
@@ -284,6 +345,13 @@ def pick_lane(
     fit = [lane for lane in table if lane.enabled and lane.fits(task_class)]
     if model:
         fit = [lane for lane in fit if lane.accepts_model(model)]
+    backed = (
+        {name for name, end in backoff.items() if end > datetime.now(UTC)}
+        if backoff is not None
+        else (set(lane_backoffs(store)) if counts is None else set())
+    )
+    if backed:
+        fit = [lane for lane in fit if lane.name not in backed]
     if exclude_vendor:
         other = [lane for lane in fit if lane.vendor != exclude_vendor]
         fit = other or fit
@@ -351,12 +419,14 @@ def rung_index(
 __all__ = [
     "ANY_CLASS",
     "FACTORY_DENY_WRITE_PATHS",
+    "HOST_REFUSAL_BACKOFF",
     "LANES",
     "RUN_SLICE",
     "Lane",
     "Rung",
     "get_lane",
     "ladder",
+    "lane_backoffs",
     "live_lane_counts",
     "pick_lane",
     "rung_index",

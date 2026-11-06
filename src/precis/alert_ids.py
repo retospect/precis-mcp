@@ -771,6 +771,17 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         triage="get(kind='todo', id=<root>): the alert detail names why the "
         "plan was moot; reopen the root if that call was wrong.",
     ),
+    AlertRule(
+        "run_slice",
+        "lane-host-refusal:{lane}",
+        "A lane's launch preflight refused for a host reason (missing "
+        "binary, dead login, failed trust seed); the lane is skipped "
+        "until the stamped backoff ends.",
+        "warn",
+        "run_slice",
+        triage="The alert detail carries the refusal's own next step; the "
+        "lane probes again after the backoff, and a launch resolves this.",
+    ),
 )
 
 RULES_BY_ID: dict[str, AlertRule] = {r.id: r for r in ALERT_RULES}

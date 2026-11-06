@@ -5,7 +5,7 @@ its task done) between passes."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -308,6 +308,7 @@ def _failed_job(
     *,
     lane: str | None = None,
     model: str | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> int:
     with store.tx() as conn:
         ref = mint_background_job(
@@ -320,11 +321,10 @@ def _failed_job(
             parent_id=task,
             status="failed",
         )
-    if lane is not None or model is not None:
-        store.stamp_ref_meta(
-            ref.id,
-            {k: v for k, v in (("lane", lane), ("model", model)) if v is not None},
-        )
+    patch = {k: v for k, v in (("lane", lane), ("model", model)) if v is not None}
+    patch.update(meta or {})
+    if patch:
+        store.stamp_ref_meta(ref.id, patch)
     store.chunks.insert_chunks(
         ref.id, [ChunkInsert(ord=1, text=reason, meta={"chunk_kind": "job_event"})]
     )
@@ -556,6 +556,63 @@ def test_retry_cap_mints_exactly_one_ask(store: Store) -> None:
     )
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (1, 0)
+
+
+def test_host_refusal_jobs_are_no_attempt(store: Store) -> None:
+    """gr571395: a launch refused for a host reason (the devin binary
+    missing, a dead login, trust seeding failed) is not a build attempt —
+    a broken host must never mint a retry-cap ask on an innocent todo."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    until = (datetime.now(UTC) + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for _ in range(2):
+        _failed_job(
+            store,
+            task,
+            "run_slice: devin preflight: binary is not executable",
+            lane="devin",
+            meta={
+                "host_refusal": {
+                    "lane": "devin",
+                    "until": until,
+                    "why": "devin preflight: binary is not executable",
+                }
+            },
+        )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+
+
+def test_lane_backoffs_marks_only_the_newest_job_per_lane(store: Store) -> None:
+    """gr571395: the backoff is derived, never stored — a lane is backed
+    off while its NEWEST run_slice job carries a future refusal ``until``;
+    a later unmarked job (a probe that launched) clears it."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    until = (datetime.now(UTC) + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    past = (datetime.now(UTC) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _failed_job(
+        store,
+        task,
+        "run_slice: devin preflight: no binary",
+        lane="devin",
+        meta={"host_refusal": {"lane": "devin", "until": until, "why": "x"}},
+    )
+    backoffs = L.lane_backoffs(store)
+    assert set(backoffs) == {"devin"}
+    assert backoffs["devin"] > datetime.now(UTC)
+    # A newer job on the lane without the mark clears the backoff.
+    _failed_job(store, task, "probe launched and failed", lane="devin")
+    assert "devin" not in L.lane_backoffs(store)
+    # An expired window clears it too.
+    _failed_job(
+        store,
+        task,
+        "run_slice: codex host refused",
+        lane="codex",
+        meta={"host_refusal": {"lane": "codex", "until": past, "why": "x"}},
+    )
+    assert "codex" not in L.lane_backoffs(store)
 
 
 def test_answered_ask_rearms_despite_jobs_run_in_between(store: Store) -> None:
