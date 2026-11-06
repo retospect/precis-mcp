@@ -20,6 +20,7 @@ See ``precis-cad-help``.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import math
 import tempfile
@@ -29,7 +30,7 @@ from typing import Any, ClassVar
 
 import numpy as np
 
-from precis.cad import catalog
+from precis.cad import catalog, cspace
 from precis.cad.bulk import expr_aabb, expr_aabb_disjoint
 from precis.cad.bulk import volume as cad_volume
 from precis.cad.dsl import FIELD_ALIAS, RELIEF_ALIAS, DslError, format_spec
@@ -58,6 +59,7 @@ from precis.cad.probe import (
 )
 from precis.cad.relate import CONTACT_TOL_REL, translational_dof
 from precis.cad.relate import _clearance as sdf_clearance
+from precis.cad.relate import _governing_length as sdf_governing_length
 from precis.cad.relate import connectivity as cad_connectivity
 from precis.cad.scene import (
     PAYLOAD_SEP,
@@ -363,6 +365,50 @@ def _joint_kind_map(spec: SceneSpec) -> dict[str, str]:
     for j in joints_of(spec):
         kinds[j.component] = j.kind
     return kinds
+
+
+def _joint_axis_point(
+    spec: SceneSpec, name: str, own_ports: dict[str, Any]
+) -> Vec3 | None:
+    """The joint's own pivot location, in this design's frame — the point
+    :mod:`precis.cad.cspace`'s conservative advancement bounds a moving
+    body's speed against (``view='sweep'``).
+
+    Distance to this **point** is always >= distance to the true rotation
+    **axis** (a line through it) — projecting onto a line only removes a
+    component — so using the point is a safe (if slightly looser) stand-in
+    for the axis itself, and needs no direction, only the pivot's position.
+    ``None`` when the joint's anchor lives on another instance (its frame
+    isn't resolvable from this design's own ports alone); callers fall back
+    to the whole design's scale, which stays safe, just looser.
+    """
+    for j in joints_of(spec):
+        if j.component == name:
+            pt = own_ports.get(j.port)
+            return vec3(*pt.loc) if pt is not None else None
+    for m in mates_of(spec):
+        if m.instance == name and m.kind != "fixed":
+            if m.anchor_instance is not None:
+                return None
+            pt = own_ports.get(m.anchor_port)
+            return vec3(*pt.loc) if pt is not None else None
+    return None
+
+
+def _chain_ratios(name: str, couples: list[Any]) -> dict[str, float]:
+    """The swept joint ``name`` (ratio 1.0) plus every joint a gear/belt
+    couples to it, transitively — each keyed to its cumulative ratio off
+    the swept joint's own ``q`` (:meth:`CadHandler._render_sweep`'s speed
+    bound scales each chain member's own radius by this)."""
+    ratios = {name: 1.0}
+    grew = True
+    while grew:
+        grew = False
+        for cp in couples:
+            if cp.drive in ratios and cp.driven not in ratios:
+                ratios[cp.driven] = ratios[cp.drive] * cp.ratio
+                grew = True
+    return ratios
 
 
 def _convert_state_value(name: str, kind: str, value: Any) -> Any:
@@ -1592,10 +1638,14 @@ class CadHandler(Handler):
     def _render_sweep(self, spec: SceneSpec, args: dict[str, Any]) -> Response:
         """``view='sweep'`` — "does anything hit anything, anywhere in the
         travel?" Each joint is swept across its ``limits:`` (others held at
-        neutral), sampling ``args.n`` states; at each state the design is
-        rebuilt and its contact graph checked for interference between the
-        moving body and everything it doesn't move with. Also reports the
-        swept envelope (accumulated bbox) per moving component."""
+        neutral): a configuration-space walk (:mod:`precis.cad.cspace`,
+        conservative advancement) finds the exact collision window(s) per
+        cross-group pair, never missing a collision thinner than any fixed
+        sample spacing and costing few gap evaluations where a pair stays
+        far apart — ``args.n`` survives as the per-pair evaluation cap, not
+        a sample count. Also reports the swept envelope (accumulated bbox,
+        a coarse ``n``-point AABB-only pass — cheap, unchanged cost) per
+        moving component."""
         try:
             joints: list[tuple[str, str, tuple[float, float] | None]] = [
                 (m.instance, m.kind, m.limits)
@@ -1630,9 +1680,11 @@ class CadHandler(Handler):
         n = max(_SWEEP_N_MIN, min(_SWEEP_N_MAX, int(args.get("n", _SWEEP_N_DEFAULT))))
 
         couples = couples_of(spec)
-        # hit samples per (joint, a, b): (sample index, state) — indices keep
-        # non-contiguous collision windows separable in the report.
-        hit_states: dict[tuple[str, str, str], list[tuple[int, float]]] = {}
+        own_ports = {pt.name: pt for pt in ports_of(spec)}
+        kind_of = _joint_kind_map(spec)
+        hit_intervals: dict[tuple[str, str, str], list[cspace.Interval]] = {}
+        contact_pairs: set[tuple[str, str, str]] = set()
+        eval_counts: dict[tuple[str, str, str], int] = {}
         envelope: dict[str, list[float]] = {}
         swept: list[str] = []
         skipped: list[str] = []
@@ -1659,45 +1711,95 @@ class CadHandler(Handler):
             # Sweeping this joint also moves everything gear/belt-coupled
             # downstream of it — each such joint's subtree is its own rigid
             # group (two coupled arms move *differently*, so they can hit
-            # each other, not just the static parts).
-            chain = {name}
-            grew = True
-            while grew:
-                grew = False
-                for cp in couples:
-                    if cp.drive in chain and cp.driven not in chain:
-                        chain.add(cp.driven)
-                        grew = True
+            # each other, not just the static parts), each at its own
+            # cumulative ratio off this joint's own q.
+            ratios = _chain_ratios(name, couples)
+            chain = set(ratios)
+
+            def state_at(q: float, _name: str = name, _kind: str = kind) -> Any:
+                return {_name: [q, 0.0] if _kind == "cylindrical" else q}
+
+            # One reference build (at q=lo) for everything that is *q*-
+            # invariant: the component list, each chain member's own joint
+            # axis, and — since a rigid rotation/translation about a fixed
+            # axis never changes a material point's distance from it — the
+            # per-component speed bound (gr-cad-sweep-cspace; see cspace.py
+            # and _joint_axis_point).
+            built0 = self._expand(spec, state=state_at(lo))
+            design0 = build_design(built0)
+            comps = list(design0.components)
+            group: dict[str, str] = {}
+            for jn in chain:
+                for comp in comps:
+                    if comp == jn or comp.startswith(jn + "."):
+                        group[comp] = jn
+            axis_of = {jn: _joint_axis_point(spec, jn, own_ports) for jn in chain}
+            design_scale = _design_scale(design0)
+
+            def speed_of(comp: str) -> float:
+                jn = group.get(comp)
+                if jn is None:
+                    return 0.0
+                clo, chi = expr_aabb(design0, design0.components[comp])
+                axis = axis_of.get(jn)
+                if axis is None:
+                    r = design_scale
+                else:
+                    corners = itertools.product(
+                        (float(clo[0]), float(chi[0])),
+                        (float(clo[1]), float(chi[1])),
+                        (float(clo[2]), float(chi[2])),
+                    )
+                    r = max(math.dist(c, tuple(axis)) for c in corners)
+                member_kind = kind_of.get(jn, kind)
+                base = r if member_kind in ("revolute", "cylindrical", "screw") else 1.0
+                return base * abs(ratios[jn])
+
+            speeds = {comp: speed_of(comp) for comp in comps}
+
+            for ia, ca in enumerate(comps):
+                for cb in comps[ia + 1 :]:
+                    ga, gb = group.get(ca), group.get(cb)
+                    if ga == gb:
+                        continue
+                    v = speeds[ca] + speeds[cb]
+                    scale = sdf_governing_length(
+                        design0, [design0.components[ca], design0.components[cb]]
+                    )
+                    tol_q = (CONTACT_TOL_REL * scale) / v if v > 1e-12 else (hi - lo)
+
+                    def gap_at(
+                        q: float, _ca: str = ca, _cb: str = cb
+                    ) -> tuple[float, float]:
+                        built = self._expand(spec, state=state_at(q))
+                        design = build_design(built)
+                        cl = sdf_clearance(design, _ca, _cb)
+                        return cl.gap, cl.resolution
+
+                    result = cspace.sweep_pair(
+                        gap_at, lo, hi, v, tol=tol_q, eval_cap=n
+                    )
+                    a, b = sorted((ca, cb))
+                    key = (name, a, b)
+                    if result.capped:
+                        raise BadInput(
+                            f"view='sweep': joint {name!r} pair {a} ↔ {b} "
+                            f"needs more than args.n={n} gap evaluations "
+                            "to cover its full travel",
+                            next=f"retry with a larger args.n (max {_SWEEP_N_MAX})",
+                        )
+                    eval_counts[key] = result.evaluations
+                    if result.persistent_contact:
+                        contact_pairs.add(key)
+                    elif result.intervals:
+                        hit_intervals[key] = list(result.intervals)
+
+            # Swept envelope: a coarse n-point AABB-only pass (no gap
+            # evaluation — cheap, same cost as the pre-cspace sweep).
             for i in range(n):
                 q = lo + (hi - lo) * i / (n - 1)
-                state: dict[str, Any] = {name: [q, 0.0] if kind == "cylindrical" else q}
-                built = self._expand(spec, state=state)
+                built = self._expand(spec, state=state_at(q))
                 design = build_design(built)
-                group: dict[str, str] = {}
-                for jn in chain:
-                    for comp in built.components:
-                        if comp == jn or comp.startswith(jn + "."):
-                            group[comp] = jn
-                # Score only pairs the hit filter below could ever report
-                # (gr561417): a pair inside one rigid group moves as one
-                # body and two unmoving parts contact identically at every
-                # state, and a pair whose material AABBs are disjoint
-                # cannot interfere — the full connectivity graph paid a
-                # clearance minimisation for all three cases.
-                comps = list(design.components)
-                for ia, ca in enumerate(comps):
-                    for cb in comps[ia + 1 :]:
-                        ga, gb = group.get(ca), group.get(cb)
-                        if ga == gb:
-                            continue
-                        if expr_aabb_disjoint(
-                            design, design.components[ca], design.components[cb]
-                        ):
-                            continue
-                        cl = sdf_clearance(design, ca, cb)
-                        if cl.interfering:
-                            a, b = sorted((ca, cb))
-                            hit_states.setdefault((name, a, b), []).append((i, q))
                 for comp in group:
                     expr = design.components.get(comp)
                     if expr is None:  # pragma: no cover - defensive
@@ -1720,11 +1822,12 @@ class CadHandler(Handler):
 
         verdict = (
             "no interference anywhere in the travel ✓"
-            if not hit_states
-            else f"⚠ {len(hit_states)} colliding pair(s) in the travel"
+            if not hit_intervals
+            else f"⚠ {len(hit_intervals)} colliding pair(s) in the travel"
         )
         lines = [
-            f"# sweep — {len(swept)} joint(s), {n} states each: {verdict}",
+            f"# sweep — {len(swept)} joint(s), up to {n} gap evaluation(s) "
+            f"per pair (configuration-space walk): {verdict}",
             "swept: " + "; ".join(swept),
         ]
         if skipped:
@@ -1732,46 +1835,42 @@ class CadHandler(Handler):
 
         kind_by_name = {name: kind for name, kind, _ in joints}
 
-        def _runs(samples: list[tuple[int, float]], dimension: Dimension) -> str:
-            """Contiguous collision windows ('-170°..-130°, 90°..130°'), not
-            one min..max band — an arm that clips near 90° and again near
-            270° is clear in between, and the table must say so."""
-
-            def fmt(q: float) -> str:
-                return format_quantity(q, dimension)
-
-            out: list[str] = []
-            start = prev_i = samples[0][0]
-            start_q = prev_q = samples[0][1]
-            for i, q in samples[1:]:
-                if i != prev_i + 1:
-                    out.append(
-                        fmt(start_q)
-                        if start == prev_i
-                        else f"{fmt(start_q)}..{fmt(prev_q)}"
-                    )
-                    start, start_q = i, q
-                prev_i, prev_q = i, q
-            out.append(
-                fmt(start_q) if start == prev_i else f"{fmt(start_q)}..{fmt(prev_q)}"
+        def _fmt_intervals(
+            ivs: list[cspace.Interval], dimension: Dimension
+        ) -> str:
+            """Collision windows ('-170°..-130°, 90°..130°'), not one
+            min..max band — an arm that clips near 90° and again near 270°
+            is clear in between, and the table must say so."""
+            return ", ".join(
+                f"{format_quantity(iv.lo, dimension)}.."
+                f"{format_quantity(iv.hi, dimension)}"
+                for iv in ivs
             )
-            return ", ".join(out)
 
         rows = [
             {
                 "joint": jn,
                 "pair": f"{a} ↔ {b}",
-                "collides_at": _runs(
-                    qs, "length" if kind_by_name.get(jn) == "prismatic" else "angle"
+                "collides_at": _fmt_intervals(
+                    ivs, "length" if kind_by_name.get(jn) == "prismatic" else "angle"
                 ),
-                "states": f"{len(qs)}/{n}",
+                "evals": str(eval_counts.get((jn, a, b), 0)),
             }
-            for (jn, a, b), qs in sorted(hit_states.items())
+            for (jn, a, b), ivs in sorted(hit_intervals.items())
         ]
         body = "\n".join(lines) + "\n"
         if rows:
             body += render_agent_table(
-                rows, schema=["joint", "pair", "collides_at", "states"]
+                rows, schema=["joint", "pair", "collides_at", "evals"]
+            )
+        if contact_pairs:
+            contact_rows = [
+                {"joint": jn, "pair": f"{a} ↔ {b}"}
+                for (jn, a, b) in sorted(contact_pairs)
+            ]
+            body += (
+                "\nin contact throughout — joint partners (not a collision):\n"
+                + render_agent_table(contact_rows, schema=["joint", "pair"])
             )
         env_rows = [
             {

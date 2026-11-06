@@ -12,7 +12,8 @@ import re
 
 import pytest
 
-from precis.cad.scene import parse_source
+from precis.cad.relate import _clearance as _sdf_clearance
+from precis.cad.scene import build_design, expand_instances, parse_source
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.cad import CadHandler
@@ -623,6 +624,150 @@ def test_sweep_sees_gear_driven_collisions(cad):
     assert "a2" in env
 
 
+def _ground_truth_crossing(
+    spec, drive_joints: dict, gap_fn, lo_deg: float, hi_deg: float
+) -> float:
+    """Bisect the exact SDF clearance directly (ground truth, independent
+    of the cspace walk under test) to the degree where it crosses zero —
+    the same bisection a human would do by hand to check the view's
+    answer, not a second copy of the production algorithm."""
+
+    def gap_at(deg: float) -> float:
+        q = math.radians(deg)
+        built = expand_instances(spec, None, {j: q for j in drive_joints})
+        design = build_design(built)
+        return gap_fn(design)
+
+    lo_sign = gap_at(lo_deg) < 0
+    for _ in range(40):
+        mid = 0.5 * (lo_deg + hi_deg)
+        if (gap_at(mid) < 0) == lo_sign:
+            lo_deg = mid
+        else:
+            hi_deg = mid
+    return 0.5 * (lo_deg + hi_deg)
+
+
+def test_sweep_gear_window_matches_analytic_crossing(cad):
+    # Independently bisect the exact a2 × post clearance (ground truth)
+    # and check the view's reported window against it — not just that
+    # "something" hit, but that the edges are right.
+    cad.put(id="geared_rig", text=_GEARED_RIG)
+    resp = cad.get(id="geared_rig", view="sweep", args={"n": 9})
+    m = re.search(r"a2 ↔ post\t(-?[\d.]+)°\.\.(-?[\d.]+)°", resp.body)
+    assert m is not None, resp.body
+    reported_lo, reported_hi = float(m.group(1)), float(m.group(2))
+
+    spec = parse_source(_GEARED_RIG)
+
+    def gap_fn(design: object) -> float:
+        return _sdf_clearance(design, "a2", "post").gap
+
+    analytic_lo = _ground_truth_crossing(spec, {"a1", "a2"}, gap_fn, 75.0, 80.0)
+    analytic_hi = _ground_truth_crossing(spec, {"a1", "a2"}, gap_fn, 100.0, 105.0)
+
+    assert reported_lo < 90.0 < reported_hi
+    assert abs(reported_lo - analytic_lo) < 2.0
+    assert abs(reported_hi - analytic_hi) < 2.0
+
+
+#: A pillar placed between two of the old fixed 45°-apart sample angles
+#: (0° and 45°): its ~12° angular footprint at this radius falls entirely
+#: inside the gap a uniform 9-sample sweep would have stepped over.
+_NARROW_RIG = """
+component post
+pillar add box:w6mmd6mmh20mm @25.87mm,10.72mm,0mm
+component arm
+bar add box:w30mmd6mmh6mm @15mm,0mm,3mm
+port hub of:arm
+joint arm revolute at:hub limits:-180deg..180deg
+"""
+
+
+def test_sweep_catches_an_obstacle_between_old_sample_angles(cad):
+    cad.put(id="narrow_rig", text=_NARROW_RIG)
+    resp = cad.get(id="narrow_rig", view="sweep", args={"n": 9})
+    assert "colliding pair" in resp.body
+    assert "arm" in resp.body and "post" in resp.body
+    m = re.search(r"arm ↔ post\t(-?[\d.]+)°\.\.(-?[\d.]+)°", resp.body)
+    assert m is not None, resp.body
+    lo, hi = float(m.group(1)), float(m.group(2))
+    # the obstacle sits near 22.5°, exactly between the old grid's 0° and
+    # 45° samples — neither of which this fixture's window should need.
+    assert lo < 22.5 < hi
+    assert 0.0 not in (lo, hi) and 45.0 not in (lo, hi)
+
+
+#: The sleeve's bore (r4mm) exactly fits the pin (r4mm): their surfaces
+#: touch everywhere, for every rotation — the joint's own hinge-pin-and-
+#: its-bore partners, not a collision to report as one.
+_HINGE_SLEEVE_RIG = """
+component pin
+shaft add cyl:r4mmh20mm
+component sleeve
+tube  add cyl:r10mmh20mm
+bore  cut cyl:r4mmh22mm
+port piv of:sleeve
+joint sleeve revolute at:piv limits:-180deg..180deg
+"""
+
+
+def test_sweep_labels_a_persistent_contact_pair_not_a_collision(cad):
+    cad.put(id="hinge_sleeve_rig", text=_HINGE_SLEEVE_RIG)
+    calls = {"n": 0}
+    real_clearance = _sdf_clearance
+
+    def counting_clearance(design, a, b):
+        calls["n"] += 1
+        return real_clearance(design, a, b)
+
+    import precis.handlers.cad as cad_module
+
+    monkeypatched = cad_module.sdf_clearance
+    cad_module.sdf_clearance = counting_clearance
+    try:
+        resp = cad.get(id="hinge_sleeve_rig", view="sweep", args={"n": 9})
+    finally:
+        cad_module.sdf_clearance = monkeypatched
+    assert "no interference anywhere in the travel" in resp.body
+    assert "in contact throughout" in resp.body
+    assert "pin ↔ sleeve" in resp.body
+    # bounded: a stalled walk (step collapsing to ~0 at a permanent
+    # near-zero gap) would have cost far more than a handful of evals.
+    assert calls["n"] < 50
+
+
+@pytest.mark.timeout(30)
+def test_sweep_gear_rig_uses_fewer_evaluations_than_the_old_sampler(cad):
+    # gr-cad-sweep-cspace: the old sweep ran the full clearance
+    # minimisation at every one of `n` fixed samples, for every scored
+    # pair — n * 3 pairs (pre-gr561417; the group-skip this view keeps
+    # already drops the in-chain a1 x a2 pair in practice). The cspace
+    # walk must cost less than that naive baseline for the same n, not
+    # just less than whatever the already-optimised old code happened to
+    # need — while reaching the same verdict.
+    cad.put(id="geared_rig", text=_GEARED_RIG)
+    n = 9
+    calls = {"n": 0}
+    real_clearance = _sdf_clearance
+
+    def counting_clearance(design, a, b):
+        calls["n"] += 1
+        return real_clearance(design, a, b)
+
+    import precis.handlers.cad as cad_module
+
+    monkeypatched = cad_module.sdf_clearance
+    cad_module.sdf_clearance = counting_clearance
+    try:
+        resp = cad.get(id="geared_rig", view="sweep", args={"n": n})
+    finally:
+        cad_module.sdf_clearance = monkeypatched
+    assert "colliding pair" in resp.body
+    assert "a2" in resp.body and "post" in resp.body
+    assert calls["n"] < n * 3
+
+
 #: The blend seam bulges up to blend/4 above the boxes' own AABB — at
 #: q=0 the tip's AABB is strictly z-disjoint from the *unpadded* union
 #: bound yet it sits inside the bulge (SDF clearance −0.6). A
@@ -643,10 +788,17 @@ def test_sweep_keeps_collision_hidden_in_a_blend_bulge(cad):
     resp = cad.get(id="blend_rig", view="sweep", args={"n": 5})
     assert "colliding pair" in resp.body
     assert "arm" in resp.body and "base" in resp.body
-    # q = -2, -1 (inside the boxes) and 0 (bulge only, AABB-disjoint from
-    # the unpadded bound) all hit; q = 1, 2 are clear — "3/5" pins the
-    # q=0 state being scored (an unpadded bound would report "2/5").
-    assert "3/5" in resp.body
+    m = re.search(r"arm ↔ base\t(-?[\d.]+) mm\.\.([\d.]+) (mm|µm)", resp.body)
+    assert m is not None, resp.body
+    lo_mm = float(m.group(1))
+    hi_mm = float(m.group(2)) if m.group(3) == "mm" else float(m.group(2)) / 1000.0
+    # the window starts at the range floor (-2 mm, inside the boxes) and
+    # ends inside the bulge-only zone (q=0..1mm, AABB-disjoint from the
+    # *unpadded* box union) — exactly the case an AABB-disjoint broad
+    # phase would miss; the cspace walk scores every cross-group pair's
+    # exact gap directly, with no such pre-filter to fool.
+    assert lo_mm == pytest.approx(-2.0, abs=0.01)
+    assert 0.0 < hi_mm < 1.0
 
 
 _HINGE_P = """
