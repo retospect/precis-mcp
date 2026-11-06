@@ -175,7 +175,8 @@ Paths are under src/precis/ except precis_web (src/precis_web).
 - No hard cap / soft-delete only: store._refs_ops RefsMixin.retire_ref
   stamps retired_at; workers/memory_thread_sweep.py
   plan_thread_sweep/run_memory_thread_sweep_pass — candidate = live
-  memory + section:threads, rules a/b/c; plan_scratch_sweep/
+  memory + section:threads − scratch-owned nodes (their only SPACE: is
+  scratch — the scratch pass owns them), rules a/b/c; plan_scratch_sweep/
   run_scratch_sweep_pass — live memory + SPACE:scratch only, rule s,
   SCRATCH_TTL_DAYS = 7 + meta.expires override (gr568398);
   utils/memory_threads.py STALE_DAYS = 14. Second sweep, dark:

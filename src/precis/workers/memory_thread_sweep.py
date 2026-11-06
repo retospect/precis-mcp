@@ -29,9 +29,18 @@ already wrote down; this cadence is just their executor:
 Scope is deliberately narrow: ``kind='memory'`` rows tagged
 ``section:threads`` only — never other kinds, never ``section:index``
 hubs (excluded even if someone tags one ``threads`` too), never
-runbook/gotcha/workflow/reference sections. The scratch pass is just as
-narrow: ``kind='memory'`` rows carrying ``SPACE:scratch`` and no other
-``SPACE:`` value, hubs excluded the same way. Retirement is the normal
+runbook/gotcha/workflow/reference sections, and never a scratch-owned
+node. A node whose only ``SPACE:`` value is ``scratch`` belongs to the
+scratch pass end to end — including one also tagged
+``section:threads``: rules a–c never see it, so a ``meta.expires``
+override on a scratch thread node is honoured instead of being cut
+short by rule c's stale clock (a ``Left: none`` scratch thread just
+waits out its TTL — scratch means self-cleaning, not curated). A
+second ``SPACE:`` value returns the node to thread rules: the scratch
+pass refuses ambiguous space tags, and nothing may fall between the
+two passes. The scratch pass is just as narrow: ``kind='memory'``
+rows carrying ``SPACE:scratch`` and no other ``SPACE:`` value, hubs
+excluded the same way. Retirement is the normal
 soft-delete (:meth:`Store.retire_ref`), recoverable at the SQL layer —
 never a hard delete. Every retirement logs one greppable line with the
 rule letter::
@@ -76,7 +85,13 @@ log = logging.getLogger(__name__)
 #: Live memories tagged ``section:threads`` (never ``section:index``
 #: hubs), with their body chunk's first lines evaluated in Python — the
 #: ``Left:`` grammar lives in :mod:`precis.utils.memory_threads`, not in
-#: SQL.
+#: SQL. Scratch-owned nodes (``SPACE:scratch`` and no other ``SPACE:``
+#: value, the mirror of :data:`_SCRATCH_CANDIDATES`) are excluded: the
+#: scratch pass owns their TTL, ``meta.expires`` included — a scratch
+#: thread node must never hit rule c's :data:`STALE_DAYS` clock. A
+#: second ``SPACE:`` value keeps it here on purpose: the scratch pass
+#: refuses ambiguous space tags, so excluding mixed nodes too would
+#: strand them unowned.
 _THREAD_CANDIDATES = """
 SELECT r.ref_id, r.title, r.updated_at,
        (SELECT c.text FROM chunks c
@@ -90,6 +105,12 @@ SELECT r.ref_id, r.title, r.updated_at,
    AND NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = r.ref_id
                       AND t.namespace = 'OPEN' AND t.value = %s)
+   AND (NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE rt.ref_id = r.ref_id
+                       AND t.namespace = 'SPACE' AND t.value = 'scratch')
+        OR EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = r.ref_id
+                      AND t.namespace = 'SPACE' AND t.value <> 'scratch'))
  ORDER BY r.ref_id
 """
 
@@ -166,8 +187,10 @@ class SweepCandidate:
 def plan_thread_sweep(
     store: Store, *, now: datetime | None = None
 ) -> list[SweepCandidate]:
-    """Every live ``section:threads`` node due for retirement, oldest id
-    first. Pure read — the dry-run mode is this plan printed."""
+    """Every live non-scratch ``section:threads`` node due for
+    retirement, oldest id first — scratch-owned nodes are the scratch
+    pass's (see :data:`_THREAD_CANDIDATES`). Pure read — the dry-run
+    mode is this plan printed."""
     with store.pool.connection() as conn:
         rows = conn.execute(_THREAD_CANDIDATES, (THREADS_TAG, INDEX_TAG)).fetchall()
         ids = [int(r[0]) for r in rows]

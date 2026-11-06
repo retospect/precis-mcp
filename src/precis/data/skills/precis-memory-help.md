@@ -708,7 +708,10 @@ put(kind="memory", text="keep this draft until the round closes",
 `meta.expires` accepts an ISO date/datetime or a `<n>[mhdw]` duration
 (resolved to an absolute instant at write) — shorter or longer than the
 7-day default, on any memory; on non-scratch spaces it only flags garden
-review debt, it never auto-retires. Editing a scratch node renews its
+review debt, it never auto-retires. A scratch-only node is the scratch
+pass's alone — `section:threads` rules a–c never fire on it, so an
+`expires` override holds even on a scratch thread node (a second
+`SPACE:` value returns it to thread rules). Editing a scratch node renews its
 default TTL only when `expires` is unset. Retagging the node out of the
 space (`tag(remove=['SPACE:scratch'], add=['SPACE:research'])`) takes it
 out of the sweep. `section:index` hubs are exempt even when scratch-tagged.

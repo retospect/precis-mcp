@@ -17,6 +17,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.handlers.memory import MemoryHandler
 from precis.store.types import Tag
+from precis.utils.memory_threads import STALE_DAYS
 from precis.workers.memory_thread_sweep import (
     SCRATCH_TTL_DAYS,
     plan_scratch_sweep,
@@ -460,3 +461,61 @@ def test_rule_s_re_run_is_a_no_op(store: Any, handler: MemoryHandler) -> None:
 
     assert first.ok == 1
     assert (second.claimed, second.ok, second.failed) == (0, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# scratch/thread overlap — which pass owns a SPACE:scratch thread node
+# ---------------------------------------------------------------------------
+
+
+def test_a_scratch_thread_node_is_the_scratch_pass(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """Regression (td575123 on td575122): a ``section:threads`` node whose
+    only ``SPACE:`` is ``scratch`` is scratch-owned end to end — rule c's
+    14-day clock must not cut a 30-day ``meta.expires`` short, however far
+    ``now`` runs. The scratch pass alone retires it, on its own clock."""
+    sid = _scratch(
+        handler,
+        "Left: keep the probe running\n\nThirty-day experiment.",
+        tags=["section:threads"],
+        meta={"expires": "30d"},
+    )
+    _age(store, sid, STALE_DAYS + 1)
+
+    assert run_memory_thread_sweep_pass(store).claimed == 0
+    assert run_scratch_sweep_pass(store).claimed == 0
+    assert not _retired(store, sid)
+
+    later = datetime.now(UTC) + timedelta(days=31)
+    assert run_memory_thread_sweep_pass(store, now=later).claimed == 0
+    assert run_scratch_sweep_pass(store, now=later).ok == 1
+    assert _retired(store, sid)
+
+
+def test_scratch_ownership_boundary_between_the_passes(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """The boundary both passes agree on: rule a does not fire on a
+    scratch thread (``Left: none`` waits out the TTL — scratch means
+    self-cleaning), and a second ``SPACE:`` value puts the node back
+    under thread rules — the scratch pass refuses ambiguous space tags,
+    so nothing falls between the passes."""
+    done = _scratch(handler, "Left: none\n\nFinished probe.", tags=["section:threads"])
+    _age(store, done, SCRATCH_TTL_DAYS + 1)
+    mixed = _scratch(
+        handler, "Left: carry\n\nAmbiguous space.", tags=["section:threads"]
+    )
+    store.add_tag(mixed, Tag.closed("SPACE", "research"), set_by="system")
+    _age(store, mixed, STALE_DAYS + 1)
+
+    thread = run_memory_thread_sweep_pass(store)
+
+    assert (thread.claimed, thread.ok) == (1, 1)
+    assert not _retired(store, done)
+    assert _retired(store, mixed)
+
+    scratch = run_scratch_sweep_pass(store)
+
+    assert (scratch.claimed, scratch.ok) == (1, 1)
+    assert _retired(store, done)
