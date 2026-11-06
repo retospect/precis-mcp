@@ -175,9 +175,9 @@ def footer(data: dict[str, Any], tier: str) -> str:
             f"MCP {', '.join(spec['allow_mcp'])} on refs you create or your brief names (each action under ${spec['spend_cap_usd']})",
             "targeted prod-psql INSERT/UPDATE/DELETE with a WHERE naming specific rows, under the row cap, recorded in the gripe or commit",
             "tighten an existing test (lower a ceiling, add an assert, narrow a tolerance)",
-            "land your own slice: "
+            "land your own slice as it finishes: "
             + ", ".join(spec["allow_exec"][:2])
-            + " in a wave of three or fewer (--quick is for docs or lint only); never edit your tree while ship runs",
+            + " (--quick for any non-harness diff, --remote for a harness diff; no batching, pytest runs in the release gate); never edit your tree while ship runs",
         ]
     lines.append("Allowed: " + "; ".join(allowed) + ".")
     forbidden = [f"running {c}" for c in deny_exec(data, tier)]

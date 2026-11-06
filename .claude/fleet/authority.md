@@ -1,6 +1,6 @@
 # Fleet authority (owner: Reto Stamm)
 
-Version 2, approved by Reto 2026-10-17 (first-hand, in the coordinator window). It replaces the 2026-10-15 grants. It applies to launches made with the generated footers; running builders keep the footers they were launched with.
+Version 2, approved by Reto 2026-10-17 (first-hand, in the coordinator window). It replaces the 2026-10-15 grants. It applies to launches made with the generated footers; running builders keep the footers they were launched with. Landing lane amended 2026-11-06 with Reto's first-hand approval (session SLACK): builders land with plain `scripts/ship --quick`, per his rulings of 2026-10-30 and 2026-11-05.
 
 This file is the single source of agent authority. Footers, Claude settings fragments, `.devin/config.json` and Codex flags are all generated from the `authority` block at the end. `tests/test_fleet_authority_drift.py` fails if any generated file disagrees with this one. Agents never edit this file or the generated files. Changing it takes Reto's commit and a run of `scripts/fleet-authority apply`.
 
@@ -22,7 +22,7 @@ Not allowed:
 
 Enforced by: a read-only MCP endpoint with no put/edit/delete/tag/link tools, a read-only DB role, and permission rules that deny `scripts/ship`.
 
-How Tier R work lands (Reto 2026-10-30): the builder commits in its own worktree and nothing lands from there. The release owner lands it with `scripts/fleet-wave land <tree>`, which runs that tree's own `scripts/ship` (`--checked`, or `--remote` for a harness diff) in that tree, from the coordinator tree, once the builder's session has exited. A branch lands only by ship run in its own tree. The release owner never cherry-picks a builder's commit onto a new branch, never keeps a `*-pin` copy, and never ships a copy from another branch: the copy lands, the builder's branch stays unmerged forever, and every audit reads it as lost work.
+How Tier R work lands (Reto 2026-10-30): the builder commits in its own worktree and nothing lands from there. The release owner lands it with `scripts/fleet-wave land <tree>`, which runs that tree's own `scripts/ship` (`--quick`, or `--remote` for a harness diff) in that tree, from the coordinator tree, once the builder's session has exited. A branch lands only by ship run in its own tree. The release owner never cherry-picks a builder's commit onto a new branch, never keeps a `*-pin` copy, and never ships a copy from another branch: the copy lands, the builder's branch stays unmerged forever, and every audit reads it as lost work.
 
 ## Tier W: trusted, revertible (named builders, granted per launch)
 
@@ -30,7 +30,7 @@ Everything in Tier R, plus the following. The test for every grant is that the u
 - Prod MCP writes for its own task: put, edit, tag and link on refs it creates or its task names; soft delete or retire of its own refs and of refs its brief names. Each action stays under $25.
 - Targeted prod data fixes through `scripts/prod-psql`: INSERT, or UPDATE/DELETE whose WHERE names specific rows, under the row cap. It records what changed in the gripe or the commit.
 - Tighten an existing test: lower a ceiling, add an assert, narrow a tolerance.
-- Land its own slice: `scripts/ship --checked` or `--remote`, in a wave of three or fewer that branch-desk names. `--quick` is for docs, lint or code. A migration lands only through the release owner.
+- Land its own slice with plain `scripts/ship --quick` as it finishes, or `--remote` for a harness diff (Reto 2026-10-30, reaffirmed 2026-11-05: not `--checked`, no batching plan, no batch-size counting; pytest runs once, in the release gate, and a red release is fixed forward). `--checked` stays allowed as an opt-in. A migration lands only through the release owner.
 - Never edit its tree while its ship runs.
 
 ## Roles (on top of a tier)
@@ -101,7 +101,7 @@ tiers:
     inherits: R
     mcp_endpoint: precis-rw
     db_role: agent_rw
-    allow_exec: ["scripts/ship --checked", "scripts/ship --remote", "scripts/test", "scripts/prod-psql", "scripts/ship --quick"]
+    allow_exec: ["scripts/ship --quick", "scripts/ship --remote", "scripts/ship --checked", "scripts/test", "scripts/prod-psql"]
     allow_mcp: [put, edit, tag, link, delete]
     spend_cap_usd: 25
 roles:
