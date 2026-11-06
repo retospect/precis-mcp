@@ -863,6 +863,83 @@ def test_poll_red_without_a_cross_line_names_the_exit(seams: dict[str, Any]) -> 
     assert pctx.failure is not None and "SHIP_STATUS conflict" in pctx.failure
 
 
+# ── infra reds (gr570187) ──────────────────────────────────────────
+
+
+def test_infra_red_marks() -> None:
+    """The gate's own machinery dying — the gate-kill lines
+    :func:`gate_kill_line` anchors (the exit-137 ✖ and the xdist worker
+    crash) or a bare exit 137 (128+SIGKILL) — classes the red as gate
+    infrastructure; a branch red does not. xdist's ``[gwN] node down:``
+    line is NOT a mark: it is the ordinary per-worker death report and
+    rides the worker-crash rule, not the infra path."""
+    oom = (
+        "pytest -n3 --impacted\n"
+        "\x1b[31m✖ the gate container exited 137 (SIGKILL) — almost always "
+        "the OOM killer on its mem_limit (24 GiB, docker/dev/compose.yaml), "
+        "not a verdict on the diff.\x1b[0m\n"
+    )
+    assert land_slice.infra_red(oom, 1) == "gate infrastructure"
+    worker = "worker 'gw2' crashed while running 'tests/test_x.py::test_y'\n"
+    assert land_slice.infra_red(worker, 1) == "gate infrastructure"
+    # xdist emits "[gwN] node down:" for every dead worker — ordinary,
+    # not infra — even when failure output merely quotes it.
+    node_down = "[gw2] node down: Not properly terminated\n"
+    assert land_slice.infra_red(node_down, 1) is None
+    assert land_slice.infra_red("pytest -n3\nKilled\n", 137) == "gate infrastructure"
+    assert (
+        land_slice.infra_red("\x1b[31m✖ ruff: 2 errors in src/x.py\x1b[0m\n", 1) is None
+    )
+    assert land_slice.infra_red("SHIP_STATUS: conflict\n", 0) is None
+
+
+def test_poll_bare_exit_137_defers_then_the_ask(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    """gr570187: a bare exit 137 — the OOM signature with no kill line —
+    follows the marked kill's path exactly: it defers under
+    ``gate_kills`` at the short backoff (no attempt, no handoff), and
+    past :data:`MAX_GATE_KILL_RETRIES` fails attempt-free with
+    ``meta.land_again_cap`` — the ask, never an automatic re-land."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 137, "pytest -n3 --impacted\nKilled\n")
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert pctx.status is None and pctx.failure is None
+    assert handle["gate_kills"] == 1
+    assert "main_refusals" not in handle
+    assert handle["not_before"] == "2026-11-01T10:02:00Z"  # 120 s, not 30 min
+    assert handle["last_refusal"].startswith(land_slice.GATE_KILL_CROSS)
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+    assert store.comments(42) == []
+    # At the backoff the land relaunches; the same bare 137 again, past
+    # the cap: still outside the diff (no attempt) but spent — the ask.
+    clock["t"] = T0 + timedelta(seconds=120)
+    assert land_slice.poll(pctx, handle) is False
+    assert len(seams["launch"]) == 2 and handle["gate_kills"] == 1
+    handle["gate_kills"] = land_slice.MAX_GATE_KILL_RETRIES
+    _finish(handle, 137, "pytest -n3 --impacted\nKilled\n")
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    n = land_slice.MAX_GATE_KILL_RETRIES + 1
+    assert (
+        f"land blocked by gate kills for {n} retries: "
+        "gate killed (exit 137, VM memory)" in (pctx.failure or "")
+    )
+    assert pctx.meta_set["attempt_free"] == "infra-land"
+    assert pctx.meta_set["land_again_cap"] is True
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags
+    assert not any(t.startswith("attempt:") for t in tags)
+    [handoff] = store.comments(42)
+    assert handoff.startswith("handoff: land BLOCKED on slice/42:")
+    assert "the docker VM's memory or the branch's own memory use" in handoff
+    assert "not at fault" not in handoff
+
+
 # ── main-side refusals (gr549328) ──────────────────────────────────
 
 DRIFT_LOG = (
@@ -1539,12 +1616,14 @@ KILL_LOG = (
     "SHIP_STATUS: error\n"
 )
 
-#: pytest-xdist's dead-worker line: the summary ✖ names the gate red, the
-#: kill line sits above it.
+#: Real pytest-xdist dead-worker output: the per-worker death report
+#: ``[gwN] node down:`` rides next to the ``worker 'gwN' crashed``
+#: kill line; the summary ✖ names the gate red.
 XDIST_LOG = (
     "checked ship (--checked)\n"
     "gw0 gw1 gw2 [3 workers]\n"
     "worker 'gw2' crashed while running 'tests/test_x.py::test_y'\n"
+    "[gw2] node down: Not properly terminated\n"
     "\x1b[31m✖ the checked gate is RED (1 crashed worker, 0 failed)\x1b[0m\n"
     "SHIP_STATUS: error\n"
 )
@@ -1634,7 +1713,10 @@ def test_poll_exit_137_cap_names_vm_or_branch_memory(
     """Past MAX_GATE_KILL_RETRIES the job fails with a handoff naming the
     docker VM's memory or the branch's own memory use — exit 137 is also
     the container's own mem_limit (24 GiB), which a branch memory hog can
-    hit, so the handoff does NOT clear the branch."""
+    hit, so the handoff does NOT clear the branch. Still outside the
+    diff: no attempt is burned — but the run is spent, so
+    ``meta.land_again_cap`` sends the tick to the ask, not to an auto
+    re-land (gr570187)."""
     store, handle = _kill_setup(
         seams, KILL_LOG, gate_kills=land_slice.MAX_GATE_KILL_RETRIES
     )
@@ -1647,11 +1729,38 @@ def test_poll_exit_137_cap_names_vm_or_branch_memory(
         f"land blocked by gate kills for {n} retries: "
         "gate killed (exit 137, VM memory)" in pctx.failure
     )
+    assert pctx.meta_set["attempt_free"] == "infra-land"
+    assert pctx.meta_set["land_again_cap"] is True
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags
+    assert "claimed-by:lane-claude-sub" not in tags
+    assert not any(t.startswith("attempt:") for t in tags)
     [handoff] = store.comments(42)
     assert handoff.startswith("handoff: land BLOCKED on slice/42:")
     assert "gate killed (exit 137, VM memory)" in handoff
     assert "the docker VM's memory or the branch's own memory use" in handoff
     assert "Do not rebuild" not in handoff
+
+
+def test_poll_node_down_without_a_kill_line_is_an_ordinary_red(
+    seams: dict[str, Any],
+) -> None:
+    """xdist's ``[gwN] node down: Not properly terminated`` is the
+    ordinary per-worker death report, not an infra mark: a red whose log
+    carries it but no kill line is a branch red with an attempt."""
+    store, handle = _kill_setup(
+        seams,
+        "gw0 gw1 gw2 [3 workers]\n"
+        "[gw2] node down: Not properly terminated\n"
+        "\x1b[31m✖ the checked gate is RED (0 crashed, 1 failed)\x1b[0m\n",
+    )
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "gate_kills" not in handle
+    assert "attempt_free" not in pctx.meta_set
+    assert "attempt:1" in store.tag_strings(42)
+    assert store.comments(42)[-1].startswith("handoff: land FAILED on slice/42")
 
 
 def test_poll_red_quoting_kill_marks_is_an_ordinary_red(

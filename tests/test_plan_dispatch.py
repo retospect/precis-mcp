@@ -16,7 +16,7 @@ from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
 from precis.workers._mint import mint_background_job
-from precis.workers.job_types import get_job_type, known_job_types
+from precis.workers.job_types import get_job_type, known_job_types, run_slice
 from precis.workers.job_types import plan_dispatch as pd
 
 PAST = {"kind": "not-before", "args": {"ts": "2020-01-01T00:00:00Z"}}
@@ -331,7 +331,15 @@ def _failed_job(
     return int(ref.id)
 
 
-def _slice_job(store: Store, task: int, job_type: str, status: str) -> int:
+def _slice_job(
+    store: Store,
+    task: int,
+    job_type: str,
+    status: str,
+    *,
+    params: dict[str, Any] | None = None,
+    meta: dict[str, Any] | None = None,
+) -> int:
     with store.tx() as conn:
         ref = mint_background_job(
             store,
@@ -339,10 +347,12 @@ def _slice_job(store: Store, task: int, job_type: str, status: str) -> int:
             job_type=job_type,
             executor="ssh_node",
             title=job_type,
-            params={"todo_id": task},
+            params=params or {"todo_id": task},
             parent_id=task,
             status=status,
         )
+    if meta:
+        store.stamp_ref_meta(ref.id, meta)
     return int(ref.id)
 
 
@@ -386,6 +396,270 @@ def test_a_red_land_is_one_attempt_not_two(store: Store) -> None:
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (1, 0)
     assert _jobs_under(store, task)[-1][1]["job_type"] == "run_slice"
+
+
+def test_attempt_free_key_matches_run_slice() -> None:
+    """``plan_dispatch`` restates the key ``run_slice`` stamps (the
+    dependency stays one-way); the two spellings must never drift."""
+    assert pd.ATTEMPT_FREE_KEY == run_slice.ATTEMPT_FREE_KEY == "attempt_free"
+
+
+def test_attempt_free_jobs_are_no_attempt(store: Store) -> None:
+    """gr572118: a job that failed for a reason outside the slice's diff —
+    ``meta.attempt_free``, e.g. a lane that never freed a slot — burned no
+    attempt; the retry-cap ask must not fire on it."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    for _ in range(2):
+        _failed_job(
+            store,
+            task,
+            "run_slice: no lane free for task class 'code'",
+            lane="claude-sub",
+            meta={"attempt_free": "lane-wait"},
+        )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+
+
+def test_infra_red_land_relands_without_a_builder(store: Store) -> None:
+    """gr570187: a land the gate infrastructure killed burns no attempt and
+    needs no builder — the tick re-mints ``land_slice`` with the failed
+    job's own params (idem ``land_slice:td<id>``)."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    land_params = {
+        "todo_id": task,
+        "worktree": f"/checkout/.claude/worktrees/slice-td{task}",
+        "branch": f"slice/{task}",
+        "target_node": "slice-host",
+        "checked": True,
+    }
+    _slice_job(
+        store,
+        task,
+        "land_slice",
+        "failed",
+        params=land_params,
+        meta={"attempt_free": "infra-land", "red_class": "gate infrastructure"},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["job_type"] == "land_slice"
+    assert meta["params"] == land_params
+    assert meta["idem_key"] == f"land_slice:td{task}"
+    assert any("infra-land" in n and "not an attempt" in n for n in res.notes)
+
+
+def test_ordinary_red_land_still_rebuilds(store: Store) -> None:
+    """A land red on the diff itself (a lint ✖, a merge conflict — no infra
+    mark, no ``attempt_free``) is still one real attempt: the tick rebuilds,
+    as ``test_a_red_land_is_one_attempt_not_two`` pins."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    _slice_job(store, task, "land_slice", "failed")
+    store.add_tag(task, Tag.open("attempt:1"), set_by="system")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    job = _jobs_under(store, task)[-1][1]
+    assert job["job_type"] == "run_slice"
+    assert job["params"]["todo_id"] == task
+
+
+def test_reland_is_bounded_then_asks(store: Store) -> None:
+    """gr570187: the re-land is bounded — ``LAND_AGAIN_CAP`` consecutive
+    infra-red lands park the node with a "land again" ask (no builder);
+    answering it re-arms and the next tick re-lands."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    land_params = {
+        "todo_id": task,
+        "worktree": f"/checkout/.claude/worktrees/slice-td{task}",
+        "branch": f"slice/{task}",
+    }
+    _slice_job(
+        store,
+        task,
+        "land_slice",
+        "failed",
+        params=land_params,
+        meta={"attempt_free": "infra-land"},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    minted, minted_meta = _jobs_under(store, task)[-1]
+    assert minted_meta["job_type"] == "land_slice"
+    # The re-land dies on the gate again: the cap parks the node with an ask.
+    _set_job_status(store, minted, "failed")
+    store.stamp_ref_meta(minted, {"attempt_free": "infra-land"})
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 1)
+    (ask,) = [c for c in _children(store, mint.root_id) if c != task]
+    ask_ref = store.get_ref(kind="todo", id=ask)
+    assert ask_ref is not None
+    assert "land failed outside the diff" in str(ask_ref.title)
+    assert _meta(store, ask)["ask"]["options"][0] == "land again (no builder)"
+    # Answering "land again (no builder)" re-arms; the next tick
+    # re-lands, no second ask.
+    store.chunks.insert_chunks(
+        ask,
+        [
+            ChunkInsert(
+                ord=1,
+                text="answer: land again (no builder)",
+                meta={"chunk_kind": "todo_comment"},
+            )
+        ],
+    )
+    store.add_tag(
+        ask, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    assert _jobs_under(store, task)[-1][1]["job_type"] == "land_slice"
+
+
+def _reland_ask(store: Store, task: int, root: int) -> int:
+    """Park ``task`` behind the re-land cap ask and return the ask's id:
+    ``LAND_AGAIN_CAP`` failed infra-land jobs at the tail, then one
+    pass."""
+    land_params = {
+        "todo_id": task,
+        "worktree": f"/checkout/.claude/worktrees/slice-td{task}",
+        "branch": f"slice/{task}",
+    }
+    for _ in range(pd.LAND_AGAIN_CAP):
+        _slice_job(
+            store,
+            task,
+            "land_slice",
+            "failed",
+            params=land_params,
+            meta={"attempt_free": "infra-land"},
+        )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 1)
+    asks = [c for c in _children(store, root) if c != task]
+    assert len(asks) == 1
+    return asks[0]
+
+
+def _answer_ask(store: Store, ask: int, text: str) -> None:
+    """Post ``answer: <text>`` on the ask and close it done."""
+    store.chunks.insert_chunks(
+        ask,
+        [
+            ChunkInsert(
+                ord=1, text=f"answer: {text}", meta={"chunk_kind": "todo_comment"}
+            )
+        ],
+    )
+    store.add_tag(
+        ask, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+
+
+def test_reland_ask_land_again_relands(store: Store) -> None:
+    """gr570187: the re-land ask answered ``land again (no builder)``
+    with the brief untouched re-lands the old branch — the failed job's
+    own params, no builder."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    ask = _reland_ask(store, task, mint.root_id)
+    _answer_ask(store, ask, "land again (no builder)")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    meta = _jobs_under(store, task)[-1][1]
+    assert meta["job_type"] == "land_slice"
+
+
+def test_reland_ask_rewrite_mints_a_builder(store: Store) -> None:
+    """gr570187: a re-land ask answered ``rewrite the brief`` mints a
+    builder on the task's new brief — never a re-land of the old branch."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    ask = _reland_ask(store, task, mint.root_id)
+    store.chunks.insert_chunks(
+        task,
+        [
+            ChunkInsert(
+                ord=1,
+                text="brief: retry the gate with a smaller test selection",
+                meta={"chunk_kind": "todo_comment"},
+            )
+        ],
+    )
+    _answer_ask(store, ask, "rewrite the brief")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    meta = _jobs_under(store, task)[-1][1]
+    assert meta["job_type"] == "run_slice"
+    assert meta["params"]["todo_id"] == task
+
+
+def test_reland_ask_land_again_with_a_rewritten_brief_builds(
+    store: Store,
+) -> None:
+    """gr570187: even a ``land again`` answer yields to a changed brief —
+    a ``brief:`` comment posted on the task after the ask means the next
+    run is a build on the new brief, not a re-land."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    ask = _reland_ask(store, task, mint.root_id)
+    store.chunks.insert_chunks(
+        task,
+        [
+            ChunkInsert(
+                ord=1,
+                text="brief: actually, fix the flaky gate first",
+                meta={"chunk_kind": "todo_comment"},
+            )
+        ],
+    )
+    _answer_ask(store, ask, "land again (no builder)")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    assert _jobs_under(store, task)[-1][1]["job_type"] == "run_slice"
+
+
+def test_gate_kill_capped_land_goes_to_the_ask(store: Store) -> None:
+    """gr570187: a land that failed past its own gate-kill retries
+    (``meta.land_again_cap`` — the exit-137 cap, where the branch's own
+    memory may be at fault) burns no attempt and does NOT auto re-land:
+    the tick files the re-land ask directly."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    _slice_job(
+        store,
+        task,
+        "land_slice",
+        "failed",
+        meta={"attempt_free": "infra-land", "land_again_cap": True},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 1)
+    (ask,) = [c for c in _children(store, mint.root_id) if c != task]
+    ask_ref = store.get_ref(kind="todo", id=ask)
+    assert ask_ref is not None
+    assert "land failed outside the diff" in str(ask_ref.title)
+    # The capped-137 ask does not clear the branch: exit 137 is also the
+    # container's mem_limit — land_slice's blocked-handoff wording.
+    body = _body_text(store, ask)
+    assert "the docker VM's memory or the branch's own memory use" in body
+    assert "not at fault" not in body
+    # Answering "land again" re-arms the mark and the tick re-lands.
+    _answer_ask(store, ask, "land again (no builder)")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    assert _jobs_under(store, task)[-1][1]["job_type"] == "land_slice"
 
 
 def test_retry_climbs_the_lane_model_ladder(
@@ -613,6 +887,183 @@ def test_lane_backoffs_marks_only_the_newest_job_per_lane(store: Store) -> None:
         meta={"host_refusal": {"lane": "codex", "until": past, "why": "x"}},
     )
     assert "codex" not in L.lane_backoffs(store)
+
+
+def test_escalate_skips_a_lane_in_backoff(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr571395: the retry ladder skips rungs on lanes a host refusal
+    backed off — an escalated retry must not climb onto a lane that just
+    refused a launch (it would park, not build)."""
+    low = L.Lane(
+        name="low",
+        adapter="devin_tree",
+        credential_pool="low",
+        cap=1,
+        task_classes=frozenset({"code"}),
+        vendor="cognition",
+    )
+    mid = L.Lane(
+        name="mid",
+        adapter="codex_exec",
+        credential_pool="mid",
+        cap=1,
+        task_classes=frozenset({"code"}),
+        vendor="openai",
+    )
+    sub = L.get_lane("claude-sub")
+    assert sub is not None
+    monkeypatch.setattr(L, "LANES", (low, mid, sub))
+    assert [(r.lane, r.model) for r in L.ladder("code")] == [
+        ("low", None),
+        ("mid", None),
+        ("claude-sub", "claude-sonnet-5"),
+        ("claude-sub", "claude-opus-4-8"),
+    ]
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    until = (datetime.now(UTC) + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _failed_job(store, task, "real failure on the foot rung", lane="low")
+    # Another slice's host refusal backed "mid" off (its newest run_slice
+    # job carries the mark): the retry must jump to rung k+2, not park on k+1.
+    _slice_job(
+        store,
+        mint.root_id,
+        "run_slice",
+        "failed",
+        meta={
+            "lane": "mid",
+            "host_refusal": {"lane": "mid", "until": until, "why": "x"},
+        },
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    params = _jobs_under(store, task)[-1][1]["params"]
+    assert params["lane"] == "claude-sub" and params["model"] == "claude-sonnet-5"
+
+
+def test_escalate_climbs_from_the_last_real_attempt(store: Store) -> None:
+    """gr571395: a host-refusal job is no attempt (:func:`pd._no_attempt`),
+    so it is no rung to climb from either — the retry goes one rung up
+    from the newest job that actually ran, not from the lane that refused."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(store, task, "real failure", lane="devin", model="swe-2-high")
+    # The newest job is a codex host refusal whose window already ended
+    # (no backoff): if it counted as the previous rung, the retry would
+    # climb above codex; ignoring it, the retry takes devin's next rung.
+    past = (datetime.now(UTC) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _failed_job(
+        store,
+        task,
+        "run_slice: codex host refused",
+        lane="codex",
+        meta={"host_refusal": {"lane": "codex", "until": past, "why": "x"}},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    params = _jobs_under(store, task)[-1][1]["params"]
+    assert params["lane"] == "devin" and params["model"] == "swe-2-max"
+
+
+def test_escalate_never_drops_below_the_last_attempt(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr571395: the retry never takes a rung below the lane the last
+    real attempt ran on — a backed-off lane lowers no floor. With the
+    next rung's lane also out, the retry takes the next lane ABOVE it;
+    with nothing free above it parks on lane-wait (no mint)."""
+    low = L.Lane(
+        name="low",
+        adapter="devin_tree",
+        credential_pool="low",
+        cap=1,
+        task_classes=frozenset({"code"}),
+        vendor="cognition",
+    )
+    mid = L.Lane(
+        name="mid",
+        adapter="codex_exec",
+        credential_pool="mid",
+        cap=1,
+        task_classes=frozenset({"code"}),
+        vendor="openai",
+    )
+    sub = L.get_lane("claude-sub")
+    assert sub is not None
+    monkeypatch.setattr(L, "LANES", (low, mid, sub))
+    until = (datetime.now(UTC) + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # The last real attempt ran on mid, which is now backed off: the
+    # retry climbs to the next lane above it — claude-sub — never back
+    # to low.
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(store, task, "real failure on mid", lane="mid")
+    _slice_job(
+        store,
+        mint.root_id,
+        "run_slice",
+        "failed",
+        meta={
+            "lane": "mid",
+            "host_refusal": {"lane": "mid", "until": until, "why": "x"},
+        },
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    params = _jobs_under(store, task)[-1][1]["params"]
+    assert params["lane"] == "claude-sub"
+    assert params["model"] == "claude-sonnet-5"
+
+    # The last real attempt ran at the top rung and that lane is backed
+    # off: nothing free sits above it, so the node parks — no mint, a
+    # lane-wait note.
+    mint2 = _one_task_plan(store)
+    task2 = mint2.ids["task"]
+    _failed_job(
+        store,
+        task2,
+        "real failure at the top rung",
+        lane="claude-sub",
+        model="claude-opus-4-8",
+    )
+    _slice_job(
+        store,
+        mint2.root_id,
+        "run_slice",
+        "failed",
+        meta={
+            "lane": "claude-sub",
+            "host_refusal": {"lane": "claude-sub", "until": until, "why": "x"},
+        },
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 0)
+    assert any("lane-wait" in n and str(task2) in n for n in res.notes)
+
+
+def test_zero_attempts_never_mints_the_cap_ask(store: Store) -> None:
+    """gr571395: ``meta.retries: 0`` on a task whose only ended job is a
+    host refusal must not mint the cap ask — ``0 >= 0`` parked a task
+    nothing was ever tried on. With no attempt burned the tick requeues."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("task", "The task", {"op": "run_slice", "retries": 0}, body="Do it.")
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    until = (datetime.now(UTC) + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _failed_job(
+        store,
+        task,
+        "run_slice: devin preflight: no binary",
+        lane="devin",
+        meta={"host_refusal": {"lane": "devin", "until": until, "why": "x"}},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
 
 
 def test_answered_ask_rearms_despite_jobs_run_in_between(store: Store) -> None:

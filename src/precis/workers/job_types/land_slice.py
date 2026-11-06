@@ -59,7 +59,13 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   forward-merge conflict, anything non-zero): the
   job fails with the ✖ line, a ``handoff:`` comment tells the next build
   session why, and the todo reopens with ``attempt:<n>`` (run_slice's
-  :func:`~precis.workers.job_types.run_slice.release_todo`). The branch and
+  :func:`~precis.workers.job_types.run_slice.release_todo`) — except a
+  red outside the diff (a gate kill past its deferral cap, marked or a
+  bare exit 137), which fails the job
+  attempt-free (``meta.attempt_free = "infra-land"`` + ``red_class``, the
+  lease back clean, no ``attempt:<n>``) with ``meta.land_again_cap``
+  set: ``plan_dispatch`` goes to the re-land ask — never an automatic
+  re-land (the same 137 can be the branch's own memory). The branch and
   worktree stay for that session. A ✖ about *main* (:func:`is_main_refusal`:
   the drift guard's two refusals) is a deferral, not a red: poll counts it
   (``handle.main_refusals``), parks the handle for
@@ -81,14 +87,19 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   ``exited 137 (SIGKILL)`` line — the docker VM's OOM killer or the
   container's own mem_limit, gr570133 — or xdist's line-start
   ``worker 'gwN' crashed while running``; the anchored shapes keep a
-  failure that QUOTES the literals an ordinary red) defers the same way
+  failure that QUOTES the literals an ordinary red) — and a bare exit
+  137, ship SIGKILLed with no mark in its log — defers the same way
   but under its own ``handle.gate_kills`` counter and the shorter
   ``PRECIS_LAND_GATE_KILL_BACKOFF_S`` (default
   120 s): the VM, not the branch, ran out of memory, so no attempt is
-  burned and the relaunch sweeps the idle stacks first. An exit-137 past
-  :data:`MAX_GATE_KILL_RETRIES` fails with a handoff naming the docker
-  VM's memory or the branch's own memory use (a branch memory hog can
-  hit the same mem_limit); an xdist crash retries once, then falls to
+  burned and the relaunch sweeps the idle stacks first. An exit-137 —
+  marked or bare — past
+  :data:`MAX_GATE_KILL_RETRIES` fails attempt-free with a handoff naming
+  the docker VM's memory or the branch's own memory use (a branch memory
+  hog can hit the same mem_limit, so the handoff does not clear the
+  branch): ``meta.land_again_cap`` parks the run at the
+  ``plan_dispatch`` ask — no auto re-land, no builder unless the human
+  rewrites the brief. An xdist crash retries once, then falls to
   the ordinary red (a deterministic crash is a branch problem).
 * :func:`kill` SIGTERMs ship's process group.
 
@@ -589,6 +600,25 @@ def nothing_new(log_text: str) -> bool:
     return any(_NOTHING_NEW_MARK in line for line in _lines(log_text))
 
 
+def infra_red(log_text: str, exit_code: int | None) -> str | None:
+    """The red's class — ``"gate infrastructure"`` — when ship died on the
+    gate's own machinery: a gate-kill line (:func:`gate_kill_line`'s
+    anchored marks) or a bare exit 137 (128+SIGKILL with or without the
+    mark, gr567471's OOM signature). ``None`` on a clean exit or an
+    ordinary branch red. xdist's ``[gwN] node down:`` report is NOT a
+    mark: it is the ordinary per-worker death line and rides the
+    worker-crash rule — one retry, then a branch red. :func:`poll`
+    routes every exit 137 — marked or bare — through the ``gate_kills``
+    deferral itself, so it consults this only for the rest."""
+    if exit_code == 0:
+        return None
+    if gate_kill_line(log_text, exit_code) is not None:
+        return "gate infrastructure"
+    if exit_code == 137:
+        return "gate infrastructure"
+    return None
+
+
 def landed_short(log_text: str) -> str | None:
     """The sha on the line after ship's ``shipped — landed on main:``."""
     lines = _lines(log_text)
@@ -922,19 +952,49 @@ def _close_pr(store: Any, number: int, todo_id: int, sha: str) -> str:
 # ── Detached protocol ──────────────────────────────────────────────
 
 
-def _fail(ctx: Any, todo_id: int, lane: Any, reason: str, *, handoff: str) -> None:
+def _fail(
+    ctx: Any,
+    todo_id: int,
+    lane: Any,
+    reason: str,
+    *,
+    handoff: str,
+    attempt_free: str | None = None,
+) -> None:
     """The red path: a ``handoff:`` for the next build session, the lease
-    released (``attempt:<n>``), the job failed with ``reason``."""
+    released (``attempt:<n>``), the job failed with ``reason``.
+
+    ``attempt_free`` (gr570187) is the red's class when it was outside the
+    diff (gate infrastructure killed the land): the job is marked
+    ``meta.attempt_free = "infra-land"`` + ``meta.red_class`` so
+    ``plan_dispatch`` re-mints a land — never a builder — and the lease
+    goes back clean (``unclaim_todo``, no ``attempt:<n>``). A caller that
+    also stamped ``meta.land_again_cap`` (a capped exit-137) parks the run
+    at the ask instead: the tick does not re-land it on its own."""
     attempt = None
     try:
         _rs._append_comment(ctx.store, todo_id, f"handoff: {handoff}")
     except Exception:  # pragma: no cover — the job outcome still lands
         log.warning("land_slice: handoff comment on td%d failed", todo_id)
-    try:
-        attempt = _rs.release_todo(ctx.store, todo_id, str(lane) if lane else None)
-    except Exception:  # pragma: no cover — defensive; the job still fails
-        log.warning("land_slice: lease release on td%d failed", todo_id, exc_info=True)
-    suffix = f"; todo td{todo_id} back to open, attempt:{attempt}" if attempt else ""
+    if attempt_free is not None:
+        ctx.set_meta(**{_rs.ATTEMPT_FREE_KEY: "infra-land"}, red_class=attempt_free)
+        try:
+            _rs.unclaim_todo(ctx.store, todo_id, str(lane) if lane else None)
+        except Exception:  # pragma: no cover — defensive; the job still fails
+            log.warning(
+                "land_slice: lease unclaim on td%d failed", todo_id, exc_info=True
+            )
+        suffix = f"; todo td{todo_id} back to open (no attempt: {attempt_free})"
+    else:
+        try:
+            attempt = _rs.release_todo(ctx.store, todo_id, str(lane) if lane else None)
+        except Exception:  # pragma: no cover — defensive; the job still fails
+            log.warning(
+                "land_slice: lease release on td%d failed", todo_id, exc_info=True
+            )
+        suffix = (
+            f"; todo td{todo_id} back to open, attempt:{attempt}" if attempt else ""
+        )
     ctx.record_failure(f"land_slice: {reason}{suffix}")
 
 
@@ -1465,30 +1525,26 @@ def poll(ctx: Any, handle: Any) -> bool:
             # A gate the VM killed is host-side too (gr570133): the land
             # defers and retries under `gate_kills` — its own counter, the
             # shorter kill backoff, and the sweep on relaunch — never an
-            # attempt, never a handoff. Past the cap an exit-137 blocks
-            # with a handoff naming the docker VM's memory or the
-            # branch's own memory use; an xdist crash retries once, then
-            # falls through to the ordinary red (a deterministic crash is
-            # a branch problem).
+            # attempt, never a handoff. A bare exit 137 (ship SIGKILLed,
+            # no mark in its log) is the same kill and rides the same
+            # counter. An exit-137 past the cap is still outside the
+            # diff — no attempt is burned — but the container's own
+            # mem_limit is also 137, so the branch's own memory may be at
+            # fault: it does NOT re-land on its own
+            # (``meta.land_again_cap`` sends the tick to the ask, keeping
+            # the blocked handoff that names the VM's or the branch's
+            # memory, gr570187). An xdist crash retries once, then falls
+            # through to the ordinary red: a repeated crash is
+            # deterministic — a branch problem — and the ``[gwN] node
+            # down:`` line xdist emits for it is not an infra mark.
             kill_line = gate_kill_line(log_text, exit_code)
-            if kill_line is not None:
-                kills = int(handle.get("gate_kills") or 0) + 1
-                if "exited 137 (SIGKILL)" in kill_line:
-                    kill_cross = f"{GATE_KILL_CROSS}: {kill_line}"
-                    if kills <= MAX_GATE_KILL_RETRIES:
-                        return _defer_to_main(
-                            ctx,
-                            handle,
-                            kill_cross,
-                            kills,
-                            side="host",
-                            backoff_s=gate_kill_backoff_s(),
-                            counter="gate_kills",
-                        )
-                    reason, handoff = _blocked_handoff(
-                        branch, kills, kill_cross, "gate"
-                    )
-                elif kills <= 1:
+            red_class: str | None = None
+            kills = int(handle.get("gate_kills") or 0) + 1
+            if kill_line is not None and "exited 137 (SIGKILL)" not in kill_line:
+                # A repeated worker crash is deterministic — a branch
+                # problem — so ``red_class`` stays ``None`` and the
+                # ordinary red below burns an attempt (main's rule).
+                if kills <= 1:
                     return _defer_to_main(
                         ctx,
                         handle,
@@ -1498,6 +1554,26 @@ def poll(ctx: Any, handle: Any) -> bool:
                         backoff_s=gate_kill_backoff_s(),
                         counter="gate_kills",
                     )
+            elif kill_line is not None or exit_code == 137:
+                kill_cross = f"{GATE_KILL_CROSS}: {kill_line or cross}"
+                if kills <= MAX_GATE_KILL_RETRIES:
+                    return _defer_to_main(
+                        ctx,
+                        handle,
+                        kill_cross,
+                        kills,
+                        side="host",
+                        backoff_s=gate_kill_backoff_s(),
+                        counter="gate_kills",
+                    )
+                reason, handoff = _blocked_handoff(branch, kills, kill_cross, "gate")
+                red_class = "gate infrastructure"
+            else:
+                red_class = infra_red(log_text, exit_code)
+            if red_class is not None:
+                # Outside the diff (no attempt), but spent — the tick
+                # goes to the ask rather than re-landing (gr570187).
+                ctx.set_meta(land_again_cap=True)
         ctx.set_meta(exit_code=exit_code, ship_status=status)
         ctx.append_chunk(
             "job_summary",
@@ -1511,6 +1587,7 @@ def poll(ctx: Any, handle: Any) -> bool:
             lane,
             reason + (f"\n--- log tail ---\n{tail}" if tail else ""),
             handoff=handoff,
+            attempt_free=red_class if side is None else None,
         )
         return True
 

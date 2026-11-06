@@ -148,6 +148,20 @@ _DEFAULT_EFFORT = "high"
 #: backoff, which idled a triage 86 minutes behind two finished builds.
 LANE_FULL_BACKOFF = timedelta(minutes=10)
 
+#: Job-meta key marking a failure that burned no attempt, its value the
+#: reason (``"lane-wait"`` here; ``land_slice`` writes ``"infra-land"``).
+#: ``plan_dispatch._attempts`` skips a job carrying it (gr570187,
+#: gr572118); the key is restated there — the dependency stays one-way.
+ATTEMPT_FREE_KEY = "attempt_free"
+
+#: Lane-wait parks before the wait is given up (~6 h at
+#: :data:`LANE_FULL_BACKOFF` each). Lane waits count under
+#: ``meta.wait_parks``, their own budget — NOT ``pause_parks``: the shared
+#: ``MAX_PAUSE_PARKS`` cap is six, so a lane busy for an hour once read the
+#: seventh park as a failed attempt on a job that never ran (gr572118;
+#: the ``paper_reextract`` ``placement_parks`` shape).
+LANE_WAIT_PARK_CAP = 36
+
 #: ``raise_alert`` source of the lane host-refusal alert (gr571395),
 #: bound to the registry: ``run_slice/lane-host-refusal:{lane}``.
 _REFUSAL_ALERT_SOURCE = RULES_BY_ID["run_slice/lane-host-refusal:{lane}"].rule
@@ -1461,13 +1475,25 @@ def _resolve_lane_refusal(store: Any, lane: str) -> None:
 
 def _park_lane_full(ctx: Any, note: str, until: datetime | None = None) -> None:
     """Park the job ``until`` (default :data:`LANE_FULL_BACKOFF` ahead —
-    gr561491) when ``ctx`` can defer; fail it with ``note`` otherwise. The
-    todo is not claimed yet, so no release and no attempt is burned."""
-    wake = until if until is not None else datetime.now(UTC) + LANE_FULL_BACKOFF
+    gr561491) when ``ctx`` can defer and the wait is under
+    :data:`LANE_WAIT_PARK_CAP`; fail it attempt-free otherwise. The todo is
+    not claimed yet, so no release and no attempt is burned either way.
+
+    Each park resets ``pause_parks`` and counts ``wait_parks`` instead:
+    the shared pause budget exists for window-scoped pauses, and a lane
+    wait is not one (gr572118). Past the cap — or with no ``defer``, or a
+    refused park — the job fails with ``meta.attempt_free = "lane-wait"``
+    so ``plan_dispatch`` re-queues the todo without counting an attempt."""
+    parks = int((ctx.meta or {}).get("wait_parks") or 0)
     defer = getattr(ctx, "defer", None)
-    if defer is not None and defer(wake, note):
-        return
-    ctx.record_failure(note)
+    if parks < LANE_WAIT_PARK_CAP and defer is not None:
+        wake = until if until is not None else datetime.now(UTC) + LANE_FULL_BACKOFF
+        ctx.set_meta(pause_parks=0, wait_parks=parks + 1)
+        if defer(wake, note):
+            return
+    waited = int(parks * LANE_FULL_BACKOFF.total_seconds() // 60)
+    ctx.set_meta(**{ATTEMPT_FREE_KEY: "lane-wait"})
+    ctx.record_failure(f"{note} — no lane slot for {waited} min")
 
 
 def submit(ctx: Any, spec: Any) -> Any:
@@ -1517,12 +1543,15 @@ def submit(ctx: Any, spec: Any) -> Any:
         # launch on it is the probe.
         until = _lanes.lane_backoffs(store).get(lane.name)
         if until is not None:
+            # Per-todo jitter (≤5 min) so a fleet of jobs parked on the
+            # same refusal does not probe the lane in one burst.
+            wake = until + timedelta(seconds=int(todo_id) * 37 % 300)
             _park_lane_full(
                 ctx,
                 f"run_slice: lane {lane.name!r} pinned by params.lane is "
                 f"backed off until {until.strftime('%Y-%m-%dT%H:%M:%SZ')} "
                 "after a host refusal",
-                until=until,
+                until=wake,
             )
             return None
         live = _lanes.live_lane_counts(store).get(lane.name, 0)

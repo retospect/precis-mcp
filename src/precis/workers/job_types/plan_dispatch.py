@@ -56,7 +56,13 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    ``meta.op`` resolved to ``{type, params}`` (a bare name is
    ``{type: name, params: {todo_id}}``), default ``run_slice {todo_id}``.
    The tick owns plan retries, so a retry drops the ``child-failed:`` tags
-   the failure bubble left. **Order:** candidates from every plan root are
+   the failure bubble left. **Re-land** (gr570187): a task whose newest
+   job is a failed ``land_slice`` carrying ``attempt_free == "infra-land"``
+   re-mints ``land_slice`` with the failed job's own params (idem
+   ``land_slice:td<id>``) — no builder, no ladder rung, no review lane —
+   up to :data:`LAND_AGAIN_CAP` consecutive infra lands, then the hygiene
+   ask offers ``land again (no builder)``. **Order:** candidates from
+   every plan root are
    taken together, sorted by (prio ascending, todo id ascending); a node
    with no ``prio`` takes its nearest ancestor's, else 5. So a prio-1
    release fixer is minted (and reaches the lanes) before a prio-5 gripe
@@ -73,11 +79,20 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    (failed, or succeeded without closing it) with attempts at
    ``meta.retries`` (default 2) gets one ask-user todo under the plan root
    (``meta.ask`` kind ``ruling``, tags ``ask-user`` + ``showstopper``) that it
-   is ``blocked-by``. Attempts count the ended jobs since the newest ask on
+   is ``blocked-by``. A land that died past its own gate-kill retries
+   carries ``meta.land_again_cap`` and goes straight to that ask — the
+   capped run is done, no auto re-land (gr570187). An answered re-land
+   ask re-lands only when the answer names ``land again (no builder)``
+   and the task's brief is untouched; a rewritten brief — or any other
+   answer — mints a builder on the task's new brief.
+   Attempts count the ended jobs since the newest ask on
    the task (or the ``attempt:<n>`` tag ``run_slice`` writes, before any ask),
    so answering the ask re-arms the task — except a job carrying
    ``meta.host_refusal``: the lane's host refused the launch, so nothing
-   was tried (gr571395). A job still queued is never an
+   was tried (gr571395); a job carrying ``meta.attempt_free`` failed for
+   a reason outside the slice's diff (``"lane-wait"``, gr572118;
+   ``"infra-land"``, gr570187) and likewise burned no attempt. A job still
+   queued is never an
    attempt; one queued over 10 min whose ``ServiceSpec.placement``
    capabilities no live host advertises gets the note ``td<id>: job jo<N>
    queued <m> min — no host advertises {tokens}`` (td543917).
@@ -174,6 +189,18 @@ _GRIPE_COMMENT_KIND = "gripe_comment"
 _JOB_TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 _JOB_ENDED = frozenset({"succeeded", "failed"})
 _ATTEMPT_RE = re.compile(r"^attempt:(\d+)$")
+
+#: ``run_slice.ATTEMPT_FREE_KEY``, restated — the dependency stays
+#: one-way (a test pins the two spellings equal). A job carrying the key
+#: failed for a reason outside the slice's diff and burned no attempt:
+#: ``"lane-wait"`` (the lane never freed a slot, gr572118), ``"infra-land"``
+#: (the gate's own machinery killed the land, gr570187).
+ATTEMPT_FREE_KEY = "attempt_free"
+
+#: Consecutive infra-red lands (:func:`_infra_red_lands`) before the tick
+#: parks the node behind a "land again" ask (gr570187): the re-land is
+#: bounded so a broken gate environment cannot loop the lander forever.
+LAND_AGAIN_CAP = 2
 
 #: Dispatch prio of a node with no prio on it or any ancestor.
 DEFAULT_PRIO = 5
@@ -1037,6 +1064,25 @@ def _step_rearm(plan: _Plan, w: _Writer, res: PassResult) -> None:
         stamp: dict[str, Any] = {"rearmed_by_ask": newest_ask.id}
         if ended:
             stamp["rearmed_after_job"] = ended[-1].id
+        # A re-land ask's answer decides what the next dispatch may be
+        # (gr570187): "land again (no builder)" over an untouched brief
+        # re-lands the old branch; a rewritten brief — or any other
+        # answer — mints a builder on the task's brief. A non-reland ask
+        # clears the record so a fresh infra-land run re-lands freely.
+        ask_node = plan.nodes.get(newest_ask.id)
+        opts = (
+            (ask_node.meta.get("ask") or {}).get("options")
+            if ask_node is not None
+            else None
+        )
+        if isinstance(opts, list) and _RELAND_ASK_OPTIONS[0] in opts:
+            stamp["rearmed_answer"] = (
+                _release._newest_answer(w.store, newest_ask.id) or ""
+            )
+            stamp["rearmed_ask_at"] = newest_ask.created_at.isoformat()
+        else:
+            stamp["rearmed_answer"] = None
+            stamp["rearmed_ask_at"] = None
         w.stamp_meta(n, stamp)
         res.notes.append(
             f"td{n.id}: ask td{newest_ask.id} answered; retry budget reset"
@@ -1177,13 +1223,21 @@ def _retries(n: _Node) -> int:
         return DEFAULT_RETRIES
 
 
+def _no_attempt(j: _Node) -> bool:
+    """An ended job that burned no attempt: the lane's host refused the
+    launch (``meta.host_refusal``, gr571395) or it failed outside the
+    diff's control (``meta.attempt_free``: a lane that never freed a slot,
+    gr572118; a land the gate infrastructure killed, gr570187)."""
+    return bool(j.meta.get("host_refusal") or j.meta.get(ATTEMPT_FREE_KEY))
+
+
 def _attempts(plan: _Plan, n: _Node) -> int:
     """Ended jobs since the newest ask on ``n`` (all of them, floored by the
     ``attempt:<n>`` tag, when there was never an ask). A REVERT verdict and
     an answered ask (:func:`_step_rearm`) re-arm a node: only jobs after
     ``meta.rearmed_after_job`` count. A job carrying ``meta.host_refusal``
-    never counts: the lane's host refused the launch, so nothing was tried
-    (gr571395)."""
+    or ``meta.attempt_free`` never counts: nothing on the diff was tried
+    (:func:`_no_attempt`)."""
     asks = [b for b in plan.blockers.get(n.id, []) if b.is_ask]
     since = max((b.created_at for b in asks), default=None)
     floor = _rearm_floor(n)
@@ -1194,7 +1248,7 @@ def _attempts(plan: _Plan, n: _Node) -> int:
         # Ended only: a job still queued — never claimed, e.g. waiting for
         # a host with its placement capabilities (td543917) — is no attempt.
         if j.status in _JOB_ENDED
-        and not j.meta.get("host_refusal")
+        and not _no_attempt(j)
         and (since is None or j.created_at > since)
         and (floor is None or j.id > floor)
         # A build that handed off to the lander is one attempt with its
@@ -1217,11 +1271,107 @@ def _rearm_floor(n: _Node) -> int | None:
     return raw
 
 
+def _infra_red_lands(plan: _Plan, n: _Node) -> int:
+    """The run of consecutive failed ``land_slice`` jobs marked
+    ``attempt_free == "infra-land"`` at the tail of ``n``'s jobs, counting
+    only jobs after ``meta.rearmed_after_job`` (an answered ask re-arms,
+    gr570187). A land red on the diff itself — or any other job — ends the
+    run: the node goes back through a build, not another land."""
+    floor = _rearm_floor(n)
+    count = 0
+    for j in reversed(plan.jobs(n)):
+        if floor is not None and j.id <= floor:
+            break
+        if not (
+            j.status == "failed"
+            and j.meta.get("job_type") == "land_slice"
+            and j.meta.get(ATTEMPT_FREE_KEY) == "infra-land"
+        ):
+            break
+        count += 1
+    return count
+
+
+def _brief_rewritten(store: Any, todo_id: int, since: datetime) -> bool:
+    """A ``brief:``/``handoff:`` comment on the task newer than ``since``
+    (the re-land ask's mint): the brief changed, so a builder on the new
+    brief — not a re-land of the old branch — is what the answer means."""
+    for c in _comments(store, todo_id):
+        if c.created_at <= since:
+            break
+        if str(c.text).lstrip().lower().startswith(("brief:", "handoff:")):
+            return True
+    return False
+
+
+def _reland_params(plan: _Plan, n: _Node, store: Any) -> dict[str, Any] | None:
+    """The failed land job's own ``params`` when the tick should re-mint
+    ``land_slice`` — the newest job is an infra-land failure and the run
+    is under :data:`LAND_AGAIN_CAP` — else ``None``. The lander re-runs
+    ship on the same branch; no builder is asked to fix what the gate's
+    environment broke. On the first tick after an answered re-land ask
+    (the newest ended job is still ``meta.rearmed_after_job``) the
+    re-land fires only when the answer names ``land again (no builder)``
+    AND the brief is untouched — a rewritten brief mints a builder on
+    the new brief instead (gr570187)."""
+    jobs = plan.jobs(n)
+    if not jobs:
+        return None
+    j = jobs[-1]
+    if not (
+        j.status == "failed"
+        and j.meta.get("job_type") == "land_slice"
+        and j.meta.get(ATTEMPT_FREE_KEY) == "infra-land"
+    ):
+        return None
+    if _infra_red_lands(plan, n) >= LAND_AGAIN_CAP:
+        return None
+    if n.meta.get("rearmed_ask_at") and _rearm_floor(n) == j.id:
+        answer = str(n.meta.get("rearmed_answer") or "").strip().lower()
+        if not answer.startswith("land again"):
+            return None
+        try:
+            since = datetime.fromisoformat(str(n.meta["rearmed_ask_at"]))
+        except ValueError:  # a stamp we cannot read must not park the land
+            since = None
+        if since is not None and _brief_rewritten(store, n.id, since):
+            return None
+    params = j.meta.get("params")
+    return dict(params) if isinstance(params, dict) else None
+
+
+def _land_again_capped(plan: _Plan, n: _Node) -> bool:
+    """The infra-land run is done on its own: ``LAND_AGAIN_CAP``
+    consecutive infra-red lands, or the newest job stamped
+    ``meta.land_again_cap`` by the lander itself (a capped exit-137 —
+    its gate-kill retries are spent, so the run goes to the ask, not to
+    another automatic land, gr570187). The mark only counts past
+    ``meta.rearmed_after_job``: an answered "land again" re-arms it."""
+    floor = _rearm_floor(n)
+    if _infra_red_lands(plan, n) >= LAND_AGAIN_CAP:
+        return True
+    jobs = plan.jobs(n)
+    j = jobs[-1] if jobs else None
+    return bool(
+        j is not None
+        and j.status == "failed"
+        and j.meta.get("job_type") == "land_slice"
+        and j.meta.get(ATTEMPT_FREE_KEY) == "infra-land"
+        and j.meta.get("land_again_cap")
+        and (floor is None or j.id > floor)
+    )
+
+
 def _capped(plan: _Plan, n: _Node) -> bool:
     jobs = plan.jobs(n)
     if not jobs or jobs[-1].status not in _JOB_ENDED:
         return False
-    return _attempts(plan, n) >= _retries(n)
+    if _land_again_capped(plan, n):
+        return True
+    attempts = _attempts(plan, n)
+    # ``attempts > 0``: with ``meta.retries: 0`` a no-attempt job (a host
+    # refusal) must not mint the cap ask — nothing was tried (gr571395).
+    return attempts > 0 and attempts >= _retries(n)
 
 
 def _resolve_op(n: _Node) -> tuple[str, dict[str, Any]]:
@@ -1254,7 +1404,9 @@ def _params_problem(schema: dict[str, Any], params: dict[str, Any]) -> str | Non
 _DEFAULT_TASK_CLASS = "code"
 
 
-def _escalate(w: _Writer, plan: _Plan, n: _Node, params: dict[str, Any]) -> str | None:
+def _escalate(
+    w: _Writer, plan: _Plan, n: _Node, params: dict[str, Any]
+) -> tuple[bool, str | None]:
     """Pin a retried ``run_slice`` one rung up the cross-lane ladder.
 
     Reto's ruling (td559457, 2026-11-03): when a slice fails, go up the
@@ -1266,30 +1418,31 @@ def _escalate(w: _Writer, plan: _Plan, n: _Node, params: dict[str, Any]) -> str 
     when that is unknown, attempt *k* takes rung *k* from the foot. Floored
     at the top rung. A node whose ``meta.op`` already pins ``model`` is left
     alone (gr549046: the triage's pick wins); one that pins ``lane`` climbs
-    within that lane only. Returns the action note, or ``None`` when
-    nothing was pinned.
+    within that lane only. Rungs on lanes a host refusal backed off are
+    skipped — an escalated retry would park there, not build (gr571395);
+    the floor is read on the FULL ladder so a backed-off lane never drops
+    the retry below the last real attempt's rung, and when nothing free
+    sits at or above the floor the node parks (lane-wait) rather than
+    climbing down.
+
+    Returns ``(go, note)``: ``go=False`` parks the node this tick — no
+    job is minted — and ``note`` is the action line for the summary.
     """
-    del w
     if "model" in params:
-        return None
+        return True, None
     attempts = _attempts(plan, n)
     if attempts <= 0:
-        return None
+        return True, None
     task_class = str(n.meta.get("task_class") or _DEFAULT_TASK_CLASS)
     rungs = _lanes.ladder(task_class)
     pinned_lane = str(params["lane"]) if params.get("lane") else None
     if pinned_lane:
         rungs = tuple(r for r in rungs if r.lane == pinned_lane)
     if not rungs:
-        return None
-    # A host-refusal job is no rung to climb from either (gr571395): the
-    # lane's host refused before anything ran, so the retry starts from
-    # the newest job that actually attempted.
-    ended = [
-        j
-        for j in plan.jobs(n)
-        if j.status in _JOB_ENDED and not j.meta.get("host_refusal")
-    ]
+        return True, None
+    # A no-attempt job is no rung to climb from either (gr571395): the
+    # retry starts from the newest job that actually attempted.
+    ended = [j for j in plan.jobs(n) if j.status in _JOB_ENDED and not _no_attempt(j)]
     prev = (
         _lanes.rung_index(
             rungs, ended[-1].meta.get("lane"), ended[-1].meta.get("model")
@@ -1297,15 +1450,27 @@ def _escalate(w: _Writer, plan: _Plan, n: _Node, params: dict[str, Any]) -> str 
         if ended
         else None
     )
-    rung = min(prev + 1 if prev is not None else attempts, len(rungs) - 1)
-    target = rungs[rung]
+    start = min(prev + 1 if prev is not None else attempts, len(rungs) - 1)
+    backed = set(_lanes.lane_backoffs(w.store))
+    idx = next(
+        (i for i in range(start, len(rungs)) if rungs[i].lane not in backed),
+        None,
+    )
+    if idx is None:
+        blocked_lanes = sorted({r.lane for r in rungs[start:]})
+        return False, (
+            f"td{n.id}: lane-wait — every rung from {start + 1}/{len(rungs)} "
+            f"up sits on a backed-off lane ({', '.join(blocked_lanes)}); the "
+            "retry waits, it never climbs down"
+        )
+    target = rungs[idx]
     params["lane"] = target.lane
     if target.model is not None:
         params["model"] = target.model
-    return (
+    return True, (
         f"td{n.id}: retry {attempts} climbs to lane {target.lane}"
         f"{f' model {target.model}' if target.model else ''} "
-        f"(rung {rung + 1}/{len(rungs)})"
+        f"(rung {idx + 1}/{len(rungs)})"
     )
 
 
@@ -1317,7 +1482,13 @@ def _pick_executor(compatible: frozenset[str]) -> str:
 
 
 def _mint_job(
-    store: Any, n: _Node, job_type: str, executor: str, params: dict[str, Any]
+    store: Any,
+    n: _Node,
+    job_type: str,
+    executor: str,
+    params: dict[str, Any],
+    *,
+    idem_key: str | None = None,
 ) -> int:
     from precis.workers._mint import mint_job_once
 
@@ -1331,7 +1502,7 @@ def _mint_job(
             title=f"{job_type} td{n.id}: {n.title.splitlines()[0][:70] if n.title else ''}",
             params=params,
             parent_id=n.id,
-            idem_key=f"{NAME}:td{n.id}",
+            idem_key=idem_key or f"{NAME}:td{n.id}",
             prio=n.prio,
             meta_extra={"plan_root": n.root},
         )
@@ -1418,16 +1589,28 @@ def _step_dispatch(plan: _Plan, w: _Writer, res: PassResult) -> None:
                 f"td{n.id}: newest job:{jobs[-1].id} was cancelled; not redispatched"
             )
             continue
-        job_type, params = _resolve_op(n)
+        free_reason = jobs[-1].meta.get(ATTEMPT_FREE_KEY) if jobs else None
+        if free_reason:
+            res.notes.append(f"td{n.id}: re-queued after {free_reason}, not an attempt")
+        reland = _reland_params(plan, n, w.store)
+        if reland is not None:
+            # An infra-red land re-runs ship on the same branch with the
+            # failed job's own params — no builder, no escalate, no review
+            # lane (gr570187).
+            job_type, params = "land_slice", reland
+        else:
+            job_type, params = _resolve_op(n)
         if _is_reviewer(n) and job_type == DEFAULT_OP and "lane" not in params:
             go, lane_name = _review_lane(plan, w, res, n)
             if not go:
                 continue
             params["lane"] = lane_name
         if job_type == DEFAULT_OP:
-            climbed = _escalate(w, plan, n, params)
+            go, climbed = _escalate(w, plan, n, params)
             if climbed:
                 res.notes.append(climbed)
+            if not go:
+                continue
         if (
             job_type in ("release_deploy", "release_cut")
             and "target_node" not in params
@@ -1453,7 +1636,17 @@ def _step_dispatch(plan: _Plan, w: _Writer, res: PassResult) -> None:
         if w.dry_run:
             res.notes.append(f"td{n.id}: would dispatch {job_type} on {executor}")
         else:
-            job_id = _mint_job(w.store, n, job_type, executor, params)
+            job_id = _mint_job(
+                w.store,
+                n,
+                job_type,
+                executor,
+                params,
+                # The re-land shares run_slice's own land-mint key
+                # (``land_slice:td<id>``), not the tick's — one lander per
+                # slice, however it was minted.
+                idem_key=(f"land_slice:td{n.id}" if reland is not None else None),
+            )
             res.notes.append(
                 f"td{n.id}: dispatched {job_type} job:{job_id} on {executor}"
             )
@@ -1480,30 +1673,78 @@ def _failure_tail(store: Any, job_id: int, limit: int) -> str:
     return text[-limit:]
 
 
-def _mint_ask(store: Any, plan: _Plan, n: _Node, attempts: int) -> int:
+#: Options of the ask a node parked at :data:`LAND_AGAIN_CAP` infra-red
+#: lands gets (gr570187): the default retry ladder cannot help — nothing
+#: on the diff failed.
+_RELAND_ASK_OPTIONS: list[str] = [
+    "land again (no builder)",
+    "rewrite the brief",
+    "won't do",
+]
+
+
+def _mint_ask(
+    store: Any, plan: _Plan, n: _Node, attempts: int, *, relands: int = 0
+) -> int:
     newest = plan.jobs(n)[-1]
-    head = (
-        f"job:{newest.id} {newest.status} after {attempts} attempt(s) "
-        f"(meta.retries={_retries(n)})"
-    )
+    if relands:
+        head = (
+            f"job:{newest.id} {newest.status} — {relands} land(s) in a row "
+            "died outside the diff (gate infrastructure)"
+        )
+        title = (
+            f"td{n.id}: land failed outside the diff {relands} times: "
+            "land again, rewrite the brief, or drop it?"
+        )
+        options = list(_RELAND_ASK_OPTIONS)
+    else:
+        head = (
+            f"job:{newest.id} {newest.status} after {attempts} attempt(s) "
+            f"(meta.retries={_retries(n)})"
+        )
+        title = f"td{n.id} hit its retry cap: retry, rewrite the brief, or drop it?"
+        options = list(_ASK_OPTIONS)
     tail = _failure_tail(store, newest.id, _ASK_CONTEXT_CAP - len(head) - 3)
     context = f"{head}: {tail}" if tail else head
     meta: dict[str, Any] = {
         "ask": {
             "kind": "ruling",
-            "options": list(_ASK_OPTIONS),
+            "options": options,
             "blocks": f"td{n.id}",
             "context": context[:_ASK_CONTEXT_CAP],
         }
     }
     check_ask_meta(meta)
-    title = f"td{n.id} hit its retry cap: retry, rewrite the brief, or drop it?"
-    body = (
-        f"The plan tick stopped dispatching td{n.id} ({n.title.splitlines()[0] if n.title else ''}): "
-        f"{head}. Answer with the option you pick and close this todo; closing "
-        f"it re-arms td{n.id} (a fresh retry budget). Pick 'won't do' by closing "
-        f"td{n.id} STATUS:won't-do."
-    )
+    if relands:
+        if newest.meta.get("land_again_cap"):
+            # A capped exit-137 (the land's own gate-kill retries spent):
+            # land_slice's blocked-handoff wording — the 137 can be the
+            # container's mem_limit on the branch's own memory, so the
+            # ask must not clear the branch.
+            verdict = (
+                "The cause is the docker VM's memory or the branch's own "
+                "memory use — a memory hog on the branch is the builder's "
+                "to fix; otherwise an operator frees the docker VM."
+            )
+        else:
+            verdict = "The branch is not at fault, so no builder was minted."
+        body = (
+            f"The plan tick stopped re-landing td{n.id} "
+            f"({n.title.splitlines()[0] if n.title else ''}): {head}. "
+            f"{verdict} Answer with "
+            "the option you pick and close this todo; 'land again (no "
+            "builder)' re-arms the re-land, 'rewrite the brief' rebuilds "
+            f"from the new brief on td{n.id} (a `brief:` comment or an "
+            f"edited body). Pick 'won't do' by closing "
+            f"td{n.id} STATUS:won't-do."
+        )
+    else:
+        body = (
+            f"The plan tick stopped dispatching td{n.id} ({n.title.splitlines()[0] if n.title else ''}): "
+            f"{head}. Answer with the option you pick and close this todo; closing "
+            f"it re-arms td{n.id} (a fresh retry budget). Pick 'won't do' by closing "
+            f"td{n.id} STATUS:won't-do."
+        )
     with store.tx() as conn:
         ref = store.insert_ref(
             kind="todo",
@@ -1697,10 +1938,17 @@ def _step_hygiene(plan: _Plan, w: _Writer, res: PassResult, now: datetime) -> No
         if plan.open_asks(n):
             continue
         attempts = _attempts(plan, n)
+        relands = _infra_red_lands(plan, n)
         if w.dry_run:
             res.notes.append(f"td{n.id}: would file an ask (retry cap {_retries(n)})")
         else:
-            ask_id = _mint_ask(w.store, plan, n, attempts)
+            ask_id = _mint_ask(
+                w.store,
+                plan,
+                n,
+                attempts,
+                relands=relands if _land_again_capped(plan, n) else 0,
+            )
             res.notes.append(f"td{n.id}: retry cap hit, asked in td{ask_id}")
             # gr548800: the park and the ask are quest-logbook events.
             log_plan_event(

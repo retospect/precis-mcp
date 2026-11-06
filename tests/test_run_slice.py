@@ -1089,6 +1089,51 @@ def test_submit_parks_when_pinned_lane_full(seams: dict[str, Any]) -> None:
     assert handle is not None and ctx2.meta_set["lane"] == "claude-sub"
 
 
+def test_lane_wait_parks_on_their_own_budget(seams: dict[str, Any]) -> None:
+    """gr572118: a lane-full wait counts under ``meta.wait_parks``, not the
+    shared ``pause_parks`` budget (``MAX_PAUSE_PARKS`` = 6 → the seventh
+    10-min park read as a failed attempt on a job that never ran)."""
+    seams["live"] = {"claude-sub": 2}
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _Ctx(store, {"todo_id": 42}, pause_parks=6)
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake_at: Any, note: str) -> bool:
+        deferred.append((wake_at, note))
+        return True
+
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    assert deferred and "no lane free" in deferred[0][1]
+    assert ctx.failure is None
+    assert ctx.meta_set["pause_parks"] == 0
+    assert ctx.meta_set["wait_parks"] == 1
+
+
+def test_lane_wait_past_the_cap_fails_attempt_free(
+    seams: dict[str, Any],
+) -> None:
+    """gr572118: past ``LANE_WAIT_PARK_CAP`` the wait ends ``failed`` but
+    marked ``meta.attempt_free`` — the job never ran, so it is no attempt
+    toward the todo's retry cap."""
+    seams["live"] = {"claude-sub": 2}
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _Ctx(store, {"todo_id": 42}, wait_parks=run_slice.LANE_WAIT_PARK_CAP)
+
+    def _defer(wake_at: Any, note: str) -> bool:
+        raise AssertionError("a capped wait must not park again")
+
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    assert ctx.failure is not None
+    assert "no lane free" in ctx.failure
+    assert "no lane slot for" in ctx.failure
+    assert ctx.meta_set["attempt_free"] == "lane-wait"
+    assert "attempt:1" not in store.tag_strings(42)
+
+
 def test_submit_refuses_a_generator_on_a_lane_without_mcp(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2706,7 +2751,9 @@ def test_pinned_lane_in_backoff_parks_until_the_window_ends(
 ) -> None:
     """gr571395: a lane pinned by ``params.lane`` while backed off parks to
     the stamped window end (not the 10-min lane-full horizon) — the next
-    launch on it is the probe, and no attempt is burned."""
+    launch on it is the probe, and no attempt is burned. The wake carries
+    a per-todo jitter so a fleet of jobs parked on the same refusal does
+    not probe the lane in one burst."""
     until = datetime.now(UTC) + timedelta(minutes=25)
     seams["backoff"] = {"devin": until}
     store = _Store()
@@ -2723,7 +2770,7 @@ def test_pinned_lane_in_backoff_parks_until_the_window_ends(
 
     ctx.defer = _defer
     assert run_slice.submit(ctx, None) is None
-    assert deferred and deferred[0][0] == until
+    assert deferred and until <= deferred[0][0] < until + timedelta(minutes=6)
     assert "devin" in deferred[0][1] and "backed off" in deferred[0][1]
     assert ctx.failure is None and seams["launch"] == []
     assert store.tag_strings(42) == {"STATUS:open"}
