@@ -984,14 +984,20 @@ def render_doable(
     return Response(body=body)
 
 
-def _fetch_doable(
+def _doable_rows(
     store: Store,
     *,
     under: int | None,
     limit: int,
     tags: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Return doable leaves (with ancestry chain) ordered per the plan."""
+    """Doable-leaf rows (``id`` + ``title``) ordered per the plan.
+
+    The bare SQL pass — no per-leaf ancestry walk — so callers that only
+    need the leaf set (``work_model``'s run-state, td573295) pay one
+    query. ``_fetch_doable`` adds the ancestry chain on top for the
+    ``view='doable'`` render.
+    """
     # Quest reweighting (slice 2): a strategic root that `serves` an active
     # quest gets its 7-day pick count discounted by the striving weight, so it
     # surfaces earlier in the least-picked-first rotation. No-op when no quest
@@ -1134,15 +1140,26 @@ def _fetch_doable(
             sql,
             (weight_sids, weight_vals) + under_params + tuple(tag_params) + (limit,),
         ).fetchall()
+    return [{"id": int(r[0]), "title": r[1]} for r in rows]
+
+
+def _fetch_doable(
+    store: Store,
+    *,
+    under: int | None,
+    limit: int,
+    tags: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return doable leaves (with ancestry chain) ordered per the plan."""
     out: list[dict[str, Any]] = []
-    for ref_id, title, _strategic_id, _picks, _prio in rows:
-        chain = _ancestor_chain(store, int(ref_id))
+    for leaf in _doable_rows(store, under=under, limit=limit, tags=tags):
+        chain = _ancestor_chain(store, leaf["id"])
         # Trim leaf itself from breadcrumb (rendered separately).
         crumbs = chain[:-1] if chain else []
         out.append(
             {
-                "id": int(ref_id),
-                "title": title,
+                "id": leaf["id"],
+                "title": leaf["title"],
                 "ancestry": crumbs,
             }
         )

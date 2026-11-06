@@ -41,13 +41,22 @@ search(kind="todo", view="work")
 ```
 
 ```
-# work — 2 quests with work in service · 3 live agents
+# work — 3 quests: 1 running · 1 queued · 1 idle · 3 live agents
 
-◆ qu540835 [dormant] prio=3 — Precis runs its own work: the platform under every agent lane …
+running (1)
+◆ qu540835 running [dormant] prio=3 agents=2 jobs=1 next=td540850 3h ago — Precis runs its own work …
   td540836 ○ prio=3 — Dark factory: precis runs the work
     td540842 ◀ claimed-by:slice-td540842 prio=2 agents=1 — Work view: gripes hang under the root …
     td540848 ◀ claimed-by:slice-td540848 prio=3 agents=1 jobs=2(1 live) — Skill precis-work-help …
     gr541510 open — precis-todo-tree-help~8 omits releasing a lease …
+  jo541880 [running] run_slice · under td540848
+
+queued (1)
+◆ qu572010 queued [active] prio=5 next=td572033 20m ago — Hydrate the datasheet mesh …
+  td572011 ○ prio=5 — Datasheet mesh …
+
+idle (1)
+◆ qu460002 idle [dormant] prio=5 2d ago — Pourbaix quest …
 
 unassigned roots (4) — serve no quest
   td98 [open] — Write the nanotrans review.
@@ -63,8 +72,10 @@ Blocks, top to bottom:
 
 | block | what it holds |
 |---|---|
-| `◆ qu<id> [status] prio=N — title` | one quest with at least one todo `serves` it; active quests first, then by prio |
-| indented `td<id>` rows | each served root and its subtree, children ordered by prio; 40 rows per root, then `… +N more` with the `view='tree'` call |
+| `running (N)` / `queued (N)` / `idle (N)` | the three run-state groups, in that order; a quest is **running** while a served todo holds a live `claimed-by:` lease or a child job is running, else **queued** while a doable leaf or a claimable (queued/yielded) job waits, else **idle** |
+| `◆ qu<id> <run-state> [status] prio=N agents=N jobs=N next=td<id> <age> — title` | one live quest (active or dormant — abandoned quests stay off the board), ordered inside its group by prio then id; `next=` is the first doable leaf; `<age>` is the newest row change |
+| indented `td<id>` rows | the expansion under running and queued quests: each served root and its subtree, children ordered by prio; 40 rows per root, then `… +N more` with the `view='tree'` call |
+| indented `jo<id> [<STATUS>] <title> · under td<id>` | the quest's live jobs (running or claimable), one line each, after the rows |
 | `unassigned roots (N)` | strategic roots that serve no quest — work nobody ranked against a quest |
 | `unplaced gripes (N)` | open gripes whose `thread:` tag matches no root (see the gripe section) |
 | `hosts` | each fleet host and when it last reported; `none reported` means no agent counts are real |
@@ -100,9 +111,10 @@ get(kind="todo", id=540848, extent="fisheye+1hop")
 get(kind="todo", id=540836, view="tree")  # one root in full
 ```
 
-The web `/work` page renders the same hierarchy with columns status /
-agents / stage / age, each row linking to `/eye/<handle>`; it lands with
-td540843.
+The web `/work` page renders the same board: the same three groups,
+one collapsed line per quest — click it to expand the rows in place —
+with columns status / agents / stage / age, each row linking to
+`/eye/<handle>`; it lands with td540843 (collapsed rows td573295).
 
 ## What blocks a lane, and what waits on the owner?
 ## Which questions are waiting for a human decision?

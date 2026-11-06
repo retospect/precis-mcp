@@ -1,14 +1,19 @@
 """The work view — one read-only hierarchy of what is in flight.
 
-``search(kind='todo', view='work')`` renders quest → the todos that
-``serves`` it → their subtrees, one row per todo with STATUS, prio, the
-``claimed-by:`` lease, the number of fleet agents on it and its child jobs
-folded into one ``jobs=N`` cell (a job is execution detail, not a row);
-then the strategic roots that serve no quest ("unassigned"); then the
-fleet hosts and when they last reported. A todo that serves the quest
-directly while also sitting inside another served root renders once, in
-the larger tree. Dark-factory step 1 (td540840,
-``docs/backlog/dark-factory.md``): every later step reads this tree.
+``search(kind='todo', view='work')`` renders one collapsed line per live
+quest — handle, the derived run-state (``running``, ``queued``,
+``idle``), STATUS, prio, agents, live jobs, the next doable leaf and the
+newest change — grouped running → queued → idle, then prio (td573295).
+A running or queued quest expands in place to the todos that ``serves``
+it → their subtrees, one row per todo with STATUS, prio, the
+``claimed-by:`` lease, the number of fleet agents on it and its child
+jobs folded into one ``jobs=N`` cell (a job is execution detail, not a
+row), plus one line per live job. Then the strategic roots that serve no
+quest ("unassigned"); then the fleet hosts and when they last reported.
+A todo that serves the quest directly while also sitting inside another
+served root renders once, in the larger tree. Dark-factory step 1
+(td540840, ``docs/backlog/dark-factory.md``): every later step reads
+this tree.
 
 :func:`work_model` computes the hierarchy once as frozen dataclasses
 (:class:`WorkModel`); :func:`render_work` formats it as MCP text and the
@@ -58,12 +63,15 @@ def _first_line(title: str | None, cap: int = 72) -> str:
 
 
 def _age(ts: Any, now: datetime) -> str:
-    if not isinstance(ts, str) or not ts:
+    if isinstance(ts, datetime):
+        then = ts
+    elif isinstance(ts, str) and ts:
+        try:
+            then = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            return "?"
+    else:
         return "never"
-    try:
-        then = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except ValueError:
-        return "?"
     mins = (now - then).total_seconds() / 60
     if mins < 90:
         return f"{mins:.0f}m ago"
@@ -160,22 +168,42 @@ class WorkRow:
 class RootBlock:
     """One served root's rows; ``hidden`` counts rows past the row cap.
     ``gripes`` are the root's open-gripe rows
-    (:mod:`precis.todo.work_gripes`, td540842 / td541980)."""
+    (:mod:`precis.todo.work_gripes`, td540842 / td541980). ``jobs`` are
+    the live job lines under this root (td573295); ``running_jobs`` /
+    ``claimable_jobs`` feed the quest's run-state."""
 
     root_id: int
     rows: tuple[WorkRow, ...]
     hidden: int
     gripes: GripeBlock = field(default_factory=GripeBlock)
+    jobs: tuple[str, ...] = ()
+    running_jobs: int = 0
+    claimable_jobs: int = 0
 
 
 @dataclass(frozen=True)
 class QuestBlock:
+    """One quest's collapsed board line plus its expansion (td573295).
+
+    ``run_state`` is derived — ``running`` while a served todo holds a
+    live lease or a child job runs, else ``queued`` while a doable leaf
+    or a claimable job waits, else ``idle``. ``jobs`` are the live job
+    lines under the quest; ``next_doable`` the first doable leaf's
+    handle (``""`` when none); ``newest`` the freshest row stamp."""
+
     ref_id: int
     handle: str
     status: str
     prio: int | None
     title: str
     roots: tuple[RootBlock, ...]
+    run_state: str
+    agents: int
+    running_jobs: int
+    queued_jobs: int
+    next_doable: str
+    newest: datetime | None
+    jobs: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -201,6 +229,18 @@ class WorkModel:
     n_agents: int
     #: The "unplaced gripes" bucket (td540842 / td541980).
     unplaced_gripes: GripeBlock = field(default_factory=GripeBlock)
+
+    @property
+    def n_running(self) -> int:
+        return sum(q.run_state == "running" for q in self.quests)
+
+    @property
+    def n_queued(self) -> int:
+        return sum(q.run_state == "queued" for q in self.quests)
+
+    @property
+    def n_idle(self) -> int:
+        return sum(q.run_state == "idle" for q in self.quests)
 
 
 # ── the view ──────────────────────────────────────────────────────
@@ -345,6 +385,64 @@ def _format_row(r: WorkRow) -> str:
 #: Job STATUS values that count as live in the ``jobs=N(M live)`` cell.
 _LIVE_JOB = frozenset({"queued", "running"})
 
+#: Job STATUS values for the run-state derivation and the quest's live
+#: job lines — mirror ``precis.workers.executors._common.RUNNING`` /
+#: ``CLAIMABLE`` (queued, yielded); local constants so this module stays
+#: out of the executor import chain.
+_JOB_RUNNING = "running"
+_JOB_CLAIMABLE = frozenset({"queued", "yielded"})
+#: A job worth a board line — running or claimable.
+_BOARD_JOB = _JOB_CLAIMABLE | {_JOB_RUNNING}
+
+#: Group order on the board (td573295): running, queued, idle.
+_RUN_RANK = {"running": 0, "queued": 1, "idle": 2}
+
+
+def _run_state(leased: int, running_jobs: int, claimable_jobs: int, doable: int) -> str:
+    """The quest's run-state (td573295): ``running`` while a served todo
+    is leased or a job runs; else ``queued`` while a doable leaf or a
+    claimable job waits; else ``idle``."""
+    if leased or running_jobs:
+        return "running"
+    if doable or claimable_jobs:
+        return "queued"
+    return "idle"
+
+
+def _live_claims(store: Store, ref_ids: list[int]) -> set[int]:
+    """Ref ids among ``ref_ids`` carrying a live ``claimed-by:`` lease —
+    ``ref_tags.expires_at`` in the future (NULL or past is not live)."""
+    if not ref_ids:
+        return set()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT rt.ref_id FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id"
+            " WHERE rt.ref_id = ANY(%s) AND t.namespace = 'OPEN'"
+            "   AND t.value LIKE 'claimed-by:%%'"
+            "   AND rt.expires_at IS NOT NULL AND rt.expires_at > now()",
+            (ref_ids,),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def _prios_for(store: Store, ref_ids: list[int]) -> dict[int, int | None]:
+    """``{ref_id: refs.prio}`` for the given ids — one query (td573295)."""
+    if not ref_ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, prio FROM refs WHERE ref_id = ANY(%s)",
+            (ref_ids,),
+        ).fetchall()
+    return {int(r[0]): r[1] for r in rows}
+
+
+def _job_line(job_id: int, status: str, title: str | None, parent_handle: str) -> str:
+    """One live job's board line: handle, STATUS, title, parent todo."""
+    return (
+        f"  {_h('job', job_id)} [{status}] {_first_line(title)} · under {parent_handle}"
+    )
+
 
 def _newest_job_lanes(store: Store, job_ids: list[int]) -> dict[int, str]:
     """``{parent id: lane}`` from the newest of the given jobs per parent
@@ -387,11 +485,22 @@ def _render_root(
     lanes = _newest_job_lanes(store, [r["id"] for r in rows if r["kind"] == "job"])
     by_parent: dict[int | None, list[dict[str, Any]]] = {}
     job_counts: dict[int, tuple[int, int]] = {}
+    job_lines: list[str] = []
+    running_jobs = 0
+    claimable_jobs = 0
     for r in rows:
         if r["kind"] == "job":
             n, live = job_counts.get(r["parent_id"], (0, 0))
-            is_live = statuses.get(r["id"], "open") in _LIVE_JOB
-            job_counts[r["parent_id"]] = (n + 1, live + int(is_live))
+            status = statuses.get(r["id"], "open")
+            job_counts[r["parent_id"]] = (n + 1, live + int(status in _LIVE_JOB))
+            if status == _JOB_RUNNING:
+                running_jobs += 1
+            elif status in _JOB_CLAIMABLE:
+                claimable_jobs += 1
+            if status in _BOARD_JOB:
+                job_lines.append(
+                    _job_line(r["id"], status, r["title"], _h("todo", r["parent_id"]))
+                )
             continue
         by_parent.setdefault(r["parent_id"], []).append(r)
     for children in by_parent.values():
@@ -433,24 +542,38 @@ def _render_root(
         rows=tuple(shown),
         hidden=hidden,
         gripes=work_gripes.root_gripes(store, tags_by_ref.get(root.id, [])),
+        jobs=tuple(job_lines),
+        running_jobs=running_jobs,
+        claimable_jobs=claimable_jobs,
     )
 
 
 def work_model(store: Store, *, now: datetime | None = None) -> WorkModel:
-    """The hierarchy as data: quests (active first, then by prio) with
-    their served roots' rows, the unassigned roots, the fleet hosts."""
+    """The board as data: every live quest (``abandoned`` stays off) one
+    collapsed line ordered run-state → prio → ref_id, its served roots'
+    rows as the expansion, the unassigned roots, the fleet hosts."""
     now = now or datetime.now(UTC)
     agents, hosts = _fleet_rows(store)
     quests = [
         q for q in store.list_refs(kind="quest", limit=500) if q.retired_at is None
     ]
+    # One doable pass for the whole board — a quest's doable leaves are
+    # this set intersected with its served subtree ids (td573295).
+    doable_ids = {
+        leaf["id"] for leaf in views._doable_rows(store, under=None, limit=5000)
+    }
     served: set[int] = set()
-    blocks: list[tuple[tuple[int, int], QuestBlock]] = []
+    # Pass 1 — the pre-existing per-quest shape: status, served roots,
+    # subtrees, rendered root blocks. The td573295 run-state inputs are
+    # set-based below: one ``_live_claims`` and one ``_prios_for`` query
+    # for the whole board, so a page load adds a constant number of
+    # queries regardless of quest count.
+    pending: list[dict[str, Any]] = []
     for q in quests:
-        roots = _todo_servers(store, q.id)
-        if not roots:
-            continue
         status = _quest_status(store, q.id)
+        if status == "abandoned":
+            continue
+        roots = _todo_servers(store, q.id)
         served.update(r.id for r in roots)
         # A served todo that also sits inside another served root's
         # subtree renders once, in the containing tree.
@@ -468,16 +591,59 @@ def work_model(store: Store, *, now: datetime | None = None) -> WorkModel:
             block = _render_root(store, root, subtrees[root.id], agents=agents)
             if block is not None:
                 root_blocks.append(block)
-        rank = 0 if status == "active" else 1
+        pending.append(
+            {
+                "q": q,
+                "status": status,
+                "ids": {row["id"] for rows in subtrees.values() for row in rows},
+                "roots": root_blocks,
+            }
+        )
+    leased_all = _live_claims(store, sorted({i for e in pending for i in e["ids"]}))
+    for e in pending:
+        e["leased"] = e["ids"] & leased_all
+        e["doable"] = (e["ids"] & doable_ids) - e["leased"]
+    dprios = _prios_for(store, sorted({i for e in pending for i in e["doable"]}))
+    blocks: list[tuple[tuple[int, int, int], QuestBlock]] = []
+    for e in pending:
+        q = e["q"]
+        quest_doable: set[int] = e["doable"]
+        next_doable = ""
+        if quest_doable:
+            best = min(
+                quest_doable,
+                key=lambda i: (dprios.get(i) or 5, i),
+            )
+            next_doable = _h("todo", best)
+        running_n = sum(b.running_jobs for b in e["roots"])
+        claimable_n = sum(b.claimable_jobs for b in e["roots"])
+        run_state = _run_state(
+            len(e["leased"]), running_n, claimable_n, len(quest_doable)
+        )
+        stamps = [
+            r.updated_at for b in e["roots"] for r in b.rows if r.updated_at is not None
+        ]
         quest_block = QuestBlock(
             ref_id=q.id,
             handle=_h("quest", q.id),
-            status=status,
+            status=e["status"],
             prio=q.prio,
             title=_first_line(q.title),
-            roots=tuple(root_blocks),
+            roots=tuple(e["roots"]),
+            run_state=run_state,
+            agents=sum(r.agents for b in e["roots"] for r in b.rows),
+            running_jobs=running_n,
+            queued_jobs=claimable_n,
+            next_doable=next_doable,
+            newest=max(stamps) if stamps else (q.updated_at or q.created_at),
+            jobs=tuple(j for b in e["roots"] for j in b.jobs),
         )
-        blocks.append(((rank, q.prio if q.prio is not None else 5), quest_block))
+        blocks.append(
+            (
+                (_RUN_RANK[run_state], q.prio if q.prio is not None else 5, q.id),
+                quest_block,
+            )
+        )
     blocks.sort(key=lambda b: b[0])
 
     unassigned = sorted(
@@ -515,26 +681,50 @@ def work_model(store: Store, *, now: datetime | None = None) -> WorkModel:
     )
 
 
+def _quest_line(q: QuestBlock, now: datetime) -> str:
+    """The quest's collapsed board line (td573295)."""
+    cells = [f"◆ {q.handle}", q.run_state, f"[{q.status}]"]
+    if q.prio is not None:
+        cells.append(f"prio={q.prio}")
+    if q.agents:
+        cells.append(f"agents={q.agents}")
+    if q.jobs:
+        cells.append(f"jobs={len(q.jobs)}")
+    if q.next_doable:
+        cells.append(f"next={q.next_doable}")
+    cells.append(_age(q.newest, now))
+    return f"{' '.join(cells)} — {q.title}"
+
+
 def render_work(store: Store, *, now: datetime | None = None) -> Response:
     """``search(kind='todo', view='work')`` — the hierarchy, read-only."""
+    now = now or datetime.now(UTC)
     model = work_model(store, now=now)
     n_q = len(model.quests)
     n_a = model.n_agents
     out: list[str] = [
-        f"# work — {n_q} quest{'' if n_q == 1 else 's'} with "
-        f"work in service · {n_a} live agent{'' if n_a == 1 else 's'}"
+        f"# work — {n_q} quest{'' if n_q == 1 else 's'}: "
+        f"{model.n_running} running · {model.n_queued} queued · "
+        f"{model.n_idle} idle · {n_a} live agent{'' if n_a == 1 else 's'}"
     ]
-    for q in model.quests:
-        prio = f" prio={q.prio}" if q.prio is not None else ""
-        out += ["", f"◆ {q.handle} [{q.status}]{prio} — {q.title}"]
-        for root in q.roots:
-            out.extend(_format_row(r) for r in root.rows)
-            if root.hidden:
-                out.append(
-                    f"    … +{root.hidden} more — "
-                    f"get(kind='todo', id={root.root_id}, view='tree')"
-                )
-            out.extend(work_gripes.render_root_gripes(root.gripes))
+    for state in ("running", "queued", "idle"):
+        group = [q for q in model.quests if q.run_state == state]
+        if not group:
+            continue
+        out += ["", f"{state} ({len(group)})"]
+        for q in group:
+            out.append(_quest_line(q, now))
+            if state == "idle":
+                continue
+            for root in q.roots:
+                out.extend(_format_row(r) for r in root.rows)
+                if root.hidden:
+                    out.append(
+                        f"    … +{root.hidden} more — "
+                        f"get(kind='todo', id={root.root_id}, view='tree')"
+                    )
+                out.extend(work_gripes.render_root_gripes(root.gripes))
+            out.extend(q.jobs)
 
     if model.unassigned:
         out += ["", f"unassigned roots ({len(model.unassigned)}) — serve no quest"]

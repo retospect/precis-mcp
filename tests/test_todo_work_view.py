@@ -148,8 +148,8 @@ def test_work_view_renders_quest_root_and_slices(
     t = _tree(handler, store)
     out = handler.search(view="work").body
 
-    assert "# work — 1 quest with work in service" in out
-    assert f"◆ qu{t['quest']} [active]" in out
+    assert "# work — 1 quest:" in out
+    assert f"◆ qu{t['quest']} running [active]" in out
     assert "Precis runs its own work" in out
     # root under the quest, slices under the root, indented deeper
     root_line = next(ln for ln in out.splitlines() if f"td{t['root']}" in ln)
@@ -179,8 +179,12 @@ def test_work_view_counts_agents_by_handle_and_lease(
     )
     out = handler.search(view="work").body
 
-    a_line = next(ln for ln in out.splitlines() if f"td{t['a']}" in ln)
-    b_line = next(ln for ln in out.splitlines() if f"td{t['b']}" in ln)
+    a_line = next(
+        ln for ln in out.splitlines() if ln.lstrip().startswith(f"td{t['a']} ")
+    )
+    b_line = next(
+        ln for ln in out.splitlines() if ln.lstrip().startswith(f"td{t['b']} ")
+    )
     # handle match + lease-holder match, dead row ignored
     assert "agents=2" in a_line
     assert "agents=" not in b_line
@@ -212,10 +216,14 @@ def test_work_view_folds_child_jobs_into_a_cell(handler: TodoHandler, hub: Hub) 
 
     a_line = next(ln for ln in out.splitlines() if f"td{t['a']}" in ln)
     assert "jobs=3(1 live)" in a_line
-    # no job gets a row of its own
-    assert "plan_tick" not in out
-    assert f"jo{jobs[0].id}" not in out
-    b_line = next(ln for ln in out.splitlines() if f"td{t['b']}" in ln)
+    # the live job earns one board line; the terminal jobs stay folded
+    job_lines = [ln for ln in out.splitlines() if "plan_tick" in ln]
+    assert len(job_lines) == 1
+    assert f"jo{jobs[0].id} [running]" in job_lines[0]
+    assert f"td{t['a']}" in job_lines[0]
+    b_line = next(
+        ln for ln in out.splitlines() if ln.lstrip().startswith(f"td{t['b']} ")
+    )
     assert "jobs=" not in b_line
 
 
@@ -316,7 +324,7 @@ def test_work_view_plan_nodes_in_the_text(handler: TodoHandler, hub: Hub) -> Non
 
 def test_work_view_empty_store(handler: TodoHandler) -> None:
     out = handler.search(view="work").body
-    assert "0 quests with work in service" in out
+    assert "# work — 0 quests: 0 running" in out
     assert "none reported" in out
 
 

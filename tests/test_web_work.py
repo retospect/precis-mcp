@@ -66,8 +66,14 @@ def test_work_page_nests_slices_under_root_under_quest(
     for handle in (quest, root, a, b, lone):
         assert handle in tags, f"no data-handle row for {handle}"
         assert f'href="/eye/{handle}"' in html
-    # document order: quest, then its root, then the slices
-    assert html.index(quest) < html.index(root) < html.index(a) < html.index(b)
+    # document order: quest, then its root, then the slices — measured on
+    # the data-handle rows (the summary's ``next`` link names a handle too)
+    assert (
+        html.index(tags[quest])
+        < html.index(tags[root])
+        < html.index(tags[a])
+        < html.index(tags[b])
+    )
     # depth: the root is 1, the slices one deeper
     assert 'data-depth="1"' in tags[root]
     assert 'data-depth="2"' in tags[a]
@@ -248,7 +254,7 @@ def test_work_page_gripe_rows_are_the_models_rows(
 def test_work_page_empty_store(client: TestClient) -> None:
     resp = client.get("/work")
     assert resp.status_code == 200
-    assert "No quest has work in service." in resp.text
+    assert "No quests." in resp.text
     assert "None reported" in resp.text
 
 
