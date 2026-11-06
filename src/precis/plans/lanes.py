@@ -11,13 +11,16 @@ unpinned job gets (``Lane.default_model``: the cheapest of ``models``
 that can still write code, so an unpinned child never drifts to the
 frontier pin).
 
-The table lives in code until the lane registry (step 3, a ``lanes``
-table seeded from me538174) lands; :data:`LANES` is its seed. ``devin``,
-``codex`` and ``claude-sub`` are enabled (Reto 2026-11-03: "ok both devin
-and codex are ok. Lets make them go."; devin on once its CLI login on the
-slice host was confirmed, 2026-11-06, td562568); the others are declared
-with their adapters named so the pick, the work view and the tests
-already see them, and :func:`pick_lane` never returns a disabled lane.
+The table derives from ``llm_account`` rows at call time (td568401 S1c:
+:func:`load_lanes` → :func:`derive_lanes`; ``lane_rank`` carries the
+preference order the code seed held by position). ``devin``, ``codex``
+and ``claude-sub`` are enabled (Reto 2026-11-03: "ok both devin and codex
+are ok. Lets make them go."; devin on once its CLI login on the slice
+host was confirmed, 2026-11-06, td562568); the others stay account rows —
+an account on an adapter the builder cannot launch (``kimi_tree``,
+``api``; :data:`LAUNCHABLE_ADAPTERS`) never becomes a lane, so enabling
+an api-adapter account can never mint a lane a submit would die on at
+``get_adapter``. :func:`pick_lane` never returns a disabled lane.
 
 Pick (:func:`pick_lane`): fit for the task class first, then the fit lane
 with the fewest live ``run_slice`` jobs carrying its ``meta.lane``, under
@@ -42,7 +45,7 @@ subscription (Reto td559457).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -150,95 +153,72 @@ class Lane:
         return bool(self.model_prefix) and model.startswith(self.model_prefix)
 
 
-#: Seed table, in preference order (ties in :func:`pick_lane` keep it, and
-#: :func:`ladder` climbs it): the free vendor lanes first, the Claude
-#: subscription after them (Reto td559457, 2026-11-03: "devin → haiku →
-#: sonnet → opus"; "both devin and codex are ok").
-LANES: tuple[Lane, ...] = (
-    Lane(
-        name="devin",
-        adapter="devin_tree",
-        credential_pool="devin",
-        cap=3,
-        task_classes=frozenset({"code", "review", "validate"}),
-        # On (td562568, Reto 2026-11-06): the devin_tree adapter is in
-        # (td561543) and the Devin CLI is logged in for the deploy user on
-        # the slice host (``devin auth status``; the dedicated vendor
-        # account is gr562902). ``run_slice`` preflights binary, login and
-        # directory trust before each launch (gr570688).
-        enabled=True,
-        vendor="cognition",
-        # `devin models list` 2026-11-03: every SWE-2 tier is free; the
-        # "-lightning" variants and every other family are paid and never
-        # launched unattended (Reto: never buy overage).
-        models=("swe-2-medium", "swe-2-high", "swe-2-max"),
-        default_model="swe-2-high",
-    ),
-    Lane(
-        name="codex",
-        adapter="codex_exec",
-        credential_pool="codex",
-        cap=1,
-        # Code (Reto 2026-10-26), plus review and validate (Reto
-        # 2026-11-04 "we can route to another devin for now", with the
-        # Claude weekly quota out): both deliver one verdict in the final
-        # message and need no MCP. Triage, brief and pcb stay off.
-        task_classes=frozenset({"code", "review", "validate"}),
-        # On (td562568, Reto 2026-11-04 "And do land the flip."): the
-        # codex_exec adapter (td561543) is in and deploy's Codex login on
-        # the slice host answered a headless ``codex exec`` (td561545; the
-        # dedicated vendor account is gr562902). No model list: the adapter
-        # passes no model flag and the CLI's account default runs.
-        enabled=True,
-        vendor="openai",
-    ),
-    Lane(
-        name="claude-sub",
-        adapter="claude_p",
-        credential_pool="subscription",
-        cap=2,
-        task_classes=frozenset({ANY_CLASS}),
-        vendor="anthropic",
-        models=(
-            "claude-haiku-4-5-20251001",
-            "claude-sonnet-5",
-            "claude-opus-4-8",
-        ),
-        # Sonnet-class: the cheapest accepted id that still writes code.
-        default_model="claude-sonnet-5",
-        # The CLI takes any claude id: a triage pin outside ``models``
-        # (td543634 carried claude-sonnet-5-5) still fits this lane.
-        model_prefix="claude-",
-    ),
-    Lane(
-        name="kimi",
-        adapter="kimi_tree",
-        credential_pool="kimi",
-        cap=1,
-        task_classes=frozenset({"code", "docs"}),
-        enabled=False,
-        vendor="moonshot",
-    ),
-    Lane(
-        name="metered",
-        adapter="api",
-        credential_pool="metered",
-        cap=1,
-        task_classes=frozenset({ANY_CLASS}),
-        enabled=False,
-        # OpenRouter / API keys: the vendor is per model; the registry
-        # (step 3) splits this lane per vendor before it is enabled.
-        vendor="openrouter",
-    ),
+#: ``model_prefix`` per adapter — the one fact the code seed carried that
+#: no ``llm_account`` column holds: ``claude -p`` accepts every
+#: ``claude-`` id, so a triage pin outside ``models`` still routes to the
+#: lane.
+_ADAPTER_MODEL_PREFIX: dict[str, str] = {"claude_p": "claude-"}
+
+#: Adapters a ``run_slice`` submit can launch — mirrors
+#: ``precis.workers.job_types._slice_adapters.ADAPTERS`` (restated so
+#: this package stays below the workers layer, like
+#: ``_TERMINAL_STATUSES``; a drift test pins the two equal). An account
+#: on any other adapter — ``api`` (metered), ``kimi_tree`` (declared,
+#: unbuilt) — derives to no lane, whatever its ``enabled`` flag.
+LAUNCHABLE_ADAPTERS: frozenset[str] = frozenset(
+    {"claude_p", "codex_exec", "devin_tree"}
 )
 
 
-def get_lane(name: str) -> Lane | None:
-    """The seed-table lane called ``name``, or ``None``."""
-    for lane in LANES:
+def get_lane(name: str, store: Any) -> Lane | None:
+    """The account-derived lane called ``name``, or ``None``."""
+    for lane in load_lanes(store):
         if lane.name == name:
             return lane
     return None
+
+
+def derive_lanes(rows: Iterable[Any]) -> tuple[Lane, ...]:
+    """The lane table from ``llm_account`` rows (td568401 S1c).
+
+    Order is ``(lane_rank, name)`` — the column carries the preference
+    order the seed tuple held by position (:func:`list_accounts` is
+    name-ordered), which :func:`pick_lane` ties and :func:`ladder` keep.
+    ``concurrency`` is the cap, ``plan`` the credential_pool (unread —
+    kept because removing the field churns test constructors),
+    ``task_classes`` the fit set (``*`` = :data:`ANY_CLASS`),
+    ``model_prefix`` the adapter's (:data:`_ADAPTER_MODEL_PREFIX`).
+    Rows on an adapter outside :data:`LAUNCHABLE_ADAPTERS` derive to
+    nothing — an enabled api-adapter account is never a builder lane."""
+    return tuple(
+        Lane(
+            name=a.name,
+            adapter=a.adapter,
+            credential_pool=a.plan,
+            cap=a.concurrency,
+            task_classes=frozenset(a.task_classes),
+            enabled=a.enabled,
+            vendor=a.vendor,
+            models=tuple(a.models),
+            default_model=a.default_model,
+            model_prefix=_ADAPTER_MODEL_PREFIX.get(a.adapter, ""),
+        )
+        for a in sorted(rows, key=lambda a: (a.lane_rank, a.name))
+        if a.adapter in LAUNCHABLE_ADAPTERS
+    )
+
+
+def load_lanes(store: Any) -> tuple[Lane, ...]:
+    """The lane table read from ``llm_account`` at call time.
+
+    The accounts module is imported lazily: ``precis.utils.llm`` is the
+    routing layer and pulling it in at module top would sit the whole
+    router under every caller of this leaf. ``accounts.list_accounts``
+    goes through the module attribute so tests patch the seam instead
+    of needing a DB."""
+    from precis.utils.llm import accounts
+
+    return derive_lanes(accounts.list_accounts(store))
 
 
 def live_lane_counts(store: Any) -> dict[str, int]:
@@ -327,9 +307,10 @@ def pick_lane(
     :meth:`Lane.accepts_model` takes it: a triage-pinned claude id never
     lands on the codex lane, which cannot run it), then the fewest live
     ``run_slice`` jobs carrying that ``meta.lane``, only lanes under their
-    cap; ties keep table order. ``lanes`` defaults to :data:`LANES` read at
-    call time (like :func:`ladder`), so a table swap is seen; ``counts``
-    skips the DB read (tests, or a caller that already has them). Lanes
+    cap; ties keep table order. ``lanes`` defaults to the ``llm_account``
+    table read at call time (like :func:`ladder`), so a row edit is seen;
+    ``counts`` skips the live-count DB read (tests, or a caller that
+    already has them). Lanes
     backed off by a host refusal leave the fit set: ``backoff`` carries
     them explicitly, else they are read with :func:`lane_backoffs` — only
     when ``counts`` is ``None`` (the same DB rule as ``counts``, so a
@@ -342,7 +323,7 @@ def pick_lane(
     second vendor's lane is enabled the rule holds (a full one is waited
     for, not bypassed).
     """
-    table = LANES if lanes is None else lanes
+    table = load_lanes(store) if lanes is None else lanes
     fit = [lane for lane in table if lane.enabled and lane.fits(task_class)]
     if model:
         fit = [lane for lane in fit if lane.accepts_model(model)]
@@ -377,15 +358,24 @@ class Rung:
 
 
 def ladder(
-    task_class: str, *, lanes: tuple[Lane, ...] | None = None
+    task_class: str,
+    *,
+    store: Any = None,
+    lanes: tuple[Lane, ...] | None = None,
 ) -> tuple[Rung, ...]:
     """The cross-lane retry ladder for ``task_class`` (Reto td559457: a
     failed slice climbs before the cap asks): every enabled fit lane in
     table order, each contributing its ``models`` from ``default_model``
     upward, or one model-less rung when it declares none. With today's
-    table that is devin high → devin max → codex → sonnet → opus."""
+    table that is devin high → devin max → codex → sonnet → opus. The
+    table is ``lanes`` or the ``llm_account`` read — one of them is
+    required."""
+    if lanes is None:
+        if store is None:
+            raise TypeError("lanes.ladder: pass store or lanes")
+        lanes = load_lanes(store)
     out: list[Rung] = []
-    for lane in LANES if lanes is None else lanes:
+    for lane in lanes:
         if not lane.enabled or not lane.fits(task_class):
             continue
         if not lane.models:
@@ -421,14 +411,16 @@ __all__ = [
     "ANY_CLASS",
     "FACTORY_DENY_WRITE_PATHS",
     "HOST_REFUSAL_BACKOFF",
-    "LANES",
+    "LAUNCHABLE_ADAPTERS",
     "RUN_SLICE",
     "Lane",
     "Rung",
+    "derive_lanes",
     "get_lane",
     "ladder",
     "lane_backoffs",
     "live_lane_counts",
+    "load_lanes",
     "pick_lane",
     "rung_index",
 ]

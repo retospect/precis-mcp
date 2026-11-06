@@ -110,6 +110,9 @@ class Account:
     promo_expiry: date | None
     pools: tuple[str, ...]
     updated_at: datetime
+    #: Preference order for the derived lane table (0283): the LANES seed
+    #: held it in tuple position; 100 = unrated.
+    lane_rank: int = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,7 +148,7 @@ class Pool:
 _ACCOUNT_COLS = (
     "name, vendor, plan, adapter, profile, api_key_ref, concurrency, "
     "task_classes, models, default_model, enabled, entitlement, privacy, "
-    "promo_expiry, pools, updated_at"
+    "promo_expiry, pools, updated_at, lane_rank"
 )
 
 
@@ -167,6 +170,7 @@ def _account_from_row(row: tuple[Any, ...]) -> Account:
         promo_expiry=row[13],
         pools=tuple(row[14] or ()),
         updated_at=row[15],
+        lane_rank=row[16],
     )
 
 

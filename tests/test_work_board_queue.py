@@ -81,7 +81,7 @@ def test_queued_slice_preview(handler: TodoHandler, store: Store) -> None:
     tree = _quest_tree(handler, store, "Preview")
     assert _rows(store, tree)[tree["leaf"]].preview == ""
     handler.tag(id=tree["root"], add=[f"plan:{tree['root']}"])
-    rung = ladder("code")[0]
+    rung = ladder("code", store=store)[0]
     expected = f"{rung.lane} {rung.model or ''}".strip()
     assert _rows(store, tree)[tree["leaf"]].preview == expected
     assert _rows(store, tree)[tree["root"]].preview == ""

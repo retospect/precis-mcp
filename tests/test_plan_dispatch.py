@@ -18,6 +18,7 @@ from precis.store.types import ChunkInsert, Tag
 from precis.workers._mint import mint_background_job
 from precis.workers.job_types import get_job_type, known_job_types, run_slice
 from precis.workers.job_types import plan_dispatch as pd
+from tests._lane_rows import seed_lane, use_lanes
 
 PAST = {"kind": "not-before", "args": {"ts": "2020-01-01T00:00:00Z"}}
 FUTURE = {"kind": "not-before", "args": {"ts": "2999-01-01T00:00:00Z"}}
@@ -671,9 +672,8 @@ def test_retry_climbs_the_lane_model_ladder(
     op already pins a model keeps it. Pinned to the Claude lane alone so
     the seed table's vendor lanes (codex on since td562568) do not add
     rungs below it — the cross-lane case is the test after this one."""
-    sub = L.get_lane("claude-sub")
-    assert sub is not None
-    monkeypatch.setattr(L, "LANES", (sub,))
+    sub = seed_lane("claude-sub")
+    use_lanes(monkeypatch, sub)
     mint = _one_task_plan(store)
     task = mint.ids["task"]
     res = pd.run_pass(store)
@@ -686,8 +686,7 @@ def test_retry_climbs_the_lane_model_ladder(
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (1, 0)
     retry = _jobs_under(store, task)[-1][1]["params"]
-    lane = L.get_lane("claude-sub")
-    assert lane is not None
+    lane = seed_lane("claude-sub")
     above_default = lane.models[lane.models.index(lane.default_model or "") + 1]
     assert retry["model"] == above_default
     assert retry["lane"] == "claude-sub"
@@ -729,10 +728,9 @@ def test_retry_climbs_across_lanes(
         task_classes=frozenset({"code"}),
         vendor="openai",
     )
-    sub = L.get_lane("claude-sub")
-    assert sub is not None
-    monkeypatch.setattr(L, "LANES", (free, bare, sub))
-    assert [(r.lane, r.model) for r in L.ladder("code")] == [
+    sub = seed_lane("claude-sub")
+    use_lanes(monkeypatch, free, bare, sub)
+    assert [(r.lane, r.model) for r in L.ladder("code", store=store)] == [
         ("free", "f-high"),
         ("free", "f-max"),
         ("bare", None),
@@ -911,10 +909,9 @@ def test_escalate_skips_a_lane_in_backoff(
         task_classes=frozenset({"code"}),
         vendor="openai",
     )
-    sub = L.get_lane("claude-sub")
-    assert sub is not None
-    monkeypatch.setattr(L, "LANES", (low, mid, sub))
-    assert [(r.lane, r.model) for r in L.ladder("code")] == [
+    sub = seed_lane("claude-sub")
+    use_lanes(monkeypatch, low, mid, sub)
+    assert [(r.lane, r.model) for r in L.ladder("code", store=store)] == [
         ("low", None),
         ("mid", None),
         ("claude-sub", "claude-sonnet-5"),
@@ -989,9 +986,8 @@ def test_escalate_never_drops_below_the_last_attempt(
         task_classes=frozenset({"code"}),
         vendor="openai",
     )
-    sub = L.get_lane("claude-sub")
-    assert sub is not None
-    monkeypatch.setattr(L, "LANES", (low, mid, sub))
+    sub = seed_lane("claude-sub")
+    use_lanes(monkeypatch, low, mid, sub)
     until = (datetime.now(UTC) + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # The last real attempt ran on mid, which is now backed off: the
@@ -1852,9 +1848,8 @@ def _pin_codex_and_sub(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the table to the seed's codex and claude-sub lanes, the two
     vendors the review-vendor tests below were written against (the seed
     table also carries devin since td562568, which would take every review)."""
-    codex, sub = L.get_lane("codex"), L.get_lane("claude-sub")
-    assert codex is not None and sub is not None
-    monkeypatch.setattr(L, "LANES", (codex, sub))
+    codex, sub = seed_lane("codex"), seed_lane("claude-sub")
+    use_lanes(monkeypatch, codex, sub)
 
 
 def test_review_excludes_every_build_vendor_then_the_original_builder(
@@ -1873,7 +1868,10 @@ def test_review_excludes_every_build_vendor_then_the_original_builder(
     _mark_done(store, build)
     plan = pd._load(store)
     node = plan.nodes[review]
-    assert pd._builder_vendors(plan, node) == ("openai", "anthropic")
+    assert pd._builder_vendors(plan, node, pd._lanes.load_lanes(store)) == (
+        "openai",
+        "anthropic",
+    )
     res = pd.run_pass(store)
     assert res.dispatched == 1
     ((_job_id, meta),) = _jobs_under(store, review)
@@ -1896,7 +1894,9 @@ def test_review_counts_only_jobs_that_left_commits(
     _todo_comment(store, build, "landed: abc1234 — the fix")
     _mark_done(store, build)
     plan = pd._load(store)
-    assert pd._builder_vendors(plan, plan.nodes[review]) == ("openai",)
+    assert pd._builder_vendors(
+        plan, plan.nodes[review], pd._lanes.load_lanes(store)
+    ) == ("openai",)
     res = pd.run_pass(store)
     assert res.dispatched == 1
     ((_job_id, meta),) = _jobs_under(store, review)
@@ -1908,7 +1908,7 @@ def test_review_shares_a_vendor_only_when_nothing_else_is_enabled(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sub = L.Lane("claude-sub", "claude_p", "s", 2, frozenset({"*"}), vendor="anthropic")
-    monkeypatch.setattr(L, "LANES", (sub,))
+    use_lanes(monkeypatch, sub)
     mint = _review_plan(store)
     build, review = mint.ids["build"], mint.ids["review"]
     _job(store, build, lane="claude-sub")

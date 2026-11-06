@@ -52,7 +52,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from precis.plans.lanes import ladder
+from precis.plans.lanes import ladder, load_lanes
 from precis.plans.nodes import node_kind
 from precis.response import Response
 from precis.todo import blocker_terminal_sql, views, work_gripes
@@ -67,6 +67,7 @@ from precis.workers.job_describe import (
 )
 
 if TYPE_CHECKING:
+    from precis.plans.lanes import Lane
     from precis.store import Ref, Store
 
 #: Rows shown per served root before the view points at ``view='tree'``.
@@ -379,6 +380,7 @@ def _row(
     lanes: dict[int, str] | None = None,
     blockers: dict[int, tuple[int, ...]] | None = None,
     preview_leaf: bool = False,
+    lane_table: tuple[Lane, ...] = (),
 ) -> WorkRow:
     rid = int(node["id"])
     tags = tags_by_ref.get(rid, [])
@@ -407,7 +409,7 @@ def _row(
         and not jobs[0]
         and plan in ("", "task")
     ):
-        rungs = ladder(meta.get("task_class") or "code")
+        rungs = ladder(meta.get("task_class") or "code", lanes=lane_table)
         if rungs:
             preview = f"{rungs[0].lane} {rungs[0].model or ''}".strip()
     return WorkRow(
@@ -758,6 +760,7 @@ def _render_root(
     blockers = _open_blockers(store, ids)
     job_fields = _job_fields(store, [r["id"] for r in rows if r["kind"] == "job"])
     planned = any(t.startswith("plan:") for tags in tags_by_ref.values() for t in tags)
+    lane_table = load_lanes(store) if planned else ()
     lanes = _newest_job_lanes(store, [r["id"] for r in rows if r["kind"] == "job"])
     sentences = _job_sentences(
         store,
@@ -829,6 +832,7 @@ def _render_root(
                         lanes=lanes,
                         blockers=blockers,
                         preview_leaf=planned and not by_parent.get(node["id"]),
+                        lane_table=lane_table,
                     )
                 )
         for c in by_parent.get(node["id"], []):

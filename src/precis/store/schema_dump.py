@@ -131,7 +131,8 @@ SEED_TABLES: tuple[str, ...] = (
     # tag display-rank registry (0256): standalone.
     "tag_axes",
     # LLM account/pool ledger (0280): standalone — the five seed accounts
-    # a fresh install needs to mirror src/precis/plans/lanes.py::LANES.
+    # a fresh install needs for the derived lane table
+    # (precis/plans/lanes.py::load_lanes).
     "llm_account",
 )
 

@@ -420,8 +420,8 @@ def deny_violations(paths: list[str], deny_paths: tuple[str, ...]) -> list[str]:
 
 
 def _lane_deny_paths(lane_name: Any) -> tuple[str, ...]:
-    lane = _lanes.get_lane(str(lane_name)) if lane_name else None
-    return lane.deny_write_paths if lane else _lanes.FACTORY_DENY_WRITE_PATHS
+    del lane_name  # the derived table denies the factory paths everywhere
+    return _lanes.FACTORY_DENY_WRITE_PATHS
 
 
 # ── Seams (tests monkeypatch these) ────────────────────────────────
@@ -925,6 +925,7 @@ def render_brief(
     role: str | None = None,
     mcp: bool = True,
     deny_paths: tuple[str, ...] = _lanes.FACTORY_DENY_WRITE_PATHS,
+    lane_models: tuple[str, ...] = (),
     target: str | None = None,
 ) -> str:
     """The prompt a slice session starts from. Ends with the commit-and-
@@ -979,10 +980,7 @@ def render_brief(
         if close is not None:
             lines += close(todo_id, mcp)
         else:
-            lane_obj = _lanes.get_lane(lane)
-            lines += _generator_close(
-                todo_id, lane_obj.models if lane_obj is not None else ()
-            )
+            lines += _generator_close(todo_id, lane_models)
         return "\n".join(lines) + "\n"
     n = len(_LAND_LINT_STEPS)
     lines += [
@@ -1091,9 +1089,10 @@ def validate_submit(
     if reason is not None:
         return reason
     lane_name = params.get("lane")
-    if lane_name is not None:
-        lane = _lanes.get_lane(str(lane_name))
-        known = [ln.name for ln in _lanes.LANES if ln.enabled]
+    if lane_name is not None and store is not None:
+        lane_table = _lanes.load_lanes(store)
+        lane = next((ln for ln in lane_table if ln.name == str(lane_name)), None)
+        known = [ln.name for ln in lane_table if ln.enabled]
         if lane is None:
             return f"run_slice: unknown lane {lane_name!r}; enabled lanes: {known}"
         if not lane.enabled:
@@ -1518,7 +1517,12 @@ def submit(ctx: Any, spec: Any) -> Any:
     # A relaunch after a lane's quota/rate window (gr565359) skips that
     # vendor outright; the table shrinks, it does not fall back.
     exclude = str((ctx.meta or {}).get("exclude_vendor") or "")
-    pinned = _lanes.get_lane(str(params["lane"])) if params.get("lane") else None
+    lane_table = _lanes.load_lanes(store)
+    pinned = (
+        next((ln for ln in lane_table if ln.name == str(params["lane"])), None)
+        if params.get("lane")
+        else None
+    )
     left_pin = pinned is not None and bool(exclude) and pinned.vendor == exclude
     if left_pin:
         # The ladder's pin (plan_dispatch._escalate) on the vendor whose
@@ -1530,7 +1534,7 @@ def submit(ctx: Any, spec: Any) -> Any:
             "whose window closed; picking another vendor's lane",
         )
     if params.get("lane") and not left_pin:
-        lane = _lanes.get_lane(str(params["lane"]))
+        lane = pinned
         if lane is None or not lane.enabled:
             ctx.record_failure(
                 f"run_slice: lane {params['lane']!r} unknown or disabled"
@@ -1569,7 +1573,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         # codex CLI rejects.
         pin = None if left_pin else params.get("model")
         model_pin = pin.strip() if isinstance(pin, str) and pin.strip() else None
-        table = tuple(ln for ln in _lanes.LANES if not exclude or ln.vendor != exclude)
+        table = tuple(ln for ln in lane_table if not exclude or ln.vendor != exclude)
         backoffs = _lanes.lane_backoffs(store)
         lane = _lanes.pick_lane(
             store, task_class, lanes=table, model=model_pin, backoff=backoffs
@@ -1577,7 +1581,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         if lane is None:
             if model_pin and not any(
                 ln.enabled and ln.fits(task_class) and ln.accepts_model(model_pin)
-                for ln in _lanes.LANES
+                for ln in lane_table
             ):
                 # A config error, not capacity: parking would wait forever.
                 ctx.record_failure(
@@ -1594,7 +1598,7 @@ def submit(ctx: Any, spec: Any) -> Any:
                 and (model_pin is None or ln.accepts_model(model_pin))
             ]
             backed = sorted(set(fit_names) & set(backoffs))
-            why = "every fit lane at its cap"
+            why = "no enabled lane" if not fit_names else "every fit lane at its cap"
             if backed:
                 why = f"lanes {', '.join(backed)} backed off after a host refusal"
                 if len(backed) < len(fit_names):
@@ -1648,6 +1652,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         role=_generate_role(todo.meta),
         mcp=adapter.mcp,
         deny_paths=lane.deny_write_paths,
+        lane_models=lane.models,
         target=_review_target(store, todo.meta),
     )
     grant: dict[str, Any] | None = None
@@ -1973,7 +1978,11 @@ def _lane_outage(
 
 
 def _outage_alternative(
-    store: Any, todo_id: int, params: dict[str, Any], vendor: str
+    store: Any,
+    todo_id: int,
+    params: dict[str, Any],
+    vendor: str,
+    lanes: tuple[_lanes.Lane, ...],
 ) -> bool:
     """Whether another vendor's enabled lane fits this slice right now, so
     the relaunch need not wait for the window: never for a lane the todo
@@ -1988,7 +1997,7 @@ def _outage_alternative(
     if node_kind(todo.meta) == "generator":
         return False
     task_class = str((todo.meta or {}).get("task_class") or _DEFAULT_TASK_CLASS)
-    others = tuple(ln for ln in _lanes.LANES if ln.vendor != vendor)
+    others = tuple(ln for ln in lanes if ln.vendor != vendor)
     return _lanes.pick_lane(store, task_class, lanes=others) is not None
 
 
@@ -2008,7 +2017,8 @@ def _park_outage(
     land_slice's deferral does; :func:`_relaunch_when_due` resubmits.
     Always ``False``."""
     now = datetime.now(UTC)
-    lane_obj = _lanes.get_lane(str(lane)) if lane else None
+    lane_table = _lanes.load_lanes(ctx.store)
+    lane_obj = next((ln for ln in lane_table if ln.name == str(lane)), None)
     vendor = lane_obj.vendor if lane_obj is not None else ""
     params = (ctx.meta or {}).get("params") or {}
     unclaim_todo(ctx.store, todo_id, str(lane) if lane else None)
@@ -2016,7 +2026,7 @@ def _park_outage(
     for key in ("pid", "pgid", "boot_id", "start_time", "ps_identity"):
         handle.pop(key, None)
     Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
-    switch = _outage_alternative(ctx.store, todo_id, params, vendor)
+    switch = _outage_alternative(ctx.store, todo_id, params, vendor, lane_table)
     if switch:
         due = now
         where = f"another vendor's lane (not {vendor})"
@@ -2099,7 +2109,7 @@ def poll(ctx: Any, handle: Any) -> bool:
     adapter_name = (ctx.meta or {}).get("adapter")
     if not adapter_name:
         # Jobs submitted before adapters existed carry only the lane name.
-        lane_obj = _lanes.get_lane(str(lane)) if lane else None
+        lane_obj = _lanes.get_lane(str(lane), ctx.store) if lane else None
         adapter_name = lane_obj.adapter if lane_obj else "claude_p"
     try:
         adapter = get_adapter(str(adapter_name))

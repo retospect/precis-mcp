@@ -27,11 +27,12 @@ pytestmark = pytest.mark.skipif(
 )
 
 from precis.plans import lanes
-from precis.plans.lanes import ANY_CLASS, Lane, pick_lane
+from precis.plans.lanes import ANY_CLASS, Lane, ladder, pick_lane
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers.job_types import get_job_type, known_job_types, run_slice
 from precis.workers.job_types import plan_dispatch as pd
 from precis.workers.job_types._slice_adapters import get_adapter
+from tests._lane_rows import SEED_LANES, seed_lane, use_lanes
 
 # ── fakes ──────────────────────────────────────────────────────────
 
@@ -270,11 +271,9 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     monkeypatch.setattr(run_slice, "_devin_seed_trust", fake_seed_trust, raising=False)
     # The seams exercise the claude_p launch path: pin the table to the
     # Claude lane so an unpinned pick lands there (the seed table's codex
-    # lane is table-first since td562568). Vendor-lane tests set LANES
-    # themselves.
-    sub = lanes.get_lane("claude-sub")
-    assert sub is not None
-    monkeypatch.setattr(lanes, "LANES", (sub,))
+    # lane is table-first since td562568). Vendor-lane tests stand their
+    # own table.
+    use_lanes(monkeypatch, seed_lane("claude-sub"))
     monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
     monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(tmp_path / "ops"))
     monkeypatch.setenv("PRECIS_RUN_SLICE_MODEL", "claude-test-model")
@@ -297,11 +296,11 @@ def _lane(name: str, cap: int, classes: set[str], enabled: bool = True) -> Lane:
 
 def test_seed_table_enabled_lanes() -> None:
     """td562568: devin and codex are on (free vendor lanes, table-first);
-    kimi and metered stay declared."""
-    enabled = [ln.name for ln in lanes.LANES if ln.enabled]
+    kimi and metered stay seeded accounts — an unlaunchable adapter
+    derives no lane."""
+    enabled = [ln.name for ln in SEED_LANES if ln.enabled]
     assert enabled == ["devin", "codex", "claude-sub"]
-    devin = lanes.get_lane("devin")
-    assert devin is not None
+    devin = seed_lane("devin")
     assert (devin.adapter, devin.cap, devin.default_model) == (
         "devin_tree",
         3,
@@ -309,44 +308,34 @@ def test_seed_table_enabled_lanes() -> None:
     )
     # Only the free SWE-2 tiers: no paid "-lightning" id is ever a rung.
     assert all(m.startswith("swe-2-") and "lightning" not in m for m in devin.models)
-    assert [(r.lane, r.model) for r in lanes.ladder("code")] == [
+    assert [(r.lane, r.model) for r in ladder("code", lanes=SEED_LANES)] == [
         ("devin", "swe-2-high"),
         ("devin", "swe-2-max"),
         ("codex", None),
         ("claude-sub", "claude-sonnet-5"),
         ("claude-sub", "claude-opus-4-8"),
     ]
-    sub = lanes.get_lane("claude-sub")
-    assert sub is not None
+    sub = seed_lane("claude-sub")
     assert (sub.adapter, sub.credential_pool, sub.cap) == (
         "claude_p",
         "subscription",
         2,
     )
-    metered = lanes.get_lane("metered")
-    assert metered is not None and metered.adapter == "api" and metered.cap == 1
-    assert {ln.name for ln in lanes.LANES} == {
-        "claude-sub",
-        "codex",
-        "kimi",
-        "devin",
-        "metered",
-    }
+    assert {ln.name for ln in SEED_LANES} == {"claude-sub", "codex", "devin"}
 
 
 def test_claude_sub_accepts_models_and_defaults_to_sonnet() -> None:
     """gr549046: the lane carries the model ids its adapter accepts
     (cheapest first) and the id an unpinned slice gets — the cheapest that
     can still write code, not the frontier pin."""
-    sub = lanes.get_lane("claude-sub")
-    assert sub is not None
+    sub = seed_lane("claude-sub")
     assert sub.models == (
         "claude-haiku-4-5-20251001",
         "claude-sonnet-5",
         "claude-opus-4-8",
     )
     assert sub.default_model == "claude-sonnet-5"
-    for lane in lanes.LANES:
+    for lane in SEED_LANES:
         assert lane.default_model is None or lane.default_model in lane.models
 
 
@@ -355,8 +344,7 @@ def test_resolve_model_order(
 ) -> None:
     """params.model > PRECIS_RUN_SLICE_MODEL > the lane's default_model >
     the router's frontier pin (gr549046)."""
-    lane = lanes.get_lane("claude-sub")
-    assert lane is not None
+    lane = seed_lane("claude-sub")
     assert run_slice.resolve_model({"model": " claude-pinned "}, lane) == (
         "claude-pinned"
     )
@@ -425,10 +413,9 @@ def test_pick_lane_honours_a_pinned_model() -> None:
     assert pick_lane(None, "code", lanes=table, counts={}, model="gpt-5-codex") is None
     assert not codex.accepts_model("gpt-5-codex")
     # The seed table: codex accepts no pin, devin only its free list.
-    seed_codex = lanes.get_lane("codex")
-    seed_devin = lanes.get_lane("devin")
-    seed_sub = lanes.get_lane("claude-sub")
-    assert seed_codex is not None and seed_devin is not None and seed_sub is not None
+    seed_codex = seed_lane("codex")
+    seed_devin = seed_lane("devin")
+    seed_sub = seed_lane("claude-sub")
     assert not seed_codex.accepts_model("claude-sonnet-5-5")
     assert seed_devin.accepts_model("swe-2-high")
     assert not seed_devin.accepts_model("swe-2-high-lightning")
@@ -436,11 +423,14 @@ def test_pick_lane_honours_a_pinned_model() -> None:
     assert seed_sub.accepts_model("claude-opus-4-8")
 
 
-def test_pick_lane_skips_a_backed_off_lane() -> None:
+def test_pick_lane_skips_a_backed_off_lane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """gr571395: a lane whose newest ``run_slice`` job refused the launch
     for a host reason leaves the fit set until the stamped window ends —
     the pick lands on the next lane rather than probing a dead host for
     every task."""
+    use_lanes(monkeypatch)
     future = datetime.now(UTC) + timedelta(minutes=30)
     picked = pick_lane(None, "code", counts={}, backoff={"devin": future})
     assert picked is not None and picked.name == "codex"
@@ -453,6 +443,7 @@ def test_pick_lane_skips_a_backed_off_lane() -> None:
 def test_pick_lane_reads_live_counts(monkeypatch: pytest.MonkeyPatch) -> None:
     """The seed table: devin (cap 3), codex (cap 1) and claude-sub (cap 2)
     fit ``code``."""
+    use_lanes(monkeypatch)
     monkeypatch.setattr(lanes, "lane_backoffs", lambda store: {})
     monkeypatch.setattr(
         lanes,
@@ -508,6 +499,9 @@ def test_validate_submit_refuses_when_factory_off(
 
 def test_validate_submit_refusals(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
+    off = Lane("off", "claude_p", "sub", 1, frozenset({ANY_CLASS}), enabled=False)
+    kimi = Lane("kimi", "api", "api", 1, frozenset({"code"}))
+    use_lanes(monkeypatch, *SEED_LANES, off, kimi)
     store = _Store()
     store.add_todo(7, "open one")
     store.add_todo(8, "closed one", status="done")
@@ -523,7 +517,11 @@ def test_validate_submit_refusals(monkeypatch: pytest.MonkeyPatch) -> None:
     assert bad is not None and "positive integer" in bad
     unknown = run_slice.validate_submit(store, params={"todo_id": 7, "lane": "nope"})
     assert unknown is not None and "unknown lane" in unknown
-    disabled = run_slice.validate_submit(store, params={"todo_id": 7, "lane": "kimi"})
+    # An enabled account on an unlaunchable adapter (kimi: api) derives
+    # to no lane, so a pin on it reads unknown, not disabled.
+    api = run_slice.validate_submit(store, params={"todo_id": 7, "lane": "kimi"})
+    assert api is not None and "unknown lane" in api
+    disabled = run_slice.validate_submit(store, params={"todo_id": 7, "lane": "off"})
     assert disabled is not None and "disabled" in disabled
 
 
@@ -680,8 +678,7 @@ def test_generator_close_pins_child_model_in_meta() -> None:
     """gr549046: with the lane's accepted ids given, the close tells the
     generator to pin each run_slice child's model and effort in
     ``meta.op.params`` — prose on the child never reaches dispatch."""
-    lane = lanes.get_lane("claude-sub")
-    assert lane is not None
+    lane = seed_lane("claude-sub")
     text = "\n".join(run_slice._generator_close(5, lane.models))
     assert "'op': {'type': 'run_slice'" in text
     assert "'model': '<id>'" in text
@@ -1144,7 +1141,10 @@ def test_submit_refuses_a_generator_on_a_lane_without_mcp(
     # The seams fixture pinned the table to claude-sub; stand the seed
     # table's codex lane (codex_exec adapter, no MCP) in its place.
     codex = Lane("codex", "codex_exec", "codex", 1, frozenset({"code"}))
-    monkeypatch.setattr(lanes, "LANES", (codex,))
+    use_lanes(
+        monkeypatch,
+        codex,
+    )
     store = _Store()
     store.add_todo(
         42, "Triage gr1", meta={"generate": {"role": "triage", "from": "gr1"}}
@@ -1165,7 +1165,10 @@ def test_submit_runs_a_reviewer_on_a_lane_without_mcp(
     verdict rides the final message (``handoff: review: …``, which
     plan_dispatch reads) and the reviewed land is inlined in its brief."""
     codex = Lane("codex", "codex_exec", "codex", 1, frozenset({"code", "review"}))
-    monkeypatch.setattr(lanes, "LANES", (codex,))
+    use_lanes(
+        monkeypatch,
+        codex,
+    )
     store = _Store()
     store.add_todo(
         7,
@@ -1223,9 +1226,8 @@ def test_submit_routes_a_pinned_claude_model_off_the_codex_lane(
     lands on the Claude lane although codex is table-first and free; with
     no lane that runs the id the submit fails closed before the claim."""
     codex = Lane("codex", "codex_exec", "codex", 1, frozenset({"code"}))
-    sub = lanes.get_lane("claude-sub")
-    assert sub is not None
-    monkeypatch.setattr(lanes, "LANES", (codex, sub))
+    sub = seed_lane("claude-sub")
+    use_lanes(monkeypatch, codex, sub)
     store = _Store()
     store.add_todo(42, "Build the fix for gr1")
     ctx, handle = _submit(store, seams, model="claude-sonnet-5-5")
@@ -1233,7 +1235,10 @@ def test_submit_routes_a_pinned_claude_model_off_the_codex_lane(
     assert ctx.meta_set["lane"] == "claude-sub"
     assert ctx.meta_set["model"] == "claude-sonnet-5-5"
 
-    monkeypatch.setattr(lanes, "LANES", (codex,))
+    use_lanes(
+        monkeypatch,
+        codex,
+    )
     store2 = _Store()
     store2.add_todo(42, "Build the fix for gr1")
     ctx2, handle2 = _submit(store2, seams, model="claude-sonnet-5-5")
@@ -1813,7 +1818,7 @@ def test_poll_quota_window_parks_without_an_attempt_and_switches_vendor(
     ctx, handle = _submit(store, seams)
     assert ctx.meta_set["lane"] == "claude-sub"
     codex, sub = _codex_and_sub()
-    monkeypatch.setattr(lanes, "LANES", (codex, sub))
+    use_lanes(monkeypatch, codex, sub)
     _finish(handle, 1, json.dumps(_QUOTA_RESULT) + "\n")
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is False
@@ -1874,7 +1879,7 @@ def test_poll_quota_window_leaves_a_ladder_pin_for_another_vendor(
     codex was free. A ladder pin is the dispatcher's: the park leaves it and
     the relaunch picks another vendor's lane, the rung's model dropped."""
     codex, sub = _codex_and_sub()
-    monkeypatch.setattr(lanes, "LANES", (codex, sub))
+    use_lanes(monkeypatch, codex, sub)
     store = _Store()
     store.add_todo(42, "t")
     ctx, handle = _submit(store, seams, lane="claude-sub", model="claude-test-model")
@@ -1903,7 +1908,7 @@ def test_poll_quota_window_honours_the_todo_s_own_lane_pin(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     codex, sub = _codex_and_sub()
-    monkeypatch.setattr(lanes, "LANES", (codex, sub))
+    use_lanes(monkeypatch, codex, sub)
     store = _Store()
     store.add_todo(
         42, "t", meta={"op": {"type": "run_slice", "params": {"lane": "claude-sub"}}}
@@ -1952,13 +1957,16 @@ def test_submit_skips_the_excluded_vendor(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     codex, sub = _codex_and_sub()
-    monkeypatch.setattr(lanes, "LANES", (codex, sub))
+    use_lanes(monkeypatch, codex, sub)
     store = _Store()
     store.add_todo(42, "t")
     ctx = _Ctx(store, {"todo_id": 42}, exclude_vendor="openai")
     handle = run_slice.submit(ctx, None)
     assert handle is not None and ctx.meta_set["lane"] == "claude-sub"
-    monkeypatch.setattr(lanes, "LANES", (sub,))
+    use_lanes(
+        monkeypatch,
+        sub,
+    )
     store.add_todo(43, "t")
     ctx = _Ctx(store, {"todo_id": 43}, exclude_vendor="anthropic")
     assert run_slice.submit(ctx, None) is None
@@ -2315,7 +2323,7 @@ def test_deny_violations_globs() -> None:
 
 
 def test_every_seed_lane_carries_the_factory_deny_paths() -> None:
-    for lane in lanes.LANES:
+    for lane in SEED_LANES:
         assert lane.deny_write_paths == lanes.FACTORY_DENY_WRITE_PATHS
     for path in (
         "scripts/ship",
@@ -2430,7 +2438,10 @@ def test_submit_codex_argv_and_model(
         models=("codex-test",) if model_source == "lane" else (),
         default_model="codex-test" if model_source == "lane" else None,
     )
-    monkeypatch.setattr(lanes, "LANES", (lane,))
+    use_lanes(
+        monkeypatch,
+        lane,
+    )
     params: dict[str, Any] = {"lane": "codex"}
     if model_source == "params":
         params["model"] = "codex-test"
@@ -2484,7 +2495,10 @@ def test_codex_add_dir_docker_fallback_and_skip(
     home = tmp_path / "home"
     (home / ".colima").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setattr(lanes, "LANES", (_vendor_lane("codex", "codex_exec"),))
+    use_lanes(
+        monkeypatch,
+        _vendor_lane("codex", "codex_exec"),
+    )
     store = _Store()
     store.add_todo(42, "Build")
     ctx, handle = _submit(store, seams, lane="codex")
@@ -2543,7 +2557,10 @@ def test_submit_devin_model_guard(
     monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
     monkeypatch.setenv("PRECIS_DEVIN_BIN", "/vendor/devin")
     lane = _vendor_lane("devin", "devin_tree", models=("swe-2-high",))
-    monkeypatch.setattr(lanes, "LANES", (lane,))
+    use_lanes(
+        monkeypatch,
+        lane,
+    )
     store = _Store()
     store.add_todo(42, "Build")
     params: dict[str, Any] = {"lane": "devin"}
@@ -2600,7 +2617,10 @@ def _devin_lane_submit(
     monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL", raising=False)
     monkeypatch.setenv("PRECIS_DEVIN_BIN", "/vendor/devin")
     lane = _vendor_lane("devin", "devin_tree", models=("swe-2-high",))
-    monkeypatch.setattr(lanes, "LANES", (lane,))
+    use_lanes(
+        monkeypatch,
+        lane,
+    )
     return _submit(store, seams, lane="devin", **params)
 
 
@@ -2763,7 +2783,10 @@ def test_pinned_lane_in_backoff_parks_until_the_window_ends(
     store.add_todo(42, "Build")
     monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
     monkeypatch.setenv("PRECIS_DEVIN_BIN", "/vendor/devin")
-    monkeypatch.setattr(lanes, "LANES", (_vendor_lane("devin", "devin_tree"),))
+    use_lanes(
+        monkeypatch,
+        _vendor_lane("devin", "devin_tree"),
+    )
     ctx = _Ctx(store, {"todo_id": 42, "lane": "devin"})
     deferred: list[tuple[Any, str]] = []
 
@@ -2798,6 +2821,30 @@ def test_empty_pick_names_the_backed_off_lanes(
     assert run_slice.submit(ctx, None) is None
     assert deferred and "claude-sub" in deferred[0][1]
     assert "backed off" in deferred[0][1]
+    assert ctx.failure is None and seams["launch"] == []
+
+
+def test_empty_lane_table_parks_as_no_enabled_lane(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An account table that derives no lanes parks the pick 'no enabled
+    lane' — 'every fit lane at its cap' would mislead."""
+    from precis.utils.llm import accounts
+
+    monkeypatch.setattr(accounts, "list_accounts", lambda store: [])
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _Ctx(store, {"todo_id": 42})
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake: Any, note: str) -> bool:
+        deferred.append((wake, note))
+        return True
+
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    assert deferred and "no enabled lane" in deferred[0][1]
     assert ctx.failure is None and seams["launch"] == []
 
 
@@ -2892,7 +2939,10 @@ def test_non_mcp_submit_never_uses_credentials_or_preflight(
     from precis.utils import claude_oauth
 
     monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
-    monkeypatch.setattr(lanes, "LANES", (_vendor_lane(name, adapter),))
+    use_lanes(
+        monkeypatch,
+        _vendor_lane(name, adapter),
+    )
     for key in ("PRECIS_MCP_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
         if inherited_tokens:
             monkeypatch.setenv(key, "must-not-reach-vendor")
@@ -2934,16 +2984,20 @@ def test_submit_unknown_adapter_fails_without_claiming(
     seams: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A lane-table error is not the slice's: the todo is never claimed,
-    so no attempt is burned on it."""
-    monkeypatch.setattr(lanes, "LANES", (_vendor_lane("mystery", "unknown-adapter"),))
+    """An account on an adapter the builder cannot launch never enters
+    the lane table: a pin on it fails as unknown, without claiming the
+    todo or burning an attempt."""
+    use_lanes(
+        monkeypatch,
+        _vendor_lane("mystery", "unknown-adapter"),
+    )
     store = _Store()
     store.add_todo(42, "Build")
     before = store.tag_strings(42)
     ctx, handle = _submit(store, seams, lane="mystery")
     assert handle is None and ctx.status == "failed"
     assert ctx.failure is not None
-    assert "mystery" in ctx.failure and "unknown-adapter" in ctx.failure
+    assert "mystery" in ctx.failure and "unknown or disabled" in ctx.failure
     assert seams["launch"] == []
     assert store.tag_strings(42) == before
     assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
@@ -2955,7 +3009,10 @@ def test_submit_codex_clears_previous_last_message(
     tmp_path: Path,
 ) -> None:
     monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
-    monkeypatch.setattr(lanes, "LANES", (_vendor_lane("codex", "codex_exec"),))
+    use_lanes(
+        monkeypatch,
+        _vendor_lane("codex", "codex_exec"),
+    )
     message = (
         tmp_path
         / ".claude"
@@ -3033,15 +3090,23 @@ def test_poll_uses_persisted_adapter(
     lane_change: str,
 ) -> None:
     monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
-    monkeypatch.setattr(lanes, "LANES", (_vendor_lane("codex", "codex_exec"),))
+    use_lanes(
+        monkeypatch,
+        _vendor_lane("codex", "codex_exec"),
+    )
     store = _Store()
     store.add_todo(42, "Build")
     ctx, handle = _submit(store, seams, lane="codex")
     assert handle is not None
     if lane_change == "removed":
-        monkeypatch.setattr(lanes, "LANES", ())
+        from precis.utils.llm import accounts
+
+        monkeypatch.setattr(accounts, "list_accounts", lambda store: [])
     elif lane_change == "changed":
-        monkeypatch.setattr(lanes, "LANES", (_vendor_lane("codex", "claude_p"),))
+        use_lanes(
+            monkeypatch,
+            _vendor_lane("codex", "claude_p"),
+        )
     seams["ahead"] = "abc1234 feat(x): build\n"
     _finish(
         handle,
@@ -3062,7 +3127,10 @@ def test_poll_devin_legacy_lane_fallback_and_exit_failure(
     exit_code: int,
 ) -> None:
     monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
-    monkeypatch.setattr(lanes, "LANES", (_vendor_lane("devin", "devin_tree"),))
+    use_lanes(
+        monkeypatch,
+        _vendor_lane("devin", "devin_tree"),
+    )
     store = _Store()
     store.add_todo(42, "Build")
     ctx, handle = _submit(store, seams, lane="devin")

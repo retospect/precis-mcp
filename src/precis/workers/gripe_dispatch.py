@@ -120,9 +120,11 @@ class DispatchPick:
     prio: int | None
 
 
-def lane_capacity(lanes: tuple[_lanes.Lane, ...] | None = None) -> int:
+def lane_capacity(
+    store: Store | None, lanes: tuple[_lanes.Lane, ...] | None = None
+) -> int:
     """Summed cap of the enabled lanes that fit the build's task class."""
-    table = _lanes.LANES if lanes is None else lanes
+    table = _lanes.load_lanes(store) if lanes is None else lanes
     return sum(ln.cap for ln in table if ln.enabled and ln.fits(_BUILD_TASK_CLASS))
 
 
@@ -195,7 +197,7 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     if not gripe_dispatch_enabled(store, host=host):
         log.info("gripe_dispatch: dark — no live service_config row; no-op")
         return BatchResult(handler=SERVICE_NAME, claimed=0, ok=0, failed=0)
-    capacity = lane_capacity()
+    capacity = lane_capacity(store)
     open_chains = open_chain_count(store)
     slots = min(_MAX_PER_TICK, max(capacity - open_chains, 0))
     picks = candidates(store, slots)

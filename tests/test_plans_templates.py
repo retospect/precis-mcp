@@ -225,8 +225,8 @@ def test_mcp_bound_nodes_never_fit_the_codex_lane(
     fix by their step; the builds stay ``code``. td564019 cut 1: a review
     and a validate deliver one verdict in the final message and need no
     MCP, so codex fits those two classes as well."""
-    codex = lanes.get_lane("codex")
-    sub = lanes.get_lane("claude-sub")
+    codex = lanes.get_lane("codex", store)
+    sub = lanes.get_lane("claude-sub", store)
     assert codex is not None and sub is not None
     gripe = _gripe(handler)
     mints = {

@@ -704,7 +704,9 @@ def _review_targets(plan: _Plan, n: _Node) -> list[_Node]:
     return kids or [target]
 
 
-def _builder_vendors(plan: _Plan, n: _Node) -> tuple[str, ...]:
+def _builder_vendors(
+    plan: _Plan, n: _Node, lanes: tuple[_lanes.Lane, ...]
+) -> tuple[str, ...]:
     """The vendors whose lanes ran a build job on the reviewed nodes, oldest
     job first (so ``[0]`` is the original builder's), each once.
 
@@ -726,7 +728,7 @@ def _builder_vendors(plan: _Plan, n: _Node) -> tuple[str, ...]:
             lane_name = j.meta.get("lane")
             if not lane_name:
                 continue
-            lane = _lanes.get_lane(str(lane_name))
+            lane = next((ln for ln in lanes if ln.name == lane_name), None)
             if lane is None or not lane.vendor:
                 continue
             laned.append((j.id, lane.vendor, bool(j.meta.get("branch_commits"))))
@@ -1434,7 +1436,7 @@ def _escalate(
     if attempts <= 0:
         return True, None
     task_class = str(n.meta.get("task_class") or _DEFAULT_TASK_CLASS)
-    rungs = _lanes.ladder(task_class)
+    rungs = _lanes.ladder(task_class, store=w.store)
     pinned_lane = str(params["lane"]) if params.get("lane") else None
     if pinned_lane:
         rungs = tuple(r for r in rungs if r.lane == pinned_lane)
@@ -1544,14 +1546,15 @@ def _review_lane(
     Codex-built fixes get a Claude review (Reto's yes to 27b357ee5, via
     BUILDER 2026-11-05)."""
     cls = _templates.REVIEW_TASK_CLASS
-    vendors = _builder_vendors(plan, n)
+    lane_table = _lanes.load_lanes(w.store)
+    vendors = _builder_vendors(plan, n, lane_table)
     steps: list[tuple[frozenset[str], str]] = [
         (frozenset(vendors), "every build vendor"),
         (frozenset(vendors[:1]), "the original builder's vendor"),
         (frozenset(), ""),
     ]
     for excluded, label in steps:
-        table = tuple(ln for ln in _lanes.LANES if ln.vendor not in excluded)
+        table = tuple(ln for ln in lane_table if ln.vendor not in excluded)
         if not any(ln.enabled and ln.fits(cls) for ln in table):
             continue  # nothing of another vendor is enabled: next step
         lane = _lanes.pick_lane(w.store, cls, lanes=table)

@@ -21,7 +21,8 @@ Modules (each lands as its own slice under td540836):
   the todo handler validates against them;
 - :mod:`precis.plans.gates` — gate evaluators;
 - :mod:`precis.plans.lanes` — lane records (adapter + credential pool +
-  concurrency cap) the ``run_slice`` job type picks from;
+  concurrency cap) derived from ``llm_account`` rows, which the
+  ``run_slice`` job type picks from;
 - :mod:`precis.plans.templates` — subtree minters (gripe-fix, slice-tree,
   release-pass, pcb-pipeline) behind ``put(kind='todo', mode='plan')``.
 

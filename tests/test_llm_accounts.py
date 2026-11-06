@@ -281,7 +281,11 @@ class TestSeededAccounts:
         assert a.vendor == "cognition"
         assert a.plan == "free-promo"
         assert a.adapter == "devin_tree"
-        assert a.enabled is False
+        # 0283 brings the row to the LANES seed's shape so derivation
+        # reproduces it: on, cap 3, the three free SWE-2 tiers only.
+        assert a.enabled is True
+        assert a.concurrency == 3
+        assert a.models == ("swe-2-medium", "swe-2-high", "swe-2-max")
         assert a.api_key_ref == "DEVIN_API_TOKEN"
         assert a.promo_expiry is not None and a.promo_expiry.isoformat() == "2026-11-30"
         assert "source" in a.entitlement

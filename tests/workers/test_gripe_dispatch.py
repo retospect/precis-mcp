@@ -7,11 +7,11 @@ from typing import Any
 import pytest
 from psycopg.types.json import Jsonb
 
-from precis.plans import lanes
 from precis.plans.lanes import ANY_CLASS, Lane
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers import gripe_dispatch as gd
+from tests._lane_rows import use_lanes
 from tests._refs import insert_gripe
 
 _AGENT = {"filed_by": {"actor": "agent", "client": "claude-code/2.1.308"}}
@@ -96,7 +96,7 @@ def two_lanes(monkeypatch: pytest.MonkeyPatch) -> tuple[Lane, Lane]:
         models=("claude-sonnet-5",),
         model_prefix="claude-",
     )
-    monkeypatch.setattr(lanes, "LANES", (codex, sub))
+    use_lanes(monkeypatch, codex, sub)
     return codex, sub
 
 
@@ -109,10 +109,10 @@ def test_dark_without_service_config(store: Store, two_lanes: Any) -> None:
 
 def test_lane_capacity_sums_enabled_code_fit_caps(two_lanes: Any) -> None:
     codex, sub = two_lanes
-    assert gd.lane_capacity() == 3
+    assert gd.lane_capacity(None) == 3
     off = Lane("devin", "devin_tree", "devin", 4, frozenset({"code"}), enabled=False)
     review_only = Lane("rev", "claude_p", "sub", 9, frozenset({"review"}))
-    assert gd.lane_capacity((codex, off, review_only)) == 1
+    assert gd.lane_capacity(None, (codex, off, review_only)) == 1
 
 
 def test_candidates_filter_and_order(store: Store, two_lanes: Any) -> None:
@@ -174,7 +174,7 @@ def test_closed_chain_frees_its_slot_but_its_gripe_stays_out(
     store: Store, two_lanes: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     codex, _sub = two_lanes
-    monkeypatch.setattr(lanes, "LANES", (codex,))  # capacity 1
+    use_lanes(monkeypatch, codex)  # capacity 1
     _light(store)
     a = _gripe(store, "a", prio=1)
     b = _gripe(store, "b", prio=2)
