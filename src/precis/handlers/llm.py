@@ -846,16 +846,23 @@ class LlmHandler(NumericRefHandler):
                         raise BadInput(
                             f"entitlement.models.{model_id}.{field} must be a "
                             "non-negative number (USD per 1M tokens)",
+                            next=f"args={{'account': {{'entitlement': {{'models': "
+                            f"{{{model_id!r}: {{'{field}': 0.5}}}}}}}}}} "
+                            "(USD per 1M tokens, >= 0)",
                         )
                 if not _https_source(spec.get("source_url")):
                     raise BadInput(
                         f"entitlement.models.{model_id}.source_url must be an "
                         "https:// source URL",
+                        next=f"args={{'account': {{'entitlement': {{'models': "
+                        f"{{{model_id!r}: {{'source_url': 'https://<pricing doc>'}}}}}}}}}}",
                     )
                 if not _iso_stamp(spec.get("verified_at")):
                     raise BadInput(
                         f"entitlement.models.{model_id}.verified_at must be an "
                         "ISO timestamp",
+                        next=f"args={{'account': {{'entitlement': {{'models': "
+                        f"{{{model_id!r}: {{'verified_at': '2026-01-01T00:00:00Z'}}}}}}}}}}",
                     )
 
         # ── free-tier rate limits → pool rows ──
@@ -893,28 +900,42 @@ class LlmHandler(NumericRefHandler):
                     or not isinstance(limit, (int, float))
                     or limit <= 0
                 ):
-                    raise BadInput(f"limit {limit!r} must be a positive number")
+                    raise BadInput(
+                        f"limit {limit!r} must be a positive number",
+                        next=f"args={{'account': {{'limits': [{{'pool': "
+                        f"'llm:{name}:rpm', 'limit': 30}}]}}}}",
+                    )
                 rule_text = entry.get("reset_rule")
                 try:
                     rule = llm_accounts.parse_reset_rule(
                         rule_text if isinstance(rule_text, str) else ""
                     )
                 except ValueError as exc:
-                    raise BadInput(str(exc)) from exc
+                    raise BadInput(
+                        str(exc),
+                        next="args={'account': {'limits': [{'reset_rule': "
+                        "'rolling:60'}]}} (or 'calendar:daily:00:00@UTC')",
+                    ) from exc
                 if not isinstance(
                     rule, (llm_accounts.RollingReset, llm_accounts.CalendarReset)
                 ):
                     raise BadInput(
                         "a free-tier limit needs a recurring reset_rule "
                         "(rolling: or calendar:), never expires:",
+                        next="args={'account': {'limits': "
+                        "[{'reset_rule': 'rolling:60'}]}}",
                     )
                 if not _https_source(entry.get("source_url")):
                     raise BadInput(
                         "a limits entry needs an https:// source_url",
+                        next="args={'account': {'limits': "
+                        "[{'source_url': 'https://<rate-limit doc>'}]}}",
                     )
                 if not _iso_stamp(entry.get("verified_at")):
                     raise BadInput(
                         "a limits entry needs an ISO verified_at",
+                        next="args={'account': {'limits': "
+                        "[{'verified_at': '2026-01-01T00:00:00Z'}]}}",
                     )
                 limit_rows.append(
                     {
@@ -992,10 +1013,16 @@ class LlmHandler(NumericRefHandler):
                         raise BadInput(
                             f"enabling {name!r} needs privacy.training_use "
                             "recorded ('no', 'yes' or 'unknown')",
+                            options=sorted(_TRAINING_USE_VALUES),
+                            next="args={'account': {'privacy': {'training_use': "
+                            "'no', 'source_url': 'https://<doc>', "
+                            "'verified_at': '<ISO>'}}}",
                         )
                     if not merged["models"]:
                         raise BadInput(
                             f"enabling {name!r} needs at least one model in models=",
+                            next=f"args={{'account': {{'name': {name!r}, "
+                            "'models': ['model-id'], 'default_model': 'model-id'}}}}",
                         )
             conn.execute(
                 _ACCOUNT_UPSERT_SQL,
