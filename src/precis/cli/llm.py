@@ -426,9 +426,18 @@ def _cmd_choose(store: Store, args: argparse.Namespace) -> None:
     from precis.utils.llm.requirement import choose_model
     from precis.utils.llm.router import Tier
 
-    req, sel = choose_model(store, args.task, tier_floor=Tier(args.tier))
+    try:
+        req, sel = choose_model(store, args.task, tier_floor=Tier(args.tier))
+    except ValueError as exc:
+        # The judge refused or missed the schema (pydantic's ValidationError is
+        # a ValueError), or --tier is unknown: a message, not a traceback.
+        raise SystemExit(f"llm choose: {exc}") from exc
     axis = f"{req.axis}≥{req.min_ordinal}" if req.axis else "no axis"
-    print(f"requirement: {axis}, tools={req.needs_tools}, window={req.max_input}")
+    print(
+        f"requirement: {axis}, tools={req.needs_tools}, window={req.max_input}, "
+        f"difficulty={req.difficulty}, domain={req.domain}, "
+        f"consequence={req.consequence}"
+    )
     src = "catalog" if sel.from_catalog else "tier-floor"
     print(f"model: {sel.model}  [{src}] — {sel.reason}")
     if sel.endpoint:

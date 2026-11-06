@@ -3855,7 +3855,9 @@ def _route_inner(req: LlmRequest) -> LlmResult:
     _kw_ladder: list[Rung] | None = None
     _kw_rule = (
         _keyword_route.match_request(req)
-        if req.model is None and not _local_first
+        if req.model is None
+        and not _local_first
+        and req.source != "llm:requirement-judge"
         else None
     )
     if _kw_rule is not None:
@@ -3923,6 +3925,34 @@ def _route_inner(req: LlmRequest) -> LlmResult:
         if _kw_ladder is not None and _kw_rule is not None
         else (f"llm.op.{req.source} chain" if _op_chain else f"{req.tier.value} chain")
     )
+    # The classifier must never spend subscription quota, including when its
+    # operator row is missing and MEDIUM resolves to Claude. Refuse the whole
+    # invalid configuration before any provider can run.
+    if req.source == "llm:requirement-judge" and any(
+        rung.transport in _CLI_TRANSPORTS
+        or (
+            rung.profile is not None
+            and (profile := resolve_profile(rung.profile)) is not None
+            and profile.kind == "subscription"
+        )
+        for rung in ladder
+    ):
+        return _gate_result(
+            req,
+            LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error="requirement judge refuses subscription rungs; configure "
+                "llm.op.llm:requirement-judge with local and metered cloud rungs",
+                reason_class="subscription_op_refused",
+            ),
+            entered=entered,
+            transport=None,
+            routed=None,
+        )
     # Structured placement filter (strict — unlike the cloud throttle below,
     # an emptied nonempty chain here is an *error* result, not a silent
     # paused/degrade: the caller asked for a rung the chain doesn't have).

@@ -178,7 +178,8 @@ The ``llm`` model catalog (ships dark) layers on this seam — facts/writer in
   requirement → model, decision-point only, never the hot path).
 * :mod:`~precis.utils.llm.requirement` — ``infer_requirement`` (the LLM
   judges *capability needed*, never picks a model), ``choose_model`` chains
-  the two.
+  the two. Strict classifier output, the 24 h cache and the no-subscription
+  guard are documented in :mod:`requirement`.
 
 Demand metadata — task kind, consequence, privacy; never a routing input — is
 :mod:`~precis.utils.llm.recipes`.
