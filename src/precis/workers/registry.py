@@ -1161,14 +1161,38 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-taproot-help",
     ),
     ServiceSpec(
+        # S9 (td568212): past the ship-dark period — defaults on
+        # everywhere now (default_profiles), same as the other _SYS
+        # passes; a service_config row still overrides either way.
+        # ``enable_env`` stays only as the deploy-time seed task's
+        # legacy mirror (see registry.ServiceSpec's own docstring).
         name="llm_reconcile",
         label="LLM catalog reconcile",
         category="review",
         kind=ServiceKind.PASS,
+        default_profiles=_SYS,
         ref_pass=True,
         enable_env="PRECIS_LLM_RECONCILE_ENABLED",
-        uses_external=("openrouter",),
-        one_line="Keep llm-catalog cards true vs OpenRouter; flag proxy drift.",
+        uses_external=("openrouter", "devin"),
+        one_line="Keep llm-catalog cards true vs OpenRouter; flag proxy "
+        "drift; refresh the devin account's entitlement.",
+        doc_skill="precis-llm-help",
+    ),
+    ServiceSpec(
+        # S9 (td568212): the discovery+qualification path Groq/Cerebras/
+        # OpenRouter free models enter through. Ships dark (`service
+        # prio` / --only offer_discovery); the one Perplexity call is
+        # throttled to 3 days but the qualification advances run every
+        # cycle so an approved lead isn't stuck waiting on the next window.
+        name="offer_discovery",
+        label="Model offer discovery",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_OFFER_DISCOVERY_ENABLED",
+        uses_external=("perplexity",),
+        one_line="Every 3 days: one Perplexity call surfaces a free-tier "
+        "model lead; dark-seed + eval + ask before enabling it.",
         doc_skill="precis-llm-help",
     ),
     ServiceSpec(

@@ -147,6 +147,17 @@ def test_sibling_lazily_constructs_and_caches_on_bare_hub(store: Store) -> None:
     assert r.handlers["job"] is inst
 
 
+def test_sibling_lazily_builds_the_perplexity_reasoning_handler(store: Store) -> None:
+    """``offer_discovery`` (a worker, which may not import ``precis.handlers``)
+    reaches the Sonar Reasoning Pro handler by kind name. A hyphenated kind: the
+    coupling test below must see it too."""
+    r = Hub(store=store)
+    inst = r.sibling("perplexity-reasoning")
+    assert type(inst).__name__ == "ThinkHandler"
+    assert inst.spec.kind == "perplexity-reasoning"
+    assert r.sibling("perplexity-reasoning") is inst
+
+
 def test_sibling_unknown_kind_raises_key_error(store: Store) -> None:
     r = Hub(store=store)
     with pytest.raises(KeyError, match="no lazy-construction mapping"):
@@ -198,7 +209,7 @@ def test_every_sibling_call_site_kind_has_a_lazy_mapping() -> None:
     from pathlib import Path
 
     src = Path(__file__).resolve().parent.parent / "src"
-    pattern = re.compile(r"""\.sibling\(\s*["']([a-z_]+)["']\s*\)""")
+    pattern = re.compile(r"""\.sibling\(\s*["']([a-z_-]+)["']\s*\)""")
     requested: dict[str, set[str]] = {}
     for path in src.rglob("*.py"):
         for kind in pattern.findall(path.read_text(encoding="utf-8")):

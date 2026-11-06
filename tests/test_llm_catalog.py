@@ -11,6 +11,7 @@ migration 0071's seeds.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
@@ -670,6 +671,520 @@ class TestReconcile:
         # proxy_models=None → we cannot assert absence, so no false alert.
         run_llm_reconcile_pass(store, models={}, proxy_models=None, force=True)
         assert not _open_drift_alerts(store)
+
+
+def _gateway_model(mid: str, *, price: Any = None) -> dict[str, Any]:
+    """One AI Gateway ``models[]`` entry; ``price`` overrides the whole field."""
+    return {
+        "id": mid,
+        "name": mid.upper(),
+        "members": [f"{mid}-v1"],
+        "price": (
+            {"input": "0", "output": "0", "cache_write": None, "cache_read": None}
+            if price is None
+            else price
+        ),
+    }
+
+
+class _DevinGateway:
+    """A recording stand-in for the AI Gateway: each request pops the next
+    scripted ``(status, headers, json body)``; every request is kept."""
+
+    def __init__(self) -> None:
+        self.script: list[tuple[int, dict[str, str], Any]] = []
+        self.requests: list[Any] = []
+
+    def __call__(self, request: Any) -> Any:
+        import httpx
+
+        self.requests.append(request)
+        status, headers, body = self.script.pop(0)
+        return httpx.Response(status, headers=headers, json=body, request=request)
+
+
+@pytest.fixture
+def devin_gateway(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """``fetch_devin_entitlement`` against a scripted gateway: a token in the
+    env, ``http_client`` over an ``httpx.MockTransport`` (it keeps its real
+    header merge and ``follow_redirects=False``), no limiter and no sleeping."""
+    import httpx
+
+    from precis.utils.http import reset_circuit
+
+    gw = _DevinGateway()
+    monkeypatch.setenv("DEVIN_API_TOKEN", "tok-test")
+    monkeypatch.setattr(
+        "precis.utils.safe_fetch.pinning_transport",
+        lambda **_kw: httpx.MockTransport(gw),
+    )
+    monkeypatch.setattr("precis.utils.rate_limit.require", lambda _p, **_kw: None)
+    monkeypatch.setattr("precis.utils.rate_limit.park", lambda _p, _s: None)
+    reset_circuit()
+    yield gw
+    reset_circuit()
+
+
+class TestDevinEntitlement:
+    """S9 (td568212): the pass's extension to the ``devin`` llm_account's
+    entitlement. ``llm_account`` is NOT truncated between tests (it's a
+    seeded ledger, not per-test data — see conftest's keep-list), so every
+    test here restores the row's ``entitlement``/``promo_expiry`` to
+    whatever it was before, or a sibling test / ``test_llm_accounts.py``
+    would see this test's leftovers under random ordering.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _restore_devin_row(self, store: Any) -> Any:
+        from psycopg.types.json import Jsonb
+
+        with store.pool.connection() as conn:
+            before = conn.execute(
+                "SELECT entitlement, promo_expiry FROM llm_account WHERE name = 'devin'"
+            ).fetchone()
+        yield
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE llm_account SET entitlement = %s, promo_expiry = %s "
+                "WHERE name = 'devin'",
+                (Jsonb(before[0]), before[1]),
+            )
+            conn.commit()
+
+    def test_first_fetch_seeds_models_with_no_stale_marker(self, store: Any) -> None:
+        from precis.utils.llm.accounts import get_account
+        from precis.workers.llm_reconcile import run_llm_reconcile_pass
+
+        feed = [
+            {
+                "id": "swe-2-high",
+                "name": "SWE-2 High",
+                "members": ["swe-2-high-v1"],
+                "price": {
+                    "input": "0",
+                    "output": "0",
+                    "cache_write": "0",
+                    "cache_read": "0",
+                },
+            }
+        ]
+        run_llm_reconcile_pass(store, models={}, devin_models=feed, force=True)
+        a = get_account(store, "devin")
+        assert a is not None
+        entry = a.entitlement["models"]["swe-2-high"]
+        assert entry["allowed"] is True
+        assert "stale_since" not in entry
+        # The fetch records where ``models`` came from under ``fetched_from``;
+        # ``source`` is the row's curated provenance and is left alone.
+        assert a.entitlement["fetched_from"] == "devin ai-gateway models API"
+
+    def test_price_change_marks_the_model_stale(self, store: Any) -> None:
+        from precis.utils.llm.accounts import get_account
+        from precis.workers.llm_reconcile import run_llm_reconcile_pass
+
+        def feed(price_in: str) -> list[dict[str, Any]]:
+            return [
+                {
+                    "id": "m1",
+                    "name": "M1",
+                    "members": [],
+                    "price": {
+                        "input": price_in,
+                        "output": "0.000002",
+                        "cache_write": None,
+                        "cache_read": None,
+                    },
+                }
+            ]
+
+        run_llm_reconcile_pass(
+            store, models={}, devin_models=feed("0.000001"), force=True
+        )
+        res = run_llm_reconcile_pass(
+            store, models={}, devin_models=feed("0.000003"), force=True
+        )
+        a = get_account(store, "devin")
+        assert a is not None
+        assert "stale_since" in a.entitlement["models"]["m1"]
+        assert res.ok >= 1
+
+    def test_unchanged_price_stays_unmarked(self, store: Any) -> None:
+        from precis.utils.llm.accounts import get_account
+        from precis.workers.llm_reconcile import run_llm_reconcile_pass
+
+        feed = [
+            {
+                "id": "m1",
+                "name": "M1",
+                "members": [],
+                "price": {
+                    "input": "0.000001",
+                    "output": "0.000002",
+                    "cache_write": None,
+                    "cache_read": None,
+                },
+            }
+        ]
+        run_llm_reconcile_pass(store, models={}, devin_models=feed, force=True)
+        run_llm_reconcile_pass(store, models={}, devin_models=feed, force=True)
+        a = get_account(store, "devin")
+        assert a is not None
+        assert "stale_since" not in a.entitlement["models"]["m1"]
+
+    def test_model_dropped_from_feed_kept_as_not_allowed(self, store: Any) -> None:
+        from precis.utils.llm.accounts import get_account
+        from precis.workers.llm_reconcile import run_llm_reconcile_pass
+
+        feed = [
+            {
+                "id": "m2",
+                "name": "M2",
+                "members": [],
+                "price": {
+                    "input": "0",
+                    "output": "0",
+                    "cache_write": None,
+                    "cache_read": None,
+                },
+            }
+        ]
+        run_llm_reconcile_pass(store, models={}, devin_models=feed, force=True)
+        run_llm_reconcile_pass(store, models={}, devin_models=[], force=True)
+        a = get_account(store, "devin")
+        assert a is not None
+        assert a.entitlement["models"]["m2"]["allowed"] is False
+
+    def test_promo_expiry_in_the_past_flags_promo_expired(self, store: Any) -> None:
+        from precis.utils.llm.accounts import get_account
+        from precis.workers.llm_reconcile import run_llm_reconcile_pass
+
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE llm_account SET promo_expiry = '2020-01-01' WHERE name = 'devin'"
+            )
+            conn.commit()
+        run_llm_reconcile_pass(store, models={}, devin_models=[], force=True)
+        a = get_account(store, "devin")
+        assert a is not None
+        assert a.entitlement.get("promo_expired") is True
+
+    def test_no_feed_leaves_entitlement_untouched(self, store: Any) -> None:
+        from precis.utils.llm.accounts import get_account
+        from precis.workers.llm_reconcile import run_llm_reconcile_pass
+
+        before = get_account(store, "devin")
+        assert before is not None
+        run_llm_reconcile_pass(
+            store, models={}, devin_models=None, _fetch=False, force=True
+        )
+        after = get_account(store, "devin")
+        assert after is not None
+        assert after.entitlement == before.entitlement
+
+    def test_refresh_merges_into_the_stored_entitlement(self, store: Any) -> None:
+        from psycopg.types.json import Jsonb
+
+        from precis.utils.llm.accounts import get_account
+        from precis.workers.llm_reconcile import run_llm_reconcile_pass
+
+        owned = {
+            "source": "curated provenance",
+            "note": "curated prose",
+            "owner_key": {"nested": [1, 2]},
+        }
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE llm_account SET entitlement = %s WHERE name = 'devin'",
+                (Jsonb(owned),),
+            )
+            conn.commit()
+        run_llm_reconcile_pass(
+            store, models={}, devin_models=[_gateway_model("m1")], force=True
+        )
+        a = get_account(store, "devin")
+        assert a is not None
+        for key, value in owned.items():
+            assert a.entitlement[key] == value, key
+        assert a.entitlement["models"]["m1"]["allowed"] is True
+        assert a.entitlement["fetched_at"]
+        assert a.entitlement["fetched_from"] == "devin ai-gateway models API"
+
+    def test_migration_seeded_source_and_note_survive_the_first_refresh(
+        self, store: Any
+    ) -> None:
+        from precis.utils.llm.accounts import get_account
+        from precis.workers.llm_reconcile import run_llm_reconcile_pass
+
+        before = get_account(store, "devin")
+        assert before is not None
+        # The premise: migration 0280 seeds both curated keys on the row.
+        assert before.entitlement.get("source")
+        assert before.entitlement.get("note")
+        run_llm_reconcile_pass(
+            store, models={}, devin_models=[_gateway_model("m1")], force=True
+        )
+        after = get_account(store, "devin")
+        assert after is not None
+        assert after.entitlement["source"] == before.entitlement["source"]
+        assert after.entitlement["note"] == before.entitlement["note"]
+
+    def test_promo_expired_flag_clears_once_the_expiry_is_extended(
+        self, store: Any
+    ) -> None:
+        from precis.utils.llm.accounts import get_account
+        from precis.workers.llm_reconcile import run_llm_reconcile_pass
+
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE llm_account SET promo_expiry = '2020-01-01' WHERE name = 'devin'"
+            )
+            conn.commit()
+        run_llm_reconcile_pass(store, models={}, devin_models=[], force=True)
+        a = get_account(store, "devin")
+        assert a is not None
+        assert a.entitlement.get("promo_expired") is True
+        # Merging into the old dict must not keep the stale flag alive.
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE llm_account SET promo_expiry = '2999-01-01' WHERE name = 'devin'"
+            )
+            conn.commit()
+        run_llm_reconcile_pass(store, models={}, devin_models=[], force=True)
+        a = get_account(store, "devin")
+        assert a is not None
+        assert "promo_expired" not in a.entitlement
+
+    def test_unexpected_top_level_shape_leaves_entitlement_untouched(
+        self,
+        store: Any,
+        devin_gateway: Any,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from precis.utils.llm.accounts import get_account
+        from precis.workers.llm_reconcile import run_llm_reconcile_pass
+
+        run_llm_reconcile_pass(
+            store, models={}, devin_models=[_gateway_model("m1")], force=True
+        )
+        before = get_account(store, "devin")
+        assert before is not None
+        assert before.entitlement["models"]["m1"]["allowed"] is True
+
+        # The list now lives under another key. That used to read as ``[]`` —
+        # "the account may call nothing" — and flip every model to not allowed.
+        devin_gateway.script = [(200, {}, {"data": [_gateway_model("m1")]})]
+        with caplog.at_level(logging.WARNING, logger="precis.workers.llm_reconcile"):
+            run_llm_reconcile_pass(store, models={}, endpoints_by_key={}, force=True)
+        assert len(devin_gateway.requests) == 1  # the fetch did run
+        after = get_account(store, "devin")
+        assert after is not None
+        assert after.entitlement == before.entitlement
+        shape_warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "no 'models' list" in r.getMessage()
+        ]
+        assert len(shape_warnings) == 1
+
+    def test_non_object_price_skips_that_entry_and_the_pass_still_runs(
+        self, store: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from precis import llm_catalog
+        from precis.utils.llm.accounts import get_account
+        from precis.workers.llm_reconcile import (
+            _norm_model_key,
+            run_llm_reconcile_pass,
+        )
+
+        rid, _ = llm_catalog.upsert_card(
+            store, model_id="claude-opus-4-8", text="Opus card."
+        )
+        feed = {
+            _norm_model_key("claude-opus-4-8"): {
+                "id": "anthropic/claude-opus-4.8",
+                "context_length": 1_000_000,
+            }
+        }
+        devin: list[Any] = [
+            _gateway_model("str-price", price="free"),
+            _gateway_model("list-price", price=["0", "1"]),
+            _gateway_model("word-in-price", price={"input": "cheap"}),
+            _gateway_model("nan-in-price", price={"input": float("nan")}),
+            {"id": 7, "price": {}},
+            "not an object",
+            _gateway_model("good"),
+            _gateway_model("bare-number", price=0),
+        ]
+        with caplog.at_level(logging.WARNING, logger="precis.workers.llm_reconcile"):
+            res = run_llm_reconcile_pass(
+                store,
+                models=feed,
+                endpoints_by_key={},
+                devin_models=devin,
+                force=True,
+            )
+        # The good entries landed; every bad one was skipped, by name, in the log.
+        a = get_account(store, "devin")
+        assert a is not None
+        stored = a.entitlement["models"]
+        assert {"good", "bare-number"} <= set(stored)
+        for bad in ("str-price", "list-price", "word-in-price", "nan-in-price"):
+            assert bad not in stored
+            assert any(
+                r.levelno == logging.WARNING and bad in r.getMessage()
+                for r in caplog.records
+            ), bad
+        # ...and the legs after the devin one ran: card refresh + throttle stamp.
+        ref = store.get_ref(kind="llm", id=rid)
+        assert ref.meta["facts_openrouter"]["context_length"] == 1_000_000
+        assert store.get_setting("llm_reconcile:last_run")
+        assert res.ok >= 1
+
+    def test_a_malformed_entry_keeps_its_stored_state(self, store: Any) -> None:
+        from precis.utils.llm.accounts import get_account
+        from precis.workers.llm_reconcile import run_llm_reconcile_pass
+
+        feed = [_gateway_model("m1"), _gateway_model("m2")]
+        run_llm_reconcile_pass(store, models={}, devin_models=feed, force=True)
+        first = get_account(store, "devin")
+        assert first is not None
+        # m2 now arrives malformed: unknown, not "dropped from the account".
+        feed = [_gateway_model("m1"), _gateway_model("m2", price="free")]
+        run_llm_reconcile_pass(store, models={}, devin_models=feed, force=True)
+        second = get_account(store, "devin")
+        assert second is not None
+        assert second.entitlement["models"]["m2"] == first.entitlement["models"]["m2"]
+        assert second.entitlement["models"]["m2"]["allowed"] is True
+
+    @pytest.mark.parametrize("failure", ["python", "sql"])
+    def test_a_failure_inside_the_devin_leg_never_escapes_the_pass(
+        self,
+        store: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        failure: str,
+    ) -> None:
+        import psycopg
+
+        from precis import llm_catalog
+        from precis.utils.llm.accounts import get_account
+        from precis.workers import llm_reconcile as lr
+
+        rid, _ = llm_catalog.upsert_card(
+            store, model_id="claude-opus-4-8", text="Opus card."
+        )
+        feed = {
+            lr._norm_model_key("claude-opus-4-8"): {
+                "id": "anthropic/claude-opus-4.8",
+                "context_length": 123_000,
+            }
+        }
+
+        def boom(*_a: Any, **_k: Any) -> Any:
+            if failure == "python":
+                raise RuntimeError("a shape the guards missed")
+            # A value the jsonb UPDATE rejects (NaN is not valid JSON): the
+            # statement itself fails, inside the pass-long transaction.
+            return {"models": {}, "bad": float("nan")}, []
+
+        monkeypatch.setattr(lr, "_devin_entitlement_from_models", boom)
+        before = get_account(store, "devin")
+        assert before is not None
+        with caplog.at_level(logging.WARNING, logger=lr.log.name):
+            res = lr.run_llm_reconcile_pass(
+                store,
+                models=feed,
+                endpoints_by_key={},
+                devin_models=[_gateway_model("m1")],
+                force=True,
+            )
+        failed = [
+            r
+            for r in caplog.records
+            if "devin entitlement refresh failed" in r.getMessage()
+        ]
+        assert len(failed) == 1
+        # ...and the failure was the kind this case claims (not a stand-in).
+        assert failed[0].exc_info is not None
+        assert isinstance(
+            failed[0].exc_info[1], psycopg.Error if failure == "sql" else RuntimeError
+        )
+        after = get_account(store, "devin")
+        assert after is not None
+        assert after.entitlement == before.entitlement  # untouched
+        ref = store.get_ref(kind="llm", id=rid)
+        assert ref.meta["facts_openrouter"]["context_length"] == 123_000
+        assert store.get_setting(lr._STATE_KEY)
+        assert res.ok >= 1
+
+
+class TestDevinFetch:
+    """``fetch_devin_entitlement`` against a scripted gateway (no DB)."""
+
+    def test_returns_the_models_list_with_the_token(self, devin_gateway: Any) -> None:
+        from precis.workers.llm_reconcile import fetch_devin_entitlement
+
+        devin_gateway.script = [(200, {}, {"models": [_gateway_model("m1")]})]
+        out = fetch_devin_entitlement()
+        assert out is not None
+        assert [m["id"] for m in out] == ["m1"]
+        assert devin_gateway.requests[0].headers["authorization"] == "Bearer tok-test"
+
+    def test_an_empty_models_list_is_a_real_answer_not_a_shape_error(
+        self, devin_gateway: Any
+    ) -> None:
+        from precis.workers.llm_reconcile import fetch_devin_entitlement
+
+        devin_gateway.script = [(200, {}, {"models": []})]
+        assert fetch_devin_entitlement() == []
+
+    def test_a_redirect_is_not_followed_and_never_carries_the_token_on(
+        self, devin_gateway: Any
+    ) -> None:
+        from precis.workers.llm_reconcile import (
+            DEVIN_AI_GATEWAY_MODELS_URL,
+            fetch_devin_entitlement,
+        )
+
+        devin_gateway.script = [
+            (302, {"Location": "https://redirect-target.example/models"}, {})
+        ]
+        assert fetch_devin_entitlement() is None
+        # Exactly one request, to the fixed URL, with the token: a followed hop
+        # would be a second request replaying the Authorization header.
+        assert [str(r.url) for r in devin_gateway.requests] == [
+            DEVIN_AI_GATEWAY_MODELS_URL
+        ]
+        assert devin_gateway.requests[0].headers["authorization"] == "Bearer tok-test"
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"data": [{"id": "m1"}]},
+            {},
+            {"models": None},
+            {"models": "m1"},
+            [],
+            "models",
+        ],
+    )
+    def test_an_unexpected_top_level_shape_is_none_with_one_warning(
+        self, devin_gateway: Any, caplog: pytest.LogCaptureFixture, body: Any
+    ) -> None:
+        from precis.workers.llm_reconcile import fetch_devin_entitlement
+
+        devin_gateway.script = [(200, {}, body)]
+        with caplog.at_level(logging.WARNING, logger="precis.workers.llm_reconcile"):
+            assert fetch_devin_entitlement() is None
+        # Only this module's records: the rate limiter logs its own one-time
+        # "runs unpaced" notice on the first call a process makes to a host.
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and r.name == "precis.workers.llm_reconcile"
+        ]
+        assert len(warnings) == 1
+        assert "no 'models' list" in warnings[0].getMessage()
 
 
 class TestSeed:

@@ -416,6 +416,7 @@ _PASS_CHOICES: tuple[str, ...] = (
     "llm_summarize",
     "classify",
     "llm_reconcile",
+    "offer_discovery",
     "paper_glossary",
     "classify_topics",
     "backlog_groom",

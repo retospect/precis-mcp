@@ -248,6 +248,7 @@ class Hub:
         "profile": ("precis.handlers.profile", "ProfileHandler"),
         "youtube": ("precis.handlers.youtube", "YouTubeHandler"),
         "pcb": ("precis.handlers.pcb", "PcbHandler"),
+        "perplexity-reasoning": ("precis.handlers.perplexity", "ThinkHandler"),
     }
 
     def sibling(self, kind: str) -> Any:

@@ -78,8 +78,18 @@ credential is expired or unreadable (re-login there).
 **`llm_reconcile` and `llama_swap`.** `llm_reconcile` diffs the
 catalogue against the proxy's served list — a catalogued model the proxy
 no longer serves raises `llm_reconcile:drift/proxy-missing:<model_id>`
-(warn). `llama_swap` is the per-node VRAM model-swapper serving local
-inference — the daemon behind the local rungs.
+(warn). It also refreshes the `devin` `llm_account` row's entitlement
+from Devin's AI Gateway models list, stamping `stale_since` on a model
+whose price changed. `llama_swap` is the per-node VRAM model-swapper
+serving local inference — the daemon behind the local rungs.
+
+**`offer_discovery`.** Every 3 days, one Perplexity call surfaces a free
+model Groq/Cerebras/OpenRouter are currently offering; a model not yet
+tracked is a lead, filed as one `ask-user` todo (never more than one per
+lead). An approved lead gets a dark `llm_account` row + card, a golden
+eval against the tier's incumbent recorded on its card, and a second
+`ask-user` todo before anything is ever enabled. Groq/Cerebras/OpenRouter
+free models enter the catalog ONLY this way — never hand-seed one.
 
 ## See also
 

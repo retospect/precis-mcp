@@ -828,10 +828,11 @@ def build_ref_passes(
 
     # llm_reconcile — keep the llm-catalog model-card facts true against the
     # live OpenRouter feed + flag proxy drift (llm-catalog slice 1, step 1 of
-    # the litellm teardown). Default-OFF (`service prio` / --only
-    # llm_reconcile — §L retired PRECIS_LLM_RECONCILE_ENABLED as the live
-    # gate); a single cheap app_state read until the catalog
-    # has cards. Corpus-wide single-runner (app_state cadence + xact lock).
+    # the litellm teardown), plus (S9, td568212) refresh the devin account's
+    # entitlement. Default-ON everywhere now (registry.ServiceSpec's
+    # `default_profiles`; a `service prio` row still overrides either way);
+    # a single cheap app_state read until the catalog has cards. Corpus-wide
+    # single-runner (app_state cadence + xact lock).
     if _register("llm_reconcile"):
         from precis.workers.runner import BatchResult as _LlmRecBatchResult
 
@@ -841,6 +842,23 @@ def build_ref_passes(
             return run_llm_reconcile_pass(store)
 
         ref_passes.append(_llm_reconcile_pass)
+
+    # offer_discovery — S9 (td568212): the discovery+qualification path
+    # Groq/Cerebras/OpenRouter free models enter through (one throttled
+    # Perplexity call surfaces a lead; the qualification advances — dark
+    # account/card, golden eval vs the incumbent, Reto's decision, enable —
+    # run every cycle). Default-OFF (`service prio` / --only
+    # offer_discovery); corpus-wide single-runner (app_state cadence +
+    # xact lock, same shape as llm_reconcile).
+    if _register("offer_discovery"):
+        from precis.workers.runner import BatchResult as _OfferDiscBatchResult
+
+        def _offer_discovery_pass(batch_size: int) -> _OfferDiscBatchResult:
+            from precis.workers.offer_discovery import run_offer_discovery_pass
+
+            return run_offer_discovery_pass(store)
+
+        ref_passes.append(_offer_discovery_pass)
 
     # paper_glossary — per-paper inferred reading glossary (reading-prep
     # loop, slice 1). Harvests Schwartz-Hearst abbreviations + undefined
