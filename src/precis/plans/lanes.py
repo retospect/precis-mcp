@@ -49,10 +49,14 @@ subscription (Reto td559457).
 
 from __future__ import annotations
 
+import fnmatch
+import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 #: Matches every task class in :attr:`Lane.task_classes`.
 ANY_CLASS = "*"
@@ -115,6 +119,212 @@ FACTORY_DENY_WRITE_PATHS: tuple[str, ...] = (
     "deploy/roles/monitoring/**",
 )
 
+#: Repo paths only a human may write (td574937 E1, Reto: "I am happy taking
+#: the risk, we have backups") — secret-placing deploy files, inventories
+#: and vault material, and the harness's own rules. Never relaxable by a
+#: setting or a lane field: when ``factory.deny_relaxed`` shrinks the deny
+#: set these stay denied, and a slice touching one still fails the
+#: attempt. Same glob syntax as :data:`FACTORY_DENY_WRITE_PATHS`, but the
+#: match folds case (:func:`human_only_hits`).
+HUMAN_ONLY_PATHS: tuple[str, ...] = (
+    # inventories and vault material
+    "deploy/inventory*/**",
+    "deploy/*vault*",
+    "deploy/*group_vars*",
+    "deploy/*host_vars*",
+    "deploy/ansible.cfg",
+    "deploy/group_vars/all.yml",
+    # hardening and the MCP edge
+    "deploy/roles/hardening/**",
+    "deploy/playbooks/10-hardening.yml",
+    "deploy/mcp-http/**",
+    # playbooks that place credentials or slice tokens
+    "deploy/playbooks/20b-precis-worker-collapsed.yml",
+    "deploy/playbooks/20c-precis-heartbeat-serving.yml",
+    "deploy/playbooks/20f-precis-worker-oasnap.yml",
+    "deploy/playbooks/20g-precis-worker-slices.yml",
+    "deploy/playbooks/22-papers-sync.yml",
+    "deploy/run-*.yml",
+    # secret-placing role files — file-level globs; a role is named whole
+    # only when every file in it places a credential
+    "deploy/roles/asa_bot/templates/claude_mcp.json.j2",
+    "deploy/roles/asa_bot/templates/claude_settings.json.j2",
+    "deploy/roles/asa_bot/templates/com.asa.bot.plist.j2",
+    "deploy/roles/asa_bot/templates/config.yaml.j2",
+    "deploy/roles/asa_slack/templates/com.asa.slack.plist.j2",
+    "deploy/roles/asa_slack/templates/config.yaml.j2",
+    "deploy/roles/backups/templates/b2_sync.sh.j2",
+    "deploy/roles/db_exporters/defaults/main.yml",
+    "deploy/roles/db_exporters/tasks/main.yml",
+    "deploy/roles/db_exporters/templates/db-exporters.env.j2",
+    "deploy/roles/db_exporters/templates/launcher.sh.j2",
+    "deploy/roles/extract_watch/templates/extract-watch.plist.j2",
+    "deploy/roles/monitoring/defaults/main.yml",
+    "deploy/roles/monitoring/templates/precis-alertmanager-receiver.service.j2",
+    "deploy/roles/nginx/tasks/main.yml",
+    "deploy/roles/pgbouncer/templates/pgbouncer.ini.j2",
+    "deploy/roles/pgbouncer/templates/userlist.txt.j2",
+    "deploy/roles/pgpass/templates/pgpass.j2",
+    "deploy/roles/postgres/tasks/main.yml",
+    "deploy/roles/postgres/templates/channel_prompts.sql.j2",
+    "deploy/roles/postgres/templates/pg_hba.conf.j2",
+    "deploy/roles/precis_embedder/templates/precis-embedder.plist.j2",
+    "deploy/roles/precis_embedder/templates/precis-embedder.service.j2",
+    "deploy/roles/precis_watch/defaults/main.yml",
+    "deploy/roles/precis_watch/templates/precis-watch.plist.j2",
+    "deploy/roles/precis_watch/templates/precis-watch.service.j2",
+    "deploy/roles/precis_web/defaults/main.yml",
+    "deploy/roles/precis_web/tasks/migrate.yml",
+    "deploy/roles/precis_web/templates/precis-web.plist.j2",
+    "deploy/roles/precis_worker/tasks/provision.yml",
+    "deploy/roles/precis_worker/templates/precis-worker.plist.j2",
+    "deploy/roles/precis_worker/templates/precis-worker.service.j2",
+    "deploy/roles/precis_worker_agent/tasks/provision.yml",
+    "deploy/roles/precis_worker_agent/templates/com.precis.colima.plist.j2",
+    "deploy/roles/precis_worker_agent/templates/precis-worker-agent.plist.j2",
+    "deploy/roles/precis_worker_agent/templates/precis-worker-agent.service.j2",
+    "deploy/roles/service_unit/templates/launchd.plist.j2",
+    "deploy/roles/service_unit/templates/systemd.service.j2",
+    "deploy/roles/tailscale/tasks/main.yml",
+    "deploy/roles/tcc_profile/**",
+    "deploy/roles/users/**",
+    # the harness's own rules — every agent surface's, plus rule files
+    # nested at any depth (fnmatch ``*`` spans ``/``; a ``*/`` prefix
+    # still wants one directory, so nested .claude trees and
+    # CLAUDE.local.md take their own globs, td574960)
+    ".claude/**",
+    "*/.claude/**",
+    ".codex/**",
+    ".devin/**",
+    ".kimi-code/**",
+    ".mcp.json",
+    "*/CLAUDE.md",
+    "*/AGENTS.md",
+    "CLAUDE.local.md",
+    "*/CLAUDE.local.md",
+    "scripts/hooks/**",
+    "CLAUDE.md",
+    "AGENTS.md",
+)
+
+#: :data:`HUMAN_ONLY_PATHS` lowercased once — the human-only match folds
+#: case (:func:`human_only_hits`) because the slice hosts' filesystems
+#: do (macOS): a case-mangled write lands on the same file.
+_HUMAN_ONLY_LOWER: tuple[str, ...] = tuple(g.lower() for g in HUMAN_ONLY_PATHS)
+
+#: Check-bearing paths that stay denied alongside :data:`HUMAN_ONLY_PATHS`
+#: while the security-review hold (td574934 A3) is undeployed — a later
+#: factory slice deploys it and this tuple empties. ``boundary.py`` and
+#: ``killswitch.py`` do not exist yet; listing them is harmless
+#: (``src/precis/plans/**`` already makes them engine paths today).
+INTERIM_DENY: tuple[str, ...] = (
+    "src/precis/workers/job_types/run_slice.py",
+    "src/precis/workers/job_types/land_slice.py",
+    "src/precis/workers/job_types/plan_dispatch.py",
+    "src/precis/workers/job_types/release_poll.py",
+    "src/precis/workers/job_types/release_cut.py",
+    "src/precis/workers/job_types/release_deploy.py",
+    "src/precis/workers/job_types/release_confirm.py",
+    "src/precis/plans/lanes.py",
+    "src/precis/plans/boundary.py",
+    "src/precis/plans/killswitch.py",
+    "scripts/ship",
+    "scripts/test",
+    # the helpers ship invokes from the SLICE tree — a slice could
+    # otherwise empty its own --checked forcing through them
+    "scripts/impacted-tests",
+    "scripts/migration-check",
+    "scripts/mutate-diff",
+    "scripts/gen-devin-hooks",
+    # on no deny list at all until now: the deploy script and the round
+    # verbs were builder-editable
+    "scripts/deploy",
+    "scripts/round",
+    "scripts/lib/**",
+    ".github/**",
+)
+
+#: The deny globs that remain engine-buildable once the list relaxes —
+#: the deduped union of :data:`FACTORY_DENY_WRITE_PATHS` and
+#: :data:`INTERIM_DENY` minus :data:`HUMAN_ONLY_PATHS`. INTERIM entries
+#: outside FACTORY (``scripts/impacted-tests`` and friends) must still
+#: stamp a land engine, so the union is the stamp set; a human-only file
+#: sitting under an engine glob (``deploy/roles/monitoring/**``) still
+#: escapes via :func:`engine_hits`' human-only filter.
+ENGINE_PATHS: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        g for g in FACTORY_DENY_WRITE_PATHS + INTERIM_DENY if g not in HUMAN_ONLY_PATHS
+    )
+)
+
+#: :data:`ENGINE_PATHS` lowercased — the stamp match folds case like the
+#: human-only one: a case-mangled write is the same file.
+_ENGINE_PATHS_LOWER: tuple[str, ...] = tuple(g.lower() for g in ENGINE_PATHS)
+
+#: The deny-write set when ``factory.deny_relaxed`` is off, unreadable or
+#: absent — the full factory list plus the never-relaxable human-only
+#: set (td574960: the session's deny text, the post-check and the land
+#: check name the same set in every mode).
+STRICT_DENY: tuple[str, ...] = tuple(
+    dict.fromkeys(FACTORY_DENY_WRITE_PATHS + HUMAN_ONLY_PATHS)
+)
+
+
+def human_only_hits(paths: Iterable[str]) -> list[str]:
+    """The ``paths`` touching a :data:`HUMAN_ONLY_PATHS` glob, matched
+    case-insensitively — the slice hosts' filesystems fold case, so a
+    ``Deploy/Inventory`` write lands on ``deploy/inventory``."""
+    return sorted(
+        {
+            p
+            for p in paths
+            if any(fnmatch.fnmatchcase(p.lower(), g) for g in _HUMAN_ONLY_LOWER)
+        }
+    )
+
+
+def engine_hits(paths: Iterable[str]) -> list[str]:
+    """The ``paths`` touching an :data:`ENGINE_PATHS` glob, human-only
+    winning: a path matching both an engine and a
+    :data:`HUMAN_ONLY_PATHS` glob (the two credential files under
+    ``deploy/roles/monitoring/**``) does not count as engine."""
+    return sorted(
+        {
+            p
+            for p in paths
+            if any(fnmatch.fnmatchcase(p.lower(), g) for g in _ENGINE_PATHS_LOWER)
+            and not any(fnmatch.fnmatchcase(p.lower(), g) for g in _HUMAN_ONLY_LOWER)
+        }
+    )
+
+
+def deny_paths_for(store: Any) -> tuple[str, ...]:
+    """The deny-write glob set for a slice, resolved at call time.
+
+    ``store is None``, an unreadable store or the row absent/off all
+    return :data:`STRICT_DENY` — the full factory list plus the
+    never-relaxable human-only set; nothing turns on by default and the
+    coordinator flips ``factory.deny_relaxed`` after this lands. The
+    stored ``app_settings`` row is the ONLY input — the registry default
+    and any env override are ignored, so a slice editing
+    ``src/precis/settings.py`` cannot relax its own deny list. Relaxed,
+    the set is :data:`HUMAN_ONLY_PATHS` ∪ :data:`INTERIM_DENY`.
+    """
+    if store is None:
+        return STRICT_DENY
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = %s",
+                ("factory.deny_relaxed",),
+            ).fetchone()
+    except Exception:
+        log.warning("lanes.deny_paths_for: setting unreadable; strict deny list")
+        return STRICT_DENY
+    if row is not None and str(row[0]).strip().lower() in {"1", "true", "yes", "on"}:
+        return HUMAN_ONLY_PATHS + INTERIM_DENY
+    return STRICT_DENY
+
 
 @dataclass(frozen=True)
 class Lane:
@@ -130,7 +340,7 @@ class Lane:
     through the precis MCP by its step (``triage``, ``brief``, ``pcb``;
     :mod:`precis.plans.templates`) so it never lands on such a lane.
     ``deny_write_paths`` are the repo globs a slice on this lane may not
-    write (:data:`FACTORY_DENY_WRITE_PATHS` for every seed lane).
+    write (:data:`STRICT_DENY` for every seed lane).
     ``vendor`` is the model vendor behind the lane (``''`` = unknown); a
     review is picked with ``exclude_vendor`` = the builder lane's vendor.
     ``models`` are the model ids the lane's adapter accepts, cheapest
@@ -152,7 +362,7 @@ class Lane:
     cap: int
     task_classes: frozenset[str]
     enabled: bool = True
-    deny_write_paths: tuple[str, ...] = FACTORY_DENY_WRITE_PATHS
+    deny_write_paths: tuple[str, ...] = STRICT_DENY
     vendor: str = ""
     models: tuple[str, ...] = ()
     default_model: str | None = None
@@ -210,7 +420,9 @@ def _cost_class(a: Any) -> str:
     return COST_SUBSCRIPTION
 
 
-def derive_lanes(rows: Iterable[Any]) -> tuple[Lane, ...]:
+def derive_lanes(
+    rows: Iterable[Any], *, deny_paths: tuple[str, ...] = STRICT_DENY
+) -> tuple[Lane, ...]:
     """The lane table from ``llm_account`` rows (td568401 S1c).
 
     Order is ``(lane_rank, name)`` — the column carries the preference
@@ -219,7 +431,9 @@ def derive_lanes(rows: Iterable[Any]) -> tuple[Lane, ...]:
     ``concurrency`` is the cap, ``plan`` the credential_pool and, with
     ``promo_expiry``, the lane's :func:`_cost_class`, ``task_classes``
     the fit set (``*`` = :data:`ANY_CLASS`), ``model_prefix`` the
-    adapter's (:data:`_ADAPTER_MODEL_PREFIX`).
+    adapter's (:data:`_ADAPTER_MODEL_PREFIX`), ``deny_paths`` the
+    resolved deny set (:func:`load_lanes` passes
+    :func:`deny_paths_for`'s).
     Rows on an adapter outside :data:`LAUNCHABLE_ADAPTERS` derive to
     nothing — an enabled api-adapter account is never a builder lane."""
     return tuple(
@@ -230,6 +444,7 @@ def derive_lanes(rows: Iterable[Any]) -> tuple[Lane, ...]:
             cap=a.concurrency,
             task_classes=frozenset(a.task_classes),
             enabled=a.enabled,
+            deny_write_paths=deny_paths,
             vendor=a.vendor,
             models=tuple(a.models),
             default_model=a.default_model,
@@ -248,10 +463,11 @@ def load_lanes(store: Any) -> tuple[Lane, ...]:
     routing layer and pulling it in at module top would sit the whole
     router under every caller of this leaf. ``accounts.list_accounts``
     goes through the module attribute so tests patch the seam instead
-    of needing a DB."""
+    of needing a DB. ``deny_write_paths`` is :func:`deny_paths_for`'s
+    resolved set."""
     from precis.utils.llm import accounts
 
-    return derive_lanes(accounts.list_accounts(store))
+    return derive_lanes(accounts.list_accounts(store), deny_paths=deny_paths_for(store))
 
 
 def live_lane_counts(store: Any) -> dict[str, int]:
@@ -461,14 +677,21 @@ __all__ = [
     "COST_METERED",
     "COST_ORDER",
     "COST_SUBSCRIPTION",
+    "ENGINE_PATHS",
     "FACTORY_DENY_WRITE_PATHS",
     "HOST_REFUSAL_BACKOFF",
+    "HUMAN_ONLY_PATHS",
+    "INTERIM_DENY",
     "LAUNCHABLE_ADAPTERS",
     "RUN_SLICE",
+    "STRICT_DENY",
     "Lane",
     "Rung",
+    "deny_paths_for",
     "derive_lanes",
+    "engine_hits",
     "get_lane",
+    "human_only_hits",
     "ladder",
     "lane_backoffs",
     "live_lane_counts",

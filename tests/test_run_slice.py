@@ -965,7 +965,7 @@ def test_submit_launches_and_claims(
         assert f"{tool}(./scripts/ship)" in deny
         assert f"{tool}(./src/precis/plans/**)" in deny
         assert f"{tool}(/{tree.as_posix()}/.github/**)" in deny
-    assert len(deny) == 2 * 4 * len(lanes.FACTORY_DENY_WRITE_PATHS)
+    assert len(deny) == 2 * 4 * len(lanes.STRICT_DENY)
     # The service account's clone is never trusted interactively; without
     # this the checkout's .mcp.json precis server is skipped in -p mode.
     assert json.loads(argv[-1])["enableAllProjectMcpServers"] is True
@@ -2571,9 +2571,37 @@ def test_deny_violations_globs() -> None:
     ]
 
 
+def test_human_only_paths_are_denied_case_insensitively() -> None:
+    """``HUMAN_ONLY_PATHS`` is never relaxable (td574937 E1): it holds
+    under the full deny list too, matched case-insensitively — the slice
+    hosts' filesystems fold case."""
+    hits = run_slice.deny_violations(
+        ["Deploy/Inventory/Hosts.yml", "CLAUDE.MD", "src/precis/foo.py"],
+        lanes.FACTORY_DENY_WRITE_PATHS,
+    )
+    assert hits == ["CLAUDE.MD", "Deploy/Inventory/Hosts.yml"]
+
+
+def test_the_briefs_deny_list_names_human_only_in_off_mode() -> None:
+    """Off mode resolves FACTORY ∪ HUMAN_ONLY (td574960): the brief's
+    deny section names the same set the post-check enforces —
+    ``AGENTS.md`` included."""
+    brief = run_slice.render_brief(
+        todo_id=42,
+        title="t",
+        body="",
+        latest=None,
+        lane="devin",
+        model=None,
+        effort="medium",
+    )
+    assert "- `AGENTS.md`" in brief
+    assert "- `deploy/inventory*/**`" in brief
+
+
 def test_every_seed_lane_carries_the_factory_deny_paths() -> None:
     for lane in SEED_LANES:
-        assert lane.deny_write_paths == lanes.FACTORY_DENY_WRITE_PATHS
+        assert lane.deny_write_paths == lanes.STRICT_DENY
     for path in (
         "scripts/ship",
         "scripts/test",

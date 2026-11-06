@@ -46,6 +46,7 @@ from typing import Any
 
 from precis.plans import release as _release
 from precis.workers import factory_git as _factory_git
+from precis.workers.job_types import release_poll as _rp
 from precis.workers.job_types import run_slice as _rs
 
 log = logging.getLogger(__name__)
@@ -231,6 +232,11 @@ def validate_submit(
     reason = factory_refusal(NAME) or todo_refusal(store, NAME, todo_id, required=False)
     if reason is not None or store is None or not isinstance(todo_id, int):
         return reason
+    # td574937 E1: no cut over an unread engine review — the same gate
+    # release_poll.run_pass runs; no asks are filed from here.
+    blockers, _notes = _rp.engine_review_blockers(store)
+    if blockers:
+        return f"{NAME}: {'; '.join(blockers)}"
     # A re-cut runs where the plan's first cut ran: the .release-owner marker
     # is in that checkout, so --cut-only elsewhere cuts nothing (td543855).
     # The first cut has no meta.release yet and is not pinned.
@@ -249,6 +255,10 @@ def submit(ctx: Any, spec: Any) -> Any:
     )
     if reason is not None:
         ctx.record_failure(reason)
+        return None
+    blockers, _notes = _rp.engine_review_blockers(ctx.store)
+    if blockers:
+        ctx.record_failure(f"{NAME}: {'; '.join(blockers)}")
         return None
     return launch_script(ctx, NAME, ["--cut-only"])
 

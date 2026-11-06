@@ -72,12 +72,13 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
 from precis.plans import pr_class
 from precis.plans import release as _release
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
+from precis.todo import TERMINAL_TODO_STATUSES
 from precis.todo.guards import check_ask_meta
 from precis.workers.job_types import JobTypeSpec
 
@@ -143,6 +144,34 @@ _TAG_CAP = 500
 #: :meth:`precis.store.Store.atomic`, so two concurrent runners cannot
 #: both pass the check and double-mint (td573430 fix round 1).
 _MINT_LOCK_KEY = 0x72656C5F706F6C6C
+
+#: ``meta.generate.from`` on a reviewer todo — ``td<N>`` of the slicer or
+#: build it reviews; a land is covered when it names the landed todo or
+#: its parent (:func:`engine_review_blockers`, td574937 E1).
+_REVIEW_FROM_RE = re.compile(r"\s*td(\d+)\s*")
+
+#: The dedupe tag on the review-wait ask — one OPEN ask per LANDED todo:
+#: ``release-review-wait:td<id>`` where id is the land's todo, and
+#: answering the ask clears that one land. An ask closed without an
+#: ``answer:`` comment holds nothing — the gate refiles it.
+_REVIEW_WAIT_TAG_PREFIX = "release-review-wait"
+
+#: Todo statuses that close a review-wait ask for dedupe and blocker
+#: purposes — :data:`precis.todo.TERMINAL_TODO_STATUSES` plus
+#: ``cancelled`` (the same set :func:`_review_outcome` judges dead on).
+_WAIT_ASK_CLOSED: tuple[str, ...] = tuple(
+    sorted(TERMINAL_TODO_STATUSES | {"cancelled"})
+)
+
+#: How long an open reviewer may sit on an engine land before one
+#: ``ask-user`` ruling files (tagged ``release-review-wait:td<id>``);
+#: a wait that can never resolve — no covering reviewer, a dead verdict,
+#: a dead root, a fix that ended unlanded — files it at once.
+REVIEW_WAIT_AFTER = timedelta(hours=24)
+
+#: ``pg_advisory_xact_lock`` key (the "rev_wait" bytes) serializing the
+#: review-wait dedupe read and insert.
+_REVIEW_WAIT_LOCK_KEY = 0x7265765F77616974
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -950,6 +979,479 @@ def _pass_for_sha(store: Any, sha12: str) -> tuple[int, str] | None:
     return rid, status
 
 
+# ── the engine-review gate (td574937 E1) ──────────────────────────
+#
+# A release never cuts over an engine land its reviewer has not read:
+# the factory may build engine paths once ``factory.deny_relaxed`` is
+# flipped, but only through the review lane. The gate is land-centric —
+# every ``land_slice`` job that SUCCEEDED (``meta.landed_sha`` not null;
+# a failed land has no key and a no-diff land a JSON null, so neither
+# blocks, and a later failed re-land cannot mask an earlier success) with
+# an engine ``meta.engine_paths`` stamp needs a reviewer covering the
+# landed todo: ``meta.generate.from`` naming the todo itself or its
+# parent — the one level ``plan_dispatch._review_targets`` reviews (a
+# slicer's slices). A land with no stamp (pre-E1) counts as non-engine.
+# A covering reviewer clears the land when it closed ``LAND``, or
+# ``FIX`` whose fix task landed; while it is open under a live root the
+# release waits, and once the land is :data:`REVIEW_WAIT_AFTER` old one
+# ``ask-user`` ruling files — at once when the wait can never resolve
+# (no covering reviewer, a dead verdict or an unlanded fix that already
+# ended, an open reviewer under a dead root). An answered ask
+# (``release-review-wait:td<land>`` with an ``answer:`` comment) clears
+# that one land; one closed without the comment holds nothing — the
+# gate refiles it and the blocker names the live ask's id. "Fix
+# reviewed" is not gated:
+# ``plan_dispatch._review_fix`` mints no reviewer for a fix today
+# (td574946 S5 adds the narrow re-review and tightens this gate).
+# Any read error fails closed — the release waits.
+
+
+def _reviewer_rows(store: Any) -> list[tuple[int, dict[str, Any]]]:
+    """``(ref_id, meta)`` for every live todo minted with
+    ``meta.generate.role == 'reviewer'``, oldest first."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT ref_id, meta FROM refs
+             WHERE kind = 'todo' AND retired_at IS NULL
+               AND meta->'generate'->>'role' = 'reviewer'
+             ORDER BY ref_id
+            """
+        ).fetchall()
+    return [(int(r[0]), dict(r[1] or {})) for r in rows]
+
+
+def _engine_landed_jobs(store: Any) -> list[tuple[int, int, Any]]:
+    """``(job ref_id, landed todo id, created_at)`` for every
+    ``land_slice`` job that SUCCEEDED and stamped engine, oldest first.
+
+    Succeeded = ``meta->>'landed_sha' IS NOT NULL``: a failed land has no
+    key and a no-diff land stamps JSON null (``->>`` reads both as SQL
+    NULL) — neither blocks. ALL jobs are read, not the newest: a later
+    failed re-land must not mask an earlier engine land. Engine = the
+    ``<unreadable>`` mark or a stamp holding a path engine TODAY (the
+    globs re-check, so a glob added since the land still counts); no
+    stamp (pre-E1) or non-engine paths skip the gate.
+    """
+    from precis.plans import lanes as _lanes
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT ref_id, meta, created_at FROM refs
+             WHERE kind = 'job' AND retired_at IS NULL
+               AND meta->>'job_type' = 'land_slice'
+               AND meta->>'landed_sha' IS NOT NULL
+             ORDER BY ref_id
+            """
+        ).fetchall()
+    out: list[tuple[int, int, Any]] = []
+    for ref_id, meta, created_at in rows:
+        m = meta if isinstance(meta, dict) else {}
+        stamped = m.get("engine_paths")
+        if not isinstance(stamped, list) or not stamped:
+            continue
+        if stamped != ["<unreadable>"] and not _lanes.engine_hits(stamped):
+            continue
+        raw = (m.get("params") or {}).get("todo_id")
+        if not isinstance(raw, (int, str)):
+            continue
+        try:
+            todo_id = int(raw)
+        except ValueError:
+            continue
+        out.append((int(ref_id), todo_id, created_at))
+    return out
+
+
+def _fix_landed(store: Any, fix_id: int) -> bool:
+    """``True`` once the fix todo carries a ``landed:`` comment."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM chunks c
+             WHERE c.ref_id = %s AND c.chunk_kind = 'todo_comment'
+               AND c.retired_at IS NULL AND c.text LIKE 'landed:%%'
+             LIMIT 1
+            """,
+            (fix_id,),
+        ).fetchone()
+    return row is not None
+
+
+def _status_of(store: Any, ref_id: int) -> str:
+    """The ref's STATUS tag — ``open`` when it carries none."""
+    return next(
+        (str(t.value) for t in store.tags_for(ref_id) if t.prefix == "STATUS"),
+        "open",
+    )
+
+
+def _parent_of(store: Any, ref_id: int) -> int | None:
+    """The ref's ``parent_id`` — ``None`` when absent or the row is
+    gone."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT parent_id FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+            (ref_id,),
+        ).fetchone()
+    return None if row is None else row[0]
+
+
+def _root(store: Any, todo_id: int) -> tuple[int, str]:
+    """``(top todo id, its STATUS tag)`` walking ``parent_id`` up —
+    capped at 25 hops; a ``parent_id`` cycle, or a link pointing at a
+    retired or non-todo ref mid-chain, ends the walk with status
+    ``gone`` (fail closed: an unreadable root is a dead root)."""
+    top = todo_id
+    seen = {todo_id}
+    for _ in range(25):
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT r.parent_id, p.kind, p.retired_at
+                  FROM refs r LEFT JOIN refs p ON p.ref_id = r.parent_id
+                 WHERE r.ref_id = %s AND r.retired_at IS NULL
+                """,
+                (top,),
+            ).fetchone()
+        if row is None:
+            return top, "gone"  # `top` vanished mid-walk
+        parent, p_kind, p_retired = row
+        if parent is None:
+            break  # `top` is the root
+        if parent in seen or p_retired is not None:
+            return top, "gone"
+        if p_kind != "todo":
+            break  # a non-todo parent: `top` is the top todo
+        seen.add(parent)
+        top = parent
+    return top, _status_of(store, top)
+
+
+def _answered_wait_ask(store: Any, todo_id: int) -> bool:
+    """``True`` when the ``release-review-wait:td<todo_id>`` ask carries
+    an ``answer:`` comment (the ``answer:`` convention —
+    ``plans.release`` ~296, ``handlers.todo`` ~66); it clears that one
+    land."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t USING (tag_id)
+              JOIN chunks c ON c.ref_id = r.ref_id
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = %s
+               AND c.chunk_kind = 'todo_comment' AND c.retired_at IS NULL
+               AND lower(ltrim(c.text)) LIKE 'answer:%%'
+             LIMIT 1
+            """,
+            (f"{_REVIEW_WAIT_TAG_PREFIX}:td{todo_id}",),
+        ).fetchone()
+    return row is not None
+
+
+def _open_wait_ask_id(store: Any, todo_id: int) -> int | None:
+    """The id of the still-answerable ``release-review-wait:td<todo_id>``
+    ask — a live todo whose STATUS is not in :data:`_WAIT_ASK_CLOSED` —
+    or ``None``. A closed (or retired) ask holds nothing whether or not
+    it was answered; an answered one cleared the land upstream."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT r.ref_id FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t USING (tag_id)
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = %s
+               AND NOT EXISTS (
+                 SELECT 1 FROM ref_tags rs JOIN tags s USING (tag_id)
+                  WHERE rs.ref_id = r.ref_id AND s.namespace = 'STATUS'
+                    AND s.value = ANY(%s))
+             ORDER BY r.ref_id
+             LIMIT 1
+            """,
+            (f"{_REVIEW_WAIT_TAG_PREFIX}:td{todo_id}", list(_WAIT_ASK_CLOSED)),
+        ).fetchone()
+    return None if row is None else int(row[0])
+
+
+def _review_outcome(
+    store: Any, rid: int, meta: dict[str, Any], todo_id: int
+) -> tuple[str, str]:
+    """``(outcome, blocker line)`` for one covering reviewer on the
+    td<todo_id> land — ``satisfied`` clears it; ``waiting`` is a live
+    reviewer still holding it (the line is the blocker); ``hopeless``
+    can never resolve, so the wait ask files at once."""
+    status = _status_of(store, rid)
+    base = f"engine review td{rid} on the td{todo_id} land"
+    if status in TERMINAL_TODO_STATUSES or status == "cancelled":
+        review = meta.get("review")
+        review = review if isinstance(review, dict) else {}
+        verdict = review.get("verdict")
+        if verdict == "LAND":
+            return "satisfied", ""
+        if verdict == "FIX":
+            task = review.get("task")
+            if isinstance(task, int):
+                if _fix_landed(store, task):
+                    return "satisfied", ""
+                task_status = _status_of(store, task)
+                if (
+                    task_status not in TERMINAL_TODO_STATUSES
+                    and task_status != "cancelled"
+                ):
+                    return "waiting", (
+                        f"{base} was FIX; its fix td{task} is not landed "
+                        f"yet — next: let td{task} land"
+                    )
+                return "hopeless", (
+                    f"{base} was FIX; its fix td{task} ended {task_status} "
+                    "with no landed: comment — next: acknowledge the "
+                    "review-wait ask or land a fix"
+                )
+        return "hopeless", (
+            f"{base} closed {status} without a usable verdict; the wait "
+            "can never resolve — next: acknowledge the review-wait ask "
+            f"or re-review td{todo_id}"
+        )
+    root_id, root_status = _root(store, rid)
+    if root_status in TERMINAL_TODO_STATUSES or root_status in ("cancelled", "gone"):
+        return "hopeless", (
+            f"{base} is open under a {root_status} root (td{root_id}); it "
+            f"will never finish — next: close td{rid} or acknowledge the "
+            "review-wait ask"
+        )
+    return "waiting", (
+        f"{base} is {status}; the release waits — next: let td{rid} finish or close it"
+    )
+
+
+def _file_review_wait_ask(
+    store: Any,
+    todo_id: int,
+    *,
+    rid: int | None = None,
+    job_id: int | None = None,
+    dry_run: bool,
+) -> tuple[str, int | None]:
+    """The review-wait ask: one OPEN ``ask-user`` ruling todo per LANDED
+    todo, deduped by its ``release-review-wait:td<todo_id>`` tag over
+    still-answerable todos inside one locked transaction — same shape as
+    :func:`_file_stuck_ask`. Answering it clears that one land; one
+    closed without an ``answer:`` comment is refiled.
+
+    Returns ``(note, ask_id)`` — the live ask's todo id (filed or
+    deduped) so the blocker can name it, ``None`` on dry-run/factory-off.
+    """
+    from precis.workers.job_types import run_slice
+
+    tag = f"{_REVIEW_WAIT_TAG_PREFIX}:td{todo_id}"
+    if rid is not None:
+        what = f"engine review td{rid} on the td{todo_id} land"
+        title = (
+            f"engine review td{rid} on the td{todo_id} land will not "
+            "resolve on its own — acknowledge it, or is this a false alarm?"
+        )
+        body = (
+            f"The engine-review gate (td574937 E1) holds every release "
+            f"pass and cut while the td{todo_id} engine land is "
+            f"uncleared; reviewer td{rid} cannot settle it on its own. "
+            "This ask is the only write the gate makes; answering it "
+            "executes nothing — 'acknowledged' and 'false alarm' both "
+            "just close it, which clears this one land."
+        )
+    else:
+        what = f"the td{todo_id} engine land (jo{job_id})"
+        title = (
+            f"engine land td{todo_id} (jo{job_id}) has no reviewer — "
+            "acknowledge it, or is this a false alarm?"
+        )
+        body = (
+            f"The engine-review gate (td574937 E1) holds every release "
+            f"pass and cut while the td{todo_id} engine land (job "
+            f"jo{job_id}) has no reviewer covering it — fix, revert and "
+            "plain lands mint none. This ask is the only write the gate "
+            "makes; answering it executes nothing — 'acknowledged' and "
+            "'false alarm' both just close it, which clears this one "
+            "land."
+        )
+    context = (
+        f"{what} holds every release pass and cut until cleared — "
+        "answering executes nothing"
+    )
+    meta: dict[str, Any] = {
+        "ask": {
+            "kind": "ruling",
+            "options": ["acknowledged", "false alarm"],
+            "blocks": "nothing",
+            "context": context[:600],
+        }
+    }
+    check_ask_meta(meta)
+    with store.atomic() as conn:
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (_REVIEW_WAIT_LOCK_KEY,))
+        dupes = conn.execute(
+            """
+            SELECT r.ref_id,
+                   EXISTS (
+                     SELECT 1 FROM ref_tags rs JOIN tags s USING (tag_id)
+                      WHERE rs.ref_id = r.ref_id AND s.namespace = 'STATUS'
+                        AND s.value = ANY(%s)) AS closed
+              FROM refs r
+                JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                JOIN tags t USING (tag_id)
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = %s
+             ORDER BY r.ref_id
+            """,
+            (list(_WAIT_ASK_CLOSED), tag),
+        ).fetchall()
+        open_ids = [int(r[0]) for r in dupes if not r[1]]
+        closed_ids = [int(r[0]) for r in dupes if r[1]]
+        if open_ids:
+            return (
+                f"engine review: ask for td{todo_id} already filed (td{open_ids[0]})",
+                open_ids[0],
+            )
+        if dry_run or run_slice.factory_off():
+            return f"engine review: would file {tag} ({title[:60]})", None
+        ref = store.insert_ref(
+            kind="todo", slug=None, title=title, meta=meta, conn=conn
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        for value in ("ask-user", "showstopper", tag):
+            store.add_tag(ref.id, Tag.open(value), set_by="system", conn=conn)
+        store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
+            conn=conn,
+        )
+    verb = "filed"
+    if closed_ids:
+        verb = f"refiled after td{', td'.join(str(i) for i in closed_ids)} closed"
+    return f"engine review: {verb} {tag} as td{ref.id}", int(ref.id)
+
+
+def engine_review_blockers(
+    store: Any,
+    *,
+    now: datetime | None = None,
+    file_asks: bool = False,
+    dry_run: bool = False,
+) -> tuple[list[str], list[str]]:
+    """``(blocker lines, notes)`` — the engine-review gate's verdict.
+
+    Per engine land — a ``land_slice`` job that SUCCEEDED with an engine
+    stamp — oldest first: an answered ``release-review-wait:td<land>``
+    ask clears it; no covering reviewer (``generate.from`` naming the
+    landed todo or its parent) blocks and files the ask at once; covering
+    reviewers are judged satisfied > waiting > hopeless — a waiting land
+    files its ask once the land is :data:`REVIEW_WAIT_AFTER` old, a
+    hopeless one at once. An ask closed without an ``answer:`` comment
+    does not dedupe — the next filing pass refiles it — and blocker
+    lines name the live ask's id. ``file_asks`` limits the one write to
+    the pass (``release_cut`` asks for nothing). Any exception anywhere
+    returns a single fail-closed blocker.
+    """
+    now = now or datetime.now(UTC)
+    notes: list[str] = []
+    blockers: list[str] = []
+    try:
+        by_from: dict[int, list[tuple[int, dict[str, Any]]]] = {}
+        for rid, meta in _reviewer_rows(store):
+            gen = meta.get("generate")
+            if not isinstance(gen, dict):
+                continue
+            m = _REVIEW_FROM_RE.fullmatch(str(gen.get("from") or ""))
+            if m is None:
+                continue
+            by_from.setdefault(int(m.group(1)), []).append((rid, meta))
+        for job_id, todo_id, created_at in _engine_landed_jobs(store):
+            if _answered_wait_ask(store, todo_id):
+                continue
+            parent = _parent_of(store, todo_id)
+            covering = [
+                r
+                for fid in (todo_id, parent)
+                if fid is not None
+                for r in by_from.get(fid, ())
+            ]
+            if not covering:
+                ask_id = _open_wait_ask_id(store, todo_id)
+                if file_asks:
+                    note, filed_id = _file_review_wait_ask(
+                        store, todo_id, job_id=job_id, dry_run=dry_run
+                    )
+                    notes.append(note)
+                    if filed_id is not None:
+                        ask_id = filed_id
+                ask_txt = f"td{ask_id}" if ask_id is not None else f"on td{todo_id}"
+                blockers.append(
+                    f"engine land td{todo_id} (jo{job_id}) has no "
+                    "reviewer; the release waits — next: answer the "
+                    f"review-wait ask {ask_txt}"
+                )
+                continue
+            waiting: tuple[int, str] | None = None
+            hopeless: tuple[int, str] | None = None
+            satisfied = False
+            for rid, meta in covering:
+                outcome, line = _review_outcome(store, rid, meta, todo_id)
+                if outcome == "satisfied":
+                    satisfied = True
+                    break
+                if outcome == "waiting" and waiting is None:
+                    waiting = (rid, line)
+                elif outcome == "hopeless" and hopeless is None:
+                    hopeless = (rid, line)
+            if satisfied:
+                continue
+            pick = waiting or hopeless
+            if pick is None:
+                continue
+            rid, line = pick
+            if hopeless is not None and waiting is None:
+                due = True  # can never resolve — ask at once
+            elif created_at is not None:
+                stamp = (
+                    created_at
+                    if created_at.tzinfo is not None
+                    else created_at.replace(tzinfo=UTC)
+                )
+                due = now - stamp >= REVIEW_WAIT_AFTER
+            else:
+                due = False
+            ask_id = _open_wait_ask_id(store, todo_id)
+            if file_asks and due:
+                note, filed_id = _file_review_wait_ask(
+                    store, todo_id, rid=rid, dry_run=dry_run
+                )
+                notes.append(note)
+                if filed_id is not None:
+                    ask_id = filed_id
+            if ask_id is not None:
+                line = f"{line} — the open ask is td{ask_id}"
+            blockers.append(line)
+    except Exception as exc:
+        log.warning("release_poll: engine review gate unreadable", exc_info=True)
+        return (
+            [
+                f"engine review gate unreadable ({type(exc).__name__}); "
+                "next: retry next tick — fail closed"
+            ],
+            notes,
+        )
+    return blockers, notes
+
+
 def run_pass(
     store: Any,
     *,
@@ -984,6 +1486,13 @@ def run_pass(
     blocked = _round_blocker(store, now, dry_run=dry_run, notes=res.notes)
     if blocked is not None:
         res.blocker = blocked
+        return res
+    lines, notes = engine_review_blockers(
+        store, now=now, file_asks=True, dry_run=dry_run
+    )
+    res.notes.extend(notes)
+    if lines:
+        res.blocker = "; ".join(lines)
         return res
     res.repo = pr_class.resolve_repo(store, repo)
     if not res.repo:
@@ -1089,6 +1598,7 @@ __all__ = [
     "WINDOWS_SETTING",
     "PollResult",
     "branch_in_flight",
+    "engine_review_blockers",
     "in_window",
     "load",
     "parse_windows",

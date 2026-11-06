@@ -23,7 +23,7 @@ from precis.plans import pr_class as P
 from precis.plans import release as R
 from precis.plans import templates as T
 from precis.store import Store
-from precis.store.types import Tag
+from precis.store.types import ChunkInsert, Tag
 from precis.workers.job_types import release_poll as rp
 from tests._script import load_script
 
@@ -1509,3 +1509,470 @@ def test_the_ask_parents_under_the_matching_pass_root_only(
     ref = store.get_ref(kind="todo", id=asks[-1])
     assert ref is not None and ref.parent_id == root
     assert f"plan:{root}" in _tags(store, asks[-1])
+
+
+# ── the engine-review gate (td574937 E1) ───────────────────────────
+#
+# A release never cuts over an engine land its reviewer has not read:
+# the gate enumerates every engine-stamped ``land_slice`` job that
+# SUCCEEDED (``meta.landed_sha`` not null — a failed land has no key, a
+# no-diff land a JSON null) and asks whether a reviewer covers the landed
+# todo — ``generate.from`` names the todo or its parent, matching
+# ``plan_dispatch._review_targets``. A covering reviewer closed ``LAND``
+# or ``FIX`` with a landed fix clears the land; an open one under a live
+# root waits (a ``release-review-wait:td<id>`` ask files after 24 h);
+# anything else — no covering reviewer, a dead verdict or a dead root —
+# can never resolve, so it blocks and files the ask at once. An answered
+# ask clears that one land. The gate sits with the DB gates, before any
+# GitHub read.
+
+
+def _reviewer(
+    store: Store,
+    from_id: int,
+    *,
+    status: str = "open",
+    review: dict[str, Any] | None = None,
+    parent_id: int | None = None,
+) -> int:
+    meta: dict[str, Any] = {"generate": {"role": "reviewer", "from": f"td{from_id}"}}
+    if review is not None:
+        meta["review"] = review
+    ref = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title=f"review td{from_id}",
+        meta=meta,
+        parent_id=parent_id,
+    )
+    store.add_tag(
+        ref.id, Tag.closed("STATUS", status), set_by="system", replace_prefix=True
+    )
+    return int(ref.id)
+
+
+def _engine_land(
+    store: Store,
+    todo_id: int,
+    *,
+    paths: list[str] | None = None,
+    hours_ago: float | None = None,
+    landed: bool | None = True,
+) -> int:
+    """A ``land_slice`` job for ``td<todo_id>``; ``paths`` is the
+    ``meta.engine_paths`` stamp (``None`` = a pre-E1 job, no stamp).
+    ``landed``: True stamps a ``landed_sha`` (a succeeded land — the only
+    kind that can block), None a JSON null (a no-diff land) and False no
+    key at all (a failed land)."""
+    meta: dict[str, Any] = {
+        "job_type": "land_slice",
+        "params": {"todo_id": todo_id},
+    }
+    if paths is not None:
+        meta["engine_paths"] = paths
+    if landed is not False:
+        meta["landed_sha"] = "f" * 40 if landed else None
+    ref = store.insert_ref(kind="job", slug=None, title="land_slice", meta=meta)
+    if hours_ago is not None:
+        from datetime import timedelta
+
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET created_at = %s WHERE ref_id = %s",
+                (NOW - timedelta(hours=hours_ago), ref.id),
+            )
+    return int(ref.id)
+
+
+def _landed_comment(store: Store, todo_id: int) -> None:
+    store.chunks.insert_chunks(
+        todo_id,
+        [
+            ChunkInsert(
+                ord=1, text="landed: abc1234 — fix", meta={"chunk_kind": "todo_comment"}
+            )
+        ],
+    )
+
+
+def _review_wait_asks(store: Store) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t USING (tag_id)
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value LIKE 'release-review-wait:%'
+             ORDER BY r.ref_id
+            """
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _slicer_child(store: Store) -> tuple[int, int]:
+    """A slicer todo and one child slice — the reviewer's ``from`` names
+    the slicer; the land job names the child."""
+    s = store.insert_ref(kind="todo", slug=None, title="slicer", meta=None)
+    c = store.insert_ref(
+        kind="todo", slug=None, title="slice", meta=None, parent_id=int(s.id)
+    )
+    return int(s.id), int(c.id)
+
+
+def test_open_engine_reviewer_blocks_a_pass(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _fake_github(monkeypatch)
+    _engine_land(store, 42, paths=["scripts/ship"])
+    rid = _reviewer(store, 42)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None
+    assert f"td{rid}" in res.blocker and "td42" in res.blocker
+    assert "next:" in res.blocker
+    assert calls == []  # the DB gates run before any GitHub read
+
+
+def test_a_slicer_reviewer_covers_its_childs_land(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``generate.from`` names the slicer; the land job names the slice —
+    one level up ``parent_id`` is still coverage."""
+    _fake_github(monkeypatch)
+    slicer, child = _slicer_child(store)
+    _engine_land(store, child, paths=["scripts/ship"])
+    rid = _reviewer(store, slicer)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None
+    assert f"td{rid}" in res.blocker and f"td{child}" in res.blocker
+
+
+def test_reviewer_closed_land_does_not_block(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    _engine_land(store, 42, paths=["scripts/ship"])
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None
+
+
+def test_fix_reviewer_with_an_unlanded_fix_blocks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    _engine_land(store, 42, paths=["src/precis/plans/lanes.py"])
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    rid = _reviewer(
+        store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)}
+    )
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None
+    assert f"td{rid}" in res.blocker and f"td{fix.id}" in res.blocker
+
+
+def test_fix_reviewer_with_a_landed_fix_does_not_block(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    _engine_land(store, 42, paths=["src/precis/plans/lanes.py"])
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    _landed_comment(store, int(fix.id))
+    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None
+
+
+def test_fix_reviewer_without_a_task_asks_at_once(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A FIX naming no task can never resolve — the wait ask files at
+    once, not after 24 h."""
+    _fake_github(monkeypatch)
+    _engine_land(store, 42, paths=["scripts/ship"])
+    _reviewer(store, 42, status="done", review={"verdict": "FIX"})
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None and res.blocker is not None
+    assert "without a usable verdict" in res.blocker
+    assert len(_review_wait_asks(store)) == 1
+
+
+def test_a_reviewer_closed_without_a_verdict_asks_at_once(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    for i, status in enumerate(("won't-do", "auto-timeout", "done")):
+        _engine_land(store, 42 + i, paths=["scripts/ship"])
+        _reviewer(store, 42 + i, status=status)  # no meta.review
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None and "without a usable verdict" in res.blocker
+    assert len(_review_wait_asks(store)) == 3
+
+
+def test_a_failed_land_never_blocks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a SUCCEEDED land holds the release: a failed job has no
+    ``landed_sha`` key and a no-diff land stamps it JSON null."""
+    _fake_github(monkeypatch)
+    _engine_land(store, 42, paths=["scripts/ship"], landed=False)
+    _engine_land(store, 43, paths=["scripts/ship"], landed=None)
+    _reviewer(store, 42)
+    _reviewer(store, 43)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None
+
+
+def test_a_later_failed_land_does_not_mask_an_engine_land(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate scans every job, not the newest: a failed re-land on top
+    of a succeeded engine land leaves the engine land blocking."""
+    _fake_github(monkeypatch)
+    _engine_land(store, 42, paths=["scripts/ship"])
+    _engine_land(store, 42, paths=["scripts/ship"], landed=False)
+    rid = _reviewer(store, 42)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None and f"td{rid}" in res.blocker
+
+
+def test_the_fix_tasks_own_engine_land_blocks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fix task's own engine land has no reviewer covering it (its
+    parent is the plan, not the slicer): it blocks and files its own ask
+    even though the review it answered is satisfied."""
+    _fake_github(monkeypatch)
+    _engine_land(store, 42, paths=["scripts/ship"])
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    _engine_land(store, int(fix.id), paths=["src/precis/plans/lanes.py"])
+    _landed_comment(store, int(fix.id))
+    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None
+    assert "has no reviewer" in res.blocker and f"td{fix.id}" in res.blocker
+    asks = _review_wait_asks(store)
+    assert len(asks) == 1
+    assert f"release-review-wait:td{fix.id}" in _tags(store, asks[0])
+
+
+def test_an_engine_land_with_no_reviewer_asks_at_once(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    job = _engine_land(store, 42, paths=["scripts/ship"])
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None
+    assert "has no reviewer" in res.blocker
+    assert "td42" in res.blocker and f"jo{job}" in res.blocker
+    asks = _review_wait_asks(store)
+    assert len(asks) == 1
+    ref = store.get_ref(kind="todo", id=asks[0])
+    assert ref is not None
+    assert "td42" in ref.meta["ask"]["context"]
+    assert "release-review-wait:td42" in _tags(store, asks[0])
+
+
+def test_an_answered_wait_ask_clears_the_land(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ruling answered on the ask — an ``answer:`` comment — clears
+    that one land; the next pass mints."""
+    _fake_github(monkeypatch)
+    _engine_land(store, 42, paths=["scripts/ship"], hours_ago=25)
+    _reviewer(store, 42)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    [ask_id] = _review_wait_asks(store)
+    store.chunks.insert_chunks(
+        ask_id,
+        [
+            ChunkInsert(
+                ord=1,
+                text="answer: acknowledged",
+                meta={"chunk_kind": "todo_comment"},
+            )
+        ],
+    )
+    _close(store, ask_id)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None
+
+
+def test_a_terminal_unlanded_fix_asks_at_once(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A FIX whose fix task ended without landing can never resolve — the
+    ask files without the 24 h wait, naming what to do."""
+    _fake_github(monkeypatch)
+    _engine_land(store, 42, paths=["scripts/ship"])  # fresh land
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    store.add_tag(
+        fix.id,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    rid = _reviewer(
+        store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)}
+    )
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None
+    assert f"td{rid}" in res.blocker and f"td{fix.id}" in res.blocker
+    assert "no landed: comment" in res.blocker
+    assert len(_review_wait_asks(store)) == 1
+
+
+def test_an_open_reviewer_under_a_dead_root_asks_at_once(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An open reviewer whose plan root is cancelled can never finish —
+    ask at once, not after 24 h."""
+    _fake_github(monkeypatch)
+    _engine_land(store, 42, paths=["scripts/ship"])  # fresh land
+    root = store.insert_ref(kind="todo", slug=None, title="the plan", meta=None)
+    store.add_tag(
+        root.id,
+        Tag.closed("STATUS", "cancelled"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    rid = _reviewer(store, 42, parent_id=int(root.id))
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None
+    assert "cancelled root" in res.blocker and f"td{rid}" in res.blocker
+    assert len(_review_wait_asks(store)) == 1
+
+
+def test_non_engine_land_does_not_block(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    _engine_land(store, 42, paths=["docs/a.md", "src/precis/foo.py"])
+    _reviewer(store, 42)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None
+
+
+def test_a_land_with_no_engine_stamp_counts_as_non_engine(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-E1 ``land_slice`` job carries no ``engine_paths`` stamp; it
+    reads as non-engine and never blocks."""
+    _fake_github(monkeypatch)
+    _engine_land(store, 42)  # no paths → no stamp
+    _reviewer(store, 42)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None
+
+
+def test_a_review_wait_under_24h_blocks_without_an_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    _engine_land(store, 42, paths=["scripts/ship"], hours_ago=2)
+    _reviewer(store, 42)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None and res.blocker is not None
+    assert _review_wait_asks(store) == []
+
+
+def test_a_review_wait_over_24h_files_one_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    _engine_land(store, 42, paths=["scripts/ship"], hours_ago=25)
+    rid = _reviewer(store, 42)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None and res.blocker is not None
+    asks = _review_wait_asks(store)
+    assert len(asks) == 1
+    ref = store.get_ref(kind="todo", id=asks[0])
+    assert ref is not None
+    ask = ref.meta["ask"]
+    assert ask["kind"] == "ruling"
+    assert ask["options"] == ["acknowledged", "false alarm"]
+    assert ask["blocks"] == "nothing"
+    assert f"td{rid}" in ask["context"] and "td42" in ask["context"]
+    tags = _tags(store, asks[0])
+    # The ask keys on the LAND's todo: answering it clears that one land.
+    assert {"ask-user", "showstopper", "release-review-wait:td42"} <= tags
+    # Deduped while the ask is open: a second pass files nothing new.
+    rp.run_pass(store, repo=REPO, now=NOW)
+    assert _review_wait_asks(store) == asks
+    # Closed WITHOUT an ``answer:`` comment the ask does not hold: the
+    # next pass refiles it and the blocker names the new ask's id.
+    _close(store, asks[0])
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None and res.blocker is not None
+    more = _review_wait_asks(store)
+    assert len(more) == 2 and asks[0] in more
+    second = next(a for a in more if a != asks[0])
+    assert f"td{second}" in res.blocker
+
+
+def test_a_wait_ask_closed_unanswered_is_refiled(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closing the ruling ask without an ``answer:`` comment does not
+    clear the land: the gate files a new ask for it and the blocker
+    names that ask's id."""
+    _fake_github(monkeypatch)
+    _engine_land(store, 42, paths=["scripts/ship"])
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    [first] = _review_wait_asks(store)
+    _close(store, first)  # closed with no ``answer:`` comment
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None and res.blocker is not None
+    asks = _review_wait_asks(store)
+    assert len(asks) == 2 and first in asks
+    second = next(a for a in asks if a != first)
+    assert f"td{second}" in res.blocker
+    assert "release-review-wait:td42" in _tags(store, second)
+    # The still-open ask dedupes the next pass, and the no-filing read
+    # (release_cut's) names the live ask's id too.
+    rp.run_pass(store, repo=REPO, now=NOW)
+    assert _review_wait_asks(store) == asks
+    lines, _notes = rp.engine_review_blockers(store, now=NOW)
+    assert lines and f"td{second}" in "; ".join(lines)
+
+
+def test_review_wait_ask_not_filed_under_dry_run_or_factory_off(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    _engine_land(store, 42, paths=["scripts/ship"], hours_ago=25)
+    _reviewer(store, 42)
+    res = rp.run_pass(store, repo=REPO, dry_run=True, now=NOW)
+    assert _review_wait_asks(store) == []
+    assert any("would file" in n for n in res.notes)
+    monkeypatch.setenv("PRECIS_FACTORY", "off")
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert _review_wait_asks(store) == []
+    assert any("would file" in n for n in res.notes)
+
+
+def test_engine_review_gate_unreadable_fails_closed(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _fake_github(monkeypatch)
+
+    def boom(s: Store) -> list[tuple[int, int, Any]]:
+        raise OSError("db gone")
+
+    monkeypatch.setattr(rp, "_engine_landed_jobs", boom)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None and "unreadable" in res.blocker
+    assert "fail closed" in res.blocker
+    assert calls == []

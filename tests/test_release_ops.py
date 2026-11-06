@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -1807,3 +1808,73 @@ def test_probe_still_stale_at_the_deadline_files_an_ask(
     assert "node-a" in meta["ask"]["context"]
     assert "last heartbeat" in meta["ask"]["context"]
     assert "confirmed" not in _meta(store, mint.root_id)["release"]
+
+
+# ── the engine-review gate on the cut (td574937 E1) ────────────────
+#
+# ``release_cut.validate_submit`` and ``submit`` refuse while a reviewer
+# on an engine-stamped ``land_slice`` job is open or its FIX is unlanded
+# — the same gate ``release_poll.run_pass`` runs; no asks are filed here.
+
+
+def _reviewer(
+    store: Store,
+    from_id: int,
+    *,
+    status: str = "open",
+    review: dict[str, Any] | None = None,
+) -> int:
+    meta: dict[str, Any] = {"generate": {"role": "reviewer", "from": f"td{from_id}"}}
+    if review is not None:
+        meta["review"] = review
+    ref = store.insert_ref(
+        kind="todo", slug=None, title=f"review td{from_id}", meta=meta
+    )
+    store.add_tag(
+        ref.id, Tag.closed("STATUS", status), set_by="system", replace_prefix=True
+    )
+    return int(ref.id)
+
+
+def _engine_land(store: Store, build_id: int, paths: list[str] | None) -> int:
+    meta: dict[str, Any] = {
+        "job_type": "land_slice",
+        "params": {"todo_id": build_id},
+        "landed_sha": "f" * 40,  # only a SUCCEEDED land can block
+    }
+    if paths is not None:
+        meta["engine_paths"] = paths
+    ref = store.insert_ref(kind="job", slug=None, title="land_slice", meta=meta)
+    return int(ref.id)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
+def test_open_engine_reviewer_blocks_a_cut(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    mint = T.mint_release_pass(store)
+    _engine_land(store, 42, ["scripts/ship"])
+    rid = _reviewer(store, 42)
+    refusal = rc.validate_submit(store, params={"todo_id": mint.ids["cut"]})
+    assert refusal is not None
+    assert refusal.startswith("release_cut:")
+    assert f"td{rid}" in refusal and "td42" in refusal
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.submit(ctx, None) is None
+    assert checkout["argv"] == []
+    assert ctx.failures and f"td{rid}" in ctx.failures[0]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
+def test_non_engine_or_resolved_review_does_not_block_a_cut(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    mint = T.mint_release_pass(store)
+    _engine_land(store, 42, ["docs/a.md"])  # a non-engine diff
+    _reviewer(store, 42)
+    _engine_land(store, 43, ["scripts/ship"])
+    _reviewer(store, 43, status="done", review={"verdict": "LAND"})
+    assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and checkout["argv"] != []

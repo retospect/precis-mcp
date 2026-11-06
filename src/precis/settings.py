@@ -489,6 +489,20 @@ REGISTRY: dict[str, SettingSpec] = {
             "measured in wait_parks * LANE_FULL_BACKOFF). 0 pays "
             "immediately, a negative value reads as 0.",
         ),
+        SettingSpec(
+            key="factory.deny_relaxed",
+            type="bool",
+            env_var=None,
+            default=False,
+            doc="DB-only. When true, the factory deny-write set shrinks to "
+            "lanes.HUMAN_ONLY_PATHS + lanes.INTERIM_DENY (td574937 E1; "
+            "Reto: 'I am happy taking the risk, we have backups'); engine "
+            "paths get a review and a checked land instead of a deny "
+            "rule. Off, absent or unreadable keeps the full "
+            "FACTORY_DENY_WRITE_PATHS plus HUMAN_ONLY_PATHS — nothing "
+            "turns on by default; the coordinator flips it after E1 is "
+            "deployed.",
+        ),
     )
 }
 

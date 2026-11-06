@@ -160,6 +160,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from precis.plans import lanes as _lanes
 from precis.plans.logbook import log_plan_event
 from precis.plans.templates import PENDING_SHA
 from precis.store.types import ChunkInsert, Tag
@@ -194,8 +195,11 @@ NO_DIFF_NOTE = (
 )
 
 
-def ship_flag(params: dict[str, Any]) -> str:
-    """``--quick`` unless ``params.checked`` is ``True``.
+def ship_flag(params: dict[str, Any], engine: bool = False) -> str:
+    """``--quick`` unless ``params.checked`` is ``True`` — or the diff is
+    ``engine`` (td574937 E1: an engine land never drops to lint; the
+    engine review gate on the release waits for its reviewer, and the
+    checked gate is what that review reads).
 
     Reto 2026-11-05 (gr570221): the factory lander defaults to ``--quick``
     — lint only; the release gate on ``/go`` runs the suite before deploy.
@@ -206,7 +210,7 @@ def ship_flag(params: dict[str, Any]) -> str:
     catches, and a pr-intake plan's land node asks for that gate
     (``templates`` passes ``checked: True``).
     """
-    return "--checked" if params.get("checked") is True else "--quick"
+    return "--checked" if engine or params.get("checked") is True else "--quick"
 
 
 #: The ✖ line ``scripts/ship --checked`` dies with when the impacted-tests
@@ -1172,7 +1176,13 @@ def submit(ctx: Any, spec: Any) -> Any:
             pr_class.land_subject(str(pr["title"]), str(pr.get("class") or "")),
             todo_id,
         )
-    flag = ship_flag(params)
+    # Stamp the engine-diff verdict on the job — always, so a land with
+    # no stamp is a pre-E1 one the release gate reads as non-engine. A
+    # diff git cannot read is treated as engine (fail closed).
+    paths = _rs.changed_paths(tree)
+    hits = ["<unreadable>"] if paths is None else _lanes.engine_hits(paths)
+    ctx.set_meta(engine_paths=hits[:50])
+    flag = ship_flag(params, engine=bool(hits))
     if subject is None:
         what = "git log failed" if subjects is None else "no commit ahead"
         _fail(
@@ -1813,8 +1823,10 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
       it from there;
     * alone red + main red → not the branch's: ship relaunches through
       :func:`full_fallback_flag` (``--quick`` — this run's lint already
-      passed; the checked tests run after it), a ``handoff``-style note
-      names the ids on the todo;
+      passed; the checked tests run after it) — or ``--full`` on an
+      engine land (``meta.engine_paths`` set), the same rule as the
+      main red path — a ``handoff``-style note names the ids on the
+      todo;
     * alone red + main green → the branch's red after all: the ordinary
       red, attempt burned;
     * any launch or probe failure → the ordinary red."""
@@ -1883,25 +1895,33 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
         # "red on main too" needs the same evidence: a non-zero probe that
         # never ran the named tests is a probe failure, never a verdict.
         return _ordinary_ship_red(ctx, handle)
-    flag = full_fallback_flag()
+    # td574937 E1: same rule as the main red path — an engine land
+    # relaunches ``--full`` (the full local gate), never lint.
+    flag = "--full" if (ctx.meta or {}).get("engine_paths") else full_fallback_flag()
     if flag is None:
         return _ordinary_ship_red(ctx, handle)
     tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
     subject = str(handle.get("subject") or "")
+    lane = "--full (the full local gate)" if flag == "--full" else "--quick (lint only)"
     try:
         _rs._append_comment(
             ctx.store,
             todo_id,
             f"handoff: {', '.join(ids)} are red on origin/main too — the "
             "checked red is not this branch's; the land goes through "
-            "--quick (lint only). The reds are main's to fix.",
+            f"{lane}. The reds are main's to fix.",
         )
     except Exception:  # pragma: no cover — the land still goes on
         log.warning("land_slice: main-red note on td%d failed", todo_id)
     ctx.append_chunk(
         "job_event",
         f"land_slice: {', '.join(ids)} red on origin/main too — relaunching "
-        f"scripts/ship {flag} (lint only; this run's lint already passed)",
+        f"scripts/ship {flag} "
+        + (
+            "(the full local gate; an engine land never drops to lint)"
+            if flag == "--full"
+            else "(lint only; this run's lint already passed)"
+        ),
     )
     Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
     fresh = _launch_ship(ctx, tree, flag, subject, carry=handle)
@@ -1977,21 +1997,36 @@ def poll(ctx: Any, handle: Any) -> bool:
             # Nothing parsed — the excerpt is all the next session gets;
             # the land log dies with the worktree (gr573347).
             handoff += f"\n\nThe gate's output before the verdict:\n{detail}"
-        fallback = full_fallback_flag()
+        # td574937 E1: an engine land's FULL refusal relaunches with the
+        # full local gate, never lint and ignoring the env flag — the
+        # release waits on the engine review, which reads the checked
+        # gate. A non-engine (or pre-E1, un-stamped) land keeps --quick.
+        fallback = (
+            "--full" if (ctx.meta or {}).get("engine_paths") else full_fallback_flag()
+        )
         if (
             fallback
             and FULL_SELECTOR_MARK in cross
             and str(handle.get("flag") or ship_flag(params)) != fallback
         ):
-            # The lane is refused, not the branch: relaunch through the quick
-            # lane (Reto 2026-11-05, me570388). No attempt is consumed and no
-            # builder is asked to fix what the ship said about itself.
+            # The lane is refused, not the branch: relaunch through the
+            # fallback lane (Reto 2026-11-05, me570388). No attempt is
+            # consumed and no builder is asked to fix what the ship said
+            # about itself.
             Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
-            ctx.append_chunk(
-                "job_event",
-                f"land_slice: {cross} — relaunching scripts/ship {fallback} "
-                "(lint only; the release gate on /go runs the full suite)",
+            # ``cross`` is the ship's own refusal line — on an engine land
+            # it would echo "lint only" into the event, so the --full
+            # relaunch names the mark instead.
+            event = (
+                f"land_slice: {FULL_SELECTOR_MARK} — relaunching scripts/ship "
+                "--full (the full local gate; an engine land never drops "
+                "to lint)"
+                if fallback == "--full"
+                else f"land_slice: {cross} — relaunching scripts/ship "
+                "--quick (lint only; the release gate on /go runs the "
+                "full suite)"
             )
+            ctx.append_chunk("job_event", event)
             # Carried onto the fresh handle so the green path's todo
             # comment can say the checked land fell back (td573580).
             handle["fell_back_full"] = True

@@ -778,11 +778,11 @@ def _pr_reviewer_brief(target_id: int, pr: dict[str, Any]) -> str:
     return _reviewer_brief(target_id) + "\n\n" + extra
 
 
-def _analysis_brief(f: pr_class.PrFacts, why: str) -> str:
-    from precis.plans.lanes import FACTORY_DENY_WRITE_PATHS
+def _analysis_brief(store: Any, f: pr_class.PrFacts, why: str) -> str:
+    from precis.plans.lanes import deny_paths_for
 
     n = f.number
-    deny = "\n".join(f"- `{p}`" for p in FACTORY_DENY_WRITE_PATHS)
+    deny = "\n".join(f"- `{p}`" for p in deny_paths_for(store))
     return (
         f"Read-only analysis of pull request #{n} ({f.url or 'GitHub'}) by "
         f"{f.author}: {f.title!r}. Class external ({why}).\n\n"
@@ -971,7 +971,7 @@ def mint_pr_intake(
                 "analysis",
                 f"Analyse PR #{number} (read-only)",
                 {**_generate("analyst", f"pr:{number}"), "task_class": "review"},
-                body=_analysis_brief(f, why),
+                body=_analysis_brief(m.store, f, why),
             )
             decision(
                 m,

@@ -437,15 +437,14 @@ def slice_env(
 
 def deny_violations(paths: list[str], deny_paths: tuple[str, ...]) -> list[str]:
     """The ``paths`` (repo-relative, posix) matching any ``deny_paths``
-    glob (``fnmatch``: ``*`` spans ``/``, so ``dir/**`` is the subtree)."""
+    glob (``fnmatch``: ``*`` spans ``/``, so ``dir/**`` is the subtree),
+    plus any path touching :data:`lanes.HUMAN_ONLY_PATHS` — those are
+    never relaxable, so they hold whatever set the lane carries, matched
+    case-insensitively."""
     return sorted(
         {p for p in paths if any(fnmatch.fnmatchcase(p, g) for g in deny_paths)}
+        | set(_lanes.human_only_hits(paths))
     )
-
-
-def _lane_deny_paths(lane_name: Any) -> tuple[str, ...]:
-    del lane_name  # the derived table denies the factory paths everywhere
-    return _lanes.FACTORY_DENY_WRITE_PATHS
 
 
 # ── Seams (tests monkeypatch these) ────────────────────────────────
@@ -962,7 +961,7 @@ def render_brief(
     generator: bool = False,
     role: str | None = None,
     mcp: bool = True,
-    deny_paths: tuple[str, ...] = _lanes.FACTORY_DENY_WRITE_PATHS,
+    deny_paths: tuple[str, ...] | None = None,
     lane_models: tuple[str, ...] = (),
     target: str | None = None,
 ) -> str:
@@ -991,6 +990,8 @@ def render_brief(
             "This lane has no precis MCP. Do not try to reach it. "
             "Everything you want recorded goes in your final message.",
         ]
+    if deny_paths is None:
+        deny_paths = _lanes.deny_paths_for(None)
     if deny_paths:
         lines += [
             "",
@@ -2001,9 +2002,9 @@ def changed_paths(tree: Path) -> list[str] | None:
 
 
 def _deny_reason(tree: Path, deny_paths: tuple[str, ...]) -> str | None:
-    """Why the slice's branch breaks its lane's deny paths, or ``None``."""
-    if not deny_paths:
-        return None
+    """Why the slice's branch breaks its lane's deny paths, or ``None``.
+    The check still runs on an empty ``deny_paths`` — human-only paths
+    hold regardless (:func:`deny_violations`)."""
     paths = changed_paths(tree)
     if paths is None:
         return (
@@ -2237,7 +2238,7 @@ def poll(ctx: Any, handle: Any) -> bool:
             )
     # Server-side deny check, before the handoff lands: independent of
     # whether the session honoured its deny rules (Bash writes included).
-    denied = _deny_reason(tree, _lane_deny_paths(lane))
+    denied = _deny_reason(tree, _lanes.deny_paths_for(ctx.store))
 
     handoff = (result or "").strip()
     if denied:

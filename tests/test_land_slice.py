@@ -25,7 +25,12 @@ pytestmark = pytest.mark.skipif(
 from precis.plans.templates import PENDING_SHA
 from precis.store.types import ChunkInsert, Tag
 from precis.workers.executors import ssh_node
-from precis.workers.job_types import get_job_type, known_job_types, land_slice
+from precis.workers.job_types import (
+    get_job_type,
+    known_job_types,
+    land_slice,
+    run_slice,
+)
 
 FULL_SHA = "abc1234" + "0" * 33
 SUBJECT = "feat(x): widget (td42)"
@@ -182,6 +187,9 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         "gates": [],
         "diff_names": "",
         "worktree_list": "",
+        # The paths ``run_slice.changed_paths`` answers for the submit's
+        # engine-diff probe; ``None`` = git could not read the diff.
+        "changed_paths": ["src/precis/x.py"],
     }
 
     def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -207,6 +215,7 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         return 5150 + len(calls["launch"])
 
     monkeypatch.setattr(land_slice, "_git", fake_git)
+    monkeypatch.setattr(run_slice, "changed_paths", lambda tree: calls["changed_paths"])
     monkeypatch.setattr(land_slice, "_launch", fake_launch)
     monkeypatch.setattr(land_slice, "_process_alive", lambda pid: calls["alive"])
     monkeypatch.setattr(
@@ -1044,6 +1053,110 @@ def test_poll_full_selector_refusal_on_quick_does_not_loop(
     assert len(seams["launch"]) == 1
 
 
+# ── engine lands (td574937 E1) ─────────────────────────────────────
+#
+# The submit stamps ``meta.engine_paths`` on its job — always, so a job
+# with no stamp is a pre-E1 one — and an engine diff lands ``--checked``
+# whatever ``params.checked`` says. A FULL-selector refusal on such a
+# land relaunches with the full local gate (``--full``), never lint and
+# ignoring ``PRECIS_LAND_FULL_FALLBACK``.
+
+
+def test_engine_diff_lands_checked(seams: dict[str, Any]) -> None:
+    seams["changed_paths"] = ["scripts/ship", "src/precis/x.py"]
+    store = _Store()
+    store.add_todo(42)
+    # ``checked`` says quick; the engine diff overrules it.
+    ctx = _Ctx(store, {**_params(seams), "checked": False})
+    handle = land_slice.submit(ctx, None)
+    assert handle is not None and ctx.failure is None
+    [(argv, _kw)] = seams["launch"]
+    assert argv[1] == "--checked"
+    assert ctx.meta_set["engine_paths"] == ["scripts/ship"]
+
+
+def test_non_engine_land_is_unchanged(seams: dict[str, Any]) -> None:
+    store = _Store()
+    store.add_todo(42)
+    ctx, _handle = _submit(store, seams)
+    [(argv, _kw)] = seams["launch"]
+    assert argv[1] == "--quick"
+    # The stamp is always written: an empty list is a checked non-engine
+    # land, distinct from a pre-E1 job carrying no stamp at all.
+    assert ctx.meta_set["engine_paths"] == []
+
+
+def test_unreadable_diff_lands_checked(seams: dict[str, Any]) -> None:
+    """A diff git cannot read is treated as engine — fail closed."""
+    seams["changed_paths"] = None
+    store = _Store()
+    store.add_todo(42)
+    ctx, _handle = _submit(store, seams)
+    [(argv, _kw)] = seams["launch"]
+    assert argv[1] == "--checked"
+    assert ctx.meta_set["engine_paths"] == ["<unreadable>"]
+
+
+def test_full_refusal_on_an_engine_land_relaunches_full(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    seams["changed_paths"] = ["scripts/ship"]
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 1, FULL_REFUSAL_LOG)
+    pctx = _Ctx(store, _params(seams))
+    pctx.meta["engine_paths"] = ["scripts/ship"]
+    assert land_slice.poll(pctx, handle) is False
+    assert pctx.status is None and pctx.failure is None
+    [(first, _kw1), (second, _kw2)] = seams["launch"]
+    assert first[1] == "--checked"
+    assert second[1] == "--full" and second[2] == SUBJECT
+    assert handle["flag"] == "--full"
+    assert handle["fell_back_full"] is True
+    events = [t for k, t in pctx.chunks if k == "job_event"]
+    assert any("selector answers FULL" in e and "--full" in e for e in events)
+    assert not any("lint only" in e for e in events)
+
+
+def test_engine_land_full_fallback_ignores_the_env_flag(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``PRECIS_LAND_FULL_FALLBACK=off`` keeps a non-engine FULL refusal a
+    red; an engine land still relaunches ``--full``."""
+    monkeypatch.setenv("PRECIS_LAND_FULL_FALLBACK", "off")
+    seams["changed_paths"] = ["scripts/ship"]
+    store = _Store()
+    store.add_todo(42)
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 1, FULL_REFUSAL_LOG)
+    pctx = _Ctx(store, _params(seams))
+    pctx.meta["engine_paths"] = ["scripts/ship"]
+    assert land_slice.poll(pctx, handle) is False
+    assert [c[0][1] for c in seams["launch"]] == ["--checked", "--full"]
+
+
+def test_engine_full_refusal_does_not_loop(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``--full`` run that still draws the FULL refusal is the ordinary
+    red — the relaunch happens once."""
+    monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    seams["changed_paths"] = ["scripts/ship"]
+    store = _Store()
+    store.add_todo(42)
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 1, FULL_REFUSAL_LOG)
+    pctx = _Ctx(store, _params(seams))
+    pctx.meta["engine_paths"] = ["scripts/ship"]
+    assert land_slice.poll(pctx, handle) is False
+    _finish(handle, 1, FULL_REFUSAL_LOG)
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert len(seams["launch"]) == 2
+
+
 def test_poll_red_without_a_cross_line_names_the_exit(seams: dict[str, Any]) -> None:
     store = _Store()
     store.add_todo(42)
@@ -1570,6 +1683,11 @@ def test_ship_flag_is_quick_unless_checked() -> None:
     assert land_slice.ship_flag({}) == "--quick"
     assert land_slice.ship_flag({"checked": False}) == "--quick"
     assert land_slice.ship_flag({"checked": True}) == "--checked"
+    # td574937 E1: an engine diff lands --checked whatever params.checked
+    # says; a caller without paths keeps the signature (engine defaults
+    # False).
+    assert land_slice.ship_flag({}, engine=True) == "--checked"
+    assert land_slice.ship_flag({"checked": False}, engine=True) == "--checked"
 
 
 def test_poll_main_refusal_keeps_checked_flag(
@@ -2210,6 +2328,37 @@ def test_poll_checked_red_outside_alone_red_main_red_relaunches_quick(
     assert OUTSIDE_ID in note
     events = [t for k, t in pctx.chunks if k == "job_event"]
     assert any("red on origin/main too" in e and "--quick" in e for e in events)
+
+
+def test_poll_checked_red_main_red_on_an_engine_land_relaunches_full(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An engine land whose outside-diff red is main's too still
+    relaunches ``--full`` — the same rule as the main red path; no
+    wording claims ``--quick``."""
+    monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    seams["diff_names"] = "src/precis/x.py\n"
+    seams["changed_paths"] = ["scripts/ship"]
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    pctx.meta["engine_paths"] = ["scripts/ship"]
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False
+    argv, _kw = seams["launch"][-1]
+    assert argv[1] == "--full" and argv[2] == SUBJECT
+    assert handle["flag"] == "--full" and "verify" not in handle
+    [note] = store.comments(42)
+    assert note.startswith("handoff:") and "red on origin/main too" in note
+    assert "--full" in note and "--quick" not in note
+    events = [t for k, t in pctx.chunks if k == "job_event"]
+    assert any("red on origin/main too" in e and "--full" in e for e in events)
+    assert not any("lint only" in e for e in events)
 
 
 def test_poll_checked_red_outside_alone_red_main_green_is_ordinary(

@@ -449,14 +449,30 @@ The other settings a slice host reads:
   `~/.cache/uv` — the checkout's hooks run through `uv`, and a root-owned
   home cache (a `sudo` bootstrap) killed every Bash hook in jo546987.
 - The session runs `--permission-mode bypassPermissions` with the lane's
-  `deny_write_paths` (`FACTORY_DENY_WRITE_PATHS` in
-  `src/precis/plans/lanes.py`: the ship harness, the factory's own
-  modules, alert rules and detectors) passed as `--settings` deny rules.
-  The poll re-checks the branch diff and working tree; a hit fails the
-  attempt and reopens the todo. The session never lands: a clean exit
-  mints a `land_slice` job on the same host that runs `scripts/ship
-  --quick` in the worktree (`PRECIS_SHIP_BIN` overrides it), so the check
-  is pre-land; that host needs the ship's git push and land_notify DSN.
+  `deny_write_paths` (`STRICT_DENY` in `src/precis/plans/lanes.py` — the
+  full `FACTORY_DENY_WRITE_PATHS` plus the never-relaxable
+  `HUMAN_ONLY_PATHS`) passed as `--settings` deny rules.
+  With the DB-only setting `factory.deny_relaxed` on (default off —
+  nothing turns on by itself) the set shrinks to `HUMAN_ONLY_PATHS +
+  INTERIM_DENY`: secret-placing deploy files, inventories and the
+  harness's own rules, plus the check-bearing modules until the
+  td574934 A3 hold deploys. The poll re-checks the branch diff and
+  working tree; a hit fails the attempt and reopens the todo. The
+  session never lands: a clean exit mints a `land_slice` job on the
+  same host that runs `scripts/ship --quick` in the worktree
+  (`PRECIS_SHIP_BIN` overrides it), so the check is pre-land; that host
+  needs the ship's git push and land_notify DSN. A land whose diff
+  touches an `ENGINE_PATHS` glob stamps `meta.engine_paths` on its job
+  and ships `--checked` whatever `params.checked` says (a
+  FULL-selector refusal relaunches `--full`, never lint); until every
+  succeeded engine land is cleared by a covering reviewer closing LAND
+  — or FIX whose fix task landed — `release_poll` mints no pass and
+  `release_cut` refuses. A wait that can still resolve files one
+  `release-review-wait:td<land>` ask after 24 h; one that never can —
+  no covering reviewer, a dead verdict, a dead root, a fix that ended
+  unlanded — files it at once, and an answered ask clears that one
+  land. An ask closed without an `answer:` comment holds nothing: the
+  next pass refiles it and the blocker names the live ask's id.
 - The session's env is an allowlist (`ENV_ALLOWLIST` in `run_slice.py`):
   no DB DSN or vault variable reaches it. It needs `PRECIS_MCP_TOKEN`
   (env or the mounted secret) to reach the precis MCP, and the claude
