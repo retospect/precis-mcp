@@ -284,6 +284,21 @@ class ObjectiveShares:
     #: and the label axis price both). 0 keeps a share vector identical
     #: to earlier slices'.
     margin: float = 0.0
+    #: Fanout room (stage 5, td569573): count of pads that need an
+    #: escape via (an SMD pad whose net spans board sides, or a
+    #: plane-like net's pad) but find no legal via site within reach on
+    #: any layer — :func:`~.proxy.fanout_total`. 0 keeps a share vector
+    #: identical to earlier slices'.
+    fanout: float = 0.0
+    #: Cut capacity (stage 5, td569573): Σ over channels between part
+    #: bodies of demand-over-capacity for the airwires forced through
+    #: them — :func:`~.proxy.cutcap_total`. Priced BEFORE routing so the
+    #: anneal avoids the exact squeeze that regenerates corridor
+    #: overflow faster than route-time legalisation can clear it
+    #: (td569573 comment 1: usbc_attiny's GND demand 2 > cap 1 between
+    #: shove rounds). 0 keeps a share vector identical to earlier
+    #: slices'.
+    cutcap: float = 0.0
 
     def __post_init__(self) -> None:
         total = (
@@ -297,6 +312,8 @@ class ObjectiveShares:
             + self.direction
             + self.silkroom
             + self.margin
+            + self.fanout
+            + self.cutcap
         )
         if total <= 0:
             raise ValueError("objective shares must not all be zero")
@@ -310,6 +327,8 @@ class ObjectiveShares:
         object.__setattr__(self, "direction", self.direction / total)
         object.__setattr__(self, "silkroom", self.silkroom / total)
         object.__setattr__(self, "margin", self.margin / total)
+        object.__setattr__(self, "fanout", self.fanout / total)
+        object.__setattr__(self, "cutcap", self.cutcap / total)
 
 
 #: The named share vectors (Decision 18's presets) over the terms the
@@ -326,7 +345,19 @@ class ObjectiveShares:
 #: adds the slice-5 route proxies (via estimate, backtrack, direction)
 #: for the route-aware dev loop; crossings stay primary there too.
 PRESETS: dict[str, ObjectiveShares] = {
-    "compact": ObjectiveShares(crossings=0.55, ratsnest=0.2, overlap=0.2, spread=0.05),
+    #: ``fanout``/``cutcap`` (td569573): small shares so the job's
+    #: anneal prices the two pre-route placement defects — a walled pad
+    #: and an overflowed corridor — without displacing crossings as the
+    #: primary term; overlap stays 0.2 (legality is never a trade-off,
+    #: Reto ruling 2026-10-25).
+    "compact": ObjectiveShares(
+        crossings=0.5,
+        ratsnest=0.18,
+        overlap=0.2,
+        spread=0.05,
+        fanout=0.04,
+        cutcap=0.03,
+    ),
     "low-via": ObjectiveShares(crossings=0.75, ratsnest=0.05, overlap=0.2),
     "2-layer-only": ObjectiveShares(crossings=0.8, ratsnest=0.0, overlap=0.2),
     #: The loop's route-aware rung (taz-leaf dev loop): crossings stay

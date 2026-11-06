@@ -96,8 +96,10 @@ from typing import Any
 
 import numpy as np
 import shapely
-from shapely.geometry import Point, Polygon
+from shapely.geometry import LineString, Point, Polygon
+from shapely.ops import nearest_points
 
+from precis.pcb.clearance import FAB_QUANTUM_MM
 from precis.pcb.silk import (
     DEFAULT_REFDES_HEIGHT_MM,
     LABEL_SPOT_ORDER,
@@ -105,6 +107,7 @@ from precis.pcb.silk import (
 from precis.pcb.stroke_font import text_width_mm
 from precis.pcb.topoplace.design import (
     FREEDOM_ROTATE,
+    LAYER_FORCE_INNER,
     ObjectiveShares,
     SilkRoom,
     TopoDesign,
@@ -2158,6 +2161,338 @@ def direction_total(
     return _dir_total(wires, nets, _dir_exempt(d), scale)
 
 
+#: Slice 5 (td569573): the fixed via-barrel fact an escape-via site must
+#: honour (me569431/me569568) — a 0.45/0.20 barrel plus 0.15 signal
+#: clearance, before the soldermask web (``via_mask_web_mm``) widens it
+#: further. Copied here, not imported from ``wires.py``'s
+#: ``_via_fit_base`` — the proxy stays import-light (the
+#: ``precis-geom[pcb-kernel]`` wheel slice imports only design/silk/
+#: stroke_font).
+_FANOUT_VIA_DIA_MM = 0.45
+_FANOUT_VIA_CLEARANCE_MM = 0.15
+#: How far from a pad the fanout term looks for a legal via site — a
+#: small FIXED fan-out radius (pad-pitch order of magnitude). This term
+#: prices PLACEMENT PRESSURE, not a routed via plan: the real site
+#: search (``wires.py``'s ``_ViaPlanter``) runs at route time, over the
+#: whole mesh.
+_FANOUT_REACH_MM = 2.0
+#: Candidate site directions sampled per pad at ``_FANOUT_REACH_MM`` —
+#: cheap and deterministic (8 points), not a routed search.
+_FANOUT_ANGLES: tuple[float, ...] = tuple(i * math.pi / 4.0 for i in range(8))
+
+#: The finest trace/clearance rule visible to the placer design — no
+#: capability/net-class resolution reaches it here, so this mirrors
+#: ``wires.py``'s own fallback (``_DEFAULT_TRACE_MM``/``_DEFAULT_CLEAR_MM``,
+#: the JLC-min 0.15/0.15 pair).
+_CUTCAP_TRACE_MM = 0.15
+_CUTCAP_CLEARANCE_MM = 0.15
+#: Body-to-body gap above which a channel is never tight enough to
+#: price (capacity only grows past here) — bounds the channel scan to
+#: genuinely close pairs, the ones a cut could ever refuse.
+_CUTCAP_CHANNEL_MAX_MM = 3.0
+
+
+def _fanout_via_room_mm(d: TopoDesign) -> float:
+    """The clear-site radius a fanout via must find — ``via_dia/2 +
+    max(signal clearance, the board's soldermask web) + the fab
+    quantum`` (:func:`~.wires._via_fit_base`'s shape): no pad is exempt,
+    the net's own copper included."""
+    return (
+        _FANOUT_VIA_DIA_MM / 2.0
+        + max(_FANOUT_VIA_CLEARANCE_MM, float(d.via_mask_web_mm))
+        + FAB_QUANTUM_MM
+    )
+
+
+def _fanout_need(d: TopoDesign) -> np.ndarray:
+    """(P,) bool: pins needing a fanout escape via — the non-TH pins of
+    a net whose non-TH pins span more than one physical board side at
+    the SEED pose (:func:`_net_via_est` > 0 — some pin needs a layer
+    change), or whose class rule forces an inner-only layer
+    (``design.LAYER_FORCE_INNER`` — a plane-like net no outer face can
+    route, so every pin needs the plane's via). Fixed at the seed pose,
+    not the live one: the set of pads under pressure is a property of
+    the NETLIST (which nets must change layer), not of today's flip —
+    re-deriving it from a live flip would let one part's flip change
+    which of ANOTHER part's pins carry this term, breaking the
+    'moved part's own pads' incremental scope ``try_move`` relies on.
+    A TH pin never needs one: its barrel already exists on every
+    layer."""
+    need = np.zeros(len(d.pin_part), dtype=bool)
+    no_flip = np.zeros(len(d.parts), dtype=bool)
+    force = d.net_layer_force if len(d.net_layer_force) == len(d.net_pins) else None
+    for k, pins in enumerate(d.net_pins):
+        plane_like = force is not None and int(force[k]) == int(LAYER_FORCE_INNER)
+        if plane_like or _net_via_est(d, pins, no_flip) > 0:
+            for p in pins:
+                if int(d.pin_side[p]) != 2:
+                    need[int(p)] = True
+    return need
+
+
+def _fanout_pad_frame(
+    d: TopoDesign,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The static (part-frame) pad table every fanout site test reads:
+    every pin's own pad plus every non-primary land
+    (:attr:`TopoDesign.pad_extra_xy`), stacked — ``(local_xy, wh,
+    owner_part)``, row order pins-then-extras. Built once; posed per
+    call by :func:`local_to_world` under each owner's CURRENT pose."""
+    local_xy = np.asarray(d.pin_xy, dtype=np.float64)
+    wh = (
+        np.asarray(d.pin_wh, dtype=np.float64)
+        if len(d.pin_wh) == len(d.pin_xy)
+        else np.zeros_like(local_xy)
+    )
+    owner = np.asarray(d.pin_part, dtype=np.int64)
+    if len(d.pad_extra_xy):
+        local_xy = np.vstack([local_xy, np.asarray(d.pad_extra_xy, dtype=np.float64)])
+        wh = np.vstack([wh, np.asarray(d.pad_extra_wh, dtype=np.float64)])
+        owner = np.concatenate([owner, np.asarray(d.pad_extra_part, dtype=np.int64)])
+    return local_xy, wh, owner
+
+
+def _fanout_pad_world(
+    d: TopoDesign, pose: np.ndarray, local_xy: np.ndarray, owner: np.ndarray
+) -> np.ndarray:
+    """``local_xy`` posed under each row's owner — the world pad table
+    :func:`_fanout_has_site` scans."""
+    out = np.empty_like(local_xy)
+    for part in np.unique(owner):
+        m = owner == part
+        out[m] = local_to_world(local_xy[m], pose[int(part)])
+    return out
+
+
+def _fanout_outline_inner(d: TopoDesign) -> Any | None:
+    """The outline eroded by the via's own edge margin — ``None`` when
+    the design carries no outline (synthetic designs skip the test, the
+    ``_ring_edge_violation`` convention) or the erosion consumes it."""
+    g = _outline_geom(d)
+    if g is None:
+        return None
+    margin = (
+        _FANOUT_VIA_DIA_MM / 2.0
+        + max(_FANOUT_VIA_CLEARANCE_MM, float(d.edge_clearance_mm or 0.0))
+        + FAB_QUANTUM_MM
+    )
+    inner = g.buffer(-margin)
+    return None if inner.is_empty else inner
+
+
+def _fanout_zone_geoms(d: TopoDesign, pose: np.ndarray) -> list[Any]:
+    """Every zone's posed polygon (``None`` entries drop out at the use
+    site) — a handful per board, never a per-pin cost."""
+    return [_zone_poly(zone_world_ring(d, z, pose)) for z in d.zones]
+
+
+def _fanout_has_site(
+    cx: float,
+    cy: float,
+    r_via: float,
+    owner: int,
+    pad_xy: np.ndarray,
+    pad_wh: np.ndarray,
+    bodies: Sequence[Any],
+    zones: Sequence[Any],
+    outline_inner: Any | None,
+) -> bool:
+    """True when some candidate point within ``_FANOUT_REACH_MM`` of
+    ``(cx, cy)`` clears every foreign part BODY, every pad (the net's
+    own included — a via on or too near its own pad's copper finds no
+    site either, ``_via_fit_base``'s rule), every zone, and the outline
+    margin. The ``_via_fit_base``/``_ViaPlanter`` predicate's shape
+    (wires.py), replicated on the proxy's own pin/body geometry instead
+    of a CDT mesh edge."""
+    for a in _FANOUT_ANGLES:
+        sx = cx + _FANOUT_REACH_MM * math.cos(a)
+        sy = cy + _FANOUT_REACH_MM * math.sin(a)
+        if outline_inner is not None and not outline_inner.contains(Point(sx, sy)):
+            continue
+        dist = np.hypot(pad_xy[:, 0] - sx, pad_xy[:, 1] - sy)
+        half_diag = 0.5 * np.hypot(pad_wh[:, 0], pad_wh[:, 1])
+        if np.any(dist < half_diag + r_via):
+            continue
+        pt = Point(sx, sy)
+        if any(
+            body is not None and body.distance(pt) < r_via
+            for i, body in enumerate(bodies)
+            if i != owner
+        ):
+            continue
+        if any(z is not None and z.distance(pt) < r_via for z in zones):
+            continue
+        return True
+    return False
+
+
+def fanout_total(d: TopoDesign, pose: np.ndarray) -> float:
+    """Count of pads needing an escape via (:func:`_fanout_need`) that
+    find NO legal via site within reach on any layer — full recompute,
+    the reference ``ProxyState`` parity-checks against. 0 when every
+    via-needing pad still has room; a pose that walls a pad scores
+    strictly higher than one that leaves it a site."""
+    need = _fanout_need(d)
+    if not need.any():
+        return 0.0
+    pose = np.asarray(pose, dtype=np.float64)
+    pw = all_pin_world(d, pose)
+    local_xy, pad_wh, owner = _fanout_pad_frame(d)
+    pad_xy = _fanout_pad_world(d, pose, local_xy, owner)
+    bodies = [_body_geom(d, pose[i], i) for i in range(len(d.parts))]
+    zones = _fanout_zone_geoms(d, pose)
+    outline_inner = _fanout_outline_inner(d)
+    r_via = _fanout_via_room_mm(d)
+    walled = 0.0
+    for p in np.flatnonzero(need):
+        part = int(d.pin_part[p])
+        cx, cy = float(pw[p, 0]), float(pw[p, 1])
+        if not _fanout_has_site(
+            cx, cy, r_via, part, pad_xy, pad_wh, bodies, zones, outline_inner
+        ):
+            walled += 1.0
+    return walled
+
+
+def _channel_cap(free: float) -> float:
+    """Trace capacity of a channel with free width ``free`` mm, under
+    the finest placer-visible rule — ``wires.py::_corridor``'s formula
+    (``floor(free / (t_ref + c_ref + FAB_QUANTUM_MM)) + 1``). A channel
+    with NO free width at all prices zero capacity outright — a short
+    edge pinched between two body corners is zero capacity, never a
+    widenable corridor (td569573 comment 1)."""
+    if free <= 1e-9:
+        return 0.0
+    return float(
+        np.floor(free / (_CUTCAP_TRACE_MM + _CUTCAP_CLEARANCE_MM + FAB_QUANTUM_MM))
+        + 1.0
+    )
+
+
+def _channel_gate(bi: Any, bj: Any, free: float) -> Any:
+    """A channel's gate: the buffered straight line between the two
+    bodies' nearest points, half-width the gap itself plus the fab
+    quantum — the corridor an airwire must cross to pass from one body
+    to the other."""
+    pi, pj = nearest_points(bi, bj)
+    line = LineString([(pi.x, pi.y), (pj.x, pj.y)])
+    return line.buffer(max(free, 0.0) / 2.0 + FAB_QUANTUM_MM)
+
+
+def _channel_pairs(
+    bodies: Sequence[Any], indices: Sequence[int] | None = None
+) -> list[tuple[int, int, float, float]]:
+    """Every part-body pair within :data:`_CUTCAP_CHANNEL_MAX_MM` as
+    ``(i, j, free, cap)`` — candidate channels a wire might be squeezed
+    through. A wider gap's capacity only grows, so pairs past the
+    threshold never bind and are skipped. ``indices`` restricts the scan
+    to pairs touching those part ids (one side of an incremental
+    update); ``None`` scans every pair (the full recompute)."""
+    n = len(bodies)
+    left = range(n) if indices is None else sorted(indices)
+    out: list[tuple[int, int, float, float]] = []
+    seen: set[tuple[int, int]] = set()
+    for i in left:
+        bi = bodies[i]
+        if bi is None:
+            continue
+        x0, y0, x1, y1 = bi.bounds
+        for j in range(n):
+            if j == i:
+                continue
+            key = (i, j) if i < j else (j, i)
+            if key in seen:
+                continue
+            bj = bodies[j]
+            if bj is None:
+                continue
+            bx0, by0, bx1, by1 = bj.bounds
+            reach = _CUTCAP_CHANNEL_MAX_MM
+            if (
+                x1 + reach < bx0
+                or bx1 + reach < x0
+                or y1 + reach < by0
+                or by1 + reach < y0
+            ):
+                continue
+            free = float(bi.distance(bj))
+            if free > _CUTCAP_CHANNEL_MAX_MM:
+                continue
+            seen.add(key)
+            out.append((key[0], key[1], free, _channel_cap(free)))
+    return out
+
+
+def _channel_demand(
+    gate: Any,
+    wires: np.ndarray,
+    nets: np.ndarray,
+    own_nets: frozenset[int],
+) -> float:
+    """Count of FOREIGN-net airwires crossing one channel's gate — a
+    wire of a net with a pin on either body owes the channel nothing
+    (``_Corridor.cut``'s own-net exemption, wires.py:4419). Uniform
+    per-wire weight: the placer design carries no per-net track/
+    clearance rule to weight by (:data:`_CUTCAP_TRACE_MM` is the one
+    rule every net sees here)."""
+    if len(wires) == 0:
+        return 0.0
+    x0, y0, x1, y1 = gate.bounds
+    bbox = (
+        (np.minimum(wires[:, 0], wires[:, 2]) <= x1)
+        & (np.maximum(wires[:, 0], wires[:, 2]) >= x0)
+        & (np.minimum(wires[:, 1], wires[:, 3]) <= y1)
+        & (np.maximum(wires[:, 1], wires[:, 3]) >= y0)
+    )
+    total = 0.0
+    for idx in np.flatnonzero(bbox):
+        if int(nets[idx]) in own_nets:
+            continue
+        w = wires[idx]
+        seg = LineString([(w[0], w[1]), (w[2], w[3])])
+        if gate.intersects(seg):
+            total += 1.0
+    return total
+
+
+def _nets_of_parts(d: TopoDesign) -> list[frozenset[int]]:
+    """Part id -> the routable net indices it touches — the own-net
+    exemption's lookup, built once (the same shape ``ProxyState``'s
+    ``_nets_of`` keeps per instance)."""
+    nets_of: list[set[int]] = [set() for _ in d.parts]
+    for k, pins in enumerate(d.net_pins):
+        for part in np.unique(d.pin_part[pins]):
+            nets_of[int(part)].add(k)
+    return [frozenset(s) for s in nets_of]
+
+
+def cutcap_total(d: TopoDesign, pose: np.ndarray) -> float:
+    """Σ demand-over-capacity over every tight body-to-body channel —
+    full recompute, the reference ``ProxyState`` parity-checks against.
+    Priced on the SAME MST airwires crossings/length use (Decision 7):
+    a channel too narrow for the nets forced through it is exactly
+    ``wires.py``'s ``_Corridor.cut`` demand-vs-capacity refusal, priced
+    BEFORE any routing — the GND-corridor overflow usbc_attiny's
+    joint legalisation could not out-run (td569573 comment 1)."""
+    pose = np.asarray(pose, dtype=np.float64)
+    bodies = [_body_geom(d, pose[i], i) for i in range(len(d.parts))]
+    pairs = _channel_pairs(bodies)
+    if not pairs:
+        return 0.0
+    pw = all_pin_world(d, pose)
+    wires, nets = _concat(
+        [_net_wires(d, np_net, pw, k) for k, np_net in enumerate(d.net_pins)],
+        list(range(len(d.net_pins))),
+    )
+    nets_of = _nets_of_parts(d)
+    overflow = 0.0
+    for i, j, free, cap in pairs:
+        gate = _channel_gate(bodies[i], bodies[j], free)
+        demand = _channel_demand(gate, wires, nets, nets_of[i] | nets_of[j])
+        overflow += max(0.0, demand - cap)
+    return overflow
+
+
 def _mst_edges(pts: np.ndarray) -> list[tuple[int, int]]:
     """Prim from vertex 0 with a ``(dist, i, j)`` min key — the same
     deterministic order :func:`precis.pcb.ratsnest._mst_edges` produces
@@ -2423,7 +2758,13 @@ class ProxyState:
         #: axis measures the same bodies against the hole keep-outs.
         self._bodies = (
             [_body_geom(d, self.pose[i], i) for i in range(len(d.parts))]
-            if (self.w.overlap or self.w.silkroom or self.w.margin)
+            if (
+                self.w.overlap
+                or self.w.silkroom
+                or self.w.margin
+                or self.w.fanout
+                or self.w.cutcap
+            )
             else []
         )
         #: The committed rings' bounds and mount sides as flat arrays —
@@ -2552,6 +2893,81 @@ class ProxyState:
             else 0.0
         )
         self._ref_meas = max(self._meas, 1.0)
+        #: fanout term (td569573): per-needing-pin walled/open status —
+        #: a dict so ``try_move`` re-tests only the TOUCHED pins (its own
+        #: part's, plus any OTHER part's needing pin close enough to the
+        #: moved body to flip), while :func:`fanout_total` stays the full-
+        #: recompute parity reference. Netlist-fixed need set
+        #: (:func:`_fanout_need`); the per-pin site test reads the live
+        #: bodies/zones/pads :meth:`try_move` stages.
+        self._fo_need = _fanout_need(d) if self.w.fanout else np.zeros(0, dtype=bool)
+        self._fo_needing = (
+            np.flatnonzero(self._fo_need) if self.w.fanout else np.zeros(0, np.int64)
+        )
+        self._fo_local_xy = np.zeros((0, 2))
+        self._fo_wh = np.zeros((0, 2))
+        self._fo_owner = np.zeros(0, dtype=np.int64)
+        self._fo_pad_xy = np.zeros((0, 2))
+        self._fo_outline_inner: Any | None = None
+        self._fo_zones_static: list[Any] = []
+        self._fo_zones_local: list[Any] = []
+        self._fo_r_via = 0.0
+        self._fo_status: dict[int, bool] = {}
+        self._fo = 0.0
+        if self.w.fanout and len(self._fo_needing):
+            self._fo_local_xy, self._fo_wh, self._fo_owner = _fanout_pad_frame(d)
+            self._fo_outline_inner = _fanout_outline_inner(d)
+            self._fo_r_via = _fanout_via_room_mm(d)
+            for z in d.zones:
+                if z.part_local and 0 <= z.part < len(d.parts):
+                    self._fo_zones_local.append(z)
+                else:
+                    g = _zone_poly(zone_world_ring(d, z, self.pose))
+                    if g is not None:
+                        self._fo_zones_static.append(g)
+            self._fo_pad_xy = _fanout_pad_world(
+                d, self.pose, self._fo_local_xy, self._fo_owner
+            )
+            zones0 = self._fo_zone_geoms()
+            for p in self._fo_needing:
+                part0 = int(d.pin_part[p])
+                cx, cy = float(self._pw[p, 0]), float(self._pw[p, 1])
+                ok = _fanout_has_site(
+                    cx,
+                    cy,
+                    self._fo_r_via,
+                    part0,
+                    self._fo_pad_xy,
+                    self._fo_wh,
+                    self._bodies,
+                    zones0,
+                    self._fo_outline_inner,
+                )
+                self._fo_status[int(p)] = not ok
+            self._fo = float(sum(self._fo_status.values()))
+        self._ref_fo = max(self._fo, 1.0)
+        #: cut-capacity term (td569573): per tight body-to-body channel,
+        #: the cached ``(free, cap)`` geometry and committed demand —
+        #: ``try_move`` re-derives channels touching the moved part in
+        #: full, and prices every OTHER channel's demand delta from just
+        #: the moved part's own net wires (the only wires that changed),
+        #: against :func:`cutcap_total`'s full-recompute parity.
+        self._cc_nets_of: list[frozenset[int]] = []
+        self._cc_pairs: dict[tuple[int, int], tuple[float, float]] = {}
+        self._cc_demand: dict[tuple[int, int], float] = {}
+        self._cc = 0.0
+        if self.w.cutcap:
+            self._cc_nets_of = _nets_of_parts(d)
+            pairs0 = _channel_pairs(self._bodies)
+            for i, j, free, cap in pairs0:
+                key = (i, j)
+                self._cc_pairs[key] = (free, cap)
+                gate = _channel_gate(self._bodies[i], self._bodies[j], free)
+                exempt = self._cc_nets_of[i] | self._cc_nets_of[j]
+                dem = _channel_demand(gate, self._flat, self._flat_net, exempt)
+                self._cc_demand[key] = dem
+                self._cc += max(0.0, dem - cap)
+        self._ref_cc = max(self._cc, 1.0)
         #: slice-5 route proxies (the flow rung): the via estimate, the
         #: fold-back mileage and the direction mix over the same wires.
         #: Each is built only when its share is on — a zero share keeps
@@ -2580,6 +2996,16 @@ class ProxyState:
         #: term's per-part overlay, applied to ``_mg_e/_mg_p/_mg_h`` at
         #: commit like ``_stage_rings`` is to ``_rings``.
         self._stage_mg: dict[int, tuple[float, float, float, float]] = {}
+        #: pin id → staged walled/open status, the fanout term's overlay
+        #: on ``_fo_status`` (``commit`` merges it in).
+        self._stage_fo: dict[int, bool] = {}
+        #: channel key → staged ``(free, cap)``/demand, the cutcap
+        #: term's overlay on ``_cc_pairs``/``_cc_demand``; a key present
+        #: in ``_stage_cc_removed`` drops out of both at ``commit`` (the
+        #: moved part's gap widened past ``_CUTCAP_CHANNEL_MAX_MM``).
+        self._stage_cc_pairs: dict[tuple[int, int], tuple[float, float]] = {}
+        self._stage_cc_demand: dict[tuple[int, int], float] = {}
+        self._stage_cc_removed: set[tuple[int, int]] = set()
         self._d_cross = 0
         self._d_len = 0.0
         self._d_ov = 0.0
@@ -2591,6 +3017,8 @@ class ProxyState:
         self._d_sk = 0.0
         self._d_mg = 0.0
         self._d_mg_s = 0.0
+        self._d_fo = 0.0
+        self._d_cc = 0.0
 
     def _backtrack_of(self, wires: list[np.ndarray], pw: np.ndarray) -> float:
         """Fold-back mileage over a per-net wire list against pin world
@@ -2668,6 +3096,18 @@ class ProxyState:
         return self._mg + self._d_mg
 
     @property
+    def fanout(self) -> float:
+        """Count of fanout-needing pads with no legal via site within
+        reach on any layer — :func:`fanout_total`'s parity twin."""
+        return self._fo + self._d_fo
+
+    @property
+    def cutcap(self) -> float:
+        """Σ demand-over-capacity over every tight body-to-body channel
+        — :func:`cutcap_total`'s parity twin."""
+        return self._cc + self._d_cc
+
+    @property
     def cost(self) -> float:
         """Share-weighted, reference-normalised J."""
         return (
@@ -2681,6 +3121,8 @@ class ProxyState:
             + self.w.direction * self.direction / self._ref_dir
             + self.w.silkroom * self.silkroom / self._ref_sk
             + self.w.margin * self.margin / self._ref_mg
+            + self.w.fanout * self.fanout / self._ref_fo
+            + self.w.cutcap * self.cutcap / self._ref_cc
         )
 
     def _rest_view(self, affected: set[int]) -> tuple[np.ndarray, np.ndarray]:
@@ -2799,6 +3241,24 @@ class ProxyState:
             g = _zone_poly(local_to_world(np.asarray(z.ring, dtype=np.float64), row))
             if g is not None:
                 out.append((int(z.part), g))
+        return out
+
+    def _fo_zone_geoms(
+        self, moved: int = -1, moved_row: np.ndarray | None = None
+    ) -> list[Any]:
+        """Every fanout keep-out polygon under the current staged-or-
+        committed state — the :func:`_fanout_zone_geoms` reference's
+        shape, split static/part-local like :meth:`_mg_zone_geoms`
+        (no owner exemption: a via site is blocked by every zone,
+        the net's own included, matching the full-recompute term)."""
+        out = list(self._fo_zones_static)
+        for z in self._fo_zones_local:
+            row = self._stage.get(z.part, self.pose[z.part])
+            if z.part == moved and moved_row is not None:
+                row = moved_row
+            g = _zone_poly(local_to_world(np.asarray(z.ring, dtype=np.float64), row))
+            if g is not None:
+                out.append(g)
         return out
 
     def _mg_edge(self, part: int, row, ring) -> float:
@@ -2940,8 +3400,11 @@ class ProxyState:
             staged_pw[self.d.pin_part == p] = pin_world(self.d, row, p)
         # Backtrack deltas price the OLD pins against the pre-move staged
         # state, so the pre-row positions are kept when the share is on
-        # (an O(P) copy, the same cost class as the one above it).
-        pre_pw = staged_pw.copy() if self.w.backtrack else None
+        # (an O(P) copy, the same cost class as the one above it). The
+        # fanout term's "other part's needing pin" site test reads the
+        # same pre-move snapshot — those pins don't move, but the test
+        # must use the state as of just before THIS staged row lands.
+        pre_pw = staged_pw.copy() if (self.w.backtrack or self.w.fanout) else None
         staged_pw[self.d.pin_part == part] = pin_world(self.d, pose_row, part)
 
         affected = set(self._nets_of[part])
@@ -2987,13 +3450,21 @@ class ProxyState:
             else 0.0
         )
         staged_row = np.asarray(pose_row, dtype=np.float64)
+        needs_body = (
+            self.w.overlap
+            or self.w.silkroom
+            or self.w.margin
+            or self.w.fanout
+            or self.w.cutcap
+        )
+        if needs_body:
+            new_body = _body_geom(self.d, staged_row, part)
+            old_body = self._body_of(part)
+            self._stage_bodies[part] = new_body
         if self.w.overlap or self.w.silkroom or self.w.margin:
             new_geom = _ring_geom(self.d, staged_row, part)
             old_ring = self._ring_of(part)
             self._stage_rings[part] = new_geom
-            new_body = _body_geom(self.d, staged_row, part)
-            old_body = self._body_of(part)
-            self._stage_bodies[part] = new_body
         if self.w.silkroom or self.w.margin:
             # ONE pair scan per ring state serves both terms: the sum
             # half feeds ``_d_sk``'s telescope, the max half is the moved
@@ -3166,6 +3637,155 @@ class ProxyState:
             self._d_via += self._via_of(affected, bottom_new) - self._via_of(
                 affected, bottom_old
             )
+        if self.w.fanout and len(self._fo_needing):
+            assert pre_pw is not None
+            own_mask = self.d.pin_part[self._fo_needing] == part
+            fo_touched = [int(p) for p in self._fo_needing[own_mask]]
+            other_pins = self._fo_needing[~own_mask]
+            reach = _FANOUT_REACH_MM + self._fo_r_via + 1e-6
+            boxes = [b.bounds for b in (old_body, new_body) if b is not None]
+            if boxes and len(other_pins):
+                bx0 = min(b[0] for b in boxes) - reach
+                by0 = min(b[1] for b in boxes) - reach
+                bx1 = max(b[2] for b in boxes) + reach
+                by1 = max(b[3] for b in boxes) + reach
+                ox, oy = pre_pw[other_pins, 0], pre_pw[other_pins, 1]
+                hit = (ox >= bx0) & (ox <= bx1) & (oy >= by0) & (oy <= by1)
+                fo_touched.extend(int(p) for p in other_pins[hit])
+            if fo_touched:
+                part_mask = self._fo_owner == part
+                old_row_fo = self._stage.get(part, self.pose[part])
+                pad_before = self._fo_pad_xy.copy()
+                pad_after = self._fo_pad_xy.copy()
+                if np.any(part_mask):
+                    pad_before[part_mask] = local_to_world(
+                        self._fo_local_xy[part_mask], old_row_fo
+                    )
+                    pad_after[part_mask] = local_to_world(
+                        self._fo_local_xy[part_mask], staged_row
+                    )
+                bodies_before = [
+                    self._stage_bodies.get(i, self._bodies[i])
+                    for i in range(len(self.d.parts))
+                ]
+                bodies_before[part] = old_body
+                bodies_after = list(bodies_before)
+                bodies_after[part] = new_body
+                zones_before = self._fo_zone_geoms()
+                zones_after = self._fo_zone_geoms(moved=part, moved_row=staged_row)
+                for p in fo_touched:
+                    owner_p = int(self.d.pin_part[p])
+                    cx_b, cy_b = float(pre_pw[p, 0]), float(pre_pw[p, 1])
+                    if owner_p == part:
+                        cx_a, cy_a = float(staged_pw[p, 0]), float(staged_pw[p, 1])
+                    else:
+                        cx_a, cy_a = cx_b, cy_b
+                    was_ok = _fanout_has_site(
+                        cx_b,
+                        cy_b,
+                        self._fo_r_via,
+                        owner_p,
+                        pad_before,
+                        self._fo_wh,
+                        bodies_before,
+                        zones_before,
+                        self._fo_outline_inner,
+                    )
+                    now_ok = _fanout_has_site(
+                        cx_a,
+                        cy_a,
+                        self._fo_r_via,
+                        owner_p,
+                        pad_after,
+                        self._fo_wh,
+                        bodies_after,
+                        zones_after,
+                        self._fo_outline_inner,
+                    )
+                    new_walled = not now_ok
+                    self._stage_fo[p] = new_walled
+                    self._d_fo += (1.0 if new_walled else 0.0) - (
+                        1.0 if not was_ok else 0.0
+                    )
+        if self.w.cutcap:
+            old_full_w = np.vstack([rest_w, old_w]) if len(old_w) else rest_w
+            old_full_n = np.concatenate([rest_n, old_n]) if len(old_n) else rest_n
+            new_full_w = np.vstack([rest_w, new_w]) if len(new_w) else rest_w
+            new_full_n = np.concatenate([rest_n, new_n]) if len(new_n) else rest_n
+            bodies_before_cc = [
+                self._stage_bodies.get(i, self._bodies[i])
+                for i in range(len(self.d.parts))
+            ]
+            bodies_before_cc[part] = old_body
+            bodies_after_cc = list(bodies_before_cc)
+            bodies_after_cc[part] = new_body
+
+            # Channels touching the moved part: geometry itself changed
+            # (free distance, gate shape, maybe capacity), so these are
+            # re-derived whole against the FULL current wire set — the
+            # same ``_channel_pairs(indices=[part])`` scan the full
+            # recompute's module function would run, just restricted to
+            # this part (pairs appearing/disappearing across the
+            # ``_CUTCAP_CHANNEL_MAX_MM`` threshold fall out naturally,
+            # since this is a fresh query, not a cached-key lookup).
+            pairs_before = _channel_pairs(bodies_before_cc, indices=[part])
+            pairs_after = _channel_pairs(bodies_after_cc, indices=[part])
+            touched_keys = {(i, j) for i, j, _, _ in pairs_before} | {
+                (i, j) for i, j, _, _ in pairs_after
+            }
+            over_before_touch = 0.0
+            for i, j, free, cap in pairs_before:
+                exempt = self._cc_nets_of[i] | self._cc_nets_of[j]
+                gate = _channel_gate(bodies_before_cc[i], bodies_before_cc[j], free)
+                dem = _channel_demand(gate, old_full_w, old_full_n, exempt)
+                over_before_touch += max(0.0, dem - cap)
+            over_after_touch = 0.0
+            after_keys = set()
+            for i, j, free, cap in pairs_after:
+                exempt = self._cc_nets_of[i] | self._cc_nets_of[j]
+                gate = _channel_gate(bodies_after_cc[i], bodies_after_cc[j], free)
+                dem = _channel_demand(gate, new_full_w, new_full_n, exempt)
+                over_after_touch += max(0.0, dem - cap)
+                self._stage_cc_pairs[(i, j)] = (free, cap)
+                self._stage_cc_demand[(i, j)] = dem
+                self._stage_cc_removed.discard((i, j))
+                after_keys.add((i, j))
+            for key in touched_keys - after_keys:
+                self._stage_cc_removed.add(key)
+                self._stage_cc_pairs.pop(key, None)
+                self._stage_cc_demand.pop(key, None)
+            self._d_cc += over_after_touch - over_before_touch
+
+            # Every OTHER channel: its geometry didn't move — only this
+            # move's own nets' wires (new_w/old_w) can cross it that
+            # didn't (or now don't) before, so only those wires are
+            # tested against it.
+            current_keys = (
+                set(self._cc_pairs) | set(self._stage_cc_pairs)
+            ) - self._stage_cc_removed
+            for key in current_keys:
+                if key in touched_keys:
+                    continue
+                i, j = key
+                free, cap = self._stage_cc_pairs.get(key) or self._cc_pairs[key]
+                exempt = self._cc_nets_of[i] | self._cc_nets_of[j]
+                gate = _channel_gate(bodies_before_cc[i], bodies_before_cc[j], free)
+                delta_dem = _channel_demand(
+                    gate, new_w, new_n, exempt
+                ) - _channel_demand(gate, old_w, old_n, exempt)
+                if delta_dem == 0.0:
+                    continue
+                # Staged baseline if a prior staged move (the first half
+                # of a swap) already touched this channel — it may be a
+                # channel that move newly formed, absent from the committed
+                # ``_cc_demand``, so the default must not be eagerly indexed.
+                if key in self._stage_cc_demand:
+                    cur_dem = self._stage_cc_demand[key]
+                else:
+                    cur_dem = self._cc_demand[key]
+                new_dem = cur_dem + delta_dem
+                self._d_cc += max(0.0, new_dem - cap) - max(0.0, cur_dem - cap)
+                self._stage_cc_demand[key] = new_dem
         self._stage[part] = staged_row.copy()
         self._stage_wires.update(new_wires)
         self._d_cross += d_cross
@@ -3192,9 +3812,12 @@ class ProxyState:
             if self._rings:
                 g = self._stage_rings.get(p, self._rings[p])
                 self._rings[p] = g
-                self._bodies[p] = self._stage_bodies.get(p, self._bodies[p])
                 self._rb[p] = g.bounds if g is not None else np.nan
                 self._rsides[p] = row[3] >= 0.5
+            # ``_bodies`` is also built fanout/cutcap-only (no rings), so
+            # its commit can't ride the ring branch above.
+            if self._bodies:
+                self._bodies[p] = self._stage_bodies.get(p, self._bodies[p])
         for p, axes in self._stage_mg.items():
             self._mg_e[p], self._mg_p[p], self._mg_h[p], self._mg_l[p] = axes
         self._ov += self._d_ov
@@ -3203,6 +3826,24 @@ class ProxyState:
         self._meas += self._d_meas
         self._mg_s += self._d_mg_s
         self._mg += self._d_mg
+        if self.w.fanout and len(self._fo_needing):
+            self._fo_status.update(self._stage_fo)
+            self._fo = float(sum(self._fo_status.values()))
+            pm = self._fo_owner
+            for p, row in self._stage.items():
+                mask = pm == p
+                if np.any(mask):
+                    self._fo_pad_xy[mask] = local_to_world(self._fo_local_xy[mask], row)
+        if self.w.cutcap:
+            for key in self._stage_cc_removed:
+                self._cc_pairs.pop(key, None)
+                self._cc_demand.pop(key, None)
+            self._cc_pairs.update(self._stage_cc_pairs)
+            self._cc_demand.update(self._stage_cc_demand)
+            self._cc = sum(
+                max(0.0, dem - self._cc_pairs[k][1])
+                for k, dem in self._cc_demand.items()
+            )
         self._wires = [self._stage_wires.get(k, w) for k, w in enumerate(self._wires)]
         self._flat, self._flat_net = _concat(
             self._wires, list(range(len(self.d.net_pins)))
@@ -3239,6 +3880,10 @@ class ProxyState:
         self._stage_rings.clear()
         self._stage_bodies.clear()
         self._stage_mg.clear()
+        self._stage_fo.clear()
+        self._stage_cc_pairs.clear()
+        self._stage_cc_demand.clear()
+        self._stage_cc_removed.clear()
         self._d_cross = 0
         self._d_len = 0.0
         self._d_ov = 0.0
@@ -3250,3 +3895,5 @@ class ProxyState:
         self._d_sk = 0.0
         self._d_mg = 0.0
         self._d_mg_s = 0.0
+        self._d_fo = 0.0
+        self._d_cc = 0.0

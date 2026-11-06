@@ -1,22 +1,27 @@
 """Every example must route all multi-member nets with no DRC errors.
 
 Measured baseline: 2026-11-05, main 99de0fedb, effort=20000, seed=1.
+usbc_attiny re-measured 2026-11-06 on td569573 (the cutcap share).
 Seconds cover local.route (including placement); boards were built first.
 Boards were measured concurrently in separate local processes.
 
 board           routable  routed  failed  drc_errors  seconds  cause
 sanity                20      20       0           0    4.644  complete
 blinky_led             1       1       0           0    0.617  complete; 1 dangling
-usbc_attiny            8       -       -           -    5.757  LocalError/CorridorOverflow on GND
+usbc_attiny            8       5       3          16   23.398  walled-off power pins; short/connectivity guards
 esp32c3               11       8       3           5   44.890  walled-off pins; short/connectivity guards
 nano                  64      45      19          18 1947.002  walled-off pins; short/connectivity guards
 nano_usb_pd           64      45      19          18 1936.141  walled-off pins; short/connectivity guards
 nano_usb_pd_r2        72      32      40          38 2192.916  walled-off pins; short/connectivity guards
 
-For usbc_attiny, routable counts authored nets with at least two pins;
-the route stage raises before returning any routing or DRC counts.
-The numbers document the baseline; the assertion always targets complete
-routing at DRC 0. Strict xfails turn a completed board into a loud XPASS.
+For usbc_attiny, routable counts authored nets with at least two pins.
+Through main 99de0fedb its placement overflowed the GND corridor and the
+route stage raised LocalError/CorridorOverflow before returning any
+routing or DRC counts. td569573's cutcap share cleared that pre-route
+refusal; the board now routes 5/8 and fails like esp32c3 on walled-off
+power nets (3V3/GND/VBUS). The numbers document the baseline; the
+assertion always targets complete routing at DRC 0. Strict xfails turn a
+completed board into a loud XPASS.
 """
 
 from __future__ import annotations
@@ -39,10 +44,11 @@ BOARD_MARKS = {
     "usbc_attiny": [
         pytest.mark.xfail(
             strict=True,
-            raises=local.LocalError,
+            raises=AssertionError,
             reason=(
-                "LocalError/CorridorOverflow before routing: GND demand 2 > cap 1 "
-                "between D1-R3 and D1-U1; placement leaves no corridor"
+                "5/8 routed, 3 failed, DRC 16: 3V3/GND/VBUS power nets walled off; "
+                "copper withdrawn by short/connectivity guards. td569573's cutcap "
+                "share cleared the pre-route CorridorOverflow (GND demand 2 > cap 1)"
             ),
         ),
     ],
@@ -119,15 +125,10 @@ def test_example_routes_fully_at_drc_zero(name: str, tmp_path: Path) -> None:
     )
     board = module.build()
 
-    try:
-        rt = local.route(board, place=True, seed=1, effort=EFFORT, out=str(tmp_path))
-    except local.LocalError as exc:
-        if name == "usbc_attiny":
-            # Only this known placement refusal belongs to the LocalError xfail.
-            message = str(exc)
-            assert "CorridorOverflow:" in message, message
-            assert "demand 2 > cap 1" in message and "nets GND" in message, message
-        raise
+    # No board is expected to refuse before routing any more (td569573's
+    # cutcap share cleared usbc_attiny's pre-route CorridorOverflow), so a
+    # LocalError now propagates as a real failure rather than an xfail.
+    rt = local.route(board, place=True, seed=1, effort=EFFORT, out=str(tmp_path))
 
     # The API buckets contain net names. Single-member (dangling) nets are
     # exempt from routing and must not inflate the required routed count.
