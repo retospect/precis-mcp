@@ -228,6 +228,31 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         optional=True,
     ),
     SecretSpec(
+        name="GROQ_API_KEY",
+        purpose="Groq key for the free-quota lane of the LLM router "
+        "(OpenAI-compatible; an llm.profiles entry's api_key_ref).",
+        get_url="https://console.groq.com/keys",
+        get_blurb="Create a key in the Groq console and paste it here. "
+        "Before sending any prompt, enable zero data retention in the "
+        "console — the free quota is separate from the paid plan and usage "
+        "metadata is still collected.",
+        cost="free quota; paid plan separate",
+        probe_group="groq",
+        optional=True,
+    ),
+    SecretSpec(
+        name="CEREBRAS_API_KEY",
+        purpose="Cerebras key for the free-quota lane of the LLM router "
+        "(OpenAI-compatible; an llm.profiles entry's api_key_ref).",
+        get_url="https://cloud.cerebras.ai/",
+        get_blurb="Create a key in the Cerebras cloud console and paste it "
+        "here. Check Cerebras's data-retention and training terms before "
+        "sending production prompts.",
+        cost="free quota; paid plan separate",
+        probe_group="cerebras",
+        optional=True,
+    ),
+    SecretSpec(
         name="SEMANTIC_SCHOLAR_API_KEY",
         purpose="Paper metadata + citation ingest (Semantic Scholar).",
         get_url="https://www.semanticscholar.org/product/api",
@@ -764,6 +789,24 @@ async def _probe_oss_llm(
     return _classify_status(r.status_code)
 
 
+async def _probe_groq(client: httpx.AsyncClient, values: dict[str, str]) -> CheckResult:
+    r = await client.get(
+        "https://api.groq.com/openai/v1/models",
+        headers={"Authorization": f"Bearer {values['GROQ_API_KEY']}"},
+    )
+    return _classify_status(r.status_code)
+
+
+async def _probe_cerebras(
+    client: httpx.AsyncClient, values: dict[str, str]
+) -> CheckResult:
+    r = await client.get(
+        "https://api.cerebras.ai/v1/models",
+        headers={"Authorization": f"Bearer {values['CEREBRAS_API_KEY']}"},
+    )
+    return _classify_status(r.status_code)
+
+
 async def _probe_discord(
     client: httpx.AsyncClient, values: dict[str, str]
 ) -> CheckResult:
@@ -795,6 +838,8 @@ _PROBES: dict[str, ProbeFn] = {
     "elsevier": _probe_elsevier,
     "openalex": _probe_openalex,
     "oss_llm": _probe_oss_llm,
+    "groq": _probe_groq,
+    "cerebras": _probe_cerebras,
     "discord": _probe_discord,
     "mailto": _probe_mailto,
 }

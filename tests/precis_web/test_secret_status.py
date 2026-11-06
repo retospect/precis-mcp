@@ -81,6 +81,19 @@ def test_every_probe_group_has_a_registered_probe() -> None:
     assert groups <= set(secret_status._PROBES.keys())
 
 
+@pytest.mark.parametrize(
+    "name, group",
+    [("GROQ_API_KEY", "groq"), ("CEREBRAS_API_KEY", "cerebras")],
+)
+def test_groq_cerebras_specs_are_optional_free_and_probed(
+    name: str, group: str
+) -> None:
+    (spec,) = [s for s in secret_status.KNOWN_SECRETS if s.name == name]
+    assert spec.optional
+    assert spec.cost.startswith("free")
+    assert spec.probe_group == group
+
+
 # ── (b) result-classification helper ───────────────────────────────────────
 
 
@@ -229,6 +242,22 @@ def test_run_checks_single_member_group(monkeypatch: pytest.MonkeyPatch) -> None
     }
 
 
+def test_run_checks_groq_single_member_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_presence(monkeypatch, {"GROQ_API_KEY": "synthetic"})
+
+    async def fake_probe(
+        client: Any, values: dict[str, str]
+    ) -> secret_status.CheckResult:
+        assert values == {"GROQ_API_KEY": "synthetic"}
+        return secret_status.CheckResult("ok", "verified")
+
+    monkeypatch.setitem(secret_status._PROBES, "groq", fake_probe)
+
+    results = asyncio.run(secret_status.run_checks(store=_FAKE_STORE))
+
+    assert results == {"GROQ_API_KEY": secret_status.CheckResult("ok", "verified")}
+
+
 # ── (d) index route rendering ──────────────────────────────────────────────
 
 _NOW = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
@@ -266,21 +295,36 @@ def _patch_page(
 
 
 @pytest.mark.parametrize(
-    "name, get_url, instructions",
+    "name, get_url, probe_group, instructions",
     [
         (
             "OPENROUTER_API_KEY",
             "https://openrouter.ai/settings/keys",
+            None,
             ("Create a key",),
         ),
         (
             "DEEPINFRA_API_KEY",
             "https://deepinfra.com/dash/api_keys",
+            None,
             ("Create an API key",),
+        ),
+        (
+            "GROQ_API_KEY",
+            "https://console.groq.com/keys",
+            "groq",
+            ("zero data retention",),
+        ),
+        (
+            "CEREBRAS_API_KEY",
+            "https://cloud.cerebras.ai/",
+            "cerebras",
+            ("data-retention and training",),
         ),
         (
             "KIMI_CODE_API_KEY",
             "https://www.kimi.com/coding/docs/en/",
+            None,
             (
                 "Kimi Code Console",
                 "up to 5",
@@ -300,6 +344,7 @@ def _patch_page(
         (
             "OPENAI_API_KEY",
             "https://platform.openai.com/api-keys",
+            None,
             (
                 "Optional OpenAI Platform API key",
                 "host-login entries",
@@ -312,6 +357,7 @@ def _patch_page(
         (
             "DEVIN_API_TOKEN",
             "https://docs.devin.ai/api-reference/overview",
+            None,
             (
                 "first confirm the plan includes the Devin API",
                 "service user",
@@ -327,6 +373,7 @@ def test_llm_secret_entries_render_with_instructions(
     monkeypatch: pytest.MonkeyPatch,
     name: str,
     get_url: str,
+    probe_group: str | None,
     instructions: tuple[str, ...],
 ) -> None:
     _patch_page(monkeypatch, present_names=set(), snap=_snapshot({}))
@@ -336,7 +383,7 @@ def test_llm_secret_entries_render_with_instructions(
     assert response.status_code == 200
     page = unescape(response.text)
     (spec,) = [s for s in secret_status.KNOWN_SECRETS if s.name == name]
-    assert spec.probe_group is None
+    assert spec.probe_group == probe_group
     assert spec.optional
     assert spec.get_url == get_url
     assert f'name="name" value="{name}"' in page
@@ -344,7 +391,12 @@ def test_llm_secret_entries_render_with_instructions(
     assert spec.get_blurb in page
     assert spec.purpose in page
     row = page.split(f'value="{name}"', 1)[0].rsplit("<tr>", 1)[1]
-    assert "bg-warning-subtle text-warning-strong" in row
+    badge = (
+        "bg-success-subtle text-success-strong"
+        if spec.cost.startswith("free")
+        else "bg-warning-subtle text-warning-strong"
+    )
+    assert badge in row
     for instruction in instructions:
         assert instruction in spec.get_blurb
 
@@ -488,3 +540,60 @@ def test_core_probe_429_is_rate_limited_with_code() -> None:
     result = asyncio.run(run())
     assert "429" in result.detail
     assert "rate limited" in result.detail
+
+
+@pytest.mark.parametrize(
+    "probe_name, secret_name, url",
+    [
+        ("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1/models"),
+        ("cerebras", "CEREBRAS_API_KEY", "https://api.cerebras.ai/v1/models"),
+    ],
+    ids=["groq", "cerebras"],
+)
+def test_groq_cerebras_probes_get_models_with_bearer(
+    probe_name: str, secret_name: str, url: str
+) -> None:
+    import httpx
+
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            return await secret_status._PROBES[probe_name](
+                client, {secret_name: "synthetic"}
+            )
+
+    assert asyncio.run(run()).state == "ok"
+    assert len(requests) == 1
+    assert requests[0].method == "GET"
+    assert str(requests[0].url) == url
+    assert requests[0].headers["Authorization"] == "Bearer synthetic"
+
+
+@pytest.mark.parametrize(
+    "probe_name, secret_name",
+    [("groq", "GROQ_API_KEY"), ("cerebras", "CEREBRAS_API_KEY")],
+    ids=["groq", "cerebras"],
+)
+@pytest.mark.parametrize(
+    "status, expected_state",
+    [(401, "bad"), (403, "bad"), (429, "unknown"), (500, "unknown")],
+)
+def test_groq_cerebras_probe_status_mapping(
+    probe_name: str, secret_name: str, status: int, expected_state: str
+) -> None:
+    import httpx
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(status))
+        ) as client:
+            return await secret_status._PROBES[probe_name](
+                client, {secret_name: "synthetic"}
+            )
+
+    assert asyncio.run(run()).state == expected_state
