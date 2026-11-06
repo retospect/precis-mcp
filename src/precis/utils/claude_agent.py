@@ -1734,13 +1734,25 @@ def stream_models_used(stdout: str) -> list[str]:
     the resolution of the ``--model`` alias ``LlmResult.model`` keeps
     verbatim. Sorted keys; ``[]`` when no result event/modelUsage exists.
     """
+    return sorted(stream_model_usage(stdout))
+
+
+def stream_model_usage(stdout: str) -> dict[str, Any]:
+    """The ``modelUsage`` payload of the trailing result event.
+
+    Keyed by the concrete billed model id, values carry the per-model
+    counters (``inputTokens``/``outputTokens``) — the suitability
+    fingerprint picks its primary id by output tokens, which the bare
+    key list of :func:`stream_models_used` cannot express. Non-string
+    keys are dropped; ``{}`` when no result event/modelUsage exists.
+    """
     ev = _last_result_event(stdout or "")
     if ev is None:
-        return []
+        return {}
     usage = ev.get("modelUsage")
     if not isinstance(usage, dict):
-        return []
-    return sorted(str(k) for k in usage if isinstance(k, str) and k)
+        return {}
+    return {k: v for k, v in usage.items() if isinstance(k, str) and k}
 
 
 def _cost_from_stdout_result(stdout: str) -> float | None:
@@ -1780,6 +1792,7 @@ __all__ = [
     "call_claude_agent_async",
     "compact_stream_transcript",
     "stream_final_text",
+    "stream_model_usage",
     "stream_models_used",
     "stream_terminal_reason",
 ]

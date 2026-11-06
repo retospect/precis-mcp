@@ -319,6 +319,13 @@ class LlmResult:
     finish_reason: str | None = None
     has_tool_calls: bool = False
     has_refusal: bool = False
+    #: Wire-reported identity: the response body's ``model``/``provider``
+    #: fields, when the backend returns them (OpenRouter stamps both; a
+    #: plain local server may return neither). Read by the router into
+    #: ``LlmResult.observed`` — the logged *observed* identity, kept apart
+    #: from the requested/booked one. ``None`` when unreported.
+    response_model: str | None = None
+    response_provider: str | None = None
 
 
 class LlmClient:
@@ -392,6 +399,9 @@ class LlmClient:
         cost = usage.get("cost")
         if cost is None:
             cost = body.get("cost")
+        # Wire-reported identity (observed, never the request's model pin).
+        resp_model = body.get("model")
+        resp_provider = body.get("provider")
         return LlmResult(
             text=str(text),
             total_tokens=int(total) if total is not None else None,
@@ -402,6 +412,10 @@ class LlmClient:
             has_tool_calls=isinstance(message, dict)
             and bool(message.get("tool_calls")),
             has_refusal=isinstance(message, dict) and bool(message.get("refusal")),
+            response_model=resp_model if isinstance(resp_model, str) else None,
+            response_provider=(
+                resp_provider if isinstance(resp_provider, str) else None
+            ),
         )
 
 

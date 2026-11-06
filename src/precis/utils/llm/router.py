@@ -71,6 +71,7 @@ from precis.utils.claude_agent import (
     call_claude_agent,
     call_claude_agent_async,
     stream_final_text,
+    stream_model_usage,
 )
 from precis.utils.claude_p import (
     ClaudePResult,
@@ -1086,6 +1087,63 @@ class LlmResult:
     #: class's fixed horizon (:data:`~precis.utils.llm.failure.DEFAULT_HORIZON`).
     #: ``None`` when unclassified or ``content``.
     retry_at: datetime | None = None
+    #: The identity the *wire* reported — never the requested/booked one.
+    #: ``{"model": str, "provider": str|None, "quant": None}`` on
+    #: OpenAI-compatible wires (the response body's fields, ``quant``
+    #: unreported on every wire today); on the claude lanes ``model`` is
+    #: the primary ``modelUsage`` id (most output tokens) and ``models``
+    #: the full billed list. ``None`` when the wire carried no identity —
+    #: never synthesized from request config.
+    observed: dict[str, Any] | None = None
+
+
+def _observed_from_response(model: Any, provider: Any) -> dict[str, Any] | None:
+    """Build ``LlmResult.observed`` from wire-reported fields.
+
+    ``None`` unless the response reported a model id — a missing model
+    means the wire carried no identity to record, and guessing from the
+    request would silently turn *requested* into *observed*.
+    """
+    if not isinstance(model, str) or not model:
+        return None
+    return {
+        "model": model,
+        "provider": provider if isinstance(provider, str) else None,
+        "quant": None,
+    }
+
+
+def _observed_from_claude_stream(raw_stdout: str | None) -> dict[str, Any] | None:
+    """Build ``LlmResult.observed`` from a claude wire's ``modelUsage``.
+
+    Works on both claude lanes: a ``claude_agent`` stream-json transcript
+    and the single-line ``claude_p`` envelope share the trailing
+    ``{"type":"result"}`` event shape :func:`stream_model_usage` reads.
+    ``model`` is the primary id — the ``modelUsage`` entry billed for the
+    most output tokens — so a call whose secondary-model set varies does
+    not read as an identity change; the full billed list stays in
+    ``models``. ``None`` when no result event/id exists.
+    """
+    usage = stream_model_usage(raw_stdout or "")
+    ids = sorted(usage)
+    if not ids:
+        return None
+
+    def _out(mid: str) -> int:
+        entry = usage.get(mid)
+        if not isinstance(entry, dict):
+            return 0
+        tokens = entry.get("outputTokens")
+        if isinstance(tokens, bool) or not isinstance(tokens, int | float):
+            return 0
+        return int(tokens)
+
+    return {
+        "model": max(ids, key=lambda m: (_out(m), m)),
+        "models": ids,
+        "provider": None,
+        "quant": None,
+    }
 
 
 def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
@@ -1119,6 +1177,7 @@ def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
         output_tokens=res.output_tokens,
         cache_read_tokens=res.cache_read_tokens,
         cache_creation_tokens=res.cache_creation_tokens,
+        observed=_observed_from_claude_stream(res.raw_stdout),
     )
     if res.terminal_reason in (None, "completed") and is_quota_exhaustion_text(
         res.final_text
@@ -1166,6 +1225,7 @@ def result_from_claude_p(res: ClaudePResult, *, model: str, tier: Tier) -> LlmRe
         output_tokens=res.output_tokens,
         cache_read_tokens=res.cache_read_tokens,
         cache_creation_tokens=res.cache_creation_tokens,
+        observed=_observed_from_claude_stream(res.raw_stdout),
     )
     if not res.data and is_quota_exhaustion_text(text):
         result = _replace(
@@ -1260,6 +1320,10 @@ def result_from_openai(res: _HasText, *, model: str, tier: Tier) -> LlmResult:
         input_tokens=prompt_tokens,
         output_tokens=completion_tokens,
         stop_reason=getattr(res, "finish_reason", None),
+        observed=_observed_from_response(
+            getattr(res, "response_model", None),
+            getattr(res, "response_provider", None),
+        ),
     )
 
 
@@ -4997,6 +5061,17 @@ def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[st
     if req.profile:
         feats["profile"] = req.profile
     if result is not None:
+        # The routing identity asked for vs the identity the wire reported
+        # back — kept as two dicts so a reader never has to guess which
+        # ``model`` is inferred (requested) and which is observed (S5).
+        feats["requested"] = {
+            "model": result.model,
+            "effort": req.effort,
+            "provider": (req.endpoint or {}).get("provider"),
+            "quant": (req.endpoint or {}).get("quant"),
+        }
+        if result.observed:
+            feats["observed"] = result.observed
         stop = result.stop_reason
         terminal = result.terminal_reason
         feats["stop_reason"] = stop
@@ -6043,6 +6118,10 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
                 # 0, not None) works on this backend too.
                 tool_calls=result.tool_calls_made,
                 stop_reason=result.stop_reason,
+                observed=_observed_from_response(
+                    getattr(result, "response_model", None),
+                    getattr(result, "response_provider", None),
+                ),
             )
         ),
     )

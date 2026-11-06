@@ -271,6 +271,8 @@ def record_call(rec: LlmCallRecord, *, store: Store | None = None) -> str | None
         ):
             features.setdefault(key, value)
         rec = replace(rec, features=features)
+        if demand.privacy_class == "local-only":
+            rec = replace(rec, store_blobs=False)
         return _write(st, rec)
     except Exception:
         log.debug("route_log: record_call failed", exc_info=True)

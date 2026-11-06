@@ -290,6 +290,40 @@ def test_lite_row_skips_blob_but_keeps_metadata(store: Any) -> None:
     assert n_blob == 0  # the ~18 KB replay blob was NOT stored
 
 
+def test_local_only_call_stores_no_blob(store: Any) -> None:
+    # A call resolved to privacy_class local-only keeps no replay blob even
+    # when the caller left store_blobs=True — the privacy rule is enforced
+    # centrally in record_call, not left to each caller. Metadata, char
+    # counts and features still land.
+    tag = uuid4().hex[:8]
+    src = f"localonly-{tag}"
+    req_text = f"LO-REQ-{tag}"
+    route_log.record_call(
+        _rec(
+            source=src,
+            request_text=req_text,
+            response_text=f"LO-RESP-{tag}",
+            features={"prompt_chars": 3, "privacy_class": "local-only"},
+            store_blobs=True,
+        ),
+        store=store,
+    )
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT request_hash, response_hash, request_chars, "
+            "features->>'privacy_class' FROM llm_call_log WHERE source=%s",
+            (src,),
+        ).fetchone()
+        n_blob = conn.execute(
+            "SELECT count(*) FROM llm_blob WHERE text=%s", (req_text,)
+        ).fetchone()[0]
+    assert row is not None
+    assert row[0] is None and row[1] is None  # hashes NULL — no blob linked
+    assert row[2] == len(req_text)  # volume signal still recorded
+    assert row[3] == "local-only"  # resolved privacy class still logged
+    assert n_blob == 0  # the replay blob was NOT stored
+
+
 def test_dispatch_lite_when_log_blobs_false(store: Any, monkeypatch: Any) -> None:
     import precis.utils.llm.router as router
     from precis.utils.claude_p import ClaudePResult

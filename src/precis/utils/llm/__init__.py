@@ -19,6 +19,8 @@ Public surface:
   + its registry accessor (the LLM-independence seam).
 * :class:`LlmRequest` / :func:`route` — the seam.
 * :class:`LlmResult` + ``result_from_*`` — the normalized result.
+* :mod:`~precis.utils.llm.suitability` — outcome posteriors on model cards
+  (dark to routing).
 
 Tiers
 ------------------------
@@ -49,12 +51,11 @@ Resolution, per dispatch (in order)
    model card rather than embedded in code.
    The override may also carry a ``chain`` (rung dicts in the
    ``llm.chain.<tier>`` grammar, same parser): that source then walks it
-   instead of the tier chain (step 4) while the rest of the tier keeps the
-   tier chain; malformed ⇒ warned and ignored. Op chains are not visible to
-   ``resolve_chain`` consumers (the ``/status`` models panel,
-   ``planner_rung0_model``), which still show the tier chain. A saturated
-   local rung 0 that pins its own model advances to the chain's next rung
-   (its own pinned model) rather than re-pointing at the hosted endpoint. Excluded on purpose: functional pins
+   while the rest of the tier keeps the tier chain (step 4); malformed ⇒
+   warned and ignored. Op chains are invisible to ``resolve_chain``
+   consumers (the ``/status`` models panel, ``planner_rung0_model``), which
+   show the tier chain. A saturated local rung 0 advances to the chain's
+   next rung rather than re-pointing at the hosted endpoint. Excluded on purpose: functional pins
    (``classify_topics``→``summarizer``, ``classify:escalate``→its Tier-2
    re-judge model) and router-bypassers (``fix_gripe``).
 3. **Model** — :func:`resolve_model`: ``llm.model.<tier>`` DB override →

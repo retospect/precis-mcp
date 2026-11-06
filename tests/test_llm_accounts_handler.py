@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from psycopg import sql
@@ -69,6 +70,30 @@ def _handler(store: Any) -> Any:
     from precis.handlers.llm import LlmHandler
 
     return LlmHandler(hub=Hub(store=store))
+
+
+def _slog_call(
+    store: Any,
+    *,
+    model: str = "suit-view-model",
+    task_kind: str,
+    source: str = "suit-view-src",
+    transport: str = "openai_compat",
+    n: int = 1,
+    observed: dict[str, Any] | None = None,
+) -> None:
+    """``n`` validated-success ``llm_call_log`` rows for one task kind."""
+    features: dict[str, Any] = {"task_kind": task_kind}
+    if observed is not None:
+        features["observed"] = observed
+    with store.pool.connection() as conn:
+        for _ in range(n):
+            conn.execute(
+                "INSERT INTO llm_call_log "
+                "(source, tier, transport, model, errored, data_parsed, "
+                "features) VALUES (%s, 'frontier', %s, %s, false, true, %s)",
+                (source, transport, model, Jsonb(features)),
+            )
 
 
 class TestAccountsView:
@@ -198,6 +223,80 @@ class TestDecisionsView:
         assert row.actual_usd == pytest.approx(0.5)
         assert row.projected_usd == pytest.approx(0.4)
         assert (row.calls, row.projected_known) == (2, 1)
+
+
+class TestSuitabilityView:
+    """``/suitability`` renders the stored ``meta.suitability`` posteriors
+    for the ten busiest task kinds — it never recomputes them."""
+
+    def test_empty_log_renders_header_only(self, store: Any) -> None:
+        handler = _handler(store)
+        assert "suitability" in handler._supported_list_views()
+        assert (
+            handler.get(id="/suitability").body
+            == "# llm suitability (0 task kinds, 7 d)"
+        )
+
+    def test_busy_kind_without_posteriors_renders_no_outcomes(self, store: Any) -> None:
+        _slog_call(store, task_kind="test.suit.none", n=3)
+        body = _handler(store).get(id="/suitability").body
+        assert "  test.suit.none: no outcomes" in body
+
+    def test_stored_posterior_renders_label_and_interval(self, store: Any) -> None:
+        from precis import llm_catalog
+        from precis.utils.llm.suitability import rollup
+
+        tag = uuid4().hex[:8]
+        model = f"suit-view-{tag}"
+        llm_catalog.upsert_card(store, model_id=model, text="A model.")
+        _slog_call(
+            store,
+            model=model,
+            task_kind="test.suit.view",
+            source=f"suit-view-{tag}",
+            n=4,
+        )
+        rollup(store)
+        body = _handler(store).get(id="/suitability").body
+        line = next(ln for ln in body.splitlines() if "test.suit.view" in ln)
+        assert f"{model}@openai_compat" in line
+        assert "band=any" in line
+        assert "label=unqualified" in line
+        assert "n=4" in line
+        assert "L90=" in line and "interval=[" in line
+        assert "identity=requested only" in line
+        assert "drift=no" in line
+
+    def test_observed_identity_renders_observed(self, store: Any) -> None:
+        from precis import llm_catalog
+        from precis.utils.llm.suitability import rollup
+
+        tag = uuid4().hex[:8]
+        model = f"suit-obs-{tag}"
+        llm_catalog.upsert_card(store, model_id=model, text="A model.")
+        _slog_call(
+            store,
+            model=model,
+            task_kind="test.suit.obs",
+            source=f"suit-obs-{tag}",
+            n=4,
+            observed={"model": "wire-m", "provider": "p"},
+        )
+        rollup(store)
+        body = _handler(store).get(id="/suitability").body
+        line = next(ln for ln in body.splitlines() if "test.suit.obs" in ln)
+        assert "identity=observed" in line
+
+    def test_view_caps_at_ten_busiest_kinds(self, store: Any) -> None:
+        for i in range(11):
+            _slog_call(store, model=f"suit-cap-m{i}", task_kind=f"test.suit.k{i:02d}")
+        body = _handler(store).get(id="/suitability").body
+        assert body.startswith("# llm suitability (10 task kinds, 7 d)")
+        kind_lines = [
+            ln for ln in body.splitlines() if ln.strip().startswith("test.suit.k")
+        ]
+        assert len(kind_lines) == 10
+        assert all("test.suit.k10" not in ln for ln in kind_lines)
 
 
 class TestPoolsView:

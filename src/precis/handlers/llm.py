@@ -21,6 +21,10 @@ configuration reads, never LLM calls or claims about effective runtime
 routing: request pins and runtime gates can change where a call lands.
 
 ``/decisions`` compares shadow routing with executed legacy calls per task kind.
+``/suitability`` shows the stored suitability posteriors — validated
+outcomes rolled up per ``model@adapter`` × task kind × difficulty band
+by the nightly ``llm_suitability`` cadence (read-only; decide() never
+reads them).
 ``/accounts`` and ``/pools`` (migration 0280, S1a) read the owned-capacity
 ledger: an account is one credential at one provider under one plan
 (``llm_account``); a pool is a rate bucket with a reset rule and explicit
@@ -172,6 +176,8 @@ class LlmHandler(NumericRefHandler):
             "(name/vendor/plan/adapter/key presence/pools); id='/pools' "
             "lists their rate buckets (unit/limit/used/remaining/reset_rule). "
             "id='/decisions' compares shadow decisions with executed routes per task kind. "
+            "id='/suitability' shows per-offering outcome posteriors "
+            "(label/n/interval) for the ten busiest task kinds. "
             "put(kind='llm', args={'account': {...}}) is owner-only. "
             "Never exported. See ``llm-catalog`` (git-only)."
         ),
@@ -292,6 +298,8 @@ class LlmHandler(NumericRefHandler):
             return Response(body=self._render_pools())
         if view == "decisions":
             return Response(body=self._render_decisions())
+        if view == "suitability":
+            return Response(body=self._render_suitability())
         return super()._list_view(view)
 
     def _supported_list_views(self) -> tuple[str, ...]:
@@ -302,6 +310,7 @@ class LlmHandler(NumericRefHandler):
             "accounts",
             "pools",
             "decisions",
+            "suitability",
         )
 
     def _op_route(self, source: str) -> Response | None:
@@ -929,6 +938,53 @@ class LlmHandler(NumericRefHandler):
                 f"usd actual={row.actual_usd:.6f} projected={row.projected_usd:.6f} "
                 f"({row.projected_known}/{row.calls} priced)"
             )
+        return "\n".join(lines)
+
+    def _render_suitability(self, *, window_days: int = 7, limit: int = 10) -> str:
+        """``id='/suitability'`` — stored posteriors for the busiest kinds.
+
+        Reads stored ``meta.suitability`` only (written by the nightly
+        ``llm_suitability`` cadence) plus the one task-kind volume query —
+        no scipy, no outcome rescan. A busy kind with no stored posterior
+        prints ``no outcomes``; an empty catalog renders the header only.
+        """
+        from precis.utils.llm.suitability import busiest_task_kinds
+
+        kinds = busiest_task_kinds(self.store, window_days=window_days, limit=limit)
+        lines = [f"# llm suitability ({len(kinds)} task kinds, {window_days} d)"]
+        if not kinds:
+            return "\n".join(lines)
+        with self.store.pool.connection() as conn:
+            cards = conn.execute(
+                "SELECT meta->'suitability'->'offerings' FROM refs "
+                "WHERE kind = 'llm' AND retired_at IS NULL "
+                "AND meta ? 'suitability'"
+            ).fetchall()
+        by_kind: dict[str, list[tuple[str, str, dict[str, Any], dict[str, Any]]]] = {}
+        for (offerings,) in cards:
+            for okey, entry in (offerings or {}).items():
+                for kind, bands in (entry.get("kinds") or {}).items():
+                    for band, cell in bands.items():
+                        by_kind.setdefault(kind, []).append((okey, band, cell, entry))
+        for kind in kinds:
+            entries = sorted(by_kind.get(kind) or [], key=lambda e: (e[0], e[1]))
+            if not entries:
+                lines.append(f"  {kind}: no outcomes")
+                continue
+            for okey, band, cell, entry in entries:
+                lo, hi = cell.get("lower90"), cell.get("upper90")
+                span = (
+                    f"[{lo:.3f}, {hi:.3f}]"
+                    if isinstance(lo, int | float) and isinstance(hi, int | float)
+                    else "[?, ?]"
+                )
+                l90 = f"{lo:.3f}" if isinstance(lo, int | float) else "?"
+                lines.append(
+                    f"  {kind}: {okey} band={band} label={cell.get('label')} "
+                    f"n={cell.get('n')} L90={l90} interval={span} "
+                    f"identity={'observed' if entry.get('identity') else 'requested only'} "
+                    f"drift={entry.get('drift_at') or 'no'}"
+                )
         return "\n".join(lines)
 
     def _render_pools(self) -> str:

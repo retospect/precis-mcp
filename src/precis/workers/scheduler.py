@@ -272,6 +272,12 @@ def _run_recipe_gap(store: Store, batch_size: int) -> None:
     log.info("scheduler: recipe_gap filed=%d", run_recipe_gap(store))
 
 
+def _run_llm_suitability(store: Store, batch_size: int) -> None:
+    from precis.workers.llm_suitability import run_llm_suitability
+
+    log.info("scheduler: llm_suitability cards=%d", run_llm_suitability(store))
+
+
 def _run_call_errors(store: Store, batch_size: int) -> None:
     """One failed-call mining pass (gr484070): cluster the last 24h of
     rejected-before-work ``tool_calls`` errors and file/bump one gripe
@@ -1051,6 +1057,7 @@ def _over_daily_budget(store: Store, cadence: str) -> bool:
 #: the same spend.
 CADENCES: tuple[Cadence, ...] = (
     Cadence(name="recipe_gap", interval_s=6 * 3600, run=_run_recipe_gap),
+    Cadence(name="llm_suitability", interval_s=24 * 3600, run=_run_llm_suitability),
     Cadence(name="cron_tick", interval_s=60, run=_run_cron_tick),
     Cadence(name="watch_poll", interval_s=3600, run=_run_watch_poll),
     # docs/backlog/self-healing-spine.md Layer 2: the liveness-net digest.

@@ -120,6 +120,28 @@ are the accepted values. `precis llm decide` previews a choice without an LLM ca
 `precis llm decide-mode <prefix|default> <legacy|shadow|on|clear>` writes or
 clears those rows.
 
+## Which offerings suit which task kinds? /suitability
+
+`get(kind='llm', id='/suitability')` shows the suitability ledger — the
+stored Beta posteriors over validated outcomes, rolled up nightly by the
+`llm_suitability` cadence per `model@adapter` × task kind × difficulty
+band (`low`/`mid`/`high` from the recipe's `difficulty_prior`, else
+`any`). One line per bucket: label, `n`, the posterior's 90% lower bound
+and its 80% interval. Labels: `unqualified` (under 5 outcomes with no
+measured eval — unseen, not inadequate), `not good enough`, `marginal`,
+`appropriate`, `vast overkill` (appropriate with headroom ≥ 2 over the
+requirement). Only a call that ran and parsed counts as an outcome —
+quota, rate, budget, transport and content rows carry no signal, and a
+call logged `local-only` keeps no replay blob. `identity=observed` means
+the wire reported what actually answered (the response's model field for
+HTTP transports, `modelUsage` for agent transports) rather than just
+what was requested; `drift=<date>` marks the last day the observed
+fingerprint changed, and outcomes before it count half. The rollup
+writes `meta.suitability` on each model card plus one
+`observed-telemetry` review, both idempotent; `precis llm suitability
+[--model M] [--days N] [--dry-run]` recomputes on demand. decide() never
+reads the ledger — it is reviewer-facing evidence, not routing input.
+
 ## See also
 
 `pool_refresh` copies Codex weekly usage from fleet host reports and Devin's

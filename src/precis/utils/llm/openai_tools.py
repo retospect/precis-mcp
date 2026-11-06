@@ -159,6 +159,12 @@ class ChatTurn:
     #: (``glm-fleet-flip-safety`` (git-only) Part 2; mirrors how
     #: ``total_tokens`` is read off the same ``usage`` block).
     cost_usd: float | None = None
+    #: Wire-reported identity for this turn: the response body's
+    #: ``model``/``provider`` fields (or, streamed, the SSE chunk's) —
+    #: ``None`` when the backend reports neither. The router folds the
+    #: last reported pair into ``LlmResult.observed``.
+    response_model: str | None = None
+    response_provider: str | None = None
 
 
 class HttpTransport(Protocol):
@@ -629,6 +635,8 @@ class ToolChatClient:
         usage = body.get("usage") or {}
         total = usage.get("total_tokens")
         cost = usage.get("cost")
+        resp_model = body.get("model")
+        resp_provider = body.get("provider")
         return ChatTurn(
             message=dict(message),
             content=content if isinstance(content, str) else None,
@@ -636,6 +644,10 @@ class ToolChatClient:
             total_tokens=int(total) if isinstance(total, int) else None,
             finish_reason=choice.get("finish_reason"),
             cost_usd=float(cost) if isinstance(cost, int | float) else None,
+            response_model=resp_model if isinstance(resp_model, str) else None,
+            response_provider=(
+                resp_provider if isinstance(resp_provider, str) else None
+            ),
         )
 
     def _chat_streaming(
@@ -666,6 +678,8 @@ class ToolChatClient:
         finish_reason: str | None = None
         total: int | None = None
         cost: float | None = None
+        resp_model: str | None = None
+        resp_provider: str | None = None
 
         def _abort(reason: str, *, drained: bool = False) -> StreamTimeout:
             return StreamTimeout(
@@ -703,6 +717,10 @@ class ToolChatClient:
                         total = usage["total_tokens"]
                     if isinstance(usage.get("cost"), int | float):
                         cost = float(usage["cost"])
+                    if isinstance(event.get("model"), str):
+                        resp_model = event["model"]
+                    if isinstance(event.get("provider"), str):
+                        resp_provider = event["provider"]
                     choices = event.get("choices") or []
                     if choices and isinstance(choices[0], dict):
                         choice = choices[0]
@@ -765,6 +783,8 @@ class ToolChatClient:
             total_tokens=total,
             finish_reason=finish_reason,
             cost_usd=cost,
+            response_model=resp_model,
+            response_provider=resp_provider,
         )
 
 
@@ -837,6 +857,12 @@ class AgentLoopResult:
     #: the ``openai_tools`` transport can meter real spend
     #: (``glm-fleet-flip-safety`` (git-only) Part 2).
     cost_usd: float | None = None
+    #: Wire-reported identity from the last turn that carried it
+    #: (:attr:`ChatTurn.response_model`/``response_provider``) — ``None``
+    #: when no turn reported it. The router folds it into
+    #: ``LlmResult.observed``.
+    response_model: str | None = None
+    response_provider: str | None = None
 
 
 def _tool_result_message(call: ToolCall, content: str) -> dict[str, Any]:
@@ -882,6 +908,8 @@ def run_tool_loop(
     total_cost: float | None = None
     calls_made = 0
     last_text = ""
+    last_resp_model: str | None = None
+    last_resp_provider: str | None = None
 
     def _accumulate(turn_tokens: int | None, turn_cost: float | None) -> None:
         nonlocal total_tokens, total_cost
@@ -901,6 +929,8 @@ def run_tool_loop(
                 error="worker draining: agent loop aborted before next turn",
                 paused=True,
                 cost_usd=total_cost,
+                response_model=last_resp_model,
+                response_provider=last_resp_provider,
             )
         try:
             turn = client.chat(messages, tools=tools_param)
@@ -937,8 +967,14 @@ def run_tool_loop(
                 timed_out=isinstance(exc, TimeoutError)
                 and not getattr(exc, "drained", False),
                 cost_usd=total_cost,
+                response_model=last_resp_model,
+                response_provider=last_resp_provider,
             )
         _accumulate(turn.total_tokens, turn.cost_usd)
+        if turn.response_model is not None:
+            last_resp_model = turn.response_model
+        if turn.response_provider is not None:
+            last_resp_provider = turn.response_provider
         if turn.content:
             last_text = turn.content
 
@@ -950,6 +986,8 @@ def run_tool_loop(
                 total_tokens=total_tokens,
                 stop_reason="stop",
                 cost_usd=total_cost,
+                response_model=last_resp_model,
+                response_provider=last_resp_provider,
             )
 
         # Echo the assistant's tool-call message verbatim, then answer each
@@ -971,6 +1009,8 @@ def run_tool_loop(
                 total_tokens=total_tokens,
                 stop_reason="max_turns",
                 cost_usd=total_cost,
+                response_model=last_resp_model,
+                response_provider=last_resp_provider,
             )
 
     return AgentLoopResult(
@@ -980,6 +1020,8 @@ def run_tool_loop(
         total_tokens=total_tokens,
         stop_reason="max_turns",
         cost_usd=total_cost,
+        response_model=last_resp_model,
+        response_provider=last_resp_provider,
     )
 
 

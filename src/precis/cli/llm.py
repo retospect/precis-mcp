@@ -155,6 +155,24 @@ def add_parser(subparsers: Any) -> None:
     )
     dec.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
+    su = lsub.add_parser(
+        "suitability",
+        help="Recompute the suitability ledger and print the posteriors; "
+        "writes them to model cards unless --dry-run. No LLM call.",
+    )
+    su.add_argument(
+        "--model", default=None, help="Restrict the rollup to one model id."
+    )
+    su.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Compute the posteriors without writing any card.",
+    )
+    su.add_argument(
+        "--days", type=int, default=30, help="Outcome window in days (default 30)."
+    )
+    su.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
     dm = lsub.add_parser(
         "decide-mode",
         help="Set or clear a decide() mode row — 'default' writes "
@@ -521,6 +539,29 @@ def _cmd_decide(store: Store, args: argparse.Namespace) -> None:
         )
     model = router.resolve_model(req.tier)
     print("legacy: " + ", ".join(decide.rung_key(rung, model) for rung in ladder))
+
+
+def _cmd_suitability(store: Store, args: argparse.Namespace) -> None:
+    from precis.utils.llm.suitability import offering_key, rollup
+
+    rows = rollup(
+        store, window_days=args.days, write=not args.dry_run, model=args.model
+    )
+    for r in rows:
+        print(
+            f"{offering_key(r.model, r.adapter)} {r.task_kind} band={r.band} "
+            f"label={r.label} n={r.n} n_eff={r.n_eff:.2f} "
+            f"L90={r.lower90:.3f} interval=[{r.lower90:.3f}, {r.upper90:.3f}] "
+            f"identity={'observed' if r.identity else 'requested only'} "
+            f"drift={r.drift_at or 'no'}"
+        )
+    if args.dry_run:
+        print(
+            f"suitability: {len(rows)} posteriors computed (dry-run — nothing written)"
+        )
+    else:
+        written = len({r.model for r in rows if r.written})
+        print(f"suitability: {len(rows)} posteriors, {written} cards written")
 
 
 def _cmd_decide_mode(store: Store, args: argparse.Namespace) -> None:
@@ -972,6 +1013,8 @@ def run(args: argparse.Namespace) -> None:
         _cmd_choose(store, args)
     elif args.llm_cmd == "decide":
         _cmd_decide(store, args)
+    elif args.llm_cmd == "suitability":
+        _cmd_suitability(store, args)
     elif args.llm_cmd == "decide-mode":
         _cmd_decide_mode(store, args)
     elif args.llm_cmd == "cost":
