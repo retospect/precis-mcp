@@ -619,6 +619,27 @@ def _accepted_overflow(
     return tuple(cut2) + tuple(c for c in cur if c.refused)
 
 
+def _hv_pen_matrix(
+    mesh: TopoMesh, br: WirePath, n_layers: int, weight: float
+) -> list[list[float]]:
+    """Per (edge, layer) H/V direction cost of ``br``'s own crossings
+    (pcb-topo-hv-preference) — the ``pen`` ``layer_dp`` folds the
+    preference through. Edge ``i``'s cell prices the travel from its
+    OWN crossing point back to the previous one (the pin start for
+    ``i == 0``), the same "run arriving at edge i" the step-cost search
+    prices (:func:`~precis.pcb.topoplace.wires._direction_pen`)."""
+    pts = [br.points[0]] + [
+        edge_xy(mesh, int(br.edges[i]), float(br.t[i])) for i in range(len(br.edges))
+    ]
+    return [
+        [
+            _wires._direction_pen(pts[i], pts[i + 1], ly, n_layers, weight)
+            for ly in range(n_layers)
+        ]
+        for i in range(len(br.edges))
+    ]
+
+
 def assign_layers(
     d: TopoDesign,
     mesh: TopoMesh,
@@ -629,6 +650,7 @@ def assign_layers(
     pose: Any = None,
     event: Callable[[str], None] | None = None,
     masks: BoardMasks | None = None,
+    hv_weight: float = 0.0,
 ) -> tuple[Wires, list[list[int]], list[list[int]], tuple[tuple[int, int], ...]]:
     """Pair-level crossing resolution on planted vias (G2g call site 2).
 
@@ -660,7 +682,11 @@ def assign_layers(
     ``event`` receives one progress line per search round — ``None``
     (the default) keeps the search silent. ``masks`` (pcb-layer-argmin)
     is the corridor mask set at the routed pose — move keys' fifth
-    element, 0.0 everywhere without it."""
+    element, 0.0 everywhere without it. ``hv_weight``
+    (pcb-topo-hv-preference, default 0.0/off) folds each branch's own
+    In1-horizontal/In2-vertical direction cost into the ``pen`` matrix
+    ``layer_dp`` reads, at both the unlayered-branch legalisation and
+    the pair-move DP."""
     branches = list(wires.branches)
     cur_wires = dataclasses.replace(
         wires,
@@ -1237,6 +1263,9 @@ def assign_layers(
                     cmask,
                     cmask,
                     n_layers,
+                    _hv_pen_matrix(mesh, br0, n_layers, hv_weight)
+                    if hv_weight
+                    else None,
                 )
                 if dead is None:
                     r0, c0 = r1, c1
@@ -1337,6 +1366,11 @@ def assign_layers(
                         continue
                     j, jo = (0, 2) if bb == a else (2, 0)
                     pen = [[0.0] * n_layers for _ in bp.edges]
+                    if hv_weight:
+                        hv_pen = _hv_pen_matrix(mesh, bp, n_layers, hv_weight)
+                        for i_hv in range(ne_b):
+                            for ly_hv in range(n_layers):
+                                pen[i_hv][ly_hv] += hv_pen[i_hv][ly_hv]
 
                     def _add_pen(
                         rg_: tuple[int, int, int, int],
@@ -2555,6 +2589,7 @@ def plan_route(
     paths: Sequence[Sequence[tuple[float, float]]] | None = None,
     event: Callable[[str], None] | None = None,
     masks: BoardMasks | None = None,
+    hv_weight: float = 0.0,
 ) -> RoutePlan:
     """Layer assignment → pieces + via sites for one routed pose.
 
@@ -2579,6 +2614,7 @@ def plan_route(
         pose=pose,
         event=event,
         masks=masks,
+        hv_weight=hv_weight,
     )
     if wires2.branches is not wires.branches and paths is not None:
         # the spoke fan was computed on the branches the caller handed
@@ -5717,6 +5753,7 @@ def route_design(
     footprints: Mapping[str, Any] | None = None,
     fixed_copper: Sequence[Mapping[str, Any]] | None = None,
     hole_clearance_mm: float = 0.0,
+    hv_weight: float = 0.0,
 ) -> tuple[RoutePlan, Any]:
     """Mesh → wires → plan → copper for one pose — the route half every
     caller (the ``placer='topo'`` job, ``pcb.local``) shares.
@@ -5731,7 +5768,7 @@ def route_design(
     ``footprints`` — the plane is poured over the finished copper
     (:func:`_plane_pours`). Without plane nets this is
     :func:`_route_signals` verbatim; see it for ``pose``, ``net_rules``,
-    ``event`` and ``masks``."""
+    ``event``, ``masks`` and ``hv_weight``."""
     kw: dict[str, Any] = dict(
         pose=pose,
         net_rules=net_rules,
@@ -5740,6 +5777,7 @@ def route_design(
         min_via_ring=min_via_ring,
         event=event,
         masks=masks,
+        hv_weight=hv_weight,
     )
     planes = _plane_nets(d, ir)
     if not planes:
@@ -6000,6 +6038,7 @@ def _route_signals(
     event: Callable[[str], None] | None = None,
     masks: BoardMasks | None = None,
     mesh_sink: list[Any] | None = None,
+    hv_weight: float = 0.0,
 ) -> tuple[RoutePlan, Any]:
     """Mesh → wires → plan → copper for one pose — the route half every
     caller (the ``placer='topo'`` job, ``pcb.local.topo_place``) shares.
@@ -6031,6 +6070,9 @@ def _route_signals(
     input.  The caller builds it per route attempt (pose-fixed inside
     one call); ``None`` keeps the legacy search order.
 
+    ``hv_weight`` (pcb-topo-hv-preference, default 0.0/off) is forwarded
+    to both ``build_wires`` and ``plan_route`` unchanged.
+
     Two passes (:attr:`RoutePlan.withdrawn`): the first pass's withdrawn
     nets (crossings, stranded, no via site, short-risk, severed,
     off-angle) are removed — their ``net_pins`` emptied — and the
@@ -6057,6 +6099,7 @@ def _route_signals(
         event=event,
         masks=masks,
         mesh_sink=mesh_sink,
+        hv_weight=hv_weight,
     )
     plan, rres = _route_pass(d, ir, **kw)
     failed = _plan_failed_nets(plan)
@@ -6551,6 +6594,7 @@ def _route_pass(
     event: Callable[[str], None] | None = None,
     masks: BoardMasks | None = None,
     mesh_sink: list[Any] | None = None,
+    hv_weight: float = 0.0,
 ) -> tuple[RoutePlan, Any]:
     """One mesh → wires → plan → copper pass; :func:`route_design`'s body."""
     from precis.pcb.topoplace.mesh import build_mesh
@@ -6586,6 +6630,7 @@ def _route_pass(
             name: float(nr.clearance_mm) for name, nr in rules.items()
         },
         masks=masks,
+        hv_weight=hv_weight,
     )
     routed_over = tuple(c for c in wires.overflow if not c.refused)
     if routed_over:
@@ -6615,6 +6660,7 @@ def _route_pass(
         paths=paths,
         event=event,
         masks=masks,
+        hv_weight=hv_weight,
     )
     if wires.overflow:
         plan = dataclasses.replace(plan, overflow=wires.overflow)

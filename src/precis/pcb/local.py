@@ -829,6 +829,7 @@ def _route_stage(
     pose: Any = None,
     label_spots: dict[str, str] | None = None,
     event: Callable[[str], None] | None = None,
+    hv_weight: float = 0.0,
 ) -> _RouteStage:
     """The shared slice-5 route stage: a routing design that admits the
     rails, the mesh at ``pose`` — ``d.pose0``, the pose ``ir`` already
@@ -842,8 +843,10 @@ def _route_stage(
     (:func:`precis.pcb.topoplace.label_boxes_for`, the same threading
     the pcb_place job's route stage uses) so the router never sites a
     via where the silk pass will draw the label. ``ir`` is throwaway in
-    every caller. Raises on a corridor-overflow refusal — best-effort
-    wrapping is the caller's choice, not this stage's."""
+    every caller. ``hv_weight`` (pcb-topo-hv-preference, default 0.0/off)
+    is forwarded to ``route_design`` unchanged. Raises on a
+    corridor-overflow refusal — best-effort wrapping is the caller's
+    choice, not this stage's."""
     from precis.pcb import topoplace as _tp
     from precis.pcb.topoplace import realise as _tprealise
 
@@ -898,6 +901,7 @@ def _route_stage(
         footprints=footprints,
         fixed_copper=design.fixed_copper,
         hole_clearance_mm=hole_fab_clearance_mm(design.fab_caps),
+        hv_weight=hv_weight,
     )
     if pose is not None:
         # The oracle measures the PLACED board — write the routed pose
@@ -1083,6 +1087,7 @@ def route(
     out: str = "out/topo",
     catalog: dict[str, dict[str, Any]] | None = None,
     progress: Callable[[str], None] | None = None,
+    hv_weight: float = 0.0,
 ) -> LocalRoute:
     """Route the board through the topological router — the workspace's
     in-script route call (gr513867), DB-free.
@@ -1094,7 +1099,10 @@ def route(
     :func:`place` result over as ``placement=`` to route the anneal's
     pose without a second solve. ``progress`` (gr513870) receives one
     line per route stage and per search round — pass ``print`` for a
-    live bench log; ``None`` stays silent.
+    live bench log; ``None`` stays silent. ``hv_weight``
+    (pcb-topo-hv-preference, default 0.0/off) is the measured
+    In1-horizontal/In2-vertical inner-layer direction preference,
+    forwarded to the route stage unchanged.
 
     Returns a :class:`LocalRoute`. A route-stage refusal (a corridor
     overflow, a design the router cannot read) raises
@@ -1114,6 +1122,7 @@ def route(
                 placement.ir,
                 placement.footprints,
                 event=progress,
+                hv_weight=hv_weight,
             )
         except CorridorOverflow as exc:
             raise LocalError(str(exc)) from exc
@@ -1140,7 +1149,9 @@ def route(
         ir = _build_ir(design)
         footprints = _footprints(design, ir)
         try:
-            stage = _route_stage(design, ir, footprints, event=progress)
+            stage = _route_stage(
+                design, ir, footprints, event=progress, hv_weight=hv_weight
+            )
         except CorridorOverflow as exc:
             raise LocalError(str(exc)) from exc
         nets = {
@@ -1169,7 +1180,13 @@ def route(
             footprints=footprints,
         )
     run = topo_place(
-        board, seed=seed, effort=effort, out=out, catalog=catalog, progress=progress
+        board,
+        seed=seed,
+        effort=effort,
+        out=out,
+        catalog=catalog,
+        progress=progress,
+        hv_weight=hv_weight,
     )
     route_json = run.files.get("route.json") or {}
     if run.route is None:
@@ -1273,6 +1290,7 @@ def topo_place(
     out: str = "out/topo",
     catalog: dict[str, dict[str, Any]] | None = None,
     progress: Callable[[str], None] | None = None,
+    hv_weight: float = 0.0,
 ) -> TopoRun:
     """The phase-0 topo-place run, in-process (topo-place spec §1c):
     ``design_from_ir`` → the proxy placer → ``assign_pins`` → the run
@@ -1290,7 +1308,9 @@ def topo_place(
     rows, exactly as :func:`place`. ``progress`` (gr513870's per-round
     progress) receives one line per anneal restart plus the route
     stage's per-phase/per-round lines — pass ``print`` for a live log;
-    ``None`` stays silent. A :class:`PinConflict` surfaces
+    ``None`` stays silent. ``hv_weight`` (pcb-topo-hv-preference,
+    default 0.0/off) is forwarded to the route stage unchanged — the
+    anneal itself never sees it. A :class:`PinConflict` surfaces
     unchanged — it is the board script's error, not the run's."""
     from precis.pcb import topoplace as _tp
     from precis.pcb.topoplace import runstore as _runstore
@@ -1422,6 +1442,7 @@ def topo_place(
             pose=result.best_pose,
             label_spots=label_spots,
             event=progress,
+            hv_weight=hv_weight,
         )
         plan, rres = stage.plan, stage.result
         route_pair = (plan, rres)

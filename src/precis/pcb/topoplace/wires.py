@@ -140,6 +140,61 @@ OCC_LAYER_COST = 0.25
 #: ordinary congestion, the same reading ``occ`` gives edges.
 TRI_OCC_MM = 1.0
 
+#: Measured H/V inner-layer direction preference (pcb-topo-hv-preference,
+#: td569574, ruling me569464/me569461): ``build_wires``' ``hv_weight``
+#: default is 0.0 (off) — the design has no spare via sites to pay for a
+#: hard rule (me569568), so the preference enters as one more weighted
+#: step/pen term and is kept only if a measurement shows no board routes
+#: worse. ``HV_WEIGHT_LOW``/``HV_WEIGHT_MED`` are the measurement
+#: harness's two nonzero points, picked at the same order of magnitude as
+#: :data:`OCC_LAYER_COST` since :func:`_direction_pen` is itself a 0..1
+#: fraction like the congestion term it sits beside.
+HV_WEIGHT_LOW = 0.1
+HV_WEIGHT_MED = 0.5
+
+#: ``_direction_pen``'s zero-travel guard (mm): a step shorter than this
+#: has no reliable axis, so the misalignment fraction is read off a
+#: denominator floored here rather than dividing by ~0.
+_HV_EPS_MM = 1e-9
+
+
+def _inner_axis(layer: int, n_layers: int) -> int:
+    """``layer``'s preferred travel axis on the inner stack (me569399's
+    4l two-sided h/v alternation): ``-1`` no axis (outer layer, or
+    ``n_layers`` has no inner layer at all), ``0`` horizontal (In1,
+    index 1), ``1`` vertical (In2, index 2), alternating up the stack
+    for a wider stackup. Inner layers are indices ``1 .. n_layers - 2``."""
+    if layer <= 0 or layer >= n_layers - 1:
+        return -1
+    return (layer - 1) % 2
+
+
+def _direction_pen(
+    p: tuple[float, float],
+    q: tuple[float, float],
+    layer: int,
+    n_layers: int,
+    weight: float,
+) -> float:
+    """``weight`` × how much the travel ``p``→``q`` runs against
+    ``layer``'s preferred axis (pcb-topo-hv-preference): a
+    horizontal-preferring layer (In1) penalises the vertical fraction
+    ``|dy| / (|dx| + |dy| + eps)``, a vertical-preferring layer (In2) the
+    horizontal fraction — 0.0 on an axis-less layer (outer, or a
+    non-inner index). ``weight == 0.0`` always returns 0.0 without
+    reading ``p``/``q`` — callers gate on ``if hv_weight:`` so this never
+    runs on the off-by-default path."""
+    if not weight:
+        return 0.0
+    axis = _inner_axis(layer, n_layers)
+    if axis < 0:
+        return 0.0
+    dx = abs(q[0] - p[0])
+    dy = abs(q[1] - p[1])
+    frac = dy if axis == 0 else dx
+    return weight * frac / (dx + dy + _HV_EPS_MM)
+
+
 #: Step-cost gate: a step through a triangle touching an edge this long
 #: is priced by the portal (point-to-segment) metric, not the
 #: midpoint-to-midpoint one — an open-area CDT edge is tens of trace
@@ -3550,6 +3605,7 @@ def _net_tree(
     occ_view: _OccView | None = None,
     planter: _ViaPlanter | None = None,
     via_drill_mm: float = 0.0,
+    hv_weight: float = 0.0,
 ) -> tuple[
     list[
         tuple[
@@ -3599,7 +3655,11 @@ def _net_tree(
     ``extra_blocked`` is an (E,) bool mask of edges closed on top of
     the net's own passability — the crossing-resolution re-thread masks
     a wrapped pad's shared corridor so the tree re-grows around its
-    other side (gr520902). Returns ``(branches, components, masks)`` —
+    other side (gr520902). ``hv_weight`` (pcb-topo-hv-preference,
+    default 0.0/off) prices each seed/relax step's misalignment with
+    its inner layer's preferred axis (:func:`_direction_pen`) — a
+    measured preference over the layered search, not a rule. Returns
+    ``(branches, components, masks)`` —
     a branch is ``(pin_a, pin_b, tris, edges, layers, hops)`` with
     ``layers`` the per-triangle layer (``len(edges) + 1``) and ``hops``
     ``(edge index, x, y, t)`` per planted via; a component is the
@@ -3850,12 +3910,18 @@ def _net_tree(
                         for iv in range(len(ivs(e0, ly))):
                             if not step_ok(t0, ly, vj, mid(e0, ly, iv)):
                                 continue
+                            seed_cost = seg * mul[ly][e0] + (
+                                TRI_OCC_MM * tovm[ly][t2] if tovm else 0.0
+                            )
+                            if hv_weight:
+                                seed_cost += seg * _direction_pen(
+                                    vj, mid(e0, ly, iv), ly, n_layers, hv_weight
+                                )
                             push_state(
                                 e0,
                                 iv,
                                 t2,
-                                seg * mul[ly][e0]
-                                + (TRI_OCC_MM * tovm[ly][t2] if tovm else 0.0),
+                                seed_cost,
                                 j,
                                 ly,
                             )
@@ -3940,7 +4006,8 @@ def _net_tree(
                     if t2 < 0 or not open_[e2] >> ly & 1:
                         continue
                     for iv2 in range(len(ivs(e2, ly))):
-                        if not step_ok(t, ly, mid_e, mid(e2, ly, iv2)):
+                        mid_e2 = mid(e2, ly, iv2)
+                        if not step_ok(t, ly, mid_e, mid_e2):
                             continue
                         nxt = ((e2 * nl + ly) * ivmax + iv2) * span + t2
                         nd = (
@@ -3948,6 +4015,10 @@ def _net_tree(
                             + wstep * mul[ly][e2]
                             + (TRI_OCC_MM * tovm[ly][t2] if tovm else 0.0)
                         )
+                        if hv_weight:
+                            nd += wstep * _direction_pen(
+                                mid_e, mid_e2, ly, n_layers, hv_weight
+                            )
                         if nd < dist.get(nxt, INF) - 1e-12:
                             prev[nxt] = st
                             src[nxt] = src[st]
@@ -5296,6 +5367,7 @@ def _grow_net(
     pin_vids: frozenset[int],
     occupancy: _Occupancy,
     view: _OccView,
+    hv_weight: float = 0.0,
 ) -> _NetAttempt:
     """One growth of net ``k`` under the view ``view``: its tree, every
     branch built per run around the via points the search planted
@@ -5324,6 +5396,7 @@ def _grow_net(
         occ_view=view,
         planter=occupancy.planter,
         via_drill_mm=rule[3] if len(rule) > 3 else 0.0,
+        hv_weight=hv_weight,
     )
     open_v = masks.open & ~view.closed
     clearance_k = rule[1]
@@ -5744,6 +5817,7 @@ class _Shove:
         *,
         net_clearance_by_name: Mapping[str, float] | None = None,
         masks: BoardMasks | None = None,
+        hv_weight: float = 0.0,
     ) -> None:
         from precis.pcb.rules import NetRules
 
@@ -5753,6 +5827,7 @@ class _Shove:
         self.n_layers = n_layers
         self.rules = rules
         self.masks = masks
+        self.hv_weight = hv_weight
         self.net_rules = {
             (str(d.net_name[k]) if k < len(d.net_name) else str(k)): NetRules(
                 track_width_mm=r[0],
@@ -5815,6 +5890,7 @@ class _Shove:
             self.pin_vids,
             occupancy,
             view,
+            self.hv_weight,
         )
         self.grows += 1
         return att
@@ -6362,6 +6438,7 @@ def build_wires(
     shove: bool = True,
     net_clearance_by_name: Mapping[str, float] | None = None,
     masks: BoardMasks | None = None,
+    hv_weight: float = 0.0,
 ) -> Wires:
     """Every net's wire tree on the mesh — spec §2's wires. Returns a
     :class:`Wires`; a component of a net no path can link to the net's
@@ -6381,7 +6458,10 @@ def build_wires(
     ``net_clearance_by_name`` also covers frozen-copper nets without a
     routed tree (a plane or singleton); their rules cannot be recovered
     from the per-routed-net tuples. ``masks`` carries the final planner's
-    crossing-resolution tie-breaks into shove validation and selection."""
+    crossing-resolution tie-breaks into shove validation and selection.
+    ``hv_weight`` (pcb-topo-hv-preference, default 0.0/off) is the
+    measured In1-horizontal/In2-vertical direction preference threaded
+    to every net's search (:func:`_net_tree` via :func:`_grow_net`)."""
     pose_a = np.asarray(d.pose0 if pose is None else pose)
     ctx = _make_ctx(mesh, d, n_layers, pose_a)
     pin_vids = frozenset(int(v) for v in mesh.pin_vertex)
@@ -6439,6 +6519,7 @@ def build_wires(
         route_order,
         net_clearance_by_name=net_clearance_by_name,
         masks=masks,
+        hv_weight=hv_weight,
     )
 
     def preserves_retry(
@@ -6495,6 +6576,7 @@ def build_wires(
                 pin_vids,
                 occupancy,
                 v,
+                hv_weight,
             )
 
         view = occupancy.view(k)
@@ -6612,6 +6694,7 @@ def build_wires(
                     pin_vids,
                     occ_j,
                     view_j,
+                    hv_weight,
                 )
                 # Keep the order loop's connected-partner requirement.
                 # Its prefix guard cannot know which existing offence later
@@ -6647,6 +6730,7 @@ def build_wires(
                         pin_vids,
                         occ_k,
                         occ_k.view(k),
+                        hv_weight,
                     )
                     # Judge both attempts in the complete proposed cell.
                     # In particular j must see k, which is not yet in occ_k.

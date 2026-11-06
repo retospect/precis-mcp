@@ -651,8 +651,12 @@ def test_a_chord_free_witness_that_crosses_nothing_is_adopted(monkeypatch) -> No
     real_grow = wires_mod._grow_net
     refused = False
 
-    def grow(ctx, mesh_, d_, n_layers, k, rule, occ, pin_vids, occupancy, v):
-        res = real_grow(ctx, mesh_, d_, n_layers, k, rule, occ, pin_vids, occupancy, v)
+    def grow(
+        ctx, mesh_, d_, n_layers, k, rule, occ, pin_vids, occupancy, v, hv_weight=0.0
+    ):
+        res = real_grow(
+            ctx, mesh_, d_, n_layers, k, rule, occ, pin_vids, occupancy, v, hv_weight
+        )
         nonlocal refused
         if k == 1 and v.chords is not None and not refused:
             refused = True
@@ -855,9 +859,31 @@ def test_a_probe_with_an_unrepairable_bigon_is_not_adopted(
     first = True
     saw_cancelled = False
 
-    def grow(ctx_, mesh_, d_, n_layers, k, rule, occ, pin_vids, occupancy, view):
+    def grow(
+        ctx_,
+        mesh_,
+        d_,
+        n_layers,
+        k,
+        rule,
+        occ,
+        pin_vids,
+        occupancy,
+        view,
+        hv_weight=0.0,
+    ):
         res = real_grow(
-            ctx_, mesh_, d_, n_layers, k, rule, occ, pin_vids, occupancy, view
+            ctx_,
+            mesh_,
+            d_,
+            n_layers,
+            k,
+            rule,
+            occ,
+            pin_vids,
+            occupancy,
+            view,
+            hv_weight,
         )
         nonlocal first, saw_cancelled
         if k == 0:
