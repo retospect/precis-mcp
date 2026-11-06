@@ -83,6 +83,13 @@ API
   :func:`solve` multiplies onto ``h*^3``; ``None`` region cells stay open.
   Imported directly (like :mod:`precis_flow.fv` / :mod:`precis_flow.species`),
   not re-exported here.
+- :mod:`precis_flow.slip` — the species-side of Navier wall slip
+  (se-multiphysics.md slice 5): the across-gap profile ``gap_profile`` and
+  its Taylor coefficient ``taylor_coefficient`` of the reduced slip ratios
+  ``β = b*/h*``, with ``flux_factor`` the reduced ``Domain.slip_factor``.
+  The Eulerian solve rides them through ``species.transport``'s
+  ``shear_velocity = U* · sqrt(210 κ)``; the tracer rides ``SlipProfile``
+  through ``trace``'s ``cell_profile``. Imported directly, not re-exported.
 
 Modules
 -------
