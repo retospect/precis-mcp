@@ -350,13 +350,14 @@ def account_pinned_dispatch(
     A provider 429 (``reason_class == 'rate'`` or ``HTTP Error 429``)
     halts the run: every later call returns a "halted" error without
     sending, so the axis reads void and nothing is recorded. Every
-    provider exception becomes an error result — this function never
-    raises.
+    failure, including pacing, scrubbing or telemetry, becomes an error
+    result — this function never raises. Internal failures use a static
+    message because credential scrubbing itself may be unavailable.
     """
     last_start: float | None = None
     halted = False
 
-    def dispatch(req: LlmRequest) -> LlmResult:
+    def guarded_dispatch(req: LlmRequest) -> LlmResult:
         nonlocal last_start, halted
         if halted:
             return _error(req, pin.model, "halted after provider rate limit")
@@ -374,15 +375,19 @@ def account_pinned_dispatch(
             )
         except Exception as exc:
             result = _error(req, pin.model, f"{type(exc).__name__}: {exc}")
-            result = _scrubbed_result(pin, result)
+        # Latch before scrubbing or telemetry: either may fail.
+        if result.error is not None and (
+            result.reason_class == "rate" or "HTTP Error 429" in result.error
+        ):
+            halted = True
+        result = _scrubbed_result(pin, result)
+        if result.error:
             # The log line gets the SCRUBBED error — never the exception.
             log.warning(
-                "llm eval: account %s dispatch raised: %s",
+                "llm eval: account %s dispatch error: %s",
                 pin.account,
                 result.error,
             )
-        else:
-            result = _scrubbed_result(pin, result)
         duration_ms = int((clock() - now) * 1000)
         record_dispatch(
             call_req,
@@ -391,16 +396,21 @@ def account_pinned_dispatch(
             duration_ms=duration_ms,
             routed="cloud",
         )
-        if result.error is not None and (
-            result.reason_class == "rate" or "HTTP Error 429" in result.error
-        ):
-            halted = True
+        if halted:
             log.warning(
                 "llm eval: account %s hit a provider rate limit — halting "
                 "the run (the axis is void; nothing is recorded)",
                 pin.account,
             )
         return result
+
+    def dispatch(req: LlmRequest) -> LlmResult:
+        try:
+            return guarded_dispatch(req)
+        except Exception:
+            # Do not log or scrub here: those operations may be the failure,
+            # and exception text may contain the account credential.
+            return _error(req, pin.model, "account dispatch failed")
 
     return dispatch
 

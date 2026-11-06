@@ -11,6 +11,11 @@ run with ``python -m precis.llm_eval.notation``).
 
 Public surface: :func:`harness.run_eval`, :func:`harness.compare`,
 :func:`tasks.load_gold_set`.
+
+Account-pinned dispatch contains pacing, scrubbing and telemetry failures as
+error results. Its last-resort error is static because scrubbing can itself
+fail; provider rate limits latch before any of these post-call operations so
+telemetry failure cannot permit another request.
 """
 
 from __future__ import annotations
