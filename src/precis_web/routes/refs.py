@@ -46,6 +46,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from precis.errors import BadInput, NotFound
 from precis.handlers._paper_format import bibtex_title
 from precis.handlers.structure import format_calc_identity
+from precis.runtime.handle_deref import MEMORY_GRIPE_HINT
 from precis.store import scan_geometry
 from precis.structure import Measure, anchor_identity_verified, evaluate_measure
 from precis.structure.importers.extxyz import extxyz_to_scene
@@ -3468,6 +3469,10 @@ async def detail(
     trust_ctx: dict[str, Any] | None = None
     if not is_error:
         body, trust_ctx = strip_trust_footer(store, kind, ref.id, body)
+    # Same for the memory render's own frame — header, tags line, gripe
+    # hint — which the page shows as h1, chips and nothing (gr574952).
+    if kind == "memory" and not is_error:
+        body = _strip_memory_chrome(body, ref.id)
 
     # Patent body text lives in body chunks; the handler's overview
     # only renders the bibliographic header + abstract excerpt. Pull
@@ -3540,6 +3545,10 @@ async def detail(
             "kind": kind,
             "kind_label": _REF_KIND_LABEL.get(kind, kind.replace("-", " ").title()),
             "ref": _row(ref),
+            # The universal handle (``me568217``) beside the numeric id, so
+            # the record id can be copied as agents name it (gr574990);
+            # None for a kind without a handle code.
+            "ref_handle": handle_registry.try_format(kind, ref.id),
             "body": body,
             "footnotes": footnotes,
             "resolved_handles": resolved_handles,
@@ -3573,6 +3582,28 @@ async def detail(
             "faved": faved(request, ref.id),
         },
     )
+
+
+def _strip_memory_chrome(body: str, ref_id: int) -> str:
+    """Lift the agent-facing frame off a memory ``get`` body for the page.
+
+    ``MemoryHandler._render_one`` prints ``# memory <id>: <title>`` first,
+    then the prose, then a ``tags: …`` line; the dispatcher closes with
+    :data:`MEMORY_GRIPE_HINT`. The page already shows the title in its h1
+    and the tags as chips, and the hint is call syntax to a person
+    (gr574952) — so all three go and the prose between them stays, the
+    ``Links:`` table included. A body that does not open with the header
+    (another view, an older render) is returned unchanged.
+    """
+    lines = body.split("\n")
+    if not lines or not re.match(rf"^# \S+ {ref_id}(?::|$)", lines[0]):
+        return body
+    lines = lines[1:]
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].startswith("tags: ") or lines[i].startswith(MEMORY_GRIPE_HINT[:24]):
+            del lines[i]
+    out = "\n".join(lines).strip("\n")
+    return re.sub(r"\n{3,}", "\n\n", out)
 
 
 @router.get("/{kind}/{ident}", response_class=HTMLResponse, response_model=None)

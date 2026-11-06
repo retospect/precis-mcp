@@ -14,7 +14,17 @@
     {% endif %}
   </h1>
   <p class="text-sm text-fg-subtle">
+    {% if ref_handle %}
+    {# The universal handle agents name the record by, with a one-click
+       copy (gr574990); the numeric id stays in the hover title. #}
+    <span class="font-mono" title="#{{ ref.id }}" x-data="{copied:false}">{{ ref_handle }}<button type="button"
+        class="ml-1 text-fg-subtle hover:text-fg-secondary" title="copy {{ ref_handle }}"
+        data-copy="{{ ref_handle }}"
+        @click="navigator.clipboard.writeText('{{ ref_handle }}'); copied=true; setTimeout(() => copied=false, 1200)"
+        x-text="copied ? '✓' : '⧉'">⧉</button></span>
+    {% else %}
     #{{ ref.id }}
+    {% endif %}
     {% if ref.slug %}· <span class="font-mono">{{ ref.slug }}</span>{% endif %}
     {% if ref.created %}· created <span title="{{ ref.created }}">{{ ref.created_at | when if ref.created_at else ref.created }}</span>{% endif %}
     {% if ref.updated %}· updated <span title="{{ ref.updated }}">{{ ref.updated_at | when if ref.updated_at else ref.updated }}</span>{% endif %}
