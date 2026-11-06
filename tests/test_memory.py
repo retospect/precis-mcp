@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from threading import Barrier, Event
 from typing import Any
 
@@ -831,6 +831,44 @@ def test_edit_meta_with_text_rewrites_both(
     assert (handler._body_text(ref), ref.meta["hook"]) == ("v2", "new")
 
 
+# ---------------------------------------------------------------------------
+# meta={'expires': ...} — the declared expiry (SPACE:scratch sweep override,
+# gr568398); normalized to an absolute Z-labelled instant at write
+# ---------------------------------------------------------------------------
+
+
+def test_put_meta_expires_stores_an_absolute_instant(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = id_of(handler.put(text="body", meta={"expires": "2030-01-02"}).body)
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.meta["expires"] == "2030-01-02T00:00:00Z"
+
+
+def test_put_meta_expires_duration_resolves_at_write(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = id_of(handler.put(text="body", meta={"expires": "30d"}).body)
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None
+    expires = datetime.fromisoformat(ref.meta["expires"].replace("Z", "+00:00"))
+    assert expires > datetime.now(UTC) + timedelta(days=29)
+
+
+def test_edit_meta_expires_patches(handler: MemoryHandler, store: Store) -> None:
+    mid = id_of(handler.put(text="body").body)
+    handler.edit(id=mid, meta={"expires": "12h"})
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None
+    expires = datetime.fromisoformat(ref.meta["expires"].replace("Z", "+00:00"))
+    assert expires > datetime.now(UTC) + timedelta(hours=11)
+
+
+def test_meta_expires_rejects_unparseable(handler: MemoryHandler) -> None:
+    with pytest.raises(BadInput, match="meta\\['expires'\\]"):
+        handler.put(text="body", meta={"expires": "whenever"})
+
+
 @pytest.mark.parametrize(
     "bad",
     [
@@ -857,7 +895,7 @@ def test_bad_meta_raises_on_put_and_edit(
 
 
 def test_bad_meta_key_names_the_allowed_keys(handler: MemoryHandler) -> None:
-    with pytest.raises(BadInput, match=r"allowed keys: \['hook', 'type'\]"):
+    with pytest.raises(BadInput, match=r"allowed keys: \['hook', 'type', 'expires'\]"):
         handler.put(text="x", meta={"nope": "y"})
 
 

@@ -18,8 +18,11 @@ from precis.dispatch import Hub
 from precis.handlers.memory import MemoryHandler
 from precis.store.types import Tag
 from precis.workers.memory_thread_sweep import (
+    SCRATCH_TTL_DAYS,
+    plan_scratch_sweep,
     plan_thread_sweep,
     run_memory_thread_sweep_pass,
+    run_scratch_sweep_pass,
 )
 from tests.conftest import id_of
 
@@ -274,3 +277,186 @@ def test_a_retired_thread_leaves_no_links(store: Any, handler: MemoryHandler) ->
             (tid, tid),
         ).fetchone()
     assert n is not None and int(n[0]) == 0
+
+
+# ---------------------------------------------------------------------------
+# rule s — the SPACE:scratch TTL sweep (gr568398)
+# ---------------------------------------------------------------------------
+
+
+def _scratch(
+    handler: MemoryHandler,
+    body: str,
+    *,
+    title: str = "Scratch",
+    meta: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
+) -> int:
+    return id_of(
+        handler.put(
+            text=body,
+            title=title,
+            tags=[*(tags or []), "SPACE:scratch"],
+            meta=meta,
+        ).body
+    )
+
+
+def test_rule_s_retires_a_scratch_node_past_the_default_ttl(
+    store: Any, handler: MemoryHandler
+) -> None:
+    sid = _scratch(handler, "a probe")
+    _age(store, sid, SCRATCH_TTL_DAYS + 1)
+
+    plan = {item.ref_id: item for item in plan_scratch_sweep(store)}
+    assert plan[sid].rule == "s"
+    result = run_scratch_sweep_pass(store)
+
+    assert (result.claimed, result.ok, result.failed) == (1, 1, 0)
+    assert _retired(store, sid)
+
+
+def test_rule_s_leaves_a_fresh_scratch_node_alone(
+    store: Any, handler: MemoryHandler
+) -> None:
+    sid = _scratch(handler, "still useful")
+    _age(store, sid, SCRATCH_TTL_DAYS - 1)
+
+    result = run_scratch_sweep_pass(store)
+
+    assert (result.claimed, result.ok) == (0, 0)
+    assert not _retired(store, sid)
+
+
+def test_rule_s_meta_expires_retires_before_the_default_ttl(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """``meta.expires`` overrides shorter too: a fresh node whose declared
+    expiry already passed retires anyway."""
+    sid = _scratch(
+        handler,
+        "short-lived",
+        meta={"expires": (datetime.now(UTC) - timedelta(days=1)).isoformat()},
+    )
+
+    result = run_scratch_sweep_pass(store)
+
+    assert result.ok == 1
+    assert _retired(store, sid)
+
+
+def test_rule_s_meta_expires_extends_past_the_default_ttl(
+    store: Any, handler: MemoryHandler
+) -> None:
+    sid = _scratch(
+        handler,
+        "keep until the round closes",
+        meta={"expires": "30d"},
+    )
+    _age(store, sid, SCRATCH_TTL_DAYS + 10)
+
+    result = run_scratch_sweep_pass(store)
+
+    assert (result.claimed, result.ok) == (0, 0)
+    assert not _retired(store, sid)
+
+
+def test_rule_s_raw_duration_expires_counts_from_updated_at(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """A duration meta.expires that bypassed write validation still
+    resolves — relative to ``updated_at``, so it slides with edits."""
+    sid = _scratch(handler, "stamped by hand")
+    store.stamp_ref_meta(sid, {"expires": "2d"})
+    _age(store, sid, 3)
+
+    result = run_scratch_sweep_pass(store)
+
+    assert result.ok == 1
+    assert _retired(store, sid)
+
+
+def test_rule_s_unparseable_expires_falls_back_to_the_default_ttl(
+    store: Any, handler: MemoryHandler
+) -> None:
+    sid = _scratch(handler, "typo'd expiry")
+    store.stamp_ref_meta(sid, {"expires": "whenever"})
+    _age(store, sid, SCRATCH_TTL_DAYS + 1)
+
+    result = run_scratch_sweep_pass(store)
+
+    assert result.ok == 1
+    assert _retired(store, sid)
+
+
+def test_rule_s_never_touches_other_spaces(store: Any, handler: MemoryHandler) -> None:
+    """The untagged default stays ``SPACE:research`` — an old research
+    node and a node double-tagged with a second space both survive."""
+    research = _memory(handler, "a durable note", tags=[])
+    # A second SPACE: value can only exist by bypassing the handler's
+    # replace_prefix tag write — the ambiguous state the sweep refuses.
+    mixed = _scratch(handler, "ambiguous")
+    store.add_tag(mixed, Tag.closed("SPACE", "research"), set_by="system")
+    for rid in (research, mixed):
+        _age(store, rid, 60)
+
+    result = run_scratch_sweep_pass(store)
+
+    assert (result.claimed, result.ok) == (0, 0)
+    assert not _retired(store, research)
+    assert not _retired(store, mixed)
+
+
+def test_rule_s_skips_a_section_index_hub(store: Any, handler: MemoryHandler) -> None:
+    hub_node = _scratch(handler, "a scratch hub", tags=["section:index"], title="Hub")
+    _age(store, hub_node, 60)
+
+    result = run_scratch_sweep_pass(store)
+
+    assert (result.claimed, result.ok) == (0, 0)
+    assert not _retired(store, hub_node)
+
+
+def test_rule_s_dry_run_lists_without_writing(
+    store: Any, handler: MemoryHandler, caplog: Any
+) -> None:
+    sid = _scratch(handler, "a probe")
+    _age(store, sid, SCRATCH_TTL_DAYS + 1)
+
+    with caplog.at_level(logging.INFO, logger="precis.workers.memory_thread_sweep"):
+        result = run_scratch_sweep_pass(store, dry_run=True)
+
+    assert result.claimed == 1
+    assert result.ok == 0
+    assert not _retired(store, sid)
+    assert f"would retire me{sid} rule=s" in caplog.text
+
+
+def test_rule_s_retirement_drops_links(store: Any, handler: MemoryHandler) -> None:
+    sid = _scratch(handler, "linked scratch")
+    other = _memory(handler, "a gotcha", tags=["section:gotchas"])
+    store.add_link(
+        src_ref_id=other, dst_ref_id=sid, relation="qualifies", set_by="agent"
+    )
+    _age(store, sid, SCRATCH_TTL_DAYS + 1)
+
+    run_scratch_sweep_pass(store)
+
+    assert _retired(store, sid)
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM links WHERE src_ref_id = %s OR dst_ref_id = %s",
+            (sid, sid),
+        ).fetchone()
+    assert n is not None and int(n[0]) == 0
+
+
+def test_rule_s_re_run_is_a_no_op(store: Any, handler: MemoryHandler) -> None:
+    sid = _scratch(handler, "a probe")
+    _age(store, sid, SCRATCH_TTL_DAYS + 1)
+
+    first = run_scratch_sweep_pass(store)
+    second = run_scratch_sweep_pass(store)
+
+    assert first.ok == 1
+    assert (second.claimed, second.ok, second.failed) == (0, 0, 0)

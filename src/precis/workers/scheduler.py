@@ -700,13 +700,17 @@ def _run_secret_status(store: Store, batch_size: int) -> None:
 
 
 def _run_memory_thread_sweep(store: Store, batch_size: int) -> None:
-    """One ``section:threads`` retirement sweep (gr485358 item 1), fired
-    from the daily host-agnostic ``memory_thread_sweep`` cadence.
+    """One ``section:threads`` retirement sweep (gr485358 item 1) plus the
+    ``SPACE:scratch`` TTL sweep (gr568398 rule s), fired from the daily
+    host-agnostic ``memory_thread_sweep`` cadence.
     ``batch_size`` is unused — the pass walks every live thread node each
     fire (a bounded set; prod had 22 on 2026-10-14). See
     workers/memory_thread_sweep.py; no network, no LLM, purely local SQL.
     """
-    from precis.workers.memory_thread_sweep import run_memory_thread_sweep_pass
+    from precis.workers.memory_thread_sweep import (
+        run_memory_thread_sweep_pass,
+        run_scratch_sweep_pass,
+    )
 
     result = run_memory_thread_sweep_pass(store)
     log.info(
@@ -714,6 +718,13 @@ def _run_memory_thread_sweep(store: Store, batch_size: int) -> None:
         result.claimed,
         result.ok,
         result.failed,
+    )
+    scratch = run_scratch_sweep_pass(store)
+    log.info(
+        "scheduler: memory_thread_sweep scratch result claimed=%d ok=%d failed=%d",
+        scratch.claimed,
+        scratch.ok,
+        scratch.failed,
     )
 
 
@@ -1276,9 +1287,10 @@ CADENCES: tuple[Cadence, ...] = (
     # gr485358 item 1: retire dead section:threads memory nodes — 'Left:
     # none' first lines, nodes another live memory supersedes, and nodes
     # untouched ≥14 days (minting a carry-over todo first when the Left:
-    # line names open work). Host-agnostic, daily, off the exact day
-    # boundary like the other daily sweeps. No `eligible` check: pure
-    # local SQL. spends=False: no LLM anywhere in the sweep.
+    # line names open work). gr568398 rule s rides the same fire: expired
+    # SPACE:scratch nodes self-retire. Host-agnostic, daily, off the
+    # exact day boundary like the other daily sweeps. No `eligible`
+    # check: pure local SQL. spends=False: no LLM anywhere in the sweep.
     # gr543711: the parked-gripe wake check — every 48 h by default,
     # resolvable live via the ``gripe.unpark_interval_hours`` setting.
     # Host-agnostic; off the exact two days (+97m, clear of the daily

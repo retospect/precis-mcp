@@ -464,14 +464,14 @@ class TestPosBoundary:
         ref = store.insert_ref(kind="memory", slug=None, title="x")
         store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text="x")])
         # Chunk-level tag on pos=0 (writes ``chunk_tags`` only).
-        store.add_tag(ref.id, Tag.open("scratch"), pos=0)
+        store.add_tag(ref.id, Tag.open("scratch-note"), pos=0)
         # Ref-level filter (routes through ``ref_tags``) must NOT
         # find this ref.
-        refs = store.list_refs(kind="memory", tags=["scratch"])
+        refs = store.list_refs(kind="memory", tags=["scratch-note"])
         assert refs == []
         # Block-level filter (routes through ``chunk_tags``) SHOULD
         # find it. v2 uses chunk_tags, not v1's pos sentinel.
-        frag, params = build_tag_filter(["scratch"], block_level=True)
+        frag, params = build_tag_filter(["scratch-note"], block_level=True)
         assert "chunk_tags" in frag
         # Smoke-execute the fragment to make sure the SQL is valid.
         # ``frag`` is a standalone predicate; the caller joins it with

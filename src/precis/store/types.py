@@ -1532,7 +1532,12 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # ``design-conventions`` is the design knowledge graph's corpus
     # (``precis conventions import --manifest design-tree`` findings,
     # gr516958) — written on ``finding``, which is unrestricted anyway.
-    "SPACE": frozenset({"research", "repo-dev", "personal", "design-conventions"}),
+    # ``scratch`` is the opt-in throwaway space (gr568398): nodes tagged
+    # ``SPACE:scratch`` self-retire past a TTL in the memory sweep —
+    # probes, session scratch, drafts nobody must remember to delete.
+    "SPACE": frozenset(
+        {"research", "repo-dev", "personal", "design-conventions", "scratch"}
+    ),
 }
 
 # Bare flag values that collide with a closed-vocab value. Maintained as

@@ -1799,9 +1799,9 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     swp = msub.add_parser(
         "sweep",
         help=(
-            "List (or with --apply, run) the section:threads retirement "
-            "sweep — the same rules the daily memory_thread_sweep cadence "
-            "applies. Dry-run by default."
+            "List (or with --apply, run) the section:threads and "
+            "SPACE:scratch retirement sweeps — the same rules the daily "
+            "memory_thread_sweep cadence applies. Dry-run by default."
         ),
     )
     swp.add_argument(
@@ -1976,13 +1976,16 @@ def run(args: argparse.Namespace) -> None:
         elif args.memory_cmd == "sweep":
             from precis.utils import handle_registry
             from precis.workers.memory_thread_sweep import (
+                plan_scratch_sweep,
                 plan_thread_sweep,
                 run_memory_thread_sweep_pass,
+                run_scratch_sweep_pass,
             )
 
             plan = plan_thread_sweep(store)
+            scratch_plan = plan_scratch_sweep(store)
             if not args.apply:
-                if not plan:
+                if not plan and not scratch_plan:
                     print("memory sweep: nothing to retire")
                 else:
                     print("memory sweep (dry run — pass --apply to retire):")
@@ -1996,11 +1999,22 @@ def run(args: argparse.Namespace) -> None:
                             f"  {handle} {item.title!r} — rule {item.rule}: "
                             f"{item.reason}{carry}"
                         )
+                    for s_item in scratch_plan:
+                        handle = (
+                            handle_registry.try_format("memory", s_item.ref_id)
+                            or f"me{s_item.ref_id}"
+                        )
+                        print(
+                            f"  {handle} {s_item.title!r} — rule {s_item.rule}: "
+                            f"{s_item.reason}"
+                        )
             else:
                 result = run_memory_thread_sweep_pass(store)
+                scratch = run_scratch_sweep_pass(store)
                 print(
-                    f"memory sweep: claimed={result.claimed} "
-                    f"retired={result.ok} failed={result.failed}"
+                    f"memory sweep: claimed={result.claimed + scratch.claimed} "
+                    f"retired={result.ok + scratch.ok} "
+                    f"failed={result.failed + scratch.failed}"
                 )
         elif args.memory_cmd == "prune-links":
             print(render_prune_links(store, dry_run=args.dry_run), end="")

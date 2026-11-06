@@ -18,11 +18,20 @@ already wrote down; this cadence is just their executor:
   node's ``Left:`` line names open work, a todo carrying that line —
   linked back to the retired node — is minted in the same transaction
   first, so the sweep forgets the *state* without dropping the *work*.
+* **rule s** — ``SPACE:scratch`` (gr568398): the opt-in throwaway space.
+  A scratch node untouched past its TTL self-retires — default
+  :data:`SCRATCH_TTL_DAYS` days from ``updated_at``, ``meta.expires`` a
+  per-node override (absolute instant, or a ``<n>[mhdw]`` duration from
+  ``updated_at``, shorter or longer). Probes, session scratch and drafts
+  clean themselves up without anyone remembering a delete; the untagged
+  default stays ``SPACE:research`` so nothing expires by accident.
 
 Scope is deliberately narrow: ``kind='memory'`` rows tagged
 ``section:threads`` only — never other kinds, never ``section:index``
 hubs (excluded even if someone tags one ``threads`` too), never
-runbook/gotcha/workflow/reference sections. Retirement is the normal
+runbook/gotcha/workflow/reference sections. The scratch pass is just as
+narrow: ``kind='memory'`` rows carrying ``SPACE:scratch`` and no other
+``SPACE:`` value, hubs excluded the same way. Retirement is the normal
 soft-delete (:meth:`Store.retire_ref`), recoverable at the SQL layer —
 never a hard delete. Every retirement logs one greppable line with the
 rule letter::
@@ -40,9 +49,10 @@ candidate query, so the next fire has nothing to re-act on.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.utils.memory_threads import (
@@ -53,6 +63,7 @@ from precis.utils.memory_threads import (
     left_is_done,
     newest_body_date,
 )
+from precis.utils.timeutil import as_utc
 from precis.workers.runner import BatchResult
 
 if TYPE_CHECKING:
@@ -81,6 +92,44 @@ SELECT r.ref_id, r.title, r.updated_at,
                       AND t.namespace = 'OPEN' AND t.value = %s)
  ORDER BY r.ref_id
 """
+
+#: ``SPACE:scratch`` default TTL (gr568398) — days from ``updated_at``
+#: after which a scratch node self-retires. Deliberately longer than the
+#: one hour the gripe ruled out: an hour races enrichment (gr563702) and
+#: is too short to be useful.
+SCRATCH_TTL_DAYS = 7
+
+#: Live memories whose *only* ``SPACE:`` tag is ``scratch`` — a second
+#: space would make the expiry intent ambiguous, and ``section:index``
+#: hubs are structural even when scratch-tagged. ``meta`` rides along
+#: for the ``meta.expires`` override (parsed in Python, like ``Left:``).
+_SCRATCH_CANDIDATES = """
+SELECT r.ref_id, r.title, r.updated_at, r.meta
+  FROM refs r
+ WHERE r.kind = 'memory' AND r.retired_at IS NULL
+   AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                WHERE rt.ref_id = r.ref_id
+                  AND t.namespace = 'SPACE' AND t.value = 'scratch')
+   AND NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = r.ref_id
+                      AND t.namespace = 'SPACE' AND t.value <> 'scratch')
+   AND NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = r.ref_id
+                      AND t.namespace = 'OPEN' AND t.value = %s)
+ ORDER BY r.ref_id
+"""
+
+#: ``meta.expires`` duration grammar — mirrors the alias handler's
+#: ``expires=`` (``'7d'``/``'12h'``/``'30m'``/``'2w'``). Validated writes
+#: store an absolute instant; a raw duration can still arrive via an
+#: unvalidated writer, so the sweep honours it relative to ``updated_at``.
+_SCRATCH_DURATION_RE = re.compile(r"^(\d+)\s*([mhdw])$")
+_SCRATCH_DURATION_UNITS = {
+    "m": "minutes",
+    "h": "hours",
+    "d": "days",
+    "w": "weeks",
+}
 
 #: ``{superseded ref_id: superseding live memory id}`` — the *edge*, never
 #: the prose: a body that merely says "supersedes meN" retires nothing
@@ -292,8 +341,113 @@ def run_memory_thread_sweep_pass(
     )
 
 
+@dataclass(frozen=True)
+class ScratchCandidate:
+    """One ``SPACE:scratch`` node past its expiry — always ``rule='s'``,
+    matching the letter the gripe names; the currency-suspect ``s`` lives
+    in the thread plan only, the two never mix."""
+
+    ref_id: int
+    title: str
+    rule: str  # "s" — scratch expiry
+    reason: str  # human-readable why, for the log line and dry-run list
+
+
+def _scratch_expiry(meta: dict[str, Any] | None, updated_at: datetime) -> datetime:
+    """When a scratch node expires: ``meta.expires`` as an absolute
+    instant or ``<n>[mhdw]`` duration from ``updated_at`` when set and
+    parseable, else ``updated_at + SCRATCH_TTL_DAYS``. An unparseable
+    override falls back to the default TTL — a typo must not make a
+    throwaway node immortal."""
+    raw = (meta or {}).get("expires")
+    expires = as_utc(raw)
+    if expires is None and isinstance(raw, str):
+        m = _SCRATCH_DURATION_RE.match(raw.strip().lower())
+        if m:
+            expires = updated_at + timedelta(
+                **{_SCRATCH_DURATION_UNITS[m.group(2)]: int(m.group(1))}
+            )
+    if expires is not None:
+        return expires
+    return updated_at + timedelta(days=SCRATCH_TTL_DAYS)
+
+
+def plan_scratch_sweep(
+    store: Store, *, now: datetime | None = None
+) -> list[ScratchCandidate]:
+    """Every live ``SPACE:scratch`` node past its expiry, oldest id
+    first. Pure read — the dry-run mode is this plan printed."""
+    now = now or datetime.now(UTC)
+    with store.pool.connection() as conn:
+        rows = conn.execute(_SCRATCH_CANDIDATES, (INDEX_TAG,)).fetchall()
+    plan: list[ScratchCandidate] = []
+    for ref_id, title, updated_at, meta in rows:
+        if updated_at is None:
+            continue
+        expiry = _scratch_expiry(meta, updated_at)
+        if expiry <= now:
+            age = (now - updated_at).days
+            plan.append(
+                ScratchCandidate(
+                    int(ref_id),
+                    str(title or ""),
+                    "s",
+                    f"scratch node expired {expiry.date().isoformat()} "
+                    f"(untouched {age}d)",
+                )
+            )
+    return plan
+
+
+def run_scratch_sweep_pass(
+    store: Store, *, dry_run: bool = False, now: datetime | None = None
+) -> BatchResult:
+    """The rule-s tick: retire each expired ``SPACE:scratch`` node.
+
+    ``claimed`` = scratch nodes due this fire; ``ok`` = actually retired
+    (0 in dry-run); ``failed`` = candidates whose retire raised (logged,
+    the pass continues). Same transaction shape as the thread pass —
+    edges drop before the tombstone (gr503031)."""
+    plan = plan_scratch_sweep(store, now=now)
+    retired = 0
+    failed = 0
+    for item in plan:
+        if dry_run:
+            log.info(
+                "memory_thread_sweep: would retire me%d rule=%s — %s",
+                item.ref_id,
+                item.rule,
+                item.reason,
+            )
+            continue
+        try:
+            with store.tx() as conn:
+                store.unlink_ref(item.ref_id, conn=conn)
+                store.retire_ref(item.ref_id, conn=conn)
+            retired += 1
+            log.info(
+                "memory_thread_sweep: retired me%d rule=%s — %s",
+                item.ref_id,
+                item.rule,
+                item.reason,
+            )
+        except Exception:
+            log.exception("memory_thread_sweep: retire failed for me%d", item.ref_id)
+            failed += 1
+    return BatchResult(
+        handler="memory_thread_sweep",
+        claimed=len(plan),
+        ok=retired,
+        failed=failed,
+    )
+
+
 __all__ = [
+    "SCRATCH_TTL_DAYS",
+    "ScratchCandidate",
     "SweepCandidate",
+    "plan_scratch_sweep",
     "plan_thread_sweep",
     "run_memory_thread_sweep_pass",
+    "run_scratch_sweep_pass",
 ]

@@ -116,7 +116,7 @@ memories plus findings — a `research` memory's paper neighbours never
 appear as recall. Repo-dev nodes take
 `tags=['SPACE:repo-dev', 'section:threads|runbooks|gotchas|workflow|reference']`
 and `meta={'hook': 'one line — status + resume point'}` (writable meta
-keys: `hook`, `type`).
+keys: `hook`, `type`, `expires`).
 
 ## Check processing before testing recall
 
@@ -688,6 +688,33 @@ edge and its metadata; a generated edge will still follow later body
 edits. A retired target must be live again before its restoration call
 can succeed. Receipts do not block edits or provide undo/reviewed apply.
 
+## Scratch memories — throwaway nodes that clean themselves up
+
+`SPACE:scratch` is for probes, session scratch, and drafts you would
+otherwise have to remember to delete. The daily `memory_thread_sweep`
+cadence soft-retires a scratch node once `updated_at` is older than its
+TTL — `rule=s` in the sweep log. Nothing else reads `scratch` as "keep
+less"; recall and `+recall` stay inside one `SPACE:`, so scratch never
+leaks into research or repo-dev recall.
+
+```python
+put(kind="memory", text="probe: does the embedder see 'quokka'?",
+    tags=["SPACE:scratch"])
+# Default TTL is 7 days from the last touch. Per-node override:
+put(kind="memory", text="keep this draft until the round closes",
+    tags=["SPACE:scratch"], meta={"expires": "30d"})   # or an ISO date
+```
+
+`meta.expires` accepts an ISO date/datetime or a `<n>[mhdw]` duration
+(resolved to an absolute instant at write) — shorter or longer than the
+7-day default, on any memory; on non-scratch spaces it only flags garden
+review debt, it never auto-retires. Editing a scratch node renews its
+default TTL only when `expires` is unset. Retagging the node out of the
+space (`tag(remove=['SPACE:scratch'], add=['SPACE:research'])`) takes it
+out of the sweep. `section:index` hubs are exempt even when scratch-tagged.
+Retirement is the normal soft delete — `view='retired'` reads the
+tombstone, and the node is restorable at the SQL layer.
+
 ## Sticky memories — show up every turn until you unpin them
 
 Some memories matter so much you want them in front of you on every
@@ -749,9 +776,10 @@ unaddressed caveat). Full workflow: `precis-argument-help`.
 
 Memory accepts four closed UPPERCASE axes:
 
-- `SPACE:` (`research` / `repo-dev` / `personal`) — author-selected scope;
-  `research` is the default, `repo-dev` isolates development knowledge,
-  and `personal` is reserved.
+- `SPACE:` (`research` / `repo-dev` / `personal` / `scratch`) —
+  author-selected scope; `research` is the default, `repo-dev` isolates
+  development knowledge, `personal` is reserved, and `scratch` is the
+  opt-in throwaway space (see "Scratch memories" below).
 - `DREAM:` (`consolidated` / `speculative` / `acquire`) — provenance;
   `consolidated` and `acquire` are system-set: `tag()` refuses to add
   them. `speculative` remains author-writable for low-confidence hunches.

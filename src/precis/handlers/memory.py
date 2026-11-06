@@ -121,7 +121,7 @@ import re
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, cast
 
 from psycopg import Connection
@@ -205,6 +205,7 @@ from precis.utils.memory_rulings import (
 )
 from precis.utils.next_block import render_next_section
 from precis.utils.secret_scan import mask_secrets
+from precis.utils.timeutil import as_utc
 
 #: Heading line that opens a memory-body section — the ``~<slug>``
 #: selector grammar (``me<id>~<section>``) splits on these.
@@ -338,8 +339,39 @@ def _dream_stamp_defaults(tags: list[str] | None) -> tuple[int | None, bool]:
 _TITLE_MAX = 80
 
 #: ``meta=`` keys a caller may write on put/edit. ``hook`` is the one-line
-#: index text of a ``SPACE:repo-dev`` memory (``precis memory index``).
-_META_ALLOWED = ("hook", "type")
+#: index text of a ``SPACE:repo-dev`` memory (``precis memory index``);
+#: ``expires`` is the node's declared expiry instant (the garden's
+#: review-due signal — and on ``SPACE:scratch`` the auto-retire override,
+#: gr568398).
+_META_ALLOWED = ("hook", "type", "expires")
+
+#: ``meta.expires`` duration grammar — mirrors the alias handler's
+#: ``expires=`` (``'7d'``/``'12h'``/``'30m'``/``'2w'``), resolved at write
+#: into the absolute instant the stored meta carries.
+_EXPIRES_DURATION_RE = re.compile(r"^(\d+)\s*([mhdw])$")
+_EXPIRES_DURATION_UNITS = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+
+
+def _expires_meta(value: Any) -> str:
+    """Normalize a writable ``meta.expires`` to ``YYYY-MM-DDTHH:MM:SSZ`` —
+    an ISO date/datetime, a ``datetime``, or a ``<n>[mhdw]`` duration from
+    now. Anything else is a BadInput: a stored value the sweep and garden
+    cannot parse would silently act as no expiry at all."""
+    when = as_utc(value)
+    if when is None and isinstance(value, str):
+        m = _EXPIRES_DURATION_RE.match(value.strip().lower())
+        if m:
+            when = datetime.now(UTC) + timedelta(
+                **{_EXPIRES_DURATION_UNITS[m.group(2)]: int(m.group(1))}
+            )
+    if when is None:
+        raise BadInput(
+            f"meta['expires'] must be an ISO date or a duration like '30d', "
+            f"got {value!r}",
+            next="meta={'expires': '7d'} or meta={'expires': '2026-12-31'}",
+        )
+    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 #: Keys one ``ops=[{...}]`` dict may carry on ``edit`` — the single-op
 #: anchored vocabulary plus ``op`` for the op kind (the
@@ -422,6 +454,8 @@ def _validate_meta(
                 ),
             )
         out["type"] = meta["type"]
+    if "expires" in meta:
+        out["expires"] = _expires_meta(meta["expires"])
     if ruling:
         out.update(validate_ruling_meta(ruling_keys, existing=existing))
     return out
@@ -1400,7 +1434,7 @@ class MemoryHandler(NumericRefHandler):
         # too, so a rule-first / warrant-later authoring order works).
         meta: dict[str, Any] = {
             k: create_meta[k]
-            for k in ("rule", "warrant", "hook", "type", *_RULING_META_KEYS)
+            for k in ("rule", "warrant", "hook", "type", "expires", *_RULING_META_KEYS)
             if k in create_meta
         }
         if system_meta:

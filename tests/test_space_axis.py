@@ -1,9 +1,9 @@
 """``SPACE:`` closed axis (docs/backlog/memory-native-authoring.md AC 1 + 2).
 
 Registered code-only in ``_CLOSED_VOCAB`` with values research / repo-dev /
-personal / design-conventions; allowed on memory, skill, todo and gripe;
-``MemoryHandler`` stamps ``SPACE:research`` by default and a caller's
-``SPACE:`` replaces it.
+personal / design-conventions / scratch (gr568398); allowed on memory,
+skill, todo and gripe; ``MemoryHandler`` stamps ``SPACE:research`` by
+default and a caller's ``SPACE:`` replaces it.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from precis.handlers.memory import MemoryHandler
 from precis.store import Store, Tag
 from tests.conftest import id_of
 
-_VALUES = ["design-conventions", "personal", "repo-dev", "research"]
+_VALUES = ["design-conventions", "personal", "repo-dev", "research", "scratch"]
 
 
 @pytest.fixture

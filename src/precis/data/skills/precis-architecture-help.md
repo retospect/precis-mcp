@@ -113,7 +113,9 @@ already linked to the focus.
 default), `repo-dev` (dev-harness knowledge), `personal` (reserved,
 nothing writes it), `design-conventions` (the design knowledge
 graph's corpus — `precis conventions` imports write it on
-`finding`).
+`finding`), `scratch` (opt-in throwaway space — the memory sweep
+self-retires its nodes past a 7-day TTL, `meta.expires` overrides;
+gr568398).
 Recall stays inside the focus's own space — a `repo-dev` node never
 recalls a `research` one, and `+recall` and ring narrowing
 (`args={'ring': {'space': 'repo-dev'}}`) honour it too. Per-space
@@ -164,6 +166,8 @@ gripe.
 - [[precis-cache]] — cache TTLs and `CACHE:*` freshness
 - [[precis-settings-help]] — DB-resident settings and the `/settings` view
 
+## Fact-check sources
+
 <!--
 Fact-check sources (gr553220; archdocs3 pass, symbol anchors).
 Paths are under src/precis/ except precis_web (src/precis_web).
@@ -171,7 +175,9 @@ Paths are under src/precis/ except precis_web (src/precis_web).
 - No hard cap / soft-delete only: store._refs_ops RefsMixin.retire_ref
   stamps retired_at; workers/memory_thread_sweep.py
   plan_thread_sweep/run_memory_thread_sweep_pass — candidate = live
-  memory + section:threads, rules a/b/c;
+  memory + section:threads, rules a/b/c; plan_scratch_sweep/
+  run_scratch_sweep_pass — live memory + SPACE:scratch only, rule s,
+  SCRATCH_TTL_DAYS = 7 + meta.expires override (gr568398);
   utils/memory_threads.py STALE_DAYS = 14. Second sweep, dark:
   workers/dream_consolidate.py module docstring + run_dream_consolidate_pass
   (supersedes summary, members retired); dream_consolidate_enabled
@@ -220,7 +226,7 @@ Paths are under src/precis/ except precis_web (src/precis_web).
   _RECALL_K=8, _linked_ref_ids excludes linked+self,
   RECALL_MAX_DISTANCE=0.6, SPACE partition unless ring overrides.
 - SPACE: types.py _CLOSED_VOCAB['SPACE'] — research / repo-dev /
-  personal / design-conventions.
+  personal / design-conventions / scratch.
 - append-only / gripe↔todo / operator overrides: unchanged —
   precis-agentlog-help, docs/conventions/invariants.md,
   precis-gripe-help, precis-relations, precis-settings-help.
