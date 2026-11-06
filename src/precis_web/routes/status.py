@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -1171,6 +1172,29 @@ def _automations(store: Store, limit: int = 20) -> list[dict[str, Any]]:
     return out
 
 
+def _no_quest_jobs(store: Store) -> dict[str, Any]:
+    """The Health tab's "Jobs with no quest" row (spec me573285 §W5,
+    td573299): live jobs whose todo chain and meta name no quest — the
+    unassigned bucket, a health signal.
+
+    Reads :func:`precis.todo.work_quest.classify_live_jobs` — the same
+    function ``/work``'s "unassigned jobs" section counts, so the row
+    and the bucket cannot drift. ``top`` names the five job types with
+    the most unresolved rows.
+    """
+    from precis.todo import work_quest
+
+    with _connect(store) as conn:
+        unassigned = work_quest.classify_live_jobs(store, conn=conn).unassigned
+    counts = Counter(
+        str((r["meta"] or {}).get("job_type") or "job") for r in unassigned
+    )
+    return {
+        "count": len(unassigned),
+        "top": [{"job_type": jt, "n": n} for jt, n in counts.most_common(5)],
+    }
+
+
 def _app_version() -> str:
     """Installed ``precis-mcp`` version, for stale-server detection."""
     from importlib.metadata import PackageNotFoundError, version
@@ -1312,6 +1336,8 @@ def _health_fast_ctx(store: Store) -> dict[str, Any]:
         "recent_agents": _safe(lambda: _recent_agent_activity(store)) or [],
         "automations": _safe(lambda: _automations(store)) or [],
         "usage": _safe(lambda: _claude_usage(store)) or {},
+        "no_quest_jobs": _safe(lambda: _no_quest_jobs(store))
+        or {"count": 0, "top": []},
     }
 
 

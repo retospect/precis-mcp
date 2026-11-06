@@ -48,6 +48,7 @@ a ``get``. Gripes join the tree in slice td540842.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -55,11 +56,12 @@ from typing import TYPE_CHECKING, Any
 from precis.plans.lanes import ladder, load_lanes
 from precis.plans.nodes import node_kind
 from precis.response import Response
-from precis.todo import blocker_terminal_sql, views, work_gripes
+from precis.todo import blocker_terminal_sql, views, work_gripes, work_quest
 from precis.todo.work_gripes import GripeBlock
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 from precis.workers.job_describe import (
+    UPKEEP_QUEST_HANDLE,
     job_sentence,
     quest_id_from_meta,
     quest_ids_for_structures,
@@ -280,6 +282,14 @@ class WorkModel:
     n_agents: int
     #: The "unplaced gripes" bucket (td540842 / td541980).
     unplaced_gripes: GripeBlock = field(default_factory=GripeBlock)
+    #: Live job lines with no quest path — the W5 unassigned bucket
+    #: (td573299). Rendered lines, same shape as ``QuestBlock.jobs``.
+    unassigned_jobs: tuple[str, ...] = ()
+    #: Live upkeep jobs with no todo parent, filed under the platform
+    #: quest — a count, never per-job lines.
+    platform_jobs: int = 0
+    #: ``derived_drain 2, plan_dispatch 1`` — the platform bucket by type.
+    platform_summary: str = ""
 
     @property
     def n_running(self) -> int:
@@ -541,14 +551,18 @@ def _job_line(
     job_id: int,
     status: str,
     title: str | None,
-    parent_handle: str,
+    parent_handle: str | None,
     fields: tuple[str, str, str] = ("", "", ""),
     sentence: str | None = None,
 ) -> str:
     """One live job's board line: handle, STATUS, the describe sentence
-    (falling back to the title), parent todo, placement fields."""
+    (falling back to the title), parent todo, placement fields.
+    ``parent_handle`` falsy (a job with no live todo parent) drops the
+    ``· under td<id>`` cell (td573299)."""
     text = sentence or _first_line(title)
-    line = f"  {_h('job', job_id)} [{status}] {text} · under {parent_handle}"
+    line = f"  {_h('job', job_id)} [{status}] {text}"
+    if parent_handle:
+        line += f" · under {parent_handle}"
     parts = [
         f"{key}={value}"
         for key, value in zip(("lane", "model", "host"), fields, strict=True)
@@ -947,6 +961,47 @@ def work_model(
             ).items()
         }
     cutoff = now - _DONE_WINDOW
+    # W5 (td573299): every live job resolves to a quest — its parent
+    # todo chain up to a root that ``serves`` one, else its own meta.
+    # A job that resolves to a quest but sits outside its served trees
+    # joins that quest's job lines for display only (run_state,
+    # running_jobs and queued_jobs do not move); jobs that resolve
+    # nowhere split into the platform upkeep count and the unassigned
+    # bucket.
+    split = work_quest.classify_live_jobs(store)
+    extra_by_quest: dict[int, list[dict[str, Any]]] = {}
+    for e in pending:
+        extra = [
+            r for r in split.by_quest.get(e["q"].id, []) if r["id"] not in e["kinds"]
+        ]
+        if extra:
+            extra_by_quest[e["q"].id] = extra
+    line_rows = list(split.unassigned) + [
+        r for rows in extra_by_quest.values() for r in rows
+    ]
+    line_sentences = _job_sentences(
+        store, line_rows, {r["id"]: r["status"] for r in line_rows}
+    )
+    line_fields = _job_fields(store, [r["id"] for r in line_rows])
+
+    def _board_job_line(r: dict[str, Any]) -> str:
+        parent = r.get("todo_parent")
+        return _job_line(
+            r["id"],
+            r["status"],
+            r["title"],
+            _h("todo", parent) if parent else "",
+            line_fields.get(r["id"], ("", "", "")),
+            sentence=line_sentences.get(r["id"]),
+        )
+
+    extra_lines = {
+        qid: tuple(_board_job_line(r) for r in rows)
+        for qid, rows in extra_by_quest.items()
+    }
+    platform_types = Counter(
+        str((r["meta"] or {}).get("job_type") or "job") for r in split.platform
+    )
     blocks: list[tuple[tuple[int, int, int], QuestBlock]] = []
     for e in pending:
         q = e["q"]
@@ -1011,7 +1066,8 @@ def work_model(
             queued_jobs=claimable_n,
             next_doable=next_doable,
             newest=max(stamps) if stamps else (q.updated_at or q.created_at),
-            jobs=tuple(j for b in e["roots"] for j in b.jobs),
+            jobs=tuple(j for b in e["roots"] for j in b.jobs)
+            + extra_lines.get(q.id, ()),
             completed=completed,
         )
         blocks.append(
@@ -1054,6 +1110,12 @@ def work_model(
         ),
         n_agents=len(agents),
         unplaced_gripes=work_gripes.unplaced_gripes(store, served),
+        unassigned_jobs=tuple(_board_job_line(r) for r in split.unassigned),
+        platform_jobs=len(split.platform),
+        platform_summary=", ".join(
+            f"{jt} {n}"
+            for jt, n in sorted(platform_types.items(), key=lambda kv: (-kv[1], kv[0]))
+        ),
     )
 
 
@@ -1106,6 +1168,20 @@ def render_work(store: Store, *, now: datetime | None = None) -> Response:
         out += ["", f"unassigned roots ({len(model.unassigned)}) — serve no quest"]
         for u in model.unassigned:
             out.append(f"  {u.handle} [{u.status}] — {u.title}")
+
+    if model.unassigned_jobs:
+        out += [
+            "",
+            f"unassigned jobs ({len(model.unassigned_jobs)}) — live, no quest path",
+        ]
+        out.extend(model.unassigned_jobs)
+
+    if model.platform_jobs:
+        out += [
+            "",
+            f"platform ({model.platform_jobs}) — live jobs with no todo "
+            f"parent, filed under {UPKEEP_QUEST_HANDLE}: {model.platform_summary}",
+        ]
 
     out.extend(work_gripes.render_unplaced(model.unplaced_gripes))
 

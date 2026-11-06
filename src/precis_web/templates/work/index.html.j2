@@ -205,6 +205,28 @@
 </section>
 {% endif %}
 
+{# W5 (td573299): live jobs with no quest path — the unassigned
+   bucket's health signal. Same rendered lines as the MCP view's
+   ``unassigned jobs`` block; the platform bucket is upkeep with no
+   todo parent, one summary line never per-job rows. #}
+{% if model.unassigned_jobs %}
+<section class="mb-6" data-kind="unassigned-jobs">
+  <h2 class="text-sm font-semibold mb-2">Unassigned jobs ({{ model.unassigned_jobs | length }}) — live, no quest path</h2>
+  <ul class="rounded-lg border border-line bg-surface divide-y divide-line">
+    {% for j in model.unassigned_jobs %}
+    <li class="px-3 py-1.5 text-xs font-mono text-fg-secondary" data-kind="job">{{ j }}</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% if model.platform_jobs %}
+<section class="mb-6" data-kind="platform-jobs">
+  <h2 class="text-sm font-semibold mb-2">Platform ({{ model.platform_jobs }}) — live jobs with no todo parent, filed under qu540835</h2>
+  <p class="rounded-lg border border-line bg-surface px-3 py-1.5 text-xs font-mono text-fg-secondary">{{ model.platform_summary }}</p>
+</section>
+{% endif %}
+
 {% if model.unplaced_gripes.rows %}
 <section class="mb-6" data-kind="unplaced-gripes">
   <h2 class="text-sm font-semibold mb-2">Unplaced gripes ({{ model.unplaced_gripes.rows | length + model.unplaced_gripes.hidden }}) — open, thread matches no root</h2>

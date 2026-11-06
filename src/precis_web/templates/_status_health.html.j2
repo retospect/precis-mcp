@@ -98,6 +98,31 @@
   </section>
 </div>
 
+{# W5 (td573299): the unassigned bucket's health signal — live jobs
+   with no quest path (todo chain + meta both silent). The count is
+   the same ``classify_live_jobs`` /work's "unassigned jobs" section
+   lists; top names the five worst job types. #}
+<section class="mt-6" data-kind="no-quest-jobs">
+  <h2 class="text-sm font-semibold mb-2">Jobs with no quest
+    <span class="font-normal text-xs text-fg-faint">(live jobs whose todo chain and meta name no quest)</span>
+  </h2>
+  <div class="rounded-lg border border-line bg-surface px-4 py-3 text-sm">
+    <div class="flex items-baseline gap-2">
+      <a href="/work" class="font-semibold text-2xl hover:underline">{{ no_quest_jobs.count }}</a>
+      <a href="/work" class="text-xs text-fg-faint hover:underline">/work — unassigned jobs</a>
+    </div>
+    {% if no_quest_jobs.count %}
+    <ul class="mt-2 text-xs space-y-1">
+      {% for o in no_quest_jobs.top %}
+      <li class="font-mono text-fg-muted">{{ o.job_type }} {{ o.n }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="mt-1 text-xs text-fg-faint">every live job resolves to a quest</p>
+    {% endif %}
+  </div>
+</section>
+
 {# Three focused recent-N panels: dreams, todo work-done, worker
    passes. These exist so a quiet ref_events stream doesn't read
    as "the cluster is dead" — dreams + pass batches keep ticking

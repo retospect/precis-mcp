@@ -77,8 +77,18 @@ Blocks, top to bottom:
 | indented `td<id>` rows | the expansion under running and queued quests: each served root and its subtree, children ordered by prio; 40 rows per root, then `… +N more` with the `view='tree'` call |
 | indented `jo<id> [<STATUS>] <title> · under td<id>` | the quest's live jobs (running or claimable), one line each, after the rows |
 | `unassigned roots (N)` | strategic roots that serve no quest — work nobody ranked against a quest |
+| `unassigned jobs (N)` | live jobs with no quest path — the health signal: work running that no quest owns |
+| `platform (N)` | live jobs with no todo parent filed under qu540835 — scheduled upkeep, one summary line by job type |
 | `unplaced gripes (N)` | open gripes whose `thread:` tag matches no root (see the gripe section) |
 | `hosts` | each fleet host and when it last reported; `none reported` means no agent counts are real |
+
+A job resolves to a quest two ways: its `parent_id` chain walks up
+through live todos to the nearest ancestor that `serves` one, else its
+own meta answers (`params.quest_id`, `coordinator_state.quest_id`, or
+its structure's `quest:<id>` tag). A job that resolves to a quest but
+sits outside its served trees still joins that quest's job lines;
+platform-upkeep types with no todo parent file under qu540835 instead
+of the unassigned bucket.
 
 A todo that serves a quest directly and also sits inside another served
 root renders once, inside the larger tree.
