@@ -130,6 +130,11 @@ quality-of-life and container items.
     (td573809), S10 (td574370) and S11 (td574366). It has never run in
     prod and is not armed; the open blockers and arming order sit in
     `docs/runbooks/release-cycle.md` §Factory loop.
+16. **Router apply (td568209, 2026-11-06)** — mode `on` now dispatches
+    the chooser's pick once with ladder fallback, the
+    `llm.decide.kind.<task_kind>` per-kind switch, a tier-floor rule and
+    a 30-minute health guard. The first prod flips are the
+    coordinator's, per kind.
 
 ## Parked
 

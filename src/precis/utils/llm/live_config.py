@@ -362,6 +362,16 @@ def decide_override(prefix: str) -> str | None:
     return _cached_setting(f"llm.decide.{prefix}")
 
 
+def decide_kind_override(task_kind: str) -> str | None:
+    """The exact task kind's decision mode — ``llm.decide.kind.<task_kind>``.
+
+    Outranks the prefix row in :func:`~precis.utils.llm.decide.mode_for`.
+    The two key forms can't collide: a prefix is cut at the first ``.`` or
+    ``:``, so ``llm.decide.<prefix>`` never carries a second dot the way
+    ``llm.decide.kind.<task_kind>`` does. Shares the negative cache."""
+    return _cached_setting(f"llm.decide.kind.{task_kind}")
+
+
 def decide_default() -> str | None:
     """The fleet-wide decide() mode row, using the shared negative cache."""
     return _cached_setting(DECIDE_MODE_KEY)
@@ -462,6 +472,7 @@ __all__ = [
     "cloud_enabled",
     "codex_exec_enabled",
     "decide_default",
+    "decide_kind_override",
     "decide_override",
     "model_env_var",
     "model_key",

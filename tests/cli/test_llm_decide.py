@@ -94,6 +94,105 @@ def test_decide_mode_set_read_clear(monkeypatch: pytest.MonkeyPatch) -> None:
         decide.reset_mode_cache()
 
 
+def test_decide_mode_kind_writes_and_clears_exact_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--kind`` writes ``llm.decide.kind.<task_kind>`` — read by mode_for
+    ahead of the prefix and default rows, and bound to that kind only."""
+    from precis.budget import meter
+    from precis.budget import settings as budget_settings
+
+    rows: dict[str, str] = {}
+    store = cast("Any", object())
+    monkeypatch.setattr(meter, "active_store", lambda: store)
+    monkeypatch.setattr(budget_settings, "get_setting", lambda _s, key: rows.get(key))
+    monkeypatch.setattr(
+        budget_settings,
+        "set_setting",
+        lambda _s, key, value: rows.__setitem__(key, value),
+    )
+    monkeypatch.setattr(
+        budget_settings, "clear_setting", lambda _s, key: rows.pop(key, None)
+    )
+    monkeypatch.delenv("PRECIS_LLM_DECIDE", raising=False)
+    live_config.bust_cache()
+    decide.reset_mode_cache()
+    try:
+        llm_cli._cmd_decide_mode(
+            store,
+            argparse.Namespace(
+                prefix=None, mode="on", kind="chunk.summarize", show=False
+            ),
+        )
+        assert rows["llm.decide.kind.chunk.summarize"] == "on"
+        assert decide.mode_for("chunk.summarize") == "on"
+        assert decide.mode_for("chunk.other") == "legacy"
+        llm_cli._cmd_decide_mode(
+            store,
+            argparse.Namespace(
+                prefix=None, mode="clear", kind="chunk.summarize", show=False
+            ),
+        )
+        assert "llm.decide.kind.chunk.summarize" not in rows
+        assert decide.mode_for("chunk.summarize") == "legacy"
+    finally:
+        live_config.bust_cache()
+        decide.reset_mode_cache()
+
+
+def test_decide_mode_show_lists_rows(
+    store: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--show`` prints every ``llm.decide.*`` row, ordered by key."""
+    from precis.budget import settings as budget_settings
+
+    budget_settings.set_setting(store, "llm.decide.mode", "shadow")
+    budget_settings.set_setting(store, "llm.decide.kind.chunk.summarize", "on")
+    try:
+        llm_cli._cmd_decide_mode(
+            store,
+            argparse.Namespace(prefix=None, mode=None, kind=None, show=True),
+        )
+        out = capsys.readouterr().out
+        assert "llm.decide.kind.chunk.summarize = on" in out
+        assert "llm.decide.mode = shadow" in out
+        assert out.index("llm.decide.kind.") < out.index("llm.decide.mode")
+    finally:
+        budget_settings.clear_setting(store, "llm.decide.mode")
+        budget_settings.clear_setting(store, "llm.decide.kind.chunk.summarize")
+
+
+def test_decide_mode_misuse_exits_with_usage() -> None:
+    """No mode, ``--kind`` beside a prefix, and ``--show`` with arguments
+    all die on the one-line usage message; an unknown mode names the
+    valid values."""
+    store = cast("Any", object())
+    with pytest.raises(SystemExit, match="usage"):
+        llm_cli._cmd_decide_mode(
+            store, argparse.Namespace(prefix=None, mode=None, kind=None, show=False)
+        )
+    with pytest.raises(SystemExit, match="usage"):
+        llm_cli._cmd_decide_mode(
+            store, argparse.Namespace(prefix="code", mode=None, kind=None, show=False)
+        )
+    with pytest.raises(SystemExit, match="usage"):
+        llm_cli._cmd_decide_mode(
+            store,
+            argparse.Namespace(
+                prefix="code", mode="on", kind="code.review", show=False
+            ),
+        )
+    with pytest.raises(SystemExit, match="usage"):
+        llm_cli._cmd_decide_mode(
+            store, argparse.Namespace(prefix="code", mode="on", kind=None, show=True)
+        )
+    with pytest.raises(SystemExit, match="invalid mode"):
+        llm_cli._cmd_decide_mode(
+            store,
+            argparse.Namespace(prefix="default", mode="bogus", kind=None, show=False),
+        )
+
+
 def test_decide_override_shares_negative_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     rows: dict[str, str] = {}
     reads: list[str] = []

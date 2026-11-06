@@ -352,7 +352,7 @@ def test_mode_for_legacy_reads_nothing_per_call(
     try:
         assert [d.mode_for("code.review") for _ in range(5)] == ["legacy"] * 5
         assert counts["settings"] == 0
-        assert counts["live"] <= 2
+        assert counts["live"] <= 3
     finally:
         settings.bind_store(None)
         live_config.bust_cache()
@@ -378,12 +378,20 @@ def test_mode_for_rereads_after_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
     live_config.bust_cache()
     try:
         assert d.mode_for("code.review") == "legacy"
-        assert sorted(reads) == ["llm.decide.code", "llm.decide.mode"]
+        assert sorted(reads) == [
+            "llm.decide.code",
+            "llm.decide.kind.code.review",
+            "llm.decide.mode",
+        ]
         d.mode_for("code.review")
-        assert len(reads) == 2
+        assert len(reads) == 3
         clock[0] += 16
         d.mode_for("code.review")
-        assert sorted(reads[2:]) == ["llm.decide.code", "llm.decide.mode"]
+        assert sorted(reads[3:]) == [
+            "llm.decide.code",
+            "llm.decide.kind.code.review",
+            "llm.decide.mode",
+        ]
     finally:
         settings.bind_store(None)
         live_config.bust_cache()
@@ -410,7 +418,8 @@ def test_mode_prefix_and_bad_values(monkeypatch: pytest.MonkeyPatch) -> None:
     assert d.mode_for("code.review") == "shadow"
     assert d.mode_for("code:review") == "shadow"
     assert d.mode_for(None) == "on"
-    assert seen == ["code", "unknown"]
+    # The memo keys on the kind, so "code:review" re-reads the prefix row.
+    assert seen == ["code", "code", "unknown"]
     monkeypatch.setattr(live_config, "decide_default", lambda: "bogus")
     assert d.mode_for("other") == "legacy"
 
@@ -728,18 +737,159 @@ def test_tier_floor_rejects_smaller_offering() -> None:
     )
 
 
-def test_unset_tier_floor_passes_with_note() -> None:
-    """A card carrying no floor value survives any demand — the miss is
-    explained on the ranked row, never a rejection (a missing field must not
-    end a demand in "no offering survives")."""
+def test_unset_tier_floor_rejected_for_big_demand() -> None:
+    """A card carrying no floor value cannot serve a demand above SMALL —
+    it can't prove the capability the floor names, so ``on`` would rank
+    nothing and fall back (``no-offering``) until the card carries one."""
+    no_floor = offering("no-floor", model="no-floor")
+    floored = offering("big-card", model="big-card", tier_floor="big")
+    decision = d.decide(
+        LlmRequest(Tier.BIG),
+        Requirement(Tier.BIG),
+        ledger(no_floor, floored),
+        "shadow",
+    )
+    assert decision.chosen == floored
+    rejected = {r.offering_key: (r.filter, r.reason) for r in decision.rejected}
+    assert rejected["no-floor"] == ("capability", "tier floor unset")
+
+
+def test_unset_tier_floor_passes_small_demand() -> None:
+    """SMALL is the floor's own rank — an unset floor still serves it."""
     no_floor = offering("no-floor", model="no-floor")
     decision = d.decide(
-        LlmRequest(Tier.BIG), Requirement(Tier.BIG), ledger(no_floor), "shadow"
+        LlmRequest(Tier.SMALL), Requirement(Tier.SMALL), ledger(no_floor), "shadow"
     )
     assert decision.chosen == no_floor
-    assert "tier floor unknown" in decision.ranked[0].reason
-    explanation = decision.explain()
-    assert "tier floor unknown" in explanation["ranked"][0]["reason"]
+
+
+def test_exact_kind_key_beats_prefix_beats_global(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``llm.decide.kind.<task_kind>`` outranks the prefix row, which
+    outranks ``llm.decide.mode``; an invalid value fails safe to legacy."""
+    from precis.utils.llm import live_config
+
+    monkeypatch.setattr(
+        live_config,
+        "decide_kind_override",
+        lambda kind: "on" if kind == "code.review" else None,
+    )
+    monkeypatch.setattr(
+        live_config,
+        "decide_override",
+        lambda prefix: "shadow" if prefix == "code" else None,
+    )
+    monkeypatch.setattr(live_config, "decide_default", lambda: "legacy")
+    assert d.mode_for("code.review") == "on"
+    assert d.mode_for("code.fix") == "shadow"
+    assert d.mode_for("other.task") == "legacy"
+    monkeypatch.setattr(live_config, "decide_kind_override", lambda kind: "bogus")
+    d.reset_mode_cache()
+    assert d.mode_for("code.review") == "legacy"
+
+
+def test_exact_kind_key_does_not_leak_to_sibling_kinds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exact-kind row binds that kind only — siblings read the lower
+    layers as before."""
+    from precis.utils.llm import live_config
+
+    monkeypatch.setattr(
+        live_config,
+        "decide_kind_override",
+        lambda kind: "on" if kind == "code.review" else None,
+    )
+    monkeypatch.setattr(live_config, "decide_override", lambda prefix: None)
+    monkeypatch.setattr(live_config, "decide_default", lambda: None)
+    monkeypatch.delenv("PRECIS_LLM_DECIDE", raising=False)
+    assert d.mode_for("code.review") == "on"
+    assert d.mode_for("code.review.deep") == "legacy"
+    assert d.mode_for("code.other") == "legacy"
+    assert d.mode_for("code") == "legacy"
+
+
+def test_all_failing_offering_is_ranked_last() -> None:
+    """≥20 calls and zero successes in the health window demotes an
+    offering behind every healthy one — but never rejects it."""
+    bad = offering("bad", model="bad", price_in=1)
+    healthy = offering("healthy", model="healthy", price_in=100)
+    led = ledger(bad, healthy, health={("bad", "api"): (20, 0)})
+    decision = d.decide(LlmRequest(Tier.SMALL), Requirement(Tier.SMALL), led, "on")
+    assert [r.offering.key for r in decision.ranked] == ["healthy", "bad"]
+    assert "unhealthy: 0 of 20 calls ok in 30 min" in decision.ranked[1].reason
+    # The only survivor stays eligible — the apply fallback covers a failure.
+    solo = d.decide(
+        LlmRequest(Tier.SMALL),
+        Requirement(Tier.SMALL),
+        ledger(bad, health={("bad", "api"): (20, 0)}),
+        "on",
+    )
+    assert solo.chosen == bad
+
+
+def test_offering_with_a_success_or_few_calls_is_not_demoted() -> None:
+    """One success, or fewer than the window's minimum calls, ranks normally."""
+    cheap = offering("cheap", model="m", price_in=1)
+    pricey = offering("pricey", model="n", price_in=100)
+    for health in ({("m", "api"): (20, 1)}, {("m", "api"): (19, 0)}, {}):
+        decision = d.decide(
+            LlmRequest(Tier.SMALL),
+            Requirement(Tier.SMALL),
+            ledger(cheap, pricey, health=health),
+            "on",
+        )
+        assert decision.chosen == cheap
+
+
+def test_loader_health_from_call_log(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ledger_from_store`` fills ``health`` from ``llm_call_log`` inside
+    the 15 s cache entry — ``budget`` rows are excluded, gated ones kept,
+    and a second call inside the window does not re-query."""
+    with store.pool.connection() as conn:
+        for _ in range(20):
+            conn.execute(
+                "INSERT INTO llm_call_log (source, tier, transport, model, "
+                "errored, reason_class) "
+                "VALUES ('h','small','openai_compat','sick-model',true,'rate')"
+            )
+        conn.execute(
+            "INSERT INTO llm_call_log (source, tier, transport, model, "
+            "errored, reason_class) "
+            "VALUES ('h','small','openai_compat','sick-model',true,'budget')"
+        )
+        conn.execute(
+            "INSERT INTO llm_call_log (source, tier, transport, model, "
+            "errored, reason_class) "
+            "VALUES ('h','big','local','well-model',false,null)"
+        )
+    d.admit.reset_cache()
+    d._ledger_cache.clear()
+    clock = [10.0]
+    monkeypatch.setattr(d.time, "monotonic", lambda: clock[0])
+    reads: list[int] = []
+    real = d._health_from_store
+
+    def spy(bound: Any) -> Any:
+        reads.append(1)
+        return real(bound)
+
+    monkeypatch.setattr(d, "_health_from_store", spy)
+    led = d.ledger_from_store(store, now=NOW)
+    assert led is not None
+    # The 'budget' row never counted — a spend-cap pause is no offering fault.
+    assert led.health[("sick-model", "openai_compat")] == (20, 0)
+    assert led.health[("well-model", "local")] == (1, 1)
+    d.ledger_from_store(store, now=NOW)
+    assert len(reads) == 1
+    clock[0] += 16
+    assert d.ledger_from_store(store, now=NOW) is not None
+    assert len(reads) == 2
+    d.admit.reset_cache()
+    d._ledger_cache.clear()
 
 
 def test_ties_prefer_legacy_lane() -> None:

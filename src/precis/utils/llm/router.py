@@ -3876,13 +3876,17 @@ def route(req: LlmRequest) -> LlmResult:
     return _route_inner(req)
 
 
-def shadow_decision(
+def _decision_probe(
     req: LlmRequest,
     ladder: Sequence[Rung],
     model: str,
     unavailable: Sequence[tuple[Rung, str]],
-) -> dict[str, Any] | None:
-    """Compute telemetry only; a failed shadow can never prevent dispatch."""
+) -> tuple[dict[str, Any] | None, Any, Any]:
+    """The decision stamp plus the objects the apply path needs — the
+    shadow :class:`~precis.utils.llm.decide.Decision` (its chosen
+    offering) and the :class:`~precis.utils.llm.decide.Ledger` (its
+    accounts) — or ``(None, None, None)``. Telemetry only; a failed
+    probe can never prevent dispatch."""
     try:
         from precis.budget import meter
         from precis.utils.llm import decide, recipes
@@ -3892,17 +3896,17 @@ def shadow_decision(
         )
         mode = decide.mode_for(demand.task_kind)
         if mode == "legacy":
-            return None
+            return None, None, None
         store = meter.active_store()
         if store is None:
-            return None
+            return None, None, None
         ledger = decide.ledger_from_store(
             store,
             now=datetime.now(UTC),
             unavailable_transports=frozenset(r.transport.value for r, _ in unavailable),
         )
         if ledger is None:
-            return None
+            return None, None, None
         rung0 = ladder[0] if ladder else None
         # Dispatch remaps a local-only alias (summarizer et al.) onto the
         # hosted small model at call time; the shadow must judge the model
@@ -3938,7 +3942,7 @@ def shadow_decision(
         )
         shadow = decide.decide(effective, decide.requirement_for(req), ledger, mode)
         legacy = decide.legacy_decision(ladder, model, ledger)
-        return {
+        stamp = {
             **shadow.explain(),
             "legacy": {
                 "chosen": decide.compact_offering(legacy.chosen)
@@ -3949,12 +3953,290 @@ def shadow_decision(
             **decide.compare(shadow, legacy),
             "executed": "legacy",
         }
+        return stamp, shadow, ledger
     except Exception:
         log.debug("llm-router: shadow decision failed", exc_info=True)
-        return None
+        return None, None, None
+
+
+def shadow_decision(
+    req: LlmRequest,
+    ladder: Sequence[Rung],
+    model: str,
+    unavailable: Sequence[tuple[Rung, str]],
+) -> dict[str, Any] | None:
+    """Compute telemetry only; a failed shadow can never prevent dispatch."""
+    stamp, _, _ = _decision_probe(req, ladder, model, unavailable)
+    return stamp
 
 
 _shadow_decision = shadow_decision
+
+
+def _fallback_stamp(stamp: dict[str, Any], kind: str, detail: str) -> dict[str, Any]:
+    """The decision stamp for a call whose chosen attempt lost to the
+    ladder: ``executed: legacy-fallback`` + ``<kind>: <detail ≤120>``."""
+    return {
+        **stamp,
+        "executed": "legacy-fallback",
+        "fallback_reason": f"{kind}: {detail[:120]}",
+    }
+
+
+def _gated_attempt(
+    req: LlmRequest,
+    *,
+    model: str,
+    error: str,
+    transport: Transport | None,
+    entered: float,
+    routed: str | None,
+    stamp: dict[str, Any],
+    paused: bool = False,
+    reason_class: _failure.FailureClass | None = None,
+    retry_at: datetime | None = None,
+) -> None:
+    """The lite route-log row for a chosen attempt refused before
+    dispatch — a breaker trip, an admission refusal, a busy/draining
+    slot, an unresolvable offering. ``gated`` like the legacy
+    early-outs, stamped ``executed: decision`` so the health guard and
+    the watch query see the failed pick (td568209)."""
+    _record_dispatch(
+        req,
+        LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error=error,
+            paused=paused,
+            reason_class=reason_class,
+            retry_at=retry_at,
+        ),
+        transport=transport,
+        duration_ms=int((time.monotonic() - entered) * 1000),
+        routed=routed,
+        gated=True,
+        decision={**stamp, "executed": "decision"},
+    )
+
+
+def _run_chosen(
+    req: LlmRequest,
+    *,
+    model: str,
+    entered: float,
+    stamp: dict[str, Any],
+    offering: Any,
+    ledger: Any,
+) -> tuple[LlmResult | None, dict[str, Any] | None]:
+    """Dispatch the chooser's pick once — the mode-``on`` apply leg.
+
+    Returns ``(result, stamp)``: a non-None result surfaces to the
+    caller (the chosen call's success, or its ``content``-class
+    refusal — walking on would only re-buy the same verdict). ``None``
+    plus a stamp means run the legacy ladder with that stamp —
+    ``executed: decision`` when the pick is the rung the ladder runs
+    anyway (``agree``), ``legacy-fallback`` with a ``fallback_reason``
+    after a failed attempt. Every failed attempt writes its own row
+    (``gated`` for a refusal, errored for a run failure) stamped
+    ``executed: decision``: an unlogged failure would keep the chosen
+    offering chosen forever.
+    """
+    from precis.budget import breaker as _breaker
+    from precis.utils.llm import admit as _admit
+    from precis.utils.llm import decide as _decide
+    from precis.utils.llm import local_serving as _local
+
+    rung = _decide.rung_for(offering, ledger.accounts if ledger is not None else {})
+    if rung is None:
+        detail = f"adapter {offering.adapter!r} is not a transport"
+        _gated_attempt(
+            req,
+            model=offering.model,
+            error=detail,
+            transport=None,
+            entered=entered,
+            routed=None,
+            stamp=stamp,
+        )
+        return None, _fallback_stamp(stamp, "unresolved", detail)
+    if (
+        req.require_transport is not None
+        and rung.transport is not req.require_transport
+    ):
+        return None, stamp
+    if stamp.get("agree"):
+        # The pick IS the ladder's rung 0 — a second attempt on it
+        # would be an added retry, so the legacy path runs it once.
+        return None, {**stamp, "executed": "decision"}
+    serve_model = rung.model or model
+    host_reason = _rung_unavailable(rung, serve_model)
+    if host_reason is not None:
+        _gated_attempt(
+            req,
+            model=serve_model,
+            error=host_reason,
+            transport=rung.transport,
+            entered=entered,
+            routed=_routed_placement(rung, None),
+            stamp=stamp,
+        )
+        return None, _fallback_stamp(stamp, "unresolved", host_reason)
+    # The same pre-flight the legacy path runs, on the chosen rung —
+    # the breaker probes with tally=False so the logical call counts
+    # one outcome row whoever serves it.
+    trip = _breaker.gate_tier(
+        req.tier,
+        transport=rung.transport.value,
+        local=not _rung_is_cloud(rung),
+        bare=rung.bare,
+        work_class=req.work_class,
+        tally=False,
+        degraded=bool(req.degraded_from),
+    )
+    if trip is not None:
+        _gated_attempt(
+            req,
+            model=serve_model,
+            error=str(trip),
+            transport=rung.transport,
+            entered=entered,
+            routed=_routed_placement(rung, None),
+            stamp=stamp,
+            paused=True,
+            reason_class=_trip_class(rung.transport, bare=rung.bare),
+            retry_at=_trip_retry_at(trip),
+        )
+        return None, _fallback_stamp(stamp, "gate", str(trip))
+    refusal = _admit.check_dispatch(req, model=serve_model, transport=rung.transport)
+    if refusal is not None:
+        _gated_attempt(
+            req,
+            model=serve_model,
+            error=refusal,
+            transport=rung.transport,
+            entered=entered,
+            routed=_routed_placement(rung, None),
+            stamp=stamp,
+        )
+        return None, _fallback_stamp(stamp, "gate", refusal)
+    slot = _local.acquire(serve_model)
+    routed = _routed_placement(rung, slot)
+    if slot is not None and slot.paused:
+        detail = (
+            f"worker draining — no local slot for {serve_model}"
+            if slot.draining
+            else f"all local serving slots for {serve_model} are busy"
+        )
+        _gated_attempt(
+            req,
+            model=serve_model,
+            error=f"{detail}; backing off",
+            transport=rung.transport,
+            entered=entered,
+            routed=routed,
+            stamp=stamp,
+            paused=True,
+            reason_class="rate",
+            retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["rate"],
+        )
+        return None, _fallback_stamp(stamp, "no-slot", detail)
+    call_req = req
+    call_model = serve_model
+    if slot is not None and slot.reserved and slot.endpoint:
+        call_req = _replace(req, local_url=slot.endpoint)
+        call_model = slot.served_model or call_model
+    call_model = _hosted_small_remap(
+        call_model,
+        rung.transport,
+        has_local_slot=call_req.local_url is not None,
+        profile=rung.profile,
+    )
+    started = time.monotonic()
+    try:
+        result = FailoverProvider([rung]).run(call_req, model=call_model)
+    finally:
+        _local.release(slot)
+    _react_to_quota(result, transport=rung.transport, bare=rung.bare)
+    if result.placement is None:
+        result = _replace(
+            result,
+            placement=(
+                "local"
+                if (slot is not None and slot.reserved and slot.endpoint)
+                else _placement_of(rung)
+            ),
+        )
+    request_hash = _record_dispatch(
+        req,
+        result,
+        transport=rung.transport,
+        duration_ms=int((time.monotonic() - started) * 1000),
+        routed=routed,
+        decision={**stamp, "executed": "decision"},
+    )
+    if result.error is None:
+        _tally_gate(req, "served")
+        if req.degraded_from:
+            _tally_gate(req, "degraded")
+        return _replace(result, request_hash=request_hash), None
+    if result.reason_class == "content":
+        return _replace(result, request_hash=request_hash), None
+    kind = (
+        "timeout"
+        if result.timed_out
+        else "rate"
+        if result.reason_class == "rate"
+        else "error"
+    )
+    return None, _fallback_stamp(stamp, kind, result.error or "unknown failure")
+
+
+def _apply_chosen(
+    req: LlmRequest,
+    *,
+    model: str,
+    entered: float,
+    stamp: dict[str, Any] | None,
+    dec: Any,
+    ledger: Any,
+    local_first: bool,
+) -> tuple[LlmResult | None, dict[str, Any] | None]:
+    """Mode ``on`` (td568209): the chooser's pick runs once before the
+    legacy ladder, which serves the call on ANY failure.
+
+    Returns ``(result, stamp)`` — a result surfaces; otherwise the
+    legacy path runs with the returned stamp. Ineligible calls (a
+    caller model pin, a local-first source, a committed keyword rule)
+    keep ``executed: legacy`` with no reason; the decision path never
+    raises into a call — a resolution or dispatch fault is an
+    ``unresolved`` fallback, not an exception."""
+    if (
+        stamp is None
+        or dec is None
+        or stamp.get("mode") != "on"
+        or dec.pinned
+        or local_first
+        or req.keyword_rule
+    ):
+        return None, stamp
+    offering = dec.chosen
+    if offering is None:
+        return None, _fallback_stamp(stamp, "no-offering", str(dec.reason))
+    try:
+        return _run_chosen(
+            req,
+            model=model,
+            entered=entered,
+            stamp=stamp,
+            offering=offering,
+            ledger=ledger,
+        )
+    except Exception as exc:
+        log.debug("llm-router: chosen dispatch fault — legacy ladder", exc_info=True)
+        return None, _fallback_stamp(stamp, "unresolved", str(exc))
 
 
 def _route_inner(req: LlmRequest) -> LlmResult:
@@ -4241,7 +4523,24 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                 transport=_unavail[0][0].transport,
                 routed=_routed_placement(routed_rung, None),
             )
-    decision = _shadow_decision(req, ladder, model, _unavail if ladder else [])
+    decision, _dec_obj, _dec_ledger = _decision_probe(
+        req, ladder, model, _unavail if ladder else []
+    )
+    # Mode `on` apply (td568209): the chooser's pick runs once ahead of
+    # the legacy ladder; a returned result surfaces, otherwise the path
+    # below is byte-for-byte today's dispatch (the stamp just says which
+    # lane actually ran).
+    _applied, decision = _apply_chosen(
+        req,
+        model=model,
+        entered=entered,
+        stamp=decision,
+        dec=_dec_obj,
+        ledger=_dec_ledger,
+        local_first=_local_first,
+    )
+    if _applied is not None:
+        return _applied
     transport = ladder[0].transport
     provider: LlmProvider = _provider_for_ladder(ladder)
     # Global circuit breaker: refuse a *new paid* call once its resource is

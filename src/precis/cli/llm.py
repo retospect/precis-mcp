@@ -176,14 +176,29 @@ def add_parser(subparsers: Any) -> None:
     dm = lsub.add_parser(
         "decide-mode",
         help="Set or clear a decide() mode row — 'default' writes "
-        "llm.decide.mode, a prefix writes llm.decide.<prefix>.",
+        "llm.decide.mode, a prefix writes llm.decide.<prefix>, --kind "
+        "writes llm.decide.kind.<task_kind>. --show lists every "
+        "llm.decide.* row.",
     )
     dm.add_argument(
         "prefix",
+        nargs="?",
         help="'default' or a task-kind prefix (e.g. code — the segment "
-        "before the first dot or colon).",
+        "before the first dot or colon). Omit with --kind or --show.",
     )
-    dm.add_argument("mode", help="legacy | shadow | on | clear")
+    dm.add_argument("mode", nargs="?", help="legacy | shadow | on | clear")
+    dm.add_argument(
+        "--kind",
+        default=None,
+        metavar="TASK_KIND",
+        help="Write the exact task-kind row llm.decide.kind.<task_kind> — "
+        "outranks the prefix and default rows.",
+    )
+    dm.add_argument(
+        "--show",
+        action="store_true",
+        help="List every llm.decide.* row (key, value, updated_at).",
+    )
     dm.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     co = lsub.add_parser(
@@ -574,17 +589,52 @@ def _cmd_suitability(store: Store, args: argparse.Namespace) -> None:
         print(f"suitability: {len(rows)} posteriors, {written} cards written")
 
 
+_DECIDE_MODE_USAGE = (
+    "usage: llm decide-mode (<prefix|default> | --kind <task_kind>) "
+    "<legacy|shadow|on|clear>, or --show"
+)
+
+
 def _cmd_decide_mode(store: Store, args: argparse.Namespace) -> None:
     from precis.budget import settings as budget_settings
     from precis.utils.llm import decide, live_config
 
-    prefix = str(args.prefix)
-    if prefix == "mode":
-        raise SystemExit(
-            "llm decide-mode: 'mode' is reserved — 'default' writes llm.decide.mode"
+    prefix = getattr(args, "prefix", None)
+    mode = getattr(args, "mode", None)
+    kind = getattr(args, "kind", None)
+    if getattr(args, "show", False):
+        if prefix is not None or mode is not None or kind is not None:
+            raise SystemExit(f"llm decide-mode: {_DECIDE_MODE_USAGE}")
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT key, value, updated_at FROM app_settings "
+                "WHERE key LIKE 'llm.decide.%' ORDER BY key"
+            ).fetchall()
+        for key, value, updated_at in rows:
+            print(f"{key} = {value}  ({updated_at})")
+        if not rows:
+            print("no llm.decide.* rows")
+        return
+    if kind is not None and prefix is not None:
+        raise SystemExit(f"llm decide-mode: {_DECIDE_MODE_USAGE}")
+    if kind is None and prefix is None:
+        raise SystemExit(f"llm decide-mode: {_DECIDE_MODE_USAGE}")
+    if kind is not None:
+        if not str(kind).strip():
+            raise SystemExit(f"llm decide-mode: {_DECIDE_MODE_USAGE}")
+        key = f"llm.decide.kind.{kind}"
+    else:
+        if prefix == "mode":
+            raise SystemExit(
+                "llm decide-mode: 'mode' is reserved — 'default' writes llm.decide.mode"
+            )
+        key = (
+            live_config.DECIDE_MODE_KEY
+            if prefix == "default"
+            else f"llm.decide.{prefix}"
         )
-    key = live_config.DECIDE_MODE_KEY if prefix == "default" else f"llm.decide.{prefix}"
-    mode = str(args.mode)
+    if mode is None:
+        raise SystemExit(f"llm decide-mode: {_DECIDE_MODE_USAGE}")
     if mode == "clear":
         budget_settings.clear_setting(store, key)
         print(f"cleared {key}")

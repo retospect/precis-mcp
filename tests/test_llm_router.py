@@ -137,7 +137,13 @@ def test_decision_shadow_preserves_route_and_hash(
         assert stamp is None
     else:
         assert stamp["mode"] == mode
-        assert stamp["executed"] == "legacy"
+        if mode == "on":
+            # The stub ledger ranks nothing — the pick fell back.
+            assert stamp["executed"] == "legacy-fallback"
+            assert stamp["fallback_reason"].startswith("no-offering:")
+        else:
+            assert stamp["executed"] == "legacy"
+            assert "fallback_reason" not in stamp
         assert "agree" in stamp and "claude_window" in stamp
         assert bool(recorded[1].features.get("gated")) == gated
 
@@ -315,6 +321,377 @@ def test_decision_streaming_logs_shadow(
     assert records[0].features["decision"] == (
         stamp if gated else {**stamp, "actual_usd": 0.1}
     )
+
+
+# ── mode `on` apply (td568209): the chooser's pick runs once, ladder on failure ──
+
+
+def _on_harness(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    offerings: tuple[Any, ...] = (),
+    pools: dict[str, Any] | None = None,
+    mode: str = "on",
+) -> list[Any]:
+    """Shared wiring for the apply tests: a stubbed decision ledger (the
+    real ``decide()`` runs on it), passthrough rung filters, admitting
+    gates, captured route-log rows."""
+    from precis import route_log
+    from precis.budget import meter
+    from precis.utils.llm import decide, recipes
+
+    ledger = decide.Ledger(offerings, {}, pools or {}, frozenset(), datetime.now(UTC))
+    monkeypatch.setattr(meter, "active_store", lambda: object())
+    monkeypatch.setattr(decide, "ledger_from_store", lambda *a, **kw: ledger)
+    monkeypatch.setattr(decide, "mode_for", lambda task: mode)
+    monkeypatch.setattr(recipes, "lookup", lambda source: None)
+    monkeypatch.setattr(router, "_apply_cloud_throttle", lambda ladder: ladder)
+    monkeypatch.setattr(
+        router, "_skip_unserved_local_rung", lambda ladder, model: ladder
+    )
+    monkeypatch.setattr(
+        router, "_drop_unavailable_rungs", lambda ladder, model: (ladder, [])
+    )
+    monkeypatch.setattr(router, "_quota_fallback_ladder", lambda *a: None)
+    monkeypatch.setattr("precis.utils.llm.local_serving.acquire", lambda model: None)
+    monkeypatch.setattr("precis.utils.llm.admit.check_dispatch", lambda *a, **kw: None)
+    monkeypatch.setattr("precis.budget.breaker.gate_tier", lambda *a, **kw: None)
+    monkeypatch.setattr(route_log, "enabled", lambda: True)
+    recorded: list[Any] = []
+    monkeypatch.setattr(route_log, "record_call", lambda rec: recorded.append(rec))
+    return recorded
+
+
+def _free_pick(model: str = "chosen-model") -> Any:
+    """A free offering on a behind pool — capacity class 0, so it outranks
+    a ``local`` legacy rung 0 (capacity 1)."""
+    from precis.utils.llm import decide
+
+    return decide.Offering(
+        f"{model}@openai_compat/none",
+        model,
+        adapter="openai_compat",
+        billing="free",
+        capacity_class="free",
+        price_in=0.0,
+        price_out=0.0,
+        pool_keys=("p",),
+    )
+
+
+def _behind_pool() -> dict[str, Any]:
+    from precis.utils.llm.accounts import Pacing
+
+    return {"p": Pacing("behind", 0.5, 0.95, None, None)}
+
+
+def _wire_providers(monkeypatch: pytest.MonkeyPatch, chosen: Any, legacy: Any) -> None:
+    """``provider_for`` maps the chosen wire to its fake; the legacy ladder
+    dispatches its own fake through ``_provider_for_ladder``."""
+    monkeypatch.setattr(router, "_provider_for_ladder", lambda ladder: legacy)
+    monkeypatch.setattr(
+        router,
+        "provider_for",
+        lambda transport, *, bare=False: (
+            chosen if transport is Transport.OPENAI_COMPAT else legacy
+        ),
+    )
+
+
+def test_on_mode_runs_the_chosen_offering(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`on` dispatches the chooser's pick once — the ladder never runs."""
+    recorded = _on_harness(monkeypatch, offerings=(_free_pick(),), pools=_behind_pool())
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://hosted.example/v1")
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [router.Rung(Transport.LOCAL, model="legacy-model")],
+    )
+    chosen = _FakeProv(_ok("chosen answer", model="chosen-model"))
+    legacy = _FakeProv(_ok("legacy answer", model="legacy-model"))
+    _wire_providers(monkeypatch, chosen, legacy)
+    out = route(LlmRequest(Tier.SMALL, prompt="x", source="apply-test"))
+    assert out.error is None and out.text == "chosen answer"
+    assert chosen.calls == 1 and legacy.calls == 0
+    assert len(recorded) == 1
+    rec = recorded[0]
+    assert rec.model == "chosen-model" and rec.transport == "openai_compat"
+    assert rec.features["decision"]["executed"] == "decision"
+
+
+def test_on_mode_failing_choice_falls_back_to_the_ladder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed pick gets one errored row, then the ladder serves the call."""
+    recorded = _on_harness(monkeypatch, offerings=(_free_pick(),), pools=_behind_pool())
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://hosted.example/v1")
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [router.Rung(Transport.LOCAL, model="legacy-model")],
+    )
+    chosen = _FakeProv(_err("chosen boom", model="chosen-model"))
+    legacy = _FakeProv(_ok("legacy answer", model="legacy-model"))
+    _wire_providers(monkeypatch, chosen, legacy)
+    out = route(LlmRequest(Tier.SMALL, prompt="x", source="apply-test"))
+    assert out.error is None and out.text == "legacy answer"
+    # Exactly one chosen attempt — never a retry.
+    assert chosen.calls == 1 and legacy.calls == 1
+    assert len(recorded) == 2
+    attempt, final = recorded
+    assert attempt.errored and attempt.model == "chosen-model"
+    assert attempt.transport == "openai_compat"
+    assert attempt.features["decision"]["executed"] == "decision"
+    assert final.features["decision"]["executed"] == "legacy-fallback"
+    assert final.features["decision"]["fallback_reason"].startswith("error:")
+
+
+@pytest.mark.parametrize("kind", ["no-slot", "gate"])
+def test_on_mode_no_capacity_falls_back(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """A gate or slot refusal on the pick logs a gated attempt row, then the
+    ladder runs — nothing is ever dispatched on the refused rung."""
+    recorded = _on_harness(monkeypatch, offerings=(_free_pick(),), pools=_behind_pool())
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://hosted.example/v1")
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [router.Rung(Transport.LOCAL, model="legacy-model")],
+    )
+    if kind == "no-slot":
+        from precis.utils.llm import local_serving as ls
+
+        monkeypatch.setattr(
+            ls,
+            "acquire",
+            lambda m: (
+                ls.LocalSlot(host="h", resource=f"llm:{m}", reserved=False, paused=True)
+                if m == "chosen-model"
+                else None
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            "precis.budget.breaker.gate_tier",
+            lambda tier, **kw: (
+                "cap tripped" if kw.get("transport") == "openai_compat" else None
+            ),
+        )
+    chosen = _FakeProv(_ok("chosen answer", model="chosen-model"))
+    legacy = _FakeProv(_ok("legacy answer", model="legacy-model"))
+    _wire_providers(monkeypatch, chosen, legacy)
+    out = route(LlmRequest(Tier.SMALL, prompt="x", source="apply-test"))
+    assert out.error is None and out.text == "legacy answer"
+    assert chosen.calls == 0 and legacy.calls == 1
+    assert len(recorded) == 2
+    attempt, final = recorded
+    assert attempt.errored and attempt.features.get("gated") is True
+    assert attempt.features["decision"]["executed"] == "decision"
+    assert final.features["decision"]["executed"] == "legacy-fallback"
+    assert final.features["decision"]["fallback_reason"].startswith(f"{kind}:")
+
+
+def test_on_mode_unresolvable_offering_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An adapter naming no Transport (and an empty ranking) falls back."""
+    from precis.utils.llm import decide
+
+    bad = decide.Offering(
+        "bad@kimi_tree/none",
+        "bad-model",
+        adapter="kimi_tree",
+        billing="free",
+        capacity_class="free",
+        price_in=0.0,
+        price_out=0.0,
+        pool_keys=("p",),
+    )
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://hosted.example/v1")
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [router.Rung(Transport.LOCAL, model="legacy-model")],
+    )
+    legacy = _FakeProv(_ok("legacy answer", model="legacy-model"))
+    monkeypatch.setattr(router, "_provider_for_ladder", lambda ladder: legacy)
+    for offerings, want in (((bad,), "unresolved:"), ((), "no-offering:")):
+        recorded = _on_harness(monkeypatch, offerings=offerings, pools=_behind_pool())
+        out = route(LlmRequest(Tier.SMALL, prompt="x", source="apply-test"))
+        assert out.error is None and out.text == "legacy answer"
+        assert legacy.calls == 1
+        legacy.calls = 0
+        assert recorded[-1].features["decision"]["executed"] == "legacy-fallback"
+        assert recorded[-1].features["decision"]["fallback_reason"].startswith(want)
+
+
+def test_on_mode_agreeing_choice_runs_the_ladder_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pick that IS rung 0 runs through the normal path once — a second
+    attempt on the same rung would be an added retry."""
+    from precis.utils.llm import decide
+
+    same = decide.Offering(
+        "legacy-model@local/local",
+        "legacy-model",
+        adapter="local",
+        billing="local",
+        capacity_class="local",
+        locality="local",
+        live=True,
+        price_in=0.0,
+        price_out=0.0,
+    )
+    recorded = _on_harness(monkeypatch, offerings=(same,))
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [router.Rung(Transport.LOCAL, model="legacy-model")],
+    )
+    chosen = _FakeProv(_ok("chosen answer", model="legacy-model"))
+    legacy = _FakeProv(_ok("legacy answer", model="legacy-model"))
+    _wire_providers(monkeypatch, chosen, legacy)
+    out = route(LlmRequest(Tier.SMALL, prompt="x", source="apply-test"))
+    assert out.error is None and legacy.calls == 1
+    assert len(recorded) == 1
+    assert recorded[0].features["decision"]["executed"] == "decision"
+
+
+def test_on_mode_content_error_does_not_fall_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `content` verdict is the answer — the ladder would only re-buy it."""
+    recorded = _on_harness(monkeypatch, offerings=(_free_pick(),), pools=_behind_pool())
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://hosted.example/v1")
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [router.Rung(Transport.LOCAL, model="legacy-model")],
+    )
+    chosen = _FakeProv(
+        LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model="chosen-model",
+            tier=Tier.SMALL,
+            error="the model refused",
+            reason_class="content",
+        )
+    )
+    legacy = _FakeProv(_ok("legacy answer", model="legacy-model"))
+    _wire_providers(monkeypatch, chosen, legacy)
+    out = route(LlmRequest(Tier.SMALL, prompt="x", source="apply-test"))
+    assert out.error == "the model refused"
+    assert chosen.calls == 1 and legacy.calls == 0
+    assert len(recorded) == 1
+    assert recorded[0].errored
+    assert recorded[0].features["decision"]["executed"] == "decision"
+
+
+@pytest.mark.parametrize("case", ["pin", "keyword", "transport"])
+def test_on_mode_ineligible_calls_stay_legacy(
+    monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """Pinned, keyword-routed and transport-fenced calls keep
+    ``executed: legacy`` with no fallback reason."""
+    recorded = _on_harness(monkeypatch, offerings=(_free_pick(),), pools=_behind_pool())
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://hosted.example/v1")
+    monkeypatch.setattr(
+        "precis.utils.llm.keyword_route.match_request", lambda req: None
+    )
+    if case == "transport":
+        ladder = [router.Rung(Transport.CLAUDE_P, model="legacy-model")]
+        req = LlmRequest(
+            Tier.SMALL,
+            prompt="x",
+            source="apply-test",
+            require_transport=Transport.CLAUDE_P,
+        )
+    else:
+        ladder = [router.Rung(Transport.LOCAL, model="legacy-model")]
+        req = LlmRequest(
+            Tier.SMALL,
+            prompt="x",
+            source="apply-test",
+            model="pin-model" if case == "pin" else None,
+            keyword_rule="code:1" if case == "keyword" else None,
+        )
+    monkeypatch.setattr(router, "resolve_chain", lambda *a, **kw: ladder)
+    chosen = _FakeProv(_ok("chosen answer", model="chosen-model"))
+    legacy = _FakeProv(_ok("legacy answer", model="legacy-model"))
+    _wire_providers(monkeypatch, chosen, legacy)
+    out = route(req)
+    assert out.error is None and legacy.calls == 1
+    if case == "pin":
+        assert legacy.model_seen == "pin-model"
+    assert len(recorded) == 1
+    stamp = recorded[0].features["decision"]
+    assert stamp["executed"] == "legacy"
+    assert "fallback_reason" not in stamp
+
+
+def test_shadow_rows_are_unchanged_by_apply(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mode `shadow` is byte-for-byte: the stamp ``shadow_decision`` builds
+    is the row's decision feature, untouched by the apply path."""
+    recorded = _on_harness(
+        monkeypatch, offerings=(_free_pick(),), pools=_behind_pool(), mode="shadow"
+    )
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://hosted.example/v1")
+    ladder = [router.Rung(Transport.LOCAL, model="legacy-model")]
+    monkeypatch.setattr(router, "resolve_chain", lambda *a, **kw: ladder)
+    chosen = _FakeProv(_ok("chosen answer", model="chosen-model"))
+    legacy = _FakeProv(_ok("legacy answer", model="legacy-model"))
+    _wire_providers(monkeypatch, chosen, legacy)
+    req = LlmRequest(Tier.SMALL, prompt="x", source="apply-test")
+    expected = router.shadow_decision(req, ladder, "legacy-model", [])
+    out = route(req)
+    assert out.error is None and legacy.calls == 1 and chosen.calls == 0
+    assert len(recorded) == 1
+    stamp = recorded[0].features["decision"]
+    assert stamp == expected
+    assert stamp["executed"] == "legacy"
+    assert "fallback_reason" not in stamp
+
+
+def test_on_mode_tallies_the_breaker_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One logical call = one outcome row: the pick's probe never tallies,
+    a chosen success writes ``served`` here, a fallback leaves the tally
+    to the legacy gate."""
+    _on_harness(monkeypatch, offerings=(_free_pick(),), pools=_behind_pool())
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://hosted.example/v1")
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [router.Rung(Transport.LOCAL, model="legacy-model")],
+    )
+    gate_tallies: list[bool] = []
+
+    def gate(tier: Any, **kw: Any) -> None:
+        gate_tallies.append(bool(kw.get("tally")))
+        return None
+
+    monkeypatch.setattr("precis.budget.breaker.gate_tier", gate)
+    outcomes: list[str] = []
+    monkeypatch.setattr(
+        router, "_tally_gate", lambda req, outcome: outcomes.append(outcome)
+    )
+    chosen = _FakeProv(_ok("chosen answer", model="chosen-model"))
+    legacy = _FakeProv(_ok("legacy answer", model="legacy-model"))
+    _wire_providers(monkeypatch, chosen, legacy)
+    out = route(LlmRequest(Tier.SMALL, prompt="x", source="apply-test"))
+    assert out.error is None
+    # The probe alone (tally=False) plus the written success tally.
+    assert gate_tallies == [False]
+    assert outcomes == ["served"]
+    # A failed pick tallies nothing; the legacy gate's own tally stands.
+    chosen._result = _err("chosen boom", model="chosen-model")
+    out = route(LlmRequest(Tier.SMALL, prompt="y", source="apply-test"))
+    assert out.error is None
+    assert gate_tallies == [False, False, True]
+    assert outcomes == ["served"]
 
 
 # ── tier_from_str: stored-value degrade over the capability tiers + placement chains Phase C removal ──

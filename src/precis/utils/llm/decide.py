@@ -52,7 +52,9 @@ class Offering:
     enabled: bool = True
     #: The card's ``tier_floor`` (``policy._tier_of``), as the tier value
     #: string — the smallest demand the offering can serve. ``None`` = the
-    #: card doesn't say; the capability filter must then pass it, not reject.
+    #: card doesn't say; the capability filter then rejects any demand
+    #: above SMALL (the offering can't prove it can serve it), passing
+    #: only SMALL demands.
     tier_floor: str | None = None
 
 
@@ -79,6 +81,12 @@ class Ledger:
     #: legacy path actually ran wins and ``compare`` agrees. ``None`` leaves
     #: the ranked order unchanged.
     legacy_model: str | None = None
+    #: ``(model, adapter) -> (calls, ok)`` over :data:`HEALTH_WINDOW_MIN`
+    #: minutes of ``llm_call_log`` — the offering-level failure signal the
+    #: rank demotion reads (td568209). ``budget``-class rows are excluded
+    #: (a spend-cap pause is not the offering's fault); gated rows count.
+    #: Refreshed with the 15-second ledger entry, never per call.
+    health: Mapping[tuple[str, str], tuple[int, int]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -105,6 +113,19 @@ _TIER_ORDER = {
     tier.value: rank
     for rank, tier in enumerate((Tier.SMALL, Tier.MEDIUM, Tier.BIG, Tier.FRONTIER))
 }
+
+#: The health guard's window and sample floor (td568209): an offering
+#: whose ``llm_call_log`` rows over the window show at least this many
+#: calls and zero successes sorts after every healthy one.
+HEALTH_WINDOW_MIN = 30
+HEALTH_MIN_CALLS = 20
+
+
+def _unhealthy_calls(o: Offering, ledger: Ledger) -> int:
+    """Calls behind an all-failing offering's demotion, ``0`` when it
+    ranks normally — below the sample floor, or one success seen."""
+    calls, ok = ledger.health.get((o.model, o.adapter), (0, 0))
+    return calls if calls >= HEALTH_MIN_CALLS and ok == 0 else 0
 
 
 #: Fields a logged decision keeps per offering — identity, lane and price.
@@ -239,8 +260,11 @@ def _rejection(
         return "capability", "tools unsupported"
     if r.needs_structured and o.structured is False:
         return "capability", "structured output unsupported"
-    floor = _TIER_ORDER.get(o.tier_floor) if o.tier_floor is not None else None
-    if floor is not None and floor < _TIER_ORDER.get(r.tier_floor, 0):
+    demand = _TIER_ORDER.get(r.tier_floor, 0)
+    if o.tier_floor is None:
+        if demand > 0:
+            return "capability", "tier floor unset"
+    elif (_TIER_ORDER.get(o.tier_floor) or 0) < demand:
         return "capability", "offering tier below demanded tier floor"
     ordinal = o.capability.get(r.axis, 0) if r.axis else 0
     if ordinal and ordinal < r.min_ordinal - 1:
@@ -297,6 +321,7 @@ def decide(
             else "marginal"
         )
         state, _ = _pool_state(o, ledger)
+        sick = _unhealthy_calls(o, ledger)
         ranked.append(
             Ranked(
                 o,
@@ -304,7 +329,11 @@ def decide(
                 o.capacity_class,
                 state,
                 f"{band}; {o.billing}; {state}"
-                + ("; tier floor unknown" if o.tier_floor is None else ""),
+                + (
+                    f"; unhealthy: 0 of {sick} calls ok in {HEALTH_WINDOW_MIN} min"
+                    if sick
+                    else ""
+                ),
             )
         )
     if any(r.band in {"strong", "adequate"} for r in ranked):
@@ -317,7 +346,7 @@ def decide(
                 )
         ranked = [r for r in ranked if r.band != "marginal"]
 
-    def rank(r: Ranked) -> tuple[int, int, float, float, int, str]:
+    def rank(r: Ranked) -> tuple[int, int, int, float, float, int, str]:
         o = r.offering
         state, deficit = _pool_state(o, ledger)
         capacity = (
@@ -346,6 +375,7 @@ def decide(
             else 1
         )
         return (
+            1 if _unhealthy_calls(o, ledger) else 0,
             {"strong": 0, "adequate": 1, "unknown": 2, "marginal": 3}[r.band],
             capacity,
             -deficit if capacity in {0, 2} else 0,
@@ -406,6 +436,35 @@ def rung_key(rung: Rung, model: str) -> str:
     else:
         account = rung.profile or "metered"
     return offering_key(rung.model or model, rung.transport.value, account)
+
+
+def rung_for(offering: Offering, accts: Mapping[str, accounts.Account]) -> Rung | None:
+    """The dispatch rung for a chosen offering — the apply path's inverse
+    of :func:`rung_key` (td568209).
+
+    ``None`` when the offering's adapter names no :class:`Transport` —
+    the caller falls back ``unresolved``. The ``anthropic-api`` account
+    rides ``--bare`` (per-token billing, mirror of :func:`rung_key`); an
+    ``openai_compat`` account offering carries its account's ``profile``;
+    the label mirrors ``locality`` so
+    :func:`~precis.utils.llm.router._rung_is_cloud` classifies the lane
+    the offering described."""
+    try:
+        transport = Transport(offering.adapter)
+    except ValueError:
+        return None
+    account = accts.get(offering.account or "")
+    return Rung(
+        transport,
+        model=offering.model,
+        label="local" if offering.locality == "local" else "cloud",
+        bare=offering.account == "anthropic-api",
+        profile=(
+            account.profile
+            if account is not None and account.adapter == "openai_compat"
+            else None
+        ),
+    )
 
 
 def legacy_decision(ladder: Sequence[Rung], model: str, ledger: Ledger) -> Decision:
@@ -502,7 +561,7 @@ def compare(shadow: Decision, legacy: Decision) -> dict[str, Any]:
 
 _bad_modes: set[str] = set()
 
-#: ``prefix -> (expiry_monotonic, mode)``. The memo stores the final
+#: ``task kind -> (expiry_monotonic, mode)``. The memo stores the final
 #: validated mode, so the default legacy hot path is one dict lookup —
 #: no ``app_settings`` read per route() (gr572666; settings misses are
 #: never cached, so ``precis.settings.get_str`` would query every call).
@@ -511,19 +570,30 @@ _MODE_MEMO_TTL_S = 15.0
 
 
 def reset_mode_cache() -> None:
-    """Drop the per-prefix mode memo (tests, and the decide-mode CLI write)."""
+    """Drop the per-kind mode memo (tests, and the decide-mode CLI write)."""
     _mode_memo.clear()
 
 
 def mode_for(task_kind: str | None) -> str:
+    """The decide mode for one task kind.
+
+    Layered switches, first set value wins: the exact-kind row
+    ``llm.decide.kind.<task_kind>``, then the prefix row
+    ``llm.decide.<prefix>`` (the segment before the first ``.``/``:``),
+    then the global ``llm.decide.mode``, then ``PRECIS_LLM_DECIDE``, else
+    ``legacy``. An invalid value at the winning layer fails safe to
+    legacy — it does not fall through to the next layer."""
     from precis.utils.llm import live_config
 
-    prefix = re.split(r"[.:]", task_kind or "unknown", maxsplit=1)[0]
+    kind = task_kind or "unknown"
     stamp = time.monotonic()
-    hit = _mode_memo.get(prefix)
+    hit = _mode_memo.get(kind)
     if hit is not None and hit[0] > stamp:
         return hit[1]
-    mode = live_config.decide_override(prefix)
+    mode = live_config.decide_kind_override(kind)
+    if mode is None:
+        prefix = re.split(r"[.:]", kind, maxsplit=1)[0]
+        mode = live_config.decide_override(prefix)
     if mode is None:
         mode = live_config.decide_default()
     if mode is None:
@@ -535,17 +605,24 @@ def mode_for(task_kind: str | None) -> str:
             _bad_modes.add(mode)
             log.warning("invalid llm.decide mode %r; using legacy", mode)
         mode = "legacy"
-    _mode_memo[prefix] = (stamp + _MODE_MEMO_TTL_S, mode)
+    _mode_memo[kind] = (stamp + _MODE_MEMO_TTL_S, mode)
     return mode
 
 
-#: ``id(store) -> (stamp, accounts, pools, offerings)``. Offerings ride the
-#: same 15 s entry as the account/pool snapshot — a rebuild is the only time
-#: the catalog is walked or a heartbeat is probed; per call stays a dict
-#: lookup plus a pure :func:`accounts.pacing` per pool.
+#: ``id(store) -> (stamp, accounts, pools, offerings, health)``. Offerings
+#: and the llm_call_log health window ride the same 15 s entry as the
+#: account/pool snapshot — a rebuild is the only time the catalog is
+#: walked, a heartbeat is probed or the log is grouped; per call stays a
+#: dict lookup plus a pure :func:`accounts.pacing` per pool.
 _ledger_cache: dict[
     int,
-    tuple[float, list[accounts.Account], list[accounts.Pool], tuple[Offering, ...]],
+    tuple[
+        float,
+        list[accounts.Account],
+        list[accounts.Pool],
+        tuple[Offering, ...],
+        dict[tuple[str, str], tuple[int, int]],
+    ],
 ] = {}
 _loader_error_at = -math.inf
 
@@ -772,6 +849,32 @@ def _build_offerings(
     return tuple(offerings) + _account_offerings(accts, catalog)
 
 
+def _health_from_store(store: Store) -> dict[tuple[str, str], tuple[int, int]]:
+    """``(model, transport) -> (calls, ok)`` over :data:`HEALTH_WINDOW_MIN`
+    minutes of ``llm_call_log`` — the offering-level failure signal the
+    rank demotion reads (td568209; the router keeps no in-memory signal,
+    and the window query rides the 15 s ledger entry so it never runs per
+    call). ``budget``-class rows are excluded — a spend-cap pause is not
+    an offering fault; gated rows count (a refused rung IS the observed
+    fault). A failed read yields an empty mapping, never an exception."""
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT model, transport, count(*), "
+                "count(*) FILTER (WHERE NOT errored) FROM llm_call_log "
+                f"WHERE ts > now() - interval '{HEALTH_WINDOW_MIN} minutes' "
+                "AND reason_class IS DISTINCT FROM 'budget' GROUP BY 1, 2"
+            ).fetchall()
+    except Exception:
+        log.debug("decide: health read failed", exc_info=True)
+        return {}
+    return {
+        (str(model), str(transport)): (int(calls), int(ok))
+        for model, transport, calls, ok in rows
+        if model is not None and transport is not None
+    }
+
+
 def ledger_from_store(
     store: Store, *, now: datetime, unavailable_transports: frozenset[str] = frozenset()
 ) -> Ledger | None:
@@ -783,11 +886,24 @@ def ledger_from_store(
         if cached is None or stamp - cached[0] >= 15:
             accts = accounts.list_accounts(store)
             pools = accounts.list_pools(store)
-            cached = (stamp, accts, pools, _build_offerings(store, accts))
+            cached = (
+                stamp,
+                accts,
+                pools,
+                _build_offerings(store, accts),
+                _health_from_store(store),
+            )
             _ledger_cache[id(store)] = cached
         account_map = {a.name: a for a in cached[1]}
         pool_map = {p.provider: accounts.pacing(p, now) for p in cached[2]}
-        return Ledger(cached[3], account_map, pool_map, unavailable_transports, now)
+        return Ledger(
+            cached[3],
+            account_map,
+            pool_map,
+            unavailable_transports,
+            now,
+            health=cached[4],
+        )
     except Exception:
         stamp = time.monotonic()
         if stamp - _loader_error_at >= 60:

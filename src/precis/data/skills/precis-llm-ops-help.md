@@ -121,16 +121,54 @@ credit-balance read — so both pools read `pacing=unknown` by design.
 
 ## What would the new router have chosen? /decisions and llm.decide
 
-`llm.decide.mode` defaults to `legacy`; `shadow` and `on` compute and log
-the decision while executing the legacy chain in this slice. Shadow changes
-nothing executed. `get(kind='llm', id='/decisions')` groups calls by task kind,
-showing agreement, legacy and shadow Claude-window counts, actual and projected
-USD, and how many calls have known projected prices. Reto sets the global
-`llm.decide.mode` row and optional `llm.decide.<prefix>` rows, where the prefix
-ends at the first dot or colon in the task kind; `legacy`, `shadow`, and `on`
-are the accepted values. `precis llm decide` previews a choice without an LLM call;
-`precis llm decide-mode <prefix|default> <legacy|shadow|on|clear>` writes or
-clears those rows.
+`llm.decide.mode` defaults to `legacy`. `shadow` computes and logs the
+decision while the legacy chain runs. `on` actually dispatches the
+chooser's pick: the chosen offering runs **once** (one attempt, no added
+retries), and on any failure — a provider error, a gate or slot refusal,
+no surviving offering, an unresolvable one — the same call falls back to
+the legacy ladder. The final route-log row says which ran in
+`features.decision.executed`: `decision`, `legacy`, or `legacy-fallback`
+with a `fallback_reason` of `no-offering:` / `unresolved:` / `gate:` /
+`no-slot:` / `error:` / `timeout:` / `rate:` plus detail. A failed chosen
+attempt also writes its own errored or gated row, stamped `executed:
+decision`, so the health guard and the watch query below see it. A
+`content`-class refusal does not fall back: the ladder would only re-buy
+the same verdict.
+
+Calls that stay on the ladder untouched (`executed: legacy`): a caller
+model pin, a local-first source, a matched keyword rule, a
+`require_transport` fence naming another wire, and the `claude_agent`
+streaming branch (`dispatch_async` with `on_event`) — it stays
+shadow-only even under `on`. When the pick agrees with rung 0 the
+ladder runs it once and the row reads `decision`.
+
+Modes layer per task kind, first set value wins:
+`llm.decide.kind.<task_kind>` (exact kind) > `llm.decide.<prefix>` (the
+segment before the first dot or colon) > `llm.decide.mode` >
+`PRECIS_LLM_DECIDE`; an invalid value fails safe to `legacy`.
+`precis llm decide-mode --kind <task_kind> <legacy|shadow|on|clear>`
+writes the exact row; the `<prefix|default> <mode>` form is unchanged;
+`--show` lists every `llm.decide.*` row. Two safety rails ride the
+chooser itself: a card with no `tier_floor` serves only SMALL demands —
+a MEDIUM-or-larger demand ranks nothing on such cards and under `on`
+falls back (`no-offering`) until the card carries a floor — and an
+offering with 20+ calls and zero successes in the last 30 minutes of
+`llm_call_log` sorts last (`; unhealthy: 0 of N calls ok in 30 min`),
+recovering on its own once a success or a smaller sample lifts it.
+
+After a flip, watch:
+
+    select features->'decision'->>'executed', model, transport, count(*),
+      count(*) filter (where errored),
+      percentile_cont(.95) within group (order by duration_ms)
+    from llm_call_log where ts > <flip time> group by 1,2,3;
+
+Revert within ~30 s, no restart:
+`scripts/prod-precis llm decide-mode --kind <task_kind> clear` (or
+`<prefix> clear`). `precis llm decide` previews a choice without an LLM
+call; `get(kind='llm', id='/decisions')` groups calls by task kind —
+agreement, legacy and shadow Claude-window counts, actual and projected
+USD.
 
 ## Which offerings suit which task kinds? /suitability
 
