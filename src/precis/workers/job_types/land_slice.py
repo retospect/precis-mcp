@@ -13,7 +13,7 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
 * :func:`submit` reads the squash subject from the branch
   (:func:`squash_subject`: the slice's commit subject, its trailing handle
   list made to carry ``(td<id>)`` so ``scripts/lib/land_notify.py`` moves
-  the todo, capped at 72 bytes) and launches ``scripts/ship --checked
+  the todo, capped at 72 bytes) and launches ``scripts/ship --quick
   "<subject>"`` detached in the worktree (``PRECIS_SHIP_BIN`` overrides the
   path; ``PRECIS_SHIP_VERBOSE=1`` so the log holds the whole transcript;
   ``PRECIS_GATE_N`` caps the checked gate's xdist workers at
@@ -67,13 +67,14 @@ the relock commit), else ``slice-pr-<n>``, cut here from ``git fetch origin
 +pull/<n>/head`` and refused when the head is not the sha the intake
 classified (``meta.pr.head_sha`` on the plan root). The subject is the PR
 title made lint-clean (:func:`precis.plans.pr_class.land_subject`) plus
-``(td<id>)``. Every land ships ``--checked`` (:func:`ship_flag`; a
-pyproject diff selects the contract and import-map tests) unless
-``params.checked`` is ``False``. A checked land the selector refuses with
+``(td<id>)``. Every land ships ``--quick`` (:func:`ship_flag`; Reto
+2026-11-05, gr570221 — lint only; the release gate on ``/go`` runs the
+suite before deploy) unless ``params.checked`` is ``True`` — what a
+pr-intake plan's land node passes, so a PR land runs the checked gate's
+contract and import-map tests. A checked land the selector refuses with
 FULL (a migration or harness diff: :data:`FULL_SELECTOR_MARK`) relaunches
-once with :func:`full_fallback_flag` — ``--quick``, lint only, the release
-gate on ``/go`` covers it (Reto 2026-11-05, me570388) — without consuming
-an attempt.
+once with :func:`full_fallback_flag` — ``--quick``, the same lane the
+default already uses (me570388) — without consuming an attempt.
 After a green land — of a PR node, or of any slice whose todo carries
 ``meta.pr_close = <n>`` (the "land after fixes" slice) — the PR is closed
 with a comment naming the squash sha (:func:`_gh`, the host's ``gh auth``:
@@ -131,16 +132,18 @@ NO_DIFF_NOTE = (
 
 
 def ship_flag(params: dict[str, Any]) -> str:
-    """``--checked`` unless ``params.checked`` is explicitly ``False``.
+    """``--quick`` unless ``params.checked`` is ``True``.
 
-    r200 went red on a factory land (8004d84e0): a new ``args`` key the
-    handler read without declaring it, caught by the dispatch contract test
-    ``tests/test_dispatch_args_keys.py`` that neither the build's own test
-    file nor the reviewer ran. ``--checked`` runs those contract invariants
-    (plus the impacted-tests selection) at the land, a couple of minutes a
-    slice; ``--quick`` is lint only and stays for an operator who asks.
+    Reto 2026-11-05 (gr570221): the factory lander defaults to ``--quick``
+    — lint only; the release gate on ``/go`` runs the suite before deploy.
+    A ``--checked`` default sent every migration/harness slice into the
+    FULL selector refusal and burned the attempts around it. ``True``
+    still runs the checked gate: r200 went red on a factory land
+    (8004d84e0) for an ``args`` key only the dispatch contract test
+    catches, and a pr-intake plan's land node asks for that gate
+    (``templates`` passes ``checked: True``).
     """
-    return "--quick" if params.get("checked") is False else "--checked"
+    return "--checked" if params.get("checked") is True else "--quick"
 
 
 #: The ✖ line ``scripts/ship --checked`` dies with when the impacted-tests
@@ -212,7 +215,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "target_node": {"type": "string"},
         # A pull request's land (worktree/branch then optional, see above).
         "pr": {"type": "integer"},
-        # False ships --quick (lint only); default and True ship --checked.
+        # True ships --checked; default and False ship --quick (lint only).
         "checked": {"type": "boolean"},
     },
     "required": ["todo_id"],

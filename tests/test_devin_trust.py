@@ -1,11 +1,14 @@
-"""scripts/lib/devin_trust.py — the trusted_workspaces.json writer.
+"""precis.utils.devin_trust and its scripts/lib/devin_trust.py CLI — the
+trusted_workspaces.json writer.
 
-Every run gets a throwaway HOME (and, where exercised, a
-``DEVIN_TRUSTED_WORKSPACES`` or ``--file`` pointing inside it), so the
-real ``~/.local/share/devin/cli/trusted_workspaces.json`` is never
-touched — even if the helper's file resolution regressed. The launch
-tests run the real scripts/devin-tree against a fake git and a fake tmux
-first on PATH.
+Most tests drive the CLI subprocess end-to-end; the package API tests
+call ``trust()``/``main()`` in-process. Every run gets a throwaway HOME
+(and, where exercised, a ``DEVIN_TRUSTED_WORKSPACES`` or ``--file``
+pointing inside it), so the real
+``~/.local/share/devin/cli/trusted_workspaces.json`` is never touched —
+even if the helper's file resolution regressed. The launch tests run
+the real scripts/devin-tree against a fake git and a fake tmux first on
+PATH.
 """
 
 from __future__ import annotations
@@ -203,6 +206,58 @@ def test_accepts_a_tree_inside_worktrees(tmp_path: Path) -> None:
     r = run(tmp_path, "--file", str(file), str(under), str(tree))
     assert r.returncode == 0, r.stderr
     assert trusted_paths(file) == [os.path.realpath(tree)]
+
+
+def test_held_lock_refuses_within_the_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr570688 review: the flock must never block forever — a held lock
+    fails ``trust()`` inside the deadline with the named next step."""
+    import fcntl
+    import time
+
+    from precis.utils import devin_trust
+
+    monkeypatch.setattr(devin_trust, "LOCK_TIMEOUT_S", 0.4)
+    under = worktrees(tmp_path)
+    file = tmp_path / "trusted_workspaces.json"
+    with open(str(file) + ".lock", "w", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        start = time.monotonic()
+        with pytest.raises(devin_trust.TrustError, match="locked by another"):
+            devin_trust.trust(str(under), file=str(file))
+        assert time.monotonic() - start < 5
+    assert not file.exists()
+
+
+def test_in_process_trust_and_main(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Review 1: the package API the CLI wraps is exercised in-process —
+    ``trust()`` returns ``(target, added)`` and raises ``TrustError`` on
+    a refusal; ``main()`` maps the refusal to exit 2 and success to 0."""
+    from precis.utils import devin_trust
+
+    under = worktrees(tmp_path)
+    file = tmp_path / "trusted_workspaces.json"
+    target, added = devin_trust.trust(str(under), file=str(file))
+    assert added and target == os.path.realpath(under)
+    assert trusted_paths(file) == [target]
+
+    # A refused PATH raises TrustError from trust() and exits 2 in main().
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    with pytest.raises(devin_trust.TrustError, match="outside"):
+        devin_trust.trust(str(under), path=str(outside), file=str(file))
+    assert devin_trust.main(["--file", str(file), str(under), str(outside)]) == 2
+    assert "outside" in capsys.readouterr().err
+
+    # A good run exits 0; a repeat prints "already trusted" and exits 0.
+    tree = under / "d-one"
+    tree.mkdir()
+    assert devin_trust.main(["--file", str(file), str(under), str(tree)]) == 0
+    assert devin_trust.main(["--file", str(file), str(under), str(tree)]) == 0
+    assert "already trusted" in capsys.readouterr().out
 
 
 def test_concurrent_adds_keep_every_entry(tmp_path: Path) -> None:

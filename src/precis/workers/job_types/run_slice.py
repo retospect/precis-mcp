@@ -20,7 +20,18 @@ that holds the lane's credentials with ``params.target_node``):
   ``origin/main`` under the checkout root (:func:`slice_root`), writes
   ``scratch/brief.md`` there and launches the lane's adapter (``claude_p``,
   ``codex_exec`` or ``devin_tree``) detached. Claude's argv and MCP grant
-  are unchanged; the other vendors receive no precis MCP token. The env is
+  are unchanged; the other vendors receive no precis MCP token. A
+  ``devin_tree`` launch is gated by :func:`_devin_preflight` (the binary
+  resolves, ``devin auth status`` reports a login, and the checkout's
+  ``.claude/worktrees`` is seeded into Devin's trusted workspaces —
+  gr570688): a refusal fails the job in seconds with the next step —
+  a host problem (:class:`_HostRefusal`), so the todo's lease goes back
+  clean with no ``attempt:`` burned — rather than burning a session that
+  dies at spawn or stalls on the trust prompt. A ``codex_exec`` launch grants its sandbox writable
+  roots beyond the tree (:func:`_codex_writable_roots`): the shared git
+  common dir — worktree index/refs, objects, and the gate queue the
+  session's ``scripts/test`` writes — plus the Docker socket's parent
+  (gr570533). The env is
   an allowlist (:func:`slice_env`): no DB DSN, no vault variables reach
   the session. The handle is ``{pid, pgid, worktree, log, exit_file,
   started_at}`` plus ``boot_id``/``start_time`` (the Linux process
@@ -37,8 +48,14 @@ that holds the lane's credentials with ``params.target_node``):
   ``land_slice`` job (:mod:`precis.workers.job_types.land_slice`; idem key
   ``land_slice:td<id>``, a child of the todo, params ``{todo_id, worktree,
   branch, lane, target_node}``) and ends ``succeeded``; the lease stays
-  until the land. Otherwise (non-zero exit, a deny-path hit, no commit to
-  land) it ends ``failed`` with the log tail and releases the lease: the
+  until the land. A clean exit that left no commit is also a success —
+  no land — when the node's work is a document, not a branch
+  (:func:`_no_commit_kind`: ``task_class`` off ``code``, or a
+  ``_NO_COMMIT_ROLES`` generate role; gr570534): the todo closes done
+  with no attempt burned, as a ``no-op:``/``moot:``/``validated:``
+  first-line verdict does on a code node. Otherwise (non-zero exit, a
+  deny-path hit, a code node with no commit to land) it ends ``failed``
+  with the log tail and releases the lease: the
   claim tag goes, the todo returns to ``STATUS:open`` and gains
   ``attempt:<n>``.
 * :func:`kill` SIGTERMs the session's process group. :func:`release`
@@ -75,6 +92,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -92,6 +110,7 @@ from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers.job_types._slice_adapters import (
     PERMISSION_MODE,
     deny_settings,
+    devin_bin,
     get_adapter,
 )
 from precis.workers.job_types._slice_adapters import (
@@ -155,6 +174,9 @@ ENV_ALLOWLIST: tuple[str, ...] = (
     "PRECIS_RUN_SLICE_MODEL",
     "PRECIS_RUN_SLICE_MAX_TURNS",
     "PRECIS_RUN_SLICE_WALL_S",
+    # How ``docker`` inside the session (the gate in ``scripts/test``)
+    # finds the socket on the slice host — colima under the unit's HOME.
+    "DOCKER_HOST",
 )
 
 #: Branch name an earlier attempt cut before the ``slice/<id>`` spelling.
@@ -547,14 +569,33 @@ def _is_generator(store: Any, todo_id: int) -> bool:
 
 def _mints_children(store: Any, todo_id: int) -> bool:
     """A generator whose brief ends with :func:`_generator_close`: its
-    deliverable is child todos. A reviewer or analyst (``_ROLE_CLOSE``)
-    delivers one comment instead and never mints."""
+    deliverable is child todos. A document role
+    (:data:`_NO_COMMIT_ROLES`: reviewer, analyst, brief) delivers a
+    comment or a written chunk instead and never mints."""
     ref = store.get_ref(kind="todo", id=todo_id)
     if ref is None or node_kind(ref.meta) != "generator":
         return False
     gen = (ref.meta or {}).get("generate")
     role = gen.get("role") if isinstance(gen, dict) else None
-    return role not in _ROLE_CLOSE
+    return role not in _NO_COMMIT_ROLES
+
+
+def _no_commit_kind(store: Any, todo_id: int) -> str | None:
+    """Why a clean exit that left no commit is this node's success
+    (gr570534, jo570327): ``task_class '<c>'`` when the class is off
+    ``code`` — a brief-writer's work is the ``brief:`` comment it posts,
+    not a branch — else ``generate role '<r>'`` for a
+    :data:`_NO_COMMIT_ROLES` role. ``None`` for a plain code node: its
+    no-commit exit stays a failed attempt."""
+    ref = store.get_ref(kind="todo", id=todo_id)
+    meta = (ref.meta if ref is not None else None) or {}
+    cls = str(meta.get("task_class") or _DEFAULT_TASK_CLASS)
+    if cls != _DEFAULT_TASK_CLASS:
+        return f"task_class {cls!r}"
+    role = _generate_role(meta)
+    if role in _NO_COMMIT_ROLES:
+        return f"generate role {role!r}"
+    return None
 
 
 def _child_todo_count(store: Any, todo_id: int) -> int:
@@ -771,6 +812,13 @@ _ROLE_CLOSE: dict[str, Callable[[int, bool], list[str]]] = {
     "reviewer": _reviewer_close,
     "analyst": _analyst_close,
 }
+
+#: ``meta.generate.role``s whose session's deliverable is a document or a
+#: single comment — never child todos and never a commit (gr570534): the
+#: ``_ROLE_CLOSE`` roles, plus ``brief`` (it posts the ``brief:`` chunk it
+#: was asked to write). A clean exit that delivered it is the node's
+#: success — no children, no commit, no attempt burned.
+_NO_COMMIT_ROLES = frozenset({*_ROLE_CLOSE, "brief"})
 
 _TD_FROM_RE = re.compile(r"td(\d+)")
 _LANDED_RE = re.compile(r"^\s*landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
@@ -1118,6 +1166,125 @@ def _preflight_mcp(tree: Path, token: str | None) -> None:
         raise RuntimeError(f"precis MCP preflight: HTTP {status} from {url}{hint}")
 
 
+def _codex_writable_roots(tree: Path) -> tuple[Path, ...]:
+    """Extra ``--add-dir`` writable roots for the codex sandbox
+    (gr570533): the shared git common dir — the worktree's index and
+    refs under ``worktrees/<name>``, the object store, loose/packed
+    refs, and the gate queue + slot locks + hold stats ``scripts/test``
+    writes — plus the Docker socket's parent dir so ``docker`` inside
+    the gate connects. Without them ``git commit`` and ``scripts/test``
+    die on the sandbox and the slice exits with work but no commit."""
+    roots: list[Path] = []
+    common = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], tree)
+    if common.returncode == 0 and common.stdout.strip():
+        roots.append(Path(common.stdout.strip()))
+    docker = os.environ.get("DOCKER_HOST", "")
+    sock_dir: Path | None
+    if docker.startswith("unix://"):
+        # The declared socket path's parent — a configured root holds
+        # even when the VM is down (docker still fails on its own).
+        sock_dir = Path(docker.removeprefix("unix://")).parent
+    else:
+        # No DOCKER_HOST: colima's default socket dir under the worker's
+        # HOME, when it exists — a missing dir grants no phantom root.
+        candidate = Path.home() / ".colima"
+        sock_dir = candidate if candidate.is_dir() else None
+    if sock_dir is not None:
+        home = Path.home()
+        if sock_dir == home or home.is_relative_to(sock_dir):
+            # /, $HOME or an ancestor of $HOME would widen the sandbox to
+            # the worker's whole world for one socket — log and skip
+            # (review 1); the gate's docker fails on its own either way.
+            log.warning(
+                "run_slice: docker socket parent %s is unsafe to grant "
+                "writable — skipping the --add-dir",
+                sock_dir,
+            )
+        elif sock_dir not in roots:
+            roots.append(sock_dir)
+    return tuple(roots)
+
+
+def _devin_bin_ok(bin: str) -> bool:
+    """The devin binary resolves: an explicit ``PRECIS_DEVIN_BIN`` path is
+    an executable file; a bare name is on ``PATH``."""
+    if os.sep in bin or (os.altsep and os.altsep in bin):
+        return os.path.isfile(bin) and os.access(bin, os.X_OK)
+    return shutil.which(bin) is not None
+
+
+def _devin_auth_status(bin: str) -> subprocess.CompletedProcess[str]:
+    """``<bin> auth status``; never raises on a non-zero exit — a missing
+    or crashing binary answers rc 127, a hang answers rc 124."""
+    try:
+        return subprocess.run(
+            [bin, "auth", "status"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=15,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            [bin], 124, stdout="", stderr="auth status timed out"
+        )
+    except OSError as e:
+        return subprocess.CompletedProcess([bin], 127, stdout="", stderr=str(e))
+
+
+def _devin_seed_trust(under: Path) -> str | None:
+    """Seed ``under`` — the checkout's ``.claude/worktrees`` — into the
+    Devin CLI's trusted workspaces; the refusal reason on failure,
+    ``None`` when the entry holds. Without it Devin stops at its
+    directory-trust prompt, which a headless session cannot answer."""
+    from precis.utils import devin_trust
+
+    try:
+        devin_trust.trust(str(under))
+    except Exception as e:
+        return str(e)
+    return None
+
+
+class _HostRefusal(RuntimeError):
+    """A submit refusal that is the HOST's, not the task's (review ruling
+    on gr570688): a missing binary, a dead login or a failed trust seed
+    burns no ``attempt:`` and just gives the lease back — the way the
+    lane-table error path refuses before claiming."""
+
+
+def _devin_preflight(under: Path) -> None:
+    """Refuse a devin slice launch the session could only die inside
+    (gr570688): no binary, no login, or an untrusted checkout. Raises
+    :class:`_HostRefusal` naming the failed check and its next step — the
+    failure lands in seconds, never as a dead or prompting session."""
+    binary = devin_bin()
+    if not _devin_bin_ok(binary):
+        raise _HostRefusal(
+            f"devin preflight: binary {binary!r} is not executable or not on "
+            "PATH; next: install the Devin CLI for the worker's user or "
+            "point PRECIS_DEVIN_BIN at it"
+        )
+    status = _devin_auth_status(binary)
+    out = f"{status.stdout}\n{status.stderr}".lower()
+    if status.returncode != 0 or "not logged in" in out or "logged in" not in out:
+        detail = (status.stdout or status.stderr).strip().splitlines()
+        tail = f" ({detail[-1].strip()[:200]})" if detail else ""
+        raise _HostRefusal(
+            f"devin preflight: `devin auth status` reports no login{tail}; "
+            "next: `devin auth login` as the worker's user (the deploy-user "
+            "login is a stopgap — Reto 2026-11-05)"
+        )
+    why = _devin_seed_trust(under)
+    if why is not None:
+        raise _HostRefusal(
+            f"devin preflight: seeding {under} into Devin's trusted "
+            f"workspaces failed ({why}); next: run "
+            f"scripts/lib/devin_trust.py {under} by hand and fix what it names"
+        )
+
+
 def _mint_slice_token(
     ctx: Any, todo_id: int, *, model: str, brief: str
 ) -> dict[str, Any] | None:
@@ -1373,6 +1540,9 @@ def submit(ctx: Any, spec: Any) -> Any:
             deny_paths=lane.deny_write_paths,
             max_turns=_max_turns(),
             models=lane.models,
+            writable_roots=(
+                _codex_writable_roots(tree) if adapter.name == "codex_exec" else ()
+            ),
         )
         if adapter.name == "codex_exec":
             # A retry reuses the tree: never accept a previous run's handoff.
@@ -1386,6 +1556,10 @@ def submit(ctx: Any, spec: Any) -> Any:
             mcp_token=grant["token"] if grant else None,
             mcp=adapter.mcp,
         )
+        if adapter.name == "devin_tree":
+            # The checkout's worktrees dir is the slice's parent; seed it
+            # before launch or the session stalls on the trust prompt.
+            _devin_preflight(tree.parent)
         if adapter.mcp:
             _preflight_mcp(tree, env.get("PRECIS_MCP_TOKEN"))
         pid = _launch(
@@ -1401,6 +1575,13 @@ def submit(ctx: Any, spec: Any) -> Any:
         ps_identity = (
             _darwin_process_identity(pid) if sys.platform == "darwin" else None
         )
+    except _HostRefusal as exc:
+        # The host cannot run the lane right now; the task is uncharged —
+        # give the lease back clean, like the lane-table error path.
+        _revoke_slice_grant(ctx, todo_id, grant, "aborted")
+        unclaim_todo(ctx.store, todo_id, lane.name)
+        ctx.record_failure(f"run_slice: {exc}")
+        return None
     except Exception as exc:
         log.warning("run_slice: launch of td%d failed", todo_id, exc_info=True)
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
@@ -1848,11 +2029,24 @@ def poll(ctx: Any, handle: Any) -> bool:
     if land and not commits:
         verdict = generator_verdict(result)
         if verdict is None:
-            nothing = (
-                f"left no commit on {slice_branch(todo_id)} ahead of origin/main "
-                "(nothing to land)"
-            )
-            summary.append(f"Land: {nothing}.")
+            no_commit = _no_commit_kind(ctx.store, todo_id)
+            if no_commit is None:
+                nothing = (
+                    f"left no commit on {slice_branch(todo_id)} ahead of "
+                    "origin/main (nothing to land)"
+                )
+                summary.append(f"Land: {nothing}.")
+            else:
+                # gr570534 / jo570327: a brief-writer (or any node whose
+                # class or role delivers a document, not a branch) leaves
+                # no commit on purpose — that is its success, not a failed
+                # attempt to retry.
+                land = False
+                close_todo(ctx.store, todo_id, str(lane) if lane else None)
+                summary.append(
+                    f"Land: none — td{todo_id} is a {no_commit} node; a "
+                    "clean exit with no commit is its success. Closed done."
+                )
         else:
             # gr561132: a task that checked and found nothing to change (a
             # validation that passed, a fix already on main) says so on its

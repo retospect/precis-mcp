@@ -346,7 +346,7 @@ def test_submit_launches_ship_with_the_slice_subject(seams: dict[str, Any]) -> N
     tree = seams["tree"]
     assert ctx.failure is None and ctx.status is None
     [(argv, kw)] = seams["launch"]
-    assert argv == [str(tree / "scripts" / "ship"), "--checked", SUBJECT]
+    assert argv == [str(tree / "scripts" / "ship"), "--quick", SUBJECT]
     assert kw["cwd"] == tree
     assert kw["env"]["PRECIS_SHIP_VERBOSE"] == "1"
     # the checked run's xdist workers are capped (gr567471: a static-wide
@@ -700,7 +700,10 @@ def test_poll_full_selector_refusal_relaunches_quick(
     monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
-    ctx, handle = _submit(store, seams)
+    # A --quick default land never runs the selector: only a checked run
+    # (params.checked, e.g. a PR land) can take the FULL refusal.
+    ctx = _Ctx(store, {**_params(seams), "checked": True})
+    handle = land_slice.submit(ctx, None)
     _finish(handle, 1, FULL_REFUSAL_LOG)
     pctx = _Ctx(store, _params(seams))
     assert land_slice.poll(pctx, handle) is False
@@ -725,7 +728,8 @@ def test_poll_full_selector_refusal_is_red_when_fallback_off(
     monkeypatch.setenv("PRECIS_LAND_FULL_FALLBACK", "off")
     store = _Store()
     store.add_todo(42)
-    ctx, handle = _submit(store, seams)
+    ctx = _Ctx(store, {**_params(seams), "checked": True})
+    handle = land_slice.submit(ctx, None)
     _finish(handle, 1, FULL_REFUSAL_LOG)
     pctx = _Ctx(store, _params(seams))
     assert land_slice.poll(pctx, handle) is True
@@ -796,7 +800,7 @@ def _defer_setup(
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     _ctx, handle = _submit(store, seams)
-    assert handle["flag"] == "--checked"
+    assert handle["flag"] == "--quick"
     if refusals is not None:
         handle["main_refusals"] = refusals
     _finish(handle, 1, DRIFT_LOG)
@@ -893,7 +897,7 @@ def test_submit_records_the_preflight_when_the_land_goes_on(
     assert ctx.chunks[0][1] == (
         f"land_slice: drift preflight (lander identity): age=3.2; {found}"
     )
-    assert ctx.chunks[1][1].startswith("land_slice: scripts/ship --checked")
+    assert ctx.chunks[1][1].startswith("land_slice: scripts/ship --quick")
     # the helper's own none-green: ship makes the refusal, the job still says so
     seams["preflight"] = _preflight(2, "", NONE_GREEN_DIAG)
     seams["launch"].clear()
@@ -938,7 +942,7 @@ def test_submit_parks_when_the_lander_identity_cannot_read_the_gate(
     assert handle["not_before"] == "2026-11-01T10:30:00Z"
     assert handle["main_refusals"] == 1
     assert handle["last_refusal"] == land_slice.UNKNOWN_GATE_CROSS
-    assert handle["flag"] == "--checked" and handle["subject"] == SUBJECT
+    assert handle["flag"] == "--quick" and handle["subject"] == SUBJECT
     assert handle["worktree"] == str(seams["tree"])
     assert "pid" not in handle
     assert ctx.meta_set["compute_handle"] == handle
@@ -976,7 +980,7 @@ def test_relaunch_parks_again_while_the_gate_stays_unknown(
     assert handle["main_refusals"] == 2
     assert handle["not_before"] == "2026-11-01T11:00:00Z"
     assert handle["last_refusal"] == land_slice.UNKNOWN_GATE_CROSS
-    assert handle["flag"] == "--checked" and handle["subject"] == SUBJECT
+    assert handle["flag"] == "--quick" and handle["subject"] == SUBJECT
     assert pctx.meta_set["compute_handle"] == handle
     due = T0 + timedelta(seconds=1800)
     assert (
@@ -1168,13 +1172,13 @@ def test_poll_at_not_before_relaunches_once(
     clock["t"] = T0 + timedelta(seconds=1800)  # exactly due
     pctx = _Ctx(store, _params(seams))
     assert land_slice.poll(pctx, handle) is False
-    assert launched == [(seams["tree"], "--checked", SUBJECT)]
+    assert launched == [(seams["tree"], "--quick", SUBJECT)]
     assert len(seams["launch"]) == 2
     argv, kw = seams["launch"][1]
-    assert argv == [str(seams["tree"] / "scripts" / "ship"), "--checked", SUBJECT]
+    assert argv == [str(seams["tree"] / "scripts" / "ship"), "--quick", SUBJECT]
     assert kw["env"]["PRECIS_SHIP_VERBOSE"] == "1"
     assert "not_before" not in handle
-    assert handle["pid"] == 5151 and handle["flag"] == "--checked"
+    assert handle["pid"] == 5151 and handle["flag"] == "--quick"
     assert handle["main_refusals"] == 3  # carried over
     assert handle["last_refusal"].startswith("✖ main has no")
     assert pctx.meta_set["compute_handle"] == handle
@@ -1188,13 +1192,15 @@ def test_poll_at_not_before_relaunches_once(
     assert len(seams["launch"]) == 2
 
 
-def test_ship_flag_is_checked_unless_opted_out() -> None:
-    """r200 red on 8004d84e0: an undeclared args key only the dispatch
-    contract test catches. Every factory land runs --checked; --quick is an
-    explicit opt-out."""
-    assert land_slice.ship_flag({}) == "--checked"
-    assert land_slice.ship_flag({"checked": True}) == "--checked"
+def test_ship_flag_is_quick_unless_checked() -> None:
+    """Reto 2026-11-05 (gr570221): the factory lander defaults to --quick —
+    a checked default sent every migration/harness slice into the FULL
+    selector refusal and burned the attempts before it. checked=True still
+    runs the checked gate (a PR land asks for it; r200's args-key contract
+    test is what it buys)."""
+    assert land_slice.ship_flag({}) == "--quick"
     assert land_slice.ship_flag({"checked": False}) == "--quick"
+    assert land_slice.ship_flag({"checked": True}) == "--checked"
 
 
 def test_poll_main_refusal_keeps_checked_flag(
@@ -1471,7 +1477,7 @@ def test_stub_ship_through_the_real_launcher(
         time.sleep(0.05)
     assert pctx.status == "succeeded", pctx.failure
     log = Path(handle["log"]).read_text(encoding="utf-8")
-    assert f"args: --checked {SUBJECT}" in log
+    assert f"args: --quick {SUBJECT}" in log
     assert "verbose: 1" in log
     assert pctx.meta_set["landed_sha"] == FULL_SHA
 

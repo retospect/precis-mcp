@@ -60,6 +60,7 @@
   vars:
     # Local constants — role defaults aren't in scope (no role imported).
     _slices_venv: /opt/precis/venv
+    _slices_home: /Users/deploy
     _slices_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
   tasks:
     - name: render + load the slice poll lane unit
@@ -82,9 +83,19 @@
           {{ precis_shared_env
              | combine(precis_identity_env | default({}))
              | combine({
-                 'HOME': '/Users/deploy',
+                 'HOME': _slices_home,
                  'PATH': _slices_venv + '/bin:/opt/homebrew/bin:/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin',
-                 'PGPASSFILE': '/Users/deploy/.pgpass',
+                 'PGPASSFILE': _slices_home + '/.pgpass',
+                 # run_slice's devin lane resolves the CLI through this —
+                 # the unit PATH carries no user-local bin dir (gr570688).
+                 # The login under the deploy user is a stopgap.
+                 'PRECIS_DEVIN_BIN': _slices_home + '/.local/bin/devin',
+                 # Docker via the deploy-owned colima socket (the 33-
+                 # agent-image convention) — a slice's `scripts/test`
+                 # gate run dials it; run_slice passes DOCKER_HOST into
+                 # the session env and the socket's parent into codex's
+                 # --add-dir writable roots (gr570533).
+                 'DOCKER_HOST': 'unix://' + _slices_home + '/.colima/docker.sock',
                  'PRECIS_DATABASE_URL': _slices_dsn,
                  'PRECIS_PROCESS': 'precis-worker-slices',
                  'PRECIS_SOURCE': 'precis-worker-slices',

@@ -24,7 +24,6 @@
   "scripts/hooks/guard-sealed-migration.py::_sealed::subprocess.run": 2,
   "scripts/hooks/guard-worktree-path.py::_git::subprocess.run": 1,
   "scripts/lib/check-entry-points.py::_reinstall::subprocess.run": 1,
-  "scripts/lib/devin_trust.py::add::fcntl.flock": 1,
   "scripts/lib/fleet_authority.py::_git::subprocess.run": 1,
   "scripts/llm_eval/_prod_ro.py::connect_ro::psycopg.connect": 1,
   "scripts/llm_eval/probe_slab_mcp.py::main::as_completed": 1,

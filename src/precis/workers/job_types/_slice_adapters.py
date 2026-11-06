@@ -3,6 +3,11 @@
 Only Claude receives precis MCP credentials. Codex and Devin use their
 host account login and return their handoff through output; the worker
 checks every vendor's branch against the lane's deny paths before land.
+Codex's ``workspace-write`` sandbox needs ``--add-dir`` for anything the
+session must write outside its tree — ``run_slice`` passes the shared
+git dir (worktree index/refs, objects, the gate queue + slot locks) and
+the Docker socket's parent so a slice can ``git commit`` and run
+``scripts/test`` (gr570533).
 Devin's model allowlist is supplied by the selected lane, never inferred
 from a vendor-wide default: unattended runs must not buy overage.
 
@@ -27,6 +32,17 @@ _DENY_TOOLS: tuple[str, ...] = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 def claude_bin() -> str:
     """``PRECIS_CLAUDE_BIN`` or ``claude`` on PATH."""
     return os.environ.get("PRECIS_CLAUDE_BIN") or "claude"
+
+
+def codex_bin() -> str:
+    """``PRECIS_CODEX_BIN`` or ``codex`` on PATH."""
+    return os.environ.get("PRECIS_CODEX_BIN") or "codex"
+
+
+def devin_bin() -> str:
+    """``PRECIS_DEVIN_BIN`` or ``devin`` on PATH — resolved on the worker
+    at submit, for argv and the preflight alike (gr570688)."""
+    return os.environ.get("PRECIS_DEVIN_BIN") or "devin"
 
 
 def deny_settings(deny_paths: tuple[str, ...], tree: Path) -> str:
@@ -74,8 +90,11 @@ class Adapter:
         deny_paths: tuple[str, ...],
         max_turns: int,
         models: tuple[str, ...] = (),
+        writable_roots: tuple[Path, ...] = (),
     ) -> list[str]:
-        """Build argv; effort remains the worker's exported metadata."""
+        """Build argv; effort remains the worker's exported metadata.
+        ``writable_roots`` are the sandbox's ``--add-dir`` grants (codex
+        only — the other vendors run unsandboxed)."""
         if self.name == "claude_p":
             argv = [
                 claude_bin(),
@@ -95,7 +114,7 @@ class Adapter:
             ]
         if self.name == "codex_exec":
             argv = [
-                os.environ.get("PRECIS_CODEX_BIN") or "codex",
+                codex_bin(),
                 "exec",
                 "--json",
                 "--skip-git-repo-check",
@@ -104,6 +123,8 @@ class Adapter:
                 "-o",
                 str(tree / "scratch" / "last-message.md"),
             ]
+            for root in writable_roots:
+                argv += ["--add-dir", str(root)]
             if model is not None:
                 argv += ["-m", model]
             return argv + ["--sandbox", "workspace-write", "-"]
@@ -111,7 +132,7 @@ class Adapter:
             if model is not None and model not in models:
                 raise ValueError(f"Devin model {model!r} is not in the lane's models")
             argv = [
-                os.environ.get("PRECIS_DEVIN_BIN") or "devin",
+                devin_bin(),
                 "-p",
                 "--prompt-file",
                 str(brief_path),

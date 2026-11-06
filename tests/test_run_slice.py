@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -185,6 +186,8 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         if args[:2] == ["worktree", "add"]:
             tree = args[4] if args[2] == "-b" else args[2]
             Path(tree).mkdir(parents=True, exist_ok=True)
+        if args == ["rev-parse", "--path-format=absolute", "--git-common-dir"]:
+            return _proc(calls.get("git_common", ""))
         if args[:3] == ["rev-parse", "--verify", "--quiet"]:
             branches = calls.get("branches")
             if branches is not None:
@@ -232,6 +235,34 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         run_slice, "_signal_group", lambda pgid, sig: calls["signals"].append(pgid)
     )
     monkeypatch.setattr(lanes, "live_lane_counts", lambda store: calls.get("live", {}))
+    # The devin lane's submit preflight (gr570688): binary resolves, the
+    # CLI reports a login, and trust seeding records the dir it seeded.
+    # raising=False keeps the rest of the suite green on a run_slice that
+    # predates the seams.
+    calls["devin"] = {
+        "bin_ok": True,
+        "auth": _proc("Logged in (via Devin)\n"),
+        "trust": None,
+        "trusted": [],
+    }
+
+    def fake_seed_trust(under: Path) -> str | None:
+        calls["devin"]["trusted"].append(Path(under))
+        return calls["devin"]["trust"]
+
+    monkeypatch.setattr(
+        run_slice,
+        "_devin_bin_ok",
+        lambda _bin: calls["devin"]["bin_ok"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        run_slice,
+        "_devin_auth_status",
+        lambda _bin: calls["devin"]["auth"],
+        raising=False,
+    )
+    monkeypatch.setattr(run_slice, "_devin_seed_trust", fake_seed_trust, raising=False)
     # The seams exercise the claude_p launch path: pin the table to the
     # Claude lane so an unpinned pick lands there (the seed table's codex
     # lane is table-first since td562568). Vendor-lane tests set LANES
@@ -246,6 +277,9 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     # No slice-token registry on this rig (the dir never exists) → the
     # shared-token path stays the default under test (gr543694).
     monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(tmp_path / "no-slice-tokens"))
+    # Determinism for the codex writable roots: tests that want a Docker
+    # socket set DOCKER_HOST themselves.
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
     return calls
 
 
@@ -1467,6 +1501,70 @@ def test_poll_clean_exit_without_a_commit_fails(seams: dict[str, Any]) -> None:
     assert {"STATUS:open", "attempt:1"} <= store.tag_strings(42)
 
 
+def test_poll_brief_node_clean_exit_without_a_commit_succeeds(
+    seams: dict[str, Any],
+) -> None:
+    """jo570327 / td570325 (gr570534): a brief-writer's work is the
+    ``brief:`` comment it posts through the MCP — the branch is meant to
+    stay empty. ``task_class`` off ``code`` makes a clean exit with no
+    commit the node's success: job succeeded, todo done, no attempt."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "Write the builder brief",
+        meta={"op": "run_slice", "task_class": "brief"},
+    )
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "Brief posted on td43."}),
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    tags = store.tag_strings(42)
+    assert "STATUS:done" in tags
+    assert not any(
+        t.startswith("attempt:") or t.startswith("claimed-by:") for t in tags
+    )
+    assert "verdict:moot" not in tags
+    assert seams["lands"] == []
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "non-code" in summary or "task_class" in summary
+
+
+def test_poll_brief_node_with_a_commit_still_lands(seams: dict[str, Any]) -> None:
+    """A spec test may ride the branch: commits still mint the land."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "Write the builder brief",
+        meta={"op": "run_slice", "task_class": "brief"},
+    )
+    ctx, handle = _submit(store, seams)
+    seams["ahead"] = "abc1234 test: spec for the fix (td42)\n"
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "done"}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert seams["lands"] == [(42, Path(handle["worktree"]), "claude-sub")]
+
+
+def test_poll_brief_role_generator_needs_no_children(
+    seams: dict[str, Any],
+) -> None:
+    """gr570534: a ``generate.role`` of ``brief`` is a document role like
+    reviewer/analyst — a clean childless exit is its success."""
+    store = _Store()
+    store.add_todo(42, "Draft it", meta={"generate": {"role": "brief", "from": "gr1"}})
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "Drafted."}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+
+
 def test_poll_commits_the_tree_a_sandboxed_session_left(seams: dict[str, Any]) -> None:
     """gr564261 / jo565335: codex under workspace-write cannot write .git, so
     it leaves the changes and scratch/commit-msg.txt; the worker commits."""
@@ -1887,6 +1985,33 @@ def test_poll_reviewer_generator_needs_no_children(seams: dict[str, Any]) -> Non
     assert pctx.status == "succeeded"
 
 
+@pytest.mark.parametrize(
+    ("role", "from_", "result"),
+    [
+        ("reviewer", "td7", "review: LAND"),
+        ("analyst", "pr:9", "analysis: one file, low risk"),
+    ],
+)
+def test_poll_document_role_clean_exit_without_a_commit_succeeds(
+    seams: dict[str, Any], role: str, from_: str, result: str
+) -> None:
+    """gr570534 / review 1: a reviewer/analyst generator's deliverable is
+    the one comment it posts — never a commit, never children. A clean
+    exit on an empty branch is the node's success: job succeeded, no
+    land minted, no attempt burned, the verdict handed off for the
+    dispatcher to close the todo on."""
+    store = _Store()
+    store.add_todo(42, "Judge it", meta={"generate": {"role": role, "from": from_}})
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, json.dumps({"is_error": False, "result": result}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert seams["lands"] == []
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+    assert any(f"handoff: {result}" in c for c in store.comments(42))
+
+
 def test_poll_failed_land_mint_releases_the_lease(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2139,10 +2264,20 @@ def _vendor_lane(
 def test_submit_codex_argv_and_model(
     seams: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     model_source: str,
 ) -> None:
+    """gr570533: ``--add-dir`` grants the sandbox the shared git dir (the
+    worktree's index/refs, the object store, and the gate queue + slot
+    locks ``scripts/test`` takes) and the Docker socket's parent — a
+    codex slice can ``git commit`` and run the gate."""
     monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
     monkeypatch.setenv("PRECIS_CODEX_BIN", "/vendor/codex")
+    common = tmp_path / "repo.git"
+    sock_dir = tmp_path / ".colima"
+    sock_dir.mkdir()
+    seams["git_common"] = str(common)
+    monkeypatch.setenv("DOCKER_HOST", f"unix://{sock_dir}/docker.sock")
     lane = _vendor_lane(
         "codex",
         "codex_exec",
@@ -2170,6 +2305,10 @@ def test_submit_codex_argv_and_model(
         str(tree),
         "-o",
         str(tree / "scratch" / "last-message.md"),
+        "--add-dir",
+        str(common),
+        "--add-dir",
+        str(sock_dir),
     ]
     # PRECIS_RUN_SLICE_MODEL names a claude id: it never reaches a vendor lane.
     pinned = model_source in ("params", "lane")
@@ -2178,8 +2317,75 @@ def test_submit_codex_argv_and_model(
     assert argv == expected + ["--sandbox", "workspace-write", "-"]
     assert kw["cwd"] == tree
     assert kw["stdin"] == tree / "scratch" / "brief.md"
+    # The socket path must also reach the session's own env.
+    assert kw["env"]["DOCKER_HOST"] == f"unix://{sock_dir}/docker.sock"
     assert ctx.meta_set["adapter"] == "codex_exec"
     assert ctx.meta_set["model"] == ("codex-test" if pinned else None)
+
+
+def test_codex_add_dir_docker_fallback_and_skip(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """No DOCKER_HOST: ``~/.colima`` is the socket root when it exists; a
+    missing dir grants no phantom root. The git common dir always is."""
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    monkeypatch.setenv("PRECIS_CODEX_BIN", "/vendor/codex")
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    common = tmp_path / "repo.git"
+    seams["git_common"] = str(common)
+    home = tmp_path / "home"
+    (home / ".colima").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(lanes, "LANES", (_vendor_lane("codex", "codex_exec"),))
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, lane="codex")
+    assert handle is not None and ctx.failure is None
+    [(argv, _kw)] = seams["launch"]
+    assert argv.count("--add-dir") == 2
+    assert str(common) in argv and str(home / ".colima") in argv
+
+    # A missing ~/.colima grants nothing extra.
+    seams["launch"].clear()
+    (home / ".colima").rename(home / ".colima-away")
+    store2 = _Store()
+    store2.add_todo(7, "Build")
+    ctx2, handle2 = _submit(store2, seams, lane="codex", todo_id=7)
+    assert handle2 is not None and ctx2.failure is None
+    [(argv2, _kw2)] = seams["launch"]
+    assert argv2.count("--add-dir") == 1
+    assert str(common) in argv2
+
+
+@pytest.mark.parametrize("unsafe", ["root", "home", "home-parent"])
+def test_codex_add_dir_never_widens_to_an_unsafe_docker_root(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    unsafe: str,
+) -> None:
+    """Review 1: the Docker socket's parent is never granted when it is
+    ``/``, ``$HOME`` or an ancestor of ``$HOME`` — that would widen the
+    sandbox toward the worker's whole world. The unsafe root is logged
+    and skipped; the git common dir is still granted."""
+    home = tmp_path / "home" / "worker"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    socket = {
+        "root": Path("/docker.sock"),
+        "home": home / "docker.sock",
+        "home-parent": home.parent / "docker.sock",
+    }[unsafe]
+    monkeypatch.setenv("DOCKER_HOST", f"unix://{socket}")
+    common = tmp_path / "repo.git"
+    seams["git_common"] = str(common)
+    with caplog.at_level(logging.WARNING, "precis.workers.job_types.run_slice"):
+        roots = run_slice._codex_writable_roots(tmp_path)
+    assert roots == (common,)
+    assert "docker" in caplog.text.lower()
 
 
 @pytest.mark.parametrize("model", [None, "swe-2-high", "paid-model"])
@@ -2236,6 +2442,145 @@ def test_devin_adapter_rejects_explicit_model_without_allowlist(tmp_path: Path) 
             deny_paths=(),
             max_turns=1,
         )
+
+
+def _devin_lane_submit(
+    store: _Store,
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    **params: Any,
+) -> tuple[_Ctx, Any]:
+    """Submit td42 on a pinned devin lane (the model guard's lane)."""
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    monkeypatch.setenv("PRECIS_DEVIN_BIN", "/vendor/devin")
+    lane = _vendor_lane("devin", "devin_tree", models=("swe-2-high",))
+    monkeypatch.setattr(lanes, "LANES", (lane,))
+    return _submit(store, seams, lane="devin", **params)
+
+
+def test_devin_submit_seeds_trust_then_launches(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr570688: a devin submit registers the checkout's worktrees dir in
+    Devin's trusted workspaces before launch — a headless session cannot
+    answer the directory-trust prompt."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None and ctx.failure is None
+    tree = Path(handle["worktree"])
+    assert seams["devin"]["trusted"] == [tree.parent]
+    [(argv, kw)] = seams["launch"]
+    assert argv[0] == "/vendor/devin" and kw["cwd"] == tree
+
+
+def test_devin_preflight_refuses_a_missing_binary(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr570688: the worker's PATH never carried the devin binary, so the
+    lane burned whole sessions just to die at spawn; the refusal names
+    the fix (install the CLI or point PRECIS_DEVIN_BIN at it). A host
+    problem burns no attempt — the todo reopens clean (review ruling)."""
+    seams["devin"]["bin_ok"] = False
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.failure is not None
+    assert "PRECIS_DEVIN_BIN" in ctx.failure and "next:" in ctx.failure
+    assert seams["launch"] == [] and seams["devin"]["trusted"] == []
+    assert store.tag_strings(42) == {"STATUS:open"}
+
+
+def test_devin_preflight_refuses_when_not_logged_in(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr570688: `devin auth status` without a login is a dead session at
+    first prompt; the refusal names `devin auth login` (the deploy-user
+    login is the recorded stopgap, not the architecture)."""
+    seams["devin"]["auth"] = _proc("Not logged in\n", rc=1)
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.failure is not None
+    assert "devin auth login" in ctx.failure and "stopgap" in ctx.failure
+    assert seams["launch"] == [] and seams["devin"]["trusted"] == []
+    assert store.tag_strings(42) == {"STATUS:open"}
+
+
+def test_devin_preflight_refuses_an_unreadable_auth_status(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An auth status that exits 0 but reports no login is not a login:
+    'Not logged in' still contains 'logged in'."""
+    seams["devin"]["auth"] = _proc("Not logged in\n", rc=0)
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.failure is not None and "devin auth login" in ctx.failure
+    assert seams["launch"] == []
+
+
+def test_devin_auth_status_maps_a_timeout_to_rc_124(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hanging `devin auth status` becomes rc 124 — the preflight then
+    refuses with the login next step instead of blocking the submit."""
+
+    def hang(*args: Any, **kw: Any) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kw.get("timeout", 15))
+
+    import types
+
+    stub = types.SimpleNamespace(
+        run=hang,
+        TimeoutExpired=subprocess.TimeoutExpired,
+        CompletedProcess=subprocess.CompletedProcess,
+    )
+    monkeypatch.setattr(run_slice, "subprocess", stub)
+    proc = run_slice._devin_auth_status("/vendor/devin")
+    assert proc.returncode == 124
+
+
+def test_devin_preflight_refuses_an_auth_status_timeout(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rc 124 is not a login: the refusal still names `devin auth login`
+    as the next step."""
+    seams["devin"]["auth"] = _proc("timed out\n", rc=124)
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.failure is not None and "devin auth login" in ctx.failure
+    assert seams["launch"] == []
+
+
+def test_devin_preflight_refuses_when_trust_seeding_fails(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr570688: a trust write that cannot land (a malformed
+    trusted_workspaces.json, a missing worktrees dir) must refuse the
+    launch with the next step — a host problem, no attempt burned — not
+    launch a session that stalls on the trust prompt."""
+    seams["devin"]["trust"] = "not updating trusted_workspaces.json: bad json"
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.failure is not None
+    assert "trusted" in ctx.failure and "next:" in ctx.failure
+    assert "devin_trust.py" in ctx.failure
+    assert seams["launch"] == []
+    assert store.tag_strings(42) == {"STATUS:open"}
 
 
 @pytest.mark.parametrize(
