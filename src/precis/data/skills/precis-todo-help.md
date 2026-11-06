@@ -44,7 +44,10 @@ round-trip.
 put(kind="todo", id=122, text="Blocked on the dataset; ETA Friday.")
 ```
 
-`text=` alone on an existing todo appends a comment (the gripe idiom); `get`
+`text=` on an existing todo appends a comment (the gripe idiom);
+`tags=`/`untags=` ride along in the same transaction — comment-then-close
+is one call: `put(kind='todo', id=122, text='done — pr merged',
+tags=['STATUS:done'])`. `get`
 shows the newest 3 in full, older ones as one-liners, and
 `get(kind='todo', id=122, view='comments')` shows all. The details body
 reads alone via `view='body'` (title + untruncated `todo_body` — the call a
@@ -96,6 +99,7 @@ value removes the previous one. No separate remove needed.
 tag(kind="todo", id=122, add=["STATUS:done"])
 tag(kind="todo", id=122, add=["STATUS:won't-do"])  # decided not to do it
 tag(kind="todo", id=[122, 123, 124], add=["STATUS:done"])  # several, one transaction
+put(kind="todo", id=122, text="done — what landed", tags=["STATUS:done"])  # comment + close, one call
 ```
 
 `id=[...]` (up to 50) also works on `get(kind='todo', id=[...])`, which

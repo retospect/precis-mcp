@@ -82,8 +82,11 @@ def test_todo_comment_ord_never_collides_with_body(todo: TodoHandler) -> None:
 
 
 def test_todo_put_other_kwargs_still_refused(todo: TodoHandler) -> None:
+    # ``tags=``/``untags=`` ride along on the comment append since
+    # gr570088 (tests/test_todo_comment_tags.py) — the create-only
+    # kwargs keep their refusal.
     rid = _new(todo)
-    for kw in ({"prio": 3}, {"tags": ["x:y"]}, {"parent_id": rid}, {"body": "b"}):
+    for kw in ({"prio": 3}, {"parent_id": rid}, {"body": "b"}):
         with pytest.raises(BadInput, match="not supported"):
             todo.put(id=rid, text="hi", **kw)
     with pytest.raises(BadInput, match="not supported"):

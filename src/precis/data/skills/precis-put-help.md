@@ -33,8 +33,9 @@ lists them. `mode=` picks the creation door: file kinds
 `put(kind='gripe'|'todo', id=N, text=...)` appends a comment to an existing
 one (no `args=`); older comments are shown as one-liners, `view='comments'`
 shows all. On memory, id= with link= adds the edge (a repeat says it was already linked); id= with text= refuses, use edit.
-On gripe the append takes `link=`/`rel=` and `tags=` in the same
-transaction — comment-then-close is one call.
+On gripe the append takes `link=`/`rel=` and `tags=`/`untags=` in the same
+transaction — comment-then-close is one call. On todo it takes
+`tags=`/`untags=` the same way (link edits stay on the `link` verb).
 
 `text=` and `body=` are the same prose slot spelled two ways across
 kinds (finding says `body=`, memory/gripe/files say `text=`). On a kind
@@ -220,7 +221,7 @@ put(kind="memory", text="...", tags=["pinned", "topic:sortie"])
 put(kind="todo", text="...", tags=["PRIO:high"])
 ```
 
-`tags=` runs at creation — and on a gripe comment append, where it
+`tags=` runs at creation — and on a gripe or todo comment append, where it
 lands in the same transaction (see above). Everywhere else, for
 retroactive tag changes use
 `tag(kind='...', id=<N>, add=[...], remove=[...])`. Closed-prefix

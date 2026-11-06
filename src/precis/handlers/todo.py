@@ -799,33 +799,47 @@ class TodoHandler(NumericRefHandler):
         **_kw: Any,
     ) -> Response:
         text, body = mask_secrets(text), mask_secrets(body)
-        # ``put`` creates, or (id=N + text= alone) appends a comment. ``id``
+        # ``put`` creates, or (id=N + text=) appends a comment. ``id``
         # isn't forwarded to ``super().put()`` below (it's consumed here for
         # the parent/tier bookkeeping), so the base's own id-rejection never
         # sees it and would silently mint a duplicate row for any other
         # mutate-an-existing-todo shape (gr450132): refuse those up front.
         if id is not None:
-            # Text alone on an existing todo appends a comment (the gripe
-            # idiom). Any other put kwarg keeps the old refusal.
+            # Text on an existing todo appends a comment (the gripe
+            # idiom); tags=/untags= ride along through the shared
+            # append-then-link helper — comment-then-close is one put,
+            # not put + tag (gr570088; the gripe shape, gr484232). Any
+            # other put kwarg keeps the old refusal.
             others = (
-                mode, tags, untags, link, unlink, rel, auto_refresh_days,
+                mode, link, unlink, rel, auto_refresh_days,
                 parent_id, prio, meta, body, executor, job_type, params,
             )  # fmt: skip
             if text is not None and text.strip() and all(o is None for o in others):
                 ref = self._resolve_live_ref(self._coerce_id(id))
-                return tl.append_comment(
-                    self.store,
-                    ref,
-                    kind=self.kind,
-                    comment_kind=_COMMENT_KIND,
-                    text=text,
+                return self._append_then_link(
+                    lambda: tl.append_comment(
+                        self.store,
+                        ref,
+                        kind=self.kind,
+                        comment_kind=_COMMENT_KIND,
+                        text=text,
+                    ),
+                    id=ref.id,
+                    link=None,
+                    unlink=None,
+                    rel=None,
+                    tags=tags,
+                    untags=untags,
+                    what=f"{self._sense()} comment",
                 )
             raise BadInput(
                 f"put on existing {self._sense()} id={id!r} is not supported"
-                " (text= alone appends a comment; other fields are not accepted)",
+                " (text= appends a comment; tags=/untags= ride along — "
+                "other fields are not accepted)",
                 next=(
-                    f"put(kind={self.kind!r}, id={id}, text='your comment') "
-                    "to comment, "
+                    f"put(kind={self.kind!r}, id={id}, text='your comment', "
+                    "tags=[...], untags=[...]) to comment and retag in one "
+                    "call, "
                     f"edit(kind={self.kind!r}, id={id}, mode='replace', "
                     "text='...'/body='...') to rewrite it, or "
                     f"tag(kind={self.kind!r}, id={id}, add=[...]/remove=[...]) "
