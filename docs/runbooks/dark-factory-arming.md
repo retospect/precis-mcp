@@ -253,6 +253,45 @@ checkout, `uv`, push rights and `gh auth` (the PR close and comments are
 posted as that login — gr543694). `pr.factory_builders` lists the logins
 whose `(td<id>)` PRs count as factory slices (default Devin's bot).
 
+## Stall watchdog (factory_rescue_tick)
+
+Sends every plan node that went silent to RESCUE (one `rescue:<class>`
+tag, one gripe per failure signature). Arm is an operator write — one
+recurring todo, a job every 5 minutes:
+
+    put(kind='todo', text='factory_rescue_tick (dark factory stall watchdog)',
+        meta={'schedule': {'every': '5m'}, 'executor': 'job_inproc',
+              'job_type': 'factory_rescue_tick'})
+
+Disarm: close or pause that todo. Dry run by hand: a `factory_rescue_tick`
+job with `params={'dry_run': true}` — the job summary lists what it would
+rescue and writes nothing.
+
+The pass is DB-only and follows the same kill switch as `plan_dispatch`
+(`PRECIS_FACTORY=off`, or a `plan_dispatch` `service_config` row with
+`prio = 0`): read-only, lists would-rescue, writes nothing.
+
+What it judges: a dispatchable node (or a `sha-in-prod` gate) whose newest
+signal — its tags, comments, events or child jobs — is older than its
+stage deadline: idle 20 min (also: cancelled newest job → `cancelled`;
+pending-sha gate whose build already landed → `post-land-write`; a node
+under a root closed terminal → `terminal-root`; no enabled lane fits the
+node's class), queued 30 min, build 5 h, land 6 h, review 45 min, gate
+72 h. A hold is not a stall: `waiting-for:`, `halt`, paused, an open ask,
+`rescue:` or a live `blocked-by` target exempt a node; a lane-parked node
+(fit lanes full or backed off) waits — the live jobs on those lanes are
+judged by their own deadlines. `release-pass` plans are skipped (the
+`release-stuck` watchdog owns release stages).
+
+The `tick-silent` heartbeat rescues the recurring `plan_dispatch` todo
+once when no `plan_dispatch` job succeeded in 30 min. Known limit: the
+lane ticker (`--only plan_tick`) runs the pass with no job row, so a
+factory ticked only by the lane is not covered by the heartbeat — the
+paused tick todo is exactly that setup and is never judged.
+
+Clearing a rescued node: fix the cause, then remove the `rescue:<class>`
+tag (the shared signature gripe closes with its work).
+
 ## Kill switch
 
 - `PRECIS_FACTORY=off` in the worker's environment: `run_slice`,

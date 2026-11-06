@@ -996,6 +996,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "run_slice",
     "land_slice",
     "plan_dispatch",
+    "factory_rescue_tick",
     "gripe_validate",
     "diagnose_gripe",
     "graph_garden",
@@ -1135,6 +1136,14 @@ def get_job_type(name: str) -> JobTypeSpec | None:
         # hygiene). Plugin dispatch under job_inproc, minted every 5 min by
         # an operator-armed recurring todo (see the module docstring).
         from precis.workers.job_types.plan_dispatch import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
+    if name == "factory_rescue_tick":
+        # Dark-factory stall watchdog: silent plan nodes to rescue
+        # (td574946 S2). Plugin dispatch under job_inproc, minted every
+        # 5 min by an operator-armed recurring todo (see its docstring).
+        from precis.workers.job_types.factory_rescue_tick import SPEC
 
         _REGISTRY[name] = SPEC
         return SPEC

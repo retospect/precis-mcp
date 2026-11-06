@@ -33,13 +33,18 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 
 from precis.errors import BadInput, NotFound
+from precis.plans.nodes import node_kind
+from precis.plans.templates import PENDING_SHA
 from precis.store.types import ChunkInsert, Tag
+from precis.todo import BLOCKER_TERMINAL_STATUSES, TERMINAL_TODO_STATUSES
+from precis.todo.views import _fetch_subtree
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
@@ -100,6 +105,7 @@ BOUNDS: dict[str, Bound] = {
     "cancelled": Bound(retries=0, engine=True),
     "terminal-root": Bound(retries=0, engine=True),
     "tick-raises": Bound(retries=0, engine=True),
+    "tick-silent": Bound(retries=0, engine=True),
     "post-land-write": Bound(retries=0, engine=True),
     "wait-deadline": Bound(retries=0, engine=True),
     "infra": Bound(retries=0, engine=True),
@@ -404,10 +410,775 @@ def enter_rescue(
     return RescueResult(tagged=True, gripe_id=gripe_id, gripe_created=gripe_created)
 
 
+# ── Stall watchdog (td574946 S2) ────────────────────────────────────
+#
+# ``run_stall_pass`` is the first caller of ``enter_rescue``: the
+# ``factory_rescue_tick`` job's DB-only pass. It finds the plan nodes
+# that went silent past their stage deadline and sends each to RESCUE —
+# never dispatched, a cancelled newest job, queued/build/land/review
+# overrunning, a sha-in-prod gate that never opens, a root closed under
+# an open node, a land's post-land write that never landed — plus the
+# ``tick-silent`` heartbeat on plan_dispatch itself. A hold is not a
+# stall: ``waiting-for:``, ``halt``, paused, an open ask, ``rescue:`` or
+# a live ``blocked-by`` target exempt a node. Release plans belong to
+# ``release_poll::watch_stuck`` and are skipped. Read-only (kill switch
+# or ``dry_run``) it lists ``would_rescue`` and writes nothing.
+
+#: ``plan_dispatch`` is silent once its newest succeeded job's STATUS
+#: stamp is this old (its recurring todo is rescued once, class
+#: ``tick-silent``).
+TICK_SILENT_AFTER = timedelta(minutes=30)
+
+#: Per-stage stall deadlines. Release stages are deliberately absent —
+#: ``release_poll::watch_stuck`` owns them.
+STAGE_DEADLINES: dict[str, timedelta] = {
+    "idle": timedelta(minutes=20),
+    "queued": timedelta(minutes=30),
+    "build": timedelta(hours=5),
+    "land": timedelta(hours=6),
+    "review": timedelta(minutes=45),
+    "gate": timedelta(hours=72),
+}
+
+_NOTES_CAP = 60
+
+
+@dataclass
+class StallResult:
+    """What one stall pass did (or, read-only, would have done).
+
+    ``rescued`` / ``would_rescue`` carry ``(ref id, class, stage)``;
+    ``held`` counts the judged-shaped nodes an exemption covered;
+    ``read_only`` is the kill-switch reason that forced the dry run.
+    """
+
+    dry_run: bool
+    read_only: str | None = None
+    rescued: list[tuple[int, str, str]] = field(default_factory=list)
+    would_rescue: list[tuple[int, str, str]] = field(default_factory=list)
+    held: int = 0
+    notes: list[str] = field(default_factory=list)
+
+    def counts(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "rescued": len(self.rescued),
+            "would_rescue": len(self.would_rescue),
+            "held": self.held,
+            "dry_run": self.dry_run,
+        }
+        if self.read_only:
+            out["read_only"] = self.read_only
+        return out
+
+    def summary(self) -> str:
+        return (
+            f"factory_rescue_tick: rescued={len(self.rescued)} "
+            f"would_rescue={len(self.would_rescue)} held={self.held} "
+            f"dry_run={self.dry_run}"
+        )
+
+    def render(self) -> str:
+        lines = [self.summary()]
+        if self.read_only:
+            lines.append(
+                f"read-only ({self.read_only}): would_rescue lists what it "
+                "would rescue; nothing was written"
+            )
+        shown = self.notes[:_NOTES_CAP]
+        lines += [f"- {n}" for n in shown]
+        if len(self.notes) > len(shown):
+            lines.append(f"- … {len(self.notes) - len(shown)} more")
+        return "\n".join(lines)
+
+
+def _iso(ts: datetime) -> str:
+    return ts.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _held_tags(open_tags: Any) -> str | None:
+    """The hold an open tag grants, or ``None`` — spec ruling 1."""
+    for v in open_tags:
+        if str(v).startswith("waiting-for:"):
+            return f"waiting-for ({v})"
+        if v == "halt" or str(v).startswith("halt:"):
+            return f"halt ({v})"
+        # ``rescue:`` only — ``rescue-sig:`` is a different tag.
+        if str(v).startswith("rescue:"):
+            return f"in rescue ({v})"
+        if v == "ask-user" or str(v).startswith("ask-user:"):
+            return f"ask-user ({v})"
+    return None
+
+
+def _held_in_plan(plan: Any, n: Any) -> str | None:
+    held = _held_tags(n.open_tags)
+    if held:
+        return held
+    if plan.paused(n):
+        return "paused"
+    if plan.open_asks(n):
+        return "an open ask blocks it"
+    if plan.blocked(n):
+        return "blocked-by a live node"
+    return None
+
+
+def _held_db(store: Store, ref_id: int) -> str | None:
+    """``_held_in_plan`` for a node no ``_Plan`` covers (the tick todo)."""
+    open_tags = [str(t.value) for t in store.tags_for(ref_id) if t.namespace == "open"]
+    held = _held_tags(open_tags)
+    if held:
+        return held
+    with store.pool.connection() as conn:
+        ancestors: list[int] = []
+        seen = {ref_id}
+        cur = ref_id
+        for _ in range(12):
+            row = conn.execute(
+                "SELECT parent_id FROM refs WHERE ref_id = %s", (cur,)
+            ).fetchone()
+            if row is None or row[0] is None or int(row[0]) in seen:
+                break
+            cur = int(row[0])
+            seen.add(cur)
+            ancestors.append(cur)
+        ids = [ref_id, *ancestors]
+        paused = conn.execute(
+            """
+            SELECT 1 FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t USING (tag_id)
+             WHERE r.ref_id = ANY(%s) AND r.retired_at IS NULL
+               AND t.namespace = 'STATUS' AND t.value = 'paused' LIMIT 1
+            """,
+            (ids,),
+        ).fetchone()
+        if paused:
+            return "paused"
+        live_blocker = conn.execute(
+            """
+            SELECT 1 FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
+             WHERE l.src_ref_id = ANY(%s) AND l.relation = 'blocked-by'
+               AND b.retired_at IS NULL
+               AND COALESCE(
+                     (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                       WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
+                       LIMIT 1),
+                     'open') <> ALL(%s)
+             LIMIT 1
+            """,
+            (ids, sorted(BLOCKER_TERMINAL_STATUSES)),
+        ).fetchone()
+        if live_blocker:
+            return "blocked-by a live node"
+        ask = conn.execute(
+            """
+            SELECT 1 FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
+             WHERE l.src_ref_id = %s AND l.relation = 'blocked-by'
+               AND b.retired_at IS NULL
+               AND (b.meta ? 'ask' OR EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = b.ref_id AND t.namespace = 'OPEN'
+                        AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')))
+               AND COALESCE(
+                     (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                       WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
+                       LIMIT 1),
+                     'open') <> ALL(%s)
+             LIMIT 1
+            """,
+            (ref_id, sorted(BLOCKER_TERMINAL_STATUSES)),
+        ).fetchone()
+    if ask:
+        return "an open ask blocks it"
+    return None
+
+
+def _signal_rows(store: Store, ids: list[int]) -> dict[int, tuple[Any, ...]]:
+    """``{ref_id: (created_at, tag_set, chunk_at, event_at)}`` — the
+    signal sources of the stall clock, one query for every ref."""
+    if not ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.created_at,
+                   (SELECT max(rt.created_at) FROM ref_tags rt
+                     WHERE rt.ref_id = r.ref_id),
+                   (SELECT max(c.created_at) FROM chunks c
+                     WHERE c.ref_id = r.ref_id),
+                   (SELECT max(e.ts) FROM ref_events e
+                     WHERE e.ref_id = r.ref_id)
+              FROM refs r WHERE r.ref_id = ANY(%s)
+            """,
+            (ids,),
+        ).fetchall()
+    return {int(r[0]): tuple(r[1:]) for r in rows}
+
+
+def _node_signals(
+    n: Any, jobs: list[Any], rows: dict[int, tuple[Any, ...]]
+) -> tuple[datetime, str, list[str]]:
+    """``(newest ts, its label, the log lines)`` — the newest signal of a
+    node is the latest of its created_at, its tag set times, its newest
+    comment chunk, its newest event, and per child job its created_at,
+    STATUS stamp and newest chunk."""
+    signals: list[tuple[str, datetime]] = []
+    created, tag_set, chunk_at, event_at = rows.get(n.id, (n.created_at,) + (None,) * 3)
+    signals.append(("todo created", created))
+    if tag_set is not None:
+        signals.append(("tag set", tag_set))
+    if chunk_at is not None:
+        signals.append(("newest comment", chunk_at))
+    if event_at is not None:
+        signals.append(("newest event", event_at))
+    for j in jobs:
+        jrow = rows.get(j.id)
+        jcreated = jrow[0] if jrow else j.created_at
+        signals.append((f"job jo{j.id} created", jcreated))
+        if jrow is not None and jrow[1] is not None:
+            signals.append((f"job jo{j.id} status set", jrow[1]))
+        if jrow is not None and jrow[2] is not None:
+            signals.append((f"job jo{j.id} newest comment", jrow[2]))
+    label, ts = max(signals, key=lambda s: s[1])
+    lines = [f"signals for td{n.id}:"] + [f"- {lbl}: {_iso(t)}" for lbl, t in signals]
+    return ts, label, lines
+
+
+def _gate_kind(n: Any) -> str | None:
+    gate = n.meta.get("gate") or {}
+    return str(gate.get("kind")) if isinstance(gate, dict) else None
+
+
+def _is_sha_gate(n: Any) -> bool:
+    return node_kind(n.meta) == "gate" and _gate_kind(n) == "sha-in-prod"
+
+
+def _lane_verdict(store: Store, now: datetime, n: Any) -> str | None:
+    """``None`` to judge normally; the ``error_line`` for a no-fit stall;
+    ``"parked"`` when the fit lanes are full or backed off (the live jobs
+    on them are judged by their own deadlines)."""
+    from precis.plans import lanes as _lanes
+
+    task_class = str(n.meta.get("task_class") or "code")
+    fit = [ln for ln in _lanes.load_lanes(store) if ln.enabled and ln.fits(task_class)]
+    if not fit:
+        return f"no enabled lane fits {task_class}"
+    if _lanes.pick_lane(store, task_class) is not None:
+        return None
+    counts = _lanes.live_lane_counts(store)
+    backoffs = _lanes.lane_backoffs(store, now)
+    full = [ln.name for ln in fit if counts.get(ln.name, 0) >= ln.cap]
+    backed = [ln.name for ln in fit if ln.name in backoffs]
+    why = ", ".join(
+        [f"full: {', '.join(sorted(full))}" if full else ""]
+        + [f"backed off: {', '.join(sorted(backed))}" if backed else ""]
+    ).strip(", ")
+    return f"parked ({why or 'fit lanes busy'})"
+
+
+def _stage_for(
+    store: Store, now: datetime, plan: Any, n: Any, is_gate: bool
+) -> tuple[str, str, Any, str] | None:
+    """``(class, stage, newest job or None, stable error_line)`` by stage
+    precedence: cancelled, post-land-write, gate, queued, land/review/
+    build by live job, idle. ``None`` when the node is parked."""
+    from precis.workers.job_types import plan_dispatch as pd
+
+    jobs = plan.jobs(n)
+    j = jobs[-1] if jobs else None
+    if not is_gate and j is not None and j.status == "cancelled":
+        # gr574402: the tick notes the cancelled job but never redispatches.
+        return "cancelled", "idle", j, "newest job cancelled"
+    if is_gate:
+        sha = ((n.meta.get("gate") or {}).get("args") or {}).get("sha")
+        if str(sha) == PENDING_SHA and not plan.blocked(n):
+            return (
+                "post-land-write",
+                "idle",
+                j,
+                "sha-in-prod gate still holds the placeholder sha "
+                "after the build landed",
+            )
+        return "stalled", "gate", j, "stage gate silent past its deadline"
+    live = next((x for x in reversed(jobs) if x.status not in pd._JOB_TERMINAL), None)
+    if live is not None:
+        if live.status == "queued":
+            return (
+                "stalled",
+                "queued",
+                live,
+                "stage queued silent past its deadline",
+            )
+        jt = str(live.meta.get("job_type") or "")
+        if jt == "land_slice":
+            return "stalled", "land", live, "stage land silent past its deadline"
+        if jt == "run_slice" and pd._is_reviewer(n):
+            return (
+                "stalled",
+                "review",
+                live,
+                "stage review silent past its deadline",
+            )
+        return "stalled", "build", live, "stage build silent past its deadline"
+    job_type, _params = pd._resolve_op(n)
+    if job_type == pd.DEFAULT_OP:
+        verdict = _lane_verdict(store, now, n)
+        if verdict is not None:
+            if verdict.startswith("parked"):
+                return "parked", "parked", j, verdict
+            return "stalled", "idle", j, verdict
+    return "stalled", "idle", j, "stage idle silent past its deadline"
+
+
+def _branch_head(plan: Any, n: Any) -> str | None:
+    """The head the newest committing ``run_slice`` job left on the
+    slice's branch — the first token of the newest
+    ``meta.branch_commits`` line (run_slice stamps
+    ``git log --oneline origin/main..HEAD``, newest first)."""
+    for j in reversed(plan.jobs(n)):
+        if j.meta.get("job_type") != "run_slice":
+            continue
+        commits = j.meta.get("branch_commits") or []
+        first = str(commits[0]).split() if commits else []
+        if first:
+            return first[0]
+    return None
+
+
+def _landed_line(store: Store, plan: Any, gate: Any) -> str | None:
+    """The ``landed: <sha>`` comment the gate's build left, if any."""
+    for b in plan.blockers.get(gate.id, []):
+        chunks = sorted(
+            store.chunks.list_chunks_for_ref(b.id),
+            key=lambda c: int(c.ord),
+            reverse=True,
+        )
+        for c in chunks:
+            for line in str(c.text).splitlines():
+                if line.strip().lower().startswith("landed:"):
+                    return line.strip()
+    return None
+
+
+def _rescue(
+    store: Store,
+    res: StallResult,
+    ref_id: int,
+    cls: str,
+    stage: str,
+    ev: RescueEvidence,
+) -> None:
+    if res.dry_run:
+        res.would_rescue.append((ref_id, cls, stage))
+        res.notes.append(f"td{ref_id}: would rescue ({cls}, stage {stage})")
+        return
+    try:
+        r = enter_rescue(store, ref_id, cls, ev)
+    except Exception as exc:  # one failing node must not stop the pass
+        log.warning("factory_rescue: rescue of td%d raised", ref_id, exc_info=True)
+        res.notes.append(f"td{ref_id}: rescue failed ({type(exc).__name__}: {exc})")
+        return
+    if r.tagged:
+        res.rescued.append((ref_id, cls, stage))
+        res.notes.append(
+            f"td{ref_id}: rescued ({cls}, stage {stage}, gripe gr{r.gripe_id})"
+        )
+    elif r.skipped:
+        res.notes.append(f"td{ref_id}: rescue skipped ({r.skipped})")
+
+
+def _evidence(
+    n: Any,
+    cls: str,
+    stage: str,
+    j: Any,
+    newest: datetime,
+    label: str,
+    lines: list[str],
+    deadline: timedelta,
+    now: datetime,
+    error_line: str,
+    *,
+    branch: str | None = None,
+    head_sha: str | None = None,
+) -> RescueEvidence:
+    deadline_min = int(deadline.total_seconds() // 60)
+    age_min = int((now - newest).total_seconds() // 60)
+    step = (
+        f"stage {stage}; deadline {deadline_min} min; newest signal {label} "
+        f"at {_iso(newest)}, {age_min} min ago"
+    )
+    job = handle_registry.format_handle("job", j.id) if j is not None else None
+    return RescueEvidence(
+        step=step,
+        log_tail="\n".join(lines),
+        job=job,
+        branch=branch,
+        head_sha=head_sha,
+        error_line=error_line,
+    )
+
+
+def _judge_node(
+    store: Store, now: datetime, plan: Any, n: Any, is_gate: bool, res: StallResult
+) -> None:
+    held = _held_in_plan(plan, n)
+    if held is not None:
+        res.held += 1
+        return
+    verdict = _stage_for(store, now, plan, n, is_gate)
+    if verdict is None:
+        return
+    cls, stage, j, error_line = verdict
+    if cls == "parked":
+        res.held += 1
+        res.notes.append(f"td{n.id}: {error_line} — a parked node is not a stall")
+        return
+    jobs = plan.jobs(n)
+    ids = [n.id] + [x.id for x in jobs]
+    newest, label, lines = _node_signals(n, jobs, _signal_rows(store, ids))
+    deadline = STAGE_DEADLINES[stage]
+    if now - newest <= deadline:
+        return
+    branch = head_sha = None
+    head = _branch_head(plan, n)
+    if head is not None:
+        from precis.workers.job_types.run_slice import slice_branch
+
+        branch, head_sha = slice_branch(n.id), head
+    if cls == "post-land-write":
+        landed = _landed_line(store, plan, n)
+        if landed:
+            lines.append(f"build: {landed}")
+    if error_line.startswith("no enabled lane"):
+        lines.append(f"lane check: {error_line}")
+    ev = _evidence(
+        n,
+        cls,
+        stage,
+        j,
+        newest,
+        label,
+        lines,
+        deadline,
+        now,
+        error_line,
+        branch=branch,
+        head_sha=head_sha,
+    )
+    _rescue(store, res, n.id, cls, stage, ev)
+
+
+def _release_skip_roots(plan: Any) -> set[int]:
+    """Roots whose nodes the watchdog never judges: ``release-pass`` plans
+    (release stages belong to ``release_poll::watch_stuck``) and any root
+    with a live non-terminal ``release-stuck:*`` todo under it."""
+    skip: set[int] = set()
+    for root in plan.roots:
+        rn = plan.nodes.get(root)
+        if rn is not None and "release-pass" in rn.open_tags:
+            skip.add(root)
+            continue
+        for tn in plan.todos():
+            if tn.root != root or tn.status in TERMINAL_TODO_STATUSES:
+                continue
+            if any(v.startswith("release-stuck:") for v in tn.open_tags):
+                skip.add(root)
+                break
+    return skip
+
+
+def _subtree_plan(store: Store, root: int) -> Any:
+    """A ``_Plan`` over one (possibly terminal) root's subtree — the
+    ``_load`` shape so ``paused`` / ``blocked`` / ``open_asks`` work."""
+    from precis.workers.job_types import plan_dispatch as pd
+
+    rows = _fetch_subtree(store, root)
+    placement = {int(r["id"]): (root, int(r["depth"])) for r in rows}
+    if not placement:
+        return pd._Plan(roots=[root], nodes={}, blockers={})
+    ids = sorted(placement)
+    with store.pool.connection() as conn:
+        ref_rows = conn.execute(
+            """
+            SELECT r.ref_id, r.kind, r.parent_id, r.title, r.meta, r.created_at,
+                   r.prio,
+                   (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                     WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1)
+              FROM refs r
+             WHERE r.ref_id = ANY(%s) AND r.retired_at IS NULL
+            """,
+            (ids,),
+        ).fetchall()
+        tag_rows = conn.execute(
+            """
+            SELECT rt.ref_id, t.value, rt.created_at
+              FROM ref_tags rt JOIN tags t USING (tag_id)
+             WHERE rt.ref_id = ANY(%s) AND t.namespace = 'OPEN'
+            """,
+            (ids,),
+        ).fetchall()
+        link_rows = conn.execute(
+            """
+            SELECT l.src_ref_id, b.ref_id, b.created_at, b.meta ? 'ask',
+                   EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                            WHERE rt.ref_id = b.ref_id AND t.namespace = 'OPEN'
+                              AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')),
+                   (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                     WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS' LIMIT 1)
+              FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
+             WHERE l.relation = 'blocked-by' AND l.src_ref_id = ANY(%s)
+               AND b.retired_at IS NULL
+            """,
+            (ids,),
+        ).fetchall()
+    nodes: dict[int, Any] = {}
+    for ref_id, kind, parent_id, title, meta, created_at, prio, status in ref_rows:
+        r, depth = placement[int(ref_id)]
+        nodes[int(ref_id)] = pd._Node(
+            id=int(ref_id),
+            kind=str(kind),
+            parent_id=int(parent_id) if parent_id is not None else None,
+            title=str(title or ""),
+            meta=dict(meta or {}),
+            status=str(status or ("open" if kind == "todo" else "queued")),
+            created_at=created_at,
+            prio=int(prio) if prio is not None else None,
+            depth=depth,
+            root=r,
+        )
+    for ref_id, value, set_at in tag_rows:
+        node = nodes.get(int(ref_id))
+        if node is not None:
+            node.open_tags[str(value)] = set_at
+    for node in nodes.values():
+        if node.parent_id is not None and node.parent_id in nodes:
+            nodes[node.parent_id].children.append(node.id)
+    blockers: dict[int, list[Any]] = {}
+    for src, dst, created_at, has_ask, ask_tag, status in link_rows:
+        blockers.setdefault(int(src), []).append(
+            pd._Blocker(
+                id=int(dst),
+                status=str(status or "open"),
+                is_ask=bool(has_ask) or bool(ask_tag),
+                created_at=created_at,
+            )
+        )
+    return pd._Plan(roots=[root], nodes=nodes, blockers=blockers)
+
+
+def _terminal_root_ids(conn: Any) -> list[int]:
+    """``plan:<n>`` roots (from open tags on live todos) whose own STATUS
+    is terminal — ``_candidate_roots`` drops them, so the watchdog finds
+    the non-terminal nodes they closed over here."""
+    values = conn.execute(
+        """
+        SELECT DISTINCT t.value
+          FROM ref_tags rt JOIN tags t USING (tag_id)
+          JOIN refs r ON r.ref_id = rt.ref_id
+         WHERE t.namespace = 'OPEN' AND t.value LIKE 'plan:%%'
+           AND r.kind = 'todo' AND r.retired_at IS NULL
+        """
+    ).fetchall()
+    ids = {int(v[5:]) for (v,) in values if str(v)[5:].isdigit()}
+    if not ids:
+        return []
+    rows = conn.execute(
+        """
+        SELECT r.ref_id FROM refs r
+         WHERE r.ref_id = ANY(%s) AND r.kind = 'todo' AND r.retired_at IS NULL
+           AND COALESCE(
+                 (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                   WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                 'open') = ANY(%s)
+         ORDER BY r.ref_id
+        """,
+        (sorted(ids), sorted(TERMINAL_TODO_STATUSES)),
+    ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _heartbeat(store: Store, now: datetime, res: StallResult) -> None:
+    """The tick-silent check: plan_dispatch's newest succeeded job by
+    STATUS stamp older than ``TICK_SILENT_AFTER`` (or none ever) rescues
+    the ONE recurring tick todo, once — its ``rescue:`` tag then exempts
+    it. A lane ticker (``--only plan_tick``) runs the pass with no job
+    row, so a factory ticked only by the lane is not covered."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT max(rt.created_at)
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'job' AND r.retired_at IS NULL
+               AND r.meta->>'job_type' = 'plan_dispatch'
+               AND t.namespace = 'STATUS' AND t.value = 'succeeded'
+            """
+        ).fetchone()
+        last_pass = row[0] if row else None
+        if last_pass is not None and now - last_pass <= TICK_SILENT_AFTER:
+            return
+        rows = conn.execute(
+            """
+            SELECT r.ref_id FROM refs r
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND r.meta->>'job_type' = 'plan_dispatch'
+               AND r.meta ? 'schedule'
+               AND COALESCE(
+                     (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                       WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                       LIMIT 1),
+                     'open') <> ALL(%s)
+             ORDER BY r.ref_id LIMIT 1
+            """,
+            (sorted(TERMINAL_TODO_STATUSES),),
+        ).fetchall()
+    if not rows:
+        res.notes.append("tick-silent: no live recurring plan_dispatch todo")
+        return
+    tid = int(rows[0][0])
+    held = _held_db(store, tid)
+    if held is not None:
+        res.notes.append(f"tick-silent: tick todo td{tid} held ({held}); not judged")
+        return
+    created, tag_set, chunk_at, event_at = _signal_rows(store, [tid])[tid]
+    signals = [
+        (lbl, ts)
+        for lbl, ts in (
+            ("todo created", created),
+            ("tag set", tag_set),
+            ("newest comment", chunk_at),
+            ("newest event", event_at),
+        )
+        if ts is not None
+    ]
+    newest = max(ts for _lbl, ts in signals)
+    lines = [f"signals for td{tid}:"] + [f"- {lbl}: {_iso(ts)}" for lbl, ts in signals]
+    if last_pass is None:
+        # No pass ever ran: the tick todo's own signal is the clock — a
+        # todo armed under TICK_SILENT_AFTER ago had no window to pass.
+        if now - newest <= TICK_SILENT_AFTER:
+            return
+        age_min = int((now - newest).total_seconds() // 60)
+        step = (
+            f"plan_dispatch ran no pass in {age_min} min (no succeeded pass recorded)"
+        )
+    else:
+        age_min = int((now - last_pass).total_seconds() // 60)
+        step = (
+            f"plan_dispatch ran no pass in {age_min} min "
+            f"(newest succeeded pass at {_iso(last_pass)})"
+        )
+    ev = RescueEvidence(
+        step=step, log_tail="\n".join(lines), error_line="plan_dispatch has run no pass"
+    )
+    _rescue(store, res, tid, "tick-silent", "heartbeat", ev)
+
+
+def _judge_terminal_roots(
+    store: Store, now: datetime, plan: Any, res: StallResult
+) -> None:
+    """Non-terminal, non-held nodes under a root whose STATUS is terminal
+    — the root was closed over open work: class ``terminal-root``, the
+    idle deadline on the node's own newest signal (so a root closed
+    together with its nodes in one tick is not flagged mid-write)."""
+    with store.pool.connection() as conn:
+        roots = _terminal_root_ids(conn)
+    for root in roots:
+        mini = _subtree_plan(store, root)
+        rn = mini.nodes.get(root)
+        if rn is not None and "release-pass" in rn.open_tags:
+            continue
+        if any(
+            v.startswith("release-stuck:")
+            for tn in mini.todos()
+            if tn.status not in TERMINAL_TODO_STATUSES
+            for v in tn.open_tags
+        ):
+            continue
+        judged = [
+            n
+            for n in mini.todos()
+            if n.id != root
+            and n.status not in TERMINAL_TODO_STATUSES
+            and n.id not in plan.nodes
+        ]
+        rows = _signal_rows(
+            store, [n.id for n in judged] + [j.id for n in judged for j in mini.jobs(n)]
+        )
+        for n in judged:
+            held = _held_in_plan(mini, n)
+            if held is not None:
+                res.held += 1
+                continue
+            jobs = mini.jobs(n)
+            newest, label, lines = _node_signals(n, jobs, rows)
+            lines.append(f"root td{root} STATUS {rn.status if rn else '?'}")
+            deadline = STAGE_DEADLINES["idle"]
+            if now - newest <= deadline:
+                continue
+            head = _branch_head(mini, n)
+            branch = head_sha = None
+            if head is not None:
+                from precis.workers.job_types.run_slice import slice_branch
+
+                branch, head_sha = slice_branch(n.id), head
+            ev = _evidence(
+                n,
+                "terminal-root",
+                "idle",
+                jobs[-1] if jobs else None,
+                newest,
+                label,
+                lines,
+                deadline,
+                now,
+                "plan root is closed under an open node",
+                branch=branch,
+                head_sha=head_sha,
+            )
+            _rescue(store, res, n.id, "terminal-root", "idle", ev)
+
+
+def run_stall_pass(store: Store, now: datetime, dry_run: bool = False) -> StallResult:
+    """One watchdog pass over every plan subtree (see the section header).
+
+    ``now`` is passed in (timezone-aware UTC). The pass is DB-only and
+    writes nothing while the factory is switched off: ``read_only_reason``
+    forces a dry run that still lists every ``would_rescue`` node.
+    """
+    from precis.workers.job_types import plan_dispatch as pd
+
+    res = StallResult(dry_run=dry_run)
+    reason = pd.read_only_reason(store)
+    if reason is not None:
+        res.dry_run = True
+        res.read_only = reason
+    _heartbeat(store, now, res)
+    plan = pd._load(store)
+    skip_roots = _release_skip_roots(plan)
+    for n in plan.todos():
+        is_gate = _is_sha_gate(n)
+        if not is_gate and not pd._dispatchable(plan, n):
+            continue
+        if n.root in skip_roots or n.status in TERMINAL_TODO_STATUSES:
+            res.held += 1
+            continue
+        _judge_node(store, now, plan, n, is_gate, res)
+    _judge_terminal_roots(store, now, plan, res)
+    return res
+
+
 __all__ = [
     "BOUNDS",
+    "STAGE_DEADLINES",
+    "TICK_SILENT_AFTER",
     "Bound",
     "RescueEvidence",
     "RescueResult",
+    "StallResult",
     "enter_rescue",
+    "run_stall_pass",
 ]

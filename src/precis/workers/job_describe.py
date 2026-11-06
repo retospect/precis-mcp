@@ -79,6 +79,7 @@ PLATFORM_UPKEEP: frozenset[str] = frozenset(
         "money_refresh",
         "news_poll",
         "plan_dispatch",
+        "factory_rescue_tick",
         "pr_poll",
         "secret_status",
         "taproot_backfill",
@@ -497,6 +498,7 @@ DESCRIBERS: dict[str, Callable[..., str]] = {
     "draft_refresh": _const("refreshing a living draft"),
     "graph_garden": _const("gardening the memory graph"),
     "plan_dispatch": _const("dispatching dark-factory work"),
+    "factory_rescue_tick": _const("watching dark-factory nodes for stalls"),
     "pr_poll": _const("polling inbound pull requests"),
     "ci_verdict_poll": _const("polling the release gate"),
 }

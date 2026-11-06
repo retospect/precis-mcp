@@ -1441,6 +1441,15 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        name="factory_rescue_tick",
+        label="Factory rescue tick (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        one_line="Dark-factory stall watchdog: send plan nodes silent "
+        "past their stage deadline to rescue, tick heartbeat included.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
         # The same tick as ``plan_dispatch`` above, run as a worker PASS by a
         # dedicated lane (``--only plan_tick``) instead of a job minted by the
         # recurring todo. No ``default_profiles`` and no ``enable_env``:
