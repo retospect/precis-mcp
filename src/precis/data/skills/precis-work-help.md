@@ -93,6 +93,16 @@ of the unassigned bucket.
 A todo that serves a quest directly and also sits inside another served
 root renders once, inside the larger tree.
 
+Blocked-only quests leave the idle group and sort by who can unblock
+them (gr573557): a quest whose live leaf rows are all blocked lands in
+`needs you (N)` at the top — expanded, its line naming the unblocking
+items — when Reto can unblock at least one leaf, and in `blocked by
+other work (N)` at the bottom when only other work can. Reto can
+unblock a leaf that carries `waiting-for:reto`, that is `blocked-by`
+an open `ask-user` todo, or that is itself an open ask; everything
+else (another open todo, `waiting-for:fleet`, a closed gate, STATUS
+`blocked`) is other work.
+
 ## How do I read one row of the work view?
 
 `td<id> <icon> prio=N agents=N jobs=N(M live) — title`; a cell with

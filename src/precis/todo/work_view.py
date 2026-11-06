@@ -3,7 +3,10 @@
 ``search(kind='todo', view='work')`` renders one collapsed line per live
 quest — handle, the derived run-state (``running``, ``queued``,
 ``idle``), STATUS, prio, agents, live jobs, the next doable leaf and the
-newest change — grouped running → queued → idle, then prio (td573295).
+newest change — grouped needs-you → running → queued → idle →
+blocked-work, then prio (td573295, td573923: an idle quest whose live
+leaves are all blocked sorts top when Reto can unblock it, bottom when
+only other work can — gr573557).
 A running or queued quest expands in place to the todos that ``serves``
 it → their subtrees, one row per todo with STATUS, prio, the
 ``claimed-by:`` lease, the number of fleet agents on it and its child
@@ -196,12 +199,26 @@ class WorkRow:
 
 
 @dataclass(frozen=True)
+class Unblocker:
+    """One todo whose action unblocks a blocked leaf (gr573557,
+    td573923): the leaf itself (``waiting-for:reto``, or the leaf is
+    the ask), or an open ``ask-user`` todo the leaf is ``blocked-by``.
+    ``why`` is ``ask-user`` or ``waiting-for:reto``."""
+
+    handle: str
+    title: str
+    why: str
+
+
+@dataclass(frozen=True)
 class RootBlock:
     """One served root's rows; ``hidden`` counts rows past the row cap.
     ``gripes`` are the root's open-gripe rows
     (:mod:`precis.todo.work_gripes`, td540842 / td541980). ``jobs`` are
     the live job lines under this root (td573295); ``running_jobs`` /
-    ``claimable_jobs`` feed the quest's run-state."""
+    ``claimable_jobs`` feed the quest's run-state. ``live_leaves`` /
+    ``blocked_leaves`` / ``unblockers`` are the td573923 leaf
+    classification, computed over every row before the row cap."""
 
     root_id: int
     rows: tuple[WorkRow, ...]
@@ -210,6 +227,9 @@ class RootBlock:
     jobs: tuple[str, ...] = ()
     running_jobs: int = 0
     claimable_jobs: int = 0
+    live_leaves: int = 0
+    blocked_leaves: int = 0
+    unblockers: tuple[Unblocker, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -241,7 +261,14 @@ class QuestBlock:
     handle (``""`` when none); ``newest`` the freshest row stamp.
     ``completed`` holds the quest's done/won't-do todos and terminal
     jobs inside the seven-day window — populated only when the
-    ``done=`` toggle names this quest or is page-wide (td573298)."""
+    ``done=`` toggle names this quest or is page-wide (td573298).
+
+    ``board`` is the td573923 placement: an idle quest whose live
+    leaves are all blocked is ``needs-you`` when Reto can unblock one
+    (it sorts top) or ``blocked-work`` when only other work can (it
+    sorts bottom); ``""`` keeps the run-state group. ``unblockers``
+    names what unblocks a ``needs-you`` quest, deduplicated in handle
+    order."""
 
     ref_id: int
     handle: str
@@ -257,6 +284,8 @@ class QuestBlock:
     newest: datetime | None
     jobs: tuple[str, ...]
     completed: tuple[CompletedRow, ...] = ()
+    board: str = ""
+    unblockers: tuple[Unblocker, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -302,6 +331,14 @@ class WorkModel:
     @property
     def n_idle(self) -> int:
         return sum(q.run_state == "idle" for q in self.quests)
+
+    @property
+    def n_needs_you(self) -> int:
+        return sum(q.board == "needs-you" for q in self.quests)
+
+    @property
+    def n_blocked_work(self) -> int:
+        return sum(q.board == "blocked-work" for q in self.quests)
 
 
 # ── the view ──────────────────────────────────────────────────────
@@ -504,8 +541,20 @@ _JOB_CLAIMABLE = frozenset({"queued", "yielded"})
 #: A job worth a board line — running or claimable.
 _BOARD_JOB = _JOB_CLAIMABLE | {_JOB_RUNNING}
 
-#: Group order on the board (td573295): running, queued, idle.
-_RUN_RANK = {"running": 0, "queued": 1, "idle": 2}
+#: Group order on the board: the run-state groups (td573295) plus the
+#: td573923 placements — a blocked-only quest Reto can unblock sorts
+#: top, one only other work can unblock sorts bottom (gr573557).
+_BOARD_RANK = {
+    "needs-you": 0,
+    "running": 1,
+    "queued": 2,
+    "idle": 3,
+    "blocked-work": 4,
+}
+
+#: STATUS values that keep a todo row out of the live-leaf set
+#: (td573923): done / won't-do leave the board, paused parks the row.
+_NOT_LIVE = _DONE_TODO | {"paused"}
 
 
 def _run_state(leased: int, running_jobs: int, claimable_jobs: int, doable: int) -> str:
@@ -749,6 +798,88 @@ def _landed_shas(store: Store, ref_ids: list[int]) -> dict[int, str]:
     return out
 
 
+def _asking(tags: list[str]) -> bool:
+    """An open ``ask-user`` / ``ask-user:*`` tag — same test ``_row`` runs."""
+    return any(t == "ask-user" or t.startswith("ask-user:") for t in tags)
+
+
+def _leaf_verdicts(
+    store: Store,
+    rows: list[dict[str, Any]],
+    *,
+    by_parent: dict[int | None, list[dict[str, Any]]],
+    statuses: dict[int, str],
+    tags_by_ref: dict[int, list[str]],
+    metas: dict[int, dict[str, Any]],
+    blockers: dict[int, tuple[int, ...]],
+) -> tuple[int, int, tuple[Unblocker, ...]]:
+    """``(live leaves, blocked leaves, unblockers)`` over every todo
+    row — before the ``MAX_ROWS_PER_ROOT`` cap (td573923).
+
+    A live leaf is a todo row whose STATUS is not done / won't-do /
+    paused and which has no live child row (jobs are execution detail,
+    not rows). It is blocked on an open ``blocked-by`` target, a hold
+    (``waiting-for:*`` / ``ask-user`` / a closed gate) or STATUS
+    ``blocked``. Reto can unblock when the leaf carries
+    ``waiting-for:reto``, an open blocked-by target is an open
+    ``ask-user`` todo, or the leaf is itself an open ask — one bulk
+    tag read and one ref fetch for the targets."""
+    target_ids = sorted({d for ds in blockers.values() for d in ds})
+    target_refs = store.fetch_refs_by_ids(target_ids) if target_ids else {}
+    target_tags = views._all_open_tags(store, target_ids) if target_ids else {}
+    live = 0
+    blocked = 0
+    unblockers: dict[str, Unblocker] = {}
+    for r in rows:
+        if r["kind"] == "job":
+            continue
+        rid = r["id"]
+        status = statuses.get(rid, "open")
+        if status in _NOT_LIVE or any(
+            statuses.get(c["id"], "open") not in _NOT_LIVE
+            for c in by_parent.get(rid, [])
+        ):
+            continue
+        live += 1
+        tags = tags_by_ref.get(rid, [])
+        meta = metas.get(rid) or {}
+        result = meta.get("gate_result")
+        hold = (
+            any(t.startswith("waiting-for:") for t in tags)
+            or _asking(tags)
+            or (
+                node_kind(meta) == "gate"
+                and isinstance(result, dict)
+                and result.get("open") is False
+            )
+        )
+        if not (blockers.get(rid) or hold or status == "blocked"):
+            continue
+        blocked += 1
+        if "waiting-for:reto" in tags:
+            unblockers.setdefault(
+                _h("todo", rid),
+                Unblocker(_h("todo", rid), _first_line(r["title"]), "waiting-for:reto"),
+            )
+        for dst in blockers.get(rid, ()):
+            tref = target_refs.get(dst)
+            if (
+                tref is not None
+                and tref.kind == "todo"
+                and _asking(target_tags.get(dst, []))
+            ):
+                unblockers.setdefault(
+                    _h("todo", dst),
+                    Unblocker(_h("todo", dst), _first_line(tref.title), "ask-user"),
+                )
+        if _asking(tags):
+            unblockers.setdefault(
+                _h("todo", rid),
+                Unblocker(_h("todo", rid), _first_line(r["title"]), "ask-user"),
+            )
+    return live, blocked, tuple(unblockers[h] for h in sorted(unblockers))
+
+
 def _render_root(
     store: Store,
     root: Ref,
@@ -854,6 +985,15 @@ def _render_root(
 
     root_row = next(r for r in rows if r["id"] == root.id)
     walk(root_row, 1)
+    live_leaves, blocked_leaves, unblockers = _leaf_verdicts(
+        store,
+        rows,
+        by_parent=by_parent,
+        statuses=statuses,
+        tags_by_ref=tags_by_ref,
+        metas=metas,
+        blockers=blockers,
+    )
     return RootBlock(
         root_id=root.id,
         rows=tuple(shown),
@@ -862,6 +1002,9 @@ def _render_root(
         jobs=tuple(job_lines),
         running_jobs=running_jobs,
         claimable_jobs=claimable_jobs,
+        live_leaves=live_leaves,
+        blocked_leaves=blocked_leaves,
+        unblockers=unblockers,
     )
 
 
@@ -1053,6 +1196,20 @@ def work_model(
         stamps = [
             r.updated_at for b in e["roots"] for r in b.rows if r.updated_at is not None
         ]
+        # td573923 (gr573557): an idle quest whose live leaves are all
+        # blocked is placed by who can unblock — ``needs-you`` when at
+        # least one blocked leaf resolves to Reto (waiting-for:reto,
+        # an open ask-user blocker, or the leaf is the ask), else
+        # ``blocked-work``. Meta-resolved display jobs never count.
+        live = sum(b.live_leaves for b in e["roots"])
+        n_blocked = sum(b.blocked_leaves for b in e["roots"])
+        unblockers: dict[str, Unblocker] = {}
+        for b in e["roots"]:
+            for u in b.unblockers:
+                unblockers.setdefault(u.handle, u)
+        board = ""
+        if run_state == "idle" and live and live == n_blocked:
+            board = "needs-you" if unblockers else "blocked-work"
         quest_block = QuestBlock(
             ref_id=q.id,
             handle=_h("quest", q.id),
@@ -1069,10 +1226,20 @@ def work_model(
             jobs=tuple(j for b in e["roots"] for j in b.jobs)
             + extra_lines.get(q.id, ()),
             completed=completed,
+            board=board,
+            unblockers=(
+                tuple(unblockers[h] for h in sorted(unblockers))
+                if board == "needs-you"
+                else ()
+            ),
         )
         blocks.append(
             (
-                (_RUN_RANK[run_state], q.prio if q.prio is not None else 5, q.id),
+                (
+                    _BOARD_RANK[board or run_state],
+                    q.prio if q.prio is not None else 5,
+                    q.id,
+                ),
                 quest_block,
             )
         )
@@ -1122,6 +1289,8 @@ def work_model(
 def _quest_line(q: QuestBlock, now: datetime) -> str:
     """The quest's collapsed board line (td573295)."""
     cells = [f"◆ {q.handle}", q.run_state, f"[{q.status}]"]
+    if q.board == "blocked-work":
+        cells.append("blocked by other work")
     if q.prio is not None:
         cells.append(f"prio={q.prio}")
     if q.agents:
@@ -1131,7 +1300,13 @@ def _quest_line(q: QuestBlock, now: datetime) -> str:
     if q.next_doable:
         cells.append(f"next={q.next_doable}")
     cells.append(_age(q.newest, now))
-    return f"{' '.join(cells)} — {q.title}"
+    line = f"{' '.join(cells)} — {q.title}"
+    if q.board == "needs-you" and q.unblockers:
+        names = ", ".join(f"{u.handle} ({u.why})" for u in q.unblockers[:3])
+        if len(q.unblockers) > 3:
+            names += f" +{len(q.unblockers) - 3} more"
+        line += f" · needs you: {names}"
+    return line
 
 
 def render_work(store: Store, *, now: datetime | None = None) -> Response:
@@ -1140,19 +1315,38 @@ def render_work(store: Store, *, now: datetime | None = None) -> Response:
     model = work_model(store, now=now)
     n_q = len(model.quests)
     n_a = model.n_agents
-    out: list[str] = [
+    head = (
         f"# work — {n_q} quest{'' if n_q == 1 else 's'}: "
         f"{model.n_running} running · {model.n_queued} queued · "
-        f"{model.n_idle} idle · {n_a} live agent{'' if n_a == 1 else 's'}"
-    ]
-    for state in ("running", "queued", "idle"):
-        group = [q for q in model.quests if q.run_state == state]
+        f"{model.n_idle} idle"
+    )
+    if model.n_needs_you:
+        head += f" · {model.n_needs_you} need you"
+    out: list[str] = [f"{head} · {n_a} live agent{'' if n_a == 1 else 's'}"]
+    # td573923: blocked-only quests leave the idle group — needs-you
+    # expands like running/queued, blocked-work stays collapsed.
+    groups: tuple[tuple[str, list[QuestBlock], bool], ...] = (
+        ("needs you", [q for q in model.quests if q.board == "needs-you"], True),
+        ("running", [q for q in model.quests if q.run_state == "running"], True),
+        ("queued", [q for q in model.quests if q.run_state == "queued"], True),
+        (
+            "idle",
+            [q for q in model.quests if q.run_state == "idle" and not q.board],
+            False,
+        ),
+        (
+            "blocked by other work",
+            [q for q in model.quests if q.board == "blocked-work"],
+            False,
+        ),
+    )
+    for label, group, expand in groups:
         if not group:
             continue
-        out += ["", f"{state} ({len(group)})"]
+        out += ["", f"{label} ({len(group)})"]
         for q in group:
             out.append(_quest_line(q, now))
-            if state != "idle":
+            if expand:
                 for root in q.roots:
                     out.extend(_format_row(r) for r in root.rows)
                     if root.hidden:

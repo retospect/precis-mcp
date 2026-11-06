@@ -66,12 +66,20 @@
 </li>
 {% endmacro %}
 
-{# Quest run-state chips (td573295): derived, not the quest STATUS. #}
+{# Quest run-state chips (td573295): derived, not the quest STATUS.
+   Board groups (td573923, gr573557): a blocked-only quest Reto can
+   unblock heads the board expanded; one only other work can unblock
+   tails it collapsed. #}
 {% set rs = {'running':'bg-success-muted text-success-strong','queued':'bg-info-muted text-info-strong','idle':'bg-surface-emphasis text-fg-subtle'} %}
 {# Completed-row outcome chips (td573298): todo + job terminals. #}
 {% set oc = {'done':'bg-success-muted text-success-strong',"won't-do":'bg-surface-emphasis text-fg-subtle','succeeded':'bg-success-muted text-success-strong','failed':'bg-danger-muted text-danger-strong','cancelled':'bg-surface-emphasis text-fg-subtle'} %}
-{% for state, label in [('running', 'Running'), ('queued', 'Queued'), ('idle', 'Idle')] %}
-{% set group = model.quests | selectattr('run_state', 'equalto', state) | list %}
+{% for state, label, group in [
+  ('needs-you', 'Needs you', model.quests | selectattr('board', 'equalto', 'needs-you') | list),
+  ('running', 'Running', model.quests | selectattr('run_state', 'equalto', 'running') | list),
+  ('queued', 'Queued', model.quests | selectattr('run_state', 'equalto', 'queued') | list),
+  ('idle', 'Idle', model.quests | selectattr('run_state', 'equalto', 'idle') | selectattr('board', 'equalto', '') | list),
+  ('blocked-work', 'Blocked by other work', model.quests | selectattr('board', 'equalto', 'blocked-work') | list),
+] %}
 {% if group %}
 <h2 class="text-sm font-semibold mb-2 mt-6">{{ label }} ({{ group | length }})</h2>
 {% for q in group %}
@@ -84,18 +92,27 @@
 {% else %}
   {% set q_done_url = '/work?done=' ~ (((done_ids | list) + [q.ref_id]) | sort | join(',')) %}
 {% endif %}
-<section class="mb-4 rounded-lg border border-line bg-surface" data-handle="{{ q.handle }}" data-kind="quest" data-run-state="{{ q.run_state }}">
-  <details>
+<section class="mb-4 rounded-lg border border-line bg-surface" data-handle="{{ q.handle }}" data-kind="quest" data-run-state="{{ q.run_state }}"{% if q.board %} data-board="{{ q.board }}"{% endif %}>
+  <details{% if q.board == 'needs-you' %} open{% endif %}>
     <summary class="flex items-baseline gap-2 px-3 py-2 cursor-pointer">
       <span class="text-fg-faint">◆</span>
       <a href="/eye/{{ q.handle }}" class="font-mono text-xs font-semibold hover:underline">{{ q.handle }}</a>
       <span class="font-semibold text-sm truncate">{{ q.title }}</span>
       <span class="text-xs px-1.5 py-0.5 rounded {{ rs.get(q.run_state, 'bg-info-muted text-info-strong') }}">{{ q.run_state }}</span>
       <span class="text-xs px-1.5 py-0.5 rounded {{ sc.get(q.status, 'bg-info-muted text-info-strong') }}">{{ q.status }}</span>
+      {% if q.board == 'blocked-work' %}<span class="text-xs text-fg-faint">blocked by other work</span>{% endif %}
       {% if q.prio is not none %}<span class="text-xs text-fg-faint">prio {{ q.prio }}</span>{% endif %}
       <span class="text-xs text-fg-faint">agents {{ q.agents }}</span>
       <span class="text-xs text-fg-faint">jobs {{ q.jobs | length }}{% if q.running_jobs %} ({{ q.running_jobs }} running){% endif %}</span>
       {% if q.next_doable %}<a href="/eye/{{ q.next_doable }}" class="font-mono text-xs text-fg-subtle hover:underline">next {{ q.next_doable }}</a>{% endif %}
+      {% if q.unblockers %}
+      <span class="text-xs text-danger-strong">needs you:
+        {%- for u in q.unblockers[:3] %}
+        <a href="/eye/{{ u.handle }}" class="font-mono hover:underline" title="{{ u.title }}">{{ u.handle }}</a> {{ u.title }} ({{ u.why }}){{ ',' if not loop.last }}
+        {%- endfor %}
+        {%- if q.unblockers | length > 3 %} +{{ q.unblockers | length - 3 }} more{% endif -%}
+      </span>
+      {% endif %}
       <a href="{{ q_done_url }}" class="text-xs text-fg-subtle hover:underline" data-done-toggle="{{ q.ref_id }}">Completed{% if q_done %} ({{ q.completed | length }}){% endif %}</a>
       <span class="ml-auto text-xs text-fg-faint" title="{{ q.newest | abs_ts }}">{{ q.newest | ago }}</span>
       {% if can_write %}{{ quest_controls(q) }}{% endif %}
