@@ -151,19 +151,17 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
      and hypothesis; the one `compound` row is now `composite`.
      `nanopub_artifacts` is append-only and was not rewritten.
 5. **backlog/context-navigation.md §7–§8** — twin + Mode B loop, owned by thread context-navigation; seam only.
-6. **Memory-architecture gripe set (2026-11-01, from the gr547899/900/901
-   review; all `builder:swe2-high`):** build in this order —
-   gr548263 followed/used/export → gr548264 gap cut
-   (re-scopes gr514956) → gr548265 memory fusion (absorbs gr515867) →
-   gr548268 tokens-per-hit + knee curve. Recall-set harvest (gr548269):
-   `precis.workers.memory_recall_harvest::run_memory_recall_harvest_pass`
+6. **Memory-architecture gripe set (2026-11-01):** the build chain and
+   the independent fixes shipped and their gripes are closed (search
+   traces, gap cut, memory fusion, tokens-per-hit, canon pre-pass, sub-hub
+   hint, dry_run door, pass hygiene); `git log --grep gr5482` holds the
+   record. The recall-set harvest
+   (`precis.workers.memory_recall_harvest::run_memory_recall_harvest_pass`)
    ships dark (`service_config`); operator-only
    `precis memory recall-set accept td<N> [--only N,M]` edits the checkout
    benchmark without committing or pushing. Activation and public-data review
-   remain operator-owned;
-   independent: gr548266/548267 glossary mirror + canon pre-pass,
-   gr548270 sub-hub hint, gr548271 dry_run door, gr548275 SPACE backfill,
-   gr548278/548279/548280 pass hygiene. Specs:
+   remain operator-owned. Open: gr548266 glossary mirror, gr548275 SPACE
+   backfill. Specs:
    `memory-retrieval-learning.md` (idea, decision rule),
    `dreaming-classify-rehome.md` (draft). Reto's call: S4 in
    `context-memory-hierarchy.md` (resident block, largest token lever).

@@ -62,7 +62,7 @@ cluster (multi-host, ansible) — [`deploy/README.md`](deploy/README.md).
 
 ## What it does
 
-One tool surface — **eight verbs** discriminated by a single `kind=`
+One tool surface — **seven verbs** discriminated by a single `kind=`
 argument — over three categories of content. Ref kinds are addressed
 by slug or integer id (output hands you a compact `<2-char><id>`
 handle, e.g. `pa5` a paper, `me42` a memory); tool kinds take `q=`
@@ -75,23 +75,35 @@ or `id=` and hand back text.
 - **Files under `PRECIS_ROOT` / code** — `markdown`, `plaintext`,
   `tex`, and `python` (symbol- and callgraph-aware repo navigator).
 - **Authored artifacts** — `draft` (chunk-native document that
-  exports to LaTeX/PDF/Word), `cad` (analytic-SDF solid modeling —
-  designs are probed, not meshed; unit-required DSL), `se`
+  exports to LaTeX/PDF/Word, with audience-aware export and
+  spreadsheet-style tables with formulas), `cad` (analytic-SDF solid
+  modeling where designs are probed, not meshed; unit-required DSL), `se`
   (structural-envelope designs: blocks/ports/joints with DRC,
   stability + prestress analysis, a fastener engine, STL/3MF/STEP
-  export), `nm` (molecular-machine designs on the same block
-  surface — envelopes bound to atomistic structures, mechanics
-  ceilings), `structure` (atomistic cell + bond graph for
-  DFT/molecular work), `pcb` (netlist + placement graph, built-in
-  vector place-and-route → BOM/CPL/DSN), and `folder` (organizational
-  container for the above).
+  export; its `atomic` mode binds blocks to atomistic structures for
+  molecular-machine designs, with mechanics ceilings), `structure`
+  (atomistic cell + bond graph for DFT/molecular work), `pcb`
+  (netlist + placement graph, built-in place-and-route →
+  BOM/CPL/DSN; consigned BOM lines, pad edits, `precis pcb
+  import-epro` intake), and `folder` (organizational container for
+  the above).
+- **Chemistry, materials & parts**: `chem` (name/CAS → SMILES +
+  InChIKey), `rxn` (sourced yields and conditions, read as a spread
+  across papers), `route` (retrosynthesis), `protein` (structure
+  prediction), `pathway` (catalytic reaction networks with kinetics
+  summaries and a Pourbaix map; needs the `catalyst` extra),
+  `estimate` (fast descriptor workup; `estimate` extra), `material`
+  and `component` (properties with per-value sources), `datasheet`
+  (component datasheets as searchable chunks).
 - **Autonomous work** — `quest` (an open problem worked on without
   being asked: each tick reads, proposes, simulates and ranks, with a
   logbook and a tree of sub-quests), `todo` (task tree; a todo can recur
   on a schedule and spawn work each tick), `job` (one unit of execution
   on the cluster: an LLM or agent run, a relaxation or DFT step, a
   sandboxed coding task), `gripe` (a defect report that fixer agents
-  pick up), `plan` (a working plan on a draft's chunk tree).
+  pick up), `plan` (a working plan on a draft's chunk tree),
+  `machine` (one ref per fleet host, with live load and last-seen
+  read from the heartbeat).
 - **Memory & evidence** — `memory` (agent memory graph), `citation`
   (verified claim → source quote), `finding` (chain-of-evidence over a
   citation chase), `anki` (spaced-repetition cloze cards → AnkiWeb).
@@ -100,7 +112,9 @@ or `id=` and hand back text.
   condition), `agentlog` (per-run attribution trail), `provenance`
   (derivation audit).
 - **Tool kinds** (stateless or cache-backed) — `calc` (local SymPy),
-  `math` (Wolfram), `youtube` (transcript), `web` (fetch + extract),
+  `time` (clock, zone conversion, fuzzy phrases such as "last week"
+  resolved to UTC windows), `math` (Wolfram), `youtube` (chunked
+  transcripts with a TOC and timed range reads), `web` (fetch + extract),
   `wikipedia` (on-demand article), `websearch` /
   `perplexity-reasoning` / `perplexity-research` (Perplexity Sonar
   tiers).
@@ -114,7 +128,7 @@ snapshot; `get(kind='skill', id='precis-help')` enumerates the kinds
 wired in *your* build, and `get(kind='skill', id='precis-overview')`
 gives the design-rationale tour with an example handle per kind.
 
-## Eight verbs
+## Seven verbs
 
 | Verb     | Use when                                            |
 |----------|-----------------------------------------------------|
@@ -125,8 +139,6 @@ gives the design-rationale tour with an example handle per kind.
 | `delete` | Soft-delete a numeric ref, or delete a region from a file kind by selector. |
 | `tag`    | Add and/or remove tags. Three namespaces: closed (`STATUS:done`), flag (`pinned`), open (`topic-foo`). |
 | `link`   | Add or remove a cross-link to another ref. Vocabulary: `related-to`, `blocks`, `contradicts`, `cites`, `derived-from`, `supports`, … |
-| `more`   | Fetch the next page of a truncated response (`more(cursor='…')` — every truncation footer hands you the cursor). |
-
 Address by `id=` for names, `q=` for content. No URI selector strings
 for ids; region selectors inside files use the compact `slug~SELECTOR`
 shape (e.g. `notes--meeting~L42-58`).
@@ -272,6 +284,22 @@ config:
 }
 ```
 
+### Quick start
+
+With the database migrated and the env vars above exported, this ends in a
+search hit on your own paper (needs the `all` extra):
+
+```bash
+precis doctor                    # one line per install check; non-zero exit on failure
+precis add /path/to/paper.pdf    # ingest one PDF (use --doi or --arxiv for metadata only)
+precis worker                    # second terminal: embeds the chunks; stop once
+                                 #   `precis worker --status` shows nothing pending
+precis eval "search(kind='paper', q='a phrase from the paper')"
+```
+
+For the browser view of the same paper, create an account and run
+`precis web` as in [`docs/setup-single-machine.md`](docs/setup-single-machine.md).
+
 ### One-tool profile
 
 Setting `PRECIS_MCP_PROFILE=command` in the server env collapses the
@@ -329,8 +357,8 @@ The policy for *adding* a var (the three-tier scheme) is
 
 ## Design system
 
-The `cad` / `se` / `nm` kinds form one design surface, macro to
-molecular, built for LLM authoring:
+The `cad` / `se` kinds form one design surface, macro to molecular
+(`se` atomic mode reaches the atoms), built for LLM authoring:
 
 - **Explicit units everywhere.** Every dimensioned input states its
   unit (`3mm`, `1.4Å`, `12 N`, `90deg` — pint-backed, hogsheads
@@ -365,8 +393,8 @@ optimisation — is mapped in
 
 ## Design highlights
 
-- **Eight verbs, one `kind=`**. The whole surface is
-  `get`/`search`/`put`/`edit`/`delete`/`tag`/`link`/`more`. No
+- **Seven verbs, one `kind=`**. The whole surface is
+  `get`/`search`/`put`/`edit`/`delete`/`tag`/`link`. No
   per-kind bespoke tools.
 - **Content-anchored edits.** `edit(find=..., before=..., after=...)`
   resolves by literal content match; unique/first/all/nth policy;
@@ -387,9 +415,9 @@ optimisation — is mapped in
   `citation` kind closes the loop: an agent's writing-thread
   workflow can persist verified `claim → source quote` records (see
   [`precis-citation-help`](src/precis/data/skills/precis-citation-help.md)).
-- **Progressive disclosure.** Eight verbs and a `kind=` argument is
-  the *whole* visible surface. Behind it sits a fan-out of ~25
-  per-kind help skills, dozens of read views, an anchored edit
+- **Progressive disclosure.** Seven verbs and a `kind=` argument is
+  the *whole* visible surface. Behind it sits a fan-out of ~180
+  help skills, dozens of read views, an anchored edit
   protocol, args-dict view payloads, and a tag/link vocabulary —
   none of which the agent has to know up front. Every response can
   emit a `next=` breadcrumb, every error names the skill that
@@ -460,14 +488,17 @@ memory snapshot with conflict checks. `precis memory mirror export DEST
 --namespace NAME` preserves original filenames and formatting in a new directory;
 it never overwrites an existing destination or retires missing memories.
 
+`precis nanopub supersede FI` stages a local successor candidate for an anchored,
+unpublished claim artifact; review and same-key signing remain separate steps.
+
 ```text
 # Serving
 precis serve                       # Start the MCP stdio server.
 precis serve-embeddings            # HTTP embedding service (server side of
                                    #   PRECIS_EMBEDDER=remote; /healthz /readyz
                                    #   /model /embed /metrics).
-precis web [--host H --port P]      # Browser UI: Tasks / Papers / Console /
-                                   #   Conversations / Status tabs (needs the
+precis web [--host H --port P]      # Browser UI: Drive, papers, drafts, designs,
+                                   #   /work, /status and more (needs the
                                    #   [web] extra; binds 127.0.0.1:9100 behind
                                    #   HTTP Basic — create an account first, or
                                    #   every page answers 503).
@@ -578,7 +609,6 @@ high-traffic ones:
 - [`docs/codebase.md`](docs/codebase.md) — orientation: invariants, lifecycle, seams, and the generated package map (subsystem detail lives in each package's `__init__.py` docstring).
 - [`docs/reference/schema.md`](docs/reference/schema.md) — the **generated** DB schema diagram (Mermaid ER, produced from the live database — can't drift).
 - [`docs/reference/config-variables.md`](docs/reference/config-variables.md) — the full `PRECIS_*` config catalog: every var, its default, the value deployed to each cluster service, and a correctness assessment.
-- [`docs/reference/schema.md`](docs/reference/schema.md) — generated schema (full ER view: `schema-v2.svg`).
 - [`src/precis/data/skills/precis-citation-help.md`](src/precis/data/skills/precis-citation-help.md) — `citation` kind + verifier-workflow agent surface.
 - [`src/precis/data/skills/precis-toc-help.md`](src/precis/data/skills/precis-toc-help.md) — TOC machinery (segments, sentences, matryoshka keywords).
 - Git history (`git log`) — what shipped in each phase (no CHANGELOG file).
@@ -623,6 +653,3 @@ definition-of-done.
 
 GPL-3.0-or-later. See the full text at
 [gnu.org/licenses/gpl-3.0.html](https://www.gnu.org/licenses/gpl-3.0.html).
-
-`precis nanopub supersede FI` stages a local successor candidate for an anchored,
-unpublished claim artifact; review and same-key signing remain separate steps.

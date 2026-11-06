@@ -1,7 +1,7 @@
 ---
 description: "One honest 'what needs doing' across repo dev work (backlog, gripes, PRs, Dependabot) and the prod todo queue, plus hygiene and system-health scans."
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
-allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-index:*), Bash(scripts/memory-lint:*), Bash(scripts/skill-eval:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/surface-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/fda-grant-review:*), Bash(scripts/secrets-check-review:*), Bash(scripts/prod-precis secret check:*), Bash(scripts/nightly:*), Bash(scripts/main-ci-status:*), Bash(uv run precis maintenance cfp-watch:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
+allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-index:*), Bash(scripts/memory-lint:*), Bash(scripts/skill-eval:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/surface-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/fda-grant-review:*), Bash(scripts/secrets-check-review:*), Bash(scripts/prod-precis secret check:*), Bash(scripts/nightly:*), Bash(scripts/main-ci-status:*), Bash(scripts/prod-precis maintenance cfp-watch:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
 ---
 
 Work lives in **two different substrates** — do not merge them into one flat
@@ -288,7 +288,7 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    (what the loop picks up next). NB: these are `search(...)` calls, not
    `get(...)`. This is the only substrate that acts on itself.
 4-cfp. **WATCH-tagged calls (cfp re-check).** Run
-   `uv run precis maintenance cfp-watch` (bounded: 25 fetches, refs checked
+   `scripts/prod-precis maintenance cfp-watch` (bounded: 25 fetches, refs checked
    <20h ago skipped), then list `search(kind='alert', q='cfp_watch')`.
    Each open alert is a call page whose text or deadline dates changed since
    the last check: surface it under the prod queue with the cfp id and the
