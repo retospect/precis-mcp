@@ -67,6 +67,12 @@ package — the pieces that are *the script's own surface*:
 - :mod:`precis_geom.optimize` — stdlib Metropolis annealing over caller-owned
   moves, snapshots, energy, schedule and RNG; domain-specific proposals stay
   with the script (se-flow-kernel slice 4b).
+- :mod:`precis_geom.params` — named, bounded parameters (``Space`` of
+  ``Continuous``/``Integer``/``Boolean`` dims) for continuous optimisers: a
+  ``Space`` samples/clips/validates a frozen ``Params`` point and applies its
+  ``bindings`` to a recipe through ``recipe.modify`` (se-flow-kernel slice 4b
+  §Design representation item 3). ``Params`` is keyed as a step argument by
+  :func:`precis_geom.steps._pcanon`.
 
 The runnable dev-loop recipe — the PCB path and the ``hexfold
 prism_tube`` → ``pga.geom`` → ``out.block`` atomic path — is
