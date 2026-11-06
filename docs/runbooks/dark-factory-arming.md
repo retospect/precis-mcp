@@ -180,6 +180,19 @@ The other settings a slice host reads:
   the repo the worker runs from. Set it when the worker has no git
   checkout around its code. A leftover `slice-td<id>` branch from an
   earlier attempt is renamed to `slice/<id>`.
+
+  Finished stacks: a landed slice's `precis-test-slice-td<N>` compose
+  project is brought down (`-v`) before its worktree is removed, and
+  every land launch first sweeps the host's other slice stacks
+  (`precis.workers.slice_stacks`): gone trees (`-v`), quiet stacks idle
+  past `PRECIS_SLICE_STACK_IDLE_S` (default 3600 s — the gate-cache
+  volume is kept) and the oldest quiet stacks over
+  `PRECIS_SLICE_STACK_CAP` (default 8). A stack with a running non-gate
+  container, an attached exec or a live `precis-test-runs/<pid>` marker
+  is never touched, and `PRECIS_SLICE_STACK_SWEEP=off` disables the
+  sweep. The SessionStart reapers never run on this headless host, so
+  without the sweep finished stacks pile into the 8 GiB docker VM until
+  gates die on OOM-137 and address-pool exhaustion (gr570133).
 - `PRECIS_CLAUDE_BIN`: the `claude` binary the slice session execs
   (default `claude` on PATH). Point it at a stub in tests.
 - `PRECIS_MCP_SLICE_TOKEN_DIR`: the shared session MCP's per-slice grant

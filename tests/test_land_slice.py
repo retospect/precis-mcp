@@ -214,6 +214,27 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         return dict(calls["preflight"])
 
     monkeypatch.setattr(land_slice, "_drift_preflight", fake_preflight)
+    # Docker seams: no test reaches a daemon. `_sweep_stacks` records the
+    # keep tree and returns `evicted_stacks`; `_evict_stack` records
+    # (project, volumes) and returns `evict_ok`.
+    calls["swept"] = []
+    calls["evicted_stacks"] = []
+    calls["evict"] = []
+    calls["evict_ok"] = True
+    monkeypatch.setattr(
+        land_slice,
+        "_sweep_stacks",
+        lambda *, keep=None: (
+            calls["swept"].append(keep) or list(calls["evicted_stacks"])
+        ),
+    )
+    monkeypatch.setattr(
+        land_slice,
+        "_evict_stack",
+        lambda project, *, volumes: (
+            calls["evict"].append((project, volumes)) or calls["evict_ok"]
+        ),
+    )
     monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
     monkeypatch.delenv("PRECIS_SHIP_BIN", raising=False)
@@ -638,6 +659,84 @@ def test_poll_green_writes_the_land_when_land_notify_did_not(
     assert "origin branch: not pushed" in pctx.meta_set["cleanup"]
 
 
+# ── stack eviction (gr570133) ──────────────────────────────────────
+
+
+def test_poll_green_evicts_the_slice_stack(seams: dict[str, Any]) -> None:
+    """gr570133: a landed slice's warm compose stack comes down (-v —
+    the tree goes too) BEFORE `git worktree remove`; a left-up project
+    kept a postgres and a sleep-infinity gate on the docker VM."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert seams["evict"] == [("precis-test-slice-td42", True)]
+    cleanup = pctx.meta_set["cleanup"]
+    assert "compose down: ok" in cleanup
+    # the stack is downed before the worktree goes, in the notes' order
+    assert cleanup.index("compose down: ok") < cleanup.index("worktree remove: ok")
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "compose down: ok" in summary
+
+
+def test_cleanup_down_failure_is_a_note(seams: dict[str, Any]) -> None:
+    """A failed `compose down` is a cleanup note, never a job failure —
+    the land is real either way."""
+    seams["evict_ok"] = False
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    cleanup = pctx.meta_set["cleanup"]
+    assert any(n.startswith("compose down: FAILED") for n in cleanup)
+    # the rest of cleanup still ran
+    assert ["worktree", "remove", str(seams["tree"])] in _cleanup_cmds(seams)
+    assert "compose down: ok" not in cleanup
+
+
+def test_cleanup_skips_a_non_slice_tree_name(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """A dep_check-pinned worktree can name a project outside
+    precis-test-slice-*: evict_project's refusal is by design, so the
+    cleanup note says 'skipped', never 'FAILED'."""
+    tree = tmp_path / ".claude" / "worktrees" / "pr-7-relock"
+    (tree / "scratch").mkdir(parents=True)
+    seams["tree"] = tree
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert seams["evict"] == []
+    cleanup = pctx.meta_set["cleanup"]
+    assert any(
+        n == "compose down: skipped (not a slice project: precis-test-pr-7-relock)"
+        for n in cleanup
+    )
+    assert not any("compose down: FAILED" in n for n in cleanup)
+
+
+def test_launch_sweeps_other_stacks_and_keeps_own(seams: dict[str, Any]) -> None:
+    """Every ship launch first sweeps the host's finished slice stacks,
+    keeping this tree's project; the evictions are one job event."""
+    seams["evicted_stacks"] = ["precis-test-slice-td99"]
+    store = _Store()
+    store.add_todo(42)
+    ctx, _handle = _submit(store, seams)
+    assert seams["swept"] == [seams["tree"]]
+    events = [t for k, t in ctx.chunks if k == "job_event"]
+    assert "land_slice: evicted idle slice stacks: precis-test-slice-td99" in events
+
+
 def test_poll_red_lint_fails_with_the_cross_line(seams: dict[str, Any]) -> None:
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
@@ -815,6 +914,7 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> dict[str, datetime]:
     now = {"t": T0}
     monkeypatch.setattr(land_slice, "_now", lambda: now["t"])
     monkeypatch.delenv("PRECIS_LAND_REFUSAL_BACKOFF_S", raising=False)
+    monkeypatch.delenv("PRECIS_LAND_GATE_KILL_BACKOFF_S", raising=False)
     return now
 
 
@@ -1422,6 +1522,205 @@ def test_poll_lint_red_is_unchanged_by_the_main_refusal_path(
     assert "attempt:1" in pctx.failure
     assert store.comments(42)[-1].startswith("handoff: land FAILED on slice/42: ✖ ruff")
     assert "attempt:1" in store.tag_strings(42)
+
+
+# ── gate kills are host-side (gr570133) ────────────────────────────
+
+#: The real ``gate_oom_note`` line (scripts/lib/gate-slot.sh) the ship log
+#: carries when the docker VM's OOM killer takes the gate container.
+KILL_LOG = (
+    "checked ship (--checked)\n"
+    "pytest -n3 --testmon --select-failures-first\n"
+    "\x1b[31m✖ the gate container (checked mode) exited 137 (SIGKILL) — almost "
+    "always the OOM killer on its mem_limit (24 GiB, docker/dev/compose.yaml), "
+    "not a verdict on the diff.\n"
+    "  The kill is per-container now: siblings keep running. Re-run to rule "
+    "out a flake; if it repeats, bisect the memory hog.\x1b[0m\n"
+    "SHIP_STATUS: error\n"
+)
+
+#: pytest-xdist's dead-worker line: the summary ✖ names the gate red, the
+#: kill line sits above it.
+XDIST_LOG = (
+    "checked ship (--checked)\n"
+    "gw0 gw1 gw2 [3 workers]\n"
+    "worker 'gw2' crashed while running 'tests/test_x.py::test_y'\n"
+    "\x1b[31m✖ the checked gate is RED (1 crashed worker, 0 failed)\x1b[0m\n"
+    "SHIP_STATUS: error\n"
+)
+
+
+def test_gate_kill_line_reads_whole_log() -> None:
+    """The kill line is found anywhere in the log — a later generic
+    "gate is RED" ✖ must not hide it. A clean exit is never a kill:
+    scripts/test retries a lone 137 itself, so a mark can sit in a
+    successful log."""
+    kill = land_slice.gate_kill_line(KILL_LOG, 1)
+    assert kill is not None and "exited 137 (SIGKILL)" in kill
+    line = land_slice.gate_kill_line(XDIST_LOG, 1)
+    assert line is not None and "crashed while running" in line
+    assert land_slice.gate_kill_line("✖ ruff format: 1 file\n", 1) is None
+    assert land_slice.gate_kill_line("", 1) is None
+    assert land_slice.gate_kill_line(KILL_LOG, 0) is None
+
+
+#: A genuinely red gate can still QUOTE the kill marks: pytest failure
+#: output prints the asserted-on string constants mid-line — this file's
+#: own KILL_LOG and XDIST_LOG are exactly such constants. Anchored marks
+#: must not fire on the quotes.
+QUOTED_KILL_LOG = (
+    "checked ship (--checked)\n"
+    "FAILED tests/test_land_slice.py::test_t - AssertionError\n"
+    ">       assert \"worker 'gw2' crashed while running 'x'\" in LOG\n"
+    "E       AssertionError: LOG held '✖ the gate container exited 137 "
+    "(SIGKILL) — almost always the OOM killer'\n"
+    "\x1b[31m✖ the checked gate is RED (0 crashed, 1 failed)\x1b[0m\n"
+    "SHIP_STATUS: error\n"
+)
+
+
+def _kill_setup(
+    seams: dict[str, Any], log: str, gate_kills: int | None = None
+) -> tuple[_Store, dict[str, Any]]:
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    if gate_kills is not None:
+        handle["gate_kills"] = gate_kills
+    _finish(handle, 1, log)
+    return store, handle
+
+
+def test_poll_exit_137_defers_without_attempt(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    """gr570133: a gate the VM's OOM killer took is infrastructure, not
+    the branch — defer under `gate_kills` at the short backoff, no
+    attempt, no handoff, then relaunch (which sweeps the stacks first)."""
+    store, handle = _kill_setup(seams, KILL_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert pctx.status is None and pctx.failure is None
+    assert handle["gate_kills"] == 1
+    assert "main_refusals" not in handle
+    assert handle["not_before"] == "2026-11-01T10:02:00Z"  # 120 s, not 30 min
+    assert handle["last_refusal"].startswith(land_slice.GATE_KILL_CROSS)
+    assert not {"pid", "pgid", "boot_id", "start_time"} & handle.keys()
+    assert pctx.meta_set["compute_handle"] == handle
+    assert pctx.meta_set["compute_handle_released"] is False
+    [(kind, text)] = pctx.chunks
+    assert kind == "job_event"
+    assert "gate killed (exit 137, VM memory) - infrastructure, not the branch" in text
+    assert "exited 137 (SIGKILL)" in text
+    assert text.endswith("scripts/ship again after 10:02Z")
+    # the todo is untouched: still claimed, no attempt bump, no handoff
+    tags = store.tag_strings(42)
+    assert "claimed-by:lane-claude-sub" in tags
+    assert not any(t.startswith("attempt:") for t in tags)
+    assert store.comments(42) == []
+    # at the backoff the land relaunches — the launch swept the stacks
+    # again — and the counter rides the carry.
+    clock["t"] = T0 + timedelta(seconds=120)
+    assert land_slice.poll(pctx, handle) is False
+    assert len(seams["launch"]) == 2
+    assert seams["swept"] == [seams["tree"], seams["tree"]]
+    assert handle["pid"] == 5151 and "not_before" not in handle
+    assert handle["gate_kills"] == 1
+
+
+def test_poll_exit_137_cap_names_vm_or_branch_memory(
+    seams: dict[str, Any],
+) -> None:
+    """Past MAX_GATE_KILL_RETRIES the job fails with a handoff naming the
+    docker VM's memory or the branch's own memory use — exit 137 is also
+    the container's own mem_limit (24 GiB), which a branch memory hog can
+    hit, so the handoff does NOT clear the branch."""
+    store, handle = _kill_setup(
+        seams, KILL_LOG, gate_kills=land_slice.MAX_GATE_KILL_RETRIES
+    )
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert len(seams["launch"]) == 1
+    n = land_slice.MAX_GATE_KILL_RETRIES + 1
+    assert pctx.status == "failed" and pctx.failure is not None
+    assert (
+        f"land blocked by gate kills for {n} retries: "
+        "gate killed (exit 137, VM memory)" in pctx.failure
+    )
+    [handoff] = store.comments(42)
+    assert handoff.startswith("handoff: land BLOCKED on slice/42:")
+    assert "gate killed (exit 137, VM memory)" in handoff
+    assert "the docker VM's memory or the branch's own memory use" in handoff
+    assert "Do not rebuild" not in handoff
+
+
+def test_poll_red_quoting_kill_marks_is_an_ordinary_red(
+    seams: dict[str, Any],
+) -> None:
+    """A genuinely red gate whose pytest failure output quotes both kill
+    literals (this file's own KILL_LOG/XDIST_LOG constants are exactly
+    such constants) is an ordinary red: anchored marks do not fire, no
+    deferral, the attempt burns."""
+    assert land_slice.gate_kill_line(QUOTED_KILL_LOG, 1) is None
+    store, handle = _kill_setup(seams, QUOTED_KILL_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "gate_kills" not in handle
+    assert len(seams["launch"]) == 1
+    assert "attempt:1" in store.tag_strings(42)
+    assert store.comments(42)[-1].startswith("handoff: land FAILED on slice/42")
+
+
+def test_poll_xdist_crash_retries_once_then_red(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    """A crashed xdist worker may have been the VM's OOM killer — one
+    retry. The second identical crash is a branch problem: the ordinary
+    red, attempt consumed."""
+    store, handle = _kill_setup(seams, XDIST_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert handle["gate_kills"] == 1
+    assert handle["not_before"] == "2026-11-01T10:02:00Z"
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+    [(kind, text)] = pctx.chunks
+    assert kind == "job_event" and "crashed" in text
+    clock["t"] = T0 + timedelta(seconds=120)
+    assert land_slice.poll(pctx, handle) is False
+    assert len(seams["launch"]) == 2 and handle["gate_kills"] == 1
+    # second identical crash: deterministic — a branch problem
+    _finish(handle, 1, XDIST_LOG)
+    pctx2 = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx2, handle) is True
+    assert pctx2.status == "failed"
+    assert "attempt:1" in store.tag_strings(42)
+    assert store.comments(42)[-1].startswith("handoff: land FAILED on slice/42")
+    assert "the checked gate is RED" in (pctx2.failure or "")
+
+
+def test_poll_kill_does_not_bump_main_refusals(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    store, handle = _kill_setup(seams, KILL_LOG)
+    handle["main_refusals"] = 3
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert handle["gate_kills"] == 1
+    assert handle["main_refusals"] == 3
+
+
+def test_poll_real_red_is_unchanged(seams: dict[str, Any]) -> None:
+    """An ordinary red — no kill line — never touches gate_kills."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 1, "\x1b[31m✖ ruff: 2 errors in src/x.py\x1b[0m\n")
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "gate_kills" not in handle
+    assert len(seams["launch"]) == 1
 
 
 # ── gate pick ──────────────────────────────────────────────────────

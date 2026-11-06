@@ -34,10 +34,29 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   ``gripe-fix`` plan's gate also moves the plan's gripe to the verify rung
   (``resolved: <sha>`` + ``STATUS:verify``, :func:`_notify_gripe`;
   gr561932), so ``gripe_validate`` closes it once the sha is on prod. Then
+  cleanup (:func:`_cleanup`): the tree's ``precis-test-slice-*`` compose
+  project is brought down (``-v``; it used to stay warm forever —
+  gr570133, and the SessionStart reapers never run on this host), then
   ``git worktree remove``, ``git branch -D slice/<id>`` and, when the
   branch is on origin, ``git push origin --delete slice/<id>``. A cleanup
   step that fails is reported in the summary, not a job failure: the land
-  is real. Red (lint ✖, a forward-merge conflict, anything non-zero): the
+  is real. Every launch — the first and each deferral relaunch — first
+  sweeps the host's other finished slice stacks
+  (:func:`_launch_ship` → :func:`_sweep_stacks` →
+  :mod:`precis.workers.slice_stacks`): gone trees down with ``-v``,
+  quiet stacks idle past ``PRECIS_SLICE_STACK_IDLE_S`` (default 3600 s;
+  the warm gate-cache volume is kept) and the oldest quiet stacks over
+  ``PRECIS_SLICE_STACK_CAP`` (default 8) — except any whose newest
+  activity is younger than ``PRECIS_SLICE_STACK_CAP_FLOOR_S`` (default
+  900 s: ship writes no run marker and gates through separate ``compose
+  exec`` calls, so a quiet young stack may be a land mid-ship), and each
+  cap eviction re-inspects liveness right before the ``down``. A stack
+  with a running non-gate container, an attached exec or a live
+  ``precis-test-runs/<pid>`` marker is never touched, and
+  ``PRECIS_SLICE_STACK_SWEEP=off`` disables the sweep. Without it
+  finished stacks piled into the 8 GiB docker VM until
+  gates died on OOM-137 and address-pool exhaustion. Red (lint ✖, a
+  forward-merge conflict, anything non-zero): the
   job fails with the ✖ line, a ``handoff:`` comment tells the next build
   session why, and the todo reopens with ``attempt:<n>`` (run_slice's
   :func:`~precis.workers.job_types.run_slice.release_todo`). The branch and
@@ -57,7 +76,20 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   ``--diag`` line. Ship's host-side refusals (:func:`is_host_refusal`: the
   docker VM disk preflight, exit 3, no ✖) defer the same way under the same
   counter and cap; the blocked handoff then names the node, not main
-  (gr552214).
+  (gr552214). A red log whose gate was killed by the host
+  (:func:`gate_kill_line` over the whole log, non-zero exit: ship's ✖
+  ``exited 137 (SIGKILL)`` line — the docker VM's OOM killer or the
+  container's own mem_limit, gr570133 — or xdist's line-start
+  ``worker 'gwN' crashed while running``; the anchored shapes keep a
+  failure that QUOTES the literals an ordinary red) defers the same way
+  but under its own ``handle.gate_kills`` counter and the shorter
+  ``PRECIS_LAND_GATE_KILL_BACKOFF_S`` (default
+  120 s): the VM, not the branch, ran out of memory, so no attempt is
+  burned and the relaunch sweeps the idle stacks first. An exit-137 past
+  :data:`MAX_GATE_KILL_RETRIES` fails with a handoff naming the docker
+  VM's memory or the branch's own memory use (a branch memory hog can
+  hit the same mem_limit); an xdist crash retries once, then falls to
+  the ordinary red (a deterministic crash is a branch problem).
 * :func:`kill` SIGTERMs ship's process group.
 
 **Pull requests** (td543749). With ``params.pr = <n>`` (a ``pr-intake``
@@ -81,10 +113,11 @@ with a comment naming the squash sha (:func:`_gh`, the host's ``gh auth``:
 the attribution gap of gr543694 applies). A failed close is reported in
 the summary, not a job failure.
 
-Guard: ``PRECIS_FACTORY=off`` refuses every submit. Git, launch and
-process probes go through module-level seams (:func:`_git`,
-:func:`_launch`, :func:`_process_alive`, :func:`_pending_gates`) so tests
-never run ship, git or SQL.
+Guard: ``PRECIS_FACTORY=off`` refuses every submit. Git, launch, docker
+and process probes go through module-level seams (:func:`_git`,
+:func:`_launch`, :func:`_process_alive`, :func:`_pending_gates`,
+:func:`_evict_stack`, :func:`_sweep_stacks`) so tests never run ship,
+git, docker or SQL.
 """
 
 from __future__ import annotations
@@ -103,6 +136,7 @@ from precis.plans.logbook import log_plan_event
 from precis.plans.templates import PENDING_SHA
 from precis.store.types import ChunkInsert, Tag
 from precis.workers import factory_git as _factory_git
+from precis.workers import slice_stacks as _slice_stacks
 from precis.workers.job_types import JobTypeSpec
 from precis.workers.job_types import run_slice as _rs
 
@@ -198,6 +232,28 @@ MAX_MAIN_REFUSALS = 8
 #: (``PRECIS_LAND_REFUSAL_BACKOFF_S`` overrides): main's state changes on the
 #: scale of a /go, not of a poll, so an immediate retry only burns the cap.
 MAIN_REFUSAL_BACKOFF_S = 1800
+#: The shapes naming a gate process the host killed, not a verdict on the
+#: diff — ANCHORED to line start, because a genuinely red run whose
+#: pytest failure output quotes the literals (this feature's own
+#: KILL_LOG/XDIST_LOG constants printed in a failure report) must read
+#: as an ordinary red. Ship's own OOM note is a line STARTING with its
+#: ✖ mark (``gate_oom_note``, scripts/lib/gate-slot.sh; exit 137 — the
+#: docker VM's OOM killer or the container's own mem_limit, gr570133)
+#: and pytest-xdist's dead-worker report starts the line
+#: ``worker 'gwN' crashed while running '<test>'``. A red log carrying
+#: one defers like a host refusal, under ``handle.gate_kills``.
+GATE_KILL_137_RE = re.compile(r"^✖ .*exited 137 \(SIGKILL\)")
+GATE_KILL_XDIST_RE = re.compile(r"^worker 'gw\d+' crashed while running")
+#: Exit-137 deferrals tolerated per land; the next one fails the job with a
+#: host handoff naming the docker VM. An xdist "crashed while running" gets
+#: ONE retry — a deterministic crash is a branch problem.
+MAX_GATE_KILL_RETRIES = 2
+#: Seconds a gate-killed land waits before ship runs again
+#: (``PRECIS_LAND_GATE_KILL_BACKOFF_S`` overrides): the sweep on relaunch
+#: may have freed the VM, so the retry is quick.
+GATE_KILL_BACKOFF_S = 120
+#: The cause a gate-kill deferral or blocked handoff names on the job.
+GATE_KILL_CROSS = "gate killed (exit 137, VM memory) - infrastructure, not the branch"
 _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 PARAMS_SCHEMA: dict[str, Any] = {
@@ -260,6 +316,16 @@ def refusal_backoff_s() -> int:
     return max(n, 0)
 
 
+def gate_kill_backoff_s() -> int:
+    """Deferral wait after a gate kill (``PRECIS_LAND_GATE_KILL_BACKOFF_S``,
+    default :data:`GATE_KILL_BACKOFF_S`; never negative)."""
+    try:
+        n = int(os.environ.get("PRECIS_LAND_GATE_KILL_BACKOFF_S", GATE_KILL_BACKOFF_S))
+    except ValueError:
+        return GATE_KILL_BACKOFF_S
+    return max(n, 0)
+
+
 def ship_bin(tree: Path) -> str:
     """``PRECIS_SHIP_BIN`` (the test seam), else the worktree's own
     ``scripts/ship``."""
@@ -307,6 +373,27 @@ def _launch(
 
 def _process_alive(pid: int) -> bool:
     return _rs._process_alive(pid)
+
+
+def _evict_stack(project: str, *, volumes: bool) -> bool:
+    """``docker compose -p <project> down`` on one slice stack
+    (:mod:`precis.workers.slice_stacks`); never raises — docker trouble is
+    a cleanup note, not a job failure."""
+    try:
+        return _slice_stacks.evict_project(project, volumes=volumes)
+    except Exception:  # pragma: no cover — defensive; the land is real
+        log.warning("land_slice: compose down of %s failed", project, exc_info=True)
+        return False
+
+
+def _sweep_stacks(*, keep: Path | None = None) -> list[str]:
+    """The pre-launch sweep of gone/idle ``precis-test-slice-*`` stacks on
+    this host (:func:`slice_stacks.sweep`); never raises."""
+    try:
+        return _slice_stacks.sweep(keep=keep)
+    except Exception:  # pragma: no cover — defensive; a launch must go on
+        log.warning("land_slice: slice-stack sweep failed", exc_info=True)
+        return []
 
 
 def _now() -> datetime:
@@ -465,6 +552,23 @@ def host_refusal_line(log_text: str) -> str | None:
     so :func:`cross_line` misses them."""
     for line in reversed(_lines(log_text)):
         if is_host_refusal(line):
+            return line.strip()
+    return None
+
+
+def gate_kill_line(log_text: str, exit_code: int | None) -> str | None:
+    """The last gate-kill line in ship's output, or ``None``. The WHOLE
+    log is scanned — ship's later generic "gate is RED" ✖ at the tail
+    must not hide an earlier kill line — but the marks stay anchored
+    (:data:`GATE_KILL_137_RE`, :data:`GATE_KILL_XDIST_RE`): failure output
+    quoting the literals is a mid-line match and an ordinary red. A clean
+    exit cannot be a kill (``scripts/test`` retries a lone 137 itself, so
+    a mark can sit in a successful log); ``None`` — a dead ship that left
+    no exit file — stays eligible: it is itself a kill suspect."""
+    if exit_code == 0:
+        return None
+    for line in reversed(_lines(log_text)):
+        if GATE_KILL_137_RE.match(line) or GATE_KILL_XDIST_RE.match(line):
             return line.strip()
     return None
 
@@ -675,6 +779,23 @@ def _cleanup(tree: Path, branch: str) -> list[str]:
         notes.append(f"{label}: FAILED ({(proc.stderr or proc.stdout).strip()[:200]})")
         return False
 
+    # The warm compose stack dies with the tree (gr570133): a
+    # precis-test-slice-* project left up keeps a postgres and a sleep-
+    # infinity gate on the 8 GiB docker VM, and the SessionStart reapers
+    # never run on this host. -v: the tree is gone, nothing is kept. A
+    # tree that names no slice project (a dep_check-pinned path) is a
+    # designed skip — evict_project would refuse it anyway, and a FAILED
+    # note misreads that as docker trouble.
+    project = _slice_stacks.project_for_tree(tree)
+    if not project.startswith(_slice_stacks.SLICE_PREFIX):
+        notes.append(f"compose down: skipped (not a slice project: {project})")
+    elif _evict_stack(project, volumes=True):
+        notes.append("compose down: ok")
+    else:
+        notes.append(
+            "compose down: FAILED "
+            f"(docker compose -p {project} down --remove-orphans -v)"
+        )
     step("worktree remove", ["worktree", "remove", str(tree)])
     step("branch -D", ["branch", "-D", branch])
     remote = _git(["ls-remote", "--exit-code", "--heads", "origin", branch], root)
@@ -905,6 +1026,12 @@ def _launch_ship(
     scratch = tree / "scratch"
     log_path = scratch / "land_slice.log"
     exit_path = scratch / "land_slice.exit"
+    evicted = _sweep_stacks(keep=tree)
+    if evicted:
+        ctx.append_chunk(
+            "job_event",
+            "land_slice: evicted idle slice stacks: " + ", ".join(evicted),
+        )
     pre = _drift_preflight(tree)
     if _gate_unknown(pre):
         # Fail closed: the lander's identity cannot see main's gate, so do not
@@ -917,7 +1044,7 @@ def _launch_ship(
             "subject": subject,
             "flag": flag,
         }
-        for key in ("main_refusals", "last_refusal"):
+        for key in ("main_refusals", "last_refusal", "gate_kills"):
             if carry is not None and key in carry:
                 parked[key] = carry[key]
         refusals = int(parked.get("main_refusals") or 0) + 1
@@ -988,7 +1115,7 @@ def _launch_ship(
         "flag": flag,
         "started_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    for key in ("main_refusals", "last_refusal"):
+    for key in ("main_refusals", "last_refusal", "gate_kills"):
         if carry is not None and key in carry:
             handle[key] = carry[key]
     identity = _rs._process_identity(pid)
@@ -1140,8 +1267,9 @@ def _gate_unknown(pre: dict[str, Any]) -> bool:
 def _blocked_handoff(
     branch: str, refusals: int, cross: str, side: str = "main"
 ) -> tuple[str, str]:
-    """``(reason, handoff)`` for a land parked past :data:`MAX_MAIN_REFUSALS`.
-    ``side`` is :func:`refusal_side`: the handoff names what has to change."""
+    """``(reason, handoff)`` for a land parked past its deferral cap.
+    ``side`` is :func:`refusal_side`, or ``"gate"`` for a land that kept
+    being gate-killed: the handoff names what has to change."""
     if side == "host":
         return (
             f"land blocked by the lander's host for {refusals} refusals: {cross}",
@@ -1149,6 +1277,18 @@ def _blocked_handoff(
             f"{refusals} times ({cross}). Nothing is wrong on the branch; the "
             "node needs the ops action the refusal names (an operator, not a "
             "builder). Do not rebuild.",
+        )
+    if side == "gate":
+        # Exit 137 is ALSO the container's own mem_limit (24 GiB,
+        # docker/dev/compose.yaml) — a branch's memory hog can hit it, so
+        # the handoff does not clear the branch ("Do not rebuild" would
+        # be wrong for that half).
+        return (
+            f"land blocked by gate kills for {refusals} retries: {cross}",
+            f"land BLOCKED on {branch}: the gate was killed {refusals} "
+            f"times ({cross}). The cause is the docker VM's memory or the "
+            "branch's own memory use — a memory hog on the branch is the "
+            "builder's to fix; otherwise an operator frees the docker VM.",
         )
     return (
         f"land blocked by main for {refusals} refusals: {cross}",
@@ -1166,27 +1306,30 @@ def _defer_to_main(
     *,
     probe: str | None = None,
     side: str = "main",
+    backoff_s: int | None = None,
+    counter: str = "main_refusals",
 ) -> bool:
     """A main-side (or host-side, ``side="host"``) refusal is a deferral, not
-    a red: count it, note it on the job and park the handle until
-    ``not_before`` (now + :func:`refusal_backoff_s`);
-    :func:`_relaunch_when_due` runs ship again then. The dead ship's pid,
-    identity and exit file are dropped so no poll re-reads its exit. The
-    handle is mutated in place and persisted to ``meta.compute_handle`` (poll
-    cannot hand one back). Always ``False``: the job stays running.
+    a red: count it in ``counter`` (``gate_kills`` for a gate kill — never
+    ``main_refusals``, which is only about main's verdict), note it on the
+    job and park the handle until ``not_before`` (now +
+    :func:`refusal_backoff_s`, or ``backoff_s`` when given — the shorter
+    gate-kill wait); :func:`_relaunch_when_due` runs ship again then. The
+    dead ship's pid, identity and exit file are dropped so no poll re-reads
+    its exit. The handle is mutated in place and persisted to
+    ``meta.compute_handle`` (poll cannot hand one back). Always ``False``:
+    the job stays running.
 
     A main-side event carries the lander identity's drift diag (``probe``,
     else a fresh :func:`_drift_preflight`) so a blind token and a red window
     read differently (gr550941); a host-side one has nothing to probe."""
-    due = _now() + timedelta(seconds=refusal_backoff_s())
+    delay = refusal_backoff_s() if backoff_s is None else backoff_s
+    due = _now() + timedelta(seconds=delay)
     for key in ("pid", "pgid", "boot_id", "start_time"):
         handle.pop(key, None)
     Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
-    handle.update(
-        main_refusals=refusals,
-        last_refusal=cross,
-        not_before=due.strftime(_TS_FMT),
-    )
+    handle.update(last_refusal=cross, not_before=due.strftime(_TS_FMT))
+    handle[counter] = refusals
     if probe is None and side == "main":
         probe = _drift_preflight(Path(str(handle.get("worktree") or "")))["diag"]
     ctx.append_chunk(
@@ -1197,7 +1340,7 @@ def _defer_to_main(
     )
     # Parked time must not eat the ssh_node wall deadline: it covers the
     # wait plus one fresh ship run.
-    deadline = _now().timestamp() + refusal_backoff_s() + wall_seconds()
+    deadline = _now().timestamp() + delay + wall_seconds()
     ctx.set_meta(
         compute_handle=handle, compute_handle_released=False, deadline=deadline
     )
@@ -1318,6 +1461,43 @@ def poll(ctx: Any, handle: Any) -> bool:
             if refusals <= MAX_MAIN_REFUSALS:
                 return _defer_to_main(ctx, handle, cross, refusals, side=side)
             reason, handoff = _blocked_handoff(branch, refusals, cross, side)
+        else:
+            # A gate the VM killed is host-side too (gr570133): the land
+            # defers and retries under `gate_kills` — its own counter, the
+            # shorter kill backoff, and the sweep on relaunch — never an
+            # attempt, never a handoff. Past the cap an exit-137 blocks
+            # with a handoff naming the docker VM's memory or the
+            # branch's own memory use; an xdist crash retries once, then
+            # falls through to the ordinary red (a deterministic crash is
+            # a branch problem).
+            kill_line = gate_kill_line(log_text, exit_code)
+            if kill_line is not None:
+                kills = int(handle.get("gate_kills") or 0) + 1
+                if "exited 137 (SIGKILL)" in kill_line:
+                    kill_cross = f"{GATE_KILL_CROSS}: {kill_line}"
+                    if kills <= MAX_GATE_KILL_RETRIES:
+                        return _defer_to_main(
+                            ctx,
+                            handle,
+                            kill_cross,
+                            kills,
+                            side="host",
+                            backoff_s=gate_kill_backoff_s(),
+                            counter="gate_kills",
+                        )
+                    reason, handoff = _blocked_handoff(
+                        branch, kills, kill_cross, "gate"
+                    )
+                elif kills <= 1:
+                    return _defer_to_main(
+                        ctx,
+                        handle,
+                        f"gate worker crashed mid-run (xdist): {kill_line}",
+                        kills,
+                        side="host",
+                        backoff_s=gate_kill_backoff_s(),
+                        counter="gate_kills",
+                    )
         ctx.set_meta(exit_code=exit_code, ship_status=status)
         ctx.append_chunk(
             "job_summary",
@@ -1460,9 +1640,14 @@ __all__ = [
     "COMPATIBLE_EXECUTORS",
     "DESCRIPTION",
     "DRIFT_PROBE_TIMEOUT_S",
+    "GATE_KILL_137_RE",
+    "GATE_KILL_BACKOFF_S",
+    "GATE_KILL_CROSS",
+    "GATE_KILL_XDIST_RE",
     "HOST_REFUSAL_MARKS",
     "MAIN_REFUSAL_BACKOFF_S",
     "MAIN_REFUSAL_MARKS",
+    "MAX_GATE_KILL_RETRIES",
     "MAX_MAIN_REFUSALS",
     "NAME",
     "PARAMS_SCHEMA",
@@ -1474,6 +1659,8 @@ __all__ = [
     "UNKNOWN_GATE_CROSS",
     "cross_line",
     "gate_error_lines",
+    "gate_kill_backoff_s",
+    "gate_kill_line",
     "host_refusal_line",
     "is_host_refusal",
     "is_main_refusal",
