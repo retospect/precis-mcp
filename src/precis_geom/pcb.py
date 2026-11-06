@@ -2030,6 +2030,8 @@ OBJECTIVE_TERMS = (
     "direction",
     "silkroom",
     "margin",
+    "fanout",
+    "cutcap",
 )
 
 
