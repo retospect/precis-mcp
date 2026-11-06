@@ -289,8 +289,41 @@ lane ticker (`--only plan_tick`) runs the pass with no job row, so a
 factory ticked only by the lane is not covered by the heartbeat — the
 paused tick todo is exactly that setup and is never judged.
 
-Clearing a rescued node: fix the cause, then remove the `rescue:<class>`
-tag (the shared signature gripe closes with its work).
+### Diagnose and re-arm
+
+The same tick's second pass acts on nodes already in RESCUE. A node
+rescued under a task class (`builder`, `land`, `review`, `release`,
+`lane`, `intake`) gets ONE diagnose task under its plan root, pinned to
+lane `claude-sub` (one attempt, `meta.retries` 1, read-only by
+instruction, `meta.rescue_for` links it to its node) and the node is
+`blocked-by` it while it waits. Engine classes (`stalled`, `cancelled`,
+`terminal-root`, `tick-raises`, `tick-silent`, `post-land-write`,
+`wait-deadline`, `infra` — an unknown class reads as engine), a second
+rescue (`meta.rescue.n >= 1`), and a rescued gripe skip the diagnose:
+the ask goes straight up (a gripe is noted and left — `meta.ask.blocks`
+takes a todo handle only).
+
+The session replies on the task with one first line: `rescue: REARM —
+<corrected brief>` or `rescue: NOFIX — <why>` (a `handoff:` prefix
+counts; anything else is unparsable). REARM removes the `rescue:` tag,
+stamps `meta.rescue` (`n`, `at`, `diagnose`, `cls`) and the re-arm floor
+(`rearmed_after_job` on the newest ended job, `rearmed_ask_at`,
+`rearmed_answer` — so an infra-red land's re-land stays off), and posts
+the corrected `brief:` comment the rebuilt run reads; the run resumes
+on `slice/<id>` through `run_slice._ensure_worktree` (the tree and
+branch are reused; nothing pins the run to the host holding the tree —
+on another host it starts from origin/main and rebuilds). NOFIX, a
+failed or unparsable diagnose, and every straight-ask case file ONE
+`ask-user` + `showstopper` ruling todo blocking the node; the diagnose
+task closes `done` on a verdict, `won't-do` on a failure, and a
+retry-cap ask the tick filed on it is closed superseded.
+
+Read a pass on the node: its `rescue:` comments (`re-armed from td…`,
+`asked td…`), `meta.rescue`, the `brief:` comment, and the diagnose
+task's comments. After answering an ask, remove the `rescue:<class>`
+tag — the pass never clears it. Dry run (`params.dry_run`) and the kill
+switch cover the rescue pass too: `would` lists mint/rearm/ask actions
+and nothing is written.
 
 ## Kill switch
 

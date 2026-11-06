@@ -27,6 +27,12 @@ this job every 5 minutes (recipe:
         meta={'schedule': {'every': '5m'}, 'executor': 'job_inproc',
               'job_type': 'factory_rescue_tick'})
 
+After the stall pass it runs the rescue pass
+(:func:`precis.workers.factory_rescue.run_rescue_pass`): a node carrying
+``rescue:<class>`` gets ONE read-only diagnose task on the ``claude-sub``
+lane — a ``rescue: REARM`` verdict re-arms it once with a corrected
+brief; anything else files one ``ask-user`` todo blocking the node.
+
 ``dedupe_pending`` coalesces a pass whose previous run is still pending.
 Workers never import handlers: every write goes through ``enter_rescue``.
 """
@@ -37,7 +43,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from precis.workers.factory_rescue import run_stall_pass
+from precis.workers.factory_rescue import run_rescue_pass, run_stall_pass
 from precis.workers.job_types import JobTypeSpec
 
 log = logging.getLogger(__name__)
@@ -57,28 +63,54 @@ DESCRIPTION: str = (
     "Dark-factory stall watchdog: one DB-only pass that sends plan nodes "
     "silent past their stage deadline to rescue (one tag, one gripe per "
     "failure signature), including the tick-silent heartbeat on "
-    "plan_dispatch itself. Read-only while the factory kill switch is on."
+    "plan_dispatch itself — then the diagnose pass: a node in rescue gets "
+    "one claude-sub diagnose task, a REARM verdict re-arms it once, else "
+    "one ask-user todo. Read-only while the factory kill switch is on."
 )
 
 
 def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
-    """``job_inproc`` plugin dispatcher: one stall pass, summary on the job."""
+    """``job_inproc`` plugin dispatcher: the stall pass, then the rescue
+    pass — each in its own try/except so one raising still lets the other
+    run (the first failure is recorded, both reported)."""
     del spec
     params = dict(ctx.meta.get("params") or {})
+    dry = bool(params.get("dry_run"))
     now = datetime.now(UTC)
-    try:
-        res = run_stall_pass(ctx.store, now, dry_run=bool(params.get("dry_run")))
-    except Exception as exc:  # a failed pass must not wedge the lane
-        log.warning(
-            "factory_rescue_tick: pass raised (%s)", type(exc).__name__, exc_info=True
-        )
-        ctx.record_failure(
-            f"factory_rescue_tick: pass raised: {type(exc).__name__}: {exc}"
-        )
-        return
-    ctx.set_meta(factory_rescue=res.counts())
-    ctx.append_chunk("job_summary", res.render())
-    log.info("%s", res.summary())
+    results: dict[str, Any] = {}
+    failures: list[str] = []
+    for label, fn in (
+        ("stall", run_stall_pass),
+        ("rescue", run_rescue_pass),
+    ):
+        try:
+            results[label] = fn(ctx.store, now, dry_run=dry)
+        except Exception as exc:  # a failed pass must not wedge the lane
+            log.warning(
+                "factory_rescue_tick: %s pass raised (%s)",
+                label,
+                type(exc).__name__,
+                exc_info=True,
+            )
+            failures.append(
+                f"factory_rescue_tick: {label} pass raised: {type(exc).__name__}: {exc}"
+            )
+    stall = results.get("stall")
+    rescue = results.get("rescue")
+    ctx.set_meta(
+        factory_rescue=(stall.counts() if stall is not None else {"raised": True}),
+        factory_rescue_diagnose=(
+            rescue.counts() if rescue is not None else {"raised": True}
+        ),
+    )
+    rendered = [r.render() for r in (stall, rescue) if r is not None]
+    rendered += [f"- {f}" for f in failures]
+    ctx.append_chunk("job_summary", "\n\n".join(rendered))
+    for r in (stall, rescue):
+        if r is not None:
+            log.info("%s", r.summary())
+    if failures:
+        ctx.record_failure(failures[0])
 
 
 SPEC = JobTypeSpec(

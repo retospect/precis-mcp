@@ -376,6 +376,41 @@ matters). A node in rescue keeps its worktree and branch: the thing
 being rescued is the branch commit, named on the node's evidence
 comment.
 
+## What happens to a node in rescue?
+
+The `factory_rescue_tick` job's second pass acts on it. A node rescued
+under a task class gets ONE diagnose task minted under its plan root,
+pinned to lane `claude-sub` (one attempt, read-only by instruction),
+and the node is `blocked-by` it while it waits. The session reads the
+node's brief, the `rescue:` evidence comment, the signature gripe, the
+newest job's tail and the branch, then replies with one first line:
+
+- `rescue: REARM — <corrected brief>` — the tag comes off, `meta.rescue`
+  (`n`, `at`, `diagnose`, `cls`) and the re-arm floor are stamped, and
+  the corrected `brief:` comment goes on the node; the rebuilt run
+  resumes on `slice/<id>` — the worktree and branch are reused.
+- `rescue: NOFIX — <why>` — the cause is outside the brief.
+
+Read the outcome on the node (`get(kind='todo', id=N)`): the `rescue:`
+comments (`re-armed from td…`, `asked td…`), `meta.rescue`, and the new
+`brief:` comment; the diagnose task's own comments hold the session's
+reply. `search(kind='todo', view='rescue')` still lists the queue.
+
+## When does a rescued node get a diagnose task, and when an ask?
+
+A task-class rescue (`builder`, `land`, `review`, `release`, `lane`,
+`intake`) with `meta.rescue.n < 1` gets the diagnose task. Everything
+else goes straight to one `ask-user` + `showstopper` ruling todo
+blocking the node: a `rescue: NOFIX`, a diagnose whose job failed or
+whose reply is unparsable, a second rescue (`meta.rescue.n >= 1`), and
+every engine class (`stalled`, `cancelled`, `terminal-root`,
+`tick-raises`, `tick-silent`, `post-land-write`, `wait-deadline`,
+`infra`) — the factory's machinery is never a brief problem. A rescued
+gripe is skipped with a note. The ask names the options (`retry with a
+different lane/model`, `rewrite the brief`, `won't do`); closing it
+re-arms the node, and clearing the `rescue:<class>` tag afterwards
+stays the human's step — the pass never clears it.
+
 ## What does the transcript_audit pass sample, and how is it lit?
 
 The `transcript_audit` worker pass (every 30 minutes, dark until
