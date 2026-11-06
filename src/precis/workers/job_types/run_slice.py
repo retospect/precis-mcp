@@ -327,6 +327,13 @@ def slice_name(todo_id: int) -> str:
     return f"slice-td{todo_id}"
 
 
+def worktrees_dir(root: Path) -> Path:
+    """The dir slice worktrees are cut under: ``<root>/.claude/worktrees``
+    — slices themselves, and land_slice's throwaway ``slice-main-td<id>``
+    probe trees."""
+    return root / ".claude" / "worktrees"
+
+
 def ops_root() -> Path:
     """The worker-owned dir slice run state lives under:
     ``<tempdir>/precis-slice-ops/`` (``PRECIS_SLICE_OPS_DIR`` overrides it —
@@ -1132,7 +1139,7 @@ def _ensure_worktree(root: Path, todo_id: int) -> Path:
     ``slice/<id>``, cut from ``origin/main``. A retry reuses an existing
     tree and branch (the branch stays owned by its slice until it lands or
     is abandoned); a legacy ``slice-td<id>`` branch is renamed first."""
-    tree = root / ".claude" / "worktrees" / slice_name(todo_id)
+    tree = worktrees_dir(root) / slice_name(todo_id)
     branch = slice_branch(todo_id)
     _adopt_legacy_branch(root, todo_id)
     if tree.exists():

@@ -7,6 +7,7 @@ the real detached launcher. No DB, no real git, no real scripts/ship.
 
 from __future__ import annotations
 
+import signal
 import subprocess
 import sys
 import time
@@ -23,6 +24,7 @@ pytestmark = pytest.mark.skipif(
 
 from precis.plans.templates import PENDING_SHA
 from precis.store.types import ChunkInsert, Tag
+from precis.workers.executors import ssh_node
 from precis.workers.job_types import get_job_type, known_job_types, land_slice
 
 FULL_SHA = "abc1234" + "0" * 33
@@ -178,6 +180,8 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         "subjects": [SUBJECT],
         "remote": False,
         "gates": [],
+        "diff_names": "",
+        "worktree_list": "",
     }
 
     def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -190,11 +194,17 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
             if calls["remote"]:
                 return _proc(f"{FULL_SHA}\trefs/heads/slice/42\n")
             return _proc(rc=2)
+        if args[:2] == ["diff", "--name-only"]:
+            return _proc(calls["diff_names"])
+        if args[:2] == ["worktree", "list"]:
+            return _proc(calls["worktree_list"])
         return _proc()
 
     def fake_launch(argv: list[str], **kw: Any) -> int:
         calls["launch"].append((argv, kw))
-        return 5151
+        # A distinct pid per launch: ship is 5151, a verify probe 5152/… —
+        # the handle's promoted pgid must name the LIVE phase's process.
+        return 5150 + len(calls["launch"])
 
     monkeypatch.setattr(land_slice, "_git", fake_git)
     monkeypatch.setattr(land_slice, "_launch", fake_launch)
@@ -779,6 +789,167 @@ def test_poll_red_lint_fails_with_the_cross_line(seams: dict[str, Any]) -> None:
     assert "landed_sha" not in pctx.meta_set
 
 
+# ── the failing lines survive (gr573347 a) ─────────────────────────
+
+#: The pinned ruff's default FULL format (0.17): ``CODE [*] message``,
+#: then `` --> path:L:C`` — the concise ``path:N:M: CODE`` shape the error
+#: regex was written for never appears, so a ruff red reached the todo as
+#: the bare ✖ verdict and nothing else.
+RUFF_FULL_LOG = (
+    "quick ship (--quick)\n"
+    "ruff check .\n"
+    "F401 [*] `os` imported but unused\n"
+    " --> src/foo.py:1:8\n"
+    "  |\n"
+    "1 | import os\n"
+    "  |        ^^\n"
+    "  = help: Remove unused import `os`\n"
+    "Found 1 error.\n"
+    "[*] 1 fixable with the `--fix` option.\n"
+    "\x1b[31m✖ ruff: 1 error\x1b[0m\n"
+)
+
+
+def test_poll_red_keeps_failing_lines_in_summary(seams: dict[str, Any]) -> None:
+    """gr573347 a: the land log dies with the worktree, so the failing
+    lines ride the job summary and the handoff — ruff's full format
+    included, condensed to one ``path:L:C CODE message`` line each."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 1, RUFF_FULL_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "src/foo.py:1:8: F401 `os` imported but unused" in summary
+    handoff = store.comments(42)[-1]
+    assert "src/foo.py:1:8: F401 `os` imported but unused" in handoff
+
+
+def test_poll_red_without_error_lines_keeps_the_excerpt(
+    seams: dict[str, Any],
+) -> None:
+    """A red whose log holds no parseable error line still hands the next
+    session the tool output before the ✖ — the step banner and the last
+    lines — on both the summary and the handoff."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        1,
+        "quick ship (--quick)\n"
+        "▶ light gate — ruff · mypy · contracts\n"
+        "gate slot 2 of 4; db sync 41.2s\n"
+        "docker: unexpected EOF reading layer\n"
+        "\x1b[31m✖ light gate is RED — not shipping.\x1b[0m\n",
+    )
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "docker: unexpected EOF reading layer" in summary
+    handoff = store.comments(42)[-1]
+    assert "The gate's output before the verdict:" in handoff
+    assert "gate slot 2 of 4; db sync 41.2s" in handoff
+    assert "docker: unexpected EOF reading layer" in handoff
+
+
+def test_gate_red_excerpt_shape() -> None:
+    """The excerpt is the non-blank lines before the LAST ✖ (not the ✖
+    itself — both surfaces already carry it), capped at 40 lines and
+    3000 chars; no ✖, no excerpt."""
+    assert land_slice.gate_red_excerpt("no cross\nlines here\n") == ""
+    log = "".join(f"line {i}\n" for i in range(50)) + "✖ red\n"
+    excerpt = land_slice.gate_red_excerpt(log)
+    lines = excerpt.splitlines()
+    assert len(lines) == 40
+    assert lines[0] == "line 10" and lines[-1] == "line 49"
+    assert "✖" not in excerpt
+    wide = ("x" * 4000 + "\n") * 3 + "✖ red\n"
+    assert len(land_slice.gate_red_excerpt(wide)) <= 3010
+
+
+# ── the failing ids and whether they are the branch's (gr573347 b) ──
+
+
+def test_failed_test_ids_summary_block_only() -> None:
+    """Ids come only from the ``=== short test summary info ===`` block:
+    an unindented captured-stdout line outside it (or a quoted/indented
+    one inside a test body) cannot inject a failure. The id is the whole
+    token up to the first `` - `` OUTSIDE square brackets, so a
+    parametrized id with spaces — or with `` - `` inside them — survives,
+    and collection ``ERROR`` lines count too."""
+    log = (
+        "FAILED tests/fake.py::test_injected - stdout leaked unindented\n"
+        "=== short test summary info ===\n"
+        "FAILED tests/a.py::test_one - AssertionError\n"
+        "FAILED tests/b.py::test_two[param with space] - RuntimeError\n"
+        "FAILED tests/c.py::t[a - b] - AssertionError\n"
+        "FAILED tests/a.py::test_one - AssertionError\n"
+        "ERROR tests/e.py::test_e - ImportError: boom\n"
+        'E   assert "FAILED tests/q.py::test_quoted - x" in captured\n'
+        "   FAILED tests/indented.py::test_no - quoted in a body\n"
+        "=== 3 failed, 1 error in 30.00s ===\n"
+        "FAILED tests/late.py::test_after - outside the block\n"
+    )
+    assert land_slice.failed_test_ids(log) == [
+        "tests/a.py::test_one",
+        "tests/b.py::test_two[param with space]",
+        "tests/c.py::t[a - b]",
+        "tests/e.py::test_e",
+    ]
+    assert land_slice.failed_test_ids("no failures\n") == []
+    # no banner, no ids — even for a real FAILED line
+    assert land_slice.failed_test_ids("FAILED tests/a.py::t - x\n") == []
+
+
+def test_failed_test_ids_malformed_line_spoils_the_set() -> None:
+    """Unbalanced brackets or an id without ``::`` means the parse can't
+    be trusted: ``[]`` → no outside set → the ordinary red."""
+    banner = "=== short test summary info ===\n"
+    assert (
+        land_slice.failed_test_ids(
+            banner + "FAILED tests/a.py::t[a - b - AssertionError\n"
+        )
+        == []
+    )
+    assert (
+        land_slice.failed_test_ids(
+            banner + "FAILED tests/a.py::t]x[ - AssertionError\n"
+        )
+        == []
+    )
+    assert land_slice.failed_test_ids(banner + "FAILED tests/a.py - no colons\n") == []
+    # a bare-path ERROR (collection failure) is no usable id either
+    assert land_slice.failed_test_ids(banner + "ERROR tests/e.py - ImportError\n") == []
+    # one bad line spoils the good ones too
+    assert (
+        land_slice.failed_test_ids(
+            banner + "FAILED tests/a.py::t - x\n" + "FAILED tests/nop.py - no colons\n"
+        )
+        == []
+    )
+
+
+def test_outside_diff_ids_filters_by_the_diff(seams: dict[str, Any]) -> None:
+    seams["diff_names"] = "tests/a.py\nsrc/precis/x.py\n"
+    ids = ["tests/a.py::t1", "tests/b.py::t2", "tests/a.py::t3[param]"]
+    assert land_slice.outside_diff_ids(seams["tree"], ids) == ["tests/b.py::t2"]
+    [args, _cwd] = next(c for c in seams["git"] if c[0][:2] == ["diff", "--name-only"])
+    assert args == ["diff", "--name-only", "origin/main...HEAD"]
+
+
+def test_outside_diff_ids_unanswerable_diff_is_empty(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A diff git cannot answer verifies nothing — the red stays
+    ordinary."""
+    monkeypatch.setattr(land_slice, "_git", lambda a, c: _proc(rc=2))
+    assert land_slice.outside_diff_ids(seams["tree"], ["tests/b.py::t2"]) == []
+
+
 FULL_REFUSAL_LOG = (
     "checked ship (--checked)\n"
     "2144 passed, 75 skipped, 2 warnings in 205.62s (0:03:25)\n"
@@ -1171,7 +1342,7 @@ def test_relaunch_parks_again_while_the_gate_stays_unknown(
     pctx = _Ctx(store, _params(seams))
     assert land_slice.poll(pctx, handle) is False
     assert len(seams["launch"]) == 2
-    assert handle["pid"] == 5151 and "not_before" not in handle
+    assert handle["pid"] == 5152 and "not_before" not in handle
     assert handle["main_refusals"] == 2  # carried, not reset
 
 
@@ -1355,7 +1526,7 @@ def test_poll_at_not_before_relaunches_once(
     assert argv == [str(seams["tree"] / "scripts" / "ship"), "--quick", SUBJECT]
     assert kw["env"]["PRECIS_SHIP_VERBOSE"] == "1"
     assert "not_before" not in handle
-    assert handle["pid"] == 5151 and handle["flag"] == "--quick"
+    assert handle["pid"] == 5152 and handle["flag"] == "--quick"
     assert handle["main_refusals"] == 3  # carried over
     assert handle["last_refusal"].startswith("✖ main has no")
     assert pctx.meta_set["compute_handle"] == handle
@@ -1703,7 +1874,7 @@ def test_poll_exit_137_defers_without_attempt(
     assert land_slice.poll(pctx, handle) is False
     assert len(seams["launch"]) == 2
     assert seams["swept"] == [seams["tree"], seams["tree"]]
-    assert handle["pid"] == 5151 and "not_before" not in handle
+    assert handle["pid"] == 5152 and "not_before" not in handle
     assert handle["gate_kills"] == 1
 
 
@@ -1830,6 +2001,752 @@ def test_poll_real_red_is_unchanged(seams: dict[str, Any]) -> None:
     assert pctx.status == "failed"
     assert "gate_kills" not in handle
     assert len(seams["launch"]) == 1
+
+
+# ── outside-diff reds verified before charging (gr573347 b) ────────
+
+#: Ship's real checked-selection verdict (``die`` in ``scripts/ship``):
+#: pytest red, but the only failing id is outside the diff — the shape
+#: td565331/td569573/td570062 all went red on.
+OUTSIDE_ID = (
+    "tests/test_pathway_environment.py"
+    "::test_far_vs_legacy_changes_selectivity_and_the_basis"
+)
+CHECKED_RED_LOG = (
+    "checked ship (--checked)\n"
+    "pytest -n3 --testmon --select-failures-first\n"
+    "=== short test summary info ===\n"
+    f"FAILED {OUTSIDE_ID} - assert 1 == 2\n"
+    "=== 1 failed in 30.00s ===\n"
+    "\x1b[31m✖ checked selection is RED — not shipping. Fix the failure "
+    "above and re-run scripts/ship --checked.\x1b[0m\n"
+    "SHIP_STATUS: error\n"
+)
+
+
+def _checked_submit(store: _Store, seams: dict[str, Any]) -> Any:
+    """A ``--checked`` land (the only lane that runs the selection)."""
+    ctx = _Ctx(store, {**_params(seams), "checked": True})
+    return land_slice.submit(ctx, None)
+
+
+#: A probe log whose summary shows the named id failing — the only
+#: non-zero exit that counts as evidence of "red alone"/"red on main".
+VERIFY_RED_LOG = (
+    "=== short test summary info ===\n"
+    f"FAILED {OUTSIDE_ID} - assert 1 == 2\n"
+    "=== 1 failed in 30.00s ===\n"
+)
+
+
+def _verify_finish(
+    handle: dict[str, Any], exit_code: int, log: str = VERIFY_RED_LOG
+) -> None:
+    Path(handle["verify"]["exit_file"]).write_text(f"{exit_code}\n", encoding="utf-8")
+    Path(handle["verify"]["log"]).write_text(log, encoding="utf-8")
+
+
+def _main_tree(seams: dict[str, Any]) -> Path:
+    # Beside the slice tree: <root>/.claude/worktrees/slice-main-td42.
+    return seams["tree"].parent / "slice-main-td42"
+
+
+def test_poll_checked_red_all_ids_in_diff_is_ordinary(
+    seams: dict[str, Any],
+) -> None:
+    """Every failing id is the branch's own — no verify, the ordinary
+    red burns an attempt."""
+    seams["diff_names"] = "tests/test_pathway_environment.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "verify" not in handle
+    assert len(seams["launch"]) == 1
+    assert "attempt:1" in store.tag_strings(42)
+
+
+def test_poll_checked_red_mixed_ids_is_ordinary(seams: dict[str, Any]) -> None:
+    """One outside, one inside: the in-diff failure is the branch's."""
+    seams["diff_names"] = "tests/touched.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(
+        handle,
+        1,
+        "=== short test summary info ===\n"
+        "FAILED tests/touched.py::test_a - boom\n"
+        f"FAILED {OUTSIDE_ID} - assert 1 == 2\n"
+        "=== 2 failed in 30.00s ===\n"
+        "\x1b[31m✖ checked selection is RED — not shipping.\x1b[0m\n",
+    )
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert "verify" not in handle
+    assert "attempt:1" in store.tag_strings(42)
+
+
+def test_poll_checked_red_only_quoted_ids_is_ordinary(
+    seams: dict[str, Any],
+) -> None:
+    """A ``FAILED`` literal quoted inside a test body is no failing id —
+    nothing to verify, the red is ordinary."""
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(
+        handle,
+        1,
+        'E   assert "FAILED tests/x.py::test_t - boom" in captured\n'
+        "\x1b[31m✖ checked selection is RED — not shipping.\x1b[0m\n",
+    )
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert "verify" not in handle
+    assert "attempt:1" in store.tag_strings(42)
+
+
+def test_poll_checked_red_outside_alone_green_is_attempt_free(
+    seams: dict[str, Any],
+) -> None:
+    """All ids outside the diff and green standalone: flaky or
+    order-dependent — attempt-free, and land-again's re-land tick takes
+    it from there."""
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert pctx.status is None and pctx.failure is None
+    verify = handle["verify"]
+    assert verify["phase"] == "alone" and verify["ids"] == [OUTSIDE_ID]
+    argv, kw = seams["launch"][-1]
+    assert argv == [str(seams["tree"] / "scripts" / "test"), OUTSIDE_ID]
+    assert kw["cwd"] == seams["tree"]
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+    _verify_finish(handle, 0)
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set["attempt_free"] == "infra-land"
+    assert pctx.meta_set["red_class"] == "flaky outside the diff"
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags
+    assert "claimed-by:lane-claude-sub" not in tags
+    assert not any(t.startswith("attempt:") for t in tags)
+    [handoff] = store.comments(42)
+    assert handoff.startswith("handoff: land FAILED on slice/42:")
+    assert "flaky or order-dependent" in handoff
+    assert "the lander re-lands" in handoff
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "green standalone" in summary and OUTSIDE_ID in summary
+
+
+def test_poll_checked_red_outside_alone_red_main_red_relaunches_quick(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Still red standalone, red on origin/main too: not the branch's —
+    the land relaunches ``--quick`` (this run's lint already passed), the
+    probe worktree and its stack are removed, and the todo carries the
+    note naming the ids."""
+    monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False
+    verify = handle["verify"]
+    main_tree = _main_tree(seams)
+    assert verify["phase"] == "main" and verify["run_tree"] == str(main_tree)
+    adds = [a for a, _ in seams["git"] if a[:2] == ["worktree", "add"]]
+    assert adds == [["worktree", "add", "--detach", str(main_tree), "origin/main"]]
+    argv, kw = seams["launch"][-1]
+    assert argv == [str(main_tree / "scripts" / "test"), OUTSIDE_ID]
+    assert kw["cwd"] == main_tree
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False
+    argv, _kw = seams["launch"][-1]
+    assert argv[1] == "--quick" and argv[2] == SUBJECT
+    assert handle["flag"] == "--quick" and "verify" not in handle
+    removes = [a for a, _ in seams["git"] if a[:2] == ["worktree", "remove"]]
+    assert removes == [["worktree", "remove", "--force", str(main_tree)]]
+    assert ("precis-test-slice-main-td42", True) in seams["evict"]
+    tags = store.tag_strings(42)
+    assert "claimed-by:lane-claude-sub" in tags
+    assert not any(t.startswith("attempt:") for t in tags)
+    [note] = store.comments(42)
+    assert note.startswith("handoff:") and "red on origin/main too" in note
+    assert OUTSIDE_ID in note
+    events = [t for k, t in pctx.chunks if k == "job_event"]
+    assert any("red on origin/main too" in e and "--quick" in e for e in events)
+
+
+def test_poll_checked_red_outside_alone_red_main_green_is_ordinary(
+    seams: dict[str, Any],
+) -> None:
+    """Red standalone but green on origin/main: the red IS the branch's —
+    ordinary red, attempt burned, the probe worktree still removed."""
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 0)
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "attempt:1" in store.tag_strings(42)
+    main_tree = _main_tree(seams)
+    assert ["worktree", "remove", "--force", str(main_tree)] in [
+        a for a, _ in seams["git"]
+    ]
+    assert ("precis-test-slice-main-td42", True) in seams["evict"]
+    handoff = store.comments(42)[-1]
+    assert "GREEN on origin/main" in handoff and OUTSIDE_ID in handoff
+
+
+def test_poll_checked_red_verify_launch_failure_is_ordinary(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The verify launch itself failing falls back to the ordinary red —
+    never a park."""
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+
+    def boom(*a: Any, **k: Any) -> int:
+        raise OSError("no exec")
+
+    monkeypatch.setattr(land_slice, "_launch", boom)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "verify" not in handle
+    assert "attempt:1" in store.tag_strings(42)
+
+
+def test_poll_checked_red_alone_probe_no_tests_is_ordinary(
+    seams: dict[str, Any],
+) -> None:
+    """A probe that never ran the named tests is a probe failure, never
+    evidence: 'no tests collected' → the ordinary red, the branch
+    charged."""
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1, "no tests collected in 0.01s\n")
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "verify" not in handle and handle.get("verify_done") is True
+    assert "attempt:1" in store.tag_strings(42)
+    # phase main never started: no probe worktree was cut
+    assert not any(a[:2] == ["worktree", "add"] for a, _ in seams["git"])
+    assert "main_probe" not in pctx.meta_set
+
+
+def test_poll_checked_red_alone_probe_other_ids_is_ordinary(
+    seams: dict[str, Any],
+) -> None:
+    """A summary failing ids that are NOT the probed ones is likewise no
+    evidence — the run did something else."""
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(
+        handle,
+        1,
+        "=== short test summary info ===\n"
+        "FAILED tests/other.py::test_x - boom\n"
+        "=== 1 failed in 30.00s ===\n",
+    )
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "attempt:1" in store.tag_strings(42)
+    assert not any(a[:2] == ["worktree", "add"] for a, _ in seams["git"])
+
+
+def test_poll_checked_red_alone_probe_subset_ids_is_ordinary(
+    seams: dict[str, Any],
+) -> None:
+    """A subset is not the same: the probe summary names only one of the
+    two ids it was asked to run — partial evidence is no evidence, the
+    ordinary red, no relaunch."""
+    other = "tests/test_other_outside.py::test_b"
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(
+        handle,
+        1,
+        "checked ship (--checked)\n"
+        "=== short test summary info ===\n"
+        f"FAILED {OUTSIDE_ID} - assert 1 == 2\n"
+        f"FAILED {other} - boom\n"
+        "=== 2 failed in 30.00s ===\n"
+        "\x1b[31m✖ checked selection is RED — not shipping.\x1b[0m\n",
+    )
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert handle["verify"]["ids"] == [OUTSIDE_ID, other]
+    _verify_finish(handle, 1)  # VERIFY_RED_LOG names only OUTSIDE_ID
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "attempt:1" in store.tag_strings(42)
+    # no phase-main worktree, no --quick relaunch
+    assert not any(a[:2] == ["worktree", "add"] for a, _ in seams["git"])
+    argv, _kw = seams["launch"][-1]
+    assert argv[0].endswith("scripts/test")
+
+
+def test_poll_checked_red_main_probe_without_evidence_is_ordinary(
+    seams: dict[str, Any],
+) -> None:
+    """The main probe exits non-zero but never ran the named tests (a
+    usage error): no --quick relaunch — the ordinary red."""
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False  # phase main launched
+    _verify_finish(handle, 4, "scripts/test: unrecognized arguments\n")
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "attempt:1" in store.tag_strings(42)
+    # no --quick relaunch: the last launch was the probe itself
+    argv, _kw = seams["launch"][-1]
+    assert argv[0].endswith("scripts/test")
+
+
+def test_poll_checked_red_outside_spaced_id_is_one_argv(
+    seams: dict[str, Any],
+) -> None:
+    """A parametrized id with spaces rides to ``scripts/test`` as ONE
+    argv element — no shell, no splitting."""
+    seams["diff_names"] = "src/precis/x.py\n"
+    spaced = "tests/test_x.py::test_p[param with space]"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(
+        handle,
+        1,
+        "=== short test summary info ===\n"
+        f"FAILED {spaced} - assert 1 == 2\n"
+        "=== 1 failed in 30.00s ===\n"
+        "\x1b[31m✖ checked selection is RED — not shipping.\x1b[0m\n",
+    )
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert handle["verify"]["ids"] == [spaced]
+    argv, _kw = seams["launch"][-1]
+    assert argv == [str(seams["tree"] / "scripts" / "test"), spaced]
+
+
+def test_poll_checked_red_in_diff_error_is_ordinary(seams: dict[str, Any]) -> None:
+    """A collection ``ERROR`` whose file the diff touches is the
+    branch's — the ordinary red, no verify."""
+    seams["diff_names"] = "tests/broken.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(
+        handle,
+        1,
+        "=== short test summary info ===\n"
+        "ERROR tests/broken.py::test_broken - ImportError: boom\n"
+        "=== 1 error in 30.00s ===\n"
+        "\x1b[31m✖ checked selection is RED — not shipping.\x1b[0m\n",
+    )
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert "verify" not in handle
+    assert "attempt:1" in store.tag_strings(42)
+
+
+def test_poll_checked_red_outside_error_verifies(seams: dict[str, Any]) -> None:
+    """A collection ``ERROR`` outside the diff counts like a FAILED id:
+    verified standalone before the branch is charged."""
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(
+        handle,
+        1,
+        "=== short test summary info ===\n"
+        "ERROR tests/broken.py::test_broken - ImportError: boom\n"
+        "=== 1 error in 30.00s ===\n"
+        "\x1b[31m✖ checked selection is RED — not shipping.\x1b[0m\n",
+    )
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    verify = handle["verify"]
+    assert verify["phase"] == "alone" and verify["ids"] == [
+        "tests/broken.py::test_broken"
+    ]
+    argv, _kw = seams["launch"][-1]
+    assert argv == [
+        str(seams["tree"] / "scripts" / "test"),
+        "tests/broken.py::test_broken",
+    ]
+
+
+def test_main_verify_removes_a_registered_stale_probe_tree(
+    seams: dict[str, Any],
+) -> None:
+    """A crashed run's ``slice-main-td<id>`` still registered as a
+    worktree comes down through git — stack evicted, forced remove —
+    before the add runs. The probe is on the job meta BEFORE the add, so
+    a kill can drop it."""
+    seams["diff_names"] = "src/precis/x.py\n"
+    main_tree = _main_tree(seams)
+    main_tree.mkdir(parents=True)
+    seams["worktree_list"] = (
+        f"worktree {seams['tree'].parent.parent}\n"
+        "HEAD abc1234\n"
+        "branch refs/heads/main\n"
+        "\n"
+        f"worktree {main_tree}\n"
+        "HEAD abc1234\n"
+        "detached\n"
+    )
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False
+    git = [a for a, _ in seams["git"]]
+    assert ["worktree", "prune"] in git
+    rm = git.index(["worktree", "remove", "--force", str(main_tree)])
+    add = git.index(["worktree", "add", "--detach", str(main_tree), "origin/main"])
+    assert rm < add
+    assert ("precis-test-slice-main-td42", True) in seams["evict"]
+    assert pctx.meta_set["main_probe"] == {
+        "tree": str(main_tree),
+        "stack": "precis-test-slice-main-td42",
+    }
+    assert handle["verify"]["phase"] == "main"
+
+
+def test_main_verify_deletes_an_unregistered_stale_probe_dir(
+    seams: dict[str, Any],
+) -> None:
+    """A leftover ``slice-main-td<id>`` directory git does NOT register
+    is deleted directly — only that exact validated path — before the
+    add runs."""
+    seams["diff_names"] = "src/precis/x.py\n"
+    main_tree = _main_tree(seams)
+    (main_tree / "debris").mkdir(parents=True)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False
+    git = [a for a, _ in seams["git"]]
+    assert ["worktree", "prune"] in git
+    assert ["worktree", "list", "--porcelain"] in git
+    # not a registered worktree: no git remove — the directory is deleted
+    assert ["worktree", "remove", "--force", str(main_tree)] not in git
+    assert not main_tree.exists()
+    assert ("precis-test-slice-main-td42", True) in seams["evict"]
+    assert ["worktree", "add", "--detach", str(main_tree), "origin/main"] in git
+    assert handle["verify"]["phase"] == "main"
+
+
+def test_main_verify_dead_probe_is_ordinary_and_dropped(
+    seams: dict[str, Any],
+) -> None:
+    """The probe dying with no exit file is a probe failure: the
+    ordinary red — and the throwaway tree and stack still come down."""
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False  # phase main running
+    seams["alive"] = False  # probe died leaving no exit file
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "attempt:1" in store.tag_strings(42)
+    main_tree = _main_tree(seams)
+    assert ["worktree", "remove", "--force", str(main_tree)] in [
+        a for a, _ in seams["git"]
+    ]
+    assert ("precis-test-slice-main-td42", True) in seams["evict"]
+    # the meta forgets the probe, so a later kill removes nothing
+    assert pctx.meta_set["main_probe"] is None
+
+
+# ── kill signals the live phase and drops the probe ─────────────────
+
+
+def _signals(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    """Record ``(pgid, sig)`` the kill sends, through run_slice's seam."""
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        land_slice._rs, "_signal_group", lambda pgid, sig: sent.append((pgid, sig))
+    )
+    return sent
+
+
+def test_kill_signals_ship_only_outside_verify(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ship running: ship's pgid is signaled and nothing else — no main
+    probe exists to drop."""
+    sent = _signals(monkeypatch)
+    store = _Store()
+    store.add_todo(42)
+    ctx, handle = _submit(store, seams)
+    land_slice.kill(ctx, handle)
+    assert sent == [(5151, signal.SIGTERM)]
+    assert seams["evict"] == []
+    assert not any(a[:2] == ["worktree", "remove"] for a, _ in seams["git"])
+
+
+def test_kill_during_alone_verify_signals_verify_only(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Phase ``alone`` runs the verify in the slice tree: only its pgid
+    is signaled — a finished ship's pgid may have been reused — and
+    there is no probe worktree to drop."""
+    sent = _signals(monkeypatch)
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42)
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    handle["pgid"] = handle["pid"] = 9999  # the dead ship
+    handle["verify"]["pgid"] = 7777
+    land_slice.kill(pctx, handle)
+    assert sent == [(7777, signal.SIGTERM)]
+    assert seams["evict"] == []
+    assert not any(a[:2] == ["worktree", "remove"] for a, _ in seams["git"])
+
+
+def test_kill_during_main_verify_signals_probe_and_drops_it(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Phase ``main``: the verify's pgid is signaled and the probe's
+    worktree and stack — read from the job meta — are removed."""
+    sent = _signals(monkeypatch)
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42)
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False  # phase main running
+    main_tree = _main_tree(seams)
+    # _Ctx.set_meta records meta_set without mutating the starting meta;
+    # the persisted job meta a later kill reads carries the same record —
+    # seed it directly.
+    pctx.meta["main_probe"] = {
+        "tree": str(main_tree),
+        "stack": "precis-test-slice-main-td42",
+    }
+    handle["pgid"] = handle["pid"] = 9999  # the dead ship
+    handle["verify"]["pgid"] = 7777
+    land_slice.kill(pctx, handle)
+    assert sent == [(7777, signal.SIGTERM)]
+    assert ("precis-test-slice-main-td42", True) in seams["evict"]
+    assert ["worktree", "remove", "--force", str(main_tree)] in [
+        a for a, _ in seams["git"]
+    ]
+
+
+def _fake_proc_fs(
+    monkeypatch: pytest.MonkeyPatch,
+    pgid: int,
+    *,
+    boot_id: str = "boot-for-test",
+    start_time: int = 123456,
+) -> None:
+    """``/proc`` answers for the executor's identity gate: the boot-id
+    file and the group leader's stat (start ticks at field 22). The
+    group is reported alive so the gate reaches the kill hook."""
+    original = Path.read_text
+
+    def read_text(path: Path, *args: Any, **kwargs: Any) -> str:
+        if str(path) == "/proc/sys/kernel/random/boot_id":
+            return boot_id + "\n"
+        if str(path) == f"/proc/{pgid}/stat":
+            fields = ["S", *(["0"] * 18), str(start_time), "0"]
+            return f"{pgid} (runner with ) spaces) " + " ".join(fields)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: True)
+    monkeypatch.setattr(
+        land_slice._rs,
+        "_process_identity",
+        lambda pid: (boot_id, start_time),
+    )
+
+
+def _gate_ctx(
+    store: Any, handle: dict[str, Any], *, main_probe: dict[str, str] | None = None
+) -> Any:
+    """A DispatchContext over the real store, carrying the job meta the
+    executor would read — the handle, and the recorded main probe."""
+    meta: dict[str, Any] = {
+        "executor": "ssh_node",
+        "job_type": "land_slice",
+        "params": {"todo_id": 42, "target_node": "spark"},
+        "compute_handle": handle,
+    }
+    if main_probe is not None:
+        meta["main_probe"] = main_probe
+    ref = store.insert_ref(kind="job", slug=None, title="land job", meta=meta)
+    return ssh_node._build_dispatch_context(store, int(ref.id), "land job", meta)
+
+
+def test_executor_cancel_signals_the_alone_verify(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    store: Any,
+) -> None:
+    """Through the executor's gate: during phase ``alone`` the promoted
+    probe identity is what ``_detached_identity_reason`` validates, so
+    the land_slice kill hook runs and the PROBE's group is signalled —
+    while the handle named the dead ship the gate failed closed and the
+    kill never ran."""
+    sent = _signals(monkeypatch)
+    # identity must resolve at LAUNCH time for the promotion to carry it
+    monkeypatch.setattr(
+        land_slice._rs,
+        "_process_identity",
+        lambda pid: ("boot-for-test", 123456),
+    )
+    seams["diff_names"] = "src/precis/x.py\n"
+    store_fake = _Store()
+    store_fake.add_todo(42)
+    handle = _checked_submit(store_fake, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store_fake, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert handle["verify"]["phase"] == "alone"
+    # the probe IS the handle's live process now
+    assert handle["pgid"] == handle["verify"]["pgid"] != 5151
+    _fake_proc_fs(monkeypatch, int(handle["pgid"]))
+    ctx = _gate_ctx(store, handle)
+    assert ssh_node._cancel_one(ctx) is False  # first sight: TERM sent
+    assert sent == [(int(handle["pgid"]), signal.SIGTERM)]
+    # phase alone has no probe tree — nothing else was touched
+    assert seams["evict"] == []
+    assert not any(a[:2] == ["worktree", "remove"] for a, _ in seams["git"])
+
+
+def test_executor_cancel_signals_the_main_probe_and_drops_it(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    store: Any,
+) -> None:
+    """Phase ``main``: the cancel reaches the kill hook through the
+    promoted identity — the probe's group is signalled and the recorded
+    main tree and stack are removed."""
+    sent = _signals(monkeypatch)
+    monkeypatch.setattr(
+        land_slice._rs,
+        "_process_identity",
+        lambda pid: ("boot-for-test", 123456),
+    )
+    seams["diff_names"] = "src/precis/x.py\n"
+    store_fake = _Store()
+    store_fake.add_todo(42)
+    handle = _checked_submit(store_fake, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store_fake, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False
+    assert handle["verify"]["phase"] == "main"
+    assert handle["pgid"] == handle["verify"]["pgid"] != 5151
+    _fake_proc_fs(monkeypatch, int(handle["pgid"]))
+    main_tree = _main_tree(seams)
+    ctx = _gate_ctx(
+        store,
+        handle,
+        main_probe={
+            "tree": str(main_tree),
+            "stack": "precis-test-slice-main-td42",
+        },
+    )
+    assert ssh_node._cancel_one(ctx) is False
+    assert sent == [(int(handle["pgid"]), signal.SIGTERM)]
+    assert ("precis-test-slice-main-td42", True) in seams["evict"]
+    assert ["worktree", "remove", "--force", str(main_tree)] in [
+        a for a, _ in seams["git"]
+    ]
+
+
+# ── credential shapes never reach the todo (mask_secrets) ──────────
+
+
+def test_poll_red_masks_credential_shapes_in_the_excerpt(
+    seams: dict[str, Any],
+) -> None:
+    """Gate output that echoes a credential rides the handoff comment,
+    the job summary and the failure's log tail masked — never the
+    literal."""
+    token = "ghp_" + "a1B2c3" * 6
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        1,
+        f"deploy: token={token} refused by the API\n✖ the deploy step failed\n",
+    )
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    handoff = store.comments(42)[-1]
+    assert token not in handoff and "<redacted:github token>" in handoff
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert token not in summary and "<redacted:github token>" in summary
+    assert token not in (pctx.failure or "")
 
 
 # ── gate pick ──────────────────────────────────────────────────────

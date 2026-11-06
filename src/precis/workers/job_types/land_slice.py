@@ -101,7 +101,23 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   ``plan_dispatch`` ask — no auto re-land, no builder unless the human
   rewrites the brief. An xdist crash retries once, then falls to
   the ordinary red (a deterministic crash is a branch problem).
-* :func:`kill` SIGTERMs ship's process group.
+  Whatever the red's class, the failing lines — the gate's error lines,
+  else the excerpt before the ✖ — ride the job summary and the
+  ``handoff:`` comment, because the land log dies with the worktree
+  (gr573347 a). And a ``checked selection is RED`` verdict whose failing
+  test ids are ALL outside the diff does not charge the branch on sight
+  (gr573347 b): a ``verify`` phase on the handle re-runs the ids detached
+  — standalone in the tree first (a green is a flake or an order
+  dependence: attempt-free, the re-land tick takes it), then, still red,
+  on a throwaway ``origin/main`` worktree ``slice-main-td<id>`` (always
+  removed afterwards, with its stack). Ids red on main too are not the
+  branch's: ship relaunches through ``--quick`` — this run's lint already
+  passed — with a ``handoff``-style note on the todo. Only a main-green
+  red burns an attempt; any launch or probe failure falls back to the
+  ordinary red.
+* :func:`kill` SIGTERMs the live phase's process group (a running
+  verify's during verify, ship's otherwise) and drops the main probe's
+  worktree and stack.
 
 **Pull requests** (td543749). With ``params.pr = <n>`` (a ``pr-intake``
 plan's land node) the branch is ``slice/pr-<n>`` and the worktree is
@@ -136,6 +152,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -146,6 +163,7 @@ from typing import Any
 from precis.plans.logbook import log_plan_event
 from precis.plans.templates import PENDING_SHA
 from precis.store.types import ChunkInsert, Tag
+from precis.utils.secret_scan import mask_secrets
 from precis.workers import factory_git as _factory_git
 from precis.workers import slice_stacks as _slice_stacks
 from precis.workers.job_types import JobTypeSpec
@@ -520,29 +538,142 @@ def cross_line(log_text: str) -> str | None:
 _GATE_ERROR_RE = re.compile(
     r"^(?:\S+\.py:\d+(?::\d+)?: (?:error|[A-Z]{1,4}\d{3,4})\b|FAILED |E {3})"
 )
+#: Ruff's FULL format (the pinned ruff's default): a ``CODE [*] message``
+#: header line, then `` --> path:L:C`` on a following line. Condensed to
+#: the concise shape ``path:L:C CODE message`` so both ruff dialects read
+#: alike on the handoff (gr573347: a full-format ruff red reached the todo
+#: as the bare ✖ verdict).
+_RUFF_HEAD_RE = re.compile(r"^([A-Z]{1,4}\d{3,4})(?:\s+\[\*\])?\s+(.+)$")
+_RUFF_LOC_RE = re.compile(r"^-->\s*(\S+?):(\d+):(\d+)\s*$")
 _GATE_ERROR_LINES = 20
 _GATE_ERROR_CHARS = 2500
 
 
 def gate_error_lines(log_text: str) -> str:
     """The lint gate's own error lines in ship's output — mypy
-    (``path.py:N: error: …``), ruff (``path.py:N:M: F401 …``) and pytest
-    (``FAILED …`` / ``E   …``) — joined, at most :data:`_GATE_ERROR_LINES`
-    and :data:`_GATE_ERROR_CHARS`; ``''`` when there are none. The next
-    session's brief starts from the ``handoff:`` comment, so the red's
-    reason has to ride it (td565331: six mypy errors reached the todo as
-    the one ✖ verdict line and nothing else)."""
+    (``path.py:N: error: …``), ruff concise (``path.py:N:M: F401 …``) and
+    full (``F401 [*] msg`` + `` --> path:L:C``, condensed to the concise
+    shape) and pytest (``FAILED …`` / ``E   …``) — joined, at most
+    :data:`_GATE_ERROR_LINES` and :data:`_GATE_ERROR_CHARS`; ``''`` when
+    there are none. The next session's brief starts from the ``handoff:``
+    comment, so the red's reason has to ride it (td565331: six mypy errors
+    reached the todo as the one ✖ verdict line and nothing else)."""
+    lines = _lines(log_text)
     out: list[str] = []
-    for line in _lines(log_text):
+    for i, line in enumerate(lines):
         s = line.strip()
         if _GATE_ERROR_RE.match(s):
             out.append(s)
-            if len(out) >= _GATE_ERROR_LINES:
-                break
+        else:
+            head = _RUFF_HEAD_RE.match(s)
+            if head:
+                for ahead in lines[i + 1 : i + 4]:
+                    loc = _RUFF_LOC_RE.match(ahead.strip())
+                    if loc:
+                        out.append(
+                            f"{loc.group(1)}:{loc.group(2)}:{loc.group(3)}: "
+                            f"{head.group(1)} {head.group(2)}"
+                        )
+                        break
+        if len(out) >= _GATE_ERROR_LINES:
+            break
     text = "\n".join(out)
     if len(text) > _GATE_ERROR_CHARS:
         text = text[:_GATE_ERROR_CHARS].rstrip() + " …"
     return text
+
+
+_GATE_EXCERPT_LINES = 40
+_GATE_EXCERPT_CHARS = 3000
+
+
+def gate_red_excerpt(log_text: str) -> str:
+    """The last :data:`_GATE_EXCERPT_LINES` non-blank lines before the last
+    ``✖`` line — the step banner plus the tool output leading to the
+    verdict — capped at :data:`_GATE_EXCERPT_CHARS` (the tail kept: what
+    died is nearest the ✖). ``''`` with no ``✖``. Fallback for
+    :func:`gate_error_lines`: when no line parses, this is all the next
+    session gets — the land log dies with the worktree (gr573347)."""
+    lines = _lines(log_text)
+    cross = max((i for i, ln in enumerate(lines) if "✖" in ln), default=None)
+    if cross is None:
+        return ""
+    kept = [ln for ln in lines[:cross] if ln.strip()]
+    text = "\n".join(kept[-_GATE_EXCERPT_LINES:])
+    if len(text) > _GATE_EXCERPT_CHARS:
+        text = "…\n" + text[-_GATE_EXCERPT_CHARS:]
+    return text
+
+
+#: Ship's verdict when the checked lane's pytest is red (``die`` in
+#: ``scripts/ship``): only this cross triggers the outside-diff verify —
+#: a lint or contract red is the branch's outright.
+CHECKED_RED_MARK = "checked selection is RED"
+#: The ``short test summary info`` banner; FAILED/ERROR lines count only
+#: inside its block (which ends at the next ``===`` banner) — an
+#: unindented captured-stdout line elsewhere cannot inject a fake id.
+_SUMMARY_START_RE = re.compile(r"^=+\s*short test summary info\s*=+$")
+_FAILED_ID_RE = re.compile(r"^(?:FAILED|ERROR)\s+(.+)$")
+
+
+def _summary_id(rest: str) -> str | None:
+    """The id half of a summary line: the text before the first `` - ``
+    OUTSIDE square brackets — a parametrized id may itself contain
+    `` - `` inside them (``t[a - b]``). ``None`` for unbalanced brackets
+    or an empty id."""
+    depth = 0
+    for i, ch in enumerate(rest):
+        if depth == 0 and rest.startswith(" - ", i):
+            head = rest[:i].strip()
+            return head or None
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth < 0:
+                return None
+    if depth != 0:
+        return None
+    head = rest.strip()
+    return head or None
+
+
+def failed_test_ids(log_text: str) -> list[str]:
+    """Pytest's summary ids — ``FAILED <id> - <reason>`` and collection
+    ``ERROR <id> - <reason>`` — de-duplicated in order, and only inside
+    the ``=== short test summary info ===`` block. One malformed line
+    spoils the set: unbalanced brackets or an id without ``::`` returns
+    ``[]``, so the outside-diff check yields no outside set and the red
+    stays ordinary."""
+    out: list[str] = []
+    in_summary = False
+    for line in _lines(log_text):
+        if _SUMMARY_START_RE.match(line):
+            in_summary = True
+            continue
+        if not in_summary:
+            continue
+        if line.startswith("="):
+            break
+        m = _FAILED_ID_RE.match(line)
+        if m:
+            ident = _summary_id(m.group(1))
+            if ident is None or "::" not in ident:
+                return []
+            if ident not in out:
+                out.append(ident)
+    return out
+
+
+def outside_diff_ids(tree: Path, ids: list[str]) -> list[str]:
+    """The ids whose test file ``git diff --name-only origin/main...HEAD``
+    in ``tree`` does not name. An unanswerable diff returns ``[]`` — an
+    unverifiable red stays an ordinary red, never attempt-free."""
+    proc = _git(["diff", "--name-only", "origin/main...HEAD"], tree)
+    if proc.returncode != 0:
+        return []
+    changed = {ln.strip() for ln in proc.stdout.splitlines() if ln.strip()}
+    return [i for i in ids if i.split("::", 1)[0] not in changed]
 
 
 def is_main_refusal(cross: str | None) -> bool:
@@ -1439,6 +1570,355 @@ def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
     return False
 
 
+def _launch_verify(
+    slice_tree: Path, ids: list[str], *, phase: str, run_tree: Path
+) -> dict[str, Any] | None:
+    """Detached ``scripts/test <ids>`` in ``run_tree``, the log and exit
+    file under the SLICE tree's ``scratch/`` so they outlive a probe
+    worktree. ``None`` when the launch itself failed — the caller falls
+    back to the ordinary red."""
+    scratch = slice_tree / "scratch"
+    log_path = scratch / f"land_verify_{phase}.log"
+    exit_path = scratch / f"land_verify_{phase}.exit"
+    try:
+        scratch.mkdir(parents=True, exist_ok=True)
+        exit_path.unlink(missing_ok=True)
+        pid = _launch(
+            [str(run_tree / "scripts" / "test"), *ids],
+            cwd=run_tree,
+            log=log_path,
+            exit_file=exit_path,
+            env={
+                **_factory_git.git_auth_env(),
+                "UV_PYTHON": ship_python(),
+                "PRECIS_TEST_NPROC": test_nproc(),
+            },
+        )
+    except Exception as exc:
+        log.warning(
+            "land_slice: verify launch (%s) failed: %s", phase, exc, exc_info=True
+        )
+        return None
+    verify: dict[str, Any] = {
+        "phase": phase,
+        "ids": list(ids),
+        "pid": pid,
+        "pgid": pid,
+        "log": str(log_path),
+        "exit_file": str(exit_path),
+        "run_tree": str(run_tree),
+    }
+    identity = _rs._process_identity(pid)
+    if identity is not None:
+        verify["boot_id"], verify["start_time"] = identity
+    return verify
+
+
+def _promote_verify(handle: dict[str, Any], verify: dict[str, Any]) -> None:
+    """Make the running probe the handle's live process — ``pid``,
+    ``pgid``, ``boot_id`` and ``start_time`` copied to the TOP level, the
+    same slot the ship relaunch fills. The executor's cancel, wall-clock
+    and orphan-reap gates all validate the top-level identity before
+    calling this job's ``kill``; while it still names the dead ship every
+    gate fails closed and the kill hook never runs, leaking the probe and
+    the ``slice-main-td<id>`` worktree."""
+    handle["verify"] = verify
+    for key in ("pid", "pgid", "boot_id", "start_time"):
+        if key in verify:
+            handle[key] = verify[key]
+        else:
+            handle.pop(key, None)
+
+
+def _ordinary_ship_red(ctx: Any, handle: dict[str, Any]) -> bool:
+    """Back to the ship red's ordinary path once a verify phase is spent —
+    or could not probe: ``verify_done`` keeps the outside-diff launch from
+    refiring, so the branch is charged as today."""
+    handle.pop("verify", None)
+    handle["verify_done"] = True
+    return poll(ctx, handle)
+
+
+def _probe_red(v: dict[str, Any], ids: list[str]) -> bool:
+    """True only when the probe's own log shows the SAME ids failing —
+    a plain test failure is evidence. 'no tests collected', 'not found',
+    a usage error, a subset/superset of the probed ids, or any other
+    non-zero exit without matching summary lines is a probe failure,
+    never evidence: the caller takes the ordinary red."""
+    failed = set(failed_test_ids(_rs._read_log(v)))
+    return bool(failed) and failed == set(ids)
+
+
+def _start_main_verify(ctx: Any, handle: dict[str, Any], v: dict[str, Any]) -> bool:
+    """Phase ``main`` of the outside-diff verify: cut ``slice-main-td<id>``
+    — a detached ``origin/main`` worktree under the worktrees dir
+    (``slice_root()/.claude/worktrees``, where
+    :func:`run_slice._ensure_worktree` puts the slice trees), so its
+    compose project carries the slice prefix and the stack sweep reaps
+    it — and run the ids there. The worktree is dropped on every later
+    exit path (:func:`_drop_main_verify`). ``False`` → the ordinary
+    red."""
+    params = (ctx.meta or {}).get("params") or {}
+    todo_id = int(params.get("todo_id") or 0)
+    if todo_id <= 0:
+        ctx.append_chunk(
+            "job_event",
+            f"land_slice: main probe skipped (no positive todo id: {todo_id})",
+        )
+        return False
+    tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
+    try:
+        root = _rs.slice_root()
+    except RuntimeError as exc:
+        ctx.append_chunk("job_event", f"land_slice: main probe skipped ({exc})")
+        return False
+    main_tree = _rs.worktrees_dir(root) / f"slice-main-td{todo_id}"
+    project = _slice_stacks.project_for_tree(main_tree)
+    # What this job is about to make goes on the job meta BEFORE the add:
+    # a kill (or a crash) after this point must be able to remove it.
+    ctx.set_meta(main_probe={"tree": str(main_tree), "stack": project})
+    if not _clear_stale_main_probe(ctx, root, main_tree, project, todo_id):
+        return False
+    add = _git(["worktree", "add", "--detach", str(main_tree), "origin/main"], root)
+    if add.returncode != 0:
+        ctx.append_chunk(
+            "job_event",
+            "land_slice: main probe worktree add failed: "
+            f"{(add.stderr or add.stdout).strip()[:200]}",
+        )
+        ctx.set_meta(main_probe=None)
+        return False
+    verify = _launch_verify(
+        tree, [str(i) for i in (v.get("ids") or [])], phase="main", run_tree=main_tree
+    )
+    if verify is None:
+        _git(["worktree", "remove", "--force", str(main_tree)], root)
+        ctx.set_meta(main_probe=None)
+        return False
+    verify["main_tree"] = str(main_tree)
+    _promote_verify(handle, verify)
+    ctx.append_chunk(
+        "job_event",
+        "land_slice: ids still red standalone — probing "
+        f"{', '.join(verify['ids'])} on origin/main ({main_tree.name})",
+    )
+    ctx.set_meta(
+        compute_handle=handle,
+        compute_handle_released=False,
+        deadline=_now().timestamp() + wall_seconds(),
+    )
+    return True
+
+
+def _clear_stale_main_probe(
+    ctx: Any, root: Path, main_tree: Path, project: str, todo_id: int
+) -> bool:
+    """What ``_start_main_verify`` clears before its add, when a crashed
+    run left ``slice-main-td<id>`` behind: ``worktree prune`` drops
+    registrations whose dirs vanished; if the path is still a REGISTERED
+    worktree it comes down through git; if it is an unregistered leftover
+    directory it is deleted — only that exact validated path, never
+    anything else. ``False`` → the ordinary red."""
+    _git(["worktree", "prune"], root)
+    listed = _git(["worktree", "list", "--porcelain"], root)
+    registered = set()
+    if listed.returncode == 0:
+        registered = {
+            ln.split(None, 1)[1].strip()
+            for ln in (listed.stdout or "").splitlines()
+            if ln.startswith("worktree ")
+        }
+    if str(main_tree) in registered or os.path.realpath(main_tree) in registered:
+        if project.startswith(_slice_stacks.SLICE_PREFIX):
+            _evict_stack(project, volumes=True)
+        stale = _git(["worktree", "remove", "--force", str(main_tree)], root)
+        if stale.returncode != 0:
+            ctx.append_chunk(
+                "job_event",
+                "land_slice: stale main probe worktree remove failed: "
+                f"{(stale.stderr or stale.stdout).strip()[:200]}",
+            )
+            return False
+        ctx.append_chunk(
+            "job_event",
+            f"land_slice: removed stale main probe worktree {main_tree.name}",
+        )
+        return True
+    if not main_tree.exists():
+        return True
+    # An unregistered leftover directory — debris git no longer knows
+    # about. Deleted only when it is exactly the expected probe path.
+    expected = _rs.worktrees_dir(root) / f"slice-main-td{todo_id}"
+    if main_tree != expected:
+        ctx.append_chunk(
+            "job_event",
+            f"land_slice: refusing to delete {main_tree} (not {expected})",
+        )
+        return False
+    if project.startswith(_slice_stacks.SLICE_PREFIX):
+        _evict_stack(project, volumes=True)
+    try:
+        shutil.rmtree(main_tree)
+    except OSError as exc:
+        ctx.append_chunk(
+            "job_event",
+            f"land_slice: stale main probe leftover remove failed: {exc}",
+        )
+        return False
+    ctx.append_chunk(
+        "job_event",
+        f"land_slice: deleted stale main probe leftover {main_tree.name}",
+    )
+    return True
+
+
+def _drop_main_verify(v: dict[str, Any]) -> list[str]:
+    """Remove the ``slice-main-td<id>`` worktree and its compose stack —
+    on EVERY exit path of phase ``main``. Notes, never raises."""
+    notes: list[str] = []
+    raw = str(v.get("main_tree") or "")
+    if not raw:
+        return notes
+    main_tree = Path(raw)
+    project = _slice_stacks.project_for_tree(main_tree)
+    if project.startswith(_slice_stacks.SLICE_PREFIX):
+        notes.append(
+            f"main probe stack {project}: "
+            + ("down" if _evict_stack(project, volumes=True) else "down FAILED")
+        )
+    try:
+        root = _rs.slice_root()
+    except RuntimeError as exc:
+        notes.append(f"main probe worktree remove skipped ({exc})")
+        return notes
+    rm = _git(["worktree", "remove", "--force", str(main_tree)], root)
+    if rm.returncode == 0:
+        notes.append(f"main probe worktree {main_tree.name}: removed")
+    else:
+        notes.append(
+            "main probe worktree remove FAILED "
+            f"({(rm.stderr or rm.stdout).strip()[:200]})"
+        )
+    return notes
+
+
+def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
+    """Detached verify half (gr573347 b): a ``checked selection is RED``
+    whose failing ids are ALL outside the diff is re-run before the branch
+    is charged — ``alone`` in the slice tree, then ``main`` on a
+    throwaway ``origin/main`` worktree:
+
+    * alone green → flaky or order-dependent: attempt-free
+      (``red_class = "flaky outside the diff"``), the re-land tick takes
+      it from there;
+    * alone red + main red → not the branch's: ship relaunches through
+      :func:`full_fallback_flag` (``--quick`` — this run's lint already
+      passed; the checked tests run after it), a ``handoff``-style note
+      names the ids on the todo;
+    * alone red + main green → the branch's red after all: the ordinary
+      red, attempt burned;
+    * any launch or probe failure → the ordinary red."""
+    v = handle["verify"]
+    exit_code = _rs._read_exit(v)
+    if exit_code is None and _process_alive(int(v.get("pid") or 0)):
+        return False
+    params = (ctx.meta or {}).get("params") or {}
+    todo_id = int(params.get("todo_id") or 0)
+    ids = [str(i) for i in (v.get("ids") or [])]
+    phase = str(v.get("phase") or "")
+    if phase == "alone":
+        if exit_code == 0:
+            number = _pr_param(params)
+            default_branch = (
+                f"slice/pr-{number}"
+                if number is not None
+                else _rs.slice_branch(todo_id)
+            )
+            branch = str(params.get("branch") or default_branch)
+            ship_log = _rs._read_log(handle)
+            cross = cross_line(ship_log) or CHECKED_RED_MARK
+            ctx.append_chunk(
+                "job_summary",
+                f"land_slice td{todo_id}: RED — {cross}\n"
+                f"subject: {handle.get('subject')}\nlog: {handle.get('log')}\n"
+                f"verify: {', '.join(ids)} outside the diff, green "
+                "standalone (flaky or order-dependent)",
+            )
+            _fail(
+                ctx,
+                todo_id,
+                params.get("lane"),
+                f"ship of td{todo_id} red: {cross} — outside-diff ids green standalone",
+                handoff=(
+                    f"land FAILED on {branch}: {cross}. The failing ids "
+                    f"({', '.join(ids)}) are outside the diff and passed "
+                    "standalone — flaky or order-dependent. Nothing to "
+                    "rebuild; the lander re-lands."
+                ),
+                attempt_free="flaky outside the diff",
+            )
+            return True
+        # A non-zero exit is only "red alone" when the probe's own
+        # summary shows the named ids failing — anything else is a probe
+        # failure and stays the ordinary red.
+        if exit_code is not None and _probe_red(v, ids):
+            if _start_main_verify(ctx, handle, v):
+                return False
+        return _ordinary_ship_red(ctx, handle)
+    # Phase "main" finished (or the probe died): the throwaway worktree
+    # and its stack go away on every exit path — and the job meta forgets
+    # the probe, so a later kill does not remove a tree already gone.
+    for note in _drop_main_verify(v):
+        ctx.append_chunk("job_event", f"land_slice: {note}")
+    ctx.set_meta(main_probe=None)
+    if phase != "main" or exit_code is None:
+        return _ordinary_ship_red(ctx, handle)
+    if exit_code == 0:
+        handle["verify_note"] = (
+            f"Outside-diff verify: {', '.join(ids)} are GREEN on "
+            "origin/main — the red is this branch's."
+        )
+        return _ordinary_ship_red(ctx, handle)
+    if not _probe_red(v, ids):
+        # "red on main too" needs the same evidence: a non-zero probe that
+        # never ran the named tests is a probe failure, never a verdict.
+        return _ordinary_ship_red(ctx, handle)
+    flag = full_fallback_flag()
+    if flag is None:
+        return _ordinary_ship_red(ctx, handle)
+    tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
+    subject = str(handle.get("subject") or "")
+    try:
+        _rs._append_comment(
+            ctx.store,
+            todo_id,
+            f"handoff: {', '.join(ids)} are red on origin/main too — the "
+            "checked red is not this branch's; the land goes through "
+            "--quick (lint only). The reds are main's to fix.",
+        )
+    except Exception:  # pragma: no cover — the land still goes on
+        log.warning("land_slice: main-red note on td%d failed", todo_id)
+    ctx.append_chunk(
+        "job_event",
+        f"land_slice: {', '.join(ids)} red on origin/main too — relaunching "
+        f"scripts/ship {flag} (lint only; this run's lint already passed)",
+    )
+    Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
+    fresh = _launch_ship(ctx, tree, flag, subject, carry=handle)
+    if fresh is None:
+        return True
+    handle.clear()
+    handle.update(fresh)
+    if fresh.get("not_before"):
+        return False  # parked by the preflight; its deferral set the meta
+    ctx.set_meta(
+        compute_handle=fresh,
+        compute_handle_released=False,
+        deadline=_now().timestamp() + wall_seconds(),
+    )
+    return False
+
+
 def poll(ctx: Any, handle: Any) -> bool:
     """Detached poll half: ``False`` while ship runs; then the land record
     and cleanup (green) or the red path."""
@@ -1447,6 +1927,8 @@ def poll(ctx: Any, handle: Any) -> bool:
         return True
     if handle.get("not_before"):
         return _relaunch_when_due(ctx, handle)
+    if isinstance(handle.get("verify"), dict):
+        return _poll_verify(ctx, handle)
     exit_code = _rs._read_exit(handle)
     if exit_code is None and _process_alive(int(handle.get("pid") or 0)):
         return False
@@ -1482,9 +1964,19 @@ def poll(ctx: Any, handle: Any) -> bool:
             f"land FAILED on {branch}: {cross}. Fix it on the branch, commit, "
             "leave the tree clean; the lander re-runs scripts/ship."
         )
-        errors = gate_error_lines(log_text)
+        # Gate output can echo credentials (env dumps, request URLs): mask
+        # FIRST, then cut — a secret spanning the cut boundary can
+        # otherwise leak a fragment. What rides the todo comment and the
+        # job summary is already masked.
+        masked_log = mask_secrets(log_text) or ""
+        errors = gate_error_lines(masked_log)
+        detail = errors or gate_red_excerpt(masked_log)
         if errors:
             handoff += f"\n\nThe gate's error lines:\n{errors}"
+        elif detail:
+            # Nothing parsed — the excerpt is all the next session gets;
+            # the land log dies with the worktree (gr573347).
+            handoff += f"\n\nThe gate's output before the verdict:\n{detail}"
         fallback = full_fallback_flag()
         if (
             fallback
@@ -1513,6 +2005,36 @@ def poll(ctx: Any, handle: Any) -> bool:
                 deadline=_now().timestamp() + wall_seconds(),
             )
             return False
+        note = handle.pop("verify_note", None)
+        if note:
+            handoff += f"\n\n{note}"
+        # gr573347 b: a checked selection red only on test ids the diff
+        # does not touch may not be the branch's — verify standalone,
+        # then on origin/main, before charging an attempt. Any launch or
+        # probe trouble falls through to the ordinary red.
+        ids = failed_test_ids(log_text)
+        if (
+            handle.get("verify_done") is None
+            and CHECKED_RED_MARK in cross
+            and todo_id > 0
+            and ids
+            and len(outside_diff_ids(tree, ids)) == len(ids)
+        ):
+            verify = _launch_verify(tree, ids, phase="alone", run_tree=tree)
+            if verify is not None:
+                _promote_verify(handle, verify)
+                ctx.append_chunk(
+                    "job_event",
+                    "land_slice: checked selection red only on ids outside "
+                    f"the diff — re-running {', '.join(ids)} standalone "
+                    "before charging the branch",
+                )
+                ctx.set_meta(
+                    compute_handle=handle,
+                    compute_handle_released=False,
+                    deadline=_now().timestamp() + wall_seconds(),
+                )
+                return False
         side = refusal_side(cross)
         if side is not None:
             # Main's or the host's state, not the branch's: park and retry
@@ -1578,9 +2100,9 @@ def poll(ctx: Any, handle: Any) -> bool:
         ctx.append_chunk(
             "job_summary",
             f"land_slice td{todo_id}: RED — {cross}\nsubject: {subject}\nlog: "
-            f"{handle.get('log')}",
+            f"{handle.get('log')}" + (f"\n{detail}" if detail else ""),
         )
-        tail = log_text[-_TAIL_CAP:].strip()
+        tail = masked_log[-_TAIL_CAP:].strip()
         _fail(
             ctx,
             todo_id,
@@ -1686,17 +2208,33 @@ def poll(ctx: Any, handle: Any) -> bool:
 
 
 def kill(ctx: Any, handle: Any) -> None:
-    """Wall-clock / operator kill: SIGTERM ship's process group."""
-    del ctx
-    if not isinstance(handle, dict):
+    """Wall-clock / operator kill: SIGTERM the live phase's process group —
+    a running verify's during verify, ship's otherwise (a ship that
+    already exited must never be signaled: the pgid may have been
+    reused) — then drop the main-probe worktree and stack the job meta
+    recorded (:func:`_start_main_verify` writes them before the add), so
+    a killed land leaves neither behind."""
+    if isinstance(handle, dict):
+        verify = handle.get("verify")
+        live = verify if isinstance(verify, dict) else handle
+        pgid = int(live.get("pgid") or live.get("pid") or 0)
+        if pgid > 1:
+            try:
+                _rs._signal_group(pgid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+    probe = (getattr(ctx, "meta", None) or {}).get("main_probe") or {}
+    tree = str(probe.get("tree") or "")
+    if not tree:
         return
-    pgid = int(handle.get("pgid") or handle.get("pid") or 0)
-    if pgid <= 1:
-        return
+    stack = str(probe.get("stack") or "")
+    if stack.startswith(_slice_stacks.SLICE_PREFIX):
+        _evict_stack(stack, volumes=True)
     try:
-        _rs._signal_group(pgid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
+        root = _rs.slice_root()
+    except RuntimeError:
+        return
+    _git(["worktree", "remove", "--force", tree], root)
 
 
 SPEC = JobTypeSpec(
@@ -1714,6 +2252,7 @@ SPEC = JobTypeSpec(
 
 
 __all__ = [
+    "CHECKED_RED_MARK",
     "COMPATIBLE_EXECUTORS",
     "DESCRIPTION",
     "DRIFT_PROBE_TIMEOUT_S",
@@ -1735,14 +2274,17 @@ __all__ = [
     "SUBJECT_CAP",
     "UNKNOWN_GATE_CROSS",
     "cross_line",
+    "failed_test_ids",
     "gate_error_lines",
     "gate_kill_backoff_s",
     "gate_kill_line",
+    "gate_red_excerpt",
     "host_refusal_line",
     "is_host_refusal",
     "is_main_refusal",
     "kill",
     "landed_short",
+    "outside_diff_ids",
     "pending_gate",
     "poll",
     "refusal_backoff_s",
