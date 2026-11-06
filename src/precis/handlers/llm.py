@@ -19,25 +19,135 @@ reconcile worker). This handler is the MCP surface: ``get`` (with model-slug res
 this handler's store, not the process-global routing cache. These are
 configuration reads, never LLM calls or claims about effective runtime
 routing: request pins and runtime gates can change where a call lands.
+
+``/accounts`` and ``/pools`` (migration 0280, S1a) read the owned-capacity
+ledger: an account is one credential at one provider under one plan
+(``llm_account``); a pool is a rate bucket with a reset rule and explicit
+scope (an ``external_rate_limits`` row keyed ``llm:<account>:<window>``).
+Both are read-only here except ``put(kind='llm', args={'account': {...}})``,
+which is owner-only (:func:`precis.todo.guards.is_owner`) and never accepts
+a ``base_url`` — that stays on the ``llm.profiles`` entry an HTTP account
+names via ``profile=``. No routing behaviour changes: ``pick_lane``,
+``ladder``, ``resolve_profile`` and ``rate_limit.acquire``/``park``/
+``_record_refusal`` read the same rows as before this migration.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, ClassVar
 
-from precis import llm_catalog
+from precis import llm_catalog, secret_status
 from precis.errors import BadInput, NotFound
 from precis.handlers._numeric_ref import NumericRefHandler
-from precis.protocol import KindSpec
+from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
+from precis.todo.guards import is_owner
 from precis.utils import handle_registry
+from precis.utils.llm import accounts as llm_accounts
 from precis.utils.llm.operations import LLM_OPERATIONS, OP_KEY_PREFIX
 from precis.utils.timeutil import as_utc
 
 log = logging.getLogger(__name__)
+
+#: ``args={'account': {...}}`` validation vocab (S1a step 4). Mirrors the
+#: migration's CHECK constraint so a reject here never diverges from what
+#: the DB would refuse anyway.
+_ACCOUNT_ADAPTERS: frozenset[str] = frozenset(
+    {
+        "claude_p",
+        "claude_agent",
+        "codex_exec",
+        "devin_tree",
+        "devin_api",
+        "kimi_tree",
+        "api",
+        "openai_compat",
+        "openai_tools",
+        "local",
+    }
+)
+_ACCOUNT_TASK_CLASSES: frozenset[str] = frozenset(
+    {"*", "code", "review", "validate", "triage", "brief", "pcb", "docs"}
+)
+_ACCOUNT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9\-]*$")
+_ACCOUNT_POOL_KEY_RE = re.compile(r"^llm:[a-z0-9-]+:[a-z0-9]+$")
+_ACCOUNT_CONCURRENCY_MIN = 1
+_ACCOUNT_CONCURRENCY_MAX = 8
+
+#: Columns this put merges, read-modify-write (whole-row replace, never a
+#: jsonb patch) — ``name`` is the key, not a mergeable column.
+_ACCOUNT_MERGE_COLS: tuple[str, ...] = (
+    "vendor",
+    "plan",
+    "adapter",
+    "profile",
+    "api_key_ref",
+    "concurrency",
+    "task_classes",
+    "models",
+    "default_model",
+    "enabled",
+    "entitlement",
+    "privacy",
+    "promo_expiry",
+    "pools",
+)
+
+#: Defaults for a column this put never saw before — a brand-new account
+#: whose payload omits it. Mirrors the migration's table-level DEFAULTs.
+_ACCOUNT_DEFAULTS: dict[str, Any] = {
+    "profile": None,
+    "api_key_ref": None,
+    "concurrency": 1,
+    "task_classes": (),
+    "models": (),
+    "default_model": None,
+    "enabled": False,
+    "entitlement": {},
+    "privacy": {},
+    "promo_expiry": None,
+    "pools": (),
+}
+
+_ACCOUNT_UPSERT_SQL = """
+INSERT INTO llm_account (
+    name, vendor, plan, adapter, profile, api_key_ref, concurrency,
+    task_classes, models, default_model, enabled, entitlement, privacy,
+    promo_expiry, pools, updated_at
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb,
+          %s, %s, now())
+ON CONFLICT (name) DO UPDATE SET
+    vendor = EXCLUDED.vendor,
+    plan = EXCLUDED.plan,
+    adapter = EXCLUDED.adapter,
+    profile = EXCLUDED.profile,
+    api_key_ref = EXCLUDED.api_key_ref,
+    concurrency = EXCLUDED.concurrency,
+    task_classes = EXCLUDED.task_classes,
+    models = EXCLUDED.models,
+    default_model = EXCLUDED.default_model,
+    enabled = EXCLUDED.enabled,
+    entitlement = EXCLUDED.entitlement,
+    privacy = EXCLUDED.privacy,
+    promo_expiry = EXCLUDED.promo_expiry,
+    pools = EXCLUDED.pools,
+    updated_at = now()
+"""
+
+#: A missing pool row is created in the rate-less carrier shape (0121's
+#: seed shape): capacity 1 / refill 1.0 / tokens 1 / class 'llm-api' / no
+#: daily cap — the same shape :func:`precis.utils.rate_limit.acquire` has
+#: always granted against, so a brand-new pool key never changes routing.
+_POOL_CARRIER_SEED_SQL = """
+INSERT INTO external_rate_limits (provider, capacity, refill_per_sec, tokens,
+                                   daily_cap, "class")
+VALUES (%s, 1, 1.0, 1, NULL, 'llm-api')
+ON CONFLICT (provider) DO NOTHING
+"""
 
 
 class LlmHandler(NumericRefHandler):
@@ -55,8 +165,12 @@ class LlmHandler(NumericRefHandler):
             "of logged calls, routed vs landed, per tier and day; "
             "get(kind='llm', id='op:<source>', view='stats') rolls up "
             "llm_call_log per calling op. get(kind='llm', id='/ops') lists "
-            "operation routes; id='<source>' reads the stored route. Never exported. "
-            "See ``llm-catalog`` (git-only)."
+            "operation routes; id='<source>' reads the stored route. "
+            "get(kind='llm', id='/accounts') lists owned LLM credentials "
+            "(name/vendor/plan/adapter/key presence/pools); id='/pools' "
+            "lists their rate buckets (unit/limit/used/remaining/reset_rule). "
+            "put(kind='llm', args={'account': {...}}) is owner-only. "
+            "Never exported. See ``llm-catalog`` (git-only)."
         ),
         supports_get=True,
         supports_search=True,
@@ -72,6 +186,10 @@ class LlmHandler(NumericRefHandler):
 
     kind: ClassVar[str] = "llm"
     sense: ClassVar[str] = "llm card"
+
+    #: ``put(kind='llm', args={'account': {...}})`` — the owner-only
+    #: account/pool write (S1a step 4). No other verb reads ``args=`` here.
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {"put": ArgsSpec({"account"})}
 
     #: The prose embeds so the card is a vector (search-by-capability). Emission
     #: itself runs through :func:`precis.llm_catalog.upsert_card`, not the base
@@ -165,10 +283,20 @@ class LlmHandler(NumericRefHandler):
             return self._op_routes()
         if view == "placement":
             return Response(body=self._render_placement())
+        if view == "accounts":
+            return Response(body=self._render_accounts())
+        if view == "pools":
+            return Response(body=self._render_pools())
         return super()._list_view(view)
 
     def _supported_list_views(self) -> tuple[str, ...]:
-        return (*super()._supported_list_views(), "ops", "placement")
+        return (
+            *super()._supported_list_views(),
+            "ops",
+            "placement",
+            "accounts",
+            "pools",
+        )
 
     def _op_route(self, source: str) -> Response | None:
         with self.store.pool.connection() as conn:
@@ -275,8 +403,14 @@ class LlmHandler(NumericRefHandler):
         tags: list[str] | None = None,
         link: str | None = None,
         rel: str | None = None,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        # ``put(args={'account': {...}})`` — the owner-only account/pool
+        # write (S1a). Checked before the id-presence branch: an account
+        # write carries no id= at all.
+        if args is not None and "account" in args:
+            return self._put_account(args["account"])
         # ``put(id=…, text=…, entry=…)`` appends a WORM review entry to a card —
         # the quest-logbook idiom (the ledger layer). The base create-only guard
         # rejects id-presence, so we intercept before delegating.
@@ -335,6 +469,178 @@ class LlmHandler(NumericRefHandler):
         handle = handle_registry.try_format(self.kind, ref_id) or f"id={ref_id}"
         verb = "created" if created else "refreshed"
         return Response(body=f"{verb} {self.kind} {handle} for model {model_id!r}.")
+
+    # ── put: owner-only account/pool write (S1a) ────────────────────
+
+    def _put_account(self, payload: Any) -> Response:
+        """``put(kind='llm', args={'account': {...}})`` — owner-only
+        read-modify-write upsert of one ``llm_account`` row, plus a carrier
+        pool row for every key in its ``pools=`` that doesn't exist yet.
+
+        Whole-row replace, never a jsonb patch: a column the payload omits
+        keeps its current stored value on an update, or its table default
+        on a first create — it is never merged key-by-key into
+        ``entitlement``/``privacy``.
+        """
+        if not is_owner():
+            raise BadInput(
+                "writing an llm_account is owner-only",
+                next="run this put from the CLI or a web:owner session, "
+                "not an asa-* worker source",
+            )
+        if not isinstance(payload, dict):
+            raise BadInput(
+                "args={'account': {...}} must be an object",
+                next="put(kind='llm', args={'account': "
+                "{'name': 'my-account', 'vendor': ..., 'plan': ..., "
+                "'adapter': ...}})",
+            )
+        if "base_url" in payload:
+            raise BadInput(
+                "llm_account carries no base_url — that lives on the "
+                "llm.profiles entry an HTTP account names via profile=",
+                next="put the base_url through llm.profiles, then name it "
+                "here with args={'account': {'profile': '<profiles entry>'}}",
+            )
+        allowed_keys = frozenset(_ACCOUNT_MERGE_COLS) | {"name"}
+        unknown_keys = sorted(set(payload) - allowed_keys)
+        if unknown_keys:
+            raise BadInput(
+                f"account payload key(s) {unknown_keys} are not recognized",
+                options=sorted(allowed_keys),
+                next=f"drop {unknown_keys} — accepted keys are {sorted(allowed_keys)}",
+            )
+        name = payload.get("name")
+        if not isinstance(name, str) or not _ACCOUNT_NAME_RE.match(name):
+            raise BadInput(
+                f"account name {name!r} must be a lowercase slug ([a-z0-9][a-z0-9-]*)",
+                next="args={'account': {'name': 'claude-sub', ...}}",
+            )
+        existing = llm_accounts.get_account(self.store, name)
+        if existing is None:
+            missing = [k for k in ("vendor", "plan", "adapter") if not payload.get(k)]
+            if missing:
+                raise BadInput(
+                    f"creating llm_account {name!r} needs {missing}",
+                    next="args={'account': {'name': "
+                    f"{name!r}, 'vendor': ..., 'plan': ..., 'adapter': ...}}",
+                )
+        merged: dict[str, Any] = {}
+        for col in _ACCOUNT_MERGE_COLS:
+            if col in payload:
+                merged[col] = payload[col]
+            elif existing is not None:
+                merged[col] = getattr(existing, col)
+            else:
+                merged[col] = _ACCOUNT_DEFAULTS[col]
+
+        if merged["adapter"] not in _ACCOUNT_ADAPTERS:
+            raise BadInput(
+                f"adapter {merged['adapter']!r} is not a known adapter",
+                options=sorted(_ACCOUNT_ADAPTERS),
+                next=f"args={{'account': {{'adapter': {sorted(_ACCOUNT_ADAPTERS)[0]!r}}}}}",
+            )
+        api_key_ref = merged["api_key_ref"]
+        if api_key_ref is not None:
+            known = {s.name for s in secret_status.KNOWN_SECRETS}
+            if api_key_ref not in known:
+                raise BadInput(
+                    f"api_key_ref {api_key_ref!r} is not a registered secret",
+                    next="register it in precis.secret_status.KNOWN_SECRETS "
+                    "first, or omit api_key_ref for a per-host login",
+                )
+        concurrency = merged["concurrency"]
+        if (
+            isinstance(concurrency, bool)
+            or not isinstance(concurrency, int)
+            or not (_ACCOUNT_CONCURRENCY_MIN <= concurrency <= _ACCOUNT_CONCURRENCY_MAX)
+        ):
+            raise BadInput(
+                f"concurrency={concurrency!r} must be an integer "
+                f"{_ACCOUNT_CONCURRENCY_MIN}-{_ACCOUNT_CONCURRENCY_MAX}",
+                next="args={'account': {'concurrency': 1}}",
+            )
+        task_classes = merged["task_classes"] or ()
+        if not isinstance(task_classes, (list, tuple)) or not all(
+            isinstance(t, str) for t in task_classes
+        ):
+            raise BadInput(
+                "task_classes must be a list of strings",
+                next="args={'account': {'task_classes': ['code']}}",
+            )
+        unknown_classes = sorted(set(task_classes) - _ACCOUNT_TASK_CLASSES)
+        if unknown_classes:
+            raise BadInput(
+                f"task_classes {unknown_classes} are not known task classes",
+                options=sorted(_ACCOUNT_TASK_CLASSES),
+                next=f"args={{'account': {{'task_classes': "
+                f"{sorted(_ACCOUNT_TASK_CLASSES)}}}}} (pick a subset)",
+            )
+        pools = merged["pools"] or ()
+        if not isinstance(pools, (list, tuple)) or not all(
+            isinstance(p, str) for p in pools
+        ):
+            raise BadInput(
+                "pools must be a list of strings",
+                next="args={'account': {'pools': ['llm:my-account:weekly']}}",
+            )
+        bad_pools = sorted(p for p in pools if not _ACCOUNT_POOL_KEY_RE.match(p))
+        if bad_pools:
+            raise BadInput(
+                f"pool key(s) {bad_pools} don't match llm:<account>:<window>",
+                next="args={'account': {'pools': ['llm:my-account:weekly']}}",
+            )
+        models = merged["models"] or ()
+        if not isinstance(models, (list, tuple)) or not all(
+            isinstance(m, str) for m in models
+        ):
+            raise BadInput(
+                "models must be a list of strings",
+                next="args={'account': {'models': ['model-id']}}",
+            )
+        entitlement = merged["entitlement"] or {}
+        privacy = merged["privacy"] or {}
+        if not isinstance(entitlement, dict) or not isinstance(privacy, dict):
+            raise BadInput(
+                "entitlement and privacy must be objects",
+                next="args={'account': {'entitlement': {}, 'privacy': {}}}",
+            )
+        default_model = merged["default_model"]
+        if default_model is not None and default_model not in models:
+            raise BadInput(
+                f"default_model {default_model!r} is not in models {list(models)}",
+                next="add it to models=, or drop default_model",
+            )
+
+        with self.store.tx() as conn:
+            conn.execute(
+                _ACCOUNT_UPSERT_SQL,
+                (
+                    name,
+                    merged["vendor"],
+                    merged["plan"],
+                    merged["adapter"],
+                    merged["profile"],
+                    api_key_ref,
+                    concurrency,
+                    list(task_classes),
+                    list(models),
+                    default_model,
+                    bool(merged["enabled"]),
+                    json.dumps(entitlement),
+                    json.dumps(privacy),
+                    merged["promo_expiry"],
+                    list(pools),
+                ),
+            )
+            for pool_key in pools:
+                conn.execute(_POOL_CARRIER_SEED_SQL, (pool_key,))
+        verb = "created" if existing is None else "updated"
+        return Response(
+            body=f"{verb} llm_account {name!r} "
+            f"(adapter={merged['adapter']}, enabled={bool(merged['enabled'])}, "
+            f"pools={list(pools)})."
+        )
 
     # ── rendering ────────────────────────────────────────────────────
 
@@ -572,6 +878,64 @@ class LlmHandler(NumericRefHandler):
                 head += f" · {prov}"
             lines.append(head)
             lines.append(b.text)
+        return "\n".join(lines)
+
+    def _render_accounts(self) -> str:
+        """``id='/accounts'`` — every ``llm_account`` row. ``key`` names the
+        vault secret only (never a value); unknown/absent fields render as
+        ``unknown``."""
+        accounts = llm_accounts.list_accounts(self.store)
+        lines = [f"# llm accounts ({len(accounts)})"]
+        if not accounts:
+            lines.append("(none)")
+            return "\n".join(lines)
+        for a in accounts:
+            if a.api_key_ref is None:
+                key = "none (per-host login, no vault secret)"
+            else:
+                has_it = (
+                    "in vault"
+                    if secret_status.present(a.api_key_ref, store=self.store)
+                    else "MISSING"
+                )
+                key = f"{a.api_key_ref} ({has_it})"
+            lines.append(
+                f"  {a.name}: vendor={a.vendor} plan={a.plan} "
+                f"adapter={a.adapter} enabled={a.enabled} "
+                f"concurrency={a.concurrency} "
+                f"task_classes={','.join(a.task_classes) or 'unknown'} "
+                f"default_model={a.default_model or 'unknown'} key={key} "
+                f"pools={','.join(a.pools) or 'unknown'}"
+            )
+        return "\n".join(lines)
+
+    def _render_pools(self) -> str:
+        """``id='/pools'`` — every ``llm:``-prefixed ``external_rate_limits``
+        row. ``pacing`` is the literal ``n/a`` until S3; unknown/absent
+        fields render as ``unknown``."""
+
+        def fmt(v: Any) -> str:
+            return "unknown" if v is None else str(v)
+
+        def fmt_ts(v: Any) -> str:
+            if v is None:
+                return "unknown"
+            stamp = as_utc(v)
+            return stamp.strftime("%Y-%m-%dT%H:%M:%SZ") if stamp else "unknown"
+
+        pools = llm_accounts.list_pools(self.store)
+        lines = [f"# llm pools ({len(pools)})"]
+        if not pools:
+            lines.append("(none)")
+            return "\n".join(lines)
+        for p in pools:
+            lines.append(
+                f"  {p.provider}: unit={fmt(p.unit)} limit={fmt(p.limit_reported)} "
+                f"used={fmt(p.used_reported)} remaining={fmt(p.remaining_reported)} "
+                f"reported_at={fmt_ts(p.reported_at)} source={fmt(p.source)} "
+                f"reset_rule={fmt(p.reset_rule)} resets_at={fmt_ts(p.resets_at)} "
+                f"expires_at={fmt_ts(p.expires_at)} pacing=n/a"
+            )
         return "\n".join(lines)
 
 

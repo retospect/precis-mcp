@@ -130,6 +130,9 @@ SEED_TABLES: tuple[str, ...] = (
     "news_sources",
     # tag display-rank registry (0256): standalone.
     "tag_axes",
+    # LLM account/pool ledger (0280): standalone — the five seed accounts
+    # a fresh install needs to mirror src/precis/plans/lanes.py::LANES.
+    "llm_account",
 )
 
 #: Extensions ``pg_dump --schema=public`` omits; prepended manually so a

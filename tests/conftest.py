@@ -1672,6 +1672,7 @@ _PRESERVE_TABLES: frozenset[str] = frozenset(
         "design_service_environments",
         "design_load_cases",
         "external_rate_limits",  # seeded provider rate/quota limits, 0121
+        "llm_account",  # seeded LLM account/pool ledger, 0280
     }
 )
 

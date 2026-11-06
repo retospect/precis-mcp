@@ -196,6 +196,14 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # — one of {"tier": s} | {"model": s} | {"chain": [rung…]} — read whole
         # by keyword_route and handed to the router, never queried by key.
         "llm_keyword_routes.target",
+        # 0280: allowed model ids with account-effective price, source and
+        # date for an llm_account — open-ended per account, read whole by
+        # the /accounts view, never queried by key.
+        "llm_account.entitlement",
+        # 0280: privacy evidence (training_use / retention / locality, each
+        # with a source URL and verified_at) for an llm_account — same
+        # open-ended-bag shape, read whole, never queried by key.
+        "llm_account.privacy",
         "material_properties.allowed_values",
         # 0187: the legacy conditions bag survives for the compatibility
         # views; `meta` holds the escalation flags, the unit-conversion
