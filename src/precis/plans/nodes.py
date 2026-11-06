@@ -194,7 +194,7 @@ def _gate_problems(gate: Any, where: str) -> list[str]:
 def _loop_problems(loop: Any) -> list[str]:
     if not isinstance(loop, dict):
         return [f"meta.loop must be a dict, got {type(loop).__name__}"]
-    bad = _unknown_keys(loop, ("max", "until", "body", "count"))
+    bad = _unknown_keys(loop, ("max", "until", "body", "count", "exhausted_ask"))
     if bad:
         return [f"meta.loop: {bad}"]
     out: list[str] = []
@@ -214,6 +214,14 @@ def _loop_problems(loop: Any) -> list[str]:
             out.append(
                 f"meta.loop.count={n!r} must be an integer >= 0 "
                 "(the tick stores the iterations minted so far)"
+            )
+    if "exhausted_ask" in loop:
+        a = loop["exhausted_ask"]
+        if isinstance(a, bool) or not isinstance(a, int) or a <= 0:
+            out.append(
+                f"meta.loop.exhausted_ask={a!r} must be an integer > 0 "
+                "(the ruling ask the tick filed when the loop's automatic "
+                "iterations ended, td573809)"
             )
     return out
 

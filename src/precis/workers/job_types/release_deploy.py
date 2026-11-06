@@ -8,7 +8,12 @@ detached submit/poll under ``ssh_node``, same launcher as ``release_cut``.
 node is ``blocked-by`` an approval ask (an ``answer`` gate); that gate opens
 on any answer, so this job checks the answer itself:
 :func:`precis.plans.release.approval` must find ``answer: deploy r<N>`` for
-the r<N> the plan's cut recorded. :func:`validate_submit` refuses otherwise
+the r<N> the plan's cut recorded — Reto's own comment, or the tick's under
+his standing approval ``release.auto_deploy`` (me573231:
+:func:`precis.plans.release.auto_answer_approval` posts it once CI is
+recorded green on the cut's exact sha and ``release.round`` names an open
+round on that head, fail closed, an existing answer never overwritten).
+:func:`validate_submit` refuses otherwise
 (the tick then notes "not dispatched" each pass and mints nothing) and
 :func:`submit` re-checks before launching. There is no param that names a
 release: r<N> comes only from the plan root's ``meta.release``.

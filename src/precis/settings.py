@@ -381,6 +381,23 @@ REGISTRY: dict[str, SettingSpec] = {
             "unparsable value blocks the pass (fail-safe).",
         ),
         SettingSpec(
+            key="release.auto_deploy",
+            type="bool",
+            env_var=None,
+            default=False,
+            doc="Standing approval for the factory release loop (td573809, "
+            "ruling me573231): when on, the plan tick answers the "
+            "release-pass approval 'deploy r<N>' itself once CI is "
+            "recorded green on the cut's exact sha and release.round "
+            "names an open round on that head sha — whatever the range, "
+            "migrations and harness paths included. Default off; the "
+            "owner turns it on (scripts/prod-precis settings set "
+            "release.auto_deploy true). DB-only — no env fallback, so a "
+            "drifted host cannot arm it. Rollback, superseding a partial "
+            "rollout and a pass whose second red fix loop ends still "
+            "ask a human.",
+        ),
+        SettingSpec(
             key="pr.factory_builders",
             type="str",
             env_var=None,

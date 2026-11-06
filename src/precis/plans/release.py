@@ -36,7 +36,12 @@ what lives here:
   approval ask that blocks it carries an ``answer:`` comment naming
   ``deploy r<N>`` for the release the plan cut. The ``answer`` gate opens on
   *any* answer (``hold`` included), so this check is what keeps a deploy
-  Reto's call (authority.md: release/deploy are Reto-only).
+  Reto's call (authority.md: release/deploy are Reto-only). The answer is
+  Reto's own comment, or the tick's under his standing approval
+  (me573231): with ``release.auto_deploy`` on, :func:`auto_answer_approval`
+  posts the ``deploy r<N>`` answer itself once CI is recorded green on the
+  cut's exact sha and ``release.round`` names an open round on that head
+  sha — fail closed on any doubt, an existing answer never overwritten.
 """
 
 from __future__ import annotations
@@ -52,7 +57,8 @@ from precis.plans.gates import (
     read_ci_verdicts,
     read_prod_head,
 )
-from precis.store.types import Tag
+from precis.store.types import ChunkInsert, Tag
+from precis.utils import handle_registry
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -337,6 +343,176 @@ def approval(store: Store, todo_id: int) -> tuple[str | None, str]:
     return rn, f"approved: {want} (td{', td'.join(str(a) for a in asks)})"
 
 
+# ── the standing approval (release.auto_deploy, td573809) ─────────
+
+#: The DB-only setting arming the auto-answer (``precis.settings.REGISTRY``).
+_AUTO_DEPLOY_KEY = "release.auto_deploy"
+
+#: ``release.round`` states that let the tick answer for the deploy — the
+#: open-release lifecycle (``scripts/lib/round_state.py::OPEN_STATES``,
+#: ``scripts/round._OPEN_STATES``; a test pins them equal). A partial
+#: rollout (``deploying``/``deployed``) and every terminal state refuse.
+_ROUND_OPEN_STATES = frozenset({"cut", "gating", "fixing", "green"})
+
+
+def _round_raw(store: Store) -> str | None:
+    """The ``app_settings`` row for ``release.round`` — raises on a
+    database error (``settings._db_read`` swallows one as ``None``, which
+    here would read as "no round" and could arm a deploy)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = %s",
+            (ROUND_KEY,),
+        ).fetchone()
+    return None if row is None else str(row[0])
+
+
+def _blocks_release_deploy(store: Store, blocks: object) -> bool:
+    """``ask.blocks`` names a live todo whose ``meta.op`` is
+    ``release_deploy`` — the auto-answer only ever speaks for that ask."""
+    if not isinstance(blocks, str):
+        return False
+    parsed = handle_registry.parse(blocks)
+    if parsed is None or parsed[0] != "todo" or parsed[1]:
+        return False
+    ref = store.get_ref(kind="todo", id=parsed[2])
+    return ref is not None and (ref.meta or {}).get("op") == "release_deploy"
+
+
+def _newest_sha_verdict(store: Store, sha12: str) -> dict[str, Any] | None:
+    """The newest ``release.ci_verdicts`` row on ``sha12`` — the cut's
+    exact sha only: no range equality and no prod-head fallback (the
+    ``tests-green`` gate allows both; an unattended deploy needs the
+    verdict recorded on the sha it will deploy)."""
+    best: tuple[str, int] | None = None
+    pick: dict[str, Any] | None = None
+    for i, row in enumerate(read_ci_verdicts(store)):
+        if str(row.get("sha") or "").lower()[:LANDED_SHA_LEN] != sha12:
+            continue
+        key = (str(row.get("at") or ""), i)
+        if best is None or key >= best:
+            best, pick = key, row
+    return pick
+
+
+def _open_round_record(
+    store: Store, rn: str, sha12: str
+) -> tuple[dict[str, Any] | None, str]:
+    """``(row, "")`` when ``release.round`` names an open round on
+    ``sha12``, else ``(None, <refusal>)``. Unlike ``release_poll`` — where
+    absent means no round — an absent record refuses the deploy answer:
+    at approval time a round must be open and name this release's head
+    sha (me573231)."""
+    try:
+        raw = _round_raw(store)
+    except Exception as exc:
+        return None, f"{ROUND_KEY} unreadable ({type(exc).__name__})"
+    if not raw or not raw.strip():
+        return None, f"no open round: {ROUND_KEY} is absent"
+    try:
+        rec = json.loads(raw)
+    except ValueError:
+        return None, f"{ROUND_KEY} is unparsable"
+    if not isinstance(rec, dict):
+        return None, f"{ROUND_KEY} is not a record"
+    state = rec.get("state")
+    if not isinstance(state, str) or not state:
+        return None, f"{ROUND_KEY} carries no state"
+    want_n = int(rn[1:])
+    if rec.get("n") != want_n:
+        return None, f"{ROUND_KEY} is r{rec.get('n', '?')}, not {rn}"
+    if state not in _ROUND_OPEN_STATES:
+        return None, f"round r{want_n} is not open ({state})"
+    base = str(rec.get("base") or "").strip().lower()
+    if base[:LANDED_SHA_LEN] != sha12:
+        return None, (
+            f"round r{want_n} names {base[:LANDED_SHA_LEN] or 'no head sha'}, "
+            f"not {sha12}"
+        )
+    return rec, ""
+
+
+def _auto_answer_approval(
+    store: Store, approval_id: int, *, now: datetime | None
+) -> tuple[bool, str]:
+    from precis import settings
+
+    # The armed check is read fresh: the setting is the switch, a stale
+    # cache must not answer a deploy after the owner turned it off.
+    settings.invalidate(_AUTO_DEPLOY_KEY)
+    if settings.get_bool(_AUTO_DEPLOY_KEY, store=store) is not True:
+        return False, ""
+    ref = store.get_ref(kind="todo", id=approval_id)
+    ask = (ref.meta or {}).get("ask") if ref is not None else None
+    rel = release_of(store, approval_id)
+    rn = str(rel["rN"]) if rel is not None else ""
+    if (
+        not isinstance(ask, dict)
+        or ask.get("kind") != "approval"
+        or rel is None
+        or ask.get("options") != approval_options(rn)
+        or not _blocks_release_deploy(store, ask.get("blocks"))
+    ):
+        return False, ""
+    if _newest_answer(store, approval_id) is not None:
+        return False, ""
+    nope = f"{_AUTO_DEPLOY_KEY} is on but td{approval_id} is not auto-answered"
+    sha = str(rel.get("sha") or "").strip().lower()
+    if len(sha) < LANDED_SHA_LEN:
+        return False, f"{nope}: the cut's sha is unrecorded ({sha or 'empty'})"
+    sha12 = sha[:LANDED_SHA_LEN]
+    settings.invalidate(CI_VERDICTS_KEY)
+    verdict = _newest_sha_verdict(store, sha12)
+    if verdict is None or verdict["verdict"] != "green":
+        return False, f"{nope}: no recorded green CI verdict for {sha12}"
+    rec, why = _open_round_record(store, rn, sha12)
+    if rec is None:
+        return False, f"{nope}: {why}"
+    # The comment is the only write and it comes last, after every check.
+    run = str(verdict.get("run_id") or "") or "unrecorded"
+    text = (
+        f"answer: deploy {rn} (auto-answered under {_AUTO_DEPLOY_KEY}; "
+        f"sha {sha12}; range {str(rel.get('range') or '')[:80]}; "
+        f"CI green run {run} at {verdict.get('at') or 'unknown time'}; "
+        f"round record r{rec.get('n')} {rec.get('state')}; "
+        f"answered {_stamp(now or datetime.now(UTC))})"
+    )
+    existing = list(store.chunks.list_chunks_for_ref(approval_id))
+    ord_ = max((int(c.ord) for c in existing), default=0) + 1
+    store.chunks.insert_chunks(
+        approval_id,
+        [ChunkInsert(ord=ord_, text=text, meta={"chunk_kind": _COMMENT_KIND})],
+    )
+    store.remove_tag(approval_id, Tag.open("ask-user"))
+    return True, f"auto-answered td{approval_id}: deploy {rn} at {sha12}"
+
+
+def auto_answer_approval(
+    store: Store, approval_id: int, *, now: datetime | None = None
+) -> tuple[bool, str]:
+    """``(answered, note)`` — the standing approval's answer to the
+    release-pass approval ask ``approval_id``, or why it stays open.
+
+    Armed only while ``release.auto_deploy`` resolves ``True`` (DB-only,
+    owner-set); a quiet ``(False, "")`` covers the switch being off and
+    every non-release approval ask. Answers only a real release approval
+    (``meta.ask.kind == 'approval'``, options rewritten to the cut's
+    r<N>, ``blocks`` a live ``release_deploy`` todo) that has no answer
+    yet — a human ``answer:`` (``hold`` included) is never overwritten —
+    and only once the newest recorded CI verdict on the cut's exact sha
+    is green *and* ``release.round`` names an open round on that head
+    sha. Every other case returns ``(False, "<the refusal>")`` for the
+    tick's notes and posts nothing: fail closed. Never raises — a fault
+    answers ``(False, "... error: <ClassName>")``."""
+    try:
+        return _auto_answer_approval(store, approval_id, now=now)
+    except Exception as exc:
+        return False, (
+            f"{_AUTO_DEPLOY_KEY} auto-answer on td{approval_id} "
+            f"error: {type(exc).__name__}"
+        )
+
+
 # ── verdict and prod-head writers (store twins of scripts/release) ──
 
 
@@ -612,6 +788,7 @@ __all__ = [
     "ROUND_KEY",
     "approval",
     "approval_options",
+    "auto_answer_approval",
     "ci_verdict_rows",
     "parse_cut",
     "parse_deployed",

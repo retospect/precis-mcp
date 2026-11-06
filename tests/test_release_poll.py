@@ -143,9 +143,15 @@ def test_mints_when_ahead_and_idle(
     assert root is not None and "release-pass" in _tags(store, root)
     assert f"release-main:{MAIN_SHA[:12]}" in _tags(store, root)
     members = _plan_members(store, root)
-    assert len(members) == 7  # root, cut, poll, gate, loop, approval, deploy
+    # root, cut, poll, gate, loop, approval, deploy, confirm
+    assert len(members) == 8
     ops = sorted(str(m["op"]) for m in members if "op" in m)
-    assert ops == ["ci_verdict_poll", "release_cut", "release_deploy"]
+    assert ops == [
+        "ci_verdict_poll",
+        "release_confirm",
+        "release_cut",
+        "release_deploy",
+    ]
     # the second pass stops on the open root before any GitHub read
     calls = _fake_github(monkeypatch)
     again = rp.run_pass(store, repo=REPO, now=NOW)

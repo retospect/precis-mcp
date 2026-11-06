@@ -45,6 +45,8 @@ GENERATE = {"role": "slicer", "from": "docs/backlog/x.md#Section"}
         ({"loop": {**LOOP, "until": GATE_DRC, "body": "pcb-fix"}}, "loop"),
         ({"loop": {**LOOP, "count": 0}}, "loop"),  # the tick's iteration count
         ({"loop": {**LOOP, "count": 2}}, "loop"),
+        # the exhausted-loop ruling ask the tick stamps (td573809)
+        ({"loop": {**LOOP, "count": 2, "exhausted_ask": 42}}, "loop"),
         ({"generate": GENERATE}, "generator"),
         ({"generate": {"role": "triage", "from": "gripe"}}, "generator"),
         (
@@ -118,6 +120,8 @@ def test_accepts_each_kind(meta: dict[str, Any] | None, kind: str | None) -> Non
         ({"loop": {**LOOP, "count": True}}, "meta.loop.count"),
         ({"loop": {**LOOP, "count": "2"}}, "meta.loop.count"),
         ({"loop": {**LOOP, "count": 1.5}}, "meta.loop.count"),
+        ({"loop": {**LOOP, "exhausted_ask": "x"}}, "meta.loop.exhausted_ask"),
+        ({"loop": {**LOOP, "exhausted_ask": 0}}, "meta.loop.exhausted_ask"),
         ({"generate": "slicer"}, "meta.generate must be a dict"),
         ({"generate": {"role": "poet", "from": "x"}}, "meta.generate.role"),
         ({"generate": {"role": "slicer"}}, "meta.generate.from"),

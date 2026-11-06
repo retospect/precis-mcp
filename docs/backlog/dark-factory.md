@@ -304,11 +304,12 @@ factory keeps the machinery and adds an owner to every branch.
   head, run the full gate once for the whole batch. Red → the fixer
   slice gets the failing test list and the commit range (ten squashes
   bisect in minutes, each names its slice), its fix lands on `main`,
-  the pass re-cuts r<N> at the new head and gates again. Two or three
-  loops is the expected cost; three red loops in a row park the release
-  as a showstopper. No long-lived release branch, no cherry-picks.
+  the pass re-cuts r<N> at the new head and gates again. One or two
+  loops is the expected cost; two red loops in a row park the release
+  as a showstopper (me573231: the third fix is a human call). No long-lived release branch, no cherry-picks.
   Green → deploy pinned, close `awaiting-deploy` rows. Migrations and
-  `safe_fetch.py` stay on the human `/go`.
+  `safe_fetch.py` take the same pass — with `release.auto_deploy` on the
+  standing answer covers every range (me573231: no range inspection).
 - **The drift guard must follow the cadence.** `scripts/ship` refuses
   qlands once `main`'s last green matrix is 48 h old. Under batch landing
   that fires whenever two days pass without a release, so either the
@@ -347,7 +348,7 @@ table entry refuses the launch; the reaper deleting a human's branch →
 it touches `slice/*` and stranded `*-pin` only, never a branch with a
 live worktree or session; a `REVERT` loop → the fingerprint breaker of
 step 7 (three reverts park the slice as a showstopper); a batch that
-never goes green → three red loops park the release. **Open:** whether
+never goes green → two red loops park the release. **Open:** whether
 to keep Devin on pull requests at all or give it a branch credential
 like the others; the grace period for stranded branches (three builds
 proposed). Answered: the lander lands everything the moment it is done,
@@ -364,7 +365,9 @@ tasks (td543732); (3) the release cut returns the moment the push is
 done and a verdict poll on no lane records the GitHub result, so the
 `tests-green` gate does the waiting; cut and deploy are mechanical ops,
 only the fixer is a model slice, and the deploy sits behind an `answer`
-gate because authority.md keeps deploys Reto's (td543733); (4) the tick
+gate because authority.md keeps deploys Reto's (td543733 — the tick may
+answer it only under the standing `release.auto_deploy` setting, Reto's
+ruling me573231); (4) the tick
 dispatches by `(prio, id)` across all roots — a prio-1 release fixer
 beats a prio-5 gripe build (td543732). Priority between gripes and
 ships is therefore the todo's `prio`, not a lane. The builder credential
@@ -610,19 +613,22 @@ pinned, close `awaiting-deploy` rows. Judgment steps (verify the live
 product, `--confirm-runtime`) stay with a session until the dogfood
 verdict is mechanical. **The ruling it needs:** authority.md makes
 release and deploy Reto-only except the release owner; a daemon as
-release owner is a change to that file (Reto's commit). **How a
+release owner is a change to that file (Reto's commit — the standing
+`release.auto_deploy` answer is Reto's ruling me573231, not a daemon
+deciding). **How a
 home-built release loop breaks, and the guard for each:**
 
 - a red gate nobody reads → the pass mints the fixer slice with the
   failing tests and the commit range, re-cuts when the fix lands (the
-  loop in "Branches" above); three red loops in a row make the release
+  loop in "Branches" above); two red loops in a row make the release
   a showstopper row (1b) and the pass stops cutting;
 - CI-green, runtime-broken → post-deploy probes stay mechanical
   (health checks, the alert board) and a failed probe redeploys the
   previous `origin/prod` sha; two rollbacks in a row trip the breaker
   and the pass parks itself;
-- migrations and `safe_fetch.py` → stay on the human `/go` lane
-  (`scripts/qgo-guard` already refuses them);
+- migrations and `safe_fetch.py` → the pass covers every range and so
+  does the standing answer under `release.auto_deploy` (me573231) —
+  with it off the human `answer: deploy r<N>` decides, as before;
 - two cutters racing → the existing deploy lock and one-open-release
   rule; the pass holds the same lock the session does;
 - the pass deploying the code that runs the pass → the pass runs from

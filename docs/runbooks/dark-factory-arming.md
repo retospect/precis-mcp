@@ -52,7 +52,8 @@ red run, the digest posted as a `brief:` on the fix) → fix → `recut`
 (`release_cut`, records the new
 cut and range on the root, the gate, the loop and the approval options) →
 `poll` (`ci_verdict_poll` on the new sha); red again mints the next
-iteration, up to 3) → `approval` → `deploy` (`release_deploy`:
+iteration — two automatic iterations, then the loop files a ruling ask
+and a third never starts by itself) → `approval` → `deploy` (`release_deploy`:
 `scripts/release --deploy-only r<N>`, pinned) → `confirm`
 (`release_confirm`: the runtime attestation below).
 
@@ -102,6 +103,36 @@ account has none. Cut and deploy run in the same
 checkout (its `.release-owner` marker makes the deploy the release's
 owner). `ci_verdict_poll` needs only the DB and api.github.com; set
 `release.repo` (`owner/repo`) on a host with no checkout.
+
+### Standing approval (release.auto_deploy)
+
+`release.auto_deploy` (bool, default off, DB-only — no env fallback, so
+a drifted host cannot arm it) is the owner's standing approval for the
+deploy ask. While it is on, the plan tick answers a release-pass
+`approval` node itself once the newest recorded CI verdict on the cut's
+exact sha is green *and* `release.round` names an open round on that
+head sha:
+
+    scripts/prod-precis settings set release.auto_deploy true
+    scripts/prod-precis settings set release.auto_deploy false
+
+The answer is an audit comment on the approval node — the node stays,
+it is not removed:
+
+    answer: deploy r<N> (auto-answered under release.auto_deploy; sha
+    <sha12>; range <prev>..<sha12>; CI green run <id> at <ts>; round
+    record r<N> <state>; answered <ts>Z)
+
+It covers every range — migrations, `safe_fetch.py` and harness diffs
+included (me573231: no range inspection). It fails closed and leaves the
+ask for a human when anything is off: the setting off or unreadable, no
+green verdict recorded on the cut's exact sha (a sha prod already covers
+or another sha's green does not count), `release.round` absent,
+unreadable, or naming another release, state or head, and any existing
+`answer:` — a human `hold` is never overwritten. These always still ask
+a human: rollback, superseding a partial rollout, and the exhausted
+release-fix loop — two red fix iterations run unattended, the second red
+files the ruling ask and no third starts by itself.
 
 ## Release loop (release_poll)
 

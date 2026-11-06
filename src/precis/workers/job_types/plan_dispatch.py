@@ -8,11 +8,20 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    (:func:`precis.plans.gates.evaluate`); the verdict lands on
    ``meta.gate_result = {open, why, at}`` (written when it changes) and an
    open gate goes ``STATUS:done``, which frees its ``blocked-by`` dependants.
+   A release-pass approval ask (``meta.ask.kind == 'approval'``) is first
+   offered to :func:`precis.plans.release.auto_answer_approval` — the
+   ``release.auto_deploy`` standing approval answers ``deploy r<N>``
+   itself once CI is recorded green on the cut's exact sha and
+   ``release.round`` names an open round on it (td573809, me573231).
 2. **loops** — once every current child of a loop is closed: ``until`` open
    or ``meta.loop.count`` (default 0) at ``max`` closes the loop; otherwise
    the body is re-minted under it (:func:`precis.plans.templates.mint_body`)
    and the count bumped. A body with no minter closes the loop with a
-   comment naming the gap.
+   comment naming the gap. A ``release-fix`` loop's automatic cap is
+   :data:`_RELEASE_FIX_AUTO_CAP` regardless of its stamped ``max``: the
+   second red iteration files a ruling ask (naming the round, the head
+   sha and the failing CI) and closes the loop — a third fix is a human
+   call (me573231).
 2a. **reviews** — a reviewer generator (``meta.generate.role ==
    'reviewer'``, ``from: 'td<id>'``) whose newest job succeeded is judged by
    its newest comment starting ``review:`` posted since that job was minted
@@ -259,6 +268,15 @@ _ASK_OPTIONS: list[str] = [
     "retry with a different lane/model",
     "rewrite the brief",
     "won't do",
+]
+#: Automatic ``release-fix`` iterations the tick runs unattended
+#: (me573231): two red fixes, then the exhausted-loop ask — a third fix
+#: never starts by itself. The stamped ``meta.loop.max`` may allow more;
+#: the cap here governs what the tick does on its own.
+_RELEASE_FIX_AUTO_CAP = 2
+_LOOP_ASK_OPTIONS: list[str] = [
+    "close this pass and let release_poll start a fresh one",
+    "hand release with /go",
 ]
 #: Action lines kept in the job summary.
 _NOTES_CAP = 60
@@ -621,6 +639,13 @@ def _step_gates(
             continue
         if plan.blocked(n):
             continue
+        if not w.dry_run and (n.meta.get("ask") or {}).get("kind") == "approval":
+            # The standing approval: the tick may post the 'deploy r<N>'
+            # answer itself — before the answer gate below evaluates, so
+            # the same tick can open it.
+            _answered, note = _release.auto_answer_approval(store, n.id, now=now)
+            if note:
+                res.notes.append(note)
         verdict = _gates.evaluate(store, n.meta["gate"], todo_id=n.id, now=now)
         prev = n.meta.get("gate_result") or {}
         if not isinstance(prev, dict) or (prev.get("open"), prev.get("why")) != (
@@ -672,14 +697,30 @@ def _step_loops(
         except (TypeError, ValueError):
             _close_loop(w, res, n, f"meta.loop count/max unreadable: {spec!r}")
             continue
+        body = spec.get("body")
+        if body == "release-fix":
+            # me573231: the automatic cap governs, not the stamped max.
+            cap = min(cap, _RELEASE_FIX_AUTO_CAP)
         until = _gates.evaluate(store, spec.get("until") or {}, todo_id=n.id, now=now)
         if until.open:
             _close_loop(w, res, n, f"until is met ({until.why})")
             continue
         if count >= cap:
+            if body == "release-fix" and not spec.get("exhausted_ask"):
+                if w.dry_run:
+                    res.notes.append(
+                        f"loop td{n.id}: would file the exhausted release-fix ask"
+                    )
+                else:
+                    ask_id = _mint_loop_ask(store, n, count, until.why)
+                    w.stamp_meta(n, {"loop": {**spec, "exhausted_ask": ask_id}})
+                    res.notes.append(
+                        f"loop td{n.id}: {count} red release-fix iteration(s), "
+                        f"asked in td{ask_id}"
+                    )
+                res.asks += 1
             _close_loop(w, res, n, f"max {cap} iteration(s) reached ({until.why})")
             continue
-        body = spec.get("body")
         if not isinstance(body, str) or body not in _templates.BODIES:
             _close_loop(
                 w,
@@ -1905,6 +1946,65 @@ def _mint_ask(
         )
         store.add_link(
             src_ref_id=n.id, dst_ref_id=ref.id, relation="blocked-by", conn=conn
+        )
+    return int(ref.id)
+
+
+def _mint_loop_ask(store: Any, n: _Node, count: int, why: str) -> int:
+    """The ruling ask an exhausted ``release-fix`` loop files (me573231):
+    ``count`` automatic iterations ended red — named with the round, the
+    head sha and the failing CI — and a further fix never starts by
+    itself. Insert shape of :func:`_mint_ask`, minus the ``blocked-by``
+    link (the ask parks the whole pass, not one node)."""
+    rel = _release.release_of(store, n.id)
+    rn = str((rel or {}).get("rN") or "?")
+    sha12 = str((rel or {}).get("sha") or "")[: _release.LANDED_SHA_LEN] or "?"
+    context = f"release {rn} at {sha12}: {why}"[:_ASK_CONTEXT_CAP]
+    meta: dict[str, Any] = {
+        "ask": {
+            "kind": "ruling",
+            "options": list(_LOOP_ASK_OPTIONS),
+            "blocks": "nothing",
+            "context": context,
+        }
+    }
+    check_ask_meta(meta)
+    title = (
+        f"release {rn}: {count} fix iteration(s) ended red — "
+        "close this pass or hand the release to a human?"
+    )
+    body = (
+        f"The {rn} pass's release-fix loop minted {count} fix iteration(s) "
+        f"and every one ended red ({why}). No further iteration is minted: "
+        "two run unattended, a third is a human call (me573231). "
+        "release_poll mints no fresh pass while this pass's root stays "
+        "open. Fix main by hand, then close this todo and the pass root "
+        "STATUS:won't-do — release_poll starts a fresh pass on the fixed "
+        "main — or answer 'hand release with /go' to run the release "
+        "yourself."
+    )
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=title,
+            meta=meta,
+            parent_id=n.root,
+            conn=conn,
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        for value in ("ask-user", "showstopper", f"plan:{n.root}"):
+            store.add_tag(ref.id, Tag.open(value), set_by="system", conn=conn)
+        store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
+            conn=conn,
         )
     return int(ref.id)
 
