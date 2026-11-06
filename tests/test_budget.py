@@ -244,10 +244,71 @@ def test_is_paid_covers_every_nonfree_tier() -> None:
     assert bands.is_paid(Tier.FRONTIER) is True
 
 
-def test_gate_tier_free_local_always_passes() -> None:
+def test_gate_tier_dollar_cap_pauses_cloud_small() -> None:
+    # Reto 2026-10-21: the gate keys on the resolved rung's resource, not
+    # the free tier band — a tripped dollar cap pauses cloud SMALL too.
     store = cast("Store", FakeStore(llm=999.0, fetch=0.0))  # wildly over cap
-    # The free SMALL tier keeps flowing even while tripped.
-    assert breaker_mod.gate_tier(Tier.SMALL, store=store) is None
+    for transport in ("openai_compat", None):
+        reason = breaker_mod.gate_tier(Tier.SMALL, transport=transport, store=store)
+        assert reason is not None and "cap" in reason, transport
+    # A free local rung keeps flowing even while tripped.
+    assert (
+        breaker_mod.gate_tier(
+            Tier.SMALL, transport="openai_compat", local=True, store=store
+        )
+        is None
+    )
+    # The quota side keeps SMALL ungated: a rejected claude window admits it.
+    rejected = SqlStore(
+        llm=999.0,
+        windows={
+            "five_hour": {
+                "status": "rejected",
+                "resets_at": "2099-07-17T00:00:00+00:00",
+            }
+        },
+    )
+    assert (
+        breaker_mod.gate_tier(
+            Tier.SMALL, transport="claude_p", store=cast("Store", rejected)
+        )
+        is None
+    )
+
+
+def test_route_pauses_cloud_small_over_the_dollar_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``router.route`` of SMALL on a one-rung hosted chain over the cap is a
+    paused ``budget`` result; the provider never runs."""
+    from precis.utils.llm import router
+
+    store = FakeStore(llm=999.0, fetch=0.0)
+    monkeypatch.setattr(meter, "active_store", lambda: store)
+    # The meter memoises the tripped status process-wide; drop it after.
+    monkeypatch.setattr(meter, "_cached", None)
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://llm.example.invalid/v1")
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [{"transport": "openai_compat", "model": "small-model"}],
+    )
+    ran: list[str] = []
+
+    class _Provider:
+        def run(self, req: object, *, model: str) -> object:
+            ran.append(model)
+            raise AssertionError("provider ran despite a tripped cap")
+
+    monkeypatch.setattr(
+        router, "provider_for", lambda transport, *, bare=False: _Provider()
+    )
+
+    out = router.route(router.LlmRequest(tier=Tier.SMALL, prompt="hi"))
+
+    assert out.paused is True
+    assert out.reason_class == "budget"
+    assert out.error is not None and "cap" in out.error
+    assert ran == []
 
 
 def test_gate_tier_paid_cheap_tiers_gated_over_cap() -> None:

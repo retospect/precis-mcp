@@ -1,14 +1,28 @@
-"""The ``llm_account`` / pool ledger and usage-signal writer.
+"""The ``llm_account`` / pool ledger, its usage-signal writers and pacing.
 
 Two of the five offering records (memory me568184): **account** (one
 credential at one provider under one plan, ``llm_account``) and **pool**
 (a rate bucket with a reset rule and explicit scope, a row of
 ``external_rate_limits`` whose ``provider`` starts with ``llm:``). This
-module supplies typed reads and the single UPDATE-only usage-signal writer
-for existing pools; the owner-only account write path lives in the handler's
-``put`` (validation needs :mod:`precis.todo.guards` and
-:mod:`precis.secret_status`, which would make this module import the
-handler layer if the upsert lived here too).
+module supplies typed reads, the UPDATE-only usage-signal writers for
+existing pools (:func:`record_pool_report`, :func:`record_pool_failure`)
+and :func:`consume_cap`, the one writer here that inserts rows: a
+subscription profile's window cap meters into its own
+``llm:<profile>:calls|tokens`` rows, so the cap holds across processes.
+The owner-only account write path (which also creates an account's
+carrier pool rows) lives in the handler's ``put`` (validation needs
+:mod:`precis.todo.guards` and :mod:`precis.secret_status`, which would make
+this module import the handler layer if the upsert lived here too).
+
+:func:`pacing` is a pool's read-time state (memory me568188): the target
+used fraction is :data:`PACE_TARGET` until :data:`DRAIN_WINDOW` before the
+pool's next reset or expiry, then 1.0, and the used fraction against that
+target reads ``behind`` / ``on-pace`` / ``ahead`` / ``exhausted`` (or
+``unknown``). Nothing is stored: the state derives from the reported
+columns, ``parked_until`` and the clock. :func:`precis.budget.breaker.gate_tier`
+pauses background claude-OAuth work on an ``ahead`` or ``exhausted``
+:data:`CLAUDE_SUB_POOLS` pool, and the router's subscription cap refuses
+on its cap rows the same way.
 
 :func:`parse_reset_rule` / :func:`format_reset_rule` / :func:`next_reset`
 are the typed reset-rule grammar: ``rolling:<seconds>``;
@@ -18,15 +32,17 @@ are the typed reset-rule grammar: ``rolling:<seconds>``;
 every month has one); ``expires:<ISO UTC>``. Garbage refuses with
 ``ValueError``; the handler's ``put`` wraps that into a ``BadInput``.
 
-No routing behaviour changes here: ``pick_lane``, ``ladder``,
-``resolve_profile`` and ``rate_limit.acquire``/``park``/``_record_refusal``
-read ``external_rate_limits`` exactly as before. Reporting never changes a
-pool's unit or reset rule, and older reports cannot overwrite newer ones.
+``pick_lane``, ``ladder`` and ``rate_limit.acquire``/``park``/
+``_record_refusal`` read ``external_rate_limits`` exactly as before.
+Reporting never changes a pool's unit or reset rule, and older reports
+cannot overwrite newer ones.
 """
 
 from __future__ import annotations
 
 import logging
+import math
+import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -42,6 +58,25 @@ if TYPE_CHECKING:
 #: never ``host:`` (the existing per-netloc outbound-policy rows).
 POOL_PREFIX = "llm:"
 log = logging.getLogger(__name__)
+
+#: The ``<account>`` segment of a pool key — what a capped subscription
+#: profile's name must match for :func:`consume_cap` to key its rows.
+POOL_ACCOUNT_RE = re.compile(r"[a-z0-9-]+")
+
+#: The axes a subscription profile's window cap meters, one pool row each
+#: (``llm:<profile>:calls``, ``llm:<profile>:tokens``).
+CAP_AXES: tuple[str, ...] = ("calls", "tokens")
+
+#: The Claude subscription's two pools, the ones the breaker paces
+#: background claude-OAuth work on.
+CLAUDE_SUB_POOLS: tuple[str, ...] = ("llm:claude-sub:5h", "llm:claude-sub:7d")
+
+#: Pacing (memory me568188): the used fraction a pool may reach before its
+#: last :data:`DRAIN_WINDOW`; inside that window the target is 1.0.
+PACE_TARGET = 0.95
+DRAIN_WINDOW = timedelta(hours=6)
+#: Width of the ``on-pace`` band just under the target.
+PACE_BAND = 0.01
 
 #: Calendar weekday tokens, Monday-first (``datetime.weekday()`` order) —
 #: the grammar's ``<mon|tue|...>`` anchor vocabulary.
@@ -276,16 +311,136 @@ def record_pool_failure(
     return True
 
 
+def consume_cap(
+    store: Store,
+    profile: str,
+    *,
+    axis: str,
+    amount: float,
+    limit: float,
+    window_s: float,
+    now: datetime,
+) -> bool:
+    """Meter ``amount`` against a subscription profile's window cap.
+
+    The one writer that inserts pool rows: upserts ``llm:<profile>:<axis>``
+    (``axis`` is ``calls`` or ``tokens``; any other key warns and returns
+    ``False``). A new row takes the 0280 carrier shape with ``unit`` the
+    axis, ``limit_reported`` the cap, ``reset_rule`` ``rolling:<window>``
+    and an estimated ``used_reported`` of ``amount`` over a window ending
+    ``window_s`` after ``now``. On an existing row a window that has reset
+    (``resets_at`` NULL or past) restarts at ``amount``; otherwise
+    ``amount`` adds to it. Limit and rule follow the cap either way. One
+    statement, so concurrent processes serialise on the row.
+    """
+    if axis not in CAP_AXES or not POOL_ACCOUNT_RE.fullmatch(profile):
+        log.warning("pool cap: unknown pool key %s%s:%s", POOL_PREFIX, profile, axis)
+        return False
+    key = f"{POOL_PREFIX}{profile}:{axis}"
+    rule = f"rolling:{math.ceil(window_s)}"
+    resets_at = now + timedelta(seconds=window_s)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO external_rate_limits AS r (provider, capacity, "
+            'refill_per_sec, tokens, daily_cap, "class", unit, limit_reported, '
+            "reset_rule, used_reported, resets_at, source, reported_at) "
+            "VALUES (%s, 1, 1.0, 1, NULL, 'llm-api', %s, %s, %s, %s, %s, "
+            "'estimate', %s) ON CONFLICT (provider) DO UPDATE SET "
+            "used_reported = CASE WHEN r.resets_at IS NULL OR r.resets_at <= %s "
+            "THEN EXCLUDED.used_reported "
+            "ELSE COALESCE(r.used_reported, 0) + EXCLUDED.used_reported END, "
+            "resets_at = CASE WHEN r.resets_at IS NULL OR r.resets_at <= %s "
+            "THEN EXCLUDED.resets_at ELSE r.resets_at END, "
+            "limit_reported = EXCLUDED.limit_reported, "
+            "reset_rule = EXCLUDED.reset_rule, "
+            "reported_at = EXCLUDED.reported_at RETURNING provider",
+            (key, axis, limit, rule, amount, resets_at, now, now, now),
+        ).fetchone()
+    return row is not None
+
+
+# ── pacing ──────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class Pacing:
+    """A pool's read-time pacing state (:func:`pacing`).
+
+    ``state`` is ``behind``, ``on-pace``, ``ahead``, ``exhausted`` or
+    ``unknown``. ``fraction`` is the used share of the limit (``None``
+    unreported), ``target`` the share the pool may reach now, ``horizon``
+    the next reset or expiry, and ``retry_at`` when an ``ahead`` or
+    ``exhausted`` pool opens again (``None`` for every other state).
+    """
+
+    state: str
+    fraction: float | None
+    target: float
+    horizon: datetime | None
+    retry_at: datetime | None
+
+
+def _used_fraction(pool: Pool) -> float | None:
+    """``used / limit``, else ``1 - remaining / limit``; a ``percent``
+    pool with no reported limit reads 100. ``None`` when unknowable."""
+    limit = pool.limit_reported
+    if limit is None and pool.unit == "percent":
+        limit = 100.0
+    if limit is None or limit <= 0:
+        return None
+    if pool.used_reported is not None:
+        return pool.used_reported / limit
+    if pool.remaining_reported is not None:
+        return 1 - pool.remaining_reported / limit
+    return None
+
+
+def pacing(pool: Pool, now: datetime) -> Pacing:
+    """The pacing state of ``pool`` at ``now`` (tz-aware).
+
+    Rules, in order: a park still running (``parked_until`` after ``now``)
+    is ``exhausted`` until it ends. The horizon is the earlier of
+    ``resets_at`` and ``expires_at`` still ahead of ``now``; with no
+    horizon or no used fraction the state is ``unknown``. The target is
+    :data:`PACE_TARGET` until :data:`DRAIN_WINDOW` before the horizon, then
+    1.0. A fraction at 1 or more is ``exhausted`` until the horizon; at or
+    over the target ``ahead`` until the drain window opens; within
+    :data:`PACE_BAND` under it ``on-pace``; below that ``behind``.
+    Staleness leaves the state alone: usage only grows inside a window, so
+    a stale report is a lower bound and an ``ahead`` reading stays true.
+    """
+    upcoming = [
+        t for t in (pool.resets_at, pool.expires_at) if t is not None and t > now
+    ]
+    horizon = min(upcoming) if upcoming else None
+    fraction = _used_fraction(pool)
+    target = PACE_TARGET
+    if horizon is not None and now >= horizon - DRAIN_WINDOW:
+        target = 1.0
+    if pool.parked_until is not None and pool.parked_until > now:
+        return Pacing("exhausted", fraction, target, horizon, pool.parked_until)
+    if horizon is None or fraction is None:
+        return Pacing("unknown", fraction, target, horizon, None)
+    if fraction >= 1:
+        return Pacing("exhausted", fraction, target, horizon, horizon)
+    if fraction >= target:
+        return Pacing("ahead", fraction, target, horizon, horizon - DRAIN_WINDOW)
+    if fraction >= target - PACE_BAND:
+        return Pacing("on-pace", fraction, target, horizon, None)
+    return Pacing("behind", fraction, target, horizon, None)
+
+
 # ── reset-rule grammar ──────────────────────────────────────────────────
 
 
 @dataclass(frozen=True, slots=True)
 class RollingReset:
-    """``rolling:<seconds>`` — resets ``seconds`` after it was last touched.
+    """``rolling:<seconds>`` — a window ``seconds`` long.
 
-    This ledger carries no per-window "started at" state (S3 reconciles the
-    bucket consume to actual on completion), so :func:`next_reset` answers
-    "a full window from now" rather than reading a stored start.
+    The rule stores no window start: a pool row's ``resets_at`` is where
+    the current window ends (:func:`consume_cap` stamps it when a cap
+    window opens; provider reports carry their own), so :func:`next_reset`
+    answers "a full window from now" — when a window opened now would end.
     """
 
     seconds: int
@@ -428,13 +583,13 @@ def next_reset(rule: ResetRule, now: datetime) -> datetime:
     """The next reset instant at or after ``now``, in UTC.
 
     ``rolling`` has no stored window-start, so this answers "a full window
-    from ``now``" (S3 reconciles the bucket consume to actual on
-    completion — the ledger doesn't track in-progress windows). ``expires``
-    is a fixed one-shot instant. ``calendar`` walks ``now`` into the rule's
-    ``tz`` via :mod:`zoneinfo`, finds the next occurrence of the anchor
-    strictly after ``now``, and converts back to UTC — correct across a
-    tz/UTC day boundary (e.g. a daily reset anchored past midnight UTC in
-    a tz still on the previous UTC day).
+    from ``now``"; an in-progress window's end is the pool row's
+    ``resets_at``, not this. ``expires`` is a fixed one-shot instant.
+    ``calendar`` walks ``now`` into the rule's ``tz`` via :mod:`zoneinfo`,
+    finds the next occurrence of the anchor strictly after ``now``, and
+    converts back to UTC — correct across a tz/UTC day boundary (e.g. a
+    daily reset anchored past midnight UTC in a tz still on the previous
+    UTC day).
     """
     if now.tzinfo is None:
         raise ValueError("next_reset: now must be tz-aware")
@@ -474,18 +629,27 @@ def next_reset(rule: ResetRule, now: datetime) -> datetime:
 
 
 __all__ = [
+    "CAP_AXES",
+    "CLAUDE_SUB_POOLS",
+    "DRAIN_WINDOW",
+    "PACE_BAND",
+    "PACE_TARGET",
+    "POOL_ACCOUNT_RE",
     "POOL_PREFIX",
     "Account",
     "CalendarReset",
     "ExpiresReset",
+    "Pacing",
     "Pool",
     "ResetRule",
     "RollingReset",
+    "consume_cap",
     "format_reset_rule",
     "get_account",
     "list_accounts",
     "list_pools",
     "next_reset",
+    "pacing",
     "parse_reset_rule",
     "record_pool_failure",
     "record_pool_report",

@@ -6975,6 +6975,43 @@ def test_dispatch_async_gate_out_writes_gated_row(
     assert rec.store_blobs is False
 
 
+def test_gate_refusal_retry_at_rides_the_paused_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pool-pacing trip is a GateRefusal naming when its pool opens: both
+    route() and the streaming dispatch_async() put that instant on the
+    paused result, and _classified keeps it over the class's default."""
+    import asyncio
+
+    from precis.budget.breaker import GateRefusal
+    from precis.utils.llm.router import dispatch_async
+
+    opens = datetime(2099, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr(
+        "precis.budget.breaker.gate_tier",
+        lambda *a, **kw: GateRefusal(
+            "budget: claude pool llm:claude-sub:7d is ahead", retry_at=opens
+        ),
+    )
+    _capture_route_log(monkeypatch)
+
+    async def on_event(evt: dict) -> None:
+        pass
+
+    synced = route(LlmRequest(tier=Tier.BIG, prompt="hi", tools_needed=True))
+    streamed = asyncio.run(
+        dispatch_async(
+            LlmRequest(tier=Tier.BIG, prompt="hi", tools_needed=True, on_event=on_event)
+        )
+    )
+
+    for out in (synced, streamed):
+        assert out.paused is True
+        assert out.reason_class == "quota"
+        assert out.retry_at == opens
+        assert (out.error or "").startswith("budget: claude pool llm:claude-sub:7d")
+
+
 def test_error_result_is_error_envelope_without_quota_wording_not_paused() -> None:
     """gr516941 (Opus N1): an ``is_error`` envelope no longer classifies on
     the flag alone — an exit-0 "API Error: …" refusal is a transient, not a
@@ -7397,7 +7434,6 @@ def test_chain_mixes_two_hosted_profiles(monkeypatch: pytest.MonkeyPatch) -> Non
         ],
     )
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
-    router._sub_ledger.clear()
 
     out = route(LlmRequest(tier=Tier.MEDIUM, prompt="judge this"))
 
@@ -7482,12 +7518,33 @@ def _subscription_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture
+def _drop_sub_cap_pools(store: Any) -> Any:
+    """The ``sub`` profile's cap rows are inserted, never seeded, into a
+    table the suite never truncates — delete them on both sides."""
+
+    def drop() -> None:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "DELETE FROM external_rate_limits WHERE provider LIKE %s",
+                ("llm:sub:%",),
+            )
+
+    drop()
+    yield
+    drop()
+
+
+@pytest.mark.usefixtures("_drop_sub_cap_pools")
 def test_subscription_cap_exhaustion_falls_through(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, store: Any
 ) -> None:
     """A subscription profile whose window cap is spent skips its rung with
     a logged ``subscription_cap`` reason — the chain walks to the next rung
-    without pausing it, and the skip itself is a route-log row."""
+    without pausing it, and the skip itself is a route-log row. The cap is
+    counted in the pool ledger (``llm:sub:calls``), not in process memory."""
+    from precis.utils.llm.accounts import list_pools
+
     _subscription_profiles(monkeypatch)
     seen: list[dict[str, object]] = []
     _profile_fakes(monkeypatch, seen)
@@ -7496,14 +7553,17 @@ def test_subscription_cap_exhaustion_falls_through(
         lambda _tier: _subscription_chain(),
     )
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
-    router._sub_ledger.clear()
+    monkeypatch.setattr("precis.budget.meter.active_store", lambda: store)
     recorded = _capture_route_log(monkeypatch)
 
     first = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
     assert first.error is None
     assert seen[-1]["url"] == "https://sub.example.invalid/v1"
-    assert len(router._sub_ledger["sub"]) == 1
-    assert router._sub_ledger["sub"][0][1] == 5  # total_tokens tallied
+    pools = {p.provider: p for p in list_pools(store)}
+    assert pools["llm:sub:calls"].used_reported == 1
+    assert pools["llm:sub:calls"].limit_reported == 1
+    # The cap bounds calls only, so no tokens row is metered.
+    assert "llm:sub:tokens" not in pools
 
     import logging as _logging
 
@@ -7544,7 +7604,6 @@ def test_subscription_rung_refuses_bulk_work(
         lambda _tier: _subscription_chain(),
     )
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
-    router._sub_ledger.clear()
     recorded = _capture_route_log(monkeypatch)
 
     out = route(LlmRequest(prompt="x", **req_kwargs))
@@ -7597,7 +7656,6 @@ def test_profile_key_never_reaches_logs_or_errors(
         ],
     )
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
-    router._sub_ledger.clear()
     recorded = _capture_route_log(monkeypatch)
 
     with caplog.at_level(_logging.DEBUG):
@@ -7642,6 +7700,30 @@ def test_resolve_profile_parses_env_table(
     assert router.resolve_profile("missing") is None
     assert router.resolve_profile("broken") is None
     assert router.resolve_profile(None) is None
+
+
+def test_resolve_profile_drops_capped_profile_with_unkeyable_name(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A capped profile's name keys its cap pools (llm:<name>:calls), so a
+    name outside [a-z0-9-]+ drops the profile with a warning; the same
+    name without a cap still resolves."""
+    entry = {
+        "base_url": "https://alpha.example.invalid/v1",
+        "api_key_ref": "ALPHA_LLM_KEY",
+        "kind": "subscription",
+    }
+    _set_profiles(
+        monkeypatch,
+        {
+            "Alpha_1": {**entry, "cap": {"calls": 3, "window_s": 60}},
+            "Beta_1": entry,
+        },
+    )
+    with caplog.at_level("WARNING", logger="precis.utils.llm.router"):
+        assert router.resolve_profile("Alpha_1") is None
+    assert any("[a-z0-9-]+" in r.getMessage() for r in caplog.records)
+    assert router.resolve_profile("Beta_1") is not None
 
 
 def test_resolve_profile_ops_empty_is_not_absent(

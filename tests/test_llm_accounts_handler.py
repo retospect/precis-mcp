@@ -11,7 +11,7 @@ seeded pool key behave like any other carrier row (acceptance e). Real PG.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -116,12 +116,30 @@ class TestPoolsView:
         ):
             assert key in body
 
-    def test_pacing_is_literal_na(self, store: Any) -> None:
-        h = _handler(store)
-        body = h.get(id="/pools").body
-        for line in body.splitlines():
-            if line.strip().startswith("llm:"):
-                assert "pacing=n/a" in line
+    def test_pacing_reads_each_pool(self, store: Any) -> None:
+        """Seeds carry no report or reset, so every one reads unknown; a
+        7-day pool at 96 % three days out reads ahead."""
+        from precis.utils.llm.accounts import record_pool_report
+
+        body = _handler(store).get(id="/pools").body
+        lines = [line for line in body.splitlines() if line.strip().startswith("llm:")]
+        assert len(lines) == 6
+        assert all(line.endswith("pacing=unknown") for line in lines), lines
+        key = "llm:claude-sub:7d"
+        now = datetime.now(UTC)
+        assert record_pool_report(
+            store,
+            key,
+            used=96,
+            remaining=4,
+            limit=100,
+            source="provider",
+            reported_at=now,
+            resets_at=now + timedelta(days=3),
+        )
+        body = _handler(store).get(id="/pools").body
+        line = next(line for line in body.splitlines() if line.strip().startswith(key))
+        assert line.endswith("pacing=ahead")
 
     def test_retry_at_and_stale_render(self, store: Any) -> None:
         body = _handler(store).get(id="/pools").body

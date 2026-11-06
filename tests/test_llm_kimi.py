@@ -192,7 +192,6 @@ def test_dark_gate_drops_the_kimi_rung(monkeypatch: pytest.MonkeyPatch) -> None:
         ),
     )
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
-    router._sub_ledger.clear()
 
     out = route(LlmRequest(tier=Tier.BIG, prompt="x", source="plan_tick"))
 
@@ -215,7 +214,6 @@ def test_lit_gate_dispatches_at_kimi(monkeypatch: pytest.MonkeyPatch) -> None:
         ),
     )
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
-    router._sub_ledger.clear()
 
     out = route(
         LlmRequest(
@@ -254,7 +252,6 @@ def test_ops_allowlist_refuses_non_coding_op(
         ),
     )
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
-    router._sub_ledger.clear()
 
     out = route(
         LlmRequest(
@@ -293,7 +290,6 @@ def test_default_profile_routes_nothing(monkeypatch: pytest.MonkeyPatch) -> None
         ),
     )
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
-    router._sub_ledger.clear()
 
     out = route(
         LlmRequest(
@@ -343,7 +339,6 @@ def test_kimi_rung_refuses_worker_origin(
         ),
     )
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
-    router._sub_ledger.clear()
 
     out = route(LlmRequest(tier=Tier.BIG, prompt="x", source="plan_tick", **req_kwargs))
 
@@ -374,7 +369,6 @@ def test_pinned_kimi_dispatch_refuses_worker(
     # The profile-less rung needs SOME hosted base url to survive
     # resolve_chain; req.profile pins kimi at dispatch regardless.
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://x.example.invalid/v1")
-    router._sub_ledger.clear()
 
     out = route(
         LlmRequest(
@@ -409,7 +403,6 @@ def test_interactive_scope_allows_listed_op(
         ),
     )
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
-    router._sub_ledger.clear()
 
     with work_class_scope("interactive"):
         out = route(LlmRequest(tier=Tier.BIG, prompt="x", source="my_op"))
@@ -438,7 +431,6 @@ def test_kimi_wire_never_sends_thinking_off(
         ),
     )
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
-    router._sub_ledger.clear()
 
     out = route(
         LlmRequest(
@@ -504,7 +496,6 @@ def test_quota_error_pauses_and_falls_through(
         ),
     )
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
-    router._sub_ledger.clear()
 
     out = route(
         LlmRequest(

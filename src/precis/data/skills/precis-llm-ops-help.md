@@ -91,6 +91,22 @@ eval against the tier's incumbent recorded on its card, and a second
 `ask-user` todo before anything is ever enabled. Groq/Cerebras/OpenRouter
 free models enter the catalog ONLY this way — never hand-seed one.
 
+## Why is background Claude work paused? Pool pacing
+
+`get(kind='llm', id='/pools')` shows each pool's `pacing`: `behind`,
+`on-pace` (within one point under target), `ahead`, `exhausted` (used up,
+or parked until its `retry_at`) or `unknown` (no usage report, or no reset
+or expiry ahead). A pool may use 95 % of its limit until six hours before
+it resets (or its credit expires), then 100 %. While `llm:claude-sub:5h`
+or `llm:claude-sub:7d` reads `ahead` or `exhausted`, background Claude
+calls pause with a `quota`-class `budget: claude pool <key> is <state>`
+refusal whose `retry_at` is when the pool opens; deliverable and
+interactive work keep running under the quota taper. A subscription
+profile's window cap counts in its own pools, `llm:<profile>:calls` and
+`llm:<profile>:tokens`, shared by every process and listed on `/pools`:
+an exhausted row skips the profile's rung, an ahead one skips it for
+background calls (`subscription_cap`).
+
 ## See also
 
 `pool_refresh` copies Codex weekly usage from fleet host reports and Devin's

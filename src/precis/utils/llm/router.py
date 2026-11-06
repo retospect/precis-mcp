@@ -28,9 +28,9 @@ Four pieces:
   ``profile`` key pins its own hosted endpoint + credential reference, so
   one process routes several hosted providers in a single chain
   (gr543825). A ``kind='subscription'`` profile additionally gates its
-  rung through an ops allowlist, a bulk-work guard and a sliding-window
-  cap; a ``kimi``-adapter rung refuses worker/job-origin calls outright
-  (interactive use only — gr543829).
+  rung through an ops allowlist, a bulk-work guard and a window cap kept
+  in the pool ledger; a ``kimi``-adapter rung refuses worker/job-origin
+  calls outright (interactive use only — gr543829).
 
 :class:`Tier` aligns with :class:`~precis.utils.prompt.model.Profile`: a
 ``HELPER`` (tool-less, one-shot) profile rides ``MEDIUM``/``SMALL`` on
@@ -55,7 +55,6 @@ import random
 import re
 import threading
 import time
-from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from dataclasses import replace as _replace
@@ -1809,11 +1808,14 @@ def provider_for(transport: Transport, *, bare: bool = False) -> LlmProvider:
 
 @dataclass(frozen=True, slots=True)
 class SubscriptionCap:
-    """A subscription profile's sliding-window budget.
+    """A subscription profile's window budget.
 
-    ``calls`` / ``tokens`` bound usage inside ``window_s`` seconds; either
-    may be ``None`` (unbounded on that axis). Accounting is per-process —
-    see :data:`_sub_ledger`.
+    ``calls`` / ``tokens`` bound usage inside a ``window_s``-second window;
+    either may be ``None`` (unbounded on that axis). Each bounded axis is a
+    pool row, ``llm:<profile>:calls`` / ``llm:<profile>:tokens``
+    (:func:`~precis.utils.llm.accounts.consume_cap`): a window opens with
+    the first call after the last one reset, and the count is shared by
+    every process on the store.
     """
 
     calls: int | None
@@ -1831,7 +1833,9 @@ class ProviderProfile:
     the profile and never logged. ``kind`` is ``'metered'`` (per-token
     billing — the default) or ``'subscription'`` (a flat plan the bulk
     guard + window cap protect). ``cap`` bounds a subscription profile's
-    sliding-window usage.
+    usage per window, metered in the pool ledger under the profile's name
+    — so a capped profile's name must be a pool-key account segment
+    (``[a-z0-9-]+``).
 
     ``adapter`` opts the wire into a provider-specific request/failure
     shape (:data:`_PROFILE_ADAPTERS` — ``'kimi'`` →
@@ -1951,6 +1955,15 @@ def resolve_profile(name: str | None) -> ProviderProfile | None:
         cap = _parse_profile_cap(name, raw["cap"])
         if cap is None:
             return None
+        from precis.utils.llm.accounts import POOL_ACCOUNT_RE
+
+        if not POOL_ACCOUNT_RE.fullmatch(name):
+            log.warning(
+                "llm-profile %r: a capped profile's name keys its cap pools "
+                "(llm:<name>:calls|tokens) and must match [a-z0-9-]+ — ignored",
+                name,
+            )
+            return None
     adapter = raw.get("adapter")
     if adapter is not None and (
         not isinstance(adapter, str) or adapter not in _PROFILE_ADAPTERS
@@ -2013,52 +2026,133 @@ def _parse_profile_str_list(name: str, raw: dict, key: str) -> frozenset[str] | 
     return frozenset(v.strip() for v in value)
 
 
-#: Per-process subscription usage ledger: profile name → deque of
-#: ``(monotonic_ts, tokens)``, one entry per *dispatched* call on a
-#: subscription-profiled rung. **In-process only** — the router reads
-#: ``llm_call_log`` on the write path only, and this is the cheap truthful
-#: counter the code offers: it counts THIS process's demand, so a windowed
-#: cap under-counts across a multi-process fleet rather than over-charging.
-#: The logged row already carries the profile name
-#: (``features.profile``), which is the hook a shared, cross-process
-#: counter would key on later.
-_sub_ledger: dict[str, deque[tuple[float, int]]] = {}
-_sub_lock = threading.Lock()
+def _cap_limits(cap: SubscriptionCap) -> dict[str, int]:
+    """The cap's bounded axes (``calls`` / ``tokens``) and their limits."""
+    return {
+        axis: limit
+        for axis, limit in (("calls", cap.calls), ("tokens", cap.tokens))
+        if limit is not None
+    }
 
 
 def _subscription_tally(profile: ProviderProfile, result: LlmResult) -> None:
-    """Ledger one dispatched subscription-rung call: 1 call + its tokens.
+    """Meter one dispatched subscription-rung call into the profile's cap
+    pools (:func:`~precis.utils.llm.accounts.consume_cap`): 1 call and its
+    tokens, on each axis the cap bounds.
 
     Counts every completed attempt — even an error result went out over
     the wire and may have drawn plan usage, so counting it is the safe
     side for a cap. Tokens prefer the provider's ``usage.total_tokens``
-    (what it billed), falling back to the input+output split.
+    (what it billed), falling back to the input+output split. Dark without
+    a bound store; a failed write warns and never raises.
     """
+    cap = profile.cap
+    if cap is None:
+        return
+    from precis.budget import meter as _meter
+
+    store = _meter.active_store()
+    if store is None:
+        return
+    from precis.utils.llm.accounts import consume_cap
+
     tokens = result.total_tokens
     if tokens is None:
         tokens = (result.input_tokens or 0) + (result.output_tokens or 0)
-    with _sub_lock:
-        _sub_ledger.setdefault(profile.name, deque()).append(
-            (time.monotonic(), int(tokens or 0))
+    spent = {"calls": 1, "tokens": int(tokens or 0)}
+    now = datetime.now(UTC)
+    for axis, limit in _cap_limits(cap).items():
+        try:
+            consume_cap(
+                store,
+                profile.name,
+                axis=axis,
+                amount=spent[axis],
+                limit=limit,
+                window_s=cap.window_s,
+                now=now,
+            )
+        except Exception:
+            log.warning(
+                "llm-profile %r: cap pool write failed (%s)",
+                profile.name,
+                axis,
+                exc_info=True,
+            )
+
+
+def _subscription_cap_refusal(
+    profile: ProviderProfile,
+    cap: SubscriptionCap,
+    req: LlmRequest,
+    *,
+    model: str,
+) -> LlmResult | None:
+    """The window cap's refusal, read from the profile's cap pools — an
+    ``exhausted`` row refuses every call, an ``ahead`` row a background one
+    (:func:`~precis.utils.llm.accounts.pacing`, judged against the cap's
+    current limit so an operator's raised cap applies at once). Dark
+    without a bound store; a store with no ledger admits quietly, and any
+    other failed read warns and admits."""
+    from precis.budget import meter as _meter
+
+    store = _meter.active_store()
+    if store is None:
+        return None
+    from precis.budget.work_class import WorkClass
+    from precis.budget.work_class import resolve as _resolve_class
+    from precis.utils.llm import accounts as _accounts
+
+    limits = {
+        f"{_accounts.POOL_PREFIX}{profile.name}:{axis}": limit
+        for axis, limit in _cap_limits(cap).items()
+    }
+    if not limits:
+        return None
+    try:
+        rows = [p for p in _accounts.list_pools(store) if p.provider in limits]
+    except (AttributeError, TypeError) as exc:
+        # A store with no ``.pool`` / ``fetchall`` (a test fake): quiet.
+        log.debug(
+            "llm-profile %r: store has no pool ledger (%s) — admitting",
+            profile.name,
+            exc,
         )
-
-
-def _subscription_window(
-    profile: ProviderProfile, cap: SubscriptionCap
-) -> tuple[int, int, float | None]:
-    """``(calls, tokens, oldest_ts)`` inside ``cap.window_s``, evicting
-    expired entries as it reads; ``oldest_ts`` is ``None`` when the
-    window is empty."""
-    cutoff = time.monotonic() - cap.window_s
-    with _sub_lock:
-        entries = _sub_ledger.get(profile.name)
-        if not entries:
-            return 0, 0, None
-        while entries and entries[0][0] <= cutoff:
-            entries.popleft()
-        if not entries:
-            return 0, 0, None
-        return len(entries), sum(t for _, t in entries), entries[0][0]
+        return None
+    except Exception:
+        log.warning(
+            "llm-profile %r: cap pool read failed — admitting",
+            profile.name,
+            exc_info=True,
+        )
+        return None
+    now = datetime.now(UTC)
+    background = _resolve_class(req.work_class) is WorkClass.BACKGROUND
+    refusing: list[tuple[_accounts.Pool, _accounts.Pacing]] = []
+    for found in rows:
+        capped = _replace(found, limit_reported=float(limits[found.provider]))
+        pace = _accounts.pacing(capped, now)
+        if pace.state == "exhausted" or (pace.state == "ahead" and background):
+            refusing.append((capped, pace))
+    if not refusing:
+        return None
+    row, pace = max(refusing, key=lambda item: item[1].retry_at or now)
+    verdict = "reached" if pace.state == "exhausted" else "ahead of pace"
+    return LlmResult(
+        text="",
+        cost_usd=None,
+        turns_used=None,
+        model=model,
+        tier=req.tier,
+        error=(
+            f"subscription profile {profile.name!r} window cap {verdict} "
+            f"({row.provider} at {row.used_reported or 0:g}/"
+            f"{limits[row.provider]} in {cap.window_s:.0f}s) — skipped"
+        ),
+        paused=True,
+        reason_class="subscription_cap",
+        retry_at=pace.retry_at,
+    )
 
 
 def _subscription_refusal(
@@ -2086,9 +2180,11 @@ def _subscription_refusal(
       ``:``-prefixed, and on an explicit ``req.work_class``) refuse
       outright: ``subscription_bulk_refused``, a permanent shape
       mismatch, so not ``paused``.
-    * **Window cap** — ``cap`` usage at the limit refuses for the window:
-      ``subscription_cap``, ``paused`` with ``retry_at`` at the oldest
-      in-window call's expiry.
+    * **Window cap** — the profile's cap pools
+      (:func:`_subscription_cap_refusal`): a row at its limit refuses for
+      the window, a row ahead of pace refuses background work:
+      ``subscription_cap``, ``paused`` with ``retry_at`` when the row opens
+      again.
 
     Every refusal is rung-scoped: :class:`FailoverProvider` treats the
     result like any other failed rung — it logs the ``reason_class`` and
@@ -2157,30 +2253,7 @@ def _subscription_refusal(
         )
     cap = profile.cap
     if cap is not None:
-        calls, tokens, oldest = _subscription_window(profile, cap)
-        if (cap.calls is not None and calls >= cap.calls) or (
-            cap.tokens is not None and tokens >= cap.tokens
-        ):
-            wait_s = (
-                cap.window_s - (time.monotonic() - oldest)
-                if oldest is not None
-                else cap.window_s
-            )
-            return LlmResult(
-                text="",
-                cost_usd=None,
-                turns_used=None,
-                model=model,
-                tier=req.tier,
-                error=(
-                    f"subscription profile {profile.name!r} window cap "
-                    f"reached ({calls} calls/{tokens} tokens in "
-                    f"{cap.window_s:.0f}s) — skipped"
-                ),
-                paused=True,
-                reason_class="subscription_cap",
-                retry_at=datetime.now(UTC) + timedelta(seconds=max(wait_s, 0.0)),
-            )
+        return _subscription_cap_refusal(profile, cap, req, model=model)
     return None
 
 
@@ -3384,6 +3457,16 @@ def _trip_class(transport: Transport, *, bare: bool) -> _failure.FailureClass:
     return "budget"
 
 
+def _trip_retry_at(trip: str) -> datetime | None:
+    """The ``retry_at`` a breaker trip carries — a pool-pacing refusal is a
+    :class:`~precis.budget.breaker.GateRefusal` naming when its pool opens;
+    a plain reason string carries none, and :func:`_classified` then falls
+    back to the class's default horizon."""
+    from precis.budget import breaker as _breaker
+
+    return trip.retry_at if isinstance(trip, _breaker.GateRefusal) else None
+
+
 def _rung_draws_quota(rung: Rung) -> bool:
     """True when a rung spends claude-subscription quota — an OAuth claude
     transport without ``bare`` (the same split :func:`_trip_class` and the
@@ -4038,6 +4121,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                     tier=req.tier,
                     error=trip,
                     paused=True,
+                    retry_at=_trip_retry_at(trip),
                 ),
                 reason_class=_trip_class(transport, bare=ladder[0].bare),
             ),
@@ -4141,6 +4225,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                             tier=req.tier,
                             error=esc_trip,
                             paused=True,
+                            retry_at=_trip_retry_at(esc_trip),
                         ),
                         reason_class=_trip_class(nxt.transport, bare=nxt.bare),
                     ),
@@ -4451,6 +4536,7 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
                     tier=req.tier,
                     error=trip,
                     paused=True,
+                    retry_at=_trip_retry_at(trip),
                 ),
                 reason_class=_trip_class(transport, bare=ladder[0].bare),
             ),

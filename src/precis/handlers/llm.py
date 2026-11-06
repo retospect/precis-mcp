@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from precis import llm_catalog, secret_status
@@ -911,8 +912,9 @@ class LlmHandler(NumericRefHandler):
 
     def _render_pools(self) -> str:
         """``id='/pools'`` — every ``llm:``-prefixed ``external_rate_limits``
-        row. ``pacing`` is the literal ``n/a`` until S3; unknown/absent
-        fields render as ``unknown``."""
+        row. ``pacing`` is the pool's read-time state
+        (:func:`~precis.utils.llm.accounts.pacing`); unknown/absent fields
+        render as ``unknown``."""
 
         def fmt(v: Any) -> str:
             return "unknown" if v is None else str(v)
@@ -928,6 +930,7 @@ class LlmHandler(NumericRefHandler):
         if not pools:
             lines.append("(none)")
             return "\n".join(lines)
+        now = datetime.now(UTC)
         for p in pools:
             lines.append(
                 f"  {p.provider}: unit={fmt(p.unit)} limit={fmt(p.limit_reported)} "
@@ -936,7 +939,7 @@ class LlmHandler(NumericRefHandler):
                 f"reset_rule={fmt(p.reset_rule)} resets_at={fmt_ts(p.resets_at)} "
                 f"expires_at={fmt_ts(p.expires_at)} "
                 f"retry_at={fmt_ts(p.parked_until)} stale={str(p.stale).lower()} "
-                "pacing=n/a"
+                f"pacing={llm_accounts.pacing(p, now).state}"
             )
         return "\n".join(lines)
 

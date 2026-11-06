@@ -11,11 +11,14 @@ without doing arithmetic:
 The bands are *information + permission-when-needful*, never prohibition:
 prefer the cheapest tier that does the job, but escalate freely when the
 cheap tier stalls or the question is high-value. Only the global breaker
-(:mod:`precis.budget.breaker`) ever refuses, and only at the catastrophe cap.
+(:mod:`precis.budget.breaker`) ever refuses: at the dollar cap, on a
+blocking quota window, or when a Claude pool runs ahead of pace.
 
 A dollar figure maps to a cost band via :func:`cost_from_usd`; a router
 :class:`~precis.utils.llm.router.Tier` maps to a full band via
-:func:`band_for_tier`. ``expensive``-band work is what the breaker gates.
+:func:`band_for_tier`. The breaker gates the resolved rung's resource, not
+the band: cloud rungs (``SMALL`` included) on dollars, OAuth rungs above
+``SMALL`` on quota and pool pacing, local rungs never.
 """
 
 from __future__ import annotations
@@ -109,11 +112,14 @@ def is_expensive(tier: Tier) -> bool:
 
 
 def is_paid(tier: Tier) -> bool:
-    """True when ``tier`` costs money — any non-``free`` band.
+    """True when ``tier`` sits in a non-``free`` band.
 
-    This is what the breaker gates: once a spend cap trips, *every* paid tier
-    is refused (cheap ``BIG``/``MEDIUM`` included), not just the
-    expensive lane. Only the ``free`` local ``SMALL`` tier keeps flowing.
+    The breaker no longer keys the dollar gate on this: it gates the
+    resource the resolved rung spends, so a tripped spend cap refuses cloud
+    ``SMALL`` as well as every paid tier, and only a free local rung keeps
+    flowing. ``is_paid`` survives on the claude-OAuth lane alone, where the
+    ``free``-band ``SMALL`` tier is never gated on quota or pool pacing
+    (Reto 2026-10-21).
     """
     return _TIER_BANDS[tier].cost is not Cost.FREE
 

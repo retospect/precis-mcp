@@ -22,9 +22,8 @@ quota snapshot gate (`budget.quota.evaluate`, pause only on
 ## Decisions (Reto 2026-10-21)
 
 - A tripped **dollar** cap pauses cloud SMALL too: gate SMALL on the dollar
-  breaker only; the quota taper keeps "SMALL never gated". The SMALL-gating
-  slice is buildable now; Piece A, Piece C and the hourly runaway check are
-  each ready-sized slices of their own.
+  breaker only; the quota taper keeps "SMALL never gated". Piece A, Piece C
+  and the hourly runaway check are each ready-sized slices of their own.
 
 ## Open scope
 
@@ -44,11 +43,6 @@ quota snapshot gate (`budget.quota.evaluate`, pause only on
 
 ## Open scope (folded 2026-10-01 from the closed tier-ladder cutover)
 
-- **The breaker never gates SMALL** — `bands._TIER_BANDS[SMALL]=FREE`, so
-  `breaker.gate_tier` lets SMALL through even when a cap has tripped. SMALL
-  is the highest-volume tier and has been all-cloud since 2026-08-15, so a
-  tripped cap pauses MEDIUM/BIG/FRONTIER while SMALL keeps spending. Fix per
-  the decision above: the dollar breaker gates SMALL; the quota path does not.
 - **The hourly runaway check** — an alert-board / scheduled inspection over
   the token-first rollups (`spend_rollup`, `llm_tote`, `precis llm cost`).
   The rollups exist; nothing schedules the check.
@@ -97,7 +91,8 @@ window reports a percentage, and stops nothing once one does:
 | interactive | asa turns, web requests (middleware), session MCP tool calls (tool wrapper) | never | never | — |
 
 All classes park at 100% / a blocking status until the window resets;
-SMALL and local tiers are never gated; the resume override bypasses both.
+the quota lane never gates SMALL or local, while a tripped dollar cap
+pauses cloud SMALL too (`gate_tier`); the resume override bypasses both.
 The percentages reach the snapshot via the CLI's
 `rate_limit_event.rate_limit_info.unifiedWindows` (`claude_quota.py`);
 the probe runs `claude -p` bounded to one turn (`--max-turns 1` — 0 is
