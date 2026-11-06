@@ -175,6 +175,19 @@ _TAIL_CAP = 2000
 
 _ATTEMPT_RE = re.compile(r"^attempt:(\d+)$")
 
+#: The marker the brief asks the builder to END its final message with
+#: (gr573563): ``tests: ran`` or ``tests: NOT RUN — <which step, why>``.
+#: The first word after ``tests:`` is the verdict — only ``ran`` is a
+#: receipt the quick lane trusts (Reto on gr573555, td573580 review:
+#: no receipt or a red one lands checked).
+_TESTS_MARKER_RE = re.compile(r"\btests:\s*(\w+)", re.IGNORECASE)
+
+#: Prefix of the ``_commit_for_session`` note meaning the worker — not the
+#: builder — committed the tree, so the gate's test evidence is suspect
+#: and the land runs checked (gr573563). The "worker commit
+#: skipped/failed" notes deliberately do not start with it.
+WORKER_COMMITTED = "worker committed"
+
 #: Parent-env names the session inherits; everything else is dropped, so
 #: no ``PRECIS_DB_*``/``PG*``/``DATABASE_URL`` DSN and no vault variable
 #: reaches it. ``PRECIS_MCP_TOKEN`` is how the session reaches the precis
@@ -534,10 +547,15 @@ def _signal_group(pgid: int, sig: int) -> None:
     os.killpg(pgid, sig)
 
 
-def _mint_land(ctx: Any, todo_id: int, tree: Path, lane: Any) -> int:
+def _mint_land(
+    ctx: Any, todo_id: int, tree: Path, lane: Any, checked: bool = False
+) -> int:
     """Mint the ``land_slice`` job for the slice (idem key
     ``land_slice:td<id>``, a child of the todo, pinned to this run's host so
-    the claimant holds the worktree). Returns its id."""
+    the claimant holds the worktree). ``checked`` sets
+    ``params["checked"]`` — what ``land_slice.ship_flag`` reads as
+    ``--checked`` when the builder's test evidence is missing (gr573563).
+    Returns its id."""
     from precis.workers._mint import mint_job_once
 
     meta = ctx.meta or {}
@@ -549,6 +567,8 @@ def _mint_land(ctx: Any, todo_id: int, tree: Path, lane: Any) -> int:
     }
     if lane:
         params["lane"] = str(lane)
+    if checked:
+        params["checked"] = True
     node = run_params.get("target_node") or os.environ.get("PRECIS_NODE")
     if node:
         params["target_node"] = str(node)
@@ -1006,8 +1026,11 @@ def render_brief(
         f"{n + 1}. Run the tests you added or changed with `scripts/test <paths>`.",
         "",
         "Fix every report and re-run until all are clean — do not commit "
-        "while any step is red. If a step cannot run in this sandbox, "
-        "name it in your final message instead of skipping it silently.",
+        "while any step is red. End your final message with exactly one "
+        "line naming the gate's outcome: `tests: ran`, or `tests: NOT RUN "
+        "— <which step, why>` when a step could not run in this sandbox "
+        "(a first-line `validated:`/`no-op:`/`moot:` verdict still comes "
+        "first).",
         "",
         f"{n + 2}. Commit on `{slice_branch(todo_id)}` with a conventional "
         f"subject (`type(scope): what (td{todo_id})`, at most 72 bytes), "
@@ -1483,6 +1506,19 @@ def _resolve_lane_refusal(store: Any, lane: str) -> None:
         )
 
 
+def _free_lane_wait_min(store: Any) -> int:
+    """Minutes a submit parks for a free lane at its cap before a paid
+    lane may take the pick — ``factory.free_lane_wait_min``, default 20
+    (gr573563). Unset or unparsable resolves 20; a negative setting is
+    0 (pay immediately)."""
+    from precis import settings
+
+    wait = settings.get_int("factory.free_lane_wait_min", store=store)
+    if wait is None:
+        return 20
+    return max(0, wait)
+
+
 def _park_lane_full(ctx: Any, note: str, until: datetime | None = None) -> None:
     """Park the job ``until`` (default :data:`LANE_FULL_BACKOFF` ahead —
     gr561491) when ``ctx`` can defer and the wait is under
@@ -1586,8 +1622,20 @@ def submit(ctx: Any, spec: Any) -> Any:
         model_pin = pin.strip() if isinstance(pin, str) and pin.strip() else None
         table = tuple(ln for ln in lane_table if not exclude or ln.vendor != exclude)
         backoffs = _lanes.lane_backoffs(store)
+        # Free compute first (gr573563): while a fit free lane exists the
+        # pick holds paid lanes out; the build waits on the free lane's
+        # cap and falls through to paid only once wait_parks has covered
+        # factory.free_lane_wait_min of LANE_FULL_BACKOFF parks.
+        wait_min = _free_lane_wait_min(store)
+        waited = int((ctx.meta or {}).get("wait_parks") or 0) * LANE_FULL_BACKOFF
+        paid_ok = waited >= timedelta(minutes=wait_min)
         lane = _lanes.pick_lane(
-            store, task_class, lanes=table, model=model_pin, backoff=backoffs
+            store,
+            task_class,
+            lanes=table,
+            model=model_pin,
+            backoff=backoffs,
+            paid_ok=paid_ok,
         )
         if lane is None:
             if model_pin and not any(
@@ -1601,15 +1649,32 @@ def submit(ctx: Any, spec: Any) -> Any:
                     "via params.lane or drop params.model"
                 )
                 return None
-            fit_names = [
-                ln.name
+            fit_lanes = [
+                ln
                 for ln in table
                 if ln.enabled
                 and ln.fits(task_class)
                 and (model_pin is None or ln.accepts_model(model_pin))
             ]
+            fit_names = [ln.name for ln in fit_lanes]
             backed = sorted(set(fit_names) & set(backoffs))
             why = "no enabled lane" if not fit_names else "every fit lane at its cap"
+            if not paid_ok:
+                held_free = [
+                    ln.name
+                    for ln in fit_lanes
+                    if ln.cost_class == _lanes.COST_FREE and ln.name not in backoffs
+                ]
+                held_paid = [
+                    ln.name
+                    for ln in fit_lanes
+                    if ln.cost_class != _lanes.COST_FREE and ln.name not in backoffs
+                ]
+                if held_free and held_paid:
+                    why = (
+                        f"free lane {', '.join(held_free)} at its cap; "
+                        f"a paid lane after {wait_min} min"
+                    )
             if backed:
                 why = f"lanes {', '.join(backed)} backed off after a host refusal"
                 if len(backed) < len(fit_names):
@@ -1884,9 +1949,23 @@ def _commit_for_session(tree: Path, todo_id: int) -> str | None:
         msg_path.unlink(missing_ok=True)
     if commit.returncode != 0:
         return f"worker commit failed ({commit.stderr.strip()[:200]})"
-    return (
-        f"worker committed the session's working tree with {COMMIT_MSG_REL.as_posix()}"
-    )
+    return f"{WORKER_COMMITTED} the session's working tree with {COMMIT_MSG_REL.as_posix()}"
+
+
+def tests_ran(text: str | None) -> bool:
+    """``True`` when the LAST ``tests:`` marker in ``text`` says ``ran``
+    — the only receipt the quick lane takes (gr573563; Reto on gr573555:
+    no receipt or a red one means the checked lane). No marker is
+    ``False``: a hand-off without a ``tests:`` line lands checked, not
+    quick — a pinned codex build that omits it included. A devin
+    ``result`` is the whole transcript, so the last marker anywhere
+    decides."""
+    if not text:
+        return False
+    last = None
+    for match in _TESTS_MARKER_RE.finditer(text):
+        last = match
+    return last is not None and last.group(1).lower() == "ran"
 
 
 def changed_paths(tree: Path) -> list[str] | None:
@@ -2267,8 +2346,16 @@ def poll(ctx: Any, handle: Any) -> bool:
                 f"closed{' and tagged for the tick to close the plan' if moot else ''}."
             )
     elif land:
+        # gr573563 (Reto on gr573555): the quick lane wants the builder's
+        # receipt — the last ``tests:`` marker saying ``ran``. Land
+        # checked when the worker committed the tree the builder left
+        # (no git, so no tests either) or the hand-off carries no green
+        # marker. ``--checked`` re-runs the impacted tests before land.
+        checked = (
+            committed is not None and committed.startswith(WORKER_COMMITTED)
+        ) or not tests_ran(result)
         try:
-            land_job = _mint_land(ctx, todo_id, tree, lane)
+            land_job = _mint_land(ctx, todo_id, tree, lane, checked=checked)
         except Exception as exc:
             log.warning("run_slice: land_slice mint for td%d failed", todo_id)
             nothing = f"exited clean but the land_slice mint failed ({exc})"

@@ -433,6 +433,16 @@ REGISTRY: dict[str, SettingSpec] = {
             doc="Wikimedia requires a descriptive User-Agent with contact "
             "info; generic/empty UAs get hard-blocked.",
         ),
+        SettingSpec(
+            key="factory.free_lane_wait_min",
+            type="int",
+            env_var="PRECIS_FACTORY_FREE_LANE_WAIT_MIN",
+            default=20,
+            doc="Minutes a run_slice submit parks for a free builder lane "
+            "at its cap before a paid lane may take the pick (gr573563; "
+            "measured in wait_parks * LANE_FULL_BACKOFF). 0 pays "
+            "immediately, a negative value reads as 0.",
+        ),
     )
 }
 

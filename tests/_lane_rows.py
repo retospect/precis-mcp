@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from precis.plans.lanes import ANY_CLASS, Lane
+from precis.plans.lanes import ANY_CLASS, COST_FREE, Lane
 from precis.utils.llm.accounts import Account
 
 #: Literal copy of the seed the ``llm_account`` rows derive (migration
@@ -33,13 +33,14 @@ SEED_LANES: tuple[Lane, ...] = (
         vendor="cognition",
         models=("swe-2-medium", "swe-2-high", "swe-2-max"),
         default_model="swe-2-high",
+        cost_class=COST_FREE,
     ),
     Lane(
         name="codex",
         adapter="codex_exec",
         credential_pool="subscription",
         cap=1,
-        task_classes=frozenset({"code", "review", "validate"}),
+        task_classes=frozenset({"review", "validate"}),
         enabled=True,
         vendor="openai",
     ),

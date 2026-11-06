@@ -22,10 +22,14 @@ an account on an adapter the builder cannot launch (``kimi_tree``,
 an api-adapter account can never mint a lane a submit would die on at
 ``get_adapter``. :func:`pick_lane` never returns a disabled lane.
 
-Pick (:func:`pick_lane`): fit for the task class first, then the fit lane
-with the fewest live ``run_slice`` jobs carrying its ``meta.lane``, under
-its cap. Pacing (the lane most behind its window target) replaces the
-live-count order once the registry carries the window numbers.
+Pick (:func:`pick_lane`): fit for the task class first, then the
+cheapest fit lane under its cap — cost class (:attr:`Lane.cost_class`,
+free before subscription before metered, gr573563: free compute first)
+before the fewest live ``run_slice`` jobs carrying its ``meta.lane``.
+With ``paid_ok=False`` a fit free lane holds the paid lanes out of the
+pick entirely — a free lane at its cap is a wait, not a paid launch.
+Pacing (the lane most behind its window target) replaces the live-count
+order once the registry carries the window numbers.
 
 Backoff (:func:`lane_backoffs`): a launch the lane's host refuses (the
 adapter preflight — binary, login, trust seed) stamps
@@ -55,6 +59,14 @@ ANY_CLASS = "*"
 
 #: The job type whose live rows count against a lane's cap.
 RUN_SLICE = "run_slice"
+
+#: The cost classes a lane falls in — what :func:`pick_lane` minimises
+#: before the live count (gr573563: free builder capacity first, paid
+#: only once the free wait has run out, td573580).
+COST_FREE = "free"
+COST_SUBSCRIPTION = "subscription"
+COST_METERED = "metered"
+COST_ORDER: tuple[str, ...] = (COST_FREE, COST_SUBSCRIPTION, COST_METERED)
 
 #: How long a lane stays out of the fit set after its host refused a
 #: launch (gr571395): long enough that a broken host costs one failed
@@ -128,6 +140,9 @@ class Lane:
     triage pin like ``claude-sonnet-5-5`` still routes to the Claude lane
     (``''`` = ``models`` is exhaustive; a lane with neither accepts no pin,
     so a pinned model never lands on a lane that cannot run it).
+    ``cost_class`` is what a launch on the lane costs (one of
+    :data:`COST_ORDER`, cheapest first); :func:`pick_lane` spends free
+    capacity before paid.
     """
 
     name: str
@@ -141,6 +156,7 @@ class Lane:
     models: tuple[str, ...] = ()
     default_model: str | None = None
     model_prefix: str = ""
+    cost_class: str = COST_SUBSCRIPTION
 
     def fits(self, task_class: str) -> bool:
         """``True`` when this lane takes ``task_class`` work."""
@@ -179,16 +195,30 @@ def get_lane(name: str, store: Any) -> Lane | None:
     return None
 
 
+def _cost_class(a: Any) -> str:
+    """The lane's cost class from the account row (gr573563): a
+    ``free-promo`` plan is free while ``promo_expiry`` is unset or not
+    past, ``metered`` is metered, everything else — an expired promo
+    included — is subscription."""
+    if a.plan == "free-promo" and (
+        a.promo_expiry is None or a.promo_expiry >= datetime.now(UTC).date()
+    ):
+        return COST_FREE
+    if a.plan == "metered":
+        return COST_METERED
+    return COST_SUBSCRIPTION
+
+
 def derive_lanes(rows: Iterable[Any]) -> tuple[Lane, ...]:
     """The lane table from ``llm_account`` rows (td568401 S1c).
 
     Order is ``(lane_rank, name)`` — the column carries the preference
     order the seed tuple held by position (:func:`list_accounts` is
     name-ordered), which :func:`pick_lane` ties and :func:`ladder` keep.
-    ``concurrency`` is the cap, ``plan`` the credential_pool (unread —
-    kept because removing the field churns test constructors),
-    ``task_classes`` the fit set (``*`` = :data:`ANY_CLASS`),
-    ``model_prefix`` the adapter's (:data:`_ADAPTER_MODEL_PREFIX`).
+    ``concurrency`` is the cap, ``plan`` the credential_pool and, with
+    ``promo_expiry``, the lane's :func:`_cost_class`, ``task_classes``
+    the fit set (``*`` = :data:`ANY_CLASS`), ``model_prefix`` the
+    adapter's (:data:`_ADAPTER_MODEL_PREFIX`).
     Rows on an adapter outside :data:`LAUNCHABLE_ADAPTERS` derive to
     nothing — an enabled api-adapter account is never a builder lane."""
     return tuple(
@@ -203,6 +233,7 @@ def derive_lanes(rows: Iterable[Any]) -> tuple[Lane, ...]:
             models=tuple(a.models),
             default_model=a.default_model,
             model_prefix=_ADAPTER_MODEL_PREFIX.get(a.adapter, ""),
+            cost_class=_cost_class(a),
         )
         for a in sorted(rows, key=lambda a: (a.lane_rank, a.name))
         if a.adapter in LAUNCHABLE_ADAPTERS
@@ -299,6 +330,7 @@ def pick_lane(
     exclude_vendor: str | None = None,
     model: str | None = None,
     backoff: Mapping[str, datetime] | None = None,
+    paid_ok: bool = True,
 ) -> Lane | None:
     """The lane a ``task_class`` slice launches on, or ``None`` when every
     fit lane is full (or none fits).
@@ -306,16 +338,24 @@ def pick_lane(
     Fit first (enabled lanes whose ``task_classes`` take the class and,
     with ``model`` -- the slice's ``params.model`` pin -- whose
     :meth:`Lane.accepts_model` takes it: a triage-pinned claude id never
-    lands on the codex lane, which cannot run it), then the fewest live
-    ``run_slice`` jobs carrying that ``meta.lane``, only lanes under their
-    cap; ties keep table order. ``lanes`` defaults to the ``llm_account``
-    table read at call time (like :func:`ladder`), so a row edit is seen;
+    lands on the codex lane, which cannot run it), then cost class --
+    :data:`COST_ORDER` order, free before paid (gr573563) -- then the
+    fewest live ``run_slice`` jobs carrying that ``meta.lane``, only
+    lanes under their cap; ties keep table order. ``lanes`` defaults to
+    the ``llm_account`` table read at call time (like :func:`ladder`),
+    so a row edit is seen;
     ``counts`` skips the live-count DB read (tests, or a caller that
     already has them). Lanes
     backed off by a host refusal leave the fit set: ``backoff`` carries
     them explicitly, else they are read with :func:`lane_backoffs` — only
     when ``counts`` is ``None`` (the same DB rule as ``counts``, so a
     DB-free caller stays DB-free).
+
+    ``paid_ok=False`` holds the paid lanes out of the pick while at
+    least one fit free lane exists: ``None`` (a wait) when the free
+    lanes are all at cap. Once every fit free lane is gone — filtered by
+    a model pin it cannot run, backed off — the paid lanes stay in the
+    set.
 
     ``exclude_vendor`` (the review rule: the reviewer never comes from the
     builder's vendor) drops fit lanes of that vendor. When no fit lane of
@@ -338,6 +378,8 @@ def pick_lane(
     if exclude_vendor:
         other = [lane for lane in fit if lane.vendor != exclude_vendor]
         fit = other or fit
+    if not paid_ok and any(lane.cost_class == COST_FREE for lane in fit):
+        fit = [lane for lane in fit if lane.cost_class == COST_FREE]
     if not fit:
         return None
     live = dict(counts) if counts is not None else live_lane_counts(store)
@@ -345,7 +387,10 @@ def pick_lane(
     if not open_lanes:
         return None
     # ``min`` keeps the first of equal keys, so ties keep table order.
-    return min(open_lanes, key=lambda lane: live.get(lane.name, 0))
+    return min(
+        open_lanes,
+        key=lambda lane: (COST_ORDER.index(lane.cost_class), live.get(lane.name, 0)),
+    )
 
 
 @dataclass(frozen=True)
@@ -368,8 +413,9 @@ def ladder(
     failed slice climbs before the cap asks): every enabled fit lane in
     table order, each contributing its ``models`` from ``default_model``
     upward, or one model-less rung when it declares none. With today's
-    table that is devin high → devin max → codex → sonnet → opus. The
-    table is ``lanes`` or the ``llm_account`` read — one of them is
+    table that is devin high → devin max → sonnet → opus (codex carries
+    no ``code`` class — a lane that cannot run the test gate, gr573563).
+    The table is ``lanes`` or the ``llm_account`` read — one of them is
     required."""
     if lanes is None:
         if store is None:
@@ -410,6 +456,10 @@ def rung_index(
 
 __all__ = [
     "ANY_CLASS",
+    "COST_FREE",
+    "COST_METERED",
+    "COST_ORDER",
+    "COST_SUBSCRIPTION",
     "FACTORY_DENY_WRITE_PATHS",
     "HOST_REFUSAL_BACKOFF",
     "LAUNCHABLE_ADAPTERS",

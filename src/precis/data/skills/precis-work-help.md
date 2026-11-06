@@ -307,8 +307,10 @@ The `gripe_dispatch` worker pass (every 10 minutes, dark until
 chain per free code-lane slot: the summed cap of the enabled lanes that
 fit the `code` class, minus the plan roots still `related-to` a gripe
 and not `done`/`won't-do`, at most two per fire. The build node carries
-the gripe text verbatim and picks its lane at dispatch (devin first by
-table order, then codex); the land writes `resolved: <sha>` on the gripe. It picks
+the gripe text verbatim and picks its lane at dispatch (the cheapest
+fit lane — free before paid — and codex, which cannot reach the test
+gate's docker, is never offered `code`); the land writes
+`resolved: <sha>` on the gripe. It picks
 the hottest `prio` then the oldest among gripes that are `open` or
 `triaged`, tagged `fix:code`, older than an hour, with no live todo
 `related-to` them, and filed by a Claude Code session or a human
@@ -353,9 +355,9 @@ comment and `plan_dispatch` reads there; the reviewed todo's `landed:`
 sha and brief are inlined in the reviewer's brief, so `git show <sha>`
 in the slice worktree is all it needs. A validate's `validated: <why>`
 first line closes it the same way, and a gripe chain's validate body
-carries the gripe report verbatim. The codex and devin lanes therefore
-fit `code`, `review` and `validate`; the review is still picked off the
-builder's vendor. Nodes that mint or post through the MCP stay on a
+carries the gripe report verbatim. Devin therefore fits `code`,
+`review` and `validate`; codex takes `review` and `validate` only
+(gr573563), and the review is still picked off the builder's vendor. Nodes that mint or post through the MCP stay on a
 Claude lane: a triage or slicer (mints children), a brief writer (posts
 `brief:`), a pcb fix (drives the pcb kind). `run_slice` refuses a
 child-minting generator on an MCP-less lane before the claim.

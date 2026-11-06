@@ -992,6 +992,27 @@ def test_poll_full_selector_refusal_relaunches_quick(
     assert any("selector answers FULL" in e and "--quick" in e for e in events)
 
 
+def test_poll_full_selector_fallback_notes_the_quick_land(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td573580 review: when the FULL selector sends a checked land through
+    --quick, the todo's receipt says so — a bare ``landed:`` comment would
+    read as a checked land whose suite ran."""
+    monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    store = _Store()
+    store.add_todo(42)
+    ctx = _Ctx(store, {**_params(seams), "checked": True})
+    handle = land_slice.submit(ctx, None)
+    _finish(handle, 1, FULL_REFUSAL_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert handle["fell_back_full"] is True  # carried onto the relaunch
+    _finish(handle, 0, GREEN_LOG)
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert any("selector FULL" in c and "--quick" in c for c in store.comments(42))
+
+
 def test_poll_full_selector_refusal_is_red_when_fallback_off(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

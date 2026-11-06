@@ -299,6 +299,15 @@ class TestSeededAccounts:
         assert a.api_key_ref is None
         assert a.pools == ("llm:codex:weekly",)
 
+    def test_codex_account_takes_no_code(self, store: Any) -> None:
+        """gr573563 / td573580: codex cannot reach the test gate's docker,
+        so the account row keeps it to review/validate — the lane fact is
+        the row's ``task_classes``, not a code table. The owner flips
+        ``code`` back through the account door once codex can test."""
+        a = get_account(store, "codex")
+        assert a is not None
+        assert a.task_classes == ("review", "validate")
+
     def test_kimi_and_metered_disabled_with_api_key_ref(self, store: Any) -> None:
         kimi = get_account(store, "kimi")
         assert kimi is not None

@@ -236,7 +236,9 @@ def test_mcp_bound_nodes_never_fit_the_codex_lane(
         ),
     }
     code_only = {("gripe-fix", "build")}
-    verdict_classes = {"code", "review", VALIDATE_TASK_CLASS}
+    # gr573563 (0284): codex fits only review and validate — a lane that
+    # cannot run the test gate takes no ``code``.
+    verdict_classes = {"review", VALIDATE_TASK_CLASS}
     seen: set[str] = set()
     for name, mint in mints.items():
         for key, todo_id in mint.ids.items():

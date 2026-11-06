@@ -1306,7 +1306,7 @@ def _launch_ship(
         "flag": flag,
         "started_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    for key in ("main_refusals", "last_refusal", "gate_kills"):
+    for key in ("main_refusals", "last_refusal", "gate_kills", "fell_back_full"):
         if carry is not None and key in carry:
             handle[key] = carry[key]
     identity = _rs._process_identity(pid)
@@ -1992,6 +1992,9 @@ def poll(ctx: Any, handle: Any) -> bool:
                 f"land_slice: {cross} — relaunching scripts/ship {fallback} "
                 "(lint only; the release gate on /go runs the full suite)",
             )
+            # Carried onto the fresh handle so the green path's todo
+            # comment can say the checked land fell back (td573580).
+            handle["fell_back_full"] = True
             fresh = _launch_ship(ctx, tree, fallback, subject, carry=handle)
             if fresh is None:
                 return True
@@ -2133,6 +2136,16 @@ def poll(ctx: Any, handle: Any) -> bool:
             "todo: "
             + (", ".join(wrote) + " written" if wrote else "land_notify did it")
         )
+        if handle.get("fell_back_full"):
+            # td573580 review: a checked land the FULL selector sent
+            # through --quick says so in plain words on the todo.
+            _rs._append_comment(
+                store,
+                todo_id,
+                "checked wanted, selector FULL, landed --quick — the "
+                "release gate runs the suite",
+            )
+            summary.append("todo: checked→quick fallback noted")
     except Exception as exc:  # pragma: no cover — the land is real; report it
         log.warning("land_slice: land record on td%d failed", todo_id, exc_info=True)
         summary.append(f"todo: land record FAILED ({exc})")

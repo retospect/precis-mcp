@@ -8,6 +8,9 @@ adapter the builder cannot launch never derive.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -22,8 +25,41 @@ def test_derived_table_equals_the_seed(store: Any) -> None:
     table row for row, order included — behaviour is identical to the
     code seed it replaces. The ``kimi``/``metered`` account rows stay
     accounts: ``kimi_tree`` and ``api`` are not launchable, so they
-    derive to no lane."""
-    assert lanes.load_lanes(store) == SEED_LANES
+    derive to no lane. ``cost_class`` is compared apart (td573580
+    review): devin's seed promo expiry passes on 2026-12-01 and the
+    literal pin would go red that day."""
+    assert [replace(ln, cost_class="") for ln in lanes.load_lanes(store)] == [
+        replace(ln, cost_class="") for ln in SEED_LANES
+    ]
+
+
+def test_cost_class_from_the_account_row() -> None:
+    """td573580 review: the class follows ``plan`` and ``promo_expiry`` —
+    no expiry or one not past is free, an expired promo or any other
+    plan is subscription, ``metered`` is metered."""
+    today = datetime.now(UTC).date()
+    cases = [
+        (SimpleNamespace(plan="free-promo", promo_expiry=None), lanes.COST_FREE),
+        (
+            SimpleNamespace(plan="free-promo", promo_expiry=today + timedelta(30)),
+            lanes.COST_FREE,
+        ),
+        (
+            SimpleNamespace(plan="free-promo", promo_expiry=today),
+            lanes.COST_FREE,
+        ),
+        (
+            SimpleNamespace(plan="free-promo", promo_expiry=today - timedelta(1)),
+            lanes.COST_SUBSCRIPTION,
+        ),
+        (SimpleNamespace(plan="metered", promo_expiry=None), lanes.COST_METERED),
+        (
+            SimpleNamespace(plan="subscription", promo_expiry=None),
+            lanes.COST_SUBSCRIPTION,
+        ),
+    ]
+    for account, want in cases:
+        assert lanes._cost_class(account) == want, account
 
 
 def test_an_enabled_api_adapter_account_is_not_a_lane(

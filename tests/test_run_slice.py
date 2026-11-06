@@ -219,9 +219,13 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         return 4242
 
     calls["lands"] = []
+    calls["land_checked"] = []
 
-    def fake_mint_land(ctx: Any, todo_id: int, tree: Path, lane: Any) -> int:
+    def fake_mint_land(
+        ctx: Any, todo_id: int, tree: Path, lane: Any, checked: bool = False
+    ) -> int:
         calls["lands"].append((todo_id, Path(tree), lane))
+        calls["land_checked"].append(checked)
         return 777
 
     monkeypatch.setattr(run_slice, "_mint_land", fake_mint_land)
@@ -311,7 +315,6 @@ def test_seed_table_enabled_lanes() -> None:
     assert [(r.lane, r.model) for r in ladder("code", lanes=SEED_LANES)] == [
         ("devin", "swe-2-high"),
         ("devin", "swe-2-max"),
-        ("codex", None),
         ("claude-sub", "claude-sonnet-5"),
         ("claude-sub", "claude-opus-4-8"),
     ]
@@ -433,7 +436,7 @@ def test_pick_lane_skips_a_backed_off_lane(
     use_lanes(monkeypatch)
     future = datetime.now(UTC) + timedelta(minutes=30)
     picked = pick_lane(None, "code", counts={}, backoff={"devin": future})
-    assert picked is not None and picked.name == "codex"
+    assert picked is not None and picked.name == "claude-sub"
     # An expired window no longer skips: the next submit is the probe.
     past = datetime.now(UTC) - timedelta(minutes=1)
     picked = pick_lane(None, "code", counts={}, backoff={"devin": past})
@@ -441,8 +444,8 @@ def test_pick_lane_skips_a_backed_off_lane(
 
 
 def test_pick_lane_reads_live_counts(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The seed table: devin (cap 3), codex (cap 1) and claude-sub (cap 2)
-    fit ``code``."""
+    """The seed table: devin (cap 3, free) and claude-sub (cap 2,
+    subscription) fit ``code``; codex carries no ``code`` class (gr573563)."""
     use_lanes(monkeypatch)
     monkeypatch.setattr(lanes, "lane_backoffs", lambda store: {})
     monkeypatch.setattr(
@@ -458,16 +461,81 @@ def test_pick_lane_reads_live_counts(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     picked = pick_lane(object(), "code")
     assert picked is not None and picked.name == "claude-sub"
-    # Devin full, codex free: the free vendor lane still beats claude-sub.
+    # Devin full: the subscription lane is next — codex no longer fits code.
     monkeypatch.setattr(
         lanes, "live_lane_counts", lambda store: {"claude-sub": 1, "devin": 3}
     )
     picked = pick_lane(object(), "code")
-    assert picked is not None and picked.name == "codex"
-    # All free: the first free vendor lane is first in the table (td559457).
+    assert picked is not None and picked.name == "claude-sub"
+    # All free: the free lane is first in the table (td559457, gr573563).
     monkeypatch.setattr(lanes, "live_lane_counts", lambda store: {})
     picked = pick_lane(object(), "code")
     assert picked is not None and picked.name == "devin"
+
+
+def test_pick_lane_devin_wins_with_one_live(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr573563: one or two live jobs on devin (cap 3) must not send the
+    pick to an idle paid lane — the cost class is minimised before the
+    live count."""
+    use_lanes(monkeypatch)
+    for live in (1, 2):
+        picked = pick_lane(None, "code", counts={"devin": live})
+        assert picked is not None and picked.name == "devin"
+
+
+def test_pick_lane_cost_class_before_load(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr573563: cost class beats load — a free lane at two of three
+    slots is picked ahead of an idle subscription lane."""
+    use_lanes(monkeypatch, seed_lane("devin"), seed_lane("claude-sub"))
+    picked = pick_lane(None, "code", counts={"devin": 2})
+    assert picked is not None and picked.name == "devin"
+
+
+def test_pick_lane_load_only_within_a_class() -> None:
+    """Inside one cost class the live count orders the pick and a tie
+    keeps table order — the class sort never reorders equal-class lanes."""
+    table = (_lane("a", 2, {ANY_CLASS}), _lane("b", 2, {ANY_CLASS}))
+    picked = pick_lane(None, "code", lanes=table, counts={"a": 1, "b": 0})
+    assert picked is not None and picked.name == "b"
+    picked = pick_lane(None, "code", lanes=table, counts={"a": 1})
+    assert picked is not None and picked.name == "b"
+    picked = pick_lane(None, "code", lanes=table, counts={})
+    assert picked is not None and picked.name == "a"
+
+
+def test_pick_lane_paid_not_ok_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr573563: ``paid_ok=False`` holds paid lanes back while a fit free
+    lane exists — the free lane at its cap is a wait (``None``), never a
+    paid pick. With every free lane filtered (a model pin it cannot run,
+    a host-refusal backoff) the paid lanes stay in the set."""
+    free = Lane(
+        "free",
+        "devin_tree",
+        "free-promo",
+        1,
+        frozenset({"code"}),
+        vendor="cognition",
+    )
+    paid = Lane(
+        "paid",
+        "claude_p",
+        "subscription",
+        1,
+        frozenset({ANY_CLASS}),
+        vendor="anthropic",
+        models=("claude-sonnet-5",),
+    )
+    use_lanes(monkeypatch, free, paid)
+    # The free lane at its cap is a wait, not a paid pick.
+    assert pick_lane(None, "code", counts={"free": 1}, paid_ok=False) is None
+    picked = pick_lane(None, "code", counts={"free": 1})
+    assert picked is not None and picked.name == "paid"
+    # Every free lane filtered → the paid lanes stay in the set.
+    picked = pick_lane(None, "code", counts={}, model="claude-sonnet-5", paid_ok=False)
+    assert picked is not None and picked.name == "paid"
+    future = datetime.now(UTC) + timedelta(minutes=30)
+    picked = pick_lane(None, "code", counts={}, paid_ok=False, backoff={"free": future})
+    assert picked is not None and picked.name == "paid"
 
 
 # ── registry ───────────────────────────────────────────────────────
@@ -792,6 +860,25 @@ def test_brief_lint_steps_match_ship() -> None:
     assert qland
     for step in run_slice._LAND_LINT_STEPS:
         assert step in qland, step
+
+
+def test_render_brief_asks_for_the_tests_marker() -> None:
+    """gr573563: the non-generator brief asks the builder to END its final
+    message with one ``tests:`` line — ``tests: ran`` or
+    ``tests: NOT RUN — <which step, why>`` — so the land mints checked
+    when the gate could not run. The first-line verdicts stay first."""
+    brief = run_slice.render_brief(
+        todo_id=42,
+        title="Build the widget",
+        body="Do X.",
+        latest=None,
+        lane="claude-sub",
+        model="m",
+        effort="high",
+    )
+    assert "tests: ran" in brief
+    assert "tests: NOT RUN" in brief
+    assert "Your final message is posted on the todo as the `handoff:` comment" in brief
 
 
 # ── submit / poll ──────────────────────────────────────────────────
@@ -1129,6 +1216,47 @@ def test_lane_wait_past_the_cap_fails_attempt_free(
     assert "no lane slot for" in ctx.failure
     assert ctx.meta_set["attempt_free"] == "lane-wait"
     assert "attempt:1" not in store.tag_strings(42)
+
+
+def test_submit_parks_for_the_free_lane_then_falls_through(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr573563: a free lane at its cap parks the build rather than paying
+    — the pick falls through to a subscription lane only once the
+    free-lane wait (``factory.free_lane_wait_min``, default 20 min of
+    ``wait_parks``) has passed, and never lands on codex."""
+    use_lanes(monkeypatch)  # the seams table is claude-sub alone
+    seams["live"] = {"devin": 3}
+    store = _Store()
+    store.add_todo(42, "Build")
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake_at: Any, note: str) -> bool:
+        deferred.append((wake_at, note))
+        return True
+
+    ctx = _Ctx(store, {"todo_id": 42}, wait_parks=0)
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    assert deferred and "devin" in deferred[0][1] and "20 min" in deferred[0][1]
+    assert "paid lane" in deferred[0][1]
+    assert ctx.failure is None
+    assert seams["launch"] == []
+
+    # Past the wait the pick falls through to the subscription lane.
+    ctx2 = _Ctx(store, {"todo_id": 42}, wait_parks=2)
+    handle = run_slice.submit(ctx2, None)
+    assert handle is not None and ctx2.meta_set["lane"] == "claude-sub"
+
+    # A longer configured wait keeps parking past 20 minutes of parks.
+    monkeypatch.setattr(
+        run_slice, "_free_lane_wait_min", lambda store: 50, raising=False
+    )
+    ctx3 = _Ctx(store, {"todo_id": 42}, wait_parks=2)
+    ctx3.defer = _defer
+    assert run_slice.submit(ctx3, None) is None
+    assert "devin" in deferred[-1][1] and "50 min" in deferred[-1][1]
+    assert ctx3.meta_set["wait_parks"] == 3
 
 
 def test_submit_refuses_a_generator_on_a_lane_without_mcp(
@@ -1769,6 +1897,92 @@ def test_poll_commits_a_bare_subject_normalised(seams: dict[str, Any]) -> None:
     assert seams["lands"] == [(42, tree, "claude-sub")]
 
 
+def test_poll_worker_commit_mints_a_checked_land(seams: dict[str, Any]) -> None:
+    """gr573563: the worker committing the tree a sandboxed session left
+    means the builder could not have run the gate — the land mints
+    ``checked``."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    tree = Path(handle["worktree"])
+    (tree / "scratch" / "commit-msg.txt").write_text(
+        "fix(se): one drc solve per block (td42)\n", encoding="utf-8"
+    )
+    seams["porcelain"] = " M a.py\n"
+    seams["staged"] = True
+    seams["committed_ahead"] = "def5678 fix(se): one drc solve per block (td42)\n"
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "Could not commit."}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert seams["lands"] == [(42, tree, "claude-sub")]
+    assert seams["land_checked"] == [True]
+
+
+def test_poll_tests_not_run_marker_mints_a_checked_land(
+    seams: dict[str, Any],
+) -> None:
+    """gr573563: a final message ending ``tests: NOT RUN — <why>`` (the
+    marker the brief asks for) mints the land checked even though the
+    builder committed its own branch."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    seams["ahead"] = "abc1234 fix(x): the fix (td42)\n"
+    result = "Done.\ntests: NOT RUN — scripts/test cannot reach docker"
+    _finish(handle, 0, json.dumps({"is_error": False, "result": result}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert seams["lands"] == [(42, Path(handle["worktree"]), "claude-sub")]
+    assert seams["land_checked"] == [True]
+
+
+def test_poll_tests_ran_marker_lands_quick(seams: dict[str, Any]) -> None:
+    """``tests: ran`` (and no worker commit) lands ``--quick`` — the only
+    marker that is a receipt (Reto on gr573555)."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    seams["ahead"] = "abc1234 fix(x): the fix (td42)\n"
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "Done.\ntests: ran"}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert seams["land_checked"] == [False]
+
+
+def test_poll_no_tests_marker_mints_a_checked_land(seams: dict[str, Any]) -> None:
+    """td573580 review (Reto on gr573555): a hand-off with no ``tests:``
+    marker is no receipt — the land mints checked, not quick. Covers the
+    pinned-codex build that omits the marker."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    seams["ahead"] = "abc1234 fix(x): the fix (td42)\n"
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "Done."}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert seams["lands"] == [(42, Path(handle["worktree"]), "claude-sub")]
+    assert seams["land_checked"] == [True]
+
+
+def test_poll_tests_red_marker_mints_a_checked_land(seams: dict[str, Any]) -> None:
+    """A ``tests: red`` marker — the gate ran and failed — is no green
+    receipt either: the land mints checked."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    seams["ahead"] = "abc1234 fix(x): the fix (td42)\n"
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "Done.\ntests: red"}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert seams["lands"] == [(42, Path(handle["worktree"]), "claude-sub")]
+    assert seams["land_checked"] == [True]
+
+
 def test_poll_without_a_message_file_commits_nothing(seams: dict[str, Any]) -> None:
     store = _Store()
     store.add_todo(42, "t")
@@ -2166,7 +2380,7 @@ def test_poll_document_role_clean_exit_without_a_commit_succeeds(
 def test_poll_failed_land_mint_releases_the_lease(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def boom(*_a: Any) -> int:
+    def boom(*_a: Any, **_kw: Any) -> int:
         raise RuntimeError("db down")
 
     monkeypatch.setattr(run_slice, "_mint_land", boom)
@@ -2218,6 +2432,32 @@ def test_mint_land_params_and_idem_key(monkeypatch: pytest.MonkeyPatch) -> None:
     }
     assert kw["meta_extra"] == {"plan_root": 40}
     assert kw["conn"] == "conn"
+
+
+def test_mint_land_checked_param(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr573563: ``checked=True`` puts ``params["checked"] = True`` on the
+    minted land — what ``land_slice.ship_flag`` reads as ``--checked``;
+    the default adds no key."""
+    import precis.workers._mint as mint_mod
+    from precis.workers.job_types import land_slice
+
+    minted: list[dict[str, Any]] = []
+
+    def fake_once(store: Any, **kw: Any) -> tuple[int, bool]:
+        minted.append(kw)
+        return 555, False
+
+    monkeypatch.setattr(mint_mod, "mint_job_once", fake_once)
+    store = _Store()
+    monkeypatch.setattr(store, "tx", lambda: _Tx(), raising=False)
+    ctx = _Ctx(store, {"todo_id": 42})
+    run_slice._mint_land(ctx, 42, Path("/t/slice-td42"), "claude-sub", checked=True)
+    params = minted[0]["params"]
+    assert params["checked"] is True
+    assert land_slice.ship_flag(params) == "--checked"
+    minted.clear()
+    run_slice._mint_land(ctx, 42, Path("/t/slice-td42"), "claude-sub")
+    assert "checked" not in minted[0]["params"]
 
 
 def test_poll_failure_releases_lease_and_bumps_attempt(seams: dict[str, Any]) -> None:
@@ -2396,6 +2636,34 @@ def test_parse_result_takes_last_result_object() -> None:
     )
     assert run_slice.parse_result(log) == ("two", False)
     assert run_slice.parse_result("not json") == (None, True)
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        ("Done.\ntests: ran", True),
+        ("tests: ran — all green", True),
+        ("Done.\ntests: NOT RUN — scripts/test cannot reach docker", False),
+        ("tests: not run — no docker socket", False),
+        ("tests: red", False),
+        ("tests: FAILED — 2 errors", False),
+        # the LAST marker decides — a devin result is the whole transcript
+        ("tests: NOT RUN — first try\ntests: ran", True),
+        ("tests: ran\ntests: NOT RUN — final gate", False),
+        ("tests: ran\ntests: red", False),
+        ("no marker at all", False),
+        (None, False),
+        ("", False),
+        ("tests:", False),
+        ("the tests: a paragraph mention", False),
+        ("unrelated: ran", False),
+    ],
+)
+def test_tests_ran_reads_the_last_marker(text: str | None, want: bool) -> None:
+    """gr573563 / Reto on gr573555: ``True`` only when the last ``tests:``
+    marker says ``ran`` — the receipt the quick lane takes. No marker,
+    ``not run`` or a red run all land checked."""
+    assert run_slice.tests_ran(text) is want
 
 
 def _vendor_lane(
