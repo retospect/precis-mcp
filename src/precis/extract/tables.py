@@ -510,19 +510,22 @@ def _enumeration_run(nums: list[int]) -> bool:
 
 
 #: ``<symbol> = <integer>`` — the way a printed index axis labels each
-#: point (``m = 0``, ``n=1``, ``$m = 0$``). The symbol side stays short:
-#: a real label like ``rate = 0.5 s^-1`` or an equation is text, not an
-#: axis point.
-_INDEX_EQ_RE = re.compile(r"^\s*\S{1,12}?\s*=\s*(-?\d+)\s*$")
+#: point (``m = 0``, ``n=1``, ``$m = 0$``). The symbol side is one
+#: short identifier — a letter or ``\``-led command plus identifier,
+#: subscript and prime characters — never an expression: ``x+1 = 0``
+#: and ``m == 1`` are equation cells, not axis points.
+_INDEX_EQ_RE = re.compile(r"^\s*\\?[^\W\d_][\w'^{}\\,]{0,11}\s*=\s*(-?\d+)\s*$")
 
 
 def _index_cell_int(text: str) -> int | None:
     """The cell as one point of a printed index axis, else ``None`` — a
     plain integer point (:func:`_int_point`) or ``<symbol> = <integer>``
     (``m = 0``, ``$m = 0$``, ``n=1``), the ``m = k`` form pa452964
-    prints for its sticking-probability axis (gr573944). Surrounding
-    ``$`` math markup and whitespace are stripped first; a bound,
-    interval, ``±`` or non-integer stays real data."""
+    prints for its sticking-probability axis (gr573944). The symbol
+    side is a short identifier, so an equation cell (``x+1 = 0``,
+    ``m == 1``) stays data. Surrounding ``$`` math markup and
+    whitespace are stripped first; a bound, interval, ``±`` or
+    non-integer stays real data."""
     stripped = text.strip().strip("$").strip()
     if (v := _int_point(stripped)) is not None:
         return v
@@ -682,7 +685,11 @@ def parse_table(
         # row, not a title), every non-empty cell is non-numeric, and
         # the row below is a whole index axis (gr573944). That stricter
         # evidence keeps a multi-cell label row from eating a real data
-        # row under it — ``| a | b |`` over ``| 1 | 2 |`` stays put.
+        # row under it — ``| a | b |`` over ``| 1 | 2 |`` stays put. The
+        # index-axis branch keeps ``_column_label_row``'s
+        # ``_body_numeric_in`` guard too: the axis is a label row only
+        # when the body below holds numbers in its columns, so
+        # ``| | 0 | 1 | 2 |`` over a text body stays data.
         next_idx = header_idx[-1] + 1 if header_idx else -1
         if sep_idx is not None and next_idx == sep_idx:
             next_idx += 1
@@ -691,12 +698,10 @@ def parse_table(
                 pipe_rows[header_idx[-1]][2], pipe_rows[header_idx[-1]][0]
             )
             cand_cells = _row_cells(pipe_rows[next_idx][2], pipe_rows[next_idx][0])
+            body_cells = [_row_cells(ln, s) for s, _e, ln in pipe_rows[next_idx + 1 :]]
             if (
                 _spanning_line(title_cells)
-                and _column_label_row(
-                    cand_cells,
-                    [_row_cells(ln, s) for s, _e, ln in pipe_rows[next_idx + 1 :]],
-                )
+                and _column_label_row(cand_cells, body_cells)
             ) or (
                 any(not text.strip() for text, _s, _e in title_cells)
                 and all(
@@ -706,6 +711,10 @@ def parse_table(
                 )
                 and not _index_axis_row(title_cells)
                 and _index_axis_row(cand_cells)
+                and _body_numeric_in(
+                    {j for j, (t, _s, _e) in enumerate(cand_cells) if t.strip()},
+                    body_cells,
+                )
             ):
                 header_idx.append(next_idx)
 

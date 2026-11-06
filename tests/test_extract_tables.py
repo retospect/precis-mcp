@@ -257,6 +257,45 @@ class TestParseGrid:
         assert not _column_label_row(_row_cells("| Pt | 1 | 2 | 3 |", 0), body_text)
         assert not _column_label_row(_row_cells("| | m = 3 | m = 5 |", 0), body_num)
 
+    @pytest.mark.parametrize("sep", ["|---|---|---|---|\n", ""])
+    def test_index_row_over_text_body_stays_data(self, sep: str) -> None:
+        # td574225 review of gr573944: the relaxed title branch keeps
+        # the ``_body_numeric_in`` guard — ``| | 0 | 1 | 2 |`` over a
+        # body that is text in those columns is a data row, not the
+        # label row.
+        text = "| Summary | | | |\n" + sep + "| | 0 | 1 | 2 |\n| Pd | a | b | c |"
+        parsed = parse_table(23, text)
+        assert parsed is not None
+        assert parsed.header_rows == 1
+        assert [[c.text for c in r] for r in parsed.rows] == [
+            ["", "0", "1", "2"],
+            ["Pd", "a", "b", "c"],
+        ]
+        _assert_offsets(text, parsed)
+
+    @pytest.mark.parametrize(
+        "axis_row",
+        ["| | x+1=0 | x+1=1 | x+1=2 |", "| | m==0 | m==1 | m==2 |"],
+    )
+    def test_expression_row_is_not_an_index_axis(self, axis_row: str) -> None:
+        # td574225 review: ``x+1=0`` and ``m==0`` are expressions, not
+        # ``<symbol> = <int>`` points — a row of them under a gappy
+        # non-numeric title is data even over a numeric body; only a
+        # true identifier axis may promote.
+        text = (
+            "| Solutions | | f(x) | |\n|---|---|---|---|\n"
+            + axis_row
+            + "\n| root | 0.5 | 0.6 | 0.7 |"
+        )
+        parsed = parse_table(24, text)
+        assert parsed is not None
+        assert parsed.header_rows == 1
+        assert [[c.text for c in r] for r in parsed.rows] == [
+            [c.strip() for c in axis_row.strip("|").split("|")],
+            ["root", "0.5", "0.6", "0.7"],
+        ]
+        _assert_offsets(text, parsed)
+
     def test_two_cell_title_over_non_index_row_stays_data(self) -> None:
         # The relaxed title test is index-run evidence only: a
         # non-numeric two-cell title over ordinary readings is still
