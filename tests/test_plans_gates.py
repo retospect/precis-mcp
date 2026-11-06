@@ -4,6 +4,7 @@ record that feeds ``sha-in-prod`` / ``tests-green``."""
 from __future__ import annotations
 
 import json
+import sys
 from datetime import UTC, datetime
 from types import ModuleType
 from typing import Any
@@ -14,6 +15,7 @@ from precis import settings as psettings
 from precis.dispatch import Hub
 from precis.handlers.todo import TodoHandler
 from precis.plans import gates
+from precis.plans import release as plans_release
 from precis.plans.gates import GateVerdict, evaluate
 from precis.store import Store
 from tests._script import load_script
@@ -478,6 +480,40 @@ class FakeProd:
 def test_prod_head_key_matches_registry(release: ModuleType) -> None:
     assert release.PROD_HEAD_KEY == gates.PROD_HEAD_KEY
     assert gates.PROD_HEAD_KEY in psettings.REGISTRY
+
+
+@pytest.fixture
+def round_script() -> ModuleType:
+    if sys.platform == "win32":
+        pytest.skip("scripts/round is POSIX release tooling")
+    return load_script("round_script_pin", REPO_ROOT / "scripts" / "round")
+
+
+def test_round_key_matches_registry(round_script: ModuleType) -> None:
+    assert plans_release.ROUND_KEY == round_script.ROUND_KEY
+    assert plans_release.ROUND_KEY in psettings.REGISTRY
+
+
+def test_round_record_literal_matches_script(round_script: ModuleType) -> None:
+    rel = {
+        "n": 1,
+        "branch": "release/r1",
+        "base": HEAD,
+        "state": "deployed",
+        "cut_at": "2026-11-06T11:00:00Z",
+        "deployment": {
+            "sha": HEAD,
+            "rollout_at": "2026-11-06T11:40:00Z",
+            "runtime_confirmed_at": "2026-11-06T11:55:00Z",
+            "runtime_evidence": "health green",
+        },
+    }
+    owner = {"host": "fake-node", "checkout": "/fake/checkout"}
+    assert round_script._round_record(
+        rel, n=1, owner=owner, now="2026-11-06T12:00:00Z"
+    ) == plans_release.round_record(
+        rel, n=1, owner=owner, now=datetime(2026, 11, 6, 12, 0, 0, tzinfo=UTC)
+    )
 
 
 def test_record_prod_head_writes_the_record_gates_read(

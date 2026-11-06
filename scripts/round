@@ -135,6 +135,15 @@ has run ~24h clean — the coordinator's sweep makes the clean-runtime call,
 the verb enforces the 24h floor from the round receipt. The newest good/r<N>
 is the rollback target; `good --resolve` prints it and `status` shows it.
 
+Release state must not live only in one clone's `round.json`, so a verb
+that writes `round.json` republishes the active release's record once, at
+the end of the verb with the final state and outside the lifecycle lock
+(best-effort through `scripts/prod-precis settings set`: it never changes
+an exit code, is capped at 15s, and is skipped for a test rig, a foreign
+checkout, a host with no prod DSN or `PRECIS_GRIPE_NOTE=0`). `status`
+reads the row back and names its owner when a different clone wrote it,
+so a stale or foreign record is visible instead of silently trusted.
+
 Exit codes: 0 ok; 3 rollout returned success, runtime confirmation pending;
 1 refused (no round open, unknown sha, bad usage). `pending`
 exits 0 with no output when everyone is in.
@@ -149,6 +158,8 @@ import math
 import os
 import re
 import runpy
+import shlex
+import socket
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
@@ -172,7 +183,8 @@ DOCS_ONLY_RE = r"^(docs/|[^/]+\.md$)"
 # ruling on the right window is pending; only this default may change.
 DEFAULT_MAX_CANDIDATE_HOURS = 6.0
 _SHA = re.compile(r"^[0-9a-f]{7,40}$")
-_NETWORK = runpy.run_path(str(Path(__file__).resolve().parent / "lib/git_network.py"))
+_HERE = Path(__file__).resolve().parent
+_NETWORK = runpy.run_path(str(_HERE / "lib/git_network.py"))
 
 
 def _git(*args: str) -> str | None:
@@ -200,24 +212,249 @@ def _read(path: Path) -> dict[str, Any] | None:
 
 
 def _write(path: Path, data: dict[str, Any]) -> None:
+    global _pending_round
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
     os.replace(tmp, path)
+    if path.name == "round.json":
+        _pending_round = data
 
 
 def _read_round(state: Path) -> dict[str, Any]:
     """Only absence permits legacy main fallback; broken lifecycle state refuses."""
     reader = cast(
         Callable[[Path], dict[str, Any]],
-        runpy.run_path(str(Path(__file__).resolve().parent / "lib/round_state.py"))[
-            "read_round"
-        ],
+        runpy.run_path(str(_HERE / "lib/round_state.py"))["read_round"],
     )
     try:
         return reader(state / "round.json")
     except (OSError, ValueError) as exc:
         sys.exit(f"scripts/round: unreadable/invalid round state — refusing: {exc}")
+
+
+# ── publish the active release's record to release.round ─────────
+
+#: ``app_settings`` key holding the shared release record (literal repeated
+#: in ``precis.plans.release.ROUND_KEY`` — a test pins them).
+ROUND_KEY = "release.round"
+#: Cap on the publish call (a deploy holds the lifecycle lock; the worst
+#: added wait is one cap).
+RECORD_TIMEOUT_S = 15.0
+#: Cap on the ``status`` read — much shorter: a human waits on the table.
+STATUS_TIMEOUT_S = 3.0
+
+#: Runs ``scripts/prod-precis <args>``; returns (returncode, stdout, stderr).
+#: Tests pass a fake; a real call raises OSError/TimeoutExpired.
+Transport = Callable[[list[str]], tuple[int, str, str]]
+
+_publish_dead = False
+_last_row: dict[str, Any] | None = None
+#: The verb's last ``round.json`` payload, flushed once by ``main`` after
+#: the lifecycle lock releases — a multi-write verb publishes its final
+#: state only, and never from under the lock.
+_pending_round: dict[str, Any] | None = None
+
+
+def _prod_precis(
+    args: list[str], *, timeout: float = RECORD_TIMEOUT_S
+) -> tuple[int, str, str]:
+    """The real transport: scripts/prod-precis from a tree that may write.
+
+    A deploy moves origin/prod past this checkout, and prod-precis refuses a
+    write from a tree behind it, so reuse scripts/gripe-note's tree choice
+    (this one, else the prod clone) and its process-group-safe timeout.
+    """
+    import importlib.machinery
+    import importlib.util
+
+    path = _HERE / "gripe-note"
+    loader = importlib.machinery.SourceFileLoader("gripe_note", str(path))
+    spec = importlib.util.spec_from_loader("gripe_note", loader)
+    if spec is None:
+        raise OSError("cannot load scripts/gripe-note")
+    gn = importlib.util.module_from_spec(spec)
+    exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), gn.__dict__)
+    cli = os.environ.get("PRECIS_GRIPE_NOTE_CLI", "").strip()
+    base = (
+        shlex.split(cli)
+        if cli
+        else [str(gn.write_tree(_HERE.parent) / "scripts" / "prod-precis")]
+    )
+    cp = gn.run_capped([*base, *args], timeout)
+    return cp.returncode, cp.stdout, cp.stderr
+
+
+def _record_skip_reason() -> str | None:
+    """Why the real transport must not run, or None. Same seams as
+    scripts/gripe-note: PRECIS_GRIPE_NOTE=0, no prod DSN on this host
+    (PRECIS_GRIPE_NOTE_CLI replaces the check). A PRECIS_ROUND_ROOT override
+    means a test rig or a foreign checkout, never the repo that deploys."""
+    if os.environ.get("PRECIS_GRIPE_NOTE", "1") == "0":
+        return "PRECIS_GRIPE_NOTE=0"
+    if _HERE.parent != _root():
+        return "PRECIS_ROUND_ROOT names another checkout"
+    dsn = Path.home() / ".secrets" / "pw" / "PRECIS_DATABASE_URL"
+    if not os.environ.get("PRECIS_GRIPE_NOTE_CLI", "").strip() and not dsn.is_file():
+        return "no prod DSN on this host"
+    return None
+
+
+def _error_detail(exc: BaseException) -> str:
+    """TimeoutExpired's string omits captured stderr; retain it explicitly."""
+    detail = f"{type(exc).__name__}: {exc}"
+    err = getattr(exc, "stderr", None)
+    if isinstance(err, bytes):
+        err = err.decode("utf-8", errors="replace")
+    if err:
+        detail += f"\n{err.strip()}"
+    return _NETWORK["redact"](detail)
+
+
+def _host_name() -> str:
+    """This clone's host name: PRECIS_NODE else the machine's short name."""
+    return (
+        os.environ.get("PRECIS_NODE", "").strip()
+        or socket.gethostname().split(".", 1)[0]
+    )
+
+
+def _owner() -> dict[str, Any]:
+    """``{host, checkout}`` for the published row, plus ``plan`` when
+    PRECIS_RELEASE_PLAN names a positive plan number."""
+    owner: dict[str, Any] = {"host": _host_name(), "checkout": str(_root())}
+    plan = os.environ.get("PRECIS_RELEASE_PLAN", "").strip()
+    if plan.isdigit() and int(plan) > 0:
+        owner["plan"] = int(plan)
+    return owner
+
+
+def _round_record(
+    rel: dict[str, Any], *, n: int, owner: dict[str, Any], now: str
+) -> dict[str, Any]:
+    """The ``release.round`` row for one release record — the same literal
+    as ``precis.plans.release.round_record`` (a test pins them). The row is
+    a pure function of record and owner: the settings row's own write time
+    is the publish time, so an unchanged record dedupes against the last
+    publish no matter how long ago."""
+    row: dict[str, Any] = {
+        "n": n,
+        "branch": rel["branch"],
+        "base": rel["base"],
+        "state": rel["state"],
+        "owner": owner,
+    }
+    if rel.get("cut_at"):
+        row["cut_at"] = rel["cut_at"]
+    dep = rel.get("deployment") or {}
+    deploy = {
+        dst: dep[src]
+        for src, dst in (
+            ("sha", "sha"),
+            ("rollout_at", "rollout_at"),
+            ("runtime_confirmed_at", "confirmed_at"),
+            ("runtime_evidence", "evidence"),
+        )
+        if dep.get(src)
+    }
+    if deploy:
+        row["deploy"] = deploy
+    return row
+
+
+def _publish_pending() -> None:
+    """Publish the verb's final ``round.json`` write, once — called by
+    ``main`` after the lifecycle lock releases."""
+    global _pending_round
+    data, _pending_round = _pending_round, None
+    if data is not None:
+        _publish_round(data)
+
+
+def _publish_round(data: dict[str, Any], *, transport: Transport | None = None) -> None:
+    """Best-effort publish of the active (else newest) release's row for a
+    finished verb: never raises, never changes an exit code, sends nothing
+    when the row is unchanged or after one failed attempt. Every failure —
+    a malformed record included — is one stderr line, then the process
+    stops trying."""
+    global _last_row, _publish_dead
+    try:
+        rel = _active_rel(data) or max(
+            _releases(data), key=lambda r: int(r["n"]), default=None
+        )
+        if rel is None:
+            return
+        row = _round_record(rel, n=int(rel["n"]), owner=_owner(), now=_now())
+    except Exception as exc:
+        print(f"round record not published: {_error_detail(exc)}", file=sys.stderr)
+        _publish_dead = True
+        return
+    if row == _last_row:
+        return
+    if transport is None:
+        if _publish_dead or _record_skip_reason():
+            return
+    send = transport or _prod_precis
+    try:
+        rc, _out, err = send(
+            ["settings", "set", ROUND_KEY, json.dumps(row, separators=(",", ":"))]
+        )
+    except Exception as exc:
+        print(f"round record not published: {_error_detail(exc)}", file=sys.stderr)
+        _publish_dead = True
+        return
+    if rc != 0:
+        detail = re.sub(r"[a-z]+://\S+", "<url>", err.strip())
+        print(f"round record not published (exit {rc}): {detail}", file=sys.stderr)
+        _publish_dead = True
+        return
+    _last_row = row
+
+
+_ROUND_ROW_RE = re.compile(r"^release\.round = (.*) \(layer=(\w+)\)$", re.MULTILINE)
+
+
+def _read_round_record() -> dict[str, Any] | None:
+    """The shared ``release.round`` row, or None on any failure — a read
+    problem prints nothing."""
+    if _record_skip_reason():
+        return None
+    try:
+        rc, out, _err = _prod_precis(
+            ["settings", "get", ROUND_KEY], timeout=STATUS_TIMEOUT_S
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if rc != 0:
+        return None
+    m = _ROUND_ROW_RE.search(out)
+    if m is None or m.group(2) != "db":
+        return None
+    try:
+        row = json.loads(m.group(1))
+    except ValueError:
+        return None
+    return row if isinstance(row, dict) else None
+
+
+def _db_owner_row() -> dict[str, Any] | None:
+    """The shared row when it is live (non-terminal state) and another clone
+    owns it: a different checkout or a different host."""
+    row = _read_round_record()
+    if not row or row.get("state") in _TERMINAL_STATES:
+        return None
+    owner = row.get("owner") or {}
+    if owner.get("checkout") != str(_root()) or owner.get("host") != _host_name():
+        return row
+    return None
+
+
+def _owner_line(row: dict[str, Any]) -> str:
+    owner = row.get("owner") or {}
+    return (
+        f"  record owner: {owner.get('host', '?')} {owner.get('checkout', '?')}"
+        f" says {row.get('branch', '?')} [{row.get('state', '?')}]"
+    )
 
 
 def _archive_receipt(state: Path, cur: dict[str, Any]) -> None:
@@ -532,6 +769,9 @@ def _good_line(root: Path) -> str:
 
 def cmd_status(state: Path, args: argparse.Namespace) -> int:
     cur = _open_round(state)
+    # The record-owner read is the human path only: --json is the machine
+    # path scripts/release calls and must not pay the prod round trip.
+    db_owner = None if args.json else _db_owner_row()
     if cur is None:
         last = _read_round(state)
         if args.json:
@@ -547,6 +787,8 @@ def cmd_status(state: Path, args: argparse.Namespace) -> int:
         else:
             print(f"no round open (last: {last['n']})" if last else "no round open")
             print(_good_line(_root()))
+            if db_owner is not None:
+                print(_owner_line(db_owner))
         return 0
     rows = _rows(state, cur)
     if args.json:
@@ -606,6 +848,8 @@ def cmd_status(state: Path, args: argparse.Namespace) -> int:
             + (f" by r{by}" if by else "")
             + (f" ({why})" if why else "")
         )
+    if db_owner is not None:
+        print(_owner_line(db_owner))
     width = max([len(r["peer"]) for r in rows] + [4])
     for r in rows:
         shas = " ".join(s[:8] for s in r["shas"])
@@ -2420,8 +2664,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "gate":
         return cmd_gate(args)
     if args.cmd == "deploy":
-        with _lifecycle(_root()) as lock_fd:
-            return cmd_deploy(args, lock_fd)
+        try:
+            with _lifecycle(_root()) as lock_fd:
+                return cmd_deploy(args, lock_fd)
+        finally:
+            _publish_pending()
     state = _state_dir()
     handlers = {
         "open": cmd_open,
@@ -2439,8 +2686,11 @@ def main(argv: list[str] | None = None) -> int:
         args.cmd == "good" and not args.resolve
     ):
         # State is common-dir even when invoked by a linked peer worktree.
-        with _lifecycle(Path.cwd()):
-            return handlers[args.cmd](state, args)
+        try:
+            with _lifecycle(Path.cwd()):
+                return handlers[args.cmd](state, args)
+        finally:
+            _publish_pending()
     return handlers[args.cmd](state, args)
 
 

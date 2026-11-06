@@ -8,6 +8,7 @@ import sys
 import time
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -2077,3 +2078,252 @@ def test_good_tag_is_immutable_and_an_unknown_release_refuses(rig: Rig) -> None:
 def test_good_resolve_with_no_good_tag(rig: Rig) -> None:
     out = rig.round("good", "--resolve")
     assert out.returncode == 0 and "no good/r" in out.stdout
+
+
+# ── release.round publish + status owner (td573429) ────────────────
+
+
+class _Prod:
+    """Fake ``scripts/prod-precis`` transport for the round record: records
+    calls, serves a fixed row for ``settings get``, fails on demand."""
+
+    def __init__(
+        self, row: dict[str, Any] | None = None, *, fail: bool = False
+    ) -> None:
+        self.row = row
+        self.fail = fail
+        self.calls: list[list[str]] = []
+        self.timeouts: list[float | None] = []
+
+    def __call__(self, args: list[str], **kw: Any) -> tuple[int, str, str]:
+        self.calls.append(args)
+        self.timeouts.append(kw.get("timeout"))
+        if self.fail:
+            return 1, "", "refused: https://example.invalid/x boom"
+        if args[:2] == ["settings", "get"]:
+            if self.row is None:
+                return 0, f"{args[2]} = None (layer=default)\n", ""
+            return 0, f"{args[2]} = {json.dumps(self.row)} (layer=db)\n", ""
+        if args[:2] == ["settings", "set"]:
+            self.row = json.loads(args[3])
+            return 0, "", ""
+        raise AssertionError(f"unexpected transport args {args}")
+
+
+def _published(rig: Rig, monkeypatch: pytest.MonkeyPatch, prod: Any) -> ModuleType:
+    """``scripts/round`` in-process with prod faked: the rig's
+    PRECIS_ROUND_ROOT skip reason is lifted and PRECIS_NODE gives
+    owner.host a stable fake."""
+    mod = _load_round(rig, monkeypatch)
+    monkeypatch.setattr(mod, "_prod_precis", prod)
+    monkeypatch.setattr(mod, "_record_skip_reason", lambda: None)
+    monkeypatch.setenv("PRECIS_NODE", "fake-node")
+    return mod
+
+
+def _round_data(rig: Rig, *recs: dict[str, object]) -> dict[str, Any]:
+    return {"n": 1, "open": True, "releases": list(recs)}
+
+
+def _db_row(
+    rig: Rig, *, host: str, checkout: str, state: str = "cut"
+) -> dict[str, Any]:
+    return {
+        "n": 1,
+        "branch": "release/r1",
+        "base": rig.shas["c2"],
+        "state": state,
+        "owner": {"host": host, "checkout": checkout},
+        "cut_at": "2026-11-06T11:00:00Z",
+    }
+
+
+def _status_json(mod: ModuleType, capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
+    rc = mod.cmd_status(mod._state_dir(), mod.argparse.Namespace(json=True))
+    assert rc == 0
+    out = capsys.readouterr().out
+    payload: dict[str, Any] = json.loads(out[out.index("{") :])
+    return payload
+
+
+def test_round_json_write_publishes_the_release_record(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
+    for key, val in _fresh(rig).items():
+        monkeypatch.setenv(key, val)
+    assert mod.main(["open"]) == 0
+    assert prod.calls == []  # no release recorded: nothing to publish
+    assert mod.main(["cut"]) == 0
+    sets = [c for c in prod.calls if c[:2] == ["settings", "set"]]
+    assert len(sets) == 1  # several round.json writes: one publish, at the end
+    row = json.loads(sets[-1][3])
+    assert row["n"] == 1
+    assert row["branch"] == "release/r1"
+    assert row["base"] == rig.shas["c2"]
+    assert row["state"] == "cut"
+    assert row["owner"] == {"host": "fake-node", "checkout": str(rig.root)}
+
+
+def test_unchanged_record_publishes_once_even_seconds_apart(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
+    data = _round_data(rig, _record(1, rig.shas["c2"], "cut"))
+    mod._publish_round(data)
+    time.sleep(1.05)
+    mod._publish_round(data)
+    assert [c[:2] for c in prod.calls] == [["settings", "set"]]
+
+
+def test_publish_failure_reports_once_then_stops(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prod = _Prod(fail=True)
+    mod = _published(rig, monkeypatch, prod)
+    data = _round_data(rig, _record(1, rig.shas["c2"], "cut"))
+    mod._publish_round(data)
+    mod._publish_round(data)
+    assert len(prod.calls) == 1  # _publish_dead: no retry for the process
+    err = capsys.readouterr().err
+    assert "round record not published (exit 1):" in err
+    assert "https://example.invalid" not in err
+
+
+def test_raising_transport_reports_once_then_stops(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[list[str]] = []
+
+    def boom(args: list[str]) -> tuple[int, str, str]:
+        calls.append(args)
+        raise subprocess.TimeoutExpired(["prod-precis"], 15)
+
+    mod = _published(rig, monkeypatch, boom)
+    data = _round_data(rig, _record(1, rig.shas["c2"], "cut"))
+    mod._publish_round(data)
+    mod._publish_round(data)
+    assert len(calls) == 1
+    assert "round record not published: TimeoutExpired" in capsys.readouterr().err
+
+
+def test_a_malformed_record_only_prints_a_line(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
+    data = {"n": 1, "open": True, "releases": [{"n": 1, "state": "cut"}]}
+    mod._publish_round(data)  # must not raise
+    assert prod.calls == []
+    assert "round record not published: KeyError" in capsys.readouterr().err
+
+
+def test_a_verb_publishes_its_final_write_once(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
+    path = rig.root / ".git" / "precis-round" / "round.json"
+    mod._write(path, _round_data(rig, _record(1, rig.shas["c2"], "cut")))
+    mod._write(path, _round_data(rig, _record(1, rig.shas["c2"], "gating")))
+    assert prod.calls == []  # nothing publishes until the verb ends
+    mod._publish_pending()
+    assert len(prod.calls) == 1
+    assert json.loads(prod.calls[0][3])["state"] == "gating"
+    mod._publish_pending()
+    assert len(prod.calls) == 1  # the flush consumes its stash
+
+
+def test_open_and_close_with_no_release_publish_nothing(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
+    assert mod.main(["open"]) == 0
+    assert mod.main(["eta", "later"]) == 0  # a marks write is not a round write
+    assert mod.main(["close"]) == 0
+    assert prod.calls == []
+
+
+def test_status_names_a_foreign_record_owner(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    row = _db_row(rig, host="other-node", checkout=str(rig.root.parent / "clone-b"))
+    prod = _Prod(row=row)
+    mod = _published(rig, monkeypatch, prod)
+    assert mod.main(["open"]) == 0
+    rc = mod.cmd_status(mod._state_dir(), mod.argparse.Namespace(json=False))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert (
+        f"record owner: other-node {rig.root.parent / 'clone-b'} says release/r1 [cut]"
+        in out
+    )
+    assert prod.timeouts == [mod.STATUS_TIMEOUT_S]
+
+
+def test_status_json_skips_the_record_read(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    row = _db_row(rig, host="other-node", checkout=str(rig.root.parent / "clone-b"))
+    prod = _Prod(row=row)
+    mod = _published(rig, monkeypatch, prod)
+    assert mod.main(["open"]) == 0
+    payload = _status_json(mod, capsys)
+    assert "db_owner" not in payload
+    assert prod.calls == []  # the machine path pays no prod round trip
+
+
+def test_status_omits_the_record_owner_when_this_clone_owns_it(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prod = _Prod(row=_db_row(rig, host="fake-node", checkout=str(rig.root)))
+    mod = _published(rig, monkeypatch, prod)
+    assert mod.main(["open"]) == 0
+    rc = mod.cmd_status(mod._state_dir(), mod.argparse.Namespace(json=False))
+    assert rc == 0
+    assert "record owner" not in capsys.readouterr().out
+
+
+def test_status_names_the_owner_on_a_closed_round(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    row = _db_row(rig, host="other-node", checkout=str(rig.root.parent / "clone-b"))
+    prod = _Prod(row=row)
+    mod = _published(rig, monkeypatch, prod)
+    assert mod.main(["open"]) == 0
+    assert mod.main(["close"]) == 0
+    rc = mod.cmd_status(mod._state_dir(), mod.argparse.Namespace(json=False))
+    assert rc == 0
+    assert "record owner: other-node" in capsys.readouterr().out
+
+
+def test_status_ignores_a_terminal_record(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    row = _db_row(
+        rig,
+        host="other-node",
+        checkout=str(rig.root.parent / "clone-b"),
+        state="confirmed",
+    )
+    prod = _Prod(row=row)
+    mod = _published(rig, monkeypatch, prod)
+    assert mod.main(["open"]) == 0
+    rc = mod.cmd_status(mod._state_dir(), mod.argparse.Namespace(json=False))
+    assert rc == 0
+    assert "record owner" not in capsys.readouterr().out
+
+
+def test_rig_run_never_contacts_the_transport(rig: Rig, tmp_path: Path) -> None:
+    marker = tmp_path / "contacted"
+    stub = tmp_path / "fake-prod-cli"
+    stub.write_text(f'#!/bin/sh\ntouch "{marker}"\nexit 0\n', encoding="utf-8")
+    stub.chmod(0o755)
+    env = {"PRECIS_GRIPE_NOTE_CLI": str(stub)}
+    assert rig.round("open", **env).returncode == 0
+    assert rig.round("cut", **env, **_fresh(rig)).returncode == 0
+    assert rig.round("status", **env).returncode == 0
+    assert not marker.exists()

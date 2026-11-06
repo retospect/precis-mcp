@@ -22,6 +22,11 @@ what lives here:
   ``scripts/release``'s ``record_ci_verdict`` / ``record_prod_head`` (the
   script cannot import this package; the row shapes are the same, so the
   gates in :mod:`precis.plans.gates` read either writer's rows).
+- **The shared round record** (:func:`record_round` / :func:`read_round`),
+  store-side twins of ``scripts/round``'s publish: ``release.round`` holds
+  the active release's row (``{n, branch, base, state, owner, cut_at,
+  deploy?}``) so a second clone and the release loop read the same
+  lifecycle state the coordinator's ``round.json`` tracks.
 - **The approval check** (:func:`approval`): the deploy runs only when the
   approval ask that blocks it carries an ``answer:`` comment naming
   ``deploy r<N>`` for the release the plan cut. The ``answer`` gate opens on
@@ -418,10 +423,80 @@ def record_prod_head(
     return f"prod head recorded: {head[:9]} (+{len(landed)} landed)"
 
 
+# ── the shared release.round record ───────────────────────────────
+
+#: ``app_settings`` key ``scripts/round`` publishes the active release's
+#: record to (same repeated-literal arrangement as ``PROD_HEAD_KEY``).
+ROUND_KEY = "release.round"
+
+
+def round_record(
+    rel: dict[str, Any], *, n: int, owner: dict[str, Any], now: datetime
+) -> dict[str, Any]:
+    """The ``release.round`` row for one ``round.json`` release record.
+
+    ``deploy`` maps the rollout journal's ``sha`` / ``rollout_at`` /
+    ``runtime_confirmed_at`` / ``runtime_evidence``; absent keys are
+    omitted, never null, and ``deploy`` itself is omitted when the
+    journal carries none of them (``scripts/round._round_record`` keeps
+    the same literal). The row is a pure function of the record and
+    owner: the settings row's own write time is the publish time, so an
+    unchanged record dedupes against the last publish.
+    """
+    row: dict[str, Any] = {
+        "n": n,
+        "branch": rel["branch"],
+        "base": rel["base"],
+        "state": rel["state"],
+        "owner": owner,
+    }
+    if rel.get("cut_at"):
+        row["cut_at"] = rel["cut_at"]
+    dep = rel.get("deployment") or {}
+    deploy = {
+        dst: dep[src]
+        for src, dst in (
+            ("sha", "sha"),
+            ("rollout_at", "rollout_at"),
+            ("runtime_confirmed_at", "confirmed_at"),
+            ("runtime_evidence", "evidence"),
+        )
+        if dep.get(src)
+    }
+    if deploy:
+        row["deploy"] = deploy
+    return row
+
+
+def record_round(store: Store, row: dict[str, Any]) -> str:
+    """Write ``row`` to ``release.round``; one status line."""
+    from precis import settings
+
+    settings.invalidate(ROUND_KEY)
+    settings.set_setting(ROUND_KEY, json.dumps(row, separators=(",", ":")), store=store)
+    return f"round record recorded: r{row.get('n', '?')} {row.get('state', '?')}"
+
+
+def read_round(store: Store) -> dict[str, Any] | None:
+    """The ``release.round`` row, or ``None`` when absent, unparsable or
+    not a dict."""
+    from precis import settings
+
+    raw = settings.get_str(ROUND_KEY, store=store)
+    if not raw:
+        return None
+    try:
+        rec = json.loads(raw)
+    except ValueError:
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
 __all__ = [
     "APPROVE_OPTION",
     "HOLD_OPTION",
     "PENDING_RANGE",
+    "ROUND_KEY",
     "approval",
     "approval_options",
     "ci_verdict_rows",
@@ -431,10 +506,13 @@ __all__ = [
     "pinned_host",
     "plan_root",
     "prod_head_record",
+    "read_round",
     "record_ci_verdict",
     "record_cut",
     "record_prod_head",
+    "record_round",
     "release_of",
     "repo_from_remote",
+    "round_record",
     "valid_repo",
 ]

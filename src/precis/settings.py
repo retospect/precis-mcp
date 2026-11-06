@@ -332,6 +332,17 @@ REGISTRY: dict[str, SettingSpec] = {
             "fallback.",
         ),
         SettingSpec(
+            key="release.round",
+            type="str",
+            env_var=None,
+            default=None,
+            doc="The shared release-round record as JSON {n, branch, base, "
+            "state, owner, cut_at, deploy?}, written by scripts/round when "
+            "a verb's round.json write settles and by the factory's release "
+            "ops; read by scripts/round status and the release loop. "
+            "DB-only — no env fallback.",
+        ),
+        SettingSpec(
             key="release.repo",
             type="str",
             env_var="PRECIS_RELEASE_REPO",
