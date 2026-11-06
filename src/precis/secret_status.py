@@ -207,6 +207,27 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         probe_group="perplexity",
     ),
     SecretSpec(
+        name="OPENROUTER_API_KEY",
+        purpose="OpenRouter key for the metered API lane of the LLM ladder "
+        "(utils/llm/router.py resolves it for openrouter.ai endpoints); "
+        "the task-aware routing 'metered' account's api_key_ref.",
+        get_url="https://openrouter.ai/settings/keys",
+        get_blurb="Create a key in OpenRouter's settings and paste it here.",
+        cost="paid — usage-billed",
+        probe_group=None,
+        optional=True,
+    ),
+    SecretSpec(
+        name="DEEPINFRA_API_KEY",
+        purpose="DeepInfra key for OpenAI-compatible endpoints on deepinfra.com "
+        "(utils/llm/router.py resolves it per host).",
+        get_url="https://deepinfra.com/dash/api_keys",
+        get_blurb="Create an API key in the DeepInfra dashboard and paste it here.",
+        cost="paid — usage-billed",
+        probe_group=None,
+        optional=True,
+    ),
+    SecretSpec(
         name="SEMANTIC_SCHOLAR_API_KEY",
         purpose="Paper metadata + citation ingest (Semantic Scholar).",
         get_url="https://www.semanticscholar.org/product/api",

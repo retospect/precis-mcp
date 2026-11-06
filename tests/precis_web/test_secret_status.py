@@ -269,6 +269,16 @@ def _patch_page(
     "name, get_url, instructions",
     [
         (
+            "OPENROUTER_API_KEY",
+            "https://openrouter.ai/settings/keys",
+            ("Create a key",),
+        ),
+        (
+            "DEEPINFRA_API_KEY",
+            "https://deepinfra.com/dash/api_keys",
+            ("Create an API key",),
+        ),
+        (
             "KIMI_CODE_API_KEY",
             "https://www.kimi.com/coding/docs/en/",
             (
@@ -332,6 +342,9 @@ def test_llm_secret_entries_render_with_instructions(
     assert f'name="name" value="{name}"' in page
     assert f'href="{get_url}"' in page
     assert spec.get_blurb in page
+    assert spec.purpose in page
+    row = page.split(f'value="{name}"', 1)[0].rsplit("<tr>", 1)[1]
+    assert "bg-warning-subtle text-warning-strong" in row
     for instruction in instructions:
         assert instruction in spec.get_blurb
 

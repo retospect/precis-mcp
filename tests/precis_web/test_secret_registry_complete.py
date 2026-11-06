@@ -7,8 +7,9 @@ provisioned from the page nor probed by the weekly credential check
 resolves a secret.
 
 Names it can see: string literals, and bare names bound to a string constant
-at module level anywhere in ``src/`` (``MP_API_KEY_SECRET``). Computed names
-(f-strings, ``NAME:<login>`` per-user credentials, loop variables) are
+at module level anywhere in ``src/`` (``MP_API_KEY_SECRET``), including dict
+values read through ``.items()`` or ``.values()`` loops. Computed names
+(f-strings, ``NAME:<login>`` per-user credentials) are
 invisible to it by design; per-user credentials are managed on ``/account``.
 """
 
@@ -16,6 +17,8 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+
+import pytest
 
 from precis import secret_status
 
@@ -78,6 +81,30 @@ def read_secret_names() -> dict[str, set[str]]:
             imported.setdefault(name, set()).update(values)
     found: dict[str, set[str]] = {}
     for path, tree in trees.items():
+        loop_values: dict[str, set[str]] = {}
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.For)
+                and isinstance(node.iter, ast.Call)
+                and isinstance(node.iter.func, ast.Attribute)
+                and isinstance(node.iter.func.value, ast.Name)
+            ):
+                continue
+            method = node.iter.func
+            target = node.target
+            if (
+                method.attr == "items"
+                and isinstance(target, ast.Tuple)
+                and len(target.elts) == 2
+                and all(isinstance(elt, ast.Name) for elt in target.elts)
+            ):
+                target = target.elts[1]
+            elif method.attr != "values":
+                continue
+            if isinstance(target, ast.Name):
+                constant = node.iter.func.value.id
+                values = local[path].get(constant) or imported.get(constant, set())
+                loop_values.setdefault(target.id, set()).update(values)
         for node in ast.walk(tree):
             if not (
                 isinstance(node, ast.Call) and _callee(node) in _READERS and node.args
@@ -89,7 +116,11 @@ def read_secret_names() -> dict[str, set[str]]:
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                 names = {arg.value}
             elif isinstance(arg, ast.Name):
-                names = local[path].get(arg.id) or imported.get(arg.id, set())
+                names = (
+                    local[path].get(arg.id)
+                    or imported.get(arg.id)
+                    or loop_values.get(arg.id, set())
+                )
             else:
                 continue
             site = f"{path.relative_to(_SRC)}:{node.lineno}"
@@ -101,6 +132,38 @@ def read_secret_names() -> dict[str, set[str]]:
 def test_scan_sees_the_known_readers() -> None:
     names = read_secret_names()
     assert {"ANTHROPIC_API_KEY", "PRECIS_MP_API_KEY", "ORCID_CLIENT_ID"} <= set(names)
+
+
+@pytest.mark.parametrize("name", ["OPENROUTER_API_KEY", "DEEPINFRA_API_KEY"])
+def test_scan_sees_dict_driven_provider_keys(name: str) -> None:
+    names = read_secret_names()
+    assert name in names
+    assert any(site.startswith("precis/utils/llm/router.py:") for site in names[name])
+
+
+@pytest.mark.parametrize(
+    "method, target", [("items", "host, secret"), ("values", "secret")]
+)
+@pytest.mark.parametrize("imported", [False, True])
+def test_scan_sees_dict_loop_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    target: str,
+    imported: bool,
+) -> None:
+    constant: str = 'KEYS = {"host": "TEST_PROVIDER_KEY"}\n'
+    reader: str = f"for {target} in KEYS.{method}():\n    get_secret(secret)\n"
+    if imported:
+        (tmp_path / "constants.py").write_text(constant, encoding="utf-8")
+        reader = "from constants import KEYS\n" + reader
+    else:
+        reader = constant + reader
+    (tmp_path / "reader.py").write_text(reader, encoding="utf-8")
+    monkeypatch.setattr(__name__ + "._SRC", tmp_path)
+    names = read_secret_names()
+    assert "TEST_PROVIDER_KEY" in names
+    assert all(site.startswith("reader.py:") for site in names["TEST_PROVIDER_KEY"])
 
 
 def test_every_secret_the_code_reads_has_a_spec() -> None:
