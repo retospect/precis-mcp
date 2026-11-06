@@ -162,6 +162,14 @@ def test_restic_dbdump_snapshot_copy_forget_and_stamps() -> None:
     assert 'restic -r "${B2_REPO}" copy --from-repo "${LOCAL_REPO}"' in out
     assert "--keep-daily 14 --keep-weekly 8 --keep-monthly 12" in out
     assert out.count("--prune") >= 2
+    # copy must run BEFORE either forget --prune: pruning the local repo
+    # first could drop a snapshot a prior run's copy never reached before
+    # it ever lands offsite.
+    backup_at = out.index('restic -r "${LOCAL_REPO}" backup "${SRC}"')
+    copy_at = out.index('restic -r "${B2_REPO}" copy --from-repo')
+    local_forget_at = out.index('restic -r "${LOCAL_REPO}" forget')
+    b2_forget_at = out.index('restic -r "${B2_REPO}" forget')
+    assert backup_at < copy_at < local_forget_at < b2_forget_at
     # Existing heartbeat file plus the leg-specific one.
     assert "restic-last-ok" in out and "restic-dbdump-last-ok" in out
     # Never snapshots a mid-rsync dir: quiescence + already-done checks.

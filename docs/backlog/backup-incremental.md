@@ -188,3 +188,10 @@ never printed.
   legacy script keeps a local dump dir on the DB node (age-pruned), which
   conflicts with the new chain's no-retained-backups rule — retire it with
   the chain.
+- Fix 2026-11-05: `restic-dbdump.sh.j2` ran `forget --prune` on the local
+  repo *before* `copy` to B2, diverging from this spec's B order (backup →
+  copy → forget on both). A snapshot a prior run's `copy` missed (B2
+  outage, network blip) could fall out of local retention before it ever
+  reached the offsite repo — the exact loss this leg exists to prevent.
+  Reordered to backup → copy → forget(local) → forget(B2); order is now
+  pinned by `test_restic_dbdump_snapshot_copy_forget_and_stamps`.

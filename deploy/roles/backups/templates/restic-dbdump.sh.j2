@@ -14,10 +14,15 @@
 #
 # What it does on a fresh, quiescent dump:
 #   restic backup <fixed dir> → local repo (the 90-day history, dedup'd)
-#   restic forget --prune      → local repo, spec retention
 #   restic copy                → local → B2 repo (offsite, diffs only)
+#   restic forget --prune      → local repo, spec retention
 #   restic forget --prune      → B2 repo, same retention
 #   touch the last-ok stamps the monitoring heartbeat reads
+#
+# Copy runs BEFORE forget on either repo: pruning the local repo first would
+# let a snapshot that a prior run's `copy` never reached (network blip, B2
+# outage) fall out of local retention before it ever reaches the offsite
+# repo — exactly the data loss this leg exists to prevent.
 #
 # /etc/restic/env must provide: RESTIC_PASSWORD or RESTIC_PASSWORD_FILE
 # (shared by both repos; if they differ, RESTIC_FROM_PASSWORD_FILE covers
@@ -90,9 +95,10 @@ fi
 restic -r "${B2_REPO}" cat config >/dev/null 2>&1 || restic -r "${B2_REPO}" init
 
 restic -r "${LOCAL_REPO}" backup "${SRC}" --tag precis-dbdump
-# forget+prune BEFORE copy: snapshots the retention drops never cross to B2.
-restic -r "${LOCAL_REPO}" forget ${RETENTION} --prune
+# copy BEFORE forget on either repo: a snapshot must be confirmed offsite
+# before it can be pruned locally (see header).
 restic -r "${B2_REPO}" copy --from-repo "${LOCAL_REPO}"
+restic -r "${LOCAL_REPO}" forget ${RETENTION} --prune
 restic -r "${B2_REPO}" forget ${RETENTION} --prune
 
 echo "${STAMP_ID}" > "${STATE_DIR}/last-stamp"
