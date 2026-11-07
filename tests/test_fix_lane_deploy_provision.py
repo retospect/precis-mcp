@@ -7,6 +7,7 @@ Plain YAML parse + text checks; no ansible.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -65,6 +66,29 @@ def test_overlay_copy_tasks_are_no_log_and_gated() -> None:
         when = " ".join(when) if isinstance(when, list) else str(when)
         assert task.get("no_log") is True, task.get("name")
         assert _SWITCH in when, task.get("name")
+
+
+def test_file_lookups_keep_trailing_newline() -> None:
+    """lookup('file') strips the trailing newline unless rstrip=False; OpenSSH
+    then rejects the placed key ("Load key ...: invalid format" -> publickey
+    denied on every node)."""
+    pattern = re.compile(r"lookup\(\s*'file'\s*,(?P<args>[^}]*?)\)\s*\}\}")
+    seen = 0
+    bad = []
+    for task in _tasks():
+        for module in ("ansible.builtin.copy", "copy"):
+            content = (task.get(module) or {}).get("content")
+            if not isinstance(content, str):
+                continue
+            for m in pattern.finditer(content):
+                seen += 1
+                if "rstrip=False" not in m.group("args"):
+                    bad.append(f"{task.get('name')}: {m.group(0)}")
+    assert seen >= 3, f"expected the vault-pass, key and pub lookups, saw {seen}"
+    assert not bad, (
+        "lookup('file') without rstrip=False drops the trailing newline; "
+        f"OpenSSH fails with 'invalid format' on the placed key: {bad}"
+    )
 
 
 def test_defaults_switch_is_off() -> None:

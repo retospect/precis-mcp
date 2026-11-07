@@ -304,7 +304,7 @@
     - precis_fix_lane_enabled | default(false) | bool
     - precis_fix_lane_deploys | default(false) | bool
   ansible.builtin.copy:
-    content: "{{ lookup('file', precis_vault_pass_file) }}"
+    content: "{{ lookup('file', precis_vault_pass_file, rstrip=False) }}"
     dest: "{{ precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo') }}/deploy/.vault-pass"
     owner: deploy
     group: staff
@@ -364,7 +364,9 @@
     - precis_fix_lane_enabled | default(false) | bool
     - precis_fix_lane_deploys | default(false) | bool
   ansible.builtin.copy:
-    content: "{{ lookup('file', lookup('env', 'HOME') ~ '/.ssh/cluster') }}"
+    # rstrip=False: OpenSSH refuses a private key whose last line lacks a
+    # newline ("Load key ...: invalid format"); lookup('file') strips it.
+    content: "{{ lookup('file', lookup('env', 'HOME') ~ '/.ssh/cluster', rstrip=False) }}"
     dest: /Users/deploy/.ssh/cluster
     owner: deploy
     group: staff
@@ -393,7 +395,7 @@
     - precis_fix_lane_deploys | default(false) | bool
     - precis_worker_agent_cluster_pub.stat.exists | default(false)
   ansible.builtin.copy:
-    content: "{{ lookup('file', lookup('env', 'HOME') ~ '/.ssh/cluster.pub') }}"
+    content: "{{ lookup('file', lookup('env', 'HOME') ~ '/.ssh/cluster.pub', rstrip=False) }}"
     dest: /Users/deploy/.ssh/cluster.pub
     owner: deploy
     group: staff
