@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuite name="pytest" tests="2">
+  <testcase classname="tests.test_text_io_encoding" name="test_c" time="4.0" />
+  <testcase classname="tests.test_type_ignore_ratchet.TestRatchet" name="test_d" time="2.0" />
+</testsuite>

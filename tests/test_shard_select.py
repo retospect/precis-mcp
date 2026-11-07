@@ -1,6 +1,7 @@
 """``--shard K/N`` (tests/conftest.py) — the CI fan-out must be an exact,
-stable partition: every test lands in exactly one shard, and the same test
-lands in the same shard on every machine and in every xdist worker."""
+stable partition by test FILE: every test lands in exactly one shard, the
+same test lands in the same shard on every machine and in every xdist
+worker, and two node ids of one file always agree."""
 
 from __future__ import annotations
 
@@ -31,10 +32,14 @@ def test_shards_partition_exactly(n: int) -> None:
 
 
 def test_shard_index_is_crc32_not_salted_hash() -> None:
-    # A salted str hash() would move tests between shards per process and
-    # break xdist's collection-consistency check; crc32 is the contract.
+    # A salted str hash() would move files between shards per process and
+    # break xdist's collection-consistency check; crc32 of the node id's
+    # path part is the contract (file-level partition, me580555).
     nodeid = "tests/test_x.py::test_y"
-    assert shard_index(nodeid, 6) == zlib.crc32(nodeid.encode("utf-8")) % 6
+    assert shard_index(nodeid, 6) == zlib.crc32(b"tests/test_x.py") % 6
+    assert shard_index("tests/test_x.py::TestK::test_z[p 1]", 6) == shard_index(
+        nodeid, 6
+    )
 
 
 def test_parse_shard_accepts_k_of_n() -> None:

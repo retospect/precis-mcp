@@ -171,6 +171,7 @@ jobs:
       lint_only: ${{ steps.shape.outputs.lint_only }}
       shards: ${{ steps.shards.outputs.n }}
       shard_list: ${{ steps.shards.outputs.list }}
+      shard_files: ${{ steps.shards.outputs.shard_files }}
       failed_ids: ${{ steps.failed.outputs.failed_ids }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -340,6 +341,8 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
       - name: Install PostgreSQL 17 client to match the pg17 server
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
@@ -387,11 +390,24 @@ jobs:
   # Sharded: the whole suite is ~43 min of pytest on one 4-vCPU runner
   # (CPU-bound; the same suite is ~10 min on a dev Mac), and that single
   # job set the wall-clock of every ship gate. `--shard K/N`
-  # (tests/conftest.py) hashes each test id into one of N buckets, so the
-  # N shard jobs partition the suite exactly and run in parallel on
-  # separate runners, each with its own postgres service. Wall-clock is
-  # one shard's worth (~8 min + setup). The count comes from the `plan`
-  # job's outputs (matrix list + the `--shard K/N` denominator below).
+  # (tests/conftest.py) hashes each test FILE into one of N buckets — a
+  # module's tests stay together, so module/class fixtures build once per
+  # gate, not once per shard — so the N shard jobs partition the suite
+  # exactly and run in parallel on separate runners, each with its own
+  # postgres service. Wall-clock is one shard's worth (~8 min + setup).
+  # The count comes from the `plan` job's outputs (matrix list + the
+  # `--shard K/N` denominator below).
+  #
+  # `plan` also emits `shard_files`: the same partition as a map of shard →
+  # test files, so each shard collects only its own ~250 files instead of
+  # every xdist worker collecting all ~61k items (~2 min per shard saved).
+  # The lists are passed positionally below; `--shard K/N` stays on the
+  # command line as the safety net — it deselects nothing from a correct
+  # list and still partitions exactly if a list is stale. File-level pins
+  # come from tests/shard_weights.json (measured per-file seconds, LPT-
+  # packed by scripts/shard-weights); the partition function is duplicated
+  # in scripts/lib/shard_partition.py because pytest's conftest cannot
+  # import scripts/ — tests/test_ci_shards.py pins the copies equal.
   #
   # Gate shape runs 3.13 only; the nightly adds 3.12 (see `plan`).
   #
@@ -452,6 +468,8 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
       # The runner image ships pg_dump 16, but the service is pg17 and
       # pg_dump refuses to dump a server newer than itself (aborting
       # `test_schema_convergence`). Install the matching pg17 client from
@@ -495,8 +513,15 @@ jobs:
       # ~4 min single-test bar — stays out of every gate-shape shard run
       # (ci/**, release/**, PRs). The full shape (nightly schedule,
       # workflow_dispatch full=true) drops the filter and runs them.
-      - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest --shard ${{ matrix.shard }}/${{ needs.plan.outputs.shards }}${{ needs.plan.outputs.full != 'true' && ' -m "not nightly"' || '' }} --junitxml=junit.xml
+      # The file list (jq, never word-splitting the shell) keeps this
+      # shard's collection to its own files; --shard stays as the net.
+      - run: |
+          mapfile -t files < <(jq -r --arg k "${{ matrix.shard }}" '.[$k][]' <<<"$SHARD_FILES")
+          echo "shard ${{ matrix.shard }}: collecting ${#files[@]} files"
+          P=(uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest --shard ${{ matrix.shard }}/${{ needs.plan.outputs.shards }}${{ needs.plan.outputs.full != 'true' && ' -m "not nightly"' || '' }})
+          "${P[@]}" "${files[@]}" --junitxml=junit.xml
         env:
+          SHARD_FILES: ${{ needs.plan.outputs.shard_files }}
           PRECIS_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/precis_test
       # Per-test timings for scripts/shard-weights (a finished shard only; a
       # timed-out one writes nothing). Short retention: it is a rebalancing input.

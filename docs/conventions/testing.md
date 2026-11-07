@@ -155,17 +155,25 @@ asserts only the argv shape against a fake docker, so a compose change
 to bare-name semantics would slip that test silently — this paragraph is
 the contract.
 
-`--shard K/N` (tests/conftest.py) hashes every test id into one of N
-buckets (crc32, so every process agrees). The N shards partition the suite
+`--shard K/N` (tests/conftest.py) hashes every test FILE into one of N
+buckets (crc32 on the path, so every process agrees): a file's tests stay
+together, so module/class fixtures build once per gate instead of once per
+shard (me580555). The N shards partition the suite
 exactly; check.yml runs the Linux legs as 10 parallel shard jobs (fixed since 2026-10-23; scripts/ci-shard-plan emits the count) so the gate's
-wall-clock is one shard, not the suite. Locally it is only for reproducing a
+wall-clock is one shard, not the suite. The `plan` job also emits the
+partition as a `shard_files` map, so each shard collects only its own
+~250 files rather than every xdist worker collecting the whole suite —
+`--shard` stays on the command line as the safety net. Locally it is only for reproducing a
 red CI shard — run the same `K/N` the failing job name shows.
-Slow tests (>=1 s) are pinned to shards by time in `tests/shard_weights.json`
-(light tests and new tests keep hashing, so the partition stays exact);
-regenerate with `scripts/shard-weights <junit.xml>...` from the CI shard junit artifacts
-(`junit-<N>-<K>`, several runs averaged) when one shard drifts past ~30 min.
-Its `seconds` map feeds `tests/test_ci_shards.py`'s per-test cap (30% of the
-test-linux timeout): a test over it is split per case, not pinned whole.
+Files are pinned to shards by measured time in `tests/shard_weights.json`
+(files with no measurement — new or nightly-only — keep hashing, so the
+partition stays exact); regenerate with
+`scripts/shard-weights --run-id <run> <junit-dir-or-files>...` from the CI
+shard junit artifacts (`junit-<N>-<K>`, e.g. `gh run download <run> -p
+'junit-*' --dir scratch/junit`) when one shard drifts past ~30 min.
+Its `seconds` map feeds `tests/test_ci_shards.py`'s balance check (each
+table's predicted max within 5% of the mean) and per-file cap (a file
+fatter than a shard's fair share is split per module, not pinned whole).
 
 **CI shapes (check.yml, decided by its `plan` job).** The single source for
 gate shape and duration: a full-gate run (`/land`, `/go`) takes ~90 min

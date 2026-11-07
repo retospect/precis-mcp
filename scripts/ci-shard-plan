@@ -2,9 +2,17 @@
 """The ship gate's test-linux shard count: fixed 10 (Reto 2026-10-23 —
 "10 is fine, we don't need 40. But no fewer"; docs/backlog/release-train.md).
 
-Prints ``n=<N>`` and ``list=<[1..N]>`` for $GITHUB_OUTPUT. check.yml's `plan`
-job runs it once per run and the shard matrix, ``pytest --shard K/N`` and
-max-parallel all follow it.
+Prints ``n=<N>``, ``list=<[1..N]>`` and ``shard_files={"1": […], …}`` for
+$GITHUB_OUTPUT. check.yml's `plan` job runs it once per run; the shard
+matrix follows ``list``, ``--shard K/N``'s denominator follows ``n``, and
+`test-linux` hands each shard its own file list (``shard_files``) to
+collect — one shard's ~250 files, not every xdist worker collecting the
+whole suite.
+
+``--files K/N`` prints shard K's file list, newline-separated, for local
+inspection; it is the same file-level partition conftest's --shard applies
+(scripts/lib/shard_partition.py, loaded via runpy so tests can stage a .py
+copy of this script beside a lib/ dir).
 
 Not 6 or 8: measured shards ran 32-40 min (6) and 32-36 min (8) of the 40 min
 timeout, no headroom. Not the load-based 12 of gr492653 either: a 10-shard
@@ -23,18 +31,69 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import runpy
+import subprocess
 import sys
+from pathlib import Path
 
 SHARDS = 10
+ROOT = Path(__file__).resolve().parents[1]
+_SP = runpy.run_path(str(Path(__file__).resolve().parent / "lib" / "shard_partition.py"))
+load_pins = _SP["load_pins"]
+shard_index = _SP["shard_index"]
+
+#: pytest's default ``python_files`` (no pyproject override) under
+#: ``testpaths = ["tests"]``: ``test_*.py`` and ``*_test.py`` at any depth.
+TEST_FILE = re.compile(r"(^|/)(test_[^/]*|[^/]*_test)\.py$")
 
 
-def main() -> int:
+def test_files() -> list[str]:
+    """Every file pytest collects under tests/, sorted — the universe the
+    ``n`` shards partition."""
+    out = subprocess.run(
+        ["git", "ls-files", "-z", "--", "tests"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+    ).stdout
+    return sorted(p for p in out.split("\0") if TEST_FILE.search(p))
+
+
+def shard_files(n: int) -> dict[str, list[str]]:
+    """``{"1": [files…], …, "n": […]}`` — the file-level partition at ``n``."""
+    pins = load_pins()
+    buckets: dict[str, list[str]] = {str(k): [] for k in range(1, n + 1)}
+    for f in test_files():
+        buckets[str(shard_index(f, n, pins) + 1)].append(f)
+    return buckets
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv if argv is None else argv
+    if len(argv) > 1 and argv[1] == "--files":
+        spec = argv[2] if len(argv) > 2 else ""
+        k_s, _, n_s = spec.partition("/")
+        if not (k_s.isdigit() and n_s.isdigit() and 1 <= int(k_s) <= int(n_s)):
+            print(f"--files expects K/N (1 <= K <= N), got {spec!r}", file=sys.stderr)
+            return 2
+        for f in shard_files(int(n_s))[k_s]:
+            print(f)
+        return 0
     forced = os.environ.get("FORCE_SHARDS", "")
     n = int(forced) if forced.isdigit() else SHARDS
     n = max(n, SHARDS)
-    print(f"shard plan: n={n} (forced={forced or '-'})", file=sys.stderr)
+    files = shard_files(n)
+    sizes = [len(v) for v in files.values()]
+    print(
+        f"shard plan: n={n} (forced={forced or '-'}) "
+        f"files per shard {min(sizes)}..{max(sizes)}",
+        file=sys.stderr,
+    )
     print(f"n={n}")
     print(f"list={json.dumps(list(range(1, n + 1)))}")
+    print(f"shard_files={json.dumps(files, separators=(',', ':'))}")
     return 0
 
 

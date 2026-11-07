@@ -651,18 +651,20 @@ def pytest_addoption(
         "--shard",
         default=None,
         metavar="K/N",
-        help="Run only shard K of N (1-based). Each collected test id is "
-        "hashed (crc32) into one of N buckets, so the N shards partition "
-        "the suite exactly and any subset of shards is reproducible on its "
-        "own. CI (check.yml) fans the Linux legs across shards so the "
-        "wall-clock gate is one shard's worth, not the whole suite's.",
+        help="Run only shard K of N (1-based). The partition is by test "
+        "FILE: each file's path is hashed (crc32) into one of N buckets, "
+        "so the N shards partition the suite exactly, a file's tests stay "
+        "together (module fixtures build once per gate, not once per "
+        "shard), and any subset of shards is reproducible on its own. CI "
+        "(check.yml) hands each shard only its own files to collect; "
+        "--shard stays as the partition's safety net.",
     )
 
 
 def _load_shard_pins() -> dict[int, dict[str, int]]:
-    """``{n: {nodeid: 0-based shard}}`` from tests/shard_weights.json, the
-    time-balanced pins for the slow tests, one table per shard count the gate
-    can run (scripts/shard-weights regenerates it; scripts/ci-shard-plan picks
+    """``{n: {test file: 0-based shard}}`` from tests/shard_weights.json, the
+    time-balanced file pins, one table per shard count the gate can run
+    (scripts/shard-weights regenerates it; scripts/ci-shard-plan picks
     the count). Missing file → no pins."""
     path = Path(__file__).parent / "shard_weights.json"
     if not path.exists():
@@ -677,16 +679,21 @@ _SHARD_PINS = _load_shard_pins()
 
 
 def shard_index(nodeid: str, n: int) -> int:
-    """0-based shard for ``nodeid`` under an ``n``-way split. Slow tests are
-    pinned by shard_weights.json (only when it has a table for ``n``);
-    every other id is crc32, not ``hash()``: Python salts str hashes per
-    process, and xdist workers each collect independently — every process
-    must agree on the partition. Each id maps to exactly one shard, so the
-    shards partition the suite whatever the pins say."""
-    pinned = _SHARD_PINS.get(n, {}).get(nodeid)
+    """0-based shard for ``nodeid`` under an ``n``-way split, by FILE: the
+    key is the node id's path part, pinned through the table for ``n``
+    (only when shard_weights.json has one), else crc32 — not ``hash()``:
+    Python salts str hashes per process, and xdist workers each collect
+    independently — every process must agree on the partition. File-level
+    so a module's tests stay together and module-scoped fixtures build
+    once per gate, not once per shard; scripts/lib/shard_partition.py
+    carries the same function for the workflow side
+    (tests/test_ci_shards.py pins them equal). Each id maps to exactly
+    one shard, so the shards partition the suite whatever the pins say."""
+    path = nodeid.split("::", 1)[0]
+    pinned = _SHARD_PINS.get(n, {}).get(path)
     if pinned is not None:
         return pinned
-    return zlib.crc32(nodeid.encode("utf-8")) % n
+    return zlib.crc32(path.encode("utf-8")) % n
 
 
 def parse_shard(spec: str) -> tuple[int, int]:

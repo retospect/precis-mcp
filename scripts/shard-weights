@@ -1,32 +1,42 @@
 #!/usr/bin/env -S uv run --no-project --python >=3.12 python
-"""Regenerate tests/shard_weights.json from a pytest junit-xml full-suite run.
+"""Regenerate tests/shard_weights.json from pytest junit-xml shard runs.
 
-    scripts/test --bg --junitxml=.scratch/junit.xml -q    # full suite
-    scripts/shard-weights .scratch/junit.xml [more-runs.xml ...]
+    gh run download <run> -p 'junit-*' --dir scratch/junit   # junit-<N>-<K>/junit.xml each
+    scripts/shard-weights --run-id <run> scratch/junit       # or bare junit.xml files
 
-Tests that took >= HEAVY seconds are pinned to shards by greedy
-longest-first packing on top of the crc32 load of all the light tests;
-everything else (and any test added later) keeps hashing, so the partition
-stays exact (tests/conftest.py shard_index). One table per shard count scripts/ci-shard-plan can pick. Re-run when a
-shard drifts past ~30 min in check.yml.
+Every argument names either one run's directory (all ``junit*.xml`` under
+it merged) or a junit file (all file arguments together form one run).
+testcase times are summed per test FILE within a run and averaged across
+runs; the shard partition is by file (tests/conftest.py::shard_index), so a
+file's total is what a shard pays — module fixtures included.
 
-``seconds`` records the averaged junit time of every test >= RECORD seconds;
-tests/test_ci_shards.py caps it, so one test can't eat a shard's budget.
+Files are then pinned to shards greedy longest-processing-time-first, one
+table per count in NS (the gate's fixed 10; ``--ns`` overrides for a
+measurement run at another width — GATE_SHARD_COUNTS in
+scripts/lib/last_gated_main_sha.py is deliberately NOT the source: its
+extra counts exist to recognise historical check-runs, not to pin).
+EVERY measured file is pinned; a file with no
+measurement (new, or deselected in the run like the ``nightly`` cluster)
+keeps hashing to crc32, so the partition stays exact. Predicted per-shard
+seconds print to stderr — aim for max within ~5% of the mean; a file fatter
+than the mean is the ceiling and wants splitting, not packing.
+
+``seconds`` is the per-file totals tests/test_ci_shards.py balances and
+caps offline; ``generated_from`` records the source and the UTC timestamp.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import xml.etree.ElementTree as ET
-import zlib
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "tests" / "shard_weights.json"
 NS = (10,)  # scripts/ci-shard-plan's fixed SHARDS
-HEAVY = 1.0
-RECORD = 60.0
 
 
 def nodeid(classname: str, name: str) -> str | None:
@@ -38,48 +48,92 @@ def nodeid(classname: str, name: str) -> str | None:
     return None
 
 
-def pack(times: dict[str, float], n: int) -> tuple[dict[str, int], list[float]]:
-    load = [0.0] * n
-    heavy: list[tuple[float, str]] = []
-    for nid, t in times.items():
-        if t >= HEAVY:
-            heavy.append((t, nid))
+def runs(inputs: list[str]) -> list[list[Path]]:
+    """Group inputs into runs: each directory argument is one run (all
+    ``junit*.xml`` under it); every bare file argument together is one run."""
+    grouped: list[list[Path]] = []
+    loose: list[Path] = []
+    for a in inputs:
+        p = Path(a)
+        if p.is_dir():
+            found = sorted(p.rglob("junit*.xml"))
+            if found:
+                grouped.append(found)
         else:
-            load[zlib.crc32(nid.encode("utf-8")) % n] += t
+            loose.append(p)
+    if loose:
+        grouped.append(loose)
+    return grouped
+
+
+def file_seconds(grouped: list[list[Path]]) -> dict[str, float]:
+    """Per-file seconds: summed over a run's testcases, averaged across the
+    runs that measured the file (a file absent from a run did not run there,
+    it is not a zero)."""
+    totals: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for files in grouped:
+        seen: dict[str, float] = {}
+        for f in files:
+            for tc in ET.parse(f).getroot().iter("testcase"):
+                nid = nodeid(tc.get("classname", ""), tc.get("name", ""))
+                if nid:
+                    path = nid.split("::", 1)[0]
+                    seen[path] = seen.get(path, 0.0) + float(tc.get("time", 0))
+        for path, t in seen.items():
+            totals[path] = totals.get(path, 0.0) + t
+            counts[path] = counts.get(path, 0) + 1
+    return {p: totals[p] / counts[p] for p in totals}
+
+
+def pack(times: dict[str, float], n: int) -> tuple[dict[str, int], list[float]]:
+    """Longest-processing-time-first: each file, heaviest first, to the
+    lightest shard. Every measured file is pinned."""
+    load = [0.0] * n
     pinned: dict[str, int] = {}
-    for t, nid in sorted(heavy, key=lambda x: (-x[0], x[1])):
+    for path, t in sorted(times.items(), key=lambda x: (-x[1], x[0])):
         k = min(range(n), key=lambda i: (load[i], i))
         load[k] += t
-        pinned[nid] = k
+        pinned[path] = k
     return dict(sorted(pinned.items())), load
 
 
 def main(argv: list[str]) -> int:
-    # Several junit files (one per run, or one per shard of a run) are merged;
-    # a test seen in k RUNS is averaged over them, which damps runner-speed noise.
-    per_run: dict[str, list[float]] = {}
-    for path in argv[1:]:
-        seen: dict[str, float] = {}
-        for tc in ET.parse(path).getroot().iter("testcase"):
-            nid = nodeid(tc.get("classname", ""), tc.get("name", ""))
-            if nid:
-                seen[nid] = seen.get(nid, 0.0) + float(tc.get("time", 0))
-        for nid, t in seen.items():
-            per_run.setdefault(nid, []).append(t)
-    times = {nid: sum(v) / len(v) for nid, v in per_run.items()}
+    ap = argparse.ArgumentParser()
+    ap.add_argument("inputs", nargs="+", help="junit.xml files or run directories")
+    ap.add_argument("--run-id", default=None, help="recorded as generated_from.run")
+    ap.add_argument("--out", type=Path, default=OUT, help="weights json path")
+    ap.add_argument(
+        "--ns",
+        default=",".join(str(n) for n in NS),
+        help="comma-separated shard counts (default: GATE_SHARD_COUNTS)",
+    )
+    args = ap.parse_args(argv[1:])
+    times = file_seconds(runs(args.inputs))
+    if not times:
+        print("no testcases resolved to repo files — weights not written", file=sys.stderr)
+        return 1
+    ns = [int(x) for x in args.ns.split(",") if x]
     tables: dict[str, dict[str, int]] = {}
-    for n in NS:
+    for n in ns:
         pinned, load = pack(times, n)
         tables[str(n)] = pinned
+        mean = sum(load) / n
         print(
-            f"estimated shard load N={n} (junit-minutes):",
-            [round(x / 60, 1) for x in load],
+            f"n={n}: predicted shard seconds {[round(x, 1) for x in load]} "
+            f"(mean {mean:.1f}, max/mean {max(load) / mean:.4f})",
+            file=sys.stderr,
         )
-    seconds = {nid: round(t) for nid, t in sorted(times.items()) if t >= RECORD}
-    OUT.write_text(
-        json.dumps({"tables": tables, "seconds": seconds}, indent=0) + "\n",
-        encoding="utf-8",
-    )
+    payload = {
+        "tables": tables,
+        "seconds": {p: round(t, 1) for p, t in sorted(times.items())},
+        "generated_from": {
+            "run": args.run_id or ",".join(args.inputs),
+            "at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        },
+    }
+    args.out.write_text(json.dumps(payload, indent=0) + "\n", encoding="utf-8")
+    print(f"wrote {args.out} ({sum(len(t) for t in tables.values())} files pinned)", file=sys.stderr)
     return 0
 
 
