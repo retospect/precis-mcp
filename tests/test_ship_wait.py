@@ -11,6 +11,7 @@ real network.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -83,20 +84,33 @@ import sys
 from pathlib import Path
 
 state = Path(os.environ["GH_STUB_STATE"])
-if "jobs" in sys.argv:
-    print(state.with_suffix(".jobs").read_text(encoding="utf-8"), end="")
-else:
-    print(state.read_text(encoding="utf-8"), end="")
+path = state.with_suffix(".jobs") if "--jq" in sys.argv else state
+print(path.read_text(encoding="utf-8"), end="")
 """
 
 
-def _gh_stub(tmp_path: Path, status: str, jobs: str = "") -> dict[str, str]:
+def _job(
+    name: str, status: str = "completed", conclusion: str | None = "success"
+) -> dict:
+    return {"name": name, "status": status, "conclusion": conclusion}
+
+
+def _gh_stub(
+    tmp_path: Path,
+    status: str,
+    jobs: str = "",
+    run_jobs: list[dict] | None = None,
+) -> dict[str, str]:
+    """`gh run view` on PATH: `ghstate` holds the run JSON (`status` is
+    "<status> [<conclusion>]"), `ghstate.jobs` the --jq'd failure lines."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     gh = bin_dir / "gh"
     gh.write_text(_GH_STUB, encoding="utf-8")
     gh.chmod(0o755)
-    (tmp_path / "ghstate").write_text(status, encoding="utf-8")
+    head, _, conclusion = status.partition(" ")
+    run = {"status": head, "conclusion": conclusion or None, "jobs": run_jobs or []}
+    (tmp_path / "ghstate").write_text(json.dumps(run), encoding="utf-8")
     (tmp_path / "ghstate.jobs").write_text(jobs, encoding="utf-8")
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
@@ -206,6 +220,125 @@ def test_run_id_cancelled_exits_nonzero(tmp_path: Path) -> None:
     cp = _run(["998877"], env=_gh_stub(tmp_path, "completed cancelled"))
     assert cp.returncode != 0
     assert "CANCELLED" in cp.stdout
+
+
+def test_run_id_green_while_soak_still_runs(tmp_path: Path) -> None:
+    """gr581652: the deciding set's green IS the verdict — a still-running
+    continue-on-error `soak` leg never delays it."""
+    env = _gh_stub(
+        tmp_path,
+        "in_progress",
+        run_jobs=[
+            _job("plan"),
+            _job("lint"),
+            _job("test-linux (3.13, 5)"),
+            _job("soak", "in_progress", None),
+        ],
+    )
+    cp = _run(["998877"], env=env)
+    assert cp.returncode == 0
+    assert "ship-wait: GREEN" in cp.stdout
+
+
+def test_run_id_deciding_job_red_despite_running_soak(tmp_path: Path) -> None:
+    """A red deciding job is the verdict whatever the soak does."""
+    env = _gh_stub(
+        tmp_path,
+        "in_progress",
+        run_jobs=[
+            _job("plan"),
+            _job("lint"),
+            _job("test-linux (3.13, 5)", conclusion="failure"),
+            _job("soak", "in_progress", None),
+        ],
+    )
+    cp = _run(["998877"], env=env)
+    assert cp.returncode == 1
+    assert "first failure: test-linux (3.13, 5): failure" in cp.stdout
+
+
+def test_run_id_red_soak_does_not_hold_the_gate(tmp_path: Path) -> None:
+    """A failed soak leg is recorded, not gated on (me580555): the
+    deciding set's green still answers GREEN."""
+    env = _gh_stub(
+        tmp_path,
+        "in_progress",
+        run_jobs=[
+            _job("plan"),
+            _job("lint"),
+            _job("test-linux (3.13, 1)"),
+            _job("soak", conclusion="failure"),
+        ],
+    )
+    cp = _run(["998877"], env=env)
+    assert cp.returncode == 0
+    assert "ship-wait: GREEN" in cp.stdout
+
+
+def test_run_id_gate_fast_counts_as_deciding(tmp_path: Path) -> None:
+    """gate-s2's `gate-fast` leg is deciding before it exists in check.yml —
+    the name lands with the soak matrix (gr581652)."""
+    env = _gh_stub(
+        tmp_path,
+        "in_progress",
+        run_jobs=[
+            _job("plan"),
+            _job("gate-fast", conclusion="failure"),
+            _job("soak", "in_progress", None),
+        ],
+    )
+    cp = _run(["998877"], env=env)
+    assert cp.returncode == 1
+    assert "first failure: gate-fast: failure" in cp.stdout
+
+
+def test_run_id_unsettled_deciding_job_keeps_polling(tmp_path: Path) -> None:
+    """A deciding job still in flight is not a verdict — the waiter keeps
+    polling until it (or the run) settles."""
+    env = _gh_stub(
+        tmp_path,
+        "in_progress",
+        run_jobs=[
+            _job("plan"),
+            _job("lint", "in_progress", None),
+            _job("soak", "in_progress", None),
+        ],
+    )
+    cp = _run(["998877", "--timeout-min", "0"], env=env)
+    assert cp.returncode == 4
+    assert "TIMEOUT" in cp.stdout
+
+
+def test_once_reports_a_settled_verdict(tmp_path: Path) -> None:
+    """`--once` is one poll of the same deciding-set verdict — the call a
+    bash wait loop (ship's remote gate) makes per tick (gr581652)."""
+    env = _gh_stub(
+        tmp_path,
+        "in_progress",
+        run_jobs=[
+            _job("plan"),
+            _job("lint"),
+            _job("soak", "in_progress", None),
+        ],
+    )
+    cp = _run(["998877", "--once"], env=env)
+    assert cp.returncode == 0
+    assert "ship-wait: GREEN" in cp.stdout
+
+
+def test_once_exits_pending_while_undecided(tmp_path: Path) -> None:
+    env = _gh_stub(
+        tmp_path,
+        "in_progress",
+        run_jobs=[_job("lint", "in_progress", None)],
+    )
+    cp = _run(["998877", "--once"], env=env)
+    assert cp.returncode == 5
+
+
+def test_once_needs_a_run_id(tmp_path: Path) -> None:
+    cp = _run(["some.log", "--once"])
+    assert cp.returncode == 2
 
 
 def test_timeout_with_no_marker(tmp_path: Path) -> None:

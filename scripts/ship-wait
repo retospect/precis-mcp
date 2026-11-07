@@ -8,6 +8,7 @@ in a main loop (gr515152).
 
   scripts/ship-wait <log>      watch a scripts/ship or scripts/release log
   scripts/ship-wait <run-id>   poll `gh run view <id>` for a check.yml run
+  scripts/ship-wait --once <run-id>   one poll: the verdict or exit 5
 
 Log mode reads the whole log each tick and exits on the first terminal
 marker found, in this order: the last `SHIP_STATUS:` token, the last
@@ -20,20 +21,35 @@ now, `gh run view --log-failed` in older logs — both are picked up) when there
 is one. Both the caller's epilogue log and ship's own full transcript
 carry these markers.
 
-Run-id mode polls `gh run view <id> --json status,conclusion`; on a
-completed non-success conclusion it names the first failing job from
-`--json jobs` and prints the `scripts/ci-failed` pointer.
+Run-id mode polls `gh run view <id> --json status,conclusion,jobs` and
+judges the run by its deciding jobs — `plan`, `lint`, `failed-first`,
+the `test-linux*`/`test-docs*` shards and gate-s2's `gate-fast*` (the
+gate programme's verdict set, gr581652): GREEN the moment the deciding
+set settles green even while a non-deciding leg still runs — the
+continue-on-error `soak*` matrix, `soak-verdict`, `test-other`,
+`coverage-db`, `publish` are recorded, never gated on (their outcome is
+`round cut` and ci_watch's input, me580555) — and RED the moment a
+deciding job fails, whatever the soak does. A completed run reports
+CANCELLED on a cancel, GREEN on a settled-green deciding set (a red
+non-deciding job does not hold the gate), else RED — naming the first
+failing job and printing the `scripts/ci-failed` pointer. `--once` asks
+the same question a single time — it is the call a bash wait loop
+(scripts/ship's remote gate) makes per tick so the deciding-set rule
+stays in one place — exiting 5 while the run has no verdict yet
+(transient gh failures read undecided too).
 
 Exit codes: 0 green · 1 red/failed · 3 cancelled · 4 timed out (or the log
-never appeared) · 2 bad usage. Knobs: --interval SEC (default 20 for a
-log, 60 for a run id; env PRECIS_SHIP_WAIT_INTERVAL), --timeout-min MIN
-(default 150, env PRECIS_SHIP_WAIT_TIMEOUT_MIN). A log that never appears
+never appeared) · 5 undecided (--once) · 2 bad usage. Knobs: --interval
+SEC (default 20 for a log, 60 for a run id; env
+PRECIS_SHIP_WAIT_INTERVAL), --timeout-min MIN (default 150, env
+PRECIS_SHIP_WAIT_TIMEOUT_MIN). A log that never appears
 gives up after PRECIS_SHIP_WAIT_APPEAR_S seconds (default 60).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -42,7 +58,7 @@ import time
 from pathlib import Path
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
-GREEN, RED, CANCELLED, TIMEOUT = 0, 1, 3, 4
+GREEN, RED, CANCELLED, TIMEOUT, PENDING = 0, 1, 3, 4, 5
 #: scripts/release failure phrasings — its die() prints no ✖ marker.
 RELEASE_FAIL_PATS = ("CI red on", "CI not green after", "deploy failed")
 
@@ -162,26 +178,64 @@ def _first_failing_job(run_id: str) -> str:
     return "(jobs unavailable)"
 
 
-def _run_verdict(run_id: str) -> tuple[int, str, str] | None:
-    out = _gh(
-        "run",
-        "view",
-        run_id,
-        "--json",
-        "status,conclusion",
-        "--jq",
-        '.status + " " + (.conclusion // "")',
+#: Conclusions a deciding job may settle with while the gate stays green
+#: (scripts/lib/ci_run.py's OK_CONCLUSIONS), and the ones that settle it
+#: red — `cancelled` is neither: it means the run is being torn down, so
+#: the run's own terminal verdict reports it.
+_JOB_OK = ("success", "skipped", "neutral")
+_JOB_RED = ("failure", "timed_out", "action_required", "startup_failure")
+
+
+def _deciding(name: str) -> bool:
+    """A job the gate's verdict is decided by (gr581652): `plan`, `lint`,
+    `failed-first`, the `test-linux`/`test-docs` shards and gate-s2's
+    `gate-fast` leg — the set `last_gated_main_sha`, scripts/round and
+    scripts/release all count. The continue-on-error `soak*` matrix,
+    `soak-verdict`, `test-other`, `coverage-db` and `publish` are
+    recorded, never waited on."""
+    return name in ("plan", "lint", "failed-first") or name.startswith(
+        ("test-linux", "test-docs", "gate-fast")
     )
+
+
+def _run_verdict(run_id: str) -> tuple[int, str, str] | None:
+    out = _gh("run", "view", run_id, "--json", "status,conclusion,jobs")
     if out is None:
         return None  # transient gh failure — keep polling
-    status = out.strip()
-    if not status.startswith("completed"):
+    try:
+        run = json.loads(out)
+    except ValueError:
         return None
-    conclusion = status.partition(" ")[2].strip()
-    if conclusion.startswith("success"):
-        return (GREEN, f"run {run_id} green", "")
+    if not isinstance(run, dict):
+        return None
+    deciding = [
+        j
+        for j in (run.get("jobs") or [])
+        if isinstance(j, dict) and _deciding(str(j.get("name") or ""))
+    ]
+    bad = [
+        j
+        for j in deciding
+        if j.get("status") == "completed" and j.get("conclusion") in _JOB_RED
+    ]
+    if bad:
+        return (
+            RED,
+            f"run {run_id} red",
+            f"{bad[0].get('name')}: {bad[0].get('conclusion')}",
+        )
+    settled_green = bool(deciding) and all(
+        j.get("status") == "completed" and j.get("conclusion") in _JOB_OK
+        for j in deciding
+    )
+    status = str(run.get("status") or "")
+    conclusion = str(run.get("conclusion") or "")
+    if not status.startswith("completed"):
+        return (GREEN, f"run {run_id} green", "") if settled_green else None
     if conclusion.startswith("cancelled"):
         return (CANCELLED, f"run {run_id} cancelled", "cancelled")
+    if settled_green or conclusion.startswith("success"):
+        return (GREEN, f"run {run_id} green", "")
     return (
         RED,
         f"run {run_id} {conclusion or 'failed'}",
@@ -209,9 +263,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("target", help="a ship/release log path, or a check.yml run id")
     ap.add_argument("--interval", type=float, default=None, metavar="SEC")
     ap.add_argument("--timeout-min", type=float, default=None, metavar="MIN")
+    ap.add_argument(
+        "--once",
+        action="store_true",
+        help="one run-id poll: the verdict, or exit 5 while undecided",
+    )
     a = ap.parse_args(argv)
 
     run_id = a.target if re.fullmatch(r"\d+", a.target) else ""
+    if a.once:
+        if not run_id:
+            print("ship-wait: --once needs a run id target", file=sys.stderr)
+            return 2
+        v = _run_verdict(run_id)
+        if v is None:
+            return PENDING
+        rc, detail, fail = v
+        return _report(rc, detail, fail, f"scripts/ci-failed {run_id}")
     interval = a.interval
     if interval is None:
         env = os.environ.get("PRECIS_SHIP_WAIT_INTERVAL", "")
