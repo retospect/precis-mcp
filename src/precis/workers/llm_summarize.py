@@ -68,6 +68,7 @@ from typing import Any
 import psycopg
 
 from precis.errors import BadInput
+from precis.liveness import drain_requested
 from precis.store.protocols import PoolStore
 from precis.utils.llm.openai_tools import HttpTransport as Transport
 from precis.utils.llm.openai_tools import _UrllibTransport
@@ -1650,6 +1651,10 @@ class _Outcome:
     #: signal for "the summarizer is misbehaving", which the per-chunk
     #: WARNING alone does not aggregate anywhere.
     rejected: str | None = None
+    #: True when the chunk was never dispatched because the process started
+    #: draining — the claim is left for the cooldown reaper (the same
+    #: between-phases shape a crash leaves), never recorded as a failure.
+    drained: bool = False
 
 
 def _heartbeat_leases(
@@ -1736,6 +1741,13 @@ def run_llm_summarize_pass(
     # (see MAX_CONCURRENCY_ENV above).
     concurrency = max(1, min(concurrency, _max_concurrency()))
 
+    if drain_requested():
+        # A draining worker takes no new work (gr575071): every dispatch a
+        # claimed batch would make is refused by the router's drain arm
+        # anyway, so claiming is a tight claim→refuse loop that floods
+        # llm_call_log for the whole drain window.
+        return {"claimed": 0, "ok": 0, "failed": 0}
+
     # Phase 1 — claim + prefetch cards and cited-identifier sets in one
     # short transaction, then commit.
     card_cache: dict[int, str] = {}
@@ -1777,6 +1789,20 @@ def run_llm_summarize_pass(
         # of deferring a whole cooldown. Runs in a pool worker thread, so the
         # short backoff never blocks the main-thread lease heartbeat.
         for attempt in range(EMPTY_RETRY_ATTEMPTS + 1):
+            if drain_requested():
+                # The drain flag flipped mid-pass (SIGTERM): no further
+                # dispatches — the router's drain arm would refuse them
+                # anyway (gr575071). A chunk never attempted keeps its lease
+                # for the cooldown reaper (drained, not failed); one that
+                # already missed keeps the transient it recorded.
+                return _Outcome(
+                    claim,
+                    prompt_hash,
+                    None,
+                    None,
+                    empty_exc or busy_exc,
+                    drained=empty_exc is None and busy_exc is None,
+                )
             try:
                 result = client.complete(messages)
                 summary = parse_summary(result.text)
@@ -1870,7 +1896,10 @@ def run_llm_summarize_pass(
     outcomes: list[_Outcome] = []
     if concurrency <= 1:
         for item in prepared:
-            outcomes.append(_complete(item))
+            outcome = _complete(item)
+            outcomes.append(outcome)
+            if outcome.drained:
+                break  # draining: stop walking the batch now
             _heartbeat_leases(store, batch_ids, summarizer=summarizer)
     else:
         with ThreadPoolExecutor(max_workers=concurrency) as ex:
@@ -1935,6 +1964,8 @@ def run_llm_summarize_pass(
     empty = 0
     busy = 0
     for o in outcomes:
+        if o.drained:
+            continue  # never dispatched — the lease stays for the reaper
         if o.error is not None or o.summary is None:
             is_empty = isinstance(o.error, EmptySummaryError)
             is_busy = isinstance(o.error, DispatchError) and o.error.paused

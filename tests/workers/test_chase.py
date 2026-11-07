@@ -1682,3 +1682,31 @@ def test_stub_slug_held_by_foreign_kind_mints_disambiguated(store) -> None:
     minted = store.get_ref(kind="paper", id=ref_id)
     assert minted is not None
     assert minted.slug == "preparation23a"
+
+
+def test_pass_stops_claiming_under_drain(store, monkeypatch) -> None:
+    """gr575071: once ``drain_requested()`` is set the pass claims nothing —
+    every ``chase:verify`` verdict it would route is refused by the router's
+    drain arm anyway, so claiming is the tight claim→refuse loop prod logged
+    per deploy burst. The seeded tracing finding is never even selected."""
+    from precis.liveness import request_drain
+    from precis.workers import chase
+
+    _seed_paper(
+        store,
+        cite_key="drain-target",
+        blocks=["The device was held at 2.4 kV throughout the entire run."],
+        identifiers=[("doi", "10.1/drain-target")],
+    )
+    _seed_finding(store, cite_key="drain-target")
+
+    claimed: list[int] = []
+
+    def _spy(*a: object, **kw: object) -> list[object]:
+        claimed.append(1)
+        return []
+
+    monkeypatch.setattr(chase, "claim_tracing_findings", _spy)
+    request_drain()
+    assert run_finding_chase_pass(store) == {"claimed": 0, "ok": 0, "failed": 0}
+    assert claimed == []  # the claim query never ran

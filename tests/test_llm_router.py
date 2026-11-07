@@ -1863,6 +1863,70 @@ def test_dispatch_acquires_slot_under_chain_rung_model_not_tier_alias(
     assert seen["model"] == "qwen3.5-9b-q4_k_m"
 
 
+def test_drain_refusal_names_the_served_rung_not_the_tier_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr575071: a drain-refused slot must name the served rung —
+    ``openai/gpt-oss-120b``, the id ``resource_slots``/``served_by`` are keyed
+    on — not the pre-chain tier/source alias (``summarizer``). Prod's
+    "worker draining" rows were logged under ``glm-4.7-flash``/
+    ``claude-sonnet-5`` (the alias leaking into the refusal), which read as a
+    per-model outage in router-readiness checks. The decide path already
+    names ``serve_model`` (``_gated_attempt``); the ``_route_inner`` drain
+    branch did not."""
+    from precis.utils.llm import local_serving as ls
+
+    # SMALL chain: local gpt-oss first (its served id ≠ the tier default
+    # "summarizer"), cloud glm second — the shape prod runs.
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda tier: (
+            [
+                {
+                    "placement": "local",
+                    "model": "openai/gpt-oss-120b",
+                    "transport": "local",
+                },
+                {
+                    "placement": "cloud",
+                    "model": "z-ai/glm-4.7-flash",
+                    "transport": "openai_compat",
+                },
+            ]
+            if tier is Tier.SMALL
+            else None
+        ),
+    )
+    monkeypatch.delenv("PRECIS_SUMMARIZE_MODEL", raising=False)
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+
+    # The draining worker's slot refusal (gr573250): paused + draining, no hold.
+    monkeypatch.setattr(
+        ls,
+        "acquire",
+        lambda model: ls.LocalSlot(
+            host="melchior",
+            resource=f"llm:{model}",
+            reserved=False,
+            paused=True,
+            draining=True,
+        ),
+    )
+    # As in the acquire-key test above: a faked serving `acquire` implies a
+    # served host, so keep the serving-aware prune from dropping rung 0.
+    monkeypatch.setattr(ls, "served_locally", lambda model: True)
+
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="classify me"))
+
+    assert out.paused is True
+    # The result + message name the resource the slot was acquired for — the
+    # rung's served id — never the "summarizer" alias resolution produced.
+    assert out.model == "openai/gpt-oss-120b"
+    assert out.error == (
+        "worker draining — no local slot for openai/gpt-oss-120b; backing off"
+    )
+
+
 def test_dispatch_big_tools_routes_to_tools_loop_under_openai_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -969,6 +969,67 @@ def test_run_pass_poison_write_does_not_lose_siblings() -> None:
 
 
 # --------------------------------------------------------------------------
+# drain (gr575071: a draining worker stops claiming + dispatching)
+# --------------------------------------------------------------------------
+
+
+def test_run_pass_stops_claiming_under_drain() -> None:
+    """Once ``drain_requested()`` is set (SIGTERM/SIGINT) the pass must not
+    claim: every dispatch a claimed batch would make is refused by the
+    router's drain arm anyway, so claiming is the tight claim→refuse loop
+    that logged hundreds of "worker draining" rows per deploy burst."""
+    from precis.liveness import request_drain
+
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
+    store = _FakeStore(conn)
+    t = _FakeTransport("BRIEF: g\nDETAIL: d.")
+    client = LlmClient(LlmConfig(), transport=t)
+
+    request_drain()
+    result = run_llm_summarize_pass(store, client=client, batch_size=10)
+
+    assert result == {"claimed": 0, "ok": 0, "failed": 0}
+    assert conn._claim_calls == 0  # the claim query never ran
+    assert t.calls == []  # and no completion was ever attempted
+
+
+def test_run_pass_stops_dispatching_when_drain_flips_mid_pass() -> None:
+    """Drain flipping mid-batch: chunks not yet attempted are never
+    dispatched — their leases stay for the cooldown reaper (no failure is
+    recorded), the same between-phases shape a crash leaves."""
+
+    class _DrainOnFirst:
+        """Answers the first completion, then the drain flag is set."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def post_json(self, *a: Any, **k: Any) -> dict[str, Any]:
+            from precis.liveness import request_drain
+
+            self.calls += 1
+            request_drain()
+            return {
+                "choices": [{"message": {"content": "BRIEF: g\nDETAIL: d."}}],
+                "usage": {"total_tokens": 7},
+            }
+
+    conn = _FakeConn(
+        claim_rows=[_claim_row(chunk_id=1), _claim_row(chunk_id=2)],
+        card_text="Title: x",
+    )
+    store = _FakeStore(conn)
+    t = _DrainOnFirst()
+    client = LlmClient(LlmConfig(), transport=t)
+
+    result = run_llm_summarize_pass(store, client=client, batch_size=10)
+
+    assert result == {"claimed": 2, "ok": 1, "failed": 0, "rejected": 0}
+    assert t.calls == 1  # chunk 2 was never dispatched
+    assert conn.leases == {2: 0}  # its lease waits for the cooldown reaper
+
+
+# --------------------------------------------------------------------------
 # claim filters (real PG — the FakeConn above doesn't parse SQL)
 # --------------------------------------------------------------------------
 

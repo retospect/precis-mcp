@@ -4721,9 +4721,9 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                     text="",
                     cost_usd=None,
                     turns_used=None,
-                    model=model,
+                    model=serve_model,
                     tier=req.tier,
-                    error=f"worker draining — no local slot for {model}; backing off",
+                    error=f"worker draining — no local slot for {serve_model}; backing off",
                     paused=True,
                     reason_class="rate",
                     retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["rate"],
@@ -4844,7 +4844,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                 "llm-failover: local slot for %s is saturated — trying the "
                 "hosted fallback rung instead of failing the call "
                 "(capacity backoff, not a transport error)",
-                model,
+                serve_model,
             )
             # No local slot is in play by construction (that's why we're
             # escaping to the hosted rung), so a local-only alias
@@ -4882,9 +4882,9 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                 text="",
                 cost_usd=None,
                 turns_used=None,
-                model=model,
+                model=serve_model,
                 tier=req.tier,
-                error=f"all local serving slots for {model} are busy — backing off",
+                error=f"all local serving slots for {serve_model} are busy — backing off",
                 paused=True,
                 # Capacity, not a fault: the shortest horizon.
                 reason_class="rate",
@@ -5161,12 +5161,12 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
                 text="",
                 cost_usd=None,
                 turns_used=None,
-                model=model,
+                model=serve_model,
                 tier=req.tier,
                 error=(
-                    f"worker draining — no local slot for {model}; backing off"
+                    f"worker draining — no local slot for {serve_model}; backing off"
                     if slot.draining
-                    else f"all local serving slots for {model} are busy — backing off"
+                    else f"all local serving slots for {serve_model} are busy — backing off"
                 ),
                 paused=True,
                 # Capacity, not a fault: the shortest horizon.

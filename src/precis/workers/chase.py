@@ -43,6 +43,7 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.errors import Conflict
+from precis.liveness import drain_requested
 from precis.store._mappers import _upsert_tag
 from precis.store.revision_context import trust_door
 from precis.taproot.canon import (
@@ -1038,6 +1039,12 @@ def run_finding_chase_pass(
     if taproot_enabled is None:
         taproot_enabled = bool(int(os.environ.get(_TAPROOT_CHASE_ENV, "0") or "0"))
 
+    if drain_requested():
+        # A draining worker takes no new findings (gr575071): the pass's
+        # LLM verdicts route through the same drain-refused slot arm, so
+        # claiming is a tight claim→refuse loop for the whole drain window.
+        return {"claimed": 0, "ok": 0, "failed": 0}
+
     # Stage 1: claim under a short-lived tx.
     with store.pool.connection() as conn:
         findings = claim_tracing_findings(conn, limit=limit)
@@ -1048,6 +1055,12 @@ def run_finding_chase_pass(
 
     result = PassResult(claimed=len(findings))
     for finding in findings:
+        if drain_requested():
+            # Drain flipped mid-pass: the SKIP LOCKED "claim" was released
+            # at commit, so the un-walked findings simply stay ``tracing``
+            # for the next generation — never a dispatch the router's
+            # drain arm would refuse.
+            break
         t0 = time.perf_counter()
         try:
             with store.pool.connection() as conn:
