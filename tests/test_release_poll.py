@@ -1511,6 +1511,286 @@ def test_the_ask_parents_under_the_matching_pass_root_only(
     assert f"plan:{root}" in _tags(store, asks[-1])
 
 
+def _pass_leg_job(
+    store: Store,
+    rn: str,
+    job_type: str,
+    *,
+    status: str = "queued",
+    job_age: int = 120,
+    event_age: int | None = None,
+) -> int:
+    """An open release-pass root for ``rn`` carrying one job of
+    ``job_type`` under a ``plan:<root>`` member — the leg a stuck stage
+    waits on. The ref stamps sit ``job_age`` minutes back so only
+    ``event_age`` — a ``job_event`` chunk's stamp — makes the leg read
+    alive."""
+    root = T.mint_release_pass(store).root_id
+    store.stamp_ref_meta(
+        root, {"release": {"rN": rn, "sha": STUCK_BASE, "range": "aa..cc"}}
+    )
+    member = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title=f"{job_type} leg",
+        meta={"op": job_type},
+        parent_id=root,
+    )
+    store.add_tag(member.id, Tag.open(f"plan:{root}"), set_by="agent")
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title=f"{job_type} td{member.id}",
+        meta={"job_type": job_type},
+        parent_id=int(member.id),
+    )
+    store.add_tag(
+        ref.id, Tag.closed("STATUS", status), set_by="system", replace_prefix=True
+    )
+    age = NOW - timedelta(minutes=job_age)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = %s, updated_at = %s WHERE ref_id = %s",
+            (age, age, ref.id),
+        )
+    if event_age is not None:
+        store.chunks.insert_chunks(
+            int(ref.id),
+            [
+                ChunkInsert(
+                    ord=0,
+                    text="wake_runner: re-queued (wake_when)",
+                    meta={"chunk_kind": "job_event"},
+                )
+            ],
+        )
+        at = NOW - timedelta(minutes=event_age)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE chunks SET created_at = %s WHERE ref_id = %s",
+                (at, int(ref.id)),
+            )
+    return int(ref.id)
+
+
+def test_a_live_leg_job_event_suppresses_the_stage_clock(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td583852/td584153: a ``ci_verdict_poll`` re-queued behind a drain
+    backlog keeps writing ``job_event`` lines — the leg is waiting, not
+    stuck, so a 60-minute ``cut`` files nothing on a 5-minute event."""
+    psettings.set_setting("release.repo", REPO, store=store)
+    calls = _fake_github(monkeypatch, runs={"workflow_runs": []})
+    psettings.set_setting(
+        "release.round", _stuck_row("cut", state_at=_stamp(60)), store=store
+    )
+    _pass_leg_job(store, "r5", "ci_verdict_poll", event_age=5)
+    assert _watch(store) == []
+    assert _stuck_asks(store) == []
+    # A live leg holding the stage under every mark spares the probe —
+    # no GitHub read at all this tick.
+    assert calls == []
+
+
+def test_a_leg_event_older_than_the_deadline_still_files(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The newest leg event is the clock: 45 minutes is past the
+    30-minute ``cut`` mark — the ask files and names the clock used."""
+    psettings.set_setting("release.repo", REPO, store=store)
+    calls = _fake_github(monkeypatch, runs={"workflow_runs": []})
+    psettings.set_setting(
+        "release.round", _stuck_row("cut", state_at=_stamp(60)), store=store
+    )
+    _pass_leg_job(store, "r5", "ci_verdict_poll", event_age=45)
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    assert "release-stuck:r5:cut" in _tags(store, asks[0])
+    body = _ask_body(store, asks[0])
+    assert "15m past the mark" in body
+    assert (
+        f"clock: last leg job event {_stamp(45)} (stage entered {_stamp(60)})" in body
+    )
+    assert calls == [f"{API}/actions/runs"]  # a filing case still probes
+
+
+def test_no_live_leg_job_files_as_today(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A terminal leg job is no leg — the stage clock alone decides."""
+    _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(120), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    _pass_leg_job(store, "r5", "release_deploy", status="succeeded", event_age=5)
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    assert "release-stuck:r5:deploying" in _tags(store, asks[0])
+    body = _ask_body(store, asks[0])
+    assert f"clock: stage entered {_stamp(120)}" in body
+
+
+def test_another_stages_leg_job_does_not_count(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``deploying`` waits on ``release_deploy``: a live
+    ``ci_verdict_poll`` under the pass is not this stage's leg."""
+    _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(120), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    _pass_leg_job(store, "r5", "ci_verdict_poll", event_age=5)
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    assert "release-stuck:r5:deploying" in _tags(store, asks[0])
+
+
+def test_an_unreadable_leg_read_files_no_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A job-activity read that errors mints no ask — one note, the same
+    fail-quiet rule as an unreadable row. Inside the deadline the read
+    never runs (it can only lower the judged elapsed), so a broken read
+    emits no note during a healthy stage."""
+    _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(120), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    root = T.mint_release_pass(store).root_id
+    store.stamp_ref_meta(
+        root, {"release": {"rN": "r5", "sha": STUCK_BASE, "range": "aa..cc"}}
+    )
+
+    def boom(s: Store, root_id: int, stage: str) -> Any:
+        raise OSError("job read gone")
+
+    monkeypatch.setattr(rp, "_leg_job_activity", boom)
+    notes = _watch(store)
+    assert _stuck_asks(store) == []
+    assert any("job activity unreadable" in n for n in notes)
+    # 30m in on a 60m mark — the read is skipped, the broken read silent.
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(30), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    notes = _watch(store)
+    assert notes == []
+    assert _stuck_asks(store) == []
+
+
+def test_a_queued_leg_job_with_stale_ref_stamps_still_files(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """jo584043's case: a QUEUED leg job that never ran writes no
+    ``job_event`` chunks — the fallback is the job ref's own
+    ``created_at``/``updated_at``, fixed stamps. Older than the mark
+    they cannot hold the stage: the elapsed grows and the ask files."""
+    _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(180), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    _pass_leg_job(store, "r5", "release_deploy", job_age=120)
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    assert "release-stuck:r5:deploying" in _tags(store, asks[0])
+    body = _ask_body(store, asks[0])
+    assert "capped:" not in body
+    assert (
+        f"clock: last leg job event {_stamp(120)} (stage entered {_stamp(180)})" in body
+    )
+
+
+def test_activity_extension_is_capped_at_three_marks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A leg re-queued forever without progress must still file: past
+    3x the stage's mark the stage clock judges and the ask says
+    ``capped: leg active but stage exceeded 3× its mark``."""
+    psettings.set_setting("release.repo", REPO, store=store)
+    calls = _fake_github(monkeypatch, runs={"workflow_runs": []})
+    # cut's mark is 30m; 80m in is inside the 90m cap — a live leg
+    # still suppresses (and spends no runs probe).
+    psettings.set_setting(
+        "release.round", _stuck_row("cut", state_at=_stamp(80)), store=store
+    )
+    _pass_leg_job(store, "r5", "ci_verdict_poll", event_age=5)
+    assert _watch(store) == []
+    assert _stuck_asks(store) == []
+    assert calls == []
+    # 100m in — past the cap — the same fresh leg can no longer hold it.
+    psettings.set_setting(
+        "release.round", _stuck_row("cut", state_at=_stamp(100)), store=store
+    )
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    assert "release-stuck:r5:cut" in _tags(store, asks[0])
+    body = _ask_body(store, asks[0])
+    assert "capped: leg active but stage exceeded 3× its mark" in body
+    assert "clock: stage entered" in body
+    assert calls == [f"{API}/actions/runs"]
+
+
+def test_the_cap_uses_the_stages_own_mark(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 2h-mark stage caps at 6h: a live leg at 5h59 still holds it,
+    at 6h1 the ask files with the ``capped:`` line."""
+    _fake_github(monkeypatch)
+    psettings.set_setting(rp.STUCK_SETTING, json.dumps({"deploying": 120}), store=store)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(359), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    _pass_leg_job(store, "r5", "release_deploy", event_age=5)
+    assert _watch(store) == []
+    assert _stuck_asks(store) == []
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(361), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    _watch(store)
+    asks = _stuck_asks(store)
+    assert len(asks) == 1
+    assert "release-stuck:r5:deploying" in _tags(store, asks[0])
+    body = _ask_body(store, asks[0])
+    assert "capped: leg active but stage exceeded 3× its mark" in body
+
+
+def test_a_deploying_leg_waiting_files_nothing(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live ``release_deploy`` whose job ref moved minutes ago counts
+    as activity even with no event chunk. A claim does NOT stamp
+    ``refs.updated_at`` — claim/lease/set_meta are raw meta UPDATEs —
+    so the fixture stamps the ref's ``created_at``/``updated_at`` by
+    hand to model ref-update activity."""
+    _fake_github(monkeypatch)
+    psettings.set_setting(
+        "release.round",
+        _stuck_row("deploying", state_at=_stamp(120), deploy={"sha": STUCK_BASE}),
+        store=store,
+    )
+    _pass_leg_job(store, "r5", "release_deploy", job_age=10)
+    assert _watch(store) == []
+    assert _stuck_asks(store) == []
+
+
 # ── the engine-review gate (td574937 E1) ───────────────────────────
 #
 # A release never cuts over an engine land its reviewer has not read:

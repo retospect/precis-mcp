@@ -15,11 +15,15 @@ the unauthenticated api.github.com budget (60/h) is shared with
 ``pr_poll`` and ``ci_verdict_poll``:
 
 0. Stuck watchdog (td574370): the ``release.round`` row's ``state_at``
-   is judged against the ``release.stage_deadlines`` setting; a round
-   past a stage's minutes gets one ``ask-user`` ruling todo, once per
-   (round, stage), offering only the hand verbs — nothing automatic
-   acts. Runs first, at any hour and inside its own try/except, so a
-   stuck release is reported whether or not a new one could mint.
+   is judged against the ``release.stage_deadlines`` setting — the
+   clock is the later of the stage stamp and the newest ``job_event``
+   of the stage's live leg job under the pass, so a parked
+   ``ci_verdict_poll`` still being re-queued reads as waiting, not
+   stuck (td583852, td584153); a round past a stage's minutes gets one
+   ``ask-user`` ruling todo, once per (round, stage), offering only the
+   hand verbs — nothing automatic acts. Runs first, at any hour and
+   inside its own try/except, so a stuck release is reported whether or
+   not a new one could mint.
 1. Clock: the ``release.no_release_windows`` setting names UTC
    ``HH:MM-HH:MM`` pairs no release may start inside (the default is the
    nightly backup window); an unparsable setting is itself a blocker —
@@ -106,10 +110,40 @@ _STUCK_LOCK_KEY = 0x72656C5F7374756B
 #: The dedupe tag on the stuck ask — one per ``(round, stage)``, ever.
 _STUCK_TAG_PREFIX = "release-stuck"
 
+#: Leg activity may hold a stage's clock at most this many marks: a leg
+#: re-queued forever without progressing still files at 3x the stage's
+#: deadline (:func:`watch_stuck`; td584381 S1c ruling).
+_ACTIVITY_CAP_MARKS = 3
+
 #: check.yml run statuses that mean CI is still moving on a head.
 _LIVE_RUN_STATUSES = frozenset(
     {"queued", "in_progress", "waiting", "requested", "pending"}
 )
+
+#: The job types whose live jobs are the leg a stage waits on —
+#: ``cut``, ``gating`` and ``fixing`` are all the row's ``cut`` state
+#: (the cut, the verdict poll and, while ``fixing``, the loop's
+#: digest/fix/land/recut legs); ``deploying`` waits on
+#: ``release_deploy``, ``confirm`` on ``release_confirm``. A live job
+#: of the stage's set whose ``job_event`` moved recently means the leg
+#: is working — a ``wake_runner: re-queued`` line on a parked poll
+#: counts (td583852, td584153: re-queued behind a derived_drain
+#: backlog, gr584136).
+_STAGE_LEG_JOBS: dict[str, frozenset[str]] = {
+    "cut": frozenset({"release_cut", "ci_verdict_poll"}),
+    "gating": frozenset({"release_cut", "ci_verdict_poll"}),
+    "fixing": frozenset(
+        {
+            "ci_red_digest",
+            "run_slice",
+            "land_slice",
+            "release_cut",
+            "ci_verdict_poll",
+        }
+    ),
+    "deploying": frozenset({"release_deploy"}),
+    "confirm": frozenset({"release_confirm"}),
+}
 
 #: The hand verbs a stuck stage's ask names — all of them a human's call.
 _STAGE_VERBS = {
@@ -617,6 +651,51 @@ def _stuck_tag_exists(store: Any, n: int, stage: str) -> bool:
     return bool(row)
 
 
+def _leg_job_activity(store: Any, root_id: int, stage: str) -> datetime | None:
+    """The newest activity stamp of the stage's live leg jobs under the
+    pass root — the newest ``job_event`` chunk's ``created_at``, else
+    the job ref's ``updated_at``/``created_at`` — or ``None`` when no
+    job of a type in :data:`_STAGE_LEG_JOBS` is non-terminal under a
+    ``plan:<root>`` member. A parked ``ci_verdict_poll`` the wake runner
+    keeps re-queueing counts: the leg is waiting, not wedged. May
+    raise: the caller's fail-quiet rule applies."""
+    from precis.workers._mint import JOB_TERMINAL_STATUSES
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT j.ref_id, j.created_at, j.updated_at,
+                   (SELECT MAX(c.created_at) FROM chunks c
+                     WHERE c.ref_id = j.ref_id AND c.retired_at IS NULL
+                       AND c.chunk_kind = 'job_event') AS last_event
+              FROM refs j
+              JOIN refs m ON m.ref_id = j.parent_id
+              JOIN ref_tags rt ON rt.ref_id = m.ref_id
+              JOIN tags t USING (tag_id)
+             WHERE j.kind = 'job' AND j.retired_at IS NULL
+               AND j.meta ->> 'job_type' = ANY(%s)
+               AND m.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = %s
+            """,
+            (sorted(_STAGE_LEG_JOBS[stage]), f"plan:{root_id}"),
+        ).fetchall()
+    newest: datetime | None = None
+    for jid, created_at, updated_at, last_event in rows:
+        status = next(
+            (str(t.value) for t in store.tags_for(int(jid)) if t.prefix == "STATUS"),
+            "open",
+        )
+        if status in JOB_TERMINAL_STATUSES:
+            continue
+        for stamp in (last_event, updated_at, created_at):
+            if stamp is None:
+                continue
+            ts = stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=UTC)
+            if newest is None or ts > newest:
+                newest = ts
+    return newest
+
+
 def _file_stuck_ask(
     store: Any,
     n: int,
@@ -628,13 +707,19 @@ def _file_stuck_ask(
     *,
     dry_run: bool,
     run_head12: str | None = None,
+    clock_txt: str,
+    capped: bool = False,
 ) -> str:
     """The one write the watchdog makes: an ``ask-user`` ruling todo,
     deduped by its ``release-stuck:r<N>:<stage>`` tag over todos in any
     status inside one locked transaction, so a re-tick, a closed ask or
     two runners never file a second. ``run_head12`` is the head the
     newest branch run reported — it may differ from the record's base
-    after a hand ``ship --release`` fix, and the ask says so."""
+    after a hand ``ship --release`` fix, and the ask says so.
+    ``clock_txt`` is the one-line ``clock:`` note naming which clock
+    judged the stage (``stage entered`` vs ``last leg job event``);
+    ``capped`` adds the ``capped:`` line — the ask filed only because
+    the live leg's hold ran past ``_ACTIVITY_CAP_MARKS`` marks."""
     from precis.workers.job_types import run_slice
 
     tag = f"{_STUCK_TAG_PREFIX}:r{n}:{stage}"
@@ -662,6 +747,7 @@ def _file_stuck_ask(
         f"release r{n} looks stuck in stage {stage} — act on it, or is this "
         "a false alarm?"
     )
+    capped_txt = "capped: leg active but stage exceeded 3× its mark\n" if capped else ""
     body = (
         f"Release r{n} has been in stage {stage} for more than {deadline} "
         f"minutes — {over}m past the mark — and nothing will act on that by "
@@ -669,7 +755,9 @@ def _file_stuck_ask(
         f"watchdog makes; answering it executes nothing — 'acknowledged' "
         f"and 'false alarm' both just close it.\n\n"
         f"Hand verbs that apply (a human's call, in the coordinator's "
-        f"checkout): {verbs}."
+        f"checkout): {verbs}.\n\n"
+        f"{capped_txt}"
+        f"clock: {clock_txt}"
     )
     with store.atomic() as conn:
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (_STUCK_LOCK_KEY,))
@@ -720,17 +808,30 @@ def watch_stuck(store: Any, *, now: datetime, dry_run: bool) -> list[str]:
     """Judge the ``release.round`` row against its stage deadlines and
     file at most one ask (module contract above); returns note lines.
 
-    The record's ``state_at`` is the clock; a record without one (every
-    round cut before td574370) is never judged, as is a future or
-    unparsable clock. From the row: ``deploying`` judges stage
-    ``deploying``; ``deployed`` without ``deploy.confirmed_at`` judges
+    The clock is the later of the stage stamp — the record's
+    ``state_at`` (``fixing`` takes the red verdict's ``at``), a record
+    without one (every round cut before td574370) never judged — and
+    the newest ``job_event`` of the stage's live leg job under the pass
+    (:func:`_leg_job_activity`): a leg that produced an event minutes
+    ago is waiting, not stuck — but only up to
+    ``_ACTIVITY_CAP_MARKS`` times the stage's deadline; past the cap
+    the stage clock judges and a filing ask says ``capped:``. The
+    activity read runs only past the deadline (it can only lower the
+    judged elapsed). An erroring activity read files no ask
+    this tick — one note, the same fail-quiet rule as the row read. A
+    future or unparsable clock is never judged. From the row:
+    ``deploying`` judges stage ``deploying``; ``deployed`` without
+    ``deploy.confirmed_at`` judges
     ``confirm``; ``cut`` derives its ruled stage from
     ``release.ci_verdicts`` — a green verdict on the head is the
     approval wait (no stage), a red is ``fixing`` from that verdict's
     ``at`` (a red on the round's older head counts until a verdict for
     the current head exists), and no verdict is ``cut`` past its
     deadline unless one GitHub read shows a run in flight, in which
-    case it is ``gating`` from ``state_at``. Terminal states, an absent
+    case it is ``gating`` from ``state_at`` — and that read is spent
+    only when the judged clock could file: ``cut`` and ``gating``
+    share the leg set, so a live leg holding the stage under every
+    mark spares the probe. Terminal states, an absent
     or unreadable record, and every error path file no ask.
     """
     notes: list[str] = []
@@ -765,6 +866,8 @@ def watch_stuck(store: Any, *, now: datetime, dry_run: bool) -> list[str]:
     clock: Any = state_at
     head = ""
     stage_run_head: str | None = None
+    leg_known = False
+    activity: datetime | None = None
     if state == "deploying":
         stage = "deploying"
     elif state == "deployed":
@@ -808,27 +911,57 @@ def watch_stuck(store: Any, *, now: datetime, dry_run: bool) -> list[str]:
                         f"{n} already exists — no runs probe"
                     )
                 else:
-                    repo = pr_class.resolve_repo(store, None)
-                    branch = str(rec.get("branch") or f"release/r{n}")
-                    if repo is None:
-                        notes.append("stuck watch: no repo for the runs probe")
-                    else:
+                    # Spend the one GitHub read only when the judged
+                    # clock could file: cut and gating share
+                    # _STAGE_LEG_JOBS' set, so this read decides for
+                    # both — a live leg holding the stage under the
+                    # smallest mark spares the probe (the same cap
+                    # rule applies, against probe_at).
+                    judged = elapsed
+                    if root_id is not None:
                         try:
-                            run = _branch_run(repo, branch)
-                        except pr_class.GitHubUnreadable as exc:
-                            notes.append(f"stuck watch: GitHub unreadable ({exc})")
+                            activity = _leg_job_activity(store, root_id, "cut")
+                        except Exception as exc:
+                            log.warning(
+                                "release_poll: stuck watch leg read failed",
+                                exc_info=True,
+                            )
+                            notes.append(
+                                "watch_stuck: job activity unreadable "
+                                f"({type(exc).__name__})"
+                            )
+                            return notes
+                        leg_known = True
+                        if activity is not None:
+                            quiet = max((now - activity).total_seconds() / 60, 0.0)
+                            if (
+                                quiet < judged
+                                and elapsed <= _ACTIVITY_CAP_MARKS * probe_at
+                            ):
+                                judged = quiet
+                    if judged > probe_at:
+                        repo = pr_class.resolve_repo(store, None)
+                        branch = str(rec.get("branch") or f"release/r{n}")
+                        if repo is None:
+                            notes.append("stuck watch: no repo for the runs probe")
                         else:
-                            run_head = (
-                                str((run or {}).get("head_sha") or "")[:12].lower()
-                                or None
-                            )
-                            stage = (
-                                "gating"
-                                if run is not None
-                                and str(run.get("status") or "") in _LIVE_RUN_STATUSES
-                                else "cut"
-                            )
-                            stage_run_head = run_head
+                            try:
+                                run = _branch_run(repo, branch)
+                            except pr_class.GitHubUnreadable as exc:
+                                notes.append(f"stuck watch: GitHub unreadable ({exc})")
+                            else:
+                                run_head = (
+                                    str((run or {}).get("head_sha") or "")[:12].lower()
+                                    or None
+                                )
+                                stage = (
+                                    "gating"
+                                    if run is not None
+                                    and str(run.get("status") or "")
+                                    in _LIVE_RUN_STATUSES
+                                    else "cut"
+                                )
+                                stage_run_head = run_head
     # terminal states, green verdicts and absent rows: no stage.
     if stage is None or stage not in deadlines:
         return notes
@@ -836,6 +969,41 @@ def watch_stuck(store: Any, *, now: datetime, dry_run: bool) -> list[str]:
     elapsed = _minutes_since(now, clock)
     if elapsed is None:
         return notes  # a clock in the future or unparsable is not judged
+    clock_txt = f"stage entered {clock}"
+    capped = False
+    if root_id is not None and stage in _STAGE_LEG_JOBS:
+        # The read is skipped inside the deadline — activity can only
+        # lower the judged elapsed, and a broken read must not note
+        # during a healthy stage. A read the probe check already did
+        # (cut/gating share the leg set) is not repeated.
+        if not leg_known and elapsed > deadline:
+            try:
+                activity = _leg_job_activity(store, root_id, stage)
+            except Exception as exc:
+                # The row-read rule: an unreadable leg mints no ask — one
+                # note, and this tick goes no further.
+                log.warning("release_poll: stuck watch leg read failed", exc_info=True)
+                notes.append(
+                    f"watch_stuck: job activity unreadable ({type(exc).__name__})"
+                )
+                return notes
+        if activity is not None:
+            quiet = max((now - activity).total_seconds() / 60, 0.0)
+            if quiet < elapsed:
+                if elapsed <= _ACTIVITY_CAP_MARKS * deadline:
+                    elapsed = quiet
+                    clock_txt = (
+                        f"last leg job event {activity:%Y-%m-%dT%H:%M:%SZ} "
+                        f"(stage entered {clock})"
+                    )
+                elif quiet <= deadline:
+                    # Past the cap the stage clock judges — the ask
+                    # files only because of it.
+                    capped = True
+                    clock_txt = (
+                        f"stage entered {clock} "
+                        f"(last leg job event {activity:%Y-%m-%dT%H:%M:%SZ})"
+                    )
     over = elapsed - deadline
     if over <= 0:
         return notes
@@ -852,6 +1020,8 @@ def watch_stuck(store: Any, *, now: datetime, dry_run: bool) -> list[str]:
             root_id,
             dry_run=dry_run,
             run_head12=stage_run_head,
+            clock_txt=clock_txt,
+            capped=capped,
         ),
     ]
 
