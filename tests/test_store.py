@@ -118,7 +118,9 @@ def test_update_ref_title_and_meta(store: Store) -> None:
     ref = store.insert_ref(kind="memory", slug=None, title="v1", meta={"a": 1})
     updated = store.update_ref(ref.id, title="v2", meta_patch={"b": 2})
     assert updated.title == "v2"
-    assert updated.meta == {"a": 1, "b": 2}
+    meta = dict(updated.meta)
+    meta.pop("filed_by", None)  # the server-side origin stamp is not under test
+    assert meta == {"a": 1, "b": 2}
 
 
 def test_update_ref_missing_raises(store: Store) -> None:

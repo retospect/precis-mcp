@@ -367,6 +367,9 @@ _VERDICTS: dict[str, dict[str, str]] = {
         # (namespace, value), its tag_id staying a local FK
         "ref_id": "carried",
         "tag_id": "gap",
+        # G1 write principal: a restore writes NULL (unknown, never trusted)
+        # rather than assert a foreign database's principal
+        "principal": "gap",
         **{c: "carried" for c in ("set_by", "created_at", "expires_at")},
     },
     "paper_authors": {c: "carried" for c in paper_dump.AUTHOR_COLUMNS},
@@ -473,6 +476,7 @@ def test_every_declared_gap_is_named_in_not_carried() -> None:
         ("chunks", "keywords"): "keywords",
         ("chunks", "keywords_meta"): "keywords_meta",
         ("ref_tags", "tag_id"): "tag_id",
+        ("ref_tags", "principal"): "ref_tags.principal",
     }
     for table, verdicts in _VERDICTS.items():
         for col, verdict in verdicts.items():

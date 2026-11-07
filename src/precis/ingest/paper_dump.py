@@ -37,6 +37,9 @@ in the rendered header — a stated partial copy beats a silent one):
   back ``NULL`` on restore and the workers refill them, as after ingest.
 * ``ref_tags.tag_id`` — a database-local FK; the dump carries the tag's
   ``(namespace, value)``, which is the identity a restore re-resolves.
+* ``ref_tags.principal`` — the server-set write principal (G1, migration
+  0287); a restore writes NULL ("unknown, never trusted") rather than
+  asserting a foreign database's principal.
 
 Read-only: no store writes, no events, no migration.
 """
@@ -88,6 +91,8 @@ NOT_CARRIED: tuple[str, ...] = (
     "restored chunks carry embedding NULL and the workers refill them",
     "ref_tags.tag_id — a database-local FK; a tag carries its "
     "(namespace, value) instead, which a restore re-resolves",
+    "ref_tags.principal — the server-set write principal (G1); a restore "
+    "writes NULL (unknown, never trusted), not a foreign database's principal",
 )
 
 #: Columns each table's dump rows carry, in SELECT order. The verdict
