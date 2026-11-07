@@ -2979,7 +2979,7 @@ def test_pathway_diagram_bep_estimated_hump_is_dashed_with_band(
     """gr559345: no measured barrier but a usable BEP fit on the joined
     ``results.edges`` record — the hump still draws through ``humpPoints``
     (not the bare 2-point "Ea n/a" line), stays dashed, carries a
-    translucent +/-rmse band, and labels ``Ea≈<value> (BEP)``."""
+    translucent +/-band_eV band, and labels ``Ea≈<value> (BEP)``."""
     graph = {
         "nodes": [{"id": "A", "rel_energy": 0.0}, {"id": "B", "rel_energy": 0.1}],
         "links": [
@@ -2998,7 +2998,10 @@ def test_pathway_diagram_bep_estimated_hump_is_dashed_with_band(
             "graph": graph,
             "results": {
                 "edges": [
-                    {"name": "A->B", "bep": {"alpha": 0.8, "beta": 0.05, "rmse": 0.03}}
+                    {
+                        "name": "A->B",
+                        "bep": {"alpha": 0.8, "beta": 0.05, "band_eV": 0.03},
+                    }
                 ]
             },
         },
@@ -3121,7 +3124,10 @@ def test_pathway_hump_layers_hide_only_their_own_curve_and_band(
             "results": {
                 "edges": [
                     {"name": "A->B", "barrier": {"mean": 0.5, "std": 0.04}},
-                    {"name": "B->C", "bep": {"alpha": 0.8, "beta": 0.05, "rmse": 0.03}},
+                    {
+                        "name": "B->C",
+                        "bep": {"alpha": 0.8, "beta": 0.05, "band_eV": 0.03},
+                    },
                 ]
             },
         },
@@ -3358,7 +3364,13 @@ def test_pathway_graph_payload_joins_bep_and_barrier_source_by_edge_name() -> No
         {
             "name": "A->B",
             "barrier": {"mean": 0.42},
-            "bep": {"alpha": 0.9, "beta": 0.1, "rmse": 0.05},
+            "bep": {
+                "alpha": 0.9,
+                "beta": 0.1,
+                "n_fit": 4,
+                "residual_eV": 0.02,
+                "band_eV": 0.05,
+            },
         },
         {"name": "B->C", "bep": {"alpha": 0.9, "beta": 0.1}},
         {"name": "C->D", "bep": {"alpha": float("nan"), "beta": 0.1}},
@@ -3369,12 +3381,13 @@ def test_pathway_graph_payload_joins_bep_and_barrier_source_by_edge_name() -> No
 
     # a finite measured barrier wins even though a bep fit is also on
     # record — "neb" carries the bep dict along anyway (the client only
-    # draws through it when barrier is itself null)
+    # draws through it when barrier is itself null). The band is the
+    # engine's band_eV half-width, not the fit residual.
     assert neb["barrier_source"] == "neb"
-    assert neb["bep"] == {"alpha": 0.9, "beta": 0.1, "rmse": 0.05}
+    assert neb["bep"] == {"alpha": 0.9, "beta": 0.1, "band_eV": 0.05}
 
-    # no measured barrier, a usable fit, no rmse recorded — rmse omitted
-    # rather than fabricated
+    # no measured barrier, a usable fit, no band_eV recorded — the band
+    # is omitted rather than fabricated
     assert bep["barrier_source"] == "bep"
     assert bep["bep"] == {"alpha": 0.9, "beta": 0.1}
 
@@ -3397,6 +3410,53 @@ def test_pathway_graph_payload_barrier_source_none_off_stored_graph() -> None:
     assert payload is not None
     (link,) = payload["links"]
     assert link["barrier_source"] == "none" and link["bep"] is None
+
+
+def test_pathway_graph_payload_reads_legacy_rmse_as_band() -> None:
+    """gr570527: the engine writes ``band_eV``/``residual_eV``, never
+    ``rmse`` — but a precis-era stored record may still carry ``rmse``,
+    and it feeds the band both the diagram and the step kinetics read."""
+    from precis_web.routes.refs import _pathway_graph_payload
+
+    graph = {
+        "nodes": [{"id": "A"}, {"id": "B"}],
+        "links": [{"source": "A", "target": "B", "kind": "reaction", "delta_e": 0.2}],
+    }
+    edges = [{"name": "A->B", "bep": {"alpha": 0.9, "beta": 0.1, "rmse": 0.05}}]
+    payload = _pathway_graph_payload(graph, edges=edges)
+    assert payload is not None
+    (link,) = payload["links"]
+    assert link["barrier_source"] == "bep"
+    assert link["bep"] == {"alpha": 0.9, "beta": 0.1, "band_eV": 0.05}
+    assert link["step_kinetics"]["band_eV"] == 0.05
+
+
+def test_pathway_step_kinetics_band_comes_from_engine_band_ev() -> None:
+    """gr570527: ``step_kinetics.band_eV`` is the engine's ``band_eV``
+    (the prediction-band half-width), not ``residual_eV`` (the fit RMSE)."""
+    from precis_web.routes.refs import _pathway_graph_payload
+
+    graph = {
+        "nodes": [{"id": "A"}, {"id": "B"}],
+        "links": [{"source": "A", "target": "B", "kind": "reaction", "delta_e": 0.2}],
+    }
+    edges = [
+        {
+            "name": "A->B",
+            "bep": {
+                "alpha": 0.9,
+                "beta": 0.1,
+                "n_fit": 4,
+                "residual_eV": 0.02,
+                "band_eV": 0.05,
+            },
+        }
+    ]
+    payload = _pathway_graph_payload(graph, edges=edges)
+    assert payload is not None
+    (link,) = payload["links"]
+    assert link["step_kinetics"]["source"] == "bep"
+    assert link["step_kinetics"]["band_eV"] == 0.05
 
 
 def _typed_link(

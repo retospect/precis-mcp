@@ -27,8 +27,9 @@ The input is a stored pathway's ``meta.results`` — the engine's
 * ``edges[name]`` carries the per-edge kinetics the slice-7 reset ladder
   reads (``reset_contour``): ``barrier`` — a measured-NEB ``Estimate``
   (``mean`` is the rung's ``barrier_ea``) — and ``bep =
-  {alpha, beta[, n_fit, rmse]}`` — the catpath BEP export fitted on the
-  run's sparse NEBs (the rung's ``bep``). Missing or malformed blocks
+  {alpha, beta[, n_fit, residual_eV, band_eV]}`` — the catpath
+  BEP export fitted on the run's sparse NEBs (the rung's ``bep``).
+  Missing or malformed blocks
   attach nothing; an edge with neither stays on the overdrive proxy.
 
 :class:`StaircaseRoutes` is what B3's frontier objectives and the

@@ -67,7 +67,13 @@ def _results(*, her: bool = True) -> dict[str, Any]:
                 "reactant": "NO",
                 "product": "N+OH",
                 "delta_e": {"mean": 0.2, "std": 0.08, "n": 1},
-                "bep": {"alpha": 0.55, "beta": 0.6, "n_fit": 3, "rmse": 0.04},
+                "bep": {
+                    "alpha": 0.55,
+                    "beta": 0.6,
+                    "n_fit": 3,
+                    "residual_eV": 0.02,
+                    "band_eV": 0.04,
+                },
                 "barrier": {"mean": 0.9, "std": 0.1, "n": 3},
             },
             {

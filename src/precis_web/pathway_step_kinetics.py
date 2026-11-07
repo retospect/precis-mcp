@@ -225,12 +225,17 @@ def attach_step_kinetics(links: list[dict[str, Any]], results: dict[str, Any]) -
         note = str(row.get("note") or "")
         if "BEP estimate" in note:
             source = "bep"
+        # gr570527: the engine's BEP record carries band_eV (the
+        # prediction-band half-width), never rmse; rmse stays a legacy
+        # fallback for precis-era stored links.
+        bep_fit = _mapping(link.get("bep"))
+        band = _number(bep_fit.get("band_eV"))
+        if band is None:
+            band = _number(bep_fit.get("rmse"))
         link["step_kinetics"] = {
             "name": name,
             "source": source,
-            "band_eV": _number(_mapping(link.get("bep")).get("rmse"))
-            if source == "bep"
-            else None,
+            "band_eV": band if source == "bep" else None,
             "quantities": quantities,
             "drc_note": drc_note,
             "product": product,

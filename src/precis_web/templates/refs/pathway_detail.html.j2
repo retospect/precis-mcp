@@ -1274,17 +1274,17 @@
       // than folded into `barrier`, so "measured" vs "estimated" stays a
       // clean split on `barrier == null`.
       const bep = s.react ? s.react.bep : null;
-      let bepEa = null, bepRmse = null;
+      let bepEa = null, bepBand = null;
       if (barrier == null && bep && Number.isFinite(bep.alpha) && Number.isFinite(bep.beta)
           && s.react && Number.isFinite(s.react.delta_e)) {
         bepEa = Math.max(bep.alpha * s.react.delta_e + bep.beta, 0);
-        bepRmse = Number.isFinite(bep.rmse) ? bep.rmse : null;
+        bepBand = Number.isFinite(bep.band_eV) ? bep.band_eV : null;
       }
       const effBarrier = barrier != null ? barrier : bepEa;
       let peak = effBarrier == null ? null : (shE != null ? shE : src.rel_energy) + effBarrier;
       if (peak != null && shE != null) { peak = Math.max(peak, src.rel_energy, tgt.rel_energy); }
       return {
-        src, tgt, shE, barrier, bepEa, bepRmse, peak,
+        src, tgt, shE, barrier, bepEa, bepBand, peak,
         bsd: s.react && barrier != null ? (s.react.barrier_std || 0) : 0,
       };
     }
@@ -1451,7 +1451,7 @@
       const xm = (x0 + x1) / 2;
       // Three draw states (gr559345): a measured barrier is a solid hump;
       // a BEP-estimated one (no measured barrier, but a usable bep fit) is
-      // a dashed hump through `bepEa`, banded at +/-rmse when recorded;
+      // a dashed hump through `bepEa`, banded at +/-band_eV when recorded;
       // neither is a bare dashed 2-point line with no inferred TS at all.
       const unknown = geo.peak == null;
       const isBep = !unknown && geo.barrier == null;
@@ -1477,11 +1477,11 @@
       parts.push(`<polyline class="pw-seg"${pa} data-from="${esc(s.src)}" data-to="${esc(s.tgt)}" data-reaction-from="${esc(s.shoulder ?? s.src)}" points="${curve}" fill="none" stroke="${color}" stroke-width="2"${dash} style="cursor:pointer"><title>${esc(`step ${s.src} \u2192 ${s.tgt}${eaTitle}, source=${barrierSource}\n${PWStepKinetics.text(s.react || s.supply)}\nclick to isolate its path`)}</title></polyline>`);
       const hasBarrierLabel = unknown || isBep || geo.barrier > 1e-3;
       if (showHump && hasBarrierLabel) {
-        if (isBep && geo.bepRmse != null && geo.bepRmse > 1e-6) {
+        if (isBep && geo.bepBand != null && geo.bepBand > 1e-6) {
           // translucent band — same perpendicular-error-bar shape as the
           // measured bsd one below, dimmed to mark it as a fit spread
           // rather than a measured std.
-          parts.push(`<line${pa} x1="${xm}" y1="${py(peakY - geo.bepRmse)}" x2="${xm}" y2="${py(peakY + geo.bepRmse)}" stroke="${color}" stroke-width="1" opacity="0.4"/>`);
+          parts.push(`<line${pa} x1="${xm}" y1="${py(peakY - geo.bepBand)}" x2="${xm}" y2="${py(peakY + geo.bepBand)}" stroke="${color}" stroke-width="1" opacity="0.4"/>`);
         } else if (bsd > 1e-6) {
           parts.push(`<line${pa} x1="${xm}" y1="${py(peakY - bsd)}" x2="${xm}" y2="${py(peakY + bsd)}" stroke="${color}" stroke-width="1"/>`);
         }

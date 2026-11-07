@@ -1159,16 +1159,31 @@ def _pathway_edges_by_name(edges: Any) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _pathway_finite(raw: Any) -> float | None:
+    if (
+        isinstance(raw, (int, float))
+        and not isinstance(raw, bool)
+        and math.isfinite(raw)
+    ):
+        return float(raw)
+    return None
+
+
 def _pathway_link_bep_source(edge_record: dict[str, Any] | None) -> dict[str, Any]:
     """gr559345's barrier-provenance tag for one link: ``"neb"`` when
     ``results.edges[name].barrier.mean`` is a finite measured value,
     ``"bep"`` when instead a BEP fit (finite ``alpha``/``beta``) is on
     record, else ``"none"`` — the trust distinction the explorer's hover
     and hump render key off (no separate ``trust`` field; this one already
-    carries it). ``bep`` (``{alpha, beta, rmse}``, ``rmse`` optional) rides
-    along whenever the fit is present, pulled straight off the record
-    rather than ``precis_pathway.staircase_routes._kinetics`` — that trims
-    ``rmse`` for a different subsystem's Rung-shaped kinetics inputs.
+    carries it). ``bep`` (``{alpha, beta, band_eV}``, ``band_eV``
+    optional) rides along whenever the fit is present, pulled straight
+    off the record rather than
+    ``precis_pathway.staircase_routes._kinetics`` — that trims the
+    uncertainty for a different subsystem's Rung-shaped kinetics inputs.
+    gr570527: the engine's fit record carries ``band_eV`` (the
+    prediction-band half-width the diagram draws) — never ``rmse``; that
+    precis-era key is still honoured as a legacy fallback for stored
+    records written before the engine exported ``band_eV``.
 
     Returned under ``barrier_source`` rather than ``source``: a link dict
     already carries ``source``/``target`` for the edge's graph node ids
@@ -1189,13 +1204,11 @@ def _pathway_link_bep_source(edge_record: dict[str, Any] | None) -> dict[str, An
                 and math.isfinite(beta)
             ):
                 bep = {"alpha": float(alpha), "beta": float(beta)}
-                rmse = raw_bep.get("rmse")
-                if (
-                    isinstance(rmse, (int, float))
-                    and not isinstance(rmse, bool)
-                    and math.isfinite(rmse)
-                ):
-                    bep["rmse"] = float(rmse)
+                band = _pathway_finite(raw_bep.get("band_eV"))
+                if band is None:
+                    band = _pathway_finite(raw_bep.get("rmse"))
+                if band is not None:
+                    bep["band_eV"] = band
     barrier = edge_record.get("barrier") if isinstance(edge_record, dict) else None
     mean = barrier.get("mean") if isinstance(barrier, dict) else None
     if (
