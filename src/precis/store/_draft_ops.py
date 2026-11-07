@@ -123,6 +123,23 @@ _HEADING_LINE_RE = re.compile(r"^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$")
 _REPLACEABLE_CHUNK_KINDS = frozenset({"paragraph", "ulist", "olist", "item"})
 
 
+#: Keys a ``move=`` intent may carry (``first``/``last`` pick the slot —
+#: under ``into`` or at the root — ``before``/``after`` anchor beside a
+#: sibling). Anything outside the grammar used to be silently dropped
+#: while the chunk flattened to the root end (gr572842: ``move={'parent':
+#: 'dcN'}`` reported "moved" but never reparented), so
+#: :meth:`DraftStore._resolve_move` refuses out-of-grammar keys and
+#: contradictory combinations instead.
+_MOVE_KEYS = frozenset({"before", "after", "into", "first", "last"})
+
+#: The valid ``move=`` forms, rendered as ``options=`` on a refusal.
+_MOVE_FORMS: tuple[str, ...] = (
+    "{'before'|'after': '<chunk handle>'} — beside the anchor, under its parent",
+    "{'into': '<chunk handle>'} — under it; 'first'/'last' picks the slot",
+    "{'first'|'last': True} or {} — start / end of the root level",
+)
+
+
 #: Intra-draft chunk cross-refs as they appear *in prose* — the bare
 #: bracket handle ``[dc41]``, the display-link target ``](dc41)`` (the
 #: ``[cap]`` half is left intact), and the legacy ``[¶<base58>]`` anchor.
@@ -4490,10 +4507,43 @@ class DraftStore(_AbbrevMixin):
         moving_id: int,
     ) -> tuple[int | None, str | None, str | None]:
         """Like ``_resolve_at`` but for an existing chunk — excludes
-        ``moving_id`` from the sibling computation."""
+        ``moving_id`` from the sibling computation. Every key must drive
+        the outcome (gr572842): an unknown key or a combination where a
+        key would be ignored refuses with the valid forms rather than
+        silently flattening the chunk to the root end."""
+        if move is not None and not isinstance(move, dict):
+            raise BadInput(
+                f"move: expected a placement dict, got {type(move).__name__} {move!r}",
+                options=list(_MOVE_FORMS),
+            )
         move = move or {}
+        unknown = sorted(set(move) - _MOVE_KEYS)
+        if unknown:
+            raise BadInput(
+                f"move: unknown key(s) {', '.join(map(repr, unknown))}",
+                options=list(_MOVE_FORMS),
+                next="move={'into': '<chunk handle>'} reparents under a heading",
+            )
+        if move.get("before") and move.get("after"):
+            raise BadInput(
+                "move: 'before' and 'after' are two anchors — keep one",
+                options=list(_MOVE_FORMS),
+            )
+        if move.get("first") and move.get("last"):
+            raise BadInput(
+                "move: 'first' and 'last' contradict — keep one",
+                options=list(_MOVE_FORMS),
+            )
         anchor = move.get("before") or move.get("after")
         if anchor is not None:
+            extras = sorted(k for k in ("into", "first", "last") if move.get(k))
+            if extras:
+                raise BadInput(
+                    f"move: {', '.join(map(repr, extras))} can't combine "
+                    "with a 'before'/'after' anchor — the anchor already "
+                    "fixes the slot; drop it or drop the anchor",
+                    options=list(_MOVE_FORMS),
+                )
             tgt = self.get_draft_chunk(_bare(anchor))
             if tgt is None:
                 raise NotFound(f"move: no draft chunk ¶{_bare(anchor)}")

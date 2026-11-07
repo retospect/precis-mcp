@@ -209,6 +209,27 @@ def test_dry_run_rejected_on_structural_op(draft: DraftHandler, hub: Hub) -> Non
     assert [c.handle for c in _order(hub, "nt")][0] == title_h
 
 
+def test_move_unknown_key_refused(draft: DraftHandler, hub: Hub) -> None:
+    """edit(move={'parent': …}) used to report "moved" while flattening
+    the chunk to the root end (gr572842) — now a loud refusal naming the
+    valid forms."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="heading",
+        text="Intro",
+        at={"after": "¶" + title_h},
+    )
+    intro_h = _order(hub, "nt")[1].handle
+    with pytest.raises(BadInput, match="unknown key") as ei:
+        draft.edit(id=f"¶{intro_h}", move={"parent": "¶" + title_h})
+    assert "'into'" in str(ei.value)  # refusal names the reparent form
+    # Order unchanged — the move was refused.
+    assert [c.handle for c in _order(hub, "nt")][1] == intro_h
+
+
 def test_add_read_edit_move_delete(draft: DraftHandler, hub: Hub) -> None:
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)

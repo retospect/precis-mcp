@@ -723,6 +723,43 @@ def test_move_to_root_first(store: Store) -> None:
     assert _texts(store, ref.id) == ["A", "T"]
 
 
+def test_move_unknown_or_ignored_keys_refused(store: Store) -> None:
+    """gr572842: ``move={'parent': 'dcN'}`` used to fall through to the
+    root end while reporting "moved" — an out-of-grammar key or a
+    combination where a key would be ignored now refuses with the valid
+    forms."""
+    ref, title = _titled(store)
+    a = _add(store, ref.id, "A", after=title.handle)
+    h = _add(store, ref.id, "H", after=a.handle)
+    for move in ({"parent": h.handle}, {"parent": h.handle, "last": True}):
+        with pytest.raises(BadInput, match="unknown key"):
+            store.drafts.move_chunk(a.handle, move)
+    # the refused moves changed nothing
+    assert _order(store, ref.id) == [
+        ("heading", "T", 0),
+        ("heading", "A", 0),
+        ("heading", "H", 0),
+    ]
+    # contradictory forms — every accepted key must drive the outcome
+    with pytest.raises(BadInput, match="keep one"):
+        store.drafts.move_chunk(a.handle, {"before": h.handle, "after": title.handle})
+    with pytest.raises(BadInput, match="contradict"):
+        store.drafts.move_chunk(a.handle, {"first": True, "last": True})
+    with pytest.raises(BadInput, match="can't combine"):
+        store.drafts.move_chunk(a.handle, {"before": h.handle, "into": title.handle})
+    with pytest.raises(BadInput, match="can't combine"):
+        store.drafts.move_chunk(a.handle, {"after": h.handle, "first": True})
+    # 'last' is the explicit-end form — read, not ignored
+    store.drafts.move_chunk(a.handle, {"into": h.handle, "last": True})
+    assert _order(store, ref.id) == [
+        ("heading", "T", 0),
+        ("heading", "H", 0),
+        ("heading", "A", 1),
+    ]
+    store.drafts.move_chunk(a.handle, {"last": True})
+    assert _order(store, ref.id)[-1] == ("heading", "A", 0)
+
+
 def test_live_paper_cites_splits_local_vs_external(store: Store) -> None:
     """The draft-reader colouring signal: only citation tokens that resolve
     to a live paper we hold come back (slug cite_key, ``pc`` chunk handle,

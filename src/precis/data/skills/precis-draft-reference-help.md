@@ -82,8 +82,8 @@ Structural ops (`move`/`table`/`authors`) have no diff and reject
 | form | effect |
 |---|---|
 | `{'before'\|'after': 'dc<id>'}` | place next to the anchor, under its parent (reparents if the anchor is elsewhere) |
-| `{'into': 'dc<id>'}` | append into a section; `'first': True` prepends |
-| `{}` or `{'first': True}` | end / start of the root level |
+| `{'into': 'dc<id>'}` | append into a section; `'first': True` prepends, `'last': True` appends explicitly |
+| `{}`, `{'first': True}` or `{'last': True}` | end / start of the root level |
 
 ```python
 edit(id="dc16", move={"before": "dc15"})  # reorder among siblings
@@ -91,8 +91,10 @@ edit(id="dc17", move={"after": "dc18"})  # move into dc18's section
 edit(id="dc19", move={"into": "dc20"})  # to a section's end
 ```
 
-Only `before`/`after`/`into`/`first` are read; other keys (`parent`,
-`last`) are silently ignored.
+`before` and `after` don't combine with each other or with
+`into`/`first`/`last`, and `first` with `last` — contradictory forms are
+refused. Any other key (`parent`, typos) is refused naming the valid
+forms, never silently dropped (gr572842).
 
 Moving a heading carries its whole subtree; no text changes, nothing
 re-embeds.
