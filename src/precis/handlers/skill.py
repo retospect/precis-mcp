@@ -445,6 +445,15 @@ def _skill_tags(slug: str) -> list[str]:
 #: ("how do I cite a paper" → precis-cite-paper-help) leads the results.
 _TITLE_MATCH_SCORE = 1.5
 
+#: gr575142: the gr259665 DF==1 rare-identity bypass earns the full
+#: ``_TITLE_MATCH_SCORE`` pin only on a short query — measured rank-1
+#: precision is ~85% at ≤3 content tokens and falls under 60% on longer
+#: ones, where one rare word is usually just a stray token among many
+#: on-topic ones. Past this many tokens the bypassed row scores as
+#: ordinary word overlap instead (see the title-boost block in
+#: :meth:`SkillHandler.search`).
+_RARE_PIN_MAX_QTOKENS = 4
+
 #: gr496170 (rerank-after-top-k): on a default-page, non-verbatim search
 #: the rendered menu stops at the first row scoring below this fraction
 #: of the top score — a dominant top hit makes the tail menu bloat the
@@ -628,10 +637,7 @@ def _lexical_row(
         score = min(_LEXICAL_SCORE_CAP, 0.30 + count / 50.0)
         label = f"{count} substring {'hit' if count == 1 else 'hits'}"
     else:
-        # Gentle slope so longer queries keep ranking headroom (more
-        # matched words → higher) instead of saturating the cap and
-        # tying; always floored below a verbatim hit's 0.30.
-        score = min(0.29, 0.10 + 0.02 * (count + compounds))
+        score = _word_overlap_score(count, compounds)
         label = f"{count} word {'match' if count == 1 else 'matches'}"
     short = (preview[:160] + "…") if len(preview) > 160 else preview
     return _SkillSearchRow(
@@ -641,6 +647,19 @@ def _lexical_row(
         section=label,
         snippet=short.strip(),
     )
+
+
+def _word_overlap_score(count: int, compounds: int = 0) -> float:
+    """Score for a bag-of-words hit: matched query words + compounds.
+
+    Shared by ``_lexical_row``'s word-overlap leg and the demoted
+    long-query rare-identity pin in :meth:`SkillHandler.search`
+    (gr575142) — one slope definition for "the query's words are here,
+    but nowhere verbatim". Gentle slope so longer queries keep ranking
+    headroom (more matched words → higher) instead of saturating the
+    cap and tying; always floored below a verbatim hit's 0.30.
+    """
+    return min(0.29, 0.10 + 0.02 * (count + compounds))
 
 
 def _norm_score(row: _SkillSearchRow) -> float:
@@ -1594,6 +1613,19 @@ class SkillHandler(Handler):
                 # promote a skill the query isn't really about, and a
                 # ubiquitous word ("help", DF>100) never can.
                 #
+                # gr575142: …but "unambiguous name" is not "the query's
+                # subject". Transcript review (14-day window) showed a
+                # lone rare word hard-pinning the wrong skill at rank 1 —
+                # "consolidate overlapping memories supersede merge"
+                # pinned precis-taproot-hub-edit-help on "merge" while
+                # precis-memory-help sat at rank 5. Precision holds only
+                # for short queries, so past _RARE_PIN_MAX_QTOKENS a row
+                # that needed the bypass still enters (the rare word may
+                # be the only evidence) but scores as plain word overlap
+                # — below a strong section hit and below
+                # _TITLE_MATCH_SCORE, so the gr496170 gap cut no longer
+                # treats the page as intent-declared either.
+                #
                 # Family-root pin (skill-search audit 2026-10): a query
                 # token that *is* a family's root slug word — ``cad``
                 # for the ``precis-cad-*`` group — names the root skill
@@ -1609,11 +1641,12 @@ class SkillHandler(Handler):
                 family_root_hit = any(
                     family_roots.get(t) == slug for t in ident_matched
                 )
+                barred = len(matched) < 2 or coverage < 0.7
                 if (
                     not single
                     and not rare_identity_hit
                     and not family_root_hit
-                    and (len(matched) < 2 or coverage < 0.7)
+                    and barred
                 ):
                     continue
                 # An unsplit hyphenated identity token
@@ -1625,6 +1658,19 @@ class SkillHandler(Handler):
                 boost = (
                     _TITLE_MATCH_SCORE + ident_weight / len(qtokens) + 0.01 * coverage
                 )
+                # A row that got in *only* on the rare-identity bypass —
+                # barred, not family-root, long query — demotes to word
+                # overlap (gr575142). ``matched`` counts title+header
+                # words, the same evidence a lexical row would cite.
+                if (
+                    rare_identity_hit
+                    and not family_root_hit
+                    and barred
+                    and len(qtokens) > _RARE_PIN_MAX_QTOKENS
+                ):
+                    boost = _word_overlap_score(
+                        len(matched), sum(1 for t in matched if "-" in t)
+                    )
                 existing_row = merged.get(slug)
                 if existing_row is None or existing_row.score < boost:
                     # New or promoted: the winning signal is now the

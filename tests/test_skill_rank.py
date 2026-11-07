@@ -126,7 +126,7 @@ def test_search_ranking_independent_of_corpus_order(
     assert "precis-memory-help" in forward[:3]
 
 
-# ── DF-aware rare-identity-token bypass (gr259665) ────────────────────
+# ── DF-aware rare-identity-token bypass (gr259665, narrowed gr575142) ──
 #
 # The 70%-coverage bar starves a long, multi-topic query even when one of
 # its words names a skill unambiguously (catalogue document frequency ==
@@ -138,25 +138,74 @@ def test_search_ranking_independent_of_corpus_order(
 # help``'s territory (DF(identity)['merge'] == 1, naming that skill, not
 # ``precis-taproot-help`` — none of ``precis-taproot-help``'s own matched
 # identity tokens {taproot, claim, help} have DF == 1: taproot names 3
-# sibling skills, help names 100+). The correct top hit for that exact
-# wording is the mint-help skill; ``precis-taproot-help`` gets its own
-# pin test below via a token that genuinely is DF == 1 for it.
+# sibling skills, help names 100+).
+#
+# gr575142 then demoted the bypass on long queries: a lone rare word in
+# a >``_RARE_PIN_MAX_QTOKENS``-token query no longer scores
+# ``_TITLE_MATCH_SCORE`` — the row still enters but ranks as plain word
+# overlap. For the repro query that means the family-root word "taproot"
+# pins ``precis-taproot-help`` to the top and
+# ``precis-taproot-hub-edit-help`` follows on its own word matches —
+# matching the *original* diagnosis after all.
 
 
 def test_title_boost_df1_token_bypasses_coverage_bar_for_taproot_family(
     skill: SkillHandler,
 ) -> None:
-    """gr259665's repro query must surface a taproot-family skill in the
-    top rows instead of sinking below the page_size cut. "merge" has
-    catalogue identity-DF == 1 (only ``precis-taproot-hub-edit-help``'s
-    title carries it, since the sharpen/refine/merge section split out of
-    mint-help) — that's the token that should fire the bypass, so that
-    skill is the one that gets pinned to the top."""
+    """gr259665's repro query must still surface both taproot-family
+    skills in the top rows. Under gr575142's narrowing the family-root
+    word "taproot" pins ``precis-taproot-help`` at rank 1 — the rare
+    "merge" (identity-DF == 1 for ``precis-taproot-hub-edit-help``)
+    admits that skill but no longer hard-pins it above the honest hits
+    on a 6-token query."""
     ranked = _ranked_slugs(
         skill.search(q="taproot help merge repoint demote claim").body
     )
     assert ranked, "expected at least one ranked hit"
-    assert ranked[0] == "precis-taproot-hub-edit-help", ranked[:5]
+    assert ranked[0] == "precis-taproot-help", ranked[:5]
+    assert "precis-taproot-hub-edit-help" in ranked[:5], ranked[:5]
+
+
+def test_title_boost_df1_bypass_demotes_below_strong_hit_on_long_query(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr575142: past ``_RARE_PIN_MAX_QTOKENS`` content tokens a lone
+    DF==1 identity word still bypasses the coverage bar — its skill
+    stays in the menu — but the row scores as plain word overlap, so a
+    strong section hit outranks it. At ≤4 tokens the same rare word
+    keeps the full ``_TITLE_MATCH_SCORE`` pin, leading even a 0.8
+    semantic hit."""
+    from precis.skill_index import SearchHit
+
+    monkeypatch.setattr(
+        skill,
+        "_semantic_hits",
+        lambda q, *, page_size: [
+            SearchHit(
+                slug="precis-memory-help",
+                chunk_idx=0,
+                heading="sec",
+                score=0.8,
+                snippet="snip",
+                variant="heading_only",
+            )
+        ],
+    )
+    # The review's repro query: "merge" used to hard-pin
+    # precis-taproot-hub-edit-help at rank 1 while precis-memory-help
+    # — the skill the caller opened — sat at rank 5.
+    q = "consolidate overlapping memories supersede merge"
+    ranked = _ranked_slugs(skill.search(q=q).body)
+    assert ranked[0] == "precis-memory-help", ranked[:5]
+    # The bypass still admitted the rare word's skill — demoted, not
+    # dropped (an explicit page_size shows every row, gap cut aside).
+    assert "precis-taproot-hub-edit-help" in _ranked_slugs(
+        skill.search(q=q, page_size=10).body
+    )
+    # Same rare word on a ≤4-token query: the full pin still beats the
+    # stubbed 0.8 semantic hit — the measured ~85%-correct regime.
+    ranked = _ranked_slugs(skill.search(q="merge banana kiwi grape").body)
+    assert ranked[0] == "precis-taproot-hub-edit-help", ranked[:3]
 
 
 def test_title_boost_df1_token_pins_taproot_help_on_its_own_identity(
