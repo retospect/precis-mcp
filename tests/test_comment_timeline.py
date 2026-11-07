@@ -40,21 +40,21 @@ def test_append_ack_and_display_policy(
     which: str, gripe: GripeHandler, todo: TodoHandler
 ) -> None:
     h = _pick(which, gripe, todo)
-    rid = _new(h)
+    create_ack = h.put(text="base text").body
+    rid = h.store.list_refs(kind=h.kind, limit=1)[0].id
     for i in range(1, 6):
         ack = h.put(id=rid, text=f"note-{i}").body
-    assert f"appended comment 5 to {which} {rid}." in ack
-    # The ack names the kind's own display policy (gripe's bare get is
-    # the title card + bounded body + newest gist — the rest of the
-    # timeline lives behind view='comments', gr515189; todo keeps the
-    # newest-3 policy).
+    # gr570089: the comment ack is one line — the repeated display-policy
+    # pointer and hide-a-comment spelling (~230 B × ~8k comment puts a
+    # fortnight) moved off it. The reads they named still live in the
+    # view='comments' footer and the create ack's Next: block.
+    assert ack == f"appended comment 5 to {which} {rid}."
+    assert "Next:" in create_ack
     if which == "gripe":
-        assert "shows the title, body and newest comment" in ack
         out = h.get(id=rid).body
         assert "## comment " not in out
         assert "comments: 5" in out
     else:
-        assert "shows the newest 3" in ack and "args={'comment': 5}" in ack
         out = h.get(id=rid).body
         heads = [ln for ln in out.splitlines() if ln.startswith("## comment ")]
         assert [ln.split()[2] for ln in heads] == ["5", "4", "3"]

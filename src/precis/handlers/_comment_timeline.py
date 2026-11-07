@@ -542,26 +542,12 @@ def append_comment(
                 "todo_comment: 0195, paper_note: 0262) against this DB",
             ],
         ) from e
-    # The ack names what a bare get now shows of the timeline — per kind
-    # (gripe's bare get is the title card + bounded body + newest gist,
-    # gr514351/gr515189; paper's shows the newest note only, gr521094).
-    shown = (
-        "the title, body and newest comment"
-        if kind == "gripe"
-        else (
-            "the newest comment plus older one-liners"
-            if _policy(kind).full_count == 1
-            else f"the newest {_policy(kind).full_count} plus older one-liners"
-        )
-    )
-    return Response(
-        body=(
-            f"appended comment {number} to {kind} {ref.id}. A bare get shows "
-            f"{shown}; view='comments' shows all; hide a stale one with "
-            f"delete(kind={kind!r}, id={ref.id}, "
-            f"args={{'comment': {number}}})."
-        )
-    )
+    # The ack is one line (gr570089): put|gripe comment calls repeat ~8k
+    # times a fortnight, mostly from bulk loops that read none of it, so
+    # the display-policy pointer and hide-a-comment spelling moved off the
+    # ack — the reads still live in the view='comments' footer and the
+    # create ack's Next block.
+    return Response(body=f"appended comment {number} to {kind} {ref.id}.")
 
 
 def _set_hidden(store: Any, ref_id: int, number: int, *, hide: bool) -> None:
