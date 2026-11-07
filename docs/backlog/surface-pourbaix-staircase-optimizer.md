@@ -453,9 +453,10 @@ slice's `ready` record plus its I/O contract.
 convention above: ΔG(U) = ΔG0 + n_e·U, n_e = pairs consumed, pH-flat on
 RHE) and `nodes[].std` → the rung's propagated σ. Per-edge kinetics when
 the pathway provides them: `edges[<name>].barrier` (a measured NEB
-Estimate) and `edges[<name>].bep = {alpha, beta[, n_fit, rmse]}` — the
-catpath spso-c1 export, E_a = alpha·ΔE + beta fitted on that run's sparse
-NEBs. Edge names join che_affine `steps[].edge` to `edges[].name`.
+Estimate) and `edges[<name>].bep = {alpha, beta[, n_fit, residual_eV,
+band_eV]}` — the catpath spso-c1 export, E_a = alpha·ΔE + beta fitted on
+that run's sparse NEBs (`band_eV` is the prediction-band half-width,
+`residual_eV` the fit RMSE; the engine writes no `rmse` key — gr570527). Edge names join che_affine `steps[].edge` to `edges[].name`.
 
 **Estimator ladder** (§6.2's order) — each edge gets a *required
 overdrive margin* m_e with the rung's label kept per edge:

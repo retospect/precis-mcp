@@ -327,7 +327,8 @@ is the slab's.
      render (`pathway_detail.html.j2`'s `stepGeom` and the hump-draw
      loop inside `// pw-annot:begin … :end`; `Ea≈alpha·ΔE+beta`
      clipped ≥ 0, same clip as `reset_contour._edge_margin`; band
-     from the fit's `rmse` when present, else no band)
+     from the fit's `band_eV` when present (legacy `rmse`
+     fallback; the engine never wrote `rmse` — gr570527), else no band)
    - transition hover · barrier-source label on every step · trust
      surface (the same `<title>` string the Ea label already builds,
      today only set for the unknown case)
