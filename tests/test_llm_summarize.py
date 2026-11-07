@@ -1029,6 +1029,41 @@ def test_run_pass_stops_dispatching_when_drain_flips_mid_pass() -> None:
     assert conn.leases == {2: 0}  # its lease waits for the cooldown reaper
 
 
+def test_run_pass_stops_repair_dispatch_when_drain_flips() -> None:
+    """Drain flipping on a completion that returns a *rejected* gist: the
+    repair turn must not be dispatched either — the claimed lease waits
+    for the cooldown reaper, no failure is recorded, nothing is stored."""
+
+    class _DrainOnRejected:
+        """Answers the first completion with a rejected gist and sets the
+        drain flag — any repair turn would be the second call."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def post_json(self, *a: Any, **k: Any) -> dict[str, Any]:
+            from precis.liveness import request_drain
+
+            self.calls += 1
+            request_drain()
+            return {
+                "choices": [{"message": {"content": _LEAKED_REASONING}}],
+                "usage": {"total_tokens": 7},
+            }
+
+    conn = _FakeConn(claim_rows=[_claim_row(chunk_id=1)], card_text="Title: x")
+    store = _FakeStore(conn)
+    t = _DrainOnRejected()
+    client = LlmClient(LlmConfig(), transport=t)
+
+    result = run_llm_summarize_pass(store, client=client, batch_size=10)
+
+    assert result == {"claimed": 1, "ok": 0, "failed": 0, "rejected": 1}
+    assert t.calls == 1  # the repair turn was never dispatched
+    assert conn.writes == []
+    assert conn.leases == {1: 0}  # its lease waits for the cooldown reaper
+
+
 # --------------------------------------------------------------------------
 # claim filters (real PG — the FakeConn above doesn't parse SQL)
 # --------------------------------------------------------------------------

@@ -1828,6 +1828,23 @@ def run_llm_summarize_pass(
                         reason,
                         summary[:80],
                     )
+                    if drain_requested():
+                        # Drain flipped mid-repair (SIGTERM): the repair
+                        # dispatch would be refused by the router's drain arm
+                        # anyway (gr575071). Same outcome shape as the
+                        # attempt-loop guard above — a chunk that already
+                        # missed keeps its recorded transient, otherwise the
+                        # lease stays for the cooldown reaper; the rejection
+                        # is logged, not recorded as a failure.
+                        return _Outcome(
+                            claim,
+                            prompt_hash,
+                            None,
+                            None,
+                            empty_exc or busy_exc,
+                            first_reason,
+                            drained=empty_exc is None and busy_exc is None,
+                        )
                     convo += [
                         {"role": "assistant", "content": result.text},
                         _repair_message(reason),
