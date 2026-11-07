@@ -125,8 +125,15 @@ work is NOT one transaction: every LLM/fetch dispatch is preceded by a
 commit (:func:`_outside_tx`, gr582653 — a backend must never sit
 idle-in-transaction holding AccessShareLock across a slow call, which
 blocked the ``REASSIGN OWNED`` cutover), so a raise rolls back only the
-work since the last dispatch; the verdicts already judged persist, and
-idempotent attaches/memos make the retry converge instead of re-spend.
+work since the last dispatch. Each boundary first writes the seal
+(:func:`_seal_patch`): the rejected/seen/citation memos plus the
+``refine_followups`` obligations record, so committed work always
+carries the records that make the retry converge — and the runner drains
+the obligations from that record when the tail never lands
+(:func:`_drain_committed_followups`). Every crossed boundary also
+re-sends the tx-local envelope it dropped (:func:`_resume_tx`: the
+pool's ``SET LOCAL ROLE``, the revision context, the pass's
+``application_name``), so a resumed statement never runs unenforced.
 :func:`_claim_hubs_due_for_refine` closes this: it writes a claim-time
 ``TAPROOT_REFINE_ATTEMPT`` lease (:data:`_ATTEMPT_NS`, TTL'd) in the same
 transaction as the ``TAPROOT_DUE`` pop, braking re-claim for
@@ -265,7 +272,8 @@ from psycopg import Connection, ProgrammingError, sql
 from precis.nanopub import method_gap
 from precis.nanopub.demote import DemotionRequest, run_demotions
 from precis.nanopub.term_coverage import paper_chunks
-from precis.store.revision_context import apply_revision_context, trust_door
+from precis.store.pool import reapply_tx_settings
+from precis.store.revision_context import trust_door
 from precis.store.types import Tag
 from precis.taproot.canon import (
     CLAIM_HUB_PREDICATE_PARAMS,
@@ -384,15 +392,92 @@ _PASS_APP_NAME = "precis hub_refine"
 
 def _label_pass_tx(conn: Connection) -> None:
     """``SET LOCAL application_name`` for the open transaction. A LOCAL
-    setting dies at commit, so :func:`_outside_tx` re-sends it on each
-    resumed transaction."""
+    setting dies at commit, so :func:`_resume_tx` re-sends it after each
+    crossed boundary."""
     conn.execute(
         sql.SQL("SET LOCAL application_name = {}").format(sql.Literal(_PASS_APP_NAME))
     )
 
 
+def _resume_tx(conn: Connection) -> None:
+    """Re-send every ``SET LOCAL`` a commit/rollback boundary dropped, in
+    the checkout's own order: the pool's envelope role and revision
+    context (:func:`~precis.store.pool.reapply_tx_settings`), then this
+    pass's ``application_name``. The resumed transaction must not run
+    looser — or less attributable — than the one it replaced.
+
+    The re-send itself opens the next transaction (a ``SET LOCAL`` needs
+    one), so callers that want NO transaction held across a slow call —
+    :func:`_outside_tx`'s whole point — defer it until the dispatch
+    returns. Lock-free until the first real statement, it costs the
+    resumed reads nothing.
+    """
+    reapply_tx_settings(conn)
+    _label_pass_tx(conn)
+
+
+def _commit_boundary(
+    conn: Connection,
+    seal: Callable[[Connection], None] | None = None,
+    *,
+    resume: bool = True,
+) -> bool:
+    """End the open transaction — writing ``seal(conn)`` into it first so
+    the pass's retry state and follow-up obligations commit *with* the
+    work they describe — and re-apply the transaction-local settings the
+    boundary dropped. Returns True when a boundary was crossed.
+
+    False when the conn cannot own a boundary here: inside a
+    ``conn.transaction()`` block (a savepoint — e.g. a pinned checkout)
+    psycopg makes ``commit()`` raise ``ProgrammingError``, and the outer
+    scope owns the boundary (its settings survive, and a ``seal`` that
+    already ran stays queued in that transaction to commit with it). A
+    duck-typed conn that cannot commit at all (a test fake) is left
+    untouched for the same reason. Only the ``commit()`` call is
+    wrapped: a ``seal`` failure is a real write failure, never
+    "outer-owned", and propagates.
+
+    ``resume=False`` defers the settings re-send to the caller —
+    :func:`_outside_tx` uses it so the resumed transaction does not sit
+    open across the slow dispatch.
+    """
+    commit = getattr(conn, "commit", None)
+    if commit is None:
+        return False
+    if seal is not None:
+        seal(conn)
+    try:
+        commit()
+    except ProgrammingError:
+        return False
+    if resume:
+        _resume_tx(conn)
+    return True
+
+
+def _rollback_boundary(conn: Connection) -> bool:
+    """Roll back the open transaction and re-apply the settings the
+    boundary dropped — a raise clears the tx-local envelope too, so the
+    statements that resume must re-enter the role/context/label, never
+    continue unenforced. False under a pinned checkout or a
+    rollback-less fake (same rule as :func:`_commit_boundary`)."""
+    rollback = getattr(conn, "rollback", None)
+    if rollback is None:
+        return False
+    try:
+        rollback()
+    except ProgrammingError:
+        return False
+    _resume_tx(conn)
+    return True
+
+
 def _outside_tx(
-    conn: Connection, fn: Callable[..., Any], *args: Any, **kwargs: Any
+    conn: Connection,
+    fn: Callable[..., Any],
+    *args: Any,
+    seal: Callable[[Connection], None] | None = None,
+    **kwargs: Any,
 ) -> Any:
     """Run one slow dispatch — a verifier/judge call, an embedder call, an
     external fetch — with NO transaction held open on ``conn``.
@@ -409,29 +494,19 @@ def _outside_tx(
     back with a later failure (attaches and link stamps are idempotent),
     and the stamp/memo tail stays atomic with the last commit.
 
-    The resumed transaction re-sends the revision context and the pass's
-    ``application_name`` — both ``SET LOCAL``-scoped, both dropped by the
-    commit. Inside a ``conn.transaction()`` block (a savepoint — e.g. a
-    pinned checkout) psycopg forbids an explicit ``commit()``; the outer
-    scope owns the boundary there, so the dispatch simply runs (and the
-    still-open transaction keeps its already-sent settings). A
-    duck-typed conn that cannot commit at all (a test fake) is left
-    untouched for the same reason.
-    """
-    committed = False
-    commit = getattr(conn, "commit", None)
-    if commit is not None:
-        try:
-            commit()
-            committed = True
-        except ProgrammingError:
-            pass  # inside a conn.transaction()/pinned savepoint — outer owns it
+    ``seal`` runs inside the transaction *before* it commits, so the
+    records that make committed work convergent — the rejection/seen
+    memos and the queued follow-up obligations — are never left behind
+    by a later failure (:func:`_seal_patch`). After the dispatch the
+    resumed transaction re-enters the full checkout envelope —
+    :func:`_resume_tx`; deferred past ``fn`` on purpose, since the
+    re-send itself opens the transaction."""
+    committed = _commit_boundary(conn, seal, resume=False)
     try:
         return fn(*args, **kwargs)
     finally:
         if committed:
-            apply_revision_context(conn)
-            _label_pass_tx(conn)
+            _resume_tx(conn)
 
 
 def _disputes_allowed(verification: dict[str, Any]) -> bool:
@@ -568,6 +643,14 @@ _META_CITATION_MISSES = "citation_misses"
 #: surfaced for display ("cites a paper we don't hold"), never fetched here
 #: (auto-fetch is out of scope, a later proposal).
 _META_UNRESOLVED = "unresolved_citations"
+#: The pass's outstanding post-commit obligations — ``{"checks": [paper
+#: ref_id, ...], "demotions": [{hub_ref_id, reason}, ...]}`` — written by
+#: the boundary seal (:func:`_seal_patch`) in the SAME transaction that
+#: commits the edges those obligations follow up on. A later failure then
+#: still executes them from the durable record
+#: (:func:`_drain_committed_followups`) instead of losing them with the
+#: rolled-back tail; the key is cleared once drained.
+_META_REFINE_FOLLOWUPS = "refine_followups"
 
 #: The trigger pass's due-marker (``workers/chase_trigger.py``) — a closed
 #: ref tag on a claim hub meaning "a new near paper landed, refresh me".
@@ -1004,6 +1087,57 @@ def _dedup_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(key)
         out.append(rec)
     return out
+
+
+def _seal_patch(
+    *,
+    reopened: bool,
+    rejected: dict[str, Any],
+    citation_misses: list[dict[str, Any]],
+    unresolved: list[dict[str, Any]],
+    reground_seen: dict[str, Any],
+    reground: RegroundConfig | None,
+    pending_checks: list[int] | None,
+    pending_demotions: list[DemotionRequest] | None,
+) -> dict[str, Any]:
+    """The retry-state + follow-up snapshot a boundary commit must carry.
+
+    Every mid-pass commit (:func:`_outside_tx` dispatches, the method-gap
+    :func:`_commit_boundary`) makes the writes so far durable; this patch
+    is what keeps them convergent: the rejection/seen/citation memos that
+    stop a judged candidate being re-spent, and the
+    :data:`_META_REFINE_FOLLOWUPS` record of obligations (retraction
+    checks, demotions) those committed writes queued — durable where the
+    caller's in-memory pending lists are not. The same patch rides the
+    final stamp's ``update_ref``, so the tail record stays identical; the
+    runner drains the obligations either from the lists (success) or from
+    the record (failure), then clears the key.
+    """
+    patch: dict[str, Any] = {}
+    if rejected or reopened:
+        patch[_META_REJECTED] = rejected
+    misses_deduped = _dedup_records(citation_misses)
+    if misses_deduped or reopened:
+        patch[_META_CITATION_MISSES] = misses_deduped
+    unresolved_deduped = _dedup_records(unresolved)
+    if unresolved_deduped or reopened:
+        patch[_META_UNRESOLVED] = unresolved_deduped
+    # The seen memo persists whenever it holds anything (reverify,
+    # method-gap and reground verdicts all land here), on a reopen (the
+    # clear taking effect) and always under reground — its usual owner.
+    if reground_seen or reopened or reground is not None:
+        patch[_META_REGROUND_SEEN] = reground_seen
+    followups: dict[str, Any] = {}
+    if pending_checks:
+        followups["checks"] = [int(r) for r in pending_checks]
+    if pending_demotions:
+        followups["demotions"] = [
+            {"hub_ref_id": int(d.hub_ref_id), "reason": d.reason}
+            for d in pending_demotions
+        ]
+    if followups:
+        patch[_META_REFINE_FOLLOWUPS] = followups
+    return patch
 
 
 def _is_composite_hub(conn: Connection, ref_id: int) -> bool:
@@ -1820,6 +1954,7 @@ def _external_candidates(
     query_vec: list[float],
     grounding_ref_ids: list[int],
     probe_fn: ExternalProbeFn,
+    seal: Callable[[Connection], None] | None = None,
 ) -> tuple[list[_Candidate], dict[str, Any]]:
     """Stage 5. Returns ``(candidates, report)``.
 
@@ -1864,7 +1999,7 @@ def _external_candidates(
         else:
             held_by_doi[doi_s] = int(held_ref_id)
 
-    probed = _outside_tx(conn, probe_fn, claim_sentence)
+    probed = _outside_tx(conn, probe_fn, claim_sentence, seal=seal)
     report["probed"] = probed
     for hit in probed:
         doi_s = str(hit.get("doi") or "").strip().lower()
@@ -2274,6 +2409,7 @@ def _audit_edges(
     plan: RegroundPlan,
     claim_source_text: str | None = None,
     identity_cache: dict[int, SourceIdentity] | None = None,
+    seal: Callable[[Connection], None] | None = None,
 ) -> None:
     """Stage 2 — strict-judge every current supporter, memoing each
     verdict at the current ``claim_sha``.
@@ -2312,6 +2448,7 @@ def _audit_edges(
             neighbours=edge.neighbours,
             claim_source_text=claim_source_text,
             source_identity=_source_identity(conn, edge.src_ref_id, identity_cache),
+            seal=seal,
         )
         if verdict is None:
             # No verdict (dispatch failure / unparseable) — deliberately
@@ -3111,6 +3248,7 @@ def _reground_verify_candidate(
     pending_demotions: list[DemotionRequest] | None = None,
     claim_source_text: str | None = None,
     identity_cache: dict[int, SourceIdentity] | None = None,
+    seal: Callable[[Connection], None] | None = None,
 ) -> None:
     """Judge ONE reground candidate with the strict judge and write the
     consequence. The reground counterpart of the Verify→Write tail above.
@@ -3180,6 +3318,7 @@ def _reground_verify_candidate(
         neighbours=neighbours,
         claim_source_text=claim_source_text,
         source_identity=_source_identity(conn, int(source_ref_id), identity_cache),
+        seal=seal,
     )
     if verdict is None:
         return  # no verdict — no memo, retried next pass
@@ -3381,6 +3520,7 @@ def _reverify_pinned_edges(
     sha: str,
     claim_source_text: str | None = None,
     identity_cache: dict[int, SourceIdentity] | None = None,
+    seal: Callable[[Connection], None] | None = None,
 ) -> bool:
     """Certify this hub's attached-but-unverified evidence for the publish
     gate — the module docstring's re-verify-pinned-edges step.
@@ -3500,6 +3640,7 @@ def _reverify_pinned_edges(
                 ],
                 claim_source_text=claim_source_text,
                 with_request_hash=True,
+                seal=seal,
             )
             for (edge, key), verdict in zip(part, verdicts):
                 if verdict is None:
@@ -3602,6 +3743,7 @@ def _method_gap_arm(
     pending_demotions: list[DemotionRequest] | None,
     sent: list[method_gap.GapCandidate],
     budget: _PassBudget | None = None,
+    seal: Callable[[Connection], None] | None = None,
 ) -> bool:
     """The method-gap arm (claims-and-evidence thread, grounding build 2 D1).
 
@@ -3773,6 +3915,7 @@ def _method_gap_arm(
             ],
             claim_source_text=claim_source_text,
             with_request_hash=True,
+            seal=seal,
         )
         judged.extend(zip(part, verifications))
     with conn.transaction():
@@ -3931,6 +4074,38 @@ def _refine_one_hub(
     reground_seen: dict[str, Any] = (
         {} if reopened else dict(meta.get(_META_REGROUND_SEEN) or {})
     )
+    # Citation-miss / unresolved-cite records accumulate across passes
+    # (keyed by their record tuple, deduped at persist time). A sha-reopen
+    # clears them like the rejection memo — the old verdicts may no longer
+    # hold on the new wording.
+    citation_misses: list[dict[str, Any]] = (
+        [] if reopened else list(meta.get(_META_CITATION_MISSES) or [])
+    )
+    unresolved: list[dict[str, Any]] = (
+        [] if reopened else list(meta.get(_META_UNRESOLVED) or [])
+    )
+
+    def _seal(c: Connection) -> None:
+        """Write the pass's retry state and outstanding follow-up
+        obligations into the transaction a boundary is about to commit.
+        Every mid-pass commit below (:func:`_outside_tx` dispatches and
+        the method-gap :func:`_commit_boundary`) hands this to the
+        boundary, so a later failure never leaves durable attaches,
+        coverage drains or judged verdicts without the memos — and the
+        ``refine_followups`` record — that make the retry converge."""
+        patch = _seal_patch(
+            reopened=reopened,
+            rejected=rejected,
+            citation_misses=citation_misses,
+            unresolved=unresolved,
+            reground_seen=reground_seen,
+            reground=reground,
+            pending_checks=pending_checks,
+            pending_demotions=pending_demotions,
+        )
+        if patch:
+            store.update_ref(hub_ref_id, meta_patch=patch, conn=c)
+
     plan: RegroundPlan | None = None
     depth_policy = DEPTH_ABSTRACT_OK
     attached_keys: set[str] = set()
@@ -3959,6 +4134,7 @@ def _refine_one_hub(
             plan=plan,
             claim_source_text=claim_source_text,
             identity_cache=identity_cache,
+            seal=_seal,
         )
 
     # Publish-gate re-verify (always on, embedder-independent): certify
@@ -3966,9 +4142,8 @@ def _refine_one_hub(
     # skip-if-attached precheck below can never reach. Runs AFTER the
     # reground audit so the strict judge wins the per-sha memo slot when
     # reground is active. Additive and bounded — see the function.
-    reverify_memoed = False
     if claim_sentence:
-        reverify_memoed = _reverify_pinned_edges(
+        _reverify_pinned_edges(
             conn,
             store,
             hub_ref_id,
@@ -3976,21 +4151,11 @@ def _refine_one_hub(
             sha=new_sha,
             claim_source_text=claim_source_text,
             identity_cache=identity_cache,
+            seal=_seal,
         )
 
-    # Citation-miss / unresolved-cite records accumulate across passes
-    # (keyed by their record tuple, deduped at persist time). A sha-reopen
-    # clears them like the rejection memo — the old verdicts may no longer
-    # hold on the new wording.
-    citation_misses: list[dict[str, Any]] = (
-        [] if reopened else list(meta.get(_META_CITATION_MISSES) or [])
-    )
-    unresolved: list[dict[str, Any]] = (
-        [] if reopened else list(meta.get(_META_UNRESOLVED) or [])
-    )
-
     query_vec = (
-        _outside_tx(conn, embed_query, embedder, claim_sentence)
+        _outside_tx(conn, embed_query, embedder, claim_sentence, seal=_seal)
         if claim_sentence
         else None
     )
@@ -4179,6 +4344,7 @@ def _refine_one_hub(
                     r for r, _ in _attached_source_refs(conn, hub_ref_id)
                 ],
                 probe_fn=reground.external_probe_fn,
+                seal=_seal,
             )
             store.update_ref(
                 hub_ref_id, meta_patch={_META_REGROUND_EXTERNAL: ext_report}, conn=conn
@@ -4271,6 +4437,7 @@ def _refine_one_hub(
                     pending_demotions=pending_demotions,
                     claim_source_text=claim_source_text,
                     identity_cache=identity_cache,
+                    seal=_seal,
                 )
                 if _seen_key(source_ref_id, chunk_id) in reground_seen:
                     resolved_cov.add(cov_id)  # judge returned a verdict
@@ -4306,6 +4473,7 @@ def _refine_one_hub(
                 ],
                 claim_source_text=claim_source_text,
                 with_request_hash=True,
+                seal=_seal,
             )
             for (cand, slot, cov_id), verification in zip(part, verifications):
                 source_ref_id = cand.source_ref_id
@@ -4462,23 +4630,21 @@ def _refine_one_hub(
     # isolated: a boundary commit plus working copies of the memo and the
     # pending lists, so an arm failure rolls back only its own writes and
     # never the discovery loop's attaches and memos above.
-    method_gap_memoed = False
     if claim_sentence and reground is None:
         arm_seen = dict(reground_seen)
         arm_checks: list[int] = []
         arm_demotions: list[DemotionRequest] = []
         # Outside the savepoint, so it survives the rollback below.
         sent: list[method_gap.GapCandidate] = []
+        # Commit the discovery loop's work first (gr582653 boundary): an
+        # arm failure then rolls back only its own uncommitted reads — the
+        # arm's apply phase runs in its own ``conn.transaction()`` — never
+        # the attaches above. The seal rides the commit so the judged
+        # verdicts and queued obligations are durable with that work, and
+        # the boundary re-arms the tx-local envelope it dropped.
+        _commit_boundary(conn, seal=_seal)
         try:
-            # Commit the discovery loop's work first (gr582653 boundary):
-            # an arm failure then rolls back only its own uncommitted
-            # reads — the arm's apply phase runs in its own
-            # ``conn.transaction()`` — never the attaches above.
-            conn.commit()
-        except ProgrammingError:
-            pass  # pinned/nested checkout — the outer scope owns the boundary
-        try:
-            method_gap_memoed = _method_gap_arm(
+            _method_gap_arm(
                 conn,
                 store,
                 hub_ref_id,
@@ -4492,6 +4658,7 @@ def _refine_one_hub(
                 pending_demotions=arm_demotions,
                 sent=sent,
                 budget=gap_budget,
+                seal=_seal,
             )
         except Exception:
             log.warning(
@@ -4500,14 +4667,12 @@ def _refine_one_hub(
                 exc_info=True,
             )
             # The arm's apply transaction rolled back (and this rollback
-            # clears any ambient error state), but the verifier calls were
-            # paid: charge them as unjudged attempts so a deterministic
-            # failure cannot re-spend them every pass.
-            try:
-                conn.rollback()
-            except ProgrammingError:
-                pass
-            method_gap_memoed = _charge_failed_gap(reground_seen, new_sha, sent)
+            # clears any ambient error state plus re-arms the settings it
+            # dropped), but the verifier calls were paid: charge them as
+            # unjudged attempts so a deterministic failure cannot re-spend
+            # them every pass.
+            _rollback_boundary(conn)
+            _charge_failed_gap(reground_seen, new_sha, sent)
         else:
             reground_seen.update(arm_seen)
             if pending_checks is not None:
@@ -4520,24 +4685,24 @@ def _refine_one_hub(
         _META_LAST_REFINED_SHA: new_sha,
         _META_LAST_REFINED_VERSION: REFINE_VERSION,
     }
-    if rejected or reopened:
-        # Always persist on a reopen, even an emptied memo -- that's the
-        # clear taking effect, not just skipped because nothing's pending.
-        meta_patch[_META_REJECTED] = rejected
-    misses_deduped = _dedup_records(citation_misses)
-    if misses_deduped or reopened:
-        meta_patch[_META_CITATION_MISSES] = misses_deduped
-    unresolved_deduped = _dedup_records(unresolved)
-    if unresolved_deduped or reopened:
-        meta_patch[_META_UNRESOLVED] = unresolved_deduped
-    if (reverify_memoed or method_gap_memoed) and reground is None:
-        # The re-verify and method-gap arms' non-corroborating memos must
-        # persist even without reground active (the memo's usual writer) —
-        # they are what stops a non-corroborating edge/chunk from
-        # re-spending the verifier every pass.
-        meta_patch[_META_REGROUND_SEEN] = reground_seen
+    # The same seal the mid-pass boundaries carried: retry state and the
+    # obligations record land in the stamp transaction too — the runner's
+    # post-commit drains then run off the in-memory lists and clear the
+    # record. Always persist on a reopen, even an emptied memo -- that's
+    # the clear taking effect, not just skipped because nothing's pending.
+    meta_patch.update(
+        _seal_patch(
+            reopened=reopened,
+            rejected=rejected,
+            citation_misses=citation_misses,
+            unresolved=unresolved,
+            reground_seen=reground_seen,
+            reground=reground,
+            pending_checks=pending_checks,
+            pending_demotions=pending_demotions,
+        )
+    )
     if reground is not None and plan is not None:
-        meta_patch[_META_REGROUND_SEEN] = reground_seen
         plan.verdict = _hub_verdict(conn, hub_ref_id, plan)
         if plan.verdict == VERDICT_RETIRE and _retire_authorized(
             conn, hub_ref_id, reground
@@ -4573,6 +4738,62 @@ def _refine_one_hub(
 # ── runner ─────────────────────────────────────────────────────────
 
 
+def _clear_refine_followups(store: Store, hub_ref_id: int) -> None:
+    """Drop the ``refine_followups`` obligations record once its drains
+    ran. Best-effort: a leftover record only re-runs idempotent checks on
+    the next failure, so a clear failure never turns a good hub failed."""
+    try:
+        store.clear_ref_meta_keys(
+            hub_ref_id, [_META_REFINE_FOLLOWUPS], source="hub_refine"
+        )
+    except Exception:
+        log.warning(
+            "hub_refine: clearing follow-ups failed for hub #%d",
+            hub_ref_id,
+            exc_info=True,
+        )
+
+
+def _drain_committed_followups(store: Store, hub_ref_id: int) -> int:
+    """Failure-path counterpart of the runner's post-commit drains.
+
+    A mid-pass boundary commit (:func:`_outside_tx` dispatches, the
+    method-gap boundary) already made part of the hub's work durable, and
+    the seal wrote ``meta.refine_followups`` into the same transaction —
+    so the obligations those committed writes queued survive the failure
+    that rolled the tail back. Read the record and run them: committed
+    evidence never loses its retraction check or its demotion. Clears the
+    record once drained. Best-effort, like the drains it calls — a hub
+    this runs for is already counted failed. Returns applied demotions.
+    """
+    try:
+        with store.pool.connection() as c:
+            row = c.execute(
+                "SELECT meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+                (hub_ref_id,),
+            ).fetchone()
+        payload = (dict(row[0]) if row and row[0] else {}).get(
+            _META_REFINE_FOLLOWUPS
+        ) or {}
+        checks = [int(r) for r in payload.get("checks") or []]
+        demotions = [
+            DemotionRequest(hub_ref_id=int(d["hub_ref_id"]), reason=str(d["reason"]))
+            for d in payload.get("demotions") or []
+        ]
+        if checks:
+            run_retraction_checks(store, checks, hub_ref_id=hub_ref_id)
+        demoted = sum(1 for d in run_demotions(store, demotions) if d.applied)
+        _clear_refine_followups(store, hub_ref_id)
+        return demoted
+    except Exception:
+        log.warning(
+            "hub_refine: draining committed follow-ups failed for hub #%d",
+            hub_ref_id,
+            exc_info=True,
+        )
+        return 0
+
+
 def reground_one_hub(
     store: Store,
     hub_ref_id: int,
@@ -4599,23 +4820,31 @@ def reground_one_hub(
     pending_checks: list[int] = []
     pending_demotions: list[DemotionRequest] = []
     plans: list[RegroundPlan] = []
-    with store.pool.connection() as conn:
-        _label_pass_tx(conn)
-        _refine_one_hub(
-            conn,
-            store,
-            hub_ref_id,
-            embedder=embedder,
-            topk=resolved_topk,
-            min_sim=resolved_min_sim,
-            pending_checks=pending_checks,
-            pending_demotions=pending_demotions,
-            reground=cfg,
-            plan_out=plans,
-        )
-        conn.commit()
+    try:
+        with store.pool.connection() as conn:
+            _label_pass_tx(conn)
+            _refine_one_hub(
+                conn,
+                store,
+                hub_ref_id,
+                embedder=embedder,
+                topk=resolved_topk,
+                min_sim=resolved_min_sim,
+                pending_checks=pending_checks,
+                pending_demotions=pending_demotions,
+                reground=cfg,
+                plan_out=plans,
+            )
+            conn.commit()
+    except Exception:
+        # Mid-pass boundary commits already made part of the work durable;
+        # run the follow-ups their seal recorded before re-raising — the
+        # caller isolates per hub, the obligations must not die with it.
+        _drain_committed_followups(store, hub_ref_id)
+        raise
     run_retraction_checks(store, pending_checks, hub_ref_id=hub_ref_id)
     run_demotions(store, pending_demotions)
+    _clear_refine_followups(store, hub_ref_id)
     if not plans:
         # The hub drained without a plan (vanished, or became composite
         # between claim and processing) — nothing was judged, nothing to
@@ -4755,6 +4984,7 @@ def run_hub_refine_pass(
             demoted += sum(
                 1 for d in run_demotions(store, pending_demotions) if d.applied
             )
+            _clear_refine_followups(store, hub_ref_id)
             # Prunes run only now — after the adds above are committed and
             # can be read back (docs/backlog/taproot-reground.md's
             # add-first contract, enforced in code).
@@ -4764,10 +4994,15 @@ def run_hub_refine_pass(
                 withheld += applied.withheld
                 demoted += applied.demoted
             ok += 1
-        except Exception:  # pragma: no cover — defensive, mirrors inbound_chase.py
+        except Exception:
             log.warning(
                 "hub_refine: refine failed for hub #%d", hub_ref_id, exc_info=True
             )
+            # Mid-pass boundary commits already made some of the hub's
+            # work durable: run the follow-ups the seal recorded with
+            # them — they were queued by committed writes, never by the
+            # rolled-back tail.
+            demoted += _drain_committed_followups(store, hub_ref_id)
             failed += 1
 
     result = {"claimed": claimed, "ok": ok, "failed": failed}

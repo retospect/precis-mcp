@@ -106,6 +106,24 @@ def _apply_db_role(conn: Connection) -> None:
     conn.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(role)))
 
 
+def reapply_tx_settings(conn: Connection) -> None:
+    """Re-send the transaction-local settings a checkout applied, in the
+    checkout's own order.
+
+    :meth:`PrecisPool.connection` opens each caller's transaction with the
+    envelope role (:func:`_apply_db_role`) then the revision context —
+    both ``SET LOCAL``-scoped, so a mid-scope commit or rollback drops
+    them: the resumed transaction would run unenforced and unattributed.
+    Callers that cross such a boundary inside a checked-out scope (e.g.
+    ``workers/hub_refine``'s pre-dispatch commits) re-apply the pair
+    before resuming statements; pass-specific labels ride on top at the
+    call site. Under a pinned checkout no boundary is ever crossed here,
+    so this never runs — the pin re-sends its own settings instead.
+    """
+    _apply_db_role(conn)
+    apply_revision_context(conn)
+
+
 def _configure_connection(conn: Connection) -> None:
     """Per-connection setup. Called by the pool's `configure=` hook.
 

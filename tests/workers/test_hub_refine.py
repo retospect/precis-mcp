@@ -2225,3 +2225,161 @@ def test_pass_labels_its_transaction(store: Any) -> None:
         hub_refine._label_pass_tx(conn)
         row = conn.execute("SHOW application_name").fetchone()
         assert row is not None and row[0] == hub_refine._PASS_APP_NAME
+
+
+# ── td584086 review: every boundary restores + seals ────────────────
+
+_ENV_ROLE = "PRECIS_MCP_DB_ROLE"
+_ENV_ROLE_ENFORCE = "PRECIS_MCP_DB_ROLE_ENFORCE"
+
+
+def _envelope_row(conn: Any) -> tuple[str, str]:
+    row = conn.execute(
+        "SELECT current_role, current_setting('application_name')"
+    ).fetchone()
+    assert row is not None
+    return str(row[0]), str(row[1])
+
+
+def test_commit_boundary_restores_tx_settings(store: Any, monkeypatch: Any) -> None:
+    """Every pool checkout opens its transaction inside an envelope —
+    ``SET LOCAL ROLE`` + the pass's ``application_name`` — and a commit
+    boundary drops both. ``_commit_boundary`` re-sends them into the
+    resumed transaction, so the statements after it never run
+    unenforced/unattributed. ``pg_monitor``: a role every superuser test
+    session can assume, same trick as ``test_pool_db_role``."""
+    monkeypatch.setenv(_ENV_ROLE_ENFORCE, "1")
+    monkeypatch.setenv(_ENV_ROLE, "pg_monitor")
+    with store.pool.connection() as conn:
+        hub_refine._label_pass_tx(conn)
+        conn.execute("SELECT 1")  # a statement, so a tx is really open
+        assert hub_refine._commit_boundary(conn) is True
+        assert _envelope_row(conn) == ("pg_monitor", hub_refine._PASS_APP_NAME)
+        conn.rollback()
+
+
+def test_rollback_boundary_restores_tx_settings(store: Any, monkeypatch: Any) -> None:
+    """The error path crosses a boundary too: a rollback drops the same
+    ``SET LOCAL`` envelope, and ``_rollback_boundary`` re-arms it before
+    the caller's tail statements (the stamp write) run."""
+    monkeypatch.setenv(_ENV_ROLE_ENFORCE, "1")
+    monkeypatch.setenv(_ENV_ROLE, "pg_monitor")
+    with store.pool.connection() as conn:
+        hub_refine._label_pass_tx(conn)
+        conn.execute("SELECT 1")
+        assert hub_refine._rollback_boundary(conn) is True
+        assert _envelope_row(conn) == ("pg_monitor", hub_refine._PASS_APP_NAME)
+        conn.rollback()
+
+
+def test_outside_tx_restores_tx_settings(store: Any, monkeypatch: Any) -> None:
+    """``_outside_tx``'s post-dispatch restore covers the whole envelope —
+    role, revision context, pass label — so a resumed read is back inside
+    it, not running with the checkout settings the commit dropped."""
+    from precis.store.revision_context import revision_context
+
+    monkeypatch.setenv(_ENV_ROLE_ENFORCE, "1")
+    monkeypatch.setenv(_ENV_ROLE, "pg_monitor")
+    with store.pool.connection() as conn:
+        hub_refine._label_pass_tx(conn)
+        with revision_context("boundary-test", actor="hub-refine-test"):
+            assert hub_refine._outside_tx(conn, lambda: "dispatched") == "dispatched"
+            row = conn.execute(
+                "SELECT current_role, current_setting('application_name'), "
+                "current_setting('precis.actor', true)"
+            ).fetchone()
+            assert row is not None
+            assert (
+                str(row[0]),
+                str(row[1]),
+                str(row[2]),
+            ) == ("pg_monitor", hub_refine._PASS_APP_NAME, "hub-refine-test")
+            conn.rollback()
+
+
+def test_commit_boundary_pinned_is_outer_owned(store: Any) -> None:
+    """Inside a ``conn.transaction()`` savepoint (a pinned checkout) the
+    boundary belongs to the outer scope: ``_commit_boundary`` refuses —
+    the still-open transaction keeps the settings it already has."""
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            assert hub_refine._commit_boundary(conn) is False
+            assert hub_refine._rollback_boundary(conn) is False
+
+
+def test_midpass_failure_keeps_verdicts_and_followups(store: Any) -> None:
+    """The review's failure shape: a dispatch boundary commits an attach,
+    a judged rejection and a coverage drain; the stamp write then raises.
+
+    Before the seal, the retry state (rejection memo) and the follow-up
+    obligations (the attach's retraction check, the disputes filing's
+    demotion) lived only in memory and the in-transaction tail — the
+    committed work outlived its records and the queued follow-ups died
+    with the pass. Now the seal persists both inside the boundary
+    transaction, and the runner's failure path executes the record."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="La2O3 passivates the copper surface at RT.")
+    yes_paper, _c1 = _seed_paper_chunk(
+        store, embedder, cite_key="sup", text="A corroborating measurement."
+    )
+    no_paper, no_chunk = _seed_paper_chunk(
+        store, embedder, cite_key="rej", text="An unrelated protocol report."
+    )
+    _insert_coverage(store, hub, no_chunk, embedder.model)
+
+    def _verdict(**kw: Any) -> dict[str, Any]:
+        if "corroborating" in str(kw.get("target_chunk_text")):
+            return _VERIFY_YES
+        return _VERIFY_PARTIAL_CONTRADICTS
+
+    real_update = store.update_ref
+
+    def _fail_on_stamp(
+        ref_id: int, *, meta_patch: dict[str, Any] | None = None, **kw: Any
+    ) -> Any:
+        if meta_patch and "last_refined_at" in meta_patch:
+            raise RuntimeError("stamp write failed")
+        return real_update(ref_id, meta_patch=meta_patch, **kw)
+
+    checks: list[list[int]] = []
+    demotions: list[list[Any]] = []
+
+    def _record_checks(_s: Any, ids: Any, **_kw: Any) -> None:
+        checks.append(list(ids))
+
+    def _record_demotions(_s: Any, reqs: Any) -> list[Any]:
+        demotions.append(list(reqs))
+        return []
+
+    with (
+        patch_verify(side_effect=_verdict),
+        patch.object(store, "update_ref", side_effect=_fail_on_stamp),
+        patch(
+            "precis.workers.hub_refine.run_retraction_checks",
+            side_effect=_record_checks,
+        ),
+        patch(
+            "precis.workers.hub_refine.run_demotions",
+            side_effect=_record_demotions,
+        ),
+    ):
+        result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+
+    assert result["failed"] == 1
+    # The boundary-committed work is durable despite the stamp failure.
+    assert _edges_from(store, yes_paper)
+    assert any(r == "disputes" for _d, r, _m in _edges_from(store, no_paper))
+    assert _coverage_rows(store, hub) == []
+    # Its records are durable too: the judged rejection memo persisted
+    # (no re-spend on the next pass), and the obligations record rode the
+    # same transaction.
+    meta = _hub_meta(store, hub)
+    rejected = meta[hub_refine._META_REJECTED]
+    assert rejected[str(no_paper)]["supports"] == "partial"
+    assert rejected[str(no_paper)]["contradicts"] is True
+    # And the follow-ups ran off that record even though the pass failed.
+    assert checks == [[yes_paper]]
+    assert len(demotions) == 1
+    assert demotions[0][0].hub_ref_id == hub
+    # Drained obligations leave no record behind.
+    assert hub_refine._META_REFINE_FOLLOWUPS not in meta
