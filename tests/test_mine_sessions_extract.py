@@ -682,3 +682,225 @@ def test_ledger_session_fallbacks() -> None:
         )
         == "ledger:2026-10-14"
     )
+
+
+# ---------------------------------------------------------------------------
+# 11. usage is stamped once per message.id — the scoreboard over-count bug
+# ---------------------------------------------------------------------------
+
+
+def test_local_usage_stamped_once_per_message_id() -> None:
+    """One API message splits into one JSONL line per content block, every
+    line restating the same ``message.usage``. Stamping it on each
+    turn-level event counted one turn once per block — 23.06B cache-read
+    against a true 10.66B on the 2026-11-05 pass (gr570090(a)). Only the
+    first block's turn event may carry the counter."""
+    session = "s-usage"
+    shared_usage = {
+        "input_tokens": 10,
+        "output_tokens": 4,
+        "cache_read_input_tokens": 90,
+    }
+    lines = [
+        json.dumps(
+            {
+                "type": "assistant",
+                "sessionId": session,
+                "timestamp": "2026-11-05T10:00:00.000Z",
+                "message": {
+                    "id": "msg_one",
+                    "model": "m",
+                    "usage": shared_usage,
+                    "content": [{"type": "text", "text": "thinking"}],
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "sessionId": session,
+                "timestamp": "2026-11-05T10:00:01.000Z",
+                "message": {
+                    "id": "msg_one",
+                    "model": "m",
+                    "usage": shared_usage,
+                    "content": [{"type": "text", "text": "more"}],
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "sessionId": session,
+                "timestamp": "2026-11-05T10:00:02.000Z",
+                "message": {
+                    "id": "msg_two",
+                    "model": "m",
+                    "usage": {"input_tokens": 7, "output_tokens": 3},
+                    "content": [{"type": "text", "text": "next turn"}],
+                },
+            }
+        ),
+    ]
+    stats = extract.Stats()
+    events = extract._extract_from_lines(
+        lines,
+        corpus="local",
+        session_fallback=session,
+        is_sidechain_default=False,
+        stats=stats,
+    )
+    turns = [e for e in events if e.tool is None]
+    assert len(turns) == 3
+    assert turns[0].usage == shared_usage
+    assert turns[1].usage == {}
+    assert turns[2].usage == {"input_tokens": 7, "output_tokens": 3}
+    # What the scoreboard sees: each message counted exactly once.
+    assert sum(e.usage.get("output_tokens", 0) for e in turns) == 7
+
+
+def test_local_usage_without_message_id_keeps_stamping() -> None:
+    """A transcript line with no ``message.id`` cannot be deduplicated —
+    it keeps the usage it carries rather than being collapsed."""
+    session = "s-noid"
+    lines = [
+        json.dumps(
+            _tool_use_event(
+                session,
+                f"toolu_{i}",
+                "mcp__precis__get",
+                {"kind": "skill"},
+                usage={"input_tokens": i},
+            )
+        )
+        for i in (1, 2)
+    ]
+    stats = extract.Stats()
+    events = extract._extract_from_lines(
+        lines,
+        corpus="local",
+        session_fallback=session,
+        is_sidechain_default=False,
+        stats=stats,
+    )
+    turns = [e for e in events if e.tool is None]
+    assert [e.usage.get("input_tokens") for e in turns] == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# 12. __user__ is a human turn — reminders, peer/system text dropped
+# ---------------------------------------------------------------------------
+
+
+def _user_text_event(
+    session: str,
+    text: str,
+    *,
+    ts: str = "2026-11-05T10:00:00.000Z",
+    **extra: object,
+) -> dict[str, object]:
+    return {
+        "type": "user",
+        "sessionId": session,
+        "timestamp": ts,
+        "message": {"content": text},
+        **extra,
+    }
+
+
+def test_user_system_reminder_and_task_notification_dropped() -> None:
+    session = "s-human"
+    lines = [
+        json.dumps(
+            _user_text_event(
+                session, "<system-reminder>\nenv stuff\n</system-reminder>"
+            )
+        ),
+        json.dumps(
+            _user_text_event(
+                session,
+                "<task-notification> <task-id>abc</task-id> "
+                "<summary>peer done</summary> </task-notification>",
+                turnOrigin="task_notification",
+            )
+        ),
+        json.dumps(
+            _user_text_event(
+                session,
+                "<system-reminder>rem</system-reminder> actually the real turn",
+            )
+        ),
+        json.dumps(
+            _user_text_event(session, "a scheduled wake", promptSource="system")
+        ),
+        json.dumps(_user_text_event(session, "meta line", isMeta=True)),
+        json.dumps(_user_text_event(session, "no, the other file")),
+    ]
+    stats = extract.Stats()
+    events = extract._extract_from_lines(
+        lines,
+        corpus="local",
+        session_fallback=session,
+        is_sidechain_default=False,
+        stats=stats,
+    )
+    users = [e for e in events if e.tool == "__user__"]
+    assert len(users) == 2
+    heads = [e.result_head for e in users]
+    assert any("actually the real turn" in h for h in heads)
+    assert any("no, the other file" in h for h in heads)
+    assert not any("reminder" in h or "task-id" in h for h in heads)
+
+
+def test_user_harness_chrome_lines_stripped() -> None:
+    session = "s-chrome"
+    lines = [
+        json.dumps(_user_text_event(session, "[Request interrupted by user]")),
+        json.dumps(
+            _user_text_event(session, "[Request interrupted by user] no, wrong table")
+        ),
+    ]
+    stats = extract.Stats()
+    events = extract._extract_from_lines(
+        lines,
+        corpus="local",
+        session_fallback=session,
+        is_sidechain_default=False,
+        stats=stats,
+    )
+    users = [e for e in events if e.tool == "__user__"]
+    assert len(users) == 1
+    assert users[0].result_head == "no, wrong table"
+
+
+# ---------------------------------------------------------------------------
+# 13. same transcript under two file paths is one event stream
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_transcript_files_deduped(tmp_path: Path) -> None:
+    """A second file whose lines carry the same ``sessionId`` lands them
+    under a suffixed session key — identical calls at identical seqs in
+    "two sessions" (gr570090(c)). Extraction keeps each observed event
+    once."""
+    sid = "33333333-3333-3333-3333-333333333333"
+    root = tmp_path / "projects"
+    proj = root / "-Users-x-proj"
+    line = json.dumps(_tool_use_event(sid, "toolu_dup", "Bash", {"command": "ls"}))
+    _write_jsonl(proj / f"{sid}.jsonl", [json.loads(line)])
+    _write_jsonl(proj / "dup.jsonl", [json.loads(line)])
+
+    out = tmp_path / "events.jsonl"
+    assert (
+        extract.main(["--local", "--projects-glob", str(root), "--out", str(out)]) == 0
+    )
+    rows = [
+        json.loads(item)
+        for item in out.read_text(encoding="utf-8").splitlines()
+        if item.strip()
+    ]
+    tool_rows = [r for r in rows if r["tool"] == "Bash"]
+    assert len(tool_rows) == 1
+    # Which file wins is mtime order — the survivor's session root is the
+    # same underlying sessionId either way.
+    assert tool_rows[0]["session"].split("/", 1)[0] == sid

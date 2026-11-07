@@ -130,6 +130,7 @@ class Stats:
     local_files: int = 0
     job_transcripts: int = 0
     parse_failures: int = 0
+    deduped_events: int = 0
     events_by_corpus: dict[str, int] = field(default_factory=dict)
 
     def bump(self, corpus: str, n: int) -> None:
@@ -221,6 +222,56 @@ def _split_user_content(content: Any) -> tuple[list[str], list[dict[str, Any]]]:
     return [], []
 
 
+#: Envelopes inside ``user``-event text that are machine-written, not
+#: human turns: reminders, background-agent (peer) notifications, fork
+#: prompts, and local-command chrome. gr570090(f): the correction
+#: detector's real recall problem was that the ``__user__`` stream was
+#: mostly these — a pass that filtered them by hand found ~65 real
+#: corrections in ~1,030 turns where the lexicon saw 2 false positives.
+_NON_HUMAN_TAG_RE = re.compile(
+    r"<(system-reminder|task-notification|fork-boilerplate|local-command-[a-z-]+|command-[a-z-]+)>.*?</\1>",
+    re.S,
+)
+#: Same envelopes, unterminated (a truncated tail) — strip to end.
+_NON_HUMAN_TAG_OPEN_RE = re.compile(
+    r"<(system-reminder|task-notification|fork-boilerplate|local-command-[a-z-]+|command-[a-z-]+)>.*\Z",
+    re.S,
+)
+#: Bracketed harness status lines at the start of a line — "[Request
+#: interrupted by user]", "[Your previous response had no visible
+#: output...]" — typed by the harness, not the human.
+_HARNESS_CHROME_RE = re.compile(
+    r"^\[(?:Request interrupted by user[^\]]*|Your previous response[^\]]*)\]\s*",
+    re.M,
+)
+
+
+def _human_turn_text(evt: dict[str, Any], texts: list[str]) -> str:
+    """The human-typed text of a ``user`` event, or ``""``.
+
+    Three non-human sources are dropped before the text counts as a turn
+    (gr570090(f)): tool results (handled structurally by the caller —
+    this only runs when the event carried no ``tool_result`` blocks),
+    system reminders, and peer messages — which arrive either as tagged
+    envelopes (``<system-reminder>``, ``<task-notification>``,
+    ``<fork-boilerplate>``) or, in the newer transcript format, as
+    ``promptSource='system'`` / ``turnOrigin='task_notification'|``
+    ``'scheduled'`` / ``isMeta`` event flags.
+    """
+    if (
+        evt.get("isMeta")
+        or evt.get("promptSource") == "system"
+        or evt.get("turnOrigin") in ("task_notification", "scheduled")
+    ):
+        return ""
+    text = "\n".join(t for t in texts if t)
+    if not text:
+        return ""
+    text = _NON_HUMAN_TAG_RE.sub(" ", text)
+    text = _NON_HUMAN_TAG_OPEN_RE.sub(" ", text)
+    return _HARNESS_CHROME_RE.sub("", text).strip()
+
+
 def _render_result_content(content: Any) -> str:
     """A tool_result's ``content`` is a plain string OR a list of
     ``{"type": "text", "text": ...}``-shaped blocks — handle both."""
@@ -278,6 +329,7 @@ def _extract_from_lines(
     events: list[Event] = []
     pending: dict[str, _PendingCall] = {}
     seq_counters: dict[str, int] = {}
+    seen_usage_msgs: set[str] = set()
 
     def next_seq(session: str) -> int:
         seq_counters[session] = seq_counters.get(session, 0) + 1
@@ -323,6 +375,23 @@ def _extract_from_lines(
             model = msg.get("model")
             usage_raw = msg.get("usage")
             usage = usage_raw if isinstance(usage_raw, dict) else {}
+            # ``message.usage`` is a per-MESSAGE counter restated verbatim on
+            # every content block: one API message splits into one JSONL line
+            # per block, all carrying the same ``message.id`` + ``usage``.
+            # Stamping it on each turn-level event counted one turn once per
+            # block — on the 2026-11-05 pass the scoreboard read 23.06B
+            # cache-read against a true 10.66B (gr570090(a)). Stamp it once
+            # per ``message.id``; a line with no id keeps the old
+            # always-stamp behaviour (there is nothing to dedupe by). Tool
+            # events keep the raw turn usage — theirs is a join pointer to
+            # the enclosing turn (schema.Event.usage), not a counter.
+            msg_id = msg.get("id")
+            turn_usage = usage
+            if isinstance(msg_id, str) and msg_id:
+                if msg_id in seen_usage_msgs:
+                    turn_usage = {}
+                else:
+                    seen_usage_msgs.add(msg_id)
             # One turn-level event per assistant turn — tool_use blocks carry
             # no token counts, only the enclosing turn does.
             #
@@ -344,7 +413,7 @@ def _extract_from_lines(
                     seq=next_seq(session),
                     ts=ts,
                     model=model,
-                    usage=usage,
+                    usage=turn_usage,
                     result_head=redact.scrub(turn_text)[: schema.HEAD_CHARS],
                     sidechain=sidechain,
                     cwd=cwd,
@@ -425,10 +494,11 @@ def _extract_from_lines(
                     )
                 )
 
-            # A real human turn (or slash-command chrome) — never emitted
-            # for an event that only carries tool_result blocks.
+            # A real human turn — never emitted for an event that only
+            # carries tool_result blocks, and never from text the harness or
+            # a peer agent wrote (`_human_turn_text`).
             if texts and not tool_results:
-                text = "\n".join(t for t in texts if t)
+                text = _human_turn_text(evt, texts)
                 if text:
                     events.append(
                         Event(
@@ -989,6 +1059,14 @@ def main(argv: list[str] | None = None) -> int:
             files = iter_local_files(args.projects_glob, since)
             if args.limit is not None:
                 files = files[: args.limit]
+            # Two file paths can hold the same transcript — a second file
+            # whose lines carry the same ``sessionId`` lands them under a
+            # suffixed session key (``sid/stem``), so the same observed
+            # event was emitted twice and the 2026-11-05 pass saw two
+            # sessions with identical calls at identical seqs (gr570090(c)).
+            # (root session id, seq, ts, payload) is the underlying event's
+            # identity; a real second call gets a different seq or ts.
+            seen_events: set[tuple] = set()
             for path in files:
                 stats.local_files += 1
                 is_sidechain_default = path.parent.name == "subagents"
@@ -1005,9 +1083,25 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"warning: could not read {path}: {exc}", file=sys.stderr)
                     continue
                 events = _filter_since(events, since)
+                kept = 0
                 for ev in events:
+                    key = (
+                        ev.session.split("/", 1)[0],
+                        ev.seq,
+                        ev.ts,
+                        ev.tool,
+                        ev.arg_digest,
+                        ev.err_head,
+                        ev.result_head,
+                        ev.is_error,
+                    )
+                    if key in seen_events:
+                        stats.deduped_events += 1
+                        continue
+                    seen_events.add(key)
                     out_fh.write(ev.to_json() + "\n")
-                stats.bump("local", len(events))
+                    kept += 1
+                stats.bump("local", kept)
 
         # Each prod corpus is isolated. The local corpus is the expensive one
         # to produce and the only one with payloads; a cluster hop that fails,
@@ -1053,7 +1147,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "mine-sessions/extract: "
         f"local_files={stats.local_files} job_transcripts={stats.job_transcripts} "
-        f"parse_failures={stats.parse_failures} events={dict(stats.events_by_corpus)} "
+        f"parse_failures={stats.parse_failures} deduped={stats.deduped_events} "
+        f"events={dict(stats.events_by_corpus)} "
         f"elapsed={elapsed:.1f}s -> {out_path}",
         file=sys.stderr,
     )

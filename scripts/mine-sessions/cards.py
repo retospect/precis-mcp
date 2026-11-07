@@ -79,7 +79,9 @@ def _format_event(ev: Event) -> list[str]:
 
 
 def _render_occurrence(
-    ref: dict[str, Any], sessions: dict[str, list[Event]]
+    ref: dict[str, Any],
+    sessions: dict[str, list[Event]],
+    event_index: dict[tuple[str, int], Event],
 ) -> list[str]:
     session = ref["session"]
     seq = ref["seq"]
@@ -87,7 +89,21 @@ def _render_occurrence(
     idx = next((i for i, e in enumerate(sess_events) if e.seq == seq), None)
     lines = [f"### session {scrub(session)} seq {seq}"]
     if idx is None:
-        lines.append("(event not found in this event set)")
+        # ``by_session`` only admits real conversational threads — a ledger
+        # row in a synthetic ``ledger:YYYY-MM-DD`` day bucket is excluded,
+        # so its evidence ref never resolved and every ledger-sourced card
+        # printed "(event not found in this event set)" (gr570090(d)).
+        # Render the row itself: its ``arg_digest``/``err_head`` carry the
+        # 0209 masked arg_sample/error_head, which is exactly the evidence
+        # the card exists to show. ±2 turns of day-bucket "context" would
+        # be unrelated fleet calls — none is rendered.
+        ev = event_index.get((session, seq))
+        if ev is None:
+            lines.append("(event not found in this event set)")
+            return lines
+        lines.append("(no surrounding turns — corpus carries no session context)")
+        for line in _format_event(ev):
+            lines.append(f">> {line}")
         return lines
     lo = max(0, idx - CONTEXT_TURNS)
     hi = min(len(sess_events), idx + CONTEXT_TURNS + 1)
@@ -101,7 +117,10 @@ def _render_occurrence(
 
 
 def _render_card(
-    cand: dict[str, Any], sessions: dict[str, list[Event]], doc_summary: str
+    cand: dict[str, Any],
+    sessions: dict[str, list[Event]],
+    event_index: dict[tuple[str, int], Event],
+    doc_summary: str,
 ) -> str:
     header = [
         f"# {cand['detector']} — {cand['signature']}",
@@ -119,7 +138,7 @@ def _render_card(
 
     body: list[str] = []
     for ref in cand["evidence"]:
-        body.extend(_render_occurrence(ref, sessions))
+        body.extend(_render_occurrence(ref, sessions, event_index))
         body.append("")
 
     text = "\n".join(header + body)
@@ -213,6 +232,7 @@ def main(argv: list[str] | None = None) -> None:
     events = detect.load_events(args.events)
     events.sort(key=lambda e: (e.session, e.seq))
     sessions = detect.by_session(events)
+    event_index = {(e.session, e.seq): e for e in events}
 
     candidates: list[dict[str, Any]] = json.loads(
         args.candidates.read_text(encoding="utf-8")
@@ -233,7 +253,7 @@ def main(argv: list[str] | None = None) -> None:
             # Slug from the SCRUBBED signature — a raw secret must never land
             # in a filename either, even though out/ is gitignored.
             fname = f"{i:02d}-{_slug(scrub(cand['signature']))}.md"
-            text = _render_card(cand, sessions, doc_summary)
+            text = _render_card(cand, sessions, event_index, doc_summary)
             (det_dir / fname).write_text(text, encoding="utf-8")
             index_entries.append(
                 (det, f"{det}/{fname}", scrub(cand["signature"]), cand["n"])

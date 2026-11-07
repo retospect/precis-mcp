@@ -148,18 +148,28 @@ Miner caveats, to discount before trusting a card:
   `id='/open'`) is dropped by the miner but still counted by other ledger
   consumers (gr492453). If `get|gripe` tops `render_obesity` at p50 ≈ 33 B,
   the probe changed shape again — check `_LEDGER_EXCLUDE_PROBES`.
-- The scoreboard's token line over-counts: `usage` repeats on every content
-  block of an assistant message, so output and cache-read read 2–3× high
-  until `stats.py` de-duplicates per message. The "precis share of
-  tool-result bytes" denominator also includes `llmlog` bytes; local-only it
-  was 15.3%, not 5.6%, on 2026-11-05.
-- Ledger-sourced cards (`hard_error`, `spin`) carry no payload — judge those
-  signatures from `tool_calls.arg_sample` / `error_head`, not the card.
+- Token totals and the byte share are `schema_version` 2 (gr570090):
+  `usage` is stamped once per `message.id` and the share's denominator is
+  payload-corpus tool results only — v1 scoreboards read 2–3× high on
+  tokens and a few points low on the share.
+- Ledger-sourced cards (`hard_error`, `spin`) render the row itself
+  (`arg_sample` / `error_head`) when the session bucket has no context
+  turns — a "(no surrounding turns)" line is expected there, not a miss.
+- `detour_census` counts only command-position invocations (a `cat` or
+  `git log --` on `scripts/prod-psql` is a mention, not a call), buckets
+  `< file.sql`/`-f` as `sql-file:<name>`, counts curl only against the
+  precis surface, and collapses the same call seen at identical seq+ts in
+  two sessions.
+- `correction_roundtrip`'s `__user__` stream is human-turn-only (tool
+  results, reminders, task notifications, scheduled wakes dropped at
+  extraction); its n is a lexicon recall floor — judge the real set by
+  reading `session_digest` human turns (~65 in ~1,030 on 2026-11-05).
 - A card's occurrence dates decide whether it is work: on 2026-11-05 the two
   largest error signatures were both fixed on main before the window closed.
-- Known detector false positives: `skill_taught_wrong` counts a legitimate
-  NotFound and blames the last-read skill; `session_digest` drops assistant
-  text; `exec_class zero` counts empty-capture rows.
+- Known detector false positives: `skill_taught_wrong` still blames the
+  last-read skill when an error lands on a kind that skill's `kinds:` covers
+  (a legitimate NotFound included); `session_digest` drops assistant text;
+  `exec_class zero` counts empty-capture rows.
 
 ## Levers
 

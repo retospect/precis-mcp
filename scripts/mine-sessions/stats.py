@@ -29,7 +29,12 @@ import outdir
 from redact import scrub
 from schema import Event
 
-SCHEMA_VERSION = 1
+#: v2 (gr570090): token totals now count ``usage`` once per assistant
+#: ``message.id`` (the extractor dedupes the per-block restatement), and
+#: the precis-byte-share denominator covers only payload-corpus tool
+#: results — llmlog response bytes no longer inflate it. Numbers are not
+#: comparable with v1 scoreboards.
+SCHEMA_VERSION = 2
 
 
 def _date_range(events: Sequence[Event]) -> tuple[str | None, str | None]:
@@ -175,7 +180,14 @@ def _tokens(events: Sequence[Event]) -> dict[str, Any]:
         )
     top_sessions = sorted(per_session.items(), key=lambda kv: kv[1], reverse=True)[:10]
 
-    tool_events = [e for e in events if e.tool not in (None, "__user__")]
+    # Denominator = tool-result bytes in payload corpora only. llmlog rows
+    # carry ``result_bytes`` = response_chars of an LLM call, not a tool
+    # result — including them printed the share as 5.6% (24.7 of 442 MB)
+    # where the real tool-result figure was 15.3% (24.7 of 161.3 MB,
+    # gr570090(b)).
+    tool_events = [
+        e for e in events if e.tool not in (None, "__user__") and detect.has_payload(e)
+    ]
     total_tool_bytes = sum(e.result_bytes for e in tool_events)
     precis_bytes = sum(e.result_bytes for e in tool_events if detect.is_precis(e))
     precis_share = precis_bytes / total_tool_bytes if total_tool_bytes else 0.0
@@ -197,7 +209,7 @@ def _detour_census(events: Sequence[Event]) -> dict[str, Any]:
     hits = [
         e
         for e in events
-        if e.tool == "Bash" and detect.DETOUR_CENSUS_RE.search(e.arg_digest or "")
+        if e.tool == "Bash" and detect.detour_bucket(e.arg_digest or "") is not None
     ]
     return {"count": len(hits), "bytes_total": sum(e.result_bytes for e in hits)}
 
@@ -273,7 +285,7 @@ def render_markdown(sb: dict[str, Any]) -> str:
         f"cache_read_ratio={_fmt_pct(tk['cache_read_ratio'])}"
     )
     lines.append(
-        f"precis result_bytes share of tool-result bytes: "
+        f"precis result_bytes share of tool-result bytes (payload corpora): "
         f"{_fmt_pct(tk['precis_result_bytes_share'])} "
         f"({tk['precis_result_bytes_total']}/{tk['total_tool_result_bytes']})"
     )

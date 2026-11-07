@@ -44,6 +44,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import outdir
 from redact import scrub
@@ -488,41 +489,194 @@ def detect_abandon_detour(events: Sequence[Event]) -> list[Candidate]:
     return [_candidate("abandon_detour", sig, evs) for sig, evs in groups.items()]
 
 
-DETOUR_CENSUS_RE = re.compile(r"psql|prod-psql|scripts/precis|curl .*api", re.I)
-_TABLE_RE = re.compile(r"\bfrom\s+([a-z_][a-z0-9_.]*)", re.I)
-_ENDPOINT_RE = re.compile(r"curl\s+\S*?(/[a-z0-9_./-]+)", re.I)
+#: Pipeline/sequence separators — each segment has its own command word.
+_SHELL_SPLIT_RE = re.compile(r"[|;&\n]+|\$\(|`")
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
+#: Prefixes through which a detour tool can still be the real command word:
+#: ``sudo prod-psql``, ``xargs prod-psql``, ``bash -c 'prod-psql …'``,
+#: ``env A=1 psql``, ``uv run scripts/prod-psql``.
+_WRAPPER_WORDS = frozenset(
+    {
+        "sudo",
+        "doas",
+        "env",
+        "time",
+        "command",
+        "nice",
+        "nohup",
+        "watch",
+        "timeout",
+        "xargs",
+        "exec",
+        "bash",
+        "sh",
+        "zsh",
+        "fish",
+        "run",
+        "uv",
+    }
+)
+#: A word that IS a detour tool (optionally path-qualified): ``psql``,
+#: ``prod-psql``, ``scripts/prod-psql``, ``scripts/precis``, bare
+#: ``precis``, ``curl``. Anything merely containing the name —
+#: ``cat scripts/prod-psql``, ``grep prod-psql``, ``git log --
+#: scripts/prod-psql`` — is a mention, not a call; on the 2026-11-05 pass
+#: that mention-vs-call confusion was most of the ``other`` bucket's 792
+#: hits (gr570090(c)).
+_DETOUR_PROG_RE = re.compile(r"(?:[\w./~-]+/)?(?:prod-psql|psql|precis|curl)$", re.I)
+_TABLE_RE = re.compile(r"\b(?:from|join|into|update)\s+([a-z_][a-z0-9_.]*)", re.I)
+#: SQL arriving via a file rather than inline — ``prod-psql < q.sql``,
+#: ``psql -f q.sql``, ``\i q.sql``. The table is hidden inside the file but
+#: the file's name still says what was being queried, which is what the
+#: census bucket needs (gr570090(c)).
+_SQL_FILE_RES = (
+    re.compile(r"(?<!<)<(?![<(])\s*([\w./~+-]+)"),
+    re.compile(r"(?<!\S)(?:-f|--file)[=\s]+([\w./~+-]+)"),
+    re.compile(r"\\i\s+([\w./~+-]+)"),
+)
+_CMD_JSON_RE = re.compile(r'"command"\s*:\s*"((?:[^"\\]|\\.)*)')
+_CURL_URL_RE = re.compile(r"https?://[^\s\"'\\]+")
+#: curl counts only when it aims at the precis HTTP surface — the ``/mcp``
+#: endpoint, a precis-named host/path, localhost, or a scrubbed cluster
+#: address (an IP/hostname is already ``[redacted:…]`` by the time the
+#: digest reaches us). A curl to an external API is ordinary web use, and
+#: it was the second big ``other``-bucket noise source (gr570090(c)).
+_PRECIS_CURL_RE = re.compile(
+    r"/mcp\b|precis|localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]"
+    r"|\[redacted:(?:tailnet-ip|lan-ip|host)\]",
+    re.I,
+)
 
 
-def _guess_intent(cmd: str) -> str:
-    m = _TABLE_RE.search(cmd)
+def _bash_command(digest: str) -> str:
+    """The shell command inside a Bash call's ``arg_digest``.
+
+    Local extraction renders the digest as ``json.dumps(args)``, so the
+    command sits in the ``command`` field — but the digest is a 400-char
+    head slice, so a long arg list truncates the JSON and the parse fails;
+    the regex fallback reads the still-intact front of the string. Codex
+    exec calls may carry ``input`` or a ``command`` list instead.
+    """
+    try:
+        obj = json.loads(digest)
+    except (TypeError, ValueError):
+        obj = None
+    if isinstance(obj, dict):
+        cmd = obj.get("command") or obj.get("input")
+        if isinstance(cmd, str):
+            return cmd
+        if isinstance(cmd, list):
+            return " ".join(str(x) for x in cmd)
+    m = _CMD_JSON_RE.search(digest or "")
+    if m:
+        frag = m.group(1)
+        try:
+            return json.loads(f'"{frag}"')
+        except ValueError:
+            return frag
+    return digest or ""
+
+
+def _sql_intent(seg: str, prog: str) -> str:
+    """What a psql/prod-psql invocation was pointed at — the bucket the
+    census exists for. An inline ``FROM``/``JOIN``/``INTO``/``UPDATE``
+    table read off the SQL, else a ``.sql`` file name (redirect, ``-f``,
+    ``\\i`` — the file's name says what was being queried), else the bare
+    ``cli:`` bucket for an invocation whose target isn't visible at all."""
+    m = _TABLE_RE.search(seg)
     if m:
         return f"table:{m.group(1).lower()}"
-    m = _ENDPOINT_RE.search(cmd)
+    for pat in _SQL_FILE_RES:
+        m = pat.search(seg)
+        if m:
+            return f"sql-file:{m.group(1).rsplit('/', 1)[-1]}"
+    return f"cli:{prog}"
+
+
+def _curl_intent(seg: str) -> str | None:
+    if not _PRECIS_CURL_RE.search(seg):
+        return None
+    m = _CURL_URL_RE.search(seg)
     if m:
-        return f"endpoint:{m.group(1)}"
-    if "scripts/precis" in cmd:
-        return "cli:scripts/precis"
-    return "other"
+        try:
+            path = urlsplit(m.group(0)).path
+        except ValueError:
+            path = ""
+        if path:
+            return f"endpoint:{path}"
+        return "endpoint:-"
+    return "endpoint:-"
+
+
+def _segment_intent(seg: str) -> str | None:
+    """The detour signature one shell segment earns, or ``None``. A detour
+    tool only counts in command position — the first word after env
+    assignments and wrappers — so ``cat scripts/prod-psql`` and
+    ``echo use prod-psql`` are mentions, not calls."""
+    words = seg.split()
+    i = 0
+    while i < len(words):
+        w = words[i].strip("\"'")
+        if _ENV_ASSIGN_RE.match(w) or w in _WRAPPER_WORDS or w.startswith("-"):
+            i += 1
+            continue
+        break
+    if i >= len(words):
+        return None
+    prog = words[i].strip("\"'")
+    if not _DETOUR_PROG_RE.fullmatch(prog):
+        return None
+    tool = prog.rsplit("/", 1)[-1].lower()
+    if tool == "curl":
+        return _curl_intent(seg)
+    if tool == "precis":
+        return "cli:precis"
+    return _sql_intent(seg, tool)
+
+
+def detour_bucket(arg_digest: str) -> str | None:
+    """The detour signature a Bash ``arg_digest`` earns, or ``None`` when it
+    holds no detour invocation. Shared by ``detour_census`` and the
+    scoreboard's census counter so the two counts can never drift — the
+    single implementation rule this module already applies to
+    ``exec_class``/``percentile``."""
+    cmd = _bash_command(arg_digest)
+    for seg in _SHELL_SPLIT_RE.split(cmd):
+        intent = _segment_intent(seg)
+        if intent is not None:
+            return intent
+    return None
 
 
 @detector("detour_census")
 def detect_detour_census(events: Sequence[Event]) -> list[Candidate]:
-    """Every ``Bash`` call matching ``psql|prod-psql|scripts/precis|curl
-    .*api``, bucketed by a crude guess at the table/endpoint it touched
-    (``metrics['result_bytes_total']`` alongside the count). A bucket with
-    a lot of calls and bytes is a missing verb with usage data already
-    attached. Fix class: MCP capability — this ranks *which* verb to build
-    next by demand, not just that one is missing.
+    """Every ``Bash`` call that invokes ``psql``/``prod-psql``/the
+    ``precis`` CLI/a precis-surface ``curl`` *in command position*
+    (``detour_bucket``), bucketed by the table, SQL file, endpoint or CLI
+    it touched (``metrics['result_bytes_total']`` alongside the count).
+    Mentions — a command line that merely contains ``prod-psql`` — do not
+    count, and neither does a curl to an external API; both were most of
+    the old ``other`` bucket's 792 noise hits (gr570090(c)). Events with an
+    identical ``(seq, ts, arg_digest)`` in different sessions are the same
+    observed call extracted under two file paths — counted once. A bucket
+    with a lot of calls and bytes is a missing verb with usage data
+    already attached. Fix class: MCP capability — this ranks *which* verb
+    to build next by demand, not just that one is missing.
     """
     groups: dict[str, list[Event]] = defaultdict(list)
     bytes_by_sig: dict[str, int] = defaultdict(int)
+    seen: set[tuple] = set()
     for ev in events:
         if ev.tool != "Bash":
             continue
-        cmd = ev.arg_digest or ""
-        if not DETOUR_CENSUS_RE.search(cmd):
+        sig = detour_bucket(ev.arg_digest or "")
+        if sig is None:
             continue
-        sig = _guess_intent(cmd)
+        if ev.ts:
+            key = (ev.seq, ev.ts, ev.arg_digest)
+            if key in seen:
+                continue
+            seen.add(key)
         groups[sig].append(ev)
         bytes_by_sig[sig] += ev.result_bytes
     cands = [
@@ -702,27 +856,86 @@ def detect_read_then_unused(events: Sequence[Event]) -> list[Candidate]:
     return cands
 
 
+_SKILLS_DIR = Path(__file__).resolve().parents[2] / "src" / "precis" / "data" / "skills"
+_SKILL_KINDS_RE = re.compile(r"^kinds:\s*(.+?)\s*$", re.M)
+_SKILL_ID_RE = re.compile(r"^id:\s*(\S+)\s*$", re.M)
+
+
+def _load_skill_kinds(skills_dir: Path = _SKILLS_DIR) -> dict[str, frozenset[str]]:
+    """skill id -> the ``kinds:`` frontmatter list, for every skill file on
+    disk (``src/precis/data/skills/*.md``). A skill that names its kinds is
+    also naming the errors it can plausibly have taught: an errored call
+    on a kind outside the list cannot have been taught by it — the rule
+    that removes most of this detector's false positives (gr570090(e)).
+    A skill absent from the map (unreadable file, no ``kinds:`` line)
+    keeps the old any-error rule — absence of metadata proves nothing."""
+    out: dict[str, frozenset[str]] = {}
+    try:
+        files = sorted(skills_dir.glob("*.md"))
+    except OSError:
+        return out
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8")[:6000]
+        except OSError:
+            continue
+        fm_end = text.find("\n---", 3)
+        if not text.startswith("---") or fm_end == -1:
+            continue
+        frontmatter = text[3:fm_end]
+        m = _SKILL_KINDS_RE.search(frontmatter)
+        if not m:
+            continue
+        kinds = frozenset(
+            k.strip() for k in m.group(1).strip().strip("[]").split(",") if k.strip()
+        )
+        if not kinds:
+            continue
+        out[path.stem] = kinds
+        idm = _SKILL_ID_RE.search(frontmatter)
+        if idm:
+            out[idm.group(1)] = kinds
+    return out
+
+
 @detector("skill_taught_wrong")
 def detect_skill_taught_wrong(events: Sequence[Event]) -> list[Candidate]:
     """``get(kind='skill', id=...)`` followed within 3 turns by an errored
     precis call in the same session. The signature names the skill id
-    (recovered from ``arg_digest``) — that is the file to fix. Fix class:
+    (recovered from ``arg_digest``) — that is the file to fix. Two
+    exclusions learned the hard way (gr570090(e)): an errored call on a
+    kind outside the read skill's ``kinds:`` frontmatter cannot have been
+    taught by it, and an over-cap failure on a skill *read* is a budget
+    problem, not the previous skill's teaching — of the first five cards
+    three were exactly these two false positives. A failed skill read also
+    seeds nothing: an errored ``get|skill`` taught nobody. Fix class:
     skill edit.
     """
+    skill_kinds = _load_skill_kinds()
     groups: dict[str, list[Event]] = defaultdict(list)
     for sess_events in by_session(events).values():
         skill_calls = [
             e
             for e in sess_events
-            if is_precis(e) and e.verb == "get" and e.kind == "skill"
+            if is_precis(e) and e.verb == "get" and e.kind == "skill" and not e.is_error
         ]
         for skill_ev in skill_calls:
             skill_id = _arg_value(skill_ev, "id") or "?"
+            kinds = skill_kinds.get(skill_id)
             for cand in sess_events:
                 if cand.seq <= skill_ev.seq or cand.seq - skill_ev.seq > 3:
                     continue
-                if is_precis(cand) and cand.is_error:
-                    groups[f"skill:{skill_id}"].extend([skill_ev, cand])
+                if not (is_precis(cand) and cand.is_error):
+                    continue
+                if (
+                    cand.verb == "get"
+                    and cand.kind == "skill"
+                    and cand.err_type == "ResultBudgetExceeded"
+                ):
+                    continue
+                if kinds and cand.kind and cand.kind not in kinds:
+                    continue
+                groups[f"skill:{skill_id}"].extend([skill_ev, cand])
     return [_candidate("skill_taught_wrong", sig, evs) for sig, evs in groups.items()]
 
 
@@ -776,6 +989,19 @@ _CORRECTION_RE = re.compile(
     re.I,
 )
 
+#: Why this count must be read as a floor, never a census (gr570090(f)).
+_CORRECTION_CAVEAT = (
+    "RECALL FLOOR: on the 2026-11-05 pass this lexicon matched n=2 (both "
+    "false positives) where a hand model-read of the human turns found "
+    "~65 real corrections in ~1,030 turns. The ``__user__`` stream is now "
+    "human-turn-only (tool results, system reminders and peer/task "
+    "notifications are dropped at extraction — gr570090(f)), which fixes "
+    "precision, but the lexicon still cannot judge 'the human corrected "
+    "the agent'. Read session_digest's human turns for the real set; this "
+    "candidate only proves the preceding tool sequence was followed by "
+    "lexicon-shaped text."
+)
+
 
 @detector("correction_roundtrip")
 def detect_correction_roundtrip(events: Sequence[Event]) -> list[Candidate]:
@@ -784,8 +1010,11 @@ def detect_correction_roundtrip(events: Sequence[Event]) -> list[Candidate]:
     "stop", "don't"), within 3 turns of a preceding tool sequence, local
     corpus only. Highest-value class: the preceding tool calls (kept in
     ``evidence`` alongside the correction) name the doc or skill that
-    taught the agent wrong, in a human's own words. Fix class: skill edit
-    or doc fix, whichever document the preceding calls point at.
+    taught the agent wrong, in a human's own words. Always carries
+    ``caveat``: the lexicon is a recall floor, and judging whether a human
+    turn is really a correction needs a model read — that is the pass's
+    job over session_digest, not a regex's (gr570090(f)). Fix class: skill
+    edit or doc fix, whichever document the preceding calls point at.
     """
     groups: dict[str, list[Event]] = defaultdict(list)
     for sess_events in by_session(events).values():
@@ -807,7 +1036,10 @@ def detect_correction_roundtrip(events: Sequence[Event]) -> list[Candidate]:
             anchor = preceding[-1]
             sig = f"{anchor.verb or anchor.tool}|{anchor.kind or '-'}"
             groups[sig].extend([*preceding, ev])
-    return [_candidate("correction_roundtrip", sig, evs) for sig, evs in groups.items()]
+    return [
+        _candidate("correction_roundtrip", sig, evs, caveat=_CORRECTION_CAVEAT)
+        for sig, evs in groups.items()
+    ]
 
 
 @detector("spin")

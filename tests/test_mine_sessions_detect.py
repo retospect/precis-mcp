@@ -297,6 +297,136 @@ def test_d5_detour_census_near_miss_unmatched_bash() -> None:
     assert detect.detect_detour_census(events) == []
 
 
+def test_d5_detour_census_mention_not_call_excluded() -> None:
+    """gr570090(c): a command line that merely *contains* ``prod-psql`` is
+    a mention, not a call — ``cat``/``grep``/``git log --`` on the script
+    was most of the ``other`` bucket's 792 noise hits. Only command
+    position counts."""
+    digest = '{"command": "%s"}'
+    mentions = [
+        "cat scripts/prod-psql",
+        "grep -n prod-psql scripts/prod-psql",
+        "git log --oneline -- scripts/prod-psql",
+        "sed -n '1,40p' scripts/prod-psql",
+        "echo try prod-psql next",
+    ]
+    for cmd in mentions:
+        events = [mk(seq=1, tool="Bash", verb=None, arg_digest=digest % cmd)]
+        assert detect.detect_detour_census(events) == [], cmd
+
+
+def test_d5_detour_census_wrappers_still_count() -> None:
+    for cmd in (
+        "sudo prod-psql --ro 'select 1'",
+        "bash scripts/prod-psql --ro 'select 1'",
+        "FOO=1 psql -c 'select 1'",
+        "true && prod-psql --ro 'select 1'",
+    ):
+        events = [
+            mk(
+                seq=1,
+                tool="Bash",
+                verb=None,
+                arg_digest='{{"command": "{}"}}'.format(cmd.replace("'", "\\u0027")),
+            )
+        ]
+        cands = detect.detect_detour_census(events)
+        assert len(cands) == 1, cmd
+
+
+def test_d5_detour_census_sql_file_buckets() -> None:
+    """gr570090(c): ``prod-psql < q.sql`` hid its table — bucket by the
+    file name, which still says what was queried."""
+    digest = '{"command": "%s"}'
+    cases = {
+        "prod-psql < scratch/q.sql": "sql-file:q.sql",
+        "prod-psql --ro -f /tmp/dump.sql": "sql-file:dump.sql",
+        "psql -f queries/report.sql": "sql-file:report.sql",
+    }
+    for cmd, want in cases.items():
+        events = [
+            mk(
+                seq=1,
+                tool="Bash",
+                verb=None,
+                arg_digest=digest % cmd,
+            )
+        ]
+        cands = detect.detect_detour_census(events)
+        assert [c.signature for c in cands] == [want], cmd
+
+
+def test_d5_detour_census_curl_external_not_counted() -> None:
+    """gr570090(c): an external-API curl is ordinary web use, not a detour
+    around the precis surface."""
+    for cmd in (
+        "curl -s https://api.github.com/rate_limit",
+        "curl https://pypi.org/simple/requests/ | head",
+    ):
+        events = [
+            mk(
+                seq=1,
+                tool="Bash",
+                verb=None,
+                arg_digest=f'{{"command": "{cmd}"}}',
+            )
+        ]
+        assert detect.detect_detour_census(events) == [], cmd
+
+
+def test_d5_detour_census_curl_precis_surface_counted() -> None:
+    for cmd, want in (
+        ("curl -s http://localhost:8000/mcp -d '{}'", "endpoint:/mcp"),
+        ("curl -s https://precis.example.com/mcp", "endpoint:/mcp"),
+    ):
+        events = [
+            mk(
+                seq=1,
+                tool="Bash",
+                verb=None,
+                arg_digest=f'{{"command": "{cmd}"}}',
+            )
+        ]
+        cands = detect.detect_detour_census(events)
+        assert [c.signature for c in cands] == [want], cmd
+
+
+def test_d5_detour_census_dedupes_same_call_two_sessions() -> None:
+    """gr570090(c): identical calls at identical seqs in two sessions are
+    the same observed event extracted under two file paths — count once."""
+    digest = '{"command": "psql -c \\"select * from refs\\""}'
+    events = [
+        mk(
+            session="s1",
+            seq=4,
+            ts="2026-11-05T10:00:00Z",
+            tool="Bash",
+            verb=None,
+            arg_digest=digest,
+        ),
+        mk(
+            session="s1/dup",
+            seq=4,
+            ts="2026-11-05T10:00:00Z",
+            tool="Bash",
+            verb=None,
+            arg_digest=digest,
+        ),
+        # Different ts: a genuinely repeated call, counted.
+        mk(
+            session="s2",
+            seq=4,
+            ts="2026-11-05T11:00:00Z",
+            tool="Bash",
+            verb=None,
+            arg_digest=digest,
+        ),
+    ]
+    cands = detect.detect_detour_census(events)
+    assert len(cands) == 1
+    assert cands[0].n == 2
+
+
 # ---------------------------------------------------------------------------
 # D6 render_obesity
 # ---------------------------------------------------------------------------
@@ -511,6 +641,138 @@ def test_d8_skill_taught_wrong_near_miss_outside_window() -> None:
     assert detect.detect_skill_taught_wrong(events) == []
 
 
+def _patch_skill_kinds(monkeypatch, kinds_map: dict) -> None:
+    monkeypatch.setattr(detect, "_load_skill_kinds", lambda *a, **k: kinds_map)
+
+
+def test_d8_skill_taught_wrong_excludes_kind_outside_skill_kinds(
+    monkeypatch,
+) -> None:
+    """gr570090(e): a ``kinds: [agentlog]`` skill cannot have taught a
+    ``kind='paper'`` error — blaming it was three of the first five cards'
+    worth of false positives."""
+    _patch_skill_kinds(monkeypatch, {"precis-agentlog-help": frozenset({"agentlog"})})
+    events = [
+        mk(
+            seq=1,
+            verb="get",
+            kind="skill",
+            arg_digest='{"id": "precis-agentlog-help", "kind": "skill"}',
+            arg_keys=("id", "kind"),
+        ),
+        mk(
+            seq=2,
+            verb="get",
+            kind="paper",
+            is_error=True,
+            err_type="NotFound",
+            err_head="no paper",
+        ),
+    ]
+    assert detect.detect_skill_taught_wrong(events) == []
+
+
+def test_d8_skill_taught_wrong_keeps_kind_inside_skill_kinds(monkeypatch) -> None:
+    _patch_skill_kinds(monkeypatch, {"precis-agentlog-help": frozenset({"agentlog"})})
+    events = [
+        mk(
+            seq=1,
+            verb="get",
+            kind="skill",
+            arg_digest='{"id": "precis-agentlog-help", "kind": "skill"}',
+            arg_keys=("id", "kind"),
+        ),
+        mk(
+            seq=2,
+            verb="get",
+            kind="agentlog",
+            is_error=True,
+            err_type="BadInput",
+            err_head="bad view",
+        ),
+    ]
+    cands = detect.detect_skill_taught_wrong(events)
+    assert len(cands) == 1
+    assert cands[0].signature == "skill:precis-agentlog-help"
+
+
+def test_d8_skill_taught_wrong_unknown_skill_keeps_old_rule(monkeypatch) -> None:
+    """A skill absent from the map proves nothing — the old any-error
+    window still applies."""
+    _patch_skill_kinds(monkeypatch, {})
+    events = [
+        mk(
+            seq=1,
+            verb="get",
+            kind="skill",
+            arg_digest='{"id": "no-such-skill", "kind": "skill"}',
+            arg_keys=("id", "kind"),
+        ),
+        mk(
+            seq=2,
+            verb="get",
+            kind="paper",
+            is_error=True,
+            err_type="NotFound",
+            err_head="no paper",
+        ),
+    ]
+    assert len(detect.detect_skill_taught_wrong(events)) == 1
+
+
+def test_d8_skill_taught_wrong_excludes_overcap_skill_read(
+    monkeypatch,
+) -> None:
+    """gr570090(e): an over-cap failure on a skill READ is a budget
+    problem, not the previous skill's teaching."""
+    _patch_skill_kinds(monkeypatch, {"precis-x": frozenset({"skill"})})
+    events = [
+        mk(
+            seq=1,
+            verb="get",
+            kind="skill",
+            arg_digest='{"id": "precis-x", "kind": "skill"}',
+            arg_keys=("id", "kind"),
+        ),
+        mk(
+            seq=2,
+            verb="get",
+            kind="skill",
+            is_error=True,
+            err_type="ResultBudgetExceeded",
+            err_head="result exceeds cap",
+        ),
+    ]
+    assert detect.detect_skill_taught_wrong(events) == []
+
+
+def test_d8_skill_taught_wrong_errored_read_seeds_nothing(monkeypatch) -> None:
+    """An errored ``get|skill`` delivered no teaching — it cannot be the
+    cause of a following failure either."""
+    _patch_skill_kinds(monkeypatch, {})
+    events = [
+        mk(
+            seq=1,
+            verb="get",
+            kind="skill",
+            arg_digest='{"id": "precis-x", "kind": "skill"}',
+            arg_keys=("id", "kind"),
+            is_error=True,
+            err_type="NotFound",
+            err_head="no skill",
+        ),
+        mk(
+            seq=2,
+            verb="get",
+            kind="paper",
+            is_error=True,
+            err_type="NotFound",
+            err_head="no paper",
+        ),
+    ]
+    assert detect.detect_skill_taught_wrong(events) == []
+
+
 # ---------------------------------------------------------------------------
 # D9 vocab_near_miss
 # ---------------------------------------------------------------------------
@@ -565,6 +827,10 @@ def test_d10_correction_roundtrip_hit() -> None:
     cands = detect.detect_correction_roundtrip(events)
     assert len(cands) == 1
     assert cands[0].signature == "get|paper"
+    # gr570090(f): the lexicon is a recall floor — every candidate must
+    # carry the caveat telling the pass to read session_digest's human
+    # turns for the real set.
+    assert "RECALL FLOOR" in cands[0].caveat
 
 
 def test_d10_correction_roundtrip_near_miss_no_lexicon_match() -> None:
@@ -1020,6 +1286,60 @@ def test_cards_random_seed_is_reproducible(tmp_path: Path) -> None:
         ).read_text(encoding="utf-8")
 
 
+def test_cards_ledger_row_renders_itself_not_not_found(tmp_path: Path) -> None:
+    """gr570090(d): a ledger day-bucket session is excluded from
+    ``by_session``, so every ledger-sourced card printed "(event not
+    found in this event set)". The card must render the row itself —
+    arg_sample and error_head are exactly the evidence the card is for."""
+    events = [
+        mk(
+            session="ledger:2026-11-04",
+            seq=17,
+            corpus="ledger",
+            verb="search",
+            kind="gripe",
+            arg_keys=("kind", "q"),
+            arg_digest='{"kind": "gripe", "q": "gr570090"}',
+            is_error=True,
+            err_type="BadInput",
+            err_head="q must be >= 3 chars",
+            ts="2026-11-04T09:00:00Z",
+        ),
+    ]
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text("\n".join(e.to_json() for e in events), encoding="utf-8")
+    candidate = {
+        "detector": "hard_error",
+        "signature": "search|gripe|BadInput|q must be >= # chars",
+        "n": 1,
+        "n_sessions": 1,
+        "first_ts": None,
+        "last_ts": None,
+        "evidence": [{"session": "ledger:2026-11-04", "seq": 17}],
+        "metrics": {},
+        "caveat": "",
+    }
+    candidates_path = tmp_path / "candidates.json"
+    candidates_path.write_text(json.dumps([candidate]), encoding="utf-8")
+    out_dir = tmp_path / "cards"
+    cards.main(
+        [
+            "--events",
+            str(events_path),
+            "--candidates",
+            str(candidates_path),
+            "--out",
+            str(out_dir),
+            "--random",
+            "0",
+        ]
+    )
+    text = next((out_dir / "hard_error").glob("*.md")).read_text(encoding="utf-8")
+    assert "event not found" not in text
+    assert "q must be >= 3 chars" in text
+    assert "gr570090" in text
+
+
 # ---------------------------------------------------------------------------
 # stats.py
 # ---------------------------------------------------------------------------
@@ -1085,6 +1405,28 @@ def test_stats_produces_valid_json_with_documented_keys() -> None:
     assert reparsed["tokens"]["input_total"] == 100
     assert reparsed["detour_census"]["count"] == 1
     assert "get" in reparsed["per_verb"]
+
+
+def test_stats_precis_share_excludes_llmlog_bytes() -> None:
+    """gr570090(b): llmlog ``result_bytes`` are LLM response chars, not
+    tool results — including them printed 5.6% where the payload-corpus
+    share was 15.3%."""
+    events = [
+        mk(seq=1, verb="get", kind="paper", result_bytes=25),
+        mk(seq=2, tool="Bash", verb=None, arg_digest="ls", result_bytes=75),
+        mk(
+            seq=3,
+            tool="__llm__",
+            verb=None,
+            corpus="llmlog",
+            result_bytes=10_000,
+        ),
+    ]
+    sb = stats.build_scoreboard(events)
+    tk = sb["tokens"]
+    assert tk["total_tool_result_bytes"] == 100
+    assert tk["precis_result_bytes_total"] == 25
+    assert tk["precis_result_bytes_share"] == 0.25
 
 
 def test_stats_cli_writes_both_outputs(tmp_path: Path) -> None:
