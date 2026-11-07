@@ -35,8 +35,12 @@ get(kind="md", id="docs/backlog/some-item.md", q="find me")  # passages inside t
 
 `<alias>` comes from `PRECIS_MD_ROOTS`. `~<heading>` takes the
 heading plus everything nested under it, up to the next heading of
-equal or higher rank — match by exact slug or by title text
-(case-insensitive).
+equal or higher rank — match by exact slug, by title text
+(case-insensitive), or by a unique title prefix (`~Gaps` resolves
+`## Gaps, most valuable first`); a miss lists the file's headings in
+the refusal. An absolute path under a root or worktree is accepted
+too — it reads as its `<alias>/<rel>` form, announced on the reply's
+`interpreted:` line.
 
 Worktree aliases: when the server has `PRECIS_PYTHON_WORKTREES` (the
 worktree spec is shared with the python kind), every git worktree of

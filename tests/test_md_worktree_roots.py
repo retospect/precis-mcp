@@ -152,6 +152,39 @@ def test_not_in_default_fanout(env):
     assert "wt-alpha" in named
 
 
+def test_absolute_worktree_path_maps_to_wt_alias(env):
+    """gr572707: an absolute path inside a discovered worktree reads as
+    its wt-<tree> alias id instead of refusing 'missing alias'."""
+    h, reg, _ = _make(env)
+    wt_path = reg.listing()[0]["wt-alpha"].path
+    resp = h.get(id=str(wt_path / "doc.md"))
+    assert resp.body.startswith("interpreted:")
+    assert "read as 'wt-alpha/doc.md'" in resp.body
+    assert "Worktree notes" in resp.body
+
+
+def test_absolute_host_path_maps_via_gitdir_map(env):
+    """The agent's host-side spelling translates through
+    PRECIS_PYTHON_GITDIR_MAP to the container path the registry knows."""
+    h, _, _ = _make(env)
+    resp = h.get(id=f"{HOST}/wts/alpha/doc.md~Worktree notes")
+    assert "worktree-only prose" in resp.body
+    assert "read as 'wt-alpha/doc.md~Worktree notes'" in resp.body
+
+
+def test_missing_file_names_worktree_holding_it(env):
+    """A file absent from main but present in a worktree checkout is
+    named in the miss (the lagging-checkout shape, gr572707)."""
+    h, reg, _ = _make(env)
+    wt_path = reg.listing()[0]["wt-alpha"].path
+    (wt_path / "extra.md").write_text("# Extra\n\nwt only\n", encoding="utf-8")
+    with pytest.raises(NotFound, match="not found") as exc:
+        h.get(id="main/extra.md")
+    nxt = exc.value.next
+    assert isinstance(nxt, list)
+    assert "get(kind='md', id='wt-alpha/extra.md')" in nxt
+
+
 def test_no_registry_behaves_as_before(tmp_path: Path):
     """Without a WorktreeRegistry nothing changes: wt-* is just an
     unknown alias."""

@@ -20,7 +20,14 @@ Address grammar accepted by ``get``:
     <alias>/<file>~<slug-or-title>  -> one heading's block(s) (the
                                         heading plus everything nested
                                         under it, up to the next
-                                        heading of equal or higher rank)
+                                        heading of equal or higher rank);
+                                        the selector resolves an exact
+                                        slug, a title (case-insensitive)
+                                        or a unique title prefix
+
+An absolute path under a registered root — or under a discovered
+worktree, host-side spellings included — resolves to its
+``<alias>/<rel>`` form and the reply announces the reading (gr572707).
 
 ``search`` is hybrid: a lexical leg (:func:`precis.md_index.search_blocks`)
 always runs; a semantic leg (:func:`precis.md_index.cosine_search`) runs
@@ -49,6 +56,7 @@ like the rest of the kind.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from collections import Counter
@@ -61,6 +69,7 @@ from precis._result_budget import size_cell
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.format import render_agent_table
+from precis.handlers._interpret import interpreted
 from precis.handlers._python_worktrees import WorktreeRegistry
 from precis.handlers._roots import parse_alias_roots
 from precis.md_index import (
@@ -312,6 +321,11 @@ class MdHandler(Handler):
         """
         from precis.handlers._find_in_ref import find_preflight, find_response
 
+        readings: list[str] = []
+        mapped = self._abs_path_id(id) if isinstance(id, str) else None
+        if mapped is not None:
+            id, mapped_note = mapped
+            readings.append(mapped_note)
         find_preflight(kind="md", id=id, view=view, q=q)
         parsed = _parse_id(str(id))
         root = self._resolve_alias(parsed.alias)
@@ -327,28 +341,27 @@ class MdHandler(Handler):
             )
         file_entry = idx.file(parsed.file)
         if file_entry is None:
-            raise NotFound(
-                f"file {parsed.file!r} not found in md root {parsed.alias!r}",
-                next=f"get(kind='md', id='{parsed.alias}')",
-            )
+            raise self._file_not_found(parsed)
         display = f"{parsed.alias}/{parsed.file}"
         blocks: list[MdBlockEntry] = list(file_entry.blocks)
         if parsed.selector is not None:
-            block = _resolve_selector(file_entry, parsed.selector)
-            if block is None:
-                raise NotFound(
-                    f"no heading {parsed.selector!r} in {parsed.file}",
-                    next=f"get(kind='md', id='{display}')",
-                )
+            block, note = _resolve_selector(
+                file_entry, parsed.selector, next=f"get(kind='md', id='{display}')"
+            )
+            if note is not None:
+                readings.append(note)
             blocks = _section_blocks(file_entry, block)
             display = f"{display}~{block.slug}"
-        return find_response(
-            kind="md",
-            display=display,
-            chunks=blocks,
-            q=str(q).strip(),
-            context=context,
-            chunk_label=lambda b: f"{parsed.alias}/{parsed.file}~{b.slug}",
+        return interpreted(
+            find_response(
+                kind="md",
+                display=display,
+                chunks=blocks,
+                q=str(q).strip(),
+                context=context,
+                chunk_label=lambda b: f"{parsed.alias}/{parsed.file}~{b.slug}",
+            ),
+            readings,
         )
 
     def get(
@@ -366,7 +379,13 @@ class MdHandler(Handler):
         if id is None or id == "/" or id == "":
             return Response(body=_render_index(self.roots))
 
-        parsed = _parse_id(str(id))
+        readings: list[str] = []
+        raw_id = str(id)
+        mapped = self._abs_path_id(raw_id)
+        if mapped is not None:
+            raw_id, mapped_note = mapped
+            readings.append(mapped_note)
+        parsed = _parse_id(raw_id)
         root = self._resolve_alias(parsed.alias)
         idx = self._index(parsed.alias, root)
 
@@ -374,7 +393,7 @@ class MdHandler(Handler):
             raise Unsupported(
                 f"unknown md view {view!r}",
                 options=list(_SUPPORTED_VIEWS),
-                next=f"get(kind='md', id={id!r}, view='outline')",
+                next=f"get(kind='md', id={raw_id!r}, view='outline')",
             )
 
         if parsed.file is None:
@@ -383,27 +402,35 @@ class MdHandler(Handler):
                     "view='source' requires a file id",
                     next=f"get(kind='md', id={parsed.alias!r})",
                 )
-            return Response(body=_render_overview(parsed.alias, idx))
+            return interpreted(
+                Response(body=_render_overview(parsed.alias, idx)), readings
+            )
 
         file_entry = idx.file(parsed.file)
         if file_entry is None:
-            raise NotFound(
-                f"file {parsed.file!r} not found in md root {parsed.alias!r}",
-                next=f"get(kind='md', id={parsed.alias!r})",
-            )
+            raise self._file_not_found(parsed)
 
         if parsed.selector is not None:
-            block = _resolve_selector(file_entry, parsed.selector)
-            if block is None:
-                raise NotFound(
-                    f"no heading {parsed.selector!r} in {parsed.file}",
-                    next=f"get(kind='md', id='{parsed.alias}/{parsed.file}')",
-                )
-            return Response(body=_render_section(parsed.alias, file_entry, block))
+            block, note = _resolve_selector(
+                file_entry,
+                parsed.selector,
+                next=f"get(kind='md', id='{parsed.alias}/{parsed.file}')",
+            )
+            if note is not None:
+                readings.append(note)
+            return interpreted(
+                Response(body=_render_section(parsed.alias, file_entry, block)),
+                readings,
+            )
 
         if view == "source":
-            return Response(body=_render_source(parsed.alias, file_entry, root))
-        return Response(body=_render_file_outline(parsed.alias, file_entry))
+            return interpreted(
+                Response(body=_render_source(parsed.alias, file_entry, root)),
+                readings,
+            )
+        return interpreted(
+            Response(body=_render_file_outline(parsed.alias, file_entry)), readings
+        )
 
     # ── search ─────────────────────────────────────────────────────
 
@@ -504,6 +531,71 @@ class MdHandler(Handler):
         return Response(body="\n".join(lines))
 
     # ── helpers ────────────────────────────────────────────────────
+
+    def _abs_path_id(self, raw: str) -> tuple[str, str] | None:
+        """Map an absolute path under a known root to its alias id.
+
+        The agent passes the path it sees (gr572707): a path under a
+        discovered worktree — host-side spellings are run through
+        :meth:`WorktreeRegistry.translate_path` so the
+        ``PRECIS_PYTHON_GITDIR_MAP`` mount translation applies — or a
+        static root has exactly one reading, so the id is rewritten to
+        ``<alias>/<rel>[~sel]`` and the caller announces it. Longest
+        root prefix wins on nesting, static roots win ties (same
+        precedence as :meth:`_resolve_alias`); ``None`` leaves the id
+        for ``_parse_id`` to refuse as before.
+        """
+        base, sep, sel = raw.partition("~")
+        if not base.startswith("/"):
+            return None
+        candidates = [Path(base)]
+        if self.worktrees is not None:
+            translated = self.worktrees.translate_path(base)
+            if translated != candidates[0]:
+                candidates.append(translated)
+        roots = [*self.roots.items(), *self._worktree_listing().items()]
+        best: tuple[Path, str, Path] | None = None
+        for cand in candidates:
+            try:
+                cand = cand.resolve()
+            except OSError:
+                cand = Path(os.path.normpath(str(cand)))
+            for alias, root in roots:
+                if not cand.is_relative_to(root):
+                    continue
+                if best is None or len(root.parts) > len(best[0].parts):
+                    best = (root, alias, cand)
+        if best is None:
+            return None
+        root, alias, cand = best
+        rel = cand.relative_to(root).as_posix()
+        new_id = alias if rel == "." else f"{alias}/{rel}"
+        if sep:
+            new_id += f"~{sel}"
+        return new_id, f"{raw!r} read as {new_id!r}"
+
+    def _file_not_found(self, parsed: _ParsedMdId) -> NotFound:
+        """The file miss — points at other roots holding the same path.
+
+        A file absent from a lagging checkout often sits in a fresher
+        worktree (gr572707): the refusal names each alias where the
+        relative path exists on disk, else falls back to the root
+        overview hint as before.
+        """
+        assert parsed.file is not None
+        nexts: list[str] = []
+        if ".." not in Path(parsed.file).parts:
+            for alias, root in [
+                *self.roots.items(),
+                *self._worktree_listing().items(),
+            ]:
+                if alias != parsed.alias and (root / parsed.file).is_file():
+                    nexts.append(f"get(kind='md', id='{alias}/{parsed.file}')")
+        nexts.append(f"get(kind='md', id={parsed.alias!r})")
+        return NotFound(
+            f"file {parsed.file!r} not found in md root {parsed.alias!r}",
+            next=nexts,
+        )
 
     def _worktree_listing(self) -> dict[str, Path]:
         if self.worktrees is None:
@@ -629,21 +721,54 @@ def _coverage_suffix(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_selector(file_entry: MdFileEntry, selector: str) -> MdBlockEntry | None:
+def _resolve_selector(
+    file_entry: MdFileEntry, selector: str, *, next: str
+) -> tuple[MdBlockEntry, str | None]:
     """Resolve a ``~selector`` against one file's blocks.
 
-    Tries an exact ``md_parse`` slug match first (stable, content-
-    derived); falls back to a case-insensitive heading-title match so
-    ``~'Ship workflow'`` works without knowing the minted slug.
+    First hit wins on the ladder: the exact ``md_parse`` slug (stable,
+    content-derived); the exact heading title, case-insensitive
+    (``~'Ship workflow'`` works without knowing the minted slug); then
+    a *unique* case-insensitive title prefix — ``~'Gaps'`` resolves a
+    ``## Gaps, most valuable first`` heading (gr572707). Forgiving
+    reads return a ``read as`` note for the reply's ``interpreted:``
+    line; a prefix matching two or more headings refuses with just
+    those titles in ``options=``, and a flat miss lists every heading,
+    so the refusal costs no second call to recover.
     """
     block = file_entry.block(selector)
     if block is not None:
-        return block
+        return block, None
     needle = selector.strip().lower()
-    for b in file_entry.blocks:
-        if b.kind == "heading" and b.title and b.title.strip().lower() == needle:
-            return b
-    return None
+    headings = [
+        (b.title.strip(), b)
+        for b in file_entry.blocks
+        if b.kind == "heading" and b.title and b.title.strip()
+    ]
+    for title, b in headings:
+        if title.lower() == needle:
+            note = (
+                f"~{selector!r} read as ~{title!r}"
+                if selector.strip() != title
+                else None
+            )
+            return b, note
+    prefixed = [tb for tb in headings if needle and tb[0].lower().startswith(needle)]
+    if len(prefixed) == 1:
+        title, b = prefixed[0]
+        return b, f"~{selector!r} read as ~{title!r}"
+    if len(prefixed) > 1:
+        raise NotFound(
+            f"ambiguous heading prefix {selector!r} in {file_entry.file} "
+            f"({len(prefixed)} matches)",
+            options=list(dict.fromkeys(t for t, _ in prefixed)),
+            next=next,
+        )
+    raise NotFound(
+        f"no heading {selector!r} in {file_entry.file}",
+        options=list(dict.fromkeys(t for t, _ in headings)) or None,
+        next=next,
+    )
 
 
 def _section_blocks(

@@ -273,11 +273,120 @@ def test_get_section_by_slug(handler: MdHandler) -> None:
 def test_get_section_by_title_case_insensitive(handler: MdHandler) -> None:
     resp = handler.get(id="r/docs/guide.md~ship workflow")
     assert "fresh after shipping" in resp.body
+    # a forgiving read is announced on the interpreted: line (rule 9)
+    assert resp.body.startswith(
+        "interpreted: ~'ship workflow' read as ~'Ship workflow'"
+    )
 
 
-def test_get_section_unknown_selector_raises_not_found(handler: MdHandler) -> None:
-    with pytest.raises(NotFound, match="no heading"):
+def test_get_section_by_unique_title_prefix(handler: MdHandler) -> None:
+    """gr572707: ``~'Ship'`` resolves ``## Ship workflow`` — one
+    reading, so the call runs and names it."""
+    resp = handler.get(id="r/docs/guide.md~Ship")
+    assert resp.body.startswith("interpreted: ~'Ship' read as ~'Ship workflow'")
+    assert "fresh after shipping" in resp.body
+    # nested sub-section content still comes along
+    assert "Nested detail" in resp.body
+
+
+def test_get_section_ambiguous_prefix_refuses_with_options(
+    handler: MdHandler,
+) -> None:
+    """A prefix matching two headings refuses with just those titles."""
+    with pytest.raises(NotFound, match="ambiguous heading prefix") as exc:
+        handler.get(id="r/docs/guide.md~s")
+    assert exc.value.options == ["Ship workflow", "Sub-section"]
+    assert exc.value.next is not None
+
+
+def test_get_section_unknown_selector_lists_headings(
+    handler: MdHandler,
+) -> None:
+    """gr572707: the miss names the file's headings so recovery costs
+    no second call."""
+    with pytest.raises(NotFound, match="no heading") as exc:
         handler.get(id="r/docs/guide.md~does-not-exist")
+    assert exc.value.options == [
+        "Guide",
+        "Ship workflow",
+        "Sub-section",
+        "Other section",
+    ]
+    # str(exc) carries the options inline for callers that never see
+    # the structured fields (gr514481 shape).
+    assert "Ship workflow" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# get — absolute paths and cross-root file misses (gr572707)
+# ---------------------------------------------------------------------------
+
+
+def test_get_absolute_path_maps_to_root_alias(handler: MdHandler, repo: Path) -> None:
+    resp = handler.get(id=str(repo / "docs" / "guide.md"))
+    assert resp.body.startswith("interpreted: '")
+    assert "read as 'r/docs/guide.md'" in resp.body
+    assert "Ship workflow" in resp.body
+
+
+def test_get_absolute_path_with_selector(handler: MdHandler, repo: Path) -> None:
+    resp = handler.get(id=f"{repo}/docs/guide.md~Other section")
+    assert "Unrelated prose" in resp.body
+    # heading content only — no sibling section
+    assert "fresh after shipping" not in resp.body
+
+
+def test_get_absolute_path_of_root_shows_overview(
+    handler: MdHandler, repo: Path
+) -> None:
+    resp = handler.get(id=str(repo))
+    assert resp.body.startswith("interpreted:")
+    assert "md root overview" in resp.body
+
+
+def test_get_absolute_path_outside_roots_still_badinput(
+    handler: MdHandler,
+) -> None:
+    with pytest.raises(BadInput, match="missing alias"):
+        handler.get(id="/definitely/not/a/root/file.md")
+
+
+def test_get_missing_file_names_other_root_holding_it(tmp_path: Path) -> None:
+    """gr572707: a file absent from a lagging checkout is often in a
+    fresher root — the miss points at the alias that has it."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / "here.md").write_text("# Here\n\nin a\n", encoding="utf-8")
+    (b / "only.md").write_text("# Only\n\nin b\n", encoding="utf-8")
+    h = MdHandler(hub=Hub(), roots={"a": a, "b": b})
+    with pytest.raises(NotFound, match="not found") as exc:
+        h.get(id="a/only.md")
+    nxt = exc.value.next
+    assert isinstance(nxt, list)
+    assert "get(kind='md', id='b/only.md')" in nxt
+
+
+def test_get_missing_file_no_other_root_keeps_overview_hint(
+    handler: MdHandler,
+) -> None:
+    with pytest.raises(NotFound, match="not found") as exc:
+        handler.get(id="r/docs/nope.md")
+    nxt = exc.value.next
+    assert isinstance(nxt, list)
+    assert nxt == ["get(kind='md', id='r')"]
+
+
+def test_find_in_ref_selector_prefix(handler: MdHandler) -> None:
+    resp = handler.get(id="r/docs/guide.md~Ship", q="fresh")
+    assert resp.body.startswith("interpreted: ~'Ship' read as")
+    assert "fresh" in resp.body
+
+
+def test_find_in_ref_absolute_path(handler: MdHandler, repo: Path) -> None:
+    resp = handler.get(id=str(repo / "docs" / "guide.md"), q="fresh")
+    assert resp.body.startswith("interpreted: '")
+    assert "fresh" in resp.body
 
 
 # ---------------------------------------------------------------------------
