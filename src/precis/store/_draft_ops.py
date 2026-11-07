@@ -47,7 +47,7 @@ from precis.store.core import StoreCore
 from precis.utils import handle_registry
 from precis.utils.db_retry import retry_locked
 from precis.utils.fractional import key_between, n_keys_between
-from precis.utils.handles import new_handle
+from precis.utils.handles import is_handle, new_handle
 
 _log = logging.getLogger(__name__)
 
@@ -969,13 +969,21 @@ class DraftStore(_AbbrevMixin):
         plan — looked up by ``chunk_id``) or the legacy ``¶<base58>`` / bare
         base-58 anchor (looked up by ``chunks.handle``). ``kind`` sets the
         returned chunk's handle namespace (``pe<id>`` for a plan) and, for a
-        universal-handle address, the code prefix that must match."""
+        universal-handle address, the code prefix that must match.
+
+        A legacy mint can collide with the decimal grammar (``Dc1647`` ≈
+        ``dc<chunk_id>`` — ``parse`` is code-case-insensitive): the decimal
+        address keeps precedence when its pk resolves, but on a miss a
+        handle-shaped input falls back to the ``handle`` column so rows
+        minted before ``new_handle`` learned to skip parseable candidates
+        stay reachable (gr582947)."""
+        bare = _bare(handle)
         parsed = handle_registry.parse(handle.strip())
         key: str | int
         if parsed is not None and parsed[0] == kind and parsed[1]:
             where, key = "chunk_id = %s", parsed[2]
         else:
-            where, key = "handle = %s", _bare(handle)
+            where, key = "handle = %s", bare
         with self.pool.connection() as conn:
             row = conn.execute(
                 f"""SELECT chunk_id, handle, chunk_kind, text, pos,
@@ -983,6 +991,13 @@ class DraftStore(_AbbrevMixin):
                      FROM chunks WHERE {where}""",
                 (key,),
             ).fetchone()
+            if row is None and where == "chunk_id = %s" and is_handle(bare):
+                row = conn.execute(
+                    """SELECT chunk_id, handle, chunk_kind, text, pos,
+                              parent_chunk_id, ref_id, meta, retired_at
+                         FROM chunks WHERE handle = %s""",
+                    (bare,),
+                ).fetchone()
         if row is None:
             return None
         return DraftChunk(

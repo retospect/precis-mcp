@@ -98,3 +98,17 @@ def test_handle_no_ambiguous_chars():
 def test_handle_randomness():
     # not all identical (sanity)
     assert len({new_handle() for _ in range(1000)}) > 900
+
+
+def test_new_handle_never_mints_a_decimal_handle(monkeypatch):
+    """gr582947: a mint shaped ``<code><digits>`` (``Dc1647`` ≈ ``dc1647`` —
+    ``handle_registry.parse`` folds the code's case) is ambiguous: decimal
+    resolution hijacks it onto ``chunk_id``, and the ``handle``-column row
+    goes NotFound (or silently resolves to a different chunk). The mint
+    must skip every candidate ``parse`` accepts."""
+    from precis.utils import handle_registry, handles
+
+    assert handle_registry.parse("Dc1647") is not None  # the collision shape
+    scripted = iter("Dc1647" + "KzQm7p")  # colliding mint, then a clean one
+    monkeypatch.setattr(handles.secrets, "choice", lambda _alphabet: next(scripted))
+    assert handles.new_handle() == "KzQm7p"

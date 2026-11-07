@@ -189,6 +189,60 @@ def test_add_chunks_unknown_anchor_raises_notfound(store: Store) -> None:
         )
 
 
+def test_get_draft_chunk_legacy_handle_colliding_with_decimal(store: Store) -> None:
+    """gr582947: a legacy mint shaped ``<code><digits>`` — the r241 flake's
+    ``Dc1647`` — parses as a universal ``dc<chunk_id>`` handle, so the
+    ``chunk_id`` path used to shadow the ``handle`` column entirely. On a
+    pk miss a handle-shaped input now falls back to the ``handle`` column
+    so pre-fix colliding rows stay reachable (the decimal address keeps
+    precedence when its pk resolves — that ambiguity is what
+    ``new_handle`` now refuses to mint)."""
+    from precis.utils import handle_registry
+
+    proj = _project(store)
+    ref, _title = store.drafts.create_draft(
+        name="coll", title="Collision", project_ref_id=proj
+    )
+    chunk = store.drafts.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text="body", split=False
+    )[0]
+
+    # Forge the pre-fix collision the UNIQUE index can't see: the row's
+    # ``handle`` is a well-formed ``dc<N>`` address whose pk (9999, far
+    # above this test's few chunk ids) resolves nothing.
+    colliding = "Dc9999"
+    assert handle_registry.parse(colliding) == ("draft", True, 9999)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET handle = %s WHERE chunk_id = %s",
+            (colliding, chunk.chunk_id),
+        )
+
+    # pk 9999 misses → the handle-column row is found (before the fix this
+    # returned None and ``_resolve_at`` raised the reported NotFound).
+    got = store.drafts.get_draft_chunk(colliding)
+    assert got is not None and got.chunk_id == chunk.chunk_id
+    # …end-to-end through the ``at=`` anchor path that actually flaked.
+    created = store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="anchored",
+        at={"before": colliding},
+        split=False,
+    )
+    assert len(created) == 1
+    # A decimal-parseable anchor that hits NEITHER path still NotFounds.
+    from precis.errors import NotFound
+
+    with pytest.raises(NotFound, match="unknown chunk handle"):
+        store.drafts.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="paragraph",
+            text="orphan",
+            at={"before": "Dc9998"},
+        )
+
+
 def _list_fixture(store: Store) -> tuple[int, str]:
     """A draft with a ulist container + two items under the title. Returns
     ``(ref_id, container_handle)``."""
