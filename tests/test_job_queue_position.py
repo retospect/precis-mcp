@@ -102,3 +102,54 @@ def test_suspended_type_is_held_not_ranked(
 
 def test_terminal_job_has_no_queue_lines(store: Store) -> None:
     assert "queue:" not in _body(store, _job(store, "succeeded"))
+
+
+# ── Release band in the readout (gr584136, review td584420) ────────────
+#
+# The release legs rank at fractional class 2.5 (``job_type``-keyed); the
+# readout used to parse the per-class counts with ``int(k)`` — a ValueError
+# on ``"2.5"`` — and mislabel the band ``recurring``.
+
+
+def _age_queued_tag(store: Store, ref_id: int, secs: float) -> None:
+    """Back-date a job's ``STATUS:queued`` tag by ``secs`` (ageing input)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags rt SET created_at = now() - "
+            "make_interval(secs => %s) "
+            "FROM tags t WHERE t.tag_id = rt.tag_id AND rt.ref_id = %s "
+            "AND t.namespace = 'STATUS' AND t.value = 'queued'",
+            (secs, ref_id),
+        )
+        conn.commit()
+
+
+def test_release_leg_reports_its_own_band(store: Store) -> None:
+    leg = _job(store, "queued", job_type="ci_verdict_poll")
+    body = _body(store, leg)
+    assert "— class release (0 ahead" in body
+    assert "recurring" not in body
+
+
+def test_queued_behind_release_leg_parses_fractional_class(store: Store) -> None:
+    _job(store, "queued", job_type="ci_verdict_poll")
+    follower = _job(store, "queued")
+    body = _body(store, follower)
+    assert "queue: position 2 of 2" in body
+    assert "queue: ahead by class: release x1" in body
+
+
+def test_release_leg_freezes_ageing_in_readout(store: Store) -> None:
+    """The readout mirrors the claim's release freeze: while a leg is
+    claimable a background row's class-ageing promotion is floored at its
+    own class, so a 2-hour-old row stays rank 3 behind the 2.5 leg.
+    Without ``release_freeze`` it would promote to 2.5, tie the leg, and
+    win on fully-aged prio — reporting position 1 where the claim puts
+    it second."""
+    bg = _job(store, "queued", origin="background")
+    _age_queued_tag(store, bg, 7200)
+    leg = _job(store, "queued", job_type="ci_verdict_poll")
+    assert "queue: position 1 of 2" in _body(store, leg)
+    body = _body(store, bg)
+    assert "queue: position 2 of 2" in body
+    assert "aged up to" not in body

@@ -987,9 +987,9 @@ def _claim_order_sql(
     lower class promotes, so an aged background backlog can neither
     reach the release band (tie it) nor cross it toward recurring.
     It requires the surrounding ``t`` LATERAL to select
-    ``bool_or(base = 2.5) AS has_release``; callers whose ``t`` lateral
-    predates the band (the advisory ``queue:`` readout) pass nothing —
-    release rows still self-pin at 2.5, only the freeze term drops.
+    ``bool_or(base = 2.5) AS has_release``; a caller whose ``t`` lateral
+    predates the band must pass nothing — release rows still self-pin
+    at 2.5, only the freeze term drops.
     """
     if not class_rank:
         if age_step_s <= 0:

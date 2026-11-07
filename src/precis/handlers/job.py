@@ -68,6 +68,7 @@ from precis.workers.executors._common import (
     _DEFAULT_JOB_PRIO,
     _MAX_RUNNING_DEFAULTS,
     _MAX_RUNNING_KEY_PREFIX,
+    _RELEASE_LEG_RANK,
     _SLICE_S_KEY_PREFIX,
     _SLICING_KEY_PREFIX,
     CLAIMABLE,
@@ -87,9 +88,15 @@ from precis.workers.job_describe import job_row_sentence
 from precis.workers.job_types import get_job_type, known_job_types
 from precis.workers.wake_runner import _requeue
 
-#: Inverse of ``_BASE_CLASS_RANK`` — base-class integer -> origin class
-#: name, for the ``queue:`` hint's per-class readout (slice 6, D6).
-_CLASS_NAME_BY_RANK = {rank: name for name, rank in _BASE_CLASS_RANK.items()}
+#: Inverse of ``_BASE_CLASS_RANK`` — base-class rank -> class name, for
+#: the ``queue:`` hint's per-class readout (slice 6, D6) — plus the
+#: fractional release band (gr584136), which the int-keyed base map
+#: can't hold. Look up with ``float()``: ranks arrive as text
+#: (``jsonb_object_agg`` keys) or Decimal, and ``int("2.5")`` raises.
+_CLASS_NAME_BY_RANK: dict[float, str] = {
+    rank: name for name, rank in _BASE_CLASS_RANK.items()
+}
+_CLASS_NAME_BY_RANK[_RELEASE_LEG_RANK] = "release"
 
 _TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
 
@@ -4265,6 +4272,7 @@ class JobHandler(NumericRefHandler):
             claim_age_step_s(),
             claim_class_age_s(),
             class_rank=claim_class_rank_enabled(),
+            release_freeze=True,
         )
         suspended = sorted(suspended_job_types())
         susp_sql = (
@@ -4291,7 +4299,9 @@ class JobHandler(NumericRefHandler):
                         ) b
                     CROSS JOIN LATERAL (
                           SELECT min({_CLASS_RANK_CASE.replace("r.", "r3.")})
-                                 AS top_class
+                                 AS top_class,
+                                 bool_or({_CLASS_RANK_CASE.replace("r.", "r3.")}
+                                         = {_RELEASE_LEG_RANK}) AS has_release
                             FROM refs r3
                            WHERE r3.kind = 'job' AND r3.retired_at IS NULL
                              AND r3.meta->>'executor' = %s
@@ -4329,6 +4339,7 @@ class JobHandler(NumericRefHandler):
                     *aparams,
                     STATUS_NAMESPACE,
                     list(CLAIMABLE),
+                    _DEFAULT_JOB_PRIO,
                     _DEFAULT_JOB_PRIO,
                     _DEFAULT_JOB_PRIO,
                     executor,
@@ -4373,16 +4384,20 @@ class JobHandler(NumericRefHandler):
         since = as_utc(queued_since)
         if total and since is not None:
             waited = int((datetime.now(UTC) - since).total_seconds())
-            cls_name = _CLASS_NAME_BY_RANK.get(int(bclass), "background")
+            cls_name = _CLASS_NAME_BY_RANK.get(float(bclass), "background")
             # The claim ranks by origin class first (slice 6, D2/D3). A
             # prio-1 row preempts across classes (claim_rank -1); otherwise
             # note when ageing has promoted this row above its minted class.
             aged_note = ""
-            if crank is not None and int(crank) < 0:
+            if crank is not None and float(crank) < 0:
                 aged_note = ", prio-1 preempt (claims ahead of every class)"
-            elif crank is not None and bclass is not None and int(crank) < int(bclass):
+            elif (
+                crank is not None
+                and bclass is not None
+                and float(crank) < float(bclass)
+            ):
                 aged_note = (
-                    f", aged up to {_CLASS_NAME_BY_RANK.get(int(crank), '?')} rank"
+                    f", aged up to {_CLASS_NAME_BY_RANK.get(float(crank), '?')} rank"
                 )
             lines.append(
                 f"queue: position {ahead + 1} of {total} queued for executor "
@@ -4392,8 +4407,10 @@ class JobHandler(NumericRefHandler):
             )
             if ahead and ahead_by_class:
                 mix = ", ".join(
-                    f"{_CLASS_NAME_BY_RANK.get(int(k), '?')} x{n}"
-                    for k, n in sorted(ahead_by_class.items())
+                    f"{_CLASS_NAME_BY_RANK.get(float(k), '?')} x{n}"
+                    for k, n in sorted(
+                        ahead_by_class.items(), key=lambda kv: float(kv[0])
+                    )
                 )
                 lines.append(f"queue: ahead by class: {mix}")
         if running:
