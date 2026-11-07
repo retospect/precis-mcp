@@ -342,6 +342,17 @@ REGISTRY: dict[str, SettingSpec] = {
             "fallback.",
         ),
         SettingSpec(
+            key="ci_watch.seen",
+            type="str",
+            env_var=None,
+            default=None,
+            doc="ci_watch's processed-run ledger as JSON "
+            "{run_id: {at, verdict (green|red), wf (nightly|soak)}}, "
+            "capped at 50 — a run in it is never re-judged, so a "
+            "re-tick converges (precis.workers.job_types.ci_watch). "
+            "DB-only — no env fallback.",
+        ),
+        SettingSpec(
             key="release.round",
             type="str",
             env_var=None,

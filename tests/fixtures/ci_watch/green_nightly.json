@@ -1,0 +1,43 @@
+{
+  "endpoints": {
+    "repos/o/r/actions/workflows/check.yml/runs?event=schedule&per_page=3": {
+      "workflow_runs": [
+        {
+          "id": 101,
+          "status": "completed",
+          "conclusion": "success",
+          "event": "schedule",
+          "head_branch": "main",
+          "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "html_url": "https://github.com/o/r/actions/runs/101",
+          "updated_at": "2026-11-07T03:10:00Z"
+        },
+        {
+          "id": 100,
+          "status": "completed",
+          "conclusion": "success",
+          "event": "schedule",
+          "head_branch": "main",
+          "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "html_url": "https://github.com/o/r/actions/runs/100",
+          "updated_at": "2026-11-06T03:10:00Z"
+        }
+      ]
+    },
+    "repos/o/r/actions/workflows/check.yml/runs?per_page=20": {
+      "workflow_runs": [
+        {
+          "id": 101,
+          "status": "completed",
+          "conclusion": "success",
+          "event": "schedule",
+          "head_branch": "main",
+          "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "html_url": "https://github.com/o/r/actions/runs/101",
+          "updated_at": "2026-11-07T03:10:00Z"
+        }
+      ]
+    }
+  },
+  "logs": {}
+}

@@ -15,6 +15,13 @@ thinnest of the three:
   (they own a detached process/container they CAN signal).
 * **No coordinator semantics.** One job, one dispatch, one terminal
   transition — no yield/resume, no fan-out.
+* **Source binding.** The dispatch runs under
+  :func:`precis.utils.inproc_context.tick_context` with
+  ``source=spec.name``, so ``filed_by.principal`` /
+  ``worker_comment_meta`` on the job's writes stamp
+  ``worker:<job_type>`` — never the ``worker:cli`` fallback.
+  ``gripe_dispatch``'s ci_watch door keys on exactly that
+  (``worker:ci_watch``).
 
 The one thing this lane exists FOR that ``claude_inproc`` doesn't offer:
 ``respect_reserve=True`` — the box-heavy claim gate (§B-2) — and, via
@@ -339,7 +346,15 @@ def _dispatch_one(ctx: DispatchContext) -> tuple[str, Any]:
         )
         return "failed", None
 
-    result = spec.dispatch(ctx, spec)
+    from precis.utils.inproc_context import TickContext, tick_context
+
+    # The tick's own source: filed_by.principal and worker_comment_meta
+    # read worker:<source> from this ContextVar (principal.current /
+    # agentlog.current_source_from_env), so the job's writes stamp
+    # worker:<job_type>. Every other TickContext field stays unset —
+    # env-reader helpers fall back to os.environ for them.
+    with tick_context(TickContext(source=spec.name)):
+        result = spec.dispatch(ctx, spec)
     if meta.get(_LEASE_LOST_META_KEY):
         # A mid-drain renewal (renew_own_lease) found this job's lease
         # already reclaimed by another worker generation — the new

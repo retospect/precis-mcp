@@ -1,0 +1,58 @@
+{
+  "endpoints": {
+    "repos/o/r/actions/workflows/check.yml/runs?event=schedule&per_page=3": {
+      "workflow_runs": [
+        {
+          "id": 201,
+          "status": "completed",
+          "conclusion": "failure",
+          "event": "schedule",
+          "head_branch": "main",
+          "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
+          "html_url": "https://github.com/o/r/actions/runs/201",
+          "updated_at": "2026-11-07T03:10:00Z"
+        }
+      ]
+    },
+    "repos/o/r/actions/workflows/check.yml/runs?per_page=20": {
+      "workflow_runs": []
+    },
+    "repos/o/r/actions/runs/201/jobs": {
+      "jobs": [
+        {
+          "id": 9001,
+          "name": "pytest (shard 1)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/o/r/actions/runs/201/job/9001"
+        },
+        {
+          "id": 9002,
+          "name": "pytest (shard 2)",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/o/r/actions/runs/201/job/9002"
+        },
+        {
+          "id": 9003,
+          "name": "lint",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/o/r/actions/runs/201/job/9003"
+        },
+        {
+          "id": 9004,
+          "name": "typecheck",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/o/r/actions/runs/201/job/9004"
+        }
+      ]
+    }
+  },
+  "logs": {
+    "9001": "2026-11-07T03:00:01.0000000Z =========================== short test summary info ============================\n2026-11-07T03:00:02.0000000Z FAILED tests/test_foo.py::test_one - assert 1 == 2\n2026-11-07T03:00:03.0000000Z \u001b[31mFAILED\u001b[0m tests/test_foo.py::test_two[slow-path] - assert 'a' == 'b'\n2026-11-07T03:00:04.0000000Z ========== 2 failed, 1400 passed in 61.20s ==========\n",
+    "9002": "2026-11-07T03:00:05.0000000Z =========================== short test summary info ============================\n2026-11-07T03:00:06.0000000Z ERROR tests/test_bar.py::test_three - ValueError: boom\n",
+    "9003": "2026-11-07T03:00:07.0000000Z src/precis/x.py:1:1: E501 line too long\n2026-11-07T03:00:08.0000000Z Error: Process completed with exit code 1.\n"
+  }
+}

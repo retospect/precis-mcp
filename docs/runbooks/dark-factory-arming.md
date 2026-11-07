@@ -363,6 +363,42 @@ tag — the pass never clears it. Dry run (`params.dry_run`) and the kill
 switch cover the rescue pass too: `would` lists mint/rearm/ask actions
 and nothing is written.
 
+## CI watch (ci_watch)
+
+Turns a red `check.yml` run into gripes. Each tick reads the newest
+`lookback_runs` (default 3) completed `event=schedule` nightly runs on
+main plus the newest 3 completed `release/**` runs carrying a `soak` job
+(`gh api` on the worker's own credentials — no checkout needed; set
+`release.repo` when there is none) and files ONE gripe per failure
+signature: `ci:check.yml:<file>::<test>` (`[param]` stripped) for a
+pytest red, `ci:check.yml:infra:<job name>` (tagged `fix:infra`, not
+`fix:code`) for a failed job with no test node. Dedupe is the exact
+title `nightly red: <sig>` / `soak red: <sig>`: open → a `seen again:`
+comment; terminal → refile, under 7 days naming the old handle. An open
+unresolved gripe with no live todo link is flake-closed after two
+consecutive green runs; a `resolved: <sha>` gripe gets `green on <url>`
+once a green head contains the sha. `ci_watch.seen` (cap 50) is the
+idempotency ledger. Same kill switch as `plan_dispatch`: read-only
+under it or `params.dry_run`, and `ci_watch.seen` is not written either.
+Silence one signature with an open `ci:mute` tag on its gripe.
+
+Armed by one recurring todo — a job every 30 minutes:
+
+    put(kind='todo', text='ci_watch tick (CI run to gripe)',
+        meta={'schedule': {'every': '30m'}, 'executor': 'job_inproc',
+              'job_type': 'ci_watch'})
+
+Disarm: close or pause that todo. The `fix:code` gripes reach a build
+lane by themselves: `gripe_dispatch` opens its door to a gripe carrying
+`meta.ci.sig` stamped `filed_by.principal = 'worker:ci_watch'` — the
+repo's own CI output about its own code, not reader intake. The
+principal is the key, not the client: a stdio `precis serve` client
+binds no principal, so its writes fall through to
+`worker:<PRECIS_CURRENT_SOURCE|cli>`; only the `job_inproc` tick's own
+bound source (`tick_context(source = spec.name)` in the executor)
+lands `worker:ci_watch`. `fix:infra`
+gripes stay out of the lanes; route them to an operator.
+
 ## Kill switch
 
 - `PRECIS_FACTORY=off` in the worker's environment: `run_slice`,

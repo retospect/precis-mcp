@@ -276,3 +276,188 @@ def test_cadence_and_service_spec() -> None:
     assert spec.kind is ServiceKind.PASS
     assert not spec.default_profiles and spec.ref_pass is False
     assert spec.uses_model is False
+
+
+# ── the ci_watch door: meta.ci.sig + filed_by.principal = worker:ci_watch ──
+#
+# The door key is the write principal, never the agent-supplied client
+# or actor: a stdio ``precis serve`` client binds no principal and falls
+# through to ``worker:<PRECIS_CURRENT_SOURCE|cli>``, so only the
+# ``job_inproc`` tick's own bound source lands ``worker:ci_watch`` —
+# ``ci_watch.WORKER_PRINCIPAL``, the one constant both sides name.
+
+
+def _age(store: Store, ref_id: int, minutes: float = 120.0) -> int:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - make_interval(secs => %s) "
+            "WHERE ref_id = %s",
+            (minutes * 60, ref_id),
+        )
+    return ref_id
+
+
+def test_inproc_ci_watch_gripe_is_a_candidate(store: Store, two_lanes: Any) -> None:
+    """A gripe written under the inproc tick context ``ci_watch`` with
+    ``meta.ci.sig`` stamps ``filed_by.principal = worker:ci_watch`` and
+    is a candidate."""
+    from precis.utils.inproc_context import TickContext, tick_context
+    from precis.workers.job_types import ci_watch
+
+    with tick_context(TickContext(source=ci_watch.NAME)):
+        ref = insert_gripe(
+            store,
+            "nightly red: ci:check.yml:tests/test_x.py::test_y",
+            meta={"ci": {"sig": "ci:check.yml:tests/test_x.py::test_y"}},
+        )
+    meta = ref.meta or {}
+    assert (meta.get("filed_by") or {}).get("principal") == (ci_watch.WORKER_PRINCIPAL)
+    gid = int(ref.id)
+    store.add_tag(gid, Tag.open("fix:code"), set_by="agent")
+    _age(store, gid)
+    assert gid in [c.gripe_id for c in gd.candidates(store, 10)]
+
+
+def test_real_run_pass_stamps_the_door_principal(
+    store: Store, two_lanes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: a queued ``ci_watch`` job claimed by
+    ``run_job_inproc_pass`` files a gripe whose stored
+    ``meta.filed_by.principal`` equals ``ci_watch.WORKER_PRINCIPAL`` —
+    the executor's tick binding is what the dispatch door keys on — and
+    the dispatch SQL admits it."""
+    from precis.workers.executors import job_inproc
+    from precis.workers.job_types import ci_watch
+
+    def gh_json(endpoint: str) -> Any:
+        endpoints = {
+            "repos/o/r/actions/workflows/check.yml/runs?event=schedule&per_page=3": {
+                "workflow_runs": [
+                    {
+                        "id": 201,
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "event": "schedule",
+                        "head_branch": "main",
+                        "head_sha": "d" * 40,
+                        "html_url": "https://github.com/o/r/actions/runs/201",
+                        "updated_at": "2026-11-07T03:10:00Z",
+                    }
+                ]
+            },
+            "repos/o/r/actions/workflows/check.yml/runs?per_page=20": {
+                "workflow_runs": []
+            },
+            "repos/o/r/actions/runs/201/jobs": {
+                "jobs": [
+                    {
+                        "id": 9001,
+                        "name": "pytest",
+                        "status": "completed",
+                        "conclusion": "failure",
+                    }
+                ]
+            },
+        }
+        if endpoint not in endpoints:
+            raise AssertionError(f"unstubbed gh endpoint: {endpoint}")
+        return endpoints[endpoint]
+
+    monkeypatch.setattr(ci_watch, "_gh_json", gh_json)
+    monkeypatch.setattr(
+        ci_watch,
+        "_gh_log",
+        lambda repo, job_id: (
+            "2026-11-07T03:00:01.0000000Z FAILED "
+            "tests/test_x.py::test_y - assert 1 == 2\n"
+        ),
+    )
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="ci_watch tick",
+        meta={
+            "executor": "job_inproc",
+            "job_type": ci_watch.NAME,
+            "params": {"repo": "o/r"},
+        },
+    )
+    store.add_tag(job.id, Tag.closed("STATUS", "queued"), set_by="agent")
+    assert job_inproc.run_job_inproc_pass(store, limit=1)["ok"] == 1
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE kind = 'gripe'"
+        ).fetchall()
+    assert len(rows) == 1
+    gid, meta = int(rows[0][0]), dict(rows[0][1] or {})
+    assert (meta.get("ci") or {}).get("sig") == ("ci:check.yml:tests/test_x.py::test_y")
+    assert (meta.get("filed_by") or {}).get("principal") == (ci_watch.WORKER_PRINCIPAL)
+    _age(store, gid)
+    assert gid in [c.gripe_id for c in gd.candidates(store, 10)]
+
+
+def test_mcp_put_handler_cannot_forge_the_ci_door(
+    store: Store, hub: Any, two_lanes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gripe put HANDLER swallows ``meta=`` (``accepts_put_meta`` is
+    False for kind=gripe): a caller-supplied ``meta.ci`` /
+    ``meta.filed_by`` never reaches the ref — no ``ci.sig``, and
+    ``filed_by.principal`` is the server stamp. This test is the red a
+    future handler must hit if it starts accepting ``put_meta`` — the
+    ci_watch door key would then be re-ruled against that surface, not
+    silently widened."""
+    from precis.handlers.gripe import GripeHandler
+    from precis.workers.job_types import ci_watch
+
+    monkeypatch.delenv("PRECIS_CURRENT_SOURCE", raising=False)
+    GripeHandler(hub=hub).put(
+        text="forged ci gripe — never a candidate",
+        meta={
+            "filed_by": {"principal": ci_watch.WORKER_PRINCIPAL},
+            "ci": {"sig": "ci:check.yml:tests/x.py::t"},
+        },
+    )
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE kind = 'gripe' "
+            "ORDER BY ref_id DESC LIMIT 1"
+        ).fetchone()
+    assert row is not None
+    gid, meta = int(row[0]), dict(row[1] or {})
+    assert meta.get("ci") is None
+    assert (meta.get("filed_by") or {}).get("principal") != (ci_watch.WORKER_PRINCIPAL)
+    store.add_tag(gid, Tag.open("fix:code"), set_by="agent")
+    _age(store, gid)
+    assert gid not in [c.gripe_id for c in gd.candidates(store, 10)]
+
+
+def test_worker_cli_with_ci_sig_is_not_a_candidate(
+    store: Store, two_lanes: Any
+) -> None:
+    """A ``worker:cli``-stamped gripe carrying ``meta.ci.sig`` is NOT a
+    candidate — the old ``actor = 'agent'`` clause is gone: the
+    agent-declared actor no longer opens the door."""
+    from precis.workers.job_types import ci_watch
+
+    gid = _gripe(
+        store,
+        "nightly red: ci:check.yml:tests/test_x.py::test_y",
+        meta={
+            "ci": {"sig": "ci:check.yml:tests/test_x.py::test_y"},
+            "filed_by": {"actor": "agent", "principal": "worker:cli"},
+        },
+    )
+    ref = store.get_ref(kind="gripe", id=gid)
+    assert ref is not None
+    meta = ref.meta or {}
+    assert meta["ci"]["sig"] == "ci:check.yml:tests/test_x.py::test_y"
+    assert meta["filed_by"]["principal"] != ci_watch.WORKER_PRINCIPAL
+    assert gid not in [c.gripe_id for c in gd.candidates(store, 10)]
+
+
+def test_worker_gripe_without_ci_sig_is_not_a_candidate(
+    store: Store, two_lanes: Any
+) -> None:
+    gid = _gripe(store, "worker-filed gripe", meta=_WORKER)
+    assert gid not in [c.gripe_id for c in gd.candidates(store, 10)]

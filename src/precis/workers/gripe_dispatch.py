@@ -28,12 +28,25 @@ Each fire:
   ``flood``, ``hold:no-dispatch``, ``hold:no-autoclose``,
   ``cluster:dark-factory``, ``rescue:intake``), and **filed by a
   Claude Code client
-  or a human account** — BUILDER's condition (2026-11-04): the gripe
+  or a human account, or machine-filed with a ``ci.sig``** — BUILDER's
+  condition (2026-11-04): the gripe
   text rides the build body verbatim and lands on main with no triage in
   front, so a reader-intake or worker-filed gripe never reaches a lane by
   this door. ``meta.filed_by`` carries the stamp
-  (:mod:`precis.filing_origin`); a gripe without one is skipped. Order:
-  ``PRIO`` (lower is hotter) then oldest.
+  (:mod:`precis.filing_origin`); a gripe without one is skipped. The
+  ``ci.sig`` exception is the ci_watch door: a gripe carrying
+  ``meta.ci.sig`` and the worker stamp ``filed_by.principal =
+  worker:ci_watch`` is machine-filed from the repo's own CI output about
+  its own code — not reader intake — so the untrusted-text exclusion
+  does not apply. The principal key is the door, not the client: a
+  stdio ``precis serve`` client (an agent host's spawned server, a
+  container's local serve) gets no bound principal, so every write of
+  its run falls through to ``worker:<PRECIS_CURRENT_SOURCE|cli>`` —
+  only the ``job_inproc`` tick's own bound source
+  (``executors/job_inproc.py`` sets ``tick_context(source = spec.name)``)
+  lands :data:`precis.workers.job_types.ci_watch.WORKER_PRINCIPAL`, the
+  one constant both sides name. Order: ``PRIO`` (lower is hotter) then
+  oldest.
 * **Mint** through :func:`precis.plans.templates.mint_gripe_fix_direct`
   (unpinned: the build picks its lane at dispatch, devin first by table
   order) and one ``dispatch:`` comment on the gripe naming the root. The
@@ -55,6 +68,7 @@ from precis.plans import lanes as _lanes
 from precis.plans.templates import mint_gripe_fix_direct
 from precis.principal import worker_comment_meta
 from precis.store import Store
+from precis.workers.job_types.ci_watch import WORKER_PRINCIPAL as _CI_WATCH_PRINCIPAL
 from precis.workers.runner import BatchResult
 from precis.workers.service_config import ALL_HOSTS, ServiceConfigResolver
 
@@ -169,7 +183,9 @@ def candidates(store: Store, limit: int) -> list[DispatchPick]:
          WHERE r.kind = 'gripe' AND r.retired_at IS NULL
            AND r.created_at < now() - %s * interval '1 minute'
            AND (r.meta->'filed_by'->>'client' LIKE %s
-                OR r.meta->'filed_by'->>'actor' LIKE %s)
+                OR r.meta->'filed_by'->>'actor' LIKE %s
+                OR (r.meta->'ci'->>'sig' IS NOT NULL
+                    AND r.meta->'filed_by'->>'principal' = %s))
            AND EXISTS (SELECT 1 FROM ref_tags ft JOIN tags f ON f.tag_id = ft.tag_id
                         WHERE ft.ref_id = r.ref_id AND f.namespace IN ('OPEN', 'FLAG')
                           AND f.value = 'fix:code')
@@ -190,6 +206,7 @@ def candidates(store: Store, limit: int) -> list[DispatchPick]:
                 _MIN_AGE_MINUTES,
                 _AGENT_CLIENT_PREFIX + "%",
                 _HUMAN_ACTOR_PREFIX + "%",
+                _CI_WATCH_PRINCIPAL,
                 list(HOLD_TAGS),
                 limit,
             ),

@@ -1,0 +1,52 @@
+{
+  "endpoints": {
+    "repos/o/r/actions/workflows/check.yml/runs?event=schedule&per_page=3": {
+      "workflow_runs": []
+    },
+    "repos/o/r/actions/workflows/check.yml/runs?per_page=20": {
+      "workflow_runs": [
+        {
+          "id": 301,
+          "status": "completed",
+          "conclusion": "failure",
+          "event": "push",
+          "head_branch": "release/r4",
+          "head_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "html_url": "https://github.com/o/r/actions/runs/301",
+          "updated_at": "2026-11-07T04:00:00Z"
+        },
+        {
+          "id": 300,
+          "status": "completed",
+          "conclusion": "success",
+          "event": "push",
+          "head_branch": "main",
+          "head_sha": "ffffffffffffffffffffffffffffffffffffffff",
+          "html_url": "https://github.com/o/r/actions/runs/300",
+          "updated_at": "2026-11-07T02:00:00Z"
+        }
+      ]
+    },
+    "repos/o/r/actions/runs/301/jobs": {
+      "jobs": [
+        {
+          "id": 9101,
+          "name": "soak",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/o/r/actions/runs/301/job/9101"
+        },
+        {
+          "id": 9102,
+          "name": "pytest",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/o/r/actions/runs/301/job/9102"
+        }
+      ]
+    }
+  },
+  "logs": {
+    "9101": "2026-11-07T04:00:01.0000000Z FAILED tests/test_soak.py::test_leak - TimeoutError: soak budget exceeded\n"
+  }
+}

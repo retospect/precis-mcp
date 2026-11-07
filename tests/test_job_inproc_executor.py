@@ -101,6 +101,33 @@ def _mk_running_job(
 # ── plugin-dispatch happy path ───────────────────────────────────────────
 
 
+def test_dispatch_binds_the_job_type_as_the_inproc_source(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The executor binds ``tick_context(source = spec.name)`` for the
+    dispatch span: ``filed_by.principal`` / ``worker_comment_meta`` on
+    the job's writes stamp ``worker:<job_type>`` (the stamp
+    ``gripe_dispatch``'s ci_watch door keys on), and the binding is
+    cleared when the dispatch returns."""
+    from precis import agentlog, principal
+
+    monkeypatch.delenv(agentlog.SOURCE_ENV_VAR, raising=False)
+    seen: dict[str, Any] = {}
+
+    def _dispatch(ctx: Any, _s: Any) -> None:
+        seen["source"] = agentlog.current_source_from_env()
+        seen["principal"] = principal.current()
+
+    monkeypatch.setattr(
+        job_inproc, "get_job_type", lambda name: _spec(dispatch=_dispatch)
+    )
+    rid = _mk_queued_job(store)
+    assert job_inproc.run_job_inproc_pass(store, limit=1)["ok"] == 1
+    assert seen["source"] == "fake_embed_batch"
+    assert seen["principal"] == "worker:fake_embed_batch"
+    assert agentlog.current_source_from_env() is None
+
+
 def test_dispatch_runs_synchronously_and_finalizes_succeeded(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
