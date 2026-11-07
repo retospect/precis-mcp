@@ -148,22 +148,29 @@ Miner caveats, to discount before trusting a card:
   `id='/open'`) is dropped by the miner but still counted by other ledger
   consumers (gr492453). If `get|gripe` tops `render_obesity` at p50 ≈ 33 B,
   the probe changed shape again — check `_LEDGER_EXCLUDE_PROBES`.
-- Token totals and the byte share are `schema_version` 2 (gr570090):
+- Token totals and the byte share are `schema_version` 2+ (gr570090):
   `usage` is stamped once per `message.id` and the share's denominator is
   payload-corpus tool results only — v1 scoreboards read 2–3× high on
-  tokens and a few points low on the share.
+  tokens and a few points low on the share. v3 dedupes `detour_census`
+  the way the detector does.
 - Ledger-sourced cards (`hard_error`, `spin`) render the row itself
   (`arg_sample` / `error_head`) when the session bucket has no context
   turns — a "(no surrounding turns)" line is expected there, not a miss.
-- `detour_census` counts only command-position invocations (a `cat` or
-  `git log --` on `scripts/prod-psql` is a mention, not a call), buckets
-  `< file.sql`/`-f` as `sql-file:<name>`, counts curl only against the
-  precis surface, and collapses the same call seen at identical seq+ts in
-  two sessions.
-- `correction_roundtrip`'s `__user__` stream is human-turn-only (tool
-  results, reminders, task notifications, scheduled wakes dropped at
-  extraction); its n is a lexicon recall floor — judge the real set by
-  reading `session_digest` human turns (~65 in ~1,030 on 2026-11-05).
+- `detour_census` counts only command-position invocations — a `cat` or
+  `git log --` on `scripts/prod-psql` is a mention, not a call, and a
+  quoted `'…; prod-psql'` string is literal text, not a command (a
+  `bash -c '…'` script IS descended into). It buckets `< file.sql`/`-f`
+  as `sql-file:<name>`, counts curl only when a URL argument points at
+  the precis surface (an `-o`/`-d`/`-H` value that says "precis" is not
+  the destination), and collapses the same call seen at identical seq+ts
+  in two sessions — `stats.py` reuses the same `detour_hits`, so the
+  scoreboard and the cards agree.
+- `correction_roundtrip` emits one candidate per roundtrip-bearing
+  session whose `metrics['human_turns']` holds EVERY human turn: the real
+  correction set comes from a model read of that stream (~65 in ~1,030 on
+  2026-11-05), and the retired keyword lexicon that saw n=2 — both false
+  positives — is gone. `session_digest` backs the same read: elision pins
+  `__user__` turns and user text renders at the full extraction head.
 - A card's occurrence dates decide whether it is work: on 2026-11-05 the two
   largest error signatures were both fixed on main before the window closed.
 - Known detector false positives: `skill_taught_wrong` still blames the

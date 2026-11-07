@@ -271,6 +271,28 @@ def test_d4_abandon_detour_near_miss_unrelated_bash() -> None:
     assert detect.detect_abandon_detour(events) == []
 
 
+def test_d4_abandon_detour_quoted_mention_not_a_call() -> None:
+    """td580721: ``echo 'example; prod-psql'`` mentions the tool but runs
+    nothing — the same command-position rule detour_census applies."""
+    events = [
+        mk(
+            seq=1,
+            verb="get",
+            kind="paper",
+            is_error=True,
+            err_type="NotFound",
+            err_head="no paper",
+        ),
+        mk(
+            seq=3,
+            tool="Bash",
+            verb=None,
+            arg_digest='{"command": "echo \'example; prod-psql\'"}',
+        ),
+    ]
+    assert detect.detect_abandon_detour(events) == []
+
+
 # ---------------------------------------------------------------------------
 # D5 detour_census
 # ---------------------------------------------------------------------------
@@ -425,6 +447,93 @@ def test_d5_detour_census_dedupes_same_call_two_sessions() -> None:
     cands = detect.detect_detour_census(events)
     assert len(cands) == 1
     assert cands[0].n == 2
+
+
+def test_d5_detour_census_quoted_separator_is_not_a_command() -> None:
+    """td580721: ``;`` inside quotes is literal text, not a command
+    boundary — ``echo 'example; prod-psql'`` printed a psql call that
+    never ran."""
+    digest = '{"command": "%s"}'
+    for cmd in (
+        "echo 'example; prod-psql'",
+        'echo "a; psql -c select"',
+        "echo 'see `prod-psql`'",
+    ):
+        events = [mk(seq=1, tool="Bash", verb=None, arg_digest=digest % cmd)]
+        assert detect.detect_detour_census(events) == [], cmd
+
+
+def test_d5_detour_census_unquoted_separator_still_splits() -> None:
+    """A real ``;``/``&&`` outside quotes still starts a new segment."""
+    for cmd in (
+        "echo hi; prod-psql 'select 1'",
+        "true && prod-psql --ro 'select 1'",
+    ):
+        events = [
+            mk(
+                seq=1,
+                tool="Bash",
+                verb=None,
+                arg_digest='{{"command": "{}"}}'.format(cmd.replace("'", "\\u0027")),
+            )
+        ]
+        cands = detect.detect_detour_census(events)
+        assert len(cands) == 1, cmd
+
+
+def test_d5_detour_census_bash_c_descends_into_script() -> None:
+    """td580721: ``bash -c '<script>'`` runs the quoted text, so a
+    separator inside that string DOES delimit commands — the quoted-text
+    rule must not hide a real detour."""
+    events = [
+        mk(
+            seq=1,
+            tool="Bash",
+            verb=None,
+            arg_digest=json.dumps(
+                {"command": "bash -c 'echo a; psql -c \"select * from refs\"'"}
+            ),
+        ),
+    ]
+    cands = detect.detect_detour_census(events)
+    assert [c.signature for c in cands] == ["table:refs"]
+
+    events = [
+        mk(
+            seq=1,
+            tool="Bash",
+            verb=None,
+            arg_digest=json.dumps({"command": "bash -c 'echo \"a;b\"'"}),
+        ),
+    ]
+    assert detect.detect_detour_census(events) == []
+
+
+def test_d5_detour_census_curl_flag_value_not_destination() -> None:
+    """td580721: only URL arguments decide a curl detour — an output
+    path or header that merely *says* "precis" is not the destination."""
+    digest = '{"command": "%s"}'
+    for cmd in (
+        "curl https://api.github.com -o /tmp/precis.json",
+        "curl -d @precis-payload.json https://api.github.com",
+        "curl -H 'x-marker: precis' https://api.github.com",
+    ):
+        events = [mk(seq=1, tool="Bash", verb=None, arg_digest=digest % cmd)]
+        assert detect.detect_detour_census(events) == [], cmd
+
+
+def test_d5_detour_census_curl_bare_host_counts() -> None:
+    """A schemeless curl to a precis-surface host still counts."""
+    events = [
+        mk(
+            seq=1,
+            tool="Bash",
+            verb=None,
+            arg_digest='{"command": "curl localhost:8000/mcp"}',
+        ),
+    ]
+    cands = detect.detect_detour_census(events)
+    assert [c.signature for c in cands] == ["endpoint:/mcp"]
 
 
 # ---------------------------------------------------------------------------
@@ -815,6 +924,10 @@ def test_d9_vocab_near_miss_near_miss_too_far() -> None:
 
 
 def test_d10_correction_roundtrip_hit() -> None:
+    """td580721: the detector hands the session's WHOLE human-turn stream
+    to the pass's model read — no keyword filter decides which turns
+    count, because the retired lexicon saw n=2 where a hand read found
+    ~65. A turn that matches no correction pattern is still material."""
     events = [
         mk(seq=1, verb="get", kind="paper", is_error=False, result_bytes=10),
         mk(
@@ -823,22 +936,52 @@ def test_d10_correction_roundtrip_hit() -> None:
             verb=None,
             result_head="No, that's wrong, I meant the other one",
         ),
+        # Far from any tool call, no lexicon-shaped text — still in the
+        # read stream because a model judges it, not a regex.
+        mk(
+            seq=40,
+            tool="__user__",
+            verb=None,
+            result_head="could you also check the sibling doc",
+        ),
     ]
     cands = detect.detect_correction_roundtrip(events)
     assert len(cands) == 1
-    assert cands[0].signature == "get|paper"
-    # gr570090(f): the lexicon is a recall floor — every candidate must
-    # carry the caveat telling the pass to read session_digest's human
-    # turns for the real set.
-    assert "RECALL FLOOR" in cands[0].caveat
+    c = cands[0]
+    assert c.signature == "session:s1"
+    assert c.n == 2  # all human turns, not just roundtrips
+    assert c.metrics["roundtrip_turns"] == 1
+    turns = c.metrics["human_turns"]
+    assert "3: No, that's wrong, I meant the other one" in turns
+    assert "40: could you also check the sibling doc" in turns
+    # The roundtrip turn leads evidence so the card shows it beside the
+    # tool calls it may correct.
+    assert c.evidence[0].seq == 3
+    assert "MODEL READ" in c.caveat
 
 
-def test_d10_correction_roundtrip_near_miss_no_lexicon_match() -> None:
+def test_d10_correction_roundtrip_near_miss_no_tool_call() -> None:
+    """A human turn that follows nothing the agent did is not a
+    roundtrip — the session earns no candidate."""
     events = [
-        mk(seq=1, verb="get", kind="paper", is_error=False, result_bytes=10),
-        mk(seq=3, tool="__user__", verb=None, result_head="thanks, that looks great"),
+        mk(seq=10, tool="__user__", verb=None, result_head="thanks, that looks great"),
+        mk(seq=11, tool=None, verb=None, result_head="assistant text"),
     ]
     assert detect.detect_correction_roundtrip(events) == []
+
+
+def test_d10_correction_roundtrip_turn_outside_window_not_evidence() -> None:
+    """A session qualifies on one roundtrip; a user turn >3 seq from any
+    tool call is still read material but not evidence."""
+    events = [
+        mk(seq=1, verb="get", kind="paper", is_error=False, result_bytes=10),
+        mk(seq=2, tool="__user__", verb=None, result_head="wrong doc"),
+        mk(seq=30, tool="__user__", verb=None, result_head="new topic"),
+    ]
+    cands = detect.detect_correction_roundtrip(events)
+    assert len(cands) == 1
+    assert cands[0].n == 2
+    assert {e.seq for e in cands[0].evidence} == {2}
 
 
 # ---------------------------------------------------------------------------
@@ -1176,6 +1319,58 @@ def test_d13_session_digest_elides_long_threads() -> None:
     assert len(cands[0].metrics["timeline"]) <= detect._DIGEST_MAX_CHARS
 
 
+def test_d13_session_digest_pins_user_turns_in_elision() -> None:
+    """td580721: elision must never drop ``__user__`` turns — the middle
+    of a long thread is where corrections hide, and dropping them made
+    the model read blind to exactly the turns it exists for."""
+    events = [
+        mk(
+            session="s1",
+            seq=i,
+            verb="get",
+            kind="paper",
+            arg_digest=f'{{"id": "paper-{i:04}", "kind": "paper"}}',
+            arg_keys=("id", "kind"),
+            result_bytes=100,
+        )
+        for i in range(1, detect._DIGEST_MAX_EVENTS + 20)
+    ]
+    # Two human turns deep in the elided middle.
+    events[30] = mk(
+        session="s1",
+        seq=31,
+        tool="__user__",
+        verb=None,
+        result_head="no, I meant the other paper",
+    )
+    events[50] = mk(
+        session="s1",
+        seq=51,
+        tool="__user__",
+        verb=None,
+        result_head="still wrong, try again",
+    )
+    cands = detect.detect_session_digest(events)
+    assert len(cands) == 1
+    tl = cands[0].metrics["timeline"]
+    assert "31 user: no, I meant the other paper" in tl
+    assert "51 user: still wrong, try again" in tl
+    assert "elided" in tl
+    assert "pinned" in cands[0].caveat
+
+
+def test_d13_session_digest_user_turn_not_truncated() -> None:
+    """td580721: human text renders at the full extraction head, not an
+    80-char cut that could drop the correction itself."""
+    long_turn = "please fix " + "the argument shape " * 20 + "before continuing"
+    events = [
+        mk(session="s1", seq=1, verb="get", kind="paper", result_bytes=10),
+        mk(session="s1", seq=2, tool="__user__", verb=None, result_head=long_turn),
+    ]
+    tl = detect.detect_session_digest(events)[0].metrics["timeline"]
+    assert long_turn in tl
+
+
 # ---------------------------------------------------------------------------
 # cards.py
 # ---------------------------------------------------------------------------
@@ -1427,6 +1622,48 @@ def test_stats_precis_share_excludes_llmlog_bytes() -> None:
     assert tk["total_tool_result_bytes"] == 100
     assert tk["precis_result_bytes_total"] == 25
     assert tk["precis_result_bytes_share"] == 0.25
+
+
+def test_stats_detour_census_shares_detector_dedup() -> None:
+    """td580721: the scoreboard consumes ``detect.detour_hits``, so the
+    same call extracted under two session paths counts once in BOTH
+    places — before, the census counted it twice and the scoreboard
+    disagreed with the detector's cards."""
+    digest = '{"command": "psql -c \\"select * from refs\\""}'
+    events = [
+        mk(
+            session="s1",
+            seq=4,
+            ts="2026-11-05T10:00:00Z",
+            tool="Bash",
+            verb=None,
+            arg_digest=digest,
+            result_bytes=10,
+        ),
+        mk(
+            session="s1/dup",
+            seq=4,
+            ts="2026-11-05T10:00:00Z",
+            tool="Bash",
+            verb=None,
+            arg_digest=digest,
+            result_bytes=10,
+        ),
+        mk(
+            session="s2",
+            seq=4,
+            ts="2026-11-05T11:00:00Z",
+            tool="Bash",
+            verb=None,
+            arg_digest=digest,
+            result_bytes=10,
+        ),
+    ]
+    sb = stats.build_scoreboard(events)
+    det = detect.detect_detour_census(events)
+    assert sb["detour_census"]["count"] == 2
+    assert det[0].n == 2
+    assert sb["detour_census"]["bytes_total"] == 20
 
 
 def test_stats_cli_writes_both_outputs(tmp_path: Path) -> None:

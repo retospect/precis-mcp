@@ -459,15 +459,16 @@ def detect_reformulation(events: Sequence[Event]) -> list[Candidate]:
     return [_candidate("reformulation", sig, evs) for sig, evs in groups.items()]
 
 
-_DETOUR_MARKER_RE = re.compile(r"psql|prod-psql", re.I)
-
-
 @detector("abandon_detour")
 def detect_abandon_detour(events: Sequence[Event]) -> list[Candidate]:
     """An error or ``zero`` on ``kind`` K, then within 5 turns a ``Bash``
-    call mentioning ``psql``/``prod-psql`` or K's own name. The agent gave
-    up on the MCP surface and went around it through raw SQL. Fix class:
-    MCP capability — the surface is missing the verb/view the agent needed.
+    call that *invokes* a detour tool in command position
+    (``detour_bucket``: psql/prod-psql, the precis CLI, a precis-surface
+    curl) or whose command text mentions K's own name. The agent gave up
+    on the MCP surface and went around it. A line merely *containing*
+    ``prod-psql`` — an ``echo`` of a quoted example, say — does not count,
+    same rule as ``detour_census``. Fix class: MCP capability — the
+    surface is missing the verb/view the agent needed.
     """
     groups: dict[str, list[Event]] = defaultdict(list)
     for sess_events in by_session(events).values():
@@ -482,19 +483,69 @@ def detect_abandon_detour(events: Sequence[Event]) -> list[Candidate]:
                     break
                 if cand.tool == "Bash":
                     cmd = (cand.arg_digest or "").lower()
-                    if _DETOUR_MARKER_RE.search(cmd) or k.lower() in cmd:
+                    if detour_bucket(cand.arg_digest or "") is not None or (
+                        k.lower() in cmd
+                    ):
                         sig = f"{ev.verb}|{k}"
                         groups[sig].extend([ev, cand])
                         break
     return [_candidate("abandon_detour", sig, evs) for sig, evs in groups.items()]
 
 
-#: Pipeline/sequence separators — each segment has its own command word.
-_SHELL_SPLIT_RE = re.compile(r"[|;&\n]+|\$\(|`")
+def _shell_segments(cmd: str) -> list[str]:
+    """Split a shell command into pipeline/sequence segments at ``|``,
+    ``;``, ``&``, newlines, ``$(`` and backticks — but only OUTSIDE
+    quotes. A separator inside ``'…'`` or ``"…"`` is literal text, not a
+    command boundary, so ``echo 'example; prod-psql'`` is one segment
+    whose command word is ``echo`` — not a psql call (td580721). A
+    backslash escapes the next character outside single quotes."""
+    segs: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    i = 0
+    while i < len(cmd):
+        ch = cmd[i]
+        if quote == "'":
+            buf.append(ch)
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if quote == '"':
+            buf.append(ch)
+            if ch == "\\" and i + 1 < len(cmd):
+                buf.append(cmd[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(cmd):
+            buf.append(cmd[i : i + 2])
+            i += 2
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if ch in "|;&\n`" or (ch == "$" and cmd[i + 1 : i + 2] == "("):
+            segs.append("".join(buf))
+            buf = []
+            i += 2 if ch == "$" else 1
+            continue
+        buf.append(ch)
+        i += 1
+    segs.append("".join(buf))
+    return segs
+
+
 _ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
 #: Prefixes through which a detour tool can still be the real command word:
-#: ``sudo prod-psql``, ``xargs prod-psql``, ``bash -c 'prod-psql …'``,
-#: ``env A=1 psql``, ``uv run scripts/prod-psql``.
+#: ``sudo prod-psql``, ``xargs prod-psql``, ``env A=1 psql``,
+#: ``uv run scripts/prod-psql``. Shells are NOT here — they live in
+#: ``_SHELL_WORDS`` so a ``-c`` argument can be descended into.
 _WRAPPER_WORDS = frozenset(
     {
         "sudo",
@@ -508,14 +559,14 @@ _WRAPPER_WORDS = frozenset(
         "timeout",
         "xargs",
         "exec",
-        "bash",
-        "sh",
-        "zsh",
-        "fish",
         "run",
         "uv",
     }
 )
+#: Shells whose ``-c`` argument is itself a command line —
+#: ``bash -c 'echo x; prod-psql'`` still counts, because the quoted text
+#: is a script that runs, not literal output (td580721).
+_SHELL_WORDS = frozenset({"bash", "sh", "zsh", "fish"})
 #: A word that IS a detour tool (optionally path-qualified): ``psql``,
 #: ``prod-psql``, ``scripts/prod-psql``, ``scripts/precis``, bare
 #: ``precis``, ``curl``. Anything merely containing the name —
@@ -535,7 +586,22 @@ _SQL_FILE_RES = (
     re.compile(r"\\i\s+([\w./~+-]+)"),
 )
 _CMD_JSON_RE = re.compile(r'"command"\s*:\s*"((?:[^"\\]|\\.)*)')
-_CURL_URL_RE = re.compile(r"https?://[^\s\"'\\]+")
+#: URL-shaped arguments to a curl call — a full ``http(s)://`` URL, or a
+#: bare ``host[:port][/path]`` that still names the precis surface
+#: (localhost, loopback, a scrubbed cluster address, or a ``precis``-named
+#: host carrying a port/path/domain). What curl *points at* decides, not
+#: the rest of the command line: flag values like ``-o /tmp/precis.json``,
+#: ``-d @payload`` or ``-H 'x: precis'`` never match, so an external API
+#: call whose output file merely says "precis" is not a detour (td580721).
+_CURL_ARG_RE = re.compile(
+    r"https?://[^\s\"'\\]+"
+    r"|(?<![/\w$.~@=-])"
+    r"(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]"
+    r"|\[redacted:(?:tailnet-ip|lan-ip|host)\]"
+    r"|[\w.$-]*precis[\w.$-]*(?::\d+|\.|/))"
+    r"[^\s\"'\\]*",
+    re.I,
+)
 #: curl counts only when it aims at the precis HTTP surface — the ``/mcp``
 #: endpoint, a precis-named host/path, localhost, or a scrubbed cluster
 #: address (an IP/hostname is already ``[redacted:…]`` by the time the
@@ -593,19 +659,34 @@ def _sql_intent(seg: str, prog: str) -> str:
     return f"cli:{prog}"
 
 
-def _curl_intent(seg: str) -> str | None:
-    if not _PRECIS_CURL_RE.search(seg):
-        return None
-    m = _CURL_URL_RE.search(seg)
-    if m:
-        try:
-            path = urlsplit(m.group(0)).path
-        except ValueError:
+def _url_path(url: str) -> str:
+    """The path component of a URL argument — bare ``host:port/path``
+    tokens get a ``//`` scheme-relative parse. Scrubbed host markers
+    (``[redacted:…]``) make urlsplit raise on the bracketed "IPv6", so a
+    regex peels scheme+host off instead."""
+    try:
+        path = urlsplit(url).path if "://" in url else urlsplit(f"//{url}").path
+    except ValueError:
+        m = re.match(r"(?:[a-z]+://|//)?[^/\s]*", url, re.I)
+        rest = url[m.end() :] if m else ""
+        path = rest.split("?", 1)[0].split("#", 1)[0]
+        if not path.startswith("/"):
             path = ""
-        if path:
-            return f"endpoint:{path}"
-        return "endpoint:-"
-    return "endpoint:-"
+    return path or "-"
+
+
+def _curl_intent(seg: str) -> str | None:
+    """The precis-surface endpoint a curl call was pointed at, or ``None``
+    for ordinary web use. Only URL arguments decide — the old
+    whole-segment search counted ``curl https://api.github.com -o
+    /tmp/precis.json`` as precis traffic because the ``-o`` path said
+    "precis" (td580721)."""
+    for m in _CURL_ARG_RE.finditer(seg):
+        url = m.group(0)
+        if not _PRECIS_CURL_RE.search(url):
+            continue
+        return f"endpoint:{_url_path(url)}"
+    return None
 
 
 def _segment_intent(seg: str) -> str | None:
@@ -617,7 +698,23 @@ def _segment_intent(seg: str) -> str | None:
     i = 0
     while i < len(words):
         w = words[i].strip("\"'")
-        if _ENV_ASSIGN_RE.match(w) or w in _WRAPPER_WORDS or w.startswith("-"):
+        if _ENV_ASSIGN_RE.match(w) or w.startswith("-"):
+            i += 1
+            continue
+        if w.rsplit("/", 1)[-1] in _SHELL_WORDS:
+            # ``bash -c 'cmd…'`` — the real command line sits inside the
+            # -c string, so descend into it: ``bash -c 'x; prod-psql'``
+            # counts even though the separator was quoted.
+            if i + 1 < len(words) and words[i + 1].strip("\"'") == "-c":
+                inner = " ".join(words[i + 2 :]).strip("\"'")
+                for sub in _shell_segments(inner):
+                    hit = _segment_intent(sub)
+                    if hit is not None:
+                        return hit
+                return None
+            i += 1
+            continue
+        if w in _WRAPPER_WORDS:
             i += 1
             continue
         break
@@ -636,36 +733,27 @@ def _segment_intent(seg: str) -> str | None:
 
 def detour_bucket(arg_digest: str) -> str | None:
     """The detour signature a Bash ``arg_digest`` earns, or ``None`` when it
-    holds no detour invocation. Shared by ``detour_census`` and the
-    scoreboard's census counter so the two counts can never drift — the
-    single implementation rule this module already applies to
-    ``exec_class``/``percentile``."""
+    holds no detour invocation. Shared by ``detour_census``,
+    ``abandon_detour``'s mention check, and (through ``detour_hits``) the
+    scoreboard's census counter — the single implementation rule this
+    module already applies to ``exec_class``/``percentile``."""
     cmd = _bash_command(arg_digest)
-    for seg in _SHELL_SPLIT_RE.split(cmd):
+    for seg in _shell_segments(cmd):
         intent = _segment_intent(seg)
         if intent is not None:
             return intent
     return None
 
 
-@detector("detour_census")
-def detect_detour_census(events: Sequence[Event]) -> list[Candidate]:
-    """Every ``Bash`` call that invokes ``psql``/``prod-psql``/the
-    ``precis`` CLI/a precis-surface ``curl`` *in command position*
-    (``detour_bucket``), bucketed by the table, SQL file, endpoint or CLI
-    it touched (``metrics['result_bytes_total']`` alongside the count).
-    Mentions — a command line that merely contains ``prod-psql`` — do not
-    count, and neither does a curl to an external API; both were most of
-    the old ``other`` bucket's 792 noise hits (gr570090(c)). Events with an
+def detour_hits(events: Sequence[Event]) -> list[tuple[Event, str]]:
+    """``(event, bucket)`` for every Bash call invoking a detour tool in
+    command position — with the census's duplicate suppression applied:
     identical ``(seq, ts, arg_digest)`` in different sessions are the same
-    observed call extracted under two file paths — counted once. A bucket
-    with a lot of calls and bytes is a missing verb with usage data
-    already attached. Fix class: MCP capability — this ranks *which* verb
-    to build next by demand, not just that one is missing.
-    """
-    groups: dict[str, list[Event]] = defaultdict(list)
-    bytes_by_sig: dict[str, int] = defaultdict(int)
-    seen: set[tuple] = set()
+    observed call extracted under two file paths, counted once.
+    ``stats.py``'s census counter consumes this rather than re-filtering,
+    so the scoreboard and the cards can never disagree (td580721)."""
+    hits: list[tuple[Event, str]] = []
+    seen: set[tuple[int, str, str]] = set()
     for ev in events:
         if ev.tool != "Bash":
             continue
@@ -677,6 +765,28 @@ def detect_detour_census(events: Sequence[Event]) -> list[Candidate]:
             if key in seen:
                 continue
             seen.add(key)
+        hits.append((ev, sig))
+    return hits
+
+
+@detector("detour_census")
+def detect_detour_census(events: Sequence[Event]) -> list[Candidate]:
+    """Every ``Bash`` call that invokes ``psql``/``prod-psql``/the
+    ``precis`` CLI/a precis-surface ``curl`` *in command position*
+    (``detour_bucket``), bucketed by the table, SQL file, endpoint or CLI
+    it touched (``metrics['result_bytes_total']`` alongside the count).
+    Mentions — a command line that merely contains ``prod-psql``, including
+    inside a quoted string — do not count, and neither does a curl to an
+    external API; both were most of the old ``other`` bucket's 792 noise
+    hits (gr570090(c)). The event stream comes from ``detour_hits``, which
+    suppresses the same call seen at identical seq+ts in two sessions.
+    A bucket with a lot of calls and bytes is a missing verb with usage
+    data already attached. Fix class: MCP capability — this ranks *which*
+    verb to build next by demand, not just that one is missing.
+    """
+    groups: dict[str, list[Event]] = defaultdict(list)
+    bytes_by_sig: dict[str, int] = defaultdict(int)
+    for ev, sig in detour_hits(events):
         groups[sig].append(ev)
         bytes_by_sig[sig] += ev.result_bytes
     cands = [
@@ -983,63 +1093,71 @@ def detect_vocab_near_miss(events: Sequence[Event]) -> list[Candidate]:
     return [_candidate("vocab_near_miss", sig, evs) for sig, evs in groups.items()]
 
 
-_CORRECTION_RE = re.compile(
-    r"^no[,. ]|that's wrong|i meant|actually,|not what i|"
-    r"you (just )?(did|used|read) the wrong|^stop\b|^don't\b",
-    re.I,
-)
-
-#: Why this count must be read as a floor, never a census (gr570090(f)).
+#: Why n counts turns handed to the model read, never verified
+#: corrections (gr570090(f), td580721).
 _CORRECTION_CAVEAT = (
-    "RECALL FLOOR: on the 2026-11-05 pass this lexicon matched n=2 (both "
-    "false positives) where a hand model-read of the human turns found "
-    "~65 real corrections in ~1,030 turns. The ``__user__`` stream is now "
-    "human-turn-only (tool results, system reminders and peer/task "
-    "notifications are dropped at extraction — gr570090(f)), which fixes "
-    "precision, but the lexicon still cannot judge 'the human corrected "
-    "the agent'. Read session_digest's human turns for the real set; this "
-    "candidate only proves the preceding tool sequence was followed by "
-    "lexicon-shaped text."
+    "MODEL READ, NOT A COUNT: n is the number of human turns in "
+    "metrics['human_turns'], material for the pass's model read — the "
+    "step that decides which of them are real corrections. On the "
+    "2026-11-05 pass a hand model-read found ~65 in ~1,030 turns where "
+    "the retired keyword lexicon saw n=2, both false positives. The "
+    "``__user__`` stream is human-turn-only (tool results, system "
+    "reminders and peer/task notifications are dropped at extraction — "
+    "gr570090(f)), so every line here is human-typed; evidence leads "
+    "with the roundtrip turns, each rendered beside the tool calls it "
+    "followed."
 )
 
 
 @detector("correction_roundtrip")
 def detect_correction_roundtrip(events: Sequence[Event]) -> list[Candidate]:
-    """A ``__user__`` turn matching a correction lexicon ("no,", "that's
-    wrong", "i meant", "actually,", "not what i", "you used the wrong ...",
-    "stop", "don't"), within 3 turns of a preceding tool sequence, local
-    corpus only. Highest-value class: the preceding tool calls (kept in
-    ``evidence`` alongside the correction) name the doc or skill that
-    taught the agent wrong, in a human's own words. Always carries
-    ``caveat``: the lexicon is a recall floor, and judging whether a human
-    turn is really a correction needs a model read — that is the pass's
-    job over session_digest, not a regex's (gr570090(f)). Fix class: skill
-    edit or doc fix, whichever document the preceding calls point at.
+    """One candidate per session containing a roundtrip — a ``__user__``
+    turn within 3 seq of a preceding tool call — with the session's WHOLE
+    human-turn stream in ``metrics['human_turns']`` (``seq: text``, one
+    line per turn, full extraction head). Judging 'the human corrected
+    the agent' is a language task, not a pattern match: the keyword
+    lexicon this replaces matched n=2 on 2026-11-05, both false
+    positives, where a hand model-read found ~65 real corrections in
+    ~1,030 turns (gr570090(f)). So the detector no longer filters turns
+    at all — it hands them to the pass's model read verbatim, and
+    ``evidence`` leads with the first 12 roundtrip turns so the rendered
+    card shows each suspect turn next to the calls it may correct. Fix
+    class: skill edit or doc fix, whichever document the preceding calls
+    point at.
     """
-    groups: dict[str, list[Event]] = defaultdict(list)
-    for sess_events in by_session(events).values():
-        for ev in sess_events:
-            if ev.tool != "__user__":
-                continue
-            text = (ev.result_head or "").strip()
-            if not _CORRECTION_RE.search(text):
-                continue
-            preceding = [
-                e
-                for e in sess_events
-                if e.seq < ev.seq
-                and ev.seq - e.seq <= 3
-                and e.tool not in (None, "__user__")
-            ]
-            if not preceding:
-                continue
-            anchor = preceding[-1]
-            sig = f"{anchor.verb or anchor.tool}|{anchor.kind or '-'}"
-            groups[sig].extend([*preceding, ev])
-    return [
-        _candidate("correction_roundtrip", sig, evs, caveat=_CORRECTION_CAVEAT)
-        for sig, evs in groups.items()
-    ]
+    cands = []
+    for session, sess_events in by_session(events).items():
+        user_turns = [e for e in sess_events if e.tool == "__user__"]
+        if not user_turns:
+            continue
+        tool_seqs = [e.seq for e in sess_events if e.tool not in (None, "__user__")]
+        roundtrips = [
+            e for e in user_turns if any(0 < e.seq - s <= 3 for s in tool_seqs)
+        ]
+        if not roundtrips:
+            continue
+        tss = sorted(e.ts for e in sess_events if e.ts)
+        cands.append(
+            Candidate(
+                detector="correction_roundtrip",
+                signature=f"session:{session}",
+                n=len(user_turns),
+                n_sessions=1,
+                first_ts=tss[0] if tss else None,
+                last_ts=tss[-1] if tss else None,
+                evidence=[EvidenceRef(e.session, e.seq) for e in roundtrips[:12]],
+                metrics={
+                    "human_turns": "\n".join(
+                        f"{e.seq}: {' '.join((e.result_head or '').split())}"
+                        for e in user_turns
+                    ),
+                    "roundtrip_turns": len(roundtrips),
+                },
+                caveat=_CORRECTION_CAVEAT,
+            )
+        )
+    cands.sort(key=lambda c: (-c.n, c.signature))
+    return cands
 
 
 @detector("spin")
@@ -1173,7 +1291,11 @@ def detect_call_chain(events: Sequence[Event]) -> list[Candidate]:
 # ---------------------------------------------------------------------------
 
 _DIGEST_MAX_EVENTS = 60
-_DIGEST_MAX_CHARS = 4000
+#: The timeline's byte bound — generous on purpose now that user turns
+#: render at full extraction-head length (they are the correction read's
+#: material); ``cards.py``'s own cap is the outer bound on anything a
+#: reader actually sees.
+_DIGEST_MAX_CHARS = 16000
 
 _DIGEST_JSON_ARG_RE = re.compile(r'"(id|q)"\s*:\s*"?([^",}]{1,80})"?')
 
@@ -1196,7 +1318,10 @@ def _sample_args(ev: Event) -> str:
 
 def _digest_line(ev: Event) -> str:
     if ev.tool == "__user__":
-        return f"{ev.seq} user: {(ev.result_head or '')[:80]}"
+        # The FULL extraction head, whitespace-folded to one line: human
+        # turns are the correction read's material, and an 80-char cut hid
+        # the correction itself (td580721).
+        return f"{ev.seq} user: {' '.join((ev.result_head or '').split())}"
     if ev.tool is None:
         return f"{ev.seq} assistant: {(ev.result_head or '')[:80]}"
     if is_precis(ev):
@@ -1211,18 +1336,21 @@ def _digest_line(ev: Event) -> str:
 def detect_session_digest(events: Sequence[Event]) -> list[Candidate]:
     """One candidate per session, signature ``session:<id>``, with the
     whole thread compressed to a bounded timeline in
-    ``metrics['timeline']`` — one short line per event
-    (``seq verb|kind sampled-args -> outcome``; user and assistant turns
-    get a head snippet) — so a pass can read *what was asked, in order,
-    and what failed* without opening a transcript. Errored calls are
-    marked ``ERR:<type>`` inline and their refs lead ``evidence``, so the
-    rendered card jumps straight to the failures. Bounded: threads longer
-    than ``_DIGEST_MAX_EVENTS`` keep head and tail with the middle elided
-    (``caveat`` then says so), and the timeline caps at
-    ``_DIGEST_MAX_CHARS``. ``n`` is the session's precis-call count, so
-    ``--min-n`` drops threads that never touched the surface. Fix class:
-    none itself — this is the per-thread evidence the aggregate detectors'
-    signatures were abstracted out of.
+    ``metrics['timeline']`` — one line per event
+    (``seq verb|kind sampled-args -> outcome``; assistant turns get a head
+    snippet, ``__user__`` turns the full extraction head, since they are
+    the correction read's material) — so a pass can read *what was asked,
+    in order, and what failed* without opening a transcript. Errored
+    calls are marked ``ERR:<type>`` inline and their refs lead
+    ``evidence``, so the rendered card jumps straight to the failures.
+    Bounded: threads longer than ``_DIGEST_MAX_EVENTS`` elide the middle
+    — but ``__user__`` turns are pinned, never elided, because the middle
+    of a long thread is exactly where corrections hide (td580721); only
+    non-user events are dropped, and ``caveat`` says so. The timeline
+    caps at ``_DIGEST_MAX_CHARS``. ``n`` is the session's precis-call
+    count, so ``--min-n`` drops threads that never touched the surface.
+    Fix class: none itself — this is the per-thread evidence the
+    aggregate detectors' signatures were abstracted out of.
     """
     cands = []
     for session, sess_events in by_session(events).items():
@@ -1232,13 +1360,29 @@ def detect_session_digest(events: Sequence[Event]) -> list[Candidate]:
         lines = [_digest_line(e) for e in sess_events]
         caveat = ""
         if len(lines) > _DIGEST_MAX_EVENTS:
-            head_n = _DIGEST_MAX_EVENTS // 3
-            tail_n = _DIGEST_MAX_EVENTS - head_n - 1
-            elided = len(lines) - head_n - tail_n
-            lines = (
-                lines[:head_n] + [f"... {elided} events elided ..."] + lines[-tail_n:]
+            pinned = {i for i, e in enumerate(sess_events) if e.tool == "__user__"}
+            loose = [i for i in range(len(sess_events)) if i not in pinned]
+            budget = max(_DIGEST_MAX_EVENTS - len(pinned), _DIGEST_MAX_EVENTS // 4)
+            head_n = budget // 3
+            tail_n = budget - head_n
+            keep = pinned | set(loose[:head_n]) | set(loose[-tail_n:])
+            kept_lines: list[str] = []
+            elided_run = 0
+            for i, line in enumerate(lines):
+                if i in keep:
+                    if elided_run:
+                        kept_lines.append(f"... {elided_run} events elided ...")
+                        elided_run = 0
+                    kept_lines.append(line)
+                else:
+                    elided_run += 1
+            if elided_run:
+                kept_lines.append(f"... {elided_run} events elided ...")
+            lines = kept_lines
+            caveat = (
+                f"timeline elided: {len(sess_events)} events, {len(keep)} shown "
+                f"(all {len(pinned)} user turns pinned)"
             )
-            caveat = f"timeline elided: {len(sess_events)} events, outer {head_n + tail_n} shown"
         timeline = "\n".join(lines)[:_DIGEST_MAX_CHARS]
 
         errs = [e for e in sess_events if e.is_error]

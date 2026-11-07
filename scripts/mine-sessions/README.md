@@ -134,8 +134,10 @@ conclusions inverted when it skipped this step. Then the error family
 (`reformulation`, `vocab_near_miss`, `skill_taught_wrong`), the
 capability-gap family (`abandon_detour`, `detour_census`), and the economy
 family (`render_obesity`, `read_then_unused`). `correction_roundtrip` is
-local-only and is the cheapest class to fix: a human saying "no, I meant…"
-right after a tool sequence names the doc that taught it wrong.
+the cheapest class to fix — a human saying "no, I meant…" right after a
+tool sequence names the doc that taught it wrong — and its candidate
+carries the session's whole human-turn stream for the pass's model read
+to judge, not a keyword match.
 
 `cards.py --random N` adds an unbiased arm: uniformly sampled windows with no
 detector attached. Without it the catalogue only ever confirms shapes we

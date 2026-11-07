@@ -34,7 +34,10 @@ from schema import Event
 #: the precis-byte-share denominator covers only payload-corpus tool
 #: results — llmlog response bytes no longer inflate it. Numbers are not
 #: comparable with v1 scoreboards.
-SCHEMA_VERSION = 2
+#: v3 (td580721): ``detour_census`` reuses the detector's ``detour_hits``,
+#: so the same call extracted under two session paths no longer
+#: double-counts — v2 detour counts can read high.
+SCHEMA_VERSION = 3
 
 
 def _date_range(events: Sequence[Event]) -> tuple[str | None, str | None]:
@@ -206,12 +209,15 @@ def _tokens(events: Sequence[Event]) -> dict[str, Any]:
 
 
 def _detour_census(events: Sequence[Event]) -> dict[str, Any]:
-    hits = [
-        e
-        for e in events
-        if e.tool == "Bash" and detect.detour_bucket(e.arg_digest or "") is not None
-    ]
-    return {"count": len(hits), "bytes_total": sum(e.result_bytes for e in hits)}
+    # ``detect.detour_hits`` carries the census's duplicate suppression —
+    # a plain ``detour_bucket`` filter here double-counted the same call
+    # extracted under two session paths, and the scoreboard disagreed
+    # with the detector's cards (td580721).
+    hits = detect.detour_hits(events)
+    return {
+        "count": len(hits),
+        "bytes_total": sum(ev.result_bytes for ev, _ in hits),
+    }
 
 
 def _exec_class_mix(events: Sequence[Event]) -> dict[str, int]:
