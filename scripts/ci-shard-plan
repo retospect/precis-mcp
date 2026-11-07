@@ -51,13 +51,29 @@ TEST_FILE = re.compile(r"(^|/)(test_[^/]*|[^/]*_test)\.py$")
 def test_files() -> list[str]:
     """Every file pytest collects under tests/, sorted — the universe the
     ``n`` shards partition."""
-    out = subprocess.run(
-        ["git", "ls-files", "-z", "--", "tests"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        encoding="utf-8",
-    ).stdout
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-z", "--", "tests"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            encoding="utf-8",
+        ).stdout
+    except (subprocess.CalledProcessError, OSError):
+        # Inside the `scripts/ship --checked` container the tree is a
+        # bind-mounted worktree whose `.git` file points at a gitdir outside
+        # the mount, so git exits 128. Walk the filesystem instead; CI (a real
+        # checkout) never lands here and keeps the tracked set.
+        found: list[str] = []
+        for dirpath, dirnames, filenames in os.walk(ROOT / "tests"):
+            dirnames[:] = [
+                d for d in dirnames if d != "__pycache__" and not d.startswith(".")
+            ]
+            for name in filenames:
+                rel = (Path(dirpath) / name).relative_to(ROOT).as_posix()
+                if TEST_FILE.search(rel):
+                    found.append(rel)
+        return sorted(found)
     return sorted(p for p in out.split("\0") if TEST_FILE.search(p))
 
 

@@ -87,6 +87,39 @@ def test_force_shards_floors_at_10(
     assert sorted(files, key=int) == [str(k) for k in range(1, expected + 1)]
 
 
+def test_test_files_falls_back_to_walk_when_git_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In the ship container the worktree's `.git` points outside the mount,
+    so `git ls-files` exits 128; test_files() must walk tests/ instead."""
+    real_run = _PLAN.subprocess.run
+    try:
+        real = real_run(
+            ["git", "ls-files", "-z", "--", "tests"],
+            cwd=REPO,
+            check=True,
+            capture_output=True,
+            encoding="utf-8",
+        ).stdout
+        tracked: list[str] | None = sorted(
+            p for p in real.split("\0") if _PLAN.TEST_FILE.search(p)
+        )
+    except (subprocess.CalledProcessError, OSError):
+        tracked = None  # git unavailable here too; skip the equality check
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise subprocess.CalledProcessError(128, ["git"])
+
+    monkeypatch.setattr(_PLAN.subprocess, "run", boom)
+    walked = _PLAN.test_files()
+    assert walked
+    assert "tests/test_ci_shards.py" in walked
+    assert all(_PLAN.TEST_FILE.search(p) for p in walked)
+    if tracked is not None:
+        # Superset, not equality: the walk also sees untracked test files.
+        assert set(tracked) <= set(walked)
+
+
 def test_workflow_follows_the_plan_output() -> None:
     assert "shard: ${{ fromJSON(needs.plan.outputs.shard_list) }}" in WORKFLOW
     assert "--shard ${{ matrix.shard }}/${{ needs.plan.outputs.shards }}" in WORKFLOW
