@@ -1325,6 +1325,11 @@ def search(
         },
     )
     memory_reads = (kind or "").strip().lower() in {"memory", "me"} and view == "reads"
+    # ``recent`` is the spelling callers reach for (gr572709): alias it
+    # at the boundary so the forwarded payload carries the canonical
+    # ``recency`` token downstream handlers match on.
+    if sort is not None and sort.strip().lower() == "recent":
+        sort = "recency"
     sorts = (
         {"reads", "size", "score"} if memory_reads else _accepted_sorts(kind, browse)
     )

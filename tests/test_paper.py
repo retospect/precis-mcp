@@ -73,6 +73,15 @@ class TestParsePaperId:
         with pytest.raises(BadInput):
             _parse_paper_id("wang2020state~xyz")
 
+    def test_chunk_handle_selector_names_direct_get(self) -> None:
+        """gr572709: a ``~pc<N>`` selector — the render headlines blocks
+        by chunk handle, so ``pa<N>~pc<M>`` is a natural misassembly —
+        refuses naming the call that works (the handle is a complete id)."""
+        with pytest.raises(BadInput) as exc:
+            _parse_paper_id("pa483138~pc4770053")
+        nxt = exc.value.next
+        assert isinstance(nxt, str) and "get(id='pc4770053')" in nxt
+
     def test_negative_chunk_single(self) -> None:
         """gr334152: a card-variant chunk's ord (``-1``) must parse — a
         search-emitted ``pc<id>`` handle for one round-trips through

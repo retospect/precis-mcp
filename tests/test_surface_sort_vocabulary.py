@@ -42,6 +42,18 @@ def test_handler_suggested_sorts_pass_surface_check(
     assert not bad, f"hints/declared sorts rejected by the surface check: {bad}"
 
 
+def test_sort_recent_aliases_to_recency(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr572709: ``sort='recent'`` is the spelling callers reach for —
+    the boundary aliases it to ``recency`` instead of refusing, and the
+    forwarded payload carries the canonical token downstream."""
+    monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
+    out = core.search(kind="gripe", status="open", sort="recent")
+    text = out if isinstance(out, str) else "\n".join(c.text for c in out.content)
+    assert "unknown search sort" not in text
+
+
 def test_cfp_explicit_deadline_sort_not_rejected(
     runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:

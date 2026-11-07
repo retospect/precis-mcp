@@ -100,6 +100,21 @@ def test_search_status_invalid_value_names_wildcard(hub: Any, store: Store) -> N
     assert isinstance(nxt, str) and "status='*'" in nxt
 
 
+def test_search_status_accepts_status_axis_prefixed_value(
+    hub: Any, store: Store
+) -> None:
+    """gr572709: ``status='STATUS:triaged'`` pastes the tag-axis spelling
+    into the shorthand — the prefix has one reading, so strip it like the
+    hyphen alias."""
+    from precis.handlers.gripe import GripeHandler
+
+    h = GripeHandler(hub=hub)
+    triaged_id = _seed_gripe(store, "triaged")
+    done_id = _seed_gripe(store, "done")
+    out = h.search(status="STATUS:triaged")
+    assert f"gr{triaged_id}" in out.body and f"gr{done_id}" not in out.body
+
+
 def test_parse_strict_accepts_refuted_on_finding_and_in_review_on_gripe() -> None:
     assert Tag.parse_strict("STATUS:refuted", kind="finding").value == "refuted"
     assert Tag.parse_strict("STATUS:in_review", kind="gripe").value == "in_review"
@@ -184,6 +199,18 @@ def test_search_status_bang_excludes(hub: Any, store: Store) -> None:
     out = h.search(status="!wontfix")
     assert f"gr{open_id}" in out.body and f"gr{done_id}" in out.body
     assert f"gr{wontfix_id}" not in out.body
+
+
+def test_search_status_bang_accepts_status_axis_prefix(hub: Any, store: Store) -> None:
+    """The same ``STATUS:``-prefixed spelling inside an exclusion
+    (``status='!STATUS:wontfix'``) strips to the bare value too."""
+    from precis.handlers.gripe import GripeHandler
+
+    h = GripeHandler(hub=hub)
+    open_id = _seed_gripe(store, "open")
+    wontfix_id = _seed_gripe(store, "wontfix")
+    out = h.search(status="!STATUS:wontfix")
+    assert f"gr{open_id}" in out.body and f"gr{wontfix_id}" not in out.body
 
 
 def test_search_status_bang_list_unions_exclusions(hub: Any, store: Store) -> None:

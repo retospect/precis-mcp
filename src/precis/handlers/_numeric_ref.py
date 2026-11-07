@@ -372,6 +372,14 @@ def _tag_names_axis(t: str, axis: str) -> bool:
     return s.startswith(f"{axis}:")
 
 
+def _strip_status_axis(v: str) -> str:
+    """Drop a redundant ``STATUS:`` axis prefix on a ``status=`` value
+    (gr572709): ``status='STATUS:triaged'`` pastes the tag-axis spelling
+    into the shorthand that already implies the axis — one reading, so
+    strip it like the hyphen alias rather than refuse."""
+    return v[7:] if v[:7].lower() == "status:" else v
+
+
 def _extract_summary(body: str) -> tuple[str, int]:
     """Return ``(summary, remaining_words)`` for the list-view TOON row.
 
@@ -1528,7 +1536,7 @@ class NumericRefHandler(Handler):
             if parts and all(p.startswith("!") for p in parts):
                 vals = [
                     ("resolved" if self.kind == "alert" and v == "closed" else v)
-                    for v in (p[1:].strip() for p in parts)
+                    for v in (_strip_status_axis(p[1:].strip()) for p in parts)
                 ]
                 bad = [
                     v
@@ -1565,7 +1573,7 @@ class NumericRefHandler(Handler):
         has_status_tag = any(_tag_names_axis(t, "STATUS") for t in effective)
         explicit = status is not None
         resolved = (status if explicit else self.default_search_status) or ""
-        resolved = resolved.strip()
+        resolved = _strip_status_axis(resolved.strip())
         # 'any'/'all' are the spellings agents reach for meaning "no
         # status filter" — map them onto the '*' opt-out (gr484229).
         if explicit and resolved.lower() in ("any", "all"):
