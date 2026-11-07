@@ -671,6 +671,11 @@ class PaperHandler(Handler):
                 # comment-number window.
                 "comment",
                 "comments",
+                # ``id=[…]`` batch door (gr575784/gr575843):
+                # ``args={'confirm_bulk': True}`` authorises minting past
+                # the per-call DOI queue cap in one call —
+                # :meth:`_get_batch`.
+                "confirm_bulk",
             }
         ),
         # Every acquire knob — ``args={'doi': …, 'verify': False}`` is the
