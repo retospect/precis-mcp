@@ -68,7 +68,9 @@ def test_default_denies_nothing() -> None:
 
 def test_write_none_denies_mutate_verbs_and_fs_writes() -> None:
     deny = disallowed_tools(Envelope(write="none"))
-    assert "mcp__precis__put" in deny
+    # ``put`` stays callable so the box can file gripes (dispatch carve-out).
+    assert "mcp__precis__put" not in deny
+    assert "mcp__precis__edit" in deny
     assert "mcp__precis__delete" in deny
     assert "mcp__precis__link" in deny
     assert "Write" in deny
@@ -90,7 +92,7 @@ def test_egress_none_denies_fetch_tools() -> None:
 
 def test_write_none_and_egress_none_combine() -> None:
     deny = disallowed_tools(Envelope(write="none", egress="none"))
-    assert "mcp__precis__put" in deny
+    assert "mcp__precis__edit" in deny
     assert "WebFetch" in deny
 
 
