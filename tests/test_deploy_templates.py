@@ -34,6 +34,9 @@ _RENDER_VARS: dict[str, object] = {
 
 def _render(**extra: object) -> str:
     env = jinja2.Environment(undefined=jinja2.ChainableUndefined)
+    # ansible's `bool` filter (jinja2 core has none): the DSN user keys on
+    # precis_db_own_cutover_done | default(false) | bool.
+    env.filters["bool"] = lambda v: str(v).strip().lower() in {"1", "true", "yes", "on"}
     template = env.from_string(_TEMPLATE.read_text(encoding="utf-8"))
     return template.render(**_RENDER_VARS, **extra)
 
