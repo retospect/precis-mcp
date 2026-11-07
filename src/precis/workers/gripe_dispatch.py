@@ -16,10 +16,14 @@ is an enablement and rides Reto's go, not a code change.
 Each fire:
 
 * **Supply.** Open chains = live plan roots ``related-to`` a gripe whose
-  STATUS is not terminal. Capacity = the summed ``cap`` of the enabled
-  lanes that fit the ``code`` task class (``plans/lanes.py``). Slots =
-  capacity minus open chains, at most :data:`_MAX_PER_TICK` per fire, so
-  one tick never floods the lanes and a stuck chain holds its slot.
+  STATUS is not terminal **and whose build has not landed**: an ``op``
+  node of a :data:`_BUILD_OPS` type under the root, non-terminal, whose
+  ``task_class`` resolves to ``code``. A chain parked on the sha-in-prod
+  gate, on validate or on the non-blocking review holds no slot
+  (gr584410). Capacity = the summed ``cap`` of the enabled lanes that
+  fit the ``code`` task class (``plans/lanes.py``). Slots = capacity
+  minus held slots — one tick may fill every free build slot, and a
+  chain whose build never lands holds its slot.
 * **Candidates** (:func:`candidates`): live gripes, STATUS ``open`` or
   ``triaged``, tagged ``fix:code``, older than :data:`_MIN_AGE_MINUTES`
   (the dedup and triage passes get their turn first), with no live todo
@@ -68,6 +72,7 @@ from precis.plans import lanes as _lanes
 from precis.plans.templates import mint_gripe_fix_direct
 from precis.principal import worker_comment_meta
 from precis.store import Store
+from precis.todo import TERMINAL_TODO_STATUSES
 from precis.workers.job_types.ci_watch import WORKER_PRINCIPAL as _CI_WATCH_PRINCIPAL
 from precis.workers.runner import BatchResult
 from precis.workers.service_config import ALL_HOSTS, ServiceConfigResolver
@@ -75,13 +80,17 @@ from precis.workers.service_config import ALL_HOSTS, ServiceConfigResolver
 log = logging.getLogger(__name__)
 
 SERVICE_NAME = "gripe_dispatch"
-#: Chains minted per fire at most, whatever the free slots.
-_MAX_PER_TICK = 2
 #: A gripe younger than this waits: the dedup pass and the triage tick
 #: get their turn, and a filer can still retract a mistaken report.
 _MIN_AGE_MINUTES = 60
 #: Task class the chain's build carries (templates leave it unset → code).
 _BUILD_TASK_CLASS = "code"
+#: ``meta.op`` types whose live node holds a build slot — the slice run
+#: itself and its land (gr584410). The chain tail — the ``sha-in-prod``
+#: gate, the ``validate``-classed validate, the ``generate`` reviewer —
+#: carries none of these ops or a non-code ``task_class``, so a chain
+#: that has landed stops holding a slot while it waits on them.
+_BUILD_OPS: tuple[str, ...] = ("run_slice", "land_slice")
 #: Tags that keep a gripe out of the lane by this door. ``hold:no-autoclose``
 #: marks Reto's never-close gripes (me547530): a land would write
 #: ``resolved:`` on one, so they never enter a chain by this door (BUILDER
@@ -149,7 +158,15 @@ def lane_capacity(
 
 
 def open_chain_count(store: Store) -> int:
-    """Live plan roots ``related-to`` a gripe whose STATUS is not terminal."""
+    """Live plan roots ``related-to`` a gripe still holding a build slot.
+
+    A chain holds a slot only while its build is unlanded: an ``op``
+    node of a :data:`_BUILD_OPS` type under the root (every plan node
+    carries the ``plan:<root>`` tag) whose ``meta.task_class`` resolves
+    to :data:`_BUILD_TASK_CLASS` — unset reads ``code``, as
+    ``plan_dispatch`` resolves it — and whose STATUS is not terminal.
+    Once the build has landed the chain tail (gate, validate, review)
+    may run on for hours without holding a lane slot (gr584410)."""
     with store.pool.connection() as conn:
         row = conn.execute(
             """
@@ -164,8 +181,29 @@ def open_chain_count(store: Store) -> int:
                AND NOT EXISTS (SELECT 1 FROM ref_tags st JOIN tags s ON s.tag_id = st.tag_id
                                 WHERE st.ref_id = r.ref_id AND s.namespace = 'STATUS'
                                   AND s.value = ANY(%s))
+               AND EXISTS (SELECT 1
+                             FROM refs bn
+                             JOIN ref_tags bpt ON bpt.ref_id = bn.ref_id
+                             JOIN tags bp ON bp.tag_id = bpt.tag_id
+                                        AND bp.namespace = 'OPEN'
+                                        AND bp.value = 'plan:' || r.ref_id
+                            WHERE bn.kind = 'todo' AND bn.retired_at IS NULL
+                              AND COALESCE(bn.meta->'op'->>'type', bn.meta->>'op')
+                                  = ANY(%s)
+                              AND COALESCE(bn.meta->>'task_class', %s) = %s
+                              AND NOT EXISTS (SELECT 1 FROM ref_tags bst
+                                                JOIN tags bs ON bs.tag_id = bst.tag_id
+                                               WHERE bst.ref_id = bn.ref_id
+                                                 AND bs.namespace = 'STATUS'
+                                                 AND bs.value = ANY(%s)))
             """,
-            (list(_TERMINAL_STATUSES),),
+            (
+                list(_TERMINAL_STATUSES),
+                list(_BUILD_OPS),
+                _BUILD_TASK_CLASS,
+                _BUILD_TASK_CLASS,
+                sorted(TERMINAL_TODO_STATUSES),
+            ),
         ).fetchone()
     return int(row[0]) if row else 0
 
@@ -234,7 +272,7 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
         )
     capacity = lane_capacity(store)
     open_chains = open_chain_count(store)
-    slots = min(_MAX_PER_TICK, max(capacity - open_chains, 0))
+    slots = max(capacity - open_chains, 0)
     picks = candidates(store, slots)
     extra: dict[str, Any] = {
         "lane_capacity": capacity,

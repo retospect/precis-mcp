@@ -146,28 +146,125 @@ def test_pass_mints_within_free_slots_and_is_idempotent(
     c = _gripe(store, "c", prio=3)
     assert gd.open_chain_count(store) == 0
     res = gd.run_gripe_dispatch_pass(store, host="h1")
-    # capacity 3, no open chains, but at most two per fire
-    assert (res.claimed, res.ok, res.failed) == (2, 2, 0)
-    assert res.extra["slots"] == 2 and res.extra["lane_capacity"] == 3
+    # capacity 3, no held slots: one fire fills every free build slot
+    assert (res.claimed, res.ok, res.failed) == (3, 3, 0)
+    assert res.extra["slots"] == 3 and res.extra["lane_capacity"] == 3
     assert len(_roots_for(store, a)) == 1 and len(_roots_for(store, b)) == 1
-    assert _roots_for(store, c) == []
+    assert len(_roots_for(store, c)) == 1
     [note] = _comments(store, a)
     assert note.startswith(
         f"dispatch: minted gripe-fix-direct td{_roots_for(store, a)[0]}"
     )
-    assert gd.open_chain_count(store) == 2
-
-    # Second fire: a and b are linked (skipped), one slot left → c.
-    res = gd.run_gripe_dispatch_pass(store, host="h1")
-    assert (res.claimed, res.ok) == (1, 1)
-    assert len(_roots_for(store, c)) == 1
-    assert len(_roots_for(store, a)) == 1  # never doubled
     assert gd.open_chain_count(store) == 3
 
-    # Third fire: lanes full, nothing minted.
+    # Second fire: all three are linked (skipped) and no slot is free.
     _gripe(store, "d", prio=1)
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert (res.claimed, res.ok) == (0, 0) and res.extra["slots"] == 0
+    assert len(_roots_for(store, a)) == 1  # never doubled
+
+
+def test_one_tick_fills_every_free_build_slot(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr584410: the per-tick cap is the free-slot count — devin 6 +
+    claude-sub 3 with no live builds mints nine chains in one pass, and
+    never more than the free slots."""
+    use_lanes(
+        monkeypatch,
+        Lane(
+            "devin",
+            "devin_tree",
+            "free-promo",
+            6,
+            frozenset({"code"}),
+            vendor="cognition",
+        ),
+        Lane(
+            "claude-sub",
+            "claude_p",
+            "sub",
+            3,
+            frozenset({ANY_CLASS}),
+            vendor="anthropic",
+            models=("claude-sonnet-5",),
+            model_prefix="claude-",
+        ),
+    )
+    _light(store)
+    gripes = [_gripe(store, f"g{i}", prio=1) for i in range(12)]
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.claimed, res.ok, res.failed) == (9, 9, 0)
+    assert res.extra["slots"] == 9 and res.extra["lane_capacity"] == 9
+    # equal prios → oldest first
+    assert [m["gripe"] for m in res.extra["minted"]] == gripes[:9]
+    assert gd.open_chain_count(store) == 9
+    # no free slot left: the next fire mints nothing more
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.claimed, res.ok) == (0, 0) and res.extra["slots"] == 0
+
+
+def _build_node(store: Store, root_id: int) -> int:
+    """The unclassed ``op`` child of a plan root — the chain's build."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM refs WHERE parent_id = %s "
+            "AND meta ? 'op' AND meta->>'task_class' IS NULL",
+            (root_id,),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_landed_build_frees_the_slot_while_the_chain_runs_on(
+    store: Store, two_lanes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr584410: a chain parked on the sha-in-prod gate, validate or the
+    non-blocking review holds no build slot — the slot frees at land."""
+    codex, _sub = two_lanes
+    use_lanes(monkeypatch, codex)  # capacity 1
+    _light(store)
+    a = _gripe(store, "a", prio=1)
+    b = _gripe(store, "b", prio=2)
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 1
+    [root] = _roots_for(store, a)
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 0  # full
+
+    # the build lands: its node goes done while gate/validate/review
+    # stay open — the chain runs on for hours yet holds no slot
+    build = _build_node(store, root)
+    store.add_tag(
+        build, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    assert gd.open_chain_count(store) == 0
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.ok == 1 and _roots_for(store, b)
+    # a still has its (running-on) chain linked: not re-minted
+    assert _roots_for(store, a) == [root]
+
+
+def test_factory_off_mints_nothing(
+    store: Store, two_lanes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _light(store)
+    _gripe(store, "a")
+    monkeypatch.setenv("PRECIS_FACTORY", "off")
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.claimed, res.ok, res.failed) == (0, 0, 0)
+    assert res.extra["read_only"] == "PRECIS_FACTORY=off"
+    with store.pool.connection() as conn:
+        n_links = conn.execute(
+            "SELECT count(*) FROM links WHERE relation = 'related-to'"
+        ).fetchone()
+    assert n_links is not None and int(n_links[0]) == 0
+
+
+@pytest.mark.parametrize("tag", gd.HOLD_TAGS)
+def test_every_hold_tag_excludes(store: Store, two_lanes: Any, tag: str) -> None:
+    _light(store)
+    _gripe(store, "held", tags=("fix:code", tag))
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.claimed, res.ok) == (0, 0)
 
 
 def test_closed_chain_frees_its_slot_but_its_gripe_stays_out(
