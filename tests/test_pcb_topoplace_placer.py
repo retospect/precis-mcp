@@ -60,6 +60,9 @@ def test_try_move_commit_matches_full_recompute_1000_moves() -> None:
     assert length == proxy.length
 
 
+@pytest.mark.nightly(
+    reason="31 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_proxy_throughput_floor_and_printed_rate() -> None:
     """Proxy evals/s on the 100-part synthetic, printed every run —
     hard floor 500/s (spec's CI floor; target ≥2000/s on the dev Mac).
@@ -1115,6 +1118,9 @@ def test_overlap_proxy_parity_over_staged_moves() -> None:
     assert proxy.overlap == pytest.approx(overlap_area(d, proxy.pose))
 
 
+@pytest.mark.nightly(
+    reason="41 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_placer_beats_autoplace_at_equal_evals_median() -> None:
     """On the synthetic board, best proxy crossings ≤ autoplace's at
     equal eval count — printed per seed, hard on the median."""

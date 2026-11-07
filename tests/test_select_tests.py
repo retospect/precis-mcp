@@ -97,6 +97,9 @@ def test_path_map_patterns_match_something() -> None:
 
 
 @pytest.mark.timeout(480)  # CI worst 181s x2.5 for runner variance (gr503084)
+@pytest.mark.nightly(
+    reason="177 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_every_corpus_ref_is_selectable(selector: sel.Selector) -> None:
     """Every repo path a test file reads must select that test when it
     changes — the snapshot/table/registry tests can never sit outside the
@@ -128,6 +131,9 @@ def test_every_corpus_ref_is_selectable(selector: sel.Selector) -> None:
     )
 
 
+@pytest.mark.nightly(
+    reason="77 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_second_select_does_not_reparse(
     selector: sel.Selector, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -176,6 +182,9 @@ R35_CASES = [
 
 
 @pytest.mark.parametrize(("changed", "want"), R35_CASES)
+@pytest.mark.nightly(
+    reason="287 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_r35_regressions_are_selected(selector: sel.Selector, changed, want) -> None:
     targets, testmon = selector.select(changed)
     if all(f.endswith(".py") for f in changed):
@@ -195,6 +204,9 @@ def test_changed_test_file_selects_itself(selector: sel.Selector) -> None:
     assert "tests/test_skill_prose.py" in targets
 
 
+@pytest.mark.nightly(
+    reason="94 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_new_migration_selects_seed_classifier(selector: sel.Selector) -> None:
     """gr514386: a ``*/migrations/*.sql`` diff always selects the
     seeded-table classifier — the unclassified ``vault._key`` seed
@@ -221,6 +233,9 @@ def test_seed_classifier_rides_contract_and_qland_lint() -> None:
 
 
 @_POSIX_MODULE_KEYS
+@pytest.mark.nightly(
+    reason="87 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_deleted_module_still_selects_importers(selector: sel.Selector) -> None:
     """A module deleted by the diff isn't in the file map anymore — its
     importers must still be selected (they break at import time)."""
@@ -229,6 +244,9 @@ def test_deleted_module_still_selects_importers(selector: sel.Selector) -> None:
     assert testmon or "tests/test_link_crud.py" in targets
 
 
+@pytest.mark.nightly(
+    reason="56 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_pcb_change_selects_workspace_pcb_local(selector: sel.Selector) -> None:
     """gr543576 / the r159 red: the pcb offline kernel's behavioural
     contract is tests/workspaces/test_pcb_local.py — a src/precis/pcb

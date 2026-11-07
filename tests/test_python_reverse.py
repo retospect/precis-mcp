@@ -208,6 +208,9 @@ def test_pattern_single_token_miss_has_no_retry_note(
     assert "also matched nothing" not in body
 
 
+@pytest.mark.nightly(
+    reason="52 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_callers_on_own_repo_finds_resolved_edges() -> None:
     """Smoke on the real tree: a well-called helper has resolved callers."""
     root = Path(__file__).resolve().parent.parent

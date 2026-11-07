@@ -453,8 +453,13 @@ def _shards(
     *,
     hours_ago: float = 1.0,
     lint: str | None = "SUCCESS",
+    family: str = "test-linux",
 ) -> list[dict[str, Any]]:
-    """`lint` plus `n` test-linux check-runs, as one commit's runs.
+    """`lint` plus `n` shard-leg check-runs, as one commit's runs.
+
+    `family` is the leg prefix: `test-linux` (the pre-me580555 gate and the
+    full shape), `gate-fast` (the blocking leg since), or `soak` (advisory —
+    never a verdict leg).
 
     Shards finish at slightly different times, as a real matrix does — spread
     backwards from `hours_ago` so the newest is exactly `hours_ago` old. The
@@ -463,7 +468,7 @@ def _shards(
     first shard; `lint=None` omits it.
     """
     runs = [
-        _run_node(f"test-linux (3.13, {i + 1})", conclusion, hours_ago + i / 30)
+        _run_node(f"{family} (3.13, {i + 1})", conclusion, hours_ago + i / 30)
         for i in range(n)
     ]
     if lint is not None:
@@ -679,11 +684,96 @@ def test_five_green_shards_are_not_enough(
     assert capsys.readouterr().out.strip() == GATED
 
 
+def test_gate_fast_legs_green_is_the_gated_sha(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """me580555: the blocking leg of the new gate shape is `gate-fast`; a
+    complete green gate-fast set is a verdict exactly as test-linux was."""
+    mod = _load()
+    _stub(mod, monkeypatch, {GATED: _shards(family="gate-fast")})
+    assert mod.main([]) == 0
+    assert capsys.readouterr().out.strip() == GATED
+
+
+def test_one_red_gate_fast_leg_disqualifies(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mod = _load()
+    fast = _shards(family="gate-fast")
+    fast[2]["conclusion"] = "FAILURE"
+    _stub(mod, monkeypatch, {BURST: fast, GATED: _shards()})
+    assert mod.main([]) == 0
+    assert capsys.readouterr().out.strip() == GATED
+
+
+def test_a_missing_gate_fast_shard_is_not_a_verdict() -> None:
+    fast = _shards(family="gate-fast", n=10)
+    del fast[4]
+    assert not _load().is_green(fast)
+
+
+def test_a_red_soak_leg_never_vetoes_a_verdict(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`soak` legs are advisory — red soak is debt (`release.soak_red`),
+    never a veto. Green gate-fast legs stay a verdict beside a failed soak
+    matrix."""
+    mod = _load()
+    runs = (
+        _shards(family="gate-fast")
+        + [_run_node(f"soak (3.13, {i})", "FAILURE", 0.5) for i in range(1, 6)]
+        + [_run_node("verdict-soak", "FAILURE", 0.5)]
+    )
+    _stub(mod, monkeypatch, {GATED: runs})
+    assert mod.main([]) == 0
+    assert capsys.readouterr().out.strip() == GATED
+    assert mod.is_green(runs)
+
+
+def test_exact_verdict_accepts_the_gate_fast_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The `{lint, gate-fast (3.13, 1..N)}` job set certifies; a failed soak
+    leg in the same attempt is excluded from `required` and cannot veto."""
+    mod = _load()
+    runs = _completed(_shards(n=10, family="gate-fast"))
+    runs.append(
+        {
+            "name": "soak (3.13, 1)",
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "completedAt": runs[0]["completedAt"],
+        }
+    )
+    monkeypatch.setattr(
+        mod,
+        "_run",
+        lambda *a: (
+            _exact_response(GATED, runs) if a[2] == "graphql" else _exact_jobs(runs)
+        ),
+    )
+    facts = mod.exact_verdict(GATED)
+    assert facts["candidate"] == GATED
+    assert facts["candidate_state"] == "found"
+
+
+def test_verdict_age_hours_counts_gate_fast_legs(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A gate-fast verdict is as old as its slowest gate-fast leg."""
+    mod = _load()
+    _stub(mod, monkeypatch, {GATED: _shards(family="gate-fast", hours_ago=20.0)})
+    assert mod.main(["--age-hours"]) == 0
+    assert abs(float(capsys.readouterr().out.strip()) - 20.0) < 0.2
+
+
 def test_nightly_shape_all_green_counts(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A sha the nightly also ran carries 2 lint + 3.13 and 3.12 legs on top of
-    the gate's. Every Python's legs must still form a complete 1..N set."""
+    the gate's. Every PRESENT family x Python group must form a complete
+    1..N set — a partial group disqualifies, pinned by
+    test_an_incomplete_python_family_is_not_rescued below."""
     mod = _load()
     nightly = (
         _shards(n=10)
@@ -691,6 +781,22 @@ def test_nightly_shape_all_green_counts(
         + [_run_node("lint", "SUCCESS", 2)]
     )
     _stub(mod, monkeypatch, {GATED: nightly})
+    assert mod.main([]) == 0
+    assert capsys.readouterr().out.strip() == GATED
+
+
+def test_an_incomplete_python_family_is_not_rescued_by_a_complete_one(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Pin for the ``all(...)`` in _shard_sets_complete: a complete green
+    3.13 matrix beside a partial green 3.12 one (4 of 10 legs) is NOT a
+    verdict — the 3.12 legs that never ran leave src ungated."""
+    mod = _load()
+    partial = _shards(n=10) + [
+        _run_node(f"test-linux (3.12, {i})", "SUCCESS", 2) for i in range(1, 5)
+    ]
+    assert not mod.is_green(partial)
+    _stub(mod, monkeypatch, {BURST: partial, GATED: _shards()})
     assert mod.main([]) == 0
     assert capsys.readouterr().out.strip() == GATED
 

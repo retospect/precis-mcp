@@ -71,6 +71,9 @@ def _report(spec: str) -> tuple[list, dict]:
     "name",
     sorted(p.stem for p in _EX.glob("*.hx") if p.stem not in _FAILING),
 )
+@pytest.mark.nightly(
+    reason="33 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_shipped_examples_pass(name: str) -> None:
     found, summary = _report((_EX / f"{name}.hx").read_text(encoding="utf-8"))
     assert found == [], [f.message for f in found]

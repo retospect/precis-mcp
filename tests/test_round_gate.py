@@ -95,14 +95,38 @@ case "$1 $2" in
     [ -f "$GH_STUB_DIR/on-rerun" ] && bash "$GH_STUB_DIR/on-rerun"
     exit "${GH_STUB_RERUN_RC:-0}" ;;
 esac
+# Real `gh api` sends POST when any -f/-F is present unless --method/-X GET
+# makes them a query string — reject the same mistake the soak read had.
+has_field=0
+method=""
+prev=""
+for a in "$@"; do
+  case "$a" in -f|-F) has_field=1 ;; esac
+  case "$prev" in --method|-X) method="$a" ;; esac
+  prev="$a"
+done
+if [ "$has_field" = 1 ] && [ "$method" != "GET" ]; then
+  echo "gh: -f/-F params go in the body — use --method GET for a query" >&2
+  exit 1
+fi
+page=""
 for a in "$@"; do
   case "$a" in
     */commits/*/check-runs)
-      sha="${a#*/commits/}"; sha="${sha%/check-runs}"
-      [ -f "$GH_STUB_DIR/$sha" ] && { cat "$GH_STUB_DIR/$sha"; exit 0; }
-      exit 1 ;;
+      sha="${a#*/commits/}"; sha="${sha%/check-runs}" ;;
+    page=*) page="${a#page=}" ;;
   esac
 done
+# A check-runs read pages `-f page=N`: $sha.pageN files win (a test can
+# push rows onto page 2), then $sha on page 1; page >=2 with no file is
+# an empty page, not an error — real gh returns [] and the loop stops.
+if [ -n "$sha" ]; then
+  [ -f "$GH_STUB_DIR/$sha.page${page:-1}" ] && { cat "$GH_STUB_DIR/$sha.page${page:-1}"; exit 0; }
+  if [ -f "$GH_STUB_DIR/$sha" ]; then
+    [ -z "$page" ] || [ "$page" = 1 ] && { cat "$GH_STUB_DIR/$sha"; exit 0; }
+    exit 0
+  fi
+fi
 exit 1
 """
 
@@ -247,7 +271,8 @@ def test_docs_only_regex_is_the_one_check_yml_uses(tmp_path: Path) -> None:
     copy = tmp_path / "round_script.py"
     copy.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
     (tmp_path / "lib").mkdir()
-    shutil.copy(REPO_ROOT / "scripts/lib/git_network.py", tmp_path / "lib")
+    for name in ("git_network.py", "soak_verdict.py"):
+        shutil.copy(REPO_ROOT / "scripts/lib" / name, tmp_path / "lib")
     mod = load_script("round_script", copy)
     workflow = (REPO_ROOT / ".github" / "workflows" / "check.yml").read_text(
         encoding="utf-8"

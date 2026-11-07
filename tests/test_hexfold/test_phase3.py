@@ -249,6 +249,9 @@ COLLARED_PILLAR = PILLAR.replace(
 
 @pytest.mark.slow  # 324s in the 2026-09-26 gate profile
 @pytest.mark.timeout(720)  # CI worst 269s x2.5 for runner variance (gr503084)
+@pytest.mark.nightly(
+    reason="216 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_collared_pillar_is_over_curved() -> None:
     # the seam already supplies six heptagons; the collar doubles them:
     # euler.residual -6 (WARN), and the collar lands far from the hole

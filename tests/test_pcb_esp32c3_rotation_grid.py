@@ -51,6 +51,9 @@ MAX_OFF90_FRAC = 0.10
 
 
 @pytest.mark.parametrize("seed", SEEDS)
+@pytest.mark.nightly(
+    reason="65 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_esp32c3_placed_rotations_are_grid_values(store: Store, seed: int) -> None:
     with FIXTURE.open(encoding="utf-8") as fh:
         design: dict[str, Any] = copy.deepcopy(json.load(fh))

@@ -119,6 +119,9 @@ def test_expected_failure_board_names_exist() -> None:
         for name in BOARD_NAMES
     ],
 )
+@pytest.mark.nightly(
+    reason="195 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_example_routes_fully_at_drc_zero(name: str, tmp_path: Path) -> None:
     module = load_script(
         f"pcb_example_{name}", ROOT / "examples/boards" / name / "main.py"

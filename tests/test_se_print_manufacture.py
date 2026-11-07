@@ -167,6 +167,9 @@ def _radial(verts: np.ndarray, axis_yz: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.nightly(
+    reason="44 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_revolute_pair_exports_two_objects_separated_by_the_gap(
     handler: SeHandler, tmp_path: Path
 ) -> None:
@@ -628,6 +631,9 @@ def test_fastener_across_fused_members_is_elided_but_model_still_prints_it(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.nightly(
+    reason="32 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_horizontal_revolute_is_an_overhang_finding_naming_the_bore(
     handler: SeHandler,
 ) -> None:

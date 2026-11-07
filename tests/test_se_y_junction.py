@@ -94,6 +94,9 @@ def test_y_invalid_input_refuses_before_build_or_relax(
 @pytest.mark.parametrize(
     "sheet", [[6, 4], pytest.param([30, 30], marks=pytest.mark.slow)]
 )
+@pytest.mark.nightly(
+    reason="73 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_public_y_scene_tethered_test_db_roundtrip(
     store: Store, hub_no_embedder: Hub, sheet: list[int]
 ) -> None:

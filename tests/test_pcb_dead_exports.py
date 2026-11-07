@@ -937,6 +937,9 @@ def _pcbir_field_consumers(field: str) -> set[str]:
 
 
 @pytest.mark.parametrize("field", _pcbir_field_names())
+@pytest.mark.nightly(
+    reason="119 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_pcbir_field_has_a_producer_and_a_consumer_or_is_known_unwired(
     field: str,
 ) -> None:
@@ -1018,6 +1021,9 @@ def _field_table_consumers(field: str, *, exclude_relpath: str) -> set[str]:
 
 
 @pytest.mark.parametrize("field", _capability_fields())
+@pytest.mark.nightly(
+    reason="79 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_capabilities_field_has_a_consumer_or_is_known_unwired(field: str) -> None:
     anchor = f"{_CAPABILITIES_RELPATH}::FIELDS.{field}"
     if anchor in _KNOWN_UNWIRED:

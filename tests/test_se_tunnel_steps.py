@@ -40,6 +40,9 @@ def stepped_block() -> Any:
 
 
 @pytest.mark.timeout(600)  # CI worst 230s x2.5 for runner variance (gr503084)
+@pytest.mark.nightly(
+    reason="231 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_stepped_rail_tunnel_builds(stepped_block) -> None:
     block = stepped_block
     findings = block.topology["report"]["findings"]
@@ -80,6 +83,9 @@ def test_stepped_rail_tunnel_builds(stepped_block) -> None:
 
 
 @pytest.mark.timeout(600)  # CI worst 220s x2.5 for runner variance (gr503084)
+@pytest.mark.nightly(
+    reason="232 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_stepped_sites_labelled_per_segment(stepped_block) -> None:
     block = stepped_block
     sites = block.topology["sites"]["sites"]
@@ -126,6 +132,9 @@ def test_stepped_cone_refused_for_flat_symmetry() -> None:
 
 
 @pytest.mark.timeout(540)  # CI worst 215s x2.5 for runner variance (gr503084)
+@pytest.mark.nightly(
+    reason="147 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_stepped_cone_18_to_12_builds() -> None:
     block = build_hexfold_scene(
         params(
@@ -234,6 +243,11 @@ def _gate_read(
 @pytest.mark.slow
 @pytest.mark.xfail(
     strict=True,
+    # gate-s2: run=False — 221 s spent re-measuring a known red is dead
+    # gate time. With run=False the body never executes anywhere, so an
+    # XPASS (the condition fixed) is never detected — the recorded
+    # numbers in `reason` are the only report.
+    run=False,
     reason=(
         "H2 cone stop condition (2026-10-21, measured in the test "
         "container): after relax_block (EMT polish, 30 steps) the 18->8 "
@@ -247,6 +261,9 @@ def _gate_read(
     ),
 )
 @pytest.mark.timeout(600)  # CI worst ~215s x2.5 for runner variance (gr503084)
+@pytest.mark.nightly(
+    reason="221 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_stepped_cone_gate_after_relax(monkeypatch: pytest.MonkeyPatch) -> None:
     # pass (spec §"H2 cone gate follow-up"): both step seams under the
     # step.overstrained bars and a clean washer zone under step: cone.
@@ -259,6 +276,9 @@ def test_stepped_cone_gate_after_relax(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.slow
 @pytest.mark.timeout(720)  # CI worst ~265s x2.5 for runner variance (gr503084)
+@pytest.mark.nightly(
+    reason="280 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_stepped_washer_reading_after_relax(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -725,6 +725,9 @@ def test_routing_rule_oracle_catches_a_gap_leak(monkeypatch) -> None:
         _assert_routing_rule(ctx, d, w, 2)
 
 
+@pytest.mark.nightly(
+    reason="44 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_build_wires_order_and_routing_rule() -> None:
     """``order[e]`` holds exactly the branches crossing ``e``, sorted by
     their taut parameter within the tie tolerance — and the routing rule
@@ -1879,6 +1882,9 @@ def test_coincident_run_braid_check() -> None:
     )
 
 
+@pytest.mark.nightly(
+    reason="54 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_build_wires_tie_order_consistent() -> None:
     """Order ties at wrapped vertices resolve by divergence, giving the
     same answer on every edge of a shared run: two different-net wires
@@ -2137,6 +2143,9 @@ def test_build_wires_capacity_honours_rotation() -> None:
     assert hit > 0
 
 
+@pytest.mark.nightly(
+    reason="84 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_build_wires_rate_printed() -> None:
     """The 2b route runs well inside the spec's 2 evals/s full-route
     floor at 100 parts — the old-form assert is back (round-5 ruling):
@@ -2203,6 +2212,9 @@ def test_build_wires_rate_printed() -> None:
     assert min(ratios) <= 4.0
 
 
+@pytest.mark.nightly(
+    reason="101 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_build_wires_deterministic(monkeypatch) -> None:
     """Raw construction stays deterministic on the synthetic shared-pin load.
 

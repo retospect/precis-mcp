@@ -806,6 +806,9 @@ def test_dogfood_stackup_op_accepts_an_inner_signal_layer(pcb, store):
     assert "stackup" in resp.body
 
 
+@pytest.mark.nightly(
+    reason="39 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_dogfood_gerber_export_zip_loads(pcb, tmp_path):
     slug = _seed(pcb)
     resp = pcb.get(id=slug, view="gerber", args={"dir": str(tmp_path)})
@@ -860,6 +863,9 @@ def test_dogfood_electrode_array_gets_no_pick_and_place_or_bom_line(pcb, tmp_pat
     assert "J_HV" in warn and "ARR1" not in warn.replace("ARR1_SINK_0", "")
 
 
+@pytest.mark.nightly(
+    reason="47 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_dogfood_gerber_export_leads_with_a_drc_banner_on_a_red_board(
     pcb, store, tmp_path
 ):
@@ -926,6 +932,9 @@ def _foreign_lands_on_authored_vias(pcb, store, slug: str) -> list[Any]:
 
 @pytest.mark.slow
 @pytest.mark.timeout(480)  # CI worst 175s x2.5 for runner variance (gr503084)
+@pytest.mark.nightly(
+    reason="192 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_dogfood_place_keeps_every_land_off_the_authored_plaza_vias(pcb, store):
     """``op='place'`` must not park a part's solder lands on authored
     copper (docs/backlog/pcb-placer-obstacle-set-is-mounting-holes-only.md).

@@ -453,6 +453,9 @@ def test_plaza_family_via_to_via_clearance_survives_coordinate_rounding():
         ([32, 32], "rim"),
     ],
 )
+@pytest.mark.nightly(
+    reason="32 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_min_clearance_stays_within_the_known_gap_across_grid_sizes(grid, variant):
     """The exact-geometry stress sweep the round-4 fix (both the
     plaza-corner chamfer and the rim via-reach rewrite) was validated

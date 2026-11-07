@@ -1,0 +1,325 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/gate-fast-refit — regenerate tests/gate_fast.json + the seconds table.
+
+A weekly chore the coordinator runs; not a CI job. It:
+
+1. lists red check.yml runs on ``ci/**`` / ``release/**`` since ``--since``
+   (conclusion failure or timed_out),
+2. reads each run's failed-job logs (``gh run view <id> --log-failed``)
+   and collects the ``FAILED tests/...::...`` summary ids — the files that
+   held a failing id become ``history_files`` with a per-file incident
+   hit count,
+3. rewrites ``tests/gate_fast.json``: history + hits, the contract tier
+   snapshot (read live from scripts/impacted-tests), the nightly-marked
+   functions with their seconds (AST scan of the tree + junit timings when
+   ``--junit`` names a downloaded run's artifact dir), and floor_seconds,
+4. with ``--weights DIR`` regenerates tests/shard_weights.json's
+   ``seconds`` + pin tables from a green run's junit dir (delegates to
+   scripts/shard-weights),
+5. prints the leave-one-out catch rate: for each red incident, whether
+   the selection built WITHOUT that incident's contribution (floor ∪
+   contract ∪ history-of-others) would have held any of its failing
+   files — the analysis the 5-minute gate was sized on.
+
+    gh run download <run> -p 'junit-*' --dir scratch/junit
+    scripts/gate-fast-refit --since 2026-10-01 --junit scratch/junit --write
+
+``--write`` requires ``--junit``: without fresh per-test seconds the
+rewrite would empty ``nightly_tests``/``nightly_seconds``. This script
+does NOT download junit itself — ``gh run download`` first (the newest
+green run's ``junit-*`` artifacts); ``--weights DIR`` reuses the same
+dir for the shard-weights table.
+
+gh notes: ~2 calls per red run (list + --log-failed); a few hundred runs
+is a few minutes. Failed runs without parseable FAILED lines still count
+as incidents — a gate red is signal even when the ids are lost to log
+truncation — they just contribute no history files.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import json
+import re
+import runpy
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
+from datetime import UTC, datetime
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+_GF = runpy.run_path(str(Path(__file__).resolve().parent / "lib" / "gate_fast.py"))
+
+# gh --log-failed prefixes every line with "job<TAB>step<TAB>ts  ", so
+# FAILED/ERROR sit mid-line; requiring a tests/ path keeps postgres
+# "ERROR: relation ..." noise out.
+FAILED_RE = re.compile(r"(?:FAILED|ERROR)\s+(tests/\S+)")
+LEG_RE = re.compile(r"^(test-linux|gate-fast|soak) \(")
+
+
+def gh(*args: str, timeout: int = 180) -> tuple[int, str]:
+    cp = subprocess.run(
+        ["gh", *args],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=timeout,
+        check=False,
+    )
+    return cp.returncode, cp.stdout
+
+
+def red_runs(since: str) -> list[dict]:
+    """check.yml runs on ci/** / release/** with a red conclusion."""
+    out: dict[int, dict] = {}
+    for status in ("failure", "timed_out"):
+        rc, text = gh(
+            "run",
+            "list",
+            "--workflow",
+            "check.yml",
+            "--status",
+            status,
+            "--created",
+            f">={since}",
+            "--limit",
+            "500",
+            "--json",
+            "databaseId,headBranch,conclusion,createdAt",
+        )
+        if rc != 0:
+            print(f"gate-fast-refit: gh run list --status {status} failed", file=sys.stderr)
+            continue
+        for r in json.loads(text):
+            br = str(r.get("headBranch") or "")
+            if br.startswith(("ci/", "release/")):
+                out[int(r["databaseId"])] = r
+    return sorted(out.values(), key=lambda r: str(r.get("createdAt") or ""))
+
+
+def failed_files(run_id: int) -> set[str]:
+    """Test files holding a FAILED/ERROR id in the run's failed-job logs."""
+    rc, text = gh("run", "view", str(run_id), "--log-failed", timeout=300)
+    if rc != 0:
+        return set()
+    return {m.group(1).split("::", 1)[0] for m in FAILED_RE.finditer(text)}
+
+
+def junit_test_seconds(d: Path) -> dict[str, dict[str, float]]:
+    """``{file: {nodeid-suffix: seconds}}`` over every junit*.xml under d."""
+    def nodeid(classname: str, name: str) -> str | None:
+        parts = [p for p in classname.split(".") if p]
+        for i in range(len(parts), 0, -1):
+            p = Path(*parts[:i]).with_suffix(".py")
+            if (ROOT / p).exists():
+                return "::".join([str(p), *parts[i:], name])
+        return None
+
+    out: dict[str, dict[str, float]] = {}
+    for jf in sorted(d.rglob("junit*.xml")):
+        for tc in ET.parse(jf).getroot().iter("testcase"):
+            nid = nodeid(tc.get("classname", ""), tc.get("name", ""))
+            if nid is None:
+                continue
+            f, rest = nid.split("::", 1)
+            fn = rest.split("::")[-1].split("[", 1)[0]
+            out.setdefault(f, {}).setdefault(fn, 0.0)
+            out[f][fn] += float(tc.get("time", 0))
+    return out
+
+
+def marked_functions(path: Path) -> set[str]:
+    """``test_*`` function names carrying the nightly mark in this file."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return set()
+    found: set[str] = set()
+
+    def visit(node: ast.AST, inherited: bool) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if child.name.startswith("test_") and (
+                    inherited or _GF["_fn_nightly"](child)
+                ):
+                    found.add(child.name)
+            elif isinstance(child, ast.ClassDef):
+                visit(child, inherited or _GF["_fn_nightly"](child))
+
+    visit(tree, _GF["_module_pytestmark_nightly"](tree))
+    return found
+
+
+def build_gate_json(
+    incidents: list[dict],
+    per_incident: dict[int, set[str]],
+    junit: Path | None,
+    floor: float,
+) -> dict:
+    hits: dict[str, int] = {}
+    for files in per_incident.values():
+        for f in files:
+            hits[f] = hits.get(f, 0) + 1
+    measured = junit_test_seconds(junit) if junit else {}
+    nightly_tests: dict[str, dict[str, float]] = {}
+    nightly_s: dict[str, float] = {}
+    weights = _GF["load_seconds"](ROOT) or {}
+    for f in sorted(set(weights) | set(measured)):
+        p = ROOT / f
+        if not p.is_file():
+            continue
+        marks = marked_functions(p) & set(measured.get(f, {}))
+        if not marks:
+            continue
+        nightly_tests[f] = {fn: round(measured[f][fn], 1) for fn in sorted(marks)}
+        nightly_s[f] = round(sum(measured[f][fn] for fn in marks), 1)
+    return {
+        "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source_run": None,
+        "floor_seconds": floor,
+        "history_files": sorted(hits),
+        "history_hits": dict(sorted(hits.items())),
+        "contract_files": sorted(_GF["contract_files"](ROOT)),
+        "nightly_tests": nightly_tests,
+        "nightly_seconds": nightly_s,
+        "incidents": len(incidents),
+    }
+
+
+def leave_one_out(
+    per_incident: dict[int, set[str]],
+    floor_files: set[str],
+    contract: set[str],
+    all_files: set[str],
+) -> tuple[float, float, int]:
+    """(any-file rate, per-file rate, incidents with ids): for each red
+    incident, rebuild the selection without its own history contribution
+    and ask whether its failing files were covered."""
+    hits: dict[str, int] = {}
+    for files in per_incident.values():
+        for f in files:
+            hits[f] = hits.get(f, 0) + 1
+    caught_runs = 0
+    covered = total = 0
+    for rid, files in per_incident.items():
+        if not files:
+            continue
+        others = {f for f, n in hits.items() if n > (1 if f in files else 0)}
+        sel = floor_files | contract | others | (set() if all_files else set())
+        got = files & sel
+        if got:
+            caught_runs += 1
+        covered += len(got)
+        total += len(files)
+    n = sum(1 for f in per_incident.values() if f)
+    return (caught_runs / n if n else 0.0, covered / total if total else 0.0, n)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="gate-fast-refit")
+    ap.add_argument("--since", default="2026-10-01")
+    ap.add_argument("--limit", type=int, default=0, help="cap red runs (debug)")
+    ap.add_argument("--junit", type=Path, default=None,
+                    help="a green run's junit artifact dir — per-test seconds + "
+                         "nightly_seconds/nightly_tests; also feeds --weights")
+    ap.add_argument("--weights", type=Path, default=None,
+                    help="junit dir to regenerate tests/shard_weights.json from "
+                         "(scripts/shard-weights logic, --run-id for its stamp)")
+    ap.add_argument("--run-id", default="", help="source run id for the stamp")
+    ap.add_argument("--floor", type=float, default=_GF["FLOOR_SECONDS"])
+    ap.add_argument("--write", action="store_true", help="rewrite tests/gate_fast.json")
+    args = ap.parse_args(argv)
+
+    if args.write and not args.junit:
+        # Without fresh per-test seconds the rewrite would wipe
+        # nightly_tests/nightly_seconds — refuse before touching gh.
+        print(
+            "gate-fast-refit: --write needs --junit <dir> (the downloaded "
+            "run's junit dir) — refusing to write empty nightly tables",
+            file=sys.stderr,
+        )
+        return 2
+
+    print(f"gate-fast-refit: listing red ci/release runs since {args.since}", file=sys.stderr)
+    runs = red_runs(args.since)
+    if args.limit:
+        runs = runs[: args.limit]
+    print(f"gate-fast-refit: {len(runs)} red runs", file=sys.stderr)
+    per_incident: dict[int, set[str]] = {}
+    for i, r in enumerate(runs, 1):
+        rid = int(r["databaseId"])
+        per_incident[rid] = failed_files(rid)
+        if i % 25 == 0:
+            print(f"gate-fast-refit: {i}/{len(runs)} runs read", file=sys.stderr)
+
+    seconds = _GF["load_seconds"](ROOT) or {}
+    floor_files = {f for f, s in seconds.items() if s <= args.floor}
+    contract = _GF["contract_files"](ROOT)
+
+    any_rate, per_file_rate, n_ids = leave_one_out(
+        per_incident, floor_files, contract, set()
+    )
+    hits_total = sum(len(v) for v in per_incident.values())
+    print(
+        f"incidents: {len(runs)} red runs, {n_ids} with parsed failed ids; "
+        f"{len({f for v in per_incident.values() for f in v})} distinct "
+        f"history files ({hits_total} file-incidents)",
+    )
+    print(
+        f"leave-one-out: any-file {any_rate:.1%} of incidents caught, "
+        f"per-file {per_file_rate:.1%} of failing files covered "
+        f"(selection = floor<={args.floor}s ∪ contract ∪ history-minus-own)"
+    )
+
+    if args.weights:
+        sw = runpy.run_path(str(ROOT / "scripts" / "shard-weights"))
+        grouped = sw["runs"]([str(args.weights)])
+        times = sw["file_seconds"](grouped)
+        if times:
+            pinned, load = sw["pack"](times, 10)
+            tables = {"10": pinned}
+            print(
+                f"weights n=10: predicted {[round(x,1) for x in load]}",
+                file=sys.stderr,
+            )
+            payload = {
+                "tables": tables,
+                "seconds": {p: round(t, 1) for p, t in sorted(times.items())},
+                "generated_from": {
+                    "run": args.run_id or str(args.weights),
+                    "at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                },
+            }
+            if args.write:
+                # indent=4 matches the committed table's style — a churn
+                # diff on 9k lines hides the real change.
+                (ROOT / "tests" / "shard_weights.json").write_text(
+                    json.dumps(payload, indent=4) + "\n", encoding="utf-8"
+                )
+                print("weights: tests/shard_weights.json rewritten")
+
+    if args.write or args.junit:
+        gj = build_gate_json(runs, per_incident, args.junit, args.floor)
+        run_id = args.run_id or ""
+        gj["source_run"] = (
+            int(run_id)
+            if run_id.isdigit()
+            else (str(args.junit) if args.junit else None)
+        )
+        if args.write:
+            (ROOT / "tests" / "gate_fast.json").write_text(
+                json.dumps(gj, indent=1, sort_keys=False) + "\n", encoding="utf-8"
+            )
+            print(
+                f"gate_fast.json: {len(gj['history_files'])} history, "
+                f"{len(gj['contract_files'])} contract, "
+                f"{len(gj['nightly_tests'])} files with nightly marks"
+            )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

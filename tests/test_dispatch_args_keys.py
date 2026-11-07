@@ -522,6 +522,9 @@ _KIND_CLASS = _load_kind_classes()
 
 
 @pytest.mark.parametrize(("kind", "verb", "key"), _declared_cases())
+@pytest.mark.nightly(
+    reason="133 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_declared_args_key_not_rejected(
     runtime_with_store: PrecisRuntime, kind: str, verb: str, key: str
 ) -> None:

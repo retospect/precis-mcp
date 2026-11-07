@@ -32,6 +32,9 @@ def test_two_step_tunnel_builds_without_errors(findings: list[dict[str, Any]]) -
     assert [f for f in findings if f["severity"] == "ERROR"] == []
 
 
+@pytest.mark.nightly(
+    reason="39 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_junction_strain_per_seam_and_mouth(findings: list[dict[str, Any]]) -> None:
     wheres = sorted(f["where"] for f in findings if f["code"] == "junction.strain")
     assert wheres == [
@@ -44,6 +47,9 @@ def test_junction_strain_per_seam_and_mouth(findings: list[dict[str, Any]]) -> N
     ]
 
 
+@pytest.mark.nightly(
+    reason="30 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_reducer_rings_balanced_per_reducer(findings: list[dict[str, Any]]) -> None:
     rings = [f["data"] for f in findings if f["code"] == "reducer.rings"]
     assert len(rings) == 2

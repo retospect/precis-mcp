@@ -106,9 +106,10 @@ permissions:
 # the rest, which a ship would read as a red gate). Every shard run is
 # FIXED at 10 (Reto 2026-10-23: "10 is fine, we don't need 40. But no
 # fewer" — scripts/ci-shard-plan emits it; the load-based 12 of gr492653
-# is gone). A gate is 12 jobs (plan + lint + 10 shards), so three fan out
-# at once and a fourth queues: a release run (12) + two harness gates (24)
-# + a main-push lint run (2) = 38 <= 40. The nightly full shape is 27 jobs
+# is gone). A gate is 12 blocking jobs (plan + lint + 10 gate-fast
+# shards; me580555) plus its soak at <= 5 parallel, so two concurrent
+# gates with both soaks live is 2 x (12 + 5) = 34 <= 40. The nightly
+# full shape is 27 jobs
 # (plan + lint + coverage-db + 2 Pythons x 2 macOS shards + 2 Pythons x
 # 10 Linux shards), so nightly + one gate is 39 <= 40. Why not 6 or 8: measured shards
 # (2026-10-16) ran 32-40 min with 6 and 32-36 min with 8 against the 40 min
@@ -155,11 +156,15 @@ jobs:
   #               .claude hooks are shell that tests exercise.
   #   lint_only — a push to main (gr495187): the shard matrix does not run.
   #               A docs-only delta still takes the docs lane.
-  # Anything else is the ship-gate shape: lint + 10 shards
-  # of 3.13 Linux (the `shards` step below).
+  # Anything else is the ship-gate shape: lint + 10 gate-fast shards
+  # blocking (the `gatefast` step below; ~5 min), then the full
+  # non-nightly suite as a non-blocking `soak` (10 shards at <= 5
+  # parallel, scripts/lib/gate_fast.py has the selection rules).
   plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # 10, not 5: the impacted-tests selector may take up to 300 s; a slow
+    # selector must fall back to FULL, never kill `plan`.
+    timeout-minutes: 10
     # checks: read for scripts/last-gated-main-sha's GraphQL checkSuites walk.
     # Job-level permissions replace the workflow's, so contents is restated.
     permissions:
@@ -173,6 +178,9 @@ jobs:
       shard_list: ${{ steps.shards.outputs.list }}
       shard_files: ${{ steps.shards.outputs.shard_files }}
       failed_ids: ${{ steps.failed.outputs.failed_ids }}
+      gate_fast_files: ${{ steps.gatefast.outputs.gate_fast_files }}
+      gate_fast_full: ${{ steps.gatefast.outputs.gate_fast_full }}
+      gate_fast_shard_list: ${{ steps.gatefast.outputs.gate_fast_shard_list }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -281,6 +289,29 @@ jobs:
           REPO: ${{ github.repository }}
           BRANCH: ${{ github.ref_name }}
         run: python3 scripts/ci-failed-first >> "$GITHUB_OUTPUT"
+      # gate-fast's selection (me580555): floor+history+contract+impacted
+      # files LPT-packed over 10 shards — the blocking ~5-min leg. Skipped
+      # on the full shape (the whole matrix runs anyway). A harness diff
+      # can't be honestly subset, so impacted-tests' FULL widens the list
+      # to the suite minus all-nightly files and gate_fast_full=true —
+      # gate-fast then IS the gate and the soak is skipped. exit 3 = FULL
+      # (not a failure); anything else is.
+      - id: gatefast
+        if: steps.shape.outputs.full != 'true'
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/release/*)
+              base=origin/prod
+              git rev-parse --verify --quiet "${base}^{commit}" >/dev/null \
+                || base=origin/main ;;
+            *) base=origin/main ;;
+          esac
+          rc=0
+          gj="$(scripts/gate-fast-select "$base" HEAD --format json)" || rc=$?
+          if [[ $rc -ne 0 && $rc -ne 3 ]]; then exit "$rc"; fi
+          echo "gate_fast_full=$(jq -r .full <<<"$gj")" >> "$GITHUB_OUTPUT"
+          echo "gate_fast_files=$(jq -c .shards <<<"$gj")" >> "$GITHUB_OUTPUT"
+          echo "gate_fast_shard_list=$(jq -c '.shards|keys' <<<"$gj")" >> "$GITHUB_OUTPUT"
 
   lint:
     runs-on: ubuntu-latest
@@ -382,6 +413,102 @@ jobs:
           PRECIS_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/precis_test
           FAILED_IDS: ${{ needs.plan.outputs.failed_ids }}
 
+  # The blocking leg of the gate shape (me580555): the ~5-minute selection
+  # `plan` computed (floor <=2 s files + red-run history + the contract
+  # tier + this diff's impacted files, LPT-packed over 10 shards on
+  # non-nightly seconds; scripts/lib/gate_fast.py). It is the verdict the
+  # merge waits on; the soak below re-runs the whole non-nightly suite
+  # after it goes green. When `plan` answered gate_fast_full (a harness
+  # diff), the selection IS the suite minus all-nightly files and the
+  # soak is skipped — gate-fast is then the whole gate.
+  #
+  # Unlike test-linux's --shard crc32 net the partition here is
+  # gate_fast's own LPT pack, so no --shard flag: passing one would
+  # deselect files the pack assigned to this shard. `-m "not nightly"`
+  # still applies inside each selected file.
+  # Skipped on the full shape — the whole matrix runs there anyway.
+  gate-fast:
+    needs: [plan, failed-first]
+    if: >-
+      !cancelled() && needs.plan.result == 'success'
+      && needs.plan.outputs.docs_only != 'true'
+      && needs.plan.outputs.lint_only != 'true'
+      && needs.plan.outputs.full != 'true'
+      && (needs.failed-first.result == 'success'
+          || needs.failed-first.result == 'skipped')
+    runs-on: ubuntu-latest
+    # ~5 min of tests + setup steady-state; the cap catches hangs and the
+    # rare impacted pull of an over-cap file (scripts/lib/gate_fast.py
+    # warns past 300 s of non-nightly time in one file).
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.13']
+        shard: ${{ fromJSON(needs.plan.outputs.gate_fast_shard_list) }}
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: precis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      # Same pg17 client install as test-linux — the pg_dump 16 the runner
+      # ships refuses the pg17 service (test_schema_convergence).
+      - name: Install PostgreSQL 17 client to match the pg17 server
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 15 --max-time 60 https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+      # shellcheck gate tests (test-linux's comment) — install, don't
+      # trust the runner image.
+      - run: |
+          uv tool install 'shellcheck-py==0.11.0.1'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: |
+          # The list MUST reach argv path-sorted (scripts/lib/gate_fast.py's
+          # pack emits it that way — do not reorder here): pytest 9.1
+          # re-collects a package dir on every bare file arg under it, so a
+          # `tests/*.py` between two `tests/<pkg>/*.py` args unbinds the
+          # pkg's conftest fixtures ("fixture 'x' not found" — the leg-5/7
+          # failure); sorted keeps each subtree contiguous.
+          mapfile -t files < <(jq -r --arg k "${{ matrix.shard }}" '.[$k][]' <<<"$GATE_FAST_FILES")
+          echo "gate-fast shard ${{ matrix.shard }}: collecting ${#files[@]} files"
+          P=(uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest -m "not nightly")
+          "${P[@]}" "${files[@]}" --junitxml=junit.xml
+        env:
+          GATE_FAST_FILES: ${{ needs.plan.outputs.gate_fast_files }}
+          PRECIS_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/precis_test
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: junit-fast-${{ matrix.shard }}
+          path: junit.xml
+          retention-days: 7
+          if-no-files-found: ignore
+
   # Linux legs run the FULL suite against a real PostgreSQL + pgvector,
   # so the db-tagged tests (~41% of the suite) actually gate the release
   # instead of auto-skipping. GHA service containers are Linux-only,
@@ -399,7 +526,10 @@ jobs:
   # `--shard K/N` denominator below).
   #
   # `plan` also emits `shard_files`: the same partition as a map of shard →
-  # test files, so each shard collects only its own ~250 files instead of
+  # test files (each bucket path-sorted — pytest file args under a package
+  # dir must not interleave with the dir's own files, or pytest 9.1's
+  # re-collection unbinds the package's conftest fixtures), so each shard
+  # collects only its own ~250 files instead of
   # every xdist worker collecting all ~61k items (~2 min per shard saved).
   # The lists are passed positionally below; `--shard K/N` stays on the
   # command line as the safety net — it deselects nothing from a correct
@@ -411,19 +541,41 @@ jobs:
   #
   # Gate shape runs 3.13 only; the nightly adds 3.12 (see `plan`).
   #
+  # On the gate shape this job is the SOAK (me580555): the whole
+  # non-nightly suite re-run after gate-fast's ~5-minute verdict. Its
+  # legs are deliberately non-blocking at the job level —
+  # `continue-on-error` keeps a red leg from vetoing the run it shares
+  # — but a red soak DOES read red in the run conclusion through
+  # `verdict-soak`, which reads the legs' real conclusions via the jobs
+  # API (needs.*.result would report `success` here — masked); the
+  # check-run reports the failure either way, and scripts/release
+  # records it in the release.soak_red setting for `round cut` to
+  # refuse on. The display name becomes `soak` so verdict readers can
+  # tell the legs apart; the job id stays `test-linux` (needs/ publish
+  # reference ids). On the full shape it keeps the test-linux name and
+  # its legs are blocking again — the nightly IS the full-matrix
+  # verdict.
+  #
   # `failed-first` is a gate, not just an ordering: it must succeed (or be
   # skipped because there was nothing to re-run) before the matrix runs.
   # A status-check function in the `if` disables the implicit needs-success
   # skip — `!cancelled()`, not `always()`: always() would still start 10
   # shards after cancel-in-progress superseded the run.
   test-linux:
-    needs: [plan, failed-first]
+    needs: [plan, failed-first, gate-fast]
+    name: >-
+      ${{ needs.plan.outputs.full == 'true' && 'test-linux' || 'soak' }}
+      (${{ matrix.python-version }}, ${{ matrix.shard }})
     if: >-
       !cancelled() && needs.plan.result == 'success'
       && needs.plan.outputs.docs_only != 'true'
       && needs.plan.outputs.lint_only != 'true'
       && (needs.failed-first.result == 'success'
           || needs.failed-first.result == 'skipped')
+      && (needs.plan.outputs.full == 'true'
+          || (needs.gate-fast.result == 'success'
+              && needs.plan.outputs.gate_fast_full != 'true'))
+    continue-on-error: ${{ needs.plan.outputs.full != 'true' }}
     runs-on: ubuntu-latest
     # ~10 min steady-state per shard; the cap is for hangs (a wedged test
     # would otherwise hold the runner for GitHub's 6 h default while nobody
@@ -431,8 +583,9 @@ jobs:
     timeout-minutes: 40
     strategy:
       fail-fast: false
-      # Nightly: cap test-linux so nightly + one gate stays <= 40 (budget above).
-      max-parallel: ${{ needs.plan.outputs.full == 'true' && 20 || 10 }}
+      # Nightly: cap at 20 so nightly + one gate stays <= 40; gate soak at
+      # 5 so two gates + soaks fit (budget above).
+      max-parallel: ${{ needs.plan.outputs.full == 'true' && 20 || 5 }}
       matrix:
         python-version: ${{ needs.plan.outputs.full == 'true' && fromJSON('["3.12", "3.13"]') || fromJSON('["3.13"]') }}
         shard: ${{ fromJSON(needs.plan.outputs.shard_list) }}
@@ -508,9 +661,9 @@ jobs:
       - run: |
           uv tool install 'shellcheck-py==0.11.0.1'
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      # `not nightly` (release-train §3, Reto 2026-10-24): the `nightly`-
-      # marked cluster — the >240 s tests that don't split under the gate's
-      # ~4 min single-test bar — stays out of every gate-shape shard run
+      # `not nightly` (me580555; Reto 2026-10-24): the `nightly`-marked
+      # cluster — the >=30 s tests that don't split under the gate's ~5 min
+      # leg bar — stays out of every gate-shape shard run
       # (ci/**, release/**, PRs). The full shape (nightly schedule,
       # workflow_dispatch full=true) drops the filter and runs them.
       # The file list (jq, never word-splitting the shell) keeps this
@@ -741,6 +894,64 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
+
+  # The soak's legible verdict (me580555 round 1): the `soak (3.13, K)`
+  # legs carry continue-on-error, so a red soak keeps the run conclusion
+  # green. This job is the check-run that actually fails — the one
+  # `scripts/round cut`/`open` reads (scripts/lib/soak_verdict.py's
+  # VERDICT_JOB; release's soak_red shares the constant). The
+  # continue-on-error also masks needs.*.result (it reports `success`),
+  # so the verdict reads the legs' real conclusions through the jobs
+  # API — permissions: actions: read replaces the workflow's contents:
+  # read and there is no checkout. The name must NOT carry the `soak`
+  # prefix (me580555 round 2): ci_watch counts any `soak*` job as a
+  # soak leg, which would gripe it separately and count soakless runs
+  # (docs lane, FULL) as soak runs. It is deliberately NOT a blocking
+  # leg: scripts/lib/last_gated_main_sha.py's LEG_PREFIXES and the
+  # round/release verdict readers only count lint/test-linux/gate-fast,
+  # so its red is debt (release.soak_red), never a veto. On shapes with
+  # no soak legs (docs lane, lint-only main push, gate_fast_full) the
+  # job itself is skipped — classify reads that as "no soak", not a
+  # green that could clear cached debt.
+  verdict-soak:
+    needs: [plan, failed-first, gate-fast, test-linux]
+    # The matrix's own run condition, specialized to the soak shape:
+    # `full != 'true'` picks the `soak` display name and reduces the
+    # matrix's last disjunction to its right-hand branch. The leading
+    # `!cancelled()` is the status check that keeps the job evaluating
+    # past red or skipped needs — a cancelled RUN still skips it, which
+    # is what it should do (always() would be redundant, not wrong). On
+    # docs-only/lint-only/harness-FULL/release-FULL shapes — anywhere
+    # the matrix does not run as `soak` — this job is SKIPPED, and a
+    # skipped verdict-soak reads "no soak" to soak_verdict.classify,
+    # never a green a stale debt row could be cleared by.
+    if: >-
+      !cancelled() && needs.plan.result == 'success'
+      && needs.plan.outputs.docs_only != 'true'
+      && needs.plan.outputs.lint_only != 'true'
+      && (needs.failed-first.result == 'success'
+          || needs.failed-first.result == 'skipped')
+      && needs.plan.outputs.full != 'true'
+      && needs.gate-fast.result == 'success'
+      && needs.plan.outputs.gate_fast_full != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" \
+            --paginate --method GET \
+            --jq '.jobs[] | [.name, (.conclusion // "")] | @tsv' > "$RUNNER_TEMP/soak-jobs.tsv"
+          if ! grep -qE '^soak \(' "$RUNNER_TEMP/soak-jobs.tsv"; then
+            echo "verdict-soak: no soak legs found — the matrix should have run" >&2
+            cat "$RUNNER_TEMP/soak-jobs.tsv" >&2
+            exit 1
+          fi
+          bad=$(awk -F'\t' '$1 ~ /^soak \(/ && ($2 == "failure" || $2 == "cancelled")' "$RUNNER_TEMP/soak-jobs.tsv")
+          if [ -n "$bad" ]; then echo "verdict-soak: red legs:"; echo "$bad"; exit 1; fi
 
   publish:
     needs: [lint, test-linux, test-other]

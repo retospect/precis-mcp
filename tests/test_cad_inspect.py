@@ -467,6 +467,9 @@ def field_design() -> tuple[Design, Expr]:
     return d, body
 
 
+@pytest.mark.nightly(
+    reason="55 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_thickness_batched_march_matches_the_per_node_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

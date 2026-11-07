@@ -160,6 +160,9 @@ terminate: t.nosuchport = H
 @pytest.mark.parametrize(
     "path", sorted(p.name for p in (ROOT / "examples").glob("*.hx"))
 )
+@pytest.mark.nightly(
+    reason="49 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_round_trip_text_json_text_stable(path: str) -> None:
     """text -> JSON -> ``spec_from_dict`` -> text is deterministic for
     every shipped example. Builds exactly once per SPEC 19c's own

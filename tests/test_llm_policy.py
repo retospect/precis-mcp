@@ -84,6 +84,24 @@ class TestDegradeToFloor:
         assert sel.from_catalog is False
         assert sel.model == resolve_model(Tier.BIG)
 
+    def test_floor_model_is_resolved_at_call_time(
+        self, clean_catalog: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A from-import bound at ``policy``'s import poisons the floor:
+        ``route()``'s ``_decision_probe`` lazy-imports ``decide`` →
+        ``policy`` *inside* a call, so a module first imported while a test
+        has ``router.resolve_model`` faked keeps the fake after monkeypatch
+        undo (gate-s2 leg 7: ``'unused'`` outlived its test). The floor
+        lookup must read the name off the module at call time."""
+        from precis.utils.llm import router
+        from precis.utils.llm.policy import select_offering
+        from precis.utils.llm.router import Tier
+
+        monkeypatch.setattr(router, "resolve_model", lambda *a, **kw: "patched-floor")
+        sel = select_offering(clean_catalog, _req(tier_floor=Tier.MEDIUM))
+        assert sel.from_catalog is False
+        assert sel.model == "patched-floor"
+
 
 class TestRank:
     def test_cheapest_meeting_axis_wins_with_next_better(

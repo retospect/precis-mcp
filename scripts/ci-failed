@@ -23,6 +23,11 @@ alone — the read the r236 gate got wrong (gr580432).
                                           (default 40; 0 = unlimited)
     scripts/ci-failed <run-id> --tail K   fallback tail per silent job
                                           (default 15)
+    scripts/ci-failed <run-id> --job-prefix P
+                                          digest only jobs whose name starts
+                                          with P (e.g. `soak` — reads only
+                                          those jobs' logs on the per-job
+                                          path too)
     scripts/ci-failed <run-id> --probe    not a digest: one `probe:` line
                                           naming what the gh credential may
                                           read on the run's logs endpoint —
@@ -257,10 +262,17 @@ def _select(entries: list[str], *, lines: int, tail: int) -> list[str]:
 
 
 def digest_jobs(
-    jobs: OrderedDict[str, list[str]], *, lines: int = 40, tail: int = 15
+    jobs: OrderedDict[str, list[str]],
+    *,
+    lines: int = 40,
+    tail: int = 15,
+    job_prefix: str = "",
 ) -> str:
     """Per failed job: a ``failed ids:`` roll-up when its log names any,
-    then deduped signal lines, or the tail when none."""
+    then deduped signal lines, or the tail when none.
+    ``job_prefix`` keeps only jobs whose name starts with it."""
+    if job_prefix:
+        jobs = OrderedDict((j, e) for j, e in jobs.items() if j.startswith(job_prefix))
     if not jobs:
         return "ci-failed: no failed-job log lines"
     out: list[str] = []
@@ -276,8 +288,8 @@ def digest_jobs(
     return "\n".join(out)
 
 
-def digest(text: str, *, lines: int = 40, tail: int = 15) -> str:
-    return digest_jobs(_parse(text), lines=lines, tail=tail)
+def digest(text: str, *, lines: int = 40, tail: int = 15, job_prefix: str = "") -> str:
+    return digest_jobs(_parse(text), lines=lines, tail=tail, job_prefix=job_prefix)
 
 
 #: ``gh run view --log-failed`` refuses a run still in progress; the
@@ -286,15 +298,18 @@ _INCOMPLETE = re.compile(r"still in progress|logs? will be available", re.IGNORE
 
 
 def _failed_job_logs(
-    run: dict[str, Any],
+    run: dict[str, Any], *, job_prefix: str = ""
 ) -> tuple[OrderedDict[str, list[str]], str | None]:
     """``{job name: [lines]}`` for the run's failed jobs, one
     ``actions/jobs/<id>/logs`` read each (per-job logs wait for nothing).
+    ``job_prefix`` skips non-matching jobs without reading their logs.
     The second element is a failure note when every read failed."""
     jobs: OrderedDict[str, list[str]] = OrderedDict()
     first_err: str | None = None
     for job in run.get("jobs", []):
         if job.get("conclusion") != "failure":
+            continue
+        if job_prefix and not str(job.get("name") or "").startswith(job_prefix):
             continue
         jid = job.get("databaseId") or job.get("id")
         if not jid:
@@ -324,7 +339,7 @@ def _failed_job_logs(
 def _failed_jobs_digest(run: dict[str, Any], a: argparse.Namespace) -> int:
     """Digest the already-failed jobs when the shared log is not (or not
     yet) readable — an in-progress run's ``--log-failed`` refusal."""
-    jobs, err = _failed_job_logs(run)
+    jobs, err = _failed_job_logs(run, job_prefix=a.job_prefix)
     if err is not None:
         print(f"ci-failed: every failed job's log unreadable ({err})", file=sys.stderr)
         return 1
@@ -348,6 +363,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("run_id", help="check.yml run id (numeric)")
     ap.add_argument("-n", "--lines", type=int, default=40, metavar="N")
     ap.add_argument("--tail", type=int, default=15, metavar="K")
+    ap.add_argument(
+        "--job-prefix",
+        default="",
+        metavar="P",
+        help="digest only jobs whose name starts with P (e.g. soak)",
+    )
     ap.add_argument(
         "--probe",
         action="store_true",
@@ -412,7 +433,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    print(digest(cp.stdout, lines=a.lines, tail=a.tail))
+    print(digest(cp.stdout, lines=a.lines, tail=a.tail, job_prefix=a.job_prefix))
     return 0 if metadata_ok else 1
 
 

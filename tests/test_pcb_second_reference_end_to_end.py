@@ -85,6 +85,9 @@ def _drain_one_job(store: Store, parent_id: int) -> None:
 
 @pytest.mark.timeout(300)  # CI worst ~120s x2.5 for runner variance (gr503084)
 @pytest.mark.parametrize("seed", _SEEDS)
+@pytest.mark.nightly(
+    reason="42 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_motor_power_board_place_seed(store: Store, seed: int) -> None:
     """One test per seed, not one 5-seed loop — the same discipline the
     nano sweep uses (per-seed ids spread over the shards; a single test

@@ -121,6 +121,9 @@ def test_junction_spacing_long_tunnel_is_clean() -> None:
 
 @_WIN_TRIM
 @pytest.mark.timeout(420)  # CI worst 155s x2.5 for runner variance (gr503084)
+@pytest.mark.nightly(
+    reason="151 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_rail_seam_ends_terminated() -> None:
     block = build_hexfold_scene(
         params(
@@ -135,6 +138,9 @@ def test_rail_seam_ends_terminated() -> None:
 
 @_WIN_TRIM
 @pytest.mark.timeout(420)  # CI worst 159s x2.5 for runner variance (gr503084)
+@pytest.mark.nightly(
+    reason="155 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_sites_rail_tunnel_labels_lumen() -> None:
     block = build_hexfold_scene(
         params(
@@ -150,6 +156,9 @@ def test_sites_rail_tunnel_labels_lumen() -> None:
 
 @_WIN_TRIM
 @pytest.mark.timeout(420)  # CI worst 158s x2.5 for runner variance (gr503084)
+@pytest.mark.nightly(
+    reason="99 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_rail_tunnel_builds() -> None:
     block = build_hexfold_scene(
         params(
@@ -194,6 +203,9 @@ def _by_code(block: Any, code: str) -> list[dict[str, Any]]:
 
 @_NUMERIC_DRIFT
 @pytest.mark.timeout(480)  # CI worst 178s x2.5 for runner variance (gr503084)
+@pytest.mark.nightly(
+    reason="151 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_rail_tunnel_emits_seam_strain_per_seam() -> None:
     block, _net, tun = _rail_inputs()
     seams = _by_code(block, "seam.strain")
@@ -210,6 +222,9 @@ def test_rail_tunnel_emits_seam_strain_per_seam() -> None:
 
 @_WIN_TRIM
 @pytest.mark.timeout(480)  # CI worst 171s x2.5 for runner variance (gr503084)
+@pytest.mark.nightly(
+    reason="166 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_tunnel_strain_reproduces_build_junction_strain() -> None:
     block, net, tun = _rail_inputs()
     fresh = tunnel_strain(
@@ -232,6 +247,9 @@ def test_tunnel_strain_reproduces_build_junction_strain() -> None:
 
 @_WIN_TRIM
 @pytest.mark.timeout(420)  # CI worst 167s x2.5 for runner variance (gr503084)
+@pytest.mark.nightly(
+    reason="166 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_seam_strain_rises_when_a_seam_atom_is_displaced() -> None:
     block, net, tun = _rail_inputs()
 

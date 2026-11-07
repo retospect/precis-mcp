@@ -94,7 +94,7 @@ def _load_round(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     copy = rig.root / "round_script.py"
     copy.write_text(script.read_text(encoding="utf-8"), encoding="utf-8")
     (rig.root / "lib").mkdir(exist_ok=True)
-    for name in ("round_state.py", "git_network.py"):
+    for name in ("round_state.py", "git_network.py", "soak_verdict.py"):
         (rig.root / "lib" / name).write_text(
             (script.parent / "lib" / name).read_text(encoding="utf-8"),
             encoding="utf-8",
@@ -2440,6 +2440,9 @@ class _Prod:
         if args[:2] == ["settings", "set"]:
             self.row = json.loads(args[3])
             return 0, "", ""
+        if args[:2] == ["settings", "clear"]:
+            self.row = None
+            return 0, "", ""
         raise AssertionError(f"unexpected transport args {args}")
 
 
@@ -2677,3 +2680,516 @@ def test_a_skipped_transport_prints_the_reason_once(
     err = capsys.readouterr().err
     assert err.count("round record not published:") == 1
     assert reason in err
+
+
+# ── soak debt gate (me580555, review round 1) ────────────────────
+
+
+def _soak_rows(*legs: tuple[str, str, str], run: str = "4242") -> str:
+    """4-field check-run rows (name/status/conclusion/url), as the
+    paginated ``--jq`` read emits them."""
+    url = f"https://github.com/o/r/actions/runs/{run}/job/9"
+    return "".join(f"{n}\t{s}\t{c}\t{url}\n" for n, s, c in legs)
+
+
+def _soak_row(sha: str, run_id: str = "4242", **kw: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "sha": sha,
+        "run_id": run_id,
+        "jobs": ["soak (3.13, 2)"],
+        "at": "2026-11-06T12:00:00Z",
+    }
+    row.update(kw)
+    return row
+
+
+def test_soak_legs_paginates_past_a_full_first_page(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sha carrying a gate run (~23 rows) plus a nightly can push the
+    soak legs onto page 2 — the read must keep paging while a page
+    returns 100 rows, and `classify` sees the late red leg."""
+    mod = _load_round(rig, monkeypatch)
+    pages: list[int] = []
+
+    def fake_run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        page = int(next(a[5:] for a in argv if a.startswith("page=")))
+        pages.append(page)
+        body = "".join(
+            f"job{i}\tcompleted\tsuccess\thttps://o/r/actions/runs/1/job/{i}\n"
+            for i in range(100)
+        )
+        if page == 2:
+            body = (
+                "soak (3.13, 1)\tcompleted\tfailure\t"
+                "https://o/r/actions/runs/4242/job/9\n"
+            )
+        return subprocess.CompletedProcess(argv, 0, body, "")
+
+    rows = mod._soak()["soak_legs"](fake_run, "0" * 40, rig.root)
+    assert pages == [1, 2]
+    assert rows is not None and len(rows) == 101
+    assert mod._soak()["classify"](rows) == "red"
+    assert mod._soak()["red_jobs"](rows) == (["soak (3.13, 1)"], "4242")
+
+
+def test_soak_debt_check_refuses_on_a_red_soak_and_caches_the_row(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A completed red `soak*` leg on the last gated main sha is the debt
+    — the refusal names sha/run/jobs and the soak-clear way out, and the
+    read is cached into release.soak_red."""
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    (rig.gh_dir / rig.shas["c2"]).write_text(
+        _soak_rows(
+            ("soak (3.13, 1)", "completed", "success"),
+            ("soak (3.13, 2)", "completed", "failure"),
+            ("verdict-soak", "completed", "failure"),
+        ),
+        encoding="utf-8",
+    )
+    block = mod._soak_debt_check(rig.root)
+    assert rig.shas["c2"][:9] in block
+    assert "run 4242" in block
+    assert "soak (3.13, 2)" in block
+    assert f"soak-clear {rig.shas['c2'][:12]} --reason" in block
+    assert prod.row is not None
+    assert prod.row["sha"] == rig.shas["c2"]
+    assert prod.row["run_id"] == "4242"
+    assert prod.row["jobs"] == ["soak (3.13, 2)", "verdict-soak"]
+    assert "waived_by" not in prod.row
+
+
+def test_a_waived_row_lets_the_check_pass_with_a_note(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`soak-clear` amended the cached row — the same sha's still-red soak
+    is then a one-line waiver note, not a veto."""
+    prod = _Prod(
+        row=_soak_row(
+            rig.shas["c2"],
+            waived_by="peer-x",
+            waived_at="2026-11-06T13:00:00Z",
+            reason="known flaky leg",
+        )
+    )
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    (rig.gh_dir / rig.shas["c2"]).write_text(
+        _soak_rows(("soak (3.13, 1)", "completed", "failure")),
+        encoding="utf-8",
+    )
+    assert mod._soak_debt_check(rig.root) == ""
+    assert (
+        f"soak waived: {rig.shas['c2'][:9]} by peer-x "
+        f"at 2026-11-06T13:00:00Z: known flaky leg" in capsys.readouterr().out
+    )
+
+
+def test_a_green_soak_read_clears_the_cached_debt_row(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A later read that finds every `soak*` leg completed green resolves
+    the debt in place — the row is cleared and the cut goes on."""
+    prod = _Prod(row=_soak_row(rig.shas["c2"]))
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    (rig.gh_dir / rig.shas["c2"]).write_text(
+        _soak_rows(
+            ("soak (3.13, 1)", "completed", "success"),
+            ("soak (3.13, 2)", "completed", "success"),
+            ("verdict-soak", "completed", "success"),
+        ),
+        encoding="utf-8",
+    )
+    assert mod._soak_debt_check(rig.root) == ""
+    out = capsys.readouterr().out
+    assert f"soak debt on {rig.shas['c2'][:9]} resolved by a green soak" in out
+    assert "row cleared" in out
+    assert prod.calls[-1] == ["settings", "clear", mod.SOAK_RED_KEY]
+    assert prod.row is None
+
+
+def test_a_still_running_soak_neither_refuses_nor_clears(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An in-flight soak is a note, not a veto — and it must not clear
+    recorded debt either (the verdict is not in yet)."""
+    prod = _Prod(row=_soak_row(rig.shas["c2"]))
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    (rig.gh_dir / rig.shas["c2"]).write_text(
+        _soak_rows(("soak (3.13, 1)", "in_progress", "")),
+        encoding="utf-8",
+    )
+    assert mod._soak_debt_check(rig.root) == ""
+    assert "soak still running" in capsys.readouterr().out
+    assert prod.row is not None  # the cached debt row survives
+    assert ["settings", "clear"] not in [c[:2] for c in prod.calls]
+
+
+def test_no_last_gated_sha_skips_the_read(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prod = _Prod(row=_soak_row(rig.shas["c2"]))
+    mod = _published(rig, monkeypatch, prod)
+    # LGM_SHA unset: the stub answers empty — nothing to read a verdict on.
+    assert mod._soak_debt_check(rig.root) == ""
+    assert "no last-gated main sha" in capsys.readouterr().out
+    assert prod.row is not None  # an unanswerable read never clears
+
+
+def test_a_verdict_soak_only_failure_is_the_red_soak(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `verdict-soak` row alone (no `soak (PY, K)` legs — the matrix was
+    renamed under an old run) is judged by its own conclusion: red is the
+    debt, cached like any red soak."""
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    (rig.gh_dir / rig.shas["c2"]).write_text(
+        _soak_rows(("verdict-soak", "completed", "failure")),
+        encoding="utf-8",
+    )
+    block = mod._soak_debt_check(rig.root)
+    assert "soak red on last gated main" in block
+    assert "verdict-soak" in block
+    assert prod.row is not None
+    assert prod.row["jobs"] == ["verdict-soak"]
+
+
+def test_a_verdict_soak_only_success_reads_green(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A green `verdict-soak` alone clears cached debt — it is the soak's
+    own verdict."""
+    prod = _Prod(row=_soak_row(rig.shas["c2"]))
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    (rig.gh_dir / rig.shas["c2"]).write_text(
+        _soak_rows(("verdict-soak", "completed", "success")),
+        encoding="utf-8",
+    )
+    assert mod._soak_debt_check(rig.root) == ""
+    assert prod.calls[-1] == ["settings", "clear", mod.SOAK_RED_KEY]
+    assert prod.row is None
+
+
+def test_a_skipped_verdict_soak_means_no_soak_ran(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A skipped `verdict-soak` (the job did not run — a shape without the
+    soak matrix) is neither a refusal nor a clear: 'none'."""
+    prod = _Prod(row=_soak_row(rig.shas["c2"]))
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    (rig.gh_dir / rig.shas["c2"]).write_text(
+        _soak_rows(("verdict-soak", "completed", "skipped")),
+        encoding="utf-8",
+    )
+    assert mod._soak_debt_check(rig.root) == ""
+    assert "no soak legs" in capsys.readouterr().out
+    assert prod.row is not None
+    assert ["settings", "clear"] not in [c[:2] for c in prod.calls]
+
+
+def test_cut_refuses_on_a_soak_that_went_red_after_the_verdict(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The real order: the blocking verdict went green while the soak was
+    still running, the soak turned red afterwards, and only now does
+    `cut` read it — refuse and cache the debt row."""
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
+    for key, val in _fresh(rig).items():
+        monkeypatch.setenv(key, val)
+    # gate-fast verdict green; the soak legs are still in flight.
+    (rig.gh_dir / rig.shas["c2"]).write_text(
+        _soak_rows(("soak (3.13, 1)", "in_progress", "")),
+        encoding="utf-8",
+    )
+    assert mod.main(["open"]) == 0
+    # ... the soak finishes red afterwards.
+    (rig.gh_dir / rig.shas["c2"]).write_text(
+        _soak_rows(
+            ("soak (3.13, 1)", "completed", "failure"),
+            ("verdict-soak", "completed", "failure"),
+        ),
+        encoding="utf-8",
+    )
+    assert mod.main(["cut"]) == 1
+    err = capsys.readouterr().err
+    assert "cut refused — soak red on last gated main" in err
+    assert "soak-clear" in err
+    assert prod.row is not None and prod.row["sha"] == rig.shas["c2"]
+
+
+def test_open_also_refuses_on_a_red_soak(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    (rig.gh_dir / rig.shas["c2"]).write_text(
+        _soak_rows(("soak (3.13, 1)", "completed", "failure")),
+        encoding="utf-8",
+    )
+    assert mod.main(["open"]) == 1
+    assert "open refused — soak red" in capsys.readouterr().err
+
+
+def test_open_prints_the_waiver_line_on_a_waived_red_soak(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`open` shares `_soak_debt_check` with `cut`: a waived red soak is
+    the printed waiver note, not a refusal — pin it on `open` too."""
+    prod = _Prod(
+        row=_soak_row(
+            rig.shas["c2"],
+            waived_by="peer-x",
+            waived_at="2026-11-06T13:00:00Z",
+            reason="known flaky leg",
+        )
+    )
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    (rig.gh_dir / rig.shas["c2"]).write_text(
+        _soak_rows(("soak (3.13, 1)", "completed", "failure")),
+        encoding="utf-8",
+    )
+    assert mod.main(["open"]) == 0
+    assert (
+        f"soak waived: {rig.shas['c2'][:9]} by peer-x "
+        f"at 2026-11-06T13:00:00Z: known flaky leg" in capsys.readouterr().out
+    )
+
+
+def test_soak_legs_pages_through_the_gh_stub(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gh stub sees `-f page=N`, not only fake_run: a full page 1
+    (junk rows) pushes the red leg to page 2 and the debt read still
+    finds it through the real stub on PATH."""
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    (rig.gh_dir / f"{rig.shas['c2']}.page1").write_text(
+        "".join(
+            f"job{i}\tcompleted\tsuccess\thttps://o/r/actions/runs/1/job/{i}\n"
+            for i in range(100)
+        ),
+        encoding="utf-8",
+    )
+    (rig.gh_dir / f"{rig.shas['c2']}.page2").write_text(
+        _soak_rows(("soak (3.13, 1)", "completed", "failure")),
+        encoding="utf-8",
+    )
+    block = mod._soak_debt_check(rig.root)
+    assert "soak red on last gated main" in block
+    assert "soak (3.13, 1)" in block
+
+
+def test_a_waived_debt_lets_the_cut_through(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """End to end: red soak → cut refuses → soak-clear records the waiver
+    → cut proceeds (the same sha's red verdict is waived, not cleared)."""
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
+    for key, val in _fresh(rig).items():
+        monkeypatch.setenv(key, val)
+    # open while the soak is still in flight — it turns red afterwards,
+    # the real order (a completed red soak refuses `open` too).
+    (rig.gh_dir / rig.shas["c2"]).write_text(
+        _soak_rows(("soak (3.13, 1)", "in_progress", "")),
+        encoding="utf-8",
+    )
+    assert mod.main(["open"]) == 0
+    (rig.gh_dir / rig.shas["c2"]).write_text(
+        _soak_rows(("soak (3.13, 1)", "completed", "failure")),
+        encoding="utf-8",
+    )
+    assert mod.main(["cut"]) == 1
+    assert mod.main(["soak-clear", rig.shas["c2"][:12], "known", "flake"]) == 0
+    assert prod.row is not None
+    assert prod.row["waived_by"] == rig.root.name
+    assert prod.row["reason"] == "known flake"
+    waived_at = prod.row["waived_at"]  # the cut republishes release.round
+    assert mod.main(["cut"]) == 0
+    out = capsys.readouterr().out
+    assert (
+        f"soak waived: {rig.shas['c2'][:9]} by {rig.root.name} "
+        f"at {waived_at}: known flake" in out
+    )
+
+
+def test_soak_clear_records_who_and_why(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prod = _Prod(row=_soak_row(rig.shas["c1"]))
+    mod = _published(rig, monkeypatch, prod)
+    assert mod.main(["soak-clear", rig.shas["c1"][:12], "--reason", "flaky shard"]) == 0
+    out = capsys.readouterr().out
+    assert (
+        f"release.soak_red cleared (was {rig.shas['c1'][:12]}) "
+        f"by {rig.root.name}: flaky shard" in out
+    )
+    assert prod.row is not None
+    assert prod.row["waived_by"] == rig.root.name
+    assert prod.row["reason"] == "flaky shard"
+    assert prod.row["waived_at"]
+    # The waiver is also journaled into the round soak log.
+    log = rig.root / ".git" / "precis-round" / "soak.log"
+    assert (
+        f"soak waived: {rig.shas['c1'][:9]} by {rig.root.name} "
+        f"at {prod.row['waived_at']}: flaky shard" in log.read_text(encoding="utf-8")
+    )
+
+
+def test_soak_clear_without_a_reason_is_refused(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The waiver IS the audit trail for a refused cut — "cleared, no
+    idea why" is refused, and nothing is written."""
+    prod = _Prod(row=_soak_row(rig.shas["c1"]))
+    mod = _published(rig, monkeypatch, prod)
+    assert mod.main(["soak-clear", rig.shas["c1"][:12]]) == 1
+    err = capsys.readouterr().err
+    assert "soak-clear refused" in err
+    assert "--reason" in err
+    assert "waived_by" not in (prod.row or {})
+    assert ["settings", "set"] not in [c[:2] for c in prod.calls]
+
+
+def test_soak_clear_with_a_blank_reason_is_refused(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prod = _Prod(row=_soak_row(rig.shas["c1"]))
+    mod = _published(rig, monkeypatch, prod)
+    assert mod.main(["soak-clear", rig.shas["c1"][:12], "--reason", "  ", " "]) == 1
+    assert "--reason" in capsys.readouterr().err
+    assert "waived_by" not in (prod.row or {})
+
+
+def test_soak_clear_with_no_row_records_a_waiver(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No cached row (the red read could not write it, prod was down)
+    must not dead-end the waiver: the named sha resolves and a fresh row
+    carries who/why — otherwise a refusal has no way out."""
+    prod = _Prod(row=None)
+    mod = _published(rig, monkeypatch, prod)
+    assert mod.main(["soak-clear", rig.shas["c1"], "--reason", "prod was down"]) == 0
+    assert prod.row is not None
+    assert prod.row["sha"] == rig.shas["c1"]
+    assert prod.row["run_id"] == ""
+    assert prod.row["jobs"] == []
+    assert prod.row["waived_by"] == rig.root.name
+    assert prod.row["reason"] == "prod was down"
+
+
+def test_soak_clear_with_no_row_refuses_an_unresolvable_sha(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prod = _Prod(row=None)
+    mod = _published(rig, monkeypatch, prod)
+    assert mod.main(["soak-clear", "0" * 40, "--reason", "why"]) == 1
+    assert prod.row is None
+
+
+def test_a_waiver_names_one_sha_not_another(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A waiver is for ONE sha: a red soak on a different last-gated sha
+    is fresh debt, not waived."""
+    prod = _Prod(
+        row=_soak_row(
+            rig.shas["c1"],
+            waived_by="peer-x",
+            waived_at="2026-11-06T13:00:00Z",
+            reason="known flaky leg",
+        )
+    )
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    (rig.gh_dir / rig.shas["c2"]).write_text(
+        _soak_rows(("soak (3.13, 1)", "completed", "failure")),
+        encoding="utf-8",
+    )
+    block = mod._soak_debt_check(rig.root)
+    assert f"soak red on last gated main {rig.shas['c2'][:9]}" in block
+    assert prod.row is not None and prod.row["sha"] == rig.shas["c2"]
+
+
+def test_an_unreadable_soak_read_leaves_a_log_line(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A gh failure proceeds (an outage must not wedge every cut) but is
+    loud: stderr and a soak.log line — a red hidden behind the failure
+    leaves a trace."""
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    # No canned rows for the sha: the gh stub exits 1.
+    assert mod._soak_debt_check(rig.root) == ""
+    err = capsys.readouterr().err
+    assert f"soak verdict on {rig.shas['c2'][:9]} unreadable" in err
+    log = rig.root / ".git" / "precis-round" / "soak.log"
+    assert "unreadable" in log.read_text(encoding="utf-8")
+
+
+def test_soak_clear_wrong_prefix_refuses_and_keeps_the_row(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Waiving must name the recorded sha — a different prefix refuses so
+    one sha's debt is never waived silently for another's."""
+    prod = _Prod(row=_soak_row(rig.shas["c1"]))
+    mod = _published(rig, monkeypatch, prod)
+    wrong = ("0" if rig.shas["c1"][0] != "0" else "1") * 12
+    assert mod.main(["soak-clear", wrong, "--reason", "why"]) == 1
+    err = capsys.readouterr().err
+    assert f"release.soak_red names {rig.shas['c1'][:12]}, not {wrong}" in err
+    assert "waived_by" not in (prod.row or {})
+    assert ["settings", "set"] not in [c[:2] for c in prod.calls]
+    assert ["settings", "clear"] not in [c[:2] for c in prod.calls]
+
+
+def test_soak_clear_with_no_row_and_no_reason_is_refused(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prod = _Prod(row=None)
+    mod = _published(rig, monkeypatch, prod)
+    assert mod.main(["soak-clear", rig.shas["c1"][:12]]) == 1
+    assert "--reason" in capsys.readouterr().err
+
+
+def test_red_verdict_counts_gate_fast_and_ignores_soak(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """me580555: `gate-fast` rows are verdict legs like test-linux (a
+    completed failed one makes the sha red); `soak*` rows never do."""
+    mod = _load_round(rig, monkeypatch)
+    sha = rig.shas["c2"]
+    url = "https://github.com/o/r/actions/runs/4242/job/9"
+    (rig.gh_dir / sha).write_text(
+        f"lint\tcompleted\tsuccess\t{url}\n"
+        f"gate-fast (3.13, 1)\tcompleted\tfailure\t{url}\n"
+        f"soak (3.13, 1)\tcompleted\tfailure\t{url}\n",
+        encoding="utf-8",
+    )
+    looked, red = mod._red_verdict(rig.root, sha)
+    assert looked
+    assert red is not None
+    assert red["jobs"] == ["gate-fast (3.13, 1)"]
+    assert red["run_id"] == "4242"
+    (rig.gh_dir / sha).write_text(
+        f"lint\tcompleted\tsuccess\t{url}\n"
+        f"soak (3.13, 1)\tcompleted\tfailure\t{url}\n"
+        f"verdict-soak\tcompleted\tfailure\t{url}\n",
+        encoding="utf-8",
+    )
+    looked, red = mod._red_verdict(rig.root, sha)
+    assert looked and red is None

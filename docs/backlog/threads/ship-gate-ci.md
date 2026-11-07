@@ -31,23 +31,23 @@ delete a live session's tree — the path every pillar's work ships through
 the order is data loss first (live-worktree deletion), then fleet-wide
 stalls (slot and lock holds, hangs), then verdict honesty (red that reads as
 green or the reverse), then tuning and residue.
-**Last reviewed:** 2026-10-17
+**Last reviewed:** 2026-11-07
 **Worktree:** `ship-gate-ci`
 **Allocation decision (historical):** yes — Reto 2026-10-03 ("push should not break build"; set off as p1).
-**Resume:** 2026-10-04 07:30Z. Everything this thread built is on main;
-the tree holds no unlanded work. Live in prod since round 4 (727728cc9):
-the narrow ship lock (forward-merge land with a `Gate:` trailer after the
-race budget), the docker-disk preflight and build-cache cap, `fleet say`
-bracketed paste, agent-tree teardown run markers. Round 6, marked in,
-awaiting the deploy: 13bac2b25 (release slice (b), `ship --release`),
-40bd57ff1 (remote race budget by risk: one CI run, then forward-merge;
-one retry when the tree adds a migration or touches `safe_fetch.py`),
-68e65b30a (`scripts/fleet up <slug…>` creates only the named windows).
-40bd57ff1's own ship dogfooded the budget: main moved during its one CI
-run and it landed forward-merged over 7 commits, no pin, `gated` not
-moved. Not yet seen running: the build-cache cap (cache was under 30 GB)
-and `ship --release` on a real round. Open: Do next 1 slice (c), then 2.
-Next step: slice (c), dogfooded on the first round cut after it lands.
+**Resume:** 2026-11-07. The me580555 gate-fast/soak slice sits in tree
+`gate-s2` through review round 4, pending the squash-land: a blocking
+~5-minute `gate-fast` leg, the test-linux matrix renamed `soak`
+(non-blocking, verdict via `verdict-soak` reading the jobs API), soak
+debt read at `round cut`/`open` on the last gated main sha with a
+`soak-clear --reason` waiver, and tests ≥30 s marked `nightly`
+(40 files/68 fns). Left after it lands: `scripts/ship --remote`'s soak
+wait is COORDINATOR's separate harness tree (gr581652), not this one;
+the 65 over-cap files with no per-test seconds in the committed tables
+sit in `NIGHTLY_MARK_ALLOWLIST` (`_SPREAD`, tests/test_gate_fast.py)
+until a fresh junit refit (`scripts/gate-fast-refit --junit ... --write`)
+can say which have a dominant test. Older open
+state from 2026-10-04: the build-cache cap and `ship --release` on a
+real round were not yet seen running; Do next 1 slice (c) stayed open.
 
 2026-10-15 ct-gate: rebased past `--checked` (72242c37a) and cut to the
 ruling "keep the full suite on releases for now" — impacted-only release
@@ -69,6 +69,36 @@ feeds it. First real `--checked` ship is the dogfood; watch for the
 Left: gripe-filing from a red soak leg is deliberately out of scope
 (job summary only); `release-ci-diff-coverage.md` now has its DB produced
 nightly — the diff-cover verdict is still open.
+
+2026-11-07 me580555: supersedes the 2026-10-15 "keep the full suite on
+releases" ruling. The ship gate now blocks on a ~5-minute `gate-fast`
+leg (floor ∪ red-run history ∪ contract tier ∪ the diff's impacted
+files, LPT-packed over 10 shards on non-nightly seconds;
+`scripts/gate-fast-select`, data `tests/gate_fast.json`), then re-runs
+the whole non-nightly suite as a non-blocking `soak` — the renamed
+test-linux job, `continue-on-error`, ≤5 parallel. Leave-one-out on 318
+parsed red runs: any-file catch 97.2 %, per-file 55.5 % (the earlier
+"~8–12 % miss" figure dropped — it matched neither measurement). The
+soak catches what the selection misses, and a red soak is debt —
+`release.soak_red` — that `round cut` and `round open` read on the last
+gated main sha and refuse on (round-1 ruling: the soak finishes long
+after the green verdict, so the read moved off `wait_ci` to cut/open
+time; `verdict-soak` is the legible, non-blocking check-run that makes
+a red soak fail visibly) until a later green soak auto-clears it or
+`round soak-clear` waives it with who/why recorded. FULL globs the
+disk — a `test_*.py` the weights table never measured still runs on a
+harness release. A harness diff answers `gate_fast_full`: gate-fast IS
+the gate and the soak is skipped. Measured on its own first FULL-shape
+run (this commit's gate, a harness diff): legs ran 736–880 s with
+4500–5500 tests each (leg4 ~10 min) against the 1669 s/shard prediction
+— under it, and the ~5-minute figure only describes non-harness diffs
+where the selection is small. Tests ≥30 s CI carry `nightly` (was
+>240 s) and are deselected in both gate legs; the nightly full shape
+still runs them. Weekly chore: `scripts/gate-fast-refit` rebuilds the
+history/contract/nightly tables (`--weights` for shard seconds;
+`--write` requires `--junit`). Verdict legs: last-gated-main-sha
+counts `lint`, `test-linux`, `gate-fast`; `round`/`release` also count
+`failed-first` — `soak*` never counts for either.
 
 ## Do next
 
@@ -156,6 +186,15 @@ nightly — the diff-cover verdict is still open.
    container; the tooling that makes 5 diagnosable.
 7. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
    3.13-only but prod runs 3.12; nightly red on a green main.
+8. **gate-s2 leftovers** (me580555, lands with tree `gate-s2`):
+   `scripts/ship --remote` waits on the soak before the CAS merge —
+   COORDINATOR's separate harness tree owns it (gr581652). The
+   `verdict-soak` jobs-API read (review round 2, item 7) ships in this
+   tree. The mark ruling landed: 40 files/68 fns carry `nightly`; the
+   65 over-cap files with no per-test seconds in the committed tables
+   sit in `NIGHTLY_MARK_ALLOWLIST` (`_SPREAD`) until a fresh junit
+   refit (`scripts/gate-fast-refit --junit ... --write`) can say which
+   have a dominant test.
 
 
 ## Horizon

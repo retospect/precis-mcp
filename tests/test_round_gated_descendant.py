@@ -82,8 +82,8 @@ def test_split_controller_targets_frozen_scripts_refs_pin_and_state(
     cwd = controller if invocation_cwd == "controller" else rig.root
     (controller / "scripts/lib").mkdir(parents=True)
     shutil.copy(repo / "scripts/round", controller / "scripts/round")
-    shutil.copy(repo / "scripts/lib/round_state.py", controller / "scripts/lib")
-    shutil.copy(repo / "scripts/lib/git_network.py", controller / "scripts/lib")
+    for name in ("round_state.py", "git_network.py", "soak_verdict.py"):
+        shutil.copy(repo / "scripts/lib" / name, controller / "scripts/lib")
     for name in ("deploy", "last-gated-main-sha"):
         poison = controller / "scripts" / name
         poison.write_text(

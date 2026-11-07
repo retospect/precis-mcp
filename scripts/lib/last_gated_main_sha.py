@@ -30,11 +30,15 @@ over-gating.
   scripts/last-gated-main-sha --exact <sha>  # one JSON verdict + age, no history walk
 
 Verdict rule for a sha: at least one check-run named exactly `lint`, every
-`lint` run SUCCESS; AND at least GATE_SHARDS (6; a 12-shard gate has more) check-runs whose name starts
-with `test-linux`, every one SUCCESS. "At least", not "exactly": a sha the
-nightly also ran carries 18 test-linux runs (3.12 + 3.13 legs on top of the
-gate's six) and 2 lint runs. "Every" is across all check suites on the sha, so
-a red nightly leg disqualifies it. A docs-lane sha runs no test-linux at all,
+`lint` run SUCCESS; AND every check-run whose name starts with `test-linux`
+or `gate-fast` SUCCESS, with at least one COMPLETE set among them — one
+family x Python covering exactly 1..N for N in GATE_SHARD_COUNTS (6; a
+12-shard gate has more). The families: `test-linux (PY, K)` legs (the
+pre-me580555 gate and the full shape) and `gate-fast (PY, K)` legs (the
+blocking leg of the gate shape since me580555). `soak (PY, K)` legs are
+deliberately not verdict legs — a red soak is debt (`release.soak_red`),
+never a veto. "Every" is across all check suites on the sha, so
+a red nightly leg disqualifies it. A docs-lane sha runs no shard legs at all,
 and a partially-cancelled matrix leaves one green shard beside five cancelled
 ones — neither is a verdict. Re-runs are collapsed (`checkType: LATEST`), so a
 re-run to green supersedes the cancelled attempt. CANCELLED check-runs are
@@ -236,7 +240,7 @@ def exact_verdict(sha: str) -> dict[str, Any]:
             r
             for r in runs
             if r.get("name") == "lint"
-            or str(r.get("name", "")).startswith("test-linux")
+            or str(r.get("name", "")).startswith(("test-linux", "gate-fast"))
         ]
         if not is_green(runs) or any(r.get("status") != "COMPLETED" for r in relevant):
             return facts
@@ -255,13 +259,16 @@ def exact_verdict(sha: str) -> dict[str, Any]:
             j
             for j in jobs
             if j.get("name") == "lint"
-            or str(j.get("name", "")).startswith("test-linux")
+            or str(j.get("name", "")).startswith(("test-linux", "gate-fast"))
         ]
         names = [j["name"] for j in required]
         shapes = []
         for n in GATE_SHARD_COUNTS:
             gate = {"lint", *(f"test-linux (3.13, {i})" for i in range(1, n + 1))}
             shapes += [
+                # me580555: the gate shape's blocking leg is gate-fast
+                # (the soak's own legs are excluded from `required` above).
+                {"lint", *(f"gate-fast (3.13, {i})" for i in range(1, n + 1))},
                 gate,
                 gate | {f"test-linux (3.12, {i})" for i in range(1, n + 1)},
             ]
@@ -406,26 +413,38 @@ def fetch_page(since: str, after: str | None) -> dict[str, Any] | None:
     return history
 
 
+_SHARD_LEG_RE = re.compile(r"(test-linux|gate-fast) \((\S+), (\d+)\)")
+#: Verdict-leg family prefixes (the module doc has the rule; `soak` is not one).
+LEG_PREFIXES = ("test-linux", "gate-fast")
+
+
 def _shard_sets_complete(shards: list[Run]) -> bool:
-    """Every Python's `test-linux (PY, K)` indices must form exactly 1..N for
-    some N in GATE_SHARD_COUNTS (duplicates from a second run on the sha are
-    fine). A matrix with a missing shard (e.g. 9 of 10) is not a verdict."""
-    by_py: dict[str, set[int]] = {}
+    """Every family x Python group present covers exactly 1..N for some N
+    in GATE_SHARD_COUNTS (duplicates from a second run on the sha are
+    fine), and at least one group is present. A matrix with a missing
+    shard (e.g. 9 of 10) contributes no complete set and disqualifies the
+    sha even when another family x Python group IS complete — an
+    incomplete 3.12 set must not ride on a complete 3.13 one; a
+    family-prefixed name outside the `FAMILY (PY, K)` pattern means the
+    shape changed under this code — not a verdict. `soak*` legs
+    (and the `verdict-soak` job) never reach here: LEG_PREFIXES
+    excludes them — a red soak is debt, never a veto."""
+    groups: dict[tuple[str, str], set[int]] = {}
     for r in shards:
-        m = re.fullmatch(r"test-linux \((\S+), (\d+)\)", str(r.get("name", "")))
+        m = _SHARD_LEG_RE.fullmatch(str(r.get("name", "")))
         if not m:
             return False
-        by_py.setdefault(m.group(1), set()).add(int(m.group(2)))
-    return bool(by_py) and all(
+        groups.setdefault((m.group(1), m.group(2)), set()).add(int(m.group(3)))
+    return bool(groups) and all(
         any(idx == set(range(1, n + 1)) for n in GATE_SHARD_COUNTS)
-        for idx in by_py.values()
+        for idx in groups.values()
     )
 
 
 def is_green(runs: list[Run]) -> bool:
     """True when `runs` carry a full gate verdict (rule in the module doc)."""
     lint = [r for r in runs if r.get("name") == "lint"]
-    shards = [r for r in runs if str(r.get("name", "")).startswith("test-linux")]
+    shards = [r for r in runs if str(r.get("name", "")).startswith(LEG_PREFIXES)]
     return (
         bool(lint)
         and all(r.get("conclusion") == "SUCCESS" for r in lint)
@@ -435,11 +454,11 @@ def is_green(runs: list[Run]) -> bool:
 
 
 def verdict_age_hours(runs: list[Run]) -> float | None:
-    """Hours since the newest `lint` / `test-linux` completion, or `None`."""
+    """Hours since the newest `lint` / shard-leg completion, or `None`."""
     stamps = []
     for r in runs:
         name = str(r.get("name", ""))
-        if name != "lint" and not name.startswith("test-linux"):
+        if name != "lint" and not name.startswith(LEG_PREFIXES):
             continue
         try:
             stamp = datetime.fromisoformat(str(r.get("completedAt")))

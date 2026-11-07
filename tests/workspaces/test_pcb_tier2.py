@@ -86,6 +86,9 @@ def test_sanity_places_with_zero_drc() -> None:
 @pytest.mark.slow
 @pytest.mark.timeout(1200)  # a full place anneal per board; CI runners run long
 @pytest.mark.parametrize("name", MEASURED)
+@pytest.mark.nightly(
+    reason="40 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_tier2_measured_board(name: str) -> None:
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
     row = _measure(name)

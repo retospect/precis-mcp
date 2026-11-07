@@ -22,6 +22,9 @@ _EXAMPLES = sorted(Path("hexfold/examples").glob("*.hx"))
 
 @pytest.mark.parametrize("path", _EXAMPLES, ids=[p.stem for p in _EXAMPLES])
 @pytest.mark.timeout(480)  # CI junit worst 112s x4 for CI variance (gr503084)
+@pytest.mark.nightly(
+    reason="181 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_canonical_json_of_net_equals_canonical_json_of_text(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     net = build(text)

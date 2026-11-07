@@ -353,6 +353,23 @@ REGISTRY: dict[str, SettingSpec] = {
             "DB-only — no env fallback.",
         ),
         SettingSpec(
+            key="release.soak_red",
+            type="str",
+            env_var=None,
+            default=None,
+            doc="The newest red soak verdict as JSON {sha, run_id, jobs, "
+            "at}: written by scripts/release when a `soak*` check.yml leg "
+            "completes non-OK and by scripts/round's debt read, which "
+            "re-reads the soak verdict on the last gated main sha at "
+            "`cut`/`open`, caches a red read here and refuses while the "
+            "row names that sha unresolved. `round soak-clear <sha> "
+            "--reason <why>` amends it with a waiver {waived_by (the "
+            "peer label), waived_at, reason} for that one sha — a red "
+            "on a different sha is not waived; a later all-soak-green "
+            "read clears the row including a waiver. "
+            "DB-only — no env fallback.",
+        ),
+        SettingSpec(
             key="release.round",
             type="str",
             env_var=None,

@@ -176,19 +176,24 @@ table's predicted max within 5% of the mean) and per-file cap (a file
 fatter than a shard's fair share is split per module, not pinned whole).
 
 **CI shapes (check.yml, decided by its `plan` job).** The single source for
-gate shape and duration: a full-gate run (`/land`, `/go`) takes ~90 min
-wall-clock under fleet load (2026-10-06); a docs-only diff takes ~5 min;
+gate shape and duration: the ship gate's blocking verdict is the
+~5-minute `gate-fast` leg (the old full-matrix blocking gate took ~90
+min under fleet load, 2026-10-06); a docs-only diff takes ~5 min;
 `scripts/ship --quick` lint takes ~3 min. Other docs link here instead of quoting
 numbers. The ship gate
-(`ci/**` and `release/**` pushes, PRs) is lint + mypy + 10 shards of
-Linux+db on
-3.13 — 12 jobs. Under the
+(`ci/**` and `release/**` pushes, PRs) is lint + mypy + a blocking
+~5-minute `gate-fast` leg — 10 shards of the impacted/history/contract
+selection on 3.13, 12 jobs (me580555) — then the whole non-nightly
+suite as a non-blocking `soak` (the renamed test-linux job, 10 shards
+at ≤5 parallel; a red leg is `release.soak_red` debt `round cut`
+refuses on, never a veto). Under the
 release train `ci/**` is the harness gate: `scripts/ship --remote` pushes
 there only for diffs the `scripts/ship` harness classifier counts
 (`scripts/ship`, `scripts/test`, `scripts/lib/*`, `.github/*` — the
 `HARNESS_DIFF` case is the canonical list) — every other diff lands
-`--quick` and meets the full matrix
-at the release cut. A **push to
+`--quick` and meets the blocking `gate-fast` selection at the release
+cut, with the whole non-nightly suite behind it as the non-blocking
+soak. A **push to
 `main` runs the slim lane instead** (gr495187, Reto 2026-10-23 — "only
 release branch gets ci"): `plan` + `lint` only, no shard matrix. A main
 sha's shard verdict comes from the release cut made on it, the nightly, or
@@ -213,8 +218,9 @@ pressure but without an OOM diagnostic (gr564777). It logs memory snapshots
 and test names to verify that inference. macOS splits the complete suite
 across two shards per Python version within the 90-minute job budget
 (td568389): the unsharded run expired at 67% after 72 minutes of tests plus
-13 minutes of setup. The full shape is 27 jobs; one 12-job gate beside it
-uses 39 of 40 slots. Named test output, durations, JUnit and hang-stack
+13 minutes of setup. The full shape is 27 jobs; one gate beside it
+(12 blocking + ≤5 soak) uses ≤39 of 40 slots, and two concurrent gates
+with both soaks live fit at 34. Named test output, durations, JUnit and hang-stack
 artifacts expose failures and the slow tail.
 
 **Pending main runs are replaced (gr479090).** Main's group never cancels a
@@ -301,11 +307,13 @@ cluster and `/go` gets its verdict in minutes.
 
 What still covers it, so nothing is actually ungated:
 
-- **check.yml's Linux shards deselect only `nightly`** — every `ci/**`
-  pre-merge gate and every `release/**` push still runs the whole `slow`
-  cluster; the gate shape's `-m "not nightly"` drops just the
-  `nightly`-marked ids (below).
-- The nightly full matrix runs it on 3.12 and macOS too.
+- **check.yml's gate shape deselects only `nightly`** — the blocking leg
+  is the ~5-minute `gate-fast` selection; every `ci/**` gate and
+  `release/**` push then re-runs the whole non-nightly suite (the `slow`
+  cluster included) as the non-blocking `soak`, whose red is
+  `release.soak_red` debt `round cut`/`open` read and refuse on.
+- The nightly full matrix runs the `nightly`-marked ids on 3.12 and
+  macOS too.
 
 Every test carries a 300 s pytest-timeout (`[tool.pytest.ini_options]`).
 Known-long tests carry `@pytest.mark.timeout(N)` sized from CI worst times,
@@ -323,10 +331,11 @@ exactly the tests that cover the pcb/se/hexfold `src/` lines. A genuinely
 well-tested change there can therefore fail diff-cover at 90%. `scripts/ship`
 says so in the failure text; re-run with `--slow` before writing new tests.
 
-**`nightly`: off the release gate, on the full matrix.** Tests that stay
->240 s CI even after splitting (rt-s3's needs-ruling set, moved per Reto
-2026-10-24) carry `@pytest.mark.nightly(reason=...)`: the gate shape
-(`ci/**`, `release/**`, PRs) runs its shards with `-m "not nightly"`; the
+**`nightly`: off the ship gate, on the full matrix.** Tests that take
+≥30 s CI (the bar was >240 s before me580555's 5-minute gate-fast leg
+made it moot) carry `@pytest.mark.nightly(reason=...)`: the gate shape
+(`ci/**`, `release/**`, PRs) deselects them with `-m "not nightly"` in
+BOTH legs — the gate-fast selection and the soak shards; the
 full shape (nightly schedule, or on demand via `gh workflow run check.yml
 -f full=true`) and local
 `scripts/test` / `scripts/nightly` carry no filter, so the tests still run

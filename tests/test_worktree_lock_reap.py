@@ -384,6 +384,9 @@ sleep 60
 
 
 @pytest.mark.slow  # 61s in the 2026-09-26 gate profile (sleeps, not compute)
+@pytest.mark.nightly(
+    reason="61 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_live_locked_session_survives_reap_then_dead_lock_is_still_reaped(
     repo_trio: dict[str, Path],
     tmp_path: Path,

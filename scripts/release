@@ -55,8 +55,12 @@ Steps, in order:
   6. Poll `round gate --json` until the candidate equals the release head.
      Early red comes from the head's check-runs (sha-keyed REST `gh api`, never
      `gh run list`: stale cache, see scripts/last-gated-main-sha): a completed
-     `lint` / `test-linux*` run that is not success/skipped/neutral exits 2
-     with job names, URLs and the `scripts/ci-failed` line. The release
+     `lint` / `failed-first` / `test-linux*` / `gate-fast*` run that is not
+     success/skipped/neutral exits 2
+     with job names, URLs and the `scripts/ci-failed` line (`soak*` legs are
+     non-blocking — a completed red one warns and is recorded in prod as
+     `release.soak_red`, the debt `round cut`/`open` read on the last gated
+     main sha). The release
      branch stays; fix via `scripts/ship --release` or `round cut --abandon`.
      --ci-timeout also exits 2. Either verdict (green or red, with the run id)
      is recorded in prod before any deploy as a row of the `release.ci_verdicts`
@@ -299,8 +303,20 @@ def _row_run_id(row: list[str]) -> int:
     return 0
 
 
-def ci_red(head: str) -> dict[str, Any] | bool | None:
-    """False = gh unreadable; None = no completed red; else the failing jobs."""
+def _check_run_rows(head: str) -> tuple[list[list[str]], int] | bool:
+    """(check-run rows scoped to the current run, its run id); False = gh
+    unreadable.
+
+    gr504329: check-runs are sha-keyed, so rows span every workflow run
+    ever made on this sha — a cancelled job from a superseded run
+    poisoned a fresh release's verdict while the new run had not yet
+    produced its own check-run for that name (r84, 2026-10-22). Scope
+    the verdict to the CURRENT run: the newest check.yml run id
+    `gh run list` reports, else the newest run id the rows' urls carry.
+    A job name absent from the current run is pending, not red. A row
+    with no parseable run id stays — a red we cannot date is still a
+    red worth seeing.
+    """
     try:
         cp = subprocess.run(
             [
@@ -328,15 +344,6 @@ def ci_red(head: str) -> dict[str, Any] | bool | None:
         )
         return False
     rows = [ln.split("\t") for ln in cp.stdout.splitlines() if ln.count("\t") >= 3]
-    # gr504329: check-runs are sha-keyed, so rows span every workflow run
-    # ever made on this sha — a cancelled job from a superseded run
-    # poisoned a fresh release's verdict while the new run had not yet
-    # produced its own check-run for that name (r84, 2026-10-22). Scope
-    # the verdict to the CURRENT run: the newest check.yml run id
-    # `gh run list` reports, else the newest run id the rows' urls carry.
-    # A job name absent from the current run is pending, not red. A row
-    # with no parseable run id stays — a red we cannot date is still a
-    # red worth seeing.
     current_run = 0
     rid = _regate_run_id(head)
     if rid.isdigit():
@@ -345,27 +352,28 @@ def ci_red(head: str) -> dict[str, Any] | bool | None:
         current_run = max((_row_run_id(r) for r in rows), default=0)
     if current_run:
         rows = [r for r in rows if _row_run_id(r) in (0, current_run)]
-        terminal = completed_run_red(str(current_run))
-        if isinstance(terminal, dict):
-            return terminal
-    else:
-        terminal = None
-    # A rerun adds a newer check-run of the same name: only the latest counts,
-    # and a latest that is still running is not red yet.
+    return rows, current_run
+
+
+def _latest_bad(rows: list[list[str]], keep: Any) -> list[list[str]]:
+    """Latest-per-name rows whose verdict is completed non-OK — a rerun's
+    newer check-run of the same name supersedes, and a latest still
+    running is not red yet. ``keep(name)`` picks the leg family."""
     latest: dict[str, list[str]] = {}
     for r in rows:
-        # failed-first counts as the release's red even though every shard
-        # it gated then reads `skipped` (release train §3).
-        if r[0] not in ("lint", "failed-first") and not r[0].startswith("test-linux"):
+        if not keep(r[0]):
             continue
         old = latest.get(r[0])
         if old is None or _run_id(r) >= _run_id(old):
             latest[r[0]] = r
-    bad = [
-        r for r in latest.values() if r[1] == "completed" and r[2] not in OK_CONCLUSIONS
+    return [
+        r
+        for r in latest.values()
+        if r[1] == "completed" and r[2] not in OK_CONCLUSIONS
     ]
-    if not bad:
-        return terminal
+
+
+def _bad_verdict(bad: list[list[str]]) -> dict[str, Any]:
     urls: list[str] = []
     for r in bad:
         for u in (r[3], r[4] if len(r) > 4 else ""):
@@ -378,6 +386,51 @@ def ci_red(head: str) -> dict[str, Any] | bool | None:
             run_id = m.group(1)
             break
     return {"jobs": [r[0] for r in bad], "urls": urls, "run_id": run_id}
+
+
+def _blocking_leg(name: str) -> bool:
+    """A verdict leg: gate-fast legs block on the new shape (me580555);
+    test-linux stays blocking for runs cut before the soak rename, and
+    failed-first counts even though every shard it gated then reads
+    `skipped` (release train §3). `soak*` is deliberately NOT blocking."""
+    return (
+        name in ("lint", "failed-first")
+        or name.startswith("test-linux")
+        or name.startswith("gate-fast")
+    )
+
+
+def ci_red(head: str) -> dict[str, Any] | bool | None:
+    """False = gh unreadable; None = no completed red; else the failing jobs."""
+    scoped = _check_run_rows(head)
+    if scoped is False:
+        return False
+    rows, current_run = scoped
+    terminal = None
+    if current_run:
+        terminal = completed_run_red(str(current_run))
+        if isinstance(terminal, dict):
+            return terminal
+    bad = _latest_bad(rows, _blocking_leg)
+    if not bad:
+        return terminal
+    return _bad_verdict(bad)
+
+
+def soak_red(head: str) -> dict[str, Any] | bool | None:
+    """False = gh unreadable; None = no completed red `soak*` leg on the
+    current run; else the failing soak jobs (non-blocking — the
+    ``continue-on-error`` legs leave the run conclusion green, so this is
+    the only place their red is surfaced)."""
+    scoped = _check_run_rows(head)
+    if scoped is False:
+        return False
+    rows, _run = scoped
+    verdict_job = runpy.run_path(str(HERE / "lib/soak_verdict.py"))["VERDICT_JOB"]
+    bad = _latest_bad(
+        rows, lambda name: name.startswith("soak") or name == verdict_job
+    )
+    return _bad_verdict(bad) if bad else None
 
 
 def completed_run_red(run_id: str) -> dict[str, Any] | bool | None:
@@ -405,10 +458,7 @@ def completed_run_red(run_id: str) -> dict[str, Any] | bool | None:
     jobs = [
         job["name"]
         for job in run.get("jobs", [])
-        if (
-            job.get("name") in ("lint", "failed-first")
-            or job.get("name", "").startswith("test-linux")
-        )
+        if _blocking_leg(str(job.get("name") or ""))
         and (
             job.get("status") != "completed"
             or job.get("conclusion") not in OK_CONCLUSIONS
@@ -993,6 +1043,72 @@ def note_ci_verdict(head: str, verdict: str, run_id: str = "") -> None:
         say(f"ci verdict not recorded: {_error_detail(e)}")
 
 
+#: ``app_settings`` key holding the newest red soak verdict (me580555):
+#: ``{sha, run_id, jobs, at}``. A `soak*` leg is non-blocking (the
+#: continue-on-error legs keep the run conclusion green), so this row is
+#: the debt record — ``scripts/round cut``/``open`` re-read the soak's
+#: check-runs on the last gated main sha and refuse on red (the row
+#: caches the read), and ``round soak-clear`` amends it with a waiver.
+SOAK_RED_KEY = "release.soak_red"
+
+
+def record_soak_red(
+    sha: str,
+    run_id: str,
+    jobs: list[str],
+    *,
+    transport: Transport | None = None,
+    now: datetime | None = None,
+) -> str:
+    """Write the ``release.soak_red`` row to prod; returns one status
+    line. Same path and skip reasons as :func:`record_ci_verdict`, and the
+    same best-effort contract: a fault is reported, never raised. The sha
+    is kept whole — `round cut` needs an ancestor test, not a prefix."""
+    if not sha:
+        return "soak red not recorded: no sha"
+    if transport is None and (why := _record_skip_reason()):
+        return f"soak red not recorded: {why}"
+    send = transport or _prod_precis
+    when = now or datetime.now(UTC)
+    row = {
+        "sha": sha,
+        "run_id": str(run_id or ""),
+        "jobs": [str(j) for j in jobs],
+        "at": when.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    try:
+        rc, _out, err = send(
+            ["settings", "set", SOAK_RED_KEY, json.dumps(row, separators=(",", ":"))]
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"soak red not recorded: {_error_detail(e)}"
+    if rc != 0:
+        detail = re.sub(r"[a-z]+://\S+", "<url>", err.strip())
+        return f"soak red not recorded (exit {rc}): {detail}"
+    return f"soak red recorded: {sha[:9]} run {run_id or '?'}"
+
+
+def note_soak(head: str) -> None:
+    """Record ``release.soak_red`` when the current run's `soak*` legs
+    went red, and say the warning line. Best-effort like
+    :func:`note_ci_verdict`: never raises, never changes the verdict."""
+    try:
+        red = soak_red(head)
+        if red is False:
+            say("soak legs unreadable — no soak verdict recorded")
+            return
+        if not red:
+            return
+        say(
+            f"soak red on {head[:9]} (non-blocking): {', '.join(red['jobs'])}"
+        )
+        for u in red["urls"]:
+            say(f"  {u}")
+        say(record_soak_red(head, str(red["run_id"]), list(red["jobs"])))
+    except Exception as e:  # the gate step must not die on bookkeeping
+        say(f"soak verdict not recorded: {_error_detail(e)}")
+
+
 #: Longest the deploy path waits on scripts/gripe-validate (two prod calls,
 #: each capped at 90 s); past this it is abandoned, the release goes on.
 VALIDATE_TIMEOUT_S = 200.0
@@ -1133,6 +1249,7 @@ def wait_ci(branch: str, args: argparse.Namespace) -> int:
         if head and cand == head and rbranch == branch:
             say(f"CI green on {branch} at {head[:9]}")
             note_ci_verdict(head, "green", _regate_run_id(head))
+            note_soak(head)
             return 0
         if head and rbranch == branch:
             red = ci_red(head)

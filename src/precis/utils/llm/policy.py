@@ -12,7 +12,7 @@ gated to where a model actually gets chosen. The hot-path guardrail is `admit`
 (slice 2), which is unconditional; ranking never runs per-item.
 
 Degrade-to-floor is the invariant: with an **empty catalog** (or no candidate
-that fits) it returns ``resolve_model(tier_floor)`` — byte-identical to today's
+that fits) it returns ``router.resolve_model(tier_floor)`` — byte-identical to today's
 behaviour, so wiring a call site through it is safe before any card exists.
 
 Mechanism:
@@ -30,8 +30,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+# ``resolve_model`` is looked up on the module at call time, never
+# from-imported: ``decide``/``policy`` are first imported *inside* a
+# ``route()`` call, so a binding made while a test monkeypatches
+# ``router.resolve_model`` would keep the fake after undo (gate-s2 leg 7).
+from precis.utils.llm import router
 from precis.utils.llm.admit import admit, window_for
-from precis.utils.llm.router import Tier, resolve_model
+from precis.utils.llm.router import Tier
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -359,10 +364,10 @@ def _next_better(
 
 def select_offering(store: Store, req: Requirement) -> Selection:
     """Pick a concrete ``(model, offering)`` for ``req`` from the catalog, with a
-    Pareto ``next_better`` rung. Degrades to ``resolve_model(req.tier_floor)`` —
+    Pareto ``next_better`` rung. Degrades to ``router.resolve_model(req.tier_floor)`` —
     byte-identical to today — when the catalog is empty or nothing fits.
     """
-    floor_model = resolve_model(req.tier_floor)
+    floor_model = router.resolve_model(req.tier_floor)
     survivors = [
         (mid, meta) for mid, meta in _candidates(store) if _passes(store, meta, req)
     ]

@@ -744,10 +744,12 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers",
-        "nightly: too heavy for the release gate even after the rt-s3 "
-        "splits (>240 s CI and unsplittable — moved to the nightly run per "
-        "Reto 2026-10-24). check.yml's gate shape (ci/**, release/** and PR "
-        "test-linux shards) deselects it with -m 'not nightly'; the full "
+        "nightly: too heavy for the ship gate (>=30 s CI — the bar was "
+        ">240 s before me580555's 5-minute gate-fast leg made it moot; "
+        "moved to the nightly run). check.yml's gate shape (ci/**, "
+        "release/** and PR) deselects it with -m 'not nightly' in both "
+        "legs — the blocking gate-fast selection and the soak shards; "
+        "the full "
         "shape (schedule, workflow_dispatch full=true) and local "
         "scripts/test / scripts/nightly carry no -m filter, so it still "
         "runs there. Items are auto-tagged 'slow' below, so every local "

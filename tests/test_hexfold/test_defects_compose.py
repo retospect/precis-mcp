@@ -80,6 +80,9 @@ def test_crossing_cuts_are_an_error_with_a_recut_that_composes() -> None:
 
 
 @pytest.mark.parametrize("d1", range(6))
+@pytest.mark.nightly(
+    reason="36 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_no_pair_is_silently_wrong(d1: int) -> None:
     """Every pair either builds exactly its rings or carries an ERROR."""
     for kind, ring in (("pentagon", 5), ("heptagon", 7)):

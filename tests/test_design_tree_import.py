@@ -292,6 +292,9 @@ def test_cli_registered() -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.nightly(
+    reason="37 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_packaged_manifest_import(store: Store) -> None:
     """The real packaged manifests (S1, the literal ``design-tree``
     manifest name), ~17 s per pass so kept in one test rather than

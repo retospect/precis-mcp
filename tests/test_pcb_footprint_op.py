@@ -574,6 +574,9 @@ def test_view_footprints_format_refuses_an_unknown_format(pcb):
 
 
 @pytest.mark.slow
+@pytest.mark.nightly(
+    reason="62 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_op_footprint_fill_clears_synthesized_footprint_drc_finding(pcb, monkeypatch):
     design = _design()
     pcb.put(id="ewod-no-footprints-2", args=design)

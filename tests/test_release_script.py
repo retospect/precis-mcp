@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
 
@@ -275,6 +276,52 @@ def test_red_failed_first_exits_two(rig: Rig) -> None:
     assert "failed-first" in out.stderr
     assert rig.origin_ref("release/r1") == s  # left in place
     assert rig.deploy_log() == []
+
+
+def test_red_gate_fast_check_run_exits_two(rig: Rig) -> None:
+    """me580555: `gate-fast` is the blocking leg of the new gate shape — a
+    red one is the release's verdict exactly as test-linux was."""
+    s = rig.shas["c3"]
+    url = "https://github.com/o/r/actions/runs/4242/job/9"
+    (rig.gh_dir / s).write_text(
+        f"lint\tcompleted\tsuccess\t{url}\n"
+        f"gate-fast (3.13, 2)\tcompleted\tfailure\t{url}\n"
+        f"soak (3.13, 1)\tcompleted\tfailure\t{url}\n",
+        encoding="utf-8",
+    )
+    out = _release(rig, "--poll", "0.01", "--ci-timeout", "1")
+    assert out.returncode == 2
+    assert "gate-fast (3.13, 2)" in out.stderr
+    assert "soak" not in out.stderr
+    # The soak is skipped when the blocking leg is red — the debt read
+    # moved to `round cut`/`open`, so no soak verdict is noted here.
+    assert "soak red" not in out.stdout
+    assert rig.origin_ref("release/r1") == s  # left in place
+    assert rig.deploy_log() == []
+
+
+def test_red_soak_leg_is_recorded_debt_not_a_veto(rig: Rig) -> None:
+    """me580555: a red `soak*` leg never blocks the release — the
+    continue-on-error legs leave the run green, so wait_ci surfaces the
+    debt itself (release.soak_red; skipped under PRECIS_ROUND_ROOT) and
+    deploys anyway."""
+    s = rig.shas["c3"]
+    url = "https://github.com/o/r/actions/runs/4242/job/9"
+    (rig.gh_dir / s).write_text(
+        f"lint\tcompleted\tsuccess\t{url}\n"
+        f"soak (3.13, 1)\tcompleted\tfailure\t{url}\n"
+        f"soak (3.13, 2)\tcompleted\tsuccess\t{url}\n"
+        f"verdict-soak\tcompleted\tfailure\t{url}\n",
+        encoding="utf-8",
+    )
+    out = _release(rig, "--poll", "0.01", "--ci-timeout", "1", **_green(rig))
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert (
+        f"soak red on {s[:9]} (non-blocking): soak (3.13, 1), verdict-soak"
+        in out.stdout
+    )
+    assert "soak red not recorded: PRECIS_ROUND_ROOT" in out.stdout
+    assert rig.deploy_log() == [f"{s} --pinned"]
 
 
 def test_ci_timeout_exits_two_and_names_branch(rig: Rig) -> None:
@@ -735,7 +782,7 @@ def _load_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType
     copy = tmp_path / "release_script.py"
     copy.write_text(RELEASE.read_text(encoding="utf-8"), encoding="utf-8")
     (tmp_path / "lib").mkdir(exist_ok=True)
-    for name in ("ci_run.py", "git_network.py"):
+    for name in ("ci_run.py", "git_network.py", "soak_verdict.py"):
         (tmp_path / "lib" / name).write_text(
             (RELEASE.parent / "lib" / name).read_text(encoding="utf-8"),
             encoding="utf-8",
@@ -784,6 +831,132 @@ def test_completed_non_green_run_fails_fast_with_queued_jobs(
     assert "never concluded: shard 2 (queued)" in err
     assert "test-linux (2)" in err
     assert "full rerun needed: gh run rerun 4242" in err
+
+
+def test_ci_red_gate_fast_leg_is_the_verdict_soak_is_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """me580555: `_blocking_leg` counts `gate-fast` (and still test-linux);
+    a red `soak*` row alone is never the CI verdict."""
+    mod = _load_release(tmp_path, monkeypatch)
+    url = "https://github.com/o/r/actions/runs/4242/job/9"
+    rows = [
+        ["lint", "completed", "success", url],
+        ["gate-fast (3.13, 2)", "completed", "failure", url],
+        ["soak (3.13, 1)", "completed", "failure", url],
+    ]
+    monkeypatch.setattr(mod, "_check_run_rows", lambda h: (rows, 0))
+    red = mod.ci_red("1" * 40)
+    assert isinstance(red, dict)
+    assert red["jobs"] == ["gate-fast (3.13, 2)"]
+    assert red["urls"] == [url]
+    assert red["run_id"] == "4242"
+    soak_only = [rows[0], rows[2]]
+    monkeypatch.setattr(mod, "_check_run_rows", lambda h: (soak_only, 0))
+    assert mod.ci_red("1" * 40) is None
+
+
+def test_soak_red_reports_only_red_soak_legs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`soak_red` sees only completed non-OK `soak*` legs — a red blocking
+    leg is ci_red's business, and unreadable `gh` is False."""
+    mod = _load_release(tmp_path, monkeypatch)
+    url = "https://github.com/o/r/actions/runs/4242/job/9"
+    rows = [
+        ["soak (3.13, 1)", "completed", "failure", url],
+        ["soak (3.13, 2)", "completed", "success", url],
+        ["soak (3.13, 3)", "in_progress", "", url],
+        ["gate-fast (3.13, 1)", "completed", "failure", url],
+    ]
+    monkeypatch.setattr(mod, "_check_run_rows", lambda h: (rows, 0))
+    red = mod.soak_red("1" * 40)
+    assert isinstance(red, dict)
+    assert red["jobs"] == ["soak (3.13, 1)"]
+    assert red["run_id"] == "4242"
+    monkeypatch.setattr(mod, "_check_run_rows", lambda h: ([rows[1]], 0))
+    assert mod.soak_red("1" * 40) is None
+    monkeypatch.setattr(mod, "_check_run_rows", lambda h: False)
+    assert mod.soak_red("1" * 40) is False
+
+
+def test_record_soak_red_writes_the_full_sha_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The debt row carries the FULL sha (round cut's ancestor test needs
+    it), run_id, jobs and a Z stamp under `release.soak_red`."""
+    mod = _load_release(tmp_path, monkeypatch)
+    sent: list[list[str]] = []
+
+    def transport(args: list[str]) -> tuple[int, str, str]:
+        sent.append(args)
+        return 0, "", ""
+
+    sha = "c0ffee" + "1" * 34
+    stamp = datetime(2026, 11, 7, 12, 0, 0, tzinfo=UTC)
+    line = mod.record_soak_red(
+        sha, "4242", ["soak (3.13, 1)"], transport=transport, now=stamp
+    )
+    assert line == f"soak red recorded: {sha[:9]} run 4242"
+    assert sent[0][:3] == ["settings", "set", mod.SOAK_RED_KEY]
+    assert json.loads(sent[0][3]) == {
+        "sha": sha,
+        "run_id": "4242",
+        "jobs": ["soak (3.13, 1)"],
+        "at": "2026-11-07T12:00:00Z",
+    }
+    monkeypatch.setattr(mod, "_record_skip_reason", lambda: "no prod DSN on this host")
+    assert (
+        mod.record_soak_red(sha, "4242", ["x"])
+        == "soak red not recorded: no prod DSN on this host"
+    )
+    assert (
+        mod.record_soak_red("", "4242", ["x"], transport=transport)
+        == "soak red not recorded: no sha"
+    )
+    assert len(sent) == 1  # neither refusal contacted the transport
+
+
+@pytest.mark.parametrize("verdict", ["red", "unreadable", "clean"])
+def test_note_soak_says_and_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    verdict: str,
+) -> None:
+    """`note_soak` is best-effort: a red verdict is said and recorded, an
+    unreadable one is said once, a clean one is silent — none raises."""
+    mod = _load_release(tmp_path, monkeypatch)
+    head = "c0ffee" + "1" * 34
+    verdicts = {
+        "red": {
+            "jobs": ["soak (3.13, 1)"],
+            "urls": ["https://u/1"],
+            "run_id": "4242",
+        },
+        "unreadable": False,
+        "clean": None,
+    }
+    monkeypatch.setattr(mod, "soak_red", lambda h: verdicts[verdict])
+    recorded: list[tuple[str, str, list[str]]] = []
+
+    def _record(sha: str, rid: str, jobs: list[str]) -> str:
+        recorded.append((sha, rid, jobs))
+        return "rec"
+
+    monkeypatch.setattr(mod, "record_soak_red", _record)
+    mod.note_soak(head)
+    out = capsys.readouterr().out
+    if verdict == "red":
+        assert f"soak red on {head[:9]} (non-blocking): soak (3.13, 1)" in out
+        assert "https://u/1" in out
+        assert recorded == [(head, "4242", ["soak (3.13, 1)"])]
+    elif verdict == "unreadable":
+        assert "soak legs unreadable" in out
+        assert recorded == []
+    else:
+        assert out == ""
+        assert recorded == []
 
 
 def test_ci_unreadable_reports_original_gh_error(
@@ -960,6 +1133,36 @@ def test_wait_ci_records_the_verdict_with_range_and_run_id(
     n = mod.LANDED_SHA_LEN
     run_id = "555" if verdict == "green" else "666"
     assert calls == [(head, f"{prod[:n]}..{head[:n]}", verdict, run_id)]
+
+
+@pytest.mark.parametrize("verdict", ["green", "red"])
+def test_wait_ci_notes_soak_on_green_and_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verdict: str
+) -> None:
+    """me580555 round 1: wait_ci notes the soak only on the green path —
+    a red gate-fast run skipped the soak outright, so there is nothing
+    to record there (the debt read moved to `round cut`/`open`)."""
+    mod = _load_release(tmp_path, monkeypatch)
+    head = "c0ffee" + "1" * 34
+    facts = {
+        "release_head": head,
+        "release_branch": "release/r1",
+        "candidate": head if verdict == "green" else "",
+        "candidate_state": "found",
+    }
+    monkeypatch.setattr(mod, "gate_facts", lambda: facts)
+    monkeypatch.setattr(mod, "rev", lambda name: "9" * 40)
+    monkeypatch.setattr(mod, "_regate_run_id", lambda sha: "555")
+    red = {"jobs": ["gate-fast (3.13, 1)"], "urls": [], "run_id": "666"}
+    monkeypatch.setattr(mod, "ci_red", lambda h: red)
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(mod, "note_ci_verdict", lambda *args: None)
+    noted: list[str] = []
+    monkeypatch.setattr(mod, "note_soak", noted.append)
+    args = mod.argparse.Namespace(ci_timeout=1.0, poll=0.0)
+    rc = mod.wait_ci("release/r1", args)
+    assert rc == (0 if verdict == "green" else 2)
+    assert noted == ([head] if verdict == "green" else [])
 
 
 @pytest.mark.parametrize(

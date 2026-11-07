@@ -61,6 +61,9 @@ def test_handler_error_strings_cite_real_skills() -> None:
     assert SKILL in cited  # _NO_TRACE cites it — the dead reference gr514237 hit
 
 
+@pytest.mark.nightly(
+    reason="33 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_no_trace_names_macro_limit_and_real_skill() -> None:
     """The 514244 message fix: the refusal names the macro-leg limit and
     a skill that exists."""
@@ -83,6 +86,9 @@ def test_skill_states_t_prefix_rule() -> None:
     assert "gr514241" in body and "template=True" in body
 
 
+@pytest.mark.nightly(
+    reason="56 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_rot_order_matches_vec() -> None:
     """The skill's R = Rz·Ry·Rx is the one convention ``vec.rotation``
     fixes — and z→−y under a +90° x rotation."""
@@ -169,6 +175,9 @@ def test_skill_has_exactly_one_recipe_block() -> None:
     assert _recipe_block()
 
 
+@pytest.mark.nightly(
+    reason="36 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_recipe_states_only_real_op_keys() -> None:
     """The fenced op call names no key the vet would refuse — the
     nested ``run``/``files`` relpaths are not op keys (the regex's

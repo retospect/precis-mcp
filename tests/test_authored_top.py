@@ -372,6 +372,9 @@ def test_the_n12_sphere_meets_all_five_bars_and_records_its_plan(
 
 
 @pytest.mark.slow
+@pytest.mark.nightly(
+    reason="57 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_the_n12_sphere_relaxes_flatter_and_the_scene_says_so(
     sphere12: af.TopPlan,
 ) -> None:
@@ -649,6 +652,9 @@ def test_tabled_tops_do_not_count_toward_the_scene_ceilings(
     ("kind", "n", "fillet"),
     [("lid", 12, af.table_lid_fillet(12)), ("sphere", 12, None)],
     ids=["lid12", "sphere12"],
+)
+@pytest.mark.nightly(
+    reason="62 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
 )
 def test_the_tabled_rows_are_what_the_planner_measures_today(
     kind: str, n: int, fillet: float | None

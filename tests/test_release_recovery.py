@@ -213,6 +213,36 @@ def test_terminal_failed_workflow_only_counts_gate_jobs(
         assert result is None
 
 
+@pytest.mark.parametrize("leg", ["gate-fast (3.13, 2)", "soak (3.13, 2)"])
+def test_terminal_failed_workflow_counts_gate_fast_never_soak(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, leg: str
+) -> None:
+    """me580555: a failed gate-fast job makes the completed non-green run
+    red like test-linux did; a failed soak job is debt, never the red."""
+    mod = _load_release(tmp_path, monkeypatch)
+    workflow = {
+        "status": "completed",
+        "conclusion": "failure",
+        "jobs": [
+            {"name": "lint", "status": "completed", "conclusion": "success"},
+            {"name": leg, "status": "completed", "conclusion": "failure"},
+        ],
+    }
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, json.dumps(workflow), ""
+        ),
+    )
+    result = mod.completed_run_red("4242")
+    if leg.startswith("gate-fast"):
+        assert isinstance(result, dict)
+        assert result["jobs"] == [leg]
+    else:
+        assert result is None
+
+
 def test_terminal_red_cleared_next_poll_records_only_green(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -158,6 +158,9 @@ def _drain_one_job(store: Store, parent_id: int) -> None:
 
 @pytest.mark.parametrize("seed", SEEDS)
 @pytest.mark.timeout(600)  # CI junit worst 136s x4 for CI variance (gr503084)
+@pytest.mark.nightly(
+    reason="57 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_esp32c3_reference_place_reads_back_retired_route_state(
     store: Store, seed: int, record_property: Any
 ) -> None:

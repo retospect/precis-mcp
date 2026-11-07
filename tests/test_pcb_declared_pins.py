@@ -536,6 +536,9 @@ def test_hv_ring_sink_seed_clears_the_hv_floor(pcb, store) -> None:
 
 
 @pytest.mark.parametrize("seed", [1, 2, 3])
+@pytest.mark.nightly(
+    reason="124 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_hv_ring_sink_stays_clear_after_place_job(
     pcb, store, seed: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:

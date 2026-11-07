@@ -95,6 +95,9 @@ def _seed(store: Store) -> list[float]:
     return base.tolist()
 
 
+@pytest.mark.nightly(
+    reason="67 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_rare_kind_is_not_starved_by_nearer_papers(
     store: Store, force_hnsw: None
 ) -> None:
@@ -127,6 +130,9 @@ def test_rare_kind_is_not_starved_by_nearer_papers(
     assert all(0.1 < d < 0.4 for d in dists), dists
 
 
+@pytest.mark.nightly(
+    reason="54 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_distance_floor_outside_the_scan_keeps_rows_and_pages(
     store: Store, force_hnsw: None
 ) -> None:

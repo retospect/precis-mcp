@@ -71,6 +71,9 @@ def _stub_xtb_with_emt(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "tblite.ase", fake)
 
 
+@pytest.mark.nightly(
+    reason="39 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_bookkeeping_persisted_on_the_block() -> None:
     block = build_hexfold_scene(_params(tube=TUBE, sheet=[30, 30]))
     junctions = block.topology["junctions"]

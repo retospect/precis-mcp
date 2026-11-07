@@ -8,6 +8,7 @@ import dataclasses
 import re
 
 import numpy as np
+import pytest
 
 from precis.pcb.topoplace import (
     ObjectiveShares,
@@ -136,6 +137,9 @@ def test_ranked_edits_probe_lighter_when_the_base_run_moved_nothing(
     assert all(e == max(1, _EFFORT // 100) for e in seen)
 
 
+@pytest.mark.nightly(
+    reason="64 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_run_files_byte_deterministic(tmp_path) -> None:
     """Decision 22: same design + same seed → byte-identical run dir."""
     files_a = _files(*_run(seed=7))

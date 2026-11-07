@@ -199,6 +199,9 @@ def test_bare_fit_enumerates_and_ranks_the_catalogue_survivors() -> None:
     assert da["alternatives"][0]["cost"][0] == 7.0
 
 
+@pytest.mark.nightly(
+    reason="46 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_domain_fit_composes_with_len_fit() -> None:
     """Domains resolve outside ``len=fit``: each surviving roll-up is a
     full spec whose own footprint solve runs inside; the winner carries

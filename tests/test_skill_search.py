@@ -273,6 +273,9 @@ def test_search_page_beyond_end_is_an_honest_empty(
     assert "page 3" in out.body
 
 
+@pytest.mark.nightly(
+    reason="37 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_search_gap_cut_eval_corpus_recall(skill: SkillHandler) -> None:
     """The gr496170 landing bar, ratcheted: replay every skill-eval
     case prompt through search and check the YAML's named skill

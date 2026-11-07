@@ -194,6 +194,12 @@ _HERE = Path(__file__).resolve().parent
 _NETWORK = runpy.run_path(str(_HERE / "lib/git_network.py"))
 
 
+def _soak() -> dict[str, Any]:
+    """Lazy lib load — a staged copy of this script may ship without the
+    lib dir (review round 2); only the soak read needs it."""
+    return runpy.run_path(str(_HERE / "lib/soak_verdict.py"))
+
+
 def _git(*args: str) -> str | None:
     cp = _NETWORK["run_git"](list(args))
     return cp.stdout.strip() if cp.returncode == 0 else None
@@ -435,6 +441,155 @@ def _publish_round(data: dict[str, Any], *, transport: Transport | None = None) 
 
 
 _ROUND_ROW_RE = re.compile(r"^release\.round = (.*) \(layer=(\w+)\)$", re.MULTILINE)
+
+
+#: ``app_settings`` key caching the newest red soak verdict (me580555):
+#: ``{sha, run_id, jobs, at}``, written when `cut`/`open` read a red soak
+#: on the last gated main sha, cleared when a later read is all-green,
+#: amended in place (``waived_by``/``waived_at``/``reason``) by
+#: ``soak-clear`` — the verdict lives on the check-runs, the row is only
+#: its durable copy plus the waiver record.
+SOAK_RED_KEY = "release.soak_red"
+_SOAK_ROW_RE = re.compile(
+    rf"^{re.escape(SOAK_RED_KEY)} = (.*) \(layer=(\w+)\)$", re.MULTILINE
+)
+
+
+def _read_soak_red() -> dict[str, Any] | None:
+    """The shared ``release.soak_red`` row, or None on any failure — a
+    read problem prints nothing and never refuses."""
+    if _record_skip_reason():
+        return None
+    try:
+        rc, out, _err = _prod_precis(
+            ["settings", "get", SOAK_RED_KEY], timeout=STATUS_TIMEOUT_S
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if rc != 0:
+        return None
+    m = _SOAK_ROW_RE.search(out)
+    if m is None or m.group(2) != "db":
+        return None
+    try:
+        row = json.loads(m.group(1))
+    except ValueError:
+        return None
+    return row if isinstance(row, dict) else None
+
+
+def _clear_soak_red() -> tuple[int, str] | None:
+    """``settings clear release.soak_red``; None when skipped/raised."""
+    if _record_skip_reason():
+        return None
+    try:
+        rc, _out, err = _prod_precis(
+            ["settings", "clear", SOAK_RED_KEY], timeout=RECORD_TIMEOUT_S
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return rc, err
+
+
+def _write_soak_red(row: dict[str, Any]) -> tuple[int, str] | None:
+    """``settings set release.soak_red <row>``; None when skipped/raised."""
+    if _record_skip_reason():
+        return None
+    try:
+        rc, _out, err = _prod_precis(
+            ["settings", "set", SOAK_RED_KEY, json.dumps(row, separators=(",", ":"))],
+            timeout=RECORD_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return rc, err
+
+
+def _soak_log(state: Path, line: str) -> None:
+    """Append one UTC-stamped line to the round soak log
+    (``state/soak.log``, append-only) — best-effort: the log is the
+    audit trail a red hidden behind a gh failure leaves, never a veto."""
+    try:
+        state.mkdir(parents=True, exist_ok=True)
+        with (state / "soak.log").open("a", encoding="utf-8") as fh:
+            fh.write(f"{_now()} {line}\n")
+    except OSError:
+        pass
+
+
+def _soak_debt_check(root: Path) -> str:
+    """Why `cut`/`open` refuse on a red soak, or "" — the read happens at
+    cut time on the last gated main sha (the previous release head), not
+    at release wait time: the soak finishes long after wait_ci's green
+    verdict, so only a later read can see it.
+
+    `release.soak_red` is the read's cache: written on red, cleared on
+    all-green, held by a `soak-clear` waiver. A soak still running, a sha
+    with no soak legs, an unanswerable lgm or gh — one-line note, never a
+    veto and never a clear."""
+    sv = _soak()
+    sha, _rc = _lgm_run(root)
+    if not sha:
+        print("scripts/round: soak debt read skipped — no last-gated main sha")
+        return ""
+    rows = sv["soak_legs"](_NETWORK["run_command"], sha, root)
+    if rows is None:
+        print(
+            f"scripts/round: soak verdict on {sha[:9]} unreadable — proceeding",
+            file=sys.stderr,
+        )
+        _soak_log(_state_dir(), f"soak verdict on {sha[:9]} unreadable — proceeded")
+        return ""
+    verdict = sv["classify"](rows)
+    if verdict == "none":
+        print(f"scripts/round: no soak legs on {sha[:9]} — proceeding")
+        return ""
+    if verdict == "pending":
+        print(f"scripts/round: soak still running on {sha[:9]} — not a veto")
+        return ""
+    if verdict == "green":
+        if _read_soak_red() is not None:
+            cleared = _clear_soak_red()
+            suffix = (
+                "row cleared" if cleared and cleared[0] == 0 else "clear failed"
+            )
+            print(
+                f"scripts/round: soak debt on {sha[:9]} resolved by a green "
+                f"soak — {suffix}"
+            )
+            _soak_log(
+                _state_dir(), f"soak green on {sha[:9]} — debt row {suffix}"
+            )
+        return ""
+    row = _read_soak_red()
+    if (
+        str((row or {}).get("sha") or "") == sha
+        and (row or {}).get("waived_by")
+    ):
+        line = (
+            f"soak waived: {sha[:9]} by {row['waived_by']} "
+            f"at {row.get('waived_at') or '?'}: "
+            f"{row.get('reason') or 'no reason recorded'}"
+        )
+        print(f"scripts/round: {line}")
+        _soak_log(_state_dir(), line)
+        return ""
+    jobs, run_id = sv["red_jobs"](rows)
+    written = _write_soak_red(
+        {"sha": sha, "run_id": run_id, "jobs": jobs, "at": _now()}
+    )
+    if written is None or written[0] != 0:
+        print("scripts/round: soak debt row not recorded — the refusal stands")
+    shown = ", ".join(jobs[:6])
+    _soak_log(
+        _state_dir(),
+        f"soak red on {sha[:9]} run {run_id or '?'}: {shown or 'soak'} — refused",
+    )
+    return (
+        f"soak red on last gated main {sha[:9]} (run {run_id or '?'}: "
+        f"{shown or 'soak'}) — land the fix and let the soak go green, or "
+        f"`scripts/round soak-clear {sha[:12]} --reason '<why>'` to waive it"
+    )
 
 
 def _read_round_record() -> dict[str, Any] | None:
@@ -685,13 +840,18 @@ def cmd_open(state: Path, args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    taken = _origin_round_max(_root())
+    root = _root()
+    taken = _origin_round_max(root)
     if taken is None:
         print(
             "scripts/round: open refused — could not read origin's deployed/release"
             " refs (git ls-remote failed); round numbers are global on origin",
             file=sys.stderr,
         )
+        return 1
+    block = _soak_debt_check(root)
+    if block:
+        print(f"scripts/round: open refused — {block}", file=sys.stderr)
         return 1
     _archive_receipt(state, prev)
     base = args.base or _git("rev-parse", "origin/prod") or ""
@@ -1166,11 +1326,15 @@ def _red_verdict(root: Path, sha: str) -> tuple[bool, dict[str, Any] | None]:
         return False, None
     rows = [ln.split("\t") for ln in cp.stdout.splitlines() if ln.count("\t") == 3]
     # failed-first counts too: a red one leaves its shards `skipped`,
-    # which must not read as "not red" (release train §3).
+    # which must not read as "not red" (release train §3). gate-fast legs
+    # are the blocking leg on the new shape (me580555); test-linux stays
+    # for runs cut before the soak rename, and `soak*` never counts.
     rows = [
         r
         for r in rows
-        if r[0] in ("lint", "failed-first") or r[0].startswith("test-linux")
+        if r[0] in ("lint", "failed-first")
+        or r[0].startswith("test-linux")
+        or r[0].startswith("gate-fast")
     ]
     if not rows or any(r[1] != "completed" for r in rows):
         return True, None
@@ -2249,6 +2413,9 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             "no open release is recorded in round.json — nothing to supersede"
         )
     _fetch(root)
+    block = _soak_debt_check(root)
+    if block:
+        return _cut_refuse(block)
     prev = max(records, key=lambda r: r["n"], default=None)
     if prev is None and cur.get("deployed"):
         return _cut_refuse(
@@ -2428,6 +2595,58 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
         f" <path> origin/{branch}) holding only the fix; everything else qlands to"
         f' main for round {n_new + 1}"'
     )
+    return 0
+
+
+def cmd_soak_clear(state: Path, args: argparse.Namespace) -> int:
+    """``soak-clear <sha> --reason T`` — waive the ``release.soak_red``
+    debt row in place: the verdict stays recorded, amended with who
+    cleared it, when and why.
+
+    A reason is mandatory — the waiver is the audit trail for a refused
+    cut, and no env or setting may skip the check (PRECIS_GRIPE_NOTE /
+    PRECIS_ROUND_ROOT only skip *recording*). With no cached row (the red
+    read could not write it, prod was unreachable) the named sha resolves
+    and a fresh waiver row is written — a refusal must have a way out.
+    The row it names must match the argument (prefix ok): waiving a
+    different sha's debt silently would lose the record.
+    """
+    why = " ".join(
+        " ".join([args.reason or "", *(args.reason_text or [])]).split()
+    )
+    if not why:
+        print(
+            "scripts/round: soak-clear refused — give a reason: "
+            "soak-clear <sha> --reason '<why>'",
+            file=sys.stderr,
+        )
+        return 1
+    row = _read_soak_red()
+    recorded = str((row or {}).get("sha") or "")
+    if recorded and args.sha and not recorded.startswith(args.sha):
+        return _cut_refuse(
+            f"release.soak_red names {recorded[:12]}, not {args.sha} "
+            f"— `scripts/round soak-clear {recorded[:12]}` to waive it"
+        )
+    if row is None:
+        full = _git("rev-parse", "--verify", "--quiet", f"{args.sha}^{{commit}}")
+        if not full:
+            return _cut_refuse(f"{args.sha} does not resolve to a commit")
+        row = {"sha": full, "run_id": "", "jobs": [], "at": _now()}
+    peer = _peer()
+    at = _now()
+    row.update({"waived_by": peer, "waived_at": at, "reason": why})
+    written = _write_soak_red(row)
+    if written is None:
+        return _cut_refuse("release.soak_red unreadable — row kept")
+    rc, err = written
+    if rc != 0:
+        return _cut_refuse(f"settings set failed ({err.strip() or rc})")
+    print(
+        f"release.soak_red cleared (was {recorded[:12] or 'unset'}) "
+        f"by {peer}: {why}"
+    )
+    _soak_log(state, f"soak waived: {row['sha'][:9]} by {peer} at {at}: {why}")
     return 0
 
 
@@ -2866,6 +3085,18 @@ def main(argv: list[str] | None = None) -> int:
         help="print the newest good/r<N> tag and its sha (the rollback target)",
     )
     p_good.add_argument("--dry-run", action="store_true")
+    p_soak = sub.add_parser(
+        "soak-clear",
+        help="waive the release.soak_red debt row once the soak failure it "
+        "records is understood (records who and why)",
+    )
+    p_soak.add_argument("sha", help="the sha the row must name (prefix ok)")
+    p_soak.add_argument(
+        "--reason", default="", help="why the debt is waived (recorded)"
+    )
+    p_soak.add_argument(
+        "reason_text", nargs="*", help="trailing words also join the reason"
+    )
     args = parser.parse_args(argv)
     if args.cmd == "supersede":
         if args.partial and not args.reason.strip():
@@ -2892,6 +3123,7 @@ def main(argv: list[str] | None = None) -> int:
         "cut": cmd_cut,
         "good": cmd_good,
         "supersede": cmd_supersede,
+        "soak-clear": cmd_soak_clear,
     }
     if args.cmd in ("open", "close", "cut", "in", "none", "eta", "supersede") or (
         args.cmd == "good" and not args.resolve

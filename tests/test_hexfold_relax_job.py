@@ -575,6 +575,9 @@ def test_raced_cancel_beats_the_yield(store: Any, monkeypatch) -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.nightly(
+    reason="37 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_yield_then_resume_completes(store: Any, monkeypatch) -> None:
     """A real child yielded mid-polish (budget + waiter): the same job's
     next dispatch resumes from the flushed checkpoint pointer and runs
@@ -1131,6 +1134,9 @@ def test_restep_job_resumes_from_checkpoint_version(
 
 
 @pytest.mark.slow
+@pytest.mark.nightly(
+    reason="42 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_reclaim_resumes_same_job(store: Any, monkeypatch, tmp_path) -> None:
     """Kill a REAL child after several fragment steps, then re-dispatch
     the SAME job through its meta pointer (the reclaim path, not a

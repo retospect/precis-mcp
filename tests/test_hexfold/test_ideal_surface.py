@@ -180,6 +180,9 @@ for _a in sorted(_GOLDEN):
     ids=[f"{a} k={list(k)}" for a, k in _ANCHOR_CASES],
 )
 @pytest.mark.timeout(480)  # CI worst ~192s x2.5 for runner variance (gr503084)
+@pytest.mark.nightly(
+    reason="589 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_foot_anchor_reproduces(anchor: str, ks: tuple[int, ...]) -> None:
     g = _GOLDEN[anchor]
     plan = af.plan_foot(g["n"], g["radius"], candidates=ks)

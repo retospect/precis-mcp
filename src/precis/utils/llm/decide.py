@@ -18,10 +18,14 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from precis.budget.work_class import resolve as resolve_work_class
-from precis.utils.llm import accounts, admit, policy, recipes
+
+# ``router`` stays a module reference (call-time ``resolve_model`` lookup):
+# ``decide`` is first imported inside a ``route()`` call, so a from-import
+# bound while a test monkeypatches the name would keep the fake (policy.py).
+from precis.utils.llm import accounts, admit, policy, recipes, router
 from precis.utils.llm.accounts import Pacing
 from precis.utils.llm.policy import Requirement
-from precis.utils.llm.router import LlmRequest, Rung, Tier, Transport, resolve_model
+from precis.utils.llm.router import LlmRequest, Rung, Tier, Transport
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -405,7 +409,7 @@ def decide(
         {k: p.state for k, p in ledger.pools.items()},
         getattr(request, "task_kind", None),
         requirement,
-        fallback_model=resolve_model(requirement.tier_floor)
+        fallback_model=router.resolve_model(requirement.tier_floor)
         if chosen is None
         else None,
         reason="pinned"

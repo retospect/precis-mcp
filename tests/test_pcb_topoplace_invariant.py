@@ -634,6 +634,9 @@ def test_near_zero_rules_route_every_net_and_fan_out_every_plane_pad(
         for order in ORDERS
     ],
 )
+@pytest.mark.nightly(
+    reason="68 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_real_rules_clean_nets_are_drc_clean(
     board: str, order: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1,0 +1,119 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/gate-fast-select — the file list for check.yml's gate-fast leg.
+
+    scripts/gate-fast-select BASE HEAD [--explain] [--format json]
+        [--floor S] [--budget S] [--cap S] [--shards N]
+
+Stdout: the selected test files, sorted (one per line); ``--explain``
+prints ``file<TAB>tier`` instead (floor / history / contract / impacted).
+``--format json`` emits the map check.yml's `plan` job consumes:
+
+    {"full": false, "files": [...], "shards": {"1": [...], ...},
+     "predicted_max_s": 203.4, "dropped": [...]}
+
+A diff touching the harness (pyproject, uv.lock, conftest, workflows,
+scripts/test, this script's selector) cannot be honestly subset:
+``scripts/impacted-tests`` answers FULL, and gate-fast then IS the gate —
+stdout carries the whole suite minus all-nightly files, stderr prints
+``gate-fast: FULL (<why>)``, the JSON says ``"full": true`` and the
+process exits 3 (0 otherwise) so `plan` can flag ``gate_fast_full`` and
+skip the soak. An impacted-tests failure is an honest answer of "we
+cannot select": FULL as well — under-gating is the wrong failure.
+
+The selection, budget and shard-cap rules live in
+scripts/lib/gate_fast.py (loaded via runpy, as scripts/ci-shard-plan
+loads shard_partition.py); the committed inputs are
+tests/shard_weights.json's ``seconds`` table and tests/gate_fast.json
+(scripts/gate-fast-refit regenerates it).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import runpy
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+_GF = runpy.run_path(str(Path(__file__).resolve().parent / "lib" / "gate_fast.py"))
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="gate-fast-select")
+    ap.add_argument("base", help="diff base (rev/ref) for scripts/impacted-tests")
+    ap.add_argument("head", help="diff head (rev/ref)")
+    ap.add_argument("--explain", action="store_true", help="file<TAB>tier listing")
+    ap.add_argument(
+        "--format",
+        choices=("files", "json"),
+        default="files",
+        help="json: the plan-job map (files + shard partition + flags)",
+    )
+    ap.add_argument("--floor", type=float, default=_GF["FLOOR_SECONDS"])
+    ap.add_argument("--budget", type=float, default=_GF["FAST_BUDGET_SECONDS"])
+    ap.add_argument("--cap", type=float, default=_GF["FAST_SHARD_CAP_SECONDS"])
+    ap.add_argument("--shards", type=int, default=_GF["SHARDS"])
+    args = ap.parse_args(argv)
+
+    res = _GF["select"](
+        ROOT, args.base, args.head, floor=args.floor, budget=args.budget, cap=args.cap
+    )
+    if res.get("error"):
+        print(f"gate-fast: {res['error']}", file=sys.stderr)
+        return 2
+    seconds = res["seconds"]
+    nightly_s = res["nightly_seconds"]
+    shards, load = _GF["pack"](
+        res["files"], seconds, nightly_s, n=args.shards
+    )
+
+    for f in res["over_cap_impacted"]:
+        s = _GF["non_nightly_seconds"](f, seconds, nightly_s)
+        print(
+            f"gate-fast: {f} over the shard cap ({s:.0f} s), impacted — "
+            "expect a slow shard",
+            file=sys.stderr,
+        )
+    if res["dropped"]:
+        print(
+            "gate-fast: over the fast budget — dropped history files "
+            f"(lowest hits first): {', '.join(res['dropped'])}",
+            file=sys.stderr,
+        )
+    if res["full"]:
+        print(f"gate-fast: FULL ({res['why'] or 'impacted-tests answered FULL'})",
+              file=sys.stderr)
+    for n in res["notes"]:
+        print(f"gate-fast: {n}", file=sys.stderr)
+    print(
+        f"gate-fast: {len(res['files'])} files, "
+        f"~{res['seconds_pred']:.0f} s predicted over {args.shards} shards "
+        f"(budget {args.budget:.0f} s), per-shard max ~{max(load, default=0.0):.0f} s",
+        file=sys.stderr,
+    )
+
+    if args.format == "json":
+        print(
+            json.dumps(
+                {
+                    "full": res["full"],
+                    "files": res["files"],
+                    "shards": shards,
+                    "predicted_max_s": round(max(load, default=0.0), 1),
+                    "dropped": res["dropped"],
+                },
+                separators=(",", ":"),
+            )
+        )
+    elif args.explain:
+        for f in res["files"]:
+            print(f"{f}\t{','.join(res['explain'].get(f, []))}")
+    else:
+        for f in res["files"]:
+            print(f)
+    return 3 if res["full"] else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

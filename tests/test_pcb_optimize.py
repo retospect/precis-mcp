@@ -2604,6 +2604,9 @@ def _nano_fixture_graph() -> tuple[
     "assertions still gate on the Linux + macOS CI legs",
 )
 @pytest.mark.slow  # 116s in the 2026-09-26 gate profile
+@pytest.mark.nightly(
+    reason="85 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_real_pipeline_shape_nano_fixture_ends_fully_legal_and_congruent():
     """Regression test for a real, round-3-review defect (2026-09):
     wiring the create->graph DB path to persist+hoist ``group``/
