@@ -2003,6 +2003,96 @@ def test_supersede_deletes_only_the_inspected_head_on_main(rig: Rig) -> None:
     assert fix[:7] in out.stdout
 
 
+def test_supersede_retries_a_failed_branch_delete(rig: Rig) -> None:
+    """A refused delete leaves the record terminal but the branch in
+    flight — naming the superseded record retries the cleanup and never
+    rewrites round.json."""
+    head = _prod_moved_past(rig)
+    hook = _hook(
+        rig,
+        "while read old new ref; do\n"
+        '  if [ "$ref" = refs/heads/release/r1 ]; then\n'
+        '    echo "remote rejects the release/r1 delete" >&2\n'
+        "    exit 1\n"
+        "  fi\n"
+        "done\n",
+    )
+    out = rig.round("supersede")
+    assert out.returncode == 0, out.stderr
+    assert "could not delete release/r1 on origin" in out.stderr
+    assert rig.origin_ref("release/r1") == head
+    assert _rel(_round_json(rig), 1)["state"] == "superseded"
+    path = rig.root / ".git/precis-round/round.json"
+    before = path.read_bytes()
+    # While origin still refuses, the retry warns again but does not fail.
+    out = rig.round("supersede", "r1")
+    assert out.returncode == 0, out.stderr
+    assert "already superseded" in out.stdout
+    assert "could not delete release/r1 on origin" in out.stderr
+    assert rig.origin_ref("release/r1") == head
+    out = rig.round("supersede", "r1", "--dry-run")
+    assert out.returncode == 0, out.stderr
+    assert "already superseded" in out.stdout
+    assert f"dry-run: would delete release/r1 on origin ({head[:9]}" in out.stdout
+    assert rig.origin_ref("release/r1") == head
+    hook.unlink()
+    out = rig.round("supersede", "r1")
+    assert out.returncode == 0, out.stderr
+    assert f"release/r1 deleted on origin ({head[:9]} is on main)" in out.stdout
+    assert rig.origin_ref("release/r1") == ""
+    assert path.read_bytes() == before
+
+
+def test_supersede_retries_a_branch_left_by_cut_supersede(rig: Rig) -> None:
+    """`cut --supersede` retires the record only — release/r1 stays on
+    origin with no deployed/r1 tag, so release_poll reads it in flight
+    forever. Naming the superseded record retires the branch."""
+    head = _cut(rig)
+    newer = _commit(rig.root, "src/c4.py", "c4 code")
+    _git(rig.root, "push", "-q", "origin", "main")
+    out = rig.round("cut", "--supersede")
+    assert out.returncode == 0, out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "superseded"
+    assert rig.origin_ref("release/r1") == head
+    out = rig.round("supersede", "r1")
+    assert out.returncode == 0, out.stderr
+    assert "already superseded" in out.stdout
+    assert f"release/r1 deleted on origin ({head[:9]} is on main)" in out.stdout
+    assert rig.origin_ref("release/r1") == ""
+    assert rig.origin_ref("release/r2") == newer
+
+
+def test_supersede_retry_deletes_once_the_head_reaches_main(rig: Rig) -> None:
+    """A kept branch is retried cheaply: the unforwarded note is reprinted
+    while main lacks the head, and the delete lands once main holds it."""
+    _prod_moved_past(rig)
+    fix = _child(rig, rig.shas["c2"], "unforwarded release fix")
+    _push_branch(rig, "release/r1", fix)
+    assert rig.round("supersede", "r1").returncode == 0
+    assert rig.origin_ref("release/r1") == fix
+    out = rig.round("supersede", "r1")
+    assert out.returncode == 0, out.stderr
+    assert "already superseded" in out.stdout
+    assert fix[:7] in out.stdout
+    assert rig.origin_ref("release/r1") == fix
+    merged = _git(
+        rig.root,
+        "commit-tree",
+        f"{fix}^{{tree}}",
+        "-p",
+        rig.shas["c3"],
+        "-p",
+        fix,
+        "-m",
+        "forward the release fix",
+    )
+    _push_branch(rig, "main", merged)
+    out = rig.round("supersede", "r1")
+    assert out.returncode == 0, out.stderr
+    assert f"release/r1 deleted on origin ({fix[:9]} is on main)" in out.stdout
+    assert rig.origin_ref("release/r1") == ""
+
+
 # ── supersede --partial (td574370): a rollout that never reached prod ────
 
 

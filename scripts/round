@@ -39,7 +39,9 @@ and nothing is tracked or pushed.
                                       superseded when origin/prod already moved past its
                                       pinned sha (keeps the journal; lease-deletes the
                                       remote branch when its head is on origin/main;
-                                      default: the one live deploying record)
+                                      default: the one live deploying record). Naming an
+                                      already-superseded record retries the branch cleanup —
+                                      the record is never rewritten
                 [--partial --reason "<text>"]   coordinator: retire a PARTIAL rollout —
                                       origin/prod does not hold the pinned sha; keeps the
                                       journal so the next cut can pipeline past it; the
@@ -2635,7 +2637,11 @@ def cmd_supersede(state: Path, args: argparse.Namespace) -> int:
     pin, a rollout that stopped short is retired with a mandatory
     ``--reason`` (``superseded_partial`` set). The journal stays; the remote
     branch is lease-deleted when its head already sits on origin/main —
-    otherwise it stays and its unforwarded commits are named (gr580767)."""
+    otherwise it stays and its unforwarded commits are named (gr580767).
+    Naming an already-superseded record retries just that cleanup: a
+    refused delete, or a record ``cut --supersede`` retired record-only,
+    otherwise leaves the branch in flight to release_poll forever — and
+    the terminal record is never rewritten."""
     root = _root()
     cur = _read_round(state)
     if args.release:
@@ -2649,7 +2655,11 @@ def cmd_supersede(state: Path, args: argparse.Namespace) -> int:
     else:
         live = [r for r in _live(cur) if r["state"] in _DEPLOYING_STATES]
         if not live:
-            return _sup_refuse("no live deploying/deployed record in round.json")
+            return _sup_refuse(
+                "no live deploying/deployed record in round.json — a"
+                " superseded record's stale branch is cleaned by naming it:"
+                " `scripts/round supersede r<N>`"
+            )
         if len(live) > 1:
             return _sup_refuse(
                 "several live deploying/deployed records — name one: "
@@ -2665,6 +2675,27 @@ def cmd_supersede(state: Path, args: argparse.Namespace) -> int:
             " (deletes it on origin)"
         )
     dep = rel.get("deployment") or {}
+    if st == "superseded":
+        # The record is terminal; only its branch can still need work — a
+        # delete refused below on the first pass, or a record ``cut
+        # --supersede`` retired record-only. release_poll reads that
+        # leftover in flight and blocks every mint, so re-running the
+        # verb retries the cleanup instead of refusing; the journal is
+        # never rewritten. State-moving flags remain a caller error.
+        if args.partial:
+            return _sup_refuse(
+                f"r{n_rel} is already superseded — nothing to supersede;"
+                f" plain `scripts/round supersede r{n_rel}` retries the"
+                " branch cleanup"
+            )
+        if args.dry_run:
+            print(f"dry-run: r{n_rel} is already superseded — record untouched")
+        else:
+            print(f"r{n_rel} already superseded — retrying its branch cleanup")
+        if _retire_branch(root, rel, dry_run=args.dry_run) == "kept":
+            if not args.dry_run:
+                _print_unforwarded(root, str(rel.get("branch") or ""))
+        return 0
     if st in _TERMINAL_STATES or dep.get("runtime_confirmed_at"):
         return _sup_refuse(
             f"r{n_rel} is {st or 'terminal'} — `scripts/round deploy` finishes a"
@@ -2792,7 +2823,8 @@ def main(argv: list[str] | None = None) -> int:
         "supersede",
         help="mark a deploying/deployed release superseded once origin/prod "
         "moved past its pinned sha (retires the remote branch when its "
-        "head is on origin/main)",
+        "head is on origin/main; naming a superseded record retries that "
+        "cleanup)",
     )
     p_sup.add_argument("release", nargs="?", default="", metavar="rN")
     p_sup.add_argument("--dry-run", action="store_true")
