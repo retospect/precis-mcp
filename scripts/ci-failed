@@ -34,7 +34,9 @@ A run still in progress: `--log-failed` refuses it, so the already-failed
 jobs' logs are read per job through `gh api …/actions/jobs/<id>/logs` and
 digested the same way; nothing failed yet prints the no-lines marker.
 The same per-job path covers the race where the metadata read said
-completed but `--log-failed` still refuses.
+completed but `--log-failed` still refuses. Every ``gh api`` logs read
+passes ``--allow-escape-sequences`` — gh ≥2.97 refuses a response
+carrying terminal escapes — retried once without it on an older gh.
 
 Input format: `gh run view --log-failed` shared-log lines
 ``job <TAB> step <TAB> <ISO timestamp> <text>``; the timestamp is
@@ -90,6 +92,33 @@ _SUMMARY_ID = re.compile(r"^(?:FAILED|ERROR)\s+(.+?)(?:\s+-\s+.*)?$")
 #: verdict survives a tight per-job signal budget.
 _ID_CAP = 20
 
+#: ``unknown flag: --allow-escape-sequences`` — the flag exists only on
+#: gh ≥2.97 (GHSA-3m3g-3wcr-px46), so an older gh needs the retry.
+_UNKNOWN_FLAG = re.compile(r"unknown (flag|shorthand)", re.IGNORECASE)
+
+
+def _gh_api(args: list[str], *, timeout: int) -> subprocess.CompletedProcess[bytes]:
+    """One ``gh api`` call that may stream log text. gh ≥2.97 refuses a
+    response carrying terminal escape sequences (a job log's ANSI
+    colour) unless the flag is passed, but the flag is itself only that
+    new — on ``unknown flag`` retry ONCE without it. The digest strips
+    ANSI in Python either way."""
+    cp = subprocess.run(
+        ["gh", "api", "--allow-escape-sequences", *args],
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+    detail = (cp.stderr or cp.stdout).decode("utf-8", "replace")
+    if cp.returncode != 0 and _UNKNOWN_FLAG.search(detail):
+        cp = subprocess.run(
+            ["gh", "api", *args],
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    return cp
+
 
 def _failed_ids(entries: list[str]) -> list[str]:
     """Node ids from a job's FAILED/ERROR summary lines, deduped in log
@@ -134,18 +163,14 @@ def probe(run_id: str) -> int:
     line and ``X-Accepted-GitHub-Permissions`` survive. The body and
     every other header are never printed."""
     try:
-        cp = subprocess.run(
+        cp = _gh_api(
             [
-                "gh",
-                "api",
                 "-i",
                 "--method",
                 "GET",
                 f"repos/{{owner}}/{{repo}}/actions/runs/{run_id}/logs",
             ],
-            capture_output=True,
             timeout=120,
-            check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         print(
@@ -275,11 +300,9 @@ def _failed_job_logs(
         if not jid:
             continue
         name = str(job.get("name") or jid)
-        cp = subprocess.run(
-            ["gh", "api", f"repos/{{owner}}/{{repo}}/actions/jobs/{jid}/logs"],
-            capture_output=True,
+        cp = _gh_api(
+            [f"repos/{{owner}}/{{repo}}/actions/jobs/{jid}/logs"],
             timeout=180,
-            check=False,
         )
         if cp.returncode != 0:
             detail = (cp.stderr or cp.stdout).decode("utf-8", "replace").strip()

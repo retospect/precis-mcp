@@ -37,6 +37,10 @@ if argv_log:
     with open(argv_log, "a", encoding="utf-8") as f:
         f.write(" ".join(sys.argv[1:]) + "\\n")
 if len(sys.argv) > 1 and sys.argv[1] == "api":
+    reject = os.environ.get("GH_STUB_REJECT_FLAG")
+    if reject and reject in sys.argv:
+        sys.stderr.write("unknown flag: %s\\n" % reject)
+        sys.exit(1)
     api = Path(os.environ["GH_STUB_API"])
     if api.is_dir():
         m = re.search(r"/jobs/(\\d+)/logs", " ".join(sys.argv))
@@ -380,6 +384,69 @@ def test_in_progress_run_digests_the_failed_jobs_per_job(tmp_path: Path) -> None
     calls = Path(env["_argv_file"]).read_text(encoding="utf-8")
     assert "/actions/jobs/111/logs" in calls
     assert "--log-failed" not in calls  # never waits on the whole run
+
+
+def test_per_job_log_call_allows_escape_sequences(tmp_path: Path) -> None:
+    """gr574350: gh ≥2.97 aborts a logs response carrying terminal escape
+    sequences unless --allow-escape-sequences is passed."""
+    env = _api_dir(
+        tmp_path,
+        {"111": f"{TS} Error: Process completed with exit code 1.\n"},
+    )
+    env["GH_STUB_RUN"] = json.dumps(
+        {
+            "status": "in_progress",
+            "conclusion": None,
+            "jobs": [
+                {
+                    "name": "build",
+                    "databaseId": 111,
+                    "status": "completed",
+                    "conclusion": "failure",
+                },
+            ],
+        }
+    )
+    cp = _run(["223355"], env)
+    assert cp.returncode == 0, cp.stderr
+    calls = Path(env["_argv_file"]).read_text(encoding="utf-8")
+    assert (
+        "api --allow-escape-sequences "
+        "repos/{owner}/{repo}/actions/jobs/111/logs" in calls
+    )
+
+
+def test_old_gh_without_the_flag_retries_plain(tmp_path: Path) -> None:
+    """gh <2.97 has no --allow-escape-sequences: one retry without it
+    keeps the per-job digest working (same shape as ci_watch._gh_log)."""
+    env = _api_dir(
+        tmp_path,
+        {"111": f"{TS} FAILED tests/test_a.py::test_broke - assert 1 == 2\n"},
+    )
+    env["GH_STUB_REJECT_FLAG"] = "--allow-escape-sequences"
+    env["GH_STUB_RUN"] = json.dumps(
+        {
+            "status": "in_progress",
+            "conclusion": None,
+            "jobs": [
+                {
+                    "name": "build",
+                    "databaseId": 111,
+                    "status": "completed",
+                    "conclusion": "failure",
+                },
+            ],
+        }
+    )
+    cp = _run(["223355"], env)
+    assert cp.returncode == 0, cp.stderr
+    assert "FAILED tests/test_a.py::test_broke - assert 1 == 2" in cp.stdout
+    calls = Path(env["_argv_file"]).read_text(encoding="utf-8")
+    job_calls = [l for l in calls.splitlines() if "/actions/jobs/111/logs" in l]
+    assert job_calls == [
+        "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/111/logs",
+        "api repos/{owner}/{repo}/actions/jobs/111/logs",
+    ]
 
 
 def test_in_progress_run_with_no_failed_jobs_reports_no_lines(tmp_path: Path) -> None:
