@@ -2272,7 +2272,7 @@ class PaperHandler(Handler):
         if id is None:
             return self._render_list_papers()
         if isinstance(id, list):
-            return self._get_batch(id, view=view)
+            return self._get_batch(id, view=view, args=args)
         try:
             raw_id = _maybe_resolve_doi(self.store, str(id))
         except NotFound:
@@ -2438,7 +2438,13 @@ class PaperHandler(Handler):
 
     # -- batch get (``id=[...]``, gr501175) -----------------------------------
 
-    def _get_batch(self, ids: list[Any], *, view: str | None = None) -> Response:
+    def _get_batch(
+        self,
+        ids: list[Any],
+        *,
+        view: str | None = None,
+        args: dict[str, Any] | None = None,
+    ) -> Response:
         """``get(id=[...])``: one summary block per id, gripe-style
         (``_numeric_ref._get_batch``).
 
@@ -2455,6 +2461,15 @@ class PaperHandler(Handler):
         ids=[…])``, gr500651) — "state of these N ids" is the same
         question asked on the other verb. A missing or deleted element
         is a one-line block, not a failed call.
+
+        gr575784/gr575843: a batch of unheld DOIs (a pasted bibliography)
+        hit the per-call mint cap (:data:`_BATCH_DOI_QUEUE_CAP`) one
+        silent "cap reached" at a time, leaving the caller to loop
+        ``put`` for every DOI past the 5th. A pre-scan now counts how
+        many elements would actually mint before touching any of
+        them; past the cap it asks for ``args={'confirm_bulk': True}``
+        up front instead, so a legitimate large batch goes through in
+        one call.
         """
         kind = self.spec.kind
         if not ids:
@@ -2474,8 +2489,33 @@ class PaperHandler(Handler):
             # same table — the caller already had the list, just on the
             # other verb (the gr501175 arg sample).
             return self._fetch_status_view([str(i) for i in ids])
+        confirm_bulk = bool((args or {}).get("confirm_bulk"))
+        if not confirm_bulk:
+            pending = 0
+            for elem in ids:
+                try:
+                    self._resolve_batch_element(elem)
+                except NotFound:
+                    doi = _queueable_doi(str(elem).strip())
+                    if (
+                        doi is not None
+                        and _retired_paper_id_for_doi(self.store, doi) is None
+                    ):
+                        pending += 1
+                except Gone:
+                    pass
+            if pending > _BATCH_DOI_QUEUE_CAP:
+                return Response(
+                    body=(
+                        f"{pending} of {len(ids)} ids are unheld DOIs that "
+                        "would each queue a new ingest job — over the "
+                        f"per-call cap ({_BATCH_DOI_QUEUE_CAP}); resubmit "
+                        "with args={'confirm_bulk': True} to queue all "
+                        f"{pending} in this one call"
+                    )
+                )
         blocks: list[str] = []
-        queue_budget = [_BATCH_DOI_QUEUE_CAP]
+        queue_budget = [len(ids) if confirm_bulk else _BATCH_DOI_QUEUE_CAP]
         for elem in ids:
             shown = str(elem)
             try:

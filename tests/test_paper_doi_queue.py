@@ -456,17 +456,38 @@ class TestGetQueueBounds:
         assert len(jobs) == 3
         assert all(j["meta"].get("discovered_via") == "get" for j in jobs)
 
-    def test_batch_seven_dois_queues_only_five(
+    def test_batch_over_cap_asks_for_confirmation(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        """One batch call mints at most ``_BATCH_DOI_QUEUE_CAP`` (5)
-        ingest jobs — the remaining DOI elements render as plain
-        not-ingested with the explicit-put hint."""
+        """gr575784/gr575843: a batch of unheld DOIs over
+        ``_BATCH_DOI_QUEUE_CAP`` (5) asks for ``confirm_bulk`` up front
+        instead of silently minting a partial batch and capping the
+        rest one "cap reached" message at a time — nothing queues yet."""
         dois: list[str | int] = [f"10.1021/batchcap{i}" for i in range(7)]
         resp = handler.get(id=dois)
+        assert "7 of 7 ids are unheld DOIs" in resp.body
+        assert "args={'confirm_bulk': True}" in resp.body
+        assert _jobs(store) == []
+
+    def test_batch_over_cap_confirm_bulk_queues_all(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Resubmitting with ``confirm_bulk`` queues every element in
+        the one call, past the per-call cap."""
+        dois: list[str | int] = [f"10.1021/batchcap{i}" for i in range(7)]
+        resp = handler.get(id=dois, args={"confirm_bulk": True})
+        assert resp.body.count("queued ingest job") == 7
+        assert "cap reached" not in resp.body
+        assert len(_jobs(store)) == 7
+
+    def test_batch_at_cap_queues_without_confirmation(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """At or under the cap, the batch still queues in one call —
+        no confirmation needed."""
+        dois: list[str | int] = [f"10.1021/batchcap{i}" for i in range(5)]
+        resp = handler.get(id=dois)
         assert resp.body.count("queued ingest job") == 5
-        assert resp.body.count("batch get-queue cap reached") == 2
-        assert "put(kind='paper', doi='10.1021/batchcap6')" in resp.body
         assert len(_jobs(store)) == 5
 
     def test_read_only_scope_gives_old_notfound_no_insert(
