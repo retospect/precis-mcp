@@ -25,7 +25,7 @@
     # precis_worker_dsn lives in the precis_worker *role* defaults (not in
     # scope for a standalone play), so reconstruct it here from the same
     # in-scope inventory/vault vars the role uses.
-    precis_worker_dsn: "postgresql://{{ 'precis_system' if (precis_db_own_cutover_done | default(false) | bool) else 'agent_rw' }}:{{ vault_pg_precis_system_pass if (precis_db_own_cutover_done | default(false) | bool) else vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+    precis_worker_dsn: "postgresql://{{ 'precis_system' if ((precis_db_own_cutover_done | default(false)) in [true, 'true', 'True', 'yes', 1, '1']) else 'agent_rw' }}:{{ vault_pg_precis_system_pass if ((precis_db_own_cutover_done | default(false)) in [true, 'true', 'True', 'yes', 1, '1']) else vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
   tasks:
     - name: Invoke precis migrate-refs
       ansible.builtin.command:

@@ -70,13 +70,13 @@ precis:
   # tuple. ACATOME_PG_PASSWORD below is a SEPARATE, raw-password
   # contract acatome-meta's own config.py reads directly (not a libpq
   # DSN it can resolve via pgpass) — left as-is, out of scope here.
-  database_url: "postgresql://{{ 'precis_system' if (precis_db_own_cutover_done | default(false) | bool) else 'agent_rw' }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+  database_url: "postgresql://{{ 'precis_system' if ((precis_db_own_cutover_done | default(false)) in [true, 'true', 'True', 'yes', 1, '1']) else 'agent_rw' }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
   env:
     ACATOME_PG_HOST: "{{ hostvars[postgres_host]['ansible_host'] }}"
     ACATOME_PG_PORT: "{{ postgres_port }}"
     ACATOME_PG_DATABASE: "precis_prod"
-    ACATOME_PG_USER: "{{ 'precis_system' if (precis_db_own_cutover_done | default(false) | bool) else 'agent_rw' }}"
-    ACATOME_PG_PASSWORD: "{{ vault_pg_precis_system_pass if (precis_db_own_cutover_done | default(false) | bool) else vault_pg_agent_rw_pass }}"
+    ACATOME_PG_USER: "{{ 'precis_system' if ((precis_db_own_cutover_done | default(false)) in [true, 'true', 'True', 'yes', 1, '1']) else 'agent_rw' }}"
+    ACATOME_PG_PASSWORD: "{{ vault_pg_precis_system_pass if ((precis_db_own_cutover_done | default(false)) in [true, 'true', 'True', 'yes', 1, '1']) else vault_pg_agent_rw_pass }}"
   health_check_interval_seconds: 30
 
 preamble:

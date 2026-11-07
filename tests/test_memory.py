@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from psycopg.errors import LockNotAvailable
 
+from precis import principal
 from precis.cli import memory as cli_memory
 from precis.dispatch import Hub
 from precis.errors import (
@@ -1947,7 +1948,7 @@ def test_shared_runtime_put_keeps_creation_fields_request_local(
             "rule": f"rule {label}",
             "warrant": f"warrant {label}",
             "hook": f"hook {label}",
-            "filed_by": {"actor": "agent"},
+            "filed_by": {"actor": "agent", "principal": principal.current()},
         }
 
 

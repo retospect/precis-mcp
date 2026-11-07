@@ -155,7 +155,9 @@ def test_put_ruling_keeps_explicit_meta(handler: MemoryHandler, store: Store) ->
         ruled_on="2026-10-20",
         status="in-force",
     )
-    assert _meta(store, mid) == {
+    meta = _meta(store, mid)
+    meta.pop("filed_by", None)  # the server-side origin stamp is not under test
+    assert meta == {
         "ruled_by": "Reto",
         "ruled_on": "2026-10-20",
         "status": "in-force",

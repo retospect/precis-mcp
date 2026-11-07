@@ -97,7 +97,7 @@
   vars:
     _sb_venv: /opt/precis/venv
     _sb_build_check_script: /opt/precis/bin/assert-unit-build.py
-    _sb_dsn: "postgresql://{{ 'precis_system' if (precis_db_own_cutover_done | default(false) | bool) else 'agent_rw' }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+    _sb_dsn: "postgresql://{{ 'precis_system' if ((precis_db_own_cutover_done | default(false)) in [true, 'true', 'True', 'yes', 1, '1']) else 'agent_rw' }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
   tasks:
     # Rootless podman needs /run/user/<uid> (XDG_RUNTIME_DIR), which
     # systemd only provisions for lingering users when nobody is logged

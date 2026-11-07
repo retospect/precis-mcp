@@ -1896,7 +1896,9 @@ def test_review_fix_mints_one_fix_task_under_the_root(store: Store) -> None:
     ref = store.get_ref(kind="todo", id=fix)
     assert ref is not None
     assert ref.title == f"Fix review findings for td{build}"
-    assert dict(ref.meta or {}) == {"op": "run_slice"}
+    fix_meta = dict(ref.meta or {})
+    fix_meta.pop("filed_by", None)  # the server-side origin stamp is not under test
+    assert fix_meta == {"op": "run_slice"}
     assert f"plan:{mint.root_id}" in _open_tags(store, fix)
     body = [
         c.text
