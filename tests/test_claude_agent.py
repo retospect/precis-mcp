@@ -9,6 +9,7 @@ binary required.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import stat
@@ -682,9 +683,14 @@ def test_envelope_param_merges_tier1_deny(stub_bin: Path) -> None:
 
     _write_argv_env_stub(stub_bin)
     res = call_claude_agent("do", envelope=Envelope(write="none", egress="none"))
-    assert "--settings" in res.final_text
-    assert "mcp__precis__put" in res.final_text
-    assert "WebFetch" in res.final_text
+    argv = res.final_text.splitlines()
+    assert "--settings" in argv
+    deny = json.loads(argv[argv.index("--settings") + 1])["permissions"]["deny"]
+    # ``put`` stays callable under write=none (gripe carve-out, enforced in
+    # dispatch + the DB role); the other mutate verbs are denied.
+    assert "mcp__precis__put" not in deny
+    assert "mcp__precis__edit" in deny
+    assert "WebFetch" in deny
     # tier 2: the read-only role is advertised to the spawned MCP server.
     assert "DB_ROLE=agent_ro" in res.final_text
 
