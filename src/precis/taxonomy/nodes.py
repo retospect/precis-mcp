@@ -65,7 +65,8 @@ EDITABLE_KEYS: frozenset[str] = frozenset(
     }
 )
 #: Keys the handler writes itself; legal on a stored node, not a caller input.
-HANDLER_KEYS: frozenset[str] = frozenset({"name", "norm_name", "slug"})
+#: filed_by is the numeric-create origin stamp (precis.filing_origin.stamp_meta), carried on every stored node.
+HANDLER_KEYS: frozenset[str] = frozenset({"name", "norm_name", "slug", "filed_by"})
 ALLOWED_KEYS: frozenset[str] = CALLER_KEYS | HANDLER_KEYS
 
 DIMENSION_KINDS: tuple[str, ...] = (

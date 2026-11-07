@@ -110,7 +110,7 @@
     # not in scope. Both are cluster-stable constants (the DSN expression is
     # the same one every precis-* worker template builds).
     _compute_venv: /opt/precis/venv
-    _compute_dsn: "postgresql://{{ 'precis_system' if (precis_db_own_cutover_done | default(false) | bool) else 'agent_rw' }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+    _compute_dsn: "postgresql://{{ 'precis_system' if ((precis_db_own_cutover_done | default(false)) in [true, 'true', 'True', 'yes', 1, '1']) else 'agent_rw' }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
     # gr199339 gate window: 40 attempts * 15s = 10 minutes. TimeoutStartSec
     # below is set past this (see comment there) so the poll's own bound
     # decides the outcome, not systemd's start timeout racing it.

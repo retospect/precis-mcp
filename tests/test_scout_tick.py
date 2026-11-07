@@ -380,6 +380,8 @@ def test_apply_scout_reply_writes_leads_and_closes_tick(store: Store) -> None:
         "scout lead: beta",
     ]
     for rid, _, meta in children:
+        # The server-side origin stamp (filed_by) is the only key the store adds.
+        meta.pop("filed_by", None)
         assert meta == {}, "a scout lead carries no meta — nothing to ride in on"
         assert _tags_of(store, rid) == {"STATUS:open", "src:scout"}
         body = store.chunks.list_chunks_for_ref(rid)

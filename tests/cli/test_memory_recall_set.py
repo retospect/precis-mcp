@@ -116,9 +116,9 @@ def test_operator_cli_reads_todo_but_never_commits_or_changes_graph(
     output = capsys.readouterr().out
     assert "+++ b/src/precis/data/memory_recall_set.json" in output
     assert "No graph writes, commits or pushes" in output and "Operator:" in output
-    assert store.get_ref(kind="todo", id=todo.id).meta == {
-        recall_set.PROPOSALS_KEY: pairs
-    }
+    meta = dict(store.get_ref(kind="todo", id=todo.id).meta)
+    meta.pop("filed_by", None)  # the server-side origin stamp is not under test
+    assert meta == {recall_set.PROPOSALS_KEY: pairs}
     history = subprocess.run(
         ["git", "rev-parse", "--verify", "HEAD"], capture_output=True, check=False
     )

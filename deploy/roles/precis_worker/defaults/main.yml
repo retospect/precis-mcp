@@ -26,7 +26,7 @@ precis_worker_venv: /opt/precis/venv
 # run as `deploy` (UserName below), and the pgpass role already lays down
 # ~deploy/.pgpass with a matching host:port:database:agent_rw:<password>
 # line on every node, so libpq resolves the password itself.
-precis_worker_dsn: "postgresql://{{ 'precis_system' if (precis_db_own_cutover_done | default(false) | bool) else 'agent_rw' }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+precis_worker_dsn: "postgresql://{{ 'precis_system' if ((precis_db_own_cutover_done | default(false)) in [true, 'true', 'True', 'yes', 1, '1']) else 'agent_rw' }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
 
 # Worker loop knobs. Defaults match precis worker --help.
 precis_worker_batch_size: 32

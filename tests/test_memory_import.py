@@ -574,7 +574,10 @@ def test_sync_converges_the_graph_on_the_changed_files(
     # the native write is untouched
     ref = store.get_ref(kind="memory", id=native)
     assert ref is not None and ref.title == "Native only"
-    assert ref.meta == {"hook": "native hook"}
+    # the origin stamp is server-written and not under test; the caller meta is
+    assert {k: v for k, v in ref.meta.items() if k != "filed_by"} == {
+        "hook": "native hook"
+    }
     assert _tag_values(store, native) >= {"repo-dev", "section:runbooks"}
     assert native not in {a for a, _b in part_of}
 
