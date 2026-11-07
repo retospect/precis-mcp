@@ -75,6 +75,37 @@ def _board(args: list[str], env: dict[str, str], cwd: Path | None = None):
     )
 
 
+def _worktree_repo(tmp_path: Path, name: str = "w1") -> Path:
+    """A main checkout plus a linked worktree under .claude/worktrees —
+    the fleet layout a done poster finishes in. .claude/ is ignored so
+    the purpose file never marks the tree dirty."""
+    main = tmp_path / "main"
+    main.mkdir()
+    _git(main, "init", "-q", "-b", "main")
+    (main / ".gitignore").write_text(".claude/\n", encoding="utf-8")
+    _git(main, "add", "-A")
+    _git(main, "commit", "-q", "-m", "base")
+    wt = main / ".claude" / "worktrees" / name
+    _git(main, "worktree", "add", "-q", "-b", name, str(wt))
+    return wt
+
+
+def _head(cwd: Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.strip()
+
+
+def _purpose(wt: Path, line: str) -> None:
+    (wt / ".claude").mkdir(exist_ok=True)
+    (wt / ".claude" / "purpose").write_text(line + "\n", encoding="utf-8")
+
+
 def test_post_appends_stamped_line(tmp_path: Path) -> None:
     board = tmp_path / "board.log"
     env = _env(board)
@@ -161,6 +192,105 @@ def test_post_state_prepends_validated_keyword(tmp_path: Path) -> None:
     assert cp.returncode == 0, cp.stderr
     line = board.read_text(encoding="utf-8").rstrip("\n")
     assert line.endswith("\tw1\tdone abc1234 all green")
+
+
+def test_post_done_in_tree_carries_head_flag_and_finish(
+    tmp_path: Path,
+) -> None:
+    """gr574883: a done post from inside the named tree carries the full
+    head, the clean flag and the purpose finish line — the coordinator
+    needs no follow-up reads."""
+    wt = _worktree_repo(tmp_path)
+    _purpose(wt, "w1 at abc1234: shipped the fix")
+    board = tmp_path / "board.log"
+    cp = _board(
+        ["post", "w1", "--state", "done", "w1 at abc1234: shipped"],
+        _env(board),
+        cwd=wt,
+    )
+    assert cp.returncode == 0, cp.stderr
+    line = board.read_text(encoding="utf-8").rstrip("\n")
+    assert line.endswith(f"\tw1\tdone {_head(wt)} clean w1 at abc1234: shipped the fix")
+
+
+def test_post_done_marks_a_dirty_tree(tmp_path: Path) -> None:
+    wt = _worktree_repo(tmp_path)
+    _purpose(wt, "w1 at abc1234: shipped")
+    (wt / "uncommitted.txt").write_text("x\n", encoding="utf-8")
+    board = tmp_path / "board.log"
+    cp = _board(
+        ["post", "w1", "--state", "done", "w1 at abc1234: shipped"],
+        _env(board),
+        cwd=wt,
+    )
+    assert cp.returncode == 0, cp.stderr
+    line = board.read_text(encoding="utf-8").rstrip("\n")
+    assert line.endswith(f"\tw1\tdone {_head(wt)} dirty w1 at abc1234: shipped")
+
+
+def test_post_done_without_a_purpose_line_keeps_the_note(
+    tmp_path: Path,
+) -> None:
+    wt = _worktree_repo(tmp_path)
+    board = tmp_path / "board.log"
+    cp = _board(
+        ["post", "w1", "--state", "done", "w1 at abc1234: shipped"],
+        _env(board),
+        cwd=wt,
+    )
+    assert cp.returncode == 0, cp.stderr
+    line = board.read_text(encoding="utf-8").rstrip("\n")
+    assert line.endswith(f"\tw1\tdone {_head(wt)} clean w1 at abc1234: shipped")
+
+
+def test_post_done_outside_the_named_tree_posts_as_given(
+    tmp_path: Path,
+) -> None:
+    """A done post that names no checkout it runs in is not enriched —
+    a board line never attributes another tree's head."""
+    wt = _worktree_repo(tmp_path)
+    board = tmp_path / "board.log"
+    cp = _board(
+        ["post", "other", "--state", "done", "other at abc1234: shipped"],
+        _env(board),
+        cwd=wt,
+    )
+    assert cp.returncode == 0, cp.stderr
+    line = board.read_text(encoding="utf-8").rstrip("\n")
+    assert line.endswith("\tother\tdone other at abc1234: shipped")
+
+
+def test_post_done_prefixed_window_matches_the_bare_tree(
+    tmp_path: Path,
+) -> None:
+    wt = _worktree_repo(tmp_path)
+    _purpose(wt, "w1 at abc1234: shipped")
+    board = tmp_path / "board.log"
+    cp = _board(
+        ["post", "claude-w1", "--state", "done", "w1 at abc1234: shipped"],
+        _env(board),
+        cwd=wt,
+    )
+    assert cp.returncode == 0, cp.stderr
+    line = board.read_text(encoding="utf-8").rstrip("\n")
+    assert line.endswith(f"\tclaude-w1\tdone {_head(wt)} clean w1 at abc1234: shipped")
+
+
+def test_post_done_truncates_a_long_finish_line(tmp_path: Path) -> None:
+    """The structured fields stay whole; only the finish line tail is
+    cut to fit the cap, so a long finish never refuses the post."""
+    wt = _worktree_repo(tmp_path)
+    _purpose(wt, "w1 at abc1234: " + "x" * 120)
+    board = tmp_path / "board.log"
+    cp = _board(
+        ["post", "w1", "--state", "done", "w1 at abc1234: shipped"],
+        _env(board),
+        cwd=wt,
+    )
+    assert cp.returncode == 0, cp.stderr
+    text = board.read_text(encoding="utf-8").split("\t")[2].rstrip("\n")
+    assert len(text) == 120
+    assert text.startswith(f"done {_head(wt)} clean w1 at abc1234: x")
 
 
 def test_post_state_then_separate_words(tmp_path: Path) -> None:

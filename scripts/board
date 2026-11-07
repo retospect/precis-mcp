@@ -26,6 +26,12 @@ validates and puts it first. Without --state the text is free-form (old
 lines read fine). A note over 120 chars (text only, not timestamp or window) is refused:
 shorten it and put the detail in a handoff or gripe.
 
+A `done` post made inside the named tree is enriched at post time into
+`done <full head sha> <clean|dirty> <finish line>` (gr574883): the
+coordinator gets head, tree state and the .claude/purpose finish line
+without a second read. The finish line truncates to the cap rather than
+refusing the post; a done post from anywhere else writes as given.
+
 `read --new --as <reader>` prints only lines after that reader's cursor
 in .claude/fleet/board.cursor.<reader> (a byte offset, gitignored) and
 then advances it to EOF; a cursor past EOF (rotation, clear) resets to 0
@@ -104,8 +110,62 @@ def _tsv(text: str) -> str:
     return " ".join(text.split())
 
 
+#: Window-name prefixes a wave pane adds to the bare tree name — the
+#: same set fleet-wave matches windows to trees with (the scripts stay
+#: import-free, so it is copied here).
+_PREFIXES = ("claude-", "devin-", "codex-", "kimi-")
+
+
+def _done_tree(window: str) -> Path | None:
+    """The caller's own checkout when it is the named tree — a window
+    prefix stripped. A done post from anywhere else gets no tree state:
+    a board post must never attribute another checkout's head."""
+    top = _git("rev-parse", "--show-toplevel")
+    if not top:
+        return None
+    names = {window}
+    names.update(window[len(p) :] for p in _PREFIXES if window.startswith(p))
+    return Path(top) if Path(top).name in names else None
+
+
+def _done_text(window: str, text: str) -> str:
+    """A done line's text enriched with what the coordinator would
+    otherwise collect by hand (gr574883): the full head sha, the
+    clean/dirty flag and the ``.claude/purpose`` finish line — the
+    caller's text when the purpose file has none. No head, no
+    enrichment; the finish line truncates to the cap rather than
+    refusing the post."""
+    tree = _done_tree(window)
+    if tree is None:
+        return text
+    head = _git("-C", str(tree), "rev-parse", "HEAD")
+    if not head:
+        return text
+    st = _git(
+        "-C", str(tree), "status", "--porcelain", "--untracked-files=all"
+    )
+    flag = "" if st is None else ("clean" if not st else "dirty")
+    finish = text
+    try:
+        hits = [
+            ln
+            for ln in (tree / ".claude" / "purpose")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if ln.startswith(f"{tree.name} at ")
+        ]
+        if hits:
+            finish = hits[-1]
+    except OSError:
+        pass
+    keep = " ".join(w for w in (head, flag) if w) + " "
+    return keep + _tsv(finish)[: MAX_LINE - len("done ") - len(keep)]
+
+
 def cmd_post(a: argparse.Namespace) -> int:
     text = _tsv(" ".join(a.text))
+    if a.state == "done":
+        text = _done_text(a.window, text)
     if a.state:
         text = f"{a.state} {text}".rstrip()
     if not text:
