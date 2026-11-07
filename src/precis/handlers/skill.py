@@ -461,6 +461,15 @@ _RARE_PIN_MAX_QTOKENS = 4
 #: equal-score tie cluster can never trip it.
 _GAP_CUT_RATIO = 0.6
 
+#: gr575145: a query token that *is* a served slug (``precis-status`` in
+#: ``precis-status served_sha``) pins that skill above everything — the
+#: caller literally typed its id, a stronger intent signal than any word
+#: overlap. Comfortably above the title-boost ceiling
+#: (``_TITLE_MATCH_SCORE`` + ~2 for all-compound identity) so the named
+#: slug always leads; being ``>= _TITLE_MATCH_SCORE`` also keeps the
+#: gr496170 gap cut off the page.
+_SLUG_MATCH_SCORE = 3 * _TITLE_MATCH_SCORE
+
 
 class _SkillSearchRow:
     """Per-slug merged hit for the search response.
@@ -629,9 +638,10 @@ def _lexical_row(
     genuine semantic hit, and a verbatim hit is floored above every
     word-overlap hit (a literal phrase match beats a bag-of-words one).
 
-    ``compounds`` is how many of the matched words are unsplit hyphenated
-    compounds (``child-failed-parked``) — each counts as an extra word for
-    scoring, so the specific term outweighs its generic parts.
+    ``compounds`` is how many of the matched words are unsplit compounds
+    — hyphenated (``child-failed-parked``) or snake_case
+    (``served_sha``) — each counts as an extra word for scoring, so the
+    specific term outweighs its generic parts.
     """
     if verbatim:
         score = min(_LEXICAL_SCORE_CAP, 0.30 + count / 50.0)
@@ -1649,11 +1659,12 @@ class SkillHandler(Handler):
                     and barred
                 ):
                     continue
-                # An unsplit hyphenated identity token
-                # (``child-failed-parked`` in a title/H1) counts double:
-                # the specific compound outweighs its generic parts.
+                # An unsplit compound identity token — hyphenated
+                # (``child-failed-parked``) or snake_case
+                # (``served_sha``) in a title/H1 — counts double: the
+                # specific compound outweighs its generic parts.
                 ident_weight = len(ident_matched) + sum(
-                    1 for t in ident_matched if "-" in t
+                    1 for t in ident_matched if "-" in t or "_" in t
                 )
                 boost = (
                     _TITLE_MATCH_SCORE + ident_weight / len(qtokens) + 0.01 * coverage
@@ -1669,7 +1680,8 @@ class SkillHandler(Handler):
                     and len(qtokens) > _RARE_PIN_MAX_QTOKENS
                 ):
                     boost = _word_overlap_score(
-                        len(matched), sum(1 for t in matched if "-" in t)
+                        len(matched),
+                        sum(1 for t in matched if "-" in t or "_" in t),
                     )
                 existing_row = merged.get(slug)
                 if existing_row is None or existing_row.score < boost:
@@ -1684,6 +1696,28 @@ class SkillHandler(Handler):
                         section=_title_pin_section(slug, qtokens, existing_row),
                         snippet=_skill_title_text(slug).strip(),
                     )
+
+            # gr575145: a query token that *is* a served slug —
+            # file-backed, synthesised (``precis-status`` has no file
+            # body, so no hit stream above can ever surface it) or a
+            # registered served alias — names the skill verbatim. Pin
+            # it first; nothing is a stronger intent signal, and the
+            # pin lands even when the named skill carries none of the
+            # query's other words.
+            for slug in _slugs_named_in_query(qtokens, set(all_slugs)):
+                existing_row = merged.get(slug)
+                if existing_row is not None and existing_row.score >= _SLUG_MATCH_SCORE:
+                    continue
+                merged[slug] = _SkillSearchRow(
+                    slug=slug,
+                    score=_SLUG_MATCH_SCORE,
+                    source="slug",
+                    section=_title_pin_section(slug, qtokens, existing_row),
+                    snippet=(
+                        SkillHandler._SYNTHESIZED_SKILLS.get(slug)
+                        or _skill_title_text(slug)
+                    ).strip(),
+                )
 
         if not merged:
             # Distinguish "genuinely no match" from "lexical drew blank
@@ -2007,9 +2041,10 @@ class SkillHandler(Handler):
            phrase misses, a multi-word query still scores a skill that
            contains a *majority* of its content words; ``count`` is the
            number of matched words and ``compounds`` how many of them are
-           unsplit hyphenated compounds (weighted double downstream — a
-           literal ``child-failed-parked`` beats generic ``child`` /
-           ``failed`` / ``parked`` scattered in prose). The fix for
+           unsplit compounds, hyphenated or snake_case (weighted double
+           downstream — a literal ``child-failed-parked`` or
+           ``served_sha`` beats generic ``child`` / ``failed`` /
+           ``served`` / ``sha`` scattered in prose). The fix for
            punctuated natural-language queries (``how to cite a paper,
            add a citation``) that never appear as one contiguous run but
            whose words all live in the target skill. Guarded to ≥2
@@ -2048,7 +2083,7 @@ class SkillHandler(Handler):
                 count, probe = verbatim, needle
             else:
                 count, probe = len(matched), next(iter(matched))
-                compounds = sum(1 for t in matched if "-" in t)
+                compounds = sum(1 for t in matched if "-" in t or "_" in t)
             preview = ""
             for line in text.splitlines():
                 if probe in _norm_for_substr(line):
@@ -4577,6 +4612,15 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 #: both forms index, the compound simply weights higher downstream.
 _COMPOUND_TOKEN_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)+")
 
+#: Snake_case runs (``served_sha``) are *also* indexed unsplit, alongside
+#: their parts — same replication shape as the hyphenated compounds
+#: above: the identifier names one specific thing, so a literal hit on it
+#: is a much stronger signal than its parts scattered through prose
+#: (gr575145: ~18% of fleet skill queries carry snake_case identifiers
+#: whose exact form previously contributed no discriminating token —
+#: ``served_sha`` tokenised to generic ``served`` + ``sha``).
+_SNAKE_TOKEN_RE = re.compile(r"[a-z0-9]+(?:_[a-z0-9]+)+")
+
 
 def _content_tokens(s: str) -> list[str]:
     """Lower-case topic tokens of ``s``: alnum runs minus stopwords / <3 char.
@@ -4593,11 +4637,16 @@ def _content_tokens(s: str) -> list[str]:
     whole unsplit run (``child-failed-parked``). The unsplit form is the
     discriminating token — a body or header that literally carries it
     matches where a parts-only bag-of-words hit would drown in noise.
+    Snake_case identifiers (``served_sha``) replicate the same way: ``_``
+    is a token boundary for the parts and part of the unsplit run
+    (gr575145).
     """
     low = s.lower()
-    return [
-        t for t in _TOKEN_RE.findall(low) if len(t) >= 3 and t not in _STOPWORDS
-    ] + [t for t in _COMPOUND_TOKEN_RE.findall(low) if len(t) >= 3]
+    return (
+        [t for t in _TOKEN_RE.findall(low) if len(t) >= 3 and t not in _STOPWORDS]
+        + [t for t in _COMPOUND_TOKEN_RE.findall(low) if len(t) >= 3]
+        + [t for t in _SNAKE_TOKEN_RE.findall(low) if len(t) >= 3]
+    )
 
 
 _FM_TITLE_RE = re.compile(r"^title:\s*(.+?)\s*$", re.MULTILINE)
@@ -4710,6 +4759,39 @@ def _family_root_slugs(slugs: list[str]) -> dict[str, str]:
                 roots[word] = candidate
                 break
     return roots
+
+
+def _slugs_named_in_query(qtokens: set[str], slug_set: set[str]) -> list[str]:
+    """Canonical slugs a query token names verbatim (gr575145).
+
+    A token that *is* a served slug — file-backed (in ``slug_set``),
+    synthesised (:data:`SkillHandler._SYNTHESIZED_SKILLS`; the synth
+    meta-skills like ``precis-status`` have no file body, so no lexical
+    or semantic hit can ever surface them) or a registered served alias
+    (:data:`_SKILL_SLUG_ALIASES`, resolved to its canonical slug, and
+    the synth aliases in :data:`SkillHandler._SYNTH_ALIASES`) — is the
+    strongest intent signal a query carries.
+
+    Only slug-shaped tokens qualify: a file-backed slug must be
+    hyphenated, so a bare word that happens to be a one-word file slug
+    (``components``) can't hard-pin off a mid-query mention — the
+    title boost's guards already cover the single-word-query case.
+    Order is query-iteration order; callers don't rely on it.
+    """
+    out: list[str] = []
+    for token in qtokens:
+        slug = SkillHandler._SYNTH_ALIASES.get(token, token)
+        if slug not in SkillHandler._SYNTHESIZED_SKILLS:
+            if slug in slug_set and "-" in slug:
+                pass
+            else:
+                target = _SKILL_SLUG_ALIASES.get(slug)
+                if target is None or target not in slug_set:
+                    continue
+                slug = target
+        if slug not in out:
+            out.append(slug)
+    return out
 
 
 # ---------------------------------------------------------------------------

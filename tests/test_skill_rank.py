@@ -6,6 +6,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.skill import SkillHandler
+from tests._skill_corpus import _install_corpus, _md
 
 
 @pytest.fixture
@@ -399,3 +400,137 @@ def test_family_root_pin_is_the_root_only_never_siblings(
 
     out = skill.search(q="anki banana orange grape mango kiwi")
     assert _pinned_slugs(out.body) == [], out.body
+
+
+# ── snake_case identifiers + slug-named queries (gr575145) ──────────
+#
+# The 2026-11-06 skill-search review found two matcher gaps: a snake_case
+# identifier tokenised into generic parts (``served_sha`` →
+# ``served``/``sha``, so the skill literally documenting the identifier
+# carried no discriminating weight — ~18% of fleet queries), and a query
+# token that *is* a served slug or alias never putting that skill on the
+# menu (``precis-status served_sha`` showed precis-status-help while the
+# caller opened ``precis-status`` — a synthesised slug no hit stream can
+# ever surface).
+
+
+def test_content_tokens_emit_snake_case_and_parts() -> None:
+    """A snake_case run yields the unsplit identifier AND its parts (each
+    part under the usual ≥3-char/stopword rules) — the same
+    replication-over-cleverness shape hyphenated compounds already had."""
+    from precis.handlers.skill import _content_tokens
+
+    tokens = set(_content_tokens("survey_extract job params run_token"))
+    assert "survey_extract" in tokens
+    assert {"survey", "extract", "run", "token", "run_token"} <= tokens
+    # The unsplit form survives whole even when a part would drop
+    # (<3 chars) — it is its own token.
+    tokens = set(_content_tokens("run_id"))
+    assert "run_id" in tokens and "run" in tokens and "id" not in tokens
+
+
+def test_search_snake_case_identifier_finds_owning_skill(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr575145 repro: a query of snake_case identifiers ranks the skill
+    that literally documents them above one matching only the generic
+    parts — the alphabetical-tiebreak shape proves the unsplit token did
+    the ranking (``precis-zzz-help`` would lose a parts-only tie)."""
+    _install_corpus(
+        monkeypatch,
+        {
+            "precis-aaa-help": _md(body="the served sha and run token values"),
+            "precis-zzz-help": _md(body="pass served_sha and run_token to the job"),
+        },
+    )
+    ranked = _ranked_slugs(skill.search(q="served_sha run_token").body)
+    assert ranked and ranked[0] == "precis-zzz-help", ranked[:5]
+
+
+def test_search_slug_token_pins_named_skill_first(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A query token that IS a file-backed slug pins that skill first —
+    even when another skill carries the same slug in prose (a parts-only
+    word match) and the named skill matches nothing else."""
+    _install_corpus(
+        monkeypatch,
+        {
+            "precis-aaa-help": _md(body="precis-zzz-help is documented elsewhere"),
+            "precis-zzz-help": _md(body="unrelated body text"),
+        },
+    )
+    ranked = _ranked_slugs(skill.search(q="precis-zzz-help banana").body)
+    assert ranked and ranked[0] == "precis-zzz-help", ranked[:5]
+
+
+def test_search_synth_slug_token_pins_synth_skill_first(
+    skill: SkillHandler,
+) -> None:
+    """gr575145 acceptance: ``precis-status`` is synthesised — no file
+    body — so lexical and semantic search can never surface it; the
+    caller who typed the slug still gets it first."""
+    ranked = _ranked_slugs(skill.search(q="precis-status served_sha").body)
+    assert ranked and ranked[0] == "precis-status", ranked[:5]
+
+
+def test_search_served_alias_token_pins_canonical_slug(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A query token that is a *served alias* (:data:`_SKILL_SLUG_ALIASES`)
+    pins its canonical slug — same rule as a verbatim slug."""
+    import precis.handlers.skill as skill_mod
+
+    _install_corpus(
+        monkeypatch,
+        {
+            "precis-aaa-help": _md(body="precis-zzz-help shows up in prose"),
+            "precis-zzz-help": _md(body="canonical body"),
+        },
+    )
+    monkeypatch.setitem(
+        skill_mod._SKILL_SLUG_ALIASES, "precis-eee-help", "precis-zzz-help"
+    )
+    ranked = _ranked_slugs(skill.search(q="precis-eee-help banana").body)
+    assert ranked and ranked[0] == "precis-zzz-help", ranked[:5]
+
+
+def test_search_synth_alias_token_pins_canonical_slug(skill: SkillHandler) -> None:
+    """``toc`` — the :data:`_SYNTH_ALIASES` short form — pins the
+    canonical ``precis-toc``, not the alias spelling."""
+    ranked = _ranked_slugs(skill.search(q="toc").body)
+    assert ranked and ranked[0] == "precis-toc", ranked[:5]
+
+
+def test_slugs_named_in_query_resolves_each_slug_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The slug pin's candidate set: hyphenated file slugs verbatim,
+    synth slugs and synth aliases, served aliases resolved to canonical
+    — and nothing else. A bare word that happens to be a one-word file
+    slug (``components``) does NOT qualify: only slug-shaped tokens do,
+    so a common word can't hard-pin off a mid-query mention."""
+    import precis.handlers.skill as skill_mod
+    from precis.handlers.skill import _slugs_named_in_query
+
+    monkeypatch.setitem(
+        skill_mod._SKILL_SLUG_ALIASES, "precis-eee-help", "precis-zzz-help"
+    )
+    slug_set = {"precis-aaa-help", "precis-zzz-help", "components"}
+    out = _slugs_named_in_query(
+        {
+            "precis-aaa-help",  # verbatim file slug
+            "precis-status",  # synthesised skill (no file body)
+            "toc",  # synth alias → precis-toc
+            "precis-eee-help",  # served alias → canonical precis-zzz-help
+            "components",  # one-word file slug — not slug-shaped
+            "banana",  # ordinary word
+        },
+        slug_set,
+    )
+    assert sorted(out) == [
+        "precis-aaa-help",
+        "precis-status",
+        "precis-toc",
+        "precis-zzz-help",
+    ]
