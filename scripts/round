@@ -37,11 +37,13 @@ and nothing is tracked or pushed.
                                       record (no remote delete) and cut the next at origin/main
   scripts/round supersede [r<N>] [--dry-run]   coordinator: mark a deploying/deployed release
                                       superseded when origin/prod already moved past its
-                                      pinned sha (record only; keeps the journal, touches
-                                      no remote ref; default: the one live deploying record)
+                                      pinned sha (keeps the journal; lease-deletes the
+                                      remote branch when its head is on origin/main;
+                                      default: the one live deploying record)
                 [--partial --reason "<text>"]   coordinator: retire a PARTIAL rollout —
                                       origin/prod does not hold the pinned sha; keeps the
-                                      journal so the next cut can pipeline past it
+                                      journal so the next cut can pipeline past it; the
+                                      branch is deleted only when every commit is on main
 
 A peer is named by its worktree directory (`PRECIS_ROUND_PEER` overrides).
 Marks carry the open release's number (the round number when no release is
@@ -2559,13 +2561,81 @@ def _print_unforwarded(root: Path, branch: str) -> None:
         print(f"  {ln}")
 
 
+def _retire_branch(root: Path, rel: dict[str, Any], *, dry_run: bool) -> str:
+    """Retire a superseded release's branch on origin — one of ``deleted``,
+    ``kept`` (the head carries commits main lacks), ``gone`` or
+    ``unknown``.
+
+    The same stale rule ``scripts/release`` applies (gr580767): a
+    ``release/r<N>`` head that is an ancestor of origin/main holds nothing
+    unshipped, yet a leftover reads in flight to ``release_poll``, which
+    then blocks every mint until someone prunes it by hand. The lease
+    names the inspected head, so a moved branch is never removed.
+    Best-effort: the record is already superseded, so an unreadable remote
+    or a refused delete warns with the hand command instead of refusing; a
+    head main lacks stays — the caller's unforwarded note names its
+    commits."""
+    branch = str(rel.get("branch") or "")
+    if not branch:
+        return "gone"
+    head = _remote(root, f"refs/heads/{branch}")
+    if head is None:
+        print(
+            f"scripts/round: could not read origin for {branch} — a stale"
+            " head is deleted by hand: git push origin --delete"
+            f" {branch}",
+            file=sys.stderr,
+        )
+        return "unknown"
+    if not head:
+        return "gone"
+    if (
+        _rgit(root, "fetch", "-q", "origin", f"refs/heads/{branch}") is None
+        or _rgit(root, "fetch", "-q", "origin", "main") is None
+    ):
+        print(
+            f"scripts/round: could not fetch {branch} and main — a stale"
+            " head is deleted by hand: git push origin --delete"
+            f" {branch}",
+            file=sys.stderr,
+        )
+        return "unknown"
+    main = _ref(root, "refs/remotes/origin/main")
+    if not main or not _ancestor(root, head, main):
+        return "kept"
+    if dry_run:
+        print(f"dry-run: would delete {branch} on origin ({head[:9]} is on main)")
+        return "deleted"
+    if (
+        _rgit(
+            root,
+            "push",
+            "-q",
+            f"--force-with-lease=refs/heads/{branch}:{head}",
+            "origin",
+            f":refs/heads/{branch}",
+        )
+        is None
+        or _remote(root, f"refs/heads/{branch}") != ""
+    ):
+        print(
+            f"scripts/round: could not delete {branch} on origin — delete"
+            f" by hand: git push origin --delete {branch}",
+            file=sys.stderr,
+        )
+        return "kept"
+    print(f"{branch} deleted on origin ({head[:9]} is on main)")
+    return "deleted"
+
+
 def cmd_supersede(state: Path, args: argparse.Namespace) -> int:
     """Record a deploying/deployed release superseded once origin/prod has
     moved past its pinned sha (gr573151): a dead clone's record is stale, not
     a blocker. ``--partial`` is the opposite reach: prod does NOT hold the
     pin, a rollout that stopped short is retired with a mandatory
-    ``--reason`` (``superseded_partial`` set). Record only — the journal
-    stays and no remote ref moves."""
+    ``--reason`` (``superseded_partial`` set). The journal stays; the remote
+    branch is lease-deleted when its head already sits on origin/main —
+    otherwise it stays and its unforwarded commits are named (gr580767)."""
     root = _root()
     cur = _read_round(state)
     if args.release:
@@ -2650,6 +2720,7 @@ def cmd_supersede(state: Path, args: argparse.Namespace) -> int:
         )
     if args.dry_run:
         print(f"dry-run: would supersede r{n_rel}")
+        _retire_branch(root, rel, dry_run=True)
         return 0
     _set_state(rel, "superseded")
     if args.partial:
@@ -2657,11 +2728,14 @@ def cmd_supersede(state: Path, args: argparse.Namespace) -> int:
         rel["superseded_why"] = args.reason.strip()[:500]
         _write(state / "round.json", cur)
         print(f"r{n_rel} superseded — partial rollout ({pin[:9]} not on origin/prod)")
-        _print_unforwarded(root, str(rel.get("branch") or ""))
+        if _retire_branch(root, rel, dry_run=False) == "kept":
+            _print_unforwarded(root, str(rel.get("branch") or ""))
         return 0
     rel["superseded_why"] = "origin/prod moved past it"
     _write(state / "round.json", cur)
     print(f"r{n_rel} superseded (origin/prod {prod[:9]} is past {pin[:9]})")
+    if _retire_branch(root, rel, dry_run=False) == "kept":
+        _print_unforwarded(root, str(rel.get("branch") or ""))
     return 0
 
 
@@ -2717,7 +2791,8 @@ def main(argv: list[str] | None = None) -> int:
     p_sup = sub.add_parser(
         "supersede",
         help="mark a deploying/deployed release superseded once origin/prod "
-        "moved past its pinned sha (record only)",
+        "moved past its pinned sha (retires the remote branch when its "
+        "head is on origin/main)",
     )
     p_sup.add_argument("release", nargs="?", default="", metavar="rN")
     p_sup.add_argument("--dry-run", action="store_true")

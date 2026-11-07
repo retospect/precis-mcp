@@ -1904,7 +1904,9 @@ def _prod_moved_past(rig: Rig) -> str:
 
 def test_supersede_marks_the_record_prod_moved_past(rig: Rig) -> None:
     """gr573151: a deployed-unconfirmed record prod moved past is stale —
-    supersede retires it, keeps the journal and touches no remote ref."""
+    supersede retires it and keeps the journal; gr580767: it also deletes
+    the remote branch whose head is on main, so release_poll stops reading
+    it in flight."""
     head = _prod_moved_past(rig)
     out = rig.round("supersede")
     assert out.returncode == 0, out.stderr
@@ -1912,11 +1914,12 @@ def test_supersede_marks_the_record_prod_moved_past(rig: Rig) -> None:
         f"r1 superseded (origin/prod {rig.shas['c3'][:9]} is past {head[:9]})"
         in out.stdout
     )
+    assert f"release/r1 deleted on origin ({head[:9]} is on main)" in out.stdout
     rel = _rel(_round_json(rig), 1)
     assert rel["state"] == "superseded"
     assert rel["superseded_why"] == "origin/prod moved past it"
     assert rel["deployment"]["sha"] == head
-    assert rig.origin_ref("release/r1") == head
+    assert rig.origin_ref("release/r1") == ""
     assert rig.origin_ref("prod") == rig.shas["c3"]
     assert rig.round("close").returncode == 0
     assert rig.round("open").returncode == 0
@@ -1925,13 +1928,18 @@ def test_supersede_marks_the_record_prod_moved_past(rig: Rig) -> None:
 
 
 def test_supersede_dry_run_leaves_the_record_untouched(rig: Rig) -> None:
-    _prod_moved_past(rig)
+    head = _prod_moved_past(rig)
     path = rig.root / ".git/precis-round/round.json"
     before = path.read_bytes()
     out = rig.round("supersede", "--dry-run")
     assert out.returncode == 0, out.stderr
     assert "dry-run: would supersede r1" in out.stdout
+    assert (
+        f"dry-run: would delete release/r1 on origin ({head[:9]} is on main)"
+        in out.stdout
+    )
     assert path.read_bytes() == before
+    assert rig.origin_ref("release/r1") == head
 
 
 def test_supersede_refuses_when_prod_sits_at_the_pin(rig: Rig) -> None:
@@ -1979,6 +1987,22 @@ def test_supersede_needs_a_live_record_or_a_name(rig: Rig) -> None:
     assert "no live deploying/deployed" in out.stderr
 
 
+def test_supersede_deletes_only_the_inspected_head_on_main(rig: Rig) -> None:
+    """gr580767: a superseded branch carrying commits main lacks is kept —
+    the lease names the inspected head and the verb lists what must be
+    forwarded by hand."""
+    _prod_moved_past(rig)
+    fix = _child(rig, rig.shas["c2"], "unforwarded release fix")
+    _push_branch(rig, "release/r1", fix)
+    out = rig.round("supersede", "r1")
+    assert out.returncode == 0, out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "superseded"
+    assert rig.origin_ref("release/r1") == fix
+    assert "deleted on origin" not in out.stdout
+    assert "forward" in out.stdout and "by hand" in out.stdout
+    assert fix[:7] in out.stdout
+
+
 # ── supersede --partial (td574370): a rollout that never reached prod ────
 
 
@@ -1987,8 +2011,9 @@ def test_supersede_partial_retires_a_partial_rollout_keeping_the_journal(
 ) -> None:
     """A deploying record whose pinned sha never reached origin/prod is a
     partial rollout: --partial retires the record, stores the reason and
-    keeps the deployment journal byte-for-byte; no remote ref moves."""
-    head = _deploying(rig)
+    keeps the deployment journal byte-for-byte; a branch whose head is on
+    main is stale and deleted."""
+    _deploying(rig)
     journal = dict(_rel(_round_json(rig), 1)["deployment"])
     out = rig.round("supersede", "--partial", "--reason", "rollout stalled")
     assert out.returncode == 0, out.stderr
@@ -1997,7 +2022,7 @@ def test_supersede_partial_retires_a_partial_rollout_keeping_the_journal(
     assert rel["superseded_why"] == "rollout stalled"
     assert rel["superseded_partial"] is True
     assert rel["deployment"] == journal
-    assert rig.origin_ref("release/r1") == head
+    assert rig.origin_ref("release/r1") == ""
     assert rig.origin_ref("prod") == ""
 
 
@@ -2069,13 +2094,15 @@ def test_supersede_partial_refuses_when_prod_unreadable(rig: Rig) -> None:
 
 
 def test_supersede_partial_dry_run_writes_nothing(rig: Rig) -> None:
-    _deploying(rig)
+    head = _deploying(rig)
     path = rig.root / ".git/precis-round/round.json"
     before = path.read_bytes()
     out = rig.round("supersede", "--partial", "--reason", "x", "--dry-run")
     assert out.returncode == 0, out.stderr
     assert "dry-run: would supersede r1" in out.stdout
+    assert "dry-run: would delete release/r1 on origin" in out.stdout
     assert path.read_bytes() == before
+    assert rig.origin_ref("release/r1") == head
 
 
 def test_cut_accepts_a_partial_superseded_record_with_its_journal(rig: Rig) -> None:
