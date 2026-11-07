@@ -223,6 +223,41 @@ across two shards per Python version within the 90-minute job budget
 with both soaks live fit at 34. Named test output, durations, JUnit and hang-stack
 artifacts expose failures and the slow tail.
 
+**A re-run-to-green hides the failed attempt's job logs (gr582947).**
+Release-r241's full-shape run 42385833948 (2026-11-07) flaked a
+`test-linux` leg on the `Dc1647` decimal-handle collision and was then
+re-run; the random mint almost never collides twice, so the second
+attempt went green and the run page now reads "Re-run triggered" +
+`Status: Success`. From that point the failure existed only in JUnit —
+in none of the output the usual tools read:
+
+- **Logs are attempt-scoped.** `actions/runs/<id>/logs`,
+  `gh run view --log`/`--log-failed` and the web UI's default view all
+  serve only the LATEST attempt — green here. `scripts/ci-failed`
+  inherits the blind spot: it reads `--log-failed` and the per-job logs
+  endpoint, both latest-attempt, so a re-run-to-green run digests to
+  "no failed-job log lines". The failed attempt's console output is not
+  gone, it is one level down: `gh run view <id> --attempt <n>
+  --log-failed` / `gh api
+  repos/{owner}/{repo}/actions/runs/<id>/attempts/<n>/logs`, or the web
+  UI's "Latest" attempt dropdown. `gh run view <id> --json attempt`
+  reports the attempt count.
+- **JUnit artifacts are kept per attempt.** Each shard leg uploads
+  `junit-<N>-<K>` `if: always()` (check.yml); v4 artifacts are immutable
+  and same-named copies from different attempts coexist under one run
+  (a name lookup resolves to the newest, the artifacts API lists both),
+  so the failed attempt's `junit-10-4` — the `<failure>` carrying the
+  `Dc1647` NotFound — stayed downloadable after the green attempt
+  uploaded its own. `gh run download <id> -p 'junit-*'` fetches every
+  attempt's copy. `retention-days: 7` applies: after a week even the
+  artifact copy is gone.
+
+A random flake plus one re-run therefore yields a run whose visible
+output is uniformly green while the failure survives only in a
+downloaded artifact. When `ci-failed` shows nothing on a run reported
+red, read the attempt count before concluding the log is missing — the
+output isn't missing, it belongs to a superseded attempt.
+
 **Pending main runs are replaced (gr479090).** Main's group never cancels a
 *running* run (`cancel-in-progress` is false), but GitHub keeps at most one
 *pending* run per group: a push that queues behind a running run replaces the
