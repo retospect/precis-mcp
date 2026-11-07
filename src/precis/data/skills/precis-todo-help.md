@@ -45,9 +45,9 @@ put(kind="todo", id=122, text="Blocked on the dataset; ETA Friday.")
 ```
 
 `text=` on an existing todo appends a comment (the gripe idiom);
-`tags=`/`untags=` ride along in the same transaction — comment-then-close
+`tags=` rides along in the same transaction — comment-then-close
 is one call: `put(kind='todo', id=122, text='done — pr merged',
-tags=['STATUS:done'])`. `get`
+tags=['STATUS:done'])`; removals go through `tag(remove=[...])`. `get`
 shows the newest 3 in full, older ones as one-liners, and
 `get(kind='todo', id=122, view='comments')` shows all. The details body
 reads alone via `view='body'` (title + untruncated `todo_body` — the call a
