@@ -8,6 +8,7 @@
   ansible.builtin.set_fact:
     pg_user: "{{ 'deploy' if os_family == 'darwin' else 'postgres' }}"
     pg_bin: "{{ '/opt/homebrew/opt/postgresql@17/bin' if os_family == 'darwin' else '/usr/bin' }}"
+  tags: [roles]
 
 - name: Install PostgreSQL (macOS via Homebrew)
   when: os_family == "darwin"
@@ -112,6 +113,7 @@
 - name: Resolve uv binary path
   ansible.builtin.set_fact:
     pg_uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+  tags: [roles]
 
 - name: Create postgres-admin venv (macOS — python3.12 for psycopg2-binary wheels)
   when: os_family == "darwin"
@@ -119,6 +121,7 @@
     cmd: /opt/homebrew/bin/python3.12 -m venv --symlinks /opt/postgres-admin-venv
     creates: /opt/postgres-admin-venv/bin/python
   become: true
+  tags: [roles]
 
 - name: Install psycopg2-binary into postgres-admin venv (macOS)
   when: os_family == "darwin"
@@ -127,11 +130,13 @@
   become: true
   register: pg_admin_deps
   changed_when: "'Installed' in pg_admin_deps.stdout"
+  tags: [roles]
 
 - name: Use psycopg2-equipped interpreter for DB-management modules (macOS)
   when: os_family == "darwin"
   ansible.builtin.set_fact:
     ansible_python_interpreter: /opt/postgres-admin-venv/bin/python
+  tags: [roles]
 
 - name: Wait for PostgreSQL to accept connections on the /tmp socket
   # The restart handler above (launchctl kickstart -k / systemctl restart)
@@ -150,6 +155,7 @@
   retries: 30
   delay: 2
   changed_when: false
+  tags: [roles]
 
 - name: Create precis_prod database
   community.postgresql.postgresql_db:
@@ -159,6 +165,29 @@
     login_unix_socket: /tmp
   become: true
   become_user: "{{ pg_user }}"
+
+# gr583810: a vault_pg_*_pass minted with a trailing newline or a colon
+# breaks differently per consumer — the userlist stores "<pw>\n" while
+# pgpass clients send "<pw>" (r241's FATAL auth as precis_system). Fail
+# loudly HERE, before any host writes the value. Peer/trust roles carry
+# no password_var and are skipped explicitly.
+- name: Assert db-role vault passwords have no newline, colon or outer whitespace
+  ansible.builtin.assert:
+    that:
+      - "_pw | length > 0"
+      - "_pw == (_pw | trim)"
+      - "':' not in _pw"
+      - "'\\n' not in _pw"
+      - "'\\r' not in _pw"
+    fail_msg: "vault_{{ item.password_var }} has trailing whitespace or a colon — re-mint with tr -d '\\n'"
+  vars:
+    _pw: "{{ lookup('vars', 'vault_' + item.password_var, default='') }}"
+  loop: "{{ postgres_roles }}"
+  loop_control:
+    label: "{{ 'vault_' ~ item.password_var if item.password_var is defined else item.name }}"
+  when: item.password_var is defined
+  no_log: true
+  tags: [roles]
 
 - name: Create database roles
   community.postgresql.postgresql_user:
@@ -175,6 +204,7 @@
   loop_control:
     label: "{{ item.name }}"
   no_log: true
+  tags: [roles]
 
 # precis_prod's extensions (vector, …) and schema are owned and migrated by
 # precis-mcp itself (see precis_web's "Apply pending precis DB migrations").
@@ -206,6 +236,7 @@
   become_user: "{{ pg_user }}"
   changed_when: false
   check_mode: false
+  tags: [roles]
 
 # db-own (Fable findings 1+3): precis_owner owns every object and is the owner
 # DSN (DDL, `precis migrate`; never a daemon's login); precis_ingress is the
@@ -231,6 +262,7 @@
   become_user: "{{ pg_user }}"
   changed_when: false
   check_mode: false
+  tags: [roles]
 
 # Before the db-own cutover agent_rw is the migrating role and needs CREATE on
 # public; after it (precis_owner owns _migrations) agent_rw never creates —
@@ -348,6 +380,7 @@
   become_user: "{{ pg_user }}"
   changed_when: false
   check_mode: false  # autocommit is incompatible with check mode
+  tags: [roles]
 
 # Secrets-vault passphrase (precis ADR 0055): the pgcrypto pgp_sym key that
 # vault.reveal/set use. Since migration 0239 (gr505334) it lives in the

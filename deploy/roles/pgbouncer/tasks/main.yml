@@ -56,7 +56,11 @@
     owner: pgboss
   become: true
   no_log: true
-  notify: restart pgbouncer
+  # A SIGHUP reload re-reads the auth file without dropping pooled
+  # connections — a restart would, and is also why --tags roles must not
+  # reach the restart handler (gr583700).
+  notify: reload pgbouncer
+  tags: [roles]
 
 - name: Ensure PgBouncer runtime directories
   ansible.builtin.file:
@@ -119,3 +123,4 @@
     port: "{{ pgbouncer_listen_port }}"
     host: 127.0.0.1
     timeout: 15
+  tags: [roles]

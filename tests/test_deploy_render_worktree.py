@@ -130,6 +130,14 @@ _FAKE_ANSIBLE_PLAYBOOK = """#!/usr/bin/env bash
 if [ -n "${FAKE_LOCK_HOLDER_PID:-}" ]; then
   printf '/x pid=%s host=%s\n' "$FAKE_LOCK_HOLDER_PID" "${FAKE_HOSTNAME:-$(hostname -s)}" > "$FAKE_LOCKDIR/holder"
 fi
+# The gr583700 role-sync runs playbooks/02-postgres.yml before the rollout;
+# let it pass by default (FAKE_ROLE_SYNC_RC makes it red for sync tests)
+# so FAKE_PLAYBOOK_OUT only ever drives the redeploy call.
+case " $* " in
+  *02-postgres*)
+    printf 'TASK [postgres : Create database roles] *****************\n'
+    exit "${FAKE_ROLE_SYNC_RC:-0}" ;;
+esac
 if [ -n "${FAKE_PLAYBOOK_OUT:-}" ]; then
   cat "$FAKE_PLAYBOOK_OUT"
   exit "${FAKE_PLAYBOOK_RC:-0}"

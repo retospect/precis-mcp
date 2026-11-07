@@ -20,6 +20,14 @@
 #      --catch-up` — installs them. A non-critical host that drops DURING
 #      the playbook gets the same treatment: marked skipped, the deploy
 #      completes once every critical host is clean.
+#      role-sync    — (gr583700, r241) before the playbook: `02-postgres.yml
+#                     --tags roles` when the overlay hash moved since the
+#                     last recorded deploy, or the overlay declares
+#                     precis_db_own_cutover_done and the deploy-state marker
+#                     carries no roles_synced=1 stamp. The `roles` tag
+#                     selects only login/grant/userlist tasks — it can never
+#                     touch postgresql.conf/pg_hba or reach a restart
+#                     handler, so it is safe to run mid-deploy.
 #   2. deploy       — run the redeploy playbook for the ref.
 #   3. report       — the play's final debug task prints installed sha +
 #                     bounced daemons; a `failed=`/`unreachable=` on a
@@ -467,7 +475,7 @@ _write_deploy_state_marker() {
     sha="$(git -C "$REPO_ROOT" rev-parse "$REF" 2>/dev/null || true)"
     [[ -n "$sha" ]] || return 0
     . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
-    printf '%s %s %s%s\n' "$sha" "$(date +%s)" "success" "${OVERLAY_HASH:+ overlay=${OVERLAY_HASH}}" > "$(deploy_state_path "$REPO_ROOT")"
+    printf '%s %s %s%s\n' "$sha" "$(date +%s)" "success" "${OVERLAY_HASH:+ overlay=${OVERLAY_HASH}}$(_roles_synced_stamp)" > "$(deploy_state_path "$REPO_ROOT")"
     rm -f "$(deploy_attempt_path "$REPO_ROOT")" 2>/dev/null
     _sync_skipped_hosts
     _publish_fleet_ledger "$sha" || true
@@ -1341,6 +1349,16 @@ _overlay_hash() {
     ) 2>/dev/null || true
 }
 OVERLAY_HASH=""
+# Set when the overlay hash differs from the marker's — read by the
+# role-sync trigger (a) below.
+_OVERLAY_CHANGED=""
+# Set when the previous marker had BOTH an overlay= field and roles_synced=1
+# — the stamp only means anything against a recorded hash; a marker with no
+# overlay field at all (older script) counts as "no stamp" (gr583700).
+_PREV_ROLES_SYNCED=""
+# Set inside _deploy_role_sync after the roles slice ran green this deploy —
+# the marker writers turn it into the roles_synced=1 stamp.
+_ROLE_SYNC_RAN=""
 if [[ -n "$OVERLAY_DIR" ]]; then
     OVERLAY_HASH="$(_overlay_hash "$OVERLAY_DIR")"
 fi
@@ -1350,11 +1368,15 @@ if [[ -n "$OVERLAY_HASH" ]]; then
     _ov_prev=""
     if [[ -n "$_ov_marker" && -f "$_ov_marker" ]]; then
         _ov_prev="$(awk '{for (i = 4; i <= NF; i++) if ($i ~ /^overlay=/) { sub(/^overlay=/, "", $i); print $i; exit }}' "$_ov_marker" 2>/dev/null || true)"
+        if [[ -n "$_ov_prev" ]]; then
+            _PREV_ROLES_SYNCED="$(awk '{for (i = 4; i <= NF; i++) if ($i == "roles_synced=1") { print 1; exit }}' "$_ov_marker" 2>/dev/null)"
+        fi
     fi
     if [[ -n "$_ov_prev" && "$_ov_prev" != "$OVERLAY_HASH" ]]; then
+        _OVERLAY_CHANGED=1
         EXTRA_ARGS+=(-e precis_overlay_changed=true)
         say "overlay changed since the last recorded deploy (hash ${_ov_prev:0:12} → ${OVERLAY_HASH:0:12}) — counting this deploy as changed, bounce scope full."
-        say "Roles outside redeploy-precis.yml (backups, monitoring, pgbouncer, ...) also read the overlay and are NOT re-rendered by this deploy: re-run their numbered playbooks in deploy/playbooks/ if the edit touches them."
+        say "Roles outside redeploy-precis.yml (backups, monitoring, ...) also read the overlay and are NOT re-rendered by this deploy — except the db-role/userlist slice, which the role-sync below covers itself via playbooks/02-postgres.yml --tags roles. Re-run the other numbered playbooks in deploy/playbooks/ if the edit touches them."
     fi
 fi
 
@@ -1461,6 +1483,118 @@ if [[ -n "${SKIPPED_HOSTS[@]+"${SKIPPED_HOSTS[*]}"}" ]]; then
         done
     fi
 fi
+
+# ── 1-rc. db role-sync before migrate (gr583700, r241) ──────────────────
+# r241 died at the migrate-first play on `password authentication failed`:
+# the db-own roles' LOGIN/passwords and pgbouncer's userlist.txt only
+# materialise through playbooks/02-postgres.yml, which redeploy-precis.yml
+# never imports — and a FULL run of it restarts Postgres on config drift
+# (postgresql.conf/pg_hba tasks notify `restart postgresql`). The `roles`
+# tag selects only the safe slice (logins, passwords, grants, userlist,
+# the pgbouncer SIGHUP reload) — tests/test_deploy_postgres_playbook_tags.py
+# pins that no tagged task can reach a restart.
+#
+# It runs only when it matters:
+#   a) the resolved overlay's hash differs from the `overlay=` hash the
+#      deploy-state marker recorded at the last green deploy (a role or
+#      inventory edit moves no git sha — that hash is the only signal), or
+#   b) the overlay's merged vars declare `precis_db_own_cutover_done: true`
+#      (it lives in group_vars/all — an awk over hosts.yml can never see
+#      it, so the read goes through `ansible-inventory --host <gateway>
+#      --yaml`) AND the deploy-state marker carries no `roles_synced=1`
+#      stamp. The stamp is written by the same success write that records
+#      `overlay=` — it means "the roles slice ran green at this overlay
+#      hash" and carries forward only while the hash does not move.
+#
+# A red sync dies here, before the redeploy playbook is ever reached.
+# Extracted for the unit harness — tests/test_deploy_role_sync.py sources
+# this block with stubs.
+# BEGIN _deploy_role_sync (tests/test_deploy_role_sync.py extracts this)
+# Sets _CUTOVER_FLAG to the overlay's merged precis_db_own_cutover_done
+# (empty on a clean absent). A read failure warns once on stderr and
+# returns 1 — the caller treats it as NOT cutover (fail quiet, never fail
+# open). UNPARSEABLE output dies instead: silently reading garbage as
+# "absent" would skip a needed sync. Older ansible-core ignores --yaml
+# for --host and prints JSON — both forms are accepted (key unquoted or
+# quoted, optional trailing comma/brace).
+_deploy_cutover_flag() {
+    local _h _out _first
+    _CUTOVER_FLAG=""
+    _h="$(inventory_group_hosts gateway 2>/dev/null | head -1)"
+    if [[ -z "$_h" ]]; then
+        echo "role-sync: could not read precis_db_own_cutover_done (no gateway host in inventory)" >&2
+        return 1
+    fi
+    if ! _out="$(ansible-inventory ${CLUSTER_INVENTORY:+-i "$CLUSTER_INVENTORY"} \
+            ${INV_ARGS[@]+"${INV_ARGS[@]}"} --host "$_h" --yaml 2>/dev/null)"; then
+        echo "role-sync: could not read precis_db_own_cutover_done (ansible-inventory failed)" >&2
+        return 1
+    fi
+    # The dump must look like a var mapping before an absent key may mean
+    # "not cutover": a column-0 `key:` line (YAML) or a leading `{` (JSON).
+    _first="$(awk 'NF {print; exit}' <<< "$_out")"
+    if [[ -z "$_first" || ( ! "$_first" =~ ^[A-Za-z_][A-Za-z0-9_]*: && ! "$_first" =~ ^[{] ) ]]; then
+        die "role-sync: unparseable ansible-inventory --host output (${_out:0:80})"
+    fi
+    _CUTOVER_FLAG="$(awk '
+        /^[[:space:]]*["\047]?precis_db_own_cutover_done["\047]?[[:space:]]*:/ {
+            sub(/^[^:]*:[[:space:]]*/, "")
+            sub(/[,}][[:space:]]*$/, "")
+            gsub(/["\047]/, "")
+            sub(/[[:space:]]+$/, "")
+            print; exit }' <<< "$_out")"
+}
+_deploy_role_sync_reason() {
+    local _out="" _flag="${_CUTOVER_FLAG:-}"
+    [[ -n "${_OVERLAY_CHANGED:-}" ]] && _out="a"
+    case "$_flag" in
+        [Tt][Rr][Uu][Ee]|[Yy][Ee][Ss])
+            # Cutover declared: sync unless the marker already says this
+            # overlay's roles were synced green.
+            [[ -z "${_PREV_ROLES_SYNCED:-}" ]] && _out="${_out:+${_out}+}b" ;;
+        ""|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|0)
+            : ;;  # absent, unreadable (already warned) or a clean false
+        *)
+            echo "role-sync: could not read precis_db_own_cutover_done (unexpected value '${_flag}')" >&2 ;;
+    esac
+    printf '%s\n' "$_out"
+}
+_deploy_role_sync() {
+    local _reasons
+    # Direct call, never $(...): the flag read may `die` on unparseable
+    # output, and inside a substitution die would only exit the subshell —
+    # reading as a quiet "not cutover". The global return keeps that loud.
+    _deploy_cutover_flag || _CUTOVER_FLAG=""
+    _reasons="$(_deploy_role_sync_reason)"
+    [[ -n "$_reasons" ]] || return 0
+    say "role-sync: db roles/userlist need a sync (${_reasons}) — running the roles-tagged slice of 02-postgres.yml before migrate"
+    ansible-playbook playbooks/02-postgres.yml --tags roles \
+        ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
+        || die "role-sync failed — the failing task is above. The redeploy playbook never ran and nothing else was touched; fix the roles-tagged slice and re-run."
+    _ROLE_SYNC_RAN=1
+    say "role-sync: ran 02-postgres --tags roles (${_reasons})"
+}
+# The marker's `roles_synced=1` field, printed (with a leading space) when
+# the stamp should be written by a marker write: this deploy ran the roles
+# slice green, or the previous marker was stamped AND the overlay hash did
+# not move (carry-forward — a later ordinary deploy keeps the stamp and the
+# sync does not run again; a moved overlay drops it until the next green
+# sync). Anything else — first deploy, an older marker without overlay=,
+# a failed run — leaves it unstamped (gr583700).
+_roles_synced_stamp() {
+    if [[ -n "${_ROLE_SYNC_RAN:-}" ]]; then
+        printf ' roles_synced=1'
+    elif [[ -n "${_PREV_ROLES_SYNCED:-}" && -z "${_OVERLAY_CHANGED:-}" ]]; then
+        printf ' roles_synced=1'
+    fi
+}
+# END _deploy_role_sync
+export CLUSTER_INVENTORY="${OVERLAY_DIR:+${OVERLAY_DIR}/hosts.yml}"
+if [[ -f "${REPO_ROOT}/scripts/lib/pgb-host.sh" ]]; then
+    # shellcheck source=scripts/lib/pgb-host.sh
+    . "${REPO_ROOT}/scripts/lib/pgb-host.sh"
+fi
+_deploy_role_sync
 
 # ── 1-pre. coverage map refresh (gr567471) ──────────────────────────────
 # The slice lander's deploy account has no GitHub credential, so it cannot
@@ -1876,7 +2010,7 @@ fi
         # fact, and a per-worktree marker made every OTHER tree's ship
         # over-report the lag. See scripts/lib/deploy-state.sh.
         . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
-        printf '%s %s %s%s\n' "$DEPLOYED_SHA" "$(date +%s)" "success" "${OVERLAY_HASH:+ overlay=${OVERLAY_HASH}}" \
+        printf '%s %s %s%s\n' "$DEPLOYED_SHA" "$(date +%s)" "success" "${OVERLAY_HASH:+ overlay=${OVERLAY_HASH}}$(_roles_synced_stamp)" \
             > "$(deploy_state_path "$REPO_ROOT")"
     fi
     # Success: clear the attempt stamp so ship stops reporting "uncertain"

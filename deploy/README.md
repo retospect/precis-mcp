@@ -244,7 +244,18 @@ playbook`, never dropped; a role rendered only through another role's meta
 `dependencies` — e.g. `asa_common` via `asa_bot` — maps to the parent's
 playbook). Advisory only: it never fails a deploy. Running the other
 playbooks automatically is deliberately not done — see
-`docs/backlog/deploy-renders-only-precis-roles.md`.
+`docs/backlog/deploy-renders-only-precis-roles.md` — with one exception:
+the db-role/userlist slice. `scripts/deploy` itself runs
+`playbooks/02-postgres.yml --tags roles` (logins, passwords, grants and the
+pgbouncer userlist through a SIGHUP reload — the tag can never reach
+postgresql.conf, pg_hba or a restart handler) before the migrate-first
+play whenever the overlay hash moved since the last recorded deploy, or the
+overlay's merged vars declare `precis_db_own_cutover_done: true` and the
+deploy-state marker carries no `roles_synced=1` stamp — the stamp is
+written by the same success write that records `overlay=`, and carries
+forward only while the hash does not move (gr583700, r241). To run the
+same slice by hand, from the main checkout's `deploy/` dir:
+`ansible-playbook playbooks/02-postgres.yml --tags roles`.
 
 Hand-run playbooks: every role that pip-installs precis-mcp refuses when its
 `*_git_ref` is unset (gr489462 — a "main" default crash-looped the workers

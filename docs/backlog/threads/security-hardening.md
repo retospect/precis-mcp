@@ -57,7 +57,11 @@ residual items.
    `precis_owner` owns everything, `agent_rw` loses vault/roster reach, the
    password hash, and infra-class vault writes) is built on db-own with S1;
    deploy is `scripts/db-own-cutover` in Reto's
-   sitting. Draft; Reto's open questions first. `backlog/out-of-box-setup.md` (admin users screen)
+   sitting; the post-cutover role/userlist sync is automatic since gr583700
+   (`scripts/deploy` runs `02-postgres.yml --tags roles` before migrate when
+   the overlay moved or the marker lacks `roles_synced=1` under the
+   cutover flag). Draft; Reto's open
+   questions first. `backlog/out-of-box-setup.md` (admin users screen)
    waits on its S3.
 
 ## Parked

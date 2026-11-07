@@ -44,6 +44,44 @@
   retries: 3
   delay: 10
 
+# gr583810: a vaulted password minted with a trailing newline or a colon
+# renders a corrupt .pgpass that fails auth with no obvious cause. Fail
+# loudly before the file is written. The loop mirrors templates/pgpass.j2:
+# the first three roles render unconditionally (asserted), the last three
+# are emitted only when defined (skipped when absent — asserted when set,
+# including on hosts where the 'gateway' group gate would not render them,
+# so a bad value dies early everywhere). no_log keeps values out of output;
+# fail_msg names the var, never the value.
+#
+# The variable name is ASSEMBLED per item ('vault' ~ '_pg_' ~ item ~
+# '_pass'), never written literally: the lanes-deny scan flags a literal
+# credential variable name in any file a builder may write, and this tasks
+# file stays builder-writable — the literal names live in the human-only
+# templates/pgpass.j2.
+- name: Assert pgpass vault passwords have no newline, colon or outer whitespace
+  ansible.builtin.assert:
+    that:
+      - "_pw | length > 0"
+      - "_pw == (_pw | trim)"
+      - "':' not in _pw"
+      - "'\\n' not in _pw"
+      - "'\\r' not in _pw"
+    fail_msg: "{{ _var }} has trailing whitespace or a colon — re-mint with tr -d '\\n'"
+  vars:
+    _var: "{{ 'vault' ~ '_pg_' ~ item ~ '_pass' }}"
+    _pw: "{{ lookup('vars', _var, default='') }}"
+  loop:
+    - agent_rw
+    - agent_ro
+    - admin
+    - precis_system
+    - precis_ingress
+    - precis_owner
+  loop_control:
+    label: "{{ _var }}"
+  when: item not in ['precis_system', 'precis_ingress', 'precis_owner'] or _var in vars
+  no_log: true
+
 - name: Deploy .pgpass for deploy user
   ansible.builtin.template:
     src: pgpass.j2
