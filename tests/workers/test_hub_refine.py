@@ -2174,3 +2174,54 @@ def test_reverify_still_stamps_a_rejected_edge_from_a_keep_memo(store: Any) -> N
     _dst, _relation, meta = _edges_from(store, paper)[0]
     assert meta["support"] == "yes"
     assert meta["verified_claim_sha"] == claim_sha(sentence)
+
+
+# ── gr582653: no transaction spans a slow dispatch ────────────────────
+
+
+def test_verify_dispatch_runs_with_no_open_tx(store: Any) -> None:
+    """gr582653: inside a verifier dispatch no backend of this pass sits
+    idle-in-transaction — the per-hub transaction commits before the LLM
+    call, so the prompt-builder reads (``_source_identity``'s
+    ``left(meta->>'abstract', %s)`` row was the observed last statement)
+    never hold AccessShareLock across it. That parked reader blocked the
+    ``REASSIGN OWNED`` cutover's AccessExclusiveLock — and would block any
+    ALTER/index DDL for up to the 300 s idle-in-transaction kill."""
+    embedder = make_mock_bge_m3()
+    _seed_hub(store, sentence="Pd/C catalyzes Suzuki coupling at RT.")
+    _seed_paper_chunk(
+        store, embedder, cite_key="primary", text="A direct measurement statement."
+    )
+
+    idle_tx: list[int] = []
+
+    def _probe(**_kw: Any) -> dict[str, Any]:
+        with store.pool.connection() as conn:
+            idle_tx.append(
+                int(
+                    conn.execute(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE datname = current_database() "
+                        "AND state = 'idle in transaction' "
+                        "AND pid <> pg_backend_pid()"
+                    ).fetchone()[0]
+                )
+            )
+        return _VERIFY_YES
+
+    with patch_verify(side_effect=_probe):
+        result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+
+    assert result["ok"] == 1 and result["failed"] == 0
+    assert idle_tx and idle_tx == [0] * len(idle_tx)
+
+
+def test_pass_labels_its_transaction(store: Any) -> None:
+    """gr582653's second half: a lock holder is attributable — the per-hub
+    transaction carries ``application_name`` (``SET LOCAL``), so
+    ``pg_stat_activity`` names the pass instead of the blank pgbouncer
+    session the cutover saw."""
+    with store.pool.connection() as conn:
+        hub_refine._label_pass_tx(conn)
+        row = conn.execute("SHOW application_name").fetchone()
+        assert row is not None and row[0] == hub_refine._PASS_APP_NAME

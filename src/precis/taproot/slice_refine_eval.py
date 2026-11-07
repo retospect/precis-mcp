@@ -45,6 +45,7 @@ from precis.workers.hub_refine import (
     _chunk_section_path,
     _claim_source_passage,
     _min_sim_default,
+    _outside_tx,
     _source_identity,
     _topk_default,
 )
@@ -208,7 +209,11 @@ def _eval_one_hub(
         hub_ref_id=hub_ref_id, claim=claim_sentence, existing_edges=existing_edges
     )
 
-    query_vec = embed_query(embedder, claim_sentence) if claim_sentence else None
+    query_vec = (
+        _outside_tx(conn, embed_query, embedder, claim_sentence)
+        if claim_sentence
+        else None
+    )
     if not claim_sentence or query_vec is None:
         hub_eval.discovery_skipped = True
         return hub_eval
@@ -246,7 +251,9 @@ def _eval_one_hub(
             )
             continue
 
-        verification = verify_fn(
+        verification = _outside_tx(
+            conn,
+            verify_fn,
             claim=claim_sentence,
             scope=scope,
             target_cite_key=ref.slug or f"ref:{paper_ref_id}",

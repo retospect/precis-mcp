@@ -105,9 +105,10 @@ acronym/mode term (acronym-expanded; numbers skipped in v1), judges at most
 pass, with the widen verifier, and attaches the ones that verify
 (``meta.widen.via == "method-gap"``). Judged-and-rejected chunks land in the
 passage-grained ``reground_seen`` memo, so nothing is re-judged per
-``claim_sha``. It runs in a savepoint (a failure never rolls back the
-discovery above) and not under a reground plan. Adds up to 4 verifier
-calls/hub/pass to the bound above, and none when every term is covered.
+``claim_sha``. Its writes run in their own transaction (a failure never
+rolls back the discovery above) and not under a reground plan. Adds up to
+4 verifier calls/hub/pass to the bound above, and none when every term is
+covered.
 
 **Reopen gate vs. decomposition.** A composite hub never reaches step 6
 (excluded at step 1), so retitling it costs nothing here and does NOT
@@ -117,9 +118,15 @@ stale ``conjunct-of`` set until a separate human-run migration revisits
 it. An atom is an ordinary hub — its own sha-reopen still clears its own
 memo at the atom grain.
 
-A raise anywhere in steps 2-5 rolls back the whole per-hub transaction —
-step 6 never runs, so absent a separate signal the hub would re-verify
-every candidate against the LLM again next sweep, unbounded.
+A raise anywhere in steps 2-5 still stops the hub short of step 6 — the
+stamp never runs, so absent a separate signal the hub would re-verify
+every candidate against the LLM again next sweep, unbounded. The per-hub
+work is NOT one transaction: every LLM/fetch dispatch is preceded by a
+commit (:func:`_outside_tx`, gr582653 — a backend must never sit
+idle-in-transaction holding AccessShareLock across a slow call, which
+blocked the ``REASSIGN OWNED`` cutover), so a raise rolls back only the
+work since the last dispatch; the verdicts already judged persist, and
+idempotent attaches/memos make the retry converge instead of re-spend.
 :func:`_claim_hubs_due_for_refine` closes this: it writes a claim-time
 ``TAPROOT_REFINE_ATTEMPT`` lease (:data:`_ATTEMPT_NS`, TTL'd) in the same
 transaction as the ``TAPROOT_DUE`` pop, braking re-claim for
@@ -253,12 +260,12 @@ from datetime import UTC, datetime, timedelta
 from itertools import batched
 from typing import TYPE_CHECKING, Any
 
-from psycopg import Connection
+from psycopg import Connection, ProgrammingError, sql
 
 from precis.nanopub import method_gap
 from precis.nanopub.demote import DemotionRequest, run_demotions
 from precis.nanopub.term_coverage import paper_chunks
-from precis.store.revision_context import trust_door
+from precis.store.revision_context import apply_revision_context, trust_door
 from precis.store.types import Tag
 from precis.taproot.canon import (
     CLAIM_HUB_PREDICATE_PARAMS,
@@ -366,6 +373,65 @@ def _verified_stamp(sha: str) -> dict[str, Any]:
         "verified_at": datetime.now(UTC).isoformat(),
         "verified_claim_sha": sha,
     }
+
+
+#: ``application_name`` every per-hub transaction carries (``SET LOCAL``),
+#: so a backend holding locks names this pass in ``pg_stat_activity`` —
+#: gr582653's cutover blocker was a blank-name pgbouncer backend. Same
+#: convention as ``job_types/plan_dispatch.py``'s ``TICK_LOCK_APP_NAME``.
+_PASS_APP_NAME = "precis hub_refine"
+
+
+def _label_pass_tx(conn: Connection) -> None:
+    """``SET LOCAL application_name`` for the open transaction. A LOCAL
+    setting dies at commit, so :func:`_outside_tx` re-sends it on each
+    resumed transaction."""
+    conn.execute(
+        sql.SQL("SET LOCAL application_name = {}").format(sql.Literal(_PASS_APP_NAME))
+    )
+
+
+def _outside_tx(
+    conn: Connection, fn: Callable[..., Any], *args: Any, **kwargs: Any
+) -> Any:
+    """Run one slow dispatch — a verifier/judge call, an embedder call, an
+    external fetch — with NO transaction held open on ``conn``.
+
+    The per-hub transaction commits first. gr582653: a refine that ran
+    ``_source_identity``'s read and then judged sat 'idle in transaction'
+    for minutes holding AccessShareLock on refs/chunks/links/
+    chase_coverage/chunk_citations, blocking the ``REASSIGN OWNED``
+    cutover's AccessExclusiveLock — and any other DDL — for the length of
+    the call. Committing drops every lock the pass holds; statements after
+    the dispatch lazily open the next transaction, which the caller's
+    final ``conn.commit()`` still ends. A side effect worth keeping:
+    verdicts landed before a dispatch now persist instead of rolling
+    back with a later failure (attaches and link stamps are idempotent),
+    and the stamp/memo tail stays atomic with the last commit.
+
+    The resumed transaction re-sends the revision context and the pass's
+    ``application_name`` — both ``SET LOCAL``-scoped, both dropped by the
+    commit. Inside a ``conn.transaction()`` block (a savepoint — e.g. a
+    pinned checkout) psycopg forbids an explicit ``commit()``; the outer
+    scope owns the boundary there, so the dispatch simply runs (and the
+    still-open transaction keeps its already-sent settings). A
+    duck-typed conn that cannot commit at all (a test fake) is left
+    untouched for the same reason.
+    """
+    committed = False
+    commit = getattr(conn, "commit", None)
+    if commit is not None:
+        try:
+            commit()
+            committed = True
+        except ProgrammingError:
+            pass  # inside a conn.transaction()/pinned savepoint — outer owns it
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        if committed:
+            apply_revision_context(conn)
+            _label_pass_tx(conn)
 
 
 def _disputes_allowed(verification: dict[str, Any]) -> bool:
@@ -1798,7 +1864,7 @@ def _external_candidates(
         else:
             held_by_doi[doi_s] = int(held_ref_id)
 
-    probed = probe_fn(claim_sentence)
+    probed = _outside_tx(conn, probe_fn, claim_sentence)
     report["probed"] = probed
     for hit in probed:
         doi_s = str(hit.get("doi") or "").strip().lower()
@@ -2232,7 +2298,9 @@ def _audit_edges(
         key = _seen_key(edge.src_ref_id, edge.src_chunk_id)
         if seen.get(key, {}).get("sha") == plan.claim_sha:
             continue  # convergence guard: judged once per claim_sha
-        verdict = cfg.judge_fn(
+        verdict = _outside_tx(
+            conn,
+            cfg.judge_fn,
             claim=claim_sentence,
             scope=scope,
             cite_key=edge.cite_key,
@@ -3098,7 +3166,9 @@ def _reground_verify_candidate(
     n_body_chunks = int(row[1]) if row else 0
     # prev/next neighbours — the same query ``_fisheye_edges`` uses.
     neighbours = _chunk_neighbours(conn, int(source_ref_id), block.ord)
-    verdict = cfg.judge_fn(
+    verdict = _outside_tx(
+        conn,
+        cfg.judge_fn,
         claim=claim_sentence,
         scope=scope,
         cite_key=ref.slug or f"ref:{source_ref_id}",
@@ -3407,7 +3477,9 @@ def _reverify_pinned_edges(
     for (sentence, _scope_key), group in groups.items():
         scope = dict(group[0][0].scope)
         for part in batched(group, VERIFY_BATCH_MAX_ITEMS):
-            verdicts = _verify_supports_batch(
+            verdicts = _outside_tx(
+                conn,
+                _verify_supports_batch,
                 claim=sentence,
                 scope=scope,
                 items=[
@@ -3576,9 +3648,11 @@ def _method_gap_arm(
     until the claim is edited). Returns True when ``seen`` gained an entry, so
     the caller persists it.
 
-    The caller runs this inside a savepoint on copies of ``seen`` and the
-    pending lists. ``sent`` collects every candidate handed to the verifier,
-    so that when the savepoint rolls back after LLM calls the caller can still
+    The caller commits before handing over and runs this on copies of
+    ``seen`` and the pending lists; the arm's own writes run in its own
+    ``conn.transaction()`` so a failure rolls back only them.
+    ``sent`` collects every candidate handed to the verifier,
+    so that when the apply rolls back after LLM calls the caller can still
     charge them (:func:`_charge_failed_gap`); ``budget`` is the pass-wide call
     budget (:data:`METHOD_GAP_CALLS_PER_PASS`): once spent the arm stops with
     no memo, so those hubs retry next pass."""
@@ -3671,9 +3745,16 @@ def _method_gap_arm(
         pending.append((cand, chunk, ref))
 
     # All candidates share this hub's claim context — batch the verifies so
-    # the claim block and rubric are paid once per group (gr499038).
+    # the claim block and rubric are paid once per group (gr499038). Each
+    # dispatch runs with no transaction held (:func:`_outside_tx`,
+    # gr582653); the apply loop below then runs inside the arm's own
+    # ``conn.transaction()``, so a failure still rolls back only this
+    # arm's writes, never the discovery loop's attaches and memos above.
+    judged: list[tuple[Any, Any]] = []
     for part in batched(pending, VERIFY_BATCH_MAX_ITEMS):
-        verifications = _verify_supports_batch(
+        verifications = _outside_tx(
+            conn,
+            _verify_supports_batch,
             claim=claim_sentence,
             scope=scope,
             items=[
@@ -3693,7 +3774,9 @@ def _method_gap_arm(
             claim_source_text=claim_source_text,
             with_request_hash=True,
         )
-        for (cand, chunk, ref), verification in zip(part, verifications):
+        judged.extend(zip(part, verifications))
+    with conn.transaction():
+        for (cand, chunk, ref), verification in judged:
             if verification is None:
                 # Transient LLM failure: spends an attempt, retried while the
                 # term is under its per-claim-version cap.
@@ -3906,7 +3989,11 @@ def _refine_one_hub(
         [] if reopened else list(meta.get(_META_UNRESOLVED) or [])
     )
 
-    query_vec = embed_query(embedder, claim_sentence) if claim_sentence else None
+    query_vec = (
+        _outside_tx(conn, embed_query, embedder, claim_sentence)
+        if claim_sentence
+        else None
+    )
     verify_calls = 0  # verifier/judge dispatches this hub this pass
     verify_judged = 0  # ... of which returned a verdict
     verify_capped = False  # the cap cut discovery short
@@ -4196,7 +4283,9 @@ def _refine_one_hub(
         # up to ``VERIFY_BATCH_MAX_ITEMS`` (gr499038). Verdicts are applied
         # in candidate order, identical to the old per-candidate calls.
         for part in batched(pending_verify, VERIFY_BATCH_MAX_ITEMS):
-            verifications = _verify_supports_batch(
+            verifications = _outside_tx(
+                conn,
+                _verify_supports_batch,
                 claim=claim_sentence,
                 scope=scope,
                 items=[
@@ -4345,8 +4434,8 @@ def _refine_one_hub(
 
         # Drain the coverage ledger only now — every recorded chunk has
         # been judged (verified, memoed, or policy-dropped) this pass. A
-        # raise anywhere above rolls this back with the whole per-hub
-        # transaction, so the rows survive and the hub re-fires. Runs inside
+        # raise before the stamp rolls back this tail transaction, so the
+        # rows survive and the hub re-fires. Runs inside
         # the ``query_vec is not None`` block: with no vector nothing was
         # verified, so the ledger is left intact to retry next pass.
         _drain_coverage(conn, hub_ref_id, sorted(resolved_cov & cov_set))
@@ -4370,9 +4459,9 @@ def _refine_one_hub(
     # papers' own chunks for terms the sentence names.
     #
     # Not under a reground plan (the strict judge owns that path), and
-    # isolated: a savepoint plus working copies of the memo and the pending
-    # lists, so an arm failure rolls back only its own writes and never the
-    # discovery loop's attaches and memos above.
+    # isolated: a boundary commit plus working copies of the memo and the
+    # pending lists, so an arm failure rolls back only its own writes and
+    # never the discovery loop's attaches and memos above.
     method_gap_memoed = False
     if claim_sentence and reground is None:
         arm_seen = dict(reground_seen)
@@ -4381,31 +4470,43 @@ def _refine_one_hub(
         # Outside the savepoint, so it survives the rollback below.
         sent: list[method_gap.GapCandidate] = []
         try:
-            with conn.transaction():
-                method_gap_memoed = _method_gap_arm(
-                    conn,
-                    store,
-                    hub_ref_id,
-                    claim_sentence=claim_sentence,
-                    scope=scope,
-                    sha=new_sha,
-                    seen=arm_seen,
-                    claim_source_text=claim_source_text,
-                    identity_cache=identity_cache,
-                    pending_checks=arm_checks,
-                    pending_demotions=arm_demotions,
-                    sent=sent,
-                    budget=gap_budget,
-                )
+            # Commit the discovery loop's work first (gr582653 boundary):
+            # an arm failure then rolls back only its own uncommitted
+            # reads — the arm's apply phase runs in its own
+            # ``conn.transaction()`` — never the attaches above.
+            conn.commit()
+        except ProgrammingError:
+            pass  # pinned/nested checkout — the outer scope owns the boundary
+        try:
+            method_gap_memoed = _method_gap_arm(
+                conn,
+                store,
+                hub_ref_id,
+                claim_sentence=claim_sentence,
+                scope=scope,
+                sha=new_sha,
+                seen=arm_seen,
+                claim_source_text=claim_source_text,
+                identity_cache=identity_cache,
+                pending_checks=arm_checks,
+                pending_demotions=arm_demotions,
+                sent=sent,
+                budget=gap_budget,
+            )
         except Exception:
             log.warning(
                 "hub_refine: method-gap arm failed for hub #%d -- skipped",
                 hub_ref_id,
                 exc_info=True,
             )
-            # The savepoint rolled back, but the verifier calls were paid:
-            # charge them as unjudged attempts so a deterministic failure
-            # cannot re-spend them every pass.
+            # The arm's apply transaction rolled back (and this rollback
+            # clears any ambient error state), but the verifier calls were
+            # paid: charge them as unjudged attempts so a deterministic
+            # failure cannot re-spend them every pass.
+            try:
+                conn.rollback()
+            except ProgrammingError:
+                pass
             method_gap_memoed = _charge_failed_gap(reground_seen, new_sha, sent)
         else:
             reground_seen.update(arm_seen)
@@ -4488,7 +4589,7 @@ def reground_one_hub(
 
     Same two-phase shape :func:`run_hub_refine_pass` uses, and for the
     same reason: :func:`_refine_one_hub` (discover → strict judge →
-    attach → stamp) runs in one transaction and commits; only then does
+    attach → stamp) runs and commits; only then does
     :func:`apply_reground_plan` read the adds back and release the paired
     prunes. Raises whatever the refine phase raises — the caller isolates
     per hub.
@@ -4499,6 +4600,7 @@ def reground_one_hub(
     pending_demotions: list[DemotionRequest] = []
     plans: list[RegroundPlan] = []
     with store.pool.connection() as conn:
+        _label_pass_tx(conn)
         _refine_one_hub(
             conn,
             store,
@@ -4581,6 +4683,7 @@ def run_hub_refine_pass(
     resolved_reground = reground if reground is not None else RegroundConfig.from_env()
 
     with store.pool.connection() as conn:
+        _label_pass_tx(conn)
         hub_ids = _claim_hubs_due_for_refine(
             conn,
             store,
@@ -4629,6 +4732,7 @@ def run_hub_refine_pass(
             pending_demotions: list[DemotionRequest] = []
             plans: list[RegroundPlan] = []
             with store.pool.connection() as conn:
+                _label_pass_tx(conn)
                 _refine_one_hub(
                     conn,
                     store,
