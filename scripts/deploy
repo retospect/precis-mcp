@@ -1291,6 +1291,7 @@ if [[ -n "${PRECIS_DEPLOY_FROM_TREE}" ]]; then
     fi
     if [[ -d "${CLUSTER_DIR}/inventory" ]]; then
         OVERLAY_DIR="${CLUSTER_DIR}/inventory"
+        _ov_vault="${CLUSTER_DIR}/.vault-pass"
         say "install-from-tree: deploying from ${CLUSTER_DIR} (local overlay)"
     else
         _main="$(dirname "$(git -C "${CLUSTER_DIR}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")"
@@ -1299,8 +1300,17 @@ if [[ -n "${PRECIS_DEPLOY_FROM_TREE}" ]]; then
         [[ -d "${_overlay}" && -f "${_vpass}" ]] || die "install-from-tree: no overlay — this checkout's ${CLUSTER_DIR}/inventory is empty and the canonical overlay (${_overlay}) is missing. Put your private inventory in the main checkout's deploy/inventory, or set PRECIS_OVERLAY_DIR (see deploy/README.md)."
         INV_ARGS=(-i "${_overlay}/hosts.yml" --vault-password-file "${_vpass}")
         OVERLAY_DIR="${_overlay}"
+        _ov_vault="${_vpass}"
         say "install-from-tree: deploying from ${CLUSTER_DIR} (canonical overlay: ${_overlay})"
     fi
+    # The precis_worker_agent role copies this overlay, its vault key, the
+    # prod DSN and the cluster ssh key into the fix-lane checkout so the
+    # factory's release_deploy job can run `scripts/release --deploy-only`
+    # there (precis_fix_lane_deploys). Hand it the controller-side paths —
+    # symlink-resolved (the overlay is often a symlink into a private repo) —
+    # as extra vars on every playbook run. Paths only, never contents.
+    _ov_abs="$(cd "${OVERLAY_DIR}" && pwd -P)"
+    EXTRA_ARGS+=(-e precis_overlay_dir="${_ov_abs}" -e precis_vault_pass_file="${_ov_vault}")
 fi
 
 # ── overlay change detection (gr239588) ─────────────────────────────────

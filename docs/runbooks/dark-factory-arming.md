@@ -57,6 +57,14 @@ and a third never starts by itself) → `approval` → `deploy` (`release_deploy
 `scripts/release --deploy-only r<N>`, pinned) → `confirm`
 (`release_confirm`: the runtime attestation below).
 
+The deploy leg needs the deploy user to hold the operator's deploy files:
+set `precis_fix_lane_deploys: true` in the gateway's host_vars, then run one
+operator deploy so the play places the overlay, vault key, prod DSN file and
+cluster ssh key in the fix-lane checkout (`deploy/README.md` "Fix-lane
+deploys"). Without it `release_deploy` fails with "install-from-tree: no
+overlay" and the round record is "not published: no prod DSN on this host".
+The deploy account then holds the same deploy authority as the operator.
+
 The job types also write the shared `release.round` record through the
 store (gr575362): the cut creates the row (`state: cut`, the script's own
 per-clone publish may have skipped on the slice host), the deploy merges

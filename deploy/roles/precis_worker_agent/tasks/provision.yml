@@ -215,6 +215,192 @@
   environment:
     HOME: /Users/deploy
 
+# Fix-lane deploys (td580789; OFF by default — precis_fix_lane_deploys). The
+# factory's release_deploy job runs `scripts/release --deploy-only` as `deploy`
+# inside the checkout above, which needs what the operator's own checkout has
+# and the repo does not carry: the private overlay (deploy/inventory), its
+# vault key (deploy/.vault-pass), the prod DSN file scripts/round reads
+# (~/.secrets/pw/PRECIS_DATABASE_URL) and the cluster ssh key that
+# deploy/ansible.cfg names (~/.ssh/cluster). Every play copies them from the
+# controller (paths from scripts/deploy: precis_overlay_dir,
+# precis_vault_pass_file; the key from the controller's ~/.ssh/cluster), so a
+# rotation or overlay edit lands on the next deploy and nothing is hand-copied.
+# AUTHORITY: with these files the deploy account can deploy to and decrypt the
+# whole cluster — the same authority as the operator. The switch is the
+# overlay's: set precis_fix_lane_deploys in the gateway's host_vars, never
+# here. Secret-bearing tasks are no_log; the task names say what they place.
+- name: Fix-lane deploy files need the controller overlay paths (scripts/deploy passes them)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['gateway']
+    - precis_fix_lane_enabled | default(false) | bool
+    - precis_fix_lane_deploys | default(false) | bool
+  ansible.builtin.assert:
+    that:
+      - precis_overlay_dir is defined
+      - precis_vault_pass_file is defined
+    fail_msg: >-
+      precis_fix_lane_deploys needs precis_overlay_dir and precis_vault_pass_file
+      (scripts/deploy passes both as -e). Run the play through scripts/deploy,
+      or pass them by hand.
+
+- name: Fix-lane deploy overlay - root directory (0700, deploy-owned)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['gateway']
+    - precis_fix_lane_enabled | default(false) | bool
+    - precis_fix_lane_deploys | default(false) | bool
+  ansible.builtin.file:
+    path: "{{ precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo') }}/deploy/inventory"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0700"
+  become: true
+  no_log: true
+
+- name: Fix-lane deploy overlay - subdirectories (0700, deploy-owned, no .git)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['gateway']
+    - precis_fix_lane_enabled | default(false) | bool
+    - precis_fix_lane_deploys | default(false) | bool
+    - item.state == 'directory'
+    - item.path is not regex('(^|/)([.]git|[.]DS_Store)(/|$)')
+  ansible.builtin.file:
+    path: "{{ precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo') }}/deploy/inventory/{{ item.path }}"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0700"
+  with_community.general.filetree: "{{ precis_overlay_dir }}"
+  loop_control:
+    label: "{{ item.path }}"
+  become: true
+  no_log: true
+
+- name: Fix-lane deploy overlay - copy the controller overlay files (0600, deploy-owned, no .git)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['gateway']
+    - precis_fix_lane_enabled | default(false) | bool
+    - precis_fix_lane_deploys | default(false) | bool
+    - item.state in ['file', 'link']
+    - item.path is not regex('(^|/)([.]git|[.]DS_Store)(/|$)')
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo') }}/deploy/inventory/{{ item.path }}"
+    owner: deploy
+    group: staff
+    mode: "0600"
+  with_community.general.filetree: "{{ precis_overlay_dir }}"
+  become: true
+  no_log: true
+
+- name: Fix-lane deploy vault key (deploy/.vault-pass, 0600)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['gateway']
+    - precis_fix_lane_enabled | default(false) | bool
+    - precis_fix_lane_deploys | default(false) | bool
+  ansible.builtin.copy:
+    content: "{{ lookup('file', precis_vault_pass_file) }}"
+    dest: "{{ precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo') }}/deploy/.vault-pass"
+    owner: deploy
+    group: staff
+    mode: "0600"
+  become: true
+  no_log: true
+
+- name: Fix-lane deploy prod DSN file (~/.secrets/pw/PRECIS_DATABASE_URL) dir
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['gateway']
+    - precis_fix_lane_enabled | default(false) | bool
+    - precis_fix_lane_deploys | default(false) | bool
+  ansible.builtin.file:
+    path: "/Users/deploy/.secrets/pw"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0700"
+  become: true
+  no_log: true
+
+- name: Fix-lane deploy prod DSN file (~/.secrets/pw/PRECIS_DATABASE_URL, 0600)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['gateway']
+    - precis_fix_lane_enabled | default(false) | bool
+    - precis_fix_lane_deploys | default(false) | bool
+  ansible.builtin.copy:
+    content: "{{ precis_worker_agent_dsn }}\n"
+    dest: /Users/deploy/.secrets/pw/PRECIS_DATABASE_URL
+    owner: deploy
+    group: staff
+    mode: "0600"
+  become: true
+  no_log: true
+
+- name: Fix-lane deploy cluster ssh key dir (~/.ssh/cluster)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['gateway']
+    - precis_fix_lane_enabled | default(false) | bool
+    - precis_fix_lane_deploys | default(false) | bool
+  ansible.builtin.file:
+    path: /Users/deploy/.ssh
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0700"
+  become: true
+  no_log: true
+
+- name: Fix-lane deploy cluster ssh key (~/.ssh/cluster, 0600, from the controller)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['gateway']
+    - precis_fix_lane_enabled | default(false) | bool
+    - precis_fix_lane_deploys | default(false) | bool
+  ansible.builtin.copy:
+    content: "{{ lookup('file', lookup('env', 'HOME') ~ '/.ssh/cluster') }}"
+    dest: /Users/deploy/.ssh/cluster
+    owner: deploy
+    group: staff
+    mode: "0600"
+  become: true
+  no_log: true
+
+- name: Fix-lane deploy cluster ssh public key present on the controller? (~/.ssh/cluster.pub)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['gateway']
+    - precis_fix_lane_enabled | default(false) | bool
+    - precis_fix_lane_deploys | default(false) | bool
+  ansible.builtin.stat:
+    path: "{{ lookup('env', 'HOME') }}/.ssh/cluster.pub"
+  delegate_to: localhost
+  become: false
+  register: precis_worker_agent_cluster_pub
+  no_log: true
+
+- name: Fix-lane deploy cluster ssh public key (~/.ssh/cluster.pub, 0644)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['gateway']
+    - precis_fix_lane_enabled | default(false) | bool
+    - precis_fix_lane_deploys | default(false) | bool
+    - precis_worker_agent_cluster_pub.stat.exists | default(false)
+  ansible.builtin.copy:
+    content: "{{ lookup('file', lookup('env', 'HOME') ~ '/.ssh/cluster.pub') }}"
+    dest: /Users/deploy/.ssh/cluster.pub
+    owner: deploy
+    group: staff
+    mode: "0644"
+  become: true
+  no_log: true
+
 - name: "§L seed: quest_loop_reconcile (mirrors PRECIS_QUEST_LOOP_ENABLED)"
   when: precis_quest_loop_enabled | default(false) | bool
   ansible.builtin.command: >-

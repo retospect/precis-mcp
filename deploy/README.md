@@ -343,6 +343,29 @@ symlink-free and checkout-independently: it uses **this** checkout's
 So a deploy works from any worktree — `/go` ships+deploys from one — with the
 overlay stored in exactly one place and no per-worktree secret copies.
 
+### Fix-lane deploys
+
+The factory's `release_deploy` job runs `scripts/release --deploy-only` as the
+`deploy` user in the gateway's fix-lane checkout
+(`precis_fix_repo_dir`, default `/Users/deploy/precis-fix-repo`), which has no
+overlay of its own. Set `precis_fix_lane_deploys: true` (with
+`precis_fix_lane_enabled`) in the gateway's host_vars and the
+`precis_worker_agent` role places, on every play, from the controller:
+
+- the overlay tree (`scripts/deploy` passes its symlink-resolved path as
+  `precis_overlay_dir`; `.git/` skipped) into `deploy/inventory/` — real
+  files, dirs 0700, files 0600;
+- the vault key (the sibling path `scripts/deploy` passes with the overlay) as `deploy/.vault-pass`, 0600;
+- the prod DSN into `~deploy/.secrets/pw/PRECIS_DATABASE_URL`, 0600 (what
+  `scripts/round` looks for);
+- the controller's `~/.ssh/cluster` (and `.pub`) into `~deploy/.ssh/`.
+
+All secret-bearing tasks are `no_log`. The play must run through
+`scripts/deploy` (the paths are its extra vars). **Authority:** with these
+files the deploy account holds the same deploy authority as the operator:
+it can decrypt the vault and reach every node. It is off by default; an
+overlay edit or key rotation lands on the next deploy, nothing is hand-copied.
+
 > **Back up `.vault-pass`.** It is the only key to the ansible-encrypted
 > `vault.yml`; it has no git history and no remote. Keep a copy in your password
 > manager — if the main checkout is lost, the vault is unrecoverable without it.

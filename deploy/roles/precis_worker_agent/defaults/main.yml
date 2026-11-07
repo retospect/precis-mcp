@@ -13,6 +13,14 @@ precis_worker_agent_venv: /opt/mcps/venv
 # §L (gr171431 §1): password-free — this daemon runs as `deploy` (UserName
 # below); ~deploy/.pgpass (pgpass role) already supplies the password.
 precis_worker_agent_dsn: "postgresql://{{ 'precis_system' if ((precis_db_own_cutover_done | default(false)) in [true, 'true', 'True', 'yes', 1, '1']) else 'agent_rw' }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+
+# When true (and precis_fix_lane_enabled), the fix-lane checkout gets the
+# operator's overlay, vault key, prod DSN file and cluster ssh key, so the
+# factory's release_deploy job can run `scripts/release --deploy-only` there.
+# The deploy account then holds the same deploy authority as the operator.
+# Off by default; set it in the gateway's host_vars (deploy/README.md
+# "Fix-lane deploys").
+precis_fix_lane_deploys: false
 precis_worker_agent_batch_size: 2
 precis_worker_agent_idle_seconds: 60
 
