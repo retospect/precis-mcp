@@ -193,6 +193,18 @@ class Rig:
             encoding="utf-8",
         )
         stub.chmod(0o755)
+        # remote_gate_wait's poll asks `scripts/ship-wait --once` for the
+        # run's deciding-set verdict each tick once the scripts/ship half
+        # lands: stage a shim that execs the real helper under this python
+        # so a --remote ship exercises the real call (its `gh` queries hit
+        # the test's stub, like every other). Unused while the gate still
+        # polls whole-run status,conclusion.
+        shim = scripts / "ship-wait"
+        shim.write_text(
+            f'#!/bin/sh\nexec "{sys.executable}" "{REPO / "scripts" / "ship-wait"}" "$@"\n',
+            encoding="utf-8",
+        )
+        shim.chmod(0o755)
         (self.primary / ".gitignore").write_text(
             ".claude/\n.ship-sha\ncoverage.xml\n", encoding="utf-8"
         )

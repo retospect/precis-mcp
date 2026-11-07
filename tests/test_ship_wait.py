@@ -39,9 +39,8 @@ SHIP_STATUS: shipped
 RED_LOG = """\
 ▶ remote gate — pushing ci/feat-x, waiting for check.yml on abc12345
 check run 223355 → https://example.invalid/run/223355
-✖ remote gate RED: failure — failing jobs:
+✖ remote gate RED (run 223355):
   test-linux (3.13, 5): failure
-  lint: success
   → scripts/ci-failed 223355
 full log: /tmp/ship-x.log
 SHIP_STATUS: error

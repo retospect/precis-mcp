@@ -10,8 +10,11 @@ non-harness diff on ``--remote`` is refused and named to ``--quick``.
 Reuses the real-git rig of test_ship_narrow_lock (origin.git, primary,
 worktrees); see that module's docstring. The ``gh`` stub drives the remote
 lane: ``api`` fails (an unreadable in-flight count proceeds), ``run list``
-answers one run, ``run view`` says it completed green — so a harness diff
-under ``--remote`` exercises the whole lane and lands.
+answers one run, and ``run view`` serves a green run however the gate asks —
+the whole-run ``status,conclusion`` today's ``remote_gate_wait`` polls,
+and the ``status,conclusion,jobs`` deciding-set query once ``scripts/ship``
+calls ``scripts/ship-wait --once`` — so a harness diff under ``--remote``
+exercises the whole lane and lands.
 """
 
 from __future__ import annotations
@@ -38,6 +41,9 @@ case "$1" in
         for a in "$@"; do
           case "$a" in
             status,conclusion) echo "completed success"; exit 0 ;;
+            status,conclusion,jobs)
+              echo '{"status":"completed","conclusion":"success","jobs":[{"name":"lint","status":"completed","conclusion":"success"}]}'
+              exit 0 ;;
             url) echo "https://example.invalid/run/1"; exit 0 ;;
           esac
         done
