@@ -135,6 +135,15 @@ quality-of-life and container items.
     `llm.decide.kind.<task_kind>` per-kind switch, a tier-floor rule and
     a 30-minute health guard. The first prod flips are the
     coordinator's, per kind.
+17. **Kimi interactive builder lane (td576126, 2026-11-06)** — landed:
+    `fleet-wave launch NAME --kimi` starts a tier R interactive pane
+    through `scripts/kimi-tree --tmux` (cap `FLEET_KIMI_MAX` 2), the
+    brief is typed into the pane, deny rules bite through the tree's own
+    `kimi-adapt.py` hook (trees cut after the landing only), and
+    event-watch gained the handoff/concurrent/quota reflexes. Not
+    covered: the STEWARD gate proving Never Ask honours PreToolUse
+    exit 2, and the real `kimi login` state — untested until the first
+    real pane.
 
 ## Parked
 

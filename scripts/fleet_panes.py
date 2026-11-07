@@ -236,6 +236,43 @@ def quota_banner(pane: str) -> bool:
     return bool(QUOTA_RE.search("\n".join(nonempty_tail(pane, 15))))
 
 
+# --- kimi subscription limits -------------------------------------------------
+# Wording mirrors src/precis/utils/llm/kimi.py classify_failure: the
+# concurrent-request limit is risk control (the plan's enforcement
+# signal), a usage limit is the account window spent.
+
+#: A real 429 line — "status code: 429" or the CLI's "You've reached your
+#: …" lead-in. Without the anchor a wording match is only a scrollback
+#: mention (a regex source line in a kimi.py diff).
+_KIMI_ANCHOR_RE = re.compile(r"reached your|status code: 429", re.I)
+_KIMI_CONCURRENT_RE = re.compile(r"concurrent request limit|too many requests", re.I)
+_KIMI_QUOTA_RE = re.compile(r"usage limit|monthly quota", re.I)
+
+
+def kimi_limit(pane: str) -> str:
+    """Kimi's subscription-limit wording in the pane tail: ``concurrent``
+    for the risk-control 429 (``concurrent request limit`` or ``too many
+    requests`` after a ``status code: 429``), ``quota`` for an account
+    usage limit (``usage limit``/``monthly quota``), else ``""``.
+
+    The class comes from the last anchored line onward, so a 429 whose
+    detail arrives on the next line still classifies.
+    """
+    tail = nonempty_tail(pane, 15)
+    last = -1
+    for i, ln in enumerate(tail):
+        if _KIMI_ANCHOR_RE.search(ln):
+            last = i
+    if last < 0:
+        return ""
+    text = "\n".join(tail[last:])
+    if _KIMI_CONCURRENT_RE.search(text):
+        return "concurrent"
+    if _KIMI_QUOTA_RE.search(text):
+        return "quota"
+    return ""
+
+
 #: Devin's status footer leads with the model ("SWE-2 High   Context: …").
 _DEVIN_MODEL_RE = re.compile(r"^\s*(SWE-[\w.]+(?:[ -]High)?)", re.I)
 
@@ -307,16 +344,19 @@ def last_meaningful(pane: str, width: int = 80) -> str:
 
 
 def detect_agent(command: str, window_name: str = "") -> str:
-    """Agent kind from the pane's current command, else the window prefix."""
+    """Agent kind from the pane's current command, else the window prefix.
+
+    A ``node`` command means Claude only as a last resort: a kimi window
+    whose binary reports ``node`` is still a kimi pane."""
     c = command.lower()
-    for agent in ("claude", "codex", "devin"):
+    for agent in ("claude", "codex", "devin", "kimi"):
         if agent in c:
             return agent
-    if c in ("node",):
-        return "claude"
-    for p in ("claude-", "devin-", "codex-"):
+    for p in ("claude-", "devin-", "codex-", "kimi-"):
         if window_name.startswith(p):
             return p[:-1]
+    if c in ("node",):
+        return "claude"
     return "other"
 
 
@@ -371,7 +411,11 @@ def pane_report(
     busy = bool(BUSY_RE.search(pane))
     if rep.dialog:
         rep.state = "prompt"
-    elif ERROR_RE.search("\n".join(nonempty_tail(pane, 12))):
+    elif ERROR_RE.search("\n".join(nonempty_tail(pane, 12))) or (
+        # Gated on the agent: a Claude pane editing kimi.py shows the
+        # same words in scrollback and must not trip the limit class.
+        agent == "kimi" and kimi_limit(pane)
+    ):
         rep.state = "error"
     elif not command_running:
         rep.state = "done"
@@ -470,4 +514,4 @@ def answerable_once(pane: str) -> str | None:
 #: Permission mode each agent is launched with by scripts/fleet-wave — the one
 #: place wave launch policy lives (Devin bypass: Reto ruling me499092
 #: "always bypass" for builder waves, 2026-10-12).
-LAUNCH_PERMISSION_MODE = {"claude": "auto", "devin": "dangerous"}
+LAUNCH_PERMISSION_MODE = {"claude": "auto", "devin": "dangerous", "kimi": "auto"}

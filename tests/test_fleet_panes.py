@@ -377,3 +377,64 @@ def test_answer_once_refuses_writes(env: dict[str, str]) -> None:
     _panes(env, {"0:codex-c": (_fix("codex-idle.txt"), "codex", 0)})
     proc = _run(env, "answer", "c", "once")
     assert proc.returncode == 3 and "no permission dialog" in proc.stdout
+
+
+# ── the Kimi pane (td576126) ──────────────────────────────────────────
+# The pane texts below are synthetic: no real Kimi capture exists.
+
+#: synthetic: no real Kimi capture exists — the subscription CLI prints
+#: the 429 wording verbatim (src/precis/utils/llm/kimi.py
+#: classify_failure).
+KIMI_LIMIT_CONCURRENT = (
+    "⏺ batch step failed\n"
+    "✕ status code: 429, message: You've reached your concurrent request "
+    "limit. Please try again later.\n"
+    "❯ \n"
+)
+KIMI_LIMIT_QUOTA = (
+    "⏺ batch step failed\n"
+    "✕ status code: 429, message: You've reached your 5-hour usage limit. "
+    "Your quota resets at 04:00 UTC.\n"
+    "❯ \n"
+)
+
+
+def test_detect_agent_kimi() -> None:
+    m = _lib()
+    assert m.detect_agent("kimi-code", "kimi-x") == "kimi"
+    assert m.detect_agent("kimi", "kimi-x") == "kimi"
+    assert m.detect_agent("zsh", "kimi-x") == "kimi"
+    assert m.detect_agent("zsh", "plain") == "other"
+    # kimi-code's comm can report `node`; the window prefix wins over the
+    # node→claude fallback so the pane is not misread as Claude.
+    assert m.detect_agent("node", "kimi-x") == "kimi"
+    assert m.detect_agent("node", "claude-x") == "claude"
+    assert m.detect_agent("node") == "claude"
+
+
+def test_kimi_limit_classes_and_the_agent_gate() -> None:
+    m = _lib()
+    assert m.kimi_limit(KIMI_LIMIT_CONCURRENT) == "concurrent"
+    assert m.kimi_limit(KIMI_LIMIT_QUOTA) == "quota"
+    # ``too many requests`` following a 429 is the same risk-control class.
+    assert m.kimi_limit("✕ status code: 429\ntoo many requests\n") == "concurrent"
+    # The anchor is required: a scrollback line carrying the wording —
+    # e.g. classify_failure's own regex in a kimi.py diff — is no event.
+    assert m.kimi_limit('x = r"concurrent request limit|too many requests"') == ""
+    assert m.kimi_limit("⏺ all quiet\n❯ \n") == ""
+    # A match makes the pane an error — but only for a kimi pane: a
+    # Claude pane quoting the same words stays idle.
+    assert m.pane_report("kimi", KIMI_LIMIT_CONCURRENT).state == "error"
+    rep = m.pane_report(
+        "claude",
+        "⏺ editing src/precis/utils/llm/kimi.py\n"
+        "\"status code: 429, message: You've reached your concurrent request "
+        'limit"\n'
+        "❯ \n",
+    )
+    assert rep.state != "error"
+
+
+def test_launch_permission_mode_has_kimi_auto() -> None:
+    m = _lib()
+    assert m.LAUNCH_PERMISSION_MODE["kimi"] == "auto"

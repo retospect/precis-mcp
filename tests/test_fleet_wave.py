@@ -11,6 +11,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -94,11 +95,17 @@ def env(tmp_path: Path) -> dict[str, str]:
     repo.mkdir()
     # launch writes the tree's permission files; apply refuses unless ignored.
     (repo / ".gitignore").write_text(".claude/*\n.devin/*\n", encoding="utf-8")
+    # A --kimi launch refuses a tree without the hook, so the fake repo
+    # carries it like a tree cut after the landing.
+    hook = repo / "scripts" / "hooks" / "kimi-adapt.py"
+    hook.parent.mkdir(parents=True)
+    shutil.copyfile(REPO / "scripts" / "hooks" / "kimi-adapt.py", hook)
+    hook.chmod(0o755)
     for cmd in (
         ["git", "init", "-q", "-b", "main"],
         ["git", "config", "user.email", "t@example.invalid"],
         ["git", "config", "user.name", "t"],
-        ["git", "add", ".gitignore"],
+        ["git", "add", ".gitignore", "scripts/hooks/kimi-adapt.py"],
         ["git", "commit", "-q", "-m", "init"],
         # close checks landedness against origin/main; there is no real
         # remote, so the ref is set by hand (fetch just fails silently).
@@ -808,7 +815,7 @@ def _fake_devin_tree(env: dict[str, str], tmp_path: Path) -> Path:
     returns the file the argv lands in."""
     log = tmp_path / "devin-tree.json"
     exe = Path(env["CWD"]) / "scripts" / "devin-tree"
-    exe.parent.mkdir()
+    exe.parent.mkdir(exist_ok=True)
     exe.write_text(
         f"#!{sys.executable}\n"
         "import json, sys\n"
@@ -1888,7 +1895,7 @@ sys.exit(int(os.environ.get("FAKE_SHIP_RC", "0")))
 def _ship_tree(env: dict[str, str], name: str, body: str = FAKE_SHIP) -> Path:
     """A builder worktree whose scripts/ship is a logging fake."""
     wt = _worktree(env, name)
-    (wt / "scripts").mkdir()
+    (wt / "scripts").mkdir(exist_ok=True)
     ship = wt / "scripts" / "ship"
     ship.write_text(body, encoding="utf-8")
     ship.chmod(0o755)
@@ -2716,3 +2723,472 @@ def test_event_watch_quota_send_poll_does_not_count(env: dict[str, str]) -> None
     # second (the count is in-memory per watcher).
     out = _run(env, *_EW, "q", "--ticks", "2").stdout
     assert "error" in out and "quota" in out
+
+
+# ── launch --kimi (td576126): an interactive pane under tier R ──────
+# The pane fixtures below are synthetic: no real Kimi capture exists.
+
+
+def _fake_kimi_tree(env: dict[str, str], tmp_path: Path, rc: int = 0) -> Path:
+    """A stub ``<repo>/scripts/kimi-tree`` that logs its argv and exits
+    ``rc``; returns the file the argv lands in (absent until it runs)."""
+    log = tmp_path / f"kimi-tree-{rc}.json"
+    exe = Path(env["CWD"]) / "scripts" / "kimi-tree"
+    exe.parent.mkdir(exist_ok=True)
+    exe.write_text(
+        f"#!{sys.executable}\n"
+        "import json, sys\n"
+        f"open({str(log)!r}, 'w', encoding='utf-8').write(\n"
+        "    json.dumps(sys.argv[1:]))\n"
+        'sys.stderr.write("stub kimi-tree refused\\n")\n'
+        f"sys.exit({rc})\n",
+        encoding="utf-8",
+    )
+    exe.chmod(0o755)
+    return log
+
+
+def _kimi_launch_fills(env: dict[str, str]) -> dict[str, str]:
+    return {
+        **env,
+        "FLEET_COORDINATOR": "c",
+        "FLEET_RELEASE_OWNER": "r",
+        "FLEET_APPROVAL": "approved",
+    }
+
+
+#: synthetic: no real Kimi capture exists
+KIMI_IDLE = "● kimi ready\n❯ \n"
+#: synthetic: no real Kimi capture exists — the trust dialog Kimi shows in
+#: a folder it has not seen; only a human answers it.
+KIMI_TRUST = "● kimi\nTrust this folder?\n 1. Yes\n 2. No\n"
+#: synthetic: no real Kimi capture exists — a numbered permission dialog.
+KIMI_NUMBERED = "Do you want to proceed?\n ❯ 1. Yes\n   2. No\n"
+
+
+def test_kimi_launch_dry_run_resolves_kimi_tree_tmux_and_never_prompt(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _windows(env, {})
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _kimi_launch_fills(env)
+    proc = _run(
+        env, "launch", "k-x", "--brief", str(brief), "--kimi",
+        "--settle", "0", "--dry-run",
+    )  # fmt: skip
+    assert proc.returncode == 0, proc.stderr
+    line = next(ln for ln in proc.stdout.splitlines() if "kimi-tree" in ln)
+    assert "--mode auto" in line and "--tmux" in line
+    # The brief is typed into the pane after launch — kimi is never given
+    # a prompt flag or headless mode.
+    assert "Read scratch/kimi-brief.md" in proc.stdout
+    tokens = set(proc.stdout.split())
+    assert not {"--prompt", "-p", "--prompt-file"} & tokens
+
+
+def test_kimi_launch_runs_kimi_tree_by_argv_and_prints_the_lane(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    log = _fake_kimi_tree(env, tmp_path)
+    _windows(env, {})
+    _pane_alive(env, "kimi-k-x", KIMI_IDLE)
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _kimi_launch_fills(env)
+    proc = _run(
+        env, "--model", "sonnet", "launch", "k-x", "--brief", str(brief),
+        "--kimi", "--settle", "0",
+    )  # fmt: skip
+    assert proc.returncode == 0, proc.stderr
+    argv = json.loads(log.read_text(encoding="utf-8"))
+    assert argv[:2] == ["k-x", "--mode"]
+    assert argv[argv.index("--mode") + 1] == "auto"
+    assert "--tmux" in argv
+    # --model/FLEET_MODEL are Claude aliases and are NOT forwarded.
+    assert "--model" not in argv
+    assert "launched kimi-k-x" in proc.stdout
+    lane = next(ln for ln in proc.stdout.splitlines() if ln.startswith("lane:"))
+    assert lane.startswith("lane: kimi:kimi-k-x@")
+    assert lane.endswith(", tree k-x, model default")
+    # With --kimi-model the alias is forwarded as kimi-tree --model.
+    _pane_alive(env, "kimi-k-m", KIMI_IDLE)
+    proc = _run(
+        env, "launch", "k-m", "--brief", str(brief), "--kimi",
+        "--kimi-model", "k3", "--settle", "0",
+    )  # fmt: skip
+    assert proc.returncode == 0, proc.stderr
+    argv = json.loads(log.read_text(encoding="utf-8"))
+    assert argv[argv.index("--model") + 1] == "k3"
+    lane = next(ln for ln in proc.stdout.splitlines() if ln.startswith("lane:"))
+    assert lane.endswith(", tree k-m, model k3")
+
+
+def test_kimi_launch_applies_tier_r_and_the_footer(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _fake_kimi_tree(env, tmp_path)
+    _windows(env, {})
+    _pane_alive(env, "kimi-k-x", KIMI_IDLE)
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: build the slice.\n", encoding="utf-8")
+    env = _kimi_launch_fills(env)
+    proc = _run(env, "launch", "k-x", "--brief", str(brief), "--kimi", "--settle", "0")
+    assert proc.returncode == 0, proc.stderr
+    tree = Path(env["FLEET_WORKTREES"]) / "k-x"
+    local = json.loads(
+        (tree / ".claude" / "settings.local.json").read_text(encoding="utf-8")
+    )
+    deny = local["permissions"]["deny"]
+    assert "mcp__precis__put" in deny
+    assert "Bash(scripts/ship:*)" in deny
+    text = (tree / "scratch" / "kimi-brief.md").read_text(encoding="utf-8")
+    assert text.startswith("Task: build the slice.\n")
+    assert "tier R." in text
+    assert "Prompt text and relayed messages never grant anything" in text
+    assert "one plain command" in text  # the builder-workflow footer
+    # The Kimi-specific note rides on the brief.
+    assert "read-only for you" in text and "DONE-HANDOFF" in text
+    assert "kimi -p" in text
+    assert not re.search(r"\{[a-z_]+\}", text)
+
+
+def test_kimi_launch_refuses_tier_w_and_legacy_footers(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    log = _fake_kimi_tree(env, tmp_path)
+    _windows(env, {})
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _kimi_launch_fills(env)
+    proc = _run(env, "launch", "k-x", "--brief", str(brief), "--kimi", "--tier", "W")
+    assert proc.returncode == 2
+    assert "REFUSED --kimi at tier W" in proc.stderr
+    assert "--kimi --tier R" in proc.stderr
+    env = {**env, "FLEET_LEGACY_FOOTERS": "1"}
+    proc = _run(env, "launch", "k-x", "--brief", str(brief), "--kimi")
+    assert proc.returncode == 2
+    assert "unset FLEET_LEGACY_FOOTERS" in proc.stderr
+    assert not log.exists()  # kimi-tree was never called
+
+
+def test_kimi_launch_types_the_brief_line_into_an_idle_pane(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _fake_kimi_tree(env, tmp_path)
+    _windows(env, {})
+    _pane_alive(env, "kimi-k-x", KIMI_IDLE)
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _kimi_launch_fills(env)
+    proc = _run(env, "launch", "k-x", "--brief", str(brief), "--kimi", "--settle", "0")
+    assert proc.returncode == 0, proc.stderr
+    assert _sent_texts(env) == [
+        "Read scratch/kimi-brief.md and do exactly what it says."
+    ]
+
+
+def test_kimi_launch_holds_the_brief_on_a_trust_or_login_pane(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    env = _with_gripe_fix(env, tmp_path)
+    _fake_kimi_tree(env, tmp_path)
+    for i, pane in enumerate((KIMI_TRUST, KIMI_NUMBERED)):
+        Path(env["FAKE_TMUX_DIR"], "log.jsonl").unlink(missing_ok=True)
+        _windows(env, {})
+        _pane_alive(env, "kimi-k-x", pane)
+        proc = _run(env, "launch", "k-x", "--batch", "b-x", "--kimi", "--settle", "0")
+        assert proc.returncode == 3, proc.stdout + proc.stderr
+        assert "launched kimi-k-x" in proc.stdout
+        assert "the brief is NOT delivered" in proc.stdout
+        assert 'send-line kimi-k-x "Read scratch/kimi-brief.md' in proc.stdout
+        calls = _tmux_calls(env)
+        # The window is kept; nothing is typed into a dialog.
+        assert not [c for c in calls if c[0] == "kill-window"]
+        assert not [c for c in calls if c[0] in ("send-keys", "set-buffer")]
+        # The batch assign is still recorded — the window IS up.
+        log = Path(env["FAKE_GRIPE_FIX_LOG"]).read_text(encoding="utf-8")
+        assert log.count('"assign"') == i + 1
+
+
+def test_kimi_launch_refuses_a_window_that_died(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    env = _with_gripe_fix(env, tmp_path)
+    _fake_kimi_tree(env, tmp_path)
+    _windows(env, {})  # no pane for kimi-k-x: the window is gone
+    proc = _run(env, "launch", "k-x", "--batch", "b-x", "--kimi", "--settle", "0")
+    assert proc.returncode == 3
+    assert "REFUSED kimi-k-x: window gone" in proc.stderr
+    assert "kimi-tree" in proc.stderr
+    assert "launched" not in proc.stdout
+    log = Path(env["FAKE_GRIPE_FIX_LOG"]).read_text(encoding="utf-8")
+    assert '"assign"' not in log
+
+
+def test_kimi_launch_surfaces_a_kimi_tree_refusal(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _fake_kimi_tree(env, tmp_path, rc=1)
+    _windows(env, {})
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _kimi_launch_fills(env)
+    proc = _run(env, "launch", "k-x", "--brief", str(brief), "--kimi", "--settle", "0")
+    assert proc.returncode == 3
+    assert "REFUSED kimi-k-x: kimi-tree exited 1" in proc.stderr
+    assert "stub kimi-tree refused" in proc.stderr
+    assert "launched" not in proc.stdout
+
+
+def test_kimi_launch_refuses_a_tree_without_the_hook(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """A tree cut before the hook landed has no enforcement: launch
+    refuses instead of starting an unguarded pane."""
+    log = _fake_kimi_tree(env, tmp_path)
+    _windows(env, {})
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _kimi_launch_fills(env)
+    tree = Path(env["FLEET_WORKTREES"]) / "k-old"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", str(tree), "HEAD"],
+        cwd=env["CWD"],
+        check=True,
+    )
+    hook = tree / "scripts" / "hooks" / "kimi-adapt.py"
+    hook.unlink()
+    proc = _run(
+        env, "launch", "k-old", "--brief", str(brief), "--kimi", "--settle", "0"
+    )
+    assert proc.returncode == 3
+    assert "kimi-adapt.py" in proc.stderr and "REFUSED kimi-k-old" in proc.stderr
+    assert not log.exists()  # kimi-tree never ran
+    # Present but not executable refuses the same way.
+    hook.write_text("# stub\n", encoding="utf-8")
+    proc = _run(
+        env, "launch", "k-old", "--brief", str(brief), "--kimi", "--settle", "0"
+    )
+    assert proc.returncode == 3 and "REFUSED kimi-k-old" in proc.stderr
+    assert not log.exists()
+
+
+def test_kimi_launch_refuses_a_non_integer_kimi_max(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _windows(env, {})
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _kimi_launch_fills(env)
+    env["FLEET_KIMI_MAX"] = "lots"
+    proc = _run(env, "launch", "k-x", "--brief", str(brief), "--kimi", "--settle", "0")
+    assert proc.returncode == 2 and "FLEET_KIMI_MAX" in proc.stderr
+
+
+def test_kimi_launch_batch_assigns_session_kimi_window(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    env = _with_gripe_fix(env, tmp_path)
+    _fake_kimi_tree(env, tmp_path)
+    _windows(env, {})
+    _pane_alive(env, "kimi-k-x", KIMI_IDLE)
+    proc = _run(env, "launch", "k-x", "--batch", "b-x", "--kimi", "--settle", "0")
+    assert proc.returncode == 0, proc.stderr
+    calls = [
+        json.loads(ln)
+        for ln in Path(env["FAKE_GRIPE_FIX_LOG"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assign = next(c for c in calls if c[0] == "assign")
+    assert assign[assign.index("--session") + 1] == "kimi:kimi-k-x"
+    assert assign[assign.index("--tree") + 1] == "k-x"
+
+
+def test_kimi_launch_cap_refuses_a_third_pane(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _fake_kimi_tree(env, tmp_path)
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _kimi_launch_fills(env)
+    _windows(env, {"kimi-a": KIMI_IDLE, "kimi-b": KIMI_IDLE})
+    proc = _run(env, "launch", "k-c", "--brief", str(brief), "--kimi", "--settle", "0")
+    assert proc.returncode == 2
+    assert "REFUSED kimi-k-c" in proc.stderr
+    assert "2 Kimi panes" in proc.stderr
+    assert "kimi-a" in proc.stderr and "kimi-b" in proc.stderr
+    assert "--kimi-max" in proc.stderr and "FLEET_KIMI_MAX" in proc.stderr
+    assert not (Path(env["FLEET_WORKTREES"]) / "k-c").exists()
+    # The same name as a live window is the exists shortcut, not the cap.
+    proc = _run(env, "launch", "a", "--brief", str(brief), "--kimi", "--settle", "0")
+    assert proc.returncode == 0 and "exists: kimi-a" in proc.stdout
+    # Raising the cap by flag or env launches.
+    _pane_alive(env, "kimi-k-c", KIMI_IDLE)
+    proc = _run(
+        env, "launch", "k-c", "--brief", str(brief), "--kimi",
+        "--kimi-max", "3", "--settle", "0",
+    )  # fmt: skip
+    assert proc.returncode == 0, proc.stderr
+    _pane_alive(env, "kimi-k-d", KIMI_IDLE)
+    env2 = {**env, "FLEET_KIMI_MAX": "4"}
+    proc = _run(
+        env2, "launch", "k-d", "--brief", str(brief), "--kimi",
+        "--settle", "0",
+    )  # fmt: skip
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_kimi_is_exclusive_with_devin_and_codex(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _windows(env, {})
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _kimi_launch_fills(env)
+    for extra in (("--devin",), ("--codex",)):
+        proc = _run(env, "launch", "x", "--brief", str(brief), "--kimi", *extra)
+        assert proc.returncode == 2 and "exclusive" in proc.stderr
+
+
+def test_kimi_model_requires_kimi(env: dict[str, str], tmp_path: Path) -> None:
+    _windows(env, {})
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _kimi_launch_fills(env)
+    proc = _run(env, "launch", "x", "--brief", str(brief), "--kimi-model", "k3")
+    assert proc.returncode == 2 and "--kimi-model needs --kimi" in proc.stderr
+
+
+# ── event-watch: the Kimi pane (td576126) ────────────────────────────
+
+#: synthetic: no real Kimi capture exists — DONE-HANDOFF printed at the
+#: context ceiling; Kimi's bullet glyph is unknown, so anything goes.
+KIMI_HANDOFF = "⏺ wrote scratch/handoff.md\n● DONE-HANDOFF\n❯ \n"
+#: synthetic: no real Kimi capture exists — the subscription CLI prints the
+#: 429 wording verbatim (src/precis/utils/llm/kimi.py classify_failure).
+KIMI_CONCURRENT = (
+    "⏺ batch step failed\n"
+    "✕ status code: 429, message: You've reached your concurrent request "
+    "limit. Please try again later.\n"
+    "❯ \n"
+)
+KIMI_QUOTA = (
+    "⏺ batch step failed\n"
+    "✕ status code: 429, message: You've reached your 5-hour usage limit. "
+    "Your quota resets at 04:00 UTC.\n"
+    "❯ \n"
+)
+
+
+def test_event_watch_kimi_pane_done_handoff_resumes_once(
+    env: dict[str, str],
+) -> None:
+    _windows(env, {"kimi-h": KIMI_HANDOFF})
+    proc = _run(env, *_EW, "h", "--ticks", "1")
+    assert proc.stdout == "", proc.stdout + proc.stderr
+    texts = _sent_texts(env)
+    assert texts[0] == "/clear"
+    assert "Resume your batch" in texts[1]
+    assert "handoff" in _ew_log(env)
+    n = len(_sent_texts(env))
+    assert _run(env, *_EW, "h", "--ticks", "1").stdout == ""
+    assert len(_sent_texts(env)) == n
+
+
+def test_event_watch_kimi_concurrent_limit_resends_once_without_model(
+    env: dict[str, str],
+) -> None:
+    """The concurrent-request limit is risk-control: one resume per
+    cooldown, never a /model switch."""
+    _windows(env, {"kimi-c": KIMI_CONCURRENT})
+    proc = _run(env, *_EW, "c", "--ticks", "1")
+    assert proc.stdout == "", proc.stdout + proc.stderr
+    texts = _sent_texts(env)
+    assert len(texts) == 1 and "Resume your batch" in texts[0]
+    assert not any(t.startswith("/model") for t in texts)
+    assert "quota" in _ew_log(env)
+    assert _run(env, *_EW, "c", "--ticks", "1").stdout == ""
+    assert len(_sent_texts(env)) == 1
+
+
+def test_event_watch_kimi_quota_prints_and_sends_nothing(
+    env: dict[str, str],
+) -> None:
+    """A usage-limit 429 cannot be retried before the window resets — no
+    reflex runs; the pane becomes a coordinator event."""
+    _windows(env, {"kimi-q": KIMI_QUOTA})
+    assert _run(env, *_EW, "q", "--ticks", "1").stdout == ""
+    assert _sent_texts(env) == []
+    out = _run(env, *_EW, "q", "--ticks", "2").stdout
+    lines = [ln for ln in out.splitlines() if ln]
+    assert len(lines) == 1 and "kimi-q" in lines[0] and "no reflex" in lines[0]
+    assert _sent_texts(env) == []
+
+
+def test_event_watch_kimi_dead_pane_prints_done_once(env: dict[str, str]) -> None:
+    _windows(env, {"kimi-d": "user@host ~ % \n"})
+    d = Path(env["FAKE_TMUX_DIR"])
+    (d / "facts-kimi-d").write_text("zsh\t1\n", encoding="utf-8")
+    out = _run(env, *_EW, "d", "--ticks", "1").stdout
+    assert "kimi-d" in out and "done: agent exited" in out
+    assert _run(env, *_EW, "d", "--ticks", "1").stdout == ""
+
+
+def test_event_watch_kimi_board_done_line_for_the_tree(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    board = tmp_path / "board.log"
+    board.write_text("", encoding="utf-8")
+    env = {**env, "PRECIS_BOARD": str(board)}
+    _windows(env, {"kimi-x": KIMI_IDLE})
+    assert _run(env, *_EW, "x", "--ticks", "1").stdout == ""
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    board.write_text(
+        f"{now}\tkimi-x\tdone kimi-x at abc1234: shipped\n", encoding="utf-8"
+    )
+    out = _run(env, *_EW, "x", "--ticks", "1").stdout
+    assert "kimi-x" in out and "board: done" in out
+    assert _run(env, *_EW, "x", "--ticks", "1").stdout == ""
+
+
+def test_event_watch_a_claude_pane_quoting_kimi_limit_text_is_not_an_error(
+    env: dict[str, str],
+) -> None:
+    """The kimi_limit classifier is gated on the agent: a Claude pane
+    editing src/precis/utils/llm/kimi.py shows the same words in
+    scrollback and must not trip the reflex."""
+    pane = (
+        "⏺ editing src/precis/utils/llm/kimi.py\n"
+        "\"status code: 429, message: You've reached your concurrent request "
+        'limit"\n'
+        "❯ \n"
+    )
+    _windows(env, {"claude-e": pane})
+    proc = _run(env, *_EW, "e", "--ticks", "2")
+    assert proc.stdout == "", proc.stdout + proc.stderr
+    assert _sent_texts(env) == []
+
+
+def test_event_watch_non_kimi_handoff_keeps_the_bullet_anchor(
+    env: dict[str, str],
+) -> None:
+    """The loose bullet is Kimi's only: another agent's pane showing an
+    unknown glyph is not a bare DONE-HANDOFF and gets no resume."""
+    _windows(env, {"devin-x": "⏺ wrote scratch/handoff.md\n● DONE-HANDOFF\n❯ \n"})
+    proc = _run(env, *_EW, "x", "--ticks", "1")
+    assert proc.stdout == "", proc.stdout + proc.stderr
+    assert _sent_texts(env) == []
+
+
+def test_handoff_re_ignores_prose_mentions() -> None:
+    m = _module()
+    for hre in (m._HANDOFF_RE, m._HANDOFF_RE_KIMI):
+        assert hre.search("see DONE-HANDOFF below") is None
+        assert hre.search("x DONE-HANDOFF") is None
+        assert hre.search("DONE-HANDOFF")
+        assert hre.search("⏺ DONE-HANDOFF")
+    # An unknown bullet glyph matches only the kimi form.
+    assert m._HANDOFF_RE.search("● DONE-HANDOFF") is None
+    assert m._HANDOFF_RE_KIMI.search("● DONE-HANDOFF")

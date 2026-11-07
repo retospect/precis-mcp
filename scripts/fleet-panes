@@ -16,7 +16,7 @@
                                      refuses and says why
 
 NAME resolves as ``sess:name``, ``sess:idx``, a unique window name, or a wave
-name (``claude-``/``devin-``/``codex-`` prefix tried). Parsing lives in
+name (``claude-``/``devin-``/``codex-``/``kimi-`` prefix tried). Parsing lives in
 scripts/fleet_panes.py (pure text); the pane-tail hash state that powers
 ``frozen`` sits in FLEET_PANES_STATE (default
 ~/.claude/projects/<esc checkout>/fleet-panes, so a reaped tree cannot take
@@ -90,7 +90,7 @@ def resolve(name: str, rs: list[dict]) -> dict | None:
     exact = [r for r in rs if r["name"] == name]
     if len(exact) == 1:
         return exact[0]
-    for p in ("claude-", "devin-", "codex-"):
+    for p in ("claude-", "devin-", "codex-", "kimi-"):
         hit = [r for r in rs if r["name"] == p + name]
         if hit:
             return hit[0]

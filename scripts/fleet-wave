@@ -8,8 +8,10 @@ The thread-session fleet (one window per roadmap thread) is
 ``scripts/fleet``; this is the per-wave kit beside it. Runbook: the
 ``gripe-fleet`` skill (.claude/skills/gripe-fleet/SKILL.md).
 
-    fleet-wave launch NAME --brief FILE [--tier R|W] [--devin [--devin-model ID]]
-    fleet-wave launch NAME --batch SLUG [--tier R|W] [--devin|--codex]
+    fleet-wave launch NAME --brief FILE [--tier R|W] [--devin [--devin-model ID]|
+                                        --codex|--kimi [--kimi-model A]
+                                        [--kimi-max N]]
+    fleet-wave launch NAME --batch SLUG [--tier R|W] [--devin|--codex|--kimi]
                                         brief = the batch dossier rendered from
                                         the gripes (precis gripe-fix brief); the
                                         launch records host/session/tree on them
@@ -117,10 +119,15 @@ handles the routine ones itself and logs them to
 ``$FLEET_STATE/event-watch.log`` — a devin pane dead on a quota-exhausted
 banner gets ``/model swe-2-high`` plus the resume line (once per pane per
 ``--cooldown-min``, default 30; a pane already on swe-2-high is printed
-for judgment instead), a bare DONE-HANDOFF gets handoff-wait's ``/clear``
-+ resume, and an idle pane over the ctx threshold (``--ceiling`` % or
-``--tokens`` tokens — ctx-guard's rules: never mid-turn, never under a
-live subagent task) gets ``/compact``. Only judgment events print: board
+for judgment instead), a kimi pane on the concurrent-limit banner gets
+the resume line once per cooldown (no ``/model`` — the enforcement
+signal is not hammered) while a kimi usage-limit has no reflex and
+prints ``error: kimi quota exhausted (no reflex)``, a bare DONE-HANDOFF
+gets handoff-wait's ``/clear`` + resume, and an idle pane over the ctx
+threshold (``--ceiling`` % or ``--tokens`` tokens — ctx-guard's rules:
+never mid-turn, never under a live subagent task) gets ``/compact`` — a
+kimi pane prints no ctx figure, so ctx-guard and the ``/compact``
+reflex leave it alone. Only judgment events print: board
 done/red/blocked/wedged lines from the watched trees (the watcher's own
 ``board.pos`` byte cursor — seeded at EOF on the first run, no history
 replay — plus ``board.pending`` for alert lines not yet printed or from
@@ -196,6 +203,26 @@ refused for ``--codex`` (its ``--sandbox read-only`` cannot commit);
 (no "launched", no assign) when the window is already gone — codex
 exits at once on a bad flag set.
 
+``--kimi`` launches a Kimi Code builder (td576126): window ``kimi-NAME``
+over ``scripts/kimi-tree NAME --mode auto --tmux`` — the interactive TUI
+under the CLI's own login. ``kimi -p`` headless is forbidden and the TUI
+takes no prompt flag, so the brief lands at
+``<tree>/scratch/kimi-brief.md`` (the batch text plus the Kimi rules
+note) and the one ``Read scratch/kimi-brief.md and do exactly what it
+says.`` line is typed through send-line's machinery once the pane is up.
+Only tier R is enforced on a Kimi pane — ``--tier W`` and
+``FLEET_LEGACY_FOOTERS=1`` are refused — and the tier file alone does
+not bind the CLI: the deny rules bite through the tree's own
+``scripts/hooks/kimi-adapt.py`` copy (trees cut after this lands), so
+the launch refuses when the apply did not take. A pane showing a trust
+or login dialog holds the brief — the window stays up, the batch assign
+still records, and only the user answers the dialog (the Devin rule).
+At most ``FLEET_KIMI_MAX``/``--kimi-max`` live ``kimi-`` panes (default
+2, the plan's concurrent cap). Like ``--devin``, the launch writes no
+board line and no lease tag; ``--kimi-model`` passes through as
+``kimi-tree --model`` (``FLEET_MODEL`` is a Claude alias and is not
+forwarded).
+
 ``reassign``, ``handoff-wait`` and ``cites`` replace the GRIPE_FIX
 coordinator's scratch scripts (reassign.sh, handoff-wait.sh,
 dupcheck.sh): a builder re-pointed at a new batch or a ``--brief``
@@ -217,6 +244,8 @@ Configuration (env, or the matching flag before the subcommand):
   FLEET_LEGACY_FOOTERS=1          pre-v2 footers, no apply (one release)
   FLEET_COMPACT_TOKENS            ctx-guard's peer-loop compact threshold
                                   (default of --tokens; bare flag = 120k)
+  FLEET_KIMI_MAX                  cap on live kimi- panes (default 2;
+                                  --kimi-max wins)
 """
 
 from __future__ import annotations
@@ -225,6 +254,7 @@ import argparse
 import fcntl
 import hashlib
 import itertools
+import json
 import os
 import re
 import shlex
@@ -252,6 +282,7 @@ from fleet_panes import (
     devin_model,
     dialog_command,
     dialog_type,
+    kimi_limit,
     nonempty_tail,
     pane_report,
     quota_banner,
@@ -261,7 +292,7 @@ from fleet_panes import (
 #: Above this length, or with a newline, text goes in as one bracketed
 #: paste (typed text loses its head in a Claude pane; see scripts/fleet).
 PASTE_MIN = 200
-PREFIXES = ("claude-", "devin-", "codex-")
+PREFIXES = ("claude-", "devin-", "codex-", "kimi-")
 
 #: The wave's context refuse line in % used (gr515267). Brief text alone
 #: did not hold the 70% handoff ceiling — five builders ran to 85-99% on
@@ -465,9 +496,9 @@ def _ship_lock_pid(tree: Path) -> int | None:
     if not gitdir:
         return None
     try:
-        text = (
-            Path(gitdir) / "precis-ship-worktree.lock.d" / "holder"
-        ).read_text(encoding="utf-8")
+        text = (Path(gitdir) / "precis-ship-worktree.lock.d" / "holder").read_text(
+            encoding="utf-8"
+        )
     except OSError:
         return None
     m = re.search(r"pid=(\d+)", text)
@@ -1173,8 +1204,11 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    if a.devin and a.codex:
-        print("fleet-wave: --devin and --codex are exclusive", file=sys.stderr)
+    if sum(bool(v) for v in (a.devin, a.codex, a.kimi)) > 1:
+        print(
+            "fleet-wave: --devin, --codex and --kimi are exclusive",
+            file=sys.stderr,
+        )
         return 2
     if a.devin_model:
         if not a.devin:
@@ -1187,11 +1221,65 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
-    vendor = "devin" if a.devin else "codex" if a.codex else "claude"
+    if a.kimi_model:
+        if not a.kimi:
+            print("fleet-wave: --kimi-model needs --kimi", file=sys.stderr)
+            return 2
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", a.kimi_model):
+            print(
+                f"fleet-wave: bad --kimi-model {a.kimi_model!r} "
+                "(aliases look like k3 or kimi-latest)",
+                file=sys.stderr,
+            )
+            return 2
+    vendor = (
+        "devin" if a.devin else "codex" if a.codex else "kimi" if a.kimi else "claude"
+    )
     win = f"{vendor}-{name}"
     if win in f.windows():
         print(f"exists: {win}")
         return 0
+    tier = TIER_ALIASES.get(a.tier, a.tier)
+    if a.kimi:
+        # The plan caps concurrent Kimi requests (gr575042): refuse a
+        # pane over the cap — flag wins over env, env over default 2.
+        raw_max = str(a.kimi_max or os.environ.get("FLEET_KIMI_MAX", "") or "2")
+        try:
+            cap = int(raw_max)
+        except ValueError:
+            print(
+                f"fleet-wave: bad FLEET_KIMI_MAX {raw_max!r} "
+                "(want an integer; --kimi-max N / FLEET_KIMI_MAX=N)",
+                file=sys.stderr,
+            )
+            return 2
+        up = [w for w in f.windows() if w.startswith("kimi-")]
+        if len(up) >= cap:
+            print(
+                f"fleet-wave: REFUSED {win}: {cap} Kimi panes are already up "
+                f"({', '.join(up)}); the plan limits concurrent requests. "
+                "next: fleet-wave close <name> once its branch landed, or "
+                "raise the cap: --kimi-max 3 / FLEET_KIMI_MAX=3",
+                file=sys.stderr,
+            )
+            return 2
+        if tier != "R":
+            print(
+                f"fleet-wave: REFUSED --kimi at tier {tier}: only tier R is "
+                "enforced on a Kimi pane. next: fleet-wave launch "
+                f"{name} --kimi --tier R ...",
+                file=sys.stderr,
+            )
+            return 2
+        if _legacy_footers():
+            # The legacy path skips the apply a Kimi pane is enforced by.
+            print(
+                "fleet-wave: REFUSED --kimi under FLEET_LEGACY_FOOTERS: the "
+                "legacy launch skips the authority apply that puts tier R "
+                "on the tree. next: unset FLEET_LEGACY_FOOTERS",
+                file=sys.stderr,
+            )
+            return 2
     if a.batch:
         if a.dry_run:
             print(
@@ -1222,7 +1310,6 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
             )
         else:
             a.brief = str(_render_batch_brief(f, a.batch, win))
-    tier = TIER_ALIASES.get(a.tier, a.tier)
     if a.codex and tier != "W":
         print(
             f"fleet-wave: REFUSED --codex at tier {tier}: its codex flags are a "
@@ -1254,6 +1341,8 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
         codex = _apply_authority(tier, _ensure_tree(f, name))
     if not a.dry_run:
         _mark_claim_purpose(f, name, _claim_specs(f, name, brief))
+    if a.kimi:
+        return _launch_kimi(f, a, name=name, win=win, tier=tier, text=text)
     if a.devin:
         argv = [
             str(f.repo / "scripts" / "devin-tree"),
@@ -1430,6 +1519,154 @@ def _codex_cmd(flags: str) -> str:
     return f"codex {flags} 'Read scratch/codex-brief.md and do exactly what it says.'"
 
 
+#: The Kimi pane's own rules, appended after the tier footer: interactive
+#: only (never ``kimi -p``), precis read-only under tier R, the board/
+#: purpose reporting channel, and the DONE-HANDOFF finish line the
+#: event-watch reflex resumes on.
+_KIMI_NOTE = (
+    "\n\nYou are an interactive Kimi pane. The precis MCP is read-only for "
+    "you: tier R denies the write tools and the hook will refuse them — do "
+    "not call put/edit/delete/tag/link or get the same effect another way. "
+    "Your commit footer is the one in .kimi-code/AGENTS.md. Report status "
+    "with one line in .claude/purpose plus `scripts/board post`. At the "
+    "context ceiling write the handoff and reply with a bare DONE-HANDOFF "
+    "line. Never run `kimi -p` — headless automation is forbidden.\n"
+)
+
+#: A pane that needs a human before the brief can be typed: Kimi's
+#: first-seen-folder trust dialog or a login/device-code screen. Only
+#: Reto answers these — never send-keys into one (the Devin rule,
+#: docs/runbooks/tmux-worker-launch.md).
+_KIMI_HOLD_RE = re.compile(r"trust|log ?in|device code|authenticat", re.I)
+
+
+def _launch_kimi(
+    f: Fleet,
+    a: argparse.Namespace,
+    *,
+    name: str,
+    win: str,
+    tier: str,
+    text: str,
+) -> int:
+    """Window ``kimi-NAME`` over an interactive ``kimi-tree --tmux`` pane.
+
+    ``kimi -p`` is headless automation, which the subscription forbids —
+    there is no way to start the TUI with a prompt — so the brief lands
+    in ``<tree>/scratch/kimi-brief.md`` and the one "Read …" line is
+    typed into the pane once it is up. A trust or login dialog holds the
+    launch (rc 3): the window stays up, the batch assign still records,
+    and the coordinator answers the dialog and sends the line by hand.
+    The tree must ship the hook — launch refuses when
+    ``<tree>/scripts/hooks/kimi-adapt.py`` is absent or not executable,
+    since the file is tracked in the repo, not copied in at launch.
+    """
+    argv = [
+        str(f.repo / "scripts" / "kimi-tree"),
+        name,
+        "--mode",
+        LAUNCH_PERMISSION_MODE["kimi"],
+        "--tmux",
+    ]
+    if f.session:
+        argv.append(f.session)
+    if a.kimi_model:
+        argv += ["--model", a.kimi_model]
+    if a.dry_run:
+        print(" ".join(argv))
+        print("then type: Read scratch/kimi-brief.md and do exactly what it says.")
+        return 0
+    tree = _ensure_tree(f, name)
+    # The pane's enforcement rides on the tree's own hook copy — a tree
+    # cut before it landed has none, and nothing copies it in.
+    hook = tree / "scripts" / "hooks" / "kimi-adapt.py"
+    if not (hook.is_file() and os.access(hook, os.X_OK)):
+        print(
+            f"fleet-wave: REFUSED {win}: {hook} is missing or not "
+            "executable. next: recut or rebase the tree onto a commit "
+            "that carries scripts/hooks/kimi-adapt.py",
+            file=sys.stderr,
+        )
+        return 3
+    try:
+        deny = (
+            json.loads(
+                (tree / ".claude" / "settings.local.json").read_text(encoding="utf-8")
+            )
+            .get("permissions", {})
+            .get("deny", [])
+        )
+    except (OSError, ValueError):
+        deny = []
+    if "mcp__precis__put" not in deny:
+        print(
+            f"fleet-wave: REFUSED {win}: the tier R apply did not take — "
+            f"{tree}/.claude/settings.local.json has no mcp__precis__put "
+            "deny; a Kimi pane is enforced only by that file. next: run "
+            f"scripts/fleet-authority apply --tier R --to {tree} --yes",
+            file=sys.stderr,
+        )
+        return 3
+    (tree / "scratch").mkdir(parents=True, exist_ok=True)
+    brief_path = tree / "scratch" / "kimi-brief.md"
+    brief_path.write_text(text + _KIMI_NOTE, encoding="utf-8")
+    proc = subprocess.run(
+        argv, capture_output=True, text=True, encoding="utf-8", check=False
+    )
+    if proc.returncode:
+        print(
+            f"fleet-wave: REFUSED {win}: kimi-tree exited {proc.returncode}\n"
+            + proc.stderr.strip(),
+            file=sys.stderr,
+        )
+        return 3
+    # kimi exits at once on a stale config or a refused flag; say
+    # "launched" and record the builder only for a window still up.
+    time.sleep(a.settle)
+    pane = f.capture(win)
+    if pane is None:
+        print(
+            f"fleet-wave: REFUSED {win}: window gone within {a.settle:g}s — "
+            "kimi-tree started kimi and it exited; run "
+            f"scripts/kimi-tree {name} --tmux by hand to see why",
+            file=sys.stderr,
+        )
+        return 3
+    held = (
+        f"launched {win} (tier {tier}) but the brief is NOT delivered: "
+        "the pane shows a dialog or login; answer it yourself, then: "
+        f'scripts/fleet-wave send-line {win} "Read scratch/kimi-brief.md '
+        'and do exactly what it says."'
+    )
+    if dialog_type(pane) or _KIMI_HOLD_RE.search(pane):
+        print(held)
+        if a.batch:
+            _assign_batch(a.batch, win=win, name=name, vendor="kimi")
+        return 3
+    rc, note = _send_text(
+        f,
+        win,
+        "Read scratch/kimi-brief.md and do exactly what it says.",
+        wait=30,
+        poll=1,
+        retries=2,
+        pause=1,
+    )
+    if rc != 0:
+        print(held)
+        print(f"fleet-wave: send-line would have refused: {note}", file=sys.stderr)
+        if a.batch:
+            _assign_batch(a.batch, win=win, name=name, vendor="kimi")
+        return 3
+    model = a.kimi_model or "default"
+    host = socket.gethostname().split(".")[0]
+    print(f"launched {win} (model {model}, tier {tier}, brief {brief_path})")
+    print(f"lane: kimi:{win}@{host}, tree {name}, model {model}")
+    if a.batch:
+        _assign_batch(a.batch, win=win, name=name, vendor="kimi")
+    return 0
+
+
 def _tree_locked(f: Fleet, tree: Path) -> bool:
     """Whether ``git worktree list --porcelain`` shows ``tree`` locked."""
     cur = ""
@@ -1450,7 +1687,19 @@ def _send(f: Fleet, win: str, text: str, *, pause: float = 1.0) -> int:
     return cmd_send_line(f, ns)
 
 
+#: A bare DONE-HANDOFF line: the ⏺/• bullets and nothing after — a
+#: prose mention ("see DONE-HANDOFF below") must not match.
 _HANDOFF_RE = re.compile(r"^\s*[⏺•]?\s*DONE-HANDOFF\s*$", re.MULTILINE)
+#: Kimi's bullet glyph is unknown, so its panes get the loose form (up
+#: to two non-word glyphs); every other agent keeps the anchor above.
+_HANDOFF_RE_KIMI = re.compile(r"^\s*[^\w\s]{0,2}\s*DONE-HANDOFF\s*$", re.MULTILINE)
+
+
+def _handoff_re(agent: str) -> re.Pattern[str]:
+    """The DONE-HANDOFF bullet regex for a pane's agent."""
+    return _HANDOFF_RE_KIMI if agent == "kimi" else _HANDOFF_RE
+
+
 _RESUME_TEXT = (
     "Resume your batch in this tree. Read your handoff first (the gripes' "
     "view='fix', or the handoff file you wrote), then the brief for the rules "
@@ -1479,7 +1728,9 @@ def cmd_handoff_wait(f: Fleet, a: argparse.Namespace) -> int:
                 print(f"GONE {name}")
                 continue
             tail = "\n".join(nonempty_tail(pane, 15))
-            if _HANDOFF_RE.search(tail) and not BUSY_RE.search(tail):
+            cmd, _dead = f.pane_facts(win) if win else ("", False)
+            hre = _handoff_re(detect_agent(cmd, win or ""))
+            if hre.search(tail) and not BUSY_RE.search(tail):
                 assert win is not None
                 if _send(f, win, "/clear", pause=a.pause) != 0:
                     # send-line printed why (dialog open, unsent text,
@@ -2196,7 +2447,38 @@ def _ew_error(
     = /model landed, ``done`` = resume landed) so a refused resume is
     retried on the next poll instead of re-sending /model.
     """
-    if agent == "devin" and quota_banner(plain):
+    if agent == "kimi":
+        limit = kimi_limit(plain)
+        if limit == "concurrent":
+            # Risk control, not quota: one resume per cooldown, no
+            # /model — the concurrent-request limit is the plan's
+            # enforcement signal and is not hammered.
+            marker = st_dir / f"quota-{name}"
+            if not _ew_mark_fresh(marker, cool_s):
+                rc, note = _ew_send(f, win, a.resume, a)
+                if rc not in (0, 4):
+                    _ew_log(f, said, name, "quota", f"send refused ({note})")
+                    _ew_emit(
+                        name,
+                        win,
+                        st_dir,
+                        digest,
+                        f"reflex-fail:quota:{note}",
+                        f"reflex failed: quota send refused ({note})",
+                        urgent=True,
+                    )
+                    return
+                _ew_mark_write(marker, "done")
+                _ew_log(f, said, name, "quota", "sent resume")
+                return  # the send poll does not count (devin's rule)
+            detail = "kimi concurrent request limit (resume sent)"
+        elif limit == "quota":
+            # A usage-limit 429 cannot be retried before the window
+            # resets — no reflex; the pane becomes a judgment event.
+            detail = "kimi quota exhausted (no reflex)"
+        else:
+            detail = (rep.last or "error").strip()
+    elif agent == "devin" and quota_banner(plain):
         marker = st_dir / f"quota-{name}"
         fresh = _ew_mark_fresh(marker, cool_s)
         stage = ""
@@ -2389,7 +2671,7 @@ def _ew_pane(
         return
     tail = "\n".join(nonempty_tail(plain, 15))
     handoff_cool = False
-    if _HANDOFF_RE.search(tail) and not BUSY_RE.search(tail):
+    if _handoff_re(agent).search(tail) and not BUSY_RE.search(tail):
         r = _ew_handoff(f, a, name, win, st_dir, cool_s, said)
         if r == "sent":
             _ew_calm(name, st_dir, digest)
@@ -2431,6 +2713,10 @@ def cmd_event_watch(f: Fleet, a: argparse.Namespace) -> int:
     - a devin ``error`` on a quota-exhausted banner → ``/model
       swe-2-high`` + the resume line, once per pane per ``--cooldown-min``
       (a pane already on swe-2-high becomes an ordinary error event);
+    - a kimi ``error`` on the concurrent-limit banner → the resume line
+      once per pane per ``--cooldown-min``, no ``/model``; a kimi
+      usage-limit has no reflex — it prints ``error: kimi quota
+      exhausted (no reflex)`` after ``--settle`` polls;
     - a bare DONE-HANDOFF → ``/clear`` + the resume line, the same
       once-per rule (handoff-wait's move);
     - an idle pane over the ctx threshold → ``/compact`` (ctx-guard's
@@ -2813,6 +3099,22 @@ def parser() -> argparse.ArgumentParser:
         "recorded at $FLEET_STATE/devin-NAME.model)",
     )
     s.add_argument("--codex", action="store_true", help="a Codex builder (locked tree)")
+    s.add_argument(
+        "--kimi",
+        action="store_true",
+        help="a Kimi builder (interactive pane via kimi-tree --tmux, tier R only)",
+    )
+    s.add_argument(
+        "--kimi-model",
+        default="",
+        help="kimi model alias (passed as kimi-tree --model; needs --kimi)",
+    )
+    s.add_argument(
+        "--kimi-max",
+        type=int,
+        default=0,
+        help="cap on live kimi- panes (default 2, env FLEET_KIMI_MAX)",
+    )
     s.add_argument("--settle", type=float, default=3.0, help=argparse.SUPPRESS)
     s.add_argument("--coordinator", default="")
     s.add_argument("--release-owner", default="")

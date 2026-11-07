@@ -1,7 +1,7 @@
 # Tmux worker launch — traps verified running the gripe fleet
 
 **When.** You're the coordinator (or any master session) launching,
-watching or recovering `claude`/`codex`/`devin` workers in tmux
+watching or recovering `claude`/`codex`/`devin`/`kimi` workers in tmux
 windows — `scripts/fleet-wave`, `scripts/devin-tree`, or a hand-rolled
 window. Verified 2026-10-12/13 on Reto's Mac. The launch/watch/close
 procedure itself is the `gripe-fleet` skill; the Codex fleet's own
@@ -59,6 +59,41 @@ launcher is `scripts/fleet-codex` (`codex-fleet.md`); Devin launch is
 - Devin has no auto-mode classifier, so a brief must forbid what
   Claude's classifier would deny (e.g. removing tests) instead of
   relying on the guard.
+
+## Kimi
+
+- `scripts/fleet-wave launch NAME --kimi` runs the interactive CLI under
+  its own subscription login — tier R only (`--tier W` and
+  `FLEET_LEGACY_FOOTERS=1` are refused), at most `FLEET_KIMI_MAX`/
+  `--kimi-max` live `kimi-` panes (default 2, the plan's concurrent cap).
+  Interactive pane only: `kimi -p` headless automation is forbidden, the
+  TUI takes no prompt flag, and no vault key or Moonshot API key is ever
+  used. The login itself is the user's own (`kimi login`), outside any
+  script — code never reads `~/.kimi-code/credentials` or `oauth`.
+- The TUI cannot take an initial prompt, so the brief lands at
+  `<tree>/scratch/kimi-brief.md` and launch types the one line `Read
+  scratch/kimi-brief.md and do exactly what it says.` once the pane is
+  up. If the pane shows a trust or login dialog the brief is held (rc 3,
+  window kept, batch assign still records): only Reto answers such a
+  dialog — NEVER `tmux send-keys` into it. Afterwards send the line by
+  hand: `scripts/fleet-wave send-line kimi-NAME "Read scratch/kimi-brief.md
+  and do exactly what it says."`.
+- Tier enforcement is not `fleet-authority`'s settings file alone (Kimi
+  reads no project permission file): the deny rules bite through the
+  tree's own `scripts/hooks/kimi-adapt.py` copy, so only trees cut after
+  this landed carry the check. Each decision also writes one line to
+  `<tree>/.claude/kimi-adapt.log` — that log is what proves a pane's
+  refusals are real. The Bash gate stops mistakes, not an adversary:
+  `$(…)`, `&`, `python -c` and absolute paths are not normalised. Real
+  enforcement is the server-side scope (G1 `mcp.slice_scope` enforce,
+  td574161 grant) and tier R's rule that only the coordinator lands.
+- event-watch reflexes on a `kimi-` pane: a bare `DONE-HANDOFF` gets
+  `/clear` + the resume line once per cooldown; the concurrent-limit
+  banner gets one resume per cooldown (no `/model` — the enforcement
+  signal is not hammered); a usage-limit/quota banner gets no reflex and
+  prints `error: kimi quota exhausted (no reflex)` — a retry cannot help
+  before the window resets. Kimi prints no ctx figure, so ctx-guard and
+  the idle `/compact` reflex leave the pane alone.
 
 ## Gates, classifiers, shared state
 

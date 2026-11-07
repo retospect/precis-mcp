@@ -133,9 +133,10 @@ def test_library_is_sourced_not_executed() -> None:
 # kimi has no --trust/non-interactive flag, so an untrusted folder's
 # interactive "Trust this folder?" prompt reads stdin — launched without a
 # tty it waits forever. kimi-tree must refuse that launch (naming the
-# manual equivalent), while --prompt one-shots still run, bounded by
-# KIMI_TREE_TIMEOUT. Fakes below mirror tests/test_devin_trust.py's: keep
-# FAKE_GIT in step with that file's.
+# manual equivalent), and --prompt is gone entirely: `kimi -p` headless
+# automation is forbidden by the subscription (gr575042). Fakes below
+# mirror tests/test_devin_trust.py's: keep FAKE_GIT in step with that
+# file's.
 
 FAKE_GIT = """#!/usr/bin/env bash
 while [ "${1:-}" = "-C" ]; do shift 2; done
@@ -160,18 +161,11 @@ FAKE_KIMI = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$KIMI_LOG"
 """
 
-# Logs the bound it was given, then execs the wrapped command.
-FAKE_TIMEOUT = """#!/usr/bin/env bash
-printf 'timeout %s\\n' "$*" >> "$TIMEOUT_LOG"
-shift
-exec "$@"
-"""
-
 
 def kimi_env(tmp_path: Path, bins: Path) -> dict[str, str]:
     """Env for a kimi-tree launch: fake bins first on PATH, kimi-setup's
     writes aimed at throwaway paths (a precis entry with a bearer env var,
-    so no secrets file is touched), a recognizable KIMI_TREE_TIMEOUT."""
+    so no secrets file is touched)."""
     repo = tmp_path / "fakerepo"
     (repo / ".git").mkdir(parents=True)
     (repo / ".claude" / "worktrees").mkdir(parents=True)
@@ -193,7 +187,6 @@ def kimi_env(tmp_path: Path, bins: Path) -> dict[str, str]:
     for name, body in (
         ("git", FAKE_GIT),
         ("kimi", FAKE_KIMI),
-        ("timeout", FAKE_TIMEOUT),
     ):
         f = bins / name
         f.write_text(body, encoding="utf-8")
@@ -204,10 +197,8 @@ def kimi_env(tmp_path: Path, bins: Path) -> dict[str, str]:
     env["FAKE_ROOT"] = str(repo)
     env["FAKE_WT"] = str(repo / ".claude" / "worktrees" / "k-fake")
     env["KIMI_LOG"] = str(tmp_path / "kimi.log")
-    env["TIMEOUT_LOG"] = str(tmp_path / "timeout.log")
     env["KIMI_CODE_HOME"] = str(tmp_path / "kimi-home")
     env["CLAUDE_JSON"] = str(claude_json)
-    env["KIMI_TREE_TIMEOUT"] = "45"
     # kimi-tree refuses a stale ~/.kimi-code (kimi-setup --check); sync the
     # throwaway KIMI_CODE_HOME first, as a user would before launching.
     subprocess.run(
@@ -246,7 +237,7 @@ def test_interactive_launch_without_tty_is_refused(tmp_path: Path) -> None:
     assert list(worktrees.iterdir()) == []
 
 
-def test_prompt_launch_without_tty_runs_bounded(tmp_path: Path) -> None:
+def test_prompt_is_refused_with_a_next_step(tmp_path: Path) -> None:
     env = kimi_env(tmp_path, tmp_path / "bin")
     r = subprocess.run(
         ["bash", str(KIMI), "k-fake", "--prompt", "say ok"],
@@ -256,15 +247,35 @@ def test_prompt_launch_without_tty_runs_bounded(tmp_path: Path) -> None:
         encoding="utf-8",
         env=env,
     )
-    assert r.returncode == 0, r.stderr
-    assert "--prompt say ok" in read_log(tmp_path, "kimi.log")
-    # kimi-tree execs the resolved path (command -v), not the bare name.
-    timeout_log = read_log(tmp_path, "timeout.log")
-    assert timeout_log.startswith("timeout 45 ")
-    assert "kimi --prompt say ok" in timeout_log
+    assert r.returncode == 2
+    assert "--prompt is removed" in r.stderr
+    assert "scripts/kimi-tree NAME --tmux" in r.stderr
+    # kimi never ran, and the refuse fired before a tree was cut.
+    assert read_log(tmp_path, "kimi.log") == ""
+    assert read_log(tmp_path, "timeout.log") == ""
+    worktrees = Path(env["FAKE_ROOT"]) / ".claude" / "worktrees"
+    assert list(worktrees.iterdir()) == []
 
 
-def test_interactive_launch_with_tty_runs_unbounded(tmp_path: Path) -> None:
+def test_exec_refuses_prompt_args(tmp_path: Path) -> None:
+    env = kimi_env(tmp_path, tmp_path / "bin")
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    for args in (["--prompt", "x"], ["-p", "x"]):
+        r = subprocess.run(
+            ["bash", str(KIMI), "--exec", str(tree), *args],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env,
+        )
+        assert r.returncode == 2, (args, r.stderr)
+        assert "--prompt is removed" in r.stderr
+    assert read_log(tmp_path, "kimi.log") == ""
+
+
+def test_interactive_launch_with_tty_runs(tmp_path: Path) -> None:
     env = kimi_env(tmp_path, tmp_path / "bin")
     master, slave = pty.openpty()
     try:
@@ -283,8 +294,6 @@ def test_interactive_launch_with_tty_runs_unbounded(tmp_path: Path) -> None:
         os.close(master)
     assert proc.returncode == 0, err.decode("utf-8", "replace")
     assert "--yolo" in read_log(tmp_path, "kimi.log")
-    # Interactive sessions are not bounded — a bound would kill them.
-    assert read_log(tmp_path, "timeout.log") == ""
 
 
 def test_exec_refuses_interactive_launch_without_tty(tmp_path: Path) -> None:

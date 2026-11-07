@@ -54,4 +54,11 @@ allow list as permission rules. `kimi doctor` validates it;
 - **Fleet.** In a fleet session, a question for Reto is an `ask-user`
   todo with `meta.ask` (`search(kind='todo', view='asks')`; skill
   `precis-work-help`); leave deploys and `/go` to the coordinator.
+- **Fleet builder pane.** A pane launched by `fleet-wave launch NAME
+  --kimi` runs tier R: the precis MCP is read-only and `kimi-adapt.py`
+  refuses the settings.local deny-listed calls with a `next` step —
+  stop and report the refusal, never get the same effect another way.
+  Report status on the board (`scripts/board post`) plus
+  `.claude/purpose`. Never run `kimi -p` — headless automation is
+  forbidden; the interactive pane is the only lane.
 - **Response style.** `CLAUDE.md` §Response style applies unchanged.

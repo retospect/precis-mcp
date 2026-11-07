@@ -1,6 +1,6 @@
 ---
 name: gripe-fleet
-description: "Use when coordinating a builder wave in tmux: the loop itself is the product skill precis-gripe-loop-help (work state on the gripe's code todo); this file holds the repo-dev mechanics — fleet-wave launch/close, tiers, Devin/Codex, board, panes, safety rules."
+description: "Use when coordinating a builder wave in tmux: the loop itself is the product skill precis-gripe-loop-help (work state on the gripe's code todo); this file holds the repo-dev mechanics — fleet-wave launch/close, tiers, Devin/Codex/Kimi, board, panes, safety rules."
 ---
 
 # gripe-fleet — run a builder wave (repo-dev mechanics)
@@ -30,9 +30,9 @@ the tier, with its UTC time).
 | loop step | here |
 |---|---|
 | mint + brief | the session MCP — `put(kind='todo', parent_id=559473, body=<the brief>, meta={'llm_tier': None, 'task_class': 'code', 'retries': 2}, tags=['waiting-for:fleet', …], link='gripe:<N>', rel='fixes')`; the file a builder without MCP reads is written by hand from the todo body and handed to launch via `--brief FILE` — no tool renders it from a todo today (phase 2); `scripts/prod-precis gripe-fix brief <batch> --out FILE` still renders a legacy `/batch` dossier. `launch --batch` taking a todo id list (or the root) instead of a gripe batch slug is phase 2 |
-| assign / launch | `scripts/fleet-wave launch NAME --brief FILE --tier R\|W [--devin\|--codex]` launches; record the assignment on the todo yourself — `tag(kind='todo', id=T, add=['claimed-by:fleet-<tree>'])` plus `put(kind='todo', id=T, text='lane: <vendor>:<window>@<host>, tree <tree>[, model <id>]')` — and on the gripe `claimed-by:fleet-<tree>` + the `in progress <tree>` comment. `--batch SLUG` still writes `meta.fix` on the gripes (legacy); launch recording on the todo is phase 2 |
+| assign / launch | `scripts/fleet-wave launch NAME --brief FILE --tier R\|W [--devin\|--codex\|--kimi]` launches; record the assignment on the todo yourself — `tag(kind='todo', id=T, add=['claimed-by:fleet-<tree>'])` plus `put(kind='todo', id=T, text='lane: <vendor>:<window>@<host>, tree <tree>[, model <id>]')` — and on the gripe `claimed-by:fleet-<tree>` + the `in progress <tree>` comment. `--batch SLUG` still writes `meta.fix` on the gripes (legacy); launch recording on the todo is phase 2 |
 | re-point a builder at a new item | `scripts/fleet-wave reassign NAME --brief FILE` (or `--batch SLUG` for a legacy batch): `/clear`, then "Read … and do it", then the assign calls above |
-| watch | one `scripts/fleet-wave event-watch NAME...` under Monitor — it handles routine events itself (a devin quota banner → `/model swe-2-high` + resume — skipped when launch recorded a non-swe `.model`, the quota prints for judgment instead — a bare `DONE-HANDOFF` → `/clear` + resume, an idle pane over the ctx threshold → `/compact`; each logged to `$FLEET_STATE/event-watch.log`) and prints only what needs judgment (board done/red/blocked lines, a permission prompt, an unhandled error, frozen, gone, a failed reflex; batched ≤ `--digest-sec` 30). `stuck-watch` stays for the plain state watch — its `done:` line carries the finish line, so `watch-done` on top only doubles every wake-up (gr515152). Never poll with a Monitor `sleep` loop or `tmux capture` in the main loop. Both leases (todo and gripe) are 4 h: re-issue the same `claimed-by:` tag at each sweep to refresh — `stuck-watch` doing that itself is phase 2. `scripts/fleet panes status [--flagged]` for a one-off look |
+| watch | one `scripts/fleet-wave event-watch NAME...` under Monitor — it handles routine events itself (a devin quota banner → `/model swe-2-high` + resume — skipped when launch recorded a non-swe `.model`, the quota prints for judgment instead — a kimi concurrent-limit banner → the resume line once per cooldown (no `/model`), a kimi usage-limit → no reflex, it prints `kimi quota exhausted (no reflex)` — a bare `DONE-HANDOFF` → `/clear` + resume, an idle pane over the ctx threshold → `/compact`; each logged to `$FLEET_STATE/event-watch.log`) and prints only what needs judgment (board done/red/blocked lines, a permission prompt, an unhandled error, frozen, gone, a failed reflex; batched ≤ `--digest-sec` 30). `stuck-watch` stays for the plain state watch — its `done:` line carries the finish line, so `watch-done` on top only doubles every wake-up (gr515152). Never poll with a Monitor `sleep` loop or `tmux capture` in the main loop. Both leases (todo and gripe) are 4 h: re-issue the same `claimed-by:` tag at each sweep to refresh — `stuck-watch` doing that itself is phase 2. `scripts/fleet panes status [--flagged]` for a one-off look |
 | compact | `scripts/fleet-wave ctx-guard NAME... --compact --tokens` in a background window sends `/compact` to the peer main loops once their printed context passes the token threshold (bare `--tokens` = 120k; retune with `--tokens N` or `FLEET_COMPACT_TOKENS`; re-arms at half). It fires only on an idle pane — a busy pane is skipped to the next poll, never compacted mid-turn — and while the window's tree has no live subagent task; a pane that prints no token figure is left alone. `--ceiling C` without `--tokens` triggers on ctx % instead. Without `--compact` it is the builders' 70% WIP+handoff nudge (gr515267). Bulky reads (queue files, triage outputs, review texts) go to a Haiku digest agent, not into the main loop (gr515153) |
 | handoff | the builder's finish message / handoff → `put(kind='todo', id=T, text='handoff: …')`; a red round also bumps `attempt:<n>` on the todo and mirrors `work: attempt N failed on <lane> — <first line>` on the gripe |
 | review | a `reviewer` agent on the branch; its verdict → `put(kind='todo', id=T, text='review: LAND\|FIX\|REVERT — …')`; a fix round is the next `brief:` comment on the todo, sent with `send-line` |
@@ -102,7 +102,8 @@ name the allowed functions, what a cap measures) are in
    (window `claude-NAME`, `claude -w NAME --permission-mode auto`), or
    `--devin` for `scripts/devin-tree` (Devins always launch
    `--permission-mode dangerous` — Reto's always-bypass ruling; both modes
-   live in `fleet_panes.LAUNCH_PERMISSION_MODE`). `--dry-run` prints the
+   live in `fleet_panes.LAUNCH_PERMISSION_MODE`), `--kimi` for
+   `scripts/kimi-tree`. `--dry-run` prints the
    argv. Launch fails if a footer placeholder is unfilled. When the brief
    names a `docs/backlog/<slug>.md` spec, launch claims it for the tree:
    `status: ready` → `in-progress` + `claimed-by: NAME` in one pushed
@@ -166,9 +167,11 @@ todo's `attempt:<n>` tag.
 
 ## Pane reads — `scripts/fleet panes`
 
-One parser per agent TUI (claude/devin/codex) lives in
+One parser per agent TUI (claude/devin/codex/kimi) lives in
 `scripts/fleet_panes.py`; `scripts/fleet panes` (delegating to
-`scripts/fleet-panes`) is the read/say/answer surface over it:
+`scripts/fleet-panes`) is the read/say/answer surface over it. The kimi
+parser prints no ctx figure — ctx-guard and the `/compact` reflex leave
+kimi panes alone:
 
 - `panes status [--flagged]` — one line per window: name, agent, state
   (working|idle|prompt|error|done|frozen), permission mode, ctx %, minutes
