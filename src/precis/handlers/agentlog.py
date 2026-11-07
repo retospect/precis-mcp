@@ -205,6 +205,9 @@ class AgentLogHandler(NumericRefHandler):
         **_kw: Any,
     ) -> Response:
         if isinstance(id, str) and (id == "/traces" or id.startswith("/traces?")):
+            # gr572708: this branch returns ahead of the base dispatch,
+            # so it runs the shared ``/<x>`` view= refusal itself.
+            self._check_list_id_view(id.partition("?")[0], view)
             _, _, qs = id.partition("?")
             params = dict(parse_qsl(qs, keep_blank_values=True))
             for key, value in (("since", since), ("kind", kind), ("limit", limit)):

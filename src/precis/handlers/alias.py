@@ -320,6 +320,10 @@ class AliasHandler(NumericRefHandler):
         **_kw: Any,
     ) -> Response:
         if id is None or str(id).strip() in ("", "/", "/recent"):
+            # gr572708: these list branches return ahead of the base
+            # dispatch, so they run the shared ``/<x>`` view= refusal
+            # themselves.
+            self._check_list_id_view("/recent", view)
             return self._recent()
         if isinstance(id, list):
             return Response(
@@ -327,6 +331,7 @@ class AliasHandler(NumericRefHandler):
             )
         s = str(id).strip()
         if s == "/stale":
+            self._check_list_id_view("/stale", view)
             return self._stale()
         if _ALIAS_HANDLE_RE.match(s):
             ref = self._resolve_ref(s)
@@ -361,6 +366,9 @@ class AliasHandler(NumericRefHandler):
         return Response(
             body=self._table(f"alias {_short(s, 60)!r} — {n} match(es)", hits, s)
         )
+
+    def _supported_list_views(self) -> tuple[str, ...]:
+        return ("recent", "stale")
 
     def _recent(self) -> Response:
         refs = self._select(_LIVE_SQL, {}, LIST_LIMIT)

@@ -892,6 +892,9 @@ class TaxonHandler(NumericRefHandler):
                 next="get(kind='taxon', under='tn42', view='meta')",
             )
         if isinstance(id, str) and id == "/coverage":
+            # gr572708: this branch returns ahead of the base dispatch,
+            # so it runs the shared ``/<x>`` view= refusal itself.
+            self._check_list_id_view(id, view)
             return self._render_coverage(days=days, page=_kw.get("page"))
         if days is not None:
             raise BadInput(

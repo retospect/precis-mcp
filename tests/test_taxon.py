@@ -2341,3 +2341,16 @@ class TestAncestorPaths:
             _link(store, child, parent)
         depths = {d for _r, d, _ax in store.taxon_ancestors(chain[-1])}
         assert max(depths) == TAXON_ANCESTOR_MAX_DEPTH
+
+
+def test_coverage_list_id_refuses_view_kwarg(store: Any) -> None:
+    """gr572708: ``id='/coverage'`` returns ahead of the base dispatch —
+    a ``view=`` used to render the coverage report silently."""
+    from precis.errors import Unsupported
+
+    h = _handler(store)
+    with pytest.raises(Unsupported, match="takes no view=") as exc:
+        h.get(id="/coverage", view="attention")
+    assert exc.value.options == ["recent", "unrooted", "unmapped", "coverage"]
+    # The plain-listing spellings still fold to the listing (gr492994).
+    h.get(id="/coverage", view="index")

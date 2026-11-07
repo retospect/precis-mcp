@@ -161,3 +161,19 @@ def test_runtime_args_roundtrip(store) -> None:
         "get", {"kind": "alias", "id": "sx", "__extras__": {"scope": "lcsc"}}
     )
     assert f"b: {URL}" in rt.dispatch("get", {"id": f"as{aid}"})
+
+
+def test_list_ids_refuse_view_kwarg(handler) -> None:
+    """gr572708: ``'/'``, ``'/recent'`` and ``'/stale'`` return ahead of
+    the base dispatch — a ``view=`` used to drop silently."""
+    from precis.errors import Unsupported
+
+    for list_id in ("/recent", "/stale"):
+        with pytest.raises(Unsupported, match="takes no view="):
+            handler.get(id=list_id, view="attention")
+    with pytest.raises(Unsupported, match="takes no view=") as exc:
+        handler.get(view="attention")
+    assert exc.value.options == ["recent", "stale"]
+    # The plain-listing spellings still fold to the listing (gr492994).
+    handler.get(id="/recent", view="index")
+    handler.get(id="/stale", view="list")

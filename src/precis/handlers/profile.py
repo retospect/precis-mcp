@@ -33,8 +33,12 @@ import json
 from typing import Any, ClassVar
 
 from precis import profiles
-from precis.errors import BadInput, NotFound
-from precis.handlers._numeric_ref import NumericRefHandler
+from precis.errors import BadInput, NotFound, Unsupported
+from precis.handlers._numeric_ref import (
+    _BASE_VIEWS,
+    NumericRefHandler,
+    plain_listing_view,
+)
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
@@ -307,6 +311,16 @@ class ProfileHandler(NumericRefHandler):
         **_kw: Any,
     ) -> Response:
         if id is None:
+            # gr572708: the bare get IS the listing — view= is never
+            # consulted, so refuse it instead of a silent index render
+            # (the ``/<x>`` refusal's id=None twin).
+            if plain_listing_view(view, ()) is not None:
+                raise Unsupported(
+                    f"bare get(kind='profile') takes no view= (got {view!r}); "
+                    "view= applies to a concrete profile id",
+                    options=["raw", *_BASE_VIEWS],
+                    next="drop view= and re-issue: get(kind='profile')",
+                )
             return self._render_index()
         ref = self._resolve_ref(id)
         if view in (None, "raw"):

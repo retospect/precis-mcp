@@ -557,3 +557,19 @@ def test_stamp_result_meta_writes_and_never_raises(hub: Hub) -> None:
     agentlog.stamp_result_meta(
         hub.live_store, log_id=999999999, res=SimpleNamespace(model="m")
     )
+
+
+def test_traces_list_id_refuses_view_kwarg(hub: Hub) -> None:
+    """gr572708: ``id='/traces'`` returns ahead of the base dispatch, so
+    a ``view=`` there used to drop silently — the shared ``/<x>``
+    refusal now names the list selectors the kind does take."""
+    from precis.errors import Unsupported
+    from precis.handlers.agentlog import AgentLogHandler
+
+    handler = AgentLogHandler(hub=hub)
+    with pytest.raises(Unsupported, match="takes no view=") as exc:
+        handler.get(id="/traces", view="attention")
+    assert exc.value.options == ["recent", "calls", "sessions", "scope", "traces"]
+    assert "'attention'" in str(exc.value)
+    # The plain-listing spellings still fold to the listing (gr492994).
+    handler.get(id="/traces?since=1h", view="index")

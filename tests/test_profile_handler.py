@@ -449,3 +449,15 @@ def test_ranked_search_is_owner_scoped(handler) -> None:
         only = handler.search(q="lab2").body
     assert f"pf{a}" in body and f"pf{b}" in body
     assert f"pf{b}" in only and f"pf{a}" not in only
+
+
+def test_bare_get_refuses_view_kwarg(handler) -> None:
+    """gr572708: the bare get IS the profile index — a ``view=`` used
+    to render it silently, the ``/<x>`` refusal's id=None twin."""
+    from precis.errors import Unsupported
+
+    with pytest.raises(Unsupported, match="takes no view=") as exc:
+        handler.get(view="attention")
+    assert exc.value.options and "raw" in exc.value.options
+    # The plain-listing spellings still fold to the listing (gr492994).
+    handler.get(view="index")
