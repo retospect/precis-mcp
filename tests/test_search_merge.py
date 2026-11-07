@@ -980,7 +980,9 @@ def test_toon_table_tags_column_when_a_hit_carries_chips() -> None:
 def test_browse_table_tags_column_drops_the_dup_status(hub: Any) -> None:
     """The ``_render_hits_table`` browse table has its own ``status``
     column for lifecycle kinds — a ``STATUS:`` tag does not re-render as
-    a chip alongside it."""
+    a chip alongside it. (gr572710 also dropped the constant ``kind``
+    column and capped the gripe row's tag cell to its ``cluster:``
+    chip — ``PRIO`` is no longer a row chip.)"""
     from precis.handlers.gripe import GripeHandler
     from tests._refs import insert_gripe
 
@@ -989,10 +991,11 @@ def test_browse_table_tags_column_drops_the_dup_status(hub: Any) -> None:
         insert_gripe(handler.store, "browse chips probe\nbody", status="triaged").id
     )
     handler.store.add_tag(gid, Tag.closed("PRIO", "high"), set_by="system")
+    handler.store.add_tag(gid, Tag.open("cluster:browse-probe"), set_by="system")
 
     body = handler.search(tags=["STATUS:triaged"]).body
-    header = next(ln for ln in body.splitlines() if ln.startswith("{kind\t"))
+    header = next(ln for ln in body.splitlines() if ln.startswith("{id\t"))
     assert "status\ttags" in header
-    row = next(ln for ln in body.splitlines() if ln.startswith(f"gripe\tgr{gid}\t"))
-    assert "[PRIO:high]" in row
-    assert "[STATUS" not in row
+    row = next(ln for ln in body.splitlines() if ln.startswith(f"gr{gid}\t"))
+    assert "[cluster:browse-probe]" in row
+    assert "[STATUS" not in row and "[PRIO" not in row

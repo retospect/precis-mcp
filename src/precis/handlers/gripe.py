@@ -561,6 +561,16 @@ class GripeHandler(NumericRefHandler):
     browse_default_sort: ClassVar[str] = "prio"
     prio_order_by: ClassVar[str] = "prio_age"
 
+    # gr572710: a gripe listing's tag cell shows only its ``cluster:``
+    # chip — the tag that groups the queue. ``size:``, ``theme:``,
+    # ``flood`` and the ``+N more`` tail were most of a 100-row page's
+    # bytes and none of its grouping signal.
+    list_row_tag_prefixes: ClassVar[tuple[str, ...]] = ("cluster:",)
+
+    # gr572710: the bare get is the card + body, not the comments —
+    # the batch footer's read-one hint names ``view='full'`` instead.
+    complete_get_view: ClassVar[str | None] = "full"
+
     # Body + append-only comment timeline live in chunks, so search the
     # chunks grouped by ref (a term that only appears in a comment still
     # surfaces the parent gripe). Salience stays cold — bug reports must
@@ -2372,12 +2382,20 @@ class GripeHandler(NumericRefHandler):
         title = first_line(ref.title or "")
         if len(title) > _TITLE_CARD_CHARS:
             title = title[: _TITLE_CARD_CHARS - 1].rstrip() + "…"
+        # gr572710: 'full' is the one-call complete read — it leads the
+        # footer when it really is complete (a short gripe renders
+        # whole); a longer one's footer still names it, last, after the
+        # focused reads it subsumes.
+        reads = "body: view='body' · timeline: view='comments'"
+        if self._full_view_complete(ref, tags, body, comments):
+            reads = f"all: view='full' · {reads}"
+        else:
+            reads = f"{reads} · all: view='full'"
         lines = [
             *self._header_lines(ref, tags),
             f"title: {title}",
             *self._dup_lines(ref),
-            f"comments: {len(comments)} · body: view='body' · "
-            "timeline: view='comments'",
+            f"comments: {len(comments)} · {reads}",
         ]
         # gr519361: a gripe in the fix loop shows its batch, derived queue,
         # who (session@host), tree, the newest brief/handoff/review ords
@@ -2435,6 +2453,25 @@ class GripeHandler(NumericRefHandler):
             ),
         ]
         return "\n".join(lines)
+
+    def _full_view_complete(
+        self, ref: Ref, tags: list[Tag], body: str | None, comments: list[Any]
+    ) -> bool:
+        """``view='full'`` renders this gripe with nothing cut — the body
+        unclipped and every comment whole on the page — so the card's
+        footer can lead with it as the one-call complete read
+        (gr572710). The check mirrors :meth:`_render_ref_view`'s own
+        budgeting: same clip slack on the body, same whole-comment
+        pieces against :data:`_FULL_VIEW_CHARS`."""
+        if len(body or "") > _BODY_HEAD_CHARS * tl.CUT_SLACK:
+            return False
+        head = "\n".join(self._header_lines(ref, tags))
+        budget = _FULL_VIEW_CHARS - len(head) - len(body or "")
+        if comments and budget < _MIN_COMMENT_PAGE:
+            return False
+        hidden = tl.hidden_comments(ref)
+        used = sum(len(tl._comment_piece(c, hidden, c.ord)) for c in comments)
+        return used <= budget
 
     def _fix_list_view(
         self,

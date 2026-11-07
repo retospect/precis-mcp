@@ -111,14 +111,23 @@ def chips_for(
     kind: str,
     ranks: Mapping[str, float],
     ring_spaces: frozenset[str] | None = None,
+    keep: tuple[str, ...] | None = None,
     cap: int = ROW_CHIP_CAP,
 ) -> str:
     """``[a] [b] [c] [d] +N more`` for one ref's ``(namespace, value)``
-    pairs — the drops applied, then rank-sorted and capped."""
+    pairs — the drops applied, then rank-sorted and capped.
+
+    ``keep`` is a value-prefix keep-list for byte-tight row surfaces
+    (gr572710): when set, only chips under one of the prefixes render —
+    gripe list rows cap their tag cell to ``cluster:``, the one tag a
+    100-row listing still groups by. The head render passes no keep and
+    shows the full set.
+    """
     kept = [
         (ns, v)
         for ns, v in pairs
-        if not (
+        if (keep is None or v.startswith(keep))
+        and not (
             (ns == "STATUS" and v == "open" and kind in OPEN_BY_DEFAULT)
             or (ns == "SPACE" and ring_spaces is not None and v in ring_spaces)
             or (ns, v, kind) in _QUIET_DEFAULTS
@@ -138,6 +147,7 @@ def chips_bulk(
     ids_kinds: Mapping[int, str],
     *,
     ring_spaces: frozenset[str] | None = None,
+    keep: tuple[str, ...] | None = None,
     cap: int = ROW_CHIP_CAP,
     tagged: dict[int, list[tuple[str, str]]] | None = None,
 ) -> dict[int, str]:
@@ -145,7 +155,8 @@ def chips_bulk(
     the N+1 avoidance for a page of rows. ``ids_kinds`` maps each ref id
     to its kind (the ``STATUS:open`` drop is kind-dependent). ``tagged``
     lets a caller that already bulk-read pass its result instead of a
-    second query. A failed bulk read reads as no chips, never as a
+    second query; ``keep`` forwards :func:`chips_for`'s value-prefix
+    keep-list. A failed bulk read reads as no chips, never as a
     broken render."""
     if not ids_kinds:
         return {}
@@ -167,6 +178,7 @@ def chips_bulk(
                 kind=ids_kinds.get(rid, ""),
                 ranks=ranks,
                 ring_spaces=ring_spaces,
+                keep=keep,
                 cap=cap,
             )
         )

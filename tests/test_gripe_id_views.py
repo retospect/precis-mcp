@@ -233,14 +233,16 @@ def test_id_range_through_dispatch(runtime_with_store: PrecisRuntime, hub: Hub) 
 def test_list_view_carries_ranked_tag_chips(handler: GripeHandler) -> None:
     """gr520321: a gripe's tags render as rank-ordered chips on
     ``view='list'`` rows; the context-restating ``STATUS:open`` drops on
-    this open-by-default kind."""
+    this open-by-default kind. gr572710 then capped the row's tag cell
+    to the ``cluster:`` chip — the tag that groups the listing."""
     gid = int(insert_gripe(handler.store, "chips probe gripe\nbody").id)
     handler.store.add_tag(gid, Tag.closed("PRIO", "high"), set_by="system")
+    handler.store.add_tag(gid, Tag.open("cluster:chips-probe"), set_by="system")
 
     list_body = handler.search(tags=["STATUS:open"], view="list", page_size=100).body
     line = next(ln for ln in list_body.splitlines() if ln.startswith(f"gr{gid}"))
-    assert "[PRIO:high]" in line
-    assert "STATUS" not in line
+    assert "[cluster:chips-probe]" in line
+    assert "STATUS" not in line and "[PRIO" not in line
 
 
 # ── get(id=[...], view='body'): the batch body read ──────────────────

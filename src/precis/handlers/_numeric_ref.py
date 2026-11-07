@@ -685,6 +685,20 @@ class NumericRefHandler(Handler):
     #: ``'prio_age'`` (oldest first within a PRIO).
     prio_order_by: ClassVar[str] = "prio_asc"
 
+    #: Tag value prefixes a *list row's* tags cell keeps — the hits
+    #: table, ``view='list'`` and ranked-hit chips all read it. ``None``
+    #: keeps every chip. Gripe caps to ``cluster:`` — the one tag a
+    #: 100-row listing still groups by; the rest are bytes the reader
+    #: already has (gr572710). The eye header is not a row surface: it
+    #: renders the full set.
+    list_row_tag_prefixes: ClassVar[tuple[str, ...] | None] = None
+
+    #: The single-id view that reads one ref completely — named on the
+    #: batch footer's read-one hint (gr572710: gripe's bare get is the
+    #: card + body, not the comments, so its hint names ``view='full'``).
+    #: ``None`` means the bare get already is the complete read.
+    complete_get_view: ClassVar[str | None] = None
+
     def __init__(self, *, hub: Hub) -> None:
         if hub.store is None:
             raise InitError(f"{self.kind}: store required")
@@ -1973,7 +1987,11 @@ class NumericRefHandler(Handler):
         line per hit, never a folded body.
         """
         chip_map = (
-            tag_chips.chips_bulk(self.store, {int(r.id): self.kind for r in refs})
+            tag_chips.chips_bulk(
+                self.store,
+                {int(r.id): self.kind for r in refs},
+                keep=self.list_row_tag_prefixes,
+            )
             if titles
             else {}
         )
@@ -2439,7 +2457,9 @@ class NumericRefHandler(Handler):
         ]
         hits = ref_hits_to_search_hits(pairs, kind=self.kind)
         chip_map = tag_chips.chips_bulk(
-            self.store, {int(ref.id): self.kind for ref in refs}
+            self.store,
+            {int(ref.id): self.kind for ref in refs},
+            keep=self.list_row_tag_prefixes,
         )
         if not chip_map:
             return hits
@@ -2762,6 +2782,7 @@ class NumericRefHandler(Handler):
             chip_map = tag_chips.chips_bulk(
                 self.store,
                 {int(ref.id): self.kind for _, ref, _ in [*shown, *weak]},
+                keep=self.list_row_tag_prefixes,
             )
             sizes = self.store.chunks.body_byte_counts([ref.id for _, ref, _ in shown])
 
@@ -2868,7 +2889,9 @@ class NumericRefHandler(Handler):
             query_vec=query_vec,
         )
         chip_map = tag_chips.chips_bulk(
-            self.store, {int(ref.id): self.kind for _, ref, _ in ordered}
+            self.store,
+            {int(ref.id): self.kind for _, ref, _ in ordered},
+            keep=self.list_row_tag_prefixes,
         )
         sizes = self.store.chunks.body_byte_counts([ref.id for _, ref, _ in ordered])
         return [
@@ -3936,10 +3959,17 @@ class NumericRefHandler(Handler):
             summary, _rest = _extract_summary(ref.title or "")
             blocks.append("  ".join(bits) + "\n" + summary)
         body = f"# {len(ref_ids)} {self._sense()} (batch)\n\n" + "\n\n".join(blocks)
+        # The read-one hint names the kind's complete read
+        # (:data:`complete_get_view`) — the summary blocks are titles
+        # only, and a bare get is not "in full" on a kind whose comments
+        # live behind a view (gr572710).
+        read_call = f"get(kind={self.kind!r}, id={ref_ids[0]}"
+        if self.complete_get_view is not None:
+            read_call += f", view={self.complete_get_view!r}"
         body += render_next_section(
             [
                 (
-                    f"get(kind={self.kind!r}, id={ref_ids[0]})",
+                    read_call + ")",
                     f"read one {self._sense()} in full",
                 ),
                 (
@@ -4319,11 +4349,16 @@ class NumericRefHandler(Handler):
     def _render_hits_table(self, refs: list[Ref]) -> str:
         """Render a list of refs as a single TOON table.
 
-        Columns: ``kind | id | summary | remaining_words | links``.
+        Columns: ``id | status? | tags? | summary | remaining_words |
+        links | age | size``.
         Columns:
-          - ``kind``: the ref kind (constant per single-kind list, useful
-            cross-kind once that path adopts the same shape).
-          - ``id``: ref.id as string.
+          - ``id``: the universal handle (``gr5``, ``me158``) — the one
+            address form; no separate ``kind`` column, it is constant
+            per single-kind listing (gr572710).
+          - ``status``: lifecycle kinds only — the ``STATUS:``/state value.
+          - ``tags``: rank-ordered chips, when any row has one. A kind
+            with :data:`list_row_tag_prefixes` (gripe → ``cluster:``)
+            shows only the keep-list chips here.
           - ``summary``: the body's first line in full (no truncation —
             scannable in one glance is the whole point).
           - ``remaining_words``: words *after* the first line, so the
@@ -4361,7 +4396,10 @@ class NumericRefHandler(Handler):
                 for rid, pairs in tag_rows.items()
             }
         chip_map = tag_chips.chips_bulk(
-            self.store, {int(r.id): self.kind for r in refs}, tagged=chip_rows
+            self.store,
+            {int(r.id): self.kind for r in refs},
+            keep=self.list_row_tag_prefixes,
+            tagged=chip_rows,
         )
         any_chips = bool(chip_map)
         marks = self._list_row_marks(refs)
@@ -4380,7 +4418,6 @@ class NumericRefHandler(Handler):
                         state = val.partition(":")[2]
             rows.append(
                 {
-                    "kind": self.kind,
                     # the universal handle (e.g. ``me158``) is the
                     # one address form, replacing the bare numeric id.
                     "id": handle_registry.try_format(self.kind, r.id) or str(r.id),
@@ -4394,11 +4431,11 @@ class NumericRefHandler(Handler):
                     **({"stale": marks.get(r.id, "")} if marks else {}),
                 }
             )
-        schema = ["kind", "id", "summary", "remaining_words", "links", "age", "size"]
+        schema = ["id", "summary", "remaining_words", "links", "age", "size"]
         if lifecycle:
-            schema.insert(2, "status")
+            schema.insert(1, "status")
         if any_chips:
-            schema.insert(3 if lifecycle else 2, "tags")
+            schema.insert(2 if lifecycle else 1, "tags")
         if marks:
             schema.append("stale")
         return render_agent_table(rows, schema=schema)
