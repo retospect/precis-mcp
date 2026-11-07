@@ -59,7 +59,12 @@ that holds the lane's credentials with ``params.target_node``):
   with no attempt burned, as a ``no-op:``/``moot:``/``validated:``
   first-line verdict does on a code node. Otherwise (non-zero exit, a
   deny-path hit, a code node with no commit to land) it ends ``failed``
-  with the log tail and releases the lease: the
+  with the log tail and releases the lease; a deny hit on a
+  :data:`precis.plans.lanes.HUMAN_ONLY_PATHS` glob also stamps
+  ``meta.human_only_hit`` on the job, so the tick asks for a human edit
+  instead of retrying (td584381 S1a), and a code node that left no
+  commit stamps ``meta.no_commit`` — one such attempt is the last, the
+  tick sends it straight to rescue. The
   claim tag goes, the todo returns to ``STATUS:open`` and gains
   ``attempt:<n>``.
 * :func:`kill` SIGTERMs the session's process group. :func:`release`
@@ -154,6 +159,20 @@ LANE_FULL_BACKOFF = timedelta(minutes=10)
 #: ``plan_dispatch._attempts`` skips a job carrying it (gr570187,
 #: gr572118); the key is restated there — the dependency stays one-way.
 ATTEMPT_FREE_KEY = "attempt_free"
+
+#: Job-meta key listing the :data:`precis.plans.lanes.HUMAN_ONLY_PATHS`
+#: globs the failed attempt's branch touched (td584381 S1a). A stamped
+#: failure is a human call — no lane may write those paths — so the tick
+#: asks at once instead of climbing the ladder; the key is restated in
+#: ``plan_dispatch`` (the same one-way rule as ``ATTEMPT_FREE_KEY``).
+HUMAN_ONLY_KEY = "human_only_hit"
+
+#: Job-meta flag a clean-exit failure that left no commit on the slice
+#: branch carries (td584381 S1a F4): one such attempt is the last —
+#: no ladder rung teaches a session to write what it chose not to, so
+#: the tick sends the node straight to rescue. Restated in
+#: ``plan_dispatch`` (the same one-way rule).
+NO_COMMIT_KEY = "no_commit"
 
 #: Lane-wait parks before the wait is given up (~6 h at
 #: :data:`LANE_FULL_BACKOFF` each). Lane waits count under
@@ -2201,20 +2220,27 @@ def changed_paths(tree: Path) -> list[str] | None:
     return sorted(p for p in paths if p)
 
 
-def _deny_reason(tree: Path, deny_paths: tuple[str, ...]) -> str | None:
-    """Why the slice's branch breaks its lane's deny paths, or ``None``.
+def _deny_reason(
+    tree: Path, deny_paths: tuple[str, ...]
+) -> tuple[str | None, list[str]]:
+    """``(why the branch breaks the deny paths, human-only paths hit)``.
     The check still runs on an empty ``deny_paths`` — human-only paths
-    hold regardless (:func:`deny_violations`)."""
+    hold regardless (:func:`deny_violations`). The second element stamps
+    :data:`HUMAN_ONLY_KEY` on the failed job (td584381 S1a)."""
     paths = changed_paths(tree)
     if paths is None:
         return (
             f"deny-path check could not read the branch in {tree} (git failed); "
-            "failing closed"
+            "failing closed",
+            [],
         )
     hits = deny_violations(paths, deny_paths)
     if not hits:
-        return None
-    return "touched deny_write_paths: " + ", ".join(f"`{p}`" for p in hits[:50])
+        return None, []
+    return (
+        "touched deny_write_paths: " + ", ".join(f"`{p}`" for p in hits[:50]),
+        _lanes.human_only_hits(paths),
+    )
 
 
 #: Failure classes that are the lane's window, not the task's verdict
@@ -2438,7 +2464,11 @@ def poll(ctx: Any, handle: Any) -> bool:
             )
     # Server-side deny check, before the handoff lands: independent of
     # whether the session honoured its deny rules (Bash writes included).
-    denied = _deny_reason(tree, _lanes.deny_paths_for(ctx.store))
+    denied, human_hits = _deny_reason(tree, _lanes.deny_paths_for(ctx.store))
+    if human_hits:
+        # The failed attempt's durable mark (td584381 S1a): the tick
+        # reads it on the ended job and asks instead of retrying.
+        ctx.set_meta(**{HUMAN_ONLY_KEY: human_hits})
 
     handoff = (result or "").strip()
     if denied:
@@ -2492,6 +2522,9 @@ def poll(ctx: Any, handle: Any) -> bool:
                     "origin/main (nothing to land)"
                 )
                 summary.append(f"Land: {nothing}.")
+                # The durable mark the tick reads (td584381 S1a F4): one
+                # such attempt exhausts the cap — rescue, no ladder.
+                ctx.set_meta(**{NO_COMMIT_KEY: True})
             else:
                 # gr570534 / jo570327: a brief-writer (or any node whose
                 # class or role delivers a document, not a branch) leaves

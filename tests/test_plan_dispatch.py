@@ -780,28 +780,280 @@ def _pinned_plan(store: Store, model: str) -> T.PlanMint:
     return T._run(store, None, build)
 
 
-def test_retry_cap_mints_exactly_one_ask(store: Store) -> None:
+def test_retry_cap_climbs_the_ladder_then_rescues(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1a: the retry cap is the ladder's length — a failed
+    build climbs one rung per attempt with no ask, and at exhaustion the
+    node enters rescue (``rescue:builder`` + the signature gripe), minting
+    no ask-user."""
+    use_lanes(monkeypatch)  # the seed table: a four-rung code ladder
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    rungs = [
+        ("devin", "swe-2-high"),
+        ("devin", "swe-2-max"),
+        ("claude-sub", "claude-sonnet-5"),
+        ("claude-sub", "claude-opus-4-8"),
+    ]
+    assert [(r.lane, r.model) for r in L.ladder("code", store=store)] == rungs
+    # Attempt 1 ran the ladder's foot (as run_slice stamps meta.lane/model).
+    _failed_job(store, task, "boom 1", lane="devin", model="swe-2-high")
+    store.add_tag(task, Tag.open("child-failed:1"), set_by="system")
+    for lane, model in rungs[1:]:
+        res = pd.run_pass(store)
+        # Unexhausted ladder: a climb, never an ask — not even at attempt 2.
+        assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
+        assert "child-failed:1" not in _open_tags(store, task)
+        job_id, meta = _jobs_under(store, task)[-1]
+        assert (meta["params"]["lane"], meta["params"]["model"]) == (lane, model)
+        # run_slice stamps where it ran at submit; mirror that, then fail.
+        store.stamp_ref_meta(job_id, {"lane": lane, "model": model})
+        _set_job_status(store, job_id, "failed")
+        store.chunks.insert_chunks(
+            job_id,
+            [
+                ChunkInsert(
+                    ord=1, text="log tail: exit 1", meta={"chunk_kind": "job_event"}
+                )
+            ],
+        )
+    # Every rung spent: the node enters rescue — tag, signature gripe,
+    # related-to link — and no ask is minted.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 1)
+    assert "rescue:builder" in _open_tags(store, task)
+    assert [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)] == []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT dst_ref_id FROM links WHERE src_ref_id = %s "
+            "AND relation = 'related-to'",
+            (task,),
+        ).fetchall()
+    assert len(rows) == 1
+    gripe = int(rows[0][0])
+    assert any(v.startswith("rescue-sig:") for v in _open_tags(store, gripe))
+    # In rescue the tick leaves the node alone: no dispatch, no ask, no
+    # second rescue write.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
+
+
+def test_human_only_hit_files_the_ask_at_once(store: Store) -> None:
+    """td584381 S1a: a failed attempt stamped ``human_only_hit`` skips
+    the ladder and rescue — the ask names the paths a human must edit."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "run_slice: session touched deny_write_paths: `deploy/inventory/x.yml`",
+        lane="devin",
+        model="swe-2-high",
+        meta={"human_only_hit": ["deploy/inventory/x.yml"]},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 1, 0)
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    meta = _meta(store, ask)["ask"]
+    assert meta["kind"] == "ruling"
+    assert meta["blocks"] == f"td{task}"
+    assert "deploy/inventory/x.yml" in meta["context"]
+    body = _body_text(store, ask)
+    assert "a human must edit" in body
+    assert "deploy/inventory/x.yml" in body
+    assert {"ask-user", "showstopper", f"plan:{mint.root_id}"} <= _open_tags(store, ask)
+    assert "rescue:builder" not in _open_tags(store, task)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = 'blocked-by'",
+            (task, ask),
+        ).fetchone()
+    assert row is not None and row[0] == 1
+
+    # The open ask blocks the task: no second ask, no dispatch.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
+
+
+def test_factory_deny_failure_climbs_then_rescues(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1a: a branch touching a FACTORY-deny (engine) path only
+    is an ordinary failure — no human stamp — so it climbs the ladder
+    like any failure and enters rescue at exhaustion."""
+    use_lanes(monkeypatch)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("task", "The task", {"op": "run_slice", "retries": 2}, body="Do it.")
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "run_slice: session touched deny_write_paths: `scripts/ship`",
+        lane="devin",
+        model="swe-2-high",
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
+    job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["params"]["lane"] == "devin" and meta["params"]["model"] == "swe-2-max"
+    store.stamp_ref_meta(job_id, {"lane": "devin", "model": "swe-2-max"})
+    _set_job_status(store, job_id, "failed")
+    store.chunks.insert_chunks(
+        job_id,
+        [ChunkInsert(ord=1, text="deny hit", meta={"chunk_kind": "job_event"})],
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 1)
+    assert "rescue:builder" in _open_tags(store, task)
+    assert [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)] == []
+
+
+def test_no_enabled_lane_still_asks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1a: with no enabled lane fit for the task class the cap
+    stays :data:`DEFAULT_RETRIES` and mints the ask naming the gap —
+    rescue needs a lane to diagnose on."""
+    dead = L.Lane(
+        name="devin",
+        adapter="devin_tree",
+        credential_pool="free-promo",
+        cap=3,
+        task_classes=frozenset({"code", "review", "validate"}),
+        enabled=False,
+        vendor="cognition",
+        models=("swe-2-medium", "swe-2-high", "swe-2-max"),
+        default_model="swe-2-high",
+        cost_class=L.COST_FREE,
+    )
+    use_lanes(monkeypatch, dead)
+    assert L.ladder("code", store=store) == ()
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(store, task, "first failure")
+    _failed_job(store, task, "second failure")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 1, 0)
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    meta = _meta(store, ask)["ask"]
+    assert "no enabled lane" in meta["context"]
+    assert "no enabled lane" in _body_text(store, ask)
+    assert "rescue:builder" not in _open_tags(store, task)
+
+
+def test_no_commit_failure_goes_straight_to_rescue(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1a F4: a clean-exit failure that left no commit on the
+    branch (``meta.no_commit``) is the LAST attempt — no ladder rung can
+    teach a session to write what it chose not to — so the node enters
+    rescue after one attempt, its ``moot:`` line in the evidence."""
+    use_lanes(monkeypatch)  # the seed table: a four-rung code ladder
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "run_slice: session left no commit on slice/td0 ahead of "
+        "origin/main (nothing to land)\n--- log tail ---\n"
+        "moot: gr123 already fixed on main\n",
+        lane="devin",
+        model="swe-2-high",
+        meta={"no_commit": True},
+    )
+    res = pd.run_pass(store)
+    # One attempt spent the whole road: rescue, never a climb or an ask.
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 1)
+    assert "rescue:builder" in _open_tags(store, task)
+    assert [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)] == []
+    # The session's verdict line reaches the evidence on the node.
+    assert any(
+        "moot: gr123 already fixed on main" in c for c in _todo_comments(store, task)
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
+
+
+def test_no_commit_lane_gap_ask_carries_the_verdict_line(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1a F4: a no-commit failure that goes to the ask instead
+    (no enabled lane — rescue needs a lane to diagnose on) carries the
+    session's first ``moot:``/``no-op:`` line in the ask body."""
+    dead = L.Lane(
+        name="devin",
+        adapter="devin_tree",
+        credential_pool="free-promo",
+        cap=3,
+        task_classes=frozenset({"code", "review", "validate"}),
+        enabled=False,
+        vendor="cognition",
+        models=("swe-2-medium", "swe-2-high", "swe-2-max"),
+        default_model="swe-2-high",
+        cost_class=L.COST_FREE,
+    )
+    use_lanes(monkeypatch, dead)
+    assert L.ladder("code", store=store) == ()
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "run_slice: session left no commit on slice/td0 ahead of "
+        "origin/main (nothing to land)\n--- log tail ---\n"
+        "no-op: docs already match the code",
+        meta={"no_commit": True},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 1, 0)
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    assert "no-op: docs already match the code" in _body_text(store, ask)
+
+
+def test_retry_cap_mints_exactly_one_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1a: the end of the road mints ONE ask per node — here
+    the road is the no-lane gap (the cap stays ``DEFAULT_RETRIES``);
+    closing the ask re-arms the task."""
+    dead = L.Lane(
+        name="devin",
+        adapter="devin_tree",
+        credential_pool="free-promo",
+        cap=3,
+        task_classes=frozenset({"code", "review", "validate"}),
+        enabled=False,
+        vendor="cognition",
+        models=("swe-2-medium", "swe-2-high", "swe-2-max"),
+        default_model="swe-2-high",
+        cost_class=L.COST_FREE,
+    )
+    use_lanes(monkeypatch, dead)
     mint = _one_task_plan(store)
     task = mint.ids["task"]
     _failed_job(store, task, "first failure")
     store.add_tag(task, Tag.open("child-failed:1"), set_by="system")
 
-    # One failure (< retries 2): the tick retries and drops the bubble tag.
+    # One failure (< DEFAULT_RETRIES 2): the tick retries, tag dropped.
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (1, 0)
     assert "child-failed:1" not in _open_tags(store, task)
     live = _jobs_under(store, task)[-1][0]
-    store.add_tag(
-        live, Tag.closed("STATUS", "failed"), set_by="system", replace_prefix=True
-    )
+    _set_job_status(store, live, "failed")
     store.chunks.insert_chunks(
         live,
         [ChunkInsert(ord=1, text="log tail: exit 1", meta={"chunk_kind": "job_event"})],
     )
 
     res = pd.run_pass(store)
-    assert (res.dispatched, res.asks) == (0, 1)
-    asks = [c for c in _children(store, mint.root_id) if c != task]
+    assert (res.dispatched, res.asks, res.rescued) == (0, 1, 0)
+    asks = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
     assert len(asks) == 1
     ask = asks[0]
     meta = _meta(store, ask)["ask"]
@@ -823,11 +1075,109 @@ def test_retry_cap_mints_exactly_one_ask(store: Store) -> None:
     assert len([c for c in _children(store, mint.root_id) if c != task]) == 1
 
     # Answering (closing) the ask re-arms the task.
-    store.add_tag(
-        ask, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
-    )
+    _answer_ask(store, ask, "retry with a different lane/model")
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (1, 0)
+
+
+def test_model_pinned_node_caps_at_default_retries(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1a F2: a ``model`` pin is the triage's pick —
+    ``_escalate`` never climbs it, so the ladder is no budget: the cap
+    falls back to :data:`DEFAULT_RETRIES` and the second failure enters
+    rescue (it used to ride the four-rung ladder to four)."""
+    use_lanes(monkeypatch)  # the seed table: a four-rung code ladder
+    mint = _pinned_plan(store, "claude-haiku-4-5-20251001")
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "first failure",
+        lane="claude-sub",
+        model="claude-haiku-4-5-20251001",
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
+    job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["params"]["model"] == "claude-haiku-4-5-20251001"
+    store.stamp_ref_meta(job_id, {"lane": "claude-sub"})
+    _set_job_status(store, job_id, "failed")
+    store.chunks.insert_chunks(
+        job_id,
+        [ChunkInsert(ord=1, text="log tail: exit 1", meta={"chunk_kind": "job_event"})],
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 1)
+    assert "rescue:builder" in _open_tags(store, task)
+    assert [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)] == []
+
+
+def test_rescue_ask_answer_clears_the_tag(store: Store) -> None:
+    """td584381 S1a F1: a node parked in rescue behind its own ruling ask
+    is freed by the answer — ``_step_rearm`` drops the ``rescue:<cls>``
+    tag in the same step it stamps the re-arm floor; ``meta.rescue.n``
+    stays, so a second exhaustion re-enters rescue for the human."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(store, task, "boom")
+    # The rescue pass's own ask parked the node (meta.rescue.n >= 1).
+    store.add_tag(task, Tag.open("rescue:builder"), set_by="system")
+    store.stamp_ref_meta(task, {"rescue": {"n": 1}})
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="rescue ruling",
+            meta={
+                "ask": {
+                    "kind": "ruling",
+                    "options": ["retry with a different lane/model"],
+                    "blocks": f"td{task}",
+                    "context": "in rescue",
+                }
+            },
+            parent_id=mint.root_id,
+            conn=conn,
+        )
+        ask = int(ref.id)
+        store.add_tag(
+            ask,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        for v in ("ask-user", "showstopper", f"plan:{mint.root_id}"):
+            store.add_tag(ask, Tag.open(v), set_by="system", conn=conn)
+        store.add_link(
+            src_ref_id=task, dst_ref_id=ask, relation="blocked-by", conn=conn
+        )
+    # The open ask keeps the node excluded: nothing moves.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
+    assert "rescue:builder" in _open_tags(store, task)
+    _answer_ask(store, ask, "retry with a different lane/model")
+    # The answer IS the clearing: re-armed AND dispatched, tag gone.
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert "rescue:builder" not in _open_tags(store, task)
+    meta = _meta(store, task)
+    assert meta["rescue"]["n"] == 1
+    assert meta["rearmed_by_ask"] == ask
+
+
+def test_human_only_key_matches_run_slice() -> None:
+    """``plan_dispatch`` restates the job-meta key ``run_slice`` stamps —
+    the dependency stays one-way, like ``ATTEMPT_FREE_KEY``."""
+    assert pd.HUMAN_ONLY_KEY == run_slice.HUMAN_ONLY_KEY == "human_only_hit"
+
+
+def test_no_commit_key_matches_run_slice() -> None:
+    """``plan_dispatch`` restates the job-meta flag ``run_slice`` stamps
+    on a clean-exit no-commit failure — the same one-way rule as
+    ``HUMAN_ONLY_KEY`` (td584381 S1a F4)."""
+    assert pd.NO_COMMIT_KEY == run_slice.NO_COMMIT_KEY == "no_commit"
 
 
 def test_host_refusal_jobs_are_no_attempt(store: Store) -> None:
@@ -1068,8 +1418,14 @@ def test_answered_ask_rearms_despite_jobs_run_in_between(store: Store) -> None:
     closed with ``retry``)."""
     mint = _one_task_plan(store)
     task = mint.ids["task"]
-    _failed_job(store, task, "first failure")
-    _failed_job(store, task, "second failure")
+    # A human-only stamp files the ask at the first failure (td584381
+    # S1a: an ordinary cap enters rescue, it no longer asks).
+    _failed_job(
+        store,
+        task,
+        "touched human-only",
+        meta={"human_only_hit": ["deploy/inventory/x.yml"]},
+    )
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (0, 1)
     (ask,) = [c for c in _children(store, mint.root_id) if c != task]
@@ -2028,32 +2384,69 @@ def test_review_revert_gate_reset_is_read_only_in_a_dry_run(store: Store) -> Non
     assert _status(store, gate) == "done"
 
 
-def test_review_without_verdict_retries_once_then_asks(store: Store) -> None:
+def test_review_without_verdict_retries_once_then_rescues(
+    store: Store,
+) -> None:
+    """A reviewer leaving no verdict retries on the picked lane (a format
+    miss never climbs, gr573564); at the picked lane's rung cap — two on
+    devin under the real table — the node enters rescue under class
+    ``review``, no ask (td584381 S1a F3/F5: the old single-lane switch
+    hid the full-table cap bug)."""
     mint = _reviewed(store, "review: looks fine to me")
     review = mint.ids["review"]
     res = pd.run_pass(store)
     assert (res.reviews, res.asks) == (0, 0)
     assert _meta(store, review)["review"]["verdict"] is None
     assert "malformed verdict" in _todo_comments(store, review)[-1]
-    # One retry, pinned to the review lane. The builder ran on the Claude
+    # One retry, pinned to the review pick. The builder ran on the Claude
     # lane, so the cross-vendor rule picks the first other-vendor lane in
-    # the table: devin (it fits `review`; enabled td562568), ahead of codex.
+    # the table: devin (it fits `review`), ahead of codex.
     assert res.dispatched == 1
     (_old, (retry, meta)) = _jobs_under(store, review)
     assert meta["params"]["todo_id"] == review
     assert meta["params"]["lane"] == "devin"
     assert not any("shares the builder's vendor" in n for n in res.notes)
-    # The retry posts nothing either: the hygiene ask follows.
+    # The retry posts nothing either: devin's two rungs are spent — the
+    # node enters rescue, no ask.
     store.add_tag(
         retry, Tag.closed("STATUS", "succeeded"), set_by="system", replace_prefix=True
     )
     res = pd.run_pass(store)
-    assert (res.reviews, res.dispatched, res.asks) == (0, 0, 1)
-    assert "no `review:` comment" in _todo_comments(store, review)[-1] or (
-        "malformed verdict" in _todo_comments(store, review)[-1]
+    assert (res.reviews, res.dispatched, res.asks, res.rescued) == (0, 0, 0, 1)
+    # The verdict-miss note is posted at judging; the rescue evidence
+    # comment lands on top of it in the same pass.
+    assert any(
+        "no `review:` comment" in c or "malformed verdict" in c
+        for c in _todo_comments(store, review)
     )
-    asks = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
-    assert len(asks) == 1
+    assert "rescue:review" in _open_tags(store, review)
+    assert [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)] == []
+
+
+def test_review_cap_is_the_picked_lanes_rungs(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1a F3: the reviewer's cap is the lane ``_review_lane``
+    picked — under the real table a second no-verdict run on devin is
+    the top rung (swe-2-max), so the node enters rescue; it does not
+    ride the full review-class table (devin+codex+claude-sub)."""
+    use_lanes(monkeypatch)  # the real multi-lane seed table
+    mint = _reviewed(store, "review: looks fine to me")
+    review = mint.ids["review"]
+    res = pd.run_pass(store)
+    # A format miss retries on the picked lane: devin — the builder's
+    # vendor (anthropic) is excluded.
+    assert res.dispatched == 1
+    (_old, (retry, meta)) = _jobs_under(store, review)
+    assert meta["params"]["lane"] == "devin"
+    store.stamp_ref_meta(retry, {"lane": "devin"})
+    _set_job_status(store, retry, "succeeded")
+    res = pd.run_pass(store)
+    # Two attempts on devin's two rungs spent the cap — rescue, never a
+    # third attempt on a codex/claude-sub rung of the class table.
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 1)
+    assert "rescue:review" in _open_tags(store, review)
+    assert [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)] == []
 
 
 def test_review_reads_a_glued_handoff(store: Store) -> None:

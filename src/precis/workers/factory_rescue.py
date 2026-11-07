@@ -1451,8 +1451,9 @@ def _episode_ask(conn: Any, ref_id: int, tag_at: Any) -> int | None:
     """The ask this rescue episode already filed: a live ``blocked-by``
     target ask-shaped (``meta.ask`` or an ``ask-user`` tag) minted at or
     after the ``rescue:`` tag went on. Status-free on purpose — a node
-    still tagged after its ask was answered is not asked again; clearing
-    the tag stays the human's step."""
+    still tagged after its ask was answered is not asked again; the
+    plan tick's ``_step_rearm`` clears the tag when the answer re-arms
+    the node (td584381 S1a F1)."""
     row = conn.execute(
         """
         SELECT b.ref_id FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
@@ -1940,11 +1941,11 @@ def _ask_node(
         f"Branch: {branch} @ {head or '?'}",
         "",
         "'retry with a different lane/model' re-arms the node — closing "
-        "this ask gives it a fresh retry budget; 'rewrite the brief' — "
-        "leave a `brief:` comment or edit the node's body and close this "
-        "ask, the rebuild runs on the new brief; 'won't do' — close the "
-        f"node STATUS:won't-do. Clear the `rescue:{cls}` tag when the "
-        "cause is fixed.",
+        "this ask gives it a fresh retry budget and the plan tick clears "
+        f"the `rescue:{cls}` tag itself; 'rewrite the brief' — leave a "
+        "`brief:` comment or edit the node's body and close this ask, "
+        "the rebuild runs on the new brief; 'won't do' — close the node "
+        "STATUS:won't-do.",
     ]
     body = "\n".join(lines)
     with store.atomic() as conn:

@@ -355,7 +355,7 @@ def test_rearm_once_rearms_and_clears_the_tag(store: Store) -> None:
     plan = pd._load(store)
     n = plan.nodes[task]
     assert pd._attempts(plan, n) == 0
-    assert not pd._capped(plan, n)
+    assert not pd._capped(plan, n, 2)
     assert pd._dispatchable(plan, n)
     pres = pd.run_pass(store, dry_run=True)
     assert any(f"td{task}: would dispatch run_slice" in note for note in pres.notes)

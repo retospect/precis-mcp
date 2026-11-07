@@ -1,6 +1,6 @@
 """gr548800(a): plan events append one-line ``quest_log`` entries on the
 quest above the plan root — root opened (template mint) and paused (tag),
-node parked at its retry cap + the ask raised (plan_dispatch hygiene),
+node entering rescue at its retry cap (plan_dispatch hygiene),
 and an ask ``put`` under a plan node (TodoHandler.put). All land through
 :func:`precis.quest.logbook.append_entry`, stamped ``by='system'``."""
 
@@ -98,7 +98,9 @@ def test_pausing_the_plan_root_logs_it(store: Store, handler: TodoHandler) -> No
     assert len(_logs(store, quest_id)) == 2  # opened + paused
 
 
-def test_retry_cap_parks_the_node_and_raises_the_ask(store: Store) -> None:
+def test_retry_cap_enters_rescue_and_logs_it(store: Store) -> None:
+    """td584381 S1a: a build node at its retry cap enters rescue (no ask);
+    the quest log records the rescue entry, not an ask."""
     quest_id, root_id = _quest_and_root(store)
     _gid, mint = _gripe_fix(store, root_id)
     task = mint.ids["build"]
@@ -111,21 +113,19 @@ def test_retry_cap_parks_the_node_and_raises_the_ask(store: Store) -> None:
         replace_prefix=True,
     )
     res = pd.run_pass(store)
-    assert res.asks == 1
+    assert (res.asks, res.rescued) == (0, 1)
     logs = _logs(store, quest_id)
     assert any(
-        t == f"plan td{mint.root_id}: node td{task} parked at retry cap "
-        "(1 attempts; meta.retries=0)"
+        t.startswith(
+            f"plan td{mint.root_id}: node td{task} entered rescue (builder) "
+            "at retry cap ("
+        )
         for t in logs
     )
-    assert any(
-        t.startswith(f"plan td{mint.root_id}: ask td")
-        and t.endswith(f"raised (blocks td{task})")
-        for t in logs
-    )
-    # The open ask blocks the node — the next pass files nothing new.
+    assert not any(t.startswith(f"plan td{mint.root_id}: ask td") for t in logs)
+    # The rescue pass owns the node — the next pass files nothing new.
     res2 = pd.run_pass(store)
-    assert res2.asks == 0
+    assert (res2.asks, res2.rescued) == (0, 0)
     assert len(_logs(store, quest_id)) == len(logs)
 
 

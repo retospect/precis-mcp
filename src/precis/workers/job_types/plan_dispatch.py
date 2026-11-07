@@ -55,9 +55,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    fresh retry budget (``meta.rearmed_after_job``). Each ``sha-in-prod``
    gate of the plan on a reverted sha goes back to ``PENDING_SHA`` (reopened
    if it had opened) with a ``sha reset after review REVERT`` comment. A missing or malformed
-   verdict reopens the node for one retry (``meta.retries`` default 2) —
-   on the picked lane, a format miss never climbs the ladder (gr573564) —
-   then the hygiene ask-user path. ``meta.review = {verdict, job, at,
+   verdict reopens the node — the retry stays on the picked lane (a
+   format miss never climbs the ladder, gr573564) — and counts against
+   the retry cap; at cap step 5 sends the reviewer to rescue as cls
+   ``review``. ``meta.review = {verdict, job, at,
    tests_run}`` records the job judged, so a pass never acts twice on one
    job; ``tests_run`` is always ``False`` — the reviewer is read-only —
    and only this step and its retry path read the record, so nothing
@@ -101,10 +102,30 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    it; ``release_claims``, back to ``STATUS:triaged`` with a comment — unless
    its newest comment is ``resolved:``, then only the lease goes; gr542086);
    a task whose newest job ended
-   (failed, or succeeded without closing it) with attempts at
-   ``meta.retries`` (default 2) gets one ask-user todo under the plan root
-   (``meta.ask`` kind ``ruling``, tags ``ask-user`` + ``showstopper``) that it
-   is ``blocked-by``. A land that died past its own gate-kill retries
+   (failed, or succeeded without closing it) with attempts at its retry
+   cap is parked. The cap is an explicit ``meta.retries`` pin, else the
+   node's lane-ladder length for a ``run_slice`` op — one rung per
+   attempt, so the ladder is spent before the cap fires (td584381 S1a);
+   a reviewer counts only the picked lane's rungs, a model-pinned op
+   keeps :data:`DEFAULT_RETRIES`, and so does a ladder-less one. What
+   parks it follows the failure: a failed job stamped ``no_commit``
+   (a clean exit that wrote nothing — no rung teaches that) or an
+   exhausted ``run_slice`` node enters rescue —
+   :func:`precis.workers.factory_rescue.enter_rescue` tags it
+   ``rescue:<cls>`` (cls ``review`` for a reviewer, else ``builder``),
+   files or joins the signature gripe, and the rescue pass owns what
+   follows — one diagnose-and-re-arm, then its own ask on a second
+   exhaustion (``meta.rescue.n >= 1``), the end of the autonomous road;
+   answering that ask re-arms the node and clears the rescue tag in the
+   same step (``_step_rearm``). A failed job stamped
+   ``human_only_hit=[paths]`` (``run_slice`` writes
+   it when the branch touches ``lanes.HUMAN_ONLY_PATHS`` — no lane may
+   write those paths) and a ``run_slice`` with no enabled fit lane still
+   get the old ask, at once and naming the paths or the gap; a
+   mechanical op (``meta.op`` other than ``run_slice``) asks too. The
+   ask is one ask-user todo under the plan root (``meta.ask`` kind
+   ``ruling``, tags ``ask-user`` + ``showstopper``) the task is
+   ``blocked-by``. A land that died past its own gate-kill retries
    carries ``meta.land_again_cap`` and goes straight to that ask — the
    capped run is done, no auto re-land (gr570187). An answered re-land
    ask re-lands only when the answer names ``land again (no builder)``
@@ -222,6 +243,19 @@ _ATTEMPT_RE = re.compile(r"^attempt:(\d+)$")
 #: (the gate's own machinery killed the land, gr570187).
 ATTEMPT_FREE_KEY = "attempt_free"
 
+#: ``run_slice.HUMAN_ONLY_KEY``, restated — the dependency stays
+#: one-way (a test pins the two spellings equal). The failed job lists
+#: the ``lanes.HUMAN_ONLY_PATHS`` globs its branch touched; a stamped
+#: failure is a human call — no lane may write those paths — so the
+#: tick asks at once instead of climbing the ladder (td584381 S1a).
+HUMAN_ONLY_KEY = "human_only_hit"
+
+#: ``run_slice.NO_COMMIT_KEY``, restated — the same one-way rule. A
+#: clean-exit failure that left no commit on the slice branch is the
+#: LAST attempt: no rung can teach a session to write what it chose
+#: not to, so the tick caps at once (td584381 S1a F4).
+NO_COMMIT_KEY = "no_commit"
+
 #: Consecutive infra-red lands (:func:`_infra_red_lands`) before the tick
 #: parks the node behind a "land again" ask (gr570187): the re-land is
 #: bounded so a broken gate environment cannot loop the lander forever.
@@ -266,10 +300,12 @@ _LANDED_RE = re.compile(r"landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
 _TD_FROM_RE = re.compile(r"\s*td(\d+)\s*")
 
 #: Doable exclusions the tick honours: the shared registry minus
-#: ``child-failed:`` — plan retries are the tick's, not the bubble's.
+#: ``child-failed:`` — plan retries are the tick's, not the bubble's —
+#: plus ``rescue:``: a node in rescue belongs to the rescue pass, never
+#: to a build (td584381 S1a).
 _EXCLUSIONS: tuple[str, ...] = tuple(
     t for t in _DOABLE_EXCLUSION_TAGS if t != "child-failed:"
-)
+) + ("rescue:",)
 
 #: Executor preference when a job type is compatible with several.
 _EXECUTOR_ORDER: tuple[str, ...] = (
@@ -311,8 +347,9 @@ DESCRIPTION: str = (
     "Dark-factory plan tick: evaluate gates, advance loops, act on reviewer "
     "verdicts (LAND/FIX/REVERT), close finished phases, mint one job per "
     "doable plan task in (prio, id) order (run_slice by default), "
-    "release stale claims and file an ask-user once a task hits its retry "
-    "cap. Read-only while PRECIS_FACTORY=off or service_config "
+    "release stale claims, enter rescue once a lane-run task's retry "
+    "ladder is spent, and file an ask-user for a human-only hit or a "
+    "missing lane. Read-only while PRECIS_FACTORY=off or service_config "
     "plan_dispatch prio 0."
 )
 
@@ -552,6 +589,9 @@ class PassResult:
     dispatched: int = 0
     released: int = 0
     asks: int = 0
+    #: Ladder-exhausted ``run_slice`` nodes handed to the rescue path
+    #: (td584381 S1a).
+    rescued: int = 0
     reopened: int = 0
     #: Reviewer verdicts acted on (LAND / FIX / REVERT).
     reviews: int = 0
@@ -570,6 +610,7 @@ class PassResult:
             "dispatched": self.dispatched,
             "released": self.released,
             "asks": self.asks,
+            "rescued": self.rescued,
             "dry_run": self.dry_run,
             "reopened": self.reopened,
             "reviews": self.reviews,
@@ -1141,7 +1182,12 @@ def _reset_gates(
 
 
 def _step_reviews(
-    store: Any, plan: _Plan, w: _Writer, res: PassResult, now: datetime
+    store: Any,
+    plan: _Plan,
+    w: _Writer,
+    res: PassResult,
+    now: datetime,
+    lane_table: tuple[_lanes.Lane, ...],
 ) -> None:
     for n in plan.todos():
         if not _is_reviewer(n) or _closed(n) or plan.paused(n):
@@ -1174,12 +1220,14 @@ def _step_reviews(
                 if raw
                 else "no `review:` comment"
             )
+            job_type_, params_ = _resolve_op(n)
+            cap = _retry_cap(n, _cap_rungs(plan, lane_table, n, job_type_, params_))
             w.stamp_meta(n, {"review": {**record, "verdict": None}})
             w.comment(
                 n,
                 f"plan_dispatch: job:{newest.id} succeeded with {what}; want "
-                f"{_templates.REVIEW_GRAMMAR}. Retrying (meta.retries="
-                f"{_retries(n)}), then asking.",
+                f"{_templates.REVIEW_GRAMMAR}. Retrying (retry cap {cap}), "
+                "then rescue.",
             )
             if n.status != "open":
                 w.set_status(n, "open")
@@ -1287,9 +1335,20 @@ def _step_rearm(plan: _Plan, w: _Writer, res: PassResult) -> None:
             stamp["rearmed_answer"] = None
             stamp["rearmed_ask_at"] = None
         w.stamp_meta(n, stamp)
+        # A node whose rescue ended in the rescue pass's own ask: the
+        # human's answer IS the clearing (td584381 S1a F1) — the
+        # ``rescue:<cls>`` tag would otherwise keep it excluded from
+        # dispatch and hygiene forever. ``meta.rescue.n`` stays: a
+        # second exhaustion re-enters rescue and asks the human again.
+        cleared = [v for v in n.open_tags if v.startswith("rescue:")]
+        if cleared:
+            w.remove_tags(n, cleared)
+            if n.status == "doing":
+                w.set_status(n, "open")
         res.notes.append(
             f"td{n.id}: ask td{newest_ask.id} answered; retry budget reset"
             + (f" after job:{ended[-1].id}" if ended else "")
+            + ("; rescue tag cleared" if cleared else "")
         )
 
 
@@ -1434,18 +1493,14 @@ def _no_attempt(j: _Node) -> bool:
     return bool(j.meta.get("host_refusal") or j.meta.get(ATTEMPT_FREE_KEY))
 
 
-def _attempts(plan: _Plan, n: _Node) -> int:
-    """Ended jobs since the newest ask on ``n`` (all of them, floored by the
-    ``attempt:<n>`` tag, when there was never an ask). A REVERT verdict and
-    an answered ask (:func:`_step_rearm`) re-arm a node: only jobs after
-    ``meta.rearmed_after_job`` count. A job carrying ``meta.host_refusal``
-    or ``meta.attempt_free`` never counts: nothing on the diff was tried
-    (:func:`_no_attempt`)."""
+def _attempt_jobs(plan: _Plan, n: _Node) -> list[_Node]:
+    """The ended jobs counting as attempts on ``n``, oldest first —
+    what :func:`_attempts` counts."""
     asks = [b for b in plan.blockers.get(n.id, []) if b.is_ask]
     since = max((b.created_at for b in asks), default=None)
     floor = _rearm_floor(n)
     jobs = plan.jobs(n)
-    ended = [
+    return [
         j
         for i, j in enumerate(jobs)
         # Ended only: a job still queued — never claimed, e.g. waiting for
@@ -1462,9 +1517,46 @@ def _attempts(plan: _Plan, n: _Node) -> int:
             and any(k.meta.get("job_type") == "land_slice" for k in jobs[i + 1 :])
         )
     ]
-    if since is None and floor is None:
+
+
+def _attempts(plan: _Plan, n: _Node) -> int:
+    """Ended jobs since the newest ask on ``n`` (all of them, floored by the
+    ``attempt:<n>`` tag, when there was never an ask). A REVERT verdict and
+    an answered ask (:func:`_step_rearm`) re-arm a node: only jobs after
+    ``meta.rearmed_after_job`` count. A job carrying ``meta.host_refusal``
+    or ``meta.attempt_free`` never counts: nothing on the diff was tried
+    (:func:`_no_attempt`)."""
+    ended = _attempt_jobs(plan, n)
+    asks = [b for b in plan.blockers.get(n.id, []) if b.is_ask]
+    if not asks and _rearm_floor(n) is None:
         return max(len(ended), _attempt_tag(n))
     return len(ended)
+
+
+def _human_hit(plan: _Plan, n: _Node) -> list[str]:
+    """The ``lanes.HUMAN_ONLY_PATHS`` paths the newest attempt's branch
+    touched, or ``[]`` — the job-meta stamp :data:`HUMAN_ONLY_KEY`
+    ``run_slice`` writes (td584381 S1a). Only the newest attempt job's
+    stamp counts: a stamped job below the re-arm floor or the newest ask
+    was already answered for."""
+    ended = _attempt_jobs(plan, n)
+    if not ended or ended[-1].status != "failed":
+        return []
+    hits = ended[-1].meta.get(HUMAN_ONLY_KEY)
+    if isinstance(hits, list):
+        return sorted(str(p) for p in hits)
+    return [str(hits)] if hits else []
+
+
+def _no_commit(plan: _Plan, n: _Node) -> bool:
+    """The newest attempt ended ``failed`` carrying ``run_slice``'s
+    :data:`NO_COMMIT_KEY` stamp — a clean exit that left no commit on
+    ``slice/<id>`` (td584381 S1a F4). One such attempt exhausts the
+    cap: no rung fixes a session that wrote nothing."""
+    ended = _attempt_jobs(plan, n)
+    return bool(
+        ended and ended[-1].status == "failed" and ended[-1].meta.get(NO_COMMIT_KEY)
+    )
 
 
 def _rearm_floor(n: _Node) -> int | None:
@@ -1565,16 +1657,79 @@ def _land_again_capped(plan: _Plan, n: _Node) -> bool:
     )
 
 
-def _capped(plan: _Plan, n: _Node) -> bool:
+def _task_rungs(
+    lane_table: tuple[_lanes.Lane, ...], n: _Node, params: dict[str, Any]
+) -> tuple[_lanes.Rung, ...]:
+    """The ladder ``n`` climbs: every enabled fit rung for its task
+    class, narrowed to the lane its ``meta.op`` pins — the same
+    narrowing :func:`_escalate` applies (td584381 S1a)."""
+    task_class = str(n.meta.get("task_class") or _DEFAULT_TASK_CLASS)
+    rungs = _lanes.ladder(task_class, lanes=lane_table)
+    pinned = str(params["lane"]) if params.get("lane") else None
+    if pinned:
+        rungs = tuple(r for r in rungs if r.lane == pinned)
+    return rungs
+
+
+def _cap_rungs(
+    plan: _Plan,
+    lane_table: tuple[_lanes.Lane, ...],
+    n: _Node,
+    job_type: str,
+    params: dict[str, Any],
+) -> tuple[_lanes.Rung, ...]:
+    """The ladder the retry cap counts, in one place (td584381 S1a
+    F2/F3): ``()`` for a non-run_slice op or a model-pinned one —
+    ``_escalate`` never climbs those, so the cap falls back to
+    :data:`DEFAULT_RETRIES`. A reviewer climbs inside the lane its
+    newest attempt ran on (``_review_lane``'s pick): its cap is that
+    lane's rung count, never the full review-class table's."""
+    if job_type != DEFAULT_OP or "model" in params:
+        return ()
+    rungs = _task_rungs(lane_table, n, params)
+    if _is_reviewer(n) and not params.get("lane"):
+        ended = _attempt_jobs(plan, n)
+        last = ended[-1] if ended else None
+        # ``meta.lane`` is stamped at submit; the job's own params carry
+        # the pick before that (and always for a minted-but-unrun job).
+        lane = (
+            last.meta.get("lane") or (last.meta.get("params") or {}).get("lane")
+            if last is not None
+            else None
+        )
+        if lane is not None:
+            rungs = tuple(r for r in rungs if r.lane == lane)
+    return rungs
+
+
+def _retry_cap(n: _Node, rungs: tuple[_lanes.Rung, ...]) -> int:
+    """The attempts budget (td584381 S1a): an explicit ``meta.retries``
+    pins the number; else the node climbs its whole lane ladder — one
+    rung per attempt — before the cap fires. No ladder at all keeps
+    :data:`DEFAULT_RETRIES`, the no-lane case that still mints the ask."""
+    if n.meta.get("retries") is not None:
+        return _retries(n)
+    return len(rungs) or DEFAULT_RETRIES
+
+
+def _capped(plan: _Plan, n: _Node, cap: int) -> bool:
     jobs = plan.jobs(n)
     if not jobs or jobs[-1].status not in _JOB_ENDED:
         return False
+    # A human-only hit caps at once: no lane may write those paths, so
+    # no rung and no rescue can fix the failure (td584381 S1a).
+    if _human_hit(plan, n):
+        return True
+    # A clean exit that left no commit is likewise the last attempt:
+    # the ladder cannot teach a session to write (td584381 S1a F4).
+    if _no_commit(plan, n):
+        return True
     if _land_again_capped(plan, n):
         return True
     attempts = _attempts(plan, n)
     # ``attempts > 0``: with ``meta.retries: 0`` a no-attempt job (a host
     # refusal) must not mint the cap ask — nothing was tried (gr571395).
-    return attempts > 0 and attempts >= _retries(n)
+    return attempts > 0 and attempts >= cap
 
 
 def _resolve_op(n: _Node) -> tuple[str, dict[str, Any]]:
@@ -1608,7 +1763,11 @@ _DEFAULT_TASK_CLASS = "code"
 
 
 def _escalate(
-    w: _Writer, plan: _Plan, n: _Node, params: dict[str, Any]
+    w: _Writer,
+    plan: _Plan,
+    n: _Node,
+    params: dict[str, Any],
+    lane_table: tuple[_lanes.Lane, ...],
 ) -> tuple[bool, str | None]:
     """Pin a retried ``run_slice`` one rung up the cross-lane ladder.
 
@@ -1651,11 +1810,7 @@ def _escalate(
     attempts = _attempts(plan, n)
     if attempts <= 0:
         return True, None
-    task_class = str(n.meta.get("task_class") or _DEFAULT_TASK_CLASS)
-    rungs = _lanes.ladder(task_class, store=w.store)
-    pinned_lane = str(params["lane"]) if params.get("lane") else None
-    if pinned_lane:
-        rungs = tuple(r for r in rungs if r.lane == pinned_lane)
+    rungs = _task_rungs(lane_table, n, params)
     if not rungs:
         return True, None
     # A no-attempt job is no rung to climb from either (gr571395): the
@@ -1747,7 +1902,11 @@ def _effective_prio(plan: _Plan, n: _Node) -> int:
 
 
 def _review_lane(
-    plan: _Plan, w: _Writer, res: PassResult, n: _Node
+    plan: _Plan,
+    w: _Writer,
+    res: PassResult,
+    n: _Node,
+    lane_table: tuple[_lanes.Lane, ...],
 ) -> tuple[bool, str | None]:
     """``(go, lane name)`` for a reviewer's ``run_slice``: a lane of a vendor
     that did not build what it reviews; ``go=False`` when every fit lane is
@@ -1762,7 +1921,6 @@ def _review_lane(
     Codex-built fixes get a Claude review (Reto's yes to 27b357ee5, via
     BUILDER 2026-11-05)."""
     cls = _templates.REVIEW_TASK_CLASS
-    lane_table = _lanes.load_lanes(w.store)
     vendors = _builder_vendors(plan, n, lane_table)
     steps: list[tuple[frozenset[str], str]] = [
         (frozenset(vendors), "every build vendor"),
@@ -1794,13 +1952,17 @@ def _review_lane(
     return False, None
 
 
-def _step_dispatch(plan: _Plan, w: _Writer, res: PassResult) -> None:
+def _step_dispatch(
+    plan: _Plan, w: _Writer, res: PassResult, lane_table: tuple[_lanes.Lane, ...]
+) -> None:
     for n in sorted(plan.todos(), key=lambda x: (_effective_prio(plan, x), x.id)):
         if not _dispatchable(plan, n) or n.status != "open":
             continue
         if _excluded(n) or _claims(n) or plan.live_job(n):
             continue
-        if plan.blocked(n) or plan.paused(n) or _capped(plan, n):
+        job_type, params = _resolve_op(n)
+        cap = _retry_cap(n, _cap_rungs(plan, lane_table, n, job_type, params))
+        if plan.blocked(n) or plan.paused(n) or _capped(plan, n, cap):
             continue
         jobs = plan.jobs(n)
         if jobs and jobs[-1].status == "cancelled":
@@ -1817,15 +1979,13 @@ def _step_dispatch(plan: _Plan, w: _Writer, res: PassResult) -> None:
             # failed job's own params — no builder, no escalate, no review
             # lane (gr570187).
             job_type, params = "land_slice", reland
-        else:
-            job_type, params = _resolve_op(n)
         if _is_reviewer(n) and job_type == DEFAULT_OP and "lane" not in params:
-            go, lane_name = _review_lane(plan, w, res, n)
+            go, lane_name = _review_lane(plan, w, res, n, lane_table)
             if not go:
                 continue
             params["lane"] = lane_name
         if job_type == DEFAULT_OP:
-            go, climbed = _escalate(w, plan, n, params)
+            go, climbed = _escalate(w, plan, n, params, lane_table)
             if climbed:
                 res.notes.append(climbed)
             if not go:
@@ -1878,8 +2038,8 @@ def _step_dispatch(plan: _Plan, w: _Writer, res: PassResult) -> None:
 # ── (5) hygiene ────────────────────────────────────────────────────
 
 
-def _failure_tail(store: Any, job_id: int, limit: int) -> str:
-    """The tail of the job's newest ``job_event`` chunk (its failure reason)."""
+def _job_event_text(store: Any, job_id: int) -> str:
+    """The newest ``job_event`` chunk's text (the job's failure reason)."""
     try:
         chunks = [
             c
@@ -1891,8 +2051,27 @@ def _failure_tail(store: Any, job_id: int, limit: int) -> str:
         return ""
     if not chunks:
         return ""
-    text = str(max(chunks, key=lambda c: (c.ord, c.id)).text).strip()
-    return text[-limit:]
+    return str(max(chunks, key=lambda c: (c.ord, c.id)).text).strip()
+
+
+def _failure_tail(store: Any, job_id: int, limit: int) -> str:
+    """The tail of the job's newest ``job_event`` chunk (its failure reason)."""
+    return _job_event_text(store, job_id)[-limit:]
+
+
+#: A session's own no-commit verdict — the first log line starting
+#: ``moot:`` or ``no-op:`` (td584381 S1a F4), carried into the rescue
+#: evidence or the ask so a human or the diagnose pass sees the why.
+_MOOT_OR_NOOP_RE = re.compile(r"^\s*(?:moot|no-op)\s*:", re.IGNORECASE)
+
+
+def _verdict_line(text: str) -> str | None:
+    """The first ``moot:``/``no-op:`` line in a job's event text, ≤300
+    chars, or ``None`` (td584381 S1a F4)."""
+    for ln in text.splitlines():
+        if _MOOT_OR_NOOP_RE.match(ln):
+            return ln.strip()[:300]
+    return None
 
 
 #: Options of the ask a node parked at :data:`LAND_AGAIN_CAP` infra-red
@@ -1904,9 +2083,26 @@ _RELAND_ASK_OPTIONS: list[str] = [
     "won't do",
 ]
 
+#: Options of the ask a human-only hit mints (td584381 S1a): no lane may
+#: write those paths — the options are the human edit landing, a new
+#: brief that stays off them, or dropping the node.
+_HUMAN_ASK_OPTIONS: list[str] = [
+    "a human made the edit",
+    "rewrite the brief",
+    "won't do",
+]
+
 
 def _mint_ask(
-    store: Any, plan: _Plan, n: _Node, attempts: int, *, relands: int = 0
+    store: Any,
+    plan: _Plan,
+    n: _Node,
+    attempts: int,
+    cap: int,
+    *,
+    relands: int = 0,
+    human: list[str] | None = None,
+    lane_gap: str | None = None,
 ) -> int:
     newest = plan.jobs(n)[-1]
     if relands:
@@ -1919,13 +2115,25 @@ def _mint_ask(
             "land again, rewrite the brief, or drop it?"
         )
         options = list(_RELAND_ASK_OPTIONS)
+    elif human:
+        head = (
+            f"job:{newest.id} {newest.status} — the branch touched "
+            "human-only path(s): " + ", ".join(f"`{p}`" for p in human)
+        )
+        title = (
+            f"td{n.id}: the diff touched human-only path(s) — "
+            "human edit, new brief, or drop it?"
+        )
+        options = list(_HUMAN_ASK_OPTIONS)
     else:
         head = (
             f"job:{newest.id} {newest.status} after {attempts} attempt(s) "
-            f"(meta.retries={_retries(n)})"
+            f"(retry cap {cap})"
         )
         title = f"td{n.id} hit its retry cap: retry, rewrite the brief, or drop it?"
         options = list(_ASK_OPTIONS)
+    if lane_gap:
+        head = f"{head}; {lane_gap}"
     tail = _failure_tail(store, newest.id, _ASK_CONTEXT_CAP - len(head) - 3)
     context = f"{head}: {tail}" if tail else head
     meta: dict[str, Any] = {
@@ -1960,13 +2168,37 @@ def _mint_ask(
             f"edited body). Pick 'won't do' by closing "
             f"td{n.id} STATUS:won't-do."
         )
+    elif human:
+        body = (
+            f"The plan tick stopped dispatching td{n.id} "
+            f"({n.title.splitlines()[0] if n.title else ''}): {head} — "
+            f"a human must edit {', '.join(f'`{p}`' for p in human)}; "
+            "no lane may write those paths, so no retry and no rescue "
+            "can fix this. Answer 'a human made the edit' once the edit "
+            f"is in and close this todo — closing re-arms td{n.id} with a "
+            "fresh retry budget; 'rewrite the brief' rebuilds on a new "
+            "brief (a `brief:` comment or an edited body); pick "
+            f"'won't do' by closing td{n.id} STATUS:won't-do."
+        )
     else:
+        gap = (
+            f" {lane_gap} — a lane must come back before a retry or a rescue can run."
+            if lane_gap
+            else ""
+        )
         body = (
             f"The plan tick stopped dispatching td{n.id} ({n.title.splitlines()[0] if n.title else ''}): "
-            f"{head}. Answer with the option you pick and close this todo; closing "
+            f"{head}.{gap} Answer with the option you pick and close this todo; closing "
             f"it re-arms td{n.id} (a fresh retry budget). Pick 'won't do' by closing "
             f"td{n.id} STATUS:won't-do."
         )
+        if newest.meta.get(NO_COMMIT_KEY):
+            # The session's own read on a no-commit exit — carried so a
+            # human (or S1d) acts on the why, not just the what
+            # (td584381 S1a F4).
+            vline = _verdict_line(_job_event_text(store, newest.id))
+            if vline is not None:
+                body += f" The session left no commit; its verdict: {vline}."
     with store.tx() as conn:
         ref = store.insert_ref(
             kind="todo",
@@ -2200,7 +2432,94 @@ def _step_unplaced(store: Any, plan: _Plan, res: PassResult, now: datetime) -> N
         )
 
 
-def _step_hygiene(plan: _Plan, w: _Writer, res: PassResult, now: datetime) -> None:
+def _in_rescue(n: _Node) -> bool:
+    """An open ``rescue:<cls>`` tag — the rescue pass owns the node."""
+    return any(v.startswith("rescue:") for v in n.open_tags)
+
+
+def _rescue_node(
+    plan: _Plan, w: _Writer, res: PassResult, n: _Node, cap: int, attempts: int
+) -> None:
+    """A ladder-exhausted ``run_slice`` node enters the rescue path
+    (td584381 S1a) instead of the cap ask: ``enter_rescue`` tags it once,
+    files or joins the signature gripe, and the rescue pass owns what
+    follows — one diagnose-and-re-arm, then the rescue pass's own ask on
+    a second exhaustion (``meta.rescue.n >= 1``), the end of the
+    autonomous road."""
+    from precis.workers import factory_rescue as _rescue
+
+    cls = "review" if _is_reviewer(n) else "builder"
+    ended = _attempt_jobs(plan, n)
+    last = ended[-1] if ended else plan.jobs(n)[-1]
+    text = _job_event_text(w.store, last.id)
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    # The signature key's error line is the failure's own first line —
+    # skipping the ``run_slice:`` preamble and the ``--- log tail ---``
+    # separator, else every same-class failure collapses into one
+    # signature gripe. The preamble stays the fallback.
+    error_line = next(
+        (ln for ln in lines if not ln.lstrip().startswith(("run_slice:", "---"))),
+        lines[0] if lines else None,
+    )
+    rungs_tried = " → ".join(
+        f"{j.meta.get('lane')}/{j.meta.get('model') or 'default'}" for j in ended
+    )
+    step = (
+        f"retry cap {cap}: the lane ladder is spent "
+        f"({attempts} attempts; rungs tried: {rungs_tried or 'unrecorded'})"
+    )
+    verdict = _verdict_line(text)
+    if verdict is not None:
+        # The session's own read on a no-commit exit — what a human or
+        # the diagnose task acts on (td584381 S1a F4).
+        step += f"; the session's verdict: {verdict}"
+    commits = last.meta.get("branch_commits") or []
+    head = str(commits[0]).split()[0] if commits and str(commits[0]).split() else None
+    try:
+        r = _rescue.enter_rescue(
+            w.store,
+            n.id,
+            cls,
+            _rescue.RescueEvidence(
+                step=step,
+                job=f"jo{last.id}",
+                log_tail=text,
+                error_line=error_line[:300] if error_line else None,
+                # ``run_slice.slice_branch``'s spelling, restated — the
+                # dependency stays one-way.
+                branch=f"slice/{n.id}",
+                head_sha=head,
+            ),
+        )
+    except Exception as exc:  # one failing node must not stop the pass
+        log.warning("plan_dispatch: rescue of td%d raised", n.id, exc_info=True)
+        res.notes.append(f"td{n.id}: rescue failed ({type(exc).__name__}: {exc})")
+        return
+    if r.tagged:
+        res.rescued += 1
+        res.notes.append(
+            f"td{n.id}: lane ladder spent ({attempts} attempts, cap {cap}); "
+            f"entered rescue ({cls}, gripe gr{r.gripe_id})"
+        )
+        log_plan_event(
+            w.store,
+            n.id,
+            f"node td{n.id} entered rescue ({cls}) at retry cap "
+            f"({attempts} attempts, cap {cap})",
+            entry_type="observation",
+            root=n.root,
+        )
+    else:
+        res.notes.append(f"td{n.id}: rescue skipped ({r.skipped})")
+
+
+def _step_hygiene(
+    plan: _Plan,
+    w: _Writer,
+    res: PassResult,
+    now: datetime,
+    lane_table: tuple[_lanes.Lane, ...],
+) -> None:
     _step_gripe_leases(w.store, w, res, now)
     _step_unplaced(w.store, plan, res, now)
     for n in plan.todos():
@@ -2214,38 +2533,82 @@ def _step_hygiene(plan: _Plan, w: _Writer, res: PassResult, now: datetime) -> No
             res.released += 1
             res.notes.append(f"td{n.id}: released stale {', '.join(stale)}")
     for n in plan.todos():
-        if _closed(n) or not _dispatchable(plan, n) or not _capped(plan, n):
+        if _closed(n) or not _dispatchable(plan, n) or _in_rescue(n):
+            continue
+        job_type, params = _resolve_op(n)
+        rungs = _task_rungs(lane_table, n, params) if job_type == DEFAULT_OP else ()
+        cap = _retry_cap(n, _cap_rungs(plan, lane_table, n, job_type, params))
+        if not _capped(plan, n, cap):
             continue
         if plan.open_asks(n):
             continue
         attempts = _attempts(plan, n)
-        relands = _infra_red_lands(plan, n)
+        human = _human_hit(plan, n)
+        land_capped = _land_again_capped(plan, n)
+        lane_gap: str | None = None
+        if not human and not land_capped and job_type == DEFAULT_OP and not rungs:
+            task_class = str(n.meta.get("task_class") or _DEFAULT_TASK_CLASS)
+            pinned = params.get("lane")
+            lane_gap = (
+                f"the op's pinned lane {pinned!r} is not enabled"
+                if pinned
+                else f"no enabled lane fits task class {task_class!r}"
+            )
+        rescue = (
+            not human
+            and not land_capped
+            and job_type == DEFAULT_OP
+            and lane_gap is None
+        )
         if w.dry_run:
-            res.notes.append(f"td{n.id}: would file an ask (retry cap {_retries(n)})")
-        else:
-            ask_id = _mint_ask(
-                w.store,
-                plan,
-                n,
-                attempts,
-                relands=relands if _land_again_capped(plan, n) else 0,
+            what = (
+                f"enter rescue ({'review' if _is_reviewer(n) else 'builder'})"
+                if rescue
+                else f"file an ask (retry cap {cap})"
             )
-            res.notes.append(f"td{n.id}: retry cap hit, asked in td{ask_id}")
-            # gr548800: the park and the ask are quest-logbook events.
-            log_plan_event(
-                w.store,
-                n.id,
-                f"node td{n.id} parked at retry cap "
-                f"({attempts} attempts; meta.retries={_retries(n)})",
-                entry_type="observation",
-                root=n.root,
-            )
-            log_plan_event(
-                w.store,
-                n.id,
-                f"ask td{ask_id} raised (blocks td{n.id})",
-                root=n.root,
-            )
+            res.notes.append(f"td{n.id}: would {what}")
+            if rescue:
+                res.rescued += 1
+            else:
+                res.asks += 1
+            continue
+        if rescue:
+            _rescue_node(plan, w, res, n, cap, attempts)
+            continue
+        ask_id = _mint_ask(
+            w.store,
+            plan,
+            n,
+            attempts,
+            cap,
+            relands=_infra_red_lands(plan, n) if land_capped else 0,
+            human=human,
+            lane_gap=lane_gap,
+        )
+        why = (
+            "human-only hit"
+            if human
+            else "re-land cap hit"
+            if land_capped
+            else "no enabled lane"
+            if lane_gap
+            else "retry cap hit"
+        )
+        res.notes.append(f"td{n.id}: {why}, asked in td{ask_id}")
+        # gr548800: the park and the ask are quest-logbook events.
+        log_plan_event(
+            w.store,
+            n.id,
+            f"node td{n.id} parked ({why}; {attempts} attempts, retry cap {cap})",
+            entry_type="observation",
+            root=n.root,
+        )
+        log_plan_event(
+            w.store,
+            n.id,
+            f"ask td{ask_id} raised (blocks td{n.id})",
+            root=n.root,
+        )
         res.asks += 1
 
 
@@ -2296,16 +2659,17 @@ def run_pass(
             return res
         plan = _load(store)
         res.roots = len(plan.roots)
+        lane_table = _lanes.load_lanes(store)
         w = _Writer(store, dry_run)
         _step_gates(store, plan, w, res, now)
         _step_loops(store, plan, w, res, now)
-        _step_reviews(store, plan, w, res, now)
+        _step_reviews(store, plan, w, res, now, lane_table)
         _step_reopen(plan, w, res)
         _step_rearm(plan, w, res)
         _step_moot(store, plan, w, res)
         _step_phases(plan, w, res)
-        _step_dispatch(plan, w, res)
-        _step_hygiene(plan, w, res, now)
+        _step_dispatch(plan, w, res, lane_table)
+        _step_hygiene(plan, w, res, now, lane_table)
     return res
 
 

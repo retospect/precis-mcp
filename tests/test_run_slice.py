@@ -2898,6 +2898,79 @@ def test_poll_deny_path_in_branch_fails_the_attempt(seams: dict[str, Any]) -> No
     assert "claimed-by:lane-claude-sub" not in tags
 
 
+def test_poll_human_only_hit_stamps_the_failed_job(seams: dict[str, Any]) -> None:
+    """td584381 S1a: a deny hit on a HUMAN_ONLY path stamps
+    ``meta.human_only_hit`` on the failed job — the durable mark
+    plan_dispatch reads to ask at once instead of climbing the ladder."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    seams["diff"] = "deploy/inventory/prod.yml\n"
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "edited it."}) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set[run_slice.HUMAN_ONLY_KEY] == ["deploy/inventory/prod.yml"]
+
+
+def test_poll_factory_deny_hit_leaves_no_human_stamp(seams: dict[str, Any]) -> None:
+    """A deny hit on a factory-deny (engine) path only is an ordinary
+    failure — no human stamp — so it climbs the ladder (td584381 S1a)."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    seams["diff"] = "scripts/lib/gate.sh\n"
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "edited it."}) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert run_slice.HUMAN_ONLY_KEY not in pctx.meta_set
+
+
+def test_poll_no_commit_exit_stamps_the_job(seams: dict[str, Any]) -> None:
+    """td584381 S1a F4: a clean exit on a code node that left no commit
+    stamps ``meta.no_commit`` on the failed job — the durable mark the
+    tick reads to send the node straight to rescue; a ``no-op:``/
+    ``moot:`` verdict exit and an ordinary red exit stamp nothing."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "Read the code; nothing to change."})
+        + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
+
+    # A verdict first line closes the node done — a success, no stamp.
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "no-op: docs already match"}) + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert run_slice.NO_COMMIT_KEY not in pctx.meta_set
+
+    # An ordinary red exit (a real failure, commits or not) stamps nothing.
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 1, "boom\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert run_slice.NO_COMMIT_KEY not in pctx.meta_set
+
+
 def test_poll_deny_check_fails_closed_when_git_fails(seams: dict[str, Any]) -> None:
     store = _Store()
     store.add_todo(42, "t")
