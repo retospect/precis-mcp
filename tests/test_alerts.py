@@ -24,6 +24,7 @@ from precis.alerts import (
     resolve_stale_alerts,
 )
 from precis.dispatch import Hub
+from precis.errors import Unsupported
 from precis.handlers.alert import AlertHandler
 from precis.store import Store
 from precis.store.types import Tag
@@ -1072,6 +1073,22 @@ def test_handler_rules_view_lists_the_catalogue(hub: Hub) -> None:
     # every rule's subject appears
     for r in ALERT_RULES:
         assert r.subject in body, r.id
+
+
+def test_handler_list_id_refuses_view_kwarg(hub: Hub) -> None:
+    """gr572708: ``get(kind='alert', id='/rules', view='attention')``
+    silently rendered the whole catalogue — a ``/``-id takes no
+    ``view=``; the refusal names the list selectors it does take."""
+    handler = AlertHandler(hub=hub)
+    with pytest.raises(Unsupported, match="takes no view=") as exc:
+        handler.get(id="/rules", view="attention")
+    assert exc.value.options == ["recent", "open", "rules", "health"]
+    assert "'attention'" in str(exc.value)
+    # A *valid* concrete-id view is refused too — it would no-op.
+    with pytest.raises(Unsupported, match="takes no view="):
+        handler.get(id="/open", view="detail")
+    # The plain-listing spellings still fold to the listing (gr492994).
+    assert "registered failure ids" in handler.get(id="/rules", view="index").body
 
 
 def test_handler_health_view_without_snapshot(hub: Hub) -> None:

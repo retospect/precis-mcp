@@ -944,6 +944,27 @@ class NumericRefHandler(Handler):
         # `id='/recent'` and similar path views — subclasses may
         # implement custom list shapes (e.g. todo's open / done filters).
         if isinstance(id, str) and id.startswith("/"):
+            if plain_listing_view(view, ()) is not None:
+                # gr572708: a `/<x>` id is already the listing — `view=`
+                # is never consulted on this path, so an unknown view
+                # (id='/rules', view='attention') used to render the
+                # whole list anyway: a silent success with a fat
+                # payload. Refuse it the way a concrete id refuses an
+                # unknown view, naming the list selectors the kind
+                # does take. 'index'/'ids'/'list' fold to the default
+                # listing first — they mean "just the listing" anyway
+                # (gr492994).
+                views = self._supported_list_views()
+                raise Unsupported(
+                    f"list id {id!r} takes no view= (got {view!r}); view= "
+                    f"applies to a concrete {self._sense()} id",
+                    options=list(views),
+                    next=(
+                        f"drop view= and re-issue: get(kind={self.kind!r}, "
+                        f"id={id!r}); the list selectors live in id=: "
+                        + ", ".join(f"'/{v}'" for v in views)
+                    ),
+                )
             list_resp = self._list_view_paged(
                 id[1:], _kw.get("page"), _kw.get("page_size")
             )
