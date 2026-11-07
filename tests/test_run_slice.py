@@ -17,6 +17,7 @@ import sys
 import urllib.error
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from email.message import Message
 from pathlib import Path
 from typing import Any
 
@@ -1623,6 +1624,380 @@ def _finish(handle: dict[str, Any], exit_code: int | None, log: str) -> None:
 def _poll_ctx(store: _Store, ctx: _Ctx) -> _Ctx:
     """A fresh per-pass ctx, as ssh_node builds one from the DB meta."""
     return _Ctx(store, ctx.meta["params"], **ctx.meta_set)
+
+
+# ── per-slice read MCP grant (gr574082, td574161) ──────────────────
+
+
+def test_read_mcp_scope_switch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``PRECIS_SLICE_READ_MCP`` takes the scope name as its value; unset
+    or anything else is today's no-MCP behaviour (the switch ships dark)."""
+    monkeypatch.delenv("PRECIS_SLICE_READ_MCP", raising=False)
+    assert run_slice._read_mcp_scope() is None
+    monkeypatch.setenv("PRECIS_SLICE_READ_MCP", "bogus")
+    assert run_slice._read_mcp_scope() is None
+    monkeypatch.setenv("PRECIS_SLICE_READ_MCP", "reader")
+    assert run_slice._read_mcp_scope() == "reader"
+    monkeypatch.setenv("PRECIS_SLICE_READ_MCP", " triage ")
+    assert run_slice._read_mcp_scope() == "triage"
+
+
+def _read_mcp_lane(
+    monkeypatch: pytest.MonkeyPatch, adapter: str = "codex_exec"
+) -> None:
+    """Pin a vendor read lane and arm the scope switch."""
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL", raising=False)
+    monkeypatch.setenv("PRECIS_SLICE_READ_MCP", "triage")
+    if adapter == "codex_exec":
+        monkeypatch.setenv("PRECIS_CODEX_BIN", "/vendor/codex")
+        use_lanes(monkeypatch, _vendor_lane("codex", "codex_exec"))
+    else:
+        monkeypatch.setenv("PRECIS_DEVIN_BIN", "/vendor/devin")
+        use_lanes(
+            monkeypatch,
+            _vendor_lane("devin", "devin_tree", models=("swe-2-high",)),
+        )
+
+
+def test_read_mcp_mints_a_scoped_grant_and_codex_flags(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``PRECIS_SLICE_READ_MCP=triage`` on a read lane: the session's
+    ``PRECIS_MCP_TOKEN`` is the minted scoped grant (never the inherited
+    shared token, never the OAuth login), and the codex argv carries the
+    two ``-c`` dotted overrides pointing at the checkout's precis MCP."""
+    registry = tmp_path / "slice-tokens"
+    registry.mkdir()
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(registry))
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "shared-token")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "must-not-leak")
+    _read_mcp_lane(monkeypatch)
+    _write_mcp_json(tmp_path)
+    monkeypatch.setattr(run_slice, "_mcp_preflight_open", lambda req, timeout: _Resp())
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, lane="codex")
+    assert handle is not None and ctx.failure is None
+    [(argv, kw)] = seams["launch"]
+    token = kw["env"]["PRECIS_MCP_TOKEN"]
+    assert token != "shared-token"
+    assert re.fullmatch(r"td42j900\.[0-9a-f]{64}", token)
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in kw["env"]
+    content = (registry / "td42j900").read_text(encoding="utf-8")
+    assert token not in content
+    fields = content.split()
+    assert "scope=triage" in fields and "refs=td42" in fields
+    flags = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "-c"]
+    assert "mcp_servers.precis.url=http://127.0.0.1:8765/mcp" in flags
+    assert "mcp_servers.precis.bearer_token_env_var=PRECIS_MCP_TOKEN" in flags
+    assert "mcp token: slice td42j900" in ctx.chunks[-1][1]
+    # The token stays out of every persisted surface.
+    brief = (Path(handle["worktree"]) / "scratch" / "brief.md").read_text(
+        encoding="utf-8"
+    )
+    assert token not in brief and token not in ctx.chunks[-1][1]
+    assert "no precis MCP" not in brief
+
+
+def test_read_mcp_off_without_the_switch(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unset switch = today's behaviour exactly: no mint, no env token,
+    no ``-c`` flags — even with the registry and a codex lane ready."""
+    registry = tmp_path / "slice-tokens"
+    registry.mkdir()
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(registry))
+    monkeypatch.delenv("PRECIS_SLICE_READ_MCP", raising=False)
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL", raising=False)
+    monkeypatch.setenv("PRECIS_CODEX_BIN", "/vendor/codex")
+    use_lanes(monkeypatch, _vendor_lane("codex", "codex_exec"))
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "shared-token")
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, lane="codex")
+    assert handle is not None
+    [(argv, kw)] = seams["launch"]
+    assert "PRECIS_MCP_TOKEN" not in kw["env"]
+    assert "-c" not in argv
+    assert "mcp token: none" in ctx.chunks[-1][1]
+    assert not list(registry.iterdir())
+
+
+def test_read_mcp_non_code_task_class_mints_nothing(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The read mint is a code-class affordance: a docs-class todo on a
+    read lane launches as today even with the switch armed."""
+    registry = tmp_path / "slice-tokens"
+    registry.mkdir()
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(registry))
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL", raising=False)
+    monkeypatch.setenv("PRECIS_SLICE_READ_MCP", "triage")
+    monkeypatch.setenv("PRECIS_CODEX_BIN", "/vendor/codex")
+    use_lanes(
+        monkeypatch,
+        Lane(
+            name="codex",
+            adapter="codex_exec",
+            credential_pool="codex",
+            cap=1,
+            task_classes=frozenset({ANY_CLASS}),
+            enabled=True,
+        ),
+    )
+    store = _Store()
+    store.add_todo(42, "Write docs", meta={"task_class": "docs"})
+    ctx, handle = _submit(store, seams, lane="codex")
+    assert handle is not None and ctx.failure is None
+    [(_argv, kw)] = seams["launch"]
+    assert "PRECIS_MCP_TOKEN" not in kw["env"]
+    assert not list(registry.iterdir())
+
+
+def test_read_mcp_preflight_failure_launches_without_the_mcp(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected scoped bearer must not kill the attempt: the grant is
+    revoked, the brief is rewritten to the no-MCP wording and the launch
+    proceeds — ``mcp token: none (<reason>)`` names the failure."""
+    registry = tmp_path / "slice-tokens"
+    registry.mkdir()
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(registry))
+    _read_mcp_lane(monkeypatch)
+    _write_mcp_json(tmp_path)
+
+    def reject(req: Any, timeout: float) -> _Resp:
+        raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", Message(), None)
+
+    monkeypatch.setattr(run_slice, "_mcp_preflight_open", reject)
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, lane="codex")
+    assert handle is not None and ctx.failure is None
+    [(argv, kw)] = seams["launch"]
+    assert "PRECIS_MCP_TOKEN" not in kw["env"]
+    assert "-c" not in argv
+    event = ctx.chunks[-1][1]
+    assert "mcp token: none" in event and "401" in event
+    assert not (registry / "td42j900").exists()
+    brief = (Path(handle["worktree"]) / "scratch" / "brief.md").read_text(
+        encoding="utf-8"
+    )
+    assert "no precis MCP. Do not try" in brief
+
+
+def test_read_mcp_devin_config_written_and_revoked(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Devin's per-tree config carries the minted bearer at 0600 (never
+    in argv or the env beyond PRECIS_MCP_TOKEN), rides the handle into
+    ``_handle_grant`` and is unlinked wherever the grant is revoked."""
+    registry = tmp_path / "slice-tokens"
+    registry.mkdir()
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(registry))
+    _read_mcp_lane(monkeypatch, adapter="devin_tree")
+    _write_mcp_json(tmp_path)
+    monkeypatch.setattr(run_slice, "_mcp_preflight_open", lambda req, timeout: _Resp())
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, lane="devin")
+    assert handle is not None and ctx.failure is None
+    tree = Path(handle["worktree"])
+    config = tree / ".devin" / "mcp_config.local.json"
+    assert config.is_file()
+    assert config.stat().st_mode & 0o777 == 0o600
+    [(_argv, kw)] = seams["launch"]
+    token = kw["env"]["PRECIS_MCP_TOKEN"]
+    assert json.loads(config.read_text(encoding="utf-8")) == {
+        "mcpServers": {
+            "precis": {
+                "type": "http",
+                "url": "http://127.0.0.1:8765/mcp",
+                "headers": {"Authorization": f"Bearer {token}"},
+            }
+        }
+    }
+    assert handle["devin_config"] == str(config)
+
+    _finish(handle, 0, "handoff: done\n")
+    assert run_slice.poll(_poll_ctx(store, ctx), handle) is True
+    assert not config.exists()
+    assert not (registry / "td42j900").exists()
+
+
+def test_read_mcp_devin_config_unlinked_on_kill(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "slice-tokens"
+    registry.mkdir()
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(registry))
+    _read_mcp_lane(monkeypatch, adapter="devin_tree")
+    _write_mcp_json(tmp_path)
+    monkeypatch.setattr(run_slice, "_mcp_preflight_open", lambda req, timeout: _Resp())
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, lane="devin")
+    config = Path(handle["devin_config"])
+    assert config.is_file()
+    run_slice.kill(ctx, handle)
+    assert not config.exists()
+
+
+def test_read_mcp_devin_config_unlinked_on_release(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The release revoke path unlinks the Devin config the same as
+    kill/poll — the bearer never outlives the grant on any exit."""
+    registry = tmp_path / "slice-tokens"
+    registry.mkdir()
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(registry))
+    _read_mcp_lane(monkeypatch, adapter="devin_tree")
+    _write_mcp_json(tmp_path)
+    monkeypatch.setattr(run_slice, "_mcp_preflight_open", lambda req, timeout: _Resp())
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, lane="devin")
+    config = Path(handle["devin_config"])
+    assert config.is_file()
+    run_slice.release(_poll_ctx(store, ctx), handle)
+    assert not config.exists()
+    assert not (registry / "td42j900").exists()
+
+
+def test_read_mcp_devin_config_unlinked_on_host_refusal(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host refusal after the config write revokes the grant — the
+    minted bearer and the per-tree Devin config both die before the
+    (never-launched) session could see them."""
+    registry = tmp_path / "slice-tokens"
+    registry.mkdir()
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(registry))
+    _read_mcp_lane(monkeypatch, adapter="devin_tree")
+    _write_mcp_json(tmp_path)
+    monkeypatch.setattr(run_slice, "_mcp_preflight_open", lambda req, timeout: _Resp())
+    seams["devin"]["bin_ok"] = False
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, lane="devin")
+    assert handle is None and ctx.status == "failed"
+    assert "host_refusal" in ctx.meta_set
+    config = (
+        tmp_path
+        / ".claude"
+        / "worktrees"
+        / "slice-td42"
+        / ".devin"
+        / "mcp_config.local.json"
+    )
+    assert not config.exists()
+    assert not (registry / "td42j900").exists()
+
+
+def test_read_mcp_devin_config_refuses_a_symlink(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``O_NOFOLLOW`` on the config open: a pre-planted symlink at the
+    path fails the write instead of writing the bearer through it — the
+    grant revokes and the slice launches without the MCP."""
+    registry = tmp_path / "slice-tokens"
+    registry.mkdir()
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(registry))
+    _read_mcp_lane(monkeypatch, adapter="devin_tree")
+    tree = _write_mcp_json(tmp_path)
+    monkeypatch.setattr(run_slice, "_mcp_preflight_open", lambda req, timeout: _Resp())
+    decoy = tmp_path / "decoy.json"
+    decoy.write_text("{}", encoding="utf-8")
+    devin_dir = tree / ".devin"
+    devin_dir.mkdir(parents=True)
+    (devin_dir / "mcp_config.local.json").symlink_to(decoy)
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, lane="devin")
+    assert handle is not None and ctx.failure is None
+    [(_argv, kw)] = seams["launch"]
+    assert "PRECIS_MCP_TOKEN" not in kw["env"]
+    assert "mcp token: none" in ctx.chunks[-1][1]
+    assert not (registry / "td42j900").exists()
+    assert decoy.read_text(encoding="utf-8") == "{}"
+
+
+def test_fixes_refs_collects_the_todo_and_fixed_gripes() -> None:
+    """``_fixes_refs`` names the grant's read set: the own todo plus the
+    gripes its ``fixes`` links point at — dead links and a store without
+    link reads both narrow to the todo itself."""
+
+    class _Link:
+        def __init__(self, dst: int) -> None:
+            self.dst_ref_id = dst
+
+    class _LinkStore(_Store):
+        def links_for(
+            self, ref_id: int, *, direction: str = "both", relation: Any = None
+        ) -> list[Any]:
+            assert ref_id == 42 and direction == "out" and relation == "fixes"
+            return [_Link(800), _Link(801)]
+
+        def get_ref(self, *, kind: str, id: int) -> Any:
+            if kind == "gripe":
+                return _Ref(id, f"gripe {id}") if id == 800 else None
+            return super().get_ref(kind=kind, id=id)
+
+    store = _LinkStore()
+    store.add_todo(42, "t")
+    assert run_slice._fixes_refs(store, 42) == ("td42", "gr800")
+    assert run_slice._fixes_refs(_Store(), 42) == ("td42",)
+
+
+def test_slice_env_minted_token_without_the_oauth_login(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The read lanes' third env state: a minted bearer goes to
+    ``PRECIS_MCP_TOKEN`` (beating an inherited one) while the Claude
+    OAuth login is still popped — the vendor reads precis with its own
+    account login."""
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "shared-token")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth")
+    env = run_slice.slice_env(42, "low", mcp_token="td42.abc", mcp=False)
+    assert env["PRECIS_MCP_TOKEN"] == "td42.abc"
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+    env = run_slice.slice_env(42, "low", mcp=False)
+    assert "PRECIS_MCP_TOKEN" not in env
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+
+def test_render_brief_read_mcp_paragraphs() -> None:
+    """The scope's brief paragraph replaces the no-MCP one: reader's is
+    the spec text verbatim; triage's names its write set and never says
+    'read-only' or that nothing is writable."""
+    kw: dict[str, Any] = {
+        "todo_id": 42,
+        "title": "t",
+        "body": "b",
+        "latest": None,
+        "lane": "codex",
+        "model": None,
+        "effort": "low",
+        "mcp": False,
+    }
+    reader = run_slice.render_brief(**kw, read_mcp="reader")
+    assert "read-only precis MCP (get and search)" in reader
+    assert "search(kind='python', mode='pattern', q='<name>')" in reader
+    assert "get(kind='python', id='main::<qualname>', view='source')" in reader
+    assert "wt-slice-td<id>::<qualname>" in reader
+    assert "get(kind='todo', id='td<id>', view='comments')" in reader
+    assert "Nothing else is served and nothing is writable" in reader
+    assert "no precis MCP. Do not try" not in reader
+    triage = run_slice.render_brief(**kw, read_mcp="triage")
+    assert "no precis MCP. Do not try" not in triage
+    para = next(ln for ln in triage.splitlines() if "precis MCP" in ln)
+    # The write-set wording never says the lane is read-only or that
+    # nothing is writable (the shared close text's "read-only .git" is
+    # a different claim).
+    assert "read-only" not in para and "nothing is writable" not in para
+    assert "put(" in para and "tag" in para
+    assert "STATUS:" in para and "claimed-by:" in para
+    assert "rel='fixes'" in para or 'rel="fixes"' in para
 
 
 def test_poll_running_then_success(seams: dict[str, Any]) -> None:

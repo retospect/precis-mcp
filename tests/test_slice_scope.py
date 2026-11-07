@@ -133,11 +133,17 @@ class _FakeCtx:
         self.session = None
 
 
-def _slice_ctx(slice_id: str) -> Any:
+def _slice_ctx(
+    slice_id: str, scope: str | None = None, refs: tuple[str, ...] = ()
+) -> Any:
     """A ctx shaped like one the auth middleware stamped a slice grant on."""
     from precis import slice_tokens
 
-    return _FakeCtx(SimpleNamespace(scope={slice_tokens.SCOPE_SLICE_ID: slice_id}))
+    stamps: dict[str, Any] = {slice_tokens.SCOPE_SLICE_ID: slice_id}
+    if scope is not None:
+        stamps[slice_tokens.SCOPE_GRANT_SCOPE] = scope
+        stamps[slice_tokens.SCOPE_GRANT_REFS] = refs
+    return _FakeCtx(SimpleNamespace(scope=stamps))
 
 
 def _is_error_result(res: Any) -> bool:
@@ -648,8 +654,7 @@ def test_minted_grant_binds_slice_principal(
     token = slice_tokens.mint(tmp_path, f"td{own}j7")
     granted = slice_tokens.grant(tmp_path, f"Bearer {token}")
     assert granted is not None
-    slice_id, _agentlog_id = granted
-    ctx = _slice_ctx(slice_id)
+    ctx = _slice_ctx(granted.slice_id)
     tools_core._runtime = runtime_with_store
     try:
         res = tools_core._dispatch(
@@ -668,6 +673,93 @@ def test_minted_grant_binds_slice_principal(
     finally:
         settings.clear_setting("mcp.slice_scope", store=store)
         tools_core._runtime = None
+
+
+def test_scoped_grant_binds_scope_as_role(
+    runtime_with_store: PrecisRuntime, store: Store, tmp_path: Any
+) -> None:
+    """A grant minted ``scope=``/``refs=`` stamps them on the ASGI scope;
+    ``_ctx_principal`` binds ``slice:<grant>:<scope>`` — the boundary's
+    role, not the todo's ``meta.generate.role``. A triage write inside
+    the boundary's allowlist lands attributed, a write outside it is
+    refused by the dispatch backstop, and a reader write reaching the
+    role table would-refuses (defense in depth)."""
+    from precis import slice_tokens
+    from precis.tools import core as tools_core
+
+    own = _mk_todo(runtime_with_store)
+    token = slice_tokens.mint(
+        tmp_path, f"td{own}j7", scope="triage", refs=(f"td{own}",)
+    )
+    granted = slice_tokens.grant(tmp_path, f"Bearer {token}")
+    assert granted is not None
+    assert granted.scope == "triage" and granted.refs == (f"td{own}",)
+    ctx = _slice_ctx(granted.slice_id, scope=granted.scope, refs=granted.refs)
+    tools_core._runtime = runtime_with_store
+    try:
+        assert tools_core._ctx_principal(ctx, store, "put") == (
+            f"slice:td{own}j7:triage"
+        )
+        res = tools_core._dispatch(
+            "put", {"kind": "todo", "id": own, "text": "claiming"}, ctx
+        )
+        assert not _is_error_result(res), _result_text(res)
+        assert _comment_meta(store, own)["principal"] == f"slice:td{own}j7:triage"
+        res = tools_core._dispatch(
+            "put", {"kind": "memory", "text": "outside the scope"}, ctx
+        )
+        assert _is_error_result(res)
+        assert "[error:Denied]" in _result_text(res)
+        # A reader role at the role table is defense-in-depth: the
+        # boundary refused the write already; the verdict is a
+        # would-refuse under observe, a Denied under enforce.
+        with principal.bind(f"slice:td{own}j7:reader"):
+            verdict = principal.slice_scope_verdict(
+                runtime_with_store, "put", {"kind": "todo", "id": own}
+            )
+        assert verdict is not None and verdict.rule == "scope-reader"
+    finally:
+        tools_core._runtime = None
+
+
+def test_triage_verdict_rec_calls_the_boundary(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """Defense in depth (review F3): the triage branch does not return
+    None — it re-judges the write through ``slice_reader_scope.refusal``
+    on the same flattened args, so a foreign-kind write, an own-todo
+    tag or a verdict-shaped own-todo comment all verdict-refuse while
+    the in-scope write passes."""
+    own = _mk_todo(runtime_with_store)
+    with principal.bind(f"slice:td{own}j7:triage"):
+        for args in (
+            {"kind": "memory", "text": "x"},
+            {"kind": "todo", "id": "td999999", "text": "foreign todo"},
+            {"kind": "todo", "id": own, "add": ["STATUS:done"]},
+            {"kind": "todo", "id": own, "text": "review: LAND"},
+            {"kind": "todo", "id": own, "text": "landed: deadbee"},
+        ):
+            verdict = principal.slice_scope_verdict(
+                runtime_with_store, "put" if "text" in args else "tag", args
+            )
+            assert verdict is not None and verdict.rule == "scope-triage", args
+        # In-scope writes pass: an own-todo comment and the one claim.
+        assert (
+            principal.slice_scope_verdict(
+                runtime_with_store,
+                "put",
+                {"kind": "todo", "id": own, "text": "progress note"},
+            )
+            is None
+        )
+        assert (
+            principal.slice_scope_verdict(
+                runtime_with_store,
+                "link",
+                {"kind": "todo", "id": own, "target": "gr1", "rel": "fixes"},
+            )
+            is None
+        )
 
 
 def test_command_form_checked(runtime_with_store: PrecisRuntime, store: Store) -> None:

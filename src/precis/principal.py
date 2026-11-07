@@ -124,6 +124,15 @@ _OP_PARAM_KEYS = frozenset({"model", "effort"})
 
 _PRINCIPAL: ContextVar[str | None] = ContextVar("precis_write_principal", default=None)
 
+#: The scoped slice grant's minted ``refs`` tuple for the bound call —
+#: server-set off the same trusted ASGI stamps as the principal (never
+#: caller input), bound in ``tools.core._dispatch_as_user`` beside the
+#: principal. ``slice_scope_verdict``'s triage branch re-judges the
+#: boundary allowlist against them (plus the live ``fixes`` links).
+_GRANT_REFS: ContextVar[tuple[str, ...] | None] = ContextVar(
+    "precis_slice_grant_refs", default=None
+)
+
 
 def current() -> str:
     """This call's write principal — the bound stamp, else the in-process
@@ -149,6 +158,19 @@ def bind(value: str | None) -> Iterator[None]:
         yield
     finally:
         _PRINCIPAL.reset(token)
+
+
+@contextmanager
+def bind_grant_refs(refs: Any) -> Iterator[None]:
+    """Bind the scoped grant's stamped ``refs`` for one dispatch;
+    falsy clears. ``None``/empty means no scoped grant — the triage
+    verdict then falls back to the own todo derived from the principal
+    (an in-process dispatch has no ASGI stamps to trust anyway)."""
+    token = _GRANT_REFS.set(tuple(str(r) for r in refs) if refs else None)
+    try:
+        yield
+    finally:
+        _GRANT_REFS.reset(token)
 
 
 def worker_comment_meta() -> dict[str, str]:
@@ -381,6 +403,15 @@ def slice_scope_verdict(
     wins the collision), so the effective surface merges both — a
     ``parent_id``/``meta`` smuggled inside ``args={}`` is judged the same
     as the top-level kwarg.
+
+    Layering: the ``reader``/``triage`` roles belong to the request
+    boundary (:mod:`precis.slice_reader_scope`, gr574082) — a scoped
+    grant binds its scope name as the role (``tools.core._ctx_principal``)
+    and the boundary plus the dispatch backstop enforce its allowlist.
+    This gate stays the backstop under them: a reader write that reaches
+    here refuses (defense in depth), a triage write passed the
+    boundary's own allowlist already so the role table must not
+    re-refuse it.
     """
     bound = _PRINCIPAL.get()
     parsed = _parse_slice(bound)
@@ -429,6 +460,34 @@ def slice_scope_verdict(
         eff.update(extras)
     eff.update({k: v for k, v in args.items() if k != "__extras__"})
     keys = {k for k, v in eff.items() if v is not None}
+
+    if role == "reader":
+        # The boundary allowlist owns this scope; a write reaching the
+        # role table is defense-in-depth, not a covered write.
+        return refuse("scope-reader")
+    if role == "triage":
+        # Defense in depth: re-judge the write through the boundary
+        # allowlist itself — the stamped refs ride the bound grant
+        # stamps (the own todo when no grant is bound, e.g. an
+        # in-process dispatch), the live ``fixes`` links come off the
+        # store, and a boundary refusal becomes the verdict.
+        from precis import slice_reader_scope
+        from precis.utils import handle_registry
+
+        refs = _GRANT_REFS.get()
+        if refs is None:
+            own = handle_registry.try_format("todo", own_id)
+            refs = () if own is None else (own,)
+        denied = slice_reader_scope.refusal(
+            "triage",
+            verb,
+            {k: v for k, v in eff.items() if v is not None},
+            refs,
+            slice_reader_scope.fixes_targets(getattr(runtime, "store", None), refs),
+        )
+        if denied is not None:
+            return refuse("scope-triage")
+        return None
 
     if verb == "put":
         if expanded == "gripe":
@@ -549,6 +608,7 @@ __all__ = [
     "WOULD_REFUSE",
     "SliceVerdict",
     "bind",
+    "bind_grant_refs",
     "check",
     "current",
     "for_slice",

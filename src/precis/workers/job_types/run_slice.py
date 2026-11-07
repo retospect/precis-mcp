@@ -403,7 +403,11 @@ def slice_env(
     minted (gr543694); given, it replaces the shared token outright so
     the server attributes the session's calls to this slice. Non-MCP
     vendors receive neither precis nor Claude credentials and never
-    consult their secret stores."""
+    consult their secret stores — except a scoped grant (gr574082):
+    under ``mcp=False`` a ``mcp_token`` still lands on
+    ``PRECIS_MCP_TOKEN`` (beating an inherited one) while the Claude
+    OAuth login stays popped, so the vendor's precis reads ride its own
+    bearer and its own account login."""
     env = {k: os.environ[k] for k in ENV_ALLOWLIST if os.environ.get(k)}
     if mcp:
         from precis.utils.claude_oauth import ensure_oauth_token
@@ -423,6 +427,8 @@ def slice_env(
     else:
         env.pop("PRECIS_MCP_TOKEN", None)
         env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+        if mcp_token:
+            env["PRECIS_MCP_TOKEN"] = mcp_token
     env["PRECIS_SLICE_ID"] = f"td{todo_id}"
     env["PRECIS_SLICE_EFFORT"] = effort
     # The checkout's SessionEnd hook (scripts/hooks/session-end-reap.sh)
@@ -972,6 +978,7 @@ def render_brief(
     generator: bool = False,
     role: str | None = None,
     mcp: bool = True,
+    read_mcp: str | None = None,
     deny_paths: tuple[str, ...] | None = None,
     lane_models: tuple[str, ...] = (),
     target: str | None = None,
@@ -983,7 +990,10 @@ def render_brief(
     (reviewer: one verdict comment; analyst: one analysis comment) ends with
     that role's instruction, worded for a lane with or without the MCP.
     ``target`` (:func:`_review_target`) is the reviewed todo inlined for a
-    reviewer. Names the ``deny_paths`` the session may not write."""
+    reviewer. Names the ``deny_paths`` the session may not write.
+    ``read_mcp`` (:func:`_read_mcp_scope`) swaps the no-MCP paragraph for
+    the scope's: ``reader`` reads only, ``triage`` also names its write
+    set (gr574082)."""
     name = slice_name(todo_id)
     lines = [
         f"# Slice td{todo_id}: {title.strip()}",
@@ -996,11 +1006,48 @@ def render_brief(
         "rules bind you.",
     ]
     if not mcp:
-        lines += [
-            "",
-            "This lane has no precis MCP. Do not try to reach it. "
-            "Everything you want recorded goes in your final message.",
-        ]
+        if read_mcp == "reader":
+            lines += [
+                "",
+                "This lane has a read-only precis MCP (get and search). "
+                "Before grepping or reading a whole .py file: "
+                "search(kind='python', mode='pattern', q='<name>'), then "
+                "get(kind='python', id='main::<qualname>', view='source'). "
+                "wt-slice-td<id>::<qualname> reads your own tree if it "
+                "resolves; main:: is the shared checkout and may lag your "
+                "branch. Repo prose: get(kind='md', id='main/docs/...'). "
+                "Your task's comments: get(kind='todo', id='td<id>', "
+                "view='comments'). Skills: search(kind='skill', q='<task>'). "
+                "Nothing else is served and nothing is writable; your "
+                "hand-off is still your final message.",
+            ]
+        elif read_mcp == "triage":
+            lines += [
+                "",
+                "This lane's precis MCP is scoped to structure reads and "
+                "gripe triage. Reads: search(kind='python', mode='pattern', "
+                "q='<name>'), then get(kind='python', id='main::<qualname>', "
+                "view='source'); wt-slice-td<id>::<qualname> reads your own "
+                "tree if it resolves; main:: is the shared checkout and may "
+                "lag your branch. Repo prose: get(kind='md', "
+                "id='main/docs/...'). Your task's comments: get(kind='todo', "
+                "id='td<id>', view='comments'). Skills: search(kind='skill', "
+                "q='<task>'). Gripes: search(kind='gripe', q='STATUS:open') "
+                "and get(kind='gripe', id='gr<id>') on any gripe to pick one. "
+                "Writes: put(kind='todo', id='td<id>', text='…') comments on "
+                "your own todo and put(kind='gripe', id='gr<id>', text='…') "
+                "on any gripe; tag(kind=..., id=..., add=[...]) with "
+                "STATUS: or claimed-by: values on those; and "
+                "link(kind='todo', id='td<id>', target='gr<id>', "
+                "rel='fixes') for the gripe you pick. Everything else "
+                "refuses; your hand-off is still your final message.",
+            ]
+        else:
+            lines += [
+                "",
+                "This lane has no precis MCP. Do not try to reach it. "
+                "Everything you want recorded goes in your final message.",
+            ]
     if deny_paths is None:
         deny_paths = _lanes.deny_paths_for(None)
     if deny_paths:
@@ -1267,6 +1314,73 @@ def _preflight_mcp(tree: Path, token: str | None) -> None:
         raise RuntimeError(f"precis MCP preflight: HTTP {status} from {url}{hint}")
 
 
+def _read_mcp_scope() -> str | None:
+    """``PRECIS_SLICE_READ_MCP`` — the scope a ``read_mcp`` lane mints:
+    ``reader`` or ``triage``. Unset, empty or any other value is today's
+    no-MCP behaviour exactly — the switch ships dark (gr574082)."""
+    from precis import slice_tokens
+
+    raw = os.environ.get("PRECIS_SLICE_READ_MCP", "").strip().lower()
+    if not raw:
+        return None
+    if raw in slice_tokens.SCOPES:
+        return raw
+    log.warning(
+        "run_slice: PRECIS_SLICE_READ_MCP=%r is not one of %s; no MCP",
+        raw,
+        sorted(slice_tokens.SCOPES),
+    )
+    return None
+
+
+def _fixes_refs(store: Any, todo_id: int) -> tuple[str, ...]:
+    """The refs a scoped grant names: the todo itself plus the gripes
+    its ``fixes`` links resolve to (``store.links_for``, the same read
+    ``_review_target`` rides). A store without link reads — or a link
+    read that throws — narrows to the todo itself."""
+    own = f"td{todo_id}"
+    try:
+        links = store.links_for(todo_id, direction="out", relation="fixes")
+        gripes = [
+            f"gr{link.dst_ref_id}"
+            for link in links or ()
+            if isinstance(getattr(link, "dst_ref_id", None), int)
+            and store.get_ref(kind="gripe", id=link.dst_ref_id) is not None
+        ]
+    except Exception:
+        return (own,)
+    return (own, *gripes)
+
+
+def _devin_mcp_config(tree: Path, url: str, token: str) -> Path:
+    """Write ``<tree>/.devin/mcp_config.local.json`` — the Devin CLI's
+    per-tree MCP server entry carrying the minted scoped bearer at mode
+    0600 (``devin mcp add`` persists exactly this shape). Gitignored by
+    ``.devin/*``; unlinked wherever the grant is revoked, so the token
+    never outlives it."""
+    path = tree / ".devin" / "mcp_config.local.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "precis": {
+                            "type": "http",
+                            "url": url,
+                            "headers": {"Authorization": f"Bearer {token}"},
+                        }
+                    }
+                }
+            )
+        )
+    # O_CREAT's mode applies only to a fresh file — pin it so a
+    # pre-existing wider-mode entry narrows too.
+    path.chmod(0o600)
+    return path
+
+
 def _codex_writable_roots(tree: Path) -> tuple[Path, ...]:
     """Extra ``--add-dir`` writable roots for the codex sandbox
     (gr570533): the shared git common dir — the worktree's index and
@@ -1387,7 +1501,13 @@ def _devin_preflight(under: Path) -> None:
 
 
 def _mint_slice_token(
-    ctx: Any, todo_id: int, *, model: str, brief: str
+    ctx: Any,
+    todo_id: int,
+    *,
+    model: str | None,
+    brief: str,
+    scope: str | None = None,
+    refs: tuple[str, ...] = (),
 ) -> dict[str, Any] | None:
     """Mint the session's per-slice bearer + its agentlog (gr543694).
 
@@ -1404,6 +1524,10 @@ def _mint_slice_token(
     jobs can run sessions for one todo at once — a bare ``td<id>`` file
     let the resubmit overwrite the live grant and the older run's revoke
     then deleted the new grant.
+
+    ``scope``/``refs`` mint a scoped grant (reader/triage, gr574082):
+    the grant file carries them and the server bounds the session's
+    calls to the scope's allowlist.
     """
     from precis import agentlog, slice_tokens
 
@@ -1428,7 +1552,9 @@ def _mint_slice_token(
     else:
         name = f"td{todo_id}"
     try:
-        token = slice_tokens.mint(directory, name, agentlog_id=log_id)
+        token = slice_tokens.mint(
+            directory, name, agentlog_id=log_id, scope=scope, refs=refs
+        )
     except Exception:
         log.warning(
             "run_slice: slice-token mint for td%d failed; launching on the "
@@ -1457,6 +1583,7 @@ def _handle_grant(handle: dict[str, Any]) -> dict[str, Any] | None:
         # Handles written before the job-qualified name carry no ``name``;
         # their file is the bare td<todo_id>.
         "name": handle.get("slice_token_name"),
+        "devin_config": handle.get("devin_config"),
     }
 
 
@@ -1475,6 +1602,15 @@ def _revoke_slice_grant(ctx: Any, todo_id: int, grant: Any, status: str) -> None
         )
     except Exception:  # pragma: no cover — defensive
         log.warning("run_slice: slice-token revoke for td%d failed", todo_id)
+    devin_config = grant.get("devin_config")
+    if devin_config:
+        # The per-tree Devin MCP entry holds the same bearer — unlink it
+        # wherever the grant is revoked (poll, kill, release, a failed
+        # launch, a host refusal) so the token dies with its grant.
+        try:
+            Path(str(devin_config)).unlink(missing_ok=True)
+        except OSError:  # pragma: no cover — best-effort
+            pass
     agentlog.close_run(ctx.store, grant.get("agentlog_id"), status=status)
 
 
@@ -1735,7 +1871,16 @@ def submit(ctx: Any, spec: Any) -> Any:
     _claim_todo(store, todo_id, lane.name)
 
     body, latest = _brief_parts(store, todo_id)
-    brief = render_brief(
+    is_generator = node_kind(todo.meta) == "generator"
+    # The scoped read grant is a code-class affordance of the read lanes
+    # (codex_exec, devin_tree — gr574082): PRECIS_SLICE_READ_MCP names the
+    # scope to mint, anything else is today's no-MCP launch (ships dark).
+    read_scope = (
+        _read_mcp_scope()
+        if adapter.read_mcp and task_class == _DEFAULT_TASK_CLASS and not is_generator
+        else None
+    )
+    brief_kwargs: dict[str, Any] = dict(
         todo_id=todo_id,
         title=str(todo.title or ""),
         body=body,
@@ -1743,14 +1888,17 @@ def submit(ctx: Any, spec: Any) -> Any:
         lane=lane.name,
         model=model,
         effort=effort,
-        generator=node_kind(todo.meta) == "generator",
+        generator=is_generator,
         role=_generate_role(todo.meta),
         mcp=adapter.mcp,
         deny_paths=lane.deny_write_paths,
         lane_models=lane.models,
         target=_review_target(store, todo.meta),
     )
+    brief = render_brief(**brief_kwargs, read_mcp=read_scope)
     grant: dict[str, Any] | None = None
+    mint_error: str | None = None
+    read_url: str | None = None
     try:
         tree = _ensure_worktree(slice_root(), todo_id)
         scratch = tree / "scratch"
@@ -1761,6 +1909,44 @@ def submit(ctx: Any, spec: Any) -> Any:
         log_path = ops / "run_slice.log"
         exit_path = ops / "run_slice.exit"
         exit_path.unlink(missing_ok=True)
+        if adapter.mcp:
+            assert model is not None
+            grant = _mint_slice_token(ctx, todo_id, model=model, brief=brief)
+        elif read_scope:
+            # The scoped grant path: mint + preflight, and for devin the
+            # per-tree MCP config. Any failure launches as today — never
+            # the shared token — with the grant revoked, the brief
+            # rewritten to the no-MCP wording and mint_error naming the
+            # reason in the launch event.
+            try:
+                read_url = _mcp_url(tree)
+                if read_url is None:
+                    raise RuntimeError("checkout names no precis MCP (.mcp.json)")
+                grant = _mint_slice_token(
+                    ctx,
+                    todo_id,
+                    model=model,
+                    brief=brief,
+                    scope=read_scope,
+                    refs=_fixes_refs(store, todo_id),
+                )
+                if grant is None:
+                    raise RuntimeError("slice-token mint failed")
+                _preflight_mcp(tree, grant["token"])
+                if adapter.name == "devin_tree":
+                    grant["devin_config"] = str(
+                        _devin_mcp_config(tree, read_url, grant["token"])
+                    )
+            except Exception as exc:
+                _revoke_slice_grant(ctx, todo_id, grant, "aborted")
+                grant = None
+                read_url = None
+                mint_error = str(exc)[:200]
+                brief = render_brief(**brief_kwargs)
+                brief_path.write_text(brief, encoding="utf-8")
+        if adapter.name == "codex_exec":
+            # A retry reuses the tree: never accept a previous run's handoff.
+            (scratch / "last-message.md").unlink(missing_ok=True)
         argv = adapter.argv(
             model=model,
             effort=effort,
@@ -1772,13 +1958,8 @@ def submit(ctx: Any, spec: Any) -> Any:
             writable_roots=(
                 _codex_writable_roots(tree) if adapter.name == "codex_exec" else ()
             ),
+            read_mcp_url=read_url if grant else None,
         )
-        if adapter.name == "codex_exec":
-            # A retry reuses the tree: never accept a previous run's handoff.
-            (scratch / "last-message.md").unlink(missing_ok=True)
-        if adapter.mcp:
-            assert model is not None
-            grant = _mint_slice_token(ctx, todo_id, model=model, brief=brief)
         env = slice_env(
             todo_id,
             effort,
@@ -1830,7 +2011,13 @@ def submit(ctx: Any, spec: Any) -> Any:
         return None
 
     token_note = (
-        f"slice {grant['name']}" if grant else "shared" if adapter.mcp else "none"
+        f"slice {grant['name']}"
+        if grant
+        else f"none ({mint_error})"
+        if mint_error
+        else "shared"
+        if adapter.mcp
+        else "none"
     )
     ctx.append_chunk(
         "job_event",
@@ -1853,6 +2040,8 @@ def submit(ctx: Any, spec: Any) -> Any:
         handle["slice_token_dir"] = grant["dir"]
         handle["slice_token_name"] = grant["name"]
         handle["agentlog_id"] = grant["agentlog_id"]
+        if grant.get("devin_config"):
+            handle["devin_config"] = grant["devin_config"]
     if identity is not None:
         # ssh_node's orphan reaper kills only a group whose leader still
         # has this boot_id and start-tick count; without them it skips.

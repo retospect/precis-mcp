@@ -457,6 +457,18 @@ The other settings a slice host reads:
   worker sends one `initialize` with the session's bearer to the
   `.mcp.json` URL and fails the attempt in seconds on anything but a
   2xx, so a broken grant never costs a session's wall clock.
+- `PRECIS_SLICE_READ_MCP`: unset is today's behaviour — Codex and Devin
+  code slices launch with no precis MCP. Set to `triage` (the intended
+  production value) or `reader` and a `code`-class slice on a `read_mcp`
+  lane (the `codex_exec` and `devin_tree` adapters) mints a *scoped*
+  grant — the same grant-file machinery as a Claude slice's, plus
+  `scope=`/`refs=` fields the server enforces (see "Slice grant read
+  scopes" below). Refs mint as the todo itself plus the gripes its
+  `fixes` links resolve to. A mint, preflight or config-write failure
+  never fails the attempt: the grant is revoked and the session
+  launches as today (`mcp token: none (<reason>)` in the job event).
+  Generators and non-`code` task classes never mint — a child-minter
+  needs the write-capable grant, which stays Claude-only.
 - The session's `UV_CACHE_DIR` is `<tempdir>/precis-slice-ops/uv-cache`
   (`PRECIS_SLICE_OPS_DIR` overrides the parent), not the service account's
   `~/.cache/uv` — the checkout's hooks run through `uv`, and a root-owned
@@ -541,3 +553,51 @@ Arming ladder:
 Kill path: `settings set mcp.slice_scope observe` (refusals stop, marks
 continue) or `off` (the check is skipped). Either takes effect on the
 next call — no restart.
+
+## Slice grant read scopes (PRECIS_SLICE_READ_MCP)
+
+The second, independent slice gate (gr574082): `mcp.slice_scope` bounds
+writes by the *todo's* role; a minted `scope=` bounds the whole call
+surface by the *grant's* scope — reads included. `slice_reader_scope.
+refusal` is the allowlist, checked twice per call (boundary vs
+principal layering): the raw request boundary
+(`server._slice_request_refusal`, beside the personal gate — non-tool
+requests refuse outright) and the dispatch backstop
+(`tools.core._require_slice_grant_scope`), which sees the normalized
+arguments. A scoped grant binds `slice:<grant>:<scope>` as its write
+principal, so `principal.check` stays the third layer: a reader write
+that reaches it is a defense-in-depth `scope-reader` refusal, and a
+triage write is re-judged through the same boundary allowlist — the
+verdict calls `slice_reader_scope.refusal` against the grant's
+stamped refs plus the todo's live `fixes` links, and a refusal lands
+as `rule=scope-triage`, so the effective refs bind at every layer.
+
+- `reader`: `get`/`search` on kinds `python`, `md` and `skill`, plus
+  `get` on the grant's `refs` (its todo and the gripes it fixes) —
+  comments views only.
+- `triage`: the reader surface plus gripe selection and the claim
+  writes — `search`/`get` on any gripe, `put` comments on its todo and
+  on gripes, `tag` `STATUS:`/`claimed-by:` on those, and
+  `link(kind='todo', id=<own>, target='gr<id>', rel='fixes')`. The one
+  claim is read-then-insert and races by design: the check reads the
+  live links at the boundary while the insert lands in the link
+  handler's own transaction, so two in-flight claims can both land —
+  the raced second claim is visible in the links and the slice's own
+  land clears only what it fixes.
+
+Everything else refuses with a `next=`, and a scope stamp outside the
+known set fails closed — a minted `scope=` can only name these.
+
+The scope value a python get takes is the checkout alias, not a file:
+`main::<qualname>` is the shared `/main` checkout (it can lag the
+slice's branch); `wt-slice-td<id>::<qualname>` reads the slice's own
+worktree when the alias resolves — the python kind only sees worktrees
+under the server's own checkout. Reads the brief tells the session:
+`search(kind='python', mode='pattern', q='<name>')` first, then
+`get(kind='python', id='main::<qualname>', view='source')`.
+
+Arm per host: `PRECIS_SLICE_READ_MCP=triage` (or `reader`) in the
+slice worker's service environment, beside `PRECIS_MCP_SLICE_TOKEN_DIR`
+— the scoped grant files live in the same registry dir. Unset, empty
+or any other value mints nothing: the launch is exactly today's
+no-MCP one.

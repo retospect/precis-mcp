@@ -3,6 +3,7 @@ and the run-context stamps (:mod:`precis.slice_tokens`)."""
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from pathlib import Path
@@ -47,7 +48,7 @@ def test_mint_grant_revoke_roundtrip(tmp_path: Path) -> None:
     assert (tmp_path / "td42").stat().st_mode & 0o777 == 0o644
     content = (tmp_path / "td42").read_text(encoding="utf-8")
     assert token not in content and token.rsplit(".", 1)[1] not in content
-    assert slice_tokens.grant(tmp_path, f"Bearer {token}") == ("td42", 777)
+    assert slice_tokens.grant(tmp_path, f"Bearer {token}") == ("td42", 777, None, ())
     # a file holding the raw token (the pre-digest layout) grants nothing
     raw = "td43." + "a" * 64
     (tmp_path / "td43").write_text(f"{raw}\n", encoding="utf-8")
@@ -69,7 +70,7 @@ def test_mint_grant_revoke_roundtrip(tmp_path: Path) -> None:
 def test_mint_without_an_agentlog(tmp_path: Path) -> None:
     """A failed open_run still mints — attribution rides the slice id."""
     token = slice_tokens.mint(tmp_path, "td7")
-    assert slice_tokens.grant(tmp_path, f"Bearer {token}") == ("td7", None)
+    assert slice_tokens.grant(tmp_path, f"Bearer {token}") == ("td7", None, None, ())
 
 
 def test_mint_rejects_a_non_td_slice_id(tmp_path: Path) -> None:
@@ -86,7 +87,12 @@ def test_job_qualified_names_validate_and_stay_strict(tmp_path: Path) -> None:
     bearer regex accepts nothing else, so a malformed locator never
     reaches the file lookup."""
     token = slice_tokens.mint(tmp_path, "td42j900")
-    assert slice_tokens.grant(tmp_path, f"Bearer {token}") == ("td42j900", None)
+    assert slice_tokens.grant(tmp_path, f"Bearer {token}") == (
+        "td42j900",
+        None,
+        None,
+        (),
+    )
     hexpart = "0" * 64
     for bad in ("td42x1", "td42.j900", "tdj42", "td42j", "j42", "td42j-1", "tD42"):
         assert slice_tokens.grant(tmp_path, f"Bearer {bad}.{hexpart}") is None
@@ -99,7 +105,7 @@ def test_grant_rejects_a_file_older_than_the_wall_clock_cap(
     that dies before its revoke leaves the file, but it stops granting."""
     monkeypatch.setenv("PRECIS_RUN_SLICE_WALL_S", "3600")
     token = slice_tokens.mint(tmp_path, "td42")
-    assert slice_tokens.grant(tmp_path, f"Bearer {token}") == ("td42", None)
+    assert slice_tokens.grant(tmp_path, f"Bearer {token}") == ("td42", None, None, ())
     stale = time.time() - 3700
     os.utime(tmp_path / "td42", (stale, stale))
     assert slice_tokens.grant(tmp_path, f"Bearer {token}") is None
@@ -150,6 +156,99 @@ def test_grant_file_with_non_ascii_content_is_no_grant(tmp_path: Path) -> None:
     assert slice_tokens.grant(tmp_path, f"Bearer {token}") is None
     (tmp_path / "td42").write_bytes(b"\xff\xfe binary\n")
     assert slice_tokens.grant(tmp_path, f"Bearer {token}") is None
+
+
+def test_mint_grant_roundtrip_with_scope_and_refs(tmp_path: Path) -> None:
+    """gr574082: a scoped mint writes ``scope=``/``refs=`` k=v fields
+    after the agentlog id; ``grant()`` carries them back on the grant."""
+    token = slice_tokens.mint(
+        tmp_path,
+        "td42",
+        agentlog_id=777,
+        scope="reader",
+        refs=("td900", "gr800"),
+    )
+    content = (tmp_path / "td42").read_text(encoding="utf-8")
+    fields = content.split()
+    assert fields[2] == "scope=reader" and fields[3] == "refs=td900,gr800"
+    assert slice_tokens.grant(tmp_path, f"Bearer {token}") == (
+        "td42",
+        777,
+        "reader",
+        ("td900", "gr800"),
+    )
+    triage = slice_tokens.mint(tmp_path, "td9", scope="triage", refs=("td9",))
+    assert slice_tokens.grant(tmp_path, f"Bearer {triage}") == (
+        "td9",
+        None,
+        "triage",
+        ("td9",),
+    )
+    # An agentlog id and the scope fields coexist in either minted order —
+    # the writer always emits agentlog first, the parser takes either.
+    token = "td5." + "b" * 64
+    digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+    (tmp_path / "td5").write_text(
+        f"{digest} 900 scope=reader refs=td900\n", encoding="utf-8"
+    )
+    assert slice_tokens.grant(tmp_path, f"Bearer {token}") == (
+        "td5",
+        900,
+        "reader",
+        ("td900",),
+    )
+
+
+def test_grant_legacy_file_yields_scope_none(tmp_path: Path) -> None:
+    """The pre-scope layout (digest + agentlog id only) still grants,
+    with no scope — in-flight grants minted before the fields drain."""
+    token = "td42." + "a" * 64
+    digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+    (tmp_path / "td42").write_text(f"{digest} 777\n", encoding="utf-8")
+    assert slice_tokens.grant(tmp_path, f"Bearer {token}") == (
+        "td42",
+        777,
+        None,
+        (),
+    )
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "scope=bogus",  # not a scope the server knows
+        "scope=reader refs=td900,,gr800",  # empty member
+        "scope=reader refs=TD900",  # a ref must be ^[a-z]{2}[0-9]+$
+        "scope=reader refs=zz",
+        "refs=td900",  # refs without scope
+        "scope=reader bogus=1",  # unknown key
+        "scope=reader scope=triage",  # duplicate key
+        "scope=reader refs=td900 refs=gr800",
+        "junk",  # a bare field that is not an int
+        "scope=reader 900",  # a bare int outside position 1
+        "900 junk",  # bare int, then a bare non-int
+    ],
+)
+def test_grant_file_malformed_scope_fields_grant_nothing(
+    tmp_path: Path, tail: str
+) -> None:
+    """Fail closed: a grant file that parses weirdly grants nothing at
+    all — never a scope the writer did not intend."""
+    token = "td42." + "c" * 64
+    digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+    (tmp_path / "td42").write_text(f"{digest} {tail}\n", encoding="utf-8")
+    assert slice_tokens.grant(tmp_path, f"Bearer {token}") is None
+
+
+def test_mint_rejects_bad_scope_and_refs(tmp_path: Path) -> None:
+    """The writer side validates too: a scope outside the known set, a
+    ref that is not a handle, and refs with no scope all raise."""
+    with pytest.raises(ValueError):
+        slice_tokens.mint(tmp_path, "td42", scope="bogus")
+    with pytest.raises(ValueError):
+        slice_tokens.mint(tmp_path, "td42", scope="reader", refs=("bad",))
+    with pytest.raises(ValueError):
+        slice_tokens.mint(tmp_path, "td42", refs=("td9",))
 
 
 def test_stamp_meta_only_inside_a_slice_context() -> None:

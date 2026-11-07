@@ -1,7 +1,9 @@
 """Headless vendor protocols for ``run_slice``.
 
-Only Claude receives precis MCP credentials. Codex and Devin use their
-host account login and return their handoff through output; the worker
+Only Claude receives write-capable precis MCP credentials. Codex and
+Devin can carry a *scoped* grant (``read_mcp`` — reader/triage,
+gr574082) when ``PRECIS_SLICE_READ_MCP`` arms it, and otherwise use
+their host account login and return their handoff through output; the worker
 checks every vendor's branch against the lane's deny paths before land.
 Codex's ``workspace-write`` sandbox needs ``--add-dir`` for anything the
 session must write outside its tree — ``run_slice`` passes the shared
@@ -75,10 +77,15 @@ def parse_claude_result(log_text: str) -> tuple[str | None, bool]:
 @dataclass(frozen=True)
 class Adapter:
     """One vendor's launch/output protocol; ``models`` in ``argv`` is the
-    selected lane's allowlist (required for any explicit Devin model)."""
+    selected lane's allowlist (required for any explicit Devin model).
+    ``mcp`` means write-capable precis MCP (it gates generators and the
+    reviewer wording); ``read_mcp`` means the lane can take a scoped
+    grant (reader/triage, gr574082) — reads plus the triage write set —
+    when ``PRECIS_SLICE_READ_MCP`` names a scope."""
 
     name: str
     mcp: bool
+    read_mcp: bool = False
 
     def argv(
         self,
@@ -91,10 +98,16 @@ class Adapter:
         max_turns: int,
         models: tuple[str, ...] = (),
         writable_roots: tuple[Path, ...] = (),
+        read_mcp_url: str | None = None,
     ) -> list[str]:
         """Build argv; effort remains the worker's exported metadata.
         ``writable_roots`` are the sandbox's ``--add-dir`` grants (codex
-        only — the other vendors run unsandboxed)."""
+        only — the other vendors run unsandboxed). ``read_mcp_url`` is
+        the checkout's precis MCP URL for a scoped-grant lane: codex
+        takes it as ``-c`` dotted overrides (``codex exec -c
+        mcp_servers.<name>.url=…``); devin's server entry lives in the
+        per-tree config file ``run_slice._devin_mcp_config`` writes, not
+        argv."""
         if self.name == "claude_p":
             argv = [
                 claude_bin(),
@@ -125,6 +138,13 @@ class Adapter:
             ]
             for root in writable_roots:
                 argv += ["--add-dir", str(root)]
+            if read_mcp_url:
+                argv += [
+                    "-c",
+                    f"mcp_servers.precis.url={read_mcp_url}",
+                    "-c",
+                    "mcp_servers.precis.bearer_token_env_var=PRECIS_MCP_TOKEN",
+                ]
             if model is not None:
                 argv += ["-m", model]
             return argv + ["--sandbox", "workspace-write", "-"]
@@ -190,8 +210,8 @@ class Adapter:
 
 ADAPTERS: dict[str, Adapter] = {
     "claude_p": Adapter("claude_p", mcp=True),
-    "codex_exec": Adapter("codex_exec", mcp=False),
-    "devin_tree": Adapter("devin_tree", mcp=False),
+    "codex_exec": Adapter("codex_exec", mcp=False, read_mcp=True),
+    "devin_tree": Adapter("devin_tree", mcp=False, read_mcp=True),
 }
 
 

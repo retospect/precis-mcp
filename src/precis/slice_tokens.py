@@ -60,6 +60,7 @@ import re
 import secrets
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 log = logging.getLogger(__name__)
 
@@ -80,6 +81,21 @@ _SUBDIR = "slice-tokens"
 #: ``tools.core._ctx_run_context`` reads them back off the same scope.
 SCOPE_SLICE_ID = "precis.slice_id"
 SCOPE_AGENTLOG_ID = "precis.agentlog_id"
+
+#: The grant's call boundary (gr574082, td574161): a minted
+#: ``scope=<name>``/``refs=<csv>`` pair stamps these ASGI keys and
+#: ``slice_reader_scope.refusal`` decides the call surface at the
+#: request boundary and the dispatch backstop. ``reader`` sees
+#: python/md/skill plus the refs it names; ``triage`` adds the
+#: comment/tag/link write set. The grant's own todo and the gripes it
+#: fixes are what ``refs`` carries — ``run_slice._fixes_refs`` mints it.
+SCOPES = frozenset({"reader", "triage"})
+SCOPE_GRANT_SCOPE = "precis.slice_scope"
+SCOPE_GRANT_REFS = "precis.slice_refs"
+
+#: A refs member is a ref handle (``td<N>``, ``gr<N>``, …) — anything
+#: else fails the mint and, on the read side, the grant.
+_REF_RE = re.compile(r"^[a-z]{2}[0-9]+$")
 
 #: Env var carrying the run_slice wall-clock cap, duplicated here so the
 #: serving container and the minting worker share the one knob. A grant
@@ -165,7 +181,26 @@ def _digest(token: str) -> str:
     return hashlib.sha256(token.encode("ascii")).hexdigest()
 
 
-def mint(directory: Path, slice_id: str, *, agentlog_id: int | None = None) -> str:
+class SliceGrant(NamedTuple):
+    """What :func:`grant` returns for a validated bearer: the slice id,
+    the run's agentlog id (when the mint had one), the call-boundary
+    scope (``reader``/``triage`` or ``None`` for an unscoped grant) and
+    the refs the scope is bound to (td574161)."""
+
+    slice_id: str
+    agentlog_id: int | None
+    scope: str | None
+    refs: tuple[str, ...]
+
+
+def mint(
+    directory: Path,
+    slice_id: str,
+    *,
+    agentlog_id: int | None = None,
+    scope: str | None = None,
+    refs: tuple[str, ...] = (),
+) -> str:
     """Write the grant file ``<directory>/<slice_id>`` and return the
     bearer token to hand the session.
 
@@ -176,12 +211,30 @@ def mint(directory: Path, slice_id: str, *, agentlog_id: int | None = None) -> s
     file is not a credential: mode 644, readable by a server running as
     another user (module docstring). Each mint also sweeps files that
     outlived the TTL (:func:`_sweep_stale`).
+
+    ``scope`` (a :data:`SCOPES` member) and ``refs`` (ref handles:
+    ``td<N>``, ``gr<N>``, …) append ``scope=<s>``/``refs=<csv>`` fields
+    after the agentlog id — the request boundary
+    (:mod:`precis.slice_reader_scope`) reads them back off the validated
+    grant. ``refs`` without a ``scope`` names nothing and raises.
     """
     if not _NAME_RE.match(slice_id):
         raise ValueError(f"slice id {slice_id!r} is not td<digits>[ja<digits>]")
+    if scope is not None and scope not in SCOPES:
+        raise ValueError(f"scope {scope!r} is not one of {sorted(SCOPES)}")
+    if refs and scope is None:
+        raise ValueError("refs= without scope= names no boundary")
+    for ref in refs:
+        if not _REF_RE.match(ref):
+            raise ValueError(f"ref {ref!r} is not a handle (xx<digits>)")
     _sweep_stale(directory)
     token = f"{slice_id}.{secrets.token_hex(32)}"
-    content = _digest(token) + (f" {int(agentlog_id)}" if agentlog_id else "") + "\n"
+    content = _digest(token) + (f" {int(agentlog_id)}" if agentlog_id else "")
+    if scope is not None:
+        content += f" scope={scope}"
+    if refs:
+        content += f" refs={','.join(refs)}"
+    content += "\n"
     target = Path(directory) / slice_id
     tmp = target.with_name(f".{slice_id}.{os.getpid()}.tmp")
     tmp.write_text(content, encoding="utf-8")
@@ -199,10 +252,8 @@ def revoke(directory: Path, slice_id: str) -> bool:
         return False
 
 
-def grant(
-    directory: Path | None, header_value: str | None
-) -> tuple[str, int | None] | None:
-    """``(slice_id, agentlog_id)`` the bearer token names, or ``None``.
+def grant(directory: Path | None, header_value: str | None) -> SliceGrant | None:
+    """The :class:`SliceGrant` the bearer token names, or ``None``.
 
     Only tokens in the slice shape (``td<id>.<64 hex>``, the id optionally
     job/agentlog-qualified) reach the file — everything else is a cheap
@@ -210,9 +261,12 @@ def grant(
     wall-clock TTL (:func:`grant_ttl_s`) is no grant, and so is one that
     does not decode or compare cleanly (a 401, never a 500). The file's
     first field is compared constant-time against the bearer's SHA-256
-    digest (a file holding the raw token grants nothing); its optional
-    second field is the run's agentlog id, or ``None`` when
-    absent/malformed.
+    digest (a file holding the raw token grants nothing); the fields
+    after it are a bare agentlog int in position 1 only, then
+    ``scope=``/``refs=`` k=v pairs — a field that fits neither shape (an
+    unknown key, a duplicate, ``refs`` without ``scope``, a malformed
+    ref, a stray bare field) makes the whole file no grant: a scoped
+    grant fails closed, never wider.
     """
     if directory is None or not header_value:
         return None
@@ -234,13 +288,37 @@ def grant(
     except TypeError:
         return None  # non-ASCII field: no grant, never a 500
     agentlog_id: int | None = None
-    if len(fields) > 1:
-        try:
-            v = int(fields[1])
-            agentlog_id = v if v > 0 else None
-        except ValueError:
-            pass
-    return slice_id, agentlog_id
+    scope: str | None = None
+    refs: tuple[str, ...] = ()
+    seen: set[str] = set()
+    for pos, field in enumerate(fields[1:], 1):
+        key, sep, value = field.partition("=")
+        if not sep:
+            # A bare field is the agentlog id, and only in position 1.
+            if pos != 1:
+                return None
+            try:
+                v = int(field)
+            except ValueError:
+                return None
+            if v > 0:
+                agentlog_id = v
+            continue
+        if key in seen or key not in ("scope", "refs"):
+            return None
+        seen.add(key)
+        if key == "scope":
+            if value not in SCOPES:
+                return None
+            scope = value
+        else:
+            members = value.split(",")
+            if any(not _REF_RE.match(m) for m in members):
+                return None
+            refs = tuple(members)
+    if refs and scope is None:
+        return None
+    return SliceGrant(slice_id, agentlog_id, scope, refs)
 
 
 def current_slice_id() -> str | None:
@@ -265,8 +343,12 @@ def stamp_meta(meta: dict | None) -> dict | None:
 
 __all__ = [
     "ENV_DIR",
+    "SCOPES",
     "SCOPE_AGENTLOG_ID",
+    "SCOPE_GRANT_REFS",
+    "SCOPE_GRANT_SCOPE",
     "SCOPE_SLICE_ID",
+    "SliceGrant",
     "current_slice_id",
     "grant",
     "grant_ttl_s",

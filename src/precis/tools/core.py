@@ -289,18 +289,26 @@ def _dispatch(
         return _dispatch_as_user(verb, payload, ctx)
 
 
-def _ctx_user_scope(ctx: Context | None) -> contextlib.AbstractContextManager[None]:
-    """Read only trusted transport stamps; an MCP session carries no owner."""
-    from precis.mcp_identity import SCOPE_TOKEN_ID, SCOPE_USER_ID
-    from precis.user_context import user_scope
-
+def _asgi_scope(ctx: Context | None) -> dict[str, Any]:
+    """The transport request's ASGI scope dict — where the auth
+    middleware stamps identities (personal user/token ids, slice grant
+    id, agentlog id, grant scope/refs). Trusted: server-set only, never
+    caller input. ``{}`` outside a request, on stdio, or on a context
+    whose request carries no scope."""
     try:
         request = ctx.request_context.request if ctx is not None else None
         scope = request.scope if request is not None else {}
     except (AttributeError, ValueError):
         scope = {}
-    if not isinstance(scope, dict):
-        scope = {}
+    return scope if isinstance(scope, dict) else {}
+
+
+def _ctx_user_scope(ctx: Context | None) -> contextlib.AbstractContextManager[None]:
+    """Read only trusted transport stamps; an MCP session carries no owner."""
+    from precis.mcp_identity import SCOPE_TOKEN_ID, SCOPE_USER_ID
+    from precis.user_context import user_scope
+
+    scope = _asgi_scope(ctx)
     user_id, token_id = scope.get(SCOPE_USER_ID), scope.get(SCOPE_TOKEN_ID)
     if type(user_id) is int and user_id > 0 and type(token_id) is int and token_id > 0:
         return user_scope(user_id, token_id)
@@ -365,14 +373,16 @@ def _dispatch_as_user(
             ctxmgr,
             user_actor_scope(store),
             principal.bind(_ctx_principal(ctx, store, verb)),
+            principal.bind_grant_refs(_ctx_grant_refs(ctx)),
         ):
             # Revalidation above must win over scope refusal for revoked tokens.
             # Verb wrappers supply None defaults; the wire boundary separately
             # checks the exact supplied keys before SDK argument coercion.
-            _require_personal_scope(
-                verb,
-                {key: value for key, value in payload.items() if value is not None},
-            )
+            filtered = {
+                key: value for key, value in payload.items() if value is not None
+            }
+            _require_personal_scope(verb, filtered)
+            _require_slice_grant_scope(verb, filtered, ctx)
             body, is_error = runtime.dispatch_with_status(
                 verb,
                 payload,
@@ -445,6 +455,32 @@ def _require_personal_scope(verb: str, payload: dict[str, Any]) -> None:
             "personal MCP tokens permit learning calls and learning help only",
             next="get(kind='learning'); get(kind='skill', id='precis-learning-help')",
         )
+
+
+def _require_slice_grant_scope(
+    verb: str, payload: dict[str, Any], ctx: Context | None
+) -> None:
+    """The dispatch backstop for a scoped slice grant (gr574082,
+    td574161): re-run the request boundary's ``slice_reader_scope``
+    check on the normalized payload. ``server._slice_request_refusal``
+    sees the raw arguments; this sees what the handler sees — a shape
+    the boundary's raw view and the slim-verb normalization judged
+    differently refuses here, inside the dispatch, same Denied."""
+    from precis import slice_reader_scope, slice_tokens
+
+    scope = _asgi_scope(ctx)
+    grant_scope = scope.get(slice_tokens.SCOPE_GRANT_SCOPE)
+    if grant_scope is None:
+        return
+    refs = scope.get(slice_tokens.SCOPE_GRANT_REFS) or ()
+    fixes = None
+    if grant_scope == "triage" and verb in slice_reader_scope._WRITE_VERBS:
+        fixes = slice_reader_scope.fixes_targets(
+            getattr(_get_runtime(), "store", None), refs
+        )
+    denied = slice_reader_scope.refusal(grant_scope, verb, payload, refs, fixes)
+    if denied is not None:
+        raise denied
 
 
 def _validation_error(body: str) -> _ToolReturn:
@@ -751,6 +787,17 @@ def _http_slice_run_context(request: Any) -> Any:
     )
 
 
+def _ctx_grant_refs(ctx: Context | None) -> Any:
+    """The scoped grant's minted ``refs`` tuple from the trusted ASGI
+    stamps — ``None`` on an unscoped or stamp-less request. Bound into
+    :func:`precis.principal.bind_grant_refs` so the triage verdict
+    re-judges the boundary allowlist against the same refs the
+    middleware validated."""
+    from precis import slice_tokens
+
+    return _asgi_scope(ctx).get(slice_tokens.SCOPE_GRANT_REFS)
+
+
 def _ctx_principal(ctx: Context | None, store: Any, verb: str) -> str | None:
     """The write-attribution principal this request's bearer resolved to —
     read only from server-set ASGI scope stamps, never caller input.
@@ -767,17 +814,17 @@ def _ctx_principal(ctx: Context | None, store: Any, verb: str) -> str | None:
     from precis import slice_tokens
     from precis.mcp_identity import SCOPE_TOKEN_ID
 
-    try:
-        request = ctx.request_context.request if ctx is not None else None
-        scope = request.scope if request is not None else {}
-    except (AttributeError, ValueError):
-        scope = {}
-    if not isinstance(scope, dict):
-        scope = {}
+    scope = _asgi_scope(ctx)
     if scope.get(principal.SCOPE_INSTALL):
         return "install"
     slice_id = scope.get(slice_tokens.SCOPE_SLICE_ID)
     if slice_id:
+        # A scoped grant's role IS the scope the mint wrote (reader /
+        # triage, gr574082) — the boundary allowlist, not the todo's
+        # ``meta.generate.role``, decides what this session may write.
+        grant_scope = scope.get(slice_tokens.SCOPE_GRANT_SCOPE)
+        if grant_scope in slice_tokens.SCOPES:
+            return principal.for_slice(str(slice_id), str(grant_scope))
         role = (
             "unknown"
             if verb in ("get", "search")

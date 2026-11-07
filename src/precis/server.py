@@ -1224,6 +1224,47 @@ def _personal_request_refusal(request: Any, ctx: Context) -> str | None:
     return None
 
 
+def _slice_request_refusal(request: Any, ctx: Context) -> str | None:
+    """The scoped-grant boundary, checked on the raw request before the
+    SDK normalizes it (gr574082, td574161) — the twin of
+    :func:`_personal_request_refusal` for the slice-grant stamps.
+
+    Reads only the middleware's ASGI stamps: a request carrying no
+    ``precis.slice_scope`` key passes (unscoped grant, install or
+    shared bearer — today's behaviour). A scoped grant's call goes
+    through ``slice_reader_scope.refusal``: a ``CallToolRequest`` is
+    judged as ``(tool name, arguments)`` and every other content
+    request (resources, prompts, …) as an empty verb — refused, since
+    no scope serves them. A triage write additionally reads the own
+    todo's live ``fixes`` links off the store (:func:`fixes_targets`),
+    so ``guarded`` runs those calls on the worker thread; the dispatch
+    backstop (``tools.core._require_slice_grant_scope``) re-runs the
+    same check after argument normalization.
+    """
+    from mcp import types
+
+    from precis import slice_reader_scope, slice_tokens
+    from precis.tools import core
+
+    asgi = core._asgi_scope(ctx)
+    grant_scope = asgi.get(slice_tokens.SCOPE_GRANT_SCOPE)
+    if grant_scope is None:
+        return None
+    refs = asgi.get(slice_tokens.SCOPE_GRANT_REFS) or ()
+    verb, payload = "", {}
+    if isinstance(request, types.CallToolRequest):
+        verb, payload = request.params.name, request.params.arguments or {}
+    fixes = None
+    if grant_scope == "triage" and verb in slice_reader_scope._WRITE_VERBS:
+        fixes = slice_reader_scope.fixes_targets(
+            getattr(core._get_runtime(), "store", None), refs
+        )
+    denied = slice_reader_scope.refusal(grant_scope, verb, payload, refs, fixes)
+    if denied is None:
+        return None
+    return core._get_runtime().render_error(denied)
+
+
 def _install_personal_scope_gate(fastmcp: FastMCP) -> None:
     """Gate every registered content request, including indirect modalities.
 
@@ -1233,6 +1274,7 @@ def _install_personal_scope_gate(fastmcp: FastMCP) -> None:
     from mcp import types
     from mcp.shared.exceptions import McpError
 
+    from precis import slice_reader_scope, slice_tokens
     from precis.tools import core
     from precis.user_context import current_principal
 
@@ -1243,11 +1285,25 @@ def _install_personal_scope_gate(fastmcp: FastMCP) -> None:
             # can need the blocking revocation check in the refusal path.
             with core._ctx_user_scope(ctx):
                 personal = current_principal() is not None
-            if not personal:
-                return await handler(request)
-            refusal = await anyio.to_thread.run_sync(
-                _personal_request_refusal, request, ctx
+            scoped_write = (
+                isinstance(request, types.CallToolRequest)
+                and request.params.name in slice_reader_scope._WRITE_VERBS
+                and core._asgi_scope(ctx).get(slice_tokens.SCOPE_GRANT_SCOPE)
+                is not None
             )
+            if personal or scoped_write:
+                # The personal path blocks on the revocation check; a
+                # scoped write blocks on the own todo's live fixes
+                # links. Both go through the worker thread.
+                refusal = await anyio.to_thread.run_sync(
+                    _personal_request_refusal if personal else _slice_request_refusal,
+                    request,
+                    ctx,
+                )
+            else:
+                # Pure compute over the trusted ASGI stamps — no store
+                # read, so no thread hop.
+                refusal = _slice_request_refusal(request, ctx)
             if refusal is not None:
                 if isinstance(request, types.CallToolRequest):
                     from precis.tools.core import _validation_error
@@ -1960,6 +2016,8 @@ def _install_token_auth(
                 mcp_identity.SCOPE_TOKEN_ID,
                 slice_tokens.SCOPE_SLICE_ID,
                 slice_tokens.SCOPE_AGENTLOG_ID,
+                slice_tokens.SCOPE_GRANT_SCOPE,
+                slice_tokens.SCOPE_GRANT_REFS,
                 principal.SCOPE_INSTALL,
                 "user",
                 "auth",
@@ -1972,12 +2030,14 @@ def _install_token_auth(
                 return
             grant = slice_tokens.grant(slice_dir, header)
             if grant is not None:
-                slice_id, agentlog_id = grant
-                scope[slice_tokens.SCOPE_SLICE_ID] = slice_id
-                if agentlog_id is not None:
-                    scope[slice_tokens.SCOPE_AGENTLOG_ID] = agentlog_id
+                scope[slice_tokens.SCOPE_SLICE_ID] = grant.slice_id
+                if grant.agentlog_id is not None:
+                    scope[slice_tokens.SCOPE_AGENTLOG_ID] = grant.agentlog_id
+                if grant.scope is not None:
+                    scope[slice_tokens.SCOPE_GRANT_SCOPE] = grant.scope
+                    scope[slice_tokens.SCOPE_GRANT_REFS] = grant.refs
                 await self._authorized(
-                    scope, receive, send, "precis-slice", subject=slice_id
+                    scope, receive, send, "precis-slice", subject=grant.slice_id
                 )
                 return
             if store is not None and header and header.startswith("Bearer "):

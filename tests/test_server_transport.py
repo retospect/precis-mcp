@@ -1335,3 +1335,188 @@ def test_md_vector_cache_probe_waits_before_retrying(
     assert handler.vector_cache is None
     assert handler.vector_cache is None
     assert calls[0] == 1  # the second read is inside the pause
+
+
+# ── scoped slice grants at the request boundary (gr574082, td574161) ──
+#
+# The recipe mirrors tests/test_mcp_identity.py: a real FastMCP app with
+# the production tool surface and token auth, dispatch mocked out.
+
+
+def _scope_mcp_app(
+    store: Any, runtime_with_store: Any, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Any, Any]:
+    from unittest.mock import Mock
+
+    from mcp.server.fastmcp import FastMCP
+
+    from precis.tools import core
+
+    dispatched = Mock(return_value=("handler reached", False))
+    monkeypatch.setattr(runtime_with_store, "dispatch_with_status", dispatched)
+    monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
+    mcp = FastMCP("slice-scope-test", json_response=True)
+    monkeypatch.setattr(server, "mcp", mcp)
+    server._register_tools_from_registry()
+    return mcp.streamable_http_app(), dispatched
+
+
+def _scope_headers(raw: str, session: str | None = None) -> dict[str, str]:
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Authorization": f"Bearer {raw}",
+    }
+    if session is not None:
+        headers["Mcp-Session-Id"] = session
+    return headers
+
+
+async def _scope_initialize(client: Any, raw: str) -> str:
+    response = await client.post(
+        "/mcp",
+        headers=_scope_headers(raw),
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "scope-test", "version": "1"},
+            },
+        },
+    )
+    assert response.status_code == 200, response.text
+    session = response.headers["mcp-session-id"]
+    ready = await client.post(
+        "/mcp",
+        headers=_scope_headers(raw, session),
+        json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+    )
+    assert ready.status_code == 202, ready.text
+    return session
+
+
+async def _scope_call(
+    client: Any, session: str, raw: str, call_id: int, **params: Any
+) -> Any:
+    return await client.post(
+        "/mcp",
+        headers=_scope_headers(raw, session),
+        json={
+            "jsonrpc": "2.0",
+            "id": call_id,
+            "method": "tools/call",
+            "params": params,
+        },
+    )
+
+
+def _result_text(resp: Any) -> str:
+    return str(resp.json()["result"]["content"][0]["text"])
+
+
+def test_scoped_slice_grants_gate_at_the_request_boundary(
+    store: Any,
+    runtime_with_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """A scoped grant's ``scope=``/``refs=`` fields ride the minted file
+    into the ASGI scope; the boundary enforces them before dispatch — a
+    reader's put never reaches the handler, a triage's own-todo comment
+    does, and a non-tool request under a scoped grant refuses outright."""
+    import asyncio
+
+    import httpx
+
+    from precis import slice_tokens
+
+    reader = slice_tokens.mint(
+        tmp_path, "td42", scope="reader", refs=("td900", "gr800")
+    )
+    triage = slice_tokens.mint(tmp_path, "td7", scope="triage", refs=("td7",))
+    plain = slice_tokens.mint(tmp_path, "td9")
+    app, dispatched = _scope_mcp_app(store, runtime_with_store, monkeypatch)
+    server._install_token_auth(app, token="install", store=store, slice_dir=tmp_path)
+
+    async def exercise() -> None:
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://localhost:8000",
+            ) as client,
+        ):
+            session = await _scope_initialize(client, reader)
+            ok = await _scope_call(
+                client,
+                session,
+                reader,
+                2,
+                name="get",
+                arguments={"kind": "skill", "id": "precis-overview"},
+            )
+            assert _result_text(ok) == "handler reached"
+            refused = await _scope_call(
+                client,
+                session,
+                reader,
+                3,
+                name="put",
+                arguments={"kind": "todo", "id": "td900", "text": "x"},
+            )
+            assert "[error:Denied]" in _result_text(refused)
+            # a non-tool request refuses at the boundary too
+            resp = await client.post(
+                "/mcp",
+                headers=_scope_headers(reader, session),
+                json={"jsonrpc": "2.0", "id": 4, "method": "resources/list"},
+            )
+            assert "error" in resp.json()
+            dispatched.assert_called_once()  # only the get reached dispatch
+
+            triage_session = await _scope_initialize(client, triage)
+            ok = await _scope_call(
+                client,
+                triage_session,
+                triage,
+                5,
+                name="put",
+                arguments={"kind": "todo", "id": "td7", "text": "claiming"},
+            )
+            assert _result_text(ok) == "handler reached"
+            for arguments in ({"kind": "todo", "id": "td900", "text": "foreign"},):
+                refused = await _scope_call(
+                    client,
+                    triage_session,
+                    triage,
+                    6,
+                    name="put",
+                    arguments=arguments,
+                )
+                assert "[error:Denied]" in _result_text(refused)
+            refused = await _scope_call(
+                client,
+                triage_session,
+                triage,
+                7,
+                name="get",
+                arguments={"kind": "memory", "id": "me1"},
+            )
+            assert "[error:Denied]" in _result_text(refused)
+
+            # An unscoped grant and the install bearer behave as before.
+            for raw in (plain, "install"):
+                session = await _scope_initialize(client, raw)
+                ok = await _scope_call(
+                    client,
+                    session,
+                    raw,
+                    8,
+                    name="put",
+                    arguments={"kind": "memory", "text": "x"},
+                )
+                assert _result_text(ok) == "handler reached"
+
+    asyncio.run(exercise())
