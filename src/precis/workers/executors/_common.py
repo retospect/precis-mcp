@@ -120,14 +120,43 @@ CLAIM_CLASS_AGE_ENV = "PRECIS_CLAIM_CLASS_AGE_S"
 #: age, ref_id — the 1.5 floor); anything else keeps the class order.
 CLAIM_CLASS_RANK_ENV = "PRECIS_CLAIM_CLASS_RANK"
 
-#: ``meta.origin`` -> base class rank (D2: human 0, agent 1, recurring 2,
-#: background 3). A missing origin (pre-slice-1 rows) reads as
-#: ``recurring`` at prio <= 2 — the old cron band — else ``background``.
+#: Release-pass legs (gr584136, S3 of td584381): these ``job_type``s claim
+#: in a band strictly between ``recurring`` and ``background`` — a
+#: re-queued ``ci_verdict_poll`` (10-minute wake cadence) or a
+#: cut/deploy/confirm stage boundary must claim within one worker-slot
+#: turnover even behind a full ``derived_drain`` backlog, while still
+#: ranking behind recurring work.
+RELEASE_LEG_JOB_TYPES: tuple[str, ...] = (
+    "ci_verdict_poll",
+    "release_cut",
+    "release_deploy",
+    "release_confirm",
+)
+
+#: The release band's class rank — strictly between recurring (2) and
+#: background (3). Fractional on purpose: the integer class-ageing step
+#: (``base - floor(age / class_age)``) can never land a promoted
+#: lower-class row ON the band, and no existing rank moves.
+_RELEASE_LEG_RANK = 2.5
+
+#: The release job_types as a SQL ``IN`` literal — module constants only,
+#: never row data.
+_RELEASE_LEG_TYPES_SQL = (
+    "(" + ", ".join(f"'{jt}'" for jt in RELEASE_LEG_JOB_TYPES) + ")"
+)
+
+#: ``meta.job_type``/``meta.origin`` -> base class rank (D2: human 0, agent
+#: 1, recurring 2, release 2.5, background 3). The release band is keyed
+#: on ``job_type`` (the legs' origin stays ``background``); a missing
+#: origin (pre-slice-1 rows) reads as ``recurring`` at prio <= 2 — the old
+#: cron band — else ``background``.
 _CLASS_RANK_CASE = (
-    "CASE r.meta->>'origin' "
+    f"CASE WHEN r.meta->>'job_type' IN {_RELEASE_LEG_TYPES_SQL} "
+    f"THEN {_RELEASE_LEG_RANK} ELSE CASE r.meta->>'origin' "
     "WHEN 'human' THEN 0 WHEN 'agent' THEN 1 WHEN 'recurring' THEN 2 "
     "WHEN 'background' THEN 3 "
-    "ELSE (CASE WHEN COALESCE(r.prio, %s)::float8 <= 2 THEN 2 ELSE 3 END) END"
+    "ELSE (CASE WHEN COALESCE(r.prio, %s)::float8 <= 2 THEN 2 ELSE 3 END) "
+    "END END"
 )
 _BASE_CLASS_RANK = {"human": 0, "agent": 1, "recurring": 2, "background": 3}
 
@@ -228,7 +257,7 @@ def lane_has_waiters(
     class_age = claim_class_age_s()
     class_rank = claim_class_rank_enabled()
     rank_sql, aged_sql, order_params = _claim_order_sql(
-        age_step, class_age, class_rank=class_rank
+        age_step, class_age, class_rank=class_rank, release_freeze=True
     )
     suspend_sql = ""
     suspend_params: tuple[list[str], ...] = ()
@@ -276,7 +305,9 @@ def lane_has_waiters(
                        {_CLASS_RANK_CASE} AS base_class
               ) b
           CROSS JOIN LATERAL (
-                SELECT min({_CLASS_RANK_CASE.replace("r.", "r3.")}) AS top_class
+                SELECT min({_CLASS_RANK_CASE.replace("r.", "r3.")}) AS top_class,
+                       bool_or({_CLASS_RANK_CASE.replace("r.", "r3.")}
+                               = {_RELEASE_LEG_RANK}) AS has_release
                   FROM refs r3
                  WHERE r3.kind = 'job' AND r3.retired_at IS NULL
                    AND r3.meta->>'executor' = %s
@@ -315,6 +346,7 @@ def lane_has_waiters(
             exclude_ref_id,
             STATUS_NAMESPACE,
             list(CLAIMABLE),
+            _DEFAULT_JOB_PRIO,
             _DEFAULT_JOB_PRIO,
             _DEFAULT_JOB_PRIO,
             executor,
@@ -923,13 +955,15 @@ def _claim_order_sql(
     class_age_s: float,
     *,
     class_rank: bool = True,
+    release_freeze: bool = False,
 ) -> tuple[str, str, tuple[Any, ...]]:
     """The D2/D3 claim order: ``(claim_rank_sql, aged_prio_sql, params)``.
 
     The expressions read ``b.age_s`` / ``b.base_class`` from the LATERALs
     in :func:`claim_executor_jobs` (queued-tag age and base origin class,
     computed once per row — :data:`_CLASS_RANK_CASE`; missing origin
-    reads as the old cron band, 2, at prio <= 2, else background 3).
+    reads as the old cron band, 2, at prio <= 2, else background 3;
+    :data:`RELEASE_LEG_JOB_TYPES` read as the release band, 2.5).
     ``claim_rank`` is ``-1`` for a prio-1 preempt (absolute across
     classes — ruled 2026-10-23); otherwise ``base - floor(age /
     class_age_s)``, floored at 0 — a row promotes one full class per
@@ -946,6 +980,16 @@ def _claim_order_sql(
     ORDER BY is the old ``aged, queued_since, ref_id`` — and drops the
     share term (:func:`claim_executor_jobs` adds it only under the
     class order).
+
+    ``release_freeze=True`` (gr584136) adds the lane cap to the
+    promotion floor: while any release leg is claimable
+    (``t.has_release``), every row's floor is its own base class — no
+    lower class promotes, so an aged background backlog can neither
+    reach the release band (tie it) nor cross it toward recurring.
+    It requires the surrounding ``t`` LATERAL to select
+    ``bool_or(base = 2.5) AS has_release``; callers whose ``t`` lateral
+    predates the band (the advisory ``queue:`` readout) pass nothing —
+    release rows still self-pin at 2.5, only the freeze term drops.
     """
     if not class_rank:
         if age_step_s <= 0:
@@ -964,7 +1008,21 @@ def _claim_order_sql(
     #: candidates) but never reaches agent/human rank, so a promoted
     #: background backlog can't fill the claim window ahead of a fresh
     #: foreground row.
-    _eff_floor = "LEAST(b.base_class, GREATEST(COALESCE(t.top_class, b.base_class), 2))"
+    #: A release-band row is self-pinned (``base = 2.5`` → its floor is its
+    #: own rank — emitted unconditionally since it only reads
+    #: ``b.base_class``): it never class-promotes, so it can never outrank
+    #: recurring. ``release_freeze`` adds ``t.has_release``: while a
+    #: release leg is claimable every row's floor is its own base — no
+    #: lower class promotes into or across the band.
+    _cap_sql = (
+        f"CASE WHEN b.base_class = {_RELEASE_LEG_RANK} THEN b.base_class ELSE 0 END"
+    )
+    if release_freeze:
+        _cap_sql += ", CASE WHEN t.has_release THEN b.base_class ELSE 0 END"
+    _eff_floor = (
+        "LEAST(b.base_class, GREATEST(COALESCE(t.top_class, b.base_class),"
+        f" 2, {_cap_sql}))"
+    )
     claim_rank = (
         "CASE WHEN COALESCE(r.prio, %s)::float8 = 1 THEN -1"
         f" ELSE GREATEST(b.base_class - FLOOR(b.age_s / %s), {_eff_floor}) END"
@@ -1103,10 +1161,13 @@ def claim_executor_jobs(
 
     **Claim ordering (slice 6a, FIFO fix 2026-09-25, ageing 2026-10-15;
     class rank 2026-10-23, job-scheduling-fairness D2/D3; share term
-    2026-10-24, D4 share half).** ``ORDER BY claim_rank ASC,
+    2026-10-24, D4 share half; release band 2026-11-07, gr584136).**
+    ``ORDER BY claim_rank ASC,
     share_running ASC, aged_prio ASC, queued_since ASC, ref_id ASC``
-    where ``claim_rank`` is the row's origin class (human 0 < agent 1 <
-    recurring 2 < background 3; a missing origin reads as the old cron
+    where ``claim_rank`` is the row's class (human 0 < agent 1 <
+    recurring 2 < release 2.5 < background 3 — the release band from
+    :data:`RELEASE_LEG_JOB_TYPES` ``job_type``s, not ``origin``; a
+    missing origin reads as the old cron
     band at prio <= 2, else background) stepped down one class per
     :func:`claim_class_age_s` of wait until it ties the top class
     queued, ``-1`` for a prio-1 preempt (absolute across classes), and
@@ -1665,6 +1726,7 @@ def claim_executor_jobs(
         claim_age_step_s(),
         claim_class_age_s(),
         class_rank=class_rank_on,
+        release_freeze=True,
     )
     # D4 share half (job-scheduling-fairness slice 5, activated by the
     # gr506754 measurement): among candidates of the winning class, prefer
@@ -1724,7 +1786,9 @@ def claim_executor_jobs(
                        {_CLASS_RANK_CASE} AS base_class
               ) b
           CROSS JOIN LATERAL (
-                SELECT min({_CLASS_RANK_CASE.replace("r.", "r3.")}) AS top_class
+                SELECT min({_CLASS_RANK_CASE.replace("r.", "r3.")}) AS top_class,
+                       bool_or({_CLASS_RANK_CASE.replace("r.", "r3.")}
+                               = {_RELEASE_LEG_RANK}) AS has_release
                   FROM refs r3
                  WHERE r3.kind = 'job' AND r3.retired_at IS NULL
                    AND r3.meta->>'executor' = %s
@@ -1768,6 +1832,7 @@ def claim_executor_jobs(
             list(CLAIMABLE),
             _DEFAULT_JOB_PRIO,
             _DEFAULT_JOB_PRIO,
+            _DEFAULT_JOB_PRIO,
             executor,
             STATUS_NAMESPACE,
             list(CLAIMABLE),
@@ -1809,8 +1874,11 @@ def claim_executor_jobs(
     class_age = claim_class_age_s()
     now_utc = datetime.now(UTC)
 
-    def _row_base(r: Any) -> int:
-        origin = (dict(r[2] or {})).get("origin")
+    def _row_base(r: Any) -> float:
+        meta = dict(r[2] or {})
+        if str(meta.get("job_type") or "") in RELEASE_LEG_JOB_TYPES:
+            return _RELEASE_LEG_RANK
+        origin = meta.get("origin")
         if isinstance(origin, str) and origin in _BASE_CLASS_RANK:
             return _BASE_CLASS_RANK[origin]
         p = float(r[3] if r[3] is not None else _DEFAULT_JOB_PRIO)
@@ -1820,6 +1888,12 @@ def claim_executor_jobs(
         return float(r[3] if r[3] is not None else _DEFAULT_JOB_PRIO)
 
     top_class = min((_row_base(r) for r in rows if _row_prio(r) != 1.0), default=0)
+    # Release-band freeze (gr584136): while a release leg is among the
+    # claimable non-prio-1 candidates, no row class-promotes — mirrors the
+    # ``t.has_release`` term the SQL emits under ``release_freeze=True``.
+    has_release = any(
+        _row_base(r) == _RELEASE_LEG_RANK and _row_prio(r) != 1.0 for r in rows
+    )
 
     def _row_age_s(r: Any) -> float:
         qs = r[5] or r[4]
@@ -1836,10 +1910,14 @@ def claim_executor_jobs(
             rank, floor = -1.0, 5.0
         elif class_rank_on:
             base = _row_base(r)
-            # May tie the top class queued, never reaches agent/human.
-            rank = float(
-                max(base - int(age // class_age), min(base, max(top_class, 2)))
+            # May tie the top class queued, never reaches agent/human —
+            # except while a release leg is claimable: then every row's
+            # floor is its own base, so an aged background row can never
+            # reach or cross the release band (gr584136).
+            floor_rank = (
+                float(base) if has_release else float(min(base, max(top_class, 2)))
             )
+            rank = float(max(base - int(age // class_age), floor_rank))
             floor = 5.0 if rank < 2 else 2.0
         else:
             # Kill switch: the pre-slice-2 order — aged prio, 1.5 floor.

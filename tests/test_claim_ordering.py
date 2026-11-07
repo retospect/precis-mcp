@@ -18,22 +18,48 @@ instead of quietly re-introducing that inversion.
 Oldest-first (``ref_id`` ASC) breaks ties within a prio band (anti-
 starvation), and an all-unset queue stays FIFO. A synthetic executor name
 isolates each test's queue from any other jobs sharing the test DB.
+
+The release band (gr584136): the four release-pass legs
+(``ci_verdict_poll``, ``release_cut``, ``release_deploy``,
+``release_confirm``) carry class rank 2.5 — derived from ``job_type``,
+strictly between recurring (2) and background (3) — so a release's
+10-minute poll cadence can't be stretched by an unrelated
+``derived_drain`` backlog, while still ranking behind recurring work.
+While a release leg is claimable, class-ageing promotion is frozen
+lane-wide, so no aged background row can reach or cross the band.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.executors._common import claim_executor_jobs
 
 
-def _queue_job(store: Store, *, executor: str, prio: int | None) -> int:
+def _queue_job(
+    store: Store,
+    *,
+    executor: str,
+    prio: int | None,
+    job_type: str = "demo",
+    origin: str | None = None,
+    queued_s_ago: float = 0,
+) -> int:
     """Insert a ``STATUS:queued`` job for ``executor`` with the given prio."""
+    meta: dict[str, Any] = {
+        "job_type": job_type,
+        "executor": executor,
+        "params": {},
+    }
+    if origin is not None:
+        meta["origin"] = origin
     ref = store.insert_ref(
         kind="job",
         slug=None,
         title=f"job prio={prio}",
-        meta={"job_type": "demo", "executor": executor, "params": {}},
+        meta=meta,
         prio=prio,
     )
     store.add_tag(
@@ -42,15 +68,43 @@ def _queue_job(store: Store, *, executor: str, prio: int | None) -> int:
         set_by="agent",
         replace_prefix=True,
     )
+    if queued_s_ago:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE ref_tags rt SET created_at = now() - "
+                "make_interval(secs => %s) "
+                "FROM tags t WHERE t.tag_id = rt.tag_id AND rt.ref_id = %s "
+                "AND t.namespace = 'STATUS' AND t.value = 'queued'",
+                (queued_s_ago, ref.id),
+            )
+            conn.commit()
     return ref.id
 
 
-def _claim_order(store: Store, executor: str) -> list[int]:
+def _claim_order(
+    store: Store, executor: str, *, reserve_host_id: str | None = None
+) -> list[int]:
     """The ref_ids the claim would lock, in order (rolled back — no side effects)."""
     with store.pool.connection() as conn:
-        rows = claim_executor_jobs(conn, executor=executor, limit=50)
+        rows = claim_executor_jobs(
+            conn, executor=executor, limit=50, reserve_host_id=reserve_host_id
+        )
         conn.rollback()
     return [r[0] for r in rows]
+
+
+def _advertise(store: Store, host: str, slots: dict[str, int | None]) -> None:
+    """Seed ``resource_slots`` AND a fresh ``host_heartbeat`` row — the
+    placement gate (``_placement_ok``) reads both, mirroring
+    ``tests/test_reserve_at_claim.py``'s ``_advertise``."""
+    store.sync_host_resource_slots(host, slots)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts) VALUES (%s, now()) "
+            "ON CONFLICT (host) DO UPDATE SET ts = EXCLUDED.ts",
+            (host,),
+        )
+        conn.commit()
 
 
 def test_lower_prio_claimed_first(store: Store) -> None:
@@ -95,3 +149,114 @@ def test_null_prio_ranks_as_default_midpoint(store: Store) -> None:
     # slots into the middle band, on both sides: prio=3 beats NULL, and NULL
     # beats prio=8.
     assert _claim_order(store, ex) == [urgent, unset, commodity]
+
+
+# ── Release band (gr584136, S3 of td584381) ────────────────────────────
+
+#: The release pass's legs — the rank derives from ``job_type`` alone
+#: (their ``meta.origin`` stays ``background`` today).
+_RELEASE_LEG_TYPES = (
+    "ci_verdict_poll",
+    "release_cut",
+    "release_deploy",
+    "release_confirm",
+)
+
+
+def test_release_leg_claims_ahead_of_background_backlog(store: Store) -> None:
+    """gr584136 repro: a re-queued ``ci_verdict_poll`` (the wake_runner's
+    re-queue is a fresh ``STATUS:queued`` stamp — age 0) behind a 50-deep
+    ``derived_drain`` backlog claims FIRST — within one worker-slot
+    turnover — instead of at position 51."""
+    ex = "test_release_leg_first"
+    drains = [
+        _queue_job(
+            store,
+            executor=ex,
+            prio=5,
+            job_type="derived_drain",
+            origin="background",
+        )
+        for _ in range(50)
+    ]
+    poll = _queue_job(
+        store,
+        executor=ex,
+        prio=5,
+        job_type="ci_verdict_poll",
+        origin="background",
+    )
+    order = _claim_order(store, ex, reserve_host_id="h1")
+    assert order[0] == poll
+    # ``derived_drain``'s code-shipped running cap (default 2) lets only
+    # two drains claim per call — the backlog's internal order is
+    # unchanged (queued_since FIFO).
+    assert order[1:] == drains[:2]
+
+
+def test_release_leg_never_outranks_recurring(store: Store) -> None:
+    """The band is pinned at 2.5 — a release row never class-promotes, so
+    it stays behind a fresh recurring row even after waiting an hour."""
+    ex = "test_release_below_recurring"
+    poll = _queue_job(
+        store,
+        executor=ex,
+        prio=5,
+        job_type="ci_verdict_poll",
+        origin="background",
+        queued_s_ago=3600,
+    )
+    rec = _queue_job(store, executor=ex, prio=2, origin="recurring")
+    assert _claim_order(store, ex) == [rec, poll]
+
+
+def test_background_order_unchanged_without_release_leg(store: Store) -> None:
+    """With no release leg queued the band is inert: background rows keep
+    their existing queued_since order."""
+    ex = "test_no_release_bg_order"
+    a = _queue_job(store, executor=ex, prio=5, origin="background")
+    b = _queue_job(store, executor=ex, prio=5, origin="background")
+    assert _claim_order(store, ex) == [a, b]
+
+
+def test_all_release_legs_share_the_band(store: Store) -> None:
+    """release_cut/release_deploy/release_confirm get the same rank as
+    ci_verdict_poll: each loses to a fresh recurring row and beats an
+    older background row — identical position in the class order."""
+    # release_cut/deploy/confirm declare ``placement={repo_checkout, git}``
+    # (registry.py) — the claim host must advertise both or the gate drops
+    # the row; ci_verdict_poll (job_inproc, DB/HTTP-only) declares none.
+    _advertise(store, "h1", {"repo_checkout": 1, "git": 1})
+    for job_type in _RELEASE_LEG_TYPES:
+        ex = f"test_release_leg_{job_type}"
+        bg = _queue_job(
+            store,
+            executor=ex,
+            prio=8,
+            origin="background",
+            queued_s_ago=300,
+        )
+        leg = _queue_job(
+            store, executor=ex, prio=5, job_type=job_type, origin="background"
+        )
+        rec = _queue_job(store, executor=ex, prio=2, origin="recurring")
+        assert _claim_order(store, ex, reserve_host_id="h1") == [rec, leg, bg]
+
+
+def test_aged_background_cannot_leapfrog_release_leg(store: Store) -> None:
+    """The anti-leapfrog pin: without the freeze this 2h-old background
+    row promotes to rank 2 and claims first; while the release leg is
+    claimable no lower class promotes, so it stays last."""
+    ex = "test_release_freeze"
+    old_bg = _queue_job(
+        store, executor=ex, prio=8, origin="background", queued_s_ago=7200
+    )
+    poll = _queue_job(
+        store,
+        executor=ex,
+        prio=5,
+        job_type="ci_verdict_poll",
+        origin="background",
+    )
+    rec = _queue_job(store, executor=ex, prio=2, origin="recurring")
+    assert _claim_order(store, ex) == [rec, poll, old_bg]
