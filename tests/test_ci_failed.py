@@ -112,6 +112,106 @@ def test_signal_lines_per_failed_job(tmp_path: Path) -> None:
     assert TS not in cp.stdout
 
 
+FAILED_FIRST_LOG = f"""\
+failed-first\tRe-run failed ids\t{TS} failed-first: tests/test_a.py::test_one
+failed-first\tRe-run failed ids\t{TS} failed-first: tests/test_a.py::test_two
+failed-first\tRe-run failed ids\t{TS} E       assert 1 == 2
+failed-first\tRe-run failed ids\t{TS} FAILED tests/test_a.py::test_one - assert 1 == 2
+failed-first\tRe-run failed ids\t{TS} FAILED tests/test_a.py::test_two - assert x
+failed-first\tRe-run failed ids\t{TS} FAILED tests/test_a.py::test_two - assert x
+failed-first\tRe-run failed ids\t{TS} ================ 2 failed, 17 passed in 19.88s =================
+failed-first\tRe-run failed ids\t{TS} Error: Process completed with exit code 1.
+"""
+
+
+def test_failed_ids_rollup_names_the_failing_nodeids(tmp_path: Path) -> None:
+    """gr580432: a red failed-first named only its job — the reader had to
+    pull the job log for the ids. The roll-up carries them, deduped and
+    outside the -n cap."""
+    cp = _run(["223355"], _gh_stub(tmp_path, log=FAILED_FIRST_LOG))
+    assert cp.returncode == 0, cp.stderr
+    assert "== failed-first ==" in cp.stdout
+    assert "failed ids (2):" in cp.stdout
+    assert "    tests/test_a.py::test_one\n" in cp.stdout
+    assert "    tests/test_a.py::test_two\n" in cp.stdout
+    # the re-run input lines are not ids and carry no signal
+    assert "failed-first: tests/test_a.py" not in cp.stdout
+
+
+def test_red_failed_first_marks_the_matrix_skip_as_by_design(
+    tmp_path: Path,
+) -> None:
+    """gr580432: skipped test-linux shards read as a hole in the run; the
+    note names the skip as failed-first's designed consequence."""
+    env = _gh_stub(tmp_path, log=FAILED_FIRST_LOG)
+    env["GH_STUB_RUN"] = json.dumps(
+        {
+            "status": "completed",
+            "conclusion": "failure",
+            "jobs": [
+                {"name": "plan", "status": "completed", "conclusion": "success"},
+                {"name": "lint", "status": "completed", "conclusion": "success"},
+                {
+                    "name": "failed-first",
+                    "status": "completed",
+                    "conclusion": "failure",
+                },
+                {
+                    "name": "test-linux (3.13, 1)",
+                    "status": "completed",
+                    "conclusion": "skipped",
+                },
+                {
+                    "name": "test-linux (3.13, 2)",
+                    "status": "completed",
+                    "conclusion": "skipped",
+                },
+                # full-shape jobs skip on every gate run — not counted
+                {
+                    "name": "test-other (macos-latest, 3.13, 1)",
+                    "status": "completed",
+                    "conclusion": "skipped",
+                },
+                {
+                    "name": "coverage-db",
+                    "status": "completed",
+                    "conclusion": "skipped",
+                },
+            ],
+        }
+    )
+    cp = _run(["223355"], env)
+    assert cp.returncode == 0, cp.stderr
+    assert "2 test-linux shard job(s) skipped by design" in cp.stdout
+    assert "green failed-first" in cp.stdout
+    assert "test-other" not in cp.stdout.split("note:")[-1]
+
+
+def test_green_failed_first_prints_no_skip_note(tmp_path: Path) -> None:
+    env = _gh_stub(tmp_path)
+    env["GH_STUB_RUN"] = json.dumps(
+        {
+            "status": "completed",
+            "conclusion": "failure",
+            "jobs": [
+                {
+                    "name": "failed-first",
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+                {
+                    "name": "test-linux (3.13, 1)",
+                    "status": "completed",
+                    "conclusion": "failure",
+                },
+            ],
+        }
+    )
+    cp = _run(["223355"], env)
+    assert cp.returncode == 0, cp.stderr
+    assert "skipped by design" not in cp.stdout
+
+
 def test_silent_job_falls_back_to_its_tail(tmp_path: Path) -> None:
     cp = _run(["223355"], _gh_stub(tmp_path))
     assert cp.returncode == 0, cp.stderr

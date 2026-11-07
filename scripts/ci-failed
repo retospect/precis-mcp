@@ -5,13 +5,18 @@
 megabytes when a shard dies mid-suite, and the pointer the ship/release/
 round/main-ci-status scripts print on red sent the reader to grep. This
 filters that stream to the part a human or agent reads first: per failed
-job, the pytest short-test-summary lines (FAILED/ERROR/E …) plus generic
-signal lines (errors, ✖ markers, timeouts, the runner's own
+job, a ``failed ids:`` roll-up of the node ids its pytest FAILED/ERROR
+summary lines name (immune to the -n cap), then the short-test-summary and
+generic signal lines (errors, ✖ markers, timeouts, the runner's own
 "Process completed with exit code" verdict), deduplicated. A failed job
 with no signal lines — a lint gate, an infra kill — gets its tail
 instead, which is where the reason lives.
 Workflow metadata also names queued/in-progress jobs stranded by a completed
-run, which have no failed-job logs and need a full rerun.
+run, which have no failed-job logs and need a full rerun, and names the
+one skip that is a verdict and not a hole: a red ``failed-first`` leaves
+the test-linux matrix ``skipped`` by design (release train §3 — the
+matrix needs it green), so the run's verdict is the re-run's failed ids
+alone — the read the r236 gate got wrong (gr580432).
 
     scripts/ci-failed <run-id>            digest of the run's failed jobs
     scripts/ci-failed <run-id> -n N       cap per-job output at N lines
@@ -76,6 +81,50 @@ _PERMISSION_HEADER = "x-accepted-github-permissions"
 #: A header value outside this prints as ``unprintable`` — the probe
 #: never echoes bytes it was not built to read.
 _PRINTABLE = re.compile(r"^[A-Za-z0-9_=, -]{0,200}$")
+
+#: A pytest short-test-summary line: ``FAILED <nodeid> - <reason>`` (the
+#: `` - `` separator is absent on ``ERROR at setup of <nodeid>``-style
+#: lines, whose tail is the whole id).
+_SUMMARY_ID = re.compile(r"^(?:FAILED|ERROR)\s+(.+?)(?:\s+-\s+.*)?$")
+#: The ``failed ids:`` roll-up's own cap — independent of -n, so the
+#: verdict survives a tight per-job signal budget.
+_ID_CAP = 20
+
+
+def _failed_ids(entries: list[str]) -> list[str]:
+    """Node ids from a job's FAILED/ERROR summary lines, deduped in log
+    order — the names a red gate's reader wants first."""
+    ids: list[str] = []
+    for line in entries:
+        m = _SUMMARY_ID.match(line)
+        if m and m.group(1) not in ids:
+            ids.append(m.group(1))
+    return ids
+
+
+def _matrix_skip_note(run: dict[str, Any]) -> list[str]:
+    """A red ``failed-first`` skips the shard matrix BY DESIGN (test-linux
+    needs it, check.yml) — name that, or 'skipped' shards read as a hole
+    in the run (gr580432)."""
+    jobs = run.get("jobs", [])
+    if not any(
+        j.get("name") == "failed-first" and j.get("conclusion") == "failure"
+        for j in jobs
+    ):
+        return []
+    skipped = sum(
+        1
+        for j in jobs
+        if str(j.get("name") or "").startswith("test-linux")
+        and j.get("conclusion") == "skipped"
+    )
+    if not skipped:
+        return []
+    return [
+        f"note: {skipped} test-linux shard job(s) skipped by design — the "
+        "matrix runs only after a green failed-first, so the failed ids "
+        "below ARE the run's verdict"
+    ]
 
 
 def probe(run_id: str) -> int:
@@ -185,12 +234,19 @@ def _select(entries: list[str], *, lines: int, tail: int) -> list[str]:
 def digest_jobs(
     jobs: OrderedDict[str, list[str]], *, lines: int = 40, tail: int = 15
 ) -> str:
-    """Per failed job: deduped signal lines, or the tail when none."""
+    """Per failed job: a ``failed ids:`` roll-up when its log names any,
+    then deduped signal lines, or the tail when none."""
     if not jobs:
         return "ci-failed: no failed-job log lines"
     out: list[str] = []
     for job, entries in jobs.items():
         out.append(f"== {job or '(log)'} ==")
+        ids = _failed_ids(entries)
+        if ids:
+            out.append(f"  failed ids ({len(ids)}):")
+            out.extend(f"    {i}" for i in ids[:_ID_CAP])
+            if len(ids) > _ID_CAP:
+                out.append(f"    … +{len(ids) - _ID_CAP} more in the full log")
         out.extend(_select(entries, lines=lines, tail=tail))
     return "\n".join(out)
 
@@ -296,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(parsed, dict):
             raise ValueError("expected a workflow-run object")
         run = parsed
-        for line in _CI["run_diagnostics"](run, a.run_id):
+        for line in _CI["run_diagnostics"](run, a.run_id) + _matrix_skip_note(run):
             print(line)
     except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
         print(
