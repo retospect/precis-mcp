@@ -17,7 +17,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.handlers.job import JobHandler
 from precis.store import Store
-from precis.store.types import Tag
+from precis.store.types import Ref, Tag
 
 
 def _job(
@@ -188,12 +188,13 @@ def test_claimed_between_reads_reports_fresh_status(store: Store) -> None:
 
 
 def test_queue_lines_report_fresh_status_over_stale_card(store: Store) -> None:
-    """The queue scan's own STATUS probe — same snapshot as the position
-    math — names the fresh truth when the card's read was stale."""
+    """The queue scan's own STATUS column — same statement as the
+    position math — names the fresh truth when the card's read was
+    stale."""
     handler = JobHandler(hub=Hub(store=store, embedder=None))
     job = _job(store, "running")
     ref = handler._resolve_live_ref(job)
-    lines = handler._queue_lines(ref)
+    lines, _, _ = handler._queue_lines(ref)
     assert any("STATUS:running" in line for line in lines)
     assert not any("position" in line for line in lines)
     assert any("running now on 'job_inproc': 1" in line for line in lines)
@@ -201,14 +202,59 @@ def test_queue_lines_report_fresh_status_over_stale_card(store: Store) -> None:
 
 def test_queue_lines_suppress_advice_on_terminal_row(store: Store) -> None:
     """A terminal row must never get 'position N' / 'nothing running …
-    if this stays queued' — the probe suppresses both."""
+    if this stays queued' — the scan's own status column suppresses
+    both."""
     handler = JobHandler(hub=Hub(store=store, embedder=None))
     job = _job(store, "succeeded")
     ref = handler._resolve_live_ref(job)
-    lines = handler._queue_lines(ref)
+    lines, scan_ref, scan_status = handler._queue_lines(ref)
     assert any("STATUS:succeeded" in line for line in lines)
     assert not any("position" in line for line in lines)
     assert not any("if this stays queued" in line for line in lines)
+    assert scan_ref is not None and scan_status == "succeeded"
+
+
+def test_completion_between_reconcile_and_scan_renders_terminal(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The td595284 residual window: the reconcile read says ``queued``,
+    the terminal flip lands before the queue scan — the card must render
+    the scan's snapshot (``status: succeeded``), never a ``queued``
+    label over a ``STATUS:succeeded`` queue line."""
+    handler = JobHandler(hub=Hub(store=store, embedder=None))
+    job = _job(store, "queued")
+    ref = handler._resolve_live_ref(job)
+    tags = store.tags_for(job)
+    real = handler._reconcile_status_read
+
+    def _complete_after_reconcile(
+        r: Ref, status: str | None
+    ) -> tuple[Ref, str | None, str | None]:
+        out = real(r, status)
+        # The terminal flip lands here — between the status read and
+        # the queue scan — stamping finished_at like the real flip.
+        store.add_tag(
+            job,
+            Tag.closed("STATUS", "succeeded"),
+            set_by="agent",
+            replace_prefix=True,
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+                (json.dumps({"finished_at": datetime.now(UTC).isoformat()}), job),
+            )
+            conn.commit()
+        return out
+
+    monkeypatch.setattr(handler, "_reconcile_status_read", _complete_after_reconcile)
+    body = handler._render_one(ref, tags)
+    assert "\nstatus: succeeded" in f"\n{body}"
+    assert "\nstatus: queued\n" not in f"\n{body}\n"
+    assert "finished_at:" in body
+    assert "stale-read" in body
+    assert "STATUS:succeeded" in body
+    assert "queue: position" not in body
 
 
 # ── Release band in the readout (gr584136, review td584420) ────────────

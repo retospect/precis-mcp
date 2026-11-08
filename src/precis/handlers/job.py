@@ -22,6 +22,7 @@ import math
 import os
 import re
 import subprocess
+from dataclasses import replace as _dc_replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
@@ -40,7 +41,11 @@ from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
-from precis.store._mappers import _REFS_COLS_ALIASED, _row_to_ref
+from precis.store._mappers import (
+    _REFS_COLS_ALIASED,
+    _REFS_COLS_LEN,
+    _row_to_ref,
+)
 from precis.store._refs_ops import FacetSpan, filtered_ref_clauses
 from precis.store._salience import current_background_actor
 from precis.store.types import Ref
@@ -4192,8 +4197,26 @@ class JobHandler(NumericRefHandler):
 
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         lines = [f"# job {ref.id}"]
-        status = _status_of(tags)
-        ref, status, stale_note = self._reconcile_status_read(ref, status)
+        tag_status = _status_of(tags)
+        ref, status, stale_note = self._reconcile_status_read(ref, tag_status)
+        queue_lines: list[str] = []
+        if status in CLAIMABLE:
+            queue_lines, scan_ref, scan_status = self._queue_lines(ref)
+            if scan_ref is not None:
+                # The scan's snapshot is the card's freshest consistent
+                # (meta, status) read — the status line and the queue
+                # text derive from it together, so a terminal flip
+                # landing between the reconcile read and the scan
+                # renders ``status: succeeded``, never ``queued`` over
+                # a ``STATUS:succeeded`` queue line (td595284 review).
+                if scan_status != status:
+                    stale_note = (
+                        f"stale-read: the card's earlier reads said "
+                        f"{tag_status!r}; the queue scan's snapshot sees "
+                        f"{scan_status or '(unset)'} — rendered from the "
+                        "scan's row"
+                    )
+                ref, status = scan_ref, scan_status
         meta = ref.meta or {}
         blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         # The plain-language row sentence leads the card (td573331): the
@@ -4252,8 +4275,7 @@ class JobHandler(NumericRefHandler):
                 elapsed = _running_elapsed_s(meta)
                 if elapsed is not None:
                     lines.append(f"elapsed: {elapsed:.0f} s")
-        if status in ("queued", "yielded"):
-            lines.extend(self._queue_lines(ref))
+        lines.extend(queue_lines)
         slices = meta.get("relax_slices")
         if isinstance(slices, list) and slices:
             last = slices[-1]
@@ -4299,9 +4321,13 @@ class JobHandler(NumericRefHandler):
                     lines.append(text)
         return "\n".join(lines)
 
-    def _fresh_status_probe(self, ref_id: int) -> tuple[str | None, datetime | None]:
-        """The ref's ``STATUS:`` value and that tag row's stamp, read on a
-        fresh snapshot — the gr592853 stale-read guard's probe.
+    def _live_job_snapshot(
+        self, ref_id: int
+    ) -> tuple[Ref | None, str | None, datetime | None]:
+        """The ref row, its latest ``STATUS`` value and that tag's stamp,
+        from ONE statement — one consistent (meta, status) snapshot
+        (gr592853; td595284 review: a tag probe and a separate ref
+        re-read straddle the terminal flip, so they must be one read).
 
         The stamp separates an honest re-queue after a terminal run (the
         new ``STATUS`` row post-dates ``meta.finished_at``) from a stale
@@ -4311,42 +4337,54 @@ class JobHandler(NumericRefHandler):
         """
         with self.store.pool.connection() as conn:
             row = conn.execute(
-                "SELECT t.value, rt.created_at "
-                "FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
-                "WHERE rt.ref_id = %s AND t.namespace = %s "
-                "ORDER BY rt.created_at DESC LIMIT 1",
-                (ref_id, STATUS_NAMESPACE),
+                f"SELECT {_REFS_COLS_ALIASED}, st.value, st.stamped_at "
+                "FROM refs r LEFT JOIN LATERAL ("
+                "  SELECT t.value, rt.created_at AS stamped_at "
+                "    FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+                "   WHERE rt.ref_id = r.ref_id AND t.namespace = %s "
+                "   ORDER BY rt.created_at DESC LIMIT 1"
+                ") st ON true "
+                "WHERE r.ref_id = %s AND r.retired_at IS NULL",
+                (STATUS_NAMESPACE, ref_id),
             ).fetchone()
         if row is None:
-            return None, None
-        return (str(row[0]) if row[0] is not None else None), as_utc(row[1])
+            return None, None, None
+        return (
+            _row_to_ref(row[:_REFS_COLS_LEN]),
+            str(row[-2]) if row[-2] is not None else None,
+            as_utc(row[-1]),
+        )
 
     def _reconcile_status_read(
         self, ref: Ref, status: str | None
     ) -> tuple[Ref, str | None, str | None]:
-        """Re-check a live ``status`` against one fresh probe (gr592853).
+        """Re-check a live ``status`` against one fresh snapshot (gr592853).
 
         The card's ref/tags reads run on separate checkouts from each
         other and from ``_queue_lines``' scan; a stale snapshot rendered
         a finished ``draft_export`` as ``queued`` for minutes after the
         terminal flip committed. The fresh read wins: a terminal truth
         must never render as queued. ``(ref, status, stale_note)`` —
-        ``ref`` is re-resolved on a correction so the meta the card
-        prints matches the status it claims; ``stale_note`` is the
-        ``stale-read:`` line to show, ``None`` when nothing diverged.
+        ``ref`` is the snapshot row, so the meta the card prints matches
+        the status it claims; ``stale_note`` is the ``stale-read:`` line
+        to show, ``None`` when nothing diverged.
         """
         if status in _TERMINAL_STATUSES:
             return ref, status, None
-        meta = ref.meta or {}
+        fresh, live_status, stamped = self._live_job_snapshot(ref.id)
+        if fresh is None:
+            # The row was retired between the card's resolve and this
+            # probe — render what the resolve read.
+            fresh = ref
+        meta = fresh.meta or {}
         finished = as_utc(meta.get("finished_at")) if meta.get("finished_at") else None
-        live_status, stamped = self._fresh_status_probe(ref.id)
         if live_status == status:
             # Same value on a fresh read — current, unless the probed
             # tag predates the row's own completion stamp: then the read
             # saw a tag the terminal flip already deleted (stale probe).
             if finished is not None and stamped is not None and stamped <= finished:
                 return (
-                    ref,
+                    fresh,
                     "terminal",
                     (
                         f"stale-read: STATUS:{status!r} predates the row's "
@@ -4355,9 +4393,8 @@ class JobHandler(NumericRefHandler):
                         "stale; the job is terminal"
                     ),
                 )
-            return ref, status, None
+            return fresh, status, None
         if live_status is not None:
-            fresh = self._resolve_live_ref(ref.id)
             return (
                 fresh,
                 live_status,
@@ -4367,7 +4404,7 @@ class JobHandler(NumericRefHandler):
                 ),
             )
         return (
-            ref,
+            fresh,
             status,
             (
                 "stale-read: a fresh read finds no STATUS tag on this row — "
@@ -4375,7 +4412,7 @@ class JobHandler(NumericRefHandler):
             ),
         )
 
-    def _queue_lines(self, ref: Ref) -> list[str]:
+    def _queue_lines(self, ref: Ref) -> tuple[list[str], Ref | None, str | None]:
         """``queue:`` lines for a ``STATUS:queued`` job: where it stands in
         its executor's claim order and what it waits behind (gr495292: a
         queued ``pcb_route`` showed neither). Read-only, advisory — the
@@ -4388,11 +4425,20 @@ class JobHandler(NumericRefHandler):
         the claim gates visible from the row itself: operator suspension, a
         ``target_node`` pin, a live lease, and work already running on the
         same executor.
+
+        Returns ``(lines, scan_ref, scan_status)``: the scan statement
+        also returns this row's ``meta``, ``updated_at`` and live
+        ``STATUS`` value — the same snapshot as the position math — and
+        the card renders its ``status:``/meta lines from them, so the
+        header can never contradict the queue text when the job moved
+        between the reconcile read and the scan (td595284 review).
+        ``scan_ref`` is ``None`` only when the scan did not run (no
+        executor on the row).
         """
         meta = ref.meta or {}
         executor = meta.get("executor")
         if not executor:
-            return []
+            return [], None, None
         rank_sql, asql, aparams = _claim_order_sql(
             claim_age_step_s(),
             claim_class_age_s(),
@@ -4457,7 +4503,14 @@ class JobHandler(NumericRefHandler):
                              WHERE (crank, aged, qs, ref_id) <
                                  (SELECT crank, aged, qs, ref_id
                                     FROM q WHERE ref_id = %s)
-                             GROUP BY bclass) s)
+                             GROUP BY bclass) s),
+                       (SELECT r2.meta FROM refs r2 WHERE r2.ref_id = %s),
+                       (SELECT r2.updated_at FROM refs r2
+                         WHERE r2.ref_id = %s),
+                       (SELECT t2.value FROM ref_tags rt2
+                          JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                         WHERE rt2.ref_id = %s AND t2.namespace = %s
+                         ORDER BY rt2.created_at DESC LIMIT 1)
                   FROM q
                 """,
                 (
@@ -4480,6 +4533,10 @@ class JobHandler(NumericRefHandler):
                     ref.id,
                     ref.id,
                     ref.id,
+                    ref.id,
+                    ref.id,
+                    ref.id,
+                    STATUS_NAMESPACE,
                 ),
             ).fetchone()
             running = conn.execute(
@@ -4495,26 +4552,37 @@ class JobHandler(NumericRefHandler):
                 """,
                 (executor, STATUS_NAMESPACE, RUNNING),
             ).fetchall()
-            live = conn.execute(
-                "SELECT t.value "
-                "FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
-                "WHERE rt.ref_id = %s AND t.namespace = %s "
-                "LIMIT 1",
-                (ref.id, STATUS_NAMESPACE),
-            ).fetchone()
+        (
+            total,
+            ahead,
+            queued_since,
+            bclass,
+            crank,
+            ahead_by_class,
+            live_meta,
+            live_updated,
+            live_value,
+        ) = row if row else (0, 0, None, None, None, None, None, None, None)
+        live_status = str(live_value) if live_value is not None else None
+        scan_ref = _dc_replace(
+            ref, meta=live_meta or {}, updated_at=live_updated or ref.updated_at
+        )
+        if live_meta is not None:
+            meta = live_meta
         lines: list[str] = []
-        live_status = str(live[0]) if live and live[0] is not None else None
         if live_status not in CLAIMABLE:
             # gr592853 (a): the card's tag read called this row claimable,
-            # but the fresh snapshot this scan just took disagrees — the
-            # job was claimed or finished between the card's reads, or
-            # that read was stale. Never render queue advice the row's
-            # own current status contradicts ("position N" / "nothing
-            # running … if this stays queued" would both lie).
+            # but this row's live STATUS — read in the same statement as
+            # the position math — disagrees: the job was claimed or
+            # finished between the card's reads, or that read was stale.
+            # Never render queue advice the row's own current status
+            # contradicts ("position N" / "nothing running … if this
+            # stays queued" would both lie); the caller renders the
+            # card's ``status:`` line from this same read (td595284).
             lines.append(
-                f"queue: fresh read sees STATUS:{live_status or '(unset)'} "
-                "on this row — it is not claimable; the queued status "
-                "above came from an older snapshot (re-get for the live "
+                f"queue: this read sees STATUS:{live_status or '(unset)'} "
+                "on this row — it is not claimable; the card renders the "
+                "status line from this same read (re-get for the live "
                 "card)"
             )
             if running:
@@ -4523,7 +4591,7 @@ class JobHandler(NumericRefHandler):
                     f"queue: running now on {executor!r}: "
                     f"{sum(n for _, n in running)} ({mix})"
                 )
-            return lines
+            return lines, scan_ref, live_status
         job_type = meta.get("job_type")
         if job_type in suspended_job_types():
             lines.append(
@@ -4531,9 +4599,6 @@ class JobHandler(NumericRefHandler):
                 "PRECIS_SUSPENDED_JOB_TYPES (operator hold; workers read their "
                 "own copy); a suspended type is not claimed until the hold clears"
             )
-        total, ahead, queued_since, bclass, crank, ahead_by_class = (
-            row if row else (0, 0, None, None, None, None)
-        )
         since = as_utc(queued_since)
         if total and since is not None:
             waited = int((datetime.now(UTC) - since).total_seconds())
@@ -4586,7 +4651,7 @@ class JobHandler(NumericRefHandler):
             until = as_utc(datetime.fromisoformat(str(lease)))
             if until is not None and until > datetime.now(UTC):
                 lines.append(f"queue: lease held until {lease}; not claimable before")
-        return lines
+        return lines, scan_ref, live_status
 
     # ── view='count' trailer: top error heads per failing job_type ──
 
@@ -4983,8 +5048,6 @@ class JobHandler(NumericRefHandler):
                 since=since,
                 until=until,
             )
-            from dataclasses import replace as _dc_replace
-
             scope = (
                 f"jobs under {root_label} "
                 f"({len(members)} member refs, depth≤{n_depth})"
