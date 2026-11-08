@@ -45,8 +45,13 @@ when the newest green run's head contains the sha (the compare API).
 :data:`SEEN_CAP` — is the idempotency ledger: a processed run is never
 re-judged, so a re-tick converges, and a judged run's ledger verdict is
 what the green streak and newest-green read (a run already judged
-still counts). A probed ``release/**`` candidate with no ``soak*`` job
-is recorded ``verdict "no-soak"`` so it is not probed again. GitHub
+still counts). A probed ``release/**`` candidate with no soak artifact
+at all is recorded ``verdict "no-soak"`` so it is not probed again; a
+candidate whose soak matrix skipped wholesale — the jobs API reports
+ONE job named by the literal ``name:`` expression, never ``soak
+(PY, K)`` legs (gr586293) — is still a soak run and records ``verdict
+"skipped"``: the legs exist but did not run, which is neither a gripe
+nor a green the flake streak could count. GitHub
 reads are bounded by :data:`_API_BUDGET` calls per tick; candidates
 already in ``seen`` cost nothing, and soak-candidate probes are capped
 at :data:`SOAK_PROBE_CAP` so the red-run job/log reads keep the rest.
@@ -123,7 +128,7 @@ BAD_JOB_CONCLUSIONS = frozenset({"failure", "cancelled", "timed_out"})
 _API_BUDGET = 15
 #: Jobs-endpoint probes the soak scan may spend per tick — the red-run
 #: job/log reads keep the rest of :data:`_API_BUDGET`. A probed run with
-#: no ``soak*`` job is ledgerecorded (``verdict "no-soak"``) so it is not
+#: no soak artifact is ledgerecorded (``verdict "no-soak"``) so it is not
 #: probed again next tick.
 SOAK_PROBE_CAP = 5
 #: The idempotency ledger setting (``{run_id: {at, verdict, wf}}``).
@@ -387,19 +392,38 @@ def _nightly_runs(
     return out[:lookback]
 
 
+def _soak_placeholder(name: str) -> bool:
+    """True for the unexpanded soak matrix's one placeholder job
+    (gr586293): a matrix job skipped before expansion is never
+    expanded — the jobs API reports it named by the literal ``name:``
+    expression, and check.yml's test-linux job's holds the ``|| 'soak'``
+    alternative. A ``${{``-led name mentioning the soak IS the soak
+    legs, skipped wholesale."""
+    return name.startswith("${{") and "soak" in name
+
+
+def _soak_job_name(name: str) -> bool:
+    """A soak leg by name: an expanded ``soak (PY, K)`` leg, or the
+    placeholder :func:`_soak_placeholder` names (the sibling readers —
+    ``scripts/lib/soak_verdict.py``, ``last_gated_main_sha.py`` — are
+    coordinator-owned; this is the builder-lane half of gr586293)."""
+    return name.startswith(SOAK_JOB_NAME) or _soak_placeholder(name)
+
+
 def _soak_runs(
     repo: str, seen: dict[str, dict[str, Any]], budget: dict[str, int]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """``(fresh, scope, probed_empty)`` out of the newest
     :data:`SOAK_SCAN` completed runs: ``fresh`` are the newest
-    :data:`SOAK_LIMIT` unseen ``release/**`` runs carrying a ``soak*``
-    job (what this tick judges); ``scope`` is every candidate a soak
+    :data:`SOAK_LIMIT` unseen ``release/**`` runs carrying a soak leg —
+    a ``soak*`` job or the skipped matrix's placeholder (what this tick
+    judges); ``scope`` is every candidate a soak
     verdict is known for — fresh plus runs already judged in ``seen`` —
     what the green streak and newest-green read (a judged run must
     still count); ``probed_empty`` are candidates probed this tick that
-    carry no ``soak*`` job, for the caller to ledgerecord so they are
-    not probed again. Probes spend at most :data:`SOAK_PROBE_CAP` calls
-    — the red-run reads keep the rest of the budget."""
+    carry no soak artifact at all, for the caller to ledgerecord so they
+    are not probed again. Probes spend at most :data:`SOAK_PROBE_CAP`
+    calls — the red-run reads keep the rest of the budget."""
     if not _take(budget):
         return [], [], []
     data = _gh_json(
@@ -428,7 +452,7 @@ def _soak_runs(
         if jobs is None:
             continue  # budget out — probes are done, unseen stays unseen
         probes += 1
-        if any(str(j.get("name") or "").startswith(SOAK_JOB_NAME) for j in jobs):
+        if any(_soak_job_name(str(j.get("name") or "")) for j in jobs):
             fresh.append(r)
             scope.append(r)
         else:
@@ -571,22 +595,33 @@ def _run_signatures(
 
 
 def _soak_verdict(jobs: list[dict[str, Any]]) -> str:
-    """A release run's ci_watch verdict — red iff a ``soak*`` job went
-    down; the rest of the run belongs to the release loop."""
-    return (
-        "red"
-        if any(
-            str(j.get("name") or "").startswith(SOAK_JOB_NAME)
-            and j.get("conclusion") in BAD_JOB_CONCLUSIONS
-            for j in jobs
+    """A release run's ci_watch verdict — ``red`` iff a ``soak*`` leg went
+    down; ``skipped`` when the soak never ran (gr586293: every leg
+    skipped, or the only soak artifact is the unexpanded matrix's
+    placeholder — a skipped soak is not a gripe and not a green the
+    flake streak could count); else ``green``. The rest of the run
+    belongs to the release loop."""
+    legs = [j for j in jobs if str(j.get("name") or "").startswith(SOAK_JOB_NAME)]
+    if any(j.get("conclusion") in BAD_JOB_CONCLUSIONS for j in legs):
+        return "red"
+    if legs:
+        return (
+            "skipped"
+            if all(j.get("conclusion") == "skipped" for j in legs)
+            else "green"
         )
+    return (
+        "skipped"
+        if any(_soak_placeholder(str(j.get("name") or "")) for j in jobs)
         else "green"
     )
 
 
 def _verdict_of(wf: str, run: dict[str, Any], seen: dict[str, dict[str, Any]]) -> str:
     """The run's ci_watch verdict — the ledger's when it was judged on
-    an earlier tick, else computed (soak: ``soak*`` jobs only)."""
+    an earlier tick, else computed (soak: ``soak*`` legs plus the
+    skipped matrix's placeholder; a fully skipped soak reads
+    ``skipped``, not green)."""
     known = seen.get(str(run.get("id") or ""))
     if isinstance(known, dict):
         return str(known.get("verdict") or "")
@@ -1054,8 +1089,9 @@ def run_pass(
     try:
         nightly = _nightly_runs(res.repo, lookback_runs, budget)
         soak_fresh, soak_scope, probed_empty = _soak_runs(res.repo, seen, budget)
-        # A probed candidate with no soak* job is not a soak run — record
-        # the probe (verdict "no-soak") so it is never probed again.
+        # A probed candidate with no soak artifact at all is not a soak
+        # run — record the probe (verdict "no-soak") so it is never
+        # probed again.
         for r in probed_empty:
             rid = str(r.get("id") or "")
             if rid and rid not in seen:

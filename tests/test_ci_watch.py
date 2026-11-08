@@ -866,6 +866,122 @@ def test_non_soak_failure_on_release_files_nothing(
     assert _seen(store)["401"]["verdict"] == "green"
 
 
+# The one job a skipped-before-expansion soak matrix reports (gr586293,
+# run 42425741923): the literal ``name:`` expression, unexpanded — there
+# are no ``soak (3.13, K)`` legs for a name-matching reader to find.
+_SKIPPED_MATRIX_NAME = (
+    "${{ (((needs.plan.outputs.full == 'true') && 'test-linux') || 'soak') }} "
+    "(${{ matrix.python-version }}, ${{ matrix.shard }})"
+)
+
+
+def test_a_skipped_soak_matrix_records_skipped_not_absent(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr586293: the skipped soak matrix is ONE placeholder job named by
+    the unrendered template, beside a skipped ``verdict-soak``. The run
+    still carries the soak — it is ledgered ``skipped`` (the legs exist
+    but did not run), not ``no-soak`` and never ``green``."""
+    _stub_gh(
+        monkeypatch,
+        {
+            "repos/o/r/actions/workflows/check.yml/runs?event=schedule&per_page=3": {
+                "workflow_runs": []
+            },
+            "repos/o/r/actions/workflows/check.yml/runs?per_page=20": {
+                "workflow_runs": [_release_run(401)]
+            },
+            "repos/o/r/actions/runs/401/jobs": {
+                "jobs": [
+                    {
+                        "id": 9101,
+                        "name": _SKIPPED_MATRIX_NAME,
+                        "status": "completed",
+                        "conclusion": "skipped",
+                    },
+                    {
+                        "id": 9102,
+                        "name": "verdict-soak",
+                        "status": "completed",
+                        "conclusion": "skipped",
+                    },
+                    {
+                        "id": 9103,
+                        "name": "gate-fast (3.13, 1)",
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                ]
+            },
+        },
+    )
+    res = ci_watch.run_pass(store, repo=REPO)
+    assert _gripes(store) == {}
+    assert res.processed == 1
+    seen = _seen(store)["401"]
+    assert seen["verdict"] == "skipped"
+    assert seen["wf"] == "soak"
+
+
+def test_a_skipped_soak_does_not_count_toward_the_flake_streak(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A skipped soak is not a green soak: a ``skipped`` verdict between
+    two green soak runs breaks the flake-close streak rather than
+    padding it — the run stays in soak scope (its matrix exists) but
+    delivers no verdict."""
+    gid = _seed_gripe(store, SOAK_SIG, tags=("origin:ci-watch", "ci:soak", "fix:code"))
+    _stub_gh(
+        monkeypatch,
+        {
+            "repos/o/r/actions/workflows/check.yml/runs?event=schedule&per_page=3": {
+                "workflow_runs": []
+            },
+            "repos/o/r/actions/workflows/check.yml/runs?per_page=20": {
+                "workflow_runs": [
+                    _release_run(403),
+                    _release_run(402),
+                    _release_run(401),
+                ]
+            },
+            "repos/o/r/actions/runs/401/jobs": {
+                "jobs": [
+                    {
+                        "id": 9101,
+                        "name": "soak (3.13, 1)",
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
+                ]
+            },
+            "repos/o/r/actions/runs/402/jobs": {
+                "jobs": [
+                    {
+                        "id": 9102,
+                        "name": _SKIPPED_MATRIX_NAME,
+                        "status": "completed",
+                        "conclusion": "skipped",
+                    }
+                ]
+            },
+            "repos/o/r/actions/runs/403/jobs": {
+                "jobs": [
+                    {
+                        "id": 9103,
+                        "name": "soak (3.13, 1)",
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
+                ]
+            },
+        },
+    )
+    ci_watch.run_pass(store, repo=REPO)
+    assert _seen(store)["402"]["verdict"] == "skipped"
+    assert _status(store, gid) == "open"
+    assert _comments(store, gid) == []
+
+
 def test_sanitize_log_strips_tabs_and_masks_hosts() -> None:
     """Body hygiene: tabs become spaces, clock times survive, and real
     addresses, home paths and dotted hostnames never reach a body."""

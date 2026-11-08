@@ -347,7 +347,8 @@ REGISTRY: dict[str, SettingSpec] = {
             env_var=None,
             default=None,
             doc="ci_watch's processed-run ledger as JSON "
-            "{run_id: {at, verdict (green|red), wf (nightly|soak)}}, "
+            "{run_id: {at, verdict (green|red|skipped|no-soak), "
+            "wf (nightly|soak|scan)}}, "
             "capped at 50 — a run in it is never re-judged, so a "
             "re-tick converges (precis.workers.job_types.ci_watch). "
             "DB-only — no env fallback.",
