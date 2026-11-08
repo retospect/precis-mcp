@@ -22,7 +22,7 @@ from precis.budget.work_class import resolve as resolve_work_class
 # ``router`` stays a module reference (call-time ``resolve_model`` lookup):
 # ``decide`` is first imported inside a ``route()`` call, so a from-import
 # bound while a test monkeypatches the name would keep the fake (policy.py).
-from precis.utils.llm import accounts, admit, policy, recipes, router
+from precis.utils.llm import accounts, admit, local_serving, policy, recipes, router
 from precis.utils.llm.accounts import Pacing
 from precis.utils.llm.policy import Requirement
 from precis.utils.llm.router import LlmRequest, Rung, Tier, Transport
@@ -92,17 +92,24 @@ class Ledger:
     #: Refreshed with the 15-second ledger entry, never per call.
     health: Mapping[tuple[str, str], tuple[int, int]] = field(default_factory=dict)
     #: ``model -> (capacity, free)`` summed over the ``resource_slots``
-    #: ``llm:<model>`` rows — the local pool's live concurrency ceiling
-    #: and headroom the rank demotion reads (gr576274). Refreshed with
-    #: the 15-second ledger entry, never per call.
+    #: ``llm:<model>`` rows this host's dispatch can acquire — its own
+    #: row plus LAN-routable ``served_by`` candidates, so a remote
+    #: loopback-only pool's spare capacity can't mask saturation of the
+    #: reachable pool (td598045). Refreshed with the 15-second ledger
+    #: entry, never per call.
     slots: Mapping[str, tuple[int, int]] = field(default_factory=dict)
-    #: ``task_kind -> offered concurrency`` in slot-equivalents over
-    #: :data:`RATE_WINDOW_MIN` minutes of ``llm_call_log`` — arrivals ×
-    #: mean served duration / window (Little's law). A kind whose demand
-    #: meets a local offering's ceiling can't be absorbed there, so the
-    #: offering sorts after the next rung *before* the call, not after a
-    #: refusal (gr576274).
-    rates: Mapping[str, float] = field(default_factory=dict)
+    #: ``(task_kind, served-model | None) -> offered concurrency`` in
+    #: slot-equivalents over :data:`RATE_WINDOW_MIN` minutes of
+    #: ``llm_call_log`` — arrivals × mean served duration / window
+    #: (Little's law). A ``model`` key reads the kind's own durations on
+    #: that local pool's lane; the ``None`` key is the kind-level
+    #: estimate (its local-lane mean, else every ungated row's mean), so
+    #: fast cloud calls can't understate the demand a slower local
+    #: offering would absorb (td598045). A kind whose demand meets a
+    #: local offering's ceiling can't be absorbed there, so the offering
+    #: sorts after the next rung *before* the call, not after a refusal
+    #: (gr576274).
+    rates: Mapping[tuple[str, str | None], float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -151,13 +158,16 @@ def _unhealthy_calls(o: Offering, ledger: Ledger) -> int:
 
 def _local_overload(o: Offering, ledger: Ledger, kind: str | None) -> str | None:
     """The demotion reason for a saturated local rung, ``None`` when it
-    ranks normally (gr576274). Two signals, both read off the pool's own
-    ``resource_slots`` rows: the live ``free`` count is spent — the pool
-    is saturated *now* — or the deciding kind's offered load meets or
-    exceeds the pool's ceiling, so its calls would queue past the slot
-    wait and the next rung should win *before* the call, not after a
-    refusal. A local operating point with no ``llm:<model>`` pool row
-    has no ceiling to read and keeps its rank."""
+    ranks normally (gr576274). Two signals, both scoped to what this
+    host can reach (td598045): the acquirable pool's live ``free``
+    count is spent — the pool is saturated *now* — or the deciding
+    kind's offered load meets or exceeds the pool's ceiling, so its
+    calls would queue past the slot wait and the next rung should win
+    *before* the call, not after a refusal. The load's holding time
+    reads the kind's durations on this pool's own lane, falling back to
+    the kind-level estimate when the pool has no observed rows. A local
+    operating point with no ``llm:<model>`` pool row has no ceiling to
+    read and keeps its rank."""
     if o.billing != "local":
         return None
     capacity, free = ledger.slots.get(o.model, (0, 0))
@@ -165,7 +175,8 @@ def _local_overload(o: Offering, ledger: Ledger, kind: str | None) -> str | None
         return None
     if free <= 0:
         return f"saturated: 0 of {capacity} local slots free"
-    load = ledger.rates.get(kind or "", 0.0)
+    key = kind or ""
+    load = ledger.rates.get((key, o.model), ledger.rates.get((key, None), 0.0))
     if load >= capacity:
         return f"over-ceiling: {kind} at {load:.1f} of {capacity} local slots"
     return None
@@ -679,7 +690,7 @@ _ledger_cache: dict[
         tuple[Offering, ...],
         dict[tuple[str, str], tuple[int, int]],
         dict[str, tuple[int, int]],
-        dict[str, float],
+        dict[tuple[str, str | None], float],
     ],
 ] = {}
 _loader_error_at = -math.inf
@@ -934,58 +945,114 @@ def _health_from_store(store: Store) -> dict[tuple[str, str], tuple[int, int]]:
 
 
 def _slots_from_store(store: Store) -> dict[str, tuple[int, int]]:
-    """``model -> (capacity, free)`` summed over the ``llm:<model>``
-    ``resource_slots`` rows — the serving pool's live ceiling and
-    headroom the rank demotion reads (gr576274). Capacity and free are
-    fleet-wide sums across serving hosts, matching what
-    :func:`~precis.utils.llm.local_serving.acquire` can reach (the local
-    row plus LAN-routable remote candidates). Rides the 15 s ledger
-    entry, never per call; a failed read yields an empty map — no
-    ceiling is read, the pre-fix behaviour — never an exception."""
+    """``model -> (capacity, free)`` summed over the acquirable
+    ``llm:<model>`` ``resource_slots`` rows — the serving pool's live
+    ceiling and headroom the rank demotion reads (gr576274). The sum is
+    restricted to hosts dispatch can actually reserve on — this host's
+    own row plus the LAN-routable ``served_by`` candidates
+    :func:`~precis.utils.llm.local_serving.acquire` tries
+    (:func:`~precis.utils.llm.local_serving._remote_served`): a remote
+    row behind a loopback-only or absent endpoint is unreachable from
+    here, so its spare capacity must not mask saturation of the
+    reachable pool (td598045). Rides the 15 s ledger entry, never per
+    call; a failed read yields an empty map — no ceiling is read, the
+    pre-fix behaviour — never an exception."""
     try:
+        local = local_serving._local_host()
+        reachable = {
+            resource: {host for host, _served in candidates}
+            for resource, candidates in local_serving._remote_served(store).items()
+        }
         with store.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT resource, sum(capacity), sum(free) FROM resource_slots "
-                "WHERE resource LIKE 'llm:%' GROUP BY 1"
+                "SELECT resource, host, capacity, free FROM resource_slots "
+                "WHERE resource LIKE 'llm:%'"
             ).fetchall()
     except Exception:
         log.debug("decide: slot read failed", exc_info=True)
         return {}
+    totals: dict[str, list[int]] = {}
+    for resource, host, capacity, free in rows:
+        if resource is None or host is None or capacity is None:
+            continue
+        if str(host) != local and str(host) not in reachable.get(str(resource), ()):
+            continue
+        pair = totals.setdefault(str(resource), [0, 0])
+        pair[0] += int(capacity)
+        pair[1] += int(free or 0)
     return {
-        str(resource)[4:]: (int(capacity), int(free))
-        for resource, capacity, free in rows
-        if resource is not None and capacity is not None
+        resource[4:]: (capacity, free) for resource, (capacity, free) in totals.items()
     }
 
 
-def _rates_from_store(store: Store) -> dict[str, float]:
-    """``task_kind -> offered concurrency`` (slot-equivalents) over
-    :data:`RATE_WINDOW_MIN` minutes of ``llm_call_log``: arrivals × mean
-    *served* duration / window — Little's law, the demand a local pool
-    must absorb for that kind (gr576274). A gated row counts as an
-    arrival but not toward the service-time mean — its duration is slot
-    wait, not serving. A kind whose rows all lack a measured duration
-    proves no holding time and gets no row (the live ``free`` signal
-    still covers a pool it fills). A failed read yields an empty map,
-    never an exception."""
+def _rates_from_store(store: Store) -> dict[tuple[str, str | None], float]:
+    """``(task_kind, served-model | None) -> offered concurrency``
+    (slot-equivalents) over :data:`RATE_WINDOW_MIN` minutes of
+    ``llm_call_log``: the kind's window arrivals × mean *served*
+    duration / window — Little's law, the demand a local pool must
+    absorb for that kind (gr576274). Holding time is per local pool: a
+    ``model`` key averages the kind's ungated rows that landed on that
+    model's local lane (``placement`` or ``transport`` ``'local'``), so
+    fast cloud calls can't understate what a slot costs there and keep
+    an over-capacity kind local (td598045). The ``None`` key is the
+    kind-level fallback: the local-lane mean when the kind has any
+    local rows, else every ungated row's mean — a floor on the real
+    local hold when the pool has never served the kind. A gated row
+    counts as an arrival but not toward a duration mean — its duration
+    is slot wait, not serving. A kind whose rows all lack a measured
+    duration proves no holding time and gets no row (the live ``free``
+    signal still covers a pool it fills). A failed read yields an empty
+    map, never an exception."""
     try:
         with store.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT features->>'task_kind', count(*), avg(duration_ms) "
-                "FILTER (WHERE features->>'gated' IS DISTINCT FROM 'true') "
+                "SELECT features->>'task_kind', transport, model, placement, "
+                "count(*), count(duration_ms) FILTER (WHERE "
+                "features->>'gated' IS DISTINCT FROM 'true'), "
+                "sum(duration_ms) FILTER (WHERE "
+                "features->>'gated' IS DISTINCT FROM 'true') "
                 "FROM llm_call_log "
                 f"WHERE ts > now() - interval '{RATE_WINDOW_MIN} minutes' "
-                "AND features->>'task_kind' IS NOT NULL GROUP BY 1"
+                "AND features->>'task_kind' IS NOT NULL GROUP BY 1, 2, 3, 4"
             ).fetchall()
     except Exception:
         log.debug("decide: rate read failed", exc_info=True)
         return {}
+    arrivals: dict[str, int] = {}
+    #: ``kind -> [ms, n]`` ungated durations — all lanes, then local lanes.
+    any_served: dict[str, list[float]] = {}
+    local_served: dict[str, list[float]] = {}
+    #: ``(kind, served model) -> [ms, n]`` — a pool's own holding time.
+    pool_served: dict[tuple[str, str], list[float]] = {}
+    for kind, transport, model, placement, calls, served_n, served_ms in rows:
+        if kind is None:
+            continue
+        k = str(kind)
+        arrivals[k] = arrivals.get(k, 0) + int(calls)
+        n = int(served_n or 0)
+        if n <= 0 or served_ms is None:
+            continue
+        ms = float(served_ms)
+        pair = any_served.setdefault(k, [0.0, 0.0])
+        pair[0] += ms
+        pair[1] += n
+        if transport == "local" or placement == "local":
+            pair = local_served.setdefault(k, [0.0, 0.0])
+            pair[0] += ms
+            pair[1] += n
+            if model is not None:
+                pair = pool_served.setdefault((k, str(model)), [0.0, 0.0])
+                pair[0] += ms
+                pair[1] += n
     window_ms = RATE_WINDOW_MIN * 60_000
-    return {
-        str(kind): int(calls) * float(mean_ms) / window_ms
-        for kind, calls, mean_ms in rows
-        if kind is not None and mean_ms is not None
-    }
+    rates: dict[tuple[str, str | None], float] = {}
+    for (kind, model), (ms_total, n_served) in pool_served.items():
+        rates[(kind, model)] = arrivals[kind] * (ms_total / n_served) / window_ms
+    for kind, calls in arrivals.items():
+        served = local_served.get(kind) or any_served.get(kind)
+        if served is not None:
+            rates[(kind, None)] = calls * (served[0] / served[1]) / window_ms
+    return rates
 
 
 def ledger_from_store(

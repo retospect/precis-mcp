@@ -938,10 +938,10 @@ def test_over_ceiling_kind_demotes_the_local_rung() -> None:
             req, Requirement(Tier.SMALL), ledger(local, cloud, **kwargs), "on"
         )
 
-    below = pick(slots={"glm": (4, 2)}, rates={"chunk.classify": 3.9})
+    below = pick(slots={"glm": (4, 2)}, rates={("chunk.classify", "glm"): 3.9})
     assert below.chosen == local
     for load in (4.0, 9.5):
-        decision = pick(slots={"glm": (4, 2)}, rates={"chunk.classify": load})
+        decision = pick(slots={"glm": (4, 2)}, rates={("chunk.classify", "glm"): load})
         assert decision.chosen == cloud
         assert "over-ceiling" in decision.ranked[-1].reason
     spent = pick(slots={"glm": (4, 0)})
@@ -951,32 +951,86 @@ def test_over_ceiling_kind_demotes_the_local_rung() -> None:
         req, Requirement(Tier.SMALL), ledger(local, slots={"glm": (4, 0)}), "on"
     )
     assert solo.chosen == local
+    # The kind-level estimate demotes too when the pool has no observed
+    # rows for the kind (td598045).
+    pooled = pick(slots={"glm": (4, 2)}, rates={("chunk.classify", None): 4.0})
+    assert pooled.chosen == cloud
+    assert "over-ceiling" in pooled.ranked[-1].reason
+    # Holding time is per pool — load observed on another local model's
+    # lane never inflates this pool's estimate (td598045).
+    assert (
+        pick(slots={"glm": (4, 2)}, rates={("chunk.classify", "qwen"): 99.0}).chosen
+        == local
+    )
     # No pool row — no ceiling to read; the kind's rate alone never demotes.
-    assert pick(rates={"chunk.classify": 99.0}).chosen == local
+    assert pick(rates={("chunk.classify", "glm"): 99.0}).chosen == local
     # A non-local offering ignores the signals — a spent pool row on the
     # cloud model's own key demotes nothing, so local still wins.
     assert (
-        pick(slots={"z-ai/glm": (4, 0)}, rates={"chunk.classify": 9.5}).chosen == local
+        pick(
+            slots={"z-ai/glm": (4, 0)},
+            rates={("chunk.classify", "z-ai/glm"): 9.5},
+        ).chosen
+        == local
     )
 
 
-def test_loader_slots_and_rates_from_store(store: Any) -> None:
+def test_loader_slots_and_rates_from_store(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """``ledger_from_store`` fills ``slots`` from ``resource_slots`` and
     ``rates`` from ``llm_call_log`` inside the same 15 s entry
     (gr576274): a gated row counts toward arrivals but its slot wait
-    never inflates the service-time mean."""
+    never inflates the service-time mean. Slot totals count only hosts
+    this dispatch can acquire — its own row plus LAN-routable
+    ``served_by`` candidates (td598045)."""
+    from precis import llm_catalog
+    from precis.utils.llm import local_serving
+
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET retired_at = now() WHERE kind = 'llm' AND retired_at IS NULL"
+        )
+    llm_catalog.upsert_card(
+        store,
+        model_id="glm",
+        text="test",
+        served_by=[
+            {"host": "me"},
+            {"host": "routable", "endpoint": "http://10.0.0.9:11445/v1"},
+            {"host": "loopback", "endpoint": "http://127.0.0.1:11445/v1"},
+            {"host": "slot-only"},
+        ],
+    )
+    monkeypatch.setenv("PRECIS_HOST_NAME", "me")
+    local_serving.reset_cache()
     with store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO resource_slots (host, resource, capacity, free, kind) "
-            "VALUES ('h1', 'llm:glm', 4, 0, 'hard')"
+            "VALUES ('me', 'llm:glm', 4, 0, 'hard')"
         )
         conn.execute(
             "INSERT INTO resource_slots (host, resource, capacity, free, kind) "
-            "VALUES ('h2', 'llm:glm', 4, 3, 'hard')"
+            "VALUES ('routable', 'llm:glm', 4, 3, 'hard')"
+        )
+        # Unreachable from here — their spare capacity must not mask the
+        # spent reachable pool: a loopback-only served_by, an
+        # endpoint-less one, and a row no card declares at all.
+        conn.execute(
+            "INSERT INTO resource_slots (host, resource, capacity, free, kind) "
+            "VALUES ('loopback', 'llm:glm', 4, 4, 'hard')"
         )
         conn.execute(
             "INSERT INTO resource_slots (host, resource, capacity, free, kind) "
-            "VALUES ('h1', 'gpu', 1, 0, 'hard')"
+            "VALUES ('slot-only', 'llm:glm', 4, 4, 'hard')"
+        )
+        conn.execute(
+            "INSERT INTO resource_slots (host, resource, capacity, free, kind) "
+            "VALUES ('ghost', 'llm:glm', 4, 4, 'hard')"
+        )
+        conn.execute(
+            "INSERT INTO resource_slots (host, resource, capacity, free, kind) "
+            "VALUES ('me', 'gpu', 1, 0, 'hard')"
         )
         for _ in range(5):
             conn.execute(
@@ -997,10 +1051,104 @@ def test_loader_slots_and_rates_from_store(store: Any) -> None:
     assert led is not None
     assert led.slots["glm"] == (8, 3)
     assert "gpu" not in led.slots
-    # 6 arrivals at a 60 s served mean over the 15-minute window → 0.4.
-    assert led.rates["chunk.classify"] == pytest.approx(6 * 60_000 / 900_000)
+    # 6 arrivals at the pool's own 60 s served mean over the 15-minute
+    # window → 0.4; the gated row counts as an arrival only.
+    assert led.rates[("chunk.classify", "glm")] == pytest.approx(6 * 60_000 / 900_000)
+    assert led.rates[("chunk.classify", None)] == pytest.approx(6 * 60_000 / 900_000)
     d.admit.reset_cache()
     d._ledger_cache.clear()
+    local_serving.reset_cache()
+
+
+def test_loader_rates_holding_time_per_local_pool(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fast cloud calls must not dilute a local pool's holding time
+    (td598045): the ``(kind, model)`` rate reads the kind's own durations
+    on that pool's lane, so a kind that mostly ran on a fast cloud lane
+    still demotes a slower local offering it would overflow. A kind with
+    no local rows falls back to the kind-level estimate."""
+    from precis import llm_catalog
+    from precis.utils.llm import local_serving
+
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET retired_at = now() WHERE kind = 'llm' AND retired_at IS NULL"
+        )
+    llm_catalog.upsert_card(
+        store,
+        model_id="pool-glm",
+        text="test",
+        offerings=[{"transport": "local"}],
+    )
+    llm_catalog.upsert_card(
+        store,
+        model_id="pool-cloud",
+        text="test",
+        offerings=[{"transport": "openai_compat", "price_in": 1, "price_out": 2}],
+    )
+    monkeypatch.setenv("PRECIS_HOST_NAME", "me")
+    local_serving.reset_cache()
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO resource_slots (host, resource, capacity, free, kind) "
+            "VALUES ('me', 'llm:pool-glm', 4, 2, 'hard')"
+        )
+        # 19 fast cloud rows + 1 slow local row for the kind: the blended
+        # ~19.8 s mean reads 0.44 slots — under the 4-slot ceiling — while
+        # the pool's own 300 s hold reads 6.7, over it.
+        for _ in range(19):
+            conn.execute(
+                "INSERT INTO llm_call_log (source, tier, transport, model, "
+                "duration_ms, features) "
+                "VALUES ('s','small','openai_compat','pool-cloud',5000,"
+                '\'{"task_kind": "chunk.classify"}\')'
+            )
+        conn.execute(
+            "INSERT INTO llm_call_log (source, tier, transport, model, "
+            "duration_ms, features) "
+            "VALUES ('s','small','local','pool-glm',300000,"
+            '\'{"task_kind": "chunk.classify"}\')'
+        )
+        conn.execute(
+            "INSERT INTO llm_call_log (source, tier, transport, model, "
+            "duration_ms, features) "
+            "VALUES ('s','small','openai_compat','pool-cloud',30000,"
+            '\'{"task_kind": "cloud.only"}\')'
+        )
+    d.admit.reset_cache()
+    d._ledger_cache.clear()
+    led = d.ledger_from_store(store, now=NOW)
+    assert led is not None
+    assert led.slots["pool-glm"] == (4, 2)
+    # 20 arrivals × the pool's own 300 s hold / 15 min → 6.7, not the
+    # blended 0.44.
+    assert led.rates[("chunk.classify", "pool-glm")] == pytest.approx(
+        20 * 300_000 / 900_000
+    )
+    assert led.rates[("chunk.classify", None)] == pytest.approx(20 * 300_000 / 900_000)
+    assert ("chunk.classify", "pool-cloud") not in led.rates
+    # No local rows at all → only the kind-level estimate exists.
+    assert led.rates[("cloud.only", None)] == pytest.approx(30_000 / 900_000)
+    assert ("cloud.only", "pool-glm") not in led.rates
+    decision = d.decide(
+        LlmRequest(Tier.SMALL, task_kind="chunk.classify"),
+        Requirement(Tier.SMALL),
+        led,
+        "on",
+    )
+    assert decision.chosen is not None and decision.chosen.model == "pool-cloud"
+    assert "over-ceiling" in decision.ranked[-1].reason
+    local_kept = d.decide(
+        LlmRequest(Tier.SMALL, task_kind="cloud.only"),
+        Requirement(Tier.SMALL),
+        led,
+        "on",
+    )
+    assert local_kept.chosen is not None and local_kept.chosen.model == "pool-glm"
+    d.admit.reset_cache()
+    d._ledger_cache.clear()
+    local_serving.reset_cache()
 
 
 def test_ties_prefer_legacy_lane() -> None:
