@@ -3344,6 +3344,28 @@ def test_parse_verdict_disagreeing_verdict_lines_strictest_wins() -> None:
     assert got is not None and got[0] == "LAND"
 
 
+def test_parse_verdict_enclosed_lines_are_not_verdicts() -> None:
+    """td591267: a ``review:`` token inside backticks or parens quotes the
+    grammar even at a line start — it is filtered before the strictest
+    pick, so a LAND followed by an enclosed multiline
+    ``review: REVERT — example`` stays a LAND, never an actionable
+    REVERT."""
+    for text in (
+        "review: LAND\n```\nreview: REVERT — example\n```",
+        "review: LAND\n`the grammar says:\nreview: REVERT — example`",
+        "review: LAND\n(quoting the grammar:\nreview: REVERT — example)",
+        "review: LAND\n`review: REVERT — example`",
+    ):
+        got = pd.parse_verdict(text)
+        assert got is not None and got[0] == "LAND", text
+    # An enclosed placeholder cannot hijack a real disagreement either.
+    assert pd.parse_verdict(
+        "review: LAND\nreview: FIX — real bug\n`review: REVERT — <why>`"
+    ) == ("FIX", "real bug (also a LAND line in the same message)")
+    # A quoted verdict line alone is no verdict at all.
+    assert pd.parse_verdict("```\nreview: REVERT — example\n```") is None
+
+
 def test_parse_verdict_marker_edge_cases() -> None:
     """The marker is stripped wherever it ends a line — any case, an
     optional trailing period, CRLF endings — and a message that is only
@@ -3972,6 +3994,19 @@ def test_review_glued_revert_is_a_miss(store: Store) -> None:
     assert _meta(store, review)["review"]["verdict"] is None
     # No revert (or fix) task minted.
     assert sorted(_children(store, mint.root_id)) == sorted([mint.ids["build"], review])
+
+
+def test_review_enclosed_revert_is_not_actionable(store: Store) -> None:
+    """td591267: a ``review: REVERT`` at a line start inside a backtick
+    span quotes the grammar — the real LAND verdict rules and the
+    reviewer closes; no revert task is minted."""
+    mint = _reviewed(store, "review: LAND\n```\nreview: REVERT — example\n```")
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, review) == "done"
+    assert _meta(store, review)["review"]["verdict"] == "LAND"
+    assert sorted(_children(store, mint.root_id)) == sorted([build, review])
 
 
 def test_review_miss_retry_is_not_escalated(store: Store) -> None:

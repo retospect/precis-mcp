@@ -29,7 +29,9 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    ``handoff:`` carrying a ``review: LAND|FIX`` token at a line start
    (markdown ``- ``/``* ``/``**``/``#``/``> `` markers may sit between
    the line start and the token) or right after sentence-final
-   punctuation, outside backticks/parens, no ``<…>`` rest (a lane gluing
+   punctuation, outside backticks/parens — the verdict lines too, so a
+   quoted grammar echo never wins the strictest pick (td591267) — no
+   ``<…>`` rest (a lane gluing
    the verdict to its narration, gr573564; on disagreement a reasoned
    FIX beats a LAND; REVERT never comes from a token). A LAND rest
    opening ``(clean`` or ``|`` is the grammar echo, and a placeholder
@@ -1003,7 +1005,10 @@ def _verdict_lines(body: str) -> list[tuple[str, str]]:
     """The ``(verdict word, rest)`` pairs of ``body``'s verdict LINES — a
     ``review:`` token at a line start, markdown ``- ``/``* ``/``**``/``#``/
     ``> `` markers allowed before it (the line-start half of
-    :func:`_token_boundary`). ``rest`` is that line's own text after the
+    :func:`_token_boundary`), outside backticks/parens like a fallback
+    token (:func:`_token_enclosed`): inside a multiline span the token
+    quotes the grammar, and an enclosed REVERT must never reach the
+    strictest pick (td591267). ``rest`` is that line's own text after the
     word and its lead, to end of line. A token glued mid-line after
     sentence-final punctuation is narration here, not a verdict line
     (gr574380)."""
@@ -1012,7 +1017,7 @@ def _verdict_lines(body: str) -> list[tuple[str, str]]:
         i = m.start() - 1
         while i >= 0 and body[i] in _MD_MARKERS:
             i -= 1
-        if i < 0 or body[i] == "\n":
+        if (i < 0 or body[i] == "\n") and not _token_enclosed(body, m.start()):
             end = body.find("\n", m.end())
             line = body[m.end() : end if end >= 0 else len(body)]
             lead = _VERDICT_LEAD_RE.match(line)
