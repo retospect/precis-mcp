@@ -119,7 +119,9 @@ def find_whole_ref_citations(text: str) -> list[str]:
         if parsed is None:
             continue
         kind, is_chunk, _id = parsed
-        if kind in ("paper", "patent") and not is_chunk:
+        # a ``~<sel>`` selector already names a specific passage — not a
+        # whole-ref mention (``[pa5~3]``)
+        if kind in ("paper", "patent") and not is_chunk and not m.group("sel"):
             out.append(bare)
     return out
 

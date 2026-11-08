@@ -39,16 +39,21 @@ _POSSESSIVE = re.compile(r"(?<!\[)\[([a-z]{2}\d+)\](?=['’]s\b)")
 #: the cite) or a ``paper:`` ref; other known ``kind:`` payloads and
 #: anything unparseable drop with the same seam repair as ``[dr1]``.
 _AUTHORING = re.compile(r"(?<!\[)\[\[([^\[\]]+)\]\]")
-#: ``<handle>~<chunk selector>`` (``[dr173020~3]``, ``dr173020~3``): the
-#: selector can't resolve across a record boundary in an export, so the
-#: token degrades to the record handle — ``[h~n]`` → ``[h]`` (drop, cite or
-#: xref per kind, exactly like the un-suffixed form), a bare ``h~n`` →
-#: ``h`` (the title splice). Only registry codes qualify; the bare form
-#: keeps the ``_BARE_HANDLE`` 4-digit guard so ``co2~3``-style prose and
-#: ``kind:slug~n``/``§slug~n`` cites are untouched.
-_SEL = r"~(?:p\d+|\d+(?:\.\.\d+)?)"
+#: ``<handle>~<chunk selector>`` (``[dr173020~3]``, ``dr173020~3``): when the
+#: selector can't carry meaning in an export the token degrades to the record
+#: handle — ``[h~n]`` → ``[h]`` (drop, cite or xref per kind, exactly like the
+#: un-suffixed form), a bare ``h~n`` → ``h`` (the title splice). A record
+#: handle of a chunked kind keeps its selector (:func:`record_nav_sel`) —
+#: ``[pr592588~124]`` names slide 124 of the deck and the audience link
+#: carries it to ``/r/<kind>/<pk>?chunk=<sel>`` (gr593143). Only registry
+#: codes qualify; the bare form keeps the ``_BARE_HANDLE`` 4-digit guard so
+#: ``co2~3``-style prose and ``kind:slug~n``/``§slug~n`` cites are untouched.
+_SEL = "~" + handle_registry.NAV_SEL_PATTERN
 _BRACKET_SEL = re.compile(rf"([\[\(])([a-z]{{2}}\d+){_SEL}(?=[\]\)])")
-_BARE_SEL = re.compile(rf"(?<![\w/.:~\-])([a-z]{{2}}\d{{4,}}){_SEL}(?![\w~]|[-.]\d)")
+#: Truly-bare ``h~n`` prose only — ``[``/``(`` are excluded from the
+#: lookbehind because ``_BRACKET_SEL`` owns the delimited forms (and is the
+#: pass that now keeps a navigable record selector).
+_BARE_SEL = re.compile(rf"(?<![\w/.:~\-[(])([a-z]{{2}}\d{{4,}}){_SEL}(?![\w~]|[-.]\d)")
 #: ``[h1, h2]`` / ``[h1 and h2]`` — a bracketed list of bare handles (the
 #: authored shorthand for citing several records at once). Exploded to
 #: adjacent brackets so each element gets its own dispatch — cites merge
@@ -298,11 +303,31 @@ def _explode(m: re.Match[str]) -> str:
     return m.group(0)
 
 
-def _sel_norm(m: re.Match[str]) -> str:
-    """``[h~n]`` / ``(h~n)`` → ``[h]`` / ``(h)`` for a registry handle."""
+def record_nav_sel(base: str) -> bool:
+    """Does ``<base>~<sel>`` keep its selector through the strip?
+
+    True when ``base`` is a *record* handle of a chunked kind that isn't a
+    citation kind: ``pr592588~124`` names slide 124 of the deck and the
+    audience link renders it (gr593143). The citation kinds
+    (paper/patent/finding) dispatch on the bare handle — the selector is
+    cite detail, never printed — and a kind with no chunk code (memory,
+    todo, …) has no chunk for the ord to select, so both degrade to the
+    record handle as before."""
+    parsed = handle_registry.parse(base)
     return (
-        f"{m.group(1)}{m.group(2)}" if handle_registry.parse(m.group(2)) else m.group(0)
+        parsed is not None
+        and not parsed[1]
+        and parsed[0] not in ("paper", "patent", "finding")
+        and handle_registry.try_format(parsed[0], 0, chunk=True) is not None
     )
+
+
+def _sel_norm(m: re.Match[str]) -> str:
+    """``[h~n]`` / ``(h~n)`` → ``[h]`` / ``(h)`` for a registry handle —
+    kept verbatim when the selector is navigable (:func:`record_nav_sel`)."""
+    if handle_registry.parse(m.group(2)) is None or record_nav_sel(m.group(2)):
+        return m.group(0)
+    return f"{m.group(1)}{m.group(2)}"
 
 
 def _kind_ref(m: re.Match[str]) -> str:

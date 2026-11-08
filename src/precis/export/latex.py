@@ -1047,7 +1047,8 @@ def _render_reference(m: re.Match[str], ctx: _Ctx) -> str:
     if m.group("disp") is not None:
         return _render_target(m.group("tgt"), m.group("disp"), ctx)
     if m.group("bare") is not None:
-        return _render_target(m.group("bare"), None, ctx, pin=m.group("pin"))
+        tgt = m.group("bare") + (m.group("sel") or "")
+        return _render_target(tgt, None, ctx, pin=m.group("pin"))
     if m.group("ref") is not None:
         kind, raw_id = m.group("kind"), m.group("id")
         if kind == "paper":
@@ -1325,6 +1326,23 @@ def _render_target(
                     rendered_record += _cite(slug, ctx, si=via_si)
             return rendered_record
     parsed = handle_registry.parse(tgt)
+    if parsed is not None and parsed[1]:
+        # A chunk handle's ``~<table-sel>`` is row/cell detail the dispatch
+        # paths don't read — dispatch on the chunk itself so e.g.
+        # ``[dc41~r2k7]`` still resolves its cross-ref.
+        base, sel = handle_registry.split_selector(tgt)
+        if sel is not None:
+            tgt = base
+    elif parsed is None and "~" in tgt:
+        # ``<record>~<sel>`` isn't a handle; when the base resolves the
+        # selector is display/navigation only (the audience link above
+        # already carried it) and the base dispatches as if written bare —
+        # ``pa5~3`` cites ``pa5``, ``dc41~3`` cross-refs ``dc41``.
+        base, sel = handle_registry.split_selector(tgt)
+        if sel is not None:
+            base_parsed = handle_registry.parse(base)
+            if base_parsed is not None:
+                parsed, tgt = base_parsed, base
     if parsed is not None:
         kind, is_chunk, _pk = parsed
         if kind in ("paper", "patent"):

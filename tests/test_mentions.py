@@ -429,6 +429,25 @@ def test_bare_bracket_pattern_non_finding_handles_have_no_pin() -> None:
         assert m.group("pin") is None
 
 
+def test_bare_bracket_pattern_nav_selectors() -> None:
+    """A ``~<ord>`` / ``~p<page>`` / ``~<lo>..<hi>`` selector on a record
+    handle parses (``[pr592588~124]`` — gr593143); a table selector still
+    parses too; junk selectors never attach."""
+    for token, sel in (
+        ("[pr592588~124]", "~124"),
+        ("[dr7~p4]", "~p4"),
+        ("[md9~1..3]", "~1..3"),
+        ("[pc10~r2k7]", "~r2k7"),
+        ("[pc10~r2k7.k5f9]", "~r2k7.k5f9"),
+    ):
+        m = mentions.BARE_BRACKET_REF_PATTERN.fullmatch(token)
+        assert m is not None, token
+        assert m.group("sel") == sel
+        assert m.group("bare") == token[1 : token.index("~")]
+    for bad in ("[pr592588~x9]", "[pr592588~1a]", "[pr592588~]"):
+        assert mentions.BARE_BRACKET_REF_PATTERN.fullmatch(bad) is None, bad
+
+
 def test_bare_bracket_pattern_sigil_forms_never_carry_a_pin() -> None:
     # The `[¶§][^\[\]]+` alternative is greedy and consumes to the closing
     # `]`, so a pin group can never attach to a sigil form — pins are

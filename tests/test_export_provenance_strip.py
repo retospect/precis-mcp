@@ -203,13 +203,18 @@ def test_glue_words_stay_without_a_dropped_handle() -> None:
 
 
 def test_handle_selector_forms_normalise() -> None:
-    """``[h~n]`` / ``(h~n)`` / bare ``h~n`` degrade to the record handle —
-    a chunk selector can't resolve across a record boundary in an export
-    (gr493181 — ``[dr173020~3]`` printed literally)."""
-    assert _strip("see [dr173020~3] here") == "see here"
+    """``[h~n]`` on a citation kind or a chunk-less record degrades to the
+    record handle; a *chunked* record keeps the selector — ``[dr173020~3]``
+    names chunk 3 of that draft and the audience link carries it
+    (gr593143). A bare ``h~n`` still degrades to the title splice."""
+    assert _strip("see [me5~3] here") == "see here"  # memory: no chunk code
     assert _strip("bare dr173020~3 here") == "bare dr173020 here"
     assert _strip("x [pa4423~1] y") == "x [pa4423] y"
-    assert _strip("[sel](dr173020~2) end") == "[sel](dr173020) end"
+    assert _strip("[sel](pa4423~2) end") == "[sel](pa4423) end"
+    # a chunked record keeps its selector — rendered downstream
+    assert _strip("see [dr173020~3] here") == "see [dr173020~3] here"
+    assert _strip("[sel](dr173020~2) end") == "[sel](dr173020~2) end"
+    assert _strip("x [pr592588~124] y") == "x [pr592588~124] y"
     # paper chunk cites and kind:slug selectors are not handle forms
     for keep in (
         "cite [§smith20~3] stays",

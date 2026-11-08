@@ -480,6 +480,13 @@ TABLE_SEL_PATTERN = (
 )
 _TABLE_SEL_RE = re.compile(rf"^(?:{TABLE_SEL_PATTERN})$")
 
+#: The ``kind:id`` chunk-selector grammar a ``~`` may carry on a record
+#: handle (``pr592588~124``, ``pa5~p12``, ``pa5~1..3``): an ord, an
+#: inclusive ord range, or a PDF page — the same selectors
+#: ``paper:slug~n`` cites use. Distinct from :data:`TABLE_SEL_PATTERN`,
+#: which addresses rows/cells inside one table chunk by stable id.
+NAV_SEL_PATTERN = r"(?:p\d+|\d+(?:\.\.\d+)?)"
+
 
 def split_selector(handle: str) -> tuple[str, str | None]:
     """``dc<N>~<sel>`` → ``('dc<N>', '<sel>')``; no ``~`` → ``(s, None)``.

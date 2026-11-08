@@ -79,13 +79,23 @@ def _load_pres(request: Request, ref_id: int) -> Any:
 
 
 @router.get("/{slug}", response_class=HTMLResponse)
-async def detail(request: Request, slug: str) -> HTMLResponse:
-    """Two-pane deck reader + attribution editor at ``/pres/<slug>``."""
+async def detail(request: Request, slug: str, chunk: str | None = None) -> HTMLResponse:
+    """Two-pane deck reader + attribution editor at ``/pres/<slug>``.
+
+    ``?chunk=N`` (a ``~N`` selector deep link, e.g. from a draft export's
+    ``[pr<id>~N]`` handle) opens the Jump tab on that slide — the same
+    cited-passage landing ``/papers/{id}?chunk=N`` gives."""
     store = get_store(request)
     ident: int | str = int(slug) if slug.isdigit() else slug
     ref = store.get_ref(kind="pres", id=ident)
     if ref is None:
         raise NotFound(f"presentation {slug!r} not found")
+
+    cited_ord = -1
+    if chunk is not None:
+        lo = chunk.split("..", 1)[0]
+        if lo.isdigit():
+            cited_ord = int(lo)
 
     blocks = store.chunks.list_chunks_for_ref(ref.id)
     slides = [
@@ -122,7 +132,7 @@ async def detail(request: Request, slug: str) -> HTMLResponse:
         "n_chunks": len(slides),
         "pdf_on_disk": pdf_path is not None,
         "has_pdf": bool(ref.pdf_sha256),
-        "cited_ord": -1,
+        "cited_ord": cited_ord,
         # Open on the attribution panel — the deck editor's primary purpose.
         "initial_tab": "Meta",
         "pdf_url": f"/pres/{ref.id}/pdf",

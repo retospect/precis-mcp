@@ -366,9 +366,53 @@ async def resolve(
                 status_code=303,
             )
 
+    # A pres deck: ``~N`` selects the slide at that chunk ord — the reader's
+    # Jump tab lands on it (gr593143). A bare ``~pN`` page jump goes
+    # straight to the PDF stream, same as paper.
+    if kind == "pres" and chunk:
+        if _CHUNK_RE.match(chunk):
+            return RedirectResponse(
+                url=f"/pres/{numeric_id}?chunk={chunk}",
+                status_code=303,
+            )
+        page = _page_from_chunk_suffix(store, numeric_id, chunk)
+        if page is not None:
+            return RedirectResponse(
+                url=f"/pres/{numeric_id}/pdf#page={page}",
+                status_code=303,
+            )
+
+    # A draft: ``~N`` selects the chunk at that ord — land on it focused,
+    # the same target a ``/c/dc<id>`` click resolves to (gr593143).
+    if kind == "draft" and chunk:
+        m = _CHUNK_RE.match(chunk)
+        if m is not None:
+            dc = _chunk_handle_at_ord(store, numeric_id, int(m.group("from")))
+            if dc is not None:
+                ref = store.fetch_refs_by_ids([numeric_id]).get(numeric_id)
+                ident = getattr(ref, "slug", None) or numeric_id
+                return RedirectResponse(
+                    url=f"/smartdraft/{ident}?focus={dc}",
+                    status_code=303,
+                )
+
     ref = store.fetch_refs_by_ids([numeric_id]).get(numeric_id)
     target = ref_url(kind, numeric_id, getattr(ref, "slug", None))
     return RedirectResponse(url=target, status_code=303)
+
+
+def _chunk_handle_at_ord(store: Store, ref_id: int, ord_pos: int) -> str | None:
+    """The ``dc<chunk_id>`` handle of the chunk at ``ord`` in ``ref_id`` —
+    the ``~N`` selector's target — or ``None``."""
+    from precis.utils.handle_registry import format_handle
+
+    try:
+        for b in store.chunks.list_chunks_for_ref(ref_id):
+            if getattr(b, "ord", None) == ord_pos:
+                return format_handle("draft", b.id, chunk=True)
+    except Exception:
+        return None
+    return None
 
 
 def _page_from_chunk_suffix(store: Store, ref_id: int, suffix: str) -> int | None:

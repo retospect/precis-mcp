@@ -222,9 +222,20 @@ def strip_page_anchor_links(text: str) -> str:
 #: The ``[¶§][^\[\]]+`` alternative is greedy and consumes to the closing
 #: ``]``, so a pin group never applies to a ``¶``/``§`` sigil — correct,
 #: pins are finding-only.
+#:
+#: The optional ``sel`` group admits both selector grammars a ``~`` can
+#: carry on a handle: a table row/cell selector (``[pc10~r2k7]``) and the
+#: ``kind:id`` chunk selector on a record (``[pr592588~124]`` — slide 124
+#: of the deck). Consumers that only read ``bare`` still degrade to the
+#: record; the exporters and linkifier carry ``sel`` through so the
+#: selector renders and the link lands on the chunk (gr593143).
 BARE_BRACKET_REF_PATTERN = re.compile(
     r"\[(?P<bare>[¶§][^\[\]]+|[a-z]{2}\d+)"
-    r"(?P<sel>~" + handle_registry.TABLE_SEL_PATTERN + r")?"
+    r"(?P<sel>~(?:"
+    + handle_registry.TABLE_SEL_PATTERN
+    + "|"
+    + handle_registry.NAV_SEL_PATTERN
+    + r"))?"
     r"(?P<pin>[>+][a-z]{2}\d+(?:,[a-z]{2}\d+)*)?\]"
 )
 

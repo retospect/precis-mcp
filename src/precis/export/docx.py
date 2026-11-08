@@ -1020,7 +1020,8 @@ def _render_reference(m: re.Match[str], ctx: _Ctx, paragraph: Any) -> None:
         _render_target(m.group("tgt"), m.group("disp"), ctx, paragraph)
         return
     if m.group("bare") is not None:
-        _render_target(m.group("bare"), None, ctx, paragraph, pin=m.group("pin"))
+        tgt = m.group("bare") + (m.group("sel") or "")
+        _render_target(tgt, None, ctx, paragraph, pin=m.group("pin"))
         return
     if m.group("ref") is not None:
         kind = m.group("kind")
@@ -1187,6 +1188,22 @@ def _render_target(
     # handle-cited drafts (e.g. everything imported from LaTeX) rendered
     # with no citations and no References section at all.
     parsed = handle_registry.parse(tgt)
+    if parsed is not None and parsed[1]:
+        # A chunk handle's ``~<table-sel>`` is row/cell detail the dispatch
+        # paths don't read — dispatch on the chunk itself (mirrors
+        # ``export/latex.py``'s ``_render_target``).
+        base, sel = handle_registry.split_selector(tgt)
+        if sel is not None:
+            tgt = base
+    elif parsed is None and "~" in tgt:
+        # ``<record>~<sel>`` isn't a handle; when the base resolves the
+        # selector is display/navigation only (the audience link above
+        # already carried it) and the base dispatches as if written bare.
+        base, sel = handle_registry.split_selector(tgt)
+        if sel is not None:
+            base_parsed = handle_registry.parse(base)
+            if base_parsed is not None:
+                parsed, tgt = base_parsed, base
     if parsed is not None:
         kind, is_chunk, pk = parsed
         if kind in ("paper", "patent"):

@@ -829,6 +829,12 @@ def _render_universal_handle(
     Compact only collapses the *bare* handle; a display link
     (``[text](dc41)``) keeps its text."""
     parsed = handle_registry.parse(handle)
+    base, sel = handle_registry.split_selector(handle)
+    if parsed is None and sel is not None:
+        # ``<record>~<sel>`` — a chunk selector on a record (``pr592588~124``):
+        # not a handle itself, but the base resolves and the selector rides
+        # into the URL as ``?chunk=<sel>`` (gr593143).
+        parsed = handle_registry.parse(base)
     if parsed is None:
         return None
     kind, is_chunk, pk = parsed
@@ -874,19 +880,24 @@ def _render_universal_handle(
     # this a run of cites (``[pa1][pa2][pa3]``) rendered as the verbose
     # ``pa1pa2pa3`` run-on. Other record kinds (memory, conv, …) keep their
     # label — they surface as Connections chips, not inline citations.
+    # A ``~<sel>`` on a record handle rides into the resolver as a query
+    # param — the same convention ``kind:id~n`` mentions use.
+    suffix_q = f"?chunk={escape(sel)}" if sel is not None else ""
     if compact and kind in _CHUNK_SIGIL:
         if kind == "paper":
             anchor_cls, sigil = _cite_style(handle_registry.normalize(handle), local)
         else:
             anchor_cls, sigil = _ANCHOR_CLS, _CHUNK_SIGIL[kind]
         return _anchor_html(
-            href=f"/r/{kind}/{pk}",
-            preview_url=f"/preview/{kind}/{pk}",
+            href=f"/r/{kind}/{pk}{suffix_q}",
+            preview_url=f"/preview/{kind}/{pk}{suffix_q}",
             label=sigil,
             anchor_cls=anchor_cls,
         )
     return _anchor_html(
-        href=f"/r/{kind}/{pk}", preview_url=f"/preview/{kind}/{pk}", label=escape(label)
+        href=f"/r/{kind}/{pk}{suffix_q}",
+        preview_url=f"/preview/{kind}/{pk}{suffix_q}",
+        label=escape(label),
     )
 
 
@@ -1436,7 +1447,10 @@ def _linkify_prose_core(
             )
         if m.group("bare") is not None:
             return _render_bare_bracket(
-                m.group("bare"), compact=compact, local=local, callouts=callouts
+                m.group("bare") + (m.group("sel") or ""),
+                compact=compact,
+                local=local,
+                callouts=callouts,
             )
         if m.group("ref") is not None:
             kind = m.group("kind")

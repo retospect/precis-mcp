@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 from zipfile import ZipFile
 
 from precis.errors import BadInput
@@ -27,6 +27,7 @@ from precis.export._provenance_strip import (
     _OPAQUE,
     _explode,
     _sel_norm,
+    record_nav_sel,
 )
 from precis.export.supplement import SupplementEntry, collect_entry
 from precis.utils import handle_registry
@@ -311,6 +312,25 @@ class RecordReference:
     citation: bool = False
 
 
+_NAV_SEL_RE = re.compile(handle_registry.NAV_SEL_PATTERN)
+
+#: The chunk noun a ``~<sel>`` selector prints with per kind — a pres deck's
+#: chunks are slides, so ``pr592588~124`` renders "pr592588 slide 124".
+_SEL_NOUN: dict[str, str] = {"pres": "slide"}
+
+
+def nav_sel_text(kind: str, sel: str) -> str:
+    """The reader-facing phrase a ``~<sel>`` chunk selector prints as:
+    "slide 124" on a pres deck, "page 4" for a ``~pN`` page jump,
+    "chunks 1..3" for an ord range, "chunk N" anywhere else (gr593143)."""
+    if sel.startswith("p"):
+        return f"page {sel[1:]}"
+    noun = _SEL_NOUN.get(kind, "chunk")
+    if ".." in sel:
+        noun += "s"
+    return f"{noun} {sel}"
+
+
 @dataclass
 class Audience:
     store: Any
@@ -332,13 +352,32 @@ class Audience:
     _counts: dict[int, int] = field(default_factory=dict)
 
     def reference(self, handle: str, surface: str | None) -> RecordReference | None:
-        parsed = record_handle(handle, self.store if self.name == "external" else None)
+        store = self.store if self.name == "external" else None
+        parsed = record_handle(handle, store)
+        # ``<record-handle>~<sel>`` — a chunk selector on a record of a
+        # chunked kind (``pr592588~124``): ``handle_registry.parse`` refuses
+        # it (a record takes no selector), so resolve the base and carry the
+        # selector into the link — ``/r/<kind>/<pk>?chunk=<sel>`` — and into
+        # the printed text ("pr592588 slide 124") instead of dropping it
+        # (gr593143). A table selector on a chunk handle (``gc13~abc1``) is
+        # not navigation and is not this case.
+        base, sel = handle_registry.split_selector(handle)
+        nav_sel: str | None = None
+        if parsed is None and sel is not None and _NAV_SEL_RE.fullmatch(sel):
+            candidate = record_handle(base, store)
+            if candidate is not None and not candidate[1] and record_nav_sel(base):
+                parsed, nav_sel = candidate, sel
         if parsed is None:
             return None
         kind, is_chunk, pk = parsed
         if self.name == "dev":
-            path = f"/c/{handle}" if is_chunk else f"/r/{kind}/{pk}"
-            return RecordReference(surface or handle, self.base_url + path)
+            path = f"/c/{base}" if is_chunk else f"/r/{kind}/{pk}"
+            if nav_sel is not None:
+                path += f"?chunk={quote(nav_sel, safe='')}"
+                text = surface or f"{base} {nav_sel_text(kind, nav_sel)}"
+            else:
+                text = surface or handle
+            return RecordReference(text, self.base_url + path)
         record = parsed
         if is_chunk:
             resolved = self.store.resolve_handle(handle)
@@ -350,7 +389,7 @@ class Audience:
             number = f"S{group}.{self._counts[group]}"
             entry = collect_entry(
                 self.store,
-                handle,
+                base if nav_sel is not None else handle,
                 number,
                 base_url=self.base_url,
                 source_chunks=self.source_chunks.get(handle),
@@ -358,8 +397,11 @@ class Audience:
             self._by_record[record] = entry
             self.entries.append(entry)
         entry = self._by_record[record]
+        text = entry.number
+        if nav_sel is not None:
+            text = f"{entry.number} ({nav_sel_text(kind, nav_sel)})"
         return RecordReference(
-            entry.number, footnote=entry.description, citation=kind == "dataset"
+            text, footnote=entry.description, citation=kind == "dataset"
         )
 
 

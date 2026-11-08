@@ -423,6 +423,98 @@ def test_record_selector_survives_legacy_cleanup(
         assert [entry.handle for entry in state.entries] == ["gr13"]
 
 
+@pytest.mark.parametrize("backend", ["latex", "docx"])
+def test_record_nav_selector_renders_and_links_the_chunk(
+    backend: str,
+) -> None:
+    """``[pr592588~124]`` — a chunk selector on a chunked record — renders
+    the selector in the text and carries it into the link as ``?chunk=``
+    (gr593143: the weekly report printed the bare ``pr592588``)."""
+    state = policy.Audience(_Records(), "dev", _BASE)
+    text = "Slides [pr592588~124] and [pr592588~131]."
+    if backend == "latex":
+        ctx = latex._Ctx(
+            keymap={}, known_handles=set(), store=state.store, audience=state
+        )
+        rendered = latex._render_inline(text, ctx)
+        urls = rendered
+    else:
+        from docx import Document
+
+        paragraph = Document().add_paragraph()
+        context = docx._Ctx(store=state.store, known_handles=set(), audience=state)
+        docx._render_inline(text, context, paragraph)
+        rendered = _xml_text(paragraph._p)
+        urls = "\n".join(
+            str(rel.target_ref)
+            for rel in paragraph.part.rels.values()
+            if rel.is_external
+        )
+    assert "pr592588 slide 124" in rendered
+    assert "pr592588 slide 131" in rendered
+    assert f"{_BASE}/r/pres/592588?chunk=124" in urls
+    assert f"{_BASE}/r/pres/592588?chunk=131" in urls
+
+
+@pytest.mark.parametrize("backend", ["latex", "docx"])
+def test_record_nav_selector_external_numbers_with_selector(
+    backend: str,
+) -> None:
+    """External audience: the supplement number keeps the selector in
+    parentheses — ``S4.1 (slide 124)``."""
+    state = policy.Audience(_Records(), "external", _BASE)
+    text = "Slides [pr592588~124]."
+    if backend == "latex":
+        ctx = latex._Ctx(
+            keymap={}, known_handles=set(), store=state.store, audience=state
+        )
+        rendered = latex._render_inline(text, ctx)
+    else:
+        from docx import Document
+
+        paragraph = Document().add_paragraph()
+        context = docx._Ctx(store=state.store, known_handles=set(), audience=state)
+        docx._render_inline(text, context, paragraph)
+        rendered = _xml_text(paragraph._p)
+    assert "S4.1 (slide 124)" in rendered
+    assert [entry.handle for entry in state.entries] == ["pr592588"]
+
+
+@pytest.mark.parametrize("backend", ["latex", "docx"])
+def test_record_selector_drops_on_chunkless_and_cite_kinds(
+    backend: str,
+) -> None:
+    """A ``~<sel>`` on a kind with no chunks (memory) or a citation kind
+    (paper) still degrades to the record handle — no selector, no
+    ``?chunk=``."""
+    state = policy.Audience(_Records(), "dev", _BASE)
+    text = "See [me5~2] and [dr7~p4] here."
+    if backend == "latex":
+        ctx = latex._Ctx(
+            keymap={}, known_handles=set(), store=state.store, audience=state
+        )
+        rendered = latex._render_inline(text, ctx)
+        urls = rendered
+    else:
+        from docx import Document
+
+        paragraph = Document().add_paragraph()
+        context = docx._Ctx(store=state.store, known_handles=set(), audience=state)
+        docx._render_inline(text, context, paragraph)
+        rendered = _xml_text(paragraph._p)
+        urls = "\n".join(
+            str(rel.target_ref)
+            for rel in paragraph.part.rels.values()
+            if rel.is_external
+        )
+    # memory has no chunk code — the selector degrades to the record link
+    assert f"{_BASE}/r/memory/5" in urls
+    assert "?chunk=2" not in urls
+    # a draft record does carry the selector (``~p4`` → "page 4")
+    assert "dr7 page 4" in rendered
+    assert f"{_BASE}/r/draft/7?chunk=p4" in urls
+
+
 def test_native_footnotes_reuse_part_and_roundtrip(tmp_path: Path) -> None:
     from docx import Document
     from docx.opc.constants import RELATIONSHIP_TYPE as RT
