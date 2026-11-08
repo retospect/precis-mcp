@@ -21,11 +21,14 @@ isolates each test's queue from any other jobs sharing the test DB.
 
 The release band (gr584136): the four release-pass legs
 (``ci_verdict_poll``, ``release_cut``, ``release_deploy``,
-``release_confirm``) carry class rank 2.5 — derived from ``job_type``,
-strictly between recurring (2) and background (3) — so a release's
-10-minute poll cadence can't be stretched by an unrelated
-``derived_drain`` backlog, while still ranking behind recurring work.
-While a release leg is claimable, class-ageing promotion is frozen
+``release_confirm``) plus the dark-factory / release heartbeat ticks
+(``release_poll``, ``factory_rescue_tick``, ``ci_watch``,
+``plan_dispatch`` — td593845) carry class rank 2.5 — derived from
+``job_type``, strictly between recurring (2) and background (3) — so a
+release's 10-minute poll cadence and the factory's ticks can't be
+stretched by an unrelated ``derived_drain`` backlog, while still
+ranking behind recurring work.
+While a band row is claimable, class-ageing promotion is frozen
 lane-wide, so no aged background row can reach or cross the band.
 """
 
@@ -260,3 +263,41 @@ def test_aged_background_cannot_leapfrog_release_leg(store: Store) -> None:
     )
     rec = _queue_job(store, executor=ex, prio=2, origin="recurring")
     assert _claim_order(store, ex) == [rec, poll, old_bg]
+
+
+# ── Heartbeat ticks in the band (gr592211, td593845 review) ───────────
+#
+# ``release_poll`` / ``factory_rescue_tick`` / ``ci_watch`` /
+# ``plan_dispatch`` mint under recurring todos, so origin alone left
+# them at class 2 — an aged background row promotes to tie them there
+# and then wins ``queued_since`` (release_poll sat 15+ min behind a
+# ``derived_drain`` backlog). In the band they self-pin at 2.5 and the
+# freeze holds the backlog at class 3 while one is claimable.
+_HEARTBEAT_JOB_TYPES = (
+    "release_poll",
+    "factory_rescue_tick",
+    "ci_watch",
+    "plan_dispatch",
+)
+
+
+def test_heartbeat_ticks_claim_ahead_of_aged_backlog(store: Store) -> None:
+    """A heartbeat tick queued fresh behind a 2h-old background row
+    claims first — without band membership the aged row promotes to
+    class 2 and beats the tick on ``queued_since`` (gr592211)."""
+    for job_type in _HEARTBEAT_JOB_TYPES:
+        ex = f"test_heartbeat_{job_type}"
+        old_bg = _queue_job(
+            store,
+            executor=ex,
+            prio=8,
+            origin="background",
+            queued_s_ago=7200,
+        )
+        tick = _queue_job(
+            store, executor=ex, prio=2, job_type=job_type, origin="recurring"
+        )
+        rec = _queue_job(store, executor=ex, prio=2, origin="recurring")
+        # The tick never outranks recurring (2) but always beats the
+        # frozen backlog (3), regardless of the backlog's age.
+        assert _claim_order(store, ex) == [rec, tick, old_bg]

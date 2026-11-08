@@ -123,6 +123,7 @@ from precis.store.types import Tag
 from precis.todo import TERMINAL_TODO_STATUSES
 from precis.utils.job_bubble import bubble_job_failure, remove_child_failed_tags
 from precis.workers.executors._common import (
+    _DEFAULT_JOB_PRIO,
     CLAIMABLE,
     JOB_EVENT_KIND,
     RELEASE_LEG_JOB_TYPES,
@@ -213,12 +214,19 @@ def _alert_starved_control_jobs(store: Store) -> int:
     :func:`_starved_control_minutes`, the cap isn't holding (or the lane
     is otherwise wedged) and a human should look. Self-resolving via
     ``resolve_stale_alerts`` on the dedicated source; returns the number
-    of offenders."""
+    of offenders.
+
+    The control predicate lives in the WHERE clause (mirroring the
+    ≤2.5 classes of ``executors/_common.py``'s ``_CLASS_RANK_CASE``) so
+    :data:`_UNSCHEDULABLE_SCAN_CAP` bounds the scan AFTER filtering —
+    applied to unfiltered rows it let a bulk backlog deeper than the
+    cap push every overdue control job out of the scanned window
+    (td593845 review)."""
     threshold_min = _starved_control_minutes()
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT r.ref_id, r.prio, r.meta,
+            SELECT r.ref_id, r.meta,
                    max(rt.created_at) AS queued_since
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
@@ -226,15 +234,28 @@ def _alert_starved_control_jobs(store: Store) -> int:
              WHERE r.kind = 'job' AND r.retired_at IS NULL
                AND r.meta->>'executor' = %s
                AND t.namespace = 'STATUS' AND t.value = ANY(%s)
-             GROUP BY r.ref_id, r.prio, r.meta
+               AND (
+                    r.meta->>'origin' = ANY(%s)
+                 OR r.meta->>'job_type' = ANY(%s)
+                 OR (r.meta->>'origin' IS NULL
+                     AND COALESCE(r.prio, %s)::float8 <= 2)
+               )
+             GROUP BY r.ref_id, r.meta
              ORDER BY queued_since ASC
              LIMIT %s
             """,
-            ("job_inproc", list(CLAIMABLE), _UNSCHEDULABLE_SCAN_CAP),
+            (
+                "job_inproc",
+                list(CLAIMABLE),
+                list(_CONTROL_ORIGINS),
+                list(RELEASE_LEG_JOB_TYPES),
+                _DEFAULT_JOB_PRIO,
+                _UNSCHEDULABLE_SCAN_CAP,
+            ),
         ).fetchall()
     now = datetime.now(UTC)
     offenders: list[tuple[int, str, float]] = []
-    for raw_id, raw_prio, raw_meta, queued_since in rows:
+    for raw_id, raw_meta, queued_since in rows:
         if queued_since is None:
             continue
         if queued_since.tzinfo is None:
@@ -243,21 +264,9 @@ def _alert_starved_control_jobs(store: Store) -> int:
         if age_min < threshold_min:
             break  # oldest-first scan: everything after this is younger
         meta = dict(raw_meta or {})
-        origin = meta.get("origin")
-        prio = float(raw_prio) if raw_prio is not None else 5.0
-        control = (
-            origin in _CONTROL_ORIGINS
-            or str(meta.get("job_type") or "") in RELEASE_LEG_JOB_TYPES
-            or (origin is None and prio <= 2)
+        offenders.append(
+            (int(raw_id), str(meta.get("job_type") or "?"), round(age_min, 1))
         )
-        if control:
-            offenders.append(
-                (
-                    int(raw_id),
-                    str(meta.get("job_type") or "?"),
-                    round(age_min, 1),
-                )
-            )
     fingerprint = "control:job_inproc"
     live: set[str] = set()
     if offenders:

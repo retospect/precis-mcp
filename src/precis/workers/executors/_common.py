@@ -120,17 +120,28 @@ CLAIM_CLASS_AGE_ENV = "PRECIS_CLAIM_CLASS_AGE_S"
 #: age, ref_id — the 1.5 floor); anything else keeps the class order.
 CLAIM_CLASS_RANK_ENV = "PRECIS_CLAIM_CLASS_RANK"
 
-#: Release-pass legs (gr584136, S3 of td584381): these ``job_type``s claim
+#: Release-pass legs (gr584136, S3 of td584381) plus the dark-factory /
+#: release heartbeat ticks (td593845 review): these ``job_type``s claim
 #: in a band strictly between ``recurring`` and ``background`` — a
-#: re-queued ``ci_verdict_poll`` (10-minute wake cadence) or a
-#: cut/deploy/confirm stage boundary must claim within one worker-slot
-#: turnover even behind a full ``derived_drain`` backlog, while still
-#: ranking behind recurring work.
+#: re-queued ``ci_verdict_poll`` (10-minute wake cadence), a
+#: cut/deploy/confirm stage boundary, or a ``release_poll`` /
+#: ``plan_dispatch`` / ``factory_rescue_tick`` / ``ci_watch`` tick must
+#: claim within one worker-slot turnover even behind a full
+#: ``derived_drain`` backlog, while still ranking behind recurring work.
+#: The ticks mint under recurring todos, so their ``recurring`` origin
+#: left them at class 2 — an aged background row promotes to tie them
+#: there and wins ``queued_since`` (gr592211: ``release_poll`` sat 15+
+#: min behind drains). Pinned at 2.5 with the freeze, no lower class
+#: reaches them while one is claimable.
 RELEASE_LEG_JOB_TYPES: tuple[str, ...] = (
     "ci_verdict_poll",
     "release_cut",
     "release_deploy",
     "release_confirm",
+    "release_poll",
+    "factory_rescue_tick",
+    "ci_watch",
+    "plan_dispatch",
 )
 
 #: The release band's class rank — strictly between recurring (2) and

@@ -346,7 +346,7 @@ as infra, tagged `reaped:off-lane-pin`, with `meta.error` naming the
 node; `sweeper/off-lane-pin:<node>/<executor>` opens at warn and
 resolves when the pass runs on that node again. The sweeper also
 watches for lane starvation: a control-class row — origin
-`human`/`agent`/`recurring`, a release-leg job_type, or unstamped
+`human`/`agent`/`recurring`, a release-band job_type, or unstamped
 prio ≤ 2 — claimable on `job_inproc` for over
 `PRECIS_CONTROL_STARVED_MINUTES` (default 15m) opens
 `jobstarve/control:<executor>` at warn, auto-resolved when nothing

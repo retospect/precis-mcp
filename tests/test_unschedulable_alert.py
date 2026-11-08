@@ -13,6 +13,8 @@ pass) must not silently suppress the alert forever.
 
 from __future__ import annotations
 
+import pytest
+
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.sweeper import _alert_unschedulable_jobs
@@ -327,3 +329,33 @@ def test_starved_control_alert_self_resolves(store: Store) -> None:
         conn.commit()
     assert _alert_starved_control_jobs(store) == 0
     assert _alert_open(store, "control:job_inproc") is False
+
+
+def test_starved_control_alert_not_hidden_by_bulk_backlog(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td593845 review: the scan cap used to bound the scan BEFORE the
+    control filter — a bulk backlog deeper than the cap pushed every
+    overdue control row out of the scanned window, so the alert never
+    fired. The cap now bounds control-class rows only."""
+    import precis.workers.sweeper as sweeper_mod
+    from precis.workers.sweeper import _alert_starved_control_jobs
+
+    monkeypatch.setattr(sweeper_mod, "_UNSCHEDULABLE_SCAN_CAP", 3)
+    for _ in range(5):
+        _queue_aged_job(
+            store,
+            job_type="derived_drain",
+            origin="background",
+            prio=8,
+            queued_min_ago=60,
+        )
+    _queue_aged_job(
+        store,
+        job_type="release_poll",
+        origin="recurring",
+        prio=2,
+        queued_min_ago=20,
+    )
+    assert _alert_starved_control_jobs(store) == 1
+    assert _alert_open(store, "control:job_inproc") is True
