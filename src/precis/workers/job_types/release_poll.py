@@ -207,6 +207,16 @@ REVIEW_WAIT_AFTER = timedelta(hours=24)
 #: review-wait dedupe read and insert.
 _REVIEW_WAIT_LOCK_KEY = 0x7265765F77616974
 
+#: ``pg_advisory_xact_lock`` key (the "rev_mint" bytes) serializing the
+#: no-covering-reviewer re-read and the reviewer insert: two concurrent
+#: gate ticks mint at most one reviewer per landed todo (td584381 S1b).
+_REVIEW_MINT_LOCK_KEY = 0x7265765F6D696E74
+
+#: Reviewers one gate pass mints at most: the backlog of historical
+#: uncovered lands drains a couple a tick instead of bursting onto the
+#: review lanes all at once.
+_MINT_PER_PASS = 2
+
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -1163,10 +1173,21 @@ def _pass_for_sha(store: Any, sha12: str) -> tuple[int, str] | None:
 # slicer's slices). A land with no stamp (pre-E1) counts as non-engine.
 # A covering reviewer clears the land when it closed ``LAND``, or
 # ``FIX`` whose fix task landed; while it is open under a live root the
-# release waits, and once the land is :data:`REVIEW_WAIT_AFTER` old one
-# ``ask-user`` ruling files — at once when the wait can never resolve
-# (no covering reviewer, a dead verdict or an unlanded fix that already
-# ended, an open reviewer under a dead root). An answered ask
+# release waits, and once the NEWER of the land and its newest covering
+# reviewer is :data:`REVIEW_WAIT_AFTER` old one ``ask-user`` ruling
+# files — at once when the wait can never resolve (a dead verdict, an
+# unlanded fix that already ended, an open reviewer under a dead root).
+# No covering reviewer is the factory's own job (td584381 S1b): the
+# gate mints one — a plan reviewer node under the root the landed
+# todo's own ``plan:<id>`` tag names, ``blocked-by`` that todo so a
+# REVERT holds it through the rebuild, which ``plan_dispatch`` runs on
+# a review lane of a vendor that did not build the land — and files the
+# ask only when no minted reviewer could run: no enabled review-fit
+# lane, no ``plan:`` tag naming a live root (a dead root is hopeless to
+# this same gate, and the reviewed todo itself would read as its own
+# review target), or a mint that raised; when ``plan_dispatch`` itself
+# is switched off the gate mints nothing and files the ask as before.
+# An answered ask
 # (``release-review-wait:td<land>`` with an ``answer:`` comment) clears
 # that one land; one closed without the comment holds nothing — the
 # gate refiles it and the blocker names the live ask's id. "Fix
@@ -1405,6 +1426,7 @@ def _file_review_wait_ask(
     rid: int | None = None,
     job_id: int | None = None,
     dry_run: bool,
+    reason: str | None = None,
 ) -> tuple[str, int | None]:
     """The review-wait ask: one OPEN ``ask-user`` ruling todo per LANDED
     todo, deduped by its ``release-review-wait:td<todo_id>`` tag over
@@ -1438,13 +1460,14 @@ def _file_review_wait_ask(
             f"engine land td{todo_id} (jo{job_id}) has no reviewer — "
             "acknowledge it, or is this a false alarm?"
         )
+        why = f" The gate could not mint one itself: {reason}." if reason else ""
         body = (
             f"The engine-review gate (td574937 E1) holds every release "
             f"pass and cut while the td{todo_id} engine land (job "
             f"jo{job_id}) has no reviewer covering it — fix, revert and "
-            "plain lands mint none. This ask is the only write the gate "
-            "makes; answering it executes nothing — 'acknowledged' and "
-            "'false alarm' both just close it, which clears this one "
+            f"plain lands mint none.{why} This ask is the only write the "
+            "gate makes; answering it executes nothing — 'acknowledged' "
+            "and 'false alarm' both just close it, which clears this one "
             "land."
         )
     context = (
@@ -1510,6 +1533,116 @@ def _file_review_wait_ask(
     return f"engine review: {verb} {tag} as td{ref.id}", int(ref.id)
 
 
+def _todo_row(store: Any, ref_id: int) -> tuple[str, Any] | None:
+    """``(STATUS tag, created_at)`` of a live todo, or ``None`` when the
+    row is retired, missing or not a todo."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT created_at FROM refs WHERE ref_id = %s AND kind = 'todo' "
+            "AND retired_at IS NULL",
+            (ref_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return _status_of(store, ref_id), row[0]
+
+
+def _plan_root_tag(store: Any, todo_id: int) -> int | None:
+    """The id in td<todo_id>'s own ``plan:<id>`` tag — the root the plan
+    tick reads it under (``plan_dispatch._candidate_roots``) — or
+    ``None``. The tag decides, never the parent chain: minting a
+    ``plan:`` tag under a non-plan epic would make the epic a plan
+    root and its other open leaf todos dispatchable ``run_slice``
+    tasks (td584381 S1b)."""
+    for tag in store.tags_for(todo_id):
+        value = str(tag.value)
+        if (
+            tag.namespace == "open"
+            and value.startswith("plan:")
+            and value[5:].isdigit()
+        ):
+            return int(value[5:])
+    return None
+
+
+def _reviewer_hang(
+    store: Any, todo_id: int, lane_table: tuple[Any, ...]
+) -> tuple[int | None, str | None]:
+    """``(plan_root, None)`` when a reviewer minted for the td<todo_id>
+    land could actually run, else ``(None, refusal)`` — the reason the
+    ask's body names (td584381 S1b).
+
+    Unrunnable means: no enabled lane in ``lane_table`` fits the
+    ``review`` task class (``plan_dispatch._review_lane`` could never
+    place it); td<todo_id> carries no ``plan:<id>`` tag of its own —
+    no plan root to hang a reviewer under (and one parented to the
+    reviewed todo itself would read as its own review target in
+    ``_review_targets``); or the root the tag names is terminal,
+    cancelled or gone — an open reviewer under a dead root is judged
+    hopeless by this same gate, so minting it burns a review lane and
+    asks anyway."""
+    from precis.plans import templates as _templates
+
+    if not any(
+        ln.enabled and ln.fits(_templates.REVIEW_TASK_CLASS) for ln in lane_table
+    ):
+        return None, "no enabled lane fits the 'review' task class"
+    root_id = _plan_root_tag(store, todo_id)
+    if root_id is None or root_id == todo_id:
+        return None, (
+            f"td{todo_id} carries no plan:<id> tag — no plan root to "
+            "hang a reviewer under"
+        )
+    row = _todo_row(store, root_id)
+    root_status = "gone" if row is None else row[0]
+    if root_status in TERMINAL_TODO_STATUSES or root_status in ("cancelled", "gone"):
+        return None, (
+            f"the plan root td{root_id} is {root_status} — a reviewer under "
+            "a dead root is judged hopeless by this gate and can never settle"
+        )
+    return root_id, None
+
+
+def _mint_engine_reviewer(
+    store: Any, todo_id: int, plan_root: int
+) -> tuple[str, int, bool]:
+    """Mint the td<todo_id> land's covering reviewer under td<plan_root>;
+    returns ``(note, reviewer id, fresh)`` — ``fresh`` is False when the
+    locked re-read found a live reviewer already covering, a dedupe
+    that minted nothing.
+
+    One per landed todo: the dedupe re-read (a live reviewer whose
+    ``generate.from`` is ``td<todo_id>``) and the insert share one
+    :data:`_REVIEW_MINT_LOCK_KEY` advisory-locked transaction
+    (:func:`templates.mint_reviewer`'s own ``store.tx()`` joins it as a
+    savepoint), so two concurrent gate ticks mint at most one — a tick
+    that lost the race reads the winner's row and reports it instead of
+    adding a second."""
+    from precis.plans import templates as _templates
+
+    with store.atomic() as conn:
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (_REVIEW_MINT_LOCK_KEY,))
+        dup = conn.execute(
+            """
+            SELECT ref_id FROM refs
+             WHERE kind = 'todo' AND retired_at IS NULL
+               AND meta->'generate'->>'role' = 'reviewer'
+               AND meta->'generate'->>'from' = %s
+             ORDER BY ref_id
+             LIMIT 1
+            """,
+            (f"td{todo_id}",),
+        ).fetchone()
+        if dup is not None:
+            return (
+                f"engine review: reviewer td{int(dup[0])} already covers td{todo_id}",
+                int(dup[0]),
+                False,
+            )
+        rid = _templates.mint_reviewer(store, plan_root, todo_id)
+    return f"engine review: minted reviewer td{rid} for td{todo_id}", rid, True
+
+
 def engine_review_blockers(
     store: Any,
     *,
@@ -1522,19 +1655,33 @@ def engine_review_blockers(
     Per engine land — a ``land_slice`` job that SUCCEEDED with an engine
     stamp — oldest first: an answered ``release-review-wait:td<land>``
     ask clears it; no covering reviewer (``generate.from`` naming the
-    landed todo or its parent) blocks and files the ask at once; covering
-    reviewers are judged satisfied > waiting > hopeless — a waiting land
-    files its ask once the land is :data:`REVIEW_WAIT_AFTER` old, a
-    hopeless one at once. An ask closed without an ``answer:`` comment
-    does not dedupe — the next filing pass refiles it — and blocker
-    lines name the live ask's id. ``file_asks`` limits the one write to
-    the pass (``release_cut`` asks for nothing). Any exception anywhere
-    returns a single fail-closed blocker.
+    landed todo or its parent) mints one under the root the land's own
+    ``plan:<id>`` tag names, at most :data:`_MINT_PER_PASS` a pass —
+    the mint is covering next tick — and files the ask only when
+    minting cannot run or ``plan_dispatch`` itself is switched off
+    (td584381 S1b); covering reviewers are judged satisfied > waiting >
+    hopeless — a waiting land files its ask once the NEWER of the land
+    and its newest covering reviewer is :data:`REVIEW_WAIT_AFTER` old,
+    a hopeless one at once. An ask closed without an ``answer:``
+    comment does not dedupe — the next filing pass refiles it — and
+    blocker lines name the live ask's id. ``file_asks`` limits the
+    mint-and-ask writes to the pass (``release_cut`` asks for nothing).
+    Any exception anywhere returns a single fail-closed blocker.
     """
+    from precis.plans import lanes as _lanes
+    from precis.workers.job_types import plan_dispatch as _plan_dispatch
+
     now = now or datetime.now(UTC)
     notes: list[str] = []
     blockers: list[str] = []
     try:
+        lane_table = _lanes.load_lanes(store) if file_asks else ()
+        # plan_dispatch's own kill switch — the env OR a service_config
+        # prio-0 row, read through its helper, never re-checked here:
+        # a mint nobody dispatches would sit "waiting" and hold the ask
+        # off for 24 h, so "off" takes the pre-S1b path and asks at once.
+        factory_reason = _plan_dispatch.read_only_reason(store) if file_asks else None
+        minted = 0
         by_from: dict[int, list[tuple[int, dict[str, Any]]]] = {}
         for rid, meta in _reviewer_rows(store):
             gen = meta.get("generate")
@@ -1557,17 +1704,75 @@ def engine_review_blockers(
             if not covering:
                 ask_id = _open_wait_ask_id(store, todo_id)
                 if file_asks:
+                    plan_root, refusal = (
+                        _reviewer_hang(store, todo_id, lane_table)
+                        if factory_reason is None
+                        else (None, None)
+                    )
+                    if plan_root is not None and not dry_run:
+                        if minted >= _MINT_PER_PASS:
+                            blockers.append(
+                                f"engine land td{todo_id} (jo{job_id}) has "
+                                "no reviewer; reviewer mint deferred; the "
+                                "release waits — next: a later tick mints it"
+                            )
+                            continue
+                        try:
+                            note, minted_id, fresh = _mint_engine_reviewer(
+                                store, todo_id, plan_root
+                            )
+                        except Exception as exc:
+                            log.warning(
+                                "release_poll: reviewer mint for td%s raised",
+                                todo_id,
+                                exc_info=True,
+                            )
+                            refusal = (
+                                f"the reviewer mint raised {type(exc).__name__}: {exc}"
+                            )
+                        else:
+                            minted += int(fresh)
+                            notes.append(note)
+                            state = (
+                                f"td{minted_id} was minted for it"
+                                if fresh
+                                else f"reviewer td{minted_id} is running"
+                            )
+                            blockers.append(
+                                f"engine land td{todo_id} (jo{job_id}) had "
+                                f"no reviewer; {state} — the release waits "
+                                f"— next: let td{minted_id} run"
+                            )
+                            continue
+                    elif plan_root is not None:
+                        notes.append(
+                            f"engine review: would mint a reviewer for td{todo_id}"
+                        )
+                        blockers.append(
+                            f"engine land td{todo_id} (jo{job_id}) has no "
+                            "reviewer; the release waits — next: a live "
+                            "tick with the factory on mints one"
+                        )
+                        continue
                     note, filed_id = _file_review_wait_ask(
-                        store, todo_id, job_id=job_id, dry_run=dry_run
+                        store,
+                        todo_id,
+                        job_id=job_id,
+                        dry_run=dry_run,
+                        reason=refusal,
                     )
                     notes.append(note)
                     if filed_id is not None:
                         ask_id = filed_id
-                ask_txt = f"td{ask_id}" if ask_id is not None else f"on td{todo_id}"
+                if ask_id is not None:
+                    next_step = f"answer the review-wait ask td{ask_id}"
+                elif file_asks:
+                    next_step = f"answer the review-wait ask on td{todo_id}"
+                else:
+                    next_step = "the review gate holds the cut"
                 blockers.append(
                     f"engine land td{todo_id} (jo{job_id}) has no "
-                    "reviewer; the release waits — next: answer the "
-                    f"review-wait ask {ask_txt}"
+                    f"reviewer; the release waits — next: {next_step}"
                 )
                 continue
             waiting: tuple[int, str] | None = None
@@ -1590,15 +1795,22 @@ def engine_review_blockers(
             rid, line = pick
             if hopeless is not None and waiting is None:
                 due = True  # can never resolve — ask at once
-            elif created_at is not None:
-                stamp = (
-                    created_at
-                    if created_at.tzinfo is not None
-                    else created_at.replace(tzinfo=UTC)
-                )
-                due = now - stamp >= REVIEW_WAIT_AFTER
             else:
-                due = False
+                # A waiting land's clock runs from the NEWER of the land
+                # and its newest covering reviewer: a reviewer minted
+                # on a stale land gets its own 24 h before the ask, and
+                # a missing stamp is not due (td584381 S1b).
+                row = _todo_row(store, max(r for r, _m in covering))
+                rstamp = row[1] if row is not None else None
+                if rstamp is None:
+                    due = False
+                else:
+                    base = max(
+                        s if s.tzinfo is not None else s.replace(tzinfo=UTC)
+                        for s in (created_at, rstamp)
+                        if s is not None
+                    )
+                    due = now - base >= REVIEW_WAIT_AFTER
             ask_id = _open_wait_ask_id(store, todo_id)
             if file_asks and due:
                 note, filed_id = _file_review_wait_ask(

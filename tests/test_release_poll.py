@@ -19,12 +19,15 @@ from typing import Any
 import pytest
 
 from precis import settings as psettings
+from precis.plans import lanes as L
 from precis.plans import pr_class as P
 from precis.plans import release as R
 from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
+from precis.workers.job_types import plan_dispatch as pd
 from precis.workers.job_types import release_poll as rp
+from tests._lane_rows import use_lanes
 from tests._script import load_script
 
 pytestmark = pytest.mark.db
@@ -2060,6 +2063,419 @@ def test_an_engine_land_with_no_reviewer_asks_at_once(
     assert "release-review-wait:td42" in _tags(store, asks[0])
 
 
+# ── the gate mints its own reviewer (td584381 S1b) ────────────────
+#
+# Fix, revert and plain lands mint no reviewer, so "no covering
+# reviewer" used to mean "ask a human". Now the gate mints one itself —
+# a plan reviewer node under the landed todo's live plan root, run by
+# ``plan_dispatch``'s review machinery on a lane of a vendor that did
+# not build the land — and files the ask only when no minted reviewer
+# could run: no enabled review-fit lane, no plan root to hang it under
+# (or a dead root, which this gate itself would judge hopeless), or a
+# mint that raised.
+
+
+def _plan_landed(store: Store) -> tuple[int, int]:
+    """An open plan root with one landed child todo -> ``(root, todo)``:
+    the build is ``done`` (the land closed it) and carries the
+    ``plan:<root>`` tag every plan-minted node gets."""
+    root = store.insert_ref(kind="todo", slug=None, title="the plan", meta=None)
+    build = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="the build",
+        meta=None,
+        parent_id=int(root.id),
+    )
+    store.add_tag(int(build.id), Tag.open(f"plan:{int(root.id)}"), set_by="agent")
+    _close(store, int(build.id))
+    return int(root.id), int(build.id)
+
+
+def _todo_text(store: Store, todo_id: int) -> str:
+    return "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(todo_id) if c.text
+    )
+
+
+def _status(store: Store, ref_id: int) -> str | None:
+    for t in store.tags_for(ref_id):
+        if t.prefix == "STATUS":
+            return str(t.value)
+    return None
+
+
+def _children(store: Store, todo_id: int) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'todo' AND parent_id = %s "
+            "AND retired_at IS NULL ORDER BY ref_id",
+            (todo_id,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _blocked_by_ids(store: Store, src: int) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT dst_ref_id FROM links WHERE src_ref_id = %s "
+            "AND relation = 'blocked-by' ORDER BY dst_ref_id",
+            (src,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _created_at(store: Store, ref_id: int, stamp: datetime) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = %s WHERE ref_id = %s",
+            (stamp, ref_id),
+        )
+
+
+def _review_job(store: Store, todo_id: int) -> int:
+    """A succeeded ``run_slice`` job under the todo — the one a review
+    verdict is read off by the real judge."""
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="run_slice",
+        meta={"job_type": "run_slice", "params": {"todo_id": todo_id}},
+        parent_id=todo_id,
+    )
+    store.add_tag(
+        int(ref.id),
+        Tag.closed("STATUS", "succeeded"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    return int(ref.id)
+
+
+def _todo_comment(store: Store, todo_id: int, text: str) -> None:
+    ords = [int(c.ord) for c in store.chunks.list_chunks_for_ref(todo_id)]
+    store.chunks.insert_chunks(
+        todo_id,
+        [
+            ChunkInsert(
+                ord=max(ords, default=0) + 1,
+                text=text,
+                meta={"chunk_kind": "todo_comment"},
+            )
+        ],
+    )
+
+
+def test_an_engine_land_with_no_reviewer_mints_one(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An engine land under a live plan root with an enabled review
+    lane gets its reviewer minted — one node, no ask."""
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)  # the seed table carries review-fit lanes
+    root, build = _plan_landed(store)
+    _engine_land(store, build, paths=["scripts/ship"])
+    lines, notes = rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    [(rid, meta)] = rp._reviewer_rows(store)
+    assert meta["generate"] == {"role": "reviewer", "from": f"td{build}"}
+    assert meta["task_class"] == T.REVIEW_TASK_CLASS
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.parent_id == root
+    assert f"plan:{root}" in _tags(store, rid)
+    assert _review_wait_asks(store) == []
+    blocker = "; ".join(lines)
+    assert f"td{rid}" in blocker and f"td{build}" in blocker
+    assert any(f"minted reviewer td{rid} for td{build}" in n for n in notes)
+    # The dispatch tick picks it up — a generator with no children under
+    # an open root, pinned to a review lane; no plan_dispatch change.
+    res = pd.run_pass(store, dry_run=True)
+    assert any(f"td{rid}: would dispatch run_slice" in n for n in res.notes)
+
+
+def test_the_reviewer_mint_is_idempotent(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The minted reviewer is covering on the next tick: no second
+    node, no ask."""
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)
+    _root_id, build = _plan_landed(store)
+    _engine_land(store, build, paths=["scripts/ship"])
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    assert len(rp._reviewer_rows(store)) == 1
+    assert _review_wait_asks(store) == []
+
+
+def test_no_enabled_review_lane_files_the_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No enabled lane fits ``review``: the minted node could never
+    run, so the gate asks — the body names the reason."""
+    _fake_github(monkeypatch)
+    use_lanes(
+        monkeypatch,
+        L.Lane("code-only", "claude_p", "s", 1, frozenset({"code"}), vendor="x"),
+    )
+    _root_id, build = _plan_landed(store)
+    _engine_land(store, build, paths=["scripts/ship"])
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    assert rp._reviewer_rows(store) == []
+    [ask_id] = _review_wait_asks(store)
+    assert "no enabled lane" in _todo_text(store, ask_id)
+
+
+def test_a_land_under_no_plan_root_asks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A standalone landed todo tops its own parent chain: no plan
+    root to hang the reviewer under, so the gate asks."""
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)
+    lone = store.insert_ref(kind="todo", slug=None, title="bare build", meta=None)
+    _engine_land(store, int(lone.id), paths=["scripts/ship"])
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    assert rp._reviewer_rows(store) == []
+    [ask_id] = _review_wait_asks(store)
+    assert "no plan root" in _todo_text(store, ask_id)
+
+
+def test_a_land_under_a_dead_root_asks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reviewer minted under a closed root is judged hopeless by
+    this same gate on the next tick — minting it buys nothing, so the
+    gate asks at once instead."""
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)
+    root, build = _plan_landed(store)
+    _engine_land(store, build, paths=["scripts/ship"])
+    _close(store, root)
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    assert rp._reviewer_rows(store) == []
+    [ask_id] = _review_wait_asks(store)
+    assert f"td{root}" in _todo_text(store, ask_id)
+
+
+def test_no_mint_without_file_asks_dry_run_or_factory_off(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)
+    _root_id, build = _plan_landed(store)
+    _engine_land(store, build, paths=["scripts/ship"])
+    lines, notes = rp.engine_review_blockers(store, now=NOW)  # release_cut's read
+    assert rp._reviewer_rows(store) == []
+    assert _review_wait_asks(store) == []
+    lines, notes = rp.engine_review_blockers(
+        store, now=NOW, file_asks=True, dry_run=True
+    )
+    assert rp._reviewer_rows(store) == []
+    assert _review_wait_asks(store) == []
+    assert any("would mint" in n for n in notes)
+    monkeypatch.setenv("PRECIS_FACTORY", "off")
+    lines, notes = rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    assert rp._reviewer_rows(store) == []
+    assert _review_wait_asks(store) == []
+    # plan_dispatch's own switch is off: the pre-S1b path — the ask.
+    assert any("would file release-review-wait" in n for n in notes)
+
+
+def test_the_minted_reviewers_land_verdict_clears(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through the real judge (``plan_dispatch._step_reviews``): the
+    minted reviewer's LAND verdict closes it done, the gate clears and
+    the pass mints."""
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)
+    _root_id, build = _plan_landed(store)
+    _engine_land(store, build, paths=["scripts/ship"])
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    [(rid, _meta)] = rp._reviewer_rows(store)
+    _review_job(store, rid)
+    _todo_comment(store, rid, "review: LAND")
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, rid) == "done"
+    poll = rp.run_pass(store, repo=REPO, now=NOW)
+    assert poll.minted is not None
+
+
+def test_a_minted_reviewers_revert_does_not_loop(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A REVERT on the minted reviewer mints ONE revert task across two
+    consecutive ticks: the reviewer is ``blocked-by`` the landed todo —
+    ``_review_revert`` reopens it behind the revert task — so the
+    reviewer is not re-dispatched while the rebuild is open (B1)."""
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)
+    root, build = _plan_landed(store)
+    _engine_land(store, build, paths=["scripts/ship"])
+    _landed_comment(store, build)
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    [(rid, _meta)] = rp._reviewer_rows(store)
+    assert _blocked_by_ids(store, rid) == [build]
+    _review_job(store, rid)
+    _todo_comment(store, rid, "review: REVERT — breaks the public API")
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    reverts = [c for c in _children(store, root) if c not in (build, rid)]
+    assert len(reverts) == 1
+    # The land is reopened behind the revert; only the revert runs.
+    assert _status(store, build) == "open"
+    assert _blocked_by_ids(store, build) == [reverts[0]]
+    assert res.dispatched == 1
+    res = pd.run_pass(store)
+    assert res.reviews == 0
+    assert [c for c in _children(store, root) if c not in (build, rid)] == reverts
+    assert len(_jobs_under(store, rid)) == 1  # not re-dispatched
+
+
+def test_a_minted_reviewers_fix_landed_fix_clears(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FIX through the real judge: one fix task mints and the reviewer
+    closes; once the fix carries a ``landed:`` comment the gate reads
+    the land satisfied."""
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)
+    root, build = _plan_landed(store)
+    _engine_land(store, build, paths=["scripts/ship"])
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    [(rid, _meta)] = rp._reviewer_rows(store)
+    _review_job(store, rid)
+    _todo_comment(store, rid, "review: FIX — a.py misses the empty case")
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, rid) == "done"
+    (fix,) = [c for c in _children(store, root) if c not in (build, rid)]
+    _landed_comment(store, fix)
+    blockers, _notes = rp.engine_review_blockers(store, now=NOW)
+    assert blockers == []
+
+
+def test_the_wait_clock_counts_from_the_newest_reviewer(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A land first seen 30 h after it landed gets its reviewer minted
+    this tick: the 24 h clock runs from the newer of the land and the
+    reviewer, so the next tick files no ask — and the same reviewer
+    aged 25 h does file it (S1)."""
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)
+    _root_id, build = _plan_landed(store)
+    _engine_land(store, build, paths=["scripts/ship"], hours_ago=30)
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    [(rid, _meta)] = rp._reviewer_rows(store)
+    _created_at(store, rid, NOW - timedelta(minutes=1))
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    assert _review_wait_asks(store) == []
+    _created_at(store, rid, NOW - timedelta(hours=25))
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    assert len(_review_wait_asks(store)) == 1
+
+
+def test_a_land_under_a_non_plan_epic_asks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A landed todo whose parent is a plain epic — no ``plan:<id>``
+    tag of its own — has no plan root: the gate asks and mints
+    nothing, and the epic never becomes a plan root (S2)."""
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)
+    epic = store.insert_ref(kind="todo", slug=None, title="the epic", meta=None)
+    build = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="the build",
+        meta=None,
+        parent_id=int(epic.id),
+    )
+    store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="another leaf",
+        meta=None,
+        parent_id=int(epic.id),
+    )
+    _engine_land(store, int(build.id), paths=["scripts/ship"])
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    assert rp._reviewer_rows(store) == []
+    [ask_id] = _review_wait_asks(store)
+    assert "no plan root" in _todo_text(store, ask_id)
+    assert not any(v.startswith("plan:") for v in _tags(store, int(epic.id)))
+    # No plan root was made up: the epic's other leaf stays outside
+    # every plan subtree — nothing dispatches it as a run_slice task.
+    res = pd.run_pass(store, dry_run=True)
+    assert res.dispatched == 0
+
+
+def test_the_plan_dispatch_kill_switch_files_the_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """plan_dispatch off by its own switch — the service_config prio-0
+    row or PRECIS_FACTORY=off — mints nothing and takes the pre-S1b
+    path: the review-wait ask (S3)."""
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)
+    _root_id, build = _plan_landed(store)
+    _engine_land(store, build, paths=["scripts/ship"])
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO service_config (host, service, prio) VALUES (%s, %s, 0)",
+            ("*", pd.SERVICE),
+        )
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    assert rp._reviewer_rows(store) == []
+    assert len(_review_wait_asks(store)) == 1
+    _root2, build2 = _plan_landed(store)
+    _engine_land(store, build2, paths=["scripts/ship"])
+    monkeypatch.setenv("PRECIS_FACTORY", "off")
+    _lines, notes = rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    assert rp._reviewer_rows(store) == []
+    # The env switch makes the filing itself a would-file; the path is
+    # the ask's, not the mint's.
+    assert any("would file release-review-wait" in n for n in notes)
+    assert len(_review_wait_asks(store)) == 1
+
+
+def test_the_gate_mints_at_most_two_reviewers_per_pass(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The historical backlog drains two mints a tick, not a burst:
+    five uncovered lands, one pass mints two, the next two more, and
+    no ask files meanwhile."""
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)
+    for _ in range(5):
+        _root_id, build = _plan_landed(store)
+        _engine_land(store, build, paths=["scripts/ship"])
+    blockers, _notes = rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    assert len(rp._reviewer_rows(store)) == 2
+    assert _review_wait_asks(store) == []
+    assert sum("reviewer mint deferred" in b for b in blockers) == 3
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    assert len(rp._reviewer_rows(store)) == 4
+    assert _review_wait_asks(store) == []
+
+
+def test_the_cut_read_names_the_gate_not_an_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``file_asks=False`` (release_cut): no ask exists to answer —
+    the blocker names the gate, not a filing that never happened."""
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)
+    _root_id, build = _plan_landed(store)
+    _engine_land(store, build, paths=["scripts/ship"])
+    blockers, _notes = rp.engine_review_blockers(store, now=NOW)
+    [line] = blockers
+    assert "the review gate holds the cut" in line
+    assert "review-wait ask" not in line
+
+
 def test_an_answered_wait_ask_clears_the_land(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2067,7 +2483,10 @@ def test_an_answered_wait_ask_clears_the_land(
     that one land; the next pass mints."""
     _fake_github(monkeypatch)
     _engine_land(store, 42, paths=["scripts/ship"], hours_ago=25)
-    _reviewer(store, 42)
+    rid = _reviewer(store, 42)
+    # The reviewer has sat open since the land: the 24 h clock (the
+    # newer of land and reviewer) is due.
+    _created_at(store, rid, NOW - timedelta(hours=25))
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.minted is None
     [ask_id] = _review_wait_asks(store)
@@ -2172,6 +2591,8 @@ def test_a_review_wait_over_24h_files_one_ask(
     _fake_github(monkeypatch)
     _engine_land(store, 42, paths=["scripts/ship"], hours_ago=25)
     rid = _reviewer(store, 42)
+    # Open since the land: the wait clock (the newer stamp) is due.
+    _created_at(store, rid, NOW - timedelta(hours=25))
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.minted is None and res.blocker is not None
     asks = _review_wait_asks(store)
@@ -2232,7 +2653,8 @@ def test_review_wait_ask_not_filed_under_dry_run_or_factory_off(
 ) -> None:
     _fake_github(monkeypatch)
     _engine_land(store, 42, paths=["scripts/ship"], hours_ago=25)
-    _reviewer(store, 42)
+    rid = _reviewer(store, 42)
+    _created_at(store, rid, NOW - timedelta(hours=25))
     res = rp.run_pass(store, repo=REPO, dry_run=True, now=NOW)
     assert _review_wait_asks(store) == []
     assert any("would file" in n for n in res.notes)

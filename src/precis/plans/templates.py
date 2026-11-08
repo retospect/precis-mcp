@@ -311,6 +311,43 @@ def mint_plan_task(
     return _run_body(store, plan_root, plan_root, build).ids["task"]
 
 
+def mint_reviewer(store: Store, plan_root: int, target_id: int) -> int:
+    """Mint one reviewer node over the already-landed td<target_id>,
+    directly under ``plan_root`` and tagged ``plan:<plan_root>`` — the
+    same shape the templates wire ``blocked-by`` their build, edge
+    included, pointed at the landed todo: it is done at mint so the
+    review dispatches at once, and ``plan_dispatch._review_revert``
+    reopens it behind the revert task, which holds the reviewer
+    through the rebuild — without the edge a REVERT verdict would
+    re-dispatch the review of the same land in a loop (td584381 S1b).
+    Returns its id.
+
+    ``release_poll.engine_review_blockers`` calls this when an engine
+    land has no covering reviewer; the caller serializes its dedupe
+    re-read and this mint under one advisory lock — inside
+    ``store.atomic()`` the ``store.tx()`` here joins the caller's
+    transaction as a savepoint. Hang the node only under a LIVE root:
+    one open under a dead root is judged hopeless by the gate (and hung
+    on the reviewed todo itself it would read as its own review
+    target)."""
+
+    def build(m: _Minter) -> None:
+        rid = m.node(
+            "review",
+            f"Review the td{target_id} land",
+            _reviewer(target_id),
+            body=_reviewer_brief(target_id),
+        )
+        store.add_link(
+            src_ref_id=rid,
+            dst_ref_id=target_id,
+            relation="blocked-by",
+            conn=m.conn,
+        )
+
+    return _run_body(store, plan_root, plan_root, build).ids["review"]
+
+
 # -- gripe-fix ---------------------------------------------------------------
 
 

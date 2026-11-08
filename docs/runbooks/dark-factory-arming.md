@@ -537,11 +537,17 @@ The other settings a slice host reads:
   succeeded engine land is cleared by a covering reviewer closing LAND
   — or FIX whose fix task landed — `release_poll` mints no pass and
   `release_cut` refuses. A wait that can still resolve files one
-  `release-review-wait:td<land>` ask after 24 h; one that never can —
-  no covering reviewer, a dead verdict, a dead root, a fix that ended
-  unlanded — files it at once, and an answered ask clears that one
-  land. An ask closed without an `answer:` comment holds nothing: the
-  next pass refiles it and the blocker names the live ask's id.
+  `release-review-wait:td<land>` ask once the newer of the land and
+  its newest covering reviewer is 24 h old; a land with no covering
+  reviewer gets one minted under the plan root its own `plan:` tag
+  names, `blocked-by` the landed todo so a REVERT verdict holds it
+  through the rebuild, at most two mints a pass — the ask files at
+  once only where minting cannot run (no review-fit lane, no live
+  root, the mint raised), where `plan_dispatch` itself is switched
+  off, or the wait can never resolve — a dead verdict, a dead root,
+  a fix that ended unlanded — and an answered ask clears that one
+  land. An ask closed without an `answer:` comment holds nothing:
+  the next pass refiles it and the blocker names the live ask's id.
 - The session's env is an allowlist (`ENV_ALLOWLIST` in `run_slice.py`):
   no DB DSN or vault variable reaches it. It needs `PRECIS_MCP_TOKEN`
   (env or the mounted secret) to reach the precis MCP, and the claude
