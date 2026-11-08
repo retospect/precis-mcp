@@ -29,6 +29,14 @@ PRIO_TAG_TO_INT: dict[str, int] = {
 }
 
 
+#: Inverse of :data:`PRIO_TAG_TO_INT` — the ladder name a stored column
+#: value renders as (the name spelling of the same number). Off-ladder
+#: values (2, 4, 6, 7, 9, 10) have no name and render bare.
+PRIO_INT_TO_NAME: dict[int, str] = {
+    v: k.removeprefix("PRIO:") for k, v in PRIO_TAG_TO_INT.items()
+}
+
+
 #: Near-miss ``PRIO:`` spellings with one reading on the tag scale
 #: (gr494831 step 2; prod 2026-10-15 put(kind='gripe', tags=['PRIO:medium'])).
 #: ``PRIO:p2`` is deliberately absent: a p-prefix reads as the P0..P4 scale,
@@ -106,6 +114,18 @@ def validate_prio(prio: int | None) -> int | None:
             next="prio=1 preempts strategic rotation; 3..10 ride the 1/N share",
         )
     return prio
+
+
+def prio_display(prio: int) -> str:
+    """The display spelling of a stored ``refs.prio`` value.
+
+    One axis, two spellings — a read renders both: the stored number
+    plus its ladder name when it has one (``3 (high)``); off-ladder
+    values (``2``) have no name and render as the bare number. Storage
+    stays numeric; only the render changes.
+    """
+    name = PRIO_INT_TO_NAME.get(prio)
+    return f"{prio} ({name})" if name is not None else str(prio)
 
 
 def split_prio(tags: list[str] | None) -> tuple[list[str] | None, int | None]:

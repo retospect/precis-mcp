@@ -2216,6 +2216,21 @@ class TestPromptAndView:
         assert "no code fences" in p
         assert "$…$` math" in p
 
+    def test_prompt_names_the_ladder_prio(self, store: Any) -> None:
+        """gr592664 — the tick prompt's ``priority`` line spells the same
+        ladder name the reads render (``priority 3 (high)``); an unset
+        prio stays ``unset``."""
+        h = QuestHandler(hub=Hub(store=store))
+        resp = h.put(text="A weighted striving", prio=3)
+        m = re.search(r"\bqu(\d+)\b", resp.body)
+        assert m is not None
+        qref = store.get_ref(kind="quest", id=int(m.group(1)))
+        assert "priority 3 (high)" in build_tick_prompt(store, qref)
+
+        qid2 = _mk_quest(store, "An unweighted striving")
+        prompt = build_tick_prompt(store, store.get_ref(kind="quest", id=qid2))
+        assert "priority unset" in prompt
+
     def test_proposal_schema_shows_derive_from_as_a_parseable_object(
         self, store: Any
     ) -> None:

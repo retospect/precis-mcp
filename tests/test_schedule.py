@@ -425,6 +425,34 @@ def test_parse_strict_numeric_prio_canonicalises() -> None:
             Tag.parse_strict(bad)
 
 
+def test_prio_renders_the_ladder_name(handler: TodoHandler) -> None:
+    """gr592664: the read spells the same axis the write took — the
+    stored number with its ladder name (``prio: 3 (high)``); off-ladder
+    numbers (2) have no name and render bare. Storage stays numeric."""
+    resp = handler.put(text="hot", prio=3)
+    assert "prio=3 (high)" in resp.body  # the create ack echoes the write
+    rid = _id_of(resp.body)
+    assert "prio: 3 (high)" in handler.get(id=rid).body
+
+    rid2 = _id_of(handler.put(text="mid", prio=2).body)
+    card = handler.get(id=rid2).body
+    assert "prio: 2" in card
+    assert "prio: 2 (" not in card
+
+    # So does the batch summary block.
+    batch = handler.get(id=[rid, rid2]).body
+    assert "prio=3 (high)" in batch
+    assert "prio=2" in batch
+
+    # A bare prio-write receipt names it too.
+    resp = handler.tag(id=rid2, prio=8)
+    assert "prio=8 (low)" in resp.body
+
+    # The fisheye focal card renders the same spelling.
+    eye = handler.get(id=rid, view="fisheye").body
+    assert "prio: 3 (high)" in eye
+
+
 def test_tag_prio_kwarg_writes_column(handler: TodoHandler, store: Store) -> None:
     resp = handler.put(text="x")
     rid = _id_of(resp.body)

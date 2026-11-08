@@ -35,7 +35,7 @@ from precis.handlers._numeric_ref import (
     _parse_id_range,
     _parse_window_bound,
 )
-from precis.handlers._prio_tag import validate_prio
+from precis.handlers._prio_tag import prio_display, validate_prio
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import KindSpec
 from precis.response import Response
@@ -3387,7 +3387,7 @@ class JobHandler(NumericRefHandler):
                 f"created job id={ref.id} (STATUS:queued, "
                 f"job_type={spec.name!r}, executor={resolved_executor!r}, "
                 f"origin={meta['origin']!r}"
-                + (f", prio={prio}" if prio is not None else "")
+                + (f", prio={prio_display(prio)}" if prio is not None else "")
                 + f"). poll: get(kind='job', id={ref.id})."
             ),
             ref_id=ref.id,
@@ -4153,7 +4153,9 @@ class JobHandler(NumericRefHandler):
                 # Only a prio write happened — the base tag() would
                 # reject an otherwise-empty call.
                 self._record_tag_reason(ref_id, reason)
-                return Response(body=f"set prio={prio} on job id={ref_id}")
+                return Response(
+                    body=f"set prio={prio_display(prio)} on job id={ref_id}"
+                )
         # ``prio`` rides through the base's ``**_kw`` — dead weight on a
         # scalar call (already written above), live on the batch path,
         # where ``_tag_batch`` re-enters this method per id with it.

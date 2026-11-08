@@ -54,7 +54,12 @@ from precis.handlers._numeric_ref import (
     NumericRefHandler,
     _parse_window_bound,
 )
-from precis.handlers._prio_tag import prio_tag_int, split_prio, validate_prio
+from precis.handlers._prio_tag import (
+    prio_display,
+    prio_tag_int,
+    split_prio,
+    validate_prio,
+)
 from precis.handlers._request_state import RequestState
 from precis.protocol import ArgsSpec, KindSpec
 from precis.quest import weave_tick as _weave_tick
@@ -1035,7 +1040,9 @@ class QuestHandler(NumericRefHandler):
             if not add and not remove:
                 # Only a prio write happened — the base tag() would reject an
                 # otherwise-empty call.
-                shown = f"prio={prio}" if prio is not None else "prio=cleared"
+                shown = (
+                    f"prio={prio_display(prio)}" if prio is not None else "prio=cleared"
+                )
                 # The prio write above committed on its own connection; the
                 # gr504803 audit row lands right after it.
                 self._record_tag_reason(ref_id, reason)
@@ -1579,7 +1586,7 @@ class QuestHandler(NumericRefHandler):
         meta = ref.meta or {}
         lines = [f"quest {ref.id}: striving {status}"]
         if ref.prio is not None:
-            lines.append(f"priority: {ref.prio}")
+            lines.append(f"priority: {prio_display(ref.prio)}")
         if meta.get("horizon"):
             lines.append(f"horizon: {meta['horizon']}")
 
@@ -2166,7 +2173,7 @@ class QuestHandler(NumericRefHandler):
         if ref.prio is not None:
             # The canonical striving weight (prio 1=hottest…10; slice 2's
             # reweighting flows this down the serves DAG). Set via PRIO: tag.
-            lines.append(f"priority: {ref.prio}")
+            lines.append(f"priority: {prio_display(ref.prio)}")
         if meta.get("horizon"):
             lines.append(f"horizon: {meta['horizon']}")
         if tags:
@@ -2319,7 +2326,7 @@ class QuestHandler(NumericRefHandler):
         indent = "  " * depth
         tags = self.store.tags_for(ref.id)
         status = _status_of(tags) or "active"
-        prio = f" prio={ref.prio}" if ref.prio is not None else ""
+        prio = f" prio={prio_display(ref.prio)}" if ref.prio is not None else ""
         handle = handle_registry.try_format(self.kind, ref.id) or f"quest:{ref.id}"
         lines = [f"{indent}◆ {handle} [{status}]{prio} {ref.title.splitlines()[0]}"]
 

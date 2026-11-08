@@ -699,6 +699,26 @@ class TestStatusAndRubricViews:
         body = h.get(id=qid, view="status").body
         assert "striving dormant" in body
 
+    def test_prio_renders_the_ladder_name(self, store: Any) -> None:
+        """gr592664: the read spells the same axis the write took — the
+        stored number with its ladder name (``priority: 3 (high)``);
+        off-ladder numbers (2) have no name and render bare."""
+        h = _handler(store)
+        qid = _created_id(h.put(text="A striving", prio=3))
+        assert "priority: 3 (high)" in h.get(id=qid, view="status").body
+        # the default digest header and the tree rollup spell it the same
+        assert "priority: 3 (high)" in h.get(id=qid).body
+        assert "prio=3 (high)" in h.get(id=qid, view="tree").body
+
+        qid2 = _created_id(h.put(text="A mid striving", prio=2))
+        body = h.get(id=qid2, view="status").body
+        assert "priority: 2" in body
+        assert "priority: 2 (" not in body
+
+        # A bare prio-write receipt names it too.
+        resp = h.tag(id=qid2, prio=1)
+        assert "prio=1 (urgent)" in resp.body
+
     def test_status_view_fresh_quest_degrades(self, store: Any) -> None:
         """gr592666 — a fresh quest reports every section empty rather
         than raising."""

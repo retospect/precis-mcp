@@ -289,17 +289,25 @@ def _search_call_text(kind: str | None, args: dict[str, Any], drop: set[str]) ->
 
 
 def _stub_state_line(row: dict[str, Any]) -> str:
-    """The per-stub state line, with ``prio N`` and (when the ``stub_rank``
-    pass's Tier-2 LLM band has labeled this stub) `` · <label>`` appended.
+    """The per-stub state line, with ``prio N (name)`` and (when the
+    ``stub_rank`` pass's Tier-2 LLM band has labeled this stub)
+    `` · <label>`` appended.
 
     ``row['prio']`` is ``None`` for an unranked stub (the ``stub_rank``
     pass hasn't scored it yet, or the whole pass is disabled) — omit the
     suffix entirely rather than rendering a noisy ``prio None``. Likewise
     ``row['llm_label']`` is empty for a stub outside the uncertain band
-    (or the LLM step is disabled/hasn't reached it yet).
+    (or the LLM step is disabled/hasn't reached it yet). The stub's prio
+    is the same ``refs.prio`` ladder the todo/quest reads render, so it
+    gets the same ``N (name)`` spelling (gr592664).
     """
+    # Lazy — the handler import stays off the runtime/worker import path.
+    from precis.handlers._prio_tag import prio_display
+
     prio = row.get("prio")
-    line = row["state"] if prio is None else f"{row['state']}  prio {prio}"
+    line = (
+        row["state"] if prio is None else f"{row['state']}  prio {prio_display(prio)}"
+    )
     label = row.get("llm_label")
     if label:
         line = f"{line}  · {label}"

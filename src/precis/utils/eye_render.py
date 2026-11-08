@@ -681,16 +681,19 @@ def _todo_state(store: Store, ref: Any) -> str:
     """``status: <STATUS> · prio: <N>`` for a todo's focal card. Prio is the
     effective sort value: a NULL column rides as the default 5 — the same
     ``COALESCE(prio, 5)`` every todo sort applies — so the line always names
-    a number (gr568413). Neither field rides the chip row: ``STATUS:open``
-    drops there as context-restating (the default), and prio is a sort
-    column, never a stored tag — ``PRIO:`` spellings split into the column
-    at write time (``handlers._prio_tag``)."""
+    a number (gr568413), rendered with its ladder name when it has one
+    (``5 (normal)``; ``handlers._prio_tag.prio_display``). Neither field
+    rides the chip row: ``STATUS:open`` drops there as context-restating
+    (the default), and prio is a sort column, never a stored tag —
+    ``PRIO:`` spellings split into the column at write time
+    (``handlers._prio_tag``)."""
+    from precis.handlers._prio_tag import prio_display
     from precis.todo import views
 
     ref_id = int(ref.id)
     status = views._status_of_many(store, [ref_id]).get(ref_id, "open")
     prio = getattr(ref, "prio", None)
-    return f"status: {status} · prio: {prio if prio is not None else 5}"
+    return f"status: {status} · prio: {prio_display(prio if prio is not None else 5)}"
 
 
 def _render_note_eye(

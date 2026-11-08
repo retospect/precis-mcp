@@ -1688,7 +1688,12 @@ def build_tick_prompt(
     """
     qid = quest.id
     stmt = quest.title or f"quest {qid}"
-    prio = quest.prio if quest.prio is not None else "unset"
+    # ``priority`` spells the same ladder name the reads render
+    # (``3 (high)``, gr592664) — the model reads the name the agent wrote,
+    # not a bare number it then has to map.
+    from precis.handlers._prio_tag import prio_display
+
+    prio = prio_display(quest.prio) if quest.prio is not None else "unset"
     dossier_text = (
         narrative_override
         if narrative_override is not None

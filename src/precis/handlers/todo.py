@@ -89,7 +89,12 @@ from precis.handlers._eye import is_eye_view
 from precis.handlers._interpret import interpreted
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
-from precis.handlers._prio_tag import prio_tag_int, split_prio, validate_prio
+from precis.handlers._prio_tag import (
+    prio_display,
+    prio_tag_int,
+    split_prio,
+    validate_prio,
+)
 from precis.handlers._request_state import RequestState
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.handlers.plaintext import _require_find_and_text
@@ -2099,7 +2104,7 @@ class TodoHandler(NumericRefHandler):
             # reject an empty ``tag`` call. A bare clear renders as
             # "cleared", not the misreadable "prio=None".
             if prio is not None:
-                suffix = f"prio={prio}"
+                suffix = f"prio={prio_display(prio)}"
             elif clear_prio:
                 suffix = "prio=cleared (back to the default)"
             else:
@@ -2423,7 +2428,7 @@ class TodoHandler(NumericRefHandler):
         if ref.parent_id is not None:
             out.append(f"parent: #{ref.parent_id}")
         if ref.prio is not None:
-            out.append(f"prio: {ref.prio}")
+            out.append(f"prio: {prio_display(ref.prio)}")
         if ref.parent_id is not None or ref.prio is not None:
             out.append("")
         out.append(ref.title)
@@ -2461,7 +2466,7 @@ class TodoHandler(NumericRefHandler):
         if parent is not None:
             body += f" under {handle_registry.format_handle('todo', parent)}"
         if state.prio is not None:
-            body += f", prio={state.prio}"
+            body += f", prio={prio_display(state.prio)}"
         body += "."
         executor = (state.meta or {}).get("executor")
         if executor:

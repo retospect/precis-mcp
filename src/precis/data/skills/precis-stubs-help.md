@@ -34,9 +34,11 @@ search(kind="paper", view="stubs", n=50)  # default 25
 
 Each row shows the ref id, the best external identifier, the cite key,
 and a one-line state (`awaiting fetch`, `no OA version available`,
-`PDF downloaded; awaiting watcher ingest`, …), with `prio N` appended
-once the `stub_rank` pass has scored it (1=hottest..10=coldest —
-relevant-first; unranked stubs carry no `prio` suffix and sort last).
+`PDF downloaded; awaiting watcher ingest`, …), with `prio N (name)`
+appended once the `stub_rank` pass has scored it (1=hottest..10=coldest —
+relevant-first, the same ladder spelling the todo/quest reads render:
+`prio 3 (high)`, off-ladder numbers bare; unranked stubs carry no `prio`
+suffix and sort last).
 Ties fall back to oldest-request-first. `q=` is ignored — the view *is*
 the filter.
 

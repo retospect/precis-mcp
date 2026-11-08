@@ -112,7 +112,8 @@ beyond the stall budget surfaces as `quest-tick-stalled:<quest_id>`
 ## Priority — how hard it steers
 
 A quest's **striving weight** is its priority, set with a `PRIO:` tag
-(synced to the canonical `prio` column, 1 = hottest … 10):
+(synced to the canonical `prio` column, 1 = hottest … 10; reads render
+the ladder name with it — `priority: 3 (high)`):
 
 ```python
 tag(kind="quest", id=7, add=["PRIO:urgent"])  # prio 1 → weight 1.0

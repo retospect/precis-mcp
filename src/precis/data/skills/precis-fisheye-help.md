@@ -188,7 +188,8 @@ A **quest** eye opens with its gist — the striving statement +
 lab notebook stays at `view='logbook'`.
 
 A **todo** eye adds `status: <STATUS> · prio: <N>` to the focal card
-(prio is the effective sort value — unset rides as the default 5) and a
+(prio is the effective sort value — unset rides as the default 5, and
+the ladder name rides along: `prio: 5 (normal)`) and a
 `— tree —` ring at `fisheye+1hop`: parent, peers, children from
 `parent_id`, or a `lone leaf` line when it has none. These sit alongside
 its `Dependencies:` and other link groups (`precis-todo-help`).

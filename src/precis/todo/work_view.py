@@ -492,7 +492,11 @@ def _format_row(r: WorkRow) -> str:
     # status icon, so its STATUS is spelled out as a bracketed cell
     cells = [r.handle, glyph, f"[{r.status}]"] if glyph else [r.handle, r.icon]
     if r.prio is not None:
-        cells.append(f"prio={r.prio}")
+        # Lazy — precis.todo is shared with workers, who never import
+        # handler modules (todo/__init__.py, import-linter contract).
+        from precis.handlers._prio_tag import prio_display
+
+        cells.append(f"prio={prio_display(r.prio)}")
     if r.agents:
         cells.append(f"agents={r.agents}")
     if r.jobs:
@@ -1292,7 +1296,11 @@ def _quest_line(q: QuestBlock, now: datetime) -> str:
     if q.board == "blocked-work":
         cells.append("blocked by other work")
     if q.prio is not None:
-        cells.append(f"prio={q.prio}")
+        # Lazy — precis.todo is shared with workers, who never import
+        # handler modules (todo/__init__.py, import-linter contract).
+        from precis.handlers._prio_tag import prio_display
+
+        cells.append(f"prio={prio_display(q.prio)}")
     if q.agents:
         cells.append(f"agents={q.agents}")
     if q.jobs:

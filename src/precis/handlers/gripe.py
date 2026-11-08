@@ -104,6 +104,7 @@ from precis.handlers._numeric_ref import (
 )
 from precis.handlers._prio_tag import (
     alias_prio_tags,
+    prio_display,
     prio_tag_int,
     split_prio,
     validate_prio,
@@ -1320,7 +1321,9 @@ class GripeHandler(NumericRefHandler):
             if not add and not remove:
                 # Only a prio write happened — the base tag() would reject an
                 # otherwise-empty call.
-                shown = f"prio={prio}" if prio is not None else "prio=cleared"
+                shown = (
+                    f"prio={prio_display(prio)}" if prio is not None else "prio=cleared"
+                )
                 # The prio write above committed on its own connection; the
                 # gr504803 audit row lands right after it.
                 self._record_tag_reason(ref_id, reason)

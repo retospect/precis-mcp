@@ -60,6 +60,7 @@ from precis._result_budget import size_cell
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Gone, NotFound, PrecisError, Unsupported
 from precis.handlers._eye import is_eye_view
+from precis.handlers._prio_tag import prio_display
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -3932,7 +3933,7 @@ class NumericRefHandler(Handler):
                 elif val.startswith("alert-state:"):
                     bits.append(val)
             if ref.prio is not None:
-                bits.append(f"prio={ref.prio}")
+                bits.append(f"prio={prio_display(ref.prio)}")
             bits.append(f"links={link_counts.get(rid, 0)}")
             if sz := size_cell(sizes.get(rid, 0)):
                 bits.append(sz)

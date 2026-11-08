@@ -125,6 +125,8 @@ itself (`PRIO:3` → `prio=3`), translated on write and **stripped** —
 priority lives in the column only, never a tag row, so don't filter by
 `tags=['PRIO:...']` (nothing stores it).
 Removing a `PRIO:*` tag clears the column back to the default.
+Reads render the ladder name with the number — `prio: 3 (high)` on the
+card; an off-ladder number shows bare (`prio: 2`).
 
 ## Block a todo on another ref
 ## Mark a todo as waiting on something else

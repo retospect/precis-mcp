@@ -691,6 +691,21 @@ def test_view_stubs_shows_prio_when_ranked(runtime_with_store: PrecisRuntime) ->
     assert "prio 2" in out
 
 
+def test_view_stubs_names_an_on_ladder_prio(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr592664 — the stub backlog spells the same axis the write took:
+    an on-ladder prio renders its ladder name (``prio 3 (high)``); the
+    off-ladder numbers the neighbouring tests rank stay bare."""
+    store = runtime_with_store.hub.store
+    assert store is not None
+    rid = _stub(store, cite_key="named2024x", doi="10.1/namedx")
+    _set_prio(store, rid, 3)
+
+    out = runtime_with_store.dispatch("search", {"view": "stubs"})
+    assert "prio 3 (high)" in out
+
+
 def test_view_stubs_omits_prio_when_unranked(runtime_with_store: PrecisRuntime) -> None:
     store = runtime_with_store.hub.store
     assert store is not None
