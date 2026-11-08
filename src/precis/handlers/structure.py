@@ -185,8 +185,10 @@ _VIEWS = (
     *_EXPORT_VIEWS,
 )
 
-#: At or below this many atoms the default TOC inlines the per-atom table
-#: after the summary head; above it the table is behind ``view='atoms'``.
+#: At or below this many atoms a put/edit/derive ack still inlines the
+#: per-atom table after the summary head — the "what you just made" echo.
+#: The default ``get`` never inlines (gr592665); the per-atom read is
+#: ``view='atoms'`` at any size.
 _TOC_INLINE_ATOMS = 40
 
 #: ``meta['generated']`` keys ``view='generator'`` elides from the
@@ -2642,7 +2644,7 @@ class StructureHandler(Handler):
         for a candidate whose atoms never landed."""
         with self.store.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT refs.ref_id, slug_id.id_value, refs.meta, "
+                "SELECT refs.ref_id, slug_id.id_value, refs.title, refs.meta, "
                 "refs.updated_at FROM refs "
                 "LEFT JOIN ref_identifiers slug_id "
                 "  ON slug_id.ref_id = refs.ref_id AND slug_id.id_kind = 'cite_key' "
@@ -2666,7 +2668,7 @@ class StructureHandler(Handler):
                 )
             )
         table = []
-        for ref_id, slug, meta, updated in rows:
+        for ref_id, slug, title, meta, updated in rows:
             meta = meta or {}
             res = meta.get("results")
             keys = ", ".join(sorted(res)) if isinstance(res, dict) and res else "-"
@@ -2677,6 +2679,9 @@ class StructureHandler(Handler):
             table.append(
                 {
                     "pathway": f"{pw_handle} {slug or ''}".rstrip(),
+                    # gr592665: the human title beside the slug — the slug alone
+                    # never said which reaction the run priced.
+                    "title": (title or "").splitlines()[0] if title else "-",
                     "status": str(meta.get("status") or "?"),
                     "tier": str(meta.get("tier") or "-"),
                     "results": keys,
@@ -2688,7 +2693,7 @@ class StructureHandler(Handler):
             f"{len(table)} pathway(s) ran on this candidate (meta.candidate_ref):\n"
             + render_agent_table(
                 table,
-                schema=["pathway", "status", "tier", "results", "updated"],
+                schema=["pathway", "title", "status", "tier", "results", "updated"],
             )
         )
         # The hint names a ready pathway carrying the staircase export
@@ -2697,13 +2702,13 @@ class StructureHandler(Handler):
         nxt = next(
             (
                 slug
-                for _id, slug, meta, _u in rows
+                for _id, slug, _t, meta, _u in rows
                 if slug
                 and (meta or {}).get("status") == "ready"
                 and isinstance((meta or {}).get("results"), dict)
                 and (meta["results"]).get("che_affine")
             ),
-            next((slug for _id, slug, _m, _u in rows if slug), None),
+            next((slug for _id, slug, _t, _m, _u in rows if slug), None),
         )
         if nxt:
             body += (
@@ -4934,8 +4939,14 @@ class StructureHandler(Handler):
         pbc = "".join("T" if p else "F" for p in scene.cell.pbc)
         handle = handle_registry.try_format("structure", ref.id, chunk=False) or "—"
         verb = f" — {head_verb}" if head_verb else ""
-        head = (
-            f"# {ref.slug}{verb} · {t['formula']} · {t['natoms']} atoms · "
+        # gr592665: the title rides the head — a bare slug meant a handle→
+        # candidate-name lookup cost a get per row of every table.
+        title = (ref.title or "").splitlines()[0].strip() if ref.title else ""
+        head = f"# {ref.slug}{verb}"
+        if title and title != str(ref.slug or ""):
+            head += f" · {title}"
+        head += (
+            f" · {t['formula']} · {t['natoms']} atoms · "
             f"pbc[{pbc}] · {t['nbonds']} bonds · {handle}"
         )
         lr = relax_summary or (ref.meta or {}).get("last_relax")
@@ -4966,8 +4977,14 @@ class StructureHandler(Handler):
         n_err = sum(1 for f in findings if f.severity == "error")
         n_warn = sum(1 for f in findings if f.severity == "warn")
         head += f"\n# validate: {n_err} error(s), {n_warn} warning(s)"
-        show_atoms = inline_atoms or len(scene.atoms) <= _TOC_INLINE_ATOMS
-        if not show_atoms:
+        # gr592665: the default get is the summary head only — the atom
+        # table lives behind view='atoms'. put/edit/derive acks (head_verb
+        # set) still inline it for small scenes, the "what you just made"
+        # echo.
+        show_atoms = inline_atoms or (
+            head_verb is not None and len(scene.atoms) <= _TOC_INLINE_ATOMS
+        )
+        if not show_atoms and scene.atoms:
             head += (
                 f"\n# {t['natoms']} atoms not listed — "
                 "view='atoms' for the per-atom table; view='validate' for findings"

@@ -1639,10 +1639,25 @@ def test_default_get_is_summary_head_above_threshold(structure):
     assert "aPd7" in full and "# bbox" in full
 
 
-def test_default_get_inlines_small_structure(structure):
+def test_default_get_is_summary_head_and_names_the_title(structure):
+    """gr592665: the default TOC never inlines the per-atom table — no size
+    threshold; ``view='atoms'`` is the per-atom read at any size. The head
+    also names the structure's title (a handle→candidate lookup used to
+    cost a second get)."""
+    structure.put(id="pd_pair", text=_PD, title="Pd pair catalyst")
+    body = structure.get(id="pd_pair").body
+    assert body.splitlines()[0].startswith("# pd_pair · Pd pair catalyst ·")
+    assert "# validate:" in body and "atoms not listed" in body
+    assert "aPd1" not in body  # no per-atom rows, even below the old 40 cap
+    full = structure.get(id="pd_pair", view="atoms").body
+    assert "aPd1" in full and "atoms not listed" not in full
+
+
+def test_default_get_head_survives_an_untitled_structure(structure):
     structure.put(id="pd_pair", text=_PD)
     body = structure.get(id="pd_pair").body
-    assert body.index("# validate:") < body.index("aPd1")
+    # put defaults title to the slug — not repeated on the head line.
+    assert body.splitlines()[0].startswith("# pd_pair · Pd2 ·")
 
 
 def test_atom_views_require_atom_key(structure):

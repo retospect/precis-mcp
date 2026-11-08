@@ -1571,13 +1571,18 @@ class PathwayHandler(Handler):
                 "WHERE kind = 'pathway' AND retired_at IS NULL "
                 "GROUP BY 1 ORDER BY 2 DESC"
             ).fetchall()
+            # gr592665: the `cand` join resolves each row's candidate
+            # structure (meta.candidate_ref) to its handle + title — the slug
+            # alone never said which dopant/site the row priced.
             rows = conn.execute(
                 "SELECT refs.ref_id, slug_id.id_value, refs.title, "
                 "refs.meta->>'status', "
                 "refs.updated_at, refs.meta->>'tier', refs.meta->'span', "
-                "refs.meta->'low_confidence' FROM refs "
+                "refs.meta->'low_confidence', cand.ref_id, cand.title FROM refs "
                 "LEFT JOIN ref_identifiers slug_id "
                 "  ON slug_id.ref_id = refs.ref_id AND slug_id.id_kind = 'cite_key' "
+                "LEFT JOIN refs cand ON cand.kind = 'structure' "
+                "  AND cand.ref_id::text = refs.meta->>'candidate_ref' "
                 "WHERE refs.kind = 'pathway' AND refs.retired_at IS NULL "
                 "ORDER BY refs.updated_at DESC LIMIT %s",
                 (self._LIST_LIMIT,),
@@ -1603,19 +1608,37 @@ class PathwayHandler(Handler):
             "",
             "pw | slug | "
             + ("" if shared else "title | ")
-            + "status | tier | span eV | updated",
+            + "candidate | status | tier | span eV | updated",
         ]
-        for ref_id, slug, title, status, updated, tier, span, low in rows:
+        for (
+            ref_id,
+            slug,
+            title,
+            status,
+            updated,
+            tier,
+            span,
+            low,
+            cand_id,
+            cand_title,
+        ) in rows:
             span_txt = f"{span:.2f}" if isinstance(span, (int, float)) else "-"
             if low is True:
                 span_txt += " (low confidence)"
             # gr553326: the pw<id> handle next to the slug — the web reader
             # keys on the ref id (/refs/pathway/<id>).
             handle = handle_registry.try_format("pathway", ref_id) or f"pw{ref_id}"
+            cand_cell = "-"
+            if cand_id is not None:
+                ch = (
+                    handle_registry.try_format("structure", int(cand_id))
+                    or f"st{cand_id}"
+                )
+                cand_cell = f"{ch} {cand_title}" if cand_title else ch
             lines.append(
                 f"{handle} | {slug or '?'} | "
                 + ("" if shared else f"{title} | ")
-                + f"{status or '?'} | {tier or '-'} | {span_txt} | "
+                + f"{cand_cell} | {status or '?'} | {tier or '-'} | {span_txt} | "
                 f"{updated:%Y-%m-%d %H:%MZ}"
             )
         # Point the hint at a ready pathway: view='analysis' on one still
@@ -1649,10 +1672,15 @@ class PathwayHandler(Handler):
         if not substrate or not target:
             return "cannot compare: this pathway has no computed results yet."
         with store.pool.connection() as conn:
+            # Same `cand` join as _list (gr592665): the candidate structure's
+            # handle + title rides each compare row.
             rows = conn.execute(
-                "SELECT refs.ref_id, slug_id.id_value, refs.meta FROM refs "
+                "SELECT refs.ref_id, slug_id.id_value, refs.meta, "
+                "cand.ref_id, cand.title FROM refs "
                 "LEFT JOIN ref_identifiers slug_id "
                 "  ON slug_id.ref_id = refs.ref_id AND slug_id.id_kind = 'cite_key' "
+                "LEFT JOIN refs cand ON cand.kind = 'structure' "
+                "  AND cand.ref_id::text = refs.meta->>'candidate_ref' "
                 "WHERE refs.kind = 'pathway' AND refs.retired_at IS NULL "
                 "  AND refs.meta->'results'->>'substrate' = %s "
                 "  AND refs.meta->'results'->>'target' = %s "
@@ -1660,15 +1688,23 @@ class PathwayHandler(Handler):
                 (substrate, target),
             ).fetchall()
         candidates = []
-        for ref_id, slug, m in rows:
+        for ref_id, slug, m, cand_id, cand_title in rows:
             g = (m or {}).get("graph")
             if not g:
                 continue
             c_root, c_target = analysis.roots(g, m.get("results", {}))
+            cand_cell = "-"
+            if cand_id is not None:
+                ch = (
+                    handle_registry.try_format("structure", int(cand_id))
+                    or f"st{cand_id}"
+                )
+                cand_cell = f"{ch} {cand_title}" if cand_title else ch
             candidates.append(
                 {
                     "ref_id": ref_id,
                     "slug": slug or "?",
+                    "candidate": cand_cell,
                     "lever": (m.get("config") or {})
                     .get("slab", {})
                     .get("element", "?"),

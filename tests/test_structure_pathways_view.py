@@ -62,6 +62,9 @@ def test_pathways_lists_candidate_runs(structure, store):
     )
     body = structure.get(id="pd_cand", view="pathways").body
     assert "pd-rx-ready" in body and "pd-rx-computing" in body
+    # gr592665: each row names its title beside the slug — a bare slug
+    # meant a get per row to learn what the run priced.
+    assert "pd-rx-ready pathway" in body and "pd-rx-computing pathway" in body
     assert "ready" in body and "computing" in body and "screening" in body
     # the results-keys summary carries the staircase/HER exports
     assert "che_affine" in body and "her" in body

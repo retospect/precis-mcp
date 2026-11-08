@@ -203,11 +203,12 @@ get(
 get(kind="structure", id="pd111", view="atoms")  # the per-atom table
 ```
 
-The TOC is the **one round-trip overview**: cell summary, composition, pbc,
-bond count, bounding box, validator error/warning counts and the last relax
-envelope (if any). The per-atom rows (element · fractional position ·
-coordination · fixed) are inlined only for ≤40 atoms; above that use
-`view='atoms'`. `put`/`edit` echo the same head. A symmetry-
+The TOC is the **one round-trip overview**: the structure's title, cell
+summary, composition, pbc, bond count, bounding box, validator
+error/warning counts and the last relax envelope (if any). The per-atom
+rows (element · fractional position · coordination · fixed) always live
+behind `view='atoms'` — the head itself is the whole default read.
+`put`/`edit` echo the same head. A symmetry-
 reduced (Wyckoff-orbit) collapse is a later increment.
 
 `view='stats'` is the geometry digest: bond lengths per element pair

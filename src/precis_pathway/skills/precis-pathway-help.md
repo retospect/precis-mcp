@@ -37,9 +37,10 @@ not a bug; retry from a host that has it.
 
 ## Find existing pathways / list what has been run
 
-A bare get lists the most recently updated pathways with their slugs,
-status, tier (`screening` or `neb`) and energetic span in eV, plus the
-total per status:
+A bare get lists the most recently updated pathways with their slugs, the
+candidate each ran on (`st<N>` handle + its title, when the
+`meta.candidate_ref` stamp resolves), status, tier (`screening` or `neb`)
+and energetic span in eV, plus the total per status:
 
 ```python
 get(kind="pathway")
@@ -62,8 +63,8 @@ meta: `{'status': 'ready'}`, `{'tier': 'screening'|'neb'|'verify'}`,
 `{'candidate': '<st<N> handle|ref id|structure slug>'}`; a filter alone
 (without `q`) browses. `get(kind='structure',
 id='<candidate>', view='pathways')` lists every pathway that ran on that
-candidate (`meta.candidate_ref`) with status and a results-keys summary —
-the "which ready pathways of stN carry `che_affine`/`her`" read.
+candidate (`meta.candidate_ref`) with its title, status and a results-keys
+summary — the "which ready pathways of stN carry `che_affine`/`her`" read.
 
 ## Count kinetics outcomes across pathways
 
@@ -477,9 +478,10 @@ get(kind="pathway", id="no-nh3-pd", view="compare")
 
 Compares this pathway against every computed sibling for the same
 substrate→target, as one table: **candidates are rows** (sorted best-first by
-`RATE`), the **reaction coordinate is the columns** (state energies + `‡`
-barriers). Scan a `‡` column to see which candidate lowers that step; read a row
-for one candidate's whole landscape. Add `args={'U': x}` to rank the same
+`RATE`; the `candidate` column names the structure each ran on — `st<N>`
+handle + title), the **reaction coordinate is the columns** (state energies +
+`‡` barriers). Scan a `‡` column to see which candidate lowers that step; read
+a row for one candidate's whole landscape. Add `args={'U': x}` to rank the same
 table at a potential (rows sorted by `SPAN` at U; see the potential lever).
 
 ## The staircase read — per-rung ΔG(U), U_L and the reset contour

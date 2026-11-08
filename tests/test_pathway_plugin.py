@@ -1447,6 +1447,25 @@ def test_compare_view(pathway_store: Store) -> None:
         assert f"pw{ref.id} {slug}" in out, out
 
 
+def test_compare_names_each_candidate_structure(pathway_store: Store) -> None:
+    """gr592665: the compare table's `candidate` column resolves each row's
+    ``meta.candidate_ref`` to the structure's `st<N>` handle + title — the
+    dopant/site identity a bare slug never carried."""
+    cand = pathway_store.insert_ref(
+        kind="structure",
+        slug="cmp-cand",
+        title="Pd111-Ta-adatom-fcc-1",
+        meta={},
+    )
+    pw_id = _store_synthetic_pathway(pathway_store, "cmp-cand-pd", element="Pd")
+    pathway_store.update_ref(pw_id, meta_patch={"candidate_ref": str(cand.id)})
+    _store_synthetic_pathway(pathway_store, "cmp-cand-pt", element="Pt")
+
+    out = _handler(pathway_store).get(id="cmp-cand-pd", view="compare").body
+    assert "candidate" in out
+    assert f"st{cand.id} Pd111-Ta-adatom-fcc-1" in out
+
+
 def test_every_read_leads_with_pw_handle_and_web_path(
     pathway_store: Store,
 ) -> None:
@@ -3779,15 +3798,38 @@ def test_bare_get_lists_pathways_with_real_slugs(pathway_store: Store) -> None:
     assert body.startswith("2 pathways (")
     assert "1 ready" in body and "1 failed" in body
     assert (
-        f"pw{seeded[0].id} | list-ready-a | NO → NH3 on Pd | ready | neb | "
+        f"pw{seeded[0].id} | list-ready-a | NO → NH3 on Pd | - | ready | neb | "
         "1.59 (low confidence) |" in body
     )
-    assert "list-failed-b | pathway list-failed-b (failed) | failed | - | - |" in body
+    assert (
+        "list-failed-b | pathway list-failed-b (failed) | - | failed | - | - |" in body
+    )
     assert f"pw{seeded[1].id} | list-failed-b |" in body
     # The next-hint names a real slug, and a ready one: view='analysis' on a
     # failed or computing pathway is a dead end.
     hint = body.rsplit("next: ", 1)[1]
     assert "id='list-ready-a'" in hint
+
+
+def test_bare_get_names_each_row_candidate(pathway_store: Store) -> None:
+    """gr592665: the list's `candidate` column resolves each pathway's
+    ``meta.candidate_ref`` stamp to the structure's handle + title — the
+    dopant/site identity a bare slug never carried."""
+    cand = pathway_store.insert_ref(
+        kind="structure",
+        slug="pd-ta-adatom",
+        title="Pd111-Ta-adatom-fcc-1",
+        meta={},
+    )
+    pathway_store.insert_ref(
+        kind="pathway",
+        slug="cand-run",
+        title="NO → NH3 on Pd",
+        meta={"status": "ready", "candidate_ref": str(cand.id)},
+    )
+    body = _handler(pathway_store).get().body
+    assert f"st{cand.id} Pd111-Ta-adatom-fcc-1" in body
+    assert "candidate |" in body
 
 
 def test_get_resolves_a_bare_numeric_ref_id(pathway_store: Store) -> None:
@@ -3827,8 +3869,8 @@ def test_bare_get_names_a_shared_title_once(pathway_store: Store) -> None:
             )
     body = _handler(pathway_store).get().body
     assert "most recently updated, all 'NO → NH3 on Pd':" in body
-    assert "slug | status | tier | span eV | updated" in body
-    assert "same-b | ready | screening | 0.87 |" in body
+    assert "slug | candidate | status | tier | span eV | updated" in body
+    assert "same-b | - | ready | screening | 0.87 |" in body
     assert body.count("NO → NH3 on Pd") == 1
 
 

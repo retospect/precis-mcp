@@ -1466,8 +1466,10 @@ def _solve_lines(
 
 # ── cross-candidate compare (interleaved profile) ───────────────────────
 def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) -> str:
-    """`candidates`: [{slug, lever, graph, root, target}]. Rows = candidates.
-    When they share a network, columns interleave state(rel eV) + ‡(barrier Eₐ)
+    """`candidates`: [{slug, lever, graph, root, target, candidate?}]. Rows =
+    candidates; ``candidate`` (optional, gr592665) is the ``st<N> <title>``
+    cell naming the structure the pathway ran on — '-' when unstamped. When
+    they share a network, columns interleave state(rel eV) + ‡(barrier Eₐ)
     along the reaction coordinate; always: RATE (max step), SPAN, conf. Sorted
     by RATE ascending (best first). With ``U`` (V vs RHE) every CHE-stamped
     candidate is re-levered to that potential and the table ranks by SPAN at
@@ -1516,6 +1518,7 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
         rl = p["summ"]["rate_limiting"] or {}
         return {
             "cand": _cand_cell(p["c"]),
+            "candidate": str(p["c"].get("candidate") or "-"),
             "lever": p["c"].get("lever", ""),
             "RATE": _ea_or_na(rl.get("ea")),
             "SPAN": _b(p["summ"]["span"]) or "n/a",
@@ -1539,7 +1542,9 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
         return (
             prefix
             + note
-            + toon.dump(rows, schema=["cand", "lever", "RATE", "SPAN", "conf"])
+            + toon.dump(
+                rows, schema=["cand", "candidate", "lever", "RATE", "SPAN", "conf"]
+            )
         )
 
     # aligned: build interleaved columns from the shared coordinate.
@@ -1551,7 +1556,7 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
         else:
             col_names.append(col["pos"])
             legend.append(f"{col['pos']} {col['label']}")
-    schema = ["cand", "lever", *col_names, "RATE", "SPAN", "conf"]
+    schema = ["cand", "candidate", "lever", *col_names, "RATE", "SPAN", "conf"]
 
     rows = []
     for p in profiles:
