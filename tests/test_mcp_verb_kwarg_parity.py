@@ -178,6 +178,10 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         ("gripe", "edit", "landed"),
         ("gripe", "edit", "session"),
         ("gripe", "edit", "tree"),
+        # -- todo: edit(mode='gate') sha-in-prod fill (gr597921), args= by
+        # design — a rare ops door, not worth advertised schema weight.
+        ("todo", "edit", "sha"),
+        ("todo", "edit", "landed_by"),
         # -- put: diagram kinds ------------------------------------------
         ("figure", "put", "viewbox"),
         ("figure", "put", "vocab"),

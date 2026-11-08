@@ -424,6 +424,133 @@ def test_edit_meta_params_recurring_is_owner_only(
     assert ref.meta.get("params") == {"tick": 2}
 
 
+# ── edit: mode='gate' fills a pending sha-in-prod gate (gr597921) ─────
+
+
+def _put_sha_gate(handler: TodoHandler, sha: str = "0000000") -> int:
+    r = handler.put(
+        text="Wait for the fix to reach prod",
+        meta={"gate": {"kind": "sha-in-prod", "args": {"sha": sha}}},
+    )
+    assert r.ref_id is not None
+    return r.ref_id
+
+
+def _comment_texts(handler: TodoHandler, tid: int) -> list[str]:
+    return [c.text for c in handler.store.chunks.list_chunks_for_ref(tid)]
+
+
+def test_edit_gate_fills_placeholder_sha(handler: TodoHandler) -> None:
+    """The gripe's core door: the lander's post-land write over MCP."""
+    tid = _put_sha_gate(handler)
+    r = handler.edit(id=tid, mode="gate", sha="abc1234")
+    assert f"gate td{tid}: sha-in-prod sha set to abc1234" in r.body
+    ref = handler.store.get_ref(kind="todo", id=tid)
+    assert ref is not None
+    assert ref.meta["gate"]["args"]["sha"] == "abc1234"
+    # The ``sha: <sha>`` audit comment the lander would have written.
+    assert "sha: abc1234" in _comment_texts(handler, tid)
+    (ev,) = handler.store.events_for(tid, source="agent", event="meta_patched")
+    assert ev.payload["new"]["gate"]["args"]["sha"] == "abc1234"
+
+
+def test_edit_gate_landed_by_names_the_build(handler: TodoHandler) -> None:
+    tid = _put_sha_gate(handler)
+    handler.edit(id=tid, mode="gate", sha="abc1234", landed_by="td99")
+    assert "sha: abc1234 — landed by td99" in _comment_texts(handler, tid)
+    tid2 = _put_sha_gate(handler)
+    handler.edit(id=tid2, mode="gate", sha="def5678", landed_by=42)
+    assert "sha: def5678 — landed by td42" in _comment_texts(handler, tid2)
+
+
+def test_edit_gate_requires_a_valid_sha(handler: TodoHandler) -> None:
+    tid = _put_sha_gate(handler)
+    with pytest.raises(BadInput, match="requires args="):
+        handler.edit(id=tid, mode="gate")
+    with pytest.raises(BadInput, match="requires args="):
+        handler.edit(id=tid, mode="gate", sha="not-hex!")
+    with pytest.raises(BadInput, match="requires args="):
+        handler.edit(id=tid, mode="gate", sha="abc")  # too short
+
+
+def test_edit_gate_refuses_the_placeholder_itself(handler: TodoHandler) -> None:
+    tid = _put_sha_gate(handler)
+    with pytest.raises(BadInput, match="placeholder"):
+        handler.edit(id=tid, mode="gate", sha="0000000")
+
+
+def test_edit_gate_refuses_a_non_gate_todo(handler: TodoHandler) -> None:
+    handler.put(text="plain todo")
+    tid = _latest_todo_id(handler)
+    with pytest.raises(BadInput, match="not a sha-in-prod gate"):
+        handler.edit(id=tid, mode="gate", sha="abc1234")
+
+
+def test_edit_gate_refuses_an_answer_gate(handler: TodoHandler) -> None:
+    r = handler.put(text="answer gate", meta={"gate": {"kind": "answer"}})
+    assert r.ref_id is not None
+    with pytest.raises(BadInput, match="not a sha-in-prod gate"):
+        handler.edit(id=r.ref_id, mode="gate", sha="abc1234")
+
+
+def test_edit_gate_refuses_a_filled_sha(handler: TodoHandler) -> None:
+    """Restricted to the placeholder — never a rewrite of a set sha."""
+    tid = _put_sha_gate(handler, sha="aaaaaaa")
+    with pytest.raises(BadInput, match="already holds"):
+        handler.edit(id=tid, mode="gate", sha="abc1234")
+    # The same sha again is an idempotent ack, not a refusal.
+    r = handler.edit(id=tid, mode="gate", sha="AAAAAAA")
+    assert "already" in r.body
+
+
+def test_edit_gate_dry_run_writes_nothing(handler: TodoHandler) -> None:
+    tid = _put_sha_gate(handler)
+    r = handler.edit(id=tid, mode="gate", sha="abc1234", dry_run=True)
+    assert "would set" in r.body
+    ref = handler.store.get_ref(kind="todo", id=tid)
+    assert ref is not None
+    assert ref.meta["gate"]["args"]["sha"] == "0000000"
+    assert _comment_texts(handler, tid) == []
+
+
+def test_edit_gate_rejects_prose_and_anchor_kwargs(handler: TodoHandler) -> None:
+    tid = _put_sha_gate(handler)
+    for kw in ({"text": "x"}, {"body": "x"}, {"meta": {"op": "y"}}, {"find": "x"}):
+        with pytest.raises(BadInput, match="takes args="):
+            handler.edit(id=tid, mode="gate", sha="abc1234", **kw)
+
+
+def test_edit_gate_kwargs_refused_without_the_mode(handler: TodoHandler) -> None:
+    handler.put(text="plain todo")
+    tid = _latest_todo_id(handler)
+    with pytest.raises(BadInput, match="mode='gate'"):
+        handler.edit(id=tid, mode="replace", sha="abc1234")
+    with pytest.raises(BadInput, match="mode='gate'"):
+        handler.edit(id=tid, mode="replace", landed_by="td1")
+
+
+def test_edit_gate_survives_dispatch(
+    handler: TodoHandler, runtime_with_store: PrecisRuntime
+) -> None:
+    """``args={'sha': ...}`` flattens to the ``sha=`` kwarg through the
+    extras gate — the call shape gr597921 names."""
+    tid = _put_sha_gate(handler)
+    out = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "todo",
+            "id": tid,
+            "mode": "gate",
+            "__extras__": {"sha": "abc1234", "landed_by": "td7"},
+        },
+    )
+    assert "[error" not in out, out
+    assert f"gate td{tid}" in out
+    ref = handler.store.get_ref(kind="todo", id=tid)
+    assert ref is not None
+    assert ref.meta["gate"]["args"]["sha"] == "abc1234"
+
+
 # ── put: status transitions ──────────────────────────────────────────
 
 

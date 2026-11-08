@@ -2113,6 +2113,15 @@ def _ask_node(
         "the rebuild runs on the new brief; 'won't do' — close the node "
         "STATUS:won't-do.",
     ]
+    if cls == "post-land-write":
+        # gr597921: a hand-landed slice never reaches land_slice's gate
+        # write — fill the placeholder over MCP instead of re-landing.
+        lines += [
+            "",
+            "If the build's landed: line names the sha, fill the gate "
+            "directly: edit(kind='todo', id=<this gate>, mode='gate', "
+            "args={'sha': '<landed sha>', 'landed_by': 'td<build todo>'})",
+        ]
     body = "\n".join(lines)
     with store.atomic() as conn:
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (_RESCUE_PASS_LOCK_KEY,))

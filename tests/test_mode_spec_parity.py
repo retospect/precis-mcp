@@ -198,7 +198,9 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     ("tex", "edit"): ("find-replace", "append", "insert", "replace"),
     ("python", "edit"): ("find-replace", "append", "insert", "replace"),
     # -- edit: numeric-ref kinds that only accept a full-body rewrite ---
-    ("todo", "edit"): ("replace", "find-replace", "insert", "delete"),
+    # todo 'gate' (gr597921): fill a pending sha-in-prod gate's args.sha —
+    # the lander's post-land write for a slice landed by hand.
+    ("todo", "edit"): ("replace", "find-replace", "insert", "delete", "gate"),
     ("memory", "edit"): ("replace", "find-replace", "insert", "append", "delete"),
     ("quest", "edit"): ("replace", "pause", "resume"),
     # finding body edits: whole-body replace or find-replace (gr509620)
@@ -323,7 +325,7 @@ def test_todo_memory_edit_replace_only_and_gripe_put_create_comment(
     todo = full_hub.handlers["todo"].spec
     memory = full_hub.handlers["memory"].spec
     gripe = full_hub.handlers["gripe"].spec
-    assert todo.edit_modes == ("replace", "find-replace", "insert", "delete")
+    assert todo.edit_modes == ("replace", "find-replace", "insert", "delete", "gate")
     assert memory.edit_modes == (
         "replace",
         "find-replace",

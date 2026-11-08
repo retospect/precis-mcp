@@ -178,9 +178,23 @@ get(kind="todo", id=122, view="log")  # previous title/details
 ```
 
 Pass either or both fields. The id, parent, links, and tags stay attached;
-the previous title/details remain in the log. Only `mode='replace'` is
-supported. Owner-only on strategic / tactical nodes (same authority as
-delete / reparent).
+the previous title/details remain in the log. Title/body rewrites use
+`mode='replace'`. Owner-only on strategic / tactical nodes (same
+authority as delete / reparent).
+
+## Fill a plan gate's sha after a hand land
+
+```python
+edit(kind="todo", id=<gate td>, mode="gate",
+     args={"sha": "<7-40 hex sha>", "landed_by": "td<build todo>"})
+```
+
+`mode='gate'` is the MCP door for the post-land write the factory's
+lander does — it fills a `sha-in-prod` gate's `args.sha` while it still
+holds the `0000000` placeholder (a slice landed by hand with
+`scripts/ship --quick` never reaches the lander). It writes the sha plus
+the `sha: <sha> — landed by td<N>` comment (`landed_by` optional), and
+refuses on a non-gate todo, a non-placeholder sha, or any prose kwargs.
 
 ## Schedule a todo for a date
 ## Add a due date to a todo

@@ -453,8 +453,10 @@ class TodoHandler(NumericRefHandler):
         # top-level tools/core.py::edit signature defaults mode= to
         # 'find-replace' (the file-kind default), so a caller that omits
         # mode= still arrives here with it; require_mode() reads this
-        # declaration (gr292913).
-        edit_modes=("replace", "find-replace", "insert", "delete"),
+        # declaration (gr292913). 'gate' (gr597921) fills a pending
+        # sha-in-prod gate's args.sha — the lander's post-land write for a
+        # slice landed by hand.
+        edit_modes=("replace", "find-replace", "insert", "delete", "gate"),
     )
 
     kind: ClassVar[str] = "todo"
@@ -1345,6 +1347,8 @@ class TodoHandler(NumericRefHandler):
         where: str | None = None,
         match: str = "unique",
         nth: int | None = None,
+        sha: str | None = None,
+        landed_by: str | int | None = None,
         **_kw: Any,
     ) -> Response:
         """In-place rewrite of a todo's title and/or details body.
@@ -1396,6 +1400,17 @@ class TodoHandler(NumericRefHandler):
 
         ``id=[...]`` (``batch_ids``) applies the same edit to every id in
         one transaction — :meth:`_edit_batch` (gr514482).
+
+        ``mode='gate'`` (gr597921) is the MCP door for the post-land write
+        ``land_slice`` does after a factory land
+        (:func:`precis.workers.job_types.land_slice._write_gate`):
+        ``args={'sha': '<7-40 hex>'}`` fills a ``sha-in-prod`` gate's
+        ``args.sha`` — but only while it still holds the placeholder
+        :data:`precis.plans.templates.PENDING_SHA`, so a hand-landed slice's
+        gate can be filled without SQL and an already-filled gate is never
+        rewritten. ``args={'landed_by': 'td<N>'}`` names the build todo for
+        the same audit comment the lander writes. Text/body/meta/anchor
+        kwargs are refused under it; ``dry_run`` previews.
         """
         if isinstance(id, list):
             return self._edit_batch(
@@ -1411,6 +1426,8 @@ class TodoHandler(NumericRefHandler):
                 where=where,
                 match=match,
                 nth=nth,
+                sha=sha,
+                landed_by=landed_by,
                 **_kw,
             )
         text, body = mask_secrets(text), mask_secrets(body)
@@ -1418,6 +1435,44 @@ class TodoHandler(NumericRefHandler):
             raise BadInput(
                 "edit(kind='todo') requires id=",
                 next="edit(kind='todo', id=N, mode='replace', text='new text')",
+            )
+        if mode == "gate":
+            strays = sorted(
+                k
+                for k, v in (
+                    ("text", text),
+                    ("body", body),
+                    ("meta", meta),
+                    ("find", find),
+                    ("before", before or None),
+                    ("after", after or None),
+                    ("where", where),
+                    ("match", match if match != "unique" else None),
+                    ("nth", nth),
+                )
+                if v is not None
+            )
+            if strays:
+                raise BadInput(
+                    f"mode='gate' takes args={{'sha': ...}} only, not {strays}",
+                    next=(
+                        "edit(kind='todo', id=<gate>, mode='gate', "
+                        "args={'sha': '<hex sha>'})"
+                    ),
+                )
+            return self._edit_gate_sha(
+                ref_id=self._coerce_id(id),
+                sha=sha,
+                landed_by=landed_by,
+                dry_run=dry_run,
+            )
+        if sha is not None or landed_by is not None:
+            raise BadInput(
+                "sha=/landed_by= only apply under mode='gate'",
+                next=(
+                    "edit(kind='todo', id=<gate>, mode='gate', "
+                    "args={'sha': '<hex sha>'})"
+                ),
             )
         delete_span = mode == "delete"
         if delete_span:
@@ -1830,6 +1885,100 @@ class TodoHandler(NumericRefHandler):
             ),
             facts_deferred,
         )
+
+    # ── edit: mode='gate' — fill a pending sha-in-prod gate (gr597921) ──
+
+    @staticmethod
+    def _gate_landed_by(value: str | int) -> str:
+        """Normalise ``landed_by`` to the ``td<N>`` handle the lander stamps."""
+        digits = str(value).strip().removeprefix("todo:").removeprefix("td")
+        if not digits.isdigit():
+            raise BadInput(
+                f"args['landed_by'] must be the landed todo (an id or 'td<N>'), "
+                f"got {value!r}",
+                next="args={'sha': '<sha>', 'landed_by': 'td<N>'} — or omit it",
+            )
+        return f"td{int(digits)}"
+
+    def _edit_gate_sha(
+        self,
+        *,
+        ref_id: int,
+        sha: str | None,
+        landed_by: str | int | None,
+        dry_run: bool | str | None,
+    ) -> Response:
+        """``edit(mode='gate')``: write the real squash sha into a pending
+        ``sha-in-prod`` gate — the write ``land_slice._write_gate`` makes
+        after a factory land, as the door for a slice landed by hand
+        (``scripts/ship --quick`` never reaches the lander, gr597921).
+        Restricted to gates still at :data:`PENDING_SHA`: the write is a
+        fill, never a rewrite."""
+        sha_norm = sha.strip().lower() if isinstance(sha, str) else ""
+        if not plan_nodes._SHA_RE.fullmatch(sha_norm):
+            raise BadInput(
+                "mode='gate' requires args={'sha': '<7-40 lowercase hex sha>'}",
+                next=(
+                    "edit(kind='todo', id=<gate>, mode='gate', args={'sha': '<sha>'})"
+                ),
+            )
+        if sha_norm == plan_templates.PENDING_SHA:
+            raise BadInput(
+                f"args.sha {plan_templates.PENDING_SHA!r} is the placeholder "
+                "itself — pass the squash sha the land wrote to main",
+                next="read it off the build todo's landed: comment",
+            )
+        who = (
+            f" — landed by {self._gate_landed_by(landed_by)}"
+            if landed_by is not None
+            else ""
+        )
+        guards.check_owner_only_ref(self.store, ref_id)
+        ref = self._resolve_live_ref(ref_id)
+        gate = (ref.meta or {}).get("gate")
+        if not isinstance(gate, dict) or gate.get("kind") != "sha-in-prod":
+            kind = gate.get("kind") if isinstance(gate, dict) else gate
+            raise BadInput(
+                f"todo id={ref.id} is not a sha-in-prod gate (meta.gate.kind={kind!r})",
+                next="mode='gate' only fills a pending sha-in-prod gate's "
+                "args.sha — other gate kinds have no sha to fill",
+            )
+        gate_args = dict(gate.get("args") or {})
+        current = str(gate_args.get("sha") or "")
+        if current == sha_norm:
+            return Response(body=f"gate td{ref.id}: sha-in-prod sha already {sha_norm}")
+        if current != plan_templates.PENDING_SHA:
+            raise BadInput(
+                f"gate td{ref.id} already holds sha '{current}' — mode='gate' "
+                f"only fills the {plan_templates.PENDING_SHA} placeholder",
+                next="a filled gate is rewritten wholesale via "
+                "edit(kind='todo', id=N, meta={'gate': {...}})",
+            )
+        if dry_run:
+            return Response(
+                body=(
+                    f"dry-run (no write) — would set gate td{ref.id} "
+                    f"sha-in-prod args.sha = {sha_norm}."
+                )
+            )
+        new_gate = {**gate, "args": {**gate_args, "sha": sha_norm}}
+        with self.store.tx() as conn:
+            self.store.stamp_ref_meta(ref_id, {"gate": new_gate}, conn=conn)
+            self.store.append_event(
+                ref_id,
+                source="agent",
+                event="meta_patched",
+                payload={"old": {"gate": gate}, "new": {"gate": new_gate}},
+                conn=conn,
+            )
+        tl.append_comment(
+            self.store,
+            ref,
+            kind=self.kind,
+            comment_kind=_COMMENT_KIND,
+            text=f"sha: {sha_norm}{who}",
+        )
+        return Response(body=f"gate td{ref.id}: sha-in-prod sha set to {sha_norm}")
 
     def _edit_anchored(
         self,
