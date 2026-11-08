@@ -43,6 +43,32 @@ Origin: the 2026-10-17 misuse audit and gr494831 (umbrella), gr494725.
    (a paid API, a rate-limited fetch) is never run on the caller's
    behalf: the refusal names the exact call and the cost.
 
+## Errors are results, never protocol errors
+
+A handler fault reaches the wire as a `CallToolResult(isError=True)` whose
+text is the refusal (rule 2), never as a JSON-RPC error: the agent keeps the
+turn and the `next=` (`tools/core.py`, the `_ToolReturn` note). Verb
+functions stay annotated `-> str`; the dual shape is a runtime contract.
+
+## Bounded replies, no cursors
+
+A read that would overflow returns a fitted head, an outline of what was
+cut and a footer naming the narrowing call (`narrow q or lower page_size`),
+never a cursor to page through (`src/precis/_result_budget.py`,
+`tests/test_result_budget.py`). Byte caps: `PRECIS_MAX_BODY_BYTES`,
+`PRECIS_TOOL_RESULT_CONTEXT_BYTES`. A handler that wants paging exposes
+`page_size=`/`offset=` and says `N of M` in its header.
+
+## Tool annotations
+
+The seven verbs carry MCP `ToolAnnotations` only where the hint is true
+for every kind behind the verb: `get` and `search` are
+`readOnlyHint=true`; `delete` is `destructiveHint=true`; `put`, `edit`,
+`tag`, `link` carry none (mixed per kind). Hints are client UX (a
+read-only tool skips the permission prompt), not a gate — the gate is the
+dispatcher (principal, slice scope, confirm doors). Set them in
+`server.py::_register_tools_from_registry`, nowhere per handler.
+
 ## Declaring `args=` keys: `ARGS` → `ARGS_KEYS`
 
 A handler whose verb takes `args: dict` declares `ARGS` (`verb ->
@@ -63,6 +89,11 @@ inherits its parent's.
 | 8 | `runtime/dispatch.py::_boundary_rows` (psycopg lock/pool/timeout/operational, httpx timeout/status/transport, `TimeoutError`, `ConnectionError`) and `scrub_upstream`; `tests/test_dispatch_boundary_map.py` has a case per row. A new row needs a case or `test_every_row_has_a_case` fails. |
 | 1, 3–6 | per-handler tests; reviewers check the ack against the effect. |
 | 9 | per-pattern tests, each with an ambiguous input that still refuses (`tests/test_forgiving_inputs.py`). |
+| annotations | `tests/test_tool_annotations.py`: the registered verb → hint table above, and no hint on the mixed verbs. |
+
+Whether an agent *plans* the right calls from a skill is a separate,
+advisory check: `skill-evals.md` (`scripts/skill-eval`). There is no live
+end-to-end eval of the tool surface yet: `docs/backlog/skill-eval-executed-runner.md`.
 
 ## Adding a hint to a pinned raise
 

@@ -97,6 +97,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.lowlevel.server import request_ctx
 from mcp.server.streamable_http import MCP_SESSION_ID_HEADER
 from mcp.shared import session as mcp_shared_session
+from mcp.types import ToolAnnotations
 from pydantic import ValidationError
 from pydantic_core import ErrorType
 
@@ -121,6 +122,16 @@ if TYPE_CHECKING:
 # difference — every wrapper has always grokked the ``[error:Class]
 # cause / options / next`` text.
 _TOOL_KW: dict[str, Any] = {"structured_output": False}
+
+#: MCP ``ToolAnnotations`` per verb, only where the hint holds for every
+#: kind behind the verb (docs/conventions/mcp-authoring.md § Tool
+#: annotations). put/edit/tag/link are mixed per kind and carry none.
+#: Client UX hints, not a gate — the dispatcher is the gate.
+_VERB_ANNOTATIONS: dict[str, ToolAnnotations] = {
+    "get": ToolAnnotations(readOnlyHint=True),
+    "search": ToolAnnotations(readOnlyHint=True),
+    "delete": ToolAnnotations(destructiveHint=True),
+}
 
 
 _PYDANTIC_ERROR_TYPES = frozenset(get_args(ErrorType))
@@ -1173,7 +1184,11 @@ def _register_tools_from_registry() -> None:
         # thread; ``TOOL_REGISTRY[...]["func"]`` itself is left untouched,
         # so the CLI adapter and the command profile's ``precis()`` (which
         # both call it directly, synchronously) are unaffected.
-        mcp.tool(description=_verb_description(func), **_TOOL_KW)(_offload_sync(func))
+        mcp.tool(
+            description=_verb_description(func),
+            annotations=_VERB_ANNOTATIONS.get(tool_name),
+            **_TOOL_KW,
+        )(_offload_sync(func))
         registered = mcp._tool_manager.get_tool(tool_name)
         if tool_name in slim and registered is not None:
             allow_extra_arguments(registered)

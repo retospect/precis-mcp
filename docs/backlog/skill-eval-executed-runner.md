@@ -64,6 +64,17 @@ verb path end to end (handler dispatch, kwarg acceptance, record shape).
 `tests/test_skill_eval.py`. `scripts/dev` supplies the dev DB; the spawn
 wires an MCP server pointing at it. No schema change, no prod writes.
 
+## Related shape: read-only QA pairs (2026-11-08)
+
+Anthropic's `mcp-builder` skill (`anthropics/skills`,
+`skills/mcp-builder/reference/evaluation.md` + `scripts/evaluation.py`)
+evaluates a server with ~10 QA pairs run against the live tools: questions
+independent, read-only and idempotent tool use only, not answerable by
+keyword search alone, stable answer, checked by string comparison. That is
+a skill-less, write-free subset of this runner — worth a `--cases` fixture
+of such pairs over the sandbox corpus once the executed runner exists,
+since it needs no cleanup and catches `get`/`search` regressions directly.
+
 ## Open questions / decisions log
 
 - Transport per run: spawn a private `precis serve` per case/run bound to
