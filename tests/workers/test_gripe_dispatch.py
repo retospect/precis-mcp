@@ -306,11 +306,52 @@ def test_enabled_resolves_per_host(store: Store) -> None:
     assert not gd.gripe_dispatch_enabled(store, host="dim")
 
 
-def test_hold_tags_contain_cluster_dark_factory() -> None:
-    # td574946 S1 (ruling 10): rescue-filed engine gripes and a gripe
-    # rescued at intake stay out of the lane by the candidates tuple.
-    assert "cluster:dark-factory" in gd.HOLD_TAGS
+def test_hold_tags_keep_rescue_intake_not_dark_factory() -> None:
+    # gr591017: ``rescue:intake`` (a gripe that failed three mints) stays
+    # held; ``cluster:dark-factory`` is no hold — it is also the cluster
+    # label humans, agents and gripe_triage put on engine design gripes,
+    # and the rescue-filed gripes it was meant to stop never carry
+    # fix:code, so candidates() already excludes them.
     assert "rescue:intake" in gd.HOLD_TAGS
+    assert "cluster:dark-factory" not in gd.HOLD_TAGS
+
+
+def test_fix_code_gripe_tagged_dark_factory_is_a_candidate(
+    store: Store, two_lanes: Any
+) -> None:
+    """gr591017: a triaged fix:code engine gripe — human- or agent-filed,
+    cluster-labelled ``cluster:dark-factory`` — dispatches again."""
+    _light(store)
+    gid = _gripe(
+        store, "engine design gripe", tags=("fix:code", "cluster:dark-factory")
+    )
+    assert gid in [c.gripe_id for c in gd.candidates(store, 10)]
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.ok == 1 and len(_roots_for(store, gid)) == 1
+
+
+def test_rescue_filed_engine_gripe_still_not_a_candidate(
+    store: Store, two_lanes: Any
+) -> None:
+    """gr591017: the dropped hold guarded nothing — a factory_rescue
+    engine gripe carries ``cluster:dark-factory`` but never ``fix:code``
+    (and no agent/human ``filed_by``), so it stays out of candidates."""
+    from precis.workers import factory_rescue as fr
+
+    node = int(store.insert_ref(kind="todo", slug=None, title="stalled slice").id)
+    res = fr.enter_rescue(
+        store,
+        node,
+        "stalled",
+        fr.RescueEvidence(step="stall pass", error_line="boom"),
+    )
+    assert res.gripe_id is not None
+    open_tags = [
+        str(t.value) for t in store.tags_for(res.gripe_id) if t.namespace == "open"
+    ]
+    assert "cluster:dark-factory" in open_tags and "fix:code" not in open_tags
+    _age(store, res.gripe_id)
+    assert res.gripe_id not in {c.gripe_id for c in gd.candidates(store, 10)}
 
 
 def test_read_only_reason_mints_nothing(store: Store, two_lanes: Any) -> None:

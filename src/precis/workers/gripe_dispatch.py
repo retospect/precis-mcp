@@ -30,9 +30,8 @@ Each fire:
   ``related-to`` them (a chain, hand-minted or ours, already exists), none
   of the hold tags (``fix:reto``, ``reto:ask``, ``disagreement``,
   ``flood``, ``hold:no-dispatch``, ``hold:no-autoclose``,
-  ``cluster:dark-factory``, ``rescue:intake``), and **filed by a
-  Claude Code client
-  or a human account, or machine-filed with a ``ci.sig``** — BUILDER's
+  ``rescue:intake``), and **filed by a Claude Code client or a human
+  account, or machine-filed with a ``ci.sig``** — BUILDER's
   condition (2026-11-04): the gripe
   text rides the build body verbatim and lands on main with no triage in
   front, so a reader-intake or worker-filed gripe never reaches a lane by
@@ -94,9 +93,13 @@ _BUILD_OPS: tuple[str, ...] = ("run_slice", "land_slice")
 #: Tags that keep a gripe out of the lane by this door. ``hold:no-autoclose``
 #: marks Reto's never-close gripes (me547530): a land would write
 #: ``resolved:`` on one, so they never enter a chain by this door (BUILDER
-#: 2026-11-05). ``cluster:dark-factory`` marks an engine-failure gripe and
-#: ``rescue:intake`` a gripe that failed three mints — both are rescue
-#: state, not dispatchable work (td574946 S1, ruling 10).
+#: 2026-11-05). ``rescue:intake`` marks a gripe that failed three mints —
+#: rescue state, not dispatchable work (td574946 S1, ruling 10).
+#: ``cluster:dark-factory`` is deliberately absent (gr591017): it is also
+#: the cluster label humans, agents and ``gripe_triage`` put on every
+#: engine design gripe, while the rescue-filed gripes it was meant to
+#: hold never carry ``fix:code`` (``factory_rescue._file_sig_gripe``) —
+#: holding it starved the factory's own engine fixes and guarded nothing.
 HOLD_TAGS: tuple[str, ...] = (
     "fix:reto",
     "reto:ask",
@@ -104,7 +107,6 @@ HOLD_TAGS: tuple[str, ...] = (
     "flood",
     "hold:no-dispatch",
     "hold:no-autoclose",
-    "cluster:dark-factory",
     "rescue:intake",
 )
 #: STATUS values a gripe may carry to be dispatched.

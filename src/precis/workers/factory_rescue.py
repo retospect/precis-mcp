@@ -23,8 +23,11 @@ Two classes of failure read differently downstream:
   collects every node the same signature defeated;
 * engine classes (``engine=True`` in :data:`BOUNDS`) — the factory's own
   machinery failed; their gripe additionally carries
-  ``cluster:dark-factory``, a ``gripe_dispatch`` hold tag, so an engine
-  gripe never re-enters a build lane by the intake door.
+  ``cluster:dark-factory``, the same cluster label triage puts on engine
+  design gripes. An engine gripe still never re-enters a build lane by
+  the intake door: ``_file_sig_gripe`` writes no ``fix:code`` and no
+  Claude-Code/human ``filed_by`` (gr591017 — the tag itself is no
+  dispatch hold; holding it also held human-filed engine gripes).
 
 A plan root is tagged and commented but never linked: ``land_slice``
 takes a root's lowest ``related-to`` gripe as the ``resolved:`` target,
