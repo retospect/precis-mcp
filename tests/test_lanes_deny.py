@@ -204,6 +204,67 @@ def test_deploy_and_round_scripts_are_interim_denied() -> None:
         assert lanes.engine_hits([script]) == [script], script
 
 
+#: The paths Reto's 2026-11-08 ruling (td574937) relaxed out of
+#: INTERIM_DENY — the engine python, factory-buildable under the
+#: review-before-cut gate while td574934 A3 is undeployed.
+_RELAXED_OUT: tuple[str, ...] = (
+    "src/precis/workers/job_types/run_slice.py",
+    "src/precis/workers/job_types/land_slice.py",
+    "src/precis/workers/job_types/plan_dispatch.py",
+    "src/precis/workers/job_types/release_poll.py",
+    "src/precis/workers/job_types/release_cut.py",
+    "src/precis/workers/job_types/release_deploy.py",
+    "src/precis/workers/job_types/release_confirm.py",
+    "src/precis/plans/boundary.py",
+    "src/precis/plans/killswitch.py",
+)
+
+
+def test_interim_deny_keeps_only_the_fence_and_the_harness() -> None:
+    """td574937, Reto 2026-11-08: INTERIM_DENY is down to the deny list's
+    own module and the ship/test/deploy harness until A3 lands."""
+    assert lanes.INTERIM_DENY == (
+        "src/precis/plans/lanes.py",
+        "scripts/ship",
+        "scripts/test",
+        "scripts/impacted-tests",
+        "scripts/migration-check",
+        "scripts/mutate-diff",
+        "scripts/gen-devin-hooks",
+        "scripts/deploy",
+        "scripts/round",
+        "scripts/lib/**",
+        ".github/**",
+    )
+
+
+@pytest.mark.db
+def test_the_relaxed_set_denies_the_fence_but_not_the_engine(
+    store: Store,
+) -> None:
+    psettings.set_setting("factory.deny_relaxed", True, store=store)
+    try:
+        deny = lanes.deny_paths_for(store)
+    finally:
+        psettings.clear_setting("factory.deny_relaxed", store=store)
+    assert "src/precis/plans/lanes.py" in deny
+    assert "scripts/ship" in deny
+    for path in _RELAXED_OUT:
+        assert not any(fnmatch.fnmatchcase(path, g) for g in deny), path
+
+
+def test_the_relaxed_out_paths_stay_strict_denied_and_stamp_engine() -> None:
+    """Every path relaxed out of INTERIM_DENY is still covered by
+    FACTORY_DENY_WRITE_PATHS: STRICT_DENY is unchanged and the stamp set
+    still names them, so an engine land carries its reviewer verdict."""
+    for path in _RELAXED_OUT:
+        assert any(
+            fnmatch.fnmatchcase(path, g) for g in lanes.FACTORY_DENY_WRITE_PATHS
+        ), path
+        assert any(fnmatch.fnmatchcase(path, g) for g in lanes.STRICT_DENY), path
+        assert lanes.engine_hits([path]) == [path], path
+
+
 def test_human_only_is_not_in_engine() -> None:
     assert not set(lanes.HUMAN_ONLY_PATHS) & set(lanes.ENGINE_PATHS)
     for glob in lanes.HUMAN_ONLY_PATHS:

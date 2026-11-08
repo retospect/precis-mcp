@@ -217,22 +217,17 @@ HUMAN_ONLY_PATHS: tuple[str, ...] = (
 #: do (macOS): a case-mangled write lands on the same file.
 _HUMAN_ONLY_LOWER: tuple[str, ...] = tuple(g.lower() for g in HUMAN_ONLY_PATHS)
 
-#: Check-bearing paths that stay denied alongside :data:`HUMAN_ONLY_PATHS`
-#: while the security-review hold (td574934 A3) is undeployed — a later
-#: factory slice deploys it and this tuple empties. ``boundary.py`` and
-#: ``killswitch.py`` do not exist yet; listing them is harmless
-#: (``src/precis/plans/**`` already makes them engine paths today).
+#: What stays denied alongside :data:`HUMAN_ONLY_PATHS` while the
+#: security-review hold (td574934 A3) is undeployed — the slice that
+#: deploys it empties this tuple. Reto's ruling (td574937, 2026-11-08):
+#: the engine python is factory-buildable now — the review-before-cut
+#: gate (``release_poll`` refuses to cut while an engine land's reviewer
+#: verdict is FIX or missing) is the guard. What a builder must never
+#: edit is its own fence and the ship/test/deploy harness: this module,
+#: ``scripts/ship`` and the helpers it invokes from the slice tree, and
+#: the deploy/round verbs.
 INTERIM_DENY: tuple[str, ...] = (
-    "src/precis/workers/job_types/run_slice.py",
-    "src/precis/workers/job_types/land_slice.py",
-    "src/precis/workers/job_types/plan_dispatch.py",
-    "src/precis/workers/job_types/release_poll.py",
-    "src/precis/workers/job_types/release_cut.py",
-    "src/precis/workers/job_types/release_deploy.py",
-    "src/precis/workers/job_types/release_confirm.py",
     "src/precis/plans/lanes.py",
-    "src/precis/plans/boundary.py",
-    "src/precis/plans/killswitch.py",
     "scripts/ship",
     "scripts/test",
     # the helpers ship invokes from the SLICE tree — a slice could
@@ -241,8 +236,7 @@ INTERIM_DENY: tuple[str, ...] = (
     "scripts/migration-check",
     "scripts/mutate-diff",
     "scripts/gen-devin-hooks",
-    # on no deny list at all until now: the deploy script and the round
-    # verbs were builder-editable
+    # the deploy script and the round verbs stay builder-proof too
     "scripts/deploy",
     "scripts/round",
     "scripts/lib/**",
@@ -313,7 +307,10 @@ def deny_paths_for(store: Any) -> tuple[str, ...]:
     stored ``app_settings`` row is the ONLY input — the registry default
     and any env override are ignored, so a slice editing
     ``src/precis/settings.py`` cannot relax its own deny list. Relaxed,
-    the set is :data:`HUMAN_ONLY_PATHS` ∪ :data:`INTERIM_DENY`.
+    the set is :data:`HUMAN_ONLY_PATHS` ∪ :data:`INTERIM_DENY` —
+    and INTERIM_DENY now holds only the fence itself (this module) and
+    the ship/test/deploy harness; the engine python relaxed out of it
+    rides the review-before-cut gate instead (td574937).
     """
     if store is None:
         return STRICT_DENY
