@@ -992,19 +992,33 @@ class Tag:
                     # in-subset value returns here, before the union
                     # check below.
                     return cls.closed(prefix, value)
-                if prefix == "PRIO" and re.fullmatch(r"[pP]?\d+", value):
-                    # Not mapped: callers mean a 1..5, P0..P4 or 1..10
-                    # scale (see ``PRIO_TAG_ALIASES``); the numeric
-                    # column is the unambiguous spelling.
-                    raise BadInput(
-                        f"invalid PRIO value: {value!r} — PRIO: takes a name",
-                        options=sorted(allowed),
-                        next=(
-                            f"write PRIO:{{{'|'.join(sorted(allowed))}}}, or for a "
-                            "number pass prio=<1..10> (1 = hottest, 5 = default) "
-                            "to put/tag instead of a tag"
-                        ),
-                    )
+                if prefix == "PRIO":
+                    numeric = re.fullmatch(r"[0-9]+", value)
+                    if numeric is not None and 1 <= int(value) <= 10:
+                        # The tag form carries the column number
+                        # (gr592664: one axis, two spellings) —
+                        # ``PRIO:3`` parses as the prio=3 spelling;
+                        # ``PRIO:03`` canonicalises to ``PRIO:3``. On
+                        # the workflow kinds the handler translates it
+                        # into ``refs.prio`` and strips the tag
+                        # (``_prio_tag.split_prio``), same as the names.
+                        return cls.closed(prefix, str(int(value)))
+                    if numeric is not None or re.fullmatch(r"[pP][0-9]+", value):
+                        # Out of the 1..10 range or p-prefixed:
+                        # ``PRIO:0`` / ``PRIO:11`` name no column value
+                        # and ``PRIO:p3`` reads as the P0..P4 scale —
+                        # still no single reading, so refuse with the
+                        # real spellings.
+                        raise BadInput(
+                            f"invalid PRIO value: {value!r} — PRIO: takes a "
+                            "name or a number 1..10",
+                            options=sorted(allowed),
+                            next=(
+                                f"write PRIO:{{{'|'.join(sorted(allowed))}}} or "
+                                "PRIO:<1..10> (1 = hottest, 5 = default); "
+                                "prio=<1..10> on put/tag is the same axis"
+                            ),
+                        )
                 if value not in allowed:
                     # A STATUS value scoped to one kind (finding's
                     # ``staged``) is not in the union but is a valid

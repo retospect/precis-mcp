@@ -391,7 +391,8 @@ runs as the `link()`/`tag()` call alone, and the reply's first line says
 so (`interpreted: … read as link(…)`). `view='full'` is the complete
 read (body + every comment), and `PRIO:medium` is read as `PRIO:normal`,
 also announced.
-A numeric `PRIO:3` is refused (no single scale); use `prio=3` on `tag()`.
+A numeric `PRIO:3` is the same axis spelled as the column number —
+`PRIO:3` writes `prio=3`; `prio=3` on `tag()` is the kwarg form.
 
 ## Correct or refine an earlier comment
 ## Take back a comment I made {write}

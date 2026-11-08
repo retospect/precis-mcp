@@ -9,9 +9,15 @@ tests, and cached agent prompts keep writing the tag form — but it is
 translated to the ``prio`` column and stripped from the stored tag set, so a
 ref's priority lives in exactly one place (the column the doable-view sorts
 on), never a redundant tag row that could drift from it.
+
+One axis, two spellings (gr592664): the column stores the 1..10 number, and
+``PRIO:`` accepts it both as a name (``PRIO:high`` → 3) and as the number
+itself (``PRIO:3`` → 3).
 """
 
 from __future__ import annotations
+
+import re
 
 #: ``PRIO:`` tag → the canonical ``refs.prio`` column (1..10, lower = hotter),
 #: the striving-weight scale the todo tree rotates on.
@@ -25,9 +31,35 @@ PRIO_TAG_TO_INT: dict[str, int] = {
 
 #: Near-miss ``PRIO:`` spellings with one reading on the tag scale
 #: (gr494831 step 2; prod 2026-10-15 put(kind='gripe', tags=['PRIO:medium'])).
-#: Numeric values (``PRIO:2``, ``PRIO:p2``) are deliberately absent: callers
-#: mean a 1..5, P0..P4 or the 1..10 column scale, so those keep refusing.
+#: ``PRIO:p2`` is deliberately absent: a p-prefix reads as the P0..P4 scale,
+#: not the column, so it keeps refusing (gr592664 lifted only the bare
+#: number — ``PRIO:2`` is now the column spelling, no alias needed).
 PRIO_TAG_ALIASES: dict[str, str] = {"PRIO:medium": "PRIO:normal"}
+
+
+#: The numeric ``PRIO:`` spelling — bare ASCII digits only (``PRIO:3``,
+#: ``PRIO:10``); the p-prefixed P0..P4 shape is not the column scale.
+_PRIO_NUMERIC_RE = re.compile(r"PRIO:([0-9]+)")
+
+
+def prio_tag_int(tag: object) -> int | None:
+    """The ``refs.prio`` value a recognised ``PRIO:`` spelling writes.
+
+    Both spellings of the one 1..10 axis (gr592664): the named ladder
+    (``PRIO:high`` → 3) and the column number itself (``PRIO:3`` → 3) —
+    the names are aliases onto the number the column stores. Anything
+    else — ``PRIO:bogus``, ``PRIO:0``, ``PRIO:11``, ``PRIO:p3``, non-str —
+    returns ``None`` so ``Tag.parse_strict`` surfaces it as a typo.
+    """
+    if not isinstance(tag, str):
+        return None
+    if (named := PRIO_TAG_TO_INT.get(tag)) is not None:
+        return named
+    m = _PRIO_NUMERIC_RE.fullmatch(tag)
+    if m is None:
+        return None
+    n = int(m.group(1))
+    return n if 1 <= n <= 10 else None
 
 
 def alias_prio_tags(tags: list[str] | None) -> tuple[list[str] | None, list[str]]:
@@ -81,16 +113,17 @@ def split_prio(tags: list[str] | None) -> tuple[list[str] | None, int | None]:
 
     Returns ``(tags_without_prio, prio_or_none)`` — the ``PRIO:`` alias is
     stripped so it never lands as a redundant closed-tag row alongside the
-    column write. Unknown ``PRIO:`` values pass through untouched so the strict
-    validator surfaces the typo with its options list.
+    column write. Both spellings translate (:func:`prio_tag_int`); unknown
+    ``PRIO:`` values pass through untouched so the strict validator surfaces
+    the typo with its options list.
     """
     if not tags:
         return tags, None
     out: list[str] = []
     found: int | None = None
     for t in tags:
-        if t in PRIO_TAG_TO_INT:
-            found = PRIO_TAG_TO_INT[t]
+        if (n := prio_tag_int(t)) is not None:
+            found = n
             continue
         out.append(t)
     return (out if out else None), found

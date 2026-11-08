@@ -54,7 +54,7 @@ from precis.handlers._numeric_ref import (
     NumericRefHandler,
     _parse_window_bound,
 )
-from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
+from precis.handlers._prio_tag import prio_tag_int, split_prio, validate_prio
 from precis.handlers._request_state import RequestState
 from precis.protocol import ArgsSpec, KindSpec
 from precis.quest import weave_tick as _weave_tick
@@ -573,7 +573,6 @@ def _check_supply_meta(meta: dict[str, Any]) -> None:
 #: scale the todo tree rotates on and slice 2's reweighting reads
 #: (:mod:`precis.quest.reweight`). Shared with the gripe handler; see
 #: :mod:`precis.handlers._prio_tag`.
-_PRIO_TAG_TO_INT = PRIO_TAG_TO_INT
 _split_prio = split_prio
 
 
@@ -1017,7 +1016,7 @@ class QuestHandler(NumericRefHandler):
         add, prio_from_tag = _split_prio(add)
         clear_prio = False
         if remove:
-            kept = [t for t in remove if t not in _PRIO_TAG_TO_INT]
+            kept = [t for t in remove if prio_tag_int(t) is None]
             clear_prio = len(kept) != len(remove)
             remove = kept or None
         if prio is None:

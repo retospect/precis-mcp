@@ -103,8 +103,8 @@ from precis.handlers._numeric_ref import (
     plain_listing_view,
 )
 from precis.handlers._prio_tag import (
-    PRIO_TAG_TO_INT,
     alias_prio_tags,
+    prio_tag_int,
     split_prio,
     validate_prio,
 )
@@ -1308,7 +1308,7 @@ class GripeHandler(NumericRefHandler):
         add, prio_from_tag = split_prio(add)
         clear_prio = False
         if remove:
-            kept = [t for t in remove if t not in PRIO_TAG_TO_INT]
+            kept = [t for t in remove if prio_tag_int(t) is None]
             clear_prio = len(kept) != len(remove)
             remove = kept or None
         if prio is None:

@@ -139,25 +139,55 @@ def test_prio_medium_on_comment_put_is_named_once(hub: Hub) -> None:
     assert _first(resp) == "interpreted: 'PRIO:medium' read as 'PRIO:normal'"
 
 
-def test_numeric_prio_still_refuses(hub: Hub) -> None:
-    """PRIO:3 has several readings (1..5, P0..P4, the 1..10 column), so it
-    refuses with the tag vocabulary and files nothing."""
+def test_numeric_prio_tag_writes_the_column(hub: Hub) -> None:
+    """gr592664: one axis, two spellings — the tag form carries the 1..10
+    column number (``PRIO:3`` is ``prio=3``, ``PRIO:2`` needs no name)."""
     h = GripeHandler(hub=hub)
-    with pytest.raises(BadInput, match="invalid PRIO value") as exc:
-        h.put(text="Synthetic numeric prio gripe", tags=["PRIO:3"])
-    assert exc.value.options == ["high", "low", "normal", "urgent"]
-    assert not [
+    h.put(text="Synthetic numeric prio gripe", tags=["PRIO:3"])
+    ref = next(
         r
         for r in h.store.list_refs(kind="gripe")
         if r.title == "Synthetic numeric prio gripe"
-    ]
+    )
+    assert ref.prio == 3
+    assert "PRIO:3" not in {str(t) for t in h.store.tags_for(ref.id)}
+
+    h.put(text="Synthetic numeric prio next", tags=["PRIO:2"])
+    ref2 = next(
+        r
+        for r in h.store.list_refs(kind="gripe")
+        if r.title == "Synthetic numeric prio next"
+    )
+    assert ref2.prio == 2
 
 
-def test_numeric_prio_refusal_points_at_prio_kwarg(hub: Hub) -> None:
+def test_numeric_prio_tag_on_tag_verb_writes_and_clears(hub: Hub) -> None:
+    """``tag(add=['PRIO:3'])`` writes the column like the named ladder;
+    ``remove=['PRIO:3']`` clears it like any ``PRIO:*`` spelling."""
+    h, a, _ = _two(hub)
+    h.tag(id=a, add=["PRIO:3"])
+    ref = h.store.get_ref(kind="gripe", id=a)
+    assert ref is not None and ref.prio == 3
+    h.tag(id=a, remove=["PRIO:3"])
+    ref = h.store.get_ref(kind="gripe", id=a)
+    assert ref is not None and ref.prio is None
+
+
+def test_out_of_scale_prio_still_refuses(hub: Hub) -> None:
+    """Only the 1..10 column number is a spelling — ``PRIO:0`` /
+    ``PRIO:11`` name no value and ``PRIO:p2`` reads as the P0..P4 scale,
+    so those keep refusing and point at the real spellings."""
     h = GripeHandler(hub=hub)
-    with pytest.raises(BadInput, match="invalid PRIO value") as exc:
-        h.put(text="Synthetic numeric prio next", tags=["PRIO:2"])
-    assert "prio=<1..10>" in (exc.value.next or "")
+    for bad in ("PRIO:0", "PRIO:11", "PRIO:p2"):
+        with pytest.raises(BadInput, match="invalid PRIO value") as exc:
+            h.put(text=f"Synthetic bad prio {bad}", tags=[bad])
+        assert exc.value.options == ["high", "low", "normal", "urgent"]
+        assert "prio=<1..10>" in (exc.value.next or "")
+    assert not [
+        r
+        for r in h.store.list_refs(kind="gripe")
+        if r.title.startswith("Synthetic bad prio")
+    ]
 
 
 def test_search_view_index_is_the_plain_listing(hub: Hub) -> None:

@@ -328,8 +328,9 @@ The level tier is `meta`, not a tag — write `tier=`, read the booleans:
 Priority is set with the `prio=N` kwarg on `put`/`tag` (1..10, lower =
 hotter, default 5). `PRIO:urgent|high|normal|low` in `tags=`/`add=` is
 an accepted **alias** (`urgent`→1 · `high`→3 · `normal`→5 · `low`→8),
-translated to the column and stripped — priority lives in one place,
-never a tag row. An explicit `prio=` wins when both are passed;
+and `PRIO:<1..10>` is the same axis spelled as the column number —
+both translated to the column and stripped, so priority lives in one
+place, never a tag row. An explicit `prio=` wins when both are passed;
 removing a `PRIO:*` tag clears the column to the default.
 
 The flat list surface (`/recent`, `/open`, `/done`, …) keeps

@@ -381,6 +381,50 @@ def test_put_with_prio_tag_translates_to_column(
     assert "PRIO:urgent" not in tags  # stripped — priority lives in one place
 
 
+def test_numeric_prio_tag_is_the_column_spelling(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr592664: the ``PRIO:`` tag form carries the 1..10 column number —
+    one axis, two spellings (``PRIO:3`` is ``prio=3``, ``PRIO:2`` needs no
+    name). prod had ``put(kind='todo', tags=['PRIO:3'])`` refused."""
+    resp = handler.put(text="numbered", tags=["PRIO:3"])
+    rid = _id_of(resp.body)
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.prio == 3
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert not any(t.startswith("PRIO:") for t in tags)  # stripped like names
+
+    # tag() takes the number too, and any recognised PRIO:* spelling in
+    # remove clears the column — same semantics as the named ladder.
+    handler.tag(id=rid, add=["PRIO:10"])
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.prio == 10
+    handler.tag(id=rid, remove=["PRIO:10"])
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.prio is None
+
+
+def test_numeric_prio_tag_off_scale_or_p_prefixed_still_refuses(
+    handler: TodoHandler,
+) -> None:
+    """``PRIO:0`` / ``PRIO:11`` name no column value and ``PRIO:p2`` reads
+    as the P0..P4 scale, not the column — still no single reading."""
+    for bad in ("PRIO:0", "PRIO:11", "PRIO:p2"):
+        with pytest.raises(BadInput, match="invalid PRIO value"):
+            handler.put(text="bad", tags=[bad])
+
+
+def test_parse_strict_numeric_prio_canonicalises() -> None:
+    """``PRIO:03`` parses to the canonical ``PRIO:3``; ``PRIO:p3`` and
+    out-of-range numbers stay refused at the tag-vocabulary layer (filter
+    paths go through parse_strict, not split_prio)."""
+    assert str(Tag.parse_strict("PRIO:3")) == "PRIO:3"
+    assert str(Tag.parse_strict("PRIO:03")) == "PRIO:3"
+    for bad in ("PRIO:0", "PRIO:11", "PRIO:p3"):
+        with pytest.raises(BadInput, match="invalid PRIO value"):
+            Tag.parse_strict(bad)
+
+
 def test_tag_prio_kwarg_writes_column(handler: TodoHandler, store: Store) -> None:
     resp = handler.put(text="x")
     rid = _id_of(resp.body)

@@ -114,14 +114,16 @@ view maps over the batch (`get(kind='todo', id=[122, 123], view='comments')`).
 tag(kind="todo", id=141, prio=1)  # hottest — preempts the rotation
 tag(kind="todo", id=141, prio=8)  # cold
 tag(kind="todo", id=141, add=["PRIO:urgent"])  # alias for prio=1
+tag(kind="todo", id=141, add=["PRIO:3"])  # the number spelling — same axis
 put(kind="todo", text="Fix the gate.", args={"prio": 3})  # set at create
 ```
 
 Priority is the `prio` column (1..10, **lower = hotter**, default 5) —
-it drives the doable/dispatch ordering. The `PRIO:` tag form is an
-alias, translated on write (`urgent`→1 · `high`→3 · `normal`→5 ·
-`low`→8) and **stripped** — priority lives in the column only, never a
-tag row, so don't filter by `tags=['PRIO:...']` (nothing stores it).
+it drives the doable/dispatch ordering. The `PRIO:` tag form takes the
+name (`urgent`→1 · `high`→3 · `normal`→5 · `low`→8) or the number
+itself (`PRIO:3` → `prio=3`), translated on write and **stripped** —
+priority lives in the column only, never a tag row, so don't filter by
+`tags=['PRIO:...']` (nothing stores it).
 Removing a `PRIO:*` tag clears the column back to the default.
 
 ## Block a todo on another ref

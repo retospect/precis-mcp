@@ -89,7 +89,7 @@ from precis.handlers._eye import is_eye_view
 from precis.handlers._interpret import interpreted
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
-from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
+from precis.handlers._prio_tag import prio_tag_int, split_prio, validate_prio
 from precis.handlers._request_state import RequestState
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.handlers.plaintext import _require_find_and_text
@@ -2012,7 +2012,7 @@ class TodoHandler(NumericRefHandler):
         add, prio_from_tag = split_prio(add)
         clear_prio = False
         if remove:
-            kept = [t for t in remove if t not in PRIO_TAG_TO_INT]
+            kept = [t for t in remove if prio_tag_int(t) is None]
             clear_prio = len(kept) != len(remove)
             remove = kept or None
         if prio is None and prio_from_tag is not None:
