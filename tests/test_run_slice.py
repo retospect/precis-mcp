@@ -4459,3 +4459,199 @@ def test_kimi_submit_refuses_a_base_url_off_the_allowlist(
     assert "api.kimi.ai" in (ctx.failure or "")
     assert ctx.meta_set["host_refusal"]["lane"] == "kimi"
     assert "sk-test-not-a-key" not in str(ctx.meta_set)
+
+
+# ── td573681 round 3: the submit key dies on EVERY exit path ─────────────
+
+
+def test_kimi_launch_error_drops_the_submit_key(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``_launch`` raise after the env was built is an exit path that
+    skips the poll — ``_fail_submit`` must drop the stored submit key,
+    not leave a credential in process memory for a run that never was."""
+    monkeypatch.setattr(
+        run_slice,
+        "_launch",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("spawn failed")),
+    )
+    store = _Store()
+    store.add_todo(42, "Build")
+
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch)
+
+    assert handle is None and ctx.failure is not None
+    assert run_slice._KIMI_SUBMIT_KEYS == {}
+
+
+def test_kimi_launch_host_refusal_drops_the_submit_key(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``_HostRefusal`` out of ``_launch`` takes the backoff branch, not
+    ``_fail_submit`` — it pops the stored key too."""
+    monkeypatch.setattr(
+        run_slice,
+        "_launch",
+        lambda *a, **kw: (_ for _ in ()).throw(run_slice._HostRefusal("host blocked")),
+    )
+    store = _Store()
+    store.add_todo(42, "Build")
+
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch)
+
+    assert handle is None and ctx.failure is not None
+    assert ctx.meta_set["host_refusal"]["lane"] == "kimi"
+    assert run_slice._KIMI_SUBMIT_KEYS == {}
+
+
+def test_kimi_kill_and_release_drop_the_submit_key(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Kill and release end the job without a terminal poll — both drop
+    the key a live submit recorded."""
+    for end in ("kill", "release"):
+        store = _Store()
+        store.add_todo(42, "Build")
+        ctx, handle = _kimi_lane_submit(store, seams, monkeypatch)
+        assert handle is not None
+        assert run_slice._KIMI_SUBMIT_KEYS == {900: "sk-test-not-a-key"}
+
+        getattr(run_slice, end)(_poll_ctx(store, ctx), handle)
+
+        assert run_slice._KIMI_SUBMIT_KEYS == {}
+        run_slice._KIMI_SUBMIT_KEYS.clear()
+
+
+def test_kimi_moot_verdict_withholds_when_unscrubbed(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A task node's ``moot:`` first line is session text: when the
+    credential cannot be re-read the verdict's ``why`` is withheld from
+    the job summary like the handoff is from the comments."""
+    from precis import secrets as _secrets
+
+    store = _Store()
+    store.add_todo(42, "Check gr1", meta={"op": "run_slice"})
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    monkeypatch.setattr(_secrets, "get_secret", lambda _name, **kw: None)
+    key = "sk-leaked-verdict"
+    _finish(
+        handle,
+        0,
+        f'{{"role":"assistant","content":"moot: KIMI_MODEL_API_KEY={key}"}}\n',
+    )
+    pctx = _poll_ctx(store, ctx)
+
+    assert run_slice.poll(pctx, handle) is True
+
+    assert pctx.status == "succeeded"
+    assert store.comments(42) == [_WITHHELD]
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "Land: none, by verdict `moot: withheld: credential unreadable" in summary
+    _assert_no_keys(pctx, handle, store, key)
+    assert "KIMI_MODEL_API_KEY" not in summary
+
+
+def test_kimi_generator_noop_verdict_withholds_when_unscrubbed(
+    tmp_path: Path, seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same withheld verdict on a child-minting generator's
+    ``Children: none`` line. kimi_tree has no MCP so submit refuses a
+    generator — the ctx and handle are built by hand, keyed on ref 900."""
+    from precis import secrets as _secrets
+
+    store = _Store()
+    store.add_todo(42, "Slice it", meta={"generate": {"role": "slicer", "from": "x"}})
+    tree = tmp_path / "wt"
+    tree.mkdir()
+    handle = {
+        "pid": 4242,
+        "pgid": 4242,
+        "worktree": str(tree),
+        "log": str(tree / "run_slice.log"),
+        "exit_file": str(tree / "run_slice.exit"),
+    }
+    ctx = _Ctx(store, {"todo_id": 42}, lane="kimi", adapter="kimi_tree", model="k3")
+    key = "sk-leaked-gen-verdict"
+    run_slice._KIMI_SUBMIT_KEYS.clear()
+    run_slice._KIMI_SUBMIT_KEYS[900] = "sk-submitted-env-key"
+    monkeypatch.setattr(_secrets, "get_secret", lambda _name, **kw: None)
+    _finish(
+        handle,
+        0,
+        f'{{"role":"assistant","content":"no-op: KIMI_MODEL_API_KEY={key}"}}\n',
+    )
+
+    assert run_slice.poll(ctx, handle) is True
+
+    assert ctx.status == "succeeded"
+    assert store.comments(42) == [_WITHHELD]
+    [summary] = [t for k, t in ctx.chunks if k == "job_summary"]
+    assert (
+        "Children: none, by verdict `no-op: withheld: credential unreadable" in summary
+    )
+    _assert_no_keys(ctx, handle, store, key, "sk-submitted-env-key")
+    assert "KIMI_MODEL_API_KEY" not in summary
+    assert run_slice._KIMI_SUBMIT_KEYS == {}
+
+
+def test_kimi_deny_and_commit_surfaces_redact_the_key(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deny-path text, human-only hits and commit subjects are session
+    surfaces too — with the key readable they carry
+    ``[redacted:KIMI_MODEL_API_KEY]``, never the value."""
+    key = "sk-leaky-path-name"
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch, key=key)
+    assert handle is not None
+    seams["diff"] = f"scripts/lib/{key}.sh\ndeploy/inventory/{key}.yml\n"
+    seams["ahead"] = f"abc1234 fix: reads KIMI_MODEL_API_KEY={key}\n"
+    _finish(handle, 1, '{"role":"assistant","content":"oops"}\n')
+    pctx = _poll_ctx(store, ctx)
+
+    assert run_slice.poll(pctx, handle) is True
+
+    assert pctx.status == "failed"
+    surfaces = _kimi_surfaces(pctx, handle, [], store)
+    surfaces += [text for _kind, text in pctx.chunks]
+    joined = "\n".join(surfaces)
+    assert key not in joined
+    assert "[redacted:KIMI_MODEL_API_KEY]" in joined
+
+
+def test_kimi_unscrubbed_withholds_deny_paths_and_commit_lines(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The unreadable-credential fallback on the branch surfaces: a deny
+    path or commit line NAMING a kimi env var could carry the value, so
+    the deny reason is withheld whole, env-naming human hits drop (no
+    meta stamp) and env-naming commit lines never reach branch_commits."""
+    from precis import secrets as _secrets
+
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    monkeypatch.setattr(_secrets, "get_secret", lambda _name, **kw: None)
+    seams["diff"] = "deploy/inventory/KIMI_MODEL_API_KEY.yml\n"
+    seams["ahead"] = (
+        "abc1234 fix: reads KIMI_MODEL_API_KEY\ndef5678 fix: ordinary commit\n"
+    )
+    _finish(handle, 1, '{"role":"assistant","content":"oops"}\n')
+    pctx = _poll_ctx(store, ctx)
+
+    assert run_slice.poll(pctx, handle) is True
+
+    assert pctx.status == "failed"
+    assert pctx.failure is not None
+    assert "path withheld" in pctx.failure
+    assert "KIMI_MODEL_API_KEY" not in pctx.failure
+    assert store.comments(42) == [_WITHHELD]
+    assert run_slice.HUMAN_ONLY_KEY not in pctx.meta_set
+    assert pctx.meta_set["branch_commits"] == ["def5678 fix: ordinary commit"]
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "KIMI_MODEL_API_KEY" not in summary
+    assert run_slice._KIMI_SUBMIT_KEYS == {}

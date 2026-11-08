@@ -28,7 +28,7 @@ import pytest
 
 from precis.utils.claude_agent import AgentResult, stream_terminal_reason
 from precis.utils.claude_p import ClaudePResult
-from precis.utils.llm import router
+from precis.utils.llm import kimi, router
 from precis.utils.llm.router import (
     Backend,
     LlmRequest,
@@ -9027,6 +9027,66 @@ def test_profile_base_url_off_allowlist_refuses_before_key_or_wire(
     assert "evil" in out.error and "openrouter.ai" in out.error
     assert seen == []  # ZERO http calls — the client is never even built
     assert "OPENROUTER_API_KEY" not in resolved  # the key is never read
+
+
+@pytest.mark.parametrize(
+    ("base_url", "served"),
+    [
+        ("https://exfil.example.invalid/coding/v1", False),
+        ("https://api.kimi.ai.evil.example/coding/v1", False),
+        ("http://api.kimi.ai/coding/v1", False),
+        # Userinfo — built at runtime so no inline-password URL literal
+        # lands in the tree (test_deploy_tree_no_secrets).
+        ("https://u" + ":pw@api.kimi.ai/coding/v1", False),
+        ("https://api.kimi.ai:8443/coding/v1", False),
+        # The documented overseas endpoint — the happy path.
+        (kimi.DEFAULT_BASE_URL, True),
+    ],
+    ids=["off-allowlist", "suffix-spoof", "http", "userinfo", "port-8443", "default"],
+)
+def test_kimi_profile_base_url_allowlist_gates_before_key_or_wire(
+    monkeypatch: pytest.MonkeyPatch, base_url: str, served: bool
+) -> None:
+    """td573681 slice 2: the kimi default profile's ``base_url`` is
+    bound to :data:`kimi.BASE_URL_HOSTS` by the key allowlist
+    (gr586613) — an off-list repoint refuses BEFORE the key is read:
+    zero ``get_secret`` calls, zero wire calls, and the error names the
+    profile and the allowlist. The default host dispatches normally —
+    the gate is the allowlist, not the profile. ``_service_gate_lit``
+    is stubbed lit so the allowlist, not the dark gate, is under test."""
+    _set_profiles(
+        monkeypatch,
+        {kimi.PROFILE_NAME: {**kimi.default_profile(), "base_url": base_url}},
+    )
+    monkeypatch.setattr(router, "_service_gate_lit", lambda _name: True)
+    seen: list[dict[str, object]] = []
+    resolved = _profile_wire_fakes(monkeypatch, seen)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [{"transport": "openai_compat", "model": "m"}],
+    )
+    # The profile-less rung needs SOME hosted base url to survive
+    # resolve_chain; req.profile pins 'kimi' at dispatch regardless.
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://x.example.invalid/v1")
+
+    out = route(
+        LlmRequest(
+            tier=Tier.MEDIUM,
+            prompt="x",
+            source="plan_tick",
+            profile=kimi.PROFILE_NAME,
+        )
+    )
+
+    if served:
+        assert out.error is None
+        assert [c["url"] for c in seen] == [base_url]
+        assert resolved == [kimi.API_KEY_REF]  # the key IS read once
+    else:
+        assert out.error is not None
+        assert "'kimi'" in out.error and "api.kimi.ai" in out.error
+        assert seen == []  # ZERO http calls — the client is never built
+        assert resolved == []  # the key is never read
 
 
 def test_profile_unknown_api_key_ref_fails_closed(

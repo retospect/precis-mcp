@@ -32,9 +32,11 @@ Four pieces:
   (:func:`_profile_base_url_refusal`, gr586613) — a profile write can
   never redirect a provider key. A ``kind='subscription'`` profile
   additionally gates its rung through an ops allowlist, a bulk-work
-  guard and a window cap kept in the pool ledger; a ``kimi``-adapter
-  rung refuses worker/job-origin calls outright (interactive use only —
-  gr543829).
+  guard and a window cap kept in the pool ledger. The ``kimi``-adapter
+  subscription profile gates the same way (gr543829): autonomous kimi
+  use is sanctioned by the account owner's 2026-11-07 ruling
+  (me573727, td573681 comment 4) — the bulk guard and window cap still
+  apply.
 
 :class:`Tier` aligns with :class:`~precis.utils.prompt.model.Profile`: a
 ``HELPER`` (tool-less, one-shot) profile rides ``MEDIUM``/``SMALL`` on
@@ -1926,7 +1928,8 @@ class ProviderProfile:
     ops the rung serves (:func:`_subscription_refusal`): ``None`` (the
     key absent or null) means no op gate; a present list is the
     allowlist — an explicitly **empty** list serves nothing (the Kimi
-    adapter ships that way, gr543829).
+    adapter shipped that way under the 2026-11-01 ruling; it ships
+    ``ops`` absent since the 2026-11-07 ruling, gr543829).
     ``thinking_required`` lists model ids the wire must never send a
     thinking-disable directive for (:func:`openrouter_routing`).
     """
@@ -2241,16 +2244,14 @@ def _subscription_refusal(
     """Why a profile's rung must skip THIS call, as a result — ``None``
     when the rung may run. ``kind='subscription'`` profiles carry the
     ops/bulk/cap lane guards (a metered profile buys per token and needs
-    none); the ``kimi``-adapter worker guard runs regardless of kind.
+    none).
 
-    * **Worker guard** (``adapter='kimi'`` only) — Reto ruled 2026-11-01
-      (gr543829): NO autonomous use of the Kimi Code subscription. Any
-      call whose effective work class
-      (:func:`precis.budget.work_class.resolve` — explicit
-      ``req.work_class`` → ambient ``work_class_scope`` → ``background``)
-      isn't ``interactive`` refuses outright:
-      ``subscription_worker_refused``. Checked before the ``kind`` gate
-      so a mis-kinded kimi profile still can't carry worker traffic.
+    * **Worker guard** — retired 2026-11-07: the account owner sanctioned
+      autonomous use of the Kimi Code subscription (me573727, td573681
+      comment 4), superseding the 2026-11-01 interactive-only ruling
+      (gr543829). A kimi profile now gates like any other subscription
+      profile — the bulk guard and window cap below still protect the
+      plan.
     * **Ops allowlist** — a subscription profile carrying ``ops`` serves
       only those ``req.source`` ops (exact or ``:``-prefixed base) or
       ``req.work_class`` labels; an explicitly empty list serves none:
@@ -2270,26 +2271,6 @@ def _subscription_refusal(
     result like any other failed rung — it logs the ``reason_class`` and
     walks on, so the refusal never pauses the rest of the chain.
     """
-    if profile.adapter == "kimi":
-        from precis.budget.work_class import WorkClass
-        from precis.budget.work_class import resolve as _resolve_class
-
-        origin = _resolve_class(req.work_class)
-        if origin is not WorkClass.INTERACTIVE:
-            return LlmResult(
-                text="",
-                cost_usd=None,
-                turns_used=None,
-                model=model,
-                tier=req.tier,
-                error=(
-                    f"kimi profile {profile.name!r} refuses a "
-                    f"{origin.value} call (source={req.source or 'unset'!r})"
-                    " — the Kimi Code subscription serves interactive use "
-                    "only; no worker/job ops (gr543829)"
-                ),
-                reason_class="subscription_worker_refused",
-            )
     if profile.kind != "subscription":
         return None
     source = req.source or ""
@@ -2382,8 +2363,8 @@ class Rung:
     ``PRECIS_LLM_BASE_URL``/host-keyed default, so one chain can mix two
     hosted providers (gr543825). A ``kind='subscription'`` profile also
     gates the rung through :func:`_subscription_refusal` (ops allowlist,
-    bulk guard, window cap; a ``kimi``-adapter rung also refuses
-    worker-origin calls) before it runs. ``None`` ⇒ unchanged behaviour.
+    bulk guard, window cap) before it runs. ``None`` ⇒ unchanged
+    behaviour.
     """
 
     transport: Transport
@@ -2465,8 +2446,8 @@ class FailoverProvider:
             started = time.monotonic()
             rung_model = rung.model or model
             rung_profile = resolve_profile(rung.profile) if rung.profile else None
-            # A subscription-profile rung gates per call here (kimi worker
-            # guard, ops allowlist, bulk guard, window cap). The refusal is
+            # A subscription-profile rung gates per call here (ops
+            # allowlist, bulk guard, window cap). The refusal is
             # an ordinary failed-rung result —
             # the ladder logs it with its reason_class and walks on.
             refusal = (

@@ -45,17 +45,23 @@ class _FakeOpenAI:
 
 class _GateStore:
     """A ``meter.active_store`` stand-in whose service_config read says
-    the gate is lit (or not). Only that one query is answered: the
-    budget breaker reads the same bound store (spend sums, app_settings
-    caps), and a blanket ``(1,)`` there fakes a tripped $1 cap — the
-    meter must read dark (no rows → zero spend, default caps)."""
+    the gate is lit (or not) and whose ``external_rate_limits`` read
+    returns the ``pool_rows`` the test seeds (the window cap's ledger).
+    Every other query answers empty: the budget breaker reads the same
+    bound store (spend sums, app_settings caps), and a blanket ``(1,)``
+    there fakes a tripped $1 cap — the meter must read dark (no rows →
+    zero spend, default caps)."""
 
-    def __init__(self, lit: bool) -> None:
+    def __init__(
+        self, lit: bool, pool_rows: list[tuple[Any, ...]] | None = None
+    ) -> None:
         self._lit = lit
+        self._pool_rows = pool_rows or []
         self.pool = self
 
     def connection(self) -> Any:
         lit = self._lit
+        pool_rows = self._pool_rows
 
         class _CM:
             def __enter__(self) -> Any:
@@ -72,6 +78,11 @@ class _GateStore:
                             return (1,) if lit else None
                         return None
 
+                    def fetchall(self) -> Any:
+                        if "external_rate_limits" in self._q:
+                            return list(pool_rows)
+                        return []
+
                 return _Conn()
 
             def __exit__(self, *a: Any) -> None:
@@ -80,10 +91,17 @@ class _GateStore:
         return _CM()
 
 
-def _gate(monkeypatch: pytest.MonkeyPatch, lit: bool) -> None:
+def _gate(
+    monkeypatch: pytest.MonkeyPatch,
+    lit: bool,
+    pool_rows: list[tuple[Any, ...]] | None = None,
+) -> None:
     from precis.budget import meter
 
-    monkeypatch.setattr("precis.budget.meter.active_store", lambda: _GateStore(lit))
+    monkeypatch.setattr(
+        "precis.budget.meter.active_store",
+        lambda: _GateStore(lit, pool_rows),
+    )
     # The meter memoises BudgetStatus for 15s process-wide, not per store —
     # drop a status a neighbouring test computed so it can't gate (or
     # un-gate) the dispatches below.
@@ -170,9 +188,9 @@ def _chain(*rungs: dict[str, Any]) -> list[dict[str, Any]]:
 
 def test_default_profile_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
     """The shipped profile spec parses into a ProviderProfile — gate,
-    adapter, subscription kind and an EMPTY ops allowlist all land (the
-    2026-11-01 ruling: no autonomous use, so the default serves no op)."""
-    assert kimi.DEFAULT_OPS == ()
+    adapter, subscription kind all land, and ``ops`` is absent (the
+    2026-11-07 ruling lifted the empty allowlist: no op gate at all)."""
+    assert kimi.DEFAULT_OPS is None
     _profiles(monkeypatch, _kimi_profile())
     p = resolve_profile(kimi.PROFILE_NAME)
     assert p is not None
@@ -181,7 +199,7 @@ def test_default_profile_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
     assert p.kind == "subscription"
     assert p.adapter == kimi.ADAPTER
     assert p.gate == kimi.SERVICE_NAME
-    assert p.ops == frozenset()
+    assert p.ops is None
 
 
 def test_dark_gate_drops_the_kimi_rung(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -240,8 +258,8 @@ def test_ops_allowlist_refuses_non_coding_op(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A source outside the profile's ops allowlist is refused —
-    ``subscription_op_refused`` — and the chain falls through. The call
-    is interactive so the worker guard isn't what refuses it."""
+    ``subscription_op_refused`` — and the chain falls through. An
+    operator-listed ``ops`` set is still enforced."""
     _profiles(monkeypatch, {**_kimi_profile(ops=["my_op"]), **_paid_profile()})
     _gate(monkeypatch, lit=True)
     seen: list[dict[str, Any]] = []
@@ -276,12 +294,178 @@ def test_ops_allowlist_refuses_non_coding_op(
     assert skipped.features["profile"] == "kimi"
 
 
-def test_default_profile_routes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The shipped allowlist is empty: even an interactive call is refused
-    (``subscription_op_refused``) — the default profile routes nothing
-    until an operator lists ops."""
+def test_default_profile_dispatches_once_lit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shipped profile carries no ops allowlist: once the gate is lit
+    a call dispatches at the kimi wire — the bulk guard and window cap are
+    the only subscription gates left (the 2026-11-07 ruling, td573681)."""
     _profiles(monkeypatch, {**_kimi_profile(), **_paid_profile()})
     _gate(monkeypatch, lit=True)
+    seen: list[dict[str, Any]] = []
+    _wire_fakes(monkeypatch, seen)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: _chain(
+            {"transport": "openai_compat", "model": "k3", "profile": "kimi"},
+            {"transport": "openai_compat", "model": "m", "profile": "paid"},
+        ),
+    )
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+
+    out = route(
+        LlmRequest(
+            tier=Tier.BIG,
+            prompt="x",
+            source="plan_tick",
+            work_class="interactive",
+        )
+    )
+
+    assert out.error is None
+    assert seen[0]["url"] == kimi.DEFAULT_BASE_URL
+    assert seen[0]["api_key"] == "sk-kimi"
+
+
+@pytest.mark.parametrize(
+    "req_kwargs",
+    [
+        {"work_class": "background"},
+        {"work_class": "deliverable"},
+        {},
+    ],
+    ids=["background", "deliverable", "unset-defaults-background"],
+)
+def test_kimi_rung_serves_worker_origin(
+    monkeypatch: pytest.MonkeyPatch, req_kwargs: dict[str, Any]
+) -> None:
+    """The 2026-11-07 ruling lifted the interactive-only guard: a
+    worker-origin call on the default (ops-absent) kimi profile dispatches
+    at the kimi wire, authed by the membership key."""
+    _profiles(monkeypatch, {**_kimi_profile(), **_paid_profile()})
+    _gate(monkeypatch, lit=True)
+    seen: list[dict[str, Any]] = []
+    _wire_fakes(monkeypatch, seen)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: _chain(
+            {"transport": "openai_compat", "model": "k3", "profile": "kimi"},
+        ),
+    )
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x", source="plan_tick", **req_kwargs))
+
+    assert out.error is None
+    assert seen[0]["url"] == kimi.DEFAULT_BASE_URL
+    assert seen[0]["api_key"] == "sk-kimi"
+
+
+def test_pinned_kimi_dispatch_serves_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pinned ``req.profile`` call bypasses the rung-level check — the
+    dispatch-level guard applies the same subscription gates and lets a
+    worker-origin call through to the kimi wire."""
+    _profiles(monkeypatch, _kimi_profile())
+    _gate(monkeypatch, lit=True)
+    seen: list[dict[str, Any]] = []
+    _wire_fakes(monkeypatch, seen)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: _chain(
+            {"transport": "openai_compat", "model": "k3"},
+        ),
+    )
+    # The profile-less rung needs SOME hosted base url to survive
+    # resolve_chain; req.profile pins kimi at dispatch regardless.
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://x.example.invalid/v1")
+
+    out = route(
+        LlmRequest(
+            tier=Tier.BIG,
+            prompt="x",
+            source="plan_tick",
+            profile="kimi",
+            work_class="background",
+        )
+    )
+
+    assert out.error is None
+    assert seen[0]["url"] == kimi.DEFAULT_BASE_URL
+    assert seen[0]["api_key"] == "sk-kimi"
+
+
+def test_kimi_rung_still_refuses_bulk_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bulk guard still gates kimi: SMALL-tier bulk traffic refuses
+    ``subscription_bulk_refused`` and falls through — the 2026-11-07
+    ruling opened worker ops, not bulk drains."""
+    _profiles(monkeypatch, {**_kimi_profile(), **_paid_profile()})
+    _gate(monkeypatch, lit=True)
+    seen: list[dict[str, Any]] = []
+    _wire_fakes(monkeypatch, seen)
+    recorded: list[Any] = []
+    from precis import route_log
+
+    monkeypatch.setattr(route_log, "enabled", lambda: True)
+    monkeypatch.setattr(route_log, "record_call", lambda rec: recorded.append(rec))
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: _chain(
+            {"transport": "openai_compat", "model": "k3", "profile": "kimi"},
+            {"transport": "openai_compat", "model": "m", "profile": "paid"},
+        ),
+    )
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x", source="llm_summarize"))
+
+    assert out.error is None
+    assert [c["url"] for c in seen] == ["https://paid.example.invalid/v1"]
+    skipped = recorded[-2]
+    assert skipped.reason_class == "subscription_bulk_refused"
+    assert skipped.features["profile"] == "kimi"
+
+
+def test_kimi_window_cap_still_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The window cap still gates kimi: an exhausted ``llm:kimi:calls``
+    pool refuses ``subscription_cap`` and the chain falls through."""
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    # A ``_POOL_COLS``-ordered ``external_rate_limits`` row: the calls pool
+    # spent at its cap with the reset still an hour out → exhausted.
+    pool_row = (
+        "llm:kimi:calls",
+        1,
+        0.0,
+        0.0,
+        None,
+        None,
+        "calls",
+        1,
+        1,
+        0,
+        now,
+        "cap",
+        None,
+        "rolling:3600",
+        now + timedelta(hours=1),
+        None,
+        None,
+    )
+    _profiles(
+        monkeypatch,
+        {
+            **_kimi_profile(cap={"calls": 1, "window_s": 3600}),
+            **_paid_profile(),
+        },
+    )
+    _gate(monkeypatch, lit=True, pool_rows=[pool_row])
     seen: list[dict[str, Any]] = []
     _wire_fakes(monkeypatch, seen)
     recorded: list[Any] = []
@@ -310,86 +494,8 @@ def test_default_profile_routes_nothing(monkeypatch: pytest.MonkeyPatch) -> None
     assert out.error is None
     assert [c["url"] for c in seen] == ["https://paid.example.invalid/v1"]
     skipped = recorded[-2]
-    assert skipped.reason_class == "subscription_op_refused"
+    assert skipped.reason_class == "subscription_cap"
     assert skipped.features["profile"] == "kimi"
-
-
-@pytest.mark.parametrize(
-    "req_kwargs",
-    [
-        {"work_class": "background"},
-        {"work_class": "deliverable"},
-        {},
-    ],
-    ids=["background", "deliverable", "unset-defaults-background"],
-)
-def test_kimi_rung_refuses_worker_origin(
-    monkeypatch: pytest.MonkeyPatch, req_kwargs: dict[str, Any]
-) -> None:
-    """The ruling: no autonomous use — a non-interactive call on the kimi
-    rung is refused (``subscription_worker_refused``) even when its op IS
-    allowlisted, and the chain falls through to the paid rung."""
-    _profiles(monkeypatch, {**_kimi_profile(ops=["plan_tick"]), **_paid_profile()})
-    _gate(monkeypatch, lit=True)
-    seen: list[dict[str, Any]] = []
-    _wire_fakes(monkeypatch, seen)
-    recorded: list[Any] = []
-    from precis import route_log
-
-    monkeypatch.setattr(route_log, "enabled", lambda: True)
-    monkeypatch.setattr(route_log, "record_call", lambda rec: recorded.append(rec))
-    monkeypatch.setattr(
-        "precis.utils.llm.live_config.chain_override",
-        lambda _tier: _chain(
-            {"transport": "openai_compat", "model": "k3", "profile": "kimi"},
-            {"transport": "openai_compat", "model": "m", "profile": "paid"},
-        ),
-    )
-    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
-
-    out = route(LlmRequest(tier=Tier.BIG, prompt="x", source="plan_tick", **req_kwargs))
-
-    assert out.error is None
-    assert [c["url"] for c in seen] == ["https://paid.example.invalid/v1"]
-    skipped = recorded[-2]
-    assert skipped.reason_class == "subscription_worker_refused"
-    assert skipped.features["profile"] == "kimi"
-    assert "interactive" in (skipped.error or "")
-
-
-def test_pinned_kimi_dispatch_refuses_worker(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A pinned ``req.profile`` call bypasses the rung-level check — the
-    dispatch-level guard still refuses a worker-origin call before the
-    wire, with no fallthrough rung to hide it."""
-    _profiles(monkeypatch, _kimi_profile(ops=["plan_tick"]))
-    _gate(monkeypatch, lit=True)
-    seen: list[dict[str, Any]] = []
-    _wire_fakes(monkeypatch, seen)
-    monkeypatch.setattr(
-        "precis.utils.llm.live_config.chain_override",
-        lambda _tier: _chain(
-            {"transport": "openai_compat", "model": "k3"},
-        ),
-    )
-    # The profile-less rung needs SOME hosted base url to survive
-    # resolve_chain; req.profile pins kimi at dispatch regardless.
-    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://x.example.invalid/v1")
-
-    out = route(
-        LlmRequest(
-            tier=Tier.BIG,
-            prompt="x",
-            source="plan_tick",
-            profile="kimi",
-            work_class="background",
-        )
-    )
-
-    assert out.reason_class == "subscription_worker_refused"
-    assert "interactive" in (out.error or "")
-    assert seen == []
 
 
 def test_interactive_scope_allows_listed_op(

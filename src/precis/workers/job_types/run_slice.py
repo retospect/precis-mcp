@@ -1624,11 +1624,13 @@ def _redact(text: str, secrets: Iterable[tuple[str, str]]) -> str:
 
 #: The kimi key each in-flight job's child env actually received at
 #: submit, keyed by job ref id — process memory only, never the job meta,
-#: the handle or a log. The poll pops it (so the memory dies with the
-#: run) to scrub the submit-time value the vault no longer holds after a
-#: mid-run rotation; a worker restart loses it, in which case the poll
-#: treats that value like any unreadable secret — env-naming lines drop
-#: and the raw handoff is withheld.
+#: the handle or a log. The terminal poll pops it in
+#: :func:`_child_env_secrets` to scrub the submit-time value the vault no
+#: longer holds after a mid-run rotation; every exit path that skips the
+#: poll pops it in :func:`_drop_submit_key`, so the memory dies with the
+#: run. A restart (or an early drop followed by a late poll) loses it, in
+#: which case the poll treats that value like any unreadable secret —
+#: env-naming lines drop and the raw handoff is withheld.
 _KIMI_SUBMIT_KEYS: dict[int, str] = {}
 
 #: The comment a poll posts instead of the raw handoff when a key value
@@ -1639,6 +1641,19 @@ _KIMI_SUBMIT_KEYS: dict[int, str] = {}
 _HANDOFF_WITHHELD = (
     "handoff withheld: credential unreadable at poll; log tail retained redacted"
 )
+
+
+def _drop_submit_key(ctx: Any) -> None:
+    """Drop this job's :data:`_KIMI_SUBMIT_KEYS` entry on an exit path
+    that never reaches the terminal poll — a refused or failed submit, a
+    malformed handle, a kill, a release. The dict is process memory: an
+    entry left behind holds a credential longer than the run that needed
+    it. A terminal poll that still runs afterwards reads the missing
+    entry like a worker restart — the stored tail drops env-naming
+    lines and the handoff is withheld (the safe side)."""
+    job = getattr(ctx, "ref_id", None)
+    if isinstance(job, int) and not isinstance(job, bool):
+        _KIMI_SUBMIT_KEYS.pop(job, None)
 
 
 def _child_env_secrets(
@@ -1810,6 +1825,7 @@ def _revoke_slice_grant(ctx: Any, todo_id: int, grant: Any, status: str) -> None
 
 
 def _fail_submit(ctx: Any, todo_id: int, lane: str | None, reason: str) -> None:
+    _drop_submit_key(ctx)
     attempt = None
     try:
         attempt = release_todo(ctx.store, todo_id, lane)
@@ -2196,6 +2212,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         # refusal stamps the lane's backoff on this job (gr571395):
         # lane_backoffs skips the lane until then, and plan_dispatch never
         # counts the job as an attempt.
+        _drop_submit_key(ctx)
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         unclaim_todo(ctx.store, todo_id, lane.name)
         until = datetime.now(UTC) + _lanes.HOST_REFUSAL_BACKOFF
@@ -2607,6 +2624,7 @@ def poll(ctx: Any, handle: Any) -> bool:
     """Detached poll half: ``False`` while the session runs; once it has
     exited, the handoff, the branch state and the terminal status."""
     if not isinstance(handle, dict):
+        _drop_submit_key(ctx)
         ctx.record_failure(f"run_slice: malformed handle {handle!r}")
         return True
     if handle.get("not_before"):
@@ -2880,6 +2898,7 @@ def poll(ctx: Any, handle: Any) -> bool:
 
 def release(ctx: Any, handle: Any) -> None:
     """Release the failed run's lease/grant without signaling any process."""
+    _drop_submit_key(ctx)
     meta = getattr(ctx, "meta", None) or {}
     todo_id = int((meta.get("params") or {}).get("todo_id") or 0)
     grant = _handle_grant(handle)
@@ -2897,6 +2916,7 @@ def release(ctx: Any, handle: Any) -> None:
 
 def kill(ctx: Any, handle: Any) -> None:
     """Wall-clock / operator kill: revoke the grant and SIGTERM."""
+    _drop_submit_key(ctx)
     if not isinstance(handle, dict):
         return
     grant = _handle_grant(handle)

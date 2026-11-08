@@ -39,9 +39,11 @@ Classes (:data:`FailureClass`):
   op: ``req.source`` isn't in the profile's ``ops`` allowlist (the Kimi
   rule, gr543829 — an empty allowlist serves no op). No horizon: another
   rung must take it.
-* ``subscription_worker_refused`` — a Kimi-subscription rung refused a
-  worker/job-origin call: the plan serves interactive use only, never
-  autonomous ops (gr543829). No horizon: another rung must take it.
+* ``subscription_worker_refused`` — legacy: a Kimi-subscription rung
+  refused a worker/job-origin call under the 2026-11-01
+  interactive-only ruling (gr543829). No longer raised since the
+  account owner's 2026-11-07 autonomous-use ruling (me573727,
+  td573681); kept in the vocabulary so stored results still classify.
 
 Unknown wording stays unclassified (``None``) — a false negative keeps
 today's generic cool-down, a false positive would only bring one retry

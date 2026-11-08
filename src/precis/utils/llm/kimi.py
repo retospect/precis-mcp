@@ -19,23 +19,20 @@ Conservative rules, per those docs:
 * **Key auth only** — ``api_key_ref: KIMI_CODE_API_KEY`` resolved at call
   time; never the CLI's OAuth login (the docs scope that to official
   clients).
-* **Interactive wire; one sanctioned headless lane** — Reto ruled
-  2026-11-01 (gr543829): no autonomous use of the Kimi Code
-  subscription. The router refuses a kimi-rung call whose effective
-  :mod:`~precis.budget.work_class` isn't ``interactive``
-  (``subscription_worker_refused``), and the shipped ``ops`` allowlist
-  is **empty** so the default profile routes nothing even once lit. The
-  Community Guidelines limit subscriptions to *interactive* use
+* **Autonomous use sanctioned; key auth only** — the account owner's
+  2026-11-07 ruling (me573727, td573681 comment 4) lifted the 2026-11-01
+  interactive-only guard (gr543829): a lit kimi rung now serves
+  worker/job-origin calls like any other subscription profile — the
+  ``ops`` allowlist, bulk guard and window cap still gate
+  (:func:`~precis.utils.llm.router._subscription_refusal`), and the
+  shipped profile carries ``ops`` absent (no op gate). The Community
+  Guidelines limit subscriptions to *interactive* use
   ("scripted batch execution or data annotation pipelines … goes beyond
   normal use") and send product-integration/enterprise traffic to the
-  pay-as-you-go Kimi Platform — an operator widening ``ops`` lists only
-  interactive-driven ops; bulk background ops stay refused by the bulk
-  guard regardless. The one exception, sanctioned by the account
-  owner's 2026-11-07 ruling (me573727, td573681 comment 4): the
-  unattended ``kimi_tree`` slice lane, which runs the CLI headless on
-  the membership key — key auth only, the CLI's own User-Agent and
-  defaults untouched. The router-side refusals above still stand:
-  lifting them is a separate slice.
+  pay-as-you-go Kimi Platform — the ruling accepts that on the owner's
+  account; bulk drains stay refused regardless. The unattended
+  ``kimi_tree`` slice lane runs the CLI headless on the membership key —
+  key auth only, the CLI's own User-Agent and defaults untouched.
 * **Quota** — a rolling 5-hour rate window plus a monthly total (new
   plans; legacy plans keep a 7-day refresh), shared across every device
   and API key. Account-side limits surface as HTTP 429 with documented
@@ -50,10 +47,9 @@ writing the profile and key alone never sends a request. Enabling is an
 operator act: store ``KIMI_CODE_API_KEY`` (the secrets page entry landed
 in e83bdaefc), write the ``llm.profiles`` entry
 (:func:`default_profile`), add a chain rung naming the profile, then
-``precis service prio '*' llm_kimi 1``. Lit is still not serving: the
-shipped ``ops`` allowlist is empty (routes nothing) and worker-origin
-calls are refused — only an interactive call on an operator-listed op
-runs.
+``precis service prio '*' llm_kimi 1``. Once lit the profile serves:
+``ops`` is absent (no op gate) and worker-origin calls are admitted —
+the bulk guard and window cap are the remaining checks.
 
 Wire differences from OpenRouter (:func:`wire_routing`): the Kimi
 endpoint takes a flat ``reasoning_effort`` field (levels
@@ -139,13 +135,14 @@ MODELS: tuple[str, ...] = (
 #: this set is informational/for the catalog.
 THINKING_REQUIRED_MODELS: frozenset[str] = frozenset({"k3.1-pro", "k3.1-pro-highspeed"})
 
-#: The ``req.source`` ops the shipped profile allowlists — **empty** per
-#: the 2026-11-01 ruling (gr543829): no autonomous use of the Kimi Code
-#: subscription, so the default profile routes nothing even once the
-#: gate is lit. An operator may list interactive ops in the profile row;
-#: worker/job-origin calls stay refused regardless (the router's
-#: work_class check, :func:`~precis.utils.llm.router._subscription_refusal`).
-DEFAULT_OPS: tuple[str, ...] = ()
+#: The ``req.source`` ops the shipped profile allowlists — **absent**
+#: since the 2026-11-07 ruling (me573727, td573681 comment 4) lifted the
+#: 2026-11-01 interactive-only guard (gr543829): the default profile
+#: carries ``ops: None`` — no op allowlist at all. An operator may still
+#: write an explicit ``ops`` list to narrow what the rung serves; the
+#: bulk guard and window cap gate regardless
+#: (:func:`~precis.utils.llm.router._subscription_refusal`).
+DEFAULT_OPS: tuple[str, ...] | None = None
 
 #: Our ``effort`` vocabulary → Kimi's ``low``/``high``/``max``: the same
 #: three-step ordinal scale, different labels (``low→low``,
@@ -188,8 +185,9 @@ def default_profile() -> dict[str, Any]:
     ``{"<PROFILE_NAME>": default_profile()}`` (or adapts the
     ``base_url``/``cap`` for the account region and tier) — the values
     are config, not constants the wire reads directly. ``ops`` ships
-    empty: the profile routes nothing until the operator lists the
-    interactive ops it may serve (gr543829).
+    absent (``None`` — no op gate) since the 2026-11-07 ruling
+    (gr543829): once lit the profile serves whatever the bulk guard and
+    window cap admit.
     """
     return {
         "base_url": DEFAULT_BASE_URL,
@@ -197,7 +195,7 @@ def default_profile() -> dict[str, Any]:
         "kind": "subscription",
         "adapter": ADAPTER,
         "gate": SERVICE_NAME,
-        "ops": list(DEFAULT_OPS),
+        "ops": list(DEFAULT_OPS) if DEFAULT_OPS is not None else None,
     }
 
 
