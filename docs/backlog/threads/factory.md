@@ -144,6 +144,11 @@ quality-of-life and container items.
     covered: the STEWARD gate proving Never Ask honours PreToolUse
     exit 2, and the real `kimi login` state — untested until the first
     real pane.
+18. **Travelling findings (2026-11-08)** — code anchors with short handles
+    on the python kind (gr595549), a rebuilt current-state summary on
+    gripes (gr595551), the broken-build ranked changed-files view
+    (gr595552); router additions live on the task-aware-routing spec
+    me568172 (gr595543, gr595544, gr595545, gr595546, gr595548).
 
 ## Parked
 

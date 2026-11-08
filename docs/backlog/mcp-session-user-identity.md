@@ -47,6 +47,28 @@ Ruling (Reto, 2026-10-06): the owner is Reto, but the identity is never
 hardcoded; the binding is a per-user credential the user manages on their own
 account page, `/account`.
 
+## Secret classes (2026-11-08)
+
+Three classes of bearer secret exist or should:
+
+1. **Install token** (`PRECIS_MCP_TOKEN`; infra: "a legitimate client").
+   Minted by `deploy/mcp-http/precis-mcp-http-ensure.sh`.
+2. **Per-user token** (`web_user_mcp_tokens`; identity: "which person").
+   Minted at `/account`; scope-gated to learning by
+   `tools/core.py::_personal_call_allowed`.
+3. **Client capability token**: per consumer, not per person, e.g. a
+   claude.ai chat connector or a podcast feed listener (today the per-user
+   feed credential in `quest-learning-plan.md` is this class, informally).
+   Revocable, digest-only storage, labelled, minted and listed at `/account`
+   beside the user tokens. Carried as `Authorization: Bearer`, or
+   URL-embedded where the client cannot set headers. Scope is a per-token
+   allow-list of kinds and verbs. Filed as gr595554.
+
+Open before building: whether the claude.ai custom connector can send a
+custom `Authorization` header or requires OAuth; if OAuth, the capability
+token is the bearer the authorisation server issues. After the gripe: an
+ask-user todo for Reto to mint the token and configure the connector.
+
 ## In scope (still open)
 
 Orchestrator proposal, inside Reto's ruling (not yet reviewed by Reto):
@@ -100,7 +122,7 @@ Remaining work touches `src/precis/tools/core.py::_personal_call_allowed`
 `src/precis/secrets.py` (per-user vault names) ·
 `deploy/mcp-http/precis-mcp-http-ensure.sh` and `scripts/mcp-http-install`
 (snippet/docs only) · skill `precis-overview` (anonymous-refusal hint).
-Related: `email-per-user-credentials.md`, `per-user-library-link.md`,
+Related: gr595554 (capability token class), `email-per-user-credentials.md`, `per-user-library-link.md`,
 `web-basic-auth-users.md`, `threads/session-mcp-shared-server.md`.
 
 ## Open questions / decisions log

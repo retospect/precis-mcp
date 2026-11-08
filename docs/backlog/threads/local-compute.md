@@ -330,6 +330,10 @@ task set.
    controller) after S0. This is the path that puts castor to work (Reto
    2026-10-03); without S1 the first background flood takes every castor
    slot from a live session.
+6b. **cluster-scheduling.md Pillar 3b + job-scheduling-fairness.md
+   matrix/deficit** — footprint rows first (gr595536), then cap
+   (gr595537), stamps (gr595539), fit-then-deficit pull (gr595541,
+   gr595542), memory-kill policy (gr595538). From the 2026-11-08 session.
 7. **llm-keyword-route — shipped** (8861517f5): ordered (keyword|regex →
    model|tier|chain) rules at the `route()` seam (`utils/llm/keyword_route.py`
    + `llm_keyword_routes`, migration 0237), probe-gated fallback to normal
@@ -387,6 +391,13 @@ task set.
     `precis stats --utilization` row.
 13. **backlog/local-coder-batch-harness.md** — idea (Reto 2026-10-04); last
     because it needs the standing castor server and has no quality number.
+14. **Context planner for batch jobs** (parked, 2026-11-08): a small agent
+    plans the fisheye queries a task needs, freezes the bundle with a
+    timestamp and handle set, submits it as a half-price off-peak batch
+    job; accept only if no handle's `updated_at` is after the bundle
+    timestamp; over-fetch and track missing-context vs extra shipped.
+    Instance three of the generic loop in `cluster-scheduling.md` Pillar
+    3b. Lowest priority, cost saving only.
 
 ## Parked
 

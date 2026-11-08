@@ -66,7 +66,10 @@ A proposal that violates one is wrong.
    drop a fire, wedge a unit, or stall a cadence — one exception: an
    **affinity-pinned** cadence stalls while its pinned host is down, by
    design (§A carve-out).
-7. **One user ⇒ no fairness scheduler.**
+7. **No fairness across users; fairness across lanes within a class.** One
+   user, so no fair-share across people; inside an origin class, lanes
+   (job_type or lane class) get a share and the claim repays deficit
+   (reworded 2026-11-08, Reto; was "One user ⇒ no fairness scheduler").
 
 **Failure vocabulary:** a **fire** is one scheduled occurrence (*dropping* =
 never runs; `catch_up` is late-not-lost); a **unit** is one claimed, leased
@@ -214,6 +217,55 @@ Cost is dominated by one producer: `dream` (~79 % of cluster LLM spend,
   ansible, `torch-cuda` base-image mirror, systemd manage story
   `gr180078`).
 
+## Pillar 3b — footprint admission and the node agent (2026-11-08)
+
+One generic loop, built once and configured three times: a requester
+declares needs as data; a table of learned capacities says what fits; a
+greedy policy with a hard safety limit picks; the outcome is measured and
+written back. Instance one is machines and resource footprints (this
+section). Instance two is models and task categories (the task-aware-routing
+spec in repo-dev memory, me568172). Instance three is a context planner for
+batch jobs (parked; `threads/local-compute.md` Horizon).
+
+The **node agent** is the thin per-host worker this doc already names (north
+star, law 4, §H): one long-lived process per machine that owns headroom
+measurement, footprint lookup and the pull loop; jobs are child
+subprocesses/containers it spawns and reaps; the only shared state is
+Postgres; no cluster-wide coordinator, no agent-to-agent heartbeats. Nothing
+new structurally; the new parts are the data and the admission filter.
+
+Order of work (Reto): 1 footprint rows (gr595536) → 2 per-task memory cap
+(gr595537) → 3 mint-time stamps (gr595539) → 4 pull = fit-then-deficit with
+ageing (gr595541, gr595542) → 5 memory-kill requeue/park/triage (gr595538).
+Items 1 and 2 ship independently (static defaults for the cap).
+
+- **Footprint rows.** Peak RSS, peak VRAM, CPU-seconds and wall per run,
+  keyed on (job_type, size parameter). A derived (type, size) table holds a
+  high percentile plus margin for noisy types, or a regression on the size
+  parameter.
+- **Admission on the pull.** GPU (science lane only; LLM serving stays
+  persistent with class lanes, `llm-lane-scheduler.md`): free VRAM − margin ≥
+  the model's footprint (weights + KV for the context length; learnable from
+  one run), at most 1–2 concurrent jobs per card; model affinity is a sort
+  key (prefer tasks needing the model just used; optional resident weights
+  with teardown on switch/idle). CPU: predicted peak RSS ≤ free memory − ~10 %
+  RAM reserve. Hard limit: a per-task memory cap via cgroups/ulimit so a
+  runaway dies instead of swapping the box. Greedy first-fit per machine;
+  cross-machine bin-packing only once measurements show packing is the
+  bottleneck.
+- **Starvation protection.** Ageing (shipped), plus reservation and backfill
+  once footprints exist: when the top candidate does not fit current
+  headroom, stop pulling for it, let running jobs drain, backfill only tasks
+  whose predicted runtime ends before the big one could start.
+- **Failure policy.** Killed for memory → requeue once with the estimate
+  bumped and a killed flag; killed twice → park; parked jobs go to a
+  big-model triage with the run logs (too big for any box → split or drop;
+  bug/leak/runaway → gripe); only what it cannot explain reaches the user.
+  Always restart, never resume.
+
+The claim key and the mint-time matrix live in `job-scheduling-fairness.md`
+("The mint-time matrix and the deficit key").
+
 ## Pillar 4 — monitorable (law 6's observability)
 
 - **§D** — shipped through Phase 2. Remaining: Phase 3 (brief lane, surface
@@ -332,8 +384,9 @@ per §C's gate.
 
 ## Explicitly NOT in scope
 
-- Multi-class fairness scheduling (fair-share, gang, bin-packing, mid-run
-  yield) — moot with one user.
+- Fair-share across users, gang scheduling, cross-machine bin-packing,
+  mid-run yield — one user; per-lane deficit inside a class is in scope
+  since 2026-11-08 (law 7, Pillar 3b).
 - A dispatcher / singleton scheduler daemon — the claim substrate needs
   none.
 - Interactive serving from a fused pool — the interconnect makes it batch.
@@ -353,6 +406,9 @@ model-servers worker-spun on demand; isolation substrate = rootless podman
 on the Sparks (Seatbelt/colima interim); git access pushed trusted-side;
 file/blob storage git-first; todo↔job boundary stays (ADR 0030); §D↔§F share
 one backlog signal; the scheduler pass is live — §A extends, not flips.
+2026-11-08 (Reto): law 7 reworded; footprint admission and the node-agent
+reading of §H added as Pillar 3b; GPU-discrete admission applies to the
+science lane only, LLM serving stays persistent (`llm-lane-scheduler.md`).
 
 Open:
 

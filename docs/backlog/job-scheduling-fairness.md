@@ -1,5 +1,5 @@
 ---
-status: parked
+status: draft
 title: Job scheduling fairness — origin classes on the job row, class-preserving ageing, a reserved interactive slot per lane, per-job_type caps for standing bands
 pillar: platform
 prio: normal
@@ -13,7 +13,8 @@ precedence over background." Trigger: graph_garden jo504788 (recurring,
 prio 2) waited 28.5 min on `job_inproc` behind prio-8 `derived_drain`.
 Related: [worker-rotation-starves-rescue-passes](worker-rotation-starves-rescue-passes.md)
 (rotation latency), [claude-inproc-lane-starves-old-jobs](claude-inproc-lane-starves-old-jobs.md)
-(ageing shipped 2026-10-15), [cluster-scheduling](cluster-scheduling.md) (lane laws).
+(ageing shipped 2026-10-15), [cluster-scheduling](cluster-scheduling.md) (lane laws). Reopened 2026-11-08: see "The mint-time matrix and the deficit
+key" below.
 
 ## Motivation / why
 
@@ -138,6 +139,10 @@ class ordering plus `derived_drain max_running=2/host` does not keep
 foreground moving; reopen then. The runtime caps of D4 are a per-host
 operator setting (`claim.max_running.<job_type>`), not code.
 
+**Reopened 2026-11-08 (Reto).** Two additions from the scheduler design
+session, filed as gr595539 and gr595541; slice 4 stays deferred on the same
+gate.
+
 1. **Origin stamp (D1)** — handler + `mint_background_job()` + recurring
    spawn; backfill none. Pure data, no claim change. Ships first so the
    metrics in acceptance can be measured by class.
@@ -201,6 +206,42 @@ operator setting (`claim.max_running.<job_type>`), not code.
    over 24 h per origin class, host-scoped
    (`precis_web/routes/factory.py::_wait_by_class`).
 
+## The mint-time matrix and the deficit key (2026-11-08)
+
+Ruled (Reto 2026-11-08): stamp as much as is trivially available at mint.
+Law 7 of `cluster-scheduling.md` is reworded to match: no fairness across
+users, fairness across lanes within a class.
+
+| Dimension | On the row today | Stamp at mint (gr595539) | Role |
+|---|---|---|---|
+| origin class | yes (`meta.origin`) | — | share key, outer |
+| job_type and `params.pass` | yes | — | folds into lane |
+| parent job, `dispatched_from_todo`, `retry_of` | yes | — | logged |
+| submitter (MCP session_id + client) | no, only in `tool_calls` | `meta.submitter` | logged |
+| lane class (triage/brief/code/review/validate) | spec only, for `run_slice` (me568185) | `meta.lane` | share key, inner |
+| task_kind, consequence | spec only, for `run_slice` | stamp | logged |
+| size parameter | unnamed in `params` | `meta.size` `{name, value}` | logged, footprint key |
+| predicted footprint / runtime | no | from the footprint table (gr595536) | admission |
+
+One mint door as today (`workers/_mint.py::mint_background_job`,
+`handlers/job.py::JobHandler.put`, the contract test). Only origin and lane
+are share keys; everything else is logged for the footprint table, the
+pass-rate table and the per-run features row, and is promoted to a share key
+only when the data shows a lane starving on that axis.
+
+`lane` = lane class for chain jobs, else `job_type[:pass]` (today's slice-5
+share key).
+
+**Deficit (gr595541).** Each lane has a share in `service_config` (default
+equal). Deficit = share − the fraction of lane-seconds this host gave the
+lane over a sliding window (1 h to start). Claim order is
+`(class_rank, deficit DESC, aged_prio, queued_since, ref_id)`. Class-bounded
+ageing (D3) and the prio-1 override stay. This replaces D4's fewest-running
+pick; the `max_running` caps stay.
+
+Reservation and backfill once footprints exist: `cluster-scheduling.md`
+Pillar 3b.
+
 ## Acceptance criteria
 
 - 100% of jobs minted after slice 1 carry `meta.origin`; a contract test
@@ -217,6 +258,12 @@ operator setting (`claim.max_running.<job_type>`), not code.
   everything; `max_running` refuses the (cap+1)th claim.
 - Repeat of the 2026-10-22 shape (band backlog + graph_garden put) in the
   dev DB: graph_garden claimed within one pass.
+- A lane that received 0 % of a 60-minute window while another lane in its
+  class ran continuously is claimed next regardless of prio once both have
+  candidates.
+- 100 % of jobs minted after the stamp slice carry `meta.lane` and
+  `meta.submitter` where a session exists; the contract test refuses a mint
+  without origin and lane.
 
 ## Explicitly NOT in scope
 
