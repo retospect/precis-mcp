@@ -47,7 +47,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from precis.plans import gates as _gates
 from precis.plans import release as _release
 from precis.utils.secret_scan import mask_secrets
 from precis.workers.job_types import release_cut as _rc
@@ -171,19 +170,10 @@ def _mode_refusal(params: dict[str, Any]) -> str | None:
 
 def _red_run_id(store: Any, sha: str) -> str | None:
     """The newest ``release.ci_verdicts`` row on ``sha`` (the tests-green
-    gate's prefix match) that is red and carries a run id, else ``None``."""
-    best: tuple[str, int] | None = None
-    run_id: str | None = None
-    for i, row in enumerate(_gates.read_ci_verdicts(store)):
-        if row["verdict"] != "red":
-            continue
-        rid = str(row.get("run_id") or "").strip()
-        if not rid or not _gates._prefix_match(sha, row["sha"].lower()):
-            continue
-        key = (str(row.get("at") or ""), i)
-        if best is None or key >= best:
-            best, run_id = key, rid
-    return run_id
+    gate's prefix match) that is red and carries a run id, else ``None``
+    — :func:`precis.plans.release.newest_red_run`, shared with
+    ``ci_rerun``'s run-id pick."""
+    return _release.newest_red_run(store, sha)
 
 
 def _fix_targets(store: Any, digest_id: int) -> list[int]:

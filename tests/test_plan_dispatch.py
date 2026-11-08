@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from precis.plans import lanes as L
+from precis.plans import release as R
 from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
@@ -1711,6 +1712,303 @@ def test_release_fix_body_shape(store: Store) -> None:
         assert ref is not None and ref.parent_id == loop
         assert "iteration 2" in str(ref.title)
     assert "brief:" in _body_text(store, body.ids["fix"])
+
+
+# ── the validated non-repro rerun (gr588028) ──────────────────────
+
+_R_SHA = "c0ffee" + "1" * 34
+_R_RNG = f"{'9' * 12}..{_R_SHA[:12]}"
+_R_RUN = "31"
+
+
+def _parked_release_fix(
+    store: Store, *, host: str | None = None
+) -> tuple[T.PlanMint, dict[str, int]]:
+    """The state ``run_slice.poll`` leaves behind a ``validated:``
+    non-repro fix session (gr588028): the cut recorded, the newest
+    verdict red with a run id, the digest done, the fix node open on
+    ``waiting-for:ci-rerun`` behind its attempt-free succeeded job."""
+    mint = T.mint_release_pass(store)
+    R.record_cut(store, mint.ids["cut"], "r7", _R_SHA, _R_RNG, repo="o/r", host=host)
+    R.record_ci_verdict(store, _R_SHA, _R_RNG, "red", _R_RUN)
+    ids = T.mint_body(store, mint.ids["loop"], "release-fix", iteration=1).ids
+    for todo_id in (mint.ids["cut"], mint.ids["poll"], ids["digest"]):
+        store.add_tag(
+            todo_id,
+            Tag.closed("STATUS", "done"),
+            set_by="system",
+            replace_prefix=True,
+        )
+    _slice_job(store, ids["digest"], "ci_red_digest", "succeeded")
+    _slice_job(
+        store,
+        ids["fix"],
+        "run_slice",
+        "succeeded",
+        meta={
+            pd.VALIDATED_NOREPRO_KEY: {"line": "validated: no repro"},
+            pd.ATTEMPT_FREE_KEY: "validated-norepro",
+        },
+    )
+    store.add_tag(ids["fix"], Tag.open(pd.NOREPRO_WAIT_TAG), set_by="system")
+    return mint, ids
+
+
+def _rerun_asks(store: Store, root: int) -> list[int]:
+    """The stall path's asks: children of ``root`` tagged ``showstopper``
+    (the standing approval ask is ``ask-user`` only)."""
+    return [c for c in _children(store, root) if "showstopper" in _open_tags(store, c)]
+
+
+def _comment_texts(store: Store, todo_id: int) -> list[str]:
+    return [
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(todo_id)
+        if c.chunk_kind == "todo_comment"
+    ]
+
+
+def _job_ids(store: Store, todo_id: int, job_type: str) -> list[int]:
+    return [j for j, m in _jobs_under(store, todo_id) if m.get("job_type") == job_type]
+
+
+def _succeed_newest(store: Store, todo_id: int, status: str = "succeeded") -> None:
+    _set_job_status(store, _jobs_under(store, todo_id)[-1][0], status)
+
+
+def _succeed_rerun(store: Store, todo_id: int, run_id: str = _R_RUN) -> None:
+    """End the newest job succeeded carrying the stamp a real
+    ``ci_rerun`` writes at settle (``meta.ci_rerun`` — the run id and
+    the pre-rerun attempt baseline the script printed)."""
+    job_id = _jobs_under(store, todo_id)[-1][0]
+    store.stamp_ref_meta(
+        job_id,
+        {"ci_rerun": {"run_id": run_id, "rerun_attempt_before": 1}},
+    )
+    _set_job_status(store, job_id, "succeeded")
+
+
+def test_parked_fix_mints_the_ci_rerun_once_per_run_id(store: Store) -> None:
+    """gr588028 (r248): mint phase — one ``ci_rerun`` job on the cut's
+    newest red run, pinned to the cut host, idem ``ci_rerun:<run id>``,
+    attempt-free; the node stays parked and the rest of the iteration
+    is untouched."""
+    mint, it = _parked_release_fix(store, host="node-a")
+    pd.run_pass(store)
+    job_id, meta = _jobs_under(store, it["fix"])[-1]
+    assert meta["job_type"] == "ci_rerun"
+    assert meta["executor"] == "ssh_node"
+    assert meta["params"] == {
+        "todo_id": it["fix"],
+        "target_node": "node-a",
+    }
+    assert meta["idem_key"] == f"ci_rerun:{_R_RUN}"
+    assert meta[pd.ATTEMPT_FREE_KEY] == "ci-rerun"
+    assert _status(store, it["fix"]) == "open"
+    assert pd.NOREPRO_WAIT_TAG in _open_tags(store, it["fix"])
+    assert _jobs_under(store, it["recut"]) == []
+    assert _jobs_under(store, it["poll"]) == []
+    assert _rerun_asks(store, mint.root_id) == []
+    # A second pass while the rerun is in flight mints no second job.
+    pd.run_pass(store)
+    assert _job_ids(store, it["fix"], "ci_rerun") == [job_id]
+
+
+def test_accepted_rerun_mints_the_verdict_poll(store: Store) -> None:
+    """A succeeded ``ci_rerun`` (the rerun request was accepted) mints
+    one ``ci_verdict_poll`` carrying ``rerun_of`` — the plan's own
+    verdict reader, no second mechanism."""
+    _mint, it = _parked_release_fix(store)
+    pd.run_pass(store)
+    _succeed_rerun(store, it["fix"])
+    pd.run_pass(store)
+    _job_id, meta = _jobs_under(store, it["fix"])[-1]
+    assert meta["job_type"] == "ci_verdict_poll"
+    assert meta["executor"] == "job_inproc"
+    assert meta["params"] == {"todo_id": it["fix"]}
+    assert meta["rerun_of"] == _R_RUN
+    assert meta["rerun_attempt_before"] == 1
+    assert meta[pd.ATTEMPT_FREE_KEY] == "ci-rerun"
+    assert pd.NOREPRO_WAIT_TAG in _open_tags(store, it["fix"])
+
+
+def test_green_rerun_closes_the_fix_and_the_recut_runs(store: Store) -> None:
+    """The rerun's poll recording green closes the fix moot-style
+    (``validated: flake`` comment, no attempt, no ask) — then the
+    loop's own re-cut node re-reads the run: nothing re-mints it."""
+    mint, it = _parked_release_fix(store)
+    pd.run_pass(store)
+    _succeed_rerun(store, it["fix"])
+    pd.run_pass(store)
+    R.record_ci_verdict(store, _R_SHA, _R_RNG, "green", _R_RUN)
+    _succeed_newest(store, it["fix"])
+    pd.run_pass(store)
+    assert _status(store, it["fix"]) == "done"
+    assert pd.NOREPRO_WAIT_TAG not in _open_tags(store, it["fix"])
+    assert any(
+        f"validated: flake — rerun of run {_R_RUN} green" in c
+        for c in _comment_texts(store, it["fix"])
+    )
+    assert _rerun_asks(store, mint.root_id) == []
+    pd.run_pass(store)
+    _job_id, meta = _jobs_under(store, it["recut"])[-1]
+    assert meta["job_type"] == "release_cut"
+
+
+def test_red_rerun_stalls_once_and_rearms_the_digest(store: Store) -> None:
+    """The rerun's verdict still red: the failure is real — one stall
+    comment, one deduped root ask, the wait tag dropped and the digest
+    REALLY re-armed: the ``rearmed_after_job`` floor keeps the phases
+    backstop from re-closing it on the old succeeded job, a SECOND
+    ``ci_red_digest`` job mints, and the fix node dispatches only after
+    that job's SECOND ``brief:`` lands. Never a second rerun."""
+    mint, it = _parked_release_fix(store)
+    # The first digest's brief, as the real ci_red_digest posted it.
+    run_slice._append_comment(store, it["fix"], "brief: release r7 is red")
+    pd.run_pass(store)
+    _succeed_rerun(store, it["fix"])
+    pd.run_pass(store)
+    _succeed_newest(store, it["fix"])  # the verdict poll; the run still red
+    pd.run_pass(store)
+    assert _status(store, it["fix"]) == "open"
+    assert pd.NOREPRO_WAIT_TAG not in _open_tags(store, it["fix"])
+    assert any(
+        "rerun path stalled" in c and "still red" in c
+        for c in _comment_texts(store, it["fix"])
+    )
+    (ask,) = _rerun_asks(store, mint.root_id)
+    ask_meta = _meta(store, ask)["ask"]
+    # The ask only RECORDS the stall: 'acknowledged' is the one option,
+    # it blocks nothing and no blocked-by edge parks the plan on it.
+    assert ask_meta["options"] == ["acknowledged"]
+    assert ask_meta["blocks"] == "nothing"
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM links WHERE src_ref_id = %s "
+            "AND dst_ref_id = %s AND relation = 'blocked-by'",
+            (mint.root_id, ask),
+        ).fetchone()
+    assert row is not None and row[0] == 0
+    assert _status(store, it["digest"]) == "open"  # re-armed
+    digests = _job_ids(store, it["digest"], "ci_red_digest")
+    # The SECOND ci_red_digest mints in the stall pass's own dispatch;
+    # the floor sits on the fixture's original (old, succeeded) job.
+    assert len(digests) == 2
+    assert _meta(store, it["digest"])["rearmed_after_job"] == digests[0]
+    # Still open next pass — the backstop can't re-close it — and the
+    # fix stays parked on its blocker: no new run_slice while the
+    # digest is open.
+    pd.run_pass(store)
+    assert _status(store, it["digest"]) == "open"
+    assert len(_job_ids(store, it["fix"], "run_slice")) == 1
+    # The digest job completes like the real one: the second brief:
+    # lands on the fix node, then the job succeeds and the tick closes
+    # the digest — only then does the fix node dispatch on the new brief.
+    run_slice._append_comment(
+        store, it["fix"], "brief: release r7 is still red — second digest"
+    )
+    _set_job_status(store, digests[-1], "succeeded")
+    res = pd.run_pass(store)
+    assert _status(store, it["digest"]) == "done"
+    assert len(_job_ids(store, it["fix"], "run_slice")) == 2, res.notes
+    briefs = [c for c in _comment_texts(store, it["fix"]) if c.startswith("brief:")]
+    assert len(briefs) == 2
+    # Deduped: the next pass files no second ask and never re-mints.
+    pd.run_pass(store)
+    assert _rerun_asks(store, mint.root_id) == [ask]
+    assert len(_job_ids(store, it["fix"], "ci_rerun")) == 1
+
+
+def test_failed_rerun_stalls_once_and_never_remints(store: Store) -> None:
+    """A refused rerun (403, run gone) fails the ``ci_rerun`` job: one
+    stall comment + one deduped root ask, the tag dropped — and no
+    pass ever mints a second rerun for the run."""
+    mint, it = _parked_release_fix(store)
+    pd.run_pass(store)
+    _succeed_newest(store, it["fix"], "failed")
+    pd.run_pass(store)
+    assert _status(store, it["fix"]) == "open"
+    assert pd.NOREPRO_WAIT_TAG not in _open_tags(store, it["fix"])
+    assert any(
+        "rerun path stalled" in c and "ci_rerun job failed" in c
+        for c in _comment_texts(store, it["fix"])
+    )
+    (ask,) = _rerun_asks(store, mint.root_id)
+    pd.run_pass(store)
+    assert _rerun_asks(store, mint.root_id) == [ask]
+    assert len(_job_ids(store, it["fix"], "ci_rerun")) == 1
+
+
+def test_a_fired_run_id_unparks_without_a_second_rerun(store: Store) -> None:
+    """Once-per-run-id on the mint side: parked on a run whose
+    ``ci_rerun:<id>`` job exists anywhere, the node drops the tag back
+    to the ordinary path — no mint, no ask, no close."""
+    mint, it = _parked_release_fix(store)
+    _slice_job(
+        store,
+        it["digest"],
+        "ci_rerun",
+        "succeeded",
+        meta={"idem_key": f"ci_rerun:{_R_RUN}"},
+    )
+    pd.run_pass(store)
+    assert pd.NOREPRO_WAIT_TAG not in _open_tags(store, it["fix"])
+    assert _status(store, it["fix"]) == "open"
+    assert _job_ids(store, it["fix"], "ci_rerun") == []
+    assert _rerun_asks(store, mint.root_id) == []
+
+
+def test_an_already_green_verdict_closes_without_a_rerun(store: Store) -> None:
+    """Never rerun a run that is not red: the verdict turned green
+    before the tick looked (a hand rerun) — the fix closes on the
+    flake comment and no ``ci_rerun`` mints."""
+    mint, it = _parked_release_fix(store)
+    R.record_ci_verdict(store, _R_SHA, _R_RNG, "green", _R_RUN)
+    pd.run_pass(store)
+    assert _status(store, it["fix"]) == "done"
+    assert pd.NOREPRO_WAIT_TAG not in _open_tags(store, it["fix"])
+    assert any("already green" in c for c in _comment_texts(store, it["fix"]))
+    assert _job_ids(store, it["fix"], "ci_rerun") == []
+    assert _rerun_asks(store, mint.root_id) == []
+
+
+def test_a_rerun_wait_over_the_cap_stalls_but_stays_parked(store: Store) -> None:
+    """The >2h wait cap is the only in-flight stall: it keeps the park
+    (a human rules there) and files the deduped ask — the rerun job
+    itself is never re-minted."""
+    mint, it = _parked_release_fix(store)
+    pd.run_pass(store)
+    later = datetime.now(UTC) + pd.RERUN_WAIT_CAP + timedelta(minutes=1)
+    pd.run_pass(store, now=later)
+    assert pd.NOREPRO_WAIT_TAG in _open_tags(store, it["fix"])
+    (ask,) = _rerun_asks(store, mint.root_id)
+    assert any("over two hours" in c for c in _comment_texts(store, it["fix"]))
+    assert _meta(store, it["fix"])["ci_rerun_stalled"]
+    assert len(_job_ids(store, it["fix"], "ci_rerun")) == 1
+    # The marker dedupes: a still-parked node does not re-ask each tick.
+    pd.run_pass(store, now=later)
+    assert _rerun_asks(store, mint.root_id) == [ask]
+    pd.run_pass(store, now=later + timedelta(minutes=5))
+    assert _rerun_asks(store, mint.root_id) == [ask]
+
+
+def test_a_wait_tag_outside_a_release_pass_never_reruns(store: Store) -> None:
+    """The tag is only meaningful on the release-fix loop: a parked
+    node whose plan has no ``meta.release`` has no cut sha to read a
+    red run from — it stalls (note + ask), it never mints."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("task", "A fix-shaped task", {"op": "run_slice"})
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    store.add_tag(task, Tag.open(pd.NOREPRO_WAIT_TAG), set_by="system")
+    pd.run_pass(store)
+    assert _job_ids(store, task, "ci_rerun") == []
+    assert pd.NOREPRO_WAIT_TAG not in _open_tags(store, task)
+    (ask,) = _rerun_asks(store, mint.root_id)
+    assert any("rerun path stalled" in c for c in _comment_texts(store, task))
 
 
 def _pcb(store: Store, slug: str = "amp") -> int:

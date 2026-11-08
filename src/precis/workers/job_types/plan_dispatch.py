@@ -297,6 +297,26 @@ _MOOT_STAMP_ASK_OPTIONS: list[str] = [
     "won't do",
 ]
 
+#: ``run_slice.VALIDATED_NOREPRO_KEY`` / ``run_slice.NOREPRO_WAIT_TAG``,
+#: restated — the same one-way rule. The stamp a fix node's succeeded
+#: ``validated:``-no-commit job carries, and the open tag that parks it
+#: for :func:`_step_ci_rerun` (gr588028): a ``waiting-for:`` prefix is a
+#: doable exclusion, so dispatch leaves the node to this step.
+VALIDATED_NOREPRO_KEY = "validated_norepro"
+NOREPRO_WAIT_TAG = "waiting-for:ci-rerun"
+
+#: How long a parked fix node may wait on the rerun and its verdict
+#: before the tick files the stall ask (gr588028 item 4): still parked,
+#: never a second mint.
+RERUN_WAIT_CAP = timedelta(hours=2)
+
+#: Options of the ask a stalled rerun path files under the plan root —
+#: it only RECORDS the stall (the loop already continued or still waits
+#: without it), so the one option is the acknowledgement.
+_RERUN_ASK_OPTIONS: list[str] = [
+    "acknowledged",
+]
+
 #: Consecutive infra-red lands (:func:`_infra_red_lands`) before the tick
 #: parks the node behind a "land again" ask (gr570187): the re-land is
 #: bounded so a broken gate environment cannot loop the lander forever.
@@ -2147,6 +2167,7 @@ def _mint_job(
     params: dict[str, Any],
     *,
     idem_key: str | None = None,
+    meta_extra: dict[str, Any] | None = None,
 ) -> int:
     from precis.workers._mint import mint_job_once
 
@@ -2162,7 +2183,7 @@ def _mint_job(
             parent_id=n.id,
             idem_key=idem_key or f"{NAME}:td{n.id}",
             prio=n.prio,
-            meta_extra={"plan_root": n.root},
+            meta_extra={"plan_root": n.root, **(meta_extra or {})},
         )
         for value in stale:
             store.remove_tag(n.id, Tag.open(value), conn=conn)
@@ -2237,6 +2258,330 @@ def _review_lane(
     return False, None
 
 
+# ── (4a) the validated non-repro rerun (gr588028) ──────────────────
+
+
+def _digest_of(plan: _Plan, n: _Node) -> _Node | None:
+    """The live ``ci_red_digest`` todo ``n`` is ``blocked-by`` — the
+    release-fix loop's digest node, re-armed when a rerun still reads
+    red (``ci_red_digest._fix_targets`` read the other way)."""
+    for b in plan.blockers.get(n.id, []):
+        node = plan.nodes.get(b.id)
+        if node is None or node.kind != "todo":
+            continue
+        op = node.meta.get("op")
+        if op == "ci_red_digest" or (
+            isinstance(op, dict) and op.get("type") == "ci_red_digest"
+        ):
+            return node
+    return None
+
+
+def _mint_rerun_ask(store: Any, n: _Node, why: str, continued: str) -> int | None:
+    """The ONE ask a stalled rerun path files under the plan root
+    (gr588028 item 4, review round 1): it RECORDS the stall — the loop
+    already continued (or still waits) without it — so it is
+    ``blocks: "nothing"`` with no ``blocked-by`` edge, and the only
+    option is ``acknowledged``. ``why`` names the error TYPE only,
+    never internals. Insert shape of :func:`_mint_loop_ask`; the
+    ``ci_rerun_stalled`` marker on the fix node is the dedupe."""
+    context = (
+        f"the validated-flake rerun stalled: {why} (fix td{n.id}, plan td{n.root})"
+    )
+    meta: dict[str, Any] = {
+        "ask": {
+            "kind": "ruling",
+            "options": list(_RERUN_ASK_OPTIONS),
+            "blocks": "nothing",
+            "context": context[:_ASK_CONTEXT_CAP],
+        }
+    }
+    check_ask_meta(meta)
+    title = f"plan td{n.root}: the validated-flake rerun stalled ({why[:80]})"
+    body = (
+        f"A `validated:` non-repro fix session on td{n.id} parked the node "
+        f"for a one-shot rerun of the red check.yml run's failed legs; the "
+        f"rerun path stalled: {why}. {continued} This ask only records "
+        "the stall — close it to acknowledge."
+    )
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=title,
+            meta=meta,
+            parent_id=n.root,
+            conn=conn,
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        for value in ("ask-user", "showstopper", f"plan:{n.root}"):
+            store.add_tag(ref.id, Tag.open(value), set_by="system", conn=conn)
+        store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
+            conn=conn,
+        )
+    return int(ref.id)
+
+
+def _rerun_stall(
+    store: Any,
+    plan: _Plan,
+    w: _Writer,
+    res: PassResult,
+    n: _Node,
+    why: str,
+    *,
+    unpark: bool = True,
+    marker: str = "",
+) -> None:
+    """One stall comment on the fix node + the informational root ask
+    (:func:`_mint_rerun_ask` — it blocks nothing; the loop continues or
+    waits regardless), then — unless ``unpark`` is false — drop
+    :data:`NOREPRO_WAIT_TAG` and re-arm the digest so the release-fix
+    loop continues as it does today (gr588028 item 4: the stall never
+    retries the rerun itself). The >2h wait-cap call keeps the park;
+    ``marker`` (the run id, or a sha key when none is known) is stamped
+    as ``meta.ci_rerun_stalled`` and is the dedupe — a still-parked node
+    never files twice for the same stall."""
+    if marker and n.meta.get("ci_rerun_stalled") == marker:
+        res.notes.append(f"td{n.id}: rerun stall already recorded — {why}")
+    else:
+        continued = (
+            "The red-fix loop has continued as before (the digest "
+            "re-armed, or no rerun fired)."
+            if unpark
+            else "The fix node is still parked on the in-flight rerun; "
+            "closing the ask changes nothing about the wait."
+        )
+        ask_id = None if w.dry_run else _mint_rerun_ask(store, n, why, continued)
+        if ask_id is not None or w.dry_run:
+            w.comment(
+                n,
+                f"validated: rerun path stalled — {why}; the plan root's "
+                "ask records it.",
+            )
+        if marker:
+            w.stamp_meta(n, {"ci_rerun_stalled": marker})
+    if unpark:
+        w.remove_tags(n, [NOREPRO_WAIT_TAG])
+        digest = _digest_of(plan, n)
+        if digest is not None and not plan.live_job(digest):
+            ended = [j for j in plan.jobs(digest) if j.status in _JOB_ENDED]
+            if digest.status != "open":
+                w.set_status(digest, "open")
+            if ended:
+                # The same floor ``_step_rearm`` and ``_review_revert``
+                # stamp: without it ``_step_phases``' backstop re-closes
+                # the digest next pass on its OLD succeeded job and no
+                # fresh ``ci_red_digest`` — no fresh ``brief:`` — mints.
+                w.stamp_meta(digest, {"rearmed_after_job": ended[-1].id})
+    res.notes.append(f"td{n.id}: rerun stalled — {why}")
+
+
+def _step_ci_rerun(
+    store: Any, plan: _Plan, w: _Writer, res: PassResult, now: datetime
+) -> None:
+    """The ``validated:`` non-repro path (gr588028), for every fix node
+    ``run_slice.poll`` parked on :data:`NOREPRO_WAIT_TAG`: mint the
+    ``ci_rerun`` job once per run id (idem ``ci_rerun:<run_id>`` — the
+    once-per-run rule also lives in :func:`_release.ci_rerun_fired`),
+    then the plan's own ``ci_verdict_poll`` records the rerun's verdict
+    (no second reader). Green closes the node moot-style so the loop's
+    recut re-reads the run; red re-arms the digest — the loop continues
+    as today. Anything blocking files one stall comment and the deduped
+    root ask, never a retry. Runs between :func:`_step_phases` and
+    :func:`_step_dispatch` — the park tag's ``waiting-for:`` prefix keeps
+    the node out of dispatch while this step owns it."""
+    for n in plan.todos():
+        if NOREPRO_WAIT_TAG not in n.open_tags or _closed(n):
+            continue
+        jobs = plan.jobs(n)
+        reruns = [j for j in jobs if j.meta.get("job_type") == "ci_rerun"]
+        polls = [
+            j
+            for j in jobs
+            if j.meta.get("job_type") == "ci_verdict_poll" and j.meta.get("rerun_of")
+        ]
+        live = [j for j in (*reruns, *polls) if j.status not in _JOB_TERMINAL]
+        rel = _release.release_of(store, n.id) or {}
+        sha = str(rel.get("sha") or "")
+        rng = str(rel.get("range") or sha)
+        if live:
+            pass  # the rerun or its poll is in flight — the wait cap below
+        elif polls and polls[-1].status == "succeeded":
+            verdict = _gates._newest_verdict(store, sha, rng) or {}
+            run_id = str(polls[-1].meta.get("rerun_of") or "?")
+            if verdict.get("verdict") == "green":
+                w.comment(n, f"validated: flake — rerun of run {run_id} green")
+                w.remove_tags(n, [NOREPRO_WAIT_TAG])
+                w.set_status(n, "done")
+                res.notes.append(
+                    f"td{n.id}: rerun of run {run_id} recorded green; fix "
+                    "closed, the recut re-reads the run"
+                )
+            else:
+                _rerun_stall(
+                    store,
+                    plan,
+                    w,
+                    res,
+                    n,
+                    f"rerun of run {run_id} still red — the loop "
+                    "continues as today (the digest re-arms)",
+                    marker=run_id,
+                )
+            continue
+        elif polls:
+            _rerun_stall(
+                store,
+                plan,
+                w,
+                res,
+                n,
+                f"the rerun's verdict poll {polls[-1].status}",
+                marker=str(polls[-1].meta.get("rerun_of") or "poll"),
+            )
+            continue
+        elif reruns and reruns[-1].status in _JOB_TERMINAL:
+            rerun = reruns[-1]
+            if rerun.status == "succeeded":
+                rid: str | None = str(
+                    (rerun.meta.get("ci_rerun") or {}).get("run_id") or ""
+                )
+                if w.dry_run:
+                    res.notes.append(
+                        f"td{n.id}: would mint ci_verdict_poll for run {rid}"
+                    )
+                    continue
+                job_id = _mint_job(
+                    store,
+                    n,
+                    "ci_verdict_poll",
+                    "job_inproc",
+                    {"todo_id": n.id},
+                    idem_key=f"{NAME}:ci_verdict_poll:td{n.id}",
+                    meta_extra={
+                        ATTEMPT_FREE_KEY: "ci-rerun",
+                        "rerun_of": rid,
+                        # The freshness baseline: the poll reads a
+                        # verdict as the rerun's only when the run shows
+                        # a higher run_attempt (gr588028 review, F4).
+                        "rerun_attempt_before": (rerun.meta.get("ci_rerun") or {}).get(
+                            "rerun_attempt_before"
+                        ),
+                    },
+                )
+                res.notes.append(
+                    f"td{n.id}: rerun of run {rid} accepted — minted "
+                    f"ci_verdict_poll job:{job_id} to record the verdict"
+                )
+            else:
+                _rerun_stall(
+                    store,
+                    plan,
+                    w,
+                    res,
+                    n,
+                    f"the ci_rerun job {rerun.status} — the rerun was "
+                    "refused or the run was not found",
+                    marker=str(
+                        (rerun.meta.get("ci_rerun") or {}).get("run_id")
+                        or sha
+                        or "refused"
+                    ),
+                )
+            continue
+        else:
+            # Mint phase: no rerun job yet.
+            verdict = _gates._newest_verdict(store, sha, rng) or {}
+            if verdict.get("verdict") == "green":
+                # Green already (a hand rerun, a misread digest) — never
+                # rerun a run that is not red.
+                w.comment(
+                    n,
+                    "validated: flake — the newest verdict on the cut is "
+                    "already green; no rerun needed",
+                )
+                w.remove_tags(n, [NOREPRO_WAIT_TAG])
+                w.set_status(n, "done")
+                res.notes.append(
+                    f"td{n.id}: verdict already green; closed without a rerun"
+                )
+                continue
+            rid = _release.newest_red_run(store, sha) if sha else None
+            if not rid:
+                _rerun_stall(
+                    store,
+                    plan,
+                    w,
+                    res,
+                    n,
+                    "no red verdict with a run id on the cut sha to rerun",
+                    marker=f"no-red:{sha or 'no-cut'}",
+                )
+                continue
+            if _release.ci_rerun_fired(store, rid):
+                # Defensive — run_slice's spent ruling never parks on a
+                # fired run; a tag placed by hand un-parks to the plain
+                # no_commit path.
+                w.remove_tags(n, [NOREPRO_WAIT_TAG])
+                res.notes.append(
+                    f"td{n.id}: ci_rerun already fired for run {rid}; "
+                    "un-parked to the ordinary path"
+                )
+                continue
+            if w.dry_run:
+                res.notes.append(f"td{n.id}: would mint ci_rerun for run {rid}")
+                continue
+            # The run id is never a param — ``ci_rerun`` resolves the
+            # cut's newest red verdict row itself (a supplied
+            # ``params.run_id`` is refused outright).
+            params: dict[str, Any] = {"todo_id": n.id}
+            host = _release.pinned_host(store, n.id)
+            if host:
+                params["target_node"] = host
+            job_id = _mint_job(
+                store,
+                n,
+                "ci_rerun",
+                "ssh_node",
+                params,
+                idem_key=f"ci_rerun:{rid}",
+                meta_extra={ATTEMPT_FREE_KEY: "ci-rerun"},
+            )
+            res.notes.append(
+                f"td{n.id}: minted ci_rerun job:{job_id} for run {rid} "
+                "(the failed legs re-fire once)"
+            )
+            continue
+        # Still in flight — only the >2h wait is a stall. The marker
+        # dedupes it: a live job does not re-ask each tick.
+        tagged = n.open_tags.get(NOREPRO_WAIT_TAG)
+        if tagged is not None and now - tagged > RERUN_WAIT_CAP:
+            live_run = str(
+                (live[-1].meta.get("rerun_of") or "")
+                or (live[-1].meta.get("ci_rerun") or {}).get("run_id")
+                or "in-flight"
+            )
+            _rerun_stall(
+                store,
+                plan,
+                w,
+                res,
+                n,
+                "over two hours waiting on the rerun and its verdict",
+                unpark=False,
+                marker=live_run,
+            )
+
+
 def _step_dispatch(
     plan: _Plan, w: _Writer, res: PassResult, lane_table: tuple[_lanes.Lane, ...]
 ) -> None:
@@ -2296,7 +2641,13 @@ def _step_dispatch(
                 continue
         if (
             job_type
-            in ("release_deploy", "release_cut", "ci_red_digest", "release_confirm")
+            in (
+                "release_deploy",
+                "release_cut",
+                "ci_red_digest",
+                "ci_rerun",
+                "release_confirm",
+            )
             and "target_node" not in params
         ):
             # The deploy, a re-cut, the red-run digest and the runtime
@@ -3087,6 +3438,7 @@ def run_pass(
         _step_rearm(plan, w, res)
         _step_moot(store, plan, w, res)
         _step_phases(plan, w, res)
+        _step_ci_rerun(store, plan, w, res, now)
         _step_dispatch(plan, w, res, lane_table)
         _step_hygiene(plan, w, res, now, lane_table)
     return res

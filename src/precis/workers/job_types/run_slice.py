@@ -139,6 +139,7 @@ from typing import Any
 from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert, resolve_alert_by_fingerprint
 from precis.plans import lanes as _lanes
+from precis.plans import release as _release
 from precis.plans.nodes import MOOT_TAG, generator_verdict, node_kind
 from precis.principal import worker_comment_meta
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
@@ -203,6 +204,19 @@ NO_COMMIT_KEY = "no_commit"
 #: td584381 S1d): the tick resolves the plan's gripe on that sha exactly
 #: as a land does. Restated in ``plan_dispatch`` (the same one-way rule).
 MOOT_VERIFIED_KEY = "moot_verified"
+
+#: Job-meta record ``poll`` stamps on a release-fix ``run_slice`` whose
+#: clean exit carried a ``validated:`` first line and no commit
+#: (:func:`_fix_norepro`, gr588028 — the r248 hand rerun): the red legs
+#: did not reproduce, so the node parks on :data:`NOREPRO_WAIT_TAG` for
+#: the tick's once-per-run-id rerun instead of burning the attempt into
+#: rescue. Restated in ``plan_dispatch`` (the same one-way rule).
+VALIDATED_NOREPRO_KEY = "validated_norepro"
+
+#: The open tag that parks the fix node: a ``waiting-for:`` prefix is a
+#: ``_DOABLE_EXCLUSION_TAGS`` exclusion, so the tick's dispatch step
+#: leaves the node alone while its ``_step_ci_rerun`` owns it.
+NOREPRO_WAIT_TAG = "waiting-for:ci-rerun"
 
 #: Lane-wait parks before the wait is given up (~6 h at
 #: :data:`LANE_FULL_BACKOFF` each). Lane waits count under
@@ -2449,6 +2463,51 @@ def _plan_root(store: Any, todo_id: int) -> int | None:
     return None
 
 
+def _blocked_by_ci_digest(store: Any, todo_id: int) -> list[int]:
+    """Live todos ``todo_id`` is ``blocked-by`` whose ``meta.op`` is
+    ``ci_red_digest`` — the release-fix loop's digest node
+    (``ci_red_digest._fix_targets`` read the other way)."""
+    pool = getattr(store, "pool", None)
+    if pool is None:
+        return []  # a store without the SQL surface expresses no links
+    with pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id FROM links l JOIN refs r ON r.ref_id = l.dst_ref_id
+             WHERE l.relation = 'blocked-by' AND l.src_ref_id = %s
+               AND r.kind = 'todo' AND r.retired_at IS NULL
+               AND (r.meta ->> 'op' = 'ci_red_digest'
+                    OR r.meta -> 'op' ->> 'type' = 'ci_red_digest')
+             ORDER BY r.ref_id
+            """,
+            (todo_id,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _fix_norepro(store: Any, todo_id: int) -> str | None:
+    """The ``validated:`` non-repro ruling for ``todo_id`` (gr588028):
+
+    ``"rerun"`` when it is the release-fix loop's fix node — a
+    ``run_slice`` todo ``blocked-by`` a live ``ci_red_digest`` node under
+    a ``release-pass`` root — and its run id's rerun has not fired;
+    ``"spent"`` when it has (a second ``validated:`` on the same run id
+    is a real red: the plain ``no_commit`` path owns it). ``None``
+    otherwise — a ``validated:`` on any other node keeps its generic
+    verdict close. An unresolvable run id reads ``"rerun"``: the tick's
+    mint phase stalls on it rather than burning the attempt."""
+    if not _blocked_by_ci_digest(store, todo_id):
+        return None
+    root = _plan_root(store, todo_id)
+    if root is None or "release-pass" not in _open_tag_values(store, root):
+        return None
+    rel = _release.release_of(store, todo_id)
+    rid = _release.newest_red_run(store, str((rel or {}).get("sha") or ""))
+    if rid and _release.ci_rerun_fired(store, rid):
+        return "spent"
+    return "rerun"
+
+
 def _plan_chain_ids(store: Any, root: int, todo_id: int) -> set[int]:
     """The ``td`` ids a verified-moot commit message may name (td584381
     S1d review): the moot node itself, its plan root and every todo under
@@ -2936,6 +2995,17 @@ def poll(ctx: Any, handle: Any) -> bool:
             if no_commit is None
             else None
         )
+        # gr588028: a ``validated:`` first line on the release-fix loop's
+        # fix node reads "the red legs do not reproduce" — a CI flake,
+        # not a diff. The tick reruns the failed legs once per run id
+        # (:func:`_fix_norepro`); a ``"spent"`` ruling — the second
+        # ``validated:`` on that run — falls to the ``no_commit`` arm so
+        # the real red follows the existing path.
+        norepro = (
+            _fix_norepro(ctx.store, todo_id)
+            if verdict is not None and verdict[0] == "validated" and no_commit is None
+            else None
+        )
         if verified is not None:
             # td584381 S1d (td584601): the session found the fix already
             # on main and named a sha the worker could verify. That is a
@@ -2957,7 +3027,39 @@ def poll(ctx: Any, handle: Any) -> bool:
                 f"origin/main; `{line_[:160]}`); td{todo_id} "
                 "closed and tagged for the tick to close the plan."
             )
-        elif verdict is not None and (verdict[0] != "moot" or no_commit is not None):
+        elif norepro == "rerun":
+            # Closing the fix node would unblock the recut while the run
+            # still reads red — the r248 incident's hole; the generic
+            # ``validated:`` close must not fire here. Park the node on
+            # the tick's rerun step instead: the lease goes back with no
+            # attempt tag and the job still succeeds (the stamp the tick
+            # reads is on the job meta).
+            kind_, why = verdict if verdict is not None else ("validated", "")
+            land = False
+            unclaim_todo(ctx.store, todo_id, str(lane) if lane else None)
+            ctx.store.add_tag(todo_id, Tag.open(NOREPRO_WAIT_TAG), set_by="system")
+            ctx.set_meta(
+                **{
+                    VALIDATED_NOREPRO_KEY: {
+                        "line": f"{kind_}: {_WITHHELD_TEXT if unscrubbed else why}"[
+                            :300
+                        ]
+                    },
+                    ATTEMPT_FREE_KEY: "validated-norepro",
+                }
+            )
+            summary.append(
+                f"Land: none, by verdict `{kind_}: "
+                f"{_WITHHELD_TEXT if unscrubbed else why[:200]}` on the "
+                f"release-fix node; td{todo_id} parked on "
+                f"{NOREPRO_WAIT_TAG} — the tick reruns the failed legs "
+                "once per run id."
+            )
+        elif (
+            verdict is not None
+            and norepro is None
+            and (verdict[0] != "moot" or no_commit is not None)
+        ):
             # gr561132: a task that checked and found nothing to change (a
             # validation that passed, a fix already on main) says so on its
             # first line; that is a success with nothing to land, not a

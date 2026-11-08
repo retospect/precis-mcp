@@ -1,0 +1,174 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/ci-rerun — re-fire a check.yml run's failed legs, once.
+
+`gh run rerun <id> --failed` re-runs only the failed jobs of a completed
+run; the run id stays the same, so the plan's own ``ci_verdict_poll``
+re-reads it and records the new verdict row. This is the one write the
+``validated:`` non-repro path (gr588028) may take — a CI re-trigger, no
+git push, no ref change — and it needs the Actions write permission on
+the gh credential, where ``ci_red_digest``'s log read needed read only.
+A read-only token gets a 403 "Resource not accessible"; the ``ci_rerun``
+job reports that naming the probe below, which prints the credential's
+permission line on the same endpoint.
+
+    scripts/ci-rerun <run-id>   rerun the run's failed jobs
+    scripts/ci-rerun --probe    not a rerun: one `probe:` line on the
+                                rerun-failed endpoint with a run id that
+                                exists nowhere (0 -> 404), so nothing
+                                fires — the response status and the
+                                X-Accepted-GitHub-Permissions header only
+
+Every stderr line carries the `ci-rerun:` prefix — the job's auth check
+reads those lines only, never echoed log content.
+
+Exit codes: 0 fired/probed · 1 gh failed · 2 bad usage.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+
+#: ``gh api -i``'s response head: the status line is
+#: ``HTTP/<v> <code> [<text>]``.
+_STATUS = re.compile(r"^HTTP/\S+\s+(\d{3})")
+#: The only header the probe reports; case-insensitive on the name.
+_PERMISSION_HEADER = "x-accepted-github-permissions"
+#: A header value outside this prints as ``unprintable`` — the probe
+#: never echoes bytes it was not built to read.
+_PRINTABLE = re.compile(r"^[A-Za-z0-9_=, -]{0,200}$")
+
+
+def _err(text: str) -> None:
+    for line in str(text).splitlines() or [""]:
+        print(f"ci-rerun: {line}", file=sys.stderr)
+
+
+def probe() -> int:
+    """One ``probe:`` line for the rerun-failed endpoint — what the gh
+    credential may do there. Run id 0 exists nowhere (404), so the POST
+    fires nothing whether or not the token may write Actions."""
+    try:
+        cp = subprocess.run(
+            [
+                "gh",
+                "api",
+                "-i",
+                "--method",
+                "POST",
+                "repos/{owner}/{repo}/actions/runs/0/rerun-failed",
+            ],
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        _err(f"gh api actions/runs/0/rerun-failed: {exc}")
+        return 1
+    head: list[str] = []
+    for raw in cp.stdout.split(b"\n"):
+        if not raw.strip():
+            break  # the head ends at the first blank line
+        head.append(raw.decode("utf-8", errors="replace"))
+    status = ""
+    permissions: str | None = None
+    if head:
+        m = _STATUS.match(head[0])
+        if m:
+            status = m.group(1)
+        for line in head[1:]:
+            name, sep, value = line.partition(":")
+            if sep and name.strip().lower() == _PERMISSION_HEADER:
+                permissions = value.strip()
+    if not status and cp.returncode != 0:
+        detail = (cp.stderr or cp.stdout).decode("utf-8", "replace").strip()
+        _err(
+            f"gh api actions/runs/0/rerun-failed failed "
+            f"({cp.returncode}): {detail}"
+        )
+        return 1
+    value = "absent"
+    if permissions is not None:
+        value = permissions if _PRINTABLE.fullmatch(permissions) else "unprintable"
+    print(f"probe: status={status or 'unknown'} accepted-permissions={value} run=0")
+    return 0
+
+
+def _run_attempt(run_id: str) -> int | None:
+    """The run's ``run_attempt`` as seen BEFORE the rerun — the baseline
+    the plan's verdict poll compares against (a verdict is fresh only
+    once the run shows a higher attempt). A read failure costs the
+    baseline only: the rerun still fires and the fixed settle window
+    stays the fallback."""
+    try:
+        cp = subprocess.run(
+            ["gh", "run", "view", run_id, "--json", "attempt,updatedAt"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if cp.returncode != 0:
+        return None
+    try:
+        attempt = json.loads(cp.stdout).get("attempt")
+        return int(attempt) if attempt is not None else None
+    except (ValueError, TypeError):
+        return None
+
+
+def rerun(run_id: str) -> int:
+    if not re.fullmatch(r"\d+", run_id or ""):
+        _err(f"run id must be numeric: {run_id!r}")
+        return 2
+    before = _run_attempt(run_id)
+    try:
+        cp = subprocess.run(
+            ["gh", "run", "rerun", run_id, "--failed"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        _err(f"gh run rerun {run_id} --failed: {exc}")
+        return 1
+    if cp.returncode != 0:
+        detail = (cp.stderr or cp.stdout).strip()
+        _err(f"gh run rerun {run_id} --failed failed ({cp.returncode}): {detail}")
+        return 1
+    print(f"ci-rerun: run {run_id} rerun of the failed jobs requested")
+    if before is not None:
+        print(f"ci-rerun: attempt={before}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(
+        prog="ci-rerun",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("run_id", nargs="?", help="check.yml run id (numeric)")
+    ap.add_argument(
+        "--probe",
+        action="store_true",
+        help="one probe: line on the rerun-failed endpoint, not a rerun",
+    )
+    a = ap.parse_args(argv)
+    if a.probe:
+        return probe()
+    if not a.run_id or not re.fullmatch(r"\d+", a.run_id):
+        ap.error(f"run id must be numeric: {a.run_id!r}")
+    return rerun(a.run_id)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

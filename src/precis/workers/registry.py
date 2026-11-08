@@ -1432,6 +1432,18 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        name="ci_rerun",
+        label="CI rerun (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        placement=frozenset({"repo_checkout", "git"}),
+        uses_external=("github",),
+        one_line="Re-fire a red check.yml run's failed jobs "
+        "(scripts/ci-rerun), once per run id, after a validated "
+        "non-repro fix session.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
         name="plan_dispatch",
         label="Plan dispatch tick (job)",
         category="jobs",

@@ -32,6 +32,14 @@ The newest check.yml run (on the release branch when one is known):
   usual retry-cap ask.
 
 ``dedupe_pending`` also holds a recurring-todo arming to one poll.
+
+A poll the plan tick mints for a ``validated:`` non-repro rerun
+(``meta.rerun_of``) carries ``meta.rerun_attempt_before`` — the run's
+``run_attempt`` before ``gh run rerun`` fired. The run id survives a
+rerun, so a completed verdict at or below that attempt is the OLD
+run's verdict: the poll reads it as pending (same park-and-repoll
+machinery), never records it. Only a verdict on a higher attempt —
+the rerun's own — is recorded (gr588028 review, F4).
 """
 
 from __future__ import annotations
@@ -172,11 +180,11 @@ def fetch_runs(repo: str, sha: str) -> list[dict[str, Any]] | None:
     return [r for r in runs if isinstance(r, dict)] if isinstance(runs, list) else None
 
 
-def verdict_of(
+def _picked_run(
     runs: list[dict[str, Any]], sha: str, branch: str = ""
-) -> tuple[str, str, str]:
-    """``(green|red|pending, run_id, why)`` from the newest check.yml run on
-    ``sha`` (on ``branch`` when given)."""
+) -> dict[str, Any] | None:
+    """The newest check.yml run on ``sha`` (on ``branch`` when given) —
+    the run :func:`verdict_of` judges, or ``None``."""
     mine = [
         r
         for r in runs
@@ -184,10 +192,41 @@ def verdict_of(
         and str(r.get("head_sha") or "").lower().startswith(sha[:7])
         and (not branch or r.get("head_branch") == branch)
     ]
-    if not mine:
+    return max(mine, key=lambda r: int(r.get("id") or 0)) if mine else None
+
+
+def _run_attempt(run: dict[str, Any]) -> int:
+    """The run's ``run_attempt`` as an int; 0 when absent/unreadable —
+    a verdict that cannot prove it is past the rerun baseline is not
+    fresh (gr588028 review, F4)."""
+    try:
+        return int(run.get("run_attempt") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _rerun_baseline(meta: dict[str, Any]) -> int | None:
+    """The ``rerun_attempt_before`` the tick stamped on a rerun poll
+    job (``meta.rerun_attempt_before``), else ``None`` — ordinary polls
+    carry no baseline and are untouched."""
+    raw = meta.get("rerun_attempt_before")
+    if isinstance(raw, bool):
+        return None
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def verdict_of(
+    runs: list[dict[str, Any]], sha: str, branch: str = ""
+) -> tuple[str, str, str]:
+    """``(green|red|pending, run_id, why)`` from the newest check.yml run on
+    ``sha`` (on ``branch`` when given)."""
+    run = _picked_run(runs, sha, branch)
+    if run is None:
         where = f" on {branch}" if branch else ""
         return "pending", "", f"no {WORKFLOW_FILE} run{where} for {sha[:9]} yet"
-    run = max(mine, key=lambda r: int(r.get("id") or 0))
     run_id = str(run.get("id") or "")
     status = str(run.get("status") or "")
     if status != "completed":
@@ -213,13 +252,33 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         ctx.record_failure(str(exc))
         return
     sha, rng = target["sha"], target["range"]
+    picked = _picked_run(runs, sha, target["branch"]) if runs else None
     if runs is None:
         state, run_id, why = "pending", "", "GitHub unreadable (network or rate limit)"
     else:
         state, run_id, why = verdict_of(runs, sha, target["branch"])
-    ctx.set_meta(
-        ci_verdict_poll={"sha": sha, "range": rng, "state": state, "run_id": run_id}
-    )
+    meta: dict[str, Any] = {"sha": sha, "range": rng, "state": state, "run_id": run_id}
+    if ctx.meta.get("rerun_of") is not None and picked is not None:
+        # A rerun poll records the run's freshness evidence too — the
+        # tick and the stall path see what the poll saw (F4).
+        meta["run_attempt"] = picked.get("run_attempt")
+        meta["updated_at"] = picked.get("updated_at")
+    before = _rerun_baseline(ctx.meta)
+    if before is not None and picked is not None and state in ("green", "red"):
+        # A completed verdict at or below the pre-rerun attempt is the
+        # OLD run's verdict — GitHub has not flipped the rerun yet:
+        # pending, not the rerun's verdict (gr588028 review, F4; the
+        # run id stays the same across a rerun).
+        attempt = _run_attempt(picked)
+        if attempt <= before:
+            state = "pending"
+            meta["state"] = state
+            why = (
+                f"run {run_id} attempt {attempt} is the pre-rerun "
+                f"baseline (<= {before}) — the rerun's own verdict has "
+                "not landed"
+            )
+    ctx.set_meta(ci_verdict_poll=meta)
     if state in ("green", "red"):
         line = _release.record_ci_verdict(ctx.store, sha, rng, state, run_id)
         ctx.append_chunk("job_summary", f"{NAME}: {sha[:9]} {state} ({why}); {line}")

@@ -67,6 +67,7 @@ from typing import TYPE_CHECKING, Any
 from precis.plans.gates import (
     CI_VERDICTS_KEY,
     PROD_HEAD_KEY,
+    _prefix_match,
     read_ci_verdicts,
     read_prod_head,
 )
@@ -587,6 +588,44 @@ def record_ci_verdict(
     return f"ci verdict recorded: {sha[:9]} {verdict}"
 
 
+def newest_red_run(store: Store, sha: str) -> str | None:
+    """The newest ``release.ci_verdicts`` row on ``sha`` (the tests-green
+    gate's prefix match) that is red and carries a run id, else ``None``.
+    Shared by ``ci_red_digest`` (the run to digest) and ``ci_rerun`` (the
+    run whose failed legs a ``validated:`` non-repro re-fires once,
+    gr588028)."""
+    best: tuple[str, int] | None = None
+    run_id: str | None = None
+    for i, row in enumerate(read_ci_verdicts(store)):
+        if row["verdict"] != "red":
+            continue
+        rid = str(row.get("run_id") or "").strip()
+        if not rid or not _prefix_match(sha, row["sha"].lower()):
+            continue
+        key = (str(row.get("at") or ""), i)
+        if best is None or key >= best:
+            best, run_id = key, rid
+    return run_id
+
+
+def ci_rerun_fired(store: Store, run_id: str) -> bool:
+    """``True`` once a ``ci_rerun`` job carrying ``ci_rerun:<run_id>`` as
+    its idem key exists — any status, ever. The once-per-run-id rule
+    (gr588028) outlives a job's active window, which ``mint_job_once``'s
+    idem dedupe alone only covers."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM refs
+             WHERE kind = 'job' AND retired_at IS NULL
+               AND meta ->> 'idem_key' = %s
+             LIMIT 1
+            """,
+            (f"ci_rerun:{run_id}",),
+        ).fetchone()
+    return row is not None
+
+
 def prod_head_record(
     head: str,
     landed: list[str],
@@ -1005,8 +1044,10 @@ __all__ = [
     "approval",
     "approval_options",
     "auto_answer_approval",
+    "ci_rerun_fired",
     "ci_verdict_rows",
     "live_deploy_job",
+    "newest_red_run",
     "parse_cut",
     "parse_deployed",
     "pin_refusal",

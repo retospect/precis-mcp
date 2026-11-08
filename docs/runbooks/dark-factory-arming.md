@@ -57,6 +57,12 @@ and a third never starts by itself) → `approval` → `deploy` (`release_deploy
 `scripts/release --deploy-only r<N>`, pinned) → `confirm`
 (`release_confirm`: the runtime attestation below).
 
+A fix session ending `validated:` (the red legs do not reproduce, no
+commit) instead parks the fix node on `waiting-for:ci-rerun` and the
+tick mints a `ci_rerun` job re-firing that run's failed legs — once per
+run id; a green rerun closes the fix node and the loop's recut proceeds,
+a still-red rerun re-arms the digest.
+
 The deploy leg needs the deploy user to hold the operator's deploy files:
 set `precis_fix_lane_deploys: true` in the gateway's host_vars, then run one
 operator deploy so the play places the overlay, vault key, prod DSN file and

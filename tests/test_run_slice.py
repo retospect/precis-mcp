@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+import types
 import urllib.error
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -2660,6 +2661,114 @@ def test_poll_task_validated_verdict_closes_it_as_done(seams: dict[str, Any]) ->
     assert "verdict:moot" not in tags
     assert seams["lands"] == []
     assert any(c.startswith("handoff: validated:") for c in store.comments(42))
+
+
+def _fix_norepro_env(
+    store: _Store,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    root_tag: str | None = "release-pass",
+    rid: str = "31",
+    fired: bool = False,
+) -> None:
+    """The release-fix loop around td42 (gr588028): a ``ci_red_digest``
+    blocker, a ``release-pass`` root, and the release verdict reads —
+    seam-faked because the in-memory store has no links or verdicts."""
+    store.add_todo(7, "Digest the red run", meta={"op": "ci_red_digest"})
+    store.add_todo(1, "Release pass", tags=(root_tag,) if root_tag else ())
+    monkeypatch.setattr(run_slice, "_blocked_by_ci_digest", lambda _s, _t: [7])
+    monkeypatch.setattr(
+        run_slice,
+        "_release",
+        types.SimpleNamespace(
+            release_of=lambda _s, _t: {
+                "rN": "r7",
+                "sha": "abc1234",
+                "range": "r",
+            },
+            newest_red_run=lambda _s, _sha: rid,
+            ci_rerun_fired=lambda _s, _rid: fired,
+        ),
+    )
+
+
+def test_poll_validated_on_a_release_fix_parks_for_the_rerun(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr588028 (r248): a fix session ending ``validated:`` with no
+    commit is a flake read, not a failure — the job succeeds
+    attempt-free, the node goes back open parked on
+    ``waiting-for:ci-rerun``, and nothing closes or burns an attempt."""
+    store = _Store()
+    store.add_todo(42, "Fix the failures", tags=("plan:1",))
+    _fix_norepro_env(store, monkeypatch)
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {
+                "is_error": False,
+                "result": "validated: the red legs do not reproduce — "
+                "nothing to fix forward",
+            }
+        ),
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    line = pctx.meta_set[run_slice.VALIDATED_NOREPRO_KEY]["line"]
+    assert line.startswith("validated: ")
+    assert pctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "validated-norepro"
+    assert run_slice.NO_COMMIT_KEY not in pctx.meta_set
+    tags = store.tag_strings(42)
+    assert {"STATUS:open", "waiting-for:ci-rerun"} <= tags
+    assert not any(
+        t.startswith("attempt:") or t.startswith("claimed-by:") for t in tags
+    )
+    assert seams["lands"] == []
+
+
+def test_poll_second_validated_on_a_fired_run_is_no_commit(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr588028 once-per-run-id: the run's rerun already fired — a second
+    ``validated:`` on it is a real red and falls to the plain
+    ``no_commit`` path (one attempt, then rescue as today)."""
+    store = _Store()
+    store.add_todo(42, "Fix the failures", tags=("plan:1",))
+    _fix_norepro_env(store, monkeypatch, fired=True)
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle, 0, json.dumps({"is_error": False, "result": "validated: still clean"})
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
+    assert run_slice.VALIDATED_NOREPRO_KEY not in pctx.meta_set
+    tags = store.tag_strings(42)
+    assert "waiting-for:ci-rerun" not in tags
+    assert "attempt:1" in tags
+
+
+def test_poll_validated_off_the_fix_loop_keeps_the_generic_close(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``release-pass`` tag is part of the ruling: a ``validated:``
+    on a fix-shaped node outside a release pass still closes on its own
+    verdict, as before."""
+    store = _Store()
+    store.add_todo(42, "Fix the failures", tags=("plan:1",))
+    _fix_norepro_env(store, monkeypatch, root_tag=None)
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "validated: holds."}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert "STATUS:done" in store.tag_strings(42)
+    assert run_slice.VALIDATED_NOREPRO_KEY not in pctx.meta_set
+    assert "waiting-for:ci-rerun" not in store.tag_strings(42)
 
 
 def test_poll_generator_clean_exit_mints_no_land(seams: dict[str, Any]) -> None:

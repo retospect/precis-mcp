@@ -501,6 +501,7 @@ DESCRIBERS: dict[str, Callable[..., str]] = {
     "factory_rescue_tick": _const("watching dark-factory nodes for stalls"),
     "pr_poll": _const("polling inbound pull requests"),
     "ci_verdict_poll": _const("polling the release gate"),
+    "ci_rerun": _const("re-firing the red run's failed jobs"),
 }
 
 

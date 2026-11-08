@@ -372,6 +372,84 @@ def test_poll_fails_past_the_park_cap(
     assert len(ctx.failures) == 1 and "still pending" in ctx.failures[0]
 
 
+def _rerun_poll_ctx(store: Store, todo_id: int, before: int = 1) -> Ctx:
+    """A poll ctx as the tick mints it for a ``validated:`` rerun
+    (gr588028 F4): ``rerun_of`` + the pre-rerun attempt baseline."""
+    ctx = Ctx(store, {"todo_id": todo_id})
+    ctx.meta["rerun_of"] = "31"
+    ctx.meta["rerun_attempt_before"] = before
+    return ctx
+
+
+def test_a_rerun_poll_reads_a_stale_attempt_as_pending(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr588028 F4: the run id survives a rerun — a completed red
+    verdict AT the pre-rerun attempt is the OLD verdict: pending
+    (re-park), never recorded, and the job meta shows what it saw."""
+    mint = _cut(store)
+    _fake_github(monkeypatch, [_run(31, "completed", "failure", run_attempt=1)])
+    parks: list[tuple[datetime, str]] = []
+    ctx = _rerun_poll_ctx(store, mint.ids["poll"], before=1)
+
+    def _park(at: datetime, note: str) -> bool:
+        parks.append((at, note))
+        return True
+
+    ctx.defer = _park
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    assert len(parks) == 1
+    stamped = ctx.stamped["ci_verdict_poll"]
+    assert stamped["state"] == "pending"
+    assert stamped["run_attempt"] == 1
+    assert "pre-rerun baseline" in ctx.chunks[-1][1]
+    assert gates.read_ci_verdicts(store) == []
+
+
+def test_a_rerun_poll_records_red_past_the_baseline(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A red verdict on a HIGHER attempt is the rerun's own — recorded
+    (the tick then re-arms the digest)."""
+    mint = _cut(store)
+    _fake_github(monkeypatch, [_run(31, "completed", "failure", run_attempt=2)])
+    ctx = _rerun_poll_ctx(store, mint.ids["poll"], before=1)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    assert ctx.stamped["ci_verdict_poll"]["state"] == "red"
+    assert ctx.stamped["ci_verdict_poll"]["run_attempt"] == 2
+    assert gates.read_ci_verdicts(store)[-1]["verdict"] == "red"
+
+
+def test_a_rerun_poll_records_green_past_the_baseline(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A green verdict on a higher attempt is fresh — recorded (the
+    tick closes the fix node)."""
+    mint = _cut(store)
+    _fake_github(monkeypatch, [_run(31, "completed", "success", run_attempt=2)])
+    ctx = _rerun_poll_ctx(store, mint.ids["poll"], before=1)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    assert gates.read_ci_verdicts(store)[-1]["verdict"] == "green"
+
+
+def test_an_ordinary_poll_ignores_the_attempt(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No baseline, no freshness check: a plain poll records the
+    completed verdict whatever the run's attempt."""
+    mint = _cut(store)
+    _fake_github(monkeypatch, [_run(36, "completed", "failure", run_attempt=1)])
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    assert ctx.stamped["ci_verdict_poll"]["state"] == "red"
+    assert "run_attempt" not in ctx.stamped["ci_verdict_poll"]
+    assert gates.read_ci_verdicts(store)[-1]["verdict"] == "red"
+
+
 def test_poll_fails_on_a_missing_repo_or_sha(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

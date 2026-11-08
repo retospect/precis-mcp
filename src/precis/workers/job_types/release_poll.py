@@ -135,6 +135,7 @@ _STAGE_LEG_JOBS: dict[str, frozenset[str]] = {
     "fixing": frozenset(
         {
             "ci_red_digest",
+            "ci_rerun",
             "run_slice",
             "land_slice",
             "release_cut",
