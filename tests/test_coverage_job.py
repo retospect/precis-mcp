@@ -265,9 +265,19 @@ def test_anchor_key_normalises_requests_to_the_achieved_thetas() -> None:
     assert runner.coverage_anchor_key(asked) != runner.coverage_anchor_key(other)
 
 
-def test_anchor_key_pins_jo482106s_normalised_key() -> None:
+#: The engine version JO482106_KEY was derived under (the lock's); the pin
+#: reads it through the runner's version seam so a host whose installed
+#: autocatpath drifts from uv.lock does not turn this normalisation check
+#: red (gr596075) — a bump re-derives both the key and this label.
+JO482106_ENGINE = "0.50.0"
+
+
+def test_anchor_key_pins_jo482106s_normalised_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The prod scan's config reproduces one exact key under the
     normalisation (engine-versioned: re-pin on an autocatpath bump)."""
+    monkeypatch.setattr(runner, "__version__", JO482106_ENGINE)
     assert (
         runner.coverage_anchor_key(coverage_job.with_defaults(JO482106_CONFIG))
         == JO482106_KEY
