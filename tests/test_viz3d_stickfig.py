@@ -7,12 +7,12 @@ import re
 import numpy as np
 import pytest
 
-from precis.structure.elements import covalent_radius_A
+from precis.structure.elements import _COVALENT_RADIUS, covalent_radius_A
 from precis.viz3d.camera import Camera
 from precis.viz3d.primitives import Ball, Stick
 from precis.viz3d.render import Style as RenderStyle
 from precis.viz3d.render import render_svg
-from precis.viz3d.stickfig import Style, stick_scene
+from precis.viz3d.stickfig import Style, cpk_color, stick_scene
 
 _ELEMENTS = ["C", "H", "H", "H", "H"]
 _COORDS = np.array(
@@ -66,6 +66,35 @@ def test_stick_scene_methane_renders_8_half_sticks_at_r1() -> None:
     )
     assert svg.count("<line") == 2 * len(_BONDS)
     assert svg.count("<circle") == len(_ELEMENTS)
+
+
+def test_cpk_color_covers_every_element_jmol_assigns() -> None:
+    """gr592814: dopant figures (Ir, Ta, W, …) must not fall back to pink.
+
+    ``_CPK`` is the complete Jmol assignment, Z=1-109 — every periodic-table
+    element a structure scene can name resolves to a real, Jmol-exact colour;
+    the table is transcribed from ASE's ``jmol_colors`` (factual data), so the
+    strongest guard is equality against it. Symbols Jmol leaves unassigned —
+    the superheavies — plus non-elements still get the loud pink fallback.
+    """
+    from ase.data import chemical_symbols
+    from ase.data.colors import jmol_colors
+
+    assert len(jmol_colors) == 110  # Z=0..109; guard against a silent resize
+    for z in range(1, len(jmol_colors)):
+        r, g, b = (round(c * 255) for c in jmol_colors[z])
+        assert cpk_color(chemical_symbols[z]) == f"#{r:02x}{g:02x}{b:02x}"
+
+    assert cpk_color("Ir") == "#175487"  # the atom that prompted the gripe
+    assert cpk_color("Og") == "#ff2fa0"  # unassigned superheavy -> fallback
+    assert cpk_color("Xx") == "#ff2fa0"  # non-element -> fallback
+
+
+def test_cpk_color_covers_the_structure_palette() -> None:
+    """The gr592814 ask literally: every symbol in precis.structure.elements
+    resolves to a non-default colour."""
+    for symbol in _COVALENT_RADIUS:
+        assert cpk_color(symbol) != "#ff2fa0"
 
 
 def test_stick_scene_mono_color_ignores_element() -> None:

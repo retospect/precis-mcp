@@ -61,7 +61,8 @@ def invalidation_key(input_shas: list[str]) -> str:
 
 
 #: Roll to retire every cached view render (append-only key scheme).
-VIZ3D_CODE_VERSION = "1"
+#: 2: full Jmol CPK palette in stickfig (gr592814) recolours prior renders.
+VIZ3D_CODE_VERSION = "2"
 
 #: Hard cost bounds for a structure view. The render runs in-process (viz3d is
 #: pure Python/numpy, no sandbox), so cost is bounded by atom count instead of
