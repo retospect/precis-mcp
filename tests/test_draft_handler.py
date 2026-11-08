@@ -190,6 +190,71 @@ def test_put_claim_chunk_kind_inserts_without_fk_violation(
     assert sum(1 for c in order if c.chunk_kind == "claim") == 2
 
 
+def test_put_code_chunk_kind_is_verbatim(draft: DraftHandler, hub: Hub) -> None:
+    """gr592769: ``chunk_kind='code'`` — registered by migration 0289 (it
+    used to die on chunks_chunk_kind_fkey, the same shape as run_log/claim
+    before it). The payload is verbatim: ONE chunk even across blank
+    lines, no dangling-handle gate on ``[dc…]``-shaped tokens inside, no
+    prose lint hints, no mention edges minted, no hygiene scan — and the
+    language tag rides ``meta.language``."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+    mem = hub.live_store.insert_ref(kind="memory", slug=None, title="note").id
+
+    # The same handle-shaped token in a paragraph is hard-refused …
+    with pytest.raises(BadInput, match="unresolved reference"):
+        draft.put(
+            id="nt",
+            chunk_kind="paragraph",
+            text="see [dc999999999]",
+            at={"after": "¶" + title_h},
+        )
+    # … but inside a code payload it is literal source.
+    r = draft.put(
+        id="nt",
+        chunk_kind="code",
+        text=(
+            "put(kind='draft', id='dc999999999')  # ZQWX\n"
+            f"**not bold** -- verbatim -- memory:{mem}\n\n"
+            "second block stays in ONE chunk"
+        ),
+        meta={"language": "python"},
+        at={"after": "¶" + title_h},
+    )
+    assert "added 1 chunk" in r.body
+    assert "⚠" not in r.body
+    dc = _dc(r.body)
+    chunk = hub.live_store.drafts.get_draft_chunk(dc)
+    assert chunk is not None
+    assert chunk.chunk_kind == "code"
+    assert "\n\n" in (chunk.text or "")  # blank line kept inside one chunk
+    assert chunk.meta.get("language") == "python"
+
+    # No mention edge minted from inside the code payload.
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    assert not [
+        link
+        for link in hub.live_store.links_for(
+            ref.id, direction="out", relation="related-to"
+        )
+        if link.dst_ref_id == mem
+    ]
+
+    # An edit keeps the verbatim contract: [dc…] tokens land, no hints.
+    r2 = draft.edit(id=dc, text="edited **still** verbatim [dc999999999]")
+    assert "edited" in r2.body and "⚠" not in r2.body
+    got = hub.live_store.drafts.get_draft_chunk(dc)
+    assert got is not None
+    assert got.text == "edited **still** verbatim [dc999999999]"
+
+    # The hygiene view never scans inside the code payload (ZQWX is
+    # acronym-shaped and undefined anywhere else).
+    hygiene = draft.get(id="nt", view="hygiene").body
+    assert "undefined abbreviation" not in hygiene
+
+
 def test_dry_run_rejected_on_structural_op(draft: DraftHandler, hub: Hub) -> None:
     """dry_run has no diff semantics for structural ops (e.g. move) — it must
     reject rather than silently write."""

@@ -1465,6 +1465,61 @@ def _cite_mark(group: walker.CiteGroup, ctx: _Ctx) -> str:
 #: List container kind → LaTeX environment (migration 0037).
 _LIST_ENV = {"ulist": "itemize", "olist": "enumerate"}
 
+#: ``meta.language`` tag (lowercase) → the ``language=`` spelling the
+#: bundled listings package defines. An unknown ``language=`` name is a
+#: listings *error*, so a tag outside this map falls back to a plain
+#: verbatim block rather than failing the PDF (gr592769).
+_LISTINGS_LANGUAGES = {
+    "bash": "bash",
+    "c": "C",
+    "c++": "C++",
+    "caml": "Caml",
+    "cobol": "Cobol",
+    "delphi": "Delphi",
+    "eiffel": "Eiffel",
+    "erlang": "erlang",
+    "fortran": "Fortran",
+    "haskell": "Haskell",
+    "html": "HTML",
+    "java": "Java",
+    "ksh": "ksh",
+    "lisp": "Lisp",
+    "lua": "Lua",
+    "make": "make",
+    "matlab": "Matlab",
+    "ml": "ML",
+    "octave": "Octave",
+    "oz": "Oz",
+    "pascal": "Pascal",
+    "perl": "Perl",
+    "php": "PHP",
+    "prolog": "Prolog",
+    "python": "Python",
+    "r": "R",
+    "ruby": "Ruby",
+    "sh": "sh",
+    "sql": "SQL",
+    "tcl": "tcl",
+    "tex": "TeX",
+    "vbscript": "VBScript",
+    "verilog": "Verilog",
+    "vhdl": "VHDL",
+    "xml": "XML",
+    "xslt": "XSLT",
+}
+
+
+def _lstlisting_language(chunk: Any) -> str:
+    """``[language=<name>]`` for a code/listing chunk's ``meta.language``
+    tag, ``""`` when absent or unrecognised — listings errors on an
+    unknown name, and verbatim-without-highlight beats a failed export."""
+    meta = getattr(chunk, "meta", None)
+    lang = meta.get("language") if isinstance(meta, dict) else None
+    name = (
+        _LISTINGS_LANGUAGES.get(lang.strip().lower()) if isinstance(lang, str) else None
+    )
+    return f"[language={name}]" if name else ""
+
 
 class LatexRenderer:
     """The LaTeX :class:`walker.Renderer`: formats resolved values as TeX
@@ -1569,7 +1624,7 @@ class LatexRenderer:
         # Code is verbatim — no inline rendering / escaping.
         sink += [
             f"% {self._label(chunk)[1:]}",
-            "\\begin{lstlisting}",
+            f"\\begin{{lstlisting}}{_lstlisting_language(chunk)}",
             chunk.text or "",
             "\\end{lstlisting}",
             "",

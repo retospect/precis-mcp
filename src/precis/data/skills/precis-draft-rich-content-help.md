@@ -1,10 +1,11 @@
 ---
 id: precis-draft-rich-content-help
 family: drafting
-title: precis — figures, images, and data tables in a draft
-summary: figure chunks (blob/graph/canvas/structure-view media, clearance gate by origin), and table chunks (structured data, four edit forms, LaTeX-recovered grids)
+title: precis — figures, images, code blocks, and data tables in a draft
+summary: figure chunks (blob/graph/canvas/structure-view media, clearance gate by origin), code chunks (verbatim payload, language tag, no hygiene inside), and table chunks (structured data, four edit forms, LaTeX-recovered grids)
 answers:
-  - how do I add a paragraph, figure, or table to a draft?
+  - how do I add a paragraph, figure, table, or code block to a draft?
+  - how do I put an exact MCP call list or code listing in a draft, verbatim?
   - how do I attach an image to a draft chunk, and who owns clearance for a third-party figure?
   - how do I turn a data table into a rendered graph in a draft?
   - how do I render a structure or se block as a figure in a draft?
@@ -16,7 +17,7 @@ tags: [drafting]
 kinds: [draft]
 ---
 
-# precis-draft-rich-content-help — figures and tables
+# precis-draft-rich-content-help — figures, code blocks, and tables
 
 ## Figures & images
 
@@ -153,6 +154,43 @@ alone re-codes, `plots=` alone re-targets the data (the edge set is
 replaced wholesale). A rewrite marks the figure render-pending, so the
 next export/view re-rasterises; `view=` doesn't combine with
 `render=`/`plots=`, and a caption still rewrites with `text=`.
+
+## Code blocks
+
+A `chunk_kind='code'` chunk holds a **verbatim code payload** — an exact
+MCP call list, a shell snippet, a config blob — rendered as a listing on
+export (`lstlisting` in the PDF, monospace in docx). Pass the source as
+`text=` and tag its language in `meta`:
+
+```python
+put(
+    kind="draft",
+    id="nanotrans",
+    chunk_kind="code",
+    text=(
+        "search(kind='python', q='render_figure')\n\n"
+        "get(kind='draft', id='dc42')"
+    ),
+    meta={"language": "python"},
+    at={"after": "dc12"},
+)
+```
+
+The payload is **verbatim, one chunk**: no blank-line split, no
+dangling-handle gate, and no hygiene checks inside — a `[dc…]`/`[pc…]`
+token in the source is literal text (it mints no link and feeds no
+citation report), and the prose lint scans (abbreviations, citations,
+house style) never look inside. `meta.language` is the `listings`
+language name (`python`, `bash`, `sql`, `c++`, …) the PDF export passes
+to `lstlisting` for highlighting; an unrecognised name still renders,
+just unhighlighted. Edit the payload in place like any chunk —
+`edit(kind='draft', id='dc<id>', text='…')` or `find=`/`insert` — under
+the same verbatim rules.
+
+`chunk_kind='listing'` (migration 0031) is the older sibling: same export
+block and `meta.language` tag, but legacy write semantics — a
+multi-paragraph payload splits into separate chunks and the prose scans
+still apply. Prefer `code` for new verbatim blocks.
 
 ## Data / table chunks
 

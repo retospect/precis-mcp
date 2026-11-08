@@ -311,7 +311,7 @@ takes a heading's exact title (`id='<slug>~Statement on AI Use'`) — it
 resolves to that heading's `dc<N>`, and several headings sharing the title
 refuse with their handles. A chunk outside that draft is NotFound.
 
-## Add a figure or a data table
+## Add a figure, code block, or data table
 
 See [[precis-draft-rich-content-help]].
 
@@ -434,7 +434,7 @@ else the draft owner's default — see [[precis-profile-help]].
 - [[precis-draft-reference-help]] — the verb/view/edit-param tables and move/table/authors grammar.
 - [[precis-draft-review-help]] — edit/review/retire a chunk, hygiene + gap-finder, steering.
 - [[precis-draft-cite-help]] — citations vs links in prose, never fabricate, request an unheld paper.
-- [[precis-draft-rich-content-help]] — figures, images, and data tables.
+- [[precis-draft-rich-content-help]] — figures, images, code blocks, and data tables.
 - [[precis-draft-export-help]] — LaTeX/PDF/Word/reMarkable export.
 - [[precis-profile-help]] — owner-scoped branding profiles for poster drafts.
 - [[precis-write-paper-help]] — prose craft: structure, diction, LLM tells to avoid.

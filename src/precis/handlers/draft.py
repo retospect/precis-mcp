@@ -1905,13 +1905,19 @@ class DraftHandler(Handler):
                             ref.id, term_role
                         )
                     }
-            self._raise_on_new_dangling_refs(str(text))
+            # A ``code`` chunk is verbatim (gr592769): the payload lands as
+            # ONE chunk (no blank-line split) and skips the dangling-handle
+            # gate — a ``[dc…]`` token inside it is literal source, never
+            # a reference.
+            if kind != "code":
+                self._raise_on_new_dangling_refs(str(text))
             chunks = self.store.drafts.add_chunks(
                 ref_id=ref.id,
                 chunk_kind=kind,
                 text=str(text),
                 at=at,
                 meta=meta,
+                split=kind != "code",
             )
             self.sync_draft_links(ref.id)
             self._attribute_touch([c.chunk_id for c in chunks])
@@ -1937,9 +1943,11 @@ class DraftHandler(Handler):
                     "it back."
                 )
             # Hint the LLM about abbreviations it just wrote (skip when the
-            # write *is* a term definition). All of a new chunk's text is
-            # "newly introduced", so there's no prior text to diff against.
-            if kind != "term":
+            # write *is* a term definition, or a verbatim code payload —
+            # no hygiene checks inside it, gr592769). All of a new chunk's
+            # text is "newly introduced", so there's no prior text to diff
+            # against.
+            if kind not in ("term", "code"):
                 body += _draft_lint.write_abbrev_hints(
                     self.store, slug, ref.id, str(text), ""
                 )
@@ -3409,7 +3417,8 @@ class DraftHandler(Handler):
                 return self._render_draft_dry_run(
                     _base.dc, old_text, new_text, mode=dry_mode, note=note
                 )
-            self._raise_on_new_dangling_refs(new_text, old_text)
+            if _base.chunk_kind != "code":
+                self._raise_on_new_dangling_refs(new_text, old_text)
             c = self.store.drafts.edit_text(
                 handle, new_text, base_sha=base_sha, source=source
             )
@@ -3429,26 +3438,31 @@ class DraftHandler(Handler):
                 self._attribute_touch([c.chunk_id])
                 ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
                 slug = ref.slug if ref and ref.slug else str(c.ref_id)
-                body += _draft_lint.write_abbrev_hints(
-                    self.store, slug, c.ref_id, new_text, old_text
-                )
-                body += _draft_lint.citation_form_hint(new_text)
-                body += _draft_lint.whole_paper_cite_hint(
-                    self.store, new_text, old_text
-                )
-                body += _draft_lint.pc_cite_claim_hub_hint(self.store, new_text)
-                body += _draft_lint.glyph_cite_hint(self.store, new_text)
-                body += _draft_lint.pin_hint(self.store, new_text, old_text)
-                body += _draft_lint.literal_cite_hint(new_text)
-                body += _draft_lint.bare_identifier_hint(new_text)
-                body += _draft_lint.temperature_form_hint(new_text)
-                body += _draft_lint.math_form_hint(new_text, old_text)
-                body += _draft_lint.house_style_hint(new_text, c.chunk_kind)
-                body += _draft_lint.bare_xref_hint(new_text, old_text)
-                body += _draft_lint.title_heading_dup_hint(
-                    self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text
-                )
-                body += _draft_lint.dangling_edit_hint(self.store, new_text, old_text)
+                # A ``code`` chunk's text is verbatim payload — no prose
+                # lint hints inside it (gr592769).
+                if c.chunk_kind != "code":
+                    body += _draft_lint.write_abbrev_hints(
+                        self.store, slug, c.ref_id, new_text, old_text
+                    )
+                    body += _draft_lint.citation_form_hint(new_text)
+                    body += _draft_lint.whole_paper_cite_hint(
+                        self.store, new_text, old_text
+                    )
+                    body += _draft_lint.pc_cite_claim_hub_hint(self.store, new_text)
+                    body += _draft_lint.glyph_cite_hint(self.store, new_text)
+                    body += _draft_lint.pin_hint(self.store, new_text, old_text)
+                    body += _draft_lint.literal_cite_hint(new_text)
+                    body += _draft_lint.bare_identifier_hint(new_text)
+                    body += _draft_lint.temperature_form_hint(new_text)
+                    body += _draft_lint.math_form_hint(new_text, old_text)
+                    body += _draft_lint.house_style_hint(new_text, c.chunk_kind)
+                    body += _draft_lint.bare_xref_hint(new_text, old_text)
+                    body += _draft_lint.title_heading_dup_hint(
+                        self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text
+                    )
+                    body += _draft_lint.dangling_edit_hint(
+                        self.store, new_text, old_text
+                    )
                 body += _landed_sha_line(c.text)
             return Response(body=body)
         if text is not None:
@@ -3461,7 +3475,8 @@ class DraftHandler(Handler):
                 return self._render_draft_dry_run(
                     _base.dc, old_text, str(text), mode=dry_mode
                 )
-            self._raise_on_new_dangling_refs(str(text), old_text)
+            if _base.chunk_kind != "code":
+                self._raise_on_new_dangling_refs(str(text), old_text)
             c = self.store.drafts.edit_text(
                 handle, str(text), base_sha=base_sha, source=source
             )
@@ -3471,25 +3486,30 @@ class DraftHandler(Handler):
                 self._attribute_touch([c.chunk_id])
                 ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
                 slug = ref.slug if ref and ref.slug else str(c.ref_id)
-                body += _draft_lint.write_abbrev_hints(
-                    self.store, slug, c.ref_id, str(text), old_text
-                )
-                body += _draft_lint.citation_form_hint(str(text))
-                body += _draft_lint.whole_paper_cite_hint(
-                    self.store, str(text), old_text
-                )
-                body += _draft_lint.pc_cite_claim_hub_hint(self.store, str(text))
-                body += _draft_lint.glyph_cite_hint(self.store, str(text))
-                body += _draft_lint.pin_hint(self.store, str(text), old_text)
-                body += _draft_lint.literal_cite_hint(str(text))
-                body += _draft_lint.bare_identifier_hint(str(text))
-                body += _draft_lint.temperature_form_hint(str(text))
-                body += _draft_lint.math_form_hint(str(text), old_text)
-                body += _draft_lint.bare_xref_hint(str(text), old_text)
-                body += _draft_lint.title_heading_dup_hint(
-                    self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text
-                )
-                body += _draft_lint.dangling_edit_hint(self.store, str(text), old_text)
+                # A ``code`` chunk's text is verbatim payload — no prose
+                # lint hints inside it (gr592769).
+                if c.chunk_kind != "code":
+                    body += _draft_lint.write_abbrev_hints(
+                        self.store, slug, c.ref_id, str(text), old_text
+                    )
+                    body += _draft_lint.citation_form_hint(str(text))
+                    body += _draft_lint.whole_paper_cite_hint(
+                        self.store, str(text), old_text
+                    )
+                    body += _draft_lint.pc_cite_claim_hub_hint(self.store, str(text))
+                    body += _draft_lint.glyph_cite_hint(self.store, str(text))
+                    body += _draft_lint.pin_hint(self.store, str(text), old_text)
+                    body += _draft_lint.literal_cite_hint(str(text))
+                    body += _draft_lint.bare_identifier_hint(str(text))
+                    body += _draft_lint.temperature_form_hint(str(text))
+                    body += _draft_lint.math_form_hint(str(text), old_text)
+                    body += _draft_lint.bare_xref_hint(str(text), old_text)
+                    body += _draft_lint.title_heading_dup_hint(
+                        self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text
+                    )
+                    body += _draft_lint.dangling_edit_hint(
+                        self.store, str(text), old_text
+                    )
                 body += _landed_sha_line(c.text)
             return Response(body=body)
         raise BadInput(
@@ -4073,6 +4093,10 @@ class DraftHandler(Handler):
                     restamp_chunk_ids is not None
                     and c.chunk_id not in restamp_chunk_ids
                 ):
+                    continue
+                # A verbatim ``code`` payload is literal text: handle- and
+                # cite-shaped tokens inside it mint no edges (gr592769).
+                if c.chunk_kind == "code":
                     continue
                 # Mint the lazy part ref for each C-number the re-resolved
                 # chunk names so the resolve pass can see it (resolution
@@ -6012,7 +6036,9 @@ class DraftHandler(Handler):
         paginated outline round-trips to see the next alphabetical batch.
         """
         out: list[str] = []
-        text = "\n\n".join(c.text for c in chunks if c.text)
+        # A ``code`` chunk's payload is verbatim source — no hygiene check
+        # reads inside it (gr592769): no abbrev, cite or house-style scan.
+        text = "\n\n".join(c.text for c in chunks if c.text and c.chunk_kind != "code")
         limit = 8 if elide else None
 
         undefined = self.store.drafts.undefined_abbrevs(ref_id, text)
@@ -6033,7 +6059,7 @@ class DraftHandler(Handler):
 
         whole_pairs: list[tuple[Any, str]] = []
         for c in chunks:
-            if not c.text:
+            if not c.text or c.chunk_kind == "code":
                 continue
             for bare in _draft_lint.find_whole_ref_citations(c.text):
                 whole_pairs.append((c.dc, bare))
@@ -6072,7 +6098,7 @@ class DraftHandler(Handler):
         # pointers still need a DOI in the bibliography, so they feed the
         # DOI line below but not the hub scoreboard.
         claim_ref_ids = self._cited_paper_ref_ids(
-            [c for c in chunks if c.chunk_kind != "figure"]
+            [c for c in chunks if c.chunk_kind not in ("figure", "code")]
         )
         caption_ref_ids = self._cited_paper_ref_ids(
             [c for c in chunks if c.chunk_kind == "figure"]
