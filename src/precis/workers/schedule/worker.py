@@ -47,11 +47,11 @@ Guards (in order, per the plan):
    pass on the same tick is a no-op.
 4. **Collision-skip** (queue-mode only) — when the previous spawned
    child is still genuinely in flight (no ``STATUS:done``-class tag
-   AND its dispatched work isn't finished — no job minted yet, or a
-   job still non-terminal), the new tick is skipped. A stalled queue
-   doesn't pile up; the nursery sweep surfaces the stuck leaf.
-   Delivery-mode has no queue item to collide with, so this guard
-   doesn't apply there.
+   AND its work isn't settled — no job minted yet, a job still
+   non-terminal or cancelled-pending-re-mint, or a live child todo
+   remains), the new tick is skipped. A stalled queue doesn't pile
+   up; the nursery sweep surfaces the stuck leaf. Delivery-mode has
+   no queue item to collide with, so this guard doesn't apply there.
 5. **Backfill policy** — when the schedule's ``backfill_missed`` is
    ``False`` (the default), only the most recent tick is considered;
    missed ticks for weather / news are dropped. ``True`` walks every
@@ -610,6 +610,17 @@ def _child_with_stamp_exists_conn(conn: Any, parent_id: int, stamp: str) -> bool
     return row is not None
 
 
+#: Job STATUS values that settle a spawned tick for the collision
+#: guard — ``workers._mint.JOB_TERMINAL_STATUSES`` minus ``cancelled``.
+#: A cancelled run never did its work and dispatch re-mints a fresh job
+#: under the same still-open tick todo ("cancelled → re-mint
+#: immediately"), so the tick's work is still owed and must keep
+#: blocking; only ``succeeded`` and ``failed`` settle it.
+_TICK_SETTLED_JOB_STATUSES: tuple[str, ...] = tuple(
+    s for s in JOB_TERMINAL_STATUSES if s != "cancelled"
+)
+
+
 def _has_open_previous_tick_conn(
     conn: Any, parent_id: int, *, stuck_hours: float
 ) -> bool:
@@ -649,21 +660,34 @@ def _has_open_previous_tick_conn(
     every-30-min ``news_poll``) a genuinely in-flight *recent* child
     (younger than ``stuck_hours``) still blocks, to prevent pile-up.
 
-    The child-job clause below bounds it from the other side: once every
-    ``kind='job'`` minted under the tick child has gone terminal
-    (``succeeded`` / ``failed`` / ``cancelled`` — the set
-    ``workers._mint.JOB_TERMINAL_STATUSES`` defines), the tick's work is
-    over and the child is settled-for-scheduling even though its own
-    ``STATUS:open`` hasn't flipped yet. That flip is the auto_check
+    The settled-work clause below bounds it from the other side: once
+    every ``kind='job'`` minted under the tick child is *settled*
+    (``succeeded`` / ``failed`` — :data:`_TICK_SETTLED_JOB_STATUSES`)
+    AND no ``kind='todo'`` child of the tick is still live, the tick's
+    work is over and the child is settled-for-scheduling even though its
+    own ``STATUS:open`` hasn't flipped yet. That flip is the auto_check
     pass's ``child_job_succeeded`` evaluator — a *sampled* sweep whose
     latency is unbounded (leaf-count over the pass limit starves it),
     while the job's terminal write is the fact. gr592215: a
     ``job_inproc`` tick whose job succeeded three seconds after mint sat
     ``STATUS:open`` for over an hour and skipped every following tick on
     two recurrings until the ``stuck_hours`` bound aged it out — the
-    close lag must not hold the cadence. A child with no job yet (the
-    dispatch sweep hasn't minted, or the tick is plain agentic work) is
-    still pending and blocks as before.
+    close lag must not hold the cadence.
+
+    Two shapes still count as in flight with no live job row:
+
+    * ``cancelled`` — a cancelled run never did its work and dispatch
+      re-mints a fresh job under the same still-open tick todo
+      ("cancelled → re-mint immediately"). Exempting it spawned the next
+      tick alongside the old tick's retry — overlapping runs of one
+      recurring.
+    * live ``kind='todo'`` children — mirrors ``child_job_succeeded``'s
+      completion guard: a settled job does not settle the tick while
+      the todos its work spawned remain open. Exempting it minted a
+      second tick over still-running work.
+
+    A child with no job yet (the dispatch sweep hasn't minted, or the
+    tick is plain agentic work) is still pending and blocks as before.
     """
     row = conn.execute(
         """
@@ -689,13 +713,16 @@ def _has_open_previous_tick_conn(
            -- (see docstring), not in-flight progress — exclude it so it
            -- can't wedge the cadence forever.
            AND c.created_at >= now() - %s::interval
-           -- The tick's dispatched work is still pending or in flight:
-           -- either no job was minted under the child yet, or at least
-           -- one is non-terminal. Once every child job is terminal the
-           -- tick is settled even while the todo still reads
-           -- STATUS:open — the auto_check flip that closes it is a
-           -- sampled sweep and can lag the job's own terminal write
-           -- (gr592215).
+           -- The tick's work is still owed or in flight — any of:
+           -- no job minted under the child yet (dispatch pending); a
+           -- job that isn't settled (queued/running, or cancelled —
+           -- dispatch re-mints that work under this same todo); or a
+           -- live kind='todo' child (the child_job_succeeded
+           -- completion guard). Once every child job is settled and no
+           -- live todo remains, the tick is settled even while the
+           -- todo still reads STATUS:open — the auto_check flip that
+           -- closes it is a sampled sweep and can lag the job's own
+           -- terminal write (gr592215).
            AND (
                  NOT EXISTS (
                      SELECT 1 FROM refs j
@@ -716,10 +743,23 @@ def _has_open_previous_tick_conn(
                               'open'
                             ) <> ALL(%s)
                  )
+                 OR EXISTS (
+                     SELECT 1 FROM refs ct
+                      WHERE ct.parent_id = c.ref_id
+                        AND ct.kind = 'todo'
+                        AND ct.retired_at IS NULL
+                        AND COALESCE(
+                              (SELECT t.value
+                                 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                                WHERE rt.ref_id = ct.ref_id
+                                  AND t.namespace = 'STATUS' LIMIT 1),
+                              'open'
+                            ) NOT IN ('done', 'won''t-do')
+                 )
                )
          LIMIT 1
         """,
-        (parent_id, f"{stuck_hours} hours", sorted(JOB_TERMINAL_STATUSES)),
+        (parent_id, f"{stuck_hours} hours", sorted(_TICK_SETTLED_JOB_STATUSES)),
     ).fetchone()
     return row is not None
 

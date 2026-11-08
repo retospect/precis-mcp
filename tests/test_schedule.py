@@ -737,9 +737,10 @@ def test_has_open_previous_tick_conn_terminal_job_never_blocks(
 ) -> None:
     """A still-open tick child whose dispatched job already went
     terminal must not block — the auto_check flip to ``STATUS:done``
-    lags the job's own terminal write (gr592215)."""
+    lags the job's own terminal write (gr592215). ``cancelled`` is
+    deliberately absent: it does not settle the tick (next test)."""
     recent_created = datetime.now(UTC) - timedelta(minutes=5)
-    for job_status in ("succeeded", "failed", "cancelled"):
+    for job_status in ("succeeded", "failed"):
         resp = handler.put(
             text="Hourly",
             meta={"schedule": {"cron": "0 * * * *"}},
@@ -754,6 +755,93 @@ def test_has_open_previous_tick_conn_terminal_job_never_blocks(
             blocked = _has_open_previous_tick_conn(conn, rid, stuck_hours=1.0)
         assert blocked is False, (
             f"a tick child whose job is {job_status} is settled, not in flight"
+        )
+
+
+def test_has_open_previous_tick_conn_cancelled_job_still_blocks(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A ``cancelled`` job does NOT settle its tick: the run never did
+    its work and dispatch re-mints a fresh job under the same still-open
+    tick todo ("cancelled → re-mint immediately"). Exempting it would
+    mint the next tick alongside the old tick's retry — overlapping
+    runs of one recurring."""
+    resp = handler.put(
+        text="Hourly",
+        meta={"schedule": {"cron": "0 * * * *"}},
+    )
+    rid = _id_of(resp.body)
+    child_id = _spawn_open_child(
+        store, rid, status="open", created_at=datetime.now(UTC) - timedelta(minutes=5)
+    )
+    _mint_job_under_child(store, child_id, status="cancelled")
+
+    with store.pool.connection() as conn:
+        blocked = _has_open_previous_tick_conn(conn, rid, stuck_hours=1.0)
+    assert blocked is True, (
+        "a cancelled job is owed work (dispatch re-mints), not settled — "
+        "the tick must keep blocking"
+    )
+
+
+def _mint_todo_under_child(store: Store, child_id: int, *, status: str) -> int:
+    """Hand-mint a ``kind='todo'`` under a spawned tick child with a
+    given STATUS — the shape a tick's job leaves when its agentic work
+    spawned follow-up todos."""
+    todo = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="tick sub-todo",
+        meta={},
+        parent_id=child_id,
+    )
+    store.add_tag(todo.id, Tag.closed("STATUS", status), set_by="system")
+    return int(todo.id)
+
+
+def test_has_open_previous_tick_conn_live_child_todo_still_blocks(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A settled job does not settle the tick while the tick's own child
+    todos are still live — mirrors ``child_job_succeeded``'s completion
+    guard (a succeeded job is not "done" while sibling work remains).
+    Only ``done`` / ``won't-do`` child todos count as finished."""
+    recent_created = datetime.now(UTC) - timedelta(minutes=5)
+    for todo_status in ("open", "doing"):
+        resp = handler.put(
+            text="Hourly",
+            meta={"schedule": {"cron": "0 * * * *"}},
+        )
+        rid = _id_of(resp.body)
+        child_id = _spawn_open_child(
+            store, rid, status="open", created_at=recent_created
+        )
+        _mint_job_under_child(store, child_id, status="succeeded")
+        _mint_todo_under_child(store, child_id, status=todo_status)
+
+        with store.pool.connection() as conn:
+            blocked = _has_open_previous_tick_conn(conn, rid, stuck_hours=1.0)
+        assert blocked is True, (
+            f"a live ({todo_status}) child todo keeps the tick in flight "
+            "even with a settled job"
+        )
+
+    for todo_status in ("done", "won't-do"):
+        resp = handler.put(
+            text="Hourly",
+            meta={"schedule": {"cron": "0 * * * *"}},
+        )
+        rid = _id_of(resp.body)
+        child_id = _spawn_open_child(
+            store, rid, status="open", created_at=recent_created
+        )
+        _mint_job_under_child(store, child_id, status="succeeded")
+        _mint_todo_under_child(store, child_id, status=todo_status)
+
+        with store.pool.connection() as conn:
+            blocked = _has_open_previous_tick_conn(conn, rid, stuck_hours=1.0)
+        assert blocked is False, (
+            f"a finished ({todo_status}) child todo does not keep the tick in flight"
         )
 
 
@@ -812,6 +900,38 @@ def test_schedule_pass_succeeded_job_on_open_tick_does_not_wedge(
         ).fetchone()
     assert row is not None
     assert int(row[0]) == 1, "a fresh tick should have been minted"
+
+
+def test_schedule_pass_cancelled_job_on_open_tick_still_skips(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Regression: a spawned tick whose only job was ``cancelled`` is
+    still in flight — dispatch re-mints the owed work under the same
+    still-open todo — so the pass must skip rather than run a fresh tick
+    alongside the old tick's retry."""
+    resp = handler.put(
+        text="Every-10-min poll",
+        meta={"schedule": {"cron": "*/10 * * * *"}},
+    )
+    rid = _id_of(resp.body)
+
+    old_created = datetime.now(UTC) - timedelta(minutes=15)
+    old_stamp = old_created.isoformat(timespec="minutes")
+    child_id = _spawn_open_child(store, rid, status="open", created_at=old_created)
+    _mint_job_under_child(store, child_id, status="cancelled")
+
+    _set_last_tick(store, rid, old_created)
+    result = run_schedule_pass(store, limit=50)
+    assert result.ok == 0, "a cancelled-job tick is still in flight — no new tick"
+    assert result.failed >= 1, "the due tick should have been skipped"
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE parent_id = %s AND retired_at IS NULL "
+            "AND meta->>'spawned_for_tick' <> %s",
+            (rid, old_stamp),
+        ).fetchone()
+    assert row is not None
+    assert int(row[0]) == 0, "no fresh tick may mint over the pending re-mint"
 
 
 def test_schedule_pass_skips_folder_umbrella(store: Store) -> None:
