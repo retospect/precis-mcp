@@ -187,6 +187,104 @@ def test_score_drop_raises_warn_alert(hub: Hub, store: Store) -> None:
     assert doc["history"][-1]["hits"] == 2  # the pre-drop score is kept
 
 
+def test_drop_alert_names_the_regressed_wants(hub: Hub, store: Store) -> None:
+    # The drop line names the questions that flipped hit->miss, not just
+    # the leg totals (gr586858).
+    native = _put(hub, title="native-node", hook="zebra quorum native")
+    mirror = _put(hub, title="mirror-node", hook="xenon lattice mirror", mirror=True)
+    entries = _entries(("zebra quorum", native), ("xenon lattice", mirror))
+    run_memory_recall_pass(store, entries=entries, embedder=hub.embedder)
+
+    store.retire_ref(native)
+    run_memory_recall_pass(store, entries=entries, embedder=hub.embedder)
+    with store.tx() as conn:
+        row = conn.execute(
+            "SELECT title, meta->>'detail' FROM refs "
+            "WHERE alert_source = %s AND fingerprint = 'recall-dropped' "
+            "AND resolved_at IS NULL",
+            (ALERT_SOURCE,),
+        ).fetchone()
+    assert row is not None
+    title, detail = row
+    assert f"me{native}" in title and "shared" in title
+    assert f"me{native}" in detail
+
+
+def test_set_composition_change_is_not_a_leg_drop(hub: Hub, store: Store) -> None:
+    # gr586858: a want leaving the set between runs shrinks a leg's total
+    # without any question regressing — the raw mirror count fell 22 -> 21
+    # while every shared mirror query still hit. No alert.
+    native = _put(hub, title="native-node", hook="zebra quorum native")
+    mirror = _put(hub, title="mirror-node", hook="xenon lattice mirror", mirror=True)
+    run_memory_recall_pass(
+        store,
+        entries=_entries(("zebra quorum", native), ("xenon lattice", mirror)),
+        embedder=hub.embedder,
+    )
+
+    r = run_memory_recall_pass(
+        store, entries=_entries(("zebra quorum", native)), embedder=hub.embedder
+    )
+    assert (r.claimed, r.ok, r.failed) == (1, 1, 0)
+    doc = _last(store)
+    assert doc["mirror_total"] == 0 and doc["native_hits"] == 1
+    assert _open_alerts(store) == []
+
+
+def test_new_question_that_misses_is_not_a_drop(hub: Hub, store: Store) -> None:
+    # An entry added to the set has no baseline; its miss lands in the
+    # recorded misses but cannot be a regression versus the last run.
+    native = _put(hub, title="native-node", hook="zebra quorum native")
+    run_memory_recall_pass(
+        store, entries=_entries(("zebra quorum", native)), embedder=hub.embedder
+    )
+
+    r = run_memory_recall_pass(
+        store,
+        entries=_entries(("zebra quorum", native), ("unanswerable phrasing", 999999)),
+        embedder=hub.embedder,
+    )
+    assert (r.ok, r.failed) == (1, 1)
+    doc = _last(store)
+    assert doc["misses"] == ["me999999"]
+    assert _open_alerts(store) == []
+
+
+def test_legacy_prior_without_queries_compares_rates(hub: Hub, store: Store) -> None:
+    # Score docs from before the per-query ``queries`` field was recorded
+    # have no shared-question baseline: compare hit *rate*, so a changed
+    # set size still cannot fake a count drop.
+    native = _put(hub, title="native-node", hook="zebra quorum native")
+    entries = _entries(("zebra quorum", native))
+    run_memory_recall_pass(store, entries=entries, embedder=hub.embedder)
+
+    def _seed_prior(hits: int, total: int) -> None:
+        app_settings.set_setting(
+            store,
+            LAST_SCORE_KEY,
+            json.dumps(
+                {
+                    "computed_at": "2026-11-01T00:00:00+00:00",
+                    "hits": hits,
+                    "total": total,
+                    "native_hits": hits,
+                    "native_total": total,
+                    "mirror_hits": 0,
+                    "mirror_total": 0,
+                }
+            ),
+        )
+
+    _seed_prior(2, 2)  # same 100% rate at a different set size: no drop
+    run_memory_recall_pass(store, entries=entries, embedder=hub.embedder)
+    assert _open_alerts(store) == []
+
+    store.retire_ref(native)
+    _seed_prior(2, 2)  # 0/1 against a queryless 2/2 baseline is a rate drop
+    run_memory_recall_pass(store, entries=entries, embedder=hub.embedder)
+    assert len(_open_alerts(store)) == 1
+
+
 def test_equal_or_higher_score_no_alert(hub: Hub, store: Store) -> None:
     native = _put(hub, title="native-node", hook="zebra quorum native")
     mirror = _put(hub, title="mirror-node", hook="xenon lattice mirror", mirror=True)

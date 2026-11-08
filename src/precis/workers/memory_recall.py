@@ -19,10 +19,12 @@ nobody watches; this makes it durable. Fired from the weekly host-agnostic ``mem
    a bounded ``history`` of prior scores. Additive ``queries``/``curve``
    fields retain ranks, recall and rendered chars/tokens (``chars/4``)
    through agent runtime dispatch, including both fisheye get variants.
-3. **Alert** — a score below the last recorded one (total or either
-   origin split), or median index-plus-fisheye tokens at k=5 up more than
-   25%, raises one WARN ``kind='alert'``. A run with neither regression
-   resolves it. The first run only records a baseline.
+3. **Alert** — a recall drop versus the last recorded run (total or
+   either origin split, compared over the questions both runs scored —
+   the set is a living document, so raw leg totals would read a ``want``
+   swap as a drop; gr586858), or median index-plus-fisheye tokens at k=5
+   up more than 25%, raises one WARN ``kind='alert'``. A run with neither
+   regression resolves it. The first run only records a baseline.
 
 Question set rules (``src/precis/data/memory_recall_set.json``, one entry
 per real case: ``query``, prod answer ``want`` handle, title + hook
@@ -101,6 +103,89 @@ def _last_score(store: Store) -> dict[str, Any] | None:
     return doc if isinstance(doc, dict) else None
 
 
+def _row_hit(row: dict[str, Any], k: int) -> bool:
+    """Whether a per-query score row's ``want`` made the top ``k``."""
+    return bool((row.get("recall_at_k") or {}).get(str(k)))
+
+
+def _score_drops(
+    prev: dict[str, Any],
+    rows: list[dict[str, Any]],
+    score: dict[str, Any],
+    *,
+    k: int,
+) -> list[str]:
+    """Leg-level regression lines versus the last recorded run.
+
+    The question set is a living document — prod gardening swaps ``want``
+    handles and adds or drops entries between weekly runs — so raw leg
+    totals cannot be compared: a mirror ``want`` leaving the set reads as
+    "mirror 21 < 22" while every shared mirror query still hit
+    (gr586858). With a per-query baseline (``prev['queries']``) each leg
+    compares only the ``want``s both runs scored, and the drop names the
+    questions that flipped hit→miss. Without one (older score docs) it
+    falls back to hit *rate* — a changed set size cannot fake a rate drop
+    the way it fakes a count drop. A newly added question that misses is
+    no regression: it lands in ``misses``, not here.
+    """
+    prev_rows = {
+        str(row["want"]): row
+        for row in prev.get("queries") or []
+        if isinstance(row, dict) and row.get("want") is not None
+    }
+    legs = (("total", None), ("native", "native"), ("mirror", "mirror"))
+    drops: list[str] = []
+    if prev_rows:
+        for label, origin in legs:
+            shared = [
+                row
+                for row in rows
+                if str(row.get("want")) in prev_rows
+                and (origin is None or row.get("origin") == origin)
+            ]
+            if not shared:
+                continue
+            was = sum(_row_hit(prev_rows[str(row["want"])], k) for row in shared)
+            now = sum(_row_hit(row, k) for row in shared)
+            if now >= was:
+                continue
+            lost = ", ".join(
+                str(row["want"])
+                for row in shared
+                if _row_hit(prev_rows[str(row["want"])], k) and not _row_hit(row, k)
+            )
+            drops.append(
+                f"{label} {now}/{len(shared)} < {was}/{len(shared)} shared ({lost})"
+            )
+        return drops
+    for label, cur_hits, cur_total, old_hits, old_total in (
+        ("total", score["hits"], score["total"], prev.get("hits"), prev.get("total")),
+        (
+            "native",
+            score["native_hits"],
+            score["native_total"],
+            prev.get("native_hits"),
+            prev.get("native_total"),
+        ),
+        (
+            "mirror",
+            score["mirror_hits"],
+            score["mirror_total"],
+            prev.get("mirror_hits"),
+            prev.get("mirror_total"),
+        ),
+    ):
+        if (
+            isinstance(old_hits, int)
+            and isinstance(old_total, int)
+            and old_total > 0
+            and cur_total > 0
+            and cur_hits * old_total < old_hits * cur_total
+        ):
+            drops.append(f"{label} {cur_hits}/{cur_total} < {old_hits}/{old_total}")
+    return drops
+
+
 def run_memory_recall_pass(
     store: Store,
     *,
@@ -154,13 +239,7 @@ def run_memory_recall_pass(
     prev = _last_score(store)
     drops: list[str] = []
     if prev is not None:
-        for label, cur, old in (
-            ("total", score["hits"], prev.get("hits")),
-            ("native", score["native_hits"], prev.get("native_hits")),
-            ("mirror", score["mirror_hits"], prev.get("mirror_hits")),
-        ):
-            if isinstance(old, int) and cur < old:
-                drops.append(f"{label} {cur} < {old}")
+        drops.extend(_score_drops(prev, rows, score, k=k))
         old_tokens = prev.get("median_tokens_k5")
         tokens = score["median_tokens_k5"]
         if (
@@ -197,7 +276,8 @@ def run_memory_recall_pass(
                 f"P4 set scored {score['hits']}/{score['total']} at k={k} "
                 f"(native {score['native_hits']}/{score['native_total']}, "
                 f"mirror {score['mirror_hits']}/{score['mirror_total']}), "
-                f"regressions versus the last recorded run: {'; '.join(drops)}; misses: "
+                f"regressions on questions shared with the last recorded run: "
+                f"{'; '.join(drops)}; misses: "
                 f"{', '.join(misses) or 'none'}.\n"
                 "Scores live in app_settings['memory_recall:last'] "
                 "(prior scores in 'history'); `precis memory index --set` "
