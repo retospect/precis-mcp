@@ -1,5 +1,6 @@
 ---
-status: ready
+status: in-progress
+claimed-by: pcb-docs-drop
 title: "pcb design flow: requirements-to-fab skill, part selection record, budgets, consigned BOM lines, mech/coating checklist"
 pillar: 3d-design
 prio: high
