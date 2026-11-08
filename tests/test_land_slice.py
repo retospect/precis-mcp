@@ -408,7 +408,8 @@ def test_submit_launches_ship_with_the_slice_subject(seams: dict[str, Any]) -> N
     # `-n` (jo570059's log could not confirm whether the cap applied)
     launch_events = [t for k, t in ctx.chunks if k == "job_event" and " pid 5151 " in t]
     assert launch_events and launch_events[-1].endswith(
-        f"(gate_n={land_slice.DEFAULT_TEST_NPROC})"
+        f"(gate_n={land_slice.DEFAULT_TEST_NPROC}, "
+        f"slots={land_slice.DEFAULT_LAND_GATE_SLOTS})"
     )
     assert (["log", "--reverse", "--format=%s", "origin/main..HEAD"], tree) in seams[
         "git"
@@ -2184,6 +2185,123 @@ def test_poll_ship_waiting_on_a_gate_slot_eats_no_wall(
     assert "gate_wait" not in handle
 
 
+def test_gate_slot_waiting_reads_the_indented_holder_dump() -> None:
+    """td599058: a real queue log's newest lines are the per-slot holder
+    dump — INDENTED ``  gate slot N: …``. Stripping the line before
+    matching left them unmatched, so a genuinely queued ship read as
+    gating and the wait ate the deadline."""
+    log = (
+        "waiting for a gate slot (2 concurrent gate containers max — "
+        "shared-VM OOM guard, gr202193)\n"
+        "(steals a slot immediately if its holder dies; a live holder on "
+        "this host is waited out however long its gate takes)\n"
+        "gate slot: waiting at position 3 of 6 (2 slots ahead are busy)\n"
+        "  gate slot 0: held 45m by slice-td97 (pid 111 on spark, alive)\n"
+        "  gate slot 1: held 12m by slice-td98 (pid 222 on spark, alive)\n"
+    )
+    got = land_slice.gate_slot_waiting(log)
+    assert got is not None and got.startswith("gate slot 1: held")
+    # a steal, a give-up, an access refusal or the gate's own output ends it
+    assert land_slice.gate_slot_waiting(log + "stole gate slot 0\n") is None
+    assert (
+        land_slice.gate_slot_waiting(
+            log + "gate slot: gave up after 1800s at position 3 of 6\n"
+        )
+        is None
+    )
+    assert land_slice.gate_slot_waiting(log + "pytest -q -n3\n") is None
+    assert land_slice.gate_slot_waiting("") is None
+
+
+def test_poll_ship_queued_behind_the_holder_dump_eats_no_wall(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    """The holder-dump tail is what a REAL queue log ends with — the wait
+    must still be detected and the deadline re-armed (td599058)."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    Path(handle["log"]).write_text(
+        "gate slot: waiting at position 2 of 4 (2 slots ahead are busy)\n"
+        "  gate slot 0: held 3m by w1 (pid 11 on spark, alive)\n"
+        "  gate slot 1: held 1m by w2 (pid 22 on spark, alive)\n",
+        encoding="utf-8",
+    )
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert pctx.meta_set["deadline"] == T0.timestamp() + land_slice.wall_seconds()
+    assert handle["gate_wait"].startswith("gate slot 1: held")
+
+
+def test_poll_verify_queued_on_a_gate_slot_eats_no_wall(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    """td599058: a live verify probe queues inside ``gate_slot_acquire``
+    like ship does — every phase runs ``scripts/test``. The deadline
+    re-arms while it waits and the position heartbeats once per change."""
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False  # phase alone launched
+    verify = handle["verify"]
+    Path(verify["log"]).write_text(
+        "gate slot: waiting at position 2 of 5 (2 slots ahead are busy)\n"
+        "  gate slot 0: held 4m by w1 (pid 11 on spark, alive)\n",
+        encoding="utf-8",
+    )
+    clock["t"] = T0 + timedelta(seconds=60)
+    assert land_slice.poll(pctx, handle) is False
+    assert verify["gate_wait"].startswith("gate slot 0: held")
+    assert (
+        pctx.meta_set["deadline"]
+        == (T0 + timedelta(seconds=60)).timestamp() + land_slice.wall_seconds()
+    )
+    # the queue drains: the marker drops and the wall stops growing
+    Path(verify["log"]).write_text("gate env → synced offline\n", encoding="utf-8")
+    assert land_slice.poll(pctx, handle) is False
+    assert "gate_wait" not in verify
+
+
+def test_poll_deselect_wait_re_arms_the_full_budget(
+    seams: dict[str, Any],
+    clock: dict[str, datetime],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A FULL-selection deselect run is itself a full gate: its queue
+    wait re-arms the ``--full`` budget, not the 1 h wall."""
+    monkeypatch.setattr(land_slice, "_checked_selection_full", lambda tree: True)
+    seams["diff_names"] = "src/precis/x.py\n"
+    seams["changed_paths"] = ["scripts/ship"]
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    pctx.meta["engine_paths"] = ["scripts/ship"]
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False
+    verify = handle["verify"]
+    assert verify["phase"] == "deselect" and verify["full_selection"] is True
+    Path(verify["log"]).write_text(
+        "gate slot: waiting at position 1 of 3 (2 slots ahead are busy)\n"
+        "  gate slot 0: held 9m by w1 (pid 11 on spark, alive)\n",
+        encoding="utf-8",
+    )
+    clock["t"] = T0 + timedelta(seconds=90)
+    assert land_slice.poll(pctx, handle) is False
+    assert verify["gate_wait"].startswith("gate slot 0: held")
+    assert (
+        pctx.meta_set["deadline"]
+        == (T0 + timedelta(seconds=90)).timestamp() + land_slice.full_wall_seconds()
+    )
+
+
 def test_kill_pushes_the_slice_branch_to_origin(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2349,13 +2467,15 @@ def test_poll_checked_red_outside_alone_green_is_attempt_free(
     assert "green standalone" in summary and OUTSIDE_ID in summary
 
 
-def test_poll_checked_red_outside_alone_red_main_red_relaunches_quick(
+def test_poll_checked_red_outside_alone_red_main_red_deselects_then_quick(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Still red standalone, red on origin/main too: not the branch's —
-    the land relaunches ``--quick`` (this run's lint already passed), the
-    probe worktree and its stack are removed, and the todo carries the
-    note naming the ids."""
+    a NON-engine checked land earns ``--quick`` the same way an engine
+    one does (td599058): the deselect gate proves the checked selection
+    minus the main-red ids green, then the land relaunches ``--quick``.
+    The probe worktree and its stack are removed, and the todo carries
+    the note naming the ids."""
     monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
     seams["diff_names"] = "src/precis/x.py\n"
     store = _Store()
@@ -2376,6 +2496,19 @@ def test_poll_checked_red_outside_alone_red_main_red_relaunches_quick(
     assert kw["cwd"] == main_tree
     _verify_finish(handle, 1)
     assert land_slice.poll(pctx, handle) is False
+    # the deselect phase runs first — the rest of the selection is
+    # proven green before --quick lands
+    verify = handle["verify"]
+    assert verify["phase"] == "deselect" and verify["ids"] == [OUTSIDE_ID]
+    argv, _kw = seams["launch"][-1]
+    assert argv == [
+        str(seams["tree"] / "scripts" / "test"),
+        "--selected",
+        "--deselect",
+        OUTSIDE_ID,
+    ]
+    _verify_finish(handle, 0)
+    assert land_slice.poll(pctx, handle) is False
     argv, _kw = seams["launch"][-1]
     assert argv[1] == "--quick" and argv[2] == SUBJECT
     assert handle["flag"] == "--quick" and "verify" not in handle
@@ -2389,7 +2522,30 @@ def test_poll_checked_red_outside_alone_red_main_red_relaunches_quick(
     assert note.startswith("handoff:") and "red on origin/main too" in note
     assert OUTSIDE_ID in note
     events = [t for k, t in pctx.chunks if k == "job_event"]
-    assert any("red on origin/main too" in e and "--quick" in e for e in events)
+    assert any("red on origin/main too" in e and "--deselect" in e for e in events)
+
+
+def test_poll_checked_red_main_red_fallback_off_stays_red(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``PRECIS_LAND_FULL_FALLBACK=off`` opts a NON-engine land out of the
+    deselect gate: the main-side red stays the ordinary red (an engine
+    land has no such opt-out — it can never drop to lint)."""
+    monkeypatch.setenv("PRECIS_LAND_FULL_FALLBACK", "off")
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False  # phase main launched
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "attempt:1" in store.tag_strings(42)
+    assert all("--deselect" not in call[0] for call in seams["launch"])
 
 
 def test_poll_checked_red_main_red_on_an_engine_land_deselects_checked(
@@ -3224,3 +3380,39 @@ def test_test_nproc_rejects_garbage_and_negatives(
     assert land_slice.test_nproc() == str(land_slice.DEFAULT_TEST_NPROC)
     monkeypatch.setenv("PRECIS_LAND_TEST_NPROC", "-4")
     assert land_slice.test_nproc() == str(land_slice.DEFAULT_TEST_NPROC)
+
+
+# --- the factory's share of the gate semaphore (td599058) ----------------
+
+
+def test_land_gate_slots_default_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``PRECIS_GATE_SLOTS`` on a land launch bounds the factory's share of
+    the shared semaphore to 1–2 slots (the lib derives up to 6 on the
+    factory host's VM) — the env narrows to 1, never widens past 2."""
+    monkeypatch.delenv("PRECIS_LAND_GATE_SLOTS", raising=False)
+    assert land_slice.land_gate_slots() == str(land_slice.DEFAULT_LAND_GATE_SLOTS)
+    monkeypatch.setenv("PRECIS_LAND_GATE_SLOTS", "1")
+    assert land_slice.land_gate_slots() == "1"
+    for bad in ("6", "0", "-1", "many"):
+        monkeypatch.setenv("PRECIS_LAND_GATE_SLOTS", bad)
+        assert land_slice.land_gate_slots() == str(land_slice.DEFAULT_LAND_GATE_SLOTS)
+
+
+def test_launches_carry_the_slot_cap(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both launch envs — ship's and a verify probe's — carry
+    ``PRECIS_GATE_SLOTS`` so every gate the lander spawns stays inside
+    the 1–2 slot share."""
+    monkeypatch.delenv("PRECIS_LAND_GATE_SLOTS", raising=False)
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42)
+    handle = _checked_submit(store, seams)
+    _argv, kw = seams["launch"][-1]
+    assert kw["env"]["PRECIS_GATE_SLOTS"] == str(land_slice.DEFAULT_LAND_GATE_SLOTS)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False  # phase alone launched
+    _argv, kw = seams["launch"][-1]
+    assert kw["env"]["PRECIS_GATE_SLOTS"] == str(land_slice.DEFAULT_LAND_GATE_SLOTS)

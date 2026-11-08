@@ -111,10 +111,12 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   dependence: attempt-free, the re-land tick takes it), then, still red,
   on a throwaway ``origin/main`` worktree ``slice-main-td<id>`` (always
   removed afterwards, with its stack). Ids red on main too are not the
-  branch's: ship relaunches through ``--quick`` — this run's lint already
-  passed — with a ``handoff``-style note on the todo. Only a main-green
-  red burns an attempt; any launch or probe failure falls back to the
-  ordinary red.
+  branch's: the land gates on the checked selection MINUS them (the
+  ``deselect`` phase — ``scripts/test --selected --deselect``, engine or
+  not) and ship relaunches ``--quick`` on its green — this run's lint
+  already passed — with a ``handoff``-style note on the todo. Only a
+  main-green red burns an attempt; any launch or probe failure falls
+  back to the ordinary red.
 * :func:`kill` SIGTERMs the live phase's process group (a running
   verify's during verify, ship's otherwise) and drops the main probe's
   worktree and stack.
@@ -470,6 +472,29 @@ def test_nproc() -> str:
     except ValueError:
         return str(DEFAULT_TEST_NPROC)
     return str(n if n >= 0 else DEFAULT_TEST_NPROC)
+
+
+#: How many of the shared gate semaphore's slot dirs a land launch may
+#: claim (``PRECIS_GATE_SLOTS`` on the ship/test env, td599058):
+#: ``scripts/lib/gate-slot.sh`` derives the fleet cap from the docker VM —
+#: 6 on the factory host's — and a wave of lands and their verify probes
+#: must not take it all. Every land launch sees only this many slot dirs,
+#: so factory gates queue among themselves on at most
+#: :data:`DEFAULT_LAND_GATE_SLOTS` slots and the rest stay free for
+#: interactive gates. ``PRECIS_LAND_GATE_SLOTS`` narrows to 1 (a small
+#: VM); anything outside 1–2 falls back to the default.
+DEFAULT_LAND_GATE_SLOTS = 2
+
+
+def land_gate_slots() -> str:
+    """The ``PRECIS_GATE_SLOTS`` the lander hands ship/test launches, a
+    string for the env dict: ``PRECIS_LAND_GATE_SLOTS`` when it is 1 or 2,
+    else :data:`DEFAULT_LAND_GATE_SLOTS`."""
+    try:
+        n = int(os.environ.get("PRECIS_LAND_GATE_SLOTS", ""))
+    except ValueError:
+        n = 0
+    return str(n if 1 <= n <= 2 else DEFAULT_LAND_GATE_SLOTS)
 
 
 # ── Seams (tests monkeypatch these) ────────────────────────────────
@@ -875,14 +900,17 @@ def gate_slot_waiting(log_text: str) -> str | None:
     ``gate_slot_acquire``, else ``None``. Only slot chatter prints while
     it waits, so the wait lasts exactly as long as the newest non-blank
     line is chatter — any other line (the gate's own output, a steal, a
-    give-up) means it left the queue."""
+    give-up) means it left the queue. The holder dump is INDENTED
+    (``  gate slot 0: …``), so the match runs on the unstripped line —
+    stripping first made every real queue log read as working and the
+    wait ate the deadline (td599058)."""
     last = ""
     for line in _lines(log_text):
         if line.strip():
-            last = line.strip()
+            last = line
     if not last or _GATE_SLOT_DONE_RE.match(last):
         return None
-    return last if _GATE_SLOT_CHATTER_RE.match(last) else None
+    return last.strip() if _GATE_SLOT_CHATTER_RE.match(last) else None
 
 
 def infra_red(log_text: str, exit_code: int | None) -> str | None:
@@ -1355,7 +1383,7 @@ def submit(ctx: Any, spec: Any) -> Any:
     ctx.append_chunk(
         "job_event",
         f"land_slice: scripts/ship {flag} {subject!r} pid {handle['pid']} in {tree} "
-        f"(gate_n={test_nproc()})",
+        f"(gate_n={test_nproc()}, slots={land_gate_slots()})",
     )
     return handle
 
@@ -1444,6 +1472,10 @@ def _launch_ship(
                 # not scripts/test, so both names carry the count.
                 "PRECIS_GATE_N": test_nproc(),
                 "PRECIS_TEST_NPROC": test_nproc(),
+                # Bound the land's share of the shared gate semaphore
+                # (td599058): without it gate-slot.sh derives up to 6
+                # slots and a land wave can take the whole VM.
+                "PRECIS_GATE_SLOTS": land_gate_slots(),
             },
         )
     except Exception as exc:
@@ -1759,6 +1791,7 @@ def _launch_verify(
                 **_factory_git.git_auth_env(),
                 "UV_PYTHON": ship_python(),
                 "PRECIS_TEST_NPROC": test_nproc(),
+                "PRECIS_GATE_SLOTS": land_gate_slots(),
             },
         )
     except Exception as exc:
@@ -1979,18 +2012,35 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
     * alone green → flaky or order-dependent: attempt-free
       (``red_class = "flaky outside the diff"``), the re-land tick takes
       it from there;
-    * alone red + main red → not the branch's: ship relaunches through
-      :func:`full_fallback_flag` (``--quick`` — this run's lint already
-      passed; the checked tests run after it) — or ``--full`` on an
-      engine land (``meta.engine_paths`` set), the same rule as the
-      main red path — a ``handoff``-style note names the ids on the
-      todo;
+    * alone red + main red → not the branch's: the land gates on the
+      checked selection MINUS the red-on-main ids (the ``deselect``
+      phase — ``scripts/test --selected --deselect <id>…``, engine or
+      not) and relaunches ``--quick`` on its green — a
+      ``handoff``-style note names the ids on the todo;
     * alone red + main green → the branch's red after all: the ordinary
       red, attempt burned;
     * any launch or probe failure → the ordinary red."""
     v = handle["verify"]
     exit_code = _rs._read_exit(v)
     if exit_code is None and _process_alive(int(v.get("pid") or 0)):
+        # The ship rule applies to a live probe too (td599058): every
+        # phase runs ``scripts/test``, which queues inside
+        # ``gate_slot_acquire`` — and the deselect phase IS a gate — so
+        # a queued probe waits on the host, not on gate time. Re-arm the
+        # deadline (the phase's own budget) and heartbeat the position.
+        waiting = gate_slot_waiting(_rs._read_log(v))
+        if waiting is not None:
+            if v.get("gate_wait") != waiting:
+                v["gate_wait"] = waiting
+                ctx.append_chunk("job_event", f"land_slice: {waiting}")
+            ctx.set_meta(
+                compute_handle=handle,
+                compute_handle_released=False,
+                deadline=_now().timestamp()
+                + (full_wall_seconds() if v.get("full_selection") else wall_seconds()),
+            )
+        elif v.pop("gate_wait", None) is not None:
+            ctx.set_meta(compute_handle=handle, compute_handle_released=False)
         return False
     params = (ctx.meta or {}).get("params") or {}
     todo_id = int(params.get("todo_id") or 0)
@@ -2037,9 +2087,10 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
         return _ordinary_ship_red(ctx, handle)
     if phase == "deselect":
         # The checked selection minus the red-on-main ids (gr598110):
-        # green means the land goes through ``--quick`` — the gate of
-        # record for the engine review is this run. Any red or dead
-        # probe is the ordinary red; a launch failure already fell back.
+        # green means the land goes through ``--quick`` — for an engine
+        # land this run is the gate of record the engine review reads.
+        # Any red or dead probe is the ordinary red; a launch failure
+        # already fell back.
         if v.get("full_selection"):
             _record_full_gate_duration(v)
         if exit_code != 0:
@@ -2094,77 +2145,43 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
         # "red on main too" needs the same evidence: a non-zero probe that
         # never ran the named tests is a probe failure, never a verdict.
         return _ordinary_ship_red(ctx, handle)
-    # td574937 E1 + gr598110: an engine land never drops to lint — but a
-    # main-side red is not the branch's debt, and the full gate on a
-    # contended factory host outruns the job's wall (jo595597 died at
-    # 5463 s). The land runs the checked selection MINUS the red-on-main
-    # ids — a detached ``scripts/test --selected --deselect <id>…`` is
-    # exactly that gate — and ``--quick`` then lands. ``--full`` stays
-    # only for the FULL-selector refusal below; when the selection
-    # itself is the suite the deselect run IS a full gate, so the last
-    # full-gate duration on this host decides whether it may start —
-    # over budget the job fails naming the ids for a human.
+    # td574937 E1 + gr598110 + td599058: EVERY checked land whose red is
+    # main's too gates on the checked selection MINUS the red-on-main ids
+    # — a detached ``scripts/test --selected --deselect <id>…`` is exactly
+    # that gate — and ``--quick`` then lands on its green. An engine land
+    # can never drop to lint; a non-engine one used to relaunch ``--quick``
+    # straight away, which skipped the rest of the selection unproven —
+    # the deselect run is the proof either way
+    # (``PRECIS_LAND_FULL_FALLBACK=off`` still keeps a non-engine land's
+    # red a red). The full gate on a contended factory host outruns the
+    # job's wall (jo595597 died at 5463 s), so when the selection itself
+    # is the suite the deselect run IS a full gate and the last full-gate
+    # duration on this host decides whether it may start — over budget
+    # the job fails naming the ids for a human.
     tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
     subject = str(handle.get("subject") or "")
-    if (ctx.meta or {}).get("engine_paths"):
-        full_sel = _checked_selection_full(tree)
-        if full_sel and not full_gate_fits():
-            return _full_gate_over(ctx, params, ids)
-        argv = ["--selected", *[a for i in ids for a in ("--deselect", i)]]
-        verify = _launch_verify(tree, ids, phase="deselect", run_tree=tree, argv=argv)
-        if verify is None:
-            return _ordinary_ship_red(ctx, handle)
-        verify["full_selection"] = bool(full_sel)
-        _promote_verify(handle, verify)
-        ctx.append_chunk(
-            "job_event",
-            f"land_slice: {', '.join(ids)} red on origin/main too — running "
-            "the checked selection minus them (scripts/test --selected "
-            "--deselect); --quick lands on its green",
-        )
-        ctx.set_meta(
-            compute_handle=handle,
-            compute_handle_released=False,
-            deadline=_now().timestamp()
-            + (full_wall_seconds() if full_sel else wall_seconds()),
-        )
-        return False
-    flag = full_fallback_flag()
-    if flag is None:
+    if not (ctx.meta or {}).get("engine_paths") and full_fallback_flag() is None:
         return _ordinary_ship_red(ctx, handle)
-    lane = "--full (the full local gate)" if flag == "--full" else "--quick (lint only)"
-    try:
-        _rs._append_comment(
-            ctx.store,
-            todo_id,
-            f"handoff: {', '.join(ids)} are red on origin/main too — the "
-            "checked red is not this branch's; the land goes through "
-            f"{lane}. The reds are main's to fix.",
-        )
-    except Exception:  # pragma: no cover — the land still goes on
-        log.warning("land_slice: main-red note on td%d failed", todo_id)
+    full_sel = _checked_selection_full(tree)
+    if full_sel and not full_gate_fits():
+        return _full_gate_over(ctx, params, ids)
+    argv = ["--selected", *[a for i in ids for a in ("--deselect", i)]]
+    verify = _launch_verify(tree, ids, phase="deselect", run_tree=tree, argv=argv)
+    if verify is None:
+        return _ordinary_ship_red(ctx, handle)
+    verify["full_selection"] = bool(full_sel)
+    _promote_verify(handle, verify)
     ctx.append_chunk(
         "job_event",
-        f"land_slice: {', '.join(ids)} red on origin/main too — relaunching "
-        f"scripts/ship {flag} "
-        + (
-            "(the full local gate; an engine land never drops to lint)"
-            if flag == "--full"
-            else "(lint only; this run's lint already passed)"
-        ),
+        f"land_slice: {', '.join(ids)} red on origin/main too — running "
+        "the checked selection minus them (scripts/test --selected "
+        "--deselect); --quick lands on its green",
     )
-    Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
-    fresh = _launch_ship(ctx, tree, flag, subject, carry=handle)
-    if fresh is None:
-        return True
-    handle.clear()
-    handle.update(fresh)
-    if fresh.get("not_before"):
-        return False  # parked by the preflight; its deferral set the meta
     ctx.set_meta(
-        compute_handle=fresh,
+        compute_handle=handle,
         compute_handle_released=False,
-        deadline=_now().timestamp() + _flag_wall_s(flag),
+        deadline=_now().timestamp()
+        + (full_wall_seconds() if full_sel else wall_seconds()),
     )
     return False
 
