@@ -166,6 +166,7 @@ print('listing')
 
 \begin{precisaside}\label{chunk:dc27}An aside with a cite \cite{lee22}.\end{precisaside}
 
+\label{chunk:dc28}
 \begin{center}
 \begin{tabular}{>{\raggedright\arraybackslash}p{\dimexpr(\linewidth-\tabcolsep*4)/2\relax}>{\raggedright\arraybackslash}p{\dimexpr(\linewidth-\tabcolsep*4)/2\relax}}
 \toprule

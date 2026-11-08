@@ -195,3 +195,39 @@ def test_low_contrast_blocks_export(hub: Hub, tmp_path: Path) -> None:
     with pytest.raises(PosterValidationError) as ei:
         latex.export_draft(hub.live_store, ref, target_dir=tmp_path / "o")
     assert "poster_contrast_insufficient" in str(ei.value)
+
+
+def test_poster_table_keeps_xref_anchor(hub: Hub, tmp_path: Path) -> None:
+    """gr592852 follow-up: a poster table numbers nothing (like a poster
+    figure) but still carries its ``\\label{chunk:dc}`` — every other
+    poster chunk keeps the anchor, so a ``[dc<id>]`` cross-ref to the
+    table must resolve, not dangle to ``??``."""
+    ref_id = _poster_draft(hub, "pt")
+    d = DraftHandler(hub=hub)
+    ro = hub.live_store.drafts.reading_order(ref_id)
+    intro = next(c for c in ro if c.text == "Introduction")
+    t = d.put(
+        id="pt",
+        chunk_kind="table",
+        table={"header": ["day", "n"], "rows": [["Mon", 3]]},
+        caption="Numbers for the week",
+        at={"into": intro.dc, "last": True},
+    )
+    m = re.search(r"dc\d+", t.body)
+    assert m
+    t_dc = m.group(0)
+    d.put(
+        id="pt",
+        chunk_kind="paragraph",
+        text=f"the week in [{t_dc}]",
+        at={"into": intro.dc, "last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="pt")
+    result = latex.export_draft(hub.live_store, ref, target_dir=tmp_path / "o")
+    tex = result.main_tex.read_text(encoding="utf-8")
+
+    assert f"\\cref{{chunk:{t_dc}}}" in tex
+    assert f"\\label{{chunk:{t_dc}}}" in tex
+    # poster mode still numbers nothing
+    assert "\\refstepcounter{table}" not in tex
+    assert "\\textbf{Table \\thetable" not in tex

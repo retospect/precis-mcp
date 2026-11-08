@@ -2373,11 +2373,14 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
     )
     out: list[str] = []
     if ctx.poster:
-        # Poster tables number nothing, like poster figures.
+        # Poster tables number nothing, like poster figures — but the
+        # ``\label`` anchor stays so a ``[dc<id>]`` cross-ref still
+        # resolves instead of dangling (gr592852).
         if caption:
             out.append(
                 f"\\noindent\\textbf{{{_render_inline(caption, ctx)}}}\\par\\nopagebreak"
             )
+        out.append(label)
     else:
         # Auto-numbered like a figure (gr592852): ``\refstepcounter{table}``
         # binds ``\label`` to the table counter so a ``[dc<id>]`` cross-ref
