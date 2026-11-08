@@ -679,13 +679,14 @@ def round_record(
 ) -> dict[str, Any]:
     """The ``release.round`` row for one ``round.json`` release record.
 
-    ``deploy`` maps the rollout journal's ``sha`` / ``rollout_at`` /
-    ``runtime_confirmed_at`` / ``runtime_evidence``; absent keys are
-    omitted, never null, and ``deploy`` itself is omitted when the
-    journal carries none of them (``scripts/round._round_record`` keeps
-    the same literal). The row is a pure function of the record and
-    owner: the settings row's own write time is the publish time, so an
-    unchanged record dedupes against the last publish.
+    ``deploy`` maps the rollout journal's ``sha`` / ``started_epoch`` /
+    ``rollout_at`` / ``runtime_confirmed_at`` / ``runtime_evidence``;
+    absent keys are omitted, never null, and ``deploy`` itself is
+    omitted when the journal carries none of them
+    (``scripts/round._round_record`` keeps the same literal). The row is
+    a pure function of the record and owner: the settings row's own
+    write time is the publish time, so an unchanged record dedupes
+    against the last publish.
     """
     row: dict[str, Any] = {
         "n": n,
@@ -703,6 +704,7 @@ def round_record(
         dst: dep[src]
         for src, dst in (
             ("sha", "sha"),
+            ("started_epoch", "started_epoch"),
             ("rollout_at", "rollout_at"),
             ("runtime_confirmed_at", "confirmed_at"),
             ("runtime_evidence", "evidence"),
@@ -765,7 +767,27 @@ def pinned_deploy_sha(store: Store, rn: str) -> str | None:
 
 #: Round ``state`` values ``record_confirm`` never moves back or over —
 #: the release lifecycle's terminal states (``scripts/round`` §states).
-_CONFIRM_TERMINAL = frozenset({"confirmed", "superseded", "abandoned"})
+_CONFIRM_TERMINAL = frozenset({"confirmed", "superseded", "abandoned", "failed"})
+
+
+def is_terminal(row: dict[str, Any]) -> bool:
+    """Whether a ``release.round`` row (or ``round.json`` record) is out of
+    the pipeline — the same literal ``scripts/round._is_terminal`` and
+    ``scripts/lib/round_state.py::is_terminal`` carry (gr593418 review):
+    ``failed`` is terminal only while its journal shows ``scripts/deploy``
+    never launched (no ``started_epoch``, no ``rollout_at``); a failed row
+    whose rollout launched is a live partial rollout. The row maps the
+    journal under ``deploy``, the record under ``deployment`` — read both.
+    """
+    state = str(row.get("state") or "")
+    if state == "failed":
+        dep = row.get("deployment") or row.get("deploy")
+        return not (
+            isinstance(dep, dict)
+            and (dep.get("started_epoch") or dep.get("rollout_at"))
+        )
+    return state in _CONFIRM_TERMINAL
+
 
 #: Lifecycle ``state`` order for a job-side :func:`update_round` write:
 #: the open states rank 0, ``deploying`` 1, ``deployed`` 2, the terminal
@@ -780,6 +802,7 @@ _ROUND_STATE_RANK = {
     "confirmed": 3,
     "superseded": 3,
     "abandoned": 3,
+    "failed": 3,
 }
 
 
@@ -858,10 +881,10 @@ def record_confirm(
                 for k, v in (("confirmed_at", when), ("evidence", evidence))
                 if not dep.get(k)
             }
-            if updates or str(row.get("state")) not in _CONFIRM_TERMINAL:
+            if updates or not is_terminal(row):
                 new_row = dict(row)
                 new_row["deploy"] = {**dep, **updates}
-                if str(row.get("state")) not in _CONFIRM_TERMINAL:
+                if not is_terminal(row):
                     new_row["state"] = "confirmed"
                     new_row["state_at"] = when
                 settings.invalidate(ROUND_KEY)
@@ -1005,7 +1028,13 @@ def update_round(
     want = str(fields.get("state") or "")
     have = str(row.get("state") or "")
     want_rank = _ROUND_STATE_RANK.get(want)
-    have_rank = _ROUND_STATE_RANK.get(have)
+    # A `failed` row whose rollout launched is a live partial rollout
+    # (is_terminal), not rank 3 — a resumed leg's `deployed` write must land.
+    have_rank = (
+        _ROUND_STATE_RANK["deploying"]
+        if have == "failed" and not is_terminal(row)
+        else _ROUND_STATE_RANK.get(have)
+    )
     if want_rank is None or have_rank is None or want_rank <= have_rank:
         return [
             f"release.round: r{n} is {have or '?'}; {want or '?'} is not a move forward"
@@ -1046,6 +1075,7 @@ __all__ = [
     "auto_answer_approval",
     "ci_rerun_fired",
     "ci_verdict_rows",
+    "is_terminal",
     "live_deploy_job",
     "newest_red_run",
     "parse_cut",

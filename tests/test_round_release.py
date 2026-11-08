@@ -1616,6 +1616,19 @@ def _journal_deploy(rig: Rig, head: str, n: int = 1) -> str:
     return head
 
 
+def _journal_deploy_unlaunched(rig: Rig, head: str, n: int = 1) -> str:
+    """Journal a deploy that died BEFORE `scripts/deploy` ran — the env
+    pointer move refused after the journal write, so the record is
+    `deploying` with no `started_epoch`: the never-launched shape."""
+    out = rig.round("deploy", PRECIS_ENV_POINTERS="0", **_verdict(head))
+    assert out.returncode == 1, out.stdout + out.stderr
+    rel = _rel(_round_json(rig), n)
+    assert rel["state"] == "deploying"
+    assert "started_epoch" not in rel["deployment"]
+    assert rig.deploy_log() == []
+    return head
+
+
 @pytest.mark.parametrize("state", ["cut", "gating", "fixing", "green"])
 def test_cut_refused_while_a_release_is_open(rig: Rig, state: str) -> None:
     _cut(rig)
@@ -1875,6 +1888,252 @@ def test_cut_keeps_refusing_a_green_or_gating_release(
     assert "already records an open release" in out.stderr
     assert rig.origin_ref("release/r2") == ""
     assert _rel(_round_json(rig), 1)["state"] == "cut"
+
+
+def test_cut_supersedes_an_open_release_whose_branch_left_origin(rig: Rig) -> None:
+    """gr593418: the record says open but release/r<N> is gone from origin
+    (the pass was abandoned elsewhere) — the dead record is superseded and
+    the next cut proceeds at origin/main."""
+    _cut(rig)
+    _git(rig.origin, "update-ref", "-d", "refs/heads/release/r1")
+    out = rig.round("cut")
+    assert out.returncode == 0, out.stderr
+    assert "superseded r1: branch gone" in out.stdout
+    old = _rel(_round_json(rig), 1)
+    assert old["state"] == "superseded"
+    assert old["superseded_by"] == 2
+    assert old["superseded_why"] == "branch gone"
+    assert _rel(_round_json(rig), 2)["state"] == "cut"
+    assert rig.origin_ref("release/r1") == ""
+    assert rig.origin_ref("release/r2") == rig.shas["c3"]
+
+
+def test_cut_supersedes_a_failed_release_record(rig: Rig) -> None:
+    """gr593418 review 2: a record the deploy leg marked `failed` is dead
+    the same way — but only while its journal shows `scripts/deploy` never
+    launched (no `started_epoch`): superseded in the record, next cut at
+    origin/main, branch kept."""
+    head = _cut(rig)
+    _journal_deploy_unlaunched(rig, head)  # died pre-launch → `deploying`
+    assert rig.round("fail").returncode == 0
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "failed"
+    assert "started_epoch" not in rel["deployment"]
+    out = rig.round("cut")
+    assert out.returncode == 0, out.stderr
+    assert "superseded r1: state failed" in out.stdout
+    old = _rel(_round_json(rig), 1)
+    assert old["state"] == "superseded"
+    assert old["superseded_by"] == 2
+    assert old["superseded_why"] == "state failed"
+    assert old["deployment"]["sha"] == head  # the journal is kept
+    assert rig.origin_ref("release/r1") == head  # the dead branch is not deleted
+    assert _rel(_round_json(rig), 2)["state"] == "cut"
+    assert rig.origin_ref("release/r2") == rig.shas["c3"]
+
+
+def test_cut_pending_with_a_gone_branch_still_reconciles(rig: Rig) -> None:
+    """Scope guard: the pending-cut path is untouched — a `cut_pending`
+    record whose branch left origin reconciles (re-pushes the recorded
+    base), never auto-supersedes."""
+    head = _cut(rig)
+    path = rig.root / ".git" / "precis-round" / "round.json"
+    cur = _round_json(rig)
+    _rel(cur, 1)["cut_pending"] = True
+    path.write_text(json.dumps(cur), encoding="utf-8")
+    _git(rig.origin, "update-ref", "-d", "refs/heads/release/r1")
+    out = rig.round("cut")
+    assert out.returncode == 0, out.stderr
+    assert "pending cut reconciled" in out.stdout
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "cut"
+    assert "superseded_by" not in rel
+    assert rig.origin_ref("release/r1") == head  # re-pushed at the recorded base
+    assert rig.origin_ref("release/r2") == ""
+
+
+def test_fail_marks_the_deploying_record_failed(rig: Rig) -> None:
+    """`round fail` is the deploy leg's terminal verdict: the record moves
+    to `failed` keeping its journal; the branch is untouched."""
+    head = _deploying(rig)
+    out = rig.round("fail", "--dry-run")
+    assert out.returncode == 0, out.stderr
+    assert "would mark release/r1 failed" in out.stdout
+    assert _rel(_round_json(rig), 1)["state"] == "deploying"
+    out = rig.round("fail")
+    assert out.returncode == 0, out.stderr
+    assert "partial rollout stays live" in out.stdout  # the rollout launched
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "failed"
+    assert rel["deployment"]["sha"] == head
+    assert rig.origin_ref("release/r1") == head
+    # Idempotent: a second call is a no-op, not a refusal.
+    assert rig.round("fail").returncode == 0
+
+
+@pytest.mark.parametrize("verb_args", [["fail"], ["fail", "r1"]])
+def test_fail_refuses_a_release_that_never_rolled_out(
+    rig: Rig, verb_args: list[str]
+) -> None:
+    """A refusal before any work — the record is still open and carries no
+    deployment journal — is never a `failed` verdict."""
+    _cut(rig)
+    out = rig.round(*verb_args)
+    assert out.returncode == 1
+    assert "never started a rollout" in out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "cut"
+
+
+def test_fail_refuses_a_finished_rollout_and_a_terminal_record(rig: Rig) -> None:
+    head = _cut(rig)
+    assert _deploy(rig, DEPLOY_STUB_VERIFY="1", **_verdict(head)).returncode == 0
+    # `confirmed` (terminal) — refusing protects the completed rollout.
+    out = rig.round("fail")
+    assert out.returncode == 1
+    assert _rel(_round_json(rig), 1)["state"] == "confirmed"
+
+
+def test_fail_refuses_an_unknown_release_name(rig: Rig) -> None:
+    _deploying(rig)
+    out = rig.round("fail", "release/r9")
+    assert out.returncode == 1
+    assert "no release r9" in out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "deploying"
+
+
+def _failed_deploy(rig: Rig) -> str:
+    """A `failed` record whose journal shows the rollout launched —
+    `scripts/deploy` ran and died mid-rollout (`started_epoch`, no
+    `rollout_at`): the live partial rollout a post-launch death leaves."""
+    head = _cut(rig)
+    _journal_deploy(rig, head)  # scripts/deploy ran, exited 7 → `deploying`
+    out = rig.round("fail")
+    assert out.returncode == 0, out.stderr
+    assert "partial rollout stays live" in out.stdout
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "failed"
+    assert rel["deployment"].get("started_epoch")
+    assert not rel["deployment"].get("rollout_at")
+    return head
+
+
+def test_failed_with_a_launched_rollout_stays_live(rig: Rig) -> None:
+    """gr593418 review 2: `failed` is terminal only while `scripts/deploy`
+    never launched. A failed record whose journal carries `started_epoch`
+    is a live partial rollout — `cut` refuses it (supersede --partial is
+    the only door), `deploy`/`--finish-pointer` find it and resume it, and
+    `fail` stays idempotent on it."""
+    head = _failed_deploy(rig)
+    rel = _rel(_round_json(rig), 1)
+    assert rel["deployment"]["started_epoch"]
+    out = rig.round("fail")
+    assert out.returncode == 0 and "already failed" in out.stdout
+    out = rig.round("status")
+    assert "failed mid-rollout" in out.stdout
+    out = rig.round("cut", **_fresh(rig, "c3"))
+    assert out.returncode == 1
+    assert "partial rollout" in out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "failed"
+    assert rig.origin_ref("release/r2") == ""
+    # --finish-pointer finds the journal (its refusal is the receipt's,
+    # not "a recorded deployment").
+    out = rig.round("deploy", "--finish-pointer")
+    assert out.returncode == 1
+    assert "convergence receipt" in out.stderr
+    out = rig.round("deploy", DEPLOY_STUB_VERIFY="1", **_verdict(head))
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert "runtime verification pending" in out.stdout
+    out = rig.round(
+        "deploy",
+        "--confirm-runtime",
+        head,
+        "--runtime-evidence",
+        "all required daemons and session MCP ready on the pinned SHA",
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "confirmed"
+
+
+def test_failed_with_a_launched_rollout_is_retired_only_by_partial_supersede(
+    rig: Rig,
+) -> None:
+    """A live `failed` record takes the same door a deploying one does:
+    `supersede --partial` retires it keeping the journal. A terminal
+    `failed` record (deploy never launched) refuses supersede — the next
+    cut owns it."""
+    head = _failed_deploy(rig)
+    journal = dict(_rel(_round_json(rig), 1)["deployment"])
+    # prod backed off the pin: what rolled out is partial.
+    _git(rig.origin, "update-ref", "-d", "refs/heads/prod")
+    _push_branch(rig, "prod", rig.shas["c0"])
+    out = rig.round("supersede", "--partial", "--reason", "rollout stalled")
+    assert out.returncode == 0, out.stderr
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "superseded"
+    assert rel["superseded_partial"] is True
+    assert rel["deployment"] == journal
+    assert rig.origin_ref("prod") != head
+
+
+def test_a_resumed_failed_leg_keeps_started_epoch(rig: Rig) -> None:
+    """gr593418 review 3: resuming a live `failed` record rewrites the
+    deployment journal — the rewrite must carry the prior `started_epoch`,
+    so a second death before `scripts/deploy` relaunches can never read
+    terminal over hosts that already took leg one's rollout."""
+    head = _failed_deploy(rig)
+    started = _rel(_round_json(rig), 1)["deployment"]["started_epoch"]
+    # The resumed leg dies before `scripts/deploy` relaunches — the
+    # env-pointer move refuses after the journal rewrite.
+    out = rig.round("deploy", PRECIS_ENV_POINTERS="0", **_verdict(head))
+    assert out.returncode == 1, out.stdout + out.stderr
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "deploying"
+    assert rel["deployment"]["started_epoch"] == started  # carried, not lost
+    assert rig.deploy_log() == [f"{head} --pinned"]  # leg one only
+    assert rig.round("fail").returncode == 0
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "failed"
+    assert rel["deployment"]["started_epoch"] == started  # still a live partial
+    out = rig.round("cut", **_fresh(rig, "c3"))
+    assert out.returncode == 1
+    assert "partial rollout" in out.stderr
+    assert rig.origin_ref("release/r2") == ""
+
+
+def test_a_resumed_failed_leg_keeps_started_epoch_on_a_refusal(rig: Rig) -> None:
+    """Same carry on a `_deploy_refuse` after the rewrite — the retain leg
+    (a certified descendant of the release head already sits in main)
+    refuses with pointer moves disabled, post-rewrite."""
+    head = _failed_deploy(rig)
+    started = _rel(_round_json(rig), 1)["deployment"]["started_epoch"]
+    # gated = main's tip: a descendant of the release head already in
+    # main → the resumed deploy retains it instead of moving it.
+    _push_branch(rig, "gated", rig.shas["c3"])
+    out = rig.round("deploy", PRECIS_ENV_POINTERS="0", **_verdict(head))
+    assert out.returncode == 1
+    assert "env_pointer_move gated disabled" in out.stderr
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "deploying"
+    assert rel["deployment"]["started_epoch"] == started
+    assert rig.round("fail").returncode == 0
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "failed"
+    assert rel["deployment"]["started_epoch"] == started
+    out = rig.round("cut", **_fresh(rig, "c3"))
+    assert out.returncode == 1 and "partial rollout" in out.stderr
+
+
+def test_supersede_refuses_a_terminal_failed_record(rig: Rig) -> None:
+    """`failed` whose rollout never launched is already terminal: the next
+    `cut` supersedes it — `supersede` reports nothing to do."""
+    head = _cut(rig)
+    _journal_deploy_unlaunched(rig, head)
+    assert rig.round("fail").returncode == 0
+    assert _rel(_round_json(rig), 1)["state"] == "failed"
+    out = rig.round("supersede", "r1")
+    assert out.returncode == 1
+    assert "nothing to supersede" in out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "failed"
 
 
 def test_deploy_resumes_the_journal_record_with_an_open_release(rig: Rig) -> None:

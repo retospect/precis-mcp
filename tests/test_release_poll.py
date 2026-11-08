@@ -714,16 +714,69 @@ def test_a_finished_deploy_job_does_not_save_the_row(
 
 
 def test_round_terminal_states_match_the_script() -> None:
-    """``_ROUND_TERMINAL_STATES`` is the same literal scripts/round and its
-    strict reader validate — an unedited copy, pinned."""
+    """``_TERMINAL_STATES`` is the same literal scripts/round and its
+    strict reader validate — an unedited copy, pinned. The ``is_terminal``
+    predicate is pinned the same way: all three implementations must agree
+    on every state × journal shape — ``failed`` is terminal only while its
+    journal shows ``scripts/deploy`` never launched (no ``started_epoch``,
+    no ``rollout_at``)."""
     if sys.platform == "win32":
         pytest.skip("scripts/round is POSIX release tooling")
     script = load_script("round_script_rel_poll_pin", REPO_ROOT / "scripts" / "round")
     reader = load_script(
         "round_state_rel_poll_pin", REPO_ROOT / "scripts" / "lib" / "round_state.py"
     )
-    assert rp._ROUND_TERMINAL_STATES == script._TERMINAL_STATES
-    assert rp._ROUND_TERMINAL_STATES == reader.TERMINAL_STATES
+    assert script._TERMINAL_STATES == reader.TERMINAL_STATES
+    assert script._TERMINAL_STATES == R._CONFIRM_TERMINAL
+    states = sorted(reader.RELEASE_STATES)
+    for state in states:
+        for key in (None, "deployment", "deploy"):
+            for started in (False, True):
+                for rollout in (False, True):
+                    rec: dict[str, Any] = {"state": state}
+                    if key is not None:
+                        rec[key] = {"sha": "a" * 40}
+                        if started:
+                            rec[key]["started_epoch"] = 1762000000
+                        if rollout:
+                            rec[key]["rollout_at"] = "2026-11-03T12:00:00Z"
+                    launched = key is not None and (started or rollout)
+                    expected = state in reader.TERMINAL_STATES and not (
+                        state == "failed" and launched
+                    )
+                    verdict = (
+                        R.is_terminal(rec),
+                        reader.is_terminal(rec),
+                        script._is_terminal(rec),
+                    )
+                    assert verdict == (expected,) * 3, (
+                        f"is_terminal disagreement on {rec!r}: {verdict}"
+                    )
+
+
+def test_a_failed_round_row_blocks_only_while_its_rollout_launched(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr593418 review: ``failed`` + ``deploy.started_epoch`` is a live
+    partial rollout — it blocks the mint; ``failed`` with a pre-launch
+    death (no ``started_epoch``, no ``rollout_at``) or no journal is
+    terminal and the pass mints."""
+    _fake_github(monkeypatch)
+    row = json.loads(_round_row("failed"))
+    row["deploy"] = {"sha": "b" * 40, "started_epoch": 1762000000}
+    psettings.set_setting("release.round", json.dumps(row), store=store)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.blocker == "release round r5 in flight (failed)"
+    assert res.minted is None
+    for dep in ({"sha": "b" * 40}, None):
+        row = json.loads(_round_row("failed"))
+        if dep is not None:
+            row["deploy"] = dep
+        psettings.set_setting("release.round", json.dumps(row), store=store)
+        res = rp.run_pass(store, repo=REPO, now=NOW)
+        # The round gate passes: a mint, or a later gate's blocker (the
+        # first mint's open pass) — never the round row.
+        assert "release round" not in (res.blocker or "")
 
 
 # ── matching-refs bounds (td573430 fix round 1) ─────────────────────

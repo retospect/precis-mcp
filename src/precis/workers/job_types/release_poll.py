@@ -31,7 +31,7 @@ the unauthenticated api.github.com budget (60/h) is shared with
 2. The DB: a live todo tagged ``release-pass`` whose STATUS is not in
    ``precis.todo.TERMINAL_TODO_STATUSES`` is a pass already in flight,
    and the shared ``release.round`` record names a round still open
-   (``state`` not in :data:`_ROUND_TERMINAL_STATES`, any owner — one
+   (not :func:`precis.plans.release.is_terminal`, any owner — one
    exception: a ``cut`` row whose recorded ``pass`` root is terminal
    with no deploy evidence is a dropped pass and the poll abandons the
    row itself, through ``update_round`` — never while a non-terminal
@@ -156,12 +156,6 @@ _STAGE_VERBS = {
     "confirm": "`scripts/round deploy` (resume/confirm) or "
     '`scripts/round supersede --partial --reason "<why>"`',
 }
-
-#: ``release.round`` record states that mean the round is closed — the
-#: same set as ``scripts/round._TERMINAL_STATES`` and
-#: ``scripts/lib/round_state.py::TERMINAL_STATES`` (a test pins it). Any
-#: other state — or none — is a round still in flight: no mint.
-_ROUND_TERMINAL_STATES = frozenset({"confirmed", "superseded", "abandoned"})
 
 #: Bounds on what one ``matching-refs`` read may claim. The endpoint
 #: answers the whole prefix in one unpaginated payload (GitHub lists
@@ -486,7 +480,7 @@ def _rejudge_after_abandon(store: Any, pass_id: int, status: str) -> str | None:
     state = rec.get("state")
     if not isinstance(state, str) or not state:
         return f"{_release.ROUND_KEY} carries no state: nothing minted"
-    if state in _ROUND_TERMINAL_STATES:
+    if _release.is_terminal(rec):
         return None
     if state == "cut":
         return f"release round r{rec.get('n', '?')} in flight (cut)"
@@ -528,7 +522,7 @@ def _round_blocker(
     state = rec.get("state")
     if not isinstance(state, str) or not state:
         return f"{_release.ROUND_KEY} carries no state: nothing minted"
-    if state in _ROUND_TERMINAL_STATES:
+    if _release.is_terminal(rec):
         return None
     n = rec.get("n", "?")
     pass_ref = _pass_ref(store, rec)

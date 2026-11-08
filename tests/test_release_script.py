@@ -553,6 +553,95 @@ def test_cut_only_adopts_an_unowned_pending_cut_and_pushes_it(rig: Rig) -> None:
     assert json.loads(_marker(rig).read_text(encoding="utf-8"))["base"] == c2
 
 
+@pytest.mark.parametrize("owned", [True, False], ids=["owned", "unowned"])
+def test_cut_only_supersedes_an_open_record_whose_branch_left_origin(
+    rig: Rig, owned: bool
+) -> None:
+    """gr593418: an open record whose release/r<N> is gone from origin is
+    dead, not in flight — --cut-only lets `round cut` supersede it and
+    cuts the next release at origin/main, owned marker or not."""
+    c2 = rig.shas["c2"]
+    assert _release(rig, "--cut-only", "--sha", c2, *FAST).returncode == 0
+    if not owned:
+        _marker(rig).unlink()
+    _git(rig.origin, "update-ref", "-d", "refs/heads/release/r1")
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "superseded r1: branch gone" in out.stdout
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "superseded"
+    assert rel["superseded_by"] == 2
+    assert rel["superseded_why"] == "branch gone"
+    c3 = rig.shas["c3"]
+    assert f"RELEASE_CUT: r2 {c3}" in out.stdout.splitlines()
+    assert rig.origin_ref("release/r1") == ""
+    assert rig.origin_ref("release/r2") == c3
+
+
+def test_cut_only_an_unreadable_origin_keeps_the_open_record_in_flight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An ls-remote FAILURE is not absence: the open record stays live —
+    in flight, never superseded, no cut attempted."""
+    mod = _load_release(tmp_path, monkeypatch)
+    rel = {
+        "n": 1,
+        "branch": "release/r1",
+        "base": "a" * 40,
+        "state": "cut",
+        "cut_at": "2026-11-08T00:00:00Z",
+    }
+    monkeypatch.setattr(mod, "warn_hook_drift", lambda: None)
+    monkeypatch.setattr(mod, "fetch", lambda: None)
+    monkeypatch.setattr(mod, "rev", lambda name: "b" * 40)
+    monkeypatch.setattr(mod, "git", lambda *a: "b" * 40)
+    monkeypatch.setattr(mod, "remote", lambda ref: None)  # ls-remote failed
+    monkeypatch.setattr(
+        mod,
+        "round_state",
+        lambda: {"open": True, "n": 1, "releases": [dict(rel)]},
+    )
+    monkeypatch.setattr(mod, "read_owner", lambda: {})
+    monkeypatch.setattr(mod, "release_branches", lambda: [])
+    monkeypatch.setattr(mod, "head_containing", lambda *a: ("", False))
+    calls: list[tuple[str, ...]] = []
+
+    def _rnd(*a: str, **k: object) -> subprocess.CompletedProcess[str]:
+        calls.append(a)
+        return subprocess.CompletedProcess(a, 0, "", "")
+
+    monkeypatch.setattr(mod, "rnd", _rnd)
+    args = mod.argparse.Namespace(
+        deploy_only="",
+        sha="",
+        adopt=False,
+        dry_run=False,
+        cut_only=True,
+        ci_timeout=0.0,
+        poll=0.0,
+    )
+    assert mod.run(args) == 0
+    out = capsys.readouterr()
+    assert "release in flight: release/r1" in out.out
+    assert calls == []  # no cut, no supersede probe — the record stays live
+
+
+def test_cut_only_a_present_open_release_is_still_in_flight(rig: Rig) -> None:
+    """The gone-branch rule does not weaken the in-flight guard: an open
+    record whose branch IS on origin reports in flight exactly as today."""
+    c2 = rig.shas["c2"]
+    assert _release(rig, "--cut-only", "--sha", c2, *FAST).returncode == 0
+    _marker(rig).unlink()
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "release in flight: release/r1" in out.stdout
+    assert "superseded" not in out.stdout
+    assert _rel(_round_json(rig), 1)["state"] == "cut"
+    assert rig.origin_ref("release/r2") == ""
+
+
 def test_deploy_only_deploys_the_cut_pinned(rig: Rig) -> None:
     s = rig.shas["c3"]
     assert _release(rig, "--cut-only", *FAST).returncode == 0
@@ -592,6 +681,237 @@ def test_deploy_only_refuses_a_release_this_tree_did_not_cut(rig: Rig) -> None:
     assert out.returncode == 1
     assert "did not cut release/r1" in out.stderr
     assert rig.deploy_log() == []
+
+
+def test_deploy_only_marks_the_release_failed_when_the_rollout_dies(
+    rig: Rig,
+) -> None:
+    """gr593418 review 2: a deploy leg that ran and exited non-zero leaves
+    a LIVE `failed` record — its journal carries `started_epoch`, so the
+    partial rollout keeps the pin and the die names the resume, not the
+    next cut; the journal and the branch stay."""
+    s = rig.shas["c3"]
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    out = _release(rig, "--deploy-only", "r1", *FAST, DEPLOY_STUB_RC="7", **_verdict(s))
+    assert out.returncode == 7, out.stdout + out.stderr
+    assert "the release pin is retained" in out.stderr
+    assert "re-run scripts/release (it resumes)" in out.stderr
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "failed"
+    assert rel["deployment"]["sha"] == s
+    assert rel["deployment"]["started_epoch"]
+    assert rig.origin_ref("release/r1") == s
+
+
+def test_deploy_only_marks_a_prelaunch_deploy_death_terminal(rig: Rig) -> None:
+    """gr593418 review 2: `round deploy` dying after its journal write but
+    before `scripts/deploy` launched (the env pointer move refused) is
+    `failed` AND terminal — the die names the next cut."""
+    s = rig.shas["c3"]
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    out = _release(
+        rig,
+        "--deploy-only",
+        "r1",
+        *FAST,
+        PRECIS_ENV_POINTERS="0",
+        **_verdict(s),
+    )
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert "the next `scripts/round cut` supersedes the record" in out.stderr
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "failed"
+    assert "started_epoch" not in rel["deployment"]
+    assert rig.deploy_log() == []  # scripts/deploy never ran
+    assert rig.origin_ref("release/r1") == s
+
+
+def test_deploy_only_resumes_a_failed_record_whose_rollout_launched(
+    rig: Rig,
+) -> None:
+    """gr593418 review 2: `failed` + a launched rollout (`started_epoch`,
+    no `rollout_at`) is a live partial rollout — --deploy-only still
+    finds the record and resumes the pinned rollout."""
+    s = rig.shas["c3"]
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    assert rig.round("deploy", DEPLOY_STUB_RC="7", **_verdict(s)).returncode == 7
+    assert rig.round("fail").returncode == 0
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "failed"
+    assert rel["deployment"].get("started_epoch")
+    assert not rel["deployment"].get("rollout_at")
+    out = _release(rig, "--deploy-only", "r1", *FAST, **_green(rig))
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert rig.deploy_log() == [f"{s} --pinned", f"{s} --pinned"]
+    assert _rel(_round_json(rig), 1)["state"] == "deployed"
+
+
+def test_deploy_only_refuses_a_terminal_failed_record(rig: Rig) -> None:
+    """gr593418 review 2: `failed` whose journal shows `scripts/deploy`
+    never launched is terminal — --deploy-only does not see it as a live
+    release."""
+    s = rig.shas["c3"]
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    assert rig.round("deploy", PRECIS_ENV_POINTERS="0", **_verdict(s)).returncode == 1
+    assert rig.round("fail").returncode == 0
+    assert _rel(_round_json(rig), 1)["state"] == "failed"
+    out = _release(rig, "--deploy-only", "r1", *FAST, **_green(rig))
+    assert out.returncode == 1
+    assert "not a live recorded release" in out.stderr
+    assert rig.deploy_log() == []
+
+
+def test_deploy_only_resume_names_the_release_not_the_round(rig: Rig) -> None:
+    """gr593418 review 3: a live `failed` record counts as deploying in
+    the resume lookups — else `release_label` falls back to the ROUND
+    number and `RELEASE_DEPLOYED:` names the wrong release."""
+    s = rig.shas["c3"]
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    assert rig.round("deploy", DEPLOY_STUB_RC="7", **_verdict(s)).returncode == 7
+    assert rig.round("fail").returncode == 0
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "failed" and rel["deployment"].get("started_epoch")
+    # Release number and round number differ in general — make the round
+    # 3 so a round-number fallback emits r3 while the release stays r1.
+    path = rig.root / ".git" / "precis-round" / "round.json"
+    cur = _round_json(rig)
+    cur["n"] = 3
+    path.write_text(json.dumps(cur), encoding="utf-8")
+    out = _release(rig, "--deploy-only", "r1", *FAST, **_green(rig))
+    assert out.returncode == 3, out.stdout + out.stderr
+    lines = out.stdout.splitlines()
+    assert any(ln.startswith(f"RELEASE_DEPLOYED: r1 {s} ") for ln in lines)
+    assert not any(ln.startswith("RELEASE_DEPLOYED: r3") for ln in lines)
+
+
+def test_deploy_and_close_labels_the_release_record_not_the_round(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """gr593418 review 3 (module seam): round 3 holding a live `failed`
+    release r7 emits r7 — in `RELEASE_DEPLOYED:`, in the prod head's
+    `release`, and in the branch `round fail` is given on a second
+    failed leg (never a bare call)."""
+    mod = _load_release(tmp_path, monkeypatch)
+    rel = {
+        "n": 7,
+        "branch": "release/r7",
+        "base": "c" * 40,
+        "state": "failed",
+        "deployment": {"sha": "b" * 40, "started_epoch": 1762000000},
+    }
+    monkeypatch.setattr(mod, "_regate_if_stale", lambda args: 0)
+    monkeypatch.setattr(
+        mod,
+        "round_state",
+        lambda: {"n": 3, "open": True, "releases": [dict(rel)]},
+    )
+    monkeypatch.setattr(mod, "rev", lambda name: "2" * 40)
+    monkeypatch.setattr(mod, "warn_post_migration", lambda: None)
+    monkeypatch.setattr(mod, "note_gripes", lambda *args: None)
+    monkeypatch.setattr(mod, "validate_gripes", lambda: None)
+    released: list[str | None] = []
+
+    def _prod_head(
+        prev: str, head: str, *, release: str | None = None, **kw: object
+    ) -> str:
+        released.append(release)
+        return "recorded"
+
+    monkeypatch.setattr(mod, "record_prod_head", _prod_head)
+    monkeypatch.setattr(
+        mod,
+        "rnd",
+        lambda *a, **k: subprocess.CompletedProcess(a, 3, "", ""),
+    )
+    args = mod.argparse.Namespace(deploy_only="r7")
+    assert mod.deploy_and_close(args, "b" * 40) == 3
+    out = capsys.readouterr().out
+    assert f"RELEASE_DEPLOYED: r7 {'b' * 40}" in out
+    assert released == ["r7"]
+    # A second failed leg on the same live record names its branch.
+    calls: list[tuple[str, ...]] = []
+
+    def _died(*a: str, **k: object) -> subprocess.CompletedProcess[str]:
+        calls.append(a)
+        return subprocess.CompletedProcess(a, 7, "", "")
+
+    monkeypatch.setattr(mod, "rnd", _died)
+    assert mod.deploy_and_close(args, "b" * 40) == 7
+    assert ("fail", "release/r7") in calls
+
+
+def test_run_rides_a_live_failed_record_instead_of_blocking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """gr593418 review 3 (module seam): a non-owner `scripts/release`
+    sees the live `failed` record as the deploying record — 'riding' it
+    when it ships S, never the in-flight blocker."""
+    mod = _load_release(tmp_path, monkeypatch)
+    head = "1" * 40
+    rel = {
+        "n": 7,
+        "branch": "release/r7",
+        "base": "c" * 40,
+        "state": "failed",
+        "deployment": {"sha": "b" * 40, "started_epoch": 1762000000},
+    }
+    monkeypatch.setattr(mod, "warn_hook_drift", lambda: None)
+    monkeypatch.setattr(mod, "fetch", lambda: None)
+    monkeypatch.setattr(mod, "rev", lambda name: head)
+    monkeypatch.setattr(mod, "git", lambda *args: head)
+    monkeypatch.setattr(
+        mod,
+        "round_state",
+        lambda: {"n": 3, "open": True, "releases": [dict(rel)]},
+    )
+    monkeypatch.setattr(mod, "owns", lambda r: False)
+    monkeypatch.setattr(mod, "read_owner", lambda: {})
+    monkeypatch.setattr(mod, "remote", lambda ref: "")
+    monkeypatch.setattr(mod, "release_branches", lambda: ["release/r7"])
+    monkeypatch.setattr(mod, "head_containing", lambda *a: ("b" * 40, True))
+    args = mod.argparse.Namespace(
+        deploy_only="",
+        sha=head,
+        adopt=False,
+        dry_run=False,
+        cut_only=False,
+        ci_timeout=0.0,
+        poll=0.0,
+    )
+    assert mod.run(args) == 0
+    out = capsys.readouterr().out
+    assert "riding release release/r7" in out
+    assert "release in flight" not in out
+
+
+def test_deploy_only_a_pre_rollout_refusal_marks_nothing(rig: Rig) -> None:
+    """gr593418: a refusal before any work (round deploy refused before
+    its journal write) is not a deploy failure — the record stays open."""
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    # A foreign ship pin makes `round deploy` refuse before journaling.
+    (rig.root / ".ship-sha").write_text(rig.shas["c0"] + "\n", encoding="utf-8")
+    s = rig.shas["c3"]
+    out = _release(rig, "--deploy-only", "r1", *FAST, **_verdict(s))
+    assert out.returncode == 1, out.stdout
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "cut"
+    assert "deployment" not in rel
+    assert rig.deploy_log() == []
+
+
+def test_deploy_only_refusal_before_the_deploy_marks_nothing(rig: Rig) -> None:
+    """gr593418: --deploy-only refused before the deploy leg runs (here:
+    not the cutting worktree) never marks the record failed."""
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    _marker(rig).unlink()
+    out = _release(rig, "--deploy-only", "r1", *FAST, **_green(rig))
+    assert out.returncode == 1
+    assert "did not cut release/r1" in out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "cut"
 
 
 def test_cut_only_and_deploy_only_are_exclusive(rig: Rig) -> None:
@@ -806,7 +1126,7 @@ def _load_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType
     copy = tmp_path / "release_script.py"
     copy.write_text(RELEASE.read_text(encoding="utf-8"), encoding="utf-8")
     (tmp_path / "lib").mkdir(exist_ok=True)
-    for name in ("ci_run.py", "git_network.py", "soak_verdict.py"):
+    for name in ("ci_run.py", "git_network.py", "soak_verdict.py", "round_state.py"):
         (tmp_path / "lib" / name).write_text(
             (RELEASE.parent / "lib" / name).read_text(encoding="utf-8"),
             encoding="utf-8",

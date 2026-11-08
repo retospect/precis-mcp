@@ -76,6 +76,33 @@ def test_row_omits_absent_deploy_keys() -> None:
     assert row["deploy"] == {"sha": BASE}
 
 
+def test_row_maps_started_epoch_into_deploy() -> None:
+    """``started_epoch`` is the live-rollout marker ``is_terminal`` reads
+    on the row — it rides the publish when the journal carries it, and
+    stays absent (never null) when it does not."""
+    row = plans_release.round_record(
+        _rel(
+            state="failed",
+            deployment={
+                "sha": BASE,
+                "started_at": "2026-11-06T11:30:00Z",
+                "started_epoch": 1762000000,
+            },
+        ),
+        n=1,
+        owner=OWNER,
+        now=NOW,
+    )
+    assert row["deploy"] == {"sha": BASE, "started_epoch": 1762000000}
+    row = plans_release.round_record(
+        _rel(state="failed", deployment={"sha": BASE, "started_at": "x"}),
+        n=1,
+        owner=OWNER,
+        now=NOW,
+    )
+    assert "started_epoch" not in row["deploy"]
+
+
 def test_row_carries_state_at_when_present() -> None:
     row = plans_release.round_record(
         _rel(state="deploying", state_at="2026-11-06T11:20:00Z"),

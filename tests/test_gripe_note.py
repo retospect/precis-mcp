@@ -41,7 +41,7 @@ def _load(path: Path, name: str, tmp_path: Path) -> ModuleType:
     if path.name == "release":
         lib = tmp_path / "lib"
         lib.mkdir(exist_ok=True)
-        for helper in ("ci_run.py", "git_network.py"):
+        for helper in ("ci_run.py", "git_network.py", "round_state.py"):
             (lib / helper).write_text(
                 (REPO / "scripts/lib" / helper).read_text(encoding="utf-8"),
                 encoding="utf-8",

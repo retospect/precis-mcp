@@ -4,13 +4,17 @@ round.json holds ``releases``: a list of release records, each
 ``{branch: release/r<N>, n: N, base: <sha>, cut_at, state, cut_pending?,
 deployment?}``. ``state`` is one of cut|gating|fixing|green (the *open*
 release), deploying|deployed (a live rollout journal) or
-confirmed|superseded|abandoned (terminal). A pre-list file's single
+confirmed|superseded|abandoned|failed (terminal) — with one conditional:
+``failed`` counts terminal only while its journal shows ``scripts/deploy``
+never launched (no ``started_epoch``, no ``rollout_at``); a failed record
+whose rollout launched is a live partial rollout (:func:`is_terminal`). A
+pre-list file's single
 ``release`` dict is normalized into a one-element ``releases`` on read — the
 file upgrades to the list shape on its next write.
 
 Pipeline invariants, enforced here so a broken journal can never read as
 permission: at most one open release and at most one deploying/deployed
-record; a deployment journal only on deploying/deployed/superseded;
+record; a deployment journal only on deploying/deployed/superseded/failed;
 ``deployed`` requires rollout_at, ``confirmed`` the runtime proof, and a
 live release only inside an open round.
 
@@ -28,8 +32,30 @@ from typing import Any
 
 OPEN_STATES = frozenset({"cut", "gating", "fixing", "green"})
 DEPLOYING_STATES = frozenset({"deploying", "deployed"})
-TERMINAL_STATES = frozenset({"confirmed", "superseded", "abandoned"})
+# ``failed`` is the deploy leg's verdict (gr593418): ``round fail`` writes
+# it after ``round deploy`` exited non-zero; the next cut supersedes the
+# record while its journal shows the rollout never launched.
+TERMINAL_STATES = frozenset({"confirmed", "superseded", "abandoned", "failed"})
 RELEASE_STATES = OPEN_STATES | DEPLOYING_STATES | TERMINAL_STATES
+
+
+def is_terminal(rel: dict[str, Any]) -> bool:
+    """Whether the record is out of the pipeline. ``failed`` is terminal
+    only when ``scripts/deploy`` never launched — its journal carries
+    neither ``started_epoch`` (written just before the rollout runs) nor
+    ``rollout_at``. A failed record whose rollout launched is a live
+    partial rollout: the next cut must not supersede it, ``round deploy``
+    still resumes it, and only ``round supersede --partial`` retires it
+    (gr593418 review). The ``deploy`` key covers the ``release.round`` row
+    shape, which maps the same journal under that name."""
+    state = str(rel.get("state") or "")
+    if state == "failed":
+        dep = rel.get("deployment") or rel.get("deploy")
+        return not (
+            isinstance(dep, dict)
+            and (dep.get("started_epoch") or dep.get("rollout_at"))
+        )
+    return state in TERMINAL_STATES
 
 
 def _text(data: dict[str, Any], key: str) -> bool:
@@ -117,6 +143,7 @@ def _norm_record(rel: Any) -> dict[str, Any]:
     if dep is not None and state not in DEPLOYING_STATES | {
         "confirmed",
         "superseded",
+        "failed",
     }:
         raise ValueError("deployment journal on a non-deploying release")
     if dep is None and state in DEPLOYING_STATES | {"confirmed"}:
@@ -215,7 +242,7 @@ if __name__ == "__main__":
         print(f"next r{nxt}" if nxt else "next")
         sys.exit(1)
     if mode == "publication":
-        blocked = any(r["state"] not in TERMINAL_STATES for r in rels)
+        blocked = any(not is_terminal(r) for r in rels)
     else:
         # journal <branch>: the named record's pending cut or live deploy
         # journal owns its head; a different release's journal does not block
@@ -226,7 +253,7 @@ if __name__ == "__main__":
                 (
                     r
                     for r in rels
-                    if r["state"] not in TERMINAL_STATES
+                    if not is_terminal(r)
                     and (not branch or r.get("branch") == branch)
                     and ("deployment" in r or r.get("cut_pending"))
                 ),

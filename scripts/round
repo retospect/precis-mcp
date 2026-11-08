@@ -29,9 +29,11 @@ and nothing is tracked or pushed.
                                       on a completed round, name hosts from its recorded
                                       lagging set — the pin never moves
   scripts/round cut [--sha S] [--dry-run]   coordinator: cut release/r<N> at the candidate (or S);
-                                      a red open release whose commits are all on main is
-                                      marked superseded in the record and r<N+1> is cut
-                                      at origin/main — the red branch is not deleted
+                                      a red open release whose commits are all on main,
+                                      an open release whose branch is gone from origin, or
+                                      the newest `failed` record is marked superseded in
+                                      the record and r<N+1> is cut at origin/main — the
+                                      dead branch is not deleted
   scripts/round cut --abandon         coordinator: delete the open release branch (every commit on main)
   scripts/round cut --supersede [--dry-run]  coordinator: mark the open release superseded in the
                                       record (no remote delete) and cut the next at origin/main
@@ -46,6 +48,11 @@ and nothing is tracked or pushed.
                                       origin/prod does not hold the pinned sha; keeps the
                                       journal so the next cut can pipeline past it; the
                                       branch is deleted only when every commit is on main
+  scripts/round fail [r<N>] [--dry-run]  deploy leg: mark the live `deploying` release `failed`
+                                      after `round deploy` exited non-zero — terminal,
+                                      record only (journal and branch kept); the next cut
+                                      supersedes it. A record that never journaled a
+                                      rollout refuses
 
 A peer is named by its worktree directory (`PRECIS_ROUND_PEER` overrides).
 Marks carry the open release's number (the round number when no release is
@@ -77,11 +84,17 @@ peers' marked shas the cut does not contain (`late: <peer> <sha>`). check.yml
 runs the full gate shape on every `release/**` push. Each record carries a
 state (release-train §5): open while it can take fixes (cut, gating, fixing,
 green), deploying/deployed while a rollout journal is live, then terminal
-(confirmed, superseded, abandoned). `cut` refuses while an open release is
-recorded — except a red one whose head is an ancestor of origin/main, which
-it marks superseded (the record only; origin's red branch stays for Reto to
-prune), then cuts r<N+1> at main and prints
-"r<N> superseded by r<N+1> (red, contained in main)". A green or still-gating
+(confirmed, superseded, abandoned, failed — `failed` is the deploy leg's
+verdict after `deploy` exited non-zero; `fail` writes it). `cut` refuses
+while an open release is
+recorded — except a red one whose head is an ancestor of origin/main, or one
+whose branch is already gone from origin (a pass abandoned elsewhere), which
+it marks superseded (the record only; origin's branch is never deleted),
+then cuts r<N+1> at main and prints
+"r<N> superseded by r<N+1> (red, contained in main)" or
+"superseded r<N>: branch gone". With no open release at all, a newest record
+marked `failed` supersedes the same way ("superseded r<N>: state failed").
+A green or still-gating
 release keeps the refusal (`--supersede` retires it by operator call;
 `--abandon` deletes it on origin), as does a red one carrying commits main
 lacks. `cut` also refuses when an unrecorded release branch exists on origin
@@ -182,7 +195,30 @@ FINAL = ("in", "none")
 # keep them in sync (a test pins it).
 _OPEN_STATES = frozenset({"cut", "gating", "fixing", "green"})
 _DEPLOYING_STATES = frozenset({"deploying", "deployed"})
-_TERMINAL_STATES = frozenset({"confirmed", "superseded", "abandoned"})
+# ``failed`` is the deploy leg's verdict (gr593418): `fail` writes it after
+# `deploy` exited non-zero; the next `cut` supersedes the record while its
+# journal shows the rollout never launched.
+_TERMINAL_STATES = frozenset({"confirmed", "superseded", "abandoned", "failed"})
+
+
+def _is_terminal(rel: dict[str, Any]) -> bool:
+    """Whether the record is out of the pipeline. `failed` is terminal only
+    when `scripts/deploy` never launched — its journal carries neither
+    `started_epoch` (written just before the rollout runs) nor `rollout_at`.
+    A failed record whose rollout launched is a live partial rollout: `cut`
+    must not supersede it, `deploy` still resumes it, `supersede --partial`
+    is the door (gr593418 review). The `deploy` key covers the
+    `release.round` row shape, which maps the same journal under that name."""
+    state = str(rel.get("state") or "")
+    if state == "failed":
+        dep = rel.get("deployment") or rel.get("deploy")
+        return not (
+            isinstance(dep, dict)
+            and (dep.get("started_epoch") or dep.get("rollout_at"))
+        )
+    return state in _TERMINAL_STATES
+
+
 # check.yml `plan`'s docs-lane classifier: a commit touching only paths that
 # match this is docs-only. A test pins that the workflow still says the same.
 DOCS_ONLY_RE = r"^(docs/|[^/]+\.md$)"
@@ -375,6 +411,7 @@ def _round_record(
         dst: dep[src]
         for src, dst in (
             ("sha", "sha"),
+            ("started_epoch", "started_epoch"),
             ("rollout_at", "rollout_at"),
             ("runtime_confirmed_at", "confirmed_at"),
             ("runtime_evidence", "evidence"),
@@ -550,22 +587,15 @@ def _soak_debt_check(root: Path) -> str:
     if verdict == "green":
         if _read_soak_red() is not None:
             cleared = _clear_soak_red()
-            suffix = (
-                "row cleared" if cleared and cleared[0] == 0 else "clear failed"
-            )
+            suffix = "row cleared" if cleared and cleared[0] == 0 else "clear failed"
             print(
                 f"scripts/round: soak debt on {sha[:9]} resolved by a green "
                 f"soak — {suffix}"
             )
-            _soak_log(
-                _state_dir(), f"soak green on {sha[:9]} — debt row {suffix}"
-            )
+            _soak_log(_state_dir(), f"soak green on {sha[:9]} — debt row {suffix}")
         return ""
     row = _read_soak_red()
-    if (
-        str((row or {}).get("sha") or "") == sha
-        and (row or {}).get("waived_by")
-    ):
+    if str((row or {}).get("sha") or "") == sha and (row or {}).get("waived_by"):
         line = (
             f"soak waived: {sha[:9]} by {row['waived_by']} "
             f"at {row.get('waived_at') or '?'}: "
@@ -619,7 +649,7 @@ def _db_owner_row() -> dict[str, Any] | None:
     """The shared row when it is live (non-terminal state) and another clone
     owns it: a different checkout or a different host."""
     row = _read_round_record()
-    if not row or row.get("state") in _TERMINAL_STATES:
+    if not row or _is_terminal(row):
         return None
     owner = row.get("owner") or {}
     if owner.get("checkout") != str(_root()) or owner.get("host") != _host_name():
@@ -740,8 +770,9 @@ def _releases(cur: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _live(cur: dict[str, Any]) -> list[dict[str, Any]]:
-    """Non-terminal release records (open or deploying/deployed)."""
-    return [r for r in _releases(cur) if r["state"] not in _TERMINAL_STATES]
+    """Non-terminal release records (open, deploying/deployed, or a `failed`
+    record whose launched rollout keeps its partial rollout live)."""
+    return [r for r in _releases(cur) if not _is_terminal(r)]
 
 
 def _open_rel(cur: dict[str, Any]) -> dict[str, Any] | None:
@@ -750,8 +781,17 @@ def _open_rel(cur: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _dep_rel(cur: dict[str, Any]) -> dict[str, Any] | None:
-    """The release whose rollout journal is live (deploying/deployed)."""
-    return next((r for r in _live(cur) if r["state"] in _DEPLOYING_STATES), None)
+    """The release whose rollout journal is live (deploying/deployed, or a
+    `failed` record whose partial rollout still rides — inside `_live` a
+    failed record necessarily has a journal showing the rollout launched)."""
+    return next(
+        (
+            r
+            for r in _live(cur)
+            if r["state"] in _DEPLOYING_STATES or r["state"] == "failed"
+        ),
+        None,
+    )
 
 
 def _active_rel(cur: dict[str, Any]) -> dict[str, Any] | None:
@@ -1022,15 +1062,22 @@ def cmd_status(state: Path, args: argparse.Namespace) -> int:
                     + " — catch up: scripts/round deploy --catch-up"
                 )
     for rel in _releases(cur):
-        if rel["state"] != "superseded":
-            continue
-        by = rel.get("superseded_by")
-        why = rel.get("superseded_why")
-        print(
-            f"  release {rel['branch']} superseded"
-            + (f" by r{by}" if by else "")
-            + (f" ({why})" if why else "")
-        )
+        if rel["state"] == "superseded":
+            by = rel.get("superseded_by")
+            why = rel.get("superseded_why")
+            print(
+                f"  release {rel['branch']} superseded"
+                + (f" by r{by}" if by else "")
+                + (f" ({why})" if why else "")
+            )
+        elif rel["state"] == "failed":
+            if _is_terminal(rel):
+                print(f"  release {rel['branch']} failed — the next cut supersedes it")
+            else:
+                print(
+                    f"  release {rel['branch']} failed mid-rollout — resume with"
+                    " `scripts/round deploy`"
+                )
     if db_owner is not None:
         print(_owner_line(db_owner))
     width = max([len(r["peer"]) for r in rows] + [4])
@@ -2169,6 +2216,12 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
             "gated_before": f["origin_gated"],
             "gated_action": "retain" if retain_gated else "publish",
         }
+        # A resume's fresh journal keeps the prior launch markers: a record
+        # that ever ran `scripts/deploy` must never read terminal again,
+        # even if this leg dies before the relaunch write below (gr593418).
+        for key in ("started_epoch", "rollout_at"):
+            if journal.get(key):
+                rel["deployment"][key] = journal[key]
         _set_state(rel, "deploying")
         _write(state / "round.json", cur)
     if retain_gated:
@@ -2350,6 +2403,10 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
     open_state = open_rel["state"] if open_rel is not None else ""
     open_state_at = open_rel.get("state_at") if open_rel is not None else None
     auto_superseded = False
+    dead_rel: dict[str, Any] | None = None
+    dead_why = ""
+    dead_state = ""
+    dead_state_at: Any = None
     if open_rel is not None:
         rel = open_rel
         if rel.get("cut_pending"):
@@ -2386,9 +2443,18 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             _write(state / "round.json", cur)
             print(f"{rel['branch']} pending cut reconciled at {rel['base'][:9]}")
             return 0
-        auto_superseded = False
-        why = _supersede_check(root, open_rel)
-        if not args.supersede and not why:
+        why = ""
+        head = _remote(root, f"refs/heads/{open_rel['branch']}")
+        if head is None:
+            why = "could not read origin's branches (git ls-remote failed)"
+        elif not head and not args.supersede:
+            # gr593418: the branch is gone from origin (the pass was
+            # abandoned elsewhere) — the open record is already dead and
+            # supersedes itself; the next cut proceeds at origin/main.
+            dead_rel, dead_why = open_rel, "branch gone"
+        else:
+            why = _supersede_check(root, open_rel)
+        if not args.supersede and not why and dead_rel is None:
             # A red release already contained in main supersedes itself in the
             # record; green, gating and unverifiable heads keep the refusal.
             if _release_red(root, open_rel):
@@ -2408,10 +2474,27 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
         if auto_superseded:
             open_rel["superseded_why"] = "red, contained in main"
         records = _releases(cur)
-    elif args.supersede:
-        return _cut_refuse(
-            "no open release is recorded in round.json — nothing to supersede"
-        )
+    else:
+        # gr593418: the deploy leg's `failed` verdict is dead the same way —
+        # the next cut supersedes the newest such record, but only while its
+        # journal shows `scripts/deploy` never launched. A failed record
+        # whose rollout launched is a live partial rollout: the same refusal
+        # an open journal gets.
+        newest = max(records, key=lambda r: int(r["n"]), default=None)
+        if newest is not None and newest["state"] == "failed":
+            if _is_terminal(newest):
+                dead_rel, dead_why = newest, "state failed"
+                dead_state, dead_state_at = (
+                    str(newest["state"]),
+                    newest.get("state_at"),
+                )
+                _set_state(dead_rel, "superseded")
+            else:
+                return _cut_refuse(_supersede_check(root, newest))
+        elif args.supersede:
+            return _cut_refuse(
+                "no open release is recorded in round.json — nothing to supersede"
+            )
     _fetch(root)
     block = _soak_debt_check(root)
     if block:
@@ -2431,6 +2514,9 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
     # The record is per clone (gr573151): number past whatever origin shows,
     # or a second clone's stale record blocks every cut.
     n_new = max(n_new, origin_max + 1)
+    if dead_rel is not None:
+        dead_rel["superseded_by"] = n_new
+        dead_rel["superseded_why"] = dead_why
     if open_rel is not None and open_rel["state"] == "superseded":
         open_rel["superseded_by"] = n_new
     branch = f"release/r{n_new}"
@@ -2532,6 +2618,8 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
     if args.dry_run:
         if open_rel is not None and open_rel["state"] == "superseded":
             print(f"dry-run: would mark {open_rel['branch']} superseded")
+        elif dead_rel is not None:
+            print(f"dry-run: would mark {dead_rel['branch']} superseded")
         print(f"dry-run: would push {sha[:9]} to origin as {branch}")
         return 0
     rel = {
@@ -2574,6 +2662,14 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
                     open_rel["state_at"] = open_state_at
                 open_rel.pop("superseded_by", None)
                 open_rel.pop("superseded_why", None)
+            if dead_rel is not None and dead_rel is not open_rel:
+                dead_rel["state"] = dead_state
+                if dead_state_at is None:
+                    dead_rel.pop("state_at", None)
+                else:
+                    dead_rel["state_at"] = dead_state_at
+                dead_rel.pop("superseded_by", None)
+                dead_rel.pop("superseded_why", None)
             _write(state / "round.json", cur)
             return _cut_refuse(
                 f"release branch {branch} exists on origin at {remote[:9]}"
@@ -2585,6 +2681,8 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             )
     del rel["cut_pending"]
     _write(state / "round.json", cur)
+    if dead_rel is not None:
+        print(f"superseded r{dead_rel['n']}: {dead_why}")
     if auto_superseded:
         print(f"r{open_rel['n']} superseded by r{n_new} (red, contained in main)")
     print(f"{branch} cut at {sha[:9]} — late work lands on main for round {n_new + 1}")
@@ -2611,9 +2709,7 @@ def cmd_soak_clear(state: Path, args: argparse.Namespace) -> int:
     The row it names must match the argument (prefix ok): waiving a
     different sha's debt silently would lose the record.
     """
-    why = " ".join(
-        " ".join([args.reason or "", *(args.reason_text or [])]).split()
-    )
+    why = " ".join(" ".join([args.reason or "", *(args.reason_text or [])]).split())
     if not why:
         print(
             "scripts/round: soak-clear refused — give a reason: "
@@ -2642,10 +2738,7 @@ def cmd_soak_clear(state: Path, args: argparse.Namespace) -> int:
     rc, err = written
     if rc != 0:
         return _cut_refuse(f"settings set failed ({err.strip() or rc})")
-    print(
-        f"release.soak_red cleared (was {recorded[:12] or 'unset'}) "
-        f"by {peer}: {why}"
-    )
+    print(f"release.soak_red cleared (was {recorded[:12] or 'unset'}) by {peer}: {why}")
     _soak_log(state, f"soak waived: {row['sha'][:9]} by {peer} at {at}: {why}")
     return 0
 
@@ -2872,7 +2965,11 @@ def cmd_supersede(state: Path, args: argparse.Namespace) -> int:
         if rel is None:
             return _sup_refuse(f"no release r{want} is recorded in round.json")
     else:
-        live = [r for r in _live(cur) if r["state"] in _DEPLOYING_STATES]
+        live = [
+            r
+            for r in _live(cur)
+            if r["state"] in _DEPLOYING_STATES or r["state"] == "failed"
+        ]
         if not live:
             return _sup_refuse(
                 "no live deploying/deployed record in round.json — a"
@@ -2915,12 +3012,12 @@ def cmd_supersede(state: Path, args: argparse.Namespace) -> int:
             if not args.dry_run:
                 _print_unforwarded(root, str(rel.get("branch") or ""))
         return 0
-    if st in _TERMINAL_STATES or dep.get("runtime_confirmed_at"):
+    if _is_terminal(rel) or dep.get("runtime_confirmed_at"):
         return _sup_refuse(
             f"r{n_rel} is {st or 'terminal'} — `scripts/round deploy` finishes a"
             " live record; nothing to supersede"
         )
-    if st not in _DEPLOYING_STATES:
+    if st not in _DEPLOYING_STATES and st != "failed":
         return _sup_refuse(f"r{n_rel} is in unknown state {st!r}")
     pin = str(dep.get("sha") or "")
     if not pin:
@@ -2986,6 +3083,71 @@ def cmd_supersede(state: Path, args: argparse.Namespace) -> int:
     print(f"r{n_rel} superseded (origin/prod {prod[:9]} is past {pin[:9]})")
     if _retire_branch(root, rel, dry_run=False) == "kept":
         _print_unforwarded(root, str(rel.get("branch") or ""))
+    return 0
+
+
+def _fail_refuse(why: str) -> int:
+    print(f"scripts/round: fail refused — {why}", file=sys.stderr)
+    return 1
+
+
+def cmd_fail(state: Path, args: argparse.Namespace) -> int:
+    """``fail [r<N>]`` — the deploy leg's terminal verdict (gr593418): the
+    live ``deploying`` record moves to ``failed`` after ``round deploy``
+    exited non-zero (``scripts/release --deploy-only`` calls it). Record
+    only: the journal and the origin branch stay, and the next ``cut``
+    supersedes the record while its journal shows ``scripts/deploy`` never
+    launched — a launched rollout's ``failed`` record stays a live partial
+    rollout. A record that never journaled a rollout (still open) is a
+    refusal before any work, not a failed deploy, and refuses;
+    ``deployed`` means the rollout succeeded and also refuses."""
+    cur = _read_round(state)
+    want = str(args.release or "").strip()
+    if want:
+        m = re.match(r"^(?:release/)?r?(\d+)$", want)
+        if m is None:
+            return _fail_refuse(f"{want!r} is not r<N>, release/r<N> or <N>")
+        rel = next((r for r in _releases(cur) if int(r["n"]) == int(m.group(1))), None)
+        if rel is None:
+            return _fail_refuse(f"no release r{m.group(1)} is recorded in round.json")
+    else:
+        rel = (
+            _dep_rel(cur)
+            or _open_rel(cur)
+            or max(_releases(cur), key=lambda r: int(r["n"]), default=None)
+        )
+        if rel is None:
+            return _fail_refuse(
+                "no release is recorded in round.json — nothing to fail"
+            )
+    st = str(rel.get("state") or "")
+    branch = str(rel.get("branch") or f"release/r{rel.get('n')}")
+    if st == "failed":
+        print(f"{branch} already failed — record untouched")
+        return 0
+    if st in _OPEN_STATES:
+        return _fail_refuse(
+            f"{branch} never started a rollout — still {st}; a refusal"
+            " before any work is not a failed deploy"
+        )
+    if st != "deploying":
+        return _fail_refuse(
+            f"{branch} is {st or 'unstated'} — only a `deploying` record can fail"
+        )
+    if args.dry_run:
+        print(f"dry-run: would mark {branch} failed")
+        return 0
+    _set_state(rel, "failed")
+    _write(state / "round.json", cur)
+    if not _is_terminal(rel):
+        # Nothing terminal about it: the rollout launched, so the record
+        # stays a live partial rollout — `cut` still refuses it.
+        print(
+            f"{branch} failed — partial rollout stays live; fix and re-run"
+            " scripts/release (it resumes) or scripts/round deploy"
+        )
+    else:
+        print(f"{branch} failed — terminal; the next `scripts/round cut` supersedes it")
     return 0
 
 
@@ -3058,6 +3220,14 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="why the partial rollout is retired (mandatory with --partial)",
     )
+    p_fail = sub.add_parser(
+        "fail",
+        help="mark the live deploying release failed — the deploy leg's "
+        "terminal verdict after `round deploy` exited non-zero (record "
+        "only; the next cut supersedes it)",
+    )
+    p_fail.add_argument("release", nargs="?", default="", metavar="rN")
+    p_fail.add_argument("--dry-run", action="store_true")
     p_good = sub.add_parser(
         "good",
         help="mark a deployed release good/r<N> after 24h clean runtime",
@@ -3124,10 +3294,18 @@ def main(argv: list[str] | None = None) -> int:
         "good": cmd_good,
         "supersede": cmd_supersede,
         "soak-clear": cmd_soak_clear,
+        "fail": cmd_fail,
     }
-    if args.cmd in ("open", "close", "cut", "in", "none", "eta", "supersede") or (
-        args.cmd == "good" and not args.resolve
-    ):
+    if args.cmd in (
+        "open",
+        "close",
+        "cut",
+        "in",
+        "none",
+        "eta",
+        "supersede",
+        "fail",
+    ) or (args.cmd == "good" and not args.resolve):
         # State is common-dir even when invoked by a linked peer worktree.
         try:
             with _lifecycle(Path.cwd()):

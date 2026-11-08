@@ -24,7 +24,12 @@ supersedes it in the record and re-cuts at S — a dead cut never reports.
 (the `release_deploy` op): never cuts; refuses (exit 1) unless release/r<N>
 is the live recorded release and this worktree owns it (--adopt takes it),
 waits for CI only if the head is not yet green, then runs step 7 and prints
-`RELEASE_DEPLOYED: r<N> <head> <prev_prod or ->` after the rollout.
+`RELEASE_DEPLOYED: r<N> <head> <prev_prod or ->` after the rollout. A deploy
+leg that ran and exited non-zero marks the record `failed` (via
+`scripts/round fail`) — terminal while its journal shows `scripts/deploy`
+never launched, so the next cut supersedes it; a launched rollout's
+`failed` record stays a live partial rollout the leg resumes. A refusal
+before any work — no deployment journal — never marks it.
 
 Steps, in order:
   1. fetch origin main/prod; S = --sha or origin/main; S must sit on
@@ -124,7 +129,11 @@ ROUND = HERE / "round"
 OK_CONCLUSIONS = ("success", "skipped", "neutral")
 OPEN_STATES = ("cut", "gating", "fixing", "green")
 DEPLOYING_STATES = ("deploying", "deployed")
-TERMINAL_STATES = ("confirmed", "superseded", "abandoned")
+# Terminality is a predicate, not a set (gr593418 review): `failed` counts
+# terminal only while its journal shows `scripts/deploy` never launched —
+# no `started_epoch`, no `rollout_at`. A failed record whose rollout
+# launched is a live partial rollout.
+_is_terminal = runpy.run_path(str(HERE / "lib" / "round_state.py"))["is_terminal"]
 _JQ = (
     '.check_runs[] | [.name, .status, (.conclusion // ""), .html_url,'
     ' (.details_url // ""), .id] | @tsv'
@@ -367,9 +376,7 @@ def _latest_bad(rows: list[list[str]], keep: Any) -> list[list[str]]:
         if old is None or _run_id(r) >= _run_id(old):
             latest[r[0]] = r
     return [
-        r
-        for r in latest.values()
-        if r[1] == "completed" and r[2] not in OK_CONCLUSIONS
+        r for r in latest.values() if r[1] == "completed" and r[2] not in OK_CONCLUSIONS
     ]
 
 
@@ -427,9 +434,7 @@ def soak_red(head: str) -> dict[str, Any] | bool | None:
         return False
     rows, _run = scoped
     verdict_job = runpy.run_path(str(HERE / "lib/soak_verdict.py"))["VERDICT_JOB"]
-    bad = _latest_bad(
-        rows, lambda name: name.startswith("soak") or name == verdict_job
-    )
+    bad = _latest_bad(rows, lambda name: name.startswith("soak") or name == verdict_job)
     return _bad_verdict(bad) if bad else None
 
 
@@ -687,11 +692,7 @@ def next_line(sha: str) -> str:
 
 
 def live_releases(state: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
-        r
-        for r in (state.get("releases") or [])
-        if r.get("state") not in TERMINAL_STATES
-    ]
+    return [r for r in (state.get("releases") or []) if not _is_terminal(r)]
 
 
 def stale_why(rel: dict[str, Any], prod: str) -> str:
@@ -722,11 +723,17 @@ def _release_by_state(state: dict[str, Any], states: tuple[str, ...]) -> dict[st
     return next((r for r in live_releases(state) if r.get("state") in states), {})
 
 
+def _release_deploying(state: dict[str, Any]) -> dict[str, Any]:
+    """The deploying-side record a resume still owns: `deploying`/`deployed`,
+    or a live `failed` partial rollout — inside `live_releases` a `failed`
+    record is necessarily the not-terminal one whose journal shows
+    `scripts/deploy` launched (gr593418 round 3)."""
+    return _release_by_state(state, (*DEPLOYING_STATES, "failed"))
+
+
 def release_label(state: dict[str, Any]) -> str:
     """``r<N>`` from the recorded release branch, else the round number."""
-    rel = _release_by_state(state, DEPLOYING_STATES) or _release_by_state(
-        state, OPEN_STATES
-    )
+    rel = _release_deploying(state) or _release_by_state(state, OPEN_STATES)
     branch = str(rel.get("branch") or "")
     return branch.rsplit("/", 1)[-1] if branch else f"r{state.get('n')}"
 
@@ -1099,9 +1106,7 @@ def note_soak(head: str) -> None:
             return
         if not red:
             return
-        say(
-            f"soak red on {head[:9]} (non-blocking): {', '.join(red['jobs'])}"
-        )
+        say(f"soak red on {head[:9]} (non-blocking): {', '.join(red['jobs'])}")
         for u in red["urls"]:
             say(f"  {u}")
         say(record_soak_red(head, str(red["run_id"]), list(red["jobs"])))
@@ -1288,6 +1293,22 @@ def wait_ci(branch: str, args: argparse.Namespace) -> int:
         time.sleep(args.poll)
 
 
+def _mark_deploy_failed(branch: str) -> None:
+    """Best-effort verdict for a deploy leg that ran and died (gr593418):
+    `round fail` moves a `deploying` record to `failed`. A journal whose
+    rollout never launched (no `started_epoch`) reads terminal — the next
+    cut supersedes it; a launched rollout keeps the record a live partial
+    rollout that `deploy` resumes. A `round deploy` refusal before its
+    journal write leaves the record open — `fail` refuses and nothing is
+    marked."""
+    cp = rnd("fail", branch) if branch else rnd("fail")
+    if cp.returncode:
+        sys.stderr.write(cp.stderr)
+    else:
+        sys.stdout.write(cp.stdout)
+        sys.stdout.flush()
+
+
 def deploy_and_close(
     args: argparse.Namespace, sha: str, *, finish_pointer: bool = False
 ) -> int:
@@ -1295,9 +1316,7 @@ def deploy_and_close(
     if stale_rc:
         return stale_rc
     before = round_state() or {}
-    finished = _release_by_state(before, DEPLOYING_STATES) or _release_by_state(
-        before, OPEN_STATES
-    )
+    finished = _release_deploying(before) or _release_by_state(before, OPEN_STATES)
     label = release_label(before)
     prev = rev("origin/prod")
     command = ("deploy", "--finish-pointer") if finish_pointer else ("deploy",)
@@ -1309,7 +1328,7 @@ def deploy_and_close(
         # Tell prod what is deployed (the server has no git): the
         # sha-in-prod / tests-green gates read this. Best-effort.
         cur = round_state() or {}
-        head = pending_sha(_release_by_state(cur, DEPLOYING_STATES), sha)
+        head = pending_sha(_release_deploying(cur), sha)
         say(record_prod_head(prev, head, release=label))
         if getattr(args, "deploy_only", ""):
             # The release_deploy op parses this to record the prod head itself.
@@ -1331,6 +1350,24 @@ def deploy_and_close(
                 "release finish refused — see the reason above; next: resolve it "
                 "and re-run scripts/round deploy --finish-pointer",
             )
+        if getattr(args, "deploy_only", ""):
+            # gr593418: the deploy leg ran and died — `failed` marks it:
+            # terminal while its journal shows `scripts/deploy` never
+            # launched, so the next cut supersedes the corpse. A refusal
+            # before any work (the record never journaled) leaves it open,
+            # and a failed record whose rollout launched stays a live
+            # partial rollout — both keep the resume message below.
+            _mark_deploy_failed(str(finished.get("branch") or ""))
+            after = round_state() or {}
+            branch = str(finished.get("branch") or "")
+            if branch and not any(
+                r.get("branch") == branch for r in live_releases(after)
+            ):
+                return die(
+                    rc,
+                    "deploy failed — the next `scripts/round cut` supersedes"
+                    " the record",
+                )
         return die(
             rc,
             "deploy failed — the release pin is retained; fix and re-run "
@@ -1374,7 +1411,19 @@ def run(args: argparse.Namespace) -> int:
             return die(1, "scripts/release: cannot read `scripts/round status --json`")
         live = live_releases(cur)
         open_rel = next((r for r in live if r.get("state") in OPEN_STATES), None)
-        dep_rel = next((r for r in live if r.get("state") in DEPLOYING_STATES), None)
+        if (
+            open_rel is not None
+            and not open_rel.get("cut_pending")
+            and remote(f"refs/heads/{open_rel['branch']}") == ""
+        ):
+            # gr593418: the open record's branch is gone from origin — the
+            # pass was abandoned elsewhere and the record is dead, not in
+            # flight. `round cut` supersedes it below (case (a)). A lookup
+            # FAILURE (None) keeps it live, and `cut_pending` keeps its
+            # own reconcile — neither is this rule's business.
+            live = [r for r in live if r is not open_rel]
+            open_rel = None
+        dep_rel = _release_deploying(cur) or None
         owned = next((r for r in live if owns(r)), None)
         rel = owned or open_rel or dep_rel or {}
         mine = owned is not None
@@ -1534,6 +1583,8 @@ def run(args: argparse.Namespace) -> int:
                     say(f"release in flight: {b}")
                 say(f"{s9} rides the next cut")
                 return 0
+            # No blockers means foreign was empty and every live record is
+            # provably stale — `live or foreign` held, so stale names one.
             return die(4, f"scripts/release: {stale[0][1]}")
 
         # Nothing in flight: prepare the round, then cut. The next number is
