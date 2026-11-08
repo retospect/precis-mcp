@@ -7,6 +7,8 @@ run anywhere; one gated case renders a real matplotlib chart end-to-end.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from psycopg.types.json import Jsonb
 
@@ -413,3 +415,148 @@ def test_real_matplotlib_render(hub: Hub) -> None:
     blob = hub.live_store.drafts.get_chunk_blob(fig.handle)
     assert blob is not None and blob[0].startswith(b"\x89PNG\r\n\x1a\n")
     assert len(blob[0]) > 1000  # a real chart, not the stub
+
+
+# ── the get surface: view='render' executes the check now (gr592765) ──
+# Before this, a pending figure rendered only inside a whole draft_export
+# job (or the reader's blob route), so a broken recipe surfaced late.
+
+
+def _put_graph_figure(hub: Hub, slug: str, src: str, table_dc: str) -> Any:
+    """A render-pending graph figure through the real put path (plots
+    edge + ``meta.figure.render_pending`` + placeholder blob). Returns the
+    LAST figure in reading order, so callers can add several."""
+    DraftHandler(hub=hub).put(
+        id=slug,
+        chunk_kind="figure",
+        render=src,
+        plots=[table_dc],
+        text="Fig 1. y vs x.",
+        at={"last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
+    assert ref is not None
+    return next(
+        c
+        for c in reversed(hub.live_store.drafts.reading_order(ref.id))
+        if c.chunk_kind == "figure"
+    )
+
+
+def _draft_with_table(hub: Hub, slug: str = "g") -> Any:
+    """A draft holding one table chunk; returns ``(ref, table chunk)``."""
+    d = DraftHandler(hub=hub)
+    d.put(id=slug, title="T", project=_proj(hub))
+    d.put(
+        id=slug,
+        chunk_kind="table",
+        table={"header": ["x", "y"], "rows": [[1, 2], [3, 4]]},
+        at={"last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
+    assert ref is not None
+    table = next(
+        c
+        for c in hub.live_store.drafts.reading_order(ref.id)
+        if c.chunk_kind == "table"
+    )
+    return ref, table
+
+
+def test_render_view_executes_and_writes_the_png(hub: Hub) -> None:
+    ref, table = _draft_with_table(hub)
+    fig = _put_graph_figure(
+        hub,
+        ref.slug,
+        "open(out, 'wb').write(b'\\x89PNG\\r\\n\\x1a\\n' + b'ok')",
+        table.dc,
+    )
+    r = DraftHandler(hub=hub).get(id=fig.dc, view="render")
+    assert fig.dc in r.body and "render ok" in r.body and "chunk_blobs" in r.body
+    meta = hub.live_store.drafts.draft_chunk_meta(fig.handle)
+    assert "render_pending" not in meta["figure"]  # cleared
+    assert meta["render"]["cached_key"]
+    blob = hub.live_store.drafts.get_chunk_blob(fig.handle)
+    assert blob is not None and blob[0] == b"\x89PNG\r\n\x1a\n" + b"ok"
+
+
+def test_render_view_returns_the_sandbox_traceback(hub: Hub) -> None:
+    ref, table = _draft_with_table(hub)
+    fig = _put_graph_figure(hub, ref.slug, "raise ValueError('bad recipe')\n", table.dc)
+    r = DraftHandler(hub=hub).get(id=fig.dc, view="render")
+    assert "render failed (exit:" in r.body
+    assert "ValueError: bad recipe" in r.body  # the child's stderr
+    assert "edit(kind='draft'" in r.body  # the fix pointer
+    # still render-pending: the figure stays retryable, as on export
+    meta = hub.live_store.drafts.draft_chunk_meta(fig.handle)
+    assert meta["figure"]["render_pending"] is True
+
+
+def test_render_view_refuses_a_non_figure_chunk(hub: Hub) -> None:
+    _ref, table = _draft_with_table(hub)
+    with pytest.raises(BadInput, match="figure"):
+        DraftHandler(hub=hub).get(id=table.dc, view="render")
+
+
+def test_render_view_on_an_uploaded_image_reports_no_recipe(hub: Hub) -> None:
+    ref, _table = _draft_with_table(hub)
+    fig = hub.live_store.drafts.add_figure(
+        ref_id=ref.id,
+        caption="photo",
+        origin="original",
+        image=b"\x89PNG\r\n\x1a\nimg",
+        mime="image/png",
+        at={"last": True},
+    )
+    r = DraftHandler(hub=hub).get(id=fig.dc, view="render")
+    assert fig.dc in r.body and "no render recipe" in r.body
+
+
+def test_draft_render_view_checks_every_figure(hub: Hub) -> None:
+    ref, table = _draft_with_table(hub)
+    good = _put_graph_figure(
+        hub,
+        ref.slug,
+        "open(out, 'wb').write(b'\\x89PNG\\r\\n\\x1a\\n' + b'ok')",
+        table.dc,
+    )
+    bad = _put_graph_figure(hub, ref.slug, "raise ValueError('broken')\n", table.dc)
+    img = hub.live_store.drafts.add_figure(
+        ref_id=ref.id,
+        caption="img",
+        origin="original",
+        image=b"\x89PNG\r\n\x1a\ni",
+        mime="image/png",
+        at={"last": True},
+    )
+    d = DraftHandler(hub=hub)
+    r = d.get(id=ref.slug, view="render")
+    assert "figure render check" in r.body
+    assert f"{good.dc}  rendered now" in r.body
+    assert f"{bad.dc}  FAILED — graph render failed" in r.body
+    assert "broken" in r.body  # the stderr tail rides the failure line
+    assert f"{img.dc}  skipped" in r.body
+    assert "1 rendered now, 0 fresh, 1 uploaded image(s), 1 failed" in r.body
+
+    # second pass: the good figure is fresh, the failure still reported
+    r2 = d.get(id=ref.slug, view="render")
+    assert f"{good.dc}  fresh" in r2.body
+    assert f"{bad.dc}  FAILED" in r2.body
+
+
+def test_hygiene_flags_figures_not_export_ready(hub: Hub) -> None:
+    ref, table = _draft_with_table(hub)
+    fig = _put_graph_figure(
+        hub,
+        ref.slug,
+        "open(out, 'wb').write(b'\\x89PNG\\r\\n\\x1a\\n' + b'x')",
+        table.dc,
+    )
+    d = DraftHandler(hub=hub)
+    r = d.get(id=ref.slug, view="hygiene")
+    assert f"{fig.dc} (render pending)" in r.body
+    assert "view='render'" in r.body
+    # after the render check runs it, the figure drops out of the list
+    d.get(id=fig.dc, view="render")
+    r2 = d.get(id=ref.slug, view="hygiene")
+    assert fig.dc not in r2.body

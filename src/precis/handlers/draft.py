@@ -947,13 +947,15 @@ class DraftHandler(Handler):
                 return self._render_table_stats(s)
             if view == "outline":  # outline of the subtree under this chunk
                 return self._render_scoped_outline(s, args)
+            if view == "render":  # execute a figure's render now (gr592765)
+                return self._render_figure_check(s)
             if view is not None:
                 # No silent degrade to the lone-chunk render (was the bug —
                 # an unrecognized view fell through here unnoticed).
                 raise BadInput(
                     f"unknown draft chunk view {view!r}",
-                    next="view ∈ backfill|toc|wordcount|outline|review-diff|"
-                    "history|proposals|stats|toon|table, or a "
+                    next="view ∈ backfill|toc|wordcount|outline|render|"
+                    "review-diff|history|proposals|stats|toon|table, or a "
                     f"focus-ladder label {'|'.join(EYE_LADDER)}",
                 )
             return self._render_chunk(s)
@@ -1040,6 +1042,12 @@ class DraftHandler(Handler):
                 next="point it at a chunk handle: "
                 f"get(kind='draft', id='dc123', view='{view}')",
             )
+        if view == "render":
+            # gr592765 — the pre-export figure render check: every live
+            # figure chunk through the same lazy pass export runs, so a
+            # broken recipe surfaces here instead of inside a
+            # ``draft_export`` job.
+            return self._render_figures_check(ref)
         if view not in (None, "outline"):
             # 'outline' is the default render (view omitted); accept it as an
             # explicit value too — the model's intuitive guess (naming the
@@ -1055,8 +1063,9 @@ class DraftHandler(Handler):
                     "ledger, view='citations' for the citation lifecycle "
                     "(to-fetch/to-re-ground/to-promote/done), view='hygiene' "
                     "for the full undefined-abbreviation/whole-paper-cite "
-                    "lists (un-elided), or omit (or view='outline') for the "
-                    "outline"
+                    "lists (un-elided), view='render' for the pre-export "
+                    "figure render check, or omit (or view='outline') for "
+                    "the outline"
                 ),
             )
         return self._render_outline(s, ref, args)
@@ -5979,6 +5988,11 @@ class DraftHandler(Handler):
         counts and example ``dc`` handles; advisory only — see
         :meth:`_hygiene_house_style_lines`.
 
+        A ninth line — figure chunks whose render is pending, stale or
+        recorded-failed (gr592765); a broken recipe would otherwise
+        surface only inside the ``draft_export`` job — see
+        :meth:`_hygiene_figure_lines`.
+
         ``elide=True`` (the outline footer's default) truncates each list to
         8 entries with a "``+N more``" tail and points at
         ``view='hygiene'`` for the rest. ``elide=False``
@@ -6076,6 +6090,8 @@ class DraftHandler(Handler):
 
         out.extend(self._hygiene_house_style_lines(chunks, clear_line=not elide))
 
+        out.extend(self._hygiene_figure_lines(chunks, limit=limit))
+
         if not out:
             return []
         return ["", "## Hygiene", *out]
@@ -6116,6 +6132,57 @@ class DraftHandler(Handler):
             f"{len(examples)} chunk(s) ({per_rule}): {shown}{tail}. "
             "Read the chunk and edit it: no em-dash (split the sentence, or "
             "colon/comma), no **bold**/*italic*/_italic_, no `--`."
+        ]
+
+    def _hygiene_figure_lines(
+        self, chunks: list[Any], *, limit: int | None
+    ) -> list[str]:
+        """Figure render-health line (gr592765): recipe-carrying figure
+        chunks whose image is ``render_pending``, stale (plotted data or
+        the recipe changed since the last render — the content-addressed
+        ``cached_key`` no longer matches), or recorded-failed
+        (``meta.render.failed``, a view figure's version-keyed stamp).
+        Without this the pending state was invisible between the put ack
+        and the export: a broken recipe surfaced only as a
+        ``draft_export`` warning. Read-only — stamps and freshness keys,
+        never the sandbox; ``view='render'`` on the draft or on one
+        ``dc<id>`` is the check that *executes* the renders. Same
+        elide-with-a-pointer convention as the other checks; ``[]`` when
+        every figure is rendered and current (or there are none)."""
+        from precis.render.figure import needs_render
+
+        bad: list[str] = []
+        for c in chunks:
+            if c.chunk_kind != "figure":
+                continue
+            meta = c.meta or {}
+            render = meta.get("render")
+            if not isinstance(render, dict):
+                continue  # an uploaded image — nothing to render
+            failed = render.get("failed")
+            if isinstance(failed, dict):
+                why = f"failed: {failed.get('message') or 'render failed'}"
+            elif (meta.get("figure") or {}).get("render_pending"):
+                why = "render pending"
+            elif needs_render(self.store, c):
+                why = "stale — re-renders on next export/view"
+            else:
+                continue
+            bad.append(f"{c.dc} ({why})")
+        if not bad:
+            return []
+        shown = ", ".join(bad if limit is None else bad[:limit])
+        tail = (
+            f" (+{len(bad) - limit} more — see "
+            "get(kind='draft', id=<slug>, view='hygiene') for the full list)"
+            if limit is not None and len(bad) > limit
+            else ""
+        )
+        return [
+            f"⚠ {len(bad)} figure(s) not export-ready: {shown}{tail}. "
+            "Run the render check now — get(kind='draft', id='<slug>', "
+            "view='render') for all, or id='dc<figure>' for one — a "
+            "failure otherwise surfaces inside the draft_export job."
         ]
 
     def _render_hygiene(
@@ -6175,6 +6242,139 @@ class DraftHandler(Handler):
         # Drop the leading blank + "## Hygiene" heading _hygiene_lines
         # prepends for the outline footer; this view is already scoped.
         return Response(body="\n".join([header, "", *lines[2:]]))
+
+    def _render_figure_check(self, handle: str) -> Response:
+        """``get(kind='draft', id='dc<fig>', view='render')`` — execute this
+        figure's render NOW (gr592765), instead of discovering a broken
+        recipe inside the whole ``draft_export`` job. Goes straight to
+        :func:`precis.render.figure.render_figure_chunk` — not
+        ``ensure_rendered`` — so the call re-runs even a fresh or
+        known-failed recipe and reports the engine's own verdict: the PNG
+        it wrote into ``chunk_blobs`` (served by the reader's
+        ``/drafts/blob/<dc>`` route, embedded by the next export), or the
+        error tag plus the sandbox child's stderr — the traceback."""
+        from precis.render.figure import needs_render, render_figure_chunk
+
+        chunk = self.store.drafts.get_draft_chunk(handle)
+        if chunk is None:
+            raise NotFound(
+                f"draft chunk {handle!r} not found",
+                next="get(kind='draft', id='<slug>', view='toc') lists "
+                "live chunk handles",
+            )
+        if chunk.chunk_kind != "figure":
+            raise BadInput(
+                f"view='render' executes a figure chunk's render recipe; "
+                f"{chunk.dc} is a {chunk.chunk_kind}",
+                next="get(kind='draft', id='<slug>', view='toc') lists the "
+                "draft's figure handles",
+            )
+        head = f"{chunk.dc} [figure]{'  ⚠ RETIRED' if chunk.retired else ''}"
+        meta = chunk.meta or {}
+        render = meta.get("render")
+        if not isinstance(render, dict):
+            blob = self.store.drafts.get_chunk_blob(chunk.handle)
+            size = f"{len(blob[0]):,} bytes {blob[1]}" if blob else "no image blob"
+            return Response(
+                body=(
+                    f"{head} — uploaded image, no render recipe ({size}); "
+                    "nothing to render. view='render' executes a graph or "
+                    "structure-view figure's recipe."
+                )
+            )
+        what = "view" if render.get("kind") == "view" else "graph"
+        stale = needs_render(self.store, chunk)
+        outcome = render_figure_chunk(self.store, chunk.chunk_id)
+        if outcome.ok:
+            self.store.drafts.clear_render_pending(chunk.chunk_id)
+            blob = self.store.drafts.get_chunk_blob(chunk.handle)
+            size = f"{len(blob[0]):,} bytes {blob[1]}" if blob else "no blob"
+            state = (
+                "was render-pending/stale"
+                if stale
+                else "was already fresh — re-rendered to check"
+            )
+            key = (outcome.cached_key or "")[:12]
+            return Response(
+                body=(
+                    f"{head} — {what} render ok ({state}): {size} written "
+                    f"to chunk_blobs, cached_key {key}…. The reader serves "
+                    f"it at /drafts/blob/{chunk.dc}; exports embed it as-is."
+                )
+            )
+        detail = outcome.detail.strip()
+        fix = (
+            f"edit(kind='draft', id='{chunk.dc}', "
+            "args={'render': '…', 'plots': ['dc<id>']})"
+            if what == "graph"
+            else f"edit(kind='draft', id='{chunk.dc}', "
+            "args={'view': {'source': 'structure:<slug>', …}})"
+        )
+        return Response(
+            body=(
+                f"{head} — {what} render failed ({outcome.error})"
+                + (f":\n\n{detail}" if detail else "")
+                + f"\n\nThe figure stays render-pending — draft_export "
+                "surfaces this same failure. next: fix the recipe — "
+                f"{fix}; this view re-runs it."
+            )
+        )
+
+    def _render_figures_check(self, ref: Any) -> Response:
+        """``get(kind='draft', id='<slug>', view='render')`` — the pre-export
+        figure render check (gr592765): every live figure chunk through
+        :func:`precis.render.figure.ensure_rendered`, the exact lazy pass
+        the exporters and the reader's blob route run, so the verdict per
+        figure — rendered now / already fresh / failed / uploaded image —
+        surfaces here instead of inside a ``draft_export`` job's warnings.
+        A figure known-failed at its current inputs reports the stamped
+        failure without re-paying the render (matching what export would
+        do); the ``dc<id>``-level ``view='render'`` re-executes it."""
+        from precis.render.figure import ensure_rendered, needs_render
+
+        figures = [
+            c
+            for c in self.store.drafts.reading_order(ref.id)
+            if c.chunk_kind == "figure"
+        ]
+        label = ref.slug or ref.id
+        head = f"# {ref.title}  ({label}) — figure render check"
+        if not figures:
+            return Response(body=f"{head}\n\nno figure chunks.")
+        lines: list[str] = []
+        n_run = n_fresh = n_image = n_fail = 0
+        for c in figures:
+            meta = c.meta or {}
+            if not isinstance(meta.get("render"), dict):
+                n_image += 1
+                lines.append(f"{c.dc}  skipped — uploaded image, no render recipe")
+                continue
+            stale = needs_render(self.store, c)
+            err = ensure_rendered(self.store, c)
+            if err:
+                n_fail += 1
+                lines.append(f"{c.dc}  FAILED — {err}")
+            elif stale:
+                n_run += 1
+                lines.append(f"{c.dc}  rendered now")
+            else:
+                n_fresh += 1
+                lines.append(f"{c.dc}  fresh — image already current")
+        rows = "\n".join(lines)
+        body = (
+            f"{head}\n\n{rows}\n\n"
+            f"{n_run} rendered now, {n_fresh} fresh, "
+            f"{n_image} uploaded image(s), {n_fail} failed."
+        )
+        if n_fail:
+            body += (
+                "\n→ per-figure traceback + a forced re-run: "
+                "get(kind='draft', id='dc<id>', view='render'). Fix the "
+                "recipe with edit(kind='draft', id='dc<id>', "
+                "args={'render': '…', 'plots': ['dc<id>']}) or "
+                "args={'view': {'source': 'structure:<slug>', …}}."
+            )
+        return Response(body=body, result_count=len(figures))
 
     def _cited_paper_ref_ids(self, chunks: list[Any]) -> list[int]:
         """Every paper/patent cite token in the draft

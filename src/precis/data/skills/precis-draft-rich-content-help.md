@@ -83,6 +83,18 @@ re-renders on mismatch, so editing a plotted table refreshes the graph (the
 `plots` edge is the one reactive recompute). A graph is otherwise an ordinary `figure` chunk — clearance,
 caption, export all apply identically.
 
+**Check the render before export.** `get(kind='draft', id='dc<figure>',
+view='render')` executes the render NOW: on success it reports the PNG it
+wrote (the reader serves it at `/drafts/blob/<dc>`; exports embed it
+as-is), on failure the error tag plus the sandbox's stderr — the
+traceback. `get(kind='draft', id='<slug>', view='render')` is the same
+check across every figure in the draft (pending/stale figures render;
+fresh and known-failed ones just report their stamp) — run it before
+`draft_export` so a broken recipe surfaces there, not mid-job. The
+hygiene report (`view='hygiene'`, and the outline's hygiene footer)
+flags render-pending, stale and recorded-failed figures read-only —
+no render executes until a `view='render'` call or export asks.
+
 ## Picture a structure or se block — a view figure
 
 A **structure view** figure (`origin='original'`) is a ball-and-stick
