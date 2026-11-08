@@ -410,6 +410,7 @@ class AsaBot(discord.Client):
                 acting_user=account,
                 pinned=bool(self._runtime.model_override),
                 agentlog_id=log_id,
+                dsn=self._cfg.precis.database_url or None,
             )
         finally:
             if not reached_invoke and log_id is not None:
@@ -602,6 +603,7 @@ class AsaBot(discord.Client):
                 conv_slug=conv_slug,
                 on_progress=None,
                 agentlog_id=log_id,
+                dsn=self._cfg.precis.database_url or None,
             )
         finally:
             if not reached_invoke and log_id is not None:
@@ -1021,7 +1023,7 @@ class _MessageCtx:
 
 async def run(cfg: Config) -> None:
     """Bring up the bot end-to-end. Blocks until Discord disconnects."""
-    token = load_discord_token(cfg.discord)
+    token = load_discord_token(cfg.discord, dsn=cfg.precis.database_url)
     precis = PrecisClient(cfg.precis)
     await precis.start()
     # LISTEN needs a direct postgres session (notify_database_url) — it does

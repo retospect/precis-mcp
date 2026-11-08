@@ -118,8 +118,10 @@ class PrecisClient:
     async def _spawn(self) -> None:
         env = dict(os.environ)
         env.update(self._cfg.env)
-        if self._cfg.database_url:
-            env.setdefault("PRECIS_DATABASE_URL", self._cfg.database_url)
+        # config.yaml's DSN beats an inherited (possibly stale agent_rw)
+        # PRECIS_DATABASE_URL; only an explicit ``precis.env`` pin outranks it.
+        if self._cfg.database_url and "PRECIS_DATABASE_URL" not in self._cfg.env:
+            env["PRECIS_DATABASE_URL"] = self._cfg.database_url
         # tool_calls.source on every call this client makes: the
         # producing job is the daemon itself (gr540852). ``setdefault`` —
         # the launchd env or config may pin a different producer.

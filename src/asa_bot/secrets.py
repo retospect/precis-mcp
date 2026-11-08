@@ -7,8 +7,15 @@ no new credential.
 
 Best-effort and env-override-wins: ``reveal_secret`` returns ``None`` on any
 error (vault absent, key unset, DB unreachable) so callers fall back to their
-existing env / file path. The DSN comes from ``PRECIS_DATABASE_URL`` in the
-environment, read at call time (before any scrub).
+existing env / file path. Callers pass the DSN from asa's ``config.yaml``
+(``precis.database_url``); ``PRECIS_DATABASE_URL`` in the environment, read at
+call time (before any scrub), is only the fallback when none is passed.
+
+The DSN must connect as ``precis_system``: infra-class secrets (e.g.
+``CLAUDE_CODE_OAUTH_TOKEN``) are refused to ``agent_rw`` with
+``InsufficientPrivilege`` (``vault._class_check``, migration 0285). A stale
+``agent_rw`` ``PRECIS_DATABASE_URL`` in the launchd plist must therefore never
+outrank the config DSN.
 """
 
 from __future__ import annotations
@@ -23,7 +30,8 @@ _warned = False
 
 def reveal_secret(name: str, *, dsn: str | None = None) -> str | None:
     """Return ``vault.reveal(name)`` from the precis DB, or ``None`` on any
-    failure. ``dsn`` defaults to ``$PRECIS_DATABASE_URL``."""
+    failure. ``dsn`` (config.yaml's, precis_system) wins; it defaults to
+    ``$PRECIS_DATABASE_URL`` only when not given."""
     global _warned
     dsn = dsn or os.environ.get("PRECIS_DATABASE_URL")
     if not dsn:

@@ -158,8 +158,12 @@ class Config:
         discord_token_env = os.environ.get("ASA_DISCORD_TOKEN")
         if discord_token_env:
             data.setdefault("discord", {})["token_env_value"] = discord_token_env
+        # config.yaml's DSN wins over an inherited PRECIS_DATABASE_URL: a stale
+        # launchd/plist value (agent_rw) must not shadow the precis_system DSN
+        # the vault's infra class requires. The env var is only a fallback for
+        # a config that names none.
         db_url = os.environ.get("PRECIS_DATABASE_URL")
-        if db_url:
+        if db_url and not (data.get("precis") or {}).get("database_url"):
             data.setdefault("precis", {})["database_url"] = db_url
         notify_url = os.environ.get("PRECIS_NOTIFY_DATABASE_URL")
         if notify_url:
@@ -180,18 +184,19 @@ class Config:
         )
 
 
-def load_discord_token(cfg: DiscordConfig) -> str:
+def load_discord_token(cfg: DiscordConfig, *, dsn: str | None = None) -> str:
     """Resolve the Discord bot token: env → precis DB vault → file.
 
     Vault reveal (precis the secrets vault) is best-effort — it returns None when the
-    vault is unavailable, so the file path stays the fallback.
+    vault is unavailable, so the file path stays the fallback. ``dsn`` is
+    ``cfg.precis.database_url`` (precis_system); see :mod:`asa_bot.secrets`.
     """
     env_val = os.environ.get(cfg.token_env)
     if env_val:
         return env_val.strip()
     from asa_bot.secrets import reveal_secret
 
-    vault_val = reveal_secret(cfg.token_env)
+    vault_val = reveal_secret(cfg.token_env, dsn=dsn or None)
     if vault_val:
         return vault_val.strip()
     p = Path(cfg.token_file)

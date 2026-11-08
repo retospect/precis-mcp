@@ -474,6 +474,7 @@ async def invoke(
     acting_user: str | None = None,
     pinned: bool = False,
     agentlog_id: int | None = None,
+    dsn: str | None = None,
 ) -> ClaudeResult:
     """Run one claude -p turn via the router. Returns the aggregated ClaudeResult.
 
@@ -484,6 +485,10 @@ async def invoke(
 
     Caller posts these to Discord as a single edited "working..."
     message (don't spam new posts).
+
+    ``dsn`` is ``cfg.precis.database_url`` from config.yaml (precis_system):
+    the connection the OAuth token is revealed over. It beats an inherited
+    ``PRECIS_DATABASE_URL`` (see :mod:`asa_bot.secrets`).
 
     A turn whose tier pauses at the budget breaker degrades down the ladder
     (:func:`_degrade`) unless ``pinned`` — the speaker chose the model with
@@ -545,6 +550,7 @@ async def invoke(
         acting_user=acting_user,
         max_turns=max_turns,
         agentlog_id=log_id,
+        dsn=dsn,
     )
     result: ClaudeResult | None = None
     status: str | None = None
@@ -598,6 +604,8 @@ class _Turn:
     acting_user: str | None
     max_turns: int
     agentlog_id: int | None = None
+    #: config.yaml's ``precis.database_url`` — the vault-reveal DSN.
+    dsn: str | None = None
 
 
 def _budget_paused(result: ClaudeResult) -> bool:
@@ -711,14 +719,14 @@ async def _invoke_streaming(
     overlay = _turn_overlay(cfg, turn.conv_slug, turn.acting_user, turn.agentlog_id)
     # asa_bot can run as a bare `deploy` user with no ~/.claude state, in
     # which case CLAUDE_CODE_OAUTH_TOKEN comes from the vault over asa's OWN
-    # PRECIS_DATABASE_URL connection (asa_bot.secrets.reveal_secret) — NOT
+    # config.yaml DSN (turn.dsn, precis_system; asa_bot.secrets.reveal_secret) — NOT
     # precis.secrets.get_secret's bound-Store vault path that
     # claude_agent._prepare_agent_env falls back to (asa_bot never binds a
     # Store in-process; it talks to precis over a subprocess MCP server, so
     # that path silently no-ops here). Resolve it with asa's own proven
     # helper and thread it through env_overlay, applied last, so it wins
     # regardless of whether the router's own vault attempt no-ops.
-    ensure_oauth_token(overlay)
+    ensure_oauth_token(overlay, dsn=turn.dsn)
 
     async def on_event(evt: dict[str, Any]) -> None:
         await _handle_event(evt, result, turn.on_progress)
@@ -821,7 +829,7 @@ async def _invoke_via_chain(
     cfg = turn.cfg
     result = ClaudeResult()
     overlay = _turn_overlay(cfg, turn.conv_slug, turn.acting_user, turn.agentlog_id)
-    ensure_oauth_token(overlay)
+    ensure_oauth_token(overlay, dsn=turn.dsn)
 
     req = LlmRequest(
         tier=Tier.BIG,

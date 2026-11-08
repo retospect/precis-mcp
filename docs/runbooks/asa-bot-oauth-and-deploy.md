@@ -30,6 +30,20 @@ CLAUDE_CODE_OAUTH_TOKEN` (picked up within the 60 s secrets cache, no deploy):
 [`rotate-agent-rw-credential`](./rotate-agent-rw-credential.md)
 §`CLAUDE_CODE_OAUTH_TOKEN`.
 
+**"Not logged in" with the vault configured (2026-11).** asa log:
+`vault reveal unavailable (InsufficientPrivilege: vault: role "agent_rw" is
+not allowed to reveal "CLAUDE_CODE_OAUTH_TOKEN" (class infra))`, then
+`claude -p` says `Not logged in · Please run /login`. The token is vault class
+`infra` (`vault._class_check`, migration 0285): only `precis_system` members
+may reveal it, so the DSN asa reveals over **must be `precis_system`**. A stale
+`PRECIS_DATABASE_URL=...agent_rw...` in the installed launchd plist used to
+outrank `config.yaml`. Now `config.yaml` `precis.database_url` wins
+(`Config.load`; threaded as `dsn` through `invoke` → `ensure_oauth_token` →
+`reveal_secret`, and into the precis MCP child env in `PrecisClient._spawn`);
+the env var is only a fallback when config names none. If it still shows
+`agent_rw`, the rendered `~/.asa/config.yaml` is wrong: check
+`precis_db_own_cutover_done` in the inventory and redeploy asa-bot.
+
 ## Deploy
 
 asa-bot deploys with **ansible, not precis's `scripts/ship`**. The repo is a

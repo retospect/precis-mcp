@@ -15,13 +15,20 @@ shells out to ``claude -p`` from this daemon MUST run
 :func:`ensure_oauth_token` on the subprocess env it passes.
 
 Resolution order (first hit wins): an existing env value → the **DB secrets
-vault**, reached over asa's existing ``PRECIS_DATABASE_URL``. The
-vault is what lets asa run as the plain ``deploy`` user with no ``~/.claude``
+vault**, reached over the ``precis.database_url`` DSN from asa's
+``config.yaml`` (threaded in as ``dsn``; ``PRECIS_DATABASE_URL`` is only a
+fallback when config names none). The vault is what lets asa run as the plain ``deploy`` user with no ``~/.claude``
 state. The ``~/.claude_oauth_token`` file this used to read first is retired
 fleet-wide — it scattered a live credential in plaintext across service-account
 homes and, sitting ahead of the vault, silently shadowed a rotation. Idempotent
 and override-safe: a token already present in the env wins; we only fill the
 gap.
+
+Failure mode (2026-11): ``CLAUDE_CODE_OAUTH_TOKEN`` is vault class ``infra``,
+which only members of ``precis_system`` may reveal. A stale inherited
+``PRECIS_DATABASE_URL`` naming ``agent_rw`` made the reveal fail with
+``InsufficientPrivilege`` and ``claude -p`` answer ``Not logged in``. The
+DSN must be ``precis_system``; config.yaml's wins over the env var.
 """
 
 from __future__ import annotations
@@ -39,8 +46,13 @@ ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 LEGACY_TOKEN_FILENAME = ".claude_oauth_token"
 
 
-def ensure_oauth_token(env: MutableMapping[str, str]) -> None:
+def ensure_oauth_token(
+    env: MutableMapping[str, str], *, dsn: str | None = None
+) -> None:
     """Fill :data:`ENV_VAR` in ``env`` from the secrets vault.
+
+    ``dsn`` is the config.yaml ``precis.database_url`` (precis_system); when
+    omitted :func:`~asa_bot.secrets.reveal_secret` falls back to the env var.
 
     Mutates ``env`` in place. No-op when the var is already set to a non-empty
     value (env override wins) or the vault can't resolve it — in that case
@@ -53,7 +65,7 @@ def ensure_oauth_token(env: MutableMapping[str, str]) -> None:
     try:
         from asa_bot.secrets import reveal_secret
 
-        token = reveal_secret(ENV_VAR) or ""
+        token = reveal_secret(ENV_VAR, dsn=dsn) or ""
     except Exception:
         log.warning("oauth: vault lookup for %s raised", ENV_VAR)
         token = ""
