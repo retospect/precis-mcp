@@ -908,6 +908,101 @@ def test_loader_health_from_call_log(
     d._ledger_cache.clear()
 
 
+def test_over_ceiling_kind_demotes_the_local_rung() -> None:
+    """gr576274: a kind whose offered load meets the local pool's
+    ceiling is decided to the next rung before the call, not after a
+    refusal; below the ceiling it picks local. A spent pool
+    (``free = 0``) demotes without any rate signal, and the demotion is
+    a rank — never a rejection — so a local-only ranking still serves."""
+    local = offering(
+        "glm@local/local",
+        model="glm",
+        adapter="local",
+        billing="local",
+        locality="local",
+        live=True,
+        price_in=0.0,
+        price_out=0.0,
+    )
+    cloud = offering(
+        "z-ai/glm@openai_compat/none",
+        model="z-ai/glm",
+        adapter="openai_compat",
+        price_in=0.1,
+        price_out=0.2,
+    )
+    req = LlmRequest(Tier.SMALL, task_kind="chunk.classify")
+
+    def pick(**kwargs: Any) -> d.Decision:
+        return d.decide(
+            req, Requirement(Tier.SMALL), ledger(local, cloud, **kwargs), "on"
+        )
+
+    below = pick(slots={"glm": (4, 2)}, rates={"chunk.classify": 3.9})
+    assert below.chosen == local
+    for load in (4.0, 9.5):
+        decision = pick(slots={"glm": (4, 2)}, rates={"chunk.classify": load})
+        assert decision.chosen == cloud
+        assert "over-ceiling" in decision.ranked[-1].reason
+    spent = pick(slots={"glm": (4, 0)})
+    assert spent.chosen == cloud
+    assert "saturated" in spent.ranked[-1].reason
+    solo = d.decide(
+        req, Requirement(Tier.SMALL), ledger(local, slots={"glm": (4, 0)}), "on"
+    )
+    assert solo.chosen == local
+    # No pool row — no ceiling to read; the kind's rate alone never demotes.
+    assert pick(rates={"chunk.classify": 99.0}).chosen == local
+    # A non-local offering ignores the signals — a spent pool row on the
+    # cloud model's own key demotes nothing, so local still wins.
+    assert (
+        pick(slots={"z-ai/glm": (4, 0)}, rates={"chunk.classify": 9.5}).chosen == local
+    )
+
+
+def test_loader_slots_and_rates_from_store(store: Any) -> None:
+    """``ledger_from_store`` fills ``slots`` from ``resource_slots`` and
+    ``rates`` from ``llm_call_log`` inside the same 15 s entry
+    (gr576274): a gated row counts toward arrivals but its slot wait
+    never inflates the service-time mean."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO resource_slots (host, resource, capacity, free, kind) "
+            "VALUES ('h1', 'llm:glm', 4, 0, 'hard')"
+        )
+        conn.execute(
+            "INSERT INTO resource_slots (host, resource, capacity, free, kind) "
+            "VALUES ('h2', 'llm:glm', 4, 3, 'hard')"
+        )
+        conn.execute(
+            "INSERT INTO resource_slots (host, resource, capacity, free, kind) "
+            "VALUES ('h1', 'gpu', 1, 0, 'hard')"
+        )
+        for _ in range(5):
+            conn.execute(
+                "INSERT INTO llm_call_log (source, tier, transport, model, "
+                "duration_ms, features) "
+                "VALUES ('s','small','local','glm',60000,"
+                '\'{"task_kind": "chunk.classify"}\')'
+            )
+        conn.execute(
+            "INSERT INTO llm_call_log (source, tier, transport, model, "
+            "duration_ms, features) "
+            "VALUES ('s','small','local','glm',600000,"
+            '\'{"task_kind": "chunk.classify", "gated": "true"}\')'
+        )
+    d.admit.reset_cache()
+    d._ledger_cache.clear()
+    led = d.ledger_from_store(store, now=NOW)
+    assert led is not None
+    assert led.slots["glm"] == (8, 3)
+    assert "gpu" not in led.slots
+    # 6 arrivals at a 60 s served mean over the 15-minute window → 0.4.
+    assert led.rates["chunk.classify"] == pytest.approx(6 * 60_000 / 900_000)
+    d.admit.reset_cache()
+    d._ledger_cache.clear()
+
+
 def test_ties_prefer_legacy_lane() -> None:
     """Equal band/capacity/price picks prefer the model the legacy lane ran."""
     earlier = offering(

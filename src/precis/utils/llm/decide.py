@@ -91,6 +91,18 @@ class Ledger:
     #: (a spend-cap pause is not the offering's fault); gated rows count.
     #: Refreshed with the 15-second ledger entry, never per call.
     health: Mapping[tuple[str, str], tuple[int, int]] = field(default_factory=dict)
+    #: ``model -> (capacity, free)`` summed over the ``resource_slots``
+    #: ``llm:<model>`` rows — the local pool's live concurrency ceiling
+    #: and headroom the rank demotion reads (gr576274). Refreshed with
+    #: the 15-second ledger entry, never per call.
+    slots: Mapping[str, tuple[int, int]] = field(default_factory=dict)
+    #: ``task_kind -> offered concurrency`` in slot-equivalents over
+    #: :data:`RATE_WINDOW_MIN` minutes of ``llm_call_log`` — arrivals ×
+    #: mean served duration / window (Little's law). A kind whose demand
+    #: meets a local offering's ceiling can't be absorbed there, so the
+    #: offering sorts after the next rung *before* the call, not after a
+    #: refusal (gr576274).
+    rates: Mapping[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -124,12 +136,39 @@ _TIER_ORDER = {
 HEALTH_WINDOW_MIN = 30
 HEALTH_MIN_CALLS = 20
 
+#: The kind-rate window (gr576274): long enough to estimate a mean served
+#: duration from, short enough that a rate flip shows within a couple of
+#: ledger rebuilds. Rides the same 15 s cache entry, never per call.
+RATE_WINDOW_MIN = 15
+
 
 def _unhealthy_calls(o: Offering, ledger: Ledger) -> int:
     """Calls behind an all-failing offering's demotion, ``0`` when it
     ranks normally — below the sample floor, or one success seen."""
     calls, ok = ledger.health.get((o.model, o.adapter), (0, 0))
     return calls if calls >= HEALTH_MIN_CALLS and ok == 0 else 0
+
+
+def _local_overload(o: Offering, ledger: Ledger, kind: str | None) -> str | None:
+    """The demotion reason for a saturated local rung, ``None`` when it
+    ranks normally (gr576274). Two signals, both read off the pool's own
+    ``resource_slots`` rows: the live ``free`` count is spent — the pool
+    is saturated *now* — or the deciding kind's offered load meets or
+    exceeds the pool's ceiling, so its calls would queue past the slot
+    wait and the next rung should win *before* the call, not after a
+    refusal. A local operating point with no ``llm:<model>`` pool row
+    has no ceiling to read and keeps its rank."""
+    if o.billing != "local":
+        return None
+    capacity, free = ledger.slots.get(o.model, (0, 0))
+    if capacity <= 0:
+        return None
+    if free <= 0:
+        return f"saturated: 0 of {capacity} local slots free"
+    load = ledger.rates.get(kind or "", 0.0)
+    if load >= capacity:
+        return f"over-ceiling: {kind} at {load:.1f} of {capacity} local slots"
+    return None
 
 
 #: Fields a logged decision keeps per offering — identity, lane and price.
@@ -295,6 +334,7 @@ def decide(
     mode: str,
 ) -> Decision:
     """Filter and rank offerings, retaining the free ranking beside a pin."""
+    kind = getattr(request, "task_kind", None)
     ranked: list[Ranked] = []
     rejected: list[Rejected] = []
     for o in ledger.offerings:
@@ -326,6 +366,7 @@ def decide(
         )
         state, _ = _pool_state(o, ledger)
         sick = _unhealthy_calls(o, ledger)
+        overload = _local_overload(o, ledger, kind)
         ranked.append(
             Ranked(
                 o,
@@ -337,7 +378,8 @@ def decide(
                     f"; unhealthy: 0 of {sick} calls ok in {HEALTH_WINDOW_MIN} min"
                     if sick
                     else ""
-                ),
+                )
+                + (f"; {overload}" if overload else ""),
             )
         )
     if any(r.band in {"strong", "adequate"} for r in ranked):
@@ -379,7 +421,10 @@ def decide(
             else 1
         )
         return (
-            1 if _unhealthy_calls(o, ledger) else 0,
+            1
+            if _unhealthy_calls(o, ledger)
+            or _local_overload(o, ledger, kind) is not None
+            else 0,
             {"strong": 0, "adequate": 1, "unknown": 2, "marginal": 3}[r.band],
             capacity,
             -deficit if capacity in {0, 2} else 0,
@@ -619,11 +664,12 @@ def mode_for(task_kind: str | None) -> str:
     return mode
 
 
-#: ``id(store) -> (stamp, accounts, pools, offerings, health)``. Offerings
-#: and the llm_call_log health window ride the same 15 s entry as the
-#: account/pool snapshot — a rebuild is the only time the catalog is
-#: walked, a heartbeat is probed or the log is grouped; per call stays a
-#: dict lookup plus a pure :func:`accounts.pacing` per pool.
+#: ``id(store) -> (stamp, accounts, pools, offerings, health, slots, rates)``.
+#: Offerings, the llm_call_log health/rate windows and the resource_slots
+#: pool read ride the same 15 s entry as the account/pool snapshot — a
+#: rebuild is the only time the catalog is walked, a heartbeat is probed
+#: or a table is grouped; per call stays a dict lookup plus a pure
+#: :func:`accounts.pacing` per pool.
 _ledger_cache: dict[
     int,
     tuple[
@@ -632,6 +678,8 @@ _ledger_cache: dict[
         list[accounts.Pool],
         tuple[Offering, ...],
         dict[tuple[str, str], tuple[int, int]],
+        dict[str, tuple[int, int]],
+        dict[str, float],
     ],
 ] = {}
 _loader_error_at = -math.inf
@@ -885,6 +933,61 @@ def _health_from_store(store: Store) -> dict[tuple[str, str], tuple[int, int]]:
     }
 
 
+def _slots_from_store(store: Store) -> dict[str, tuple[int, int]]:
+    """``model -> (capacity, free)`` summed over the ``llm:<model>``
+    ``resource_slots`` rows — the serving pool's live ceiling and
+    headroom the rank demotion reads (gr576274). Capacity and free are
+    fleet-wide sums across serving hosts, matching what
+    :func:`~precis.utils.llm.local_serving.acquire` can reach (the local
+    row plus LAN-routable remote candidates). Rides the 15 s ledger
+    entry, never per call; a failed read yields an empty map — no
+    ceiling is read, the pre-fix behaviour — never an exception."""
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT resource, sum(capacity), sum(free) FROM resource_slots "
+                "WHERE resource LIKE 'llm:%' GROUP BY 1"
+            ).fetchall()
+    except Exception:
+        log.debug("decide: slot read failed", exc_info=True)
+        return {}
+    return {
+        str(resource)[4:]: (int(capacity), int(free))
+        for resource, capacity, free in rows
+        if resource is not None and capacity is not None
+    }
+
+
+def _rates_from_store(store: Store) -> dict[str, float]:
+    """``task_kind -> offered concurrency`` (slot-equivalents) over
+    :data:`RATE_WINDOW_MIN` minutes of ``llm_call_log``: arrivals × mean
+    *served* duration / window — Little's law, the demand a local pool
+    must absorb for that kind (gr576274). A gated row counts as an
+    arrival but not toward the service-time mean — its duration is slot
+    wait, not serving. A kind whose rows all lack a measured duration
+    proves no holding time and gets no row (the live ``free`` signal
+    still covers a pool it fills). A failed read yields an empty map,
+    never an exception."""
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT features->>'task_kind', count(*), avg(duration_ms) "
+                "FILTER (WHERE features->>'gated' IS DISTINCT FROM 'true') "
+                "FROM llm_call_log "
+                f"WHERE ts > now() - interval '{RATE_WINDOW_MIN} minutes' "
+                "AND features->>'task_kind' IS NOT NULL GROUP BY 1"
+            ).fetchall()
+    except Exception:
+        log.debug("decide: rate read failed", exc_info=True)
+        return {}
+    window_ms = RATE_WINDOW_MIN * 60_000
+    return {
+        str(kind): int(calls) * float(mean_ms) / window_ms
+        for kind, calls, mean_ms in rows
+        if kind is not None and mean_ms is not None
+    }
+
+
 def ledger_from_store(
     store: Store, *, now: datetime, unavailable_transports: frozenset[str] = frozenset()
 ) -> Ledger | None:
@@ -902,6 +1005,8 @@ def ledger_from_store(
                 pools,
                 _build_offerings(store, accts),
                 _health_from_store(store),
+                _slots_from_store(store),
+                _rates_from_store(store),
             )
             _ledger_cache[id(store)] = cached
         account_map = {a.name: a for a in cached[1]}
@@ -913,6 +1018,8 @@ def ledger_from_store(
             unavailable_transports,
             now,
             health=cached[4],
+            slots=cached[5],
+            rates=cached[6],
         )
     except Exception:
         stamp = time.monotonic()
