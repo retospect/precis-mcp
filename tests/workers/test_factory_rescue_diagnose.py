@@ -3,8 +3,9 @@ td574946, slice S3): a node sitting in RESCUE gets ONE read-only diagnose
 task on the ``claude-sub`` lane; a ``rescue: REARM`` verdict re-arms it once
 with a corrected brief; a ``rescue: NOFIX``, a failed or unparsable
 diagnose, a second rescue or an engine class files one ask-user todo
-blocking the node. The pass writes nothing while the factory kill switch
-holds; ``dry_run`` lists what it would do."""
+blocking the node — except a node under a closed ancestor, which the pass
+closes ``won't-do`` instead (gr576258). The pass writes nothing while the
+factory kill switch holds; ``dry_run`` lists what it would do."""
 
 from __future__ import annotations
 
@@ -542,9 +543,7 @@ def test_second_rescue_is_refused_and_asks(store: Store) -> None:
     assert _meta(store, task)["rescue"]["ask"] == f"td{ask}"
 
 
-@pytest.mark.parametrize(
-    "cls", ["stalled", "cancelled", "terminal-root", "tick-silent"]
-)
+@pytest.mark.parametrize("cls", ["stalled", "cancelled", "tick-silent"])
 def test_engine_class_asks_without_a_diagnose_task(store: Store, cls: str) -> None:
     root = _root(store)
     task = _node(store, root)
@@ -579,6 +578,146 @@ def test_ask_is_not_repeated_after_it_is_answered(store: Store) -> None:
     assert len(_ask_refs(store)) == 1
     assert _diagnose_tasks(store) == [diag]
     assert _rescue_tags(store, task) == ["rescue:builder"]
+
+
+# ── a closed ancestor: close won't-do, never ask (gr576258) ────────
+
+
+def test_terminal_root_orphan_closes_wont_do_with_no_ask(store: Store) -> None:
+    """The whole-tick shape: the stall pass tags the orphan
+    ``rescue:terminal-root``, the rescue pass closes it — ``root td<N>
+    is <state>; closed by the watchdog`` — and no ``ask-user`` todo
+    appears."""
+    root = _root(store, status="done")
+    task = _node(store, root)
+
+    stall = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
+    assert stall.rescued == [(task, "terminal-root", "idle")]
+
+    res = fr.run_rescue_pass(store, NOW + timedelta(minutes=22))
+
+    assert res.closed == [task]
+    assert res.asked == [] and res.diagnosing == []
+    assert _ask_refs(store) == [] and _diagnose_tasks(store) == []
+    assert _status(store, task) == "won't-do"
+    assert any(
+        f"root td{root} is done; closed by the watchdog" in c
+        for c in _comments(store, task)
+    )
+    meta = _meta(store, task)
+    assert meta["rescue"]["closed"] == "won't-do"
+    assert meta["rescue"]["cls"] == "terminal-root"
+
+    # a second pass writes nothing: a closed node is never re-judged
+    res2 = fr.run_rescue_pass(store, NOW + timedelta(minutes=23))
+    assert res2.closed == [] and res2.asked == []
+
+
+def test_wont_do_ancestor_closes_any_rescue_class(store: Store) -> None:
+    """A node rescued under another class whose own parent chain holds
+    a won't-do closes the same way — the work is dead whatever the
+    failure signature was."""
+    root = _root(store)
+    phase = _node(
+        store, root, title="phase", meta={"auto_close": True}, status="won't-do"
+    )
+    leaf = _node(store, root, parent=phase)
+    fr.enter_rescue(store, leaf, "stalled", _ev())
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.closed == [leaf]
+    assert res.asked == [] and res.diagnosing == []
+    assert _ask_refs(store) == []
+    assert _status(store, leaf) == "won't-do"
+    assert _status(store, root) == "open"  # the open root is untouched
+    assert any(
+        f"ancestor td{phase} is won't-do; closed by the watchdog" in c
+        for c in _comments(store, leaf)
+    )
+
+
+def test_rescued_node_under_an_open_root_is_unchanged(store: Store) -> None:
+    """Control: a live root keeps the human-choice path — an engine
+    class still files its one ask."""
+    root = _root(store)
+    task = _node(store, root)
+    fr.enter_rescue(store, task, "stalled", _ev())
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.closed == [] and res.asked == [task]
+    assert _status(store, task) == "open"
+
+
+def test_a_pending_ask_on_the_orphan_closes_with_it(store: Store) -> None:
+    """An ask already open on the orphan (filed before this fix, or by
+    a racer) is moot the moment the close lands — closed won't-do with
+    it, never left orphaned."""
+    root = _root(store, status="done")
+    task = _node(store, root)
+    fr.enter_rescue(store, task, "terminal-root", _ev())
+    ask = _node(
+        store,
+        root,
+        title="a ruling ask",
+        meta={
+            "ask": {
+                "kind": "ruling",
+                "options": ["retry"],
+                "blocks": f"td{task}",
+                "context": "pending",
+            }
+        },
+        tags=("ask-user",),
+    )
+    store.add_link(
+        src_ref_id=task, dst_ref_id=ask, relation="blocked-by", set_by="system"
+    )
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.closed == [task]
+    assert _status(store, task) == "won't-do"
+    assert _status(store, ask) == "won't-do"
+    assert any("superseded" in c for c in _comments(store, ask))
+
+
+def test_orphan_closes_are_a_bounded_batch(store: Store) -> None:
+    """``ORPHAN_BATCH`` orphans close in one pass; the rest wait a
+    tick — an old backlog drains in a few passes, not one ask a
+    tick."""
+    root = _root(store, status="done")
+    tasks = [
+        _node(store, root, title=f"orphan {i}") for i in range(fr.ORPHAN_BATCH + 1)
+    ]
+    for t in tasks:
+        fr.enter_rescue(store, t, "terminal-root", _ev())
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.closed == tasks[:-1]
+    assert _status(store, tasks[-1]) == "open"
+    assert any("batch full" in n for n in res.notes)
+
+    res2 = fr.run_rescue_pass(store, NOW + timedelta(minutes=1))
+    assert res2.closed == [tasks[-1]]
+    assert _status(store, tasks[-1]) == "won't-do"
+    assert _ask_refs(store) == []
+
+
+def test_dry_run_lists_the_close_and_writes_nothing(store: Store) -> None:
+    root = _root(store, status="done")
+    task = _node(store, root)
+    fr.enter_rescue(store, task, "terminal-root", _ev())
+
+    res = fr.run_rescue_pass(store, NOW, dry_run=True)
+
+    assert res.dry_run is True
+    assert (task, "close") in res.would
+    assert res.closed == []
+    assert _status(store, task) == "open"
+    assert "rescue" not in _meta(store, task)
 
 
 # ── holds, gripes, supersession ────────────────────────────────────

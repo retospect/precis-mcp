@@ -344,11 +344,17 @@ rescued under a task class (`builder`, `land`, `review`, `release`,
 lane `claude-sub` (one attempt, `meta.retries` 1, read-only by
 instruction, `meta.rescue_for` links it to its node) and the node is
 `blocked-by` it while it waits. Engine classes (`stalled`, `cancelled`,
-`terminal-root`, `tick-raises`, `tick-silent`, `post-land-write`,
+`tick-raises`, `tick-silent`, `post-land-write`,
 `wait-deadline`, `infra` — an unknown class reads as engine), a second
 rescue (`meta.rescue.n >= 1`), and a rescued gripe skip the diagnose:
 the ask goes straight up (a gripe is noted and left — `meta.ask.blocks`
-takes a todo handle only).
+takes a todo handle only). The exception is a node under a closed
+ancestor (gr576258): a `terminal-root` rescue, or any class with a
+`won't-do` up its own parent chain, has nothing to retry — the pass
+closes the node `STATUS:won't-do` with one note (`root td<N> is
+<state>; closed by the watchdog`), closes any live ask blocking it,
+and files no ask; a bounded batch of `ORPHAN_BATCH` (20) closes a pass
+drains an old backlog in a few ticks.
 
 The session replies on the task with one first line: `rescue: REARM —
 <corrected brief>` or `rescue: NOFIX — <why>` (a `handoff:` prefix

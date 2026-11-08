@@ -1285,7 +1285,13 @@ def run_stall_pass(store: Store, now: datetime, dry_run: bool = False) -> StallR
 # branch are reused; nothing pins the run to the host holding the tree,
 # the known gap); ``rescue: NOFIX — <why>``, a failed or unparsable
 # diagnose, a second rescue (``meta.rescue.n >= 1``) and every engine
-# class file ONE ``ask-user`` ruling todo blocking the node. A rescued
+# class file ONE ``ask-user`` ruling todo blocking the node — EXCEPT a
+# node under a closed ancestor (gr576258): a ``terminal-root`` rescue,
+# or any class whose own parent chain holds a ``won't-do``, has nothing
+# to retry (every such ask came back "won't do"), so the pass closes
+# the node ``STATUS:won't-do`` with one note and files no ask — a
+# bounded batch of ``ORPHAN_BATCH`` closes per pass, so an old orphan
+# backlog drains in a few ticks instead of one ask a tick. A rescued
 # gripe is skipped with a note (``meta.ask.blocks`` takes a todo handle
 # only). Read-only while the factory is switched off; ``dry_run`` lists
 # ``would`` and writes nothing.
@@ -1320,6 +1326,10 @@ _JOB_TAIL_CAP = 3000
 _ASK_CONTEXT_CAP = 600
 #: The ``<why>`` fragment on the rescue ask's title.
 _ASK_WHY_CAP = 60
+#: Bound on the orphan won't-do closes one rescue pass writes
+#: (gr576258): a closed-root backlog drains at this many nodes a tick —
+#: no longer one ask a tick — without one pass writing unbounded.
+ORPHAN_BATCH = 20
 
 _DIAGNOSIS_RE = re.compile(
     r"rescue:\s*(REARM|NOFIX)\b[\s:]*(?:[—–-]+\s*)?(.*)",
@@ -1338,11 +1348,12 @@ _BRANCH_RE = re.compile(r"^branch:\s*(\S+)\s*@\s*(\S+)", re.MULTILINE)
 class RescuePassResult:
     """What one rescue pass did (or, read-only, would have done).
 
-    ``diagnosing`` / ``rearmed`` / ``asked`` carry the node ids this pass
-    wrote for; ``would`` the ``(node id, action)`` pairs a dry run lists
-    (``"diagnose"`` / ``"rearm"`` / ``"ask"``); ``waiting`` the nodes a
-    hold or an in-flight diagnose covered; ``read_only`` the kill-switch
-    reason that forced the dry run.
+    ``diagnosing`` / ``rearmed`` / ``asked`` / ``closed`` carry the node
+    ids this pass wrote for (``closed`` the orphans set ``won't-do``,
+    gr576258); ``would`` the ``(node id, action)`` pairs a dry run lists
+    (``"diagnose"`` / ``"rearm"`` / ``"ask"`` / ``"close"``); ``waiting``
+    the nodes a hold or an in-flight diagnose covered; ``read_only``
+    the kill-switch reason that forced the dry run.
     """
 
     dry_run: bool
@@ -1350,6 +1361,7 @@ class RescuePassResult:
     diagnosing: list[int] = field(default_factory=list)
     rearmed: list[int] = field(default_factory=list)
     asked: list[int] = field(default_factory=list)
+    closed: list[int] = field(default_factory=list)
     would: list[tuple[int, str]] = field(default_factory=list)
     waiting: int = 0
     notes: list[str] = field(default_factory=list)
@@ -1359,6 +1371,7 @@ class RescuePassResult:
             "diagnose_minted": len(self.diagnosing),
             "rearmed": len(self.rearmed),
             "asked": len(self.asked),
+            "closed": len(self.closed),
             "would": len(self.would),
             "waiting": self.waiting,
             "dry_run": self.dry_run,
@@ -1371,6 +1384,7 @@ class RescuePassResult:
         return (
             f"factory_rescue_tick: diagnose minted={len(self.diagnosing)} "
             f"rearmed={len(self.rearmed)} asked={len(self.asked)} "
+            f"closed={len(self.closed)} "
             f"would={len(self.would)} waiting={self.waiting} "
             f"dry_run={self.dry_run}"
         )
@@ -1532,6 +1546,59 @@ def _diagnose_task_id(conn: Any, ref_id: int, tag_at: Any) -> int | None:
         (str(ref_id), tag_at),
     ).fetchone()
     return int(row[0]) if row else None
+
+
+def _terminal_ancestor(store: Store, ref_id: int) -> tuple[int, str] | None:
+    """``(ref id, STATUS)`` of the node's nearest ancestor with a terminal
+    STATUS — the ``_ancestor_ids`` walk, nearest first (gr576258)."""
+    with store.pool.connection() as conn:
+        ids = _ancestor_ids(conn, ref_id)
+        if not ids:
+            return None
+        rows = conn.execute(
+            """
+            SELECT r.ref_id,
+                   COALESCE(
+                     (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                       WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                       LIMIT 1),
+                     'open')
+              FROM refs r
+             WHERE r.ref_id = ANY(%s) AND r.retired_at IS NULL
+            """,
+            (ids,),
+        ).fetchall()
+    status = {int(rid): str(v) for rid, v in rows}
+    for aid in ids:
+        s = status.get(aid)
+        if s in TERMINAL_TODO_STATUSES:
+            return aid, s
+    return None
+
+
+def _live_ask_blockers(conn: Any, ref_id: int) -> list[int]:
+    """Live ask-shaped ``blocked-by`` targets on the node — the
+    ``_episode_ask`` shape minus the episode bound: a watchdog close
+    supersedes every pending ruling, not just this rescue's."""
+    rows = conn.execute(
+        """
+        SELECT b.ref_id FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
+         WHERE l.src_ref_id = %s AND l.relation = 'blocked-by'
+           AND b.retired_at IS NULL
+           AND (b.meta ? 'ask' OR EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = b.ref_id AND t.namespace = 'OPEN'
+                    AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')))
+           AND COALESCE(
+                 (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                   WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
+                   LIMIT 1),
+                 'open') <> ALL(%s)
+         ORDER BY b.ref_id
+        """,
+        (ref_id, sorted(BLOCKER_TERMINAL_STATUSES)),
+    ).fetchall()
+    return [int(r[0]) for r in rows]
 
 
 def _plan_root_of(n: Any) -> int | None:
@@ -2066,6 +2133,74 @@ def _ask_node(
     return int(ref.id)
 
 
+def _close_orphan(
+    store: Store,
+    now: datetime,
+    res: RescuePassResult,
+    n: Any,
+    cls: str,
+    term: tuple[int, str],
+) -> None:
+    """Close the orphan ``STATUS:won't-do`` — there is nothing to retry
+    under a done or won't-do root, and every ask the pass filed on one
+    came back "won't do" (gr576258): one note, ``meta.rescue`` stamped
+    (an existing ``n`` kept — the count is about re-arms, not closes),
+    and every live ask on the node closed with it so none is left
+    orphaned. The ``rescue:<cls>`` tag stays — the record of why the
+    node died."""
+    aid, astatus = term
+    label = "root" if aid == _plan_root_of(n) else "ancestor"
+    note = f"{label} td{aid} is {astatus}; closed by the watchdog"
+    if res.dry_run:
+        res.would.append((n.id, "close"))
+        res.notes.append(f"td{n.id}: would close won't-do ({note})")
+        return
+    with store.atomic() as conn:
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (_RESCUE_PASS_LOCK_KEY,))
+        # Recheck under the lock (the ``_rearm_node`` pattern): a racer
+        # that moved the node off the statuses ``_rescued_nodes``
+        # selects — a close, a pause — wins; this pass writes nothing.
+        tags_now = store.tags_for(n.id, conn=conn)
+        status = next((str(t.value) for t in tags_now if t.prefix == "STATUS"), "open")
+        if status not in ("open", "doing"):
+            res.notes.append(f"td{n.id}: STATUS {status} under the lock; not closed")
+            return
+        store.add_tag(
+            n.id,
+            Tag.closed("STATUS", "won't-do"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        _comment(store, conn, n.id, "todo_comment", f"rescue: {note}")
+        prev = n.meta.get("rescue")
+        rescue_meta = dict(prev) if isinstance(prev, dict) else {}
+        rescue_meta["at"] = _iso(now)
+        rescue_meta["cls"] = cls
+        rescue_meta["closed"] = "won't-do"
+        store.stamp_ref_meta(n.id, {"rescue": rescue_meta}, conn=conn)
+        for ask_id in _live_ask_blockers(conn, n.id):
+            store.add_tag(
+                ask_id,
+                Tag.closed("STATUS", "won't-do"),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )
+            _comment(
+                store,
+                conn,
+                ask_id,
+                "todo_comment",
+                f"superseded — td{n.id} closed by the watchdog",
+            )
+    res.closed.append(n.id)
+    res.notes.append(f"td{n.id}: closed won't-do ({note})")
+    root = _plan_root_of(n)
+    if root is not None:
+        log_plan_event(store, n.id, note, root=root)
+
+
 def _close_diagnose(
     store: Store,
     res: RescuePassResult,
@@ -2228,7 +2363,10 @@ def _judge_rescued(
     tag_at: Any,
     pd: Any,
 ) -> None:
-    """One rescued node's path: held → waiting; an ask already filed
+    """One rescued node's path: held → waiting; a closed ancestor —
+    the ``terminal-root`` class, or a ``won't-do`` anywhere up the
+    node's own parent chain — → close won't-do, no ask (gr576258, a
+    bounded ``ORPHAN_BATCH`` closes a pass); an ask already filed
     this episode → skip; a diagnose task → judge it; an engine class,
     an unknown class or a second rescue → the ask directly; else mint
     the diagnose task."""
@@ -2242,6 +2380,25 @@ def _judge_rescued(
         res.waiting += 1
         res.notes.append(f"td{ref_id}: held ({held}); not judged")
         return
+    term = _terminal_ancestor(store, ref_id)
+    if term is not None and (cls == "terminal-root" or term[1] == "won't-do"):
+        if any(j.status not in pd._JOB_TERMINAL for j in plan.jobs(n)):
+            # A live job may still land: deferring beats closing under
+            # it (the ``_step_moot`` rule — never close over a live job).
+            res.waiting += 1
+            res.notes.append(
+                f"td{ref_id}: live job under a closed ancestor; not closed"
+            )
+            return
+        if len(res.closed) >= ORPHAN_BATCH:
+            res.waiting += 1
+            res.notes.append(
+                f"td{ref_id}: orphan close batch full "
+                f"({ORPHAN_BATCH} this pass); next tick"
+            )
+            return
+        _close_orphan(store, now, res, n, cls, term)
+        return
     with store.pool.connection() as conn:
         ask = _episode_ask(conn, ref_id, tag_at)
         task_id = _diagnose_task_id(conn, ref_id, tag_at)
@@ -2253,6 +2410,9 @@ def _judge_rescued(
         return
     bound = BOUNDS.get(cls)
     if bound is None or bound.engine:
+        # The ask survives for engine classes where a human choice
+        # exists — a ``terminal-root`` whose closed ancestor is still
+        # findable closes won't-do above instead (gr576258).
         why = (
             f"unknown rescue class {cls!r} (treated as engine)"
             if bound is None
@@ -2333,6 +2493,7 @@ __all__ = [
     "BOUNDS",
     "DIAGNOSE_LANE",
     "DIAGNOSE_TASK_CLASS",
+    "ORPHAN_BATCH",
     "STAGE_DEADLINES",
     "TICK_SILENT_AFTER",
     "Bound",
