@@ -391,7 +391,7 @@ search(kind="job", tags=["STATUS:running"])
 
 ## How long did a job run, and where?
 
-Every terminal `STATUS:` (succeeded, failed, cancelled, timeout kill) stamps `meta.finished_at` (UTC), `meta.wall_s` (finished minus first claim; 0 if it never ran) and `meta.node` (the pinned `target_node`, else the claiming host). `get(kind="job", id=N)` prints them. A seed's compute dir is kept until that stamp lands.
+Every terminal `STATUS:` (succeeded, failed, cancelled, timeout kill) stamps `meta.finished_at` (UTC), `meta.wall_s` (finished minus first claim; 0 if it never ran) and `meta.node` (the pinned `target_node`, else the claiming host). `get(kind="job", id=N)` prints them under `status:` alongside `updated_at` (the row's own timestamp — compare it to your clock when a card looks stale). A seed's compute dir is kept until that stamp lands.
 
 ## Show me everything queued up
 
@@ -404,6 +404,11 @@ class, its position in the executor's claim order (class, then priority,
 then time queued) with the per-class count of rows ahead, what is running
 on that executor now, and holds it can see (operator suspension, a
 `target_node` pin, a live lease).
+
+The card's status is verified against a fresh read before queue text is
+rendered: when the row's real state moved on (claimed, parked, finished),
+the card prints the fresh status or a `stale-read:` line instead of a
+position — a terminal job never renders as queued (gr592853).
 
 ## Show me failed jobs
 ## Find jobs that need attention

@@ -9,6 +9,9 @@ gates visible from the row (suspension, node pin).
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
+
 import pytest
 
 from precis.dispatch import Hub
@@ -102,6 +105,110 @@ def test_suspended_type_is_held_not_ranked(
 
 def test_terminal_job_has_no_queue_lines(store: Store) -> None:
     assert "queue:" not in _body(store, _job(store, "succeeded"))
+
+
+# ── Stale-read guard (gr592853) ─────────────────────────────────────
+#
+# The card's ref/tags reads and the queue scan run on separate
+# checkouts; a stale one rendered a finished draft_export as "queued ·
+# nothing running" for minutes after the terminal flip committed. The
+# terminal STATUS: flip lands in the same transaction as the
+# meta.finished_at stamp, so the card reconciles a live status against
+# one fresh probe — and never renders a terminal row as queued.
+
+
+def _render_with_tags(store: Store, job_id: int, tags: list[Tag]) -> str:
+    """The job card as rendered from a caller-supplied (stale) tag list."""
+    handler = JobHandler(hub=Hub(store=store, embedder=None))
+    ref = handler._resolve_live_ref(job_id)
+    return handler._render_one(ref, tags)
+
+
+def test_card_shows_updated_at_and_finished_at(store: Store) -> None:
+    body = _body(store, _job(store, "succeeded"))
+    assert "updated_at:" in body
+    assert "finished_at:" in body
+
+
+def test_finished_stamp_contradiction_never_renders_queued(
+    store: Store,
+) -> None:
+    """The prod shape: tags still read ``queued`` while the row already
+    carries the terminal stamp — the card must not claim 'queued'."""
+    job = _job(store, "queued")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+            (json.dumps({"finished_at": datetime.now(UTC).isoformat()}), job),
+        )
+        conn.commit()
+    body = _body(store, job)
+    assert "\nstatus: queued\n" not in f"\n{body}\n"
+    assert "queue:" not in body
+    assert "stale-read" in body
+    assert "finished_at:" in body
+
+
+def test_stale_tag_read_is_corrected_to_terminal(store: Store) -> None:
+    """A stale tag list handed to the card is corrected by the fresh
+    probe: the finished row renders 'succeeded', never 'queued'."""
+    job = _job(store, "succeeded")
+    body = _render_with_tags(store, job, [Tag.closed("STATUS", "queued")])
+    assert "\nstatus: succeeded" in f"\n{body}"
+    assert "stale-read" in body
+    assert "queue:" not in body
+
+
+def test_requeued_after_terminal_renders_queued_normally(store: Store) -> None:
+    """A live re-tag after a terminal run keeps the last run's
+    ``finished_at`` — that job really is queued again; the stamp alone
+    must not flip the card to terminal."""
+    job = _job(store, "succeeded")
+    store.add_tag(
+        job,
+        Tag.closed("STATUS", "queued"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    body = _body(store, job)
+    assert "\nstatus: queued" in f"\n{body}"
+    assert "stale-read" not in body
+    assert "queue:" in body
+
+
+def test_claimed_between_reads_reports_fresh_status(store: Store) -> None:
+    """Tags say queued (stale) while a fresh probe sees the row running —
+    the card corrects to the fresh status instead of inventing a queue
+    position."""
+    job = _job(store, "running")
+    body = _render_with_tags(store, job, [Tag.closed("STATUS", "queued")])
+    assert "\nstatus: running" in f"\n{body}"
+    assert "stale-read" in body
+    assert "queue: position" not in body
+
+
+def test_queue_lines_report_fresh_status_over_stale_card(store: Store) -> None:
+    """The queue scan's own STATUS probe — same snapshot as the position
+    math — names the fresh truth when the card's read was stale."""
+    handler = JobHandler(hub=Hub(store=store, embedder=None))
+    job = _job(store, "running")
+    ref = handler._resolve_live_ref(job)
+    lines = handler._queue_lines(ref)
+    assert any("STATUS:running" in line for line in lines)
+    assert not any("position" in line for line in lines)
+    assert any("running now on 'job_inproc': 1" in line for line in lines)
+
+
+def test_queue_lines_suppress_advice_on_terminal_row(store: Store) -> None:
+    """A terminal row must never get 'position N' / 'nothing running …
+    if this stays queued' — the probe suppresses both."""
+    handler = JobHandler(hub=Hub(store=store, embedder=None))
+    job = _job(store, "succeeded")
+    ref = handler._resolve_live_ref(job)
+    lines = handler._queue_lines(ref)
+    assert any("STATUS:succeeded" in line for line in lines)
+    assert not any("position" in line for line in lines)
+    assert not any("if this stays queued" in line for line in lines)
 
 
 # ── Release band in the readout (gr584136, review td584420) ────────────

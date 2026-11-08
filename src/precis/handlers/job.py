@@ -4193,6 +4193,7 @@ class JobHandler(NumericRefHandler):
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         lines = [f"# job {ref.id}"]
         status = _status_of(tags)
+        ref, status, stale_note = self._reconcile_status_read(ref, status)
         meta = ref.meta or {}
         blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         # The plain-language row sentence leads the card (td573331): the
@@ -4211,18 +4212,21 @@ class JobHandler(NumericRefHandler):
                 lines.append(f"error: {reason}")
                 if meta.get("retry_after"):
                     lines.append(f"retry_after: {meta['retry_after']}")
-        if meta.get("job_type"):
-            lines.append(f"job_type: {meta['job_type']}")
-        if meta.get("executor"):
-            lines.append(f"executor: {meta['executor']}")
-        if meta.get("wall_seconds") is not None:
-            lines.append(f"wall_seconds: {meta['wall_seconds']:.1f}")
+        if stale_note is not None:
+            lines.append(stale_note)
+        lines.append(f"updated_at: {_fmt_utc(ref.updated_at)}")
         if meta.get("finished_at"):
             lines.append(f"finished_at: {meta['finished_at']}")
             if meta.get("wall_s") is not None:
                 lines.append(f"wall_s: {meta['wall_s']:.1f}")
             if meta.get("node"):
                 lines.append(f"node: {meta['node']}")
+        if meta.get("job_type"):
+            lines.append(f"job_type: {meta['job_type']}")
+        if meta.get("executor"):
+            lines.append(f"executor: {meta['executor']}")
+        if meta.get("wall_seconds") is not None:
+            lines.append(f"wall_seconds: {meta['wall_seconds']:.1f}")
         if meta.get("branch"):
             lines.append(f"branch: {meta['branch']}")
         if meta.get("sha"):
@@ -4294,6 +4298,82 @@ class JobHandler(NumericRefHandler):
                 else:
                     lines.append(text)
         return "\n".join(lines)
+
+    def _fresh_status_probe(self, ref_id: int) -> tuple[str | None, datetime | None]:
+        """The ref's ``STATUS:`` value and that tag row's stamp, read on a
+        fresh snapshot — the gr592853 stale-read guard's probe.
+
+        The stamp separates an honest re-queue after a terminal run (the
+        new ``STATUS`` row post-dates ``meta.finished_at``) from a stale
+        tag read: a terminal flip deletes the live tag in the same write
+        that lands the stamp, so a surviving ``STATUS`` older than
+        ``finished_at`` cannot be the current one.
+        """
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT t.value, rt.created_at "
+                "FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+                "WHERE rt.ref_id = %s AND t.namespace = %s "
+                "ORDER BY rt.created_at DESC LIMIT 1",
+                (ref_id, STATUS_NAMESPACE),
+            ).fetchone()
+        if row is None:
+            return None, None
+        return (str(row[0]) if row[0] is not None else None), as_utc(row[1])
+
+    def _reconcile_status_read(
+        self, ref: Ref, status: str | None
+    ) -> tuple[Ref, str | None, str | None]:
+        """Re-check a live ``status`` against one fresh probe (gr592853).
+
+        The card's ref/tags reads run on separate checkouts from each
+        other and from ``_queue_lines``' scan; a stale snapshot rendered
+        a finished ``draft_export`` as ``queued`` for minutes after the
+        terminal flip committed. The fresh read wins: a terminal truth
+        must never render as queued. ``(ref, status, stale_note)`` —
+        ``ref`` is re-resolved on a correction so the meta the card
+        prints matches the status it claims; ``stale_note`` is the
+        ``stale-read:`` line to show, ``None`` when nothing diverged.
+        """
+        if status in _TERMINAL_STATUSES:
+            return ref, status, None
+        meta = ref.meta or {}
+        finished = as_utc(meta.get("finished_at")) if meta.get("finished_at") else None
+        live_status, stamped = self._fresh_status_probe(ref.id)
+        if live_status == status:
+            # Same value on a fresh read — current, unless the probed
+            # tag predates the row's own completion stamp: then the read
+            # saw a tag the terminal flip already deleted (stale probe).
+            if finished is not None and stamped is not None and stamped <= finished:
+                return (
+                    ref,
+                    "terminal",
+                    (
+                        f"stale-read: STATUS:{status!r} predates the row's "
+                        f"finished_at={meta['finished_at']} — a terminal flip "
+                        "deletes the live tag it stamps, so the tag read is "
+                        "stale; the job is terminal"
+                    ),
+                )
+            return ref, status, None
+        if live_status is not None:
+            fresh = self._resolve_live_ref(ref.id)
+            return (
+                fresh,
+                live_status,
+                (
+                    f"stale-read: the card's tag read said {status!r}; a fresh "
+                    f"read says {live_status!r} — rendered from the fresh row"
+                ),
+            )
+        return (
+            ref,
+            status,
+            (
+                "stale-read: a fresh read finds no STATUS tag on this row — "
+                f"the card's {status!r} read was stale"
+            ),
+        )
 
     def _queue_lines(self, ref: Ref) -> list[str]:
         """``queue:`` lines for a ``STATUS:queued`` job: where it stands in
@@ -4415,7 +4495,35 @@ class JobHandler(NumericRefHandler):
                 """,
                 (executor, STATUS_NAMESPACE, RUNNING),
             ).fetchall()
+            live = conn.execute(
+                "SELECT t.value "
+                "FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+                "WHERE rt.ref_id = %s AND t.namespace = %s "
+                "LIMIT 1",
+                (ref.id, STATUS_NAMESPACE),
+            ).fetchone()
         lines: list[str] = []
+        live_status = str(live[0]) if live and live[0] is not None else None
+        if live_status not in CLAIMABLE:
+            # gr592853 (a): the card's tag read called this row claimable,
+            # but the fresh snapshot this scan just took disagrees — the
+            # job was claimed or finished between the card's reads, or
+            # that read was stale. Never render queue advice the row's
+            # own current status contradicts ("position N" / "nothing
+            # running … if this stays queued" would both lie).
+            lines.append(
+                f"queue: fresh read sees STATUS:{live_status or '(unset)'} "
+                "on this row — it is not claimable; the queued status "
+                "above came from an older snapshot (re-get for the live "
+                "card)"
+            )
+            if running:
+                mix = ", ".join(f"{t} x{n}" for t, n in running)
+                lines.append(
+                    f"queue: running now on {executor!r}: "
+                    f"{sum(n for _, n in running)} ({mix})"
+                )
+            return lines
         job_type = meta.get("job_type")
         if job_type in suspended_job_types():
             lines.append(
