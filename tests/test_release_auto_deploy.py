@@ -491,7 +491,9 @@ def test_second_red_fix_loop_files_an_ask_and_mints_no_third(
     assert {"ask-user", "showstopper", f"plan:{mint.root_id}"} <= tags
     ask = _meta(store, asks[0])["ask"]
     assert ask["kind"] == "ruling"
-    assert ask["blocks"] == "nothing"
+    # The ruling parks the whole pass: it names the root, never "nothing"
+    # (an informational ask no longer holds its root open, gr589823).
+    assert ask["blocks"] == f"td{mint.root_id}"
     context = ask["context"]
     assert "r7" in context and "CI red" in context and "31" in context
 
