@@ -4183,6 +4183,62 @@ class TestBarrierVerdictConsistency:
         assert c.flags["barrier_trusted"] is True
         assert c.measures["barrier"] == 0.8
 
+    def test_mismatch_note_lands_when_stamp_already_false(self, store: Any) -> None:
+        """The cross-check must run even when ``barrier_trusted`` is
+        ALREADY False: a harvest that distrusted the barrier on its own
+        counters can still carry a provenance-mismatched anchor, and
+        without the ``anchor/source mismatch`` note the provisional
+        reason never names it (td594066)."""
+        qid = _mk_quest(store, "A striving")
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        pw_a = store.insert_ref(
+            kind="pathway", slug="pw-a", title="pw", meta={}, parent_id=sid
+        ).id
+        pw_b = store.insert_ref(
+            kind="pathway", slug="pw-b", title="pw", meta={}, parent_id=sid
+        ).id
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=5,
+            max_disp=0.0,
+            energy=-12.0,
+        )
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.648,
+                "barrier_trusted": False,
+                "barrier_neb_failed": 1,
+                "barrier_source": "autocatpath",
+                "barrier_pathway_ref_id": pw_a,
+                "barrier_anchor": {
+                    "pathway": f"pw{pw_b}",
+                    "gates": ["neb_convergence"],
+                    "not_run": [],
+                    "over": [],
+                    "seeds": [0, 1],
+                },
+            },
+        )
+        c = _cand(store, sid)
+        assert c.flags["barrier_trusted"] is False
+        assert c.flags["barrier_trust_note"] == "anchor/source mismatch"
+        assert "barrier" not in c.measures
+        assert c.flags["barrier_untrusted_value"] == 0.648
+        assert _provisional_reasons(c, ["barrier"], {"barrier": 0.648}) == [
+            "barrier untrusted: NEB not converged",
+            "barrier untrusted: anchor/source mismatch",
+        ]
+
 
 class TestProvisionalReasonsSelectivityBlockers:
     def test_selectivity_blocker_prose_names_competitor_fork_and_record(
