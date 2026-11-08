@@ -53,12 +53,14 @@ def _exact_suite(
     run_id: int = 42,
     attempt: int = 1,
     path: str | None = ".github/workflows/check.yml",
+    event: str = "push",
 ) -> dict[str, Any]:
     """One check suite bound to a workflow run, as the exact query returns it."""
     return {
         "workflowRun": {
             "databaseId": run_id,
             "runAttempt": attempt,
+            "event": event,
             "file": {"path": path} if path is not None else None,
         },
         "checkRuns": {"pageInfo": {"hasNextPage": False}, "nodes": runs},
@@ -373,6 +375,46 @@ def test_exact_verdict_red_chosen_run_is_not_rescued_by_a_green_sibling(
     assert facts["candidate"] == ""
     assert facts["candidate_state"] == "release_not_green"
     assert "certificate" not in facts
+
+
+def test_exact_verdict_ignores_a_scheduled_sibling_suite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """r253: the nightly (event=schedule) attached to the release head
+    because it was also main's tip at midnight. Newest run id, still in
+    progress — it must not shadow the green release push run, and a red
+    nightly must not read as a release red either."""
+    mod = _load()
+    green = _completed(_shards())
+    nightly = _shards()  # IN_PROGRESS shards, newest run id
+    graph = _exact_graph(
+        GATED,
+        [
+            _exact_suite(green, run_id=42),
+            _exact_suite(nightly, run_id=43, event="schedule"),
+        ],
+    )
+    monkeypatch.setattr(
+        mod,
+        "_run",
+        lambda *a: graph if a[2] == "graphql" else _exact_jobs(green, run_id=42),
+    )
+    facts = mod.exact_verdict(GATED)
+    assert facts["candidate_state"] == "found"
+    assert facts["certificate"]["run_id"] == 42
+
+    red_nightly = _completed(_shards())
+    red_nightly[0]["conclusion"] = "FAILURE"
+    graph = _exact_graph(
+        GATED,
+        [
+            _exact_suite(green, run_id=42),
+            _exact_suite(red_nightly, run_id=43, event="schedule"),
+        ],
+    )
+    facts = mod.exact_verdict(GATED)
+    assert facts["candidate_state"] == "found"
+    assert facts["certificate"]["run_id"] == 42
 
 
 def test_exact_verdict_cancelled_chosen_run_is_not_green(

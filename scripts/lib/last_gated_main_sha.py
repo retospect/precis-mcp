@@ -162,7 +162,7 @@ EXACT_QUERY = """
 query($owner:String!,$name:String!,$sha:String!){
  repository(owner:$owner,name:$name){object(expression:$sha){... on Commit{
   oid checkSuites(first:100){pageInfo{hasNextPage} nodes{
-   workflowRun{databaseId runAttempt file{path}}
+   workflowRun{databaseId runAttempt event file{path}}
    checkRuns(first:100,filterBy:{checkType:LATEST}){pageInfo{hasNextPage}
     nodes{name status conclusion completedAt}}}}}}}}
 """
@@ -182,6 +182,12 @@ def exact_verdict(sha: str) -> dict[str, Any]:
     head is also a main commit, so the sha can carry a second check.yml
     suite whose superseded push run was concurrency-cancelled. Another
     run's cancelled suite is not this run's verdict (gr492454).
+
+    A ``schedule`` run (the nightly full matrix) is never the certificate:
+    it attaches to whatever sha main's tip is at midnight, which can be the
+    release head itself — r253 (1f7a1c4e2) sat "not green" for its whole
+    hour while CI had already passed the release push, and a nightly red
+    would have read as a release red. Only push / dispatch runs certify.
     """
     facts: dict[str, Any] = {
         "candidate": "",
@@ -223,6 +229,7 @@ def exact_verdict(sha: str) -> dict[str, Any]:
             for s in suites["nodes"]
             if ((s.get("workflowRun") or {}).get("file") or {}).get("path")
             == ".github/workflows/check.yml"
+            and (s.get("workflowRun") or {}).get("event") != "schedule"
         ]
         chosen = max(
             intended,
