@@ -235,6 +235,13 @@ def resolve_cite_handle(store: Any, handle: str) -> tuple[str, int | None, bool]
         return None
     try:
         resolved = store.resolve_handle(handle)
+        if resolved is None:
+            # ``<record>~<sel>`` isn't a handle, but a chunk selector on a
+            # citable record still resolves through its base — ``pa5~3``
+            # cites ``pa5``.
+            base, sel = handle_registry.split_selector(handle)
+            if sel is not None:
+                resolved = store.resolve_handle(base)
     except Exception:  # pragma: no cover — store hiccup
         return None
     if resolved is None or not resolved.public_id:

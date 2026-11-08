@@ -484,9 +484,8 @@ def test_record_nav_selector_external_numbers_with_selector(
 def test_record_selector_drops_on_chunkless_and_cite_kinds(
     backend: str,
 ) -> None:
-    """A ``~<sel>`` on a kind with no chunks (memory) or a citation kind
-    (paper) still degrades to the record handle — no selector, no
-    ``?chunk=``."""
+    """A ``~<sel>`` on a kind with no chunks (memory) still degrades to
+    the record handle — no selector, no ``?chunk=``."""
     state = policy.Audience(_Records(), "dev", _BASE)
     text = "See [me5~2] and [dr7~p4] here."
     if backend == "latex":
@@ -513,6 +512,51 @@ def test_record_selector_drops_on_chunkless_and_cite_kinds(
     # a draft record does carry the selector (``~p4`` → "page 4")
     assert "dr7 page 4" in rendered
     assert f"{_BASE}/r/draft/7?chunk=p4" in urls
+
+
+@pytest.mark.parametrize("backend", ["latex", "docx"])
+def test_paper_nav_selector_renders_and_links_the_passage(
+    backend: str,
+) -> None:
+    """``[pa5~3]`` — a chunk selector on a paper record — keeps the
+    selector in the text and carries it into the link as ``?chunk=``,
+    landing on the cited-passage card (review of gr593143: papers were
+    still degrading to the bare cite)."""
+    state = policy.Audience(_Records(), "dev", _BASE)
+    text = "Evidence [pa5~3] and [pa5~p12]."
+    if backend == "latex":
+        ctx = latex._Ctx(
+            keymap={}, known_handles=set(), store=state.store, audience=state
+        )
+        rendered = latex._render_inline(text, ctx)
+        urls = rendered
+    else:
+        from docx import Document
+
+        paragraph = Document().add_paragraph()
+        context = docx._Ctx(store=state.store, known_handles=set(), audience=state)
+        docx._render_inline(text, context, paragraph)
+        rendered = _xml_text(paragraph._p)
+        urls = "\n".join(
+            str(rel.target_ref)
+            for rel in paragraph.part.rels.values()
+            if rel.is_external
+        )
+    assert "pa5 chunk 3" in rendered
+    assert "pa5 page 12" in rendered
+    assert f"{_BASE}/r/paper/5?chunk=3" in urls
+    assert f"{_BASE}/r/paper/5?chunk=p12" in urls
+
+
+def test_paper_nav_selector_external_numbers_and_cites() -> None:
+    """External ``[pa5~3]``: the supplement number keeps the selector AND
+    the paper still lands in the bibliography (``citation=True``)."""
+    state = policy.Audience(_Records(), "external", _BASE)
+    ref = state.reference("pa5~3", None)
+    assert ref is not None
+    assert ref.text == "S4.1 (chunk 3)"
+    assert ref.citation
+    assert [entry.handle for entry in state.entries] == ["pa5"]
 
 
 def test_native_footnotes_reuse_part_and_roundtrip(tmp_path: Path) -> None:

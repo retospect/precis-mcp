@@ -367,6 +367,12 @@ class Audience:
             candidate = record_handle(base, store)
             if candidate is not None and not candidate[1] and record_nav_sel(base):
                 parsed, nav_sel = candidate, sel
+            elif candidate is None and record_nav_sel(base):
+                # A citation kind's base (``pa5~3``): ``record_handle``
+                # refuses papers so the *bare* handle cites, but a
+                # ``~<sel>`` names a passage the ``/r`` resolver lands on
+                # — link it like any other navigable selector.
+                parsed, nav_sel = handle_registry.parse(base), sel
         if parsed is None:
             return None
         kind, is_chunk, pk = parsed
@@ -401,7 +407,7 @@ class Audience:
         if nav_sel is not None:
             text = f"{entry.number} ({nav_sel_text(kind, nav_sel)})"
         return RecordReference(
-            text, footnote=entry.description, citation=kind == "dataset"
+            text, footnote=entry.description, citation=kind in ("dataset", "paper")
         )
 
 

@@ -382,6 +382,18 @@ async def resolve(
                 status_code=303,
             )
 
+    # File-backed doc kinds (markdown/plaintext/tex): ``~N`` selects the
+    # chunk at that ord — the generic detail surfaces it as the cited
+    # passage, the same landing ``/papers/{id}?chunk=N`` gives (gr593143).
+    # A ``~pN`` page jump has no meaning on a chunked text record and
+    # falls through to the overview.
+    if kind in {"markdown", "plaintext", "tex"} and chunk:
+        if _CHUNK_RE.match(chunk):
+            return RedirectResponse(
+                url=f"/refs/{kind}/{numeric_id}?chunk={chunk}",
+                status_code=303,
+            )
+
     # A draft: ``~N`` selects the chunk at that ord — land on it focused,
     # the same target a ``/c/dc<id>`` click resolves to (gr593143).
     if kind == "draft" and chunk:

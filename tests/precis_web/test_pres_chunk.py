@@ -99,3 +99,42 @@ def test_r_resolver_draft_chunk_focuses_the_dc(
 
     assert response.status_code == 303
     assert response.headers["location"].endswith(f"?focus={dc}")
+
+
+def _markdown_ref(store: Store, slug: str) -> Any:
+    from precis.store.types import ChunkInsert
+
+    ref = store.insert_ref(kind="markdown", slug=slug, title="Notes")
+    store.chunks.insert_chunks(
+        ref.id,
+        [
+            ChunkInsert(ord=0, text="first block"),
+            ChunkInsert(ord=3, text="the cited passage"),
+        ],
+    )
+    return ref
+
+
+def test_r_resolver_markdown_chunk_redirects_to_detail(
+    web_client: TestClient, store: Store
+) -> None:
+    """``/r/markdown/<id>?chunk=3`` → ``/refs/markdown/<id>?chunk=3`` — a
+    ``[md<id>~3]`` export link lands on the cited chunk, not the record
+    overview."""
+    ref = _markdown_ref(store, "sel-md-1")
+    response = web_client.get(f"/r/markdown/{ref.id}?chunk=3", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/refs/markdown/{ref.id}?chunk=3"
+
+
+def test_markdown_detail_chunk_surfaces_cited_passage(
+    web_client: TestClient, store: Store
+) -> None:
+    """``/refs/markdown/<id>?chunk=3`` renders the cited chunk as a card."""
+    ref = _markdown_ref(store, "sel-md-2")
+    response = web_client.get(f"/refs/markdown/{ref.id}?chunk=3")
+
+    assert response.status_code == 200
+    assert "cited ~3" in response.text
+    assert "the cited passage" in response.text

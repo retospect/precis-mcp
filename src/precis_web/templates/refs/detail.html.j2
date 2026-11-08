@@ -135,6 +135,15 @@
   {{ body_disabled_notice }}
 </div>
 {% endif %}
+{% if cited_chunk %}
+{# ``?chunk=N`` deep link — the cited passage card (gr593143). #}
+<div class="mb-3 rounded-lg border border-info bg-info-subtle p-4">
+  <p class="text-xs font-mono text-info-strong mb-1">
+    cited ~{{ cited_chunk.pos }}{% if cited_chunk.handle %} · {{ cited_chunk.handle }}{% endif %}
+  </p>
+  <pre class="text-sm whitespace-pre-wrap break-words text-fg">{{ cited_chunk.text }}</pre>
+</div>
+{% endif %}
 {% if is_error %}
 <div class="rounded-lg border border-danger bg-danger-subtle p-4 text-sm text-danger-deep whitespace-pre-wrap">{{ body | linkify_refs }}</div>
 {% elif kind == "anki" %}

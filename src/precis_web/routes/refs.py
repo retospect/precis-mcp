@@ -3327,9 +3327,15 @@ async def job_geometry(
 # validation (gr553326).
 @router.get("/{kind}/{ref_id:int}", response_class=HTMLResponse, response_model=None)
 async def detail(
-    request: Request, kind: str, ref_id: int
+    request: Request, kind: str, ref_id: int, chunk: str | None = None
 ) -> HTMLResponse | RedirectResponse:
-    """Read-only reader for every stored kind, independent of browse menus."""
+    """Read-only reader for every stored kind, independent of browse menus.
+
+    ``?chunk=N`` (a ``~N`` selector deep link, e.g. an export's
+    ``[md<id>~N]`` landing) surfaces that chunk as a cited-passage card —
+    the file kinds (markdown/plaintext/tex) render their chunks as one
+    joined body, so the card is what makes the selector land on the
+    passage rather than the overview (gr593143)."""
     if kind == "profile":
         # owner-private (gr490266) — see _require_kind
         raise NotFound("profiles are managed under /account")
@@ -3434,6 +3440,7 @@ async def detail(
     # misses for query-keyed kinds (perplexity/websearch), so a page view
     # would re-run the paid upstream call. no_fetch=True serves the stored
     # body and never spends.
+    cited_chunk: dict[str, Any] | None = None
     if kind in _CACHE_BACKED_KINDS:
         get_args["no_fetch"] = True
     if kind == "orcid":
@@ -3443,12 +3450,26 @@ async def detail(
         # File get synchronizes with its local corpus and may retire a ref
         # absent there. A browser must read the stored snapshot, even when
         # this process does not mount the originating filesystem.
-        body = "\n\n".join(
-            chunk.text
-            for chunk in store.chunks.list_chunks_for_ref(ref.id)
-            if chunk.text
-        )
+        blocks = store.chunks.list_chunks_for_ref(ref.id)
+        body = "\n\n".join(b.text for b in blocks if b.text)
         is_error = False
+        # ``?chunk=N`` — a ``~N`` selector deep link — surfaces the chunk
+        # at that ord as the cited passage (``mc<id>`` handle alongside).
+        if chunk:
+            lo = chunk.split("..", 1)[0]
+            if lo.isdigit():
+                ord_pos = int(lo)
+                hit = next(
+                    (b for b in blocks if getattr(b, "ord", None) == ord_pos), None
+                )
+                if hit is not None:
+                    cited_chunk = {
+                        "pos": ord_pos,
+                        "text": hit.text or "",
+                        "handle": handle_registry.format_handle(
+                            kind, hit.id, chunk=True
+                        ),
+                    }
     else:
         body, is_error = await await_dispatch(request, "get", get_args)
 
@@ -3563,6 +3584,7 @@ async def detail(
             # None for a kind without a handle code.
             "ref_handle": handle_registry.try_format(kind, ref.id),
             "body": body,
+            "cited_chunk": cited_chunk,
             "footnotes": footnotes,
             "resolved_handles": resolved_handles,
             "is_error": is_error,

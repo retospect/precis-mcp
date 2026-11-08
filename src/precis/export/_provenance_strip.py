@@ -306,18 +306,19 @@ def _explode(m: re.Match[str]) -> str:
 def record_nav_sel(base: str) -> bool:
     """Does ``<base>~<sel>`` keep its selector through the strip?
 
-    True when ``base`` is a *record* handle of a chunked kind that isn't a
-    citation kind: ``pr592588~124`` names slide 124 of the deck and the
-    audience link renders it (gr593143). The citation kinds
-    (paper/patent/finding) dispatch on the bare handle — the selector is
-    cite detail, never printed — and a kind with no chunk code (memory,
-    todo, …) has no chunk for the ord to select, so both degrade to the
-    record handle as before."""
+    True when ``base`` is a *record* handle of a chunked kind whose ``/r``
+    resolver lands a ``?chunk=`` on the passage — ``pr592588~124`` names
+    slide 124 of the deck and ``pa5~3`` names chunk 3 of the paper, and
+    the audience link renders the selector (gr593143). The other citation
+    kinds (patent/finding) have no chunk-addressed landing — their
+    selector is cite detail, never printed — and a kind with no chunk
+    code (memory, todo, …) has no chunk for the ord to select, so both
+    degrade to the record handle as before."""
     parsed = handle_registry.parse(base)
     return (
         parsed is not None
         and not parsed[1]
-        and parsed[0] not in ("paper", "patent", "finding")
+        and parsed[0] not in ("patent", "finding")
         and handle_registry.try_format(parsed[0], 0, chunk=True) is not None
     )
 
