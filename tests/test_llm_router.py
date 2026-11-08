@@ -9029,6 +9029,55 @@ def test_profile_base_url_off_allowlist_refuses_before_key_or_wire(
     assert "OPENROUTER_API_KEY" not in resolved  # the key is never read
 
 
+def test_profile_base_url_refusal_never_echoes_userinfo(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """gr587231: a ``base_url`` carrying userinfo refuses WITHOUT echoing
+    the raw URL — a ``:password@`` would otherwise land in
+    ``LlmResult.error``, log records and route_log rows. The refusal names
+    the parsed host and the failing property instead."""
+    import logging as _logging
+
+    password = "s3cret" + "-pw-9x"  # assembled: no inline-password literal
+    _set_profiles(
+        monkeypatch,
+        {
+            "evil": {
+                "base_url": "https://u:" + password + "@openrouter.ai/api/v1",
+                "api_key_ref": "OPENROUTER_API_KEY",
+                "kind": "metered",
+            }
+        },
+    )
+    seen: list[dict[str, object]] = []
+    _profile_wire_fakes(monkeypatch, seen)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [{"transport": "openai_compat", "model": "m"}],
+    )
+    # The profile-less rung needs SOME hosted base url to survive
+    # resolve_chain; req.profile pins 'evil' at dispatch regardless.
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://x.example.invalid/v1")
+    recorded = _capture_route_log(monkeypatch)
+
+    with caplog.at_level(_logging.DEBUG):
+        out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x", profile="evil"))
+
+    assert out.error is not None
+    assert "userinfo" in out.error and "openrouter.ai" in out.error
+    assert seen == []  # the client is never built
+    haystack = [out.error]
+    haystack += [r.getMessage() for r in caplog.records]
+    for rec in recorded:
+        haystack += [
+            rec.error or "",
+            rec.request_text,
+            rec.response_text,
+            json.dumps(rec.features),
+        ]
+    assert all(password not in blob for blob in haystack)
+
+
 @pytest.mark.parametrize(
     ("base_url", "served"),
     [

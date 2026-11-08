@@ -5923,8 +5923,10 @@ def _profile_base_url_refusal(profile: ProviderProfile) -> str | None:
     (:func:`_profile_key_hosts`). A profile without ``api_key_ref`` is
     unchecked — its key is the host-keyed default, which only resolves a
     provider secret on that provider's own host. The returned text names
-    the profile, the allowlist and the next step (widening is a reviewed
-    land; no DB write widens it).
+    the profile, the parsed host, the failing property (scheme, userinfo,
+    port, host) and the next step (widening is a reviewed land; no DB
+    write widens it) — never the raw URL: a userinfo password would land
+    in ``LlmResult.error``, logs and route_log rows (gr587231).
     """
     if not profile.api_key_ref:
         return None
@@ -5939,23 +5941,27 @@ def _profile_base_url_refusal(profile: ProviderProfile) -> str | None:
         )
     try:
         parsed = urlparse(profile.base_url)
-        ok = (
-            parsed.scheme.lower() == "https"
-            and parsed.username is None
-            and parsed.password is None
-            and parsed.port in (None, 443)
-            and (parsed.hostname or "").lower() in allowed
-        )
+        port = parsed.port  # a malformed port raises here
+        host = (parsed.hostname or "").lower()
     except ValueError:
-        ok = False
-    if ok:
-        return None
+        why = "unparseable base_url"
+    else:
+        if parsed.scheme.lower() != "https":
+            why = "scheme is not https"
+        elif parsed.username is not None or parsed.password is not None:
+            why = f"userinfo on host {host or '<none>'!r}"
+        elif port not in (None, 443):
+            why = f"port {port} on host {host or '<none>'!r}"
+        elif host not in allowed:
+            why = f"host {host or '<none>'!r} is not on the allowlist"
+        else:
+            return None
     return (
-        f"llm profile {profile.name!r}: base_url {profile.base_url!r} is "
-        f"not a host {profile.api_key_ref!r} may be sent to "
-        f"({sorted(allowed)}; https only, no userinfo, port 443/default) "
-        "— the key is never resolved or sent. Widening the allowlist is "
-        "a reviewed land, never a llm.profiles write"
+        f"llm profile {profile.name!r}: base_url refused — {why} "
+        f"({profile.api_key_ref!r} sends only to {sorted(allowed)}; "
+        "https only, no userinfo, port 443/default) — the key is never "
+        "resolved or sent. Widening the allowlist is a reviewed land, "
+        "never a llm.profiles write"
     )
 
 
