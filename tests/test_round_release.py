@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 import time
@@ -84,6 +86,16 @@ def _tag(rig: Rig) -> str:
 
 def _hook(rig: Rig, body: str) -> Path:
     path = rig.origin / "hooks" / "pre-receive"
+    path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def _post_hook(rig: Rig, body: str) -> Path:
+    """A hook that runs on the fake origin AFTER the pushed refs land —
+    the deterministic way to move a ref between the supersede check and
+    the branch-retirement read."""
+    path = rig.origin / "hooks" / "post-receive"
     path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     path.chmod(0o755)
     return path
@@ -1779,9 +1791,12 @@ def test_peer_marks_attach_to_the_open_release(rig: Rig) -> None:
     )
 
 
-def test_supersede_retires_open_release_without_remote_delete(rig: Rig) -> None:
-    """gr531127: a red release whose commits are all on main is retired in the
-    record only; the next cut lands at origin/main and origin keeps r1."""
+def test_cut_supersede_retires_the_open_release_and_its_ancestor_head(
+    rig: Rig,
+) -> None:
+    """gr531127: a release whose commits are all on main is retired in the
+    record; the next cut lands at origin/main. gr585785: the superseded
+    head is an ancestor of origin/main, so its branch is deleted there."""
     head = _cut(rig)
     newer = _commit(rig.root, "src/c4.py", "c4 code")
     _git(rig.root, "push", "-q", "origin", "main")
@@ -1797,10 +1812,24 @@ def test_supersede_retires_open_release_without_remote_delete(rig: Rig) -> None:
     assert "not allowed with" in both.stderr
     out = rig.round("cut", "--supersede")
     assert out.returncode == 0, out.stderr
+    assert "deleted release/r1 (ancestor of main)" in out.stdout
     assert _rel(_round_json(rig), 1)["state"] == "superseded"
     assert _rel(_round_json(rig), 2)["state"] == "cut"
-    assert rig.origin_ref("release/r1") == head
+    assert rig.origin_ref("release/r1") == ""
     assert rig.origin_ref("release/r2") == newer
+
+
+def test_cut_refusal_names_the_supersede_branch_delete(rig: Rig) -> None:
+    """gr585785 review: the open-release refusal no longer sells `cut
+    --supersede` as record-only — it says the stale branch is deleted on
+    origin when its commits are all on main."""
+    _cut(rig)
+    _commit(rig.root, "src/c4.py", "c4 code")
+    _git(rig.root, "push", "-q", "origin", "main")
+    out = rig.round("cut")
+    assert out.returncode == 1
+    assert "--supersede" in out.stderr
+    assert "deleting the origin branch when its commits are on main" in out.stderr
 
 
 def test_supersede_refuses_without_an_open_release(rig: Rig) -> None:
@@ -1820,7 +1849,8 @@ def _gate_rows(rig: Rig, sha: str, *verdicts: str) -> None:
 
 def test_cut_supersedes_a_red_release_contained_in_main(rig: Rig) -> None:
     """gr531127: plain `cut` retires a red release whose head is an ancestor
-    of origin/main and cuts r<N+1> at main; the red branch is not deleted."""
+    of origin/main and cuts r<N+1> at main; gr585785: the red branch is
+    deleted on origin — a leftover would read in flight to release_poll."""
     head = _cut(rig)
     _gate_rows(
         rig,
@@ -1832,11 +1862,12 @@ def test_cut_supersedes_a_red_release_contained_in_main(rig: Rig) -> None:
     out = rig.round("cut")
     assert out.returncode == 0, out.stderr
     assert "r1 superseded by r2 (red, contained in main)" in out.stdout
+    assert "deleted release/r1 (ancestor of main)" in out.stdout
     old = _rel(_round_json(rig), 1)
     assert old["state"] == "superseded"
     assert old["superseded_by"] == 2
     assert _rel(_round_json(rig), 2)["state"] == "cut"
-    assert rig.origin_ref("release/r1") == head
+    assert rig.origin_ref("release/r1") == ""
     assert rig.origin_ref("release/r2") == rig.shas["c3"]
     status = rig.round("status")
     assert status.returncode == 0, status.stderr
@@ -1899,6 +1930,8 @@ def test_cut_supersedes_an_open_release_whose_branch_left_origin(rig: Rig) -> No
     out = rig.round("cut")
     assert out.returncode == 0, out.stderr
     assert "superseded r1: branch gone" in out.stdout
+    assert "deleted release/r1" not in out.stdout
+    assert "kept release/r1" not in out.stdout
     old = _rel(_round_json(rig), 1)
     assert old["state"] == "superseded"
     assert old["superseded_by"] == 2
@@ -1912,7 +1945,8 @@ def test_cut_supersedes_a_failed_release_record(rig: Rig) -> None:
     """gr593418 review 2: a record the deploy leg marked `failed` is dead
     the same way — but only while its journal shows `scripts/deploy` never
     launched (no `started_epoch`): superseded in the record, next cut at
-    origin/main, branch kept."""
+    origin/main. The journal is kept; gr585785 deletes the dead branch
+    whose head main already holds."""
     head = _cut(rig)
     _journal_deploy_unlaunched(rig, head)  # died pre-launch → `deploying`
     assert rig.round("fail").returncode == 0
@@ -1922,14 +1956,81 @@ def test_cut_supersedes_a_failed_release_record(rig: Rig) -> None:
     out = rig.round("cut")
     assert out.returncode == 0, out.stderr
     assert "superseded r1: state failed" in out.stdout
+    assert "deleted release/r1 (ancestor of main)" in out.stdout
     old = _rel(_round_json(rig), 1)
     assert old["state"] == "superseded"
     assert old["superseded_by"] == 2
     assert old["superseded_why"] == "state failed"
     assert old["deployment"]["sha"] == head  # the journal is kept
-    assert rig.origin_ref("release/r1") == head  # the dead branch is not deleted
+    assert rig.origin_ref("release/r1") == ""  # the dead branch is deleted
     assert _rel(_round_json(rig), 2)["state"] == "cut"
     assert rig.origin_ref("release/r2") == rig.shas["c3"]
+
+
+def test_cut_supersede_keeps_a_head_that_moved_off_main(rig: Rig) -> None:
+    """gr585785: the superseded head carries commits main lacks when the
+    delete inspects it (a fix landed between the supersede check and the
+    r<N+1> push) — the branch is kept and the cut still succeeds."""
+    head = _cut(rig)
+    newer = _commit(rig.root, "src/c4.py", "c4 code")
+    _git(rig.root, "push", "-q", "origin", "main")
+    fix = _child(rig, rig.shas["c2"], "unforwarded release fix")
+    _push_branch(rig, "attic", fix)  # holds the object on origin
+    _post_hook(
+        rig,
+        "while read old new ref; do\n"
+        '  if [ "$ref" = refs/heads/release/r2 ]; then\n'
+        f"    git update-ref refs/heads/release/r1 {fix}\n"
+        "  fi\n"
+        "done\n",
+    )
+    out = rig.round("cut", "--supersede")
+    assert out.returncode == 0, out.stderr
+    assert f"kept release/r1: head {fix[:12]} not on main" in out.stdout
+    assert _rel(_round_json(rig), 1)["state"] == "superseded"
+    assert rig.origin_ref("release/r1") == fix
+    assert rig.origin_ref("release/r2") == newer
+    assert rig.origin_ref("main") == newer
+    _git(rig.origin, "update-ref", "-d", "refs/heads/attic")
+
+
+def test_cut_supersede_keeps_the_branch_when_ancestry_is_unknown(
+    rig: Rig,
+) -> None:
+    """gr585785: when the ancestry check errors after r<N+1> is pushed, the
+    superseded branch is kept — never deleted on a guess — and the cut
+    still succeeds."""
+    head = _cut(rig)
+    newer = _commit(rig.root, "src/c4.py", "c4 code")
+    _git(rig.root, "push", "-q", "origin", "main")
+    marker = rig.gh_dir / "fail-merge-base"
+    bindir = Path(rig.env["PATH"].split(os.pathsep)[0])
+    shim = bindir / "git"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ -f "{marker}" ]; then\n'
+        '  for a in "$@"; do\n'
+        '    [ "$a" = merge-base ] && exit 9\n'
+        "  done\n"
+        "fi\n"
+        f'exec "{shutil.which("git")}" "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    _post_hook(
+        rig,
+        "while read old new ref; do\n"
+        '  if [ "$ref" = refs/heads/release/r2 ]; then\n'
+        f'    touch "{marker}"\n'
+        "  fi\n"
+        "done\n",
+    )
+    out = rig.round("cut", "--supersede")
+    assert out.returncode == 0, out.stderr
+    assert "kept release/r1: ancestry unknown" in out.stdout
+    assert _rel(_round_json(rig), 1)["state"] == "superseded"
+    assert rig.origin_ref("release/r1") == head
+    assert rig.origin_ref("release/r2") == newer
 
 
 def test_cut_pending_with_a_gone_branch_still_reconciles(rig: Rig) -> None:
@@ -1945,6 +2046,7 @@ def test_cut_pending_with_a_gone_branch_still_reconciles(rig: Rig) -> None:
     out = rig.round("cut")
     assert out.returncode == 0, out.stderr
     assert "pending cut reconciled" in out.stdout
+    assert "deleted release/r1" not in out.stdout  # pending path: no retire
     rel = _rel(_round_json(rig), 1)
     assert rel["state"] == "cut"
     assert "superseded_by" not in rel
@@ -2302,17 +2404,28 @@ def test_supersede_retries_a_failed_branch_delete(rig: Rig) -> None:
     assert path.read_bytes() == before
 
 
-def test_supersede_retries_a_branch_left_by_cut_supersede(rig: Rig) -> None:
-    """`cut --supersede` retires the record only — release/r1 stays on
-    origin with no deployed/r1 tag, so release_poll reads it in flight
-    forever. Naming the superseded record retires the branch."""
+def test_supersede_retries_a_branch_cut_failed_to_delete(rig: Rig) -> None:
+    """gr585785: `cut --supersede` deletes the superseded head; when origin
+    refuses the delete, release/r1 stays in flight and release_poll keeps
+    blocking. Naming the superseded record retries the branch cleanup."""
     head = _cut(rig)
     newer = _commit(rig.root, "src/c4.py", "c4 code")
     _git(rig.root, "push", "-q", "origin", "main")
+    hook = _hook(
+        rig,
+        "while read old new ref; do\n"
+        '  if [ "$ref" = refs/heads/release/r1 ]; then\n'
+        '    echo "remote rejects the release/r1 delete" >&2\n'
+        "    exit 1\n"
+        "  fi\n"
+        "done\n",
+    )
     out = rig.round("cut", "--supersede")
     assert out.returncode == 0, out.stderr
+    assert "kept release/r1: delete refused" in out.stdout
     assert _rel(_round_json(rig), 1)["state"] == "superseded"
     assert rig.origin_ref("release/r1") == head
+    hook.unlink()
     out = rig.round("supersede", "r1")
     assert out.returncode == 0, out.stderr
     assert "already superseded" in out.stdout

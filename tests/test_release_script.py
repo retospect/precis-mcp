@@ -434,7 +434,9 @@ def test_cut_only_recuts_a_red_owned_release_once_the_fix_is_on_main(
     rig: Rig,
 ) -> None:
     """gr573151: --cut-only resuming our own release that went red with its
-    head fully on main supersedes it and re-cuts at S — the fix landed."""
+    head fully on main supersedes it and re-cuts at S — the fix landed.
+    gr585785: the superseded head, an ancestor of main, is deleted on
+    origin — a leftover would read in flight to release_poll."""
     c2 = rig.shas["c2"]
     out = _release(rig, "--cut-only", "--sha", c2, *FAST)
     assert out.returncode == 0, out.stdout + out.stderr  # r1 at c2
@@ -450,7 +452,7 @@ def test_cut_only_recuts_a_red_owned_release_once_the_fix_is_on_main(
     rel1 = _rel(_round_json(rig), 1)
     assert rel1["state"] == "superseded"
     assert rel1["superseded_by"] == 2
-    assert rig.origin_ref("release/r1") == c2  # Reto prunes, never the script
+    assert rig.origin_ref("release/r1") == ""  # superseded head on main: deleted
     assert rig.origin_ref("release/r2") == c3
     mark = json.loads(_marker(rig).read_text(encoding="utf-8"))
     assert (mark["branch"], mark["base"]) == ("release/r2", c3)

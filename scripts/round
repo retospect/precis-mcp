@@ -32,11 +32,13 @@ and nothing is tracked or pushed.
                                       a red open release whose commits are all on main,
                                       an open release whose branch is gone from origin, or
                                       the newest `failed` record is marked superseded in
-                                      the record and r<N+1> is cut at origin/main — the
-                                      dead branch is not deleted
+                                      the record and r<N+1> is cut at origin/main — a
+                                      superseded head main already holds is deleted on
+                                      origin (kept, never fatal, otherwise)
   scripts/round cut --abandon         coordinator: delete the open release branch (every commit on main)
   scripts/round cut --supersede [--dry-run]  coordinator: mark the open release superseded in the
-                                      record (no remote delete) and cut the next at origin/main
+                                      record, delete its origin branch when the head is
+                                      on origin/main, and cut the next at origin/main
   scripts/round supersede [r<N>] [--dry-run]   coordinator: mark a deploying/deployed release
                                       superseded when origin/prod already moved past its
                                       pinned sha (keeps the journal; lease-deletes the
@@ -89,15 +91,14 @@ verdict after `deploy` exited non-zero; `fail` writes it). `cut` refuses
 while an open release is
 recorded — except a red one whose head is an ancestor of origin/main, or one
 whose branch is already gone from origin (a pass abandoned elsewhere), which
-it marks superseded (the record only; origin's branch is never deleted),
-then cuts r<N+1> at main and prints
+it marks superseded, then cuts r<N+1> at main and prints
 "r<N> superseded by r<N+1> (red, contained in main)" or
 "superseded r<N>: branch gone". With no open release at all, a newest record
 marked `failed` supersedes the same way ("superseded r<N>: state failed").
 A green or still-gating
-release keeps the refusal (`--supersede` retires it by operator call;
-`--abandon` deletes it on origin), as does a red one carrying commits main
-lacks. `cut` also refuses when an unrecorded release branch exists on origin
+release keeps the refusal (`--supersede` retires it by operator call,
+deleting the origin branch when its head is on main; `--abandon` deletes
+it on origin), as does a red one carrying commits main lacks. `cut` also refuses when an unrecorded release branch exists on origin
 with commits main lacks (one whose head main already contains is a stale
 leftover — ignored, with the delete command printed for the operator),
 off main's first-parent line, or when the cut tree carries a new duplicate
@@ -2462,8 +2463,9 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             else:
                 why = (
                     f"round.json already records an open release ({open_rel['branch']})"
-                    " — `scripts/round cut --supersede` (record only, next cut at"
-                    " origin/main) or `--abandon` (deletes it on origin) first"
+                    " — `scripts/round cut --supersede` (retires it and cuts at"
+                    " origin/main, deleting the origin branch when its commits"
+                    " are on main) or `--abandon` (deletes it on origin) first"
                 )
         if why:
             return _cut_refuse(why)
@@ -2685,6 +2687,15 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
         print(f"superseded r{dead_rel['n']}: {dead_why}")
     if auto_superseded:
         print(f"r{open_rel['n']} superseded by r{n_new} (red, contained in main)")
+    # gr585785: a leftover release/r<N> reads in flight to release_poll and
+    # blocks every later mint — retire each head THIS cut superseded (a
+    # record retired earlier keeps its hand-prune note) when origin/main
+    # already holds it. Never fails the cut. dead_rel is open_rel when the
+    # open branch left origin — retire it once.
+    for retired in (dead_rel, open_rel):
+        if retired is None or (retired is open_rel and retired is dead_rel):
+            continue
+        _retire_branch(root, retired, dry_run=False, cut=True)
     print(f"{branch} cut at {sha[:9]} — late work lands on main for round {n_new + 1}")
     print(
         f'fleet say -m "{branch} is cut at {sha[:9]} and frozen for round {n}: a release'
@@ -2875,10 +2886,13 @@ def _print_unforwarded(root: Path, branch: str) -> None:
         print(f"  {ln}")
 
 
-def _retire_branch(root: Path, rel: dict[str, Any], *, dry_run: bool) -> str:
+def _retire_branch(
+    root: Path, rel: dict[str, Any], *, dry_run: bool, cut: bool = False
+) -> str:
     """Retire a superseded release's branch on origin — one of ``deleted``,
-    ``kept`` (the head carries commits main lacks), ``gone`` or
-    ``unknown``.
+    ``kept`` (the head carries commits main lacks, or the delete was
+    refused), ``gone`` or ``unknown`` (the remote read, fetch or ancestry
+    check failed).
 
     The same stale rule ``scripts/release`` applies (gr580767): a
     ``release/r<N>`` head that is an ancestor of origin/main holds nothing
@@ -2888,18 +2902,23 @@ def _retire_branch(root: Path, rel: dict[str, Any], *, dry_run: bool) -> str:
     Best-effort: the record is already superseded, so an unreadable remote
     or a refused delete warns with the hand command instead of refusing; a
     head main lacks stays — the caller's unforwarded note names its
-    commits."""
+    commits. ``cut`` prints the single ``deleted``/``kept`` line a cut
+    reports for the head it just superseded (gr585785); the default keeps
+    ``supersede``'s own wording."""
     branch = str(rel.get("branch") or "")
     if not branch:
         return "gone"
     head = _remote(root, f"refs/heads/{branch}")
     if head is None:
-        print(
-            f"scripts/round: could not read origin for {branch} — a stale"
-            " head is deleted by hand: git push origin --delete"
-            f" {branch}",
-            file=sys.stderr,
-        )
+        if cut:
+            print(f"kept {branch}: ancestry unknown")
+        else:
+            print(
+                f"scripts/round: could not read origin for {branch} — a stale"
+                " head is deleted by hand: git push origin --delete"
+                f" {branch}",
+                file=sys.stderr,
+            )
         return "unknown"
     if not head:
         return "gone"
@@ -2907,15 +2926,32 @@ def _retire_branch(root: Path, rel: dict[str, Any], *, dry_run: bool) -> str:
         _rgit(root, "fetch", "-q", "origin", f"refs/heads/{branch}") is None
         or _rgit(root, "fetch", "-q", "origin", "main") is None
     ):
-        print(
-            f"scripts/round: could not fetch {branch} and main — a stale"
-            " head is deleted by hand: git push origin --delete"
-            f" {branch}",
-            file=sys.stderr,
-        )
+        if cut:
+            print(f"kept {branch}: ancestry unknown")
+        else:
+            print(
+                f"scripts/round: could not fetch {branch} and main — a stale"
+                " head is deleted by hand: git push origin --delete"
+                f" {branch}",
+                file=sys.stderr,
+            )
         return "unknown"
     main = _ref(root, "refs/remotes/origin/main")
-    if not main or not _ancestor(root, head, main):
+    if not main:
+        if cut:
+            print(f"kept {branch}: ancestry unknown")
+        return "unknown" if cut else "kept"
+    verdict = _NETWORK["run_command"](
+        ["git", "-C", str(root), "merge-base", "--is-ancestor", head, main],
+        allowed=(0, 1),
+    ).returncode
+    if verdict not in (0, 1):
+        if cut:
+            print(f"kept {branch}: ancestry unknown")
+        return "unknown"
+    if verdict:
+        if cut:
+            print(f"kept {branch}: head {head[:12]} not on main")
         return "kept"
     if dry_run:
         print(f"dry-run: would delete {branch} on origin ({head[:9]} is on main)")
@@ -2937,8 +2973,13 @@ def _retire_branch(root: Path, rel: dict[str, Any], *, dry_run: bool) -> str:
             f" by hand: git push origin --delete {branch}",
             file=sys.stderr,
         )
+        if cut:
+            print(f"kept {branch}: delete refused")
         return "kept"
-    print(f"{branch} deleted on origin ({head[:9]} is on main)")
+    if cut:
+        print(f"deleted {branch} (ancestor of main)")
+    else:
+        print(f"{branch} deleted on origin ({head[:9]} is on main)")
     return "deleted"
 
 
@@ -2951,9 +2992,9 @@ def cmd_supersede(state: Path, args: argparse.Namespace) -> int:
     branch is lease-deleted when its head already sits on origin/main —
     otherwise it stays and its unforwarded commits are named (gr580767).
     Naming an already-superseded record retries just that cleanup: a
-    refused delete, or a record ``cut --supersede`` retired record-only,
-    otherwise leaves the branch in flight to release_poll forever — and
-    the terminal record is never rewritten."""
+    delete the first pass refused or kept otherwise leaves the branch in
+    flight to release_poll forever — and the terminal record is never
+    rewritten."""
     root = _root()
     cur = _read_round(state)
     if args.release:
@@ -2987,17 +3028,18 @@ def cmd_supersede(state: Path, args: argparse.Namespace) -> int:
     if st in _OPEN_STATES:
         return _sup_refuse(
             f"r{n_rel} is still open ({st}) — use `scripts/round cut"
-            " --supersede` (record only, next cut at origin/main) or `--abandon`"
+            " --supersede` (retires it, deleting the origin branch when its"
+            " commits are on main; next cut at origin/main) or `--abandon`"
             " (deletes it on origin)"
         )
     dep = rel.get("deployment") or {}
     if st == "superseded":
         # The record is terminal; only its branch can still need work — a
-        # delete refused below on the first pass, or a record ``cut
-        # --supersede`` retired record-only. release_poll reads that
-        # leftover in flight and blocks every mint, so re-running the
-        # verb retries the cleanup instead of refusing; the journal is
-        # never rewritten. State-moving flags remain a caller error.
+        # delete the first pass refused or kept (the head moved off main).
+        # release_poll reads that leftover in flight and blocks every
+        # mint, so re-running the verb retries the cleanup instead of
+        # refusing; the journal is never rewritten. State-moving flags
+        # remain a caller error.
         if args.partial:
             return _sup_refuse(
                 f"r{n_rel} is already superseded — nothing to supersede;"
@@ -3213,7 +3255,8 @@ def main(argv: list[str] | None = None) -> int:
         "--partial",
         action="store_true",
         help="retire a PARTIAL rollout: origin/prod does not hold the "
-        "pinned sha (record only; keeps the journal)",
+        "pinned sha (keeps the journal; deletes the origin branch when "
+        "its head is on main)",
     )
     p_sup.add_argument(
         "--reason",
