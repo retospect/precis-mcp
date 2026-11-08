@@ -1973,6 +1973,27 @@ def _reviewed(store: Store, verdict: str) -> T.PlanMint:
     return mint
 
 
+def _reviewed_landed(store: Store, verdict: str) -> T.PlanMint:
+    """The production REVERT shape (gr586688): the reviewed todo's newest
+    job is the succeeded ``land_slice`` ``run_slice`` mints as its child —
+    what every engine-landed plan todo carries. ``_reviewed``'s
+    run_slice-only newest job is the shape the old REVERT test ran on."""
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    _slice_job(store, build, "land_slice", "succeeded")
+    _todo_comment(store, build, "landed: abc1234 — the fix")
+    _mark_done(store, build)
+    _job(store, review, lane="claude-sub")
+    store.add_tag(review, Tag.open("claimed-by:lane-claude-sub"), set_by="system")
+    store.add_tag(
+        review, Tag.closed("STATUS", "doing"), set_by="system", replace_prefix=True
+    )
+    if verdict:
+        _todo_comment(store, review, verdict)
+    return mint
+
+
 def _blocked_by_ids(store: Store, src: int) -> list[int]:
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -2306,6 +2327,200 @@ def test_review_revert_mints_a_revert_and_requeues_the_build(store: Store) -> No
     _finish_live_jobs(store)
     assert pd.run_pass(store).dispatched == 1
     assert len(_jobs_under(store, build)) == 2
+
+
+def test_review_revert_reopen_survives_the_land_backstop(store: Store) -> None:
+    """gr586688: on the production shape — the reviewed todo's newest job
+    its succeeded ``land_slice`` — the REVERT reopen held only until
+    ``_step_phases`` ran later in the same pass: its task backstop closed
+    the todo again on the OLD land, the reviewer unblocked and re-judged
+    the same sha, and every pass minted another revert task. The re-arm
+    floor the REVERT stamps now keeps the todo open for the rebuild."""
+    mint = _reviewed_landed(store, "review: REVERT — breaks the public API")
+    build, review = mint.ids["build"], mint.ids["review"]
+    land = _jobs_under(store, build)[-1][0]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    (revert,) = [c for c in _children(store, mint.root_id) if c not in (build, review)]
+    # The reopen holds the pass: open, blocked-by the revert task, floored
+    # on the old land — the backstop's note says why it did not close.
+    assert _status(store, build) == "open"
+    assert _blocked_by_ids(store, build) == [revert]
+    assert _meta(store, build)["rearmed_after_job"] == land
+    assert (
+        f"task td{build} held open: newest land_slice job:{land} "
+        f"is at or below re-arm floor {land}" in res.notes
+    )
+    # Only the revert task is dispatched — the build waits on it (no
+    # rebuild while the revert task is open), the review on the build.
+    assert res.dispatched == 1
+    assert len(_jobs_under(store, revert)) == 1
+    assert len(_jobs_under(store, build)) == 2
+    # The judged job is not re-judged and the review does not re-run on
+    # the same sha: after three passes exactly one revert task exists.
+    for _ in range(2):
+        res = pd.run_pass(store)
+        assert (res.reviews, res.dispatched) == (0, 0)
+    assert [c for c in _children(store, mint.root_id) if c not in (build, review)] == [
+        revert
+    ]
+    assert _status(store, build) == "open"
+    assert len(_jobs_under(store, review)) == 1
+
+
+def test_review_revert_rebuild_land_closes_and_the_review_reruns(
+    store: Store,
+) -> None:
+    """The floor supersedes only the jobs that existed at the re-arm: the
+    rebuild's fresh succeeded ``land_slice`` (id above the floor) closes
+    the todo through the backstop as before, and the held reviewer runs
+    exactly once on the new land."""
+    mint = _reviewed_landed(store, "review: REVERT — breaks the public API")
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    (revert,) = [c for c in _children(store, mint.root_id) if c not in (build, review)]
+    # One dispatch this pass — the revert task; no rebuild under the
+    # build while the revert task is still open.
+    assert res.dispatched == 1
+    assert len(_jobs_under(store, revert)) == 1
+    assert len(_jobs_under(store, build)) == 2
+    # The revert lands: the build is redispatched on its fresh budget —
+    # the one dispatch is a new run_slice under it.
+    _finish_live_jobs(store)  # the revert job succeeds, the task closes
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert _jobs_under(store, build)[-1][1]["job_type"] == "run_slice"
+    # The rebuild lands: a fresh succeeded land_slice above the floor.
+    _finish_live_jobs(store, close_task=False)
+    _slice_job(store, build, "land_slice", "succeeded")
+    res = pd.run_pass(store)
+    assert _status(store, build) == "done"
+    # The reviewer, held through the rebuild, re-runs exactly once.
+    assert res.dispatched == 1
+    assert len(_jobs_under(store, review)) == 2
+    _finish_live_jobs(store, close_task=False)
+    _todo_comment(store, review, "review: LAND")
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, review) == "done"
+    assert len(_jobs_under(store, review)) == 2
+
+
+def test_landed_task_without_a_rearm_closes(store: Store) -> None:
+    """The backstop's normal use, unchanged: a succeeded ``land_slice``
+    with no re-arm floor still closes the task."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    _slice_job(store, task, "land_slice", "succeeded")
+    res = pd.run_pass(store)
+    assert _status(store, task) == "done"
+    assert any(f"task td{task} closed: land_slice" in n for n in res.notes)
+
+
+def test_ask_rearm_on_a_landed_task_closes_it_without_a_rebuild(
+    store: Store,
+) -> None:
+    """``_step_rearm`` must not floor a task whose newest ended job is a
+    succeeded ``land_slice``: the slice already landed, there is nothing
+    to retry — the backstop closes the task the same pass and no rebuild
+    is dispatched. Flooring it here once held the task open and minted a
+    second ``run_slice``: a duplicate build of landed work (gr586688
+    review)."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "touched human-only",
+        meta={"human_only_hit": ["deploy/inventory/x.yml"]},
+    )
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    (ask,) = [c for c in _children(store, mint.root_id) if c != task]
+    # A hand-run land succeeds while the ask is open; the answer lands
+    # before the closing tick. The task closes on the land, not on a
+    # rebuild: no floor, no new job — ``rearmed_by_ask`` is still stamped
+    # (the once-per-ask record is unchanged).
+    land = _slice_job(store, task, "land_slice", "succeeded")
+    _answer_ask(store, ask, "retry")
+    res = pd.run_pass(store)
+    assert res.dispatched == 0
+    assert _status(store, task) == "done"
+    meta = _meta(store, task)
+    assert "rearmed_after_job" not in meta
+    assert meta["rearmed_by_ask"] == ask
+    assert _jobs_under(store, task)[-1][0] == land
+
+
+def test_ask_rearm_on_a_failed_attempt_still_stamps_the_floor(
+    store: Store,
+) -> None:
+    """The floor keeps its use where it belongs: an answered ask on a
+    task whose newest ended job is a FAILED attempt stamps
+    ``meta.rearmed_after_job`` on that failure — the rebuild dispatches
+    and a fresh land above the floor closes the task, as before."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "touched human-only",
+        meta={"human_only_hit": ["deploy/inventory/x.yml"]},
+    )
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    (ask,) = [c for c in _children(store, mint.root_id) if c != task]
+    # A second attempt dies while the ask is open: the answer floors the
+    # re-arm on it (unchanged behaviour — a failed newest job still
+    # means "retry from here").
+    failed = _failed_job(store, task, "hit the same wall")
+    _answer_ask(store, ask, "retry")
+    res = pd.run_pass(store)
+    assert _meta(store, task)["rearmed_after_job"] == failed
+    assert _status(store, task) == "open"
+    assert res.dispatched == 1
+    # Rebuilt and re-landed: a fresh land above the floor closes it.
+    _finish_live_jobs(store, close_task=False)
+    _slice_job(store, task, "land_slice", "succeeded")
+    res = pd.run_pass(store)
+    assert _status(store, task) == "done"
+
+
+def test_review_revert_reopen_holds_for_an_s1b_minted_reviewer(
+    store: Store,
+) -> None:
+    """The S1b engine-review shape (``templates.mint_reviewer``, td584381):
+    a reviewer minted under the root over an already-landed todo, blocked
+    by it — its REVERT holds the todo open through the same floor."""
+
+    def build_(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("build", "Build it", {"op": "run_slice"}, body="Build it.")
+
+    mint = T._run(store, None, build_)
+    build = mint.ids["build"]
+    _job(store, build, lane="claude-sub")
+    _slice_job(store, build, "land_slice", "succeeded")
+    _todo_comment(store, build, "landed: abc1234 — the fix")
+    _mark_done(store, build)
+    review = T.mint_reviewer(store, mint.root_id, build)
+    _job(store, review, lane="devin")
+    _todo_comment(store, review, "review: REVERT — breaks the public API")
+    land = _jobs_under(store, build)[-1][0]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    (revert,) = [c for c in _children(store, mint.root_id) if c not in (build, review)]
+    assert _status(store, build) == "open"
+    assert _blocked_by_ids(store, build) == [revert]
+    assert _meta(store, build)["rearmed_after_job"] == land
+    assert res.dispatched == 1
+    for _ in range(2):
+        res = pd.run_pass(store)
+        assert (res.reviews, res.dispatched) == (0, 0)
+    assert [c for c in _children(store, mint.root_id) if c not in (build, review)] == [
+        revert
+    ]
 
 
 def _gated_review_plan(store: Store) -> T.PlanMint:

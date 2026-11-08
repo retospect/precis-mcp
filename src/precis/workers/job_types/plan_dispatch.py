@@ -1299,7 +1299,12 @@ def _step_rearm(plan: _Plan, w: _Writer, res: PassResult) -> None:
     the moment the first closed. The first tick that sees the newest ask
     terminal stamps ``meta.rearmed_after_job`` with the newest ended job
     (the floor the review-REVERT path already uses) and records which ask
-    did it (``meta.rearmed_by_ask``), so the stamp happens once per ask."""
+    did it (``meta.rearmed_by_ask``), so the stamp happens once per ask —
+    except when that newest ended job is a succeeded ``land_slice``: the
+    slice already landed, there is nothing to retry, and flooring the
+    todo on its own land would hold it open for a duplicate build of
+    landed work — ``_step_phases``' backstop closes it this pass instead
+    (gr586688 review)."""
     for n in plan.todos():
         if _closed(n) or not _dispatchable(plan, n):
             continue
@@ -1312,8 +1317,19 @@ def _step_rearm(plan: _Plan, w: _Writer, res: PassResult) -> None:
         if n.meta.get("rearmed_by_ask") == newest_ask.id:
             continue
         ended = [j for j in plan.jobs(n) if j.status in _JOB_ENDED]
+        # A succeeded ``land_slice`` as the newest ended job means the
+        # slice already landed — nothing to retry: no floor, and the
+        # phases backstop closes the todo this pass. Everything else the
+        # re-arm writes (``rearmed_by_ask`` here, the answer record and
+        # the ``rescue:`` clear below) still applies — safe: with no
+        # floor the todo is done before dispatch would ever see it.
+        landed = bool(
+            ended
+            and ended[-1].status == "succeeded"
+            and ended[-1].meta.get("job_type") == "land_slice"
+        )
         stamp: dict[str, Any] = {"rearmed_by_ask": newest_ask.id}
-        if ended:
+        if ended and not landed:
             stamp["rearmed_after_job"] = ended[-1].id
         # A re-land ask's answer decides what the next dispatch may be
         # (gr570187): "land again (no builder)" over an untouched brief
@@ -1347,7 +1363,12 @@ def _step_rearm(plan: _Plan, w: _Writer, res: PassResult) -> None:
                 w.set_status(n, "open")
         res.notes.append(
             f"td{n.id}: ask td{newest_ask.id} answered; retry budget reset"
-            + (f" after job:{ended[-1].id}" if ended else "")
+            + (f" after job:{ended[-1].id}" if ended and not landed else "")
+            + (
+                f"; newest job:{ended[-1].id} already landed — no floor"
+                if landed
+                else ""
+            )
             + ("; rescue tag cleared" if cleared else "")
         )
 
@@ -1433,10 +1454,22 @@ def _step_phases(plan: _Plan, w: _Writer, res: PassResult) -> None:
                 jobs and jobs[-1].meta.get("job_type") == "land_slice"
             ):
                 continue
+            # ``meta.rearmed_after_job`` — the floor ``_attempts`` honours,
+            # stamped by a review REVERT or an answered ask — supersedes
+            # the jobs at or below it: a newest job still under the floor
+            # is the OLD land, and the todo stays open for its rebuild
+            # (gr586688).
+            floor = _rearm_floor(n)
             if jobs and jobs[-1].status == "succeeded":
+                job_type = jobs[-1].meta.get("job_type") or _op_type(n)
+                if floor is not None and jobs[-1].id <= floor:
+                    res.notes.append(
+                        f"task td{n.id} held open: newest {job_type} "
+                        f"job:{jobs[-1].id} is at or below re-arm floor {floor}"
+                    )
+                    continue
                 w.set_status(n, "done")
                 res.phases_closed += 1
-                job_type = jobs[-1].meta.get("job_type") or _op_type(n)
                 res.notes.append(
                     f"task td{n.id} closed: {job_type} job:{jobs[-1].id} succeeded"
                 )
