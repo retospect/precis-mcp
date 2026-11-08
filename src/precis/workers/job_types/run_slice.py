@@ -106,9 +106,13 @@ Deny paths are enforced twice for Claude: the session gets them as ``Edit``/
 ``Write``/``MultiEdit``/``NotebookEdit`` deny rules through ``--settings``
 (they hold under ``bypassPermissions``), and :func:`poll` re-checks the
 branch diff and the working tree, which also catches a write made through
-Bash. Every vendor receives the paths in its brief and gets the poll
-check. The poll check is pre-land: the session only commits on its branch,
-and nothing is landed until the check passed.
+Bash. The coordinator verbs ride the same ``--settings`` as ``Bash``
+denies (:data:`_slice_adapters.DENY_BASH`, gr574884: a builder ran
+``scripts/round in <sha>`` itself — the round mark is the coordinator's,
+and the brief says so too for the vendors no settings reach). Every
+vendor receives the paths in its brief and gets the poll check. The
+poll check is pre-land: the session only commits on its branch, and
+nothing is landed until the check passed.
 
 The land is the lander's: the brief ends with "commit on the branch, leave
 the tree clean, stop", and ``land_slice`` runs ``scripts/ship``, whose
@@ -1085,7 +1089,9 @@ def render_brief(
         f"effort `{effort}`), in git worktree `{name}` on branch "
         f"`{slice_branch(todo_id)}`, cut from `origin/main`. Work only in this "
         "worktree. Read CLAUDE.md and AGENTS.md here before editing; their "
-        "rules bind you.",
+        "rules bind you — except the round rule: a slice is not a round "
+        "peer, so never run `scripts/round` (any verb); the mark belongs "
+        "to the coordinator.",
     ]
     if not mcp:
         if read_mcp == "reader":

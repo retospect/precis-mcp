@@ -33,7 +33,11 @@ from precis.plans.lanes import ANY_CLASS, Lane, ladder, pick_lane
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers.job_types import get_job_type, known_job_types, run_slice
 from precis.workers.job_types import plan_dispatch as pd
-from precis.workers.job_types._slice_adapters import get_adapter
+from precis.workers.job_types._slice_adapters import (
+    DENY_BASH,
+    deny_settings,
+    get_adapter,
+)
 from tests._lane_rows import SEED_LANES, seed_lane, use_lanes
 
 # ── fakes ──────────────────────────────────────────────────────────
@@ -839,6 +843,51 @@ def test_task_brief_commits_and_never_ships(
     assert tail.index("uv run mypy") < tail.index(". Commit on")
 
 
+def test_brief_carves_out_the_round_mark() -> None:
+    """gr574884: a free-lane builder ran ``scripts/round in <sha>``
+    itself — its brief said commit and stop, but CLAUDE.md/AGENTS.md
+    tell a *peer* to mark the round. The brief names the carve-out
+    where it binds those rules: a slice is not a round peer; the mark
+    is the coordinator's. Every role gets it — a generator reads the
+    same CLAUDE.md."""
+    for generator in (False, True):
+        brief = run_slice.render_brief(
+            todo_id=42,
+            title="Build the widget",
+            body="Do X.",
+            latest=None,
+            lane="claude-sub",
+            model="m",
+            effort="high",
+            generator=generator,
+        )
+        assert "never run `scripts/round`" in brief, generator
+        assert "a slice is not a round peer" in brief, generator
+        assert "the mark belongs to the coordinator" in brief, generator
+
+
+def test_claude_settings_deny_the_coordinator_verbs() -> None:
+    """gr574884: the claude lane's ``--settings`` denies the coordinator
+    verbs as ``Bash(<verb>:*)`` rules, so the session cannot run them
+    even when the brief is skimmed. The fleet's generated tier-R
+    settings are the drift pin: a verb denied there stays denied
+    here."""
+    fleet = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / ".claude/fleet/generated/claude-settings-R.json"
+        ).read_text(encoding="utf-8")
+    )
+    fleet_bash = {
+        rule for rule in fleet["permissions"]["deny"] if rule.startswith("Bash(")
+    }
+    assert fleet_bash
+    deny = set(json.loads(deny_settings((), Path("/t")))["permissions"]["deny"])
+    assert fleet_bash <= deny
+    for cmd in DENY_BASH:
+        assert f"Bash({cmd}:*)" in deny
+
+
 def test_brief_names_the_lands_lint_steps() -> None:
     """gr573347 / td573419: a build session's prompt names the same lint
     the land runs — the whole tree, not just touched files — and forbids
@@ -1014,7 +1063,14 @@ def test_submit_launches_and_claims(
         assert f"{tool}(./scripts/ship)" in deny
         assert f"{tool}(./src/precis/plans/**)" in deny
         assert f"{tool}(/{tree.as_posix()}/.github/**)" in deny
-    assert len(deny) == 2 * 4 * len(lanes.STRICT_DENY)
+    # The coordinator verbs are denied as Bash rules, plain and ./
+    # spellings for the scripts (gr574884: a builder ran scripts/round).
+    for cmd in DENY_BASH:
+        assert f"Bash({cmd}:*)" in deny
+        if cmd.startswith("scripts/"):
+            assert f"Bash(./{cmd}:*)" in deny
+    n_bash = sum(2 if c.startswith("scripts/") else 1 for c in DENY_BASH)
+    assert len(deny) == 2 * 4 * len(lanes.STRICT_DENY) + n_bash
     # The service account's clone is never trusted interactively; without
     # this the checkout's .mcp.json precis server is skipped in -p mode.
     assert json.loads(argv[-1])["enableAllProjectMcpServers"] is True

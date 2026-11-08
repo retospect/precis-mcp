@@ -45,6 +45,22 @@ from pathlib import Path
 PERMISSION_MODE = "bypassPermissions"
 _DENY_TOOLS: tuple[str, ...] = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 
+#: Command prefixes a slice session never runs — the coordinator verbs.
+#: The same ``deny_exec`` the fleet's tier-R authority carries
+#: (``.claude/fleet/generated/claude-settings-R.json``; restated — this
+#: module stays standalone — and pinned equal by a test). gr574884: a
+#: free-lane builder ran ``scripts/round in <sha>`` itself — the round
+#: mark is the coordinator's — so the verbs are denied at the settings
+#: layer, not left to the brief alone.
+DENY_BASH: tuple[str, ...] = (
+    "scripts/ship",
+    "scripts/release",
+    "scripts/deploy",
+    "scripts/round",
+    "scripts/host-ops/play",
+    "pkill -f",
+)
+
 
 def claude_bin() -> str:
     """``PRECIS_CLAUDE_BIN`` or ``claude`` on PATH."""
@@ -90,11 +106,16 @@ def adapter_bin(name: str) -> str:
 
 def deny_settings(deny_paths: tuple[str, ...], tree: Path) -> str:
     """Claude deny rules in cwd-relative and absolute forms, plus trust
-    for the service account checkout's project MCP servers."""
+    for the service account checkout's project MCP servers. The
+    :data:`DENY_BASH` verbs are denied in plain and ``./`` spellings,
+    like the path rules' cwd/absolute pair."""
     rules: list[str] = []
     for path in deny_paths:
         for spec in (f"./{path}", f"/{tree.as_posix()}/{path}"):
             rules += [f"{tool}({spec})" for tool in _DENY_TOOLS]
+    for cmd in DENY_BASH:
+        forms = (cmd, f"./{cmd}") if cmd.startswith("scripts/") else (cmd,)
+        rules += [f"Bash({form}:*)" for form in forms]
     return json.dumps(
         {"permissions": {"deny": rules}, "enableAllProjectMcpServers": True}
     )
