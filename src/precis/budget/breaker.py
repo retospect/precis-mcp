@@ -14,8 +14,9 @@ The hard rail. Two gates, one for each spend chokepoint:
   free lookups (cache hits, zero-cost providers) always run.
 
 Both return ``None`` to allow, or a human-readable reason string to refuse;
-a pool-pacing refusal is a :class:`GateRefusal`, a ``str`` that also carries
-the pool's ``retry_at``. Free work is never gated. The breaker
+a refusal that knows its horizon is a :class:`GateRefusal`, a ``str`` that
+also carries ``retry_at`` (pool pacing, quota pause, taper trip). Free
+work is never gated. The breaker
 **auto-clears**: it re-reads the rolling meter, the quota snapshot and the
 pool ledger each time, so once a window ages back under its cap or a pool
 resets, paid work flows again — no manual reset.
@@ -52,8 +53,10 @@ class GateRefusal(str):
 
     Still a ``str``, so every caller that reads :func:`gate_tier`'s reason
     keeps working; ``retry_at`` is when the refusing resource opens again
-    (``None`` when the gate cannot tell). The router copies it onto the
-    paused result.
+    (``None`` when the gate cannot tell): the pool's ``retry_at`` for a
+    pacing refusal, the blocking window's own ``resets_at`` for a quota
+    pause or taper trip (gr592789). The router copies it onto the paused
+    result.
     """
 
     retry_at: datetime | None
@@ -230,11 +233,14 @@ def _taper_reason(store: Store | None, tier: Tier, work_class: WorkClass) -> str
         if taper.no_signal:
             log.debug("quota taper: no signal in snapshot; failing open")
         return None
-    return (
+    # GateRefusal carries the window's own reset so a parked job wakes at
+    # the real horizon, not the class default (gr592789).
+    return GateRefusal(
         f"budget: claude quota low ({taper.why(work_class)}) "
         f"— {name} {work_class.value} work paused. Smaller tiers and free local "
         f"work still run; auto-clears when the window resets, or resume now on "
-        f"/budget."
+        f"/budget.",
+        retry_at=taper.resets_at,
     )
 
 
@@ -258,7 +264,11 @@ def _gate_quota(
     # Sync first so a cleared park resolves its alert even on a taper return.
     _sync_quota_alert(store, window, pause)
     if pause is not None:
-        return pause.reason
+        # GateRefusal carries the window's own reset instant — the router
+        # stamps it as ``retry_at`` so a parked job re-queues AT the reset
+        # instead of re-parking every two hours until its park cap fails
+        # it on a long window (gr592789).
+        return GateRefusal(pause.reason, retry_at=pause.resets_at)
     if tier is not None and not resumed:
         return _taper_reason(store, tier, work_class)
     return None

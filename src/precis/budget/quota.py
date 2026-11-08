@@ -98,6 +98,11 @@ class QuotaPause:
 
     window: str
     reason: str
+    #: The blocking window's own reset instant, parsed off the snapshot
+    #: bucket — propagated onto the gate refusal's ``retry_at`` so a job
+    #: parked on this pause wakes at the real reset rather than burning
+    #: its park cap on a generic two-hour backoff (gr592789).
+    resets_at: datetime | None = None
 
 
 def _ceiling_pct(store: Store | None) -> float:
@@ -171,7 +176,7 @@ def evaluate(store: Store | None) -> QuotaPause | None:
             f"work is paused; free local work still runs. Auto-clears at "
             f"{resets}, or resume now on /budget."
         )
-        return QuotaPause(window=name, reason=reason)
+        return QuotaPause(window=name, reason=reason, resets_at=reset_dt)
     return None
 
 
@@ -256,6 +261,11 @@ class Taper:
     used_pct: float | None = None
     pct_reason: str = ""
     warning_reason: str = ""
+    #: The reset instant of the window driving the blocking signal — the
+    #: highest-used window's ``resets_at`` when a percentage is visible,
+    #: else the warning-band window's. Propagated to the gate refusal's
+    #: ``retry_at`` so a parked job wakes at the real reset (gr592789).
+    resets_at: datetime | None = None
 
     def blocked(self, work_class: str | WorkClass | None = None) -> frozenset[str]:
         """Tier names (``medium``/``big``/``frontier``) the taper stops for
@@ -332,6 +342,8 @@ def taper_state(store: Store | None) -> Taper:
     now = datetime.now(UTC)
     used_pct: float | None = None
     pct_reason = warning_reason = ""
+    resets_at: datetime | None = None
+    warn_resets_at: datetime | None = None
     for name, bucket in windows.items():
         # Headroom windows only: overage is extra-usage credit, not headroom.
         if name not in _TAPER_WINDOWS or not isinstance(bucket, dict):
@@ -345,13 +357,16 @@ def taper_state(store: Store | None) -> Taper:
             if used_pct is None or raw > used_pct:
                 used_pct = float(raw)
                 pct_reason = f"{raw:.0f}% of the {name} window used"
+                resets_at = reset_dt
         elif status in _WARNING_STATUSES and not warning_reason:
             warning_reason = f"the {name} window is {status}"
+            warn_resets_at = reset_dt
     return Taper(
         no_signal=used_pct is None and not warning_reason,
         used_pct=used_pct,
         pct_reason=pct_reason,
         warning_reason=warning_reason,
+        resets_at=resets_at if used_pct is not None else warn_resets_at,
     )
 
 

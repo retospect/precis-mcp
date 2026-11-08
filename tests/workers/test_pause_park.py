@@ -92,6 +92,9 @@ def test_ctx_defer_parks_and_wake_requeues(store: Store) -> None:
     meta = _meta(store, job_id)
     assert meta["wake_when"]["kind"] == "at_time"
     assert int(meta["wake_when"]["payload"]["ts"]) == int(wake_at.timestamp())
+    # The park's reason rides ``payload.why`` — the re-queue's audit
+    # line names what the job waited on (gr592789's visible health line).
+    assert meta["wake_when"]["payload"]["why"] == "taper pause — parked"
     assert meta["pause_parks"] == 1
 
     # The happy-path finalize must NOT stamp succeeded over a parked job
@@ -112,6 +115,15 @@ def test_ctx_defer_parks_and_wake_requeues(store: Store) -> None:
     assert out["ok"] >= 1
     assert _status(store, job_id) == "queued"
     assert "lease_until" not in _meta(store, job_id)
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s "
+            "AND chunk_kind = 'job_event' ORDER BY ord DESC LIMIT 1",
+            (job_id,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "wake_runner: re-queued (at_time — taper pause — parked)"
 
     # …and the claude_inproc lane can claim it again as fresh work.
     with store.pool.connection() as conn:

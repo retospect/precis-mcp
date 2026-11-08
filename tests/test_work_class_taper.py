@@ -7,6 +7,7 @@ call, web request), else background.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
@@ -95,6 +96,52 @@ def test_level_and_reason_are_the_background_reading() -> None:
     assert _taper(None, "allowed_warning").level == 1
     # A warning alongside a visible percentage reads as no taper.
     assert _taper(50, "allowed_warning").level == 0
+
+
+def test_taper_resets_at_tracks_the_driving_window() -> None:
+    """gr592789: the taper carries the blocking window's ``resets_at`` so
+    the gate refusal names a real retry instant — the highest-used
+    window's reset when a percentage is visible, the warning window's
+    otherwise."""
+    reset_5h = "2099-07-17T06:30:00+00:00"
+    reset_7d = "2099-07-20T00:00:00+00:00"
+    store = _Store(
+        {
+            "five_hour": {
+                "status": "allowed",
+                "used_percentage": 97,
+                "resets_at": reset_5h,
+            },
+            "seven_day": {
+                "status": "allowed",
+                "used_percentage": 99,
+                "resets_at": reset_7d,
+            },
+        }
+    )
+    taper = quota_mod.taper_state(cast("Any", store))
+    assert taper.used_pct == 99
+    assert taper.resets_at == datetime(2099, 7, 20, tzinfo=UTC)
+
+    # Blind taper (no percentage): the warning window's reset applies.
+    store = _Store({"five_hour": {"status": "allowed_warning", "resets_at": reset_5h}})
+    taper = quota_mod.taper_state(cast("Any", store))
+    assert taper.used_pct is None and taper.warning_reason
+    assert taper.resets_at == datetime(2099, 7, 17, 6, 30, tzinfo=UTC)
+
+    # A window already past its own reset has rolled — it neither blocks
+    # nor contributes a horizon.
+    store = _Store(
+        {
+            "five_hour": {
+                "status": "allowed",
+                "used_percentage": 99,
+                "resets_at": "2000-01-01T00:00:00+00:00",
+            }
+        }
+    )
+    taper = quota_mod.taper_state(cast("Any", store))
+    assert taper.used_pct is None and taper.resets_at is None
 
 
 def _gate(tier: Tier, windows: object, **kw: Any) -> str | None:

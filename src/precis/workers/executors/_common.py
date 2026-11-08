@@ -2166,6 +2166,10 @@ def park_job_until(
     :data:`MAX_PAUSE_PARKS` times (``meta.pause_parks``) — the caller then
     records the pause as a normal failure instead of letting a
     never-lifting window hide the job forever. Caller commits.
+
+    ``note`` also lands on ``wake_when.payload.why`` (first 200 chars) so
+    the wake_runner's re-queued/cancelled audit line names the pause the
+    job was waiting on (gr592789).
     """
     row = conn.execute(
         "SELECT COALESCE((meta->>'pause_parks')::int, 0) FROM refs WHERE ref_id = %s",
@@ -2181,7 +2185,10 @@ def park_job_until(
         ref_id,
         wake_when={
             "kind": "at_time",
-            "payload": {"ts": int(at.timestamp())},
+            # ``why`` echoes on the wake_runner's re-queued/cancelled
+            # audit line — the parked job's health trail names the pause
+            # it waited on, not just "(at_time)" (gr592789).
+            "payload": {"ts": int(at.timestamp()), "why": note[:200]},
         },
         pause_parks=parks + 1,
     )

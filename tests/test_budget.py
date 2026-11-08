@@ -727,6 +727,10 @@ def test_quota_gate_rejected_pauses() -> None:
     assert pause is not None
     assert pause.window == "five_hour"
     assert "quota" in pause.reason
+    # The window's own reset rides the pause so a parked job re-queues
+    # AT it (gr592789) instead of re-parking on a generic backoff until
+    # its park cap fails the job.
+    assert pause.resets_at == datetime(2099, 7, 17, tzinfo=UTC)
 
 
 def test_quota_gate_over_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -737,6 +741,55 @@ def test_quota_gate_over_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
     pause = quota_mod.evaluate(cast("Store", store))
     assert pause is not None
     assert pause.window == "seven_day"
+    assert pause.resets_at is None  # no resets_at in the bucket → no horizon
+
+
+def test_gate_tier_quota_trip_carries_window_reset() -> None:
+    """gr592789: the quota pause's refusal is a ``GateRefusal`` naming the
+    blocking window's ``resets_at`` — the router stamps it as ``retry_at``
+    so ``ctx.defer`` parks the job until the real reset (a multi-day
+    seven_day window no longer burns ``MAX_PAUSE_PARKS`` on two-hour
+    backoffs and lands the job ``failed``)."""
+    resets = "2099-07-17T06:30:00+00:00"
+    store = SqlStore(
+        windows={
+            "seven_day": {
+                "status": "exceeded",
+                "resets_at": resets,
+            }
+        }
+    )
+    reason = breaker_mod.gate_tier(
+        Tier.BIG, transport="claude_agent", store=cast("Store", store)
+    )
+    assert isinstance(reason, breaker_mod.GateRefusal)
+    assert reason.retry_at == datetime(2099, 7, 17, 6, 30, tzinfo=UTC)
+    assert "quota" in reason
+
+
+def test_gate_tier_taper_trip_carries_window_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same for the admission taper's refusal (used_percentage below the
+    full-park ceiling but past the BIG background floor): the parked job
+    waits for the window that throttled it, not a fixed backoff."""
+    monkeypatch.delenv("PRECIS_QUOTA_CEILING_PCT", raising=False)
+    resets = "2099-07-17T06:30:00+00:00"
+    store = SqlStore(
+        windows={
+            "seven_day": {
+                "status": "allowed",
+                "used_percentage": 98.5,  # over the 98% BIG background floor
+                "resets_at": resets,
+            }
+        }
+    )
+    reason = breaker_mod.gate_tier(
+        Tier.BIG, transport="claude_agent", store=cast("Store", store)
+    )
+    assert isinstance(reason, breaker_mod.GateRefusal)
+    assert "quota low" in reason
+    assert reason.retry_at == datetime(2099, 7, 17, 6, 30, tzinfo=UTC)
 
 
 def test_quota_gate_under_ceiling_passes(monkeypatch: pytest.MonkeyPatch) -> None:
