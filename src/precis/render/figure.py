@@ -71,7 +71,9 @@ def invalidation_key(input_shas: list[str]) -> str:
 #: 3: bond-less scenes get detected MIC bonds, periodic scenes an oblique
 #:    camera default, and ``color:'layer'`` z-shading is new (gr592796).
 #: 4: superheavy CPK colours (Z=110-118) recolour pink-fallback renders.
-VIZ3D_CODE_VERSION = "4"
+#: 5: the periodic oblique default adds ``persp`` projection — td594867
+#:    set the angles but left ``Camera()``'s ortho (review td594868).
+VIZ3D_CODE_VERSION = "5"
 
 #: Hard cost bounds for a structure view. The render runs in-process (viz3d is
 #: pure Python/numpy, no sandbox), so cost is bounded by atom count instead of
@@ -90,10 +92,12 @@ _VIEW_COLORS = ("cpk", "mono", "layer")
 
 #: Oblique default for a periodic scene (gr592796): ``Camera()``'s az/el 0
 #: stares straight down a lattice axis, stacking a slab's atoms into
-#: columns of hidden depth. Matches ``precis_web.structure_package``'s
-#: fixed view so a package image and a draft figure of one structure agree.
+#: columns of hidden depth. The angles match
+#: ``precis_web.structure_package``'s fixed view; ``persp`` adds the
+#: depth cue the gripe's "oblique perspective" asked for.
 _OBLIQUE_AZIMUTH_DEG = 35.0
 _OBLIQUE_ELEVATION_DEG = 25.0
+_OBLIQUE_PROJECTION = "persp"
 
 #: The flat recipe ``style`` splits two ways — geometry knobs consumed by
 #: :class:`precis.viz3d.stickfig.Style`, render knobs forwarded verbatim
@@ -249,14 +253,16 @@ def view_key(scene: Any, recipe: dict[str, Any]) -> str:
 def _view_camera(scene: Any, camera: dict[str, Any]) -> Camera:
     """The recipe's camera with the periodic-scene default filled in: keys
     the recipe names win (an explicit camera stays honoured); a recipe that
-    omits azimuth/elevation on a periodic scene gets the oblique view
-    (gr592796) instead of the axis-aligned ``Camera()`` default."""
+    omits azimuth/elevation/projection on a periodic scene gets the oblique
+    persp view (gr592796) instead of the axis-aligned ortho ``Camera()``
+    default."""
     from precis.viz3d.camera import Camera
 
     cam = dict(camera)
     if any(scene.cell.pbc):
         cam.setdefault("azimuth_deg", _OBLIQUE_AZIMUTH_DEG)
         cam.setdefault("elevation_deg", _OBLIQUE_ELEVATION_DEG)
+        cam.setdefault("projection", _OBLIQUE_PROJECTION)
     return Camera(**cam)
 
 

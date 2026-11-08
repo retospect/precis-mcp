@@ -115,8 +115,9 @@ put(kind="draft", id="nanotrans", chunk_kind="figure",
 
 `camera` takes `azimuth_deg`, `elevation_deg`, `twist_deg`, `projection`
 (`ortho`|`persp`), `zoom`; a periodic structure with no camera keys gets an
-oblique default view (azimuth 35, elevation 25) — a bare `Camera()` would
-stare straight down a lattice axis. `style` takes `stick_radius`,
+oblique perspective default (azimuth 35, elevation 25, `projection:
+persp`) — a bare `Camera()` would stare straight down a lattice axis.
+`style` takes `stick_radius`,
 `ball_scale`, `color` (`cpk`|`mono`|`layer` — `layer` darkens each element
 colour by the atom's z so a slab's layer stack and a dopant inside it read
 at a glance), plus the render knobs `halo`/`fog` (booleans; `fog` is the

@@ -578,9 +578,9 @@ def _scene(hub: Hub, slug: str):
 
 
 def test_view_camera_oblique_default_for_periodic_only(hub: Hub) -> None:
-    """A periodic scene with no camera keys gets the oblique default
-    (gr592796 want (a)); keys the recipe names win, and a molecular scene
-    keeps ``Camera()``'s defaults."""
+    """A periodic scene with no camera keys gets the oblique persp default
+    (gr592796 want (a)); keys the recipe names win — an explicit projection
+    included — and a molecular scene keeps ``Camera()``'s defaults."""
     import precis.render.figure as rf
 
     sh = StructureHandler(hub=hub)
@@ -590,12 +590,14 @@ def test_view_camera_oblique_default_for_periodic_only(hub: Hub) -> None:
 
     cam = rf._view_camera(slab, {})
     assert cam.azimuth_deg == 35.0 and cam.elevation_deg == 25.0
-    cam = rf._view_camera(slab, {"azimuth_deg": 10.0, "projection": "persp"})
+    assert cam.projection == "persp"  # the gripe's depth cue, periodic-only
+    cam = rf._view_camera(slab, {"azimuth_deg": 10.0, "projection": "ortho"})
     assert cam.azimuth_deg == 10.0  # recipe wins
     assert cam.elevation_deg == 25.0  # still filled for a periodic scene
-    assert cam.projection == "persp"
+    assert cam.projection == "ortho"  # an explicit projection wins too
     cam = rf._view_camera(mol, {})
     assert cam.azimuth_deg == 0.0 and cam.elevation_deg == 0.0
+    assert cam.projection == "ortho"
 
 
 def test_view_styles_split_and_layer_color() -> None:
