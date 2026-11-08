@@ -206,6 +206,7 @@ header flags it (`⚠ N of M … also match q`) so the truncation is visible.
 ```python
 search(kind="gripe", tags=["STATUS:open"])  # untriaged only — a literal tag pin
 get(kind="gripe", id="/open")  # the live cohort (all non-terminal), 20 per page
+get(kind="gripe", id="/open", args={"sort": "size"})  # same queue, re-grouped
 ```
 
 Queryless gripe browse sorts by the shared **drain** order (gr595573 —
@@ -213,10 +214,12 @@ the same default the `/gripes` web view shows): explicit PRIO first
 where set (lower = hotter), then size `s` < `m` < `l` < unsized, then
 oldest first within a size — the queue that drains. Under the header
 one line reads `N open · M older than 3d · oldest grX
-(D days) · K more past this page`. `sort=` re-groups the queue:
+(D days) · K more past this page`. `sort=` re-groups the queue — on
+`search` and on the `/open` and `/wontfix` listings alike:
 `drain` (default) | `oldest` | `newest` | `size` | `source` (human /
 agent / watchdog) | `status`; the legacy `prio` (unset sorts at 5) and
-`recency` (newest-touched) spellings still work.
+`recency` (newest-touched) spellings still work. A listing's next-page
+call re-states the sort, so page 2 keeps the order page 1 picked.
 
 Need every id in a filtered set — a triage pass, a batch `get`?
 `view='ids'` renders one handle per line and nothing else, so a full

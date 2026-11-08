@@ -61,7 +61,12 @@ Surface (see ``precis-gripe-help``):
   (:func:`age_summary`, also the session-start digest line). ``/open``
   and the ``status='open'`` shorthand both mean the live cohort —
   every non-terminal ``STATUS:`` (gr530682); a literal status cohort
-  is ``search(kind='gripe', tags=['STATUS:open'])``.
+  is ``search(kind='gripe', tags=['STATUS:open'])``. The ``/open`` and
+  ``/wontfix`` listings take ``args={'sort': '<name>'}`` — the same
+  ``drain``|``oldest``|``newest``|``size``|``source``|``status``
+  vocabulary ``search(sort=)`` takes, plus the legacy ``prio``/
+  ``recency`` spellings; the next-page call re-states it so the
+  continuation can't silently revert to ``drain``.
 - ``tag`` / ``link`` / ``delete`` behave like every other
   first-class numeric ref kind via :class:`NumericRefHandler`.
 - The gripe-fix loop's working state lives on the gripe (gr519361,
@@ -562,10 +567,18 @@ class GripeHandler(NumericRefHandler):
     # Queryless browse is the drain queue (gr595573 ruling): explicit
     # PRIO first where set, then size s<m<l<unsized, then oldest first —
     # the same order /gripes shows; ``sort=`` takes the shared
-    # vocabulary plus the legacy ``prio``/``recency`` spellings.
+    # vocabulary plus the legacy ``prio``/``recency`` spellings, on
+    # ``search`` and on the paged ``/open``/``/wontfix`` listings
+    # (td596398 review: ``/open`` used to hardcode drain).
     browse_default_sort: ClassVar[str] = "drain"
     prio_order_by: ClassVar[str] = "prio_age"
     EXTRA_SORTS: ClassVar[frozenset[str]] = frozenset(gripe_order.SORT_VALUES)
+
+    #: The ``/`` list ids whose ``_list_by_tags`` page takes
+    #: ``args={'sort': …}``. ``/parked`` keeps its own parked-age order;
+    #: the fix-loop views (``/queue``, ``/batch``) and single-id reads
+    #: have no list order to apply one to.
+    _SORTABLE_LIST_VIEWS: ClassVar[frozenset[str]] = frozenset({"open", "wontfix"})
 
     # gr572710: a gripe listing's tag cell shows only its ``cluster:``
     # chip — the tag that groups the queue. ``size:``, ``theme:``,
@@ -602,11 +615,22 @@ class GripeHandler(NumericRefHandler):
     )
 
     def _list_view(
-        self, view: str, *, page: int = 1, page_size: int | None = None
+        self,
+        view: str,
+        *,
+        page: int = 1,
+        page_size: int | None = None,
+        sort: str | None = None,
     ) -> Response | None:
         size = 20 if page_size is None else page_size
         offset = (page - 1) * size
         if view == "parked":
+            if sort is not None:
+                raise BadInput(
+                    "args={'sort': …} doesn't apply to the parked shelf "
+                    "— it orders by wake condition and parked age",
+                    next="get(kind='gripe', id='/parked')",
+                )
             return self._parked_list_view(page=page, size=size)
         if view not in self.paged_list_views:
             return super()._list_view(view)
@@ -616,25 +640,27 @@ class GripeHandler(NumericRefHandler):
         tags = [] if view == "open" else ["STATUS:wontfix"]
         exclude = sorted(_OPEN_EXCLUDED_TAGS) if view == "open" else None
         # The next-page call must repeat a non-default page_size or the
-        # continuation silently shrinks back to 20 rows.
+        # continuation silently shrinks back to 20 rows — and a caller's
+        # sort=, or page 2 quietly reverts to the default order.
         more_args = "'page': {next}"
         if page_size is not None:
             more_args += f", 'page_size': {size}"
+        if sort is not None:
+            more_args += f", 'sort': {sort!r}"
         resp = self._list_by_tags(
             tags,
             page_size=size,
             page=page,
             offset=offset,
-            sort="drain" if view == "open" else "recency",
+            sort=sort or ("drain" if view == "open" else "recency"),
             exclude_tags=exclude,
             more_call=f"get(kind='gripe', id='/{view}', args={{{{{more_args}}}}})",
         )
         if "next page:" in resp.body:
-            resp = replace(
-                resp,
-                body=resp.body
-                + f"\nfallback: search(kind='gripe', status='{view}', page_size=100)",
-            )
+            fallback = f"search(kind='gripe', status='{view}', page_size=100"
+            if sort is not None:
+                fallback += f", sort={sort!r}"
+            resp = replace(resp, body=resp.body + f"\nfallback: {fallback})")
         return replace(
             resp,
             body=resp.body
@@ -2214,6 +2240,11 @@ class GripeHandler(NumericRefHandler):
         # ``args={'page_size': N}`` — the list views' canonical row cap
         # (gr514469), same extras channel as ``page``.
         page_size: int | None = None,
+        # ``args={'sort': '<name>'}`` — the ``/open``/``/wontfix``
+        # listings' order (the gr595573 queue vocabulary, the same names
+        # ``search(sort=)`` takes plus legacy ``prio``/``recency``); the
+        # next-page call re-states it.
+        sort: str | None = None,
         # ``args={'comment': K}`` / ``{'comments': K}`` — the timeline
         # selectors inside ``view='comments'``/``view='full'`` (gr499040,
         # gr503545; flattened to kwargs by the dispatcher's extras
@@ -2233,6 +2264,27 @@ class GripeHandler(NumericRefHandler):
             _kw["page"] = page
         if page_size is not None:
             _kw["page_size"] = page_size
+        if sort is not None:
+            sort = str(sort).strip().lower()
+            browse_sorts = {"prio", "recency"} | self.EXTRA_SORTS
+            if sort not in browse_sorts:
+                raise BadInput(
+                    f"unknown sort {sort!r} for kind='gripe'",
+                    options=sorted(browse_sorts),
+                    next=(
+                        "get(kind='gripe', id='/open', "
+                        f"args={{'sort': {gripe_order.DEFAULT_SORT!r}}})"
+                    ),
+                )
+            listed = id[1:] if isinstance(id, str) and id.startswith("/") else ""
+            if listed not in self._SORTABLE_LIST_VIEWS:
+                raise BadInput(
+                    "args={'sort': …} re-orders the '/open' and '/wontfix' "
+                    "listings only — a single gripe and the fix-loop views "
+                    "have no list order to apply it to",
+                    next=(f"get(kind='gripe', id='/open', args={{'sort': {sort!r}}})"),
+                )
+            _kw["sort"] = sort
         view = plain_listing_view(view, ())
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
