@@ -205,6 +205,91 @@ def test_trust_view_schema2_without_records_says_so(
     assert "predates" not in r.body
 
 
+def test_trust_view_screening_tier_points_at_the_neb_promotion_door(
+    pathway_store: Store,
+) -> None:
+    """gr592663: a screening-tier pathway carries no ``trust_schema`` BY
+    DESIGN (the rung is relax-only — no NEB legs), so the view names the
+    tier and points at the deliberate neb-tier promotion door on its
+    candidate — never "predates" or a bare same-tier engine re-run."""
+    h = _handler(pathway_store)
+    with pathway_store.tx() as conn:
+        cand = pathway_store.insert_ref(
+            kind="structure",
+            slug="trust-screening-cand",
+            title="screening candidate",
+            meta={},
+            conn=conn,
+        )
+    _seed(
+        pathway_store,
+        "trust-screening",
+        {
+            "status": "ready",
+            "tier": "screening",
+            "candidate_ref": cand.id,
+            "graph": _GRAPH,
+            "results": _RESULTS_LEGACY,
+        },
+    )
+
+    r = h.get(id="trust-screening", view="trust")
+    assert "screening tier: no NEB trust records" in r.body
+    assert "promote to neb tier to get a gate" in r.body
+    assert "predates" not in r.body
+    assert (
+        f"put(kind='structure', id='st{cand.id}', mode='rerun', args={{'tier': 'neb'}})"
+    ) in r.body
+
+
+def test_trust_view_unstamped_screening_result_same_message(
+    pathway_store: Store,
+) -> None:
+    """The ``results.screening`` fallback (a pathway minted before the
+    ``meta.tier`` stamp, or off-ladder) reads identically — screening by
+    shape, not by stamp. With no ``candidate_ref`` there is no structure
+    door, so the next step is the config-level one."""
+    h = _handler(pathway_store)
+    _seed(
+        pathway_store,
+        "trust-screening-unstamped",
+        {
+            "status": "ready",
+            "graph": _GRAPH,
+            "results": {**_RESULTS_LEGACY, "screening": True},
+        },
+    )
+
+    r = h.get(id="trust-screening-unstamped", view="trust")
+    assert "screening tier: no NEB trust records" in r.body
+    assert "predates" not in r.body
+    assert "mode='rerun'" not in r.body
+    assert "search.screening" in r.body
+
+
+def test_trust_view_verify_tier_without_schema_still_predates(
+    pathway_store: Store,
+) -> None:
+    """Only the screening rung is excused: a verify-tier pathway with no
+    ``trust_schema`` genuinely predates the records contract — NEB ran
+    at that rung, so the records should exist."""
+    h = _handler(pathway_store)
+    _seed(
+        pathway_store,
+        "trust-verify-legacy",
+        {
+            "status": "ready",
+            "tier": "verify",
+            "graph": _GRAPH,
+            "results": _RESULTS_LEGACY,
+        },
+    )
+
+    r = h.get(id="trust-verify-legacy", view="trust")
+    assert "predates" in r.body
+    assert "screening tier" not in r.body
+
+
 def test_trust_view_no_graph_errors_cleanly(pathway_store: Store) -> None:
     """No computed graph → the same not-computed-yet guard as the other
     views, not a crash."""

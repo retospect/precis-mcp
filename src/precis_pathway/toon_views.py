@@ -388,14 +388,36 @@ def trust_toon(
     (the 1-seed vacuous pass is labelled, not hidden). A pathway
     harvested before the trust-records contract existed gets the same
     guidance message it always did — never guess at a shape this reader
-    doesn't understand.
+    doesn't understand. A screening-tier pathway is the exception: the
+    rung is relax-only, so missing records are by design and the named
+    next step is the neb-tier promotion door (gr592663).
     """
+    from precis.quest.compute import _autocatpath_current_version, _pathway_tier
     from precis.utils import trust_gate
 
     results = meta.get("results")
     results = results if isinstance(results, dict) else {}
     schema = results.get("trust_schema")
     if schema not in (1, 2):  # 2 (engine 0.20.0) is additive over 1
+        if _pathway_tier(meta) == "screening":
+            # gr592663: no NEB legs ran, so no trust records exist by
+            # design — "predates" is the wrong reason and "re-run on a
+            # current engine" the wrong next step (a screening re-run
+            # stays record-free). The deliberate door is the neb-tier
+            # rerun of the pathway's candidate (request_rerun's tier
+            # override); an off-ladder screening pathway drops
+            # `search.screening` from its config instead.
+            door = (
+                f"put(kind='structure', id='{candidate_handle}', "
+                "mode='rerun', args={'tier': 'neb'})"
+                if candidate_handle
+                else "re-put the pathway config without `search.screening`"
+            )
+            return (
+                "screening tier: no NEB trust records (a screening run is "
+                "relax-only by design); promote to neb tier to get a "
+                f"gate — {door}."
+            )
         return (
             "this pathway predates per-step trust records (its results carry "
             "no trust_schema in 1-2) — re-run it against a current "
@@ -405,8 +427,6 @@ def trust_toon(
     records = [r for r in (results.get("trust") or []) if isinstance(r, dict)]
     if not records:
         return f"trust_schema={schema} but no trust records on this pathway."
-
-    from precis.quest.compute import _autocatpath_current_version, _pathway_tier
 
     engine = meta.get("autocatpath_version")
     engine = engine if isinstance(engine, str) and engine else None

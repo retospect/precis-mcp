@@ -564,7 +564,13 @@ or enqueue the suggested calls.
   reads `fail` with `endpoint:union-disagree` in `blocked_by`, and no
   cross-seed pair blocks as `endpoint:union-not-run`; when the union
   answers a check the run's own seeds couldn't, the row shows the
-  union's verdict instead of a bare `not-run`. Read this first; `view='warnings'` keeps the per-record detail.
+  union's verdict instead of a bare `not-run`. A screening-tier pathway
+  has no records by design (relax-only — no NEB legs): the view says
+  `screening tier: no NEB trust records` and names the promotion door
+  (`put(kind='structure', id='st<N>', mode='rerun', args={'tier':
+  'neb'})` on its candidate), not the pre-schema re-run line an old
+  neb/verify artifact gets. Read this first; `view='warnings'` keeps
+  the per-record detail.
 - `view='warnings'` — where to distrust the numbers, in three sections:
   **blocking** (real fatal, on-route trust-record fails — read these first),
   **counts** (everything else, one row per check/verdict, e.g. `wrong_binder
