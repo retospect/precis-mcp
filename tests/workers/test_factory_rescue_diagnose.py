@@ -637,6 +637,32 @@ def test_wont_do_ancestor_closes_any_rescue_class(store: Store) -> None:
     )
 
 
+def test_done_parent_does_not_mask_a_higher_wont_do_ancestor(
+    store: Store,
+) -> None:
+    """td598267 regression: ``_terminal_ancestor`` stopped at the
+    NEAREST terminal ancestor, so a done parent masked a higher
+    won't-do and a non-``terminal-root`` class fell through to mint a
+    diagnose or file an ask for work the won't-do already ended."""
+    root = _root(store)
+    dead = _node(store, root, title="a won't-do phase", status="won't-do")
+    parent = _node(store, root, title="a done parent", status="done", parent=dead)
+    leaf = _node(store, root, parent=parent)
+    fr.enter_rescue(store, leaf, "builder", _ev())
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.closed == [leaf]
+    assert res.asked == [] and res.diagnosing == []
+    assert _ask_refs(store) == [] and _diagnose_tasks(store) == []
+    assert _status(store, leaf) == "won't-do"
+    assert _status(store, root) == "open"
+    assert any(
+        f"ancestor td{dead} is won't-do; closed by the watchdog" in c
+        for c in _comments(store, leaf)
+    )
+
+
 def test_rescued_node_under_an_open_root_is_unchanged(store: Store) -> None:
     """Control: a live root keeps the human-choice path — an engine
     class still files its one ask."""

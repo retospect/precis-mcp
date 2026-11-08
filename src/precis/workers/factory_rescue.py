@@ -1549,8 +1549,12 @@ def _diagnose_task_id(conn: Any, ref_id: int, tag_at: Any) -> int | None:
 
 
 def _terminal_ancestor(store: Store, ref_id: int) -> tuple[int, str] | None:
-    """``(ref id, STATUS)`` of the node's nearest ancestor with a terminal
-    STATUS — the ``_ancestor_ids`` walk, nearest first (gr576258)."""
+    """``(ref id, STATUS)`` of the terminal ancestor that decides the
+    orphan close — the ``_ancestor_ids`` walk, nearest first
+    (gr576258). A ``won't-do`` anywhere up the chain wins over a nearer
+    terminal: a done parent must not mask a dead ancestor's won't-do
+    (td598267 — the masked leaf minted a diagnose or filed an ask for
+    work the won't-do already ended)."""
     with store.pool.connection() as conn:
         ids = _ancestor_ids(conn, ref_id)
         if not ids:
@@ -1569,11 +1573,14 @@ def _terminal_ancestor(store: Store, ref_id: int) -> tuple[int, str] | None:
             (ids,),
         ).fetchall()
     status = {int(rid): str(v) for rid, v in rows}
+    term: tuple[int, str] | None = None
     for aid in ids:
         s = status.get(aid)
-        if s in TERMINAL_TODO_STATUSES:
+        if s == "won't-do":
             return aid, s
-    return None
+        if term is None and s in TERMINAL_TODO_STATUSES:
+            term = aid, s
+    return term
 
 
 def _live_ask_blockers(conn: Any, ref_id: int) -> list[int]:
