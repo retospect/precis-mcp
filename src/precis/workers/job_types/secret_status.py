@@ -54,12 +54,20 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     ctx.set_meta(
         status={
             "checked_at": snap.checked_at.isoformat() if snap.checked_at else None,
+            "tracked": len(snap.entries),
             **counts,
         }
     )
+    # Healthiest first — the StatusEntry.state vocabulary (gr592971: the
+    # summary is the weekly report's only read of vault health).
+    detail = ", ".join(
+        f"{counts[s]} {s}"
+        for s in ("ok", "present", "missing", "invalid", "unknown")
+        if counts.get(s)
+    )
     ctx.append_chunk(
         "job_summary",
-        "secret_status: " + ", ".join(f"{n} {s}" for s, n in sorted(counts.items())),
+        f"secret_status: {len(snap.entries)} tracked — {detail or 'no entries'}",
     )
 
 

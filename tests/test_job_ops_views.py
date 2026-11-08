@@ -553,6 +553,75 @@ def test_settings_collapses_per_day_keys(jobs: JobHandler, store: Store) -> None
             _drop_setting(store, k)
 
 
+# ── /secrets (gr592971) ───────────────────────────────────────────
+
+
+def _seed_secret_status(store: Store, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Write the checker job's status blob with a canned vault: one
+    verified key, everything else missing."""
+    from precis import secret_status
+
+    async def fake_run_checks(
+        _store: object, *, scheduled: bool = False, **_kw: object
+    ) -> dict[str, secret_status.CheckResult]:
+        return {"ANTHROPIC_API_KEY": secret_status.CheckResult("ok", "verified")}
+
+    monkeypatch.setattr(secret_status, "run_checks", fake_run_checks)
+    monkeypatch.setattr(secret_status, "list_secrets", lambda *, store: [])
+    monkeypatch.setattr(
+        secret_status,
+        "present",
+        lambda n, *, vault_names=None, store=None: n == "ANTHROPIC_API_KEY",
+    )
+    secret_status.record_status(store)
+
+
+def _drop_secret_status(store: Store) -> None:
+    from precis import secret_status
+
+    with store.pool.connection() as conn:
+        conn.execute(
+            "DELETE FROM app_state WHERE key = %s", (secret_status._STATUS_KEY,)
+        )
+        conn.commit()
+
+
+def test_secrets_reports_tracked_counts(
+    jobs: JobHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``id='/secrets'`` answers vault health as counts — the weekly
+    report's line — with no names and no values."""
+    _seed_secret_status(store, monkeypatch)
+    try:
+        from precis import secret_status
+
+        resp = jobs.get(id="/secrets")
+        n = len(secret_status.KNOWN_SECRETS)
+        assert f"secrets: {n} tracked" in resp.body
+        assert "1 ok" in resp.body
+        assert f"{n - 1} missing" in resp.body
+        assert "checked:" in resp.body
+        assert "re-check:" in resp.body
+        # Counts only — a registry name never renders.
+        assert "ANTHROPIC" not in resp.body
+        assert "API_KEY" not in resp.body
+    finally:
+        _drop_secret_status(store)
+
+
+def test_secrets_without_snapshot_reports_unchecked(jobs: JobHandler) -> None:
+    _drop_secret_status(jobs.store)
+    resp = jobs.get(id="/secrets")
+    assert "not checked yet" in resp.body
+
+
+def test_secrets_rejects_unknown_filters(jobs: JobHandler) -> None:
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="unknown /secrets filter"):
+        jobs.get(id="/secrets?probe=1")
+
+
 def test_settings_service_config_typed_cells(jobs: JobHandler, store: Store) -> None:
     """Service names print only from the registry enum; actor and host
     material never render — a node hostname in the host column or an

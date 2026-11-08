@@ -87,12 +87,8 @@ _ALLOWLIST: dict[tuple[str, str], str] = {
     ): "' | ' inside an error-prose layout enumeration — not output rows",
     (
         "_numeric_ref.py",
-        "_count_group_line",
-    ): "count-view facet rows are the machine-parsed 'label: n' contract (agents + tests read it)",
-    (
-        "job.py",
-        "_count_group_line",
-    ): "job's newest/oldest span rides the same count contract",
+        "_count_group_label",
+    ): "the 'v1 | v2' facet-label join — machine-parsed count contract shared by the 'label: n' rows and the 'other:' tail names (agents + tests read it)",
     (
         "finding.py",
         "_finding_count_view",

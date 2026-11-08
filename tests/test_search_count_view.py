@@ -112,11 +112,12 @@ def _sql_job_cell(store: Store, job_type: str | None, status: str | None) -> int
 
 def _facet_counts(body: str) -> dict[str, int]:
     """Parse ``  <v1> | <v2>: N`` group lines out of a count response
-    (a job row may trail a ``— newest/oldest`` span after the count)."""
+    (a job row may trail a ``— newest/oldest`` span after the count;
+    the ``other:`` overflow tail is not a group)."""
     out: dict[str, int] = {}
     for line in body.splitlines():
         m = re.match(r"^  (.+?): (\d+)", line)
-        if m:
+        if m and m.group(1) != "other":
             out[m.group(1)] = int(m.group(2))
     return out
 
@@ -343,14 +344,14 @@ class TestJobErrorHeads:
         assert "error heads" not in resp.body
 
 
-class TestCountGroupByteBudget:
-    """gr536316 fix round 1: a span-annotated job facet row runs ~110
-    bytes, so the full ``_COUNT_GROUP_LIMIT`` rendered ~20 KB — several
-    times the 4096-byte session-MCP result cap, which refused the whole
-    call. Rows now stop at a byte budget and the remainder collapses
-    into one "N more groups" line carrying a working ``next:``."""
+class TestCountGroupPaging:
+    """gr592971: ``page_size``/``page`` now window the facet groups —
+    the args used to be accepted-but-ignored, so a facet wider than the
+    render budget truncated at ~24 groups with no way through. Rows
+    past the page fold into one ``other: N groups, M entries`` tail
+    naming the hidden groups, whose ``next:`` is the next page's call."""
 
-    def test_200_groups_stay_under_context_cap(
+    def test_default_page_ten_groups_with_other_tail(
         self, jobs: JobHandler, store: Store
     ) -> None:
         for i in range(240):
@@ -361,31 +362,85 @@ class TestCountGroupByteBudget:
         assert resp.body.startswith("# 240 job entries"), resp.body
         size = len(resp.body.encode("utf-8"))
         assert size <= 4096, size
-        m = re.search(
-            r"… (\d+) more groups; narrow with job_type= or since=", resp.body
-        )
+        assert len(_facet_counts(resp.body)) == 10
+        m = re.search(r"other: (\d+)\+? groups, (\d+) job entries", resp.body)
         assert m is not None, resp.body
         assert int(m.group(1)) > 0
-        assert "next: search(kind='job', view='count', since='24h'" in resp.body
+        # The folded tail names its groups (the report's "other (15
+        # types)" line) and carries a working next-page call.
+        tail = resp.body.split("other:", 1)[1]
+        assert "type_" in tail
+        assert "next: search(kind='job', view='count'" in tail
+        assert "page=2" in tail
+        assert "page_size=10" in tail
 
-    def test_overflow_next_call_executes(self, jobs: JobHandler, store: Store) -> None:
-        """The advertised ``next:`` must be a working call, not a
-        placeholder — same kwargs dispatched directly."""
-        for i in range(240):
+    def test_page_size_expands_the_facet_listing(
+        self, jobs: JobHandler, store: Store
+    ) -> None:
+        """The gripe's own call: every job_type group on one page."""
+        for i in range(30):
             _job(store, job_type=f"type_{i:03d}", status="succeeded")
+
         resp = jobs.search(
-            view="count",
-            since="24h",
-            group_by="meta.job_type",
-            status="*",
+            view="count", group_by="meta.job_type", status="*", page_size=100
         )
-        assert resp.body.startswith("# 240 job entries"), resp.body
+
+        assert len(_facet_counts(resp.body)) == 30
+        assert "other:" not in resp.body
+
+    def test_page_windows_the_groups(self, jobs: JobHandler, store: Store) -> None:
+        for i in range(25):
+            _job(store, job_type=f"type_{i:02d}", status="succeeded")
+
+        resp = jobs.search(view="count", group_by="meta.job_type", status="*", page=2)
+
+        got = _facet_counts(resp.body)
+        # Equal counts order by label — page 2 is the second ten.
+        assert list(got) == [f"type_{i:02d}" for i in range(10, 20)]
+        assert "— page 2 of 3" in resp.body
+        m = re.search(r"other: (\d+) groups, (\d+) job entries", resp.body)
+        assert m is not None, resp.body
+        assert (int(m.group(1)), int(m.group(2))) == (5, 5)
+        assert "page=3" in resp.body
+        resp3 = jobs.search(view="count", group_by="meta.job_type", status="*", page=3)
+        assert "other:" not in resp3.body
+        assert list(_facet_counts(resp3.body)) == [
+            f"type_{i:02d}" for i in range(20, 25)
+        ]
+
+    def test_page_past_the_end_notes_it(self, jobs: JobHandler, store: Store) -> None:
+        _job(store, job_type="sweep", status="succeeded")
+        resp = jobs.search(view="count", group_by="meta.job_type", status="*", page=9)
+        assert "past the end" in resp.body
+        assert "1 groups, 1 page(s) of 10" in resp.body
+
+    def test_page_args_validated(self, jobs: JobHandler) -> None:
+        for bad in ({"page_size": 0}, {"page_size": -3}, {"page": "x"}):
+            with pytest.raises(BadInput, match="page"):
+                jobs.search(view="count", group_by="meta.job_type", status="*", **bad)
+
+    def test_paging_works_on_the_job_type_path(
+        self, jobs: JobHandler, store: Store
+    ) -> None:
+        """``args={'job_type': …}`` + view='count' delegates to the same
+        paged facet render."""
+        for i in range(15):
+            _job(store, job_type="sweep", status=f"s{i:02d}")
+        resp = jobs.search(
+            job_type="sweep", view="count", group_by="state", status="*", page=2
+        )
+        got = _facet_counts(resp.body)
+        # Equal counts order by label — page 2 holds the last five.
+        assert list(got) == [f"STATUS:s{i:02d}" for i in range(10, 15)]
+        assert sum(got.values()) == 5
+        assert "other:" not in resp.body
+        assert "# 15 job entries" in resp.body
 
     def test_few_groups_no_overflow_line(self, jobs: JobHandler, store: Store) -> None:
         _job(store, job_type="sweep", status="succeeded")
         _job(store, job_type="fix_gripe", status="failed")
         resp = jobs.search(view="count", group_by="meta.job_type", status="*")
-        assert "more groups" not in resp.body
+        assert "other:" not in resp.body
         assert "type_" in resp.body or "sweep" in resp.body
 
 

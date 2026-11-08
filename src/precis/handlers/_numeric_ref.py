@@ -167,15 +167,12 @@ _COUNT_MAX_FACETS = 3
 #: a count. The store caps the GROUP BY at the same bound.
 _COUNT_GROUP_LIMIT = 200
 
-#: Byte budget for the rendered facet-row block on ``view='count'``
-#: (gr536316 fix round 1). A kind whose ``_count_group_line`` carries
-#: span handles + timestamps emits ~110 bytes/row, so the full
-#: ``_COUNT_GROUP_LIMIT`` would render ~20 KB — several times the
-#: 4096-byte session-MCP result cap (``DEFAULT_CONTEXT_BODY_BYTES``).
-#: Sized well under the cap so the header, filter annotations and a
-#: per-kind trailer keep their room; rows past the budget collapse
-#: into :meth:`NumericRefHandler._count_groups_overflow`.
-_COUNT_GROUPS_BUDGET = 2560
+#: Byte budget for the hidden-group names spelled inside the ``other:``
+#: tail on ``view='count'`` (gr592971). The tail's ``next:`` page call
+#: enumerates every hidden group, so the names here are a preview, not
+#: the enumeration — capped so a 200-group tail can't crowd out the
+#: facet rows themselves.
+_COUNT_OTHER_NAMES_BUDGET = 1200
 
 #: A universal handle token (``me474312``, ``td12``) inside free text —
 #: the delete ``reason='merged into me474312'`` breadcrumb the Gone
@@ -318,6 +315,21 @@ def _count_facet_null_label(spec: tuple[str, str]) -> str:
     SPACE tag". ``(none)`` stays for meta/fulltext — a missing scalar
     there isn't an untagged state."""
     return "(untagged)" if spec[0] in ("axis", "open_axis") else "(none)"
+
+
+def _count_group_label(
+    vals: tuple[str | None, ...],
+    facets: list[tuple[str, str]],
+) -> str:
+    """The ``v1 | v2 | v3`` label of one facet group.
+
+    The machine-parsed count contract — agents and tests read the same
+    spelling off the ``label: n`` rows and the ``other:`` tail's name
+    list (gr592971), so both render through this one join."""
+    return " | ".join(
+        v if v is not None else _count_facet_null_label(spec)
+        for v, spec in zip(vals, facets, strict=True)
+    )
 
 
 # Browse lifecycle follows each kind's actual vocabulary; dormant quests stay live.
@@ -1177,7 +1189,14 @@ class NumericRefHandler(Handler):
         # page=N → offset = (page-1) * page_size. Clamped to >= 0 so a
         # stray page=0 doesn't blow the query up. Mirrors the convention
         # in _paper_search.py's ranked search path.
-        offset = max(0, (int(page) - 1) * int(page_size))
+        try:
+            offset = max(0, (int(page) - 1) * int(page_size))
+        except (TypeError, ValueError):
+            raise BadInput(
+                "page=/page_size= must be integers, got "
+                f"page={page!r}, page_size={page_size!r}",
+                next=f"search(kind={self.kind!r}, page_size=100)",
+            ) from None
 
         # Resolve the per-kind STATUS default (e.g. gripe → 'open') into
         # the effective tag filter. An explicit status= always applies;
@@ -1246,6 +1265,8 @@ class NumericRefHandler(Handler):
                 until=until,
                 id_min=id_lo,
                 id_max=id_hi,
+                page_size=page_size,
+                page=page,
             )
         if since is not None or until is not None:
             # Reached only on a direct handler call — dispatch routes
@@ -1718,6 +1739,8 @@ class NumericRefHandler(Handler):
         meta_eq: tuple[str, str] | None = None,
         id_min: int | None = None,
         id_max: int | None = None,
+        page_size: int = 10,
+        page: int = 1,
     ) -> Response:
         """``search(kind=K, view='count')`` — filtered total + facet counts.
 
@@ -1729,6 +1752,13 @@ class NumericRefHandler(Handler):
         value land in ``(none)`` rather than vanishing, so group counts
         can sum past the total only when one ref carries several tags in
         an open axis.
+
+        The facet rows page like a listing: ``page_size`` rows per page,
+        ``page`` the window (gr592971 — both were accepted but ignored,
+        so a facet wider than the render budget truncated at ~24 groups
+        with no way through). Rows past the window fold into one
+        ``other: N groups, M entries`` tail naming the hidden groups;
+        its ``next:`` is the next page's call.
         """
         if sort is not None:
             raise BadInput(
@@ -1803,24 +1833,43 @@ class NumericRefHandler(Handler):
             if hidden > 0:
                 parts.append(f"{hidden} {label} entries hidden; status='*' to include")
         if facets:
+            try:
+                ps, pg = int(page_size), int(page)
+            except (TypeError, ValueError):
+                ps, pg = 0, 0
+            if ps < 1 or pg < 1:
+                raise BadInput(
+                    "page=/page_size= must be positive integers on "
+                    f"view='count', got page={page!r}, page_size={page_size!r}",
+                    next=f"search(kind={self.kind!r}, view='count', page_size=100)",
+                )
             parts.append("")
-            parts.append(" × ".join(_count_facet_label(f) for f in facets) + ":")
-            used = 0
-            shown = 0
-            for row in groups:
-                line = self._count_group_line(row, facets)
-                # +1 for the newline join; the first row always renders
-                # so the facet block is never an empty stub.
-                if (
-                    shown
-                    and used + len(line.encode("utf-8")) + 1 > _COUNT_GROUPS_BUDGET
-                ):
-                    break
-                parts.append(line)
-                used += len(line.encode("utf-8")) + 1
-                shown += 1
-            if shown < len(groups):
-                parts.append(self._count_groups_overflow(len(groups) - shown, group_by))
+            pages = max(1, -(-len(groups) // ps))
+            page_note = f" — page {pg} of {pages}" if len(groups) > ps or pg > 1 else ""
+            parts.append(
+                " × ".join(_count_facet_label(f) for f in facets) + f":{page_note}"
+            )
+            offset = (pg - 1) * ps
+            window = groups[offset : offset + ps]
+            for row in window:
+                parts.append(self._count_group_line(row, facets))
+            hidden_rows = groups[offset + len(window) :]
+            if hidden_rows:
+                parts.append(
+                    self._count_groups_overflow(
+                        hidden_rows,
+                        facets,
+                        group_by=group_by,
+                        page=pg,
+                        page_size=ps,
+                        sql_capped=len(groups) == _COUNT_GROUP_LIMIT,
+                    )
+                )
+            elif not window and groups:
+                parts.append(
+                    f"  (page {pg} is past the end — {len(groups)} groups, "
+                    f"{pages} page(s) of {ps})"
+                )
             elif len(groups) == _COUNT_GROUP_LIMIT:
                 parts.append(f"  … (top {_COUNT_GROUP_LIMIT} groups by count)")
         else:
@@ -1873,27 +1922,76 @@ class NumericRefHandler(Handler):
         job kind's newest/oldest member per group, gr536316).
         """
         vals, n = row[0], row[1]
-        label = " | ".join(
-            v if v is not None else _count_facet_null_label(spec)
-            for v, spec in zip(vals, facets, strict=True)
-        )
-        return f"  {label}: {n}"
+        return f"  {_count_group_label(vals, facets)}: {n}"
 
-    def _count_groups_overflow(self, hidden: int, group_by: Any) -> str:
-        """One-line stand-in for facet rows the byte budget cut
-        (:data:`_COUNT_GROUPS_BUDGET`, gr536316 fix round 1).
+    def _count_other_tail(
+        self,
+        hidden: list[tuple[tuple[str | None, ...], int, Any]],
+        facets: list[tuple[str, str]],
+        *,
+        more: bool = False,
+    ) -> str:
+        """``other: N groups, M <kind> entries (names…)`` — the collapsed
+        tail of a paged count facet (gr592971).
 
-        Carries a working ``next:`` — the same count by a narrower
-        axis — so an agent that hit the wall has a real call to make,
-        not a dead end. Kinds with their own narrowing filters (the
-        job kind's ``job_type=``/``since=``) override the wording.
+        ``hidden`` is the group rows after the current page window;
+        their counts sum to M (open-axis groups can sum past the total —
+        the same double-count the rows themselves carry). Names spell
+        out until :data:`_COUNT_OTHER_NAMES_BUDGET`, then fold into a
+        ``+K more`` marker — the ``next:`` page call is the full
+        enumeration. ``more`` flags a possible tail beyond the SQL-side
+        ``_COUNT_GROUP_LIMIT`` (the group count is a floor, not exact).
         """
-        del group_by  # the default next= re-facets instead of echoing it
-        return (
-            f"  … {hidden} more groups — next: "
-            f"search(kind={self.kind!r}, view='count', "
-            "args={'group_by': 'state'})"
+        names: list[str] = []
+        used = 0
+        dropped = 0
+        for vals, _n, _span in hidden:
+            label = _count_group_label(vals, facets)
+            cost = len(label.encode("utf-8")) + 2
+            if names and used + cost > _COUNT_OTHER_NAMES_BUDGET:
+                dropped += 1
+                continue
+            names.append(label)
+            used += cost
+        total = sum(int(n) for _v, n, _s in hidden)
+        text = (
+            f"other: {len(hidden)}{'+' if more else ''} groups, "
+            f"{total} {self._sense()} entries"
         )
+        if names:
+            text += f" ({', '.join(names)}{f', … +{dropped}' if dropped else ''})"
+        return text
+
+    def _count_groups_overflow(
+        self,
+        hidden: list[tuple[tuple[str | None, ...], int, Any]],
+        facets: list[tuple[str, str]],
+        *,
+        group_by: Any,
+        page: int,
+        page_size: int,
+        sql_capped: bool,
+    ) -> str:
+        """One-line stand-in for facet rows past the current page.
+
+        The collapsed ``other:`` tail (gr592971) plus a working
+        ``next:`` — the next page of the same facet — so an agent that
+        hit the wall has a real call to make, not a dead end. Kinds
+        with their own narrowing filters (the job kind's
+        ``job_type=``/``since=``) override the wording.
+        """
+        tail = self._count_other_tail(hidden, facets, more=sql_capped)
+        gb = f", args={{'group_by': {group_by!r}}}" if group_by is not None else ""
+        line = (
+            f"  {tail} — next: search(kind={self.kind!r}, view='count'{gb}, "
+            f"page={page + 1}, page_size={page_size})"
+        )
+        if sql_capped:
+            line += (
+                f"; only the top {_COUNT_GROUP_LIMIT} groups are counted — "
+                "narrow the filter set for the rest"
+            )
+        return line
 
     def _count_view_extra(
         self,

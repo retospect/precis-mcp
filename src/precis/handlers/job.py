@@ -31,8 +31,9 @@ from urllib.parse import parse_qsl, urlencode
 from precis.errors import BadInput, Denied, NotFound
 from precis.handlers._interpret import interpreted
 from precis.handlers._numeric_ref import (
+    _COUNT_GROUP_LIMIT,
     NumericRefHandler,
-    _count_facet_null_label,
+    _count_group_label,
     _parse_id_range,
     _parse_window_bound,
 )
@@ -135,6 +136,17 @@ _FIX_REPO_ENV = "PRECIS_FIX_REPO_DIR"
 #: count; bounds the ``hosts=1`` listing (``host:<netloc>`` rows are seeded
 #: up to ``rate_limit.MAX_SEEDED_HOST_ROWS``).
 _LIMITS_MAX_ROWS = 600
+
+#: Display order for the ``/secrets`` count line and the ``secret_status``
+#: job summary — the stored ``StatusEntry.state`` vocabulary
+#: (:mod:`precis.secret_status`), healthiest first.
+_SECRET_STATE_ORDER: tuple[str, ...] = (
+    "ok",
+    "present",
+    "missing",
+    "invalid",
+    "unknown",
+)
 
 # ── /settings list view: read-only app_settings + service_config
 # surface (gr538186) ────────────────────────────────────────────────
@@ -968,6 +980,7 @@ class JobHandler(NumericRefHandler):
             "claim",
             "garden",
             "garden/merges",
+            "secrets",
         )
 
     def get(
@@ -1170,6 +1183,8 @@ class JobHandler(NumericRefHandler):
             return self._render_garden_view(view.partition("?")[2])
         if view == "garden/merges" or view.startswith("garden/merges?"):
             return self._render_garden_merges_view(view.partition("?")[2])
+        if view == "secrets" or view.startswith("secrets?"):
+            return self._render_secrets_view(view.partition("?")[2])
         return super()._list_view(view)
 
     def _render_garden_view(
@@ -1356,6 +1371,58 @@ class JobHandler(NumericRefHandler):
         if not entries:
             lines.append("no merge proposals in the window")
         return Response(body="\n".join(lines), result_count=len(entries))
+
+    def _render_secrets_view(self, query_string: str) -> Response:
+        """``id='/secrets'`` — the stored credential-check counts (gr592971).
+
+        The "how healthy is the vault" line the weekly report used to
+        leave blank or open the /secrets web page for. Reads the same
+        ``app_state`` snapshot the page renders
+        (:func:`precis.secret_status.stored_status`, written by the
+        hourly ``secret_status`` checker job) and reports counts per
+        stored state — names and values never leave the snapshot, so
+        there is nothing here a caller shouldn't see.
+        """
+        params = dict(parse_qsl(query_string, keep_blank_values=True))
+        if params:
+            raise BadInput(
+                f"unknown /secrets filter {sorted(params)}",
+                next="get(kind='job', id='/secrets')",
+            )
+        from precis import secret_status
+        from precis.workers.secret_check import pending_status_check
+
+        snap = secret_status.stored_status(self.store)
+        lines = [
+            "# secrets — stored credential check "
+            "(counts only; names/values never render)"
+        ]
+        if not snap.entries:
+            lines.append(
+                "secrets: not checked yet — the hourly secret_status "
+                "cadence writes the snapshot this reads"
+            )
+        else:
+            counts: dict[str, int] = {}
+            for entry in snap.entries.values():
+                counts[entry.state] = counts.get(entry.state, 0) + 1
+            detail = ", ".join(
+                f"{counts[s]} {s}" for s in _SECRET_STATE_ORDER if counts.get(s)
+            )
+            lines.append(f"secrets: {len(snap.entries)} tracked — {detail}")
+            lines.append(f"checked: {_fmt_utc(snap.checked_at)}")
+            pending = pending_status_check(self.store)
+            lines.append(
+                "re-check: a secret_status job is queued or running"
+                if pending
+                else "re-check: nothing queued — the cadence fires hourly; "
+                "the /secrets page's 'Check now' mints one on demand"
+            )
+        lines.append(
+            "related: search(kind='job', args={'job_type': 'secret_status'}) "
+            "lists the checker runs"
+        )
+        return Response(body="\n".join(lines), result_count=len(snap.entries))
 
     def _render_transcript_view(self, ref: Any) -> Response:
         """``view='transcript'`` — the compact forensic read (gr504491).
@@ -4665,10 +4732,7 @@ class JobHandler(NumericRefHandler):
         the "when did the last <type> run, and how far back does the
         streak reach" half of the count question (gr536316)."""
         vals, n, span = row
-        label = " | ".join(
-            v if v is not None else _count_facet_null_label(spec)
-            for v, spec in zip(vals, facets, strict=True)
-        )
+        label = _count_group_label(vals, facets)
         newest = handle_registry.try_format("job", span.max_ref_id) or (
             f"job:{span.max_ref_id}"
         )
@@ -4681,16 +4745,34 @@ class JobHandler(NumericRefHandler):
             f"oldest {oldest} ({_fmt_utc(span.min_created)})"
         )
 
-    def _count_groups_overflow(self, hidden: int, group_by: Any) -> str:
-        """Jobs narrow by ``job_type=``/``since=`` — the filters that
-        actually produced a 200-group page (gr536316 fix round 1). The
-        ``next:`` re-runs the same facet under a 24h window; it must
-        stay a literal-working call (no ``<placeholders>``)."""
+    def _count_groups_overflow(
+        self,
+        hidden: list[tuple[tuple[str | None, ...], int, Any]],
+        facets: list[tuple[str, str]],
+        *,
+        group_by: Any,
+        page: int,
+        page_size: int,
+        sql_capped: bool,
+    ) -> str:
+        """Jobs page through a wide facet (gr592971): the ``next:``
+        re-runs the same count one page later, and the collapsed
+        ``other:`` tail names the folded groups with their job total.
+        Past the SQL-side ``_COUNT_GROUP_LIMIT`` the honest answer is
+        still narrowing with ``job_type=``/``since=`` — the filters
+        that produced a 200-group page."""
+        tail = self._count_other_tail(hidden, facets, more=sql_capped)
         gb = f", args={{'group_by': {group_by!r}}}" if group_by is not None else ""
-        return (
-            f"  … {hidden} more groups; narrow with job_type= or since= "
-            f"— next: search(kind='job', view='count', since='24h'{gb})"
+        line = (
+            f"  {tail} — next: search(kind='job', view='count'{gb}, "
+            f"page={page + 1}, page_size={page_size})"
         )
+        if sql_capped:
+            line += (
+                f"; only the top {_COUNT_GROUP_LIMIT} groups are counted — "
+                "narrow with job_type= or since= for the rest"
+            )
+        return line
 
     def _count_view_extra(
         self,
@@ -5047,6 +5129,8 @@ class JobHandler(NumericRefHandler):
                 include_ref_ids=[int(j[0]) for j in jobs],
                 since=since,
                 until=until,
+                page_size=page_size,
+                page=page,
             )
             scope = (
                 f"jobs under {root_label} "
@@ -5313,6 +5397,8 @@ class JobHandler(NumericRefHandler):
                 meta_eq=("job_type", job_type) if job_type is not None else None,
                 id_min=id_lo,
                 id_max=id_hi,
+                page_size=page_size,
+                page=page,
             )
         link_ref_id: int | None = None
         if link is not None and str(link).strip():

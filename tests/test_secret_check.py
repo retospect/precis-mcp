@@ -434,6 +434,14 @@ def test_job_dispatch_writes_status(
     assert dispatch is not None
     dispatch(ctx, SPEC)
     assert meta["status"]["ok"] >= 1
+    # gr592971: the summary states how many secrets are tracked and the
+    # per-state counts — names and values never appear.
+    assert meta["status"]["tracked"] == len(secret_status.KNOWN_SECRETS)
+    [summary] = chunks
+    assert summary.startswith(
+        f"secret_status: {len(secret_status.KNOWN_SECRETS)} tracked — "
+    )
+    assert "ok" in summary
     assert _SENTINEL not in repr(meta)
     assert chunks
     assert secret_status.stored_status(store).checked_at is not None

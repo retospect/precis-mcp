@@ -270,6 +270,21 @@ wall budget seconds — `PRECIS_JOB_SLICE_S`, else `DEFAULT_SLICE_S`).
 Writes go through `put(kind='job', mode='setting', …)` — see
 [[precis-job-help]].
 
+## How healthy is the secrets vault? — /secrets
+
+```python
+get(kind="job", id="/secrets")
+```
+
+The stored credential check as counts, never names or values:
+`secrets: N tracked — X ok, Y present, Z missing, …` over the
+`StatusEntry.state` vocabulary (ok = probe-verified, present = set
+but unverified, missing = absent, invalid = rejected, unknown =
+inconclusive), plus when the hourly `secret_status` job last wrote
+the snapshot and whether a re-check is queued. The web `/secrets`
+page is the editor and shows the same snapshot per row; this view is
+the reportable one-liner.
+
 ## See also
 
 - [[precis-job-help]] — submit, poll, cancel; the parent-todo contract
