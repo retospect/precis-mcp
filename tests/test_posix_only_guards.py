@@ -44,6 +44,9 @@ _ROOT = Path(__file__).resolve().parents[1]
 _EXEMPT: set[str] = {
     # Only asserts that a brief's text names "scripts/ship"; fake seams, no exec.
     "tests/test_run_slice.py",
+    # Names "scripts/ship" as a deny-glob operand; the real exec is
+    # sys.executable on the probe .py files.
+    "tests/test_boundary_probe.py",
 }
 
 #: Stdlib modules that do not exist on Windows — importing one at module

@@ -3167,6 +3167,163 @@ def test_poll_validated_off_the_fix_loop_keeps_the_generic_close(
     assert "waiting-for:ci-rerun" not in store.tag_strings(42)
 
 
+def test_poll_fix_node_moot_on_an_ancestor_sha_closes_done(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr597599 (r256, td597541): the fixer found the digest's ids
+    already fixed on main — the sha landed under ANOTHER plan's
+    subject, so ``_verified_moot``'s message gate could never pass and
+    the clean no-commit exit failed the job until a human closed it.
+    On the release-fix loop's fix node the ancestor check alone is the
+    verification: succeeded, todo done, no land, no attempt burned, no
+    ``verdict:moot`` tag (the release plan itself is not moot)."""
+    store = _Store()
+    store.add_todo(42, "Fix the failures", tags=("plan:1",))
+    _fix_norepro_env(store, monkeypatch)
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {
+                "is_error": False,
+                "result": "Checked main first.\n"
+                "moot: td42 already fixed by d0dc82d40\n"
+                "Nothing to land.",
+            }
+        )
+        + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    fv = pctx.meta_set[run_slice.FIX_VERIFIED_KEY]
+    assert fv["kind"] == "moot" and fv["sha"] == "d0dc82d40"
+    assert run_slice.MOOT_VERIFIED_KEY not in pctx.meta_set
+    assert run_slice.NO_COMMIT_KEY not in pctx.meta_set
+    tags = store.tag_strings(42)
+    assert "STATUS:done" in tags
+    assert "verdict:moot" not in tags
+    assert not any(
+        t.startswith("attempt:") or t.startswith("claimed-by:") for t in tags
+    )
+    assert seams["lands"] == []
+    assert any(c.startswith("handoff: ") for c in store.comments(42))
+    git_cmds = [args for args, _cwd in seams["git"]]
+    assert ["fetch", "origin", "main"] in git_cmds
+    assert ["merge-base", "--is-ancestor", "d0dc82d40", "origin/main"] in git_cmds
+
+
+def test_poll_fix_node_verified_marker_closes_done(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr597599's alternative marker: ``verified: <ids> green on
+    origin/main`` needs no sha — the builder asserts the digest's ids
+    pass on main and the loop's next cut is the check a false claim
+    fails."""
+    store = _Store()
+    store.add_todo(42, "Fix the failures", tags=("plan:1",))
+    _fix_norepro_env(store, monkeypatch)
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {
+                "is_error": False,
+                "result": "Ran the legs on main.\n"
+                "verified: 3 test ids green on origin/main\n",
+            }
+        )
+        + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    fv = pctx.meta_set[run_slice.FIX_VERIFIED_KEY]
+    assert fv["kind"] == "verified" and "sha" not in fv
+    assert "STATUS:done" in store.tag_strings(42)
+    assert seams["lands"] == []
+
+
+def test_poll_fix_node_moot_on_a_non_ancestor_sha_fails(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr597599: the marker names a sha that is NOT on origin/main —
+    nothing verified, the ordinary no-commit failure stands."""
+    store = _Store()
+    store.add_todo(42, "Fix the failures", tags=("plan:1",))
+    _fix_norepro_env(store, monkeypatch)
+    seams["ancestor_rc"] = 1
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {
+                "is_error": False,
+                "result": "moot: td42 already fixed by d0dc82d40\n",
+            }
+        )
+        + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
+    assert run_slice.FIX_VERIFIED_KEY not in pctx.meta_set
+    tags = store.tag_strings(42)
+    assert "STATUS:done" not in tags and "attempt:1" in tags
+
+
+def test_poll_fix_node_without_the_marker_still_fails(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr597599: a bare no-commit exit on the fix node — no ``moot:``,
+    no ``verified:`` — keeps today's failure path (``meta.no_commit``,
+    straight to rescue)."""
+    store = _Store()
+    store.add_todo(42, "Fix the failures", tags=("plan:1",))
+    _fix_norepro_env(store, monkeypatch)
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "Read the logs; unsure what fails."})
+        + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
+    assert run_slice.FIX_VERIFIED_KEY not in pctx.meta_set
+    assert "attempt:1" in store.tag_strings(42)
+
+
+def test_poll_verified_marker_off_the_fix_loop_still_fails(
+    seams: dict[str, Any],
+) -> None:
+    """gr597599: the ``verified:`` marker is the release-fix loop's own
+    — on a plain code node it is no verdict and the no-commit exit
+    stays a failure."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {"is_error": False, "result": "verified: 3 ids green on origin/main"}
+        )
+        + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
+    assert run_slice.FIX_VERIFIED_KEY not in pctx.meta_set
+
+
 def test_poll_generator_clean_exit_mints_no_land(seams: dict[str, Any]) -> None:
     store = _Store()
     store.add_todo(42, "Slice it", meta={"generate": {"role": "slicer", "from": "x"}})

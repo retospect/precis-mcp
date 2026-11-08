@@ -73,7 +73,16 @@ that holds the lane's credentials with ``params.target_node``):
   Verified, the todo closes done tagged ``verdict:moot`` and the job
   carries ``meta.moot_verified = {sha, line}`` so the tick resolves the
   plan's gripe on that sha exactly as a land does; unverified, the
-  no-commit exit is the failure below. Otherwise (non-zero exit, a
+  no-commit exit is the failure below. The release-fix loop's fix
+  node (``blocked-by`` a live ``ci_red_digest`` under a
+  ``release-pass`` root) gets a weaker ruling INSTEAD
+  (:func:`_fix_moot`, gr597599 — the r256 stall: the fix already on
+  main had landed under another plan's subject, so the message gate
+  above could never pass and the red loop re-dispatched until a human
+  closed it): ``moot: <sha>`` needs only the ancestor check and
+  ``verified: <ids> green on origin/main`` needs none; the node closes
+  done untagged — the release plan itself is not moot — and the loop's
+  next cut is the check a false claim fails. Otherwise (non-zero exit, a
   deny-path hit, a code node with no commit to land) it ends ``failed``
   with the log tail and releases the lease; a deny hit on a
   :data:`precis.plans.lanes.HUMAN_ONLY_PATHS` glob also stamps
@@ -205,6 +214,13 @@ NO_COMMIT_KEY = "no_commit"
 #: td584381 S1d): the tick resolves the plan's gripe on that sha exactly
 #: as a land does. Restated in ``plan_dispatch`` (the same one-way rule).
 MOOT_VERIFIED_KEY = "moot_verified"
+
+#: Job-meta record ``poll`` stamps on the release-fix loop's fix node a
+#: ``moot:``/``verified:`` marker let close with no commit
+#: (:func:`_fix_moot`, gr597599): ``{"kind", "line"}`` plus ``"sha"``
+#: for a moot — WHY a code node closed done with no land and no
+#: ``verdict:moot`` tag (the release plan itself is not moot).
+FIX_VERIFIED_KEY = "fix_verified"
 
 #: Job-meta record ``poll`` stamps on a release-fix ``run_slice`` whose
 #: clean exit carried a ``validated:`` first line and no commit
@@ -2449,6 +2465,13 @@ _MOOT_SHA_RE = re.compile(r"(?<![0-9A-Za-z])([0-9a-f]{7,40})(?![0-9A-Za-z])")
 _MOOT_GRIPE_RE = re.compile(r"\bgr(\d+)\b", re.IGNORECASE)
 #: A test-file path a gripe's text can name (``tests/….py``).
 _MOOT_TEST_RE = re.compile(r"\btests/[\w./-]+\.py\b")
+#: The release-fix loop's own marker (gr597599): on its fix node the
+#: builder reports the digest's ids already green on ``origin/main``
+#: (``verified: <ids> green on origin/main``) and the node closes on
+#: the claim alone — the loop's next cut re-runs the legs, so a false
+#: one cannot pass. Position-free like :data:`_MOOT_LINE_RE`.
+_FIX_VERIFIED_RE = re.compile(r"^\s*verified\s*:\s*(.*?)\s*$", re.IGNORECASE)
+_FIX_VERIFIED_GREEN_RE = re.compile(r"green on origin/main", re.IGNORECASE)
 
 
 def _moot_line(result: str | None) -> str | None:
@@ -2490,6 +2513,17 @@ def _blocked_by_ci_digest(store: Any, todo_id: int) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
+def _fix_node(store: Any, todo_id: int) -> bool:
+    """``todo_id`` is the release-fix loop's fix node: a ``run_slice``
+    todo ``blocked-by`` a live ``ci_red_digest`` node under a
+    ``release-pass`` root (the scope :func:`_fix_norepro` and
+    :func:`_fix_moot` rule on)."""
+    if not _blocked_by_ci_digest(store, todo_id):
+        return False
+    root = _plan_root(store, todo_id)
+    return root is not None and "release-pass" in _open_tag_values(store, root)
+
+
 def _fix_norepro(store: Any, todo_id: int) -> str | None:
     """The ``validated:`` non-repro ruling for ``todo_id`` (gr588028):
 
@@ -2501,10 +2535,7 @@ def _fix_norepro(store: Any, todo_id: int) -> str | None:
     otherwise — a ``validated:`` on any other node keeps its generic
     verdict close. An unresolvable run id reads ``"rerun"``: the tick's
     mint phase stalls on it rather than burning the attempt."""
-    if not _blocked_by_ci_digest(store, todo_id):
-        return None
-    root = _plan_root(store, todo_id)
-    if root is None or "release-pass" not in _open_tag_values(store, root):
+    if not _fix_node(store, todo_id):
         return None
     rel = _release.release_of(store, todo_id)
     rid = _release.newest_red_run(store, str((rel or {}).get("sha") or ""))
@@ -2527,6 +2558,16 @@ def _plan_chain_ids(store: Any, root: int, todo_id: int) -> set[int]:
                 ids.add(rid)
                 frontier.append(rid)
     return ids
+
+
+def _fetch_main(tree: Path) -> None:
+    """Best-effort ``git fetch origin main`` — a failure, a timeout or
+    an ``OSError`` only means a later ancestor check runs on whatever
+    ``origin/main`` ref exists."""
+    try:
+        _git(["fetch", "origin", "main"], tree)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def _verified_moot(
@@ -2587,12 +2628,7 @@ def _verified_moot(
         re.compile(rf"\bgr{gid}\b", re.IGNORECASE),
         re.compile(rf"\btd(?:{'|'.join(str(i) for i in chain)})\b", re.IGNORECASE),
     ]
-    try:
-        # Best-effort: the checks below run on whatever ``origin/main``
-        # ref the fetch leaves.
-        _git(["fetch", "origin", "main"], tree)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    _fetch_main(tree)
     sha = None
     for cand in _MOOT_SHA_RE.findall(line):
         try:
@@ -2617,6 +2653,40 @@ def _verified_moot(
             # A cat-file that cannot answer fails closed like a miss.
             return None
     return {"sha": sha, "line": line[:300]}
+
+
+def _fix_moot(tree: Path, result: str | None) -> dict[str, str] | None:
+    """``{"kind", "line"}`` (plus ``"sha"`` on a moot) when the
+    release-fix loop's marker lets the fix node close with no commit
+    (gr597599), else ``None``.
+
+    The marker is a ``verified: <ids> green on origin/main`` line — the
+    builder asserts the digest's ids already pass on main and the
+    loop's next cut is the check a false claim fails — or a ``moot:``
+    line naming a sha :func:`_fetch_main` +
+    ``git merge-base --is-ancestor`` confirms on ``origin/main``. The
+    plan-gripe gates of :func:`_verified_moot` do NOT apply: the fix
+    already on main landed under another plan's subject, so the
+    message gate could never pass for the claim that is in fact true
+    (r256's td597541). No marker, or a ``moot:`` whose shas are all
+    non-ancestors or unreadable, is ``None`` — the no-commit failure
+    :data:`NO_COMMIT_KEY` stamps stands."""
+    for ln in (result or "").splitlines():
+        m = _FIX_VERIFIED_RE.match(ln)
+        if m is not None and _FIX_VERIFIED_GREEN_RE.search(m.group(1)):
+            return {"kind": "verified", "line": ln.strip()[:300]}
+    line = _moot_line(result)
+    if line is None:
+        return None
+    _fetch_main(tree)
+    for cand in _MOOT_SHA_RE.findall(line):
+        try:
+            check = _git(["merge-base", "--is-ancestor", cand, "origin/main"], tree)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if check.returncode == 0:
+            return {"kind": "moot", "sha": cand, "line": line[:300]}
+    return None
 
 
 def changed_paths(tree: Path) -> list[str] | None:
@@ -3083,9 +3153,16 @@ def poll(ctx: Any, handle: Any) -> bool:
         # close the plan (td584381 S1d): first line or anywhere in the
         # result — the ``handoff:`` comment's source text, already
         # parsed out of a JSON log. A document node keeps today's trust.
+        # gr597599: the release-fix loop's fix node takes its own ruling
+        # INSTEAD (:func:`_fix_moot`) — a verified claim there closes the
+        # node untagged: the release plan is not moot, so
+        # ``_verified_moot``'s ``verdict:moot`` + gripe stamp would kill
+        # the pass the loop is fixing.
+        fix_node = no_commit is None and _fix_node(ctx.store, todo_id)
+        fix_moot = _fix_moot(tree, result) if fix_node else None
         verified = (
             _verified_moot(ctx.store, tree, result, todo_id)
-            if no_commit is None
+            if no_commit is None and not fix_node
             else None
         )
         # gr588028: a ``validated:`` first line on the release-fix loop's
@@ -3119,6 +3196,27 @@ def poll(ctx: Any, handle: Any) -> bool:
                 f"Land: none — verified moot (sha {verified['sha']} on "
                 f"origin/main; `{line_[:160]}`); td{todo_id} "
                 "closed and tagged for the tick to close the plan."
+            )
+        elif fix_moot is not None:
+            # gr597599 (r256, td597541): the fixer found the digest's
+            # ids already green on main and said so — ``moot: <sha>``
+            # whose sha is an ancestor, or ``verified: <ids> green on
+            # origin/main``. Success with nothing to land: close done —
+            # no ``verdict:moot`` tag (the release plan is not moot;
+            # the loop's recut re-checks the claim).
+            land = False
+            line_ = _WITHHELD_TEXT if unscrubbed else fix_moot["line"]
+            close_todo(ctx.store, todo_id, str(lane) if lane else None)
+            ctx.set_meta(**{FIX_VERIFIED_KEY: {**fix_moot, "line": line_}})
+            summary.append(
+                f"Land: none — the fix node's `{line_[:160]}` holds "
+                f"({fix_moot['kind']}"
+                + (
+                    f", sha {fix_moot['sha']} on origin/main"
+                    if fix_moot.get("sha")
+                    else ""
+                )
+                + f"); td{todo_id} closed done."
             )
         elif norepro == "rerun":
             # Closing the fix node would unblock the recut while the run

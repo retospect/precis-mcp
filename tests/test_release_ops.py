@@ -1950,6 +1950,8 @@ def test_digest_posts_a_masked_brief_on_the_fix_node(
     assert token not in text
     assert "<redacted:github token>" in text
     assert "never skip, xfail or loosen a test" in text
+    # gr597599: the fix node's escape when main is already green.
+    assert "finish with `moot: <sha>` and no commit" in text
     assert text in ctx.chunks[-1][1]
 
 

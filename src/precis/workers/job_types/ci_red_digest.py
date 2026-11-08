@@ -114,10 +114,14 @@ _AUTH_RE = re.compile(
     re.IGNORECASE,
 )
 
-#: The fixer's rule, the last line of every brief this job posts.
+#: The fixer's rule, the last line of every brief this job posts. The
+#: ``moot:`` tail (gr597599) names the escape ``run_slice._fix_moot``
+#: honors: a fix already on main needs no session diff.
 _RULE = (
     "Fix forward on main; never skip, xfail or loosen a test. Land the "
-    "fix with scripts/ship --quick; the loop then re-cuts."
+    "fix with scripts/ship --quick; the loop then re-cuts. If the ids "
+    "are already green on origin/main, finish with `moot: <sha>` and "
+    "no commit."
 )
 
 #: ci-failed's per-job section head, and the marker it prints when the
