@@ -68,25 +68,40 @@ def test_stick_scene_methane_renders_8_half_sticks_at_r1() -> None:
     assert svg.count("<circle") == len(_ELEMENTS)
 
 
-def test_cpk_color_covers_every_element_jmol_assigns() -> None:
-    """gr592814: dopant figures (Ir, Ta, W, …) must not fall back to pink.
+def test_cpk_color_covers_all_118_elements() -> None:
+    """gr592814: every element a structure scene can name gets a real colour.
 
-    ``_CPK`` is the complete Jmol assignment, Z=1-109 — every periodic-table
-    element a structure scene can name resolves to a real, Jmol-exact colour;
-    the table is transcribed from ASE's ``jmol_colors`` (factual data), so the
-    strongest guard is equality against it. Symbols Jmol leaves unassigned —
-    the superheavies — plus non-elements still get the loud pink fallback.
+    Z=1-109 is the complete Jmol assignment — the table is transcribed from
+    ASE's ``jmol_colors`` (factual data), so the strongest guard is equality
+    against it. Jmol leaves the superheavies unassigned, so Z=110-118 uses the
+    Blue Obelisk/Open Babel ``elementtable.h`` RGBs — they agree with Jmol on
+    the shared Rf-Mt ramp and continue it to Og; those hexes are pinned below.
+    Only non-elements still get the loud pink fallback.
     """
     from ase.data import chemical_symbols
     from ase.data.colors import jmol_colors
 
+    assert len(chemical_symbols) == 119  # Z=0..118; guard against a resize
     assert len(jmol_colors) == 110  # Z=0..109; guard against a silent resize
     for z in range(1, len(jmol_colors)):
         r, g, b = (round(c * 255) for c in jmol_colors[z])
         assert cpk_color(chemical_symbols[z]) == f"#{r:02x}{g:02x}{b:02x}"
 
+    for z in range(1, len(chemical_symbols)):
+        assert cpk_color(chemical_symbols[z]) != "#ff2fa0"
+
+    # Blue Obelisk/Open Babel superheavy ramp, continued from Jmol's Rf-Mt.
+    assert cpk_color("Ds") == "#ed0024"
+    assert cpk_color("Rg") == "#f00021"
+    assert cpk_color("Cn") == "#f2001f"
+    assert cpk_color("Nh") == "#f5001c"
+    assert cpk_color("Fl") == "#f7001a"
+    assert cpk_color("Mc") == "#fa0017"
+    assert cpk_color("Lv") == "#fc0014"
+    assert cpk_color("Ts") == "#fc0012"
+    assert cpk_color("Og") == "#fc000f"
+
     assert cpk_color("Ir") == "#175487"  # the atom that prompted the gripe
-    assert cpk_color("Og") == "#ff2fa0"  # unassigned superheavy -> fallback
     assert cpk_color("Xx") == "#ff2fa0"  # non-element -> fallback
 
 

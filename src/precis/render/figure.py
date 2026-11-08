@@ -70,7 +70,8 @@ def invalidation_key(input_shas: list[str]) -> str:
 #: 2: full Jmol CPK palette in stickfig (gr592814) recolours prior renders.
 #: 3: bond-less scenes get detected MIC bonds, periodic scenes an oblique
 #:    camera default, and ``color:'layer'`` z-shading is new (gr592796).
-VIZ3D_CODE_VERSION = "3"
+#: 4: superheavy CPK colours (Z=110-118) recolour pink-fallback renders.
+VIZ3D_CODE_VERSION = "4"
 
 #: Hard cost bounds for a structure view. The render runs in-process (viz3d is
 #: pure Python/numpy, no sandbox), so cost is bounded by atom count instead of

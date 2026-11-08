@@ -27,15 +27,17 @@ from precis.viz3d.render import ScalebarSpec
 
 __all__ = ["Style", "cpk_color", "stick_scene"]
 
-#: CPK colours (hex), following the Jmol CPK convention exactly. Own table —
-#: see the module docstring on why this isn't imported from ``precis_web``.
-#: The complete Jmol assignment for Z=1-109 (Jmol itself leaves the
-#: superheavies unassigned); values match ASE's ``ase.data.colors.jmol_colors``
-#: — element→colour assignments are factual data, transcribed rather than
-#: runtime-imported so this module's chain stays numpy-only. Symbols outside
-#: the table (typos, placeholders, Z≥110) fall back to a loud pink so an
-#: uncolourable element reads as obviously wrong, never a plausible-looking
-#: guess — the same pink CPK itself uses for "whatever's left".
+#: CPK colours (hex), covering all 118 elements. Own table — see the module
+#: docstring on why this isn't imported from ``precis_web``. Z=1-109 is the
+#: complete Jmol assignment, matching ASE's ``ase.data.colors.jmol_colors``;
+#: Jmol leaves the superheavies unassigned, so Z=110-118 takes the Blue
+#: Obelisk/Open Babel ``elementtable.h`` RGBs, which agree with Jmol wherever
+#: both assign (the shared Rf-Mt ramp) and continue it to Og — element→colour
+#: assignments are factual data, transcribed rather than runtime-imported so
+#: this module's chain stays numpy-only. Non-element symbols (typos,
+#: placeholders) fall back to a loud pink so an uncolourable element reads as
+#: obviously wrong, never a plausible-looking guess — the same pink CPK
+#: itself uses for "whatever's left".
 _CPK: dict[str, str] = {
     "H": "#ffffff", "He": "#d9ffff",
     "Li": "#cc80ff", "Be": "#c2ff00", "B": "#ffb5b5", "C": "#909090",
@@ -65,7 +67,9 @@ _CPK: dict[str, str] = {
     "Am": "#545cf2", "Cm": "#785ce3", "Bk": "#8a4fe3", "Cf": "#a136d4",
     "Es": "#b31fd4", "Fm": "#b31fba", "Md": "#b30da6", "No": "#bd0d87",
     "Lr": "#c70066", "Rf": "#cc0059", "Db": "#d1004f", "Sg": "#d90045",
-    "Bh": "#e00038", "Hs": "#e6002e", "Mt": "#eb0026",
+    "Bh": "#e00038", "Hs": "#e6002e", "Mt": "#eb0026", "Ds": "#ed0024",
+    "Rg": "#f00021", "Cn": "#f2001f", "Nh": "#f5001c", "Fl": "#f7001a",
+    "Mc": "#fa0017", "Lv": "#fc0014", "Ts": "#fc0012", "Og": "#fc000f",
 }  # fmt: skip
 _CPK_DEFAULT = "#ff2fa0"
 
