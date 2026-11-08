@@ -70,6 +70,7 @@ def _fake_github(
     heads: Any = (),
     tags: Any = (),
     prod_cmp: Any = None,
+    main_cmp: Any = None,
     main_ref: Any = ...,
     runs: Any = ...,
     status: int = 200,
@@ -100,6 +101,8 @@ def _fake_github(
             data = {"workflow_runs": []} if runs is ... else runs
         elif "/compare/" in url and url.endswith("...prod"):
             data = prod_cmp if prod_cmp is not None else {"status": "ahead"}
+        elif "/compare/" in url and url.endswith("...main"):
+            data = main_cmp if main_cmp is not None else {"status": "behind"}
         else:
             data = {}
         return SimpleNamespace(status_code=status, json=lambda: data)
@@ -196,7 +199,8 @@ def test_skips_on_an_open_pass(store: Store, monkeypatch: pytest.MonkeyPatch) ->
 def test_skips_on_an_in_flight_branch(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # a release head with no deployed tag: in flight, no prod compare made
+    # a release head with no deployed tag: in flight — no prod compare,
+    # and the main compare answers "behind" (main lacks its commits)
     calls = _fake_github(monkeypatch, heads=[_head(7)])
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.blocker == "release/r7 is in flight"
@@ -204,6 +208,7 @@ def test_skips_on_an_in_flight_branch(
         f"{API}/compare/prod...main",
         f"{API}/git/matching-refs/heads/release/",
         f"{API}/git/matching-refs/tags/deployed/",
+        f"{API}/compare/{HEAD_SHA}...main",
     ]
     # head + tag, prod contains the head: not in flight, mints
     calls = _fake_github(
@@ -244,6 +249,44 @@ def test_branch_in_flight_case_tag_prod_lacks_head() -> None:
     assert rp.branch_in_flight(True, False) is True
     assert rp.branch_in_flight(True, None) is True
     assert rp.branch_in_flight(True, True) is False
+
+
+def test_a_stale_head_on_main_does_not_block(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr585785: a superseded release head left on origin — all its
+    commits already on main — is a stale ref, not a release in flight."""
+    calls = _fake_github(monkeypatch, heads=[_head(7)], main_cmp={"status": "ahead"})
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None
+    assert calls == [
+        f"{API}/compare/prod...main",
+        f"{API}/git/matching-refs/heads/release/",
+        f"{API}/git/matching-refs/tags/deployed/",
+        f"{API}/compare/{HEAD_SHA}...main",
+        f"{API}/git/ref/heads/main",
+    ]
+    _close(store, res.minted)
+    # identical to main's tip clears the same way (main moved: new sha)
+    _fake_github(
+        monkeypatch,
+        heads=[_head(7)],
+        main_cmp={"status": "identical"},
+        main_ref={"ref": "refs/heads/main", "object": {"sha": "e" * 40}},
+    )
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None
+    _close(store, res.minted)
+    # a head whose commits main does not contain still blocks
+    calls = _fake_github(monkeypatch, heads=[_head(7)], main_cmp={"status": "behind"})
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.blocker == "release/r7 is in flight" and res.minted is None
+    assert calls == [
+        f"{API}/compare/prod...main",
+        f"{API}/git/matching-refs/heads/release/",
+        f"{API}/git/matching-refs/tags/deployed/",
+        f"{API}/compare/{HEAD_SHA}...main",
+    ]
 
 
 @pytest.mark.parametrize(

@@ -50,7 +50,11 @@ the unauthenticated api.github.com budget (60/h) is shared with
    degrade to "in flight"). A ``release/r<N>`` head is in flight unless
    its ``deployed/r<N>`` tag exists AND prod contains the head
    (``GET .../compare/<head sha>...prod`` answers ``identical`` or
-   ``ahead``); the prod compare is skipped when there is no tag.
+   ``ahead``); the prod compare is skipped when there is no tag. A head
+   that fails that test still clears when main already contains it
+   (``GET .../compare/<head sha>...main`` answers ``identical`` or
+   ``ahead``) — a superseded re-cut leaves its stale ref on origin and
+   must not block the next pass forever (gr585785).
 6. The sha claim — one pass per main sha (td573430 fix round 1):
    ``GET .../git/ref/heads/main``, then inside one transaction under the
    ``_MINT_LOCK_KEY`` advisory lock the pass re-checks the open-pass
@@ -1072,6 +1076,18 @@ def _matching_refs(
     return refs if len(refs) <= cap else None
 
 
+def _merged_to_main(base: str, sha: str) -> bool:
+    """main already contains ``sha`` — the head is a stale ref (a
+    superseded re-cut's branch left on origin), not a release in flight
+    (gr585785). ``GET .../compare/<sha>...main`` answers ``identical`` or
+    ``ahead`` when main contains the head; any other verdict — behind,
+    diverged, an empty sha or an unreadable payload — keeps the block."""
+    if not sha:
+        return False
+    cmp_ = pr_class._get_json(f"{base}/compare/{sha}...main", {})
+    return isinstance(cmp_, dict) and cmp_.get("status") in ("identical", "ahead")
+
+
 def _in_flight(repo: str) -> str | None:
     """The first in-flight ``release/r<N>`` on origin (``release/r<N>``),
     else ``None``. Raises :class:`precis.plans.pr_class.GitHubUnreadable`."""
@@ -1088,15 +1104,15 @@ def _in_flight(repo: str) -> str | None:
     tagged = set(_matching_refs(tags_url, _TAG_RE, _TAG_CAP) or {})
     for n in sorted(heads):
         has_tag = n in tagged
+        sha = str((heads[n].get("object") or {}).get("sha") or "")
         prod_has_head: bool | None = None
         if has_tag:
-            sha = str((heads[n].get("object") or {}).get("sha") or "")
             cmp_ = pr_class._get_json(f"{base}/compare/{sha}...prod", {})
             prod_has_head = isinstance(cmp_, dict) and cmp_.get("status") in (
                 "identical",
                 "ahead",
             )
-        if branch_in_flight(has_tag, prod_has_head):
+        if branch_in_flight(has_tag, prod_has_head) and not _merged_to_main(base, sha):
             return f"release/r{n}"
     return None
 
