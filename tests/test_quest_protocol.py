@@ -116,6 +116,34 @@ class TestProtocolFromConfig:
     def test_non_ammonia_defaults_parked(self) -> None:
         assert protocol_from_config({"network": "other"}).template == "parked"
 
+    def test_engine_settings_capture_neb_knobs(self) -> None:
+        """The measurement search knobs ride the record; the keys with
+        dedicated fields (seeds, energy_thresh) and the physics-identical
+        runtime levers (neb_pool_size, neb_batched) do not."""
+        p = protocol_from_config(
+            {
+                "search": {
+                    "seeds": [0],
+                    "energy_thresh": 0.1,
+                    "screening": False,
+                    "neb_schedule": "best_first",
+                    "neb_optimizer": "neb-ode",
+                    "neb_multistart": 3,
+                    "neb_pool_size": 4,
+                    "neb_batched": True,
+                }
+            }
+        )
+        assert dict(p.engine_settings) == {
+            "screening": False,
+            "neb_schedule": "best_first",
+            "neb_optimizer": "neb-ode",
+            "neb_multistart": 3,
+        }
+
+    def test_no_search_no_settings(self) -> None:
+        assert protocol_from_config(dict(_RX)).engine_settings == {}
+
 
 class TestProtocolFromPathway:
     def _pw(self, **extra: Any) -> dict[str, Any]:
@@ -158,6 +186,13 @@ class TestProtocolFromPathway:
         assert protocol_from_pathway({"autocatpath_version": "0.32.0"}) is None
         assert protocol_from_pathway(None) is None
 
+    def test_engine_settings_from_stored_config(self) -> None:
+        pw = self._pw()
+        pw["config"]["search"] = {"neb_schedule": "exhaustive", "neb_pool_size": 4}
+        p = protocol_from_pathway(pw)
+        assert p is not None
+        assert dict(p.engine_settings) == {"neb_schedule": "exhaustive"}
+
 
 class TestProtocolDiff:
     def test_each_field(self) -> None:
@@ -187,6 +222,22 @@ class TestProtocolDiff:
     def test_equal_is_empty(self) -> None:
         e = QuestProtocol(model="mace:medium", engine="0.50.0", seeds=3)
         assert protocol_diff(e, e) == {}
+
+    def test_engine_settings_diff(self) -> None:
+        """A changed NEB stack is drift like any other axis."""
+        e = QuestProtocol(engine_settings={"neb_schedule": "best_first"})
+        a = QuestProtocol(engine_settings={"neb_schedule": "exhaustive"})
+        assert protocol_diff(e, a) == {
+            "engine_settings": (
+                {"neb_schedule": "best_first"},
+                {"neb_schedule": "exhaustive"},
+            )
+        }
+
+    def test_empty_engine_settings_never_diffs(self) -> None:
+        e = QuestProtocol(engine_settings={"neb_schedule": "best_first"})
+        a = QuestProtocol()  # bare config — the stack is unprovable, not drift
+        assert protocol_diff(e, a) == {}
 
 
 # ── store-backed ──────────────────────────────────────────────────────
@@ -343,6 +394,55 @@ class TestDispatchDrift:
             is None
         )
 
+    def test_neb_schedule_override_logs(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hand-tuned NEB stack vs the quest's overlay is drift — the
+        engine settings axis the record used to omit entirely."""
+        monkeypatch.setenv(_VERSION_ENV, "0.50.0")
+        qid = _mk_quest(store)
+        store.stamp_ref_meta(qid, {"reaction_config": dict(_RX)})
+        sid = _mk_candidate(store, qid, "cand-a")
+        run_config = dict(
+            _RX, search={"neb_schedule": "exhaustive", "neb_multistart": 1}
+        )
+        n = protocol_mod.note_dispatch_drift(
+            store, sid, run_config, tier="neb", subject="st-x pw1"
+        )
+        assert n is not None
+        entries = _drift_entries(store, qid)
+        assert len(entries) == 1
+        assert "engine settings" in entries[0].text
+        assert "exhaustive" in entries[0].text
+
+    def test_runtime_search_knobs_are_not_drift(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A routed dispatch's stored config carries the tier overlay plus
+        precis's runtime injections (``neb_pool_size``, ``neb_batched``) —
+        none of which is drift."""
+        monkeypatch.setenv(_VERSION_ENV, "0.50.0")
+        qid = _mk_quest(store)
+        store.stamp_ref_meta(qid, {"reaction_config": dict(_RX)})
+        sid = _mk_candidate(store, qid, "cand-a")
+        run_config = dict(
+            _RX,
+            search={
+                "seeds": [0, 1, 2],
+                "neb_schedule": "best_first",
+                "neb_optimizer": "neb-ode",
+                "neb_batched": True,
+                "neb_multistart": 3,
+                "neb_pool_size": 4,
+            },
+        )
+        assert (
+            protocol_mod.note_dispatch_drift(
+                store, sid, run_config, tier="neb", subject="st-x pw1"
+            )
+            is None
+        )
+
 
 class TestHarvestDrift:
     def test_stale_engine_logs(
@@ -408,6 +508,76 @@ class TestHarvestDrift:
             )
             is None
         )
+
+    def test_legacy_screening_reads_results_tier(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pre-stamp pathway carries no ``meta.tier`` — its tier must come
+        from catpath's own ``results`` (``compute._pathway_tier``), not from
+        ``str(None)`` → ``"None"``, which compared legacy screening runs
+        against the neb protocol and logged false ``network parked``
+        drift."""
+        monkeypatch.setenv(_VERSION_ENV, "0.50.0")
+        qid = _mk_quest(store)
+        store.stamp_ref_meta(qid, {"reaction_config": dict(_RX)})
+        pw_meta = {
+            "autocatpath_version": "0.50.0",
+            "config": dict(_RX, template="parked", search={"screening": True}),
+            "results": {"screening": True},
+        }
+        assert (
+            protocol_mod.note_harvest_drift(
+                store, qid, subject="st1 pw2", pw_meta=pw_meta
+            )
+            is None
+        )
+        assert not _drift_entries(store, qid)
+
+    def test_legacy_verify_reads_results_tier(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pre-stamp exhaustive run — ``results.template='coadsorbed'``
+        with no ``results.neb_schedule`` — is verify, not neb: comparing
+        its stackless config against the neb overlay's best_first stack
+        would log false engine-settings drift."""
+        monkeypatch.setenv(_VERSION_ENV, "0.50.0")
+        qid = _mk_quest(store)
+        store.stamp_ref_meta(qid, {"reaction_config": dict(_RX)})
+        pw_meta = {
+            "autocatpath_version": "0.50.0",
+            "config": dict(_RX, template="coadsorbed", search={"seeds": [0, 1, 2]}),
+            "requested_seeds": [0, 1, 2],
+            "results": {"template": "coadsorbed"},
+        }
+        assert (
+            protocol_mod.note_harvest_drift(
+                store, qid, subject="st1 pw2", pw_meta=pw_meta
+            )
+            is None
+        )
+        assert not _drift_entries(store, qid)
+
+    def test_legacy_screening_on_wrong_template_still_logs(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The results-tier fallback is not a muzzle: a legacy screening
+        run on the WRONG template for its own tier still drifts."""
+        monkeypatch.setenv(_VERSION_ENV, "0.50.0")
+        qid = _mk_quest(store)
+        store.stamp_ref_meta(qid, {"reaction_config": dict(_RX)})
+        pw_meta = {
+            "autocatpath_version": "0.50.0",
+            # screening results, but the stored config ran coadsorbed.
+            "config": dict(_RX, template="coadsorbed", search={"screening": True}),
+            "results": {"screening": True, "template": "coadsorbed"},
+        }
+        n = protocol_mod.note_harvest_drift(
+            store, qid, subject="st1 pw2", pw_meta=pw_meta
+        )
+        assert n is not None
+        entries = _drift_entries(store, qid)
+        assert len(entries) == 1
+        assert "network coadsorbed vs protocol parked" in entries[0].text
 
     def test_no_config_no_entry(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
@@ -495,6 +665,109 @@ class TestProtocolHistogram:
         hist = protocol_mod.protocol_histogram(store, qid)
         assert hist is not None and dict(hist.engines) == {"0.32.0": 1}
 
+    def test_unfinished_run_is_not_measured(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A candidate whose only run is still ``computing`` (or has
+        ``failed``) supplied no measures — it is not ``measured``."""
+        monkeypatch.setenv(_VERSION_ENV, "0.50.0")
+        qid = _mk_quest(store)
+        a = _mk_candidate(store, qid, "cand-a")
+        b = _mk_candidate(store, qid, "cand-b")
+        _mk_pathway(
+            store,
+            a,
+            "pw-a",
+            meta={
+                "status": "computing",
+                "autocatpath_version": "0.50.0",
+                "config": dict(_RX),
+            },
+        )
+        _mk_pathway(
+            store,
+            b,
+            "pw-b",
+            meta={
+                "status": "failed",
+                "autocatpath_version": "0.50.0",
+                "config": dict(_RX),
+            },
+        )
+        hist = protocol_mod.protocol_histogram(store, qid)
+        assert hist is not None
+        assert hist.candidates == 2
+        assert hist.measured == 0
+        assert not hist.engines
+
+    def test_superseded_run_supplies_the_display(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A superseded pathway's measures stay on display until its
+        superseder harvests — with no ready run it still counts."""
+        monkeypatch.setenv(_VERSION_ENV, "0.50.0")
+        qid = _mk_quest(store)
+        cand = _mk_candidate(store, qid, "cand-a")
+        _mk_pathway(
+            store,
+            cand,
+            "pw-old",
+            meta={
+                "status": "superseded",
+                "autocatpath_version": "0.32.0",
+                "config": dict(_RX),
+            },
+        )
+        _mk_pathway(
+            store,
+            cand,
+            "pw-new",
+            meta={
+                "status": "computing",
+                "autocatpath_version": "0.50.0",
+                "config": dict(_RX),
+            },
+        )
+        hist = protocol_mod.protocol_histogram(store, qid)
+        assert hist is not None
+        assert hist.measured == 1
+        assert dict(hist.engines) == {"0.32.0": 1}
+
+    def test_barrier_provenance_beats_newest_ready(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``meta.barrier_pathway_ref_id`` names the pathway the displayed
+        barrier was harvested from — a newer ready (e.g. barrierless)
+        pathway must not steal its bucket."""
+        monkeypatch.setenv(_VERSION_ENV, "0.50.0")
+        qid = _mk_quest(store)
+        cand = _mk_candidate(store, qid, "cand-a")
+        kept = _mk_pathway(
+            store,
+            cand,
+            "pw-kept",
+            meta={
+                "status": "superseded",
+                "autocatpath_version": "0.32.0",
+                "config": dict(_RX),
+            },
+        )
+        _mk_pathway(
+            store,
+            cand,
+            "pw-new",
+            meta={
+                "status": "ready",
+                "autocatpath_version": "0.50.0",
+                "config": dict(_RX),
+            },
+        )
+        store.stamp_ref_meta(cand, {"barrier_pathway_ref_id": kept})
+        hist = protocol_mod.protocol_histogram(store, qid)
+        assert hist is not None
+        assert hist.measured == 1
+        assert dict(hist.engines) == {"0.32.0": 1}
+
     def test_no_candidates_is_none(self, store: Any) -> None:
         qid = _mk_quest(store)
         assert protocol_mod.protocol_histogram(store, qid) is None
@@ -525,6 +798,7 @@ class TestProtocolLines:
             and "mace:medium" in ln
             and "0.50.0" in ln
             and "coadsorbed" in ln
+            and "schedule=best_first" in ln
             for ln in lines
         )
         assert any(

@@ -9,8 +9,11 @@ never surfaced — a quest whose candidates span engines 0.20.0 → 0.50.0,
 frontier (qu164903). This module makes the drift visible:
 
 * :class:`QuestProtocol` — the per-quest **protocol record** (model, engine
-  version, network template, seed count, tolerances). The quest's *current*
-  protocol is derived, never stored: :func:`quest_protocol` resolves
+  version, network template, seed count, tolerances, and the measurement
+  ``search`` knobs — ``neb_schedule``/``neb_optimizer``/``neb_multistart``/
+  ``screening``/… — that decide how the run computes its numbers). The
+  quest's *current* protocol is derived, never stored:
+  :func:`quest_protocol` resolves
   ``meta.reaction_config`` through the same tier overlay dispatch applies
   (:func:`precis.quest.compute._apply_tier_config` +
   ``_neb_multiseed_config`) under the live engine pin, so "current" means
@@ -61,6 +64,24 @@ class QuestProtocol:
     template: str | None = None
     seeds: int | None = None
     tolerances: Mapping[str, float] = field(default_factory=dict)
+    #: The measurement ``search`` knobs (``neb_schedule``, ``neb_optimizer``,
+    #: ``neb_multistart``, ``screening``, …) — keys already carried by their
+    #: own fields (``seeds`` → :attr:`seeds`, ``energy_thresh`` →
+    #: :attr:`tolerances`) and runtime-only levers precis itself injects
+    #: (``neb_pool_size``, ``neb_batched`` — physics-identical batching
+    #: controls) are excluded; see :data:`_NON_MEASURE_SEARCH_KEYS`.
+    engine_settings: Mapping[str, Any] = field(default_factory=dict)
+
+
+#: ``search`` keys that are NOT part of the protocol's engine settings:
+#: ``seeds``/``energy_thresh`` have dedicated fields, and
+#: ``neb_pool_size``/``neb_batched`` are physics-identical runtime levers —
+#: the former stamped by dispatch's GB10 memory guard
+#: (:data:`precis.quest.compute._GB10_MACE_NEB_POOL_SIZE`), the latter a
+#: batching switch the engine self-checks to serial equivalence.
+_NON_MEASURE_SEARCH_KEYS = frozenset(
+    {"seeds", "energy_thresh", "neb_pool_size", "neb_batched"}
+)
 
 
 def _model_label(specs: list[tuple[str, str | None]]) -> str | None:
@@ -83,11 +104,22 @@ def _tolerances_from_config(config: Mapping[str, Any]) -> dict[str, float]:
     return out
 
 
+def _engine_settings_from_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    """The measurement ``search`` knobs a run on ``config`` is judged under —
+    every search key except the ones with dedicated protocol fields or a
+    runtime-only role (:data:`_NON_MEASURE_SEARCH_KEYS`)."""
+    search = config.get("search")
+    if not isinstance(search, Mapping):
+        return {}
+    return {k: v for k, v in search.items() if k not in _NON_MEASURE_SEARCH_KEYS}
+
+
 def protocol_from_config(
     config: Mapping[str, Any], *, engine: str | None = None
 ) -> QuestProtocol:
     """The protocol a run on ``config`` measures under (model, resolved
-    network template, seed count, tolerances) + the given engine version."""
+    network template, seed count, tolerances, engine settings) + the given
+    engine version."""
     from precis.quest import compute as _compute
 
     specs = _compute._autocatpath_mlip_specs(dict(config))
@@ -98,6 +130,7 @@ def protocol_from_config(
         template=_compute._resolved_template(config),
         seeds=len(seeds) if seeds else None,
         tolerances=_tolerances_from_config(config),
+        engine_settings=_engine_settings_from_config(config),
     )
 
 
@@ -193,6 +226,13 @@ def protocol_diff(
             out[f] = (e, a)
     if actual.tolerances and dict(expected.tolerances) != dict(actual.tolerances):
         out["tolerances"] = (dict(expected.tolerances), dict(actual.tolerances))
+    if actual.engine_settings and dict(expected.engine_settings) != dict(
+        actual.engine_settings
+    ):
+        out["engine_settings"] = (
+            dict(expected.engine_settings),
+            dict(actual.engine_settings),
+        )
     return out
 
 
@@ -203,6 +243,7 @@ _FIELD_LABEL: dict[str, str] = {
     "template": "network",
     "seeds": "seeds",
     "tolerances": "tolerances",
+    "engine_settings": "engine settings",
 }
 
 
@@ -275,6 +316,7 @@ def note_protocol_drift(
                     "template": expected.template,
                     "seeds": expected.seeds,
                     "tolerances": dict(expected.tolerances),
+                    "engine_settings": dict(expected.engine_settings),
                 },
                 "actual": {
                     "model": actual.model,
@@ -282,6 +324,7 @@ def note_protocol_drift(
                     "template": actual.template,
                     "seeds": actual.seeds,
                     "tolerances": dict(actual.tolerances),
+                    "engine_settings": dict(actual.engine_settings),
                 },
                 "diff": {
                     k: [_fmt_value(e), _fmt_value(a)] for k, (e, a) in diff.items()
@@ -332,11 +375,19 @@ def note_harvest_drift(
     pw_meta: Mapping[str, Any] | None,
 ) -> int | None:
     """Harvest-side check: the finished pathway's stamped protocol vs the
-    quest's current protocol for the pathway's own tier. Defensive — a
-    drift check must never break the harvest it annotates."""
+    quest's current protocol for the pathway's own tier — resolved by
+    :func:`precis.quest.compute._pathway_tier`, which reads the
+    dispatch-time ``meta.tier`` stamp AND catpath's verbatim ``results``
+    for a pre-stamp pathway (a legacy screening run with no ``tier`` key
+    compares against screening, never neb). Defensive — a drift check must
+    never break the harvest it annotates."""
     try:
-        pw_tier = str(pw_meta.get("tier")) if isinstance(pw_meta, Mapping) else None
-        expected = quest_protocol(store, quest_id, tier=pw_tier or None)
+        from precis.quest import compute as _compute
+
+        pw_tier = _compute._pathway_tier(
+            dict(pw_meta) if isinstance(pw_meta, Mapping) else None
+        )
+        expected = quest_protocol(store, quest_id, tier=pw_tier)
         actual = protocol_from_pathway(pw_meta)
         if expected is None or actual is None:
             return None
@@ -350,12 +401,13 @@ def note_harvest_drift(
 
 @dataclass
 class ProtocolHistogram:
-    """The quest's protocol spread: one bucket per candidate's newest
-    `pathway` (a ``ready`` run wins over a computing/superseded one — the
-    measure in force, not the attempt).
+    """The quest's protocol spread: one bucket per candidate's **measure
+    pathway** — the run its displayed measures came from
+    (:func:`_measure_pathway`), not the newest mint.
 
-    ``measured`` counts candidates with at least one pathway; the rest of
-    ``candidates`` have no run yet and fill no bucket.
+    ``measured`` counts candidates with a completed run behind their
+    displayed measures; candidates whose runs are all in-flight/failed —
+    and candidates with no run at all — fill no bucket.
     """
 
     candidates: int = 0
@@ -391,10 +443,39 @@ def _pathways_by_candidate(
     return out
 
 
+def _measure_pathway(
+    runs: list[tuple[int, dict[str, Any]]], candidate_meta: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """The pathway meta whose run supplied the candidate's **displayed**
+    measures — the protocol the frontier actually quotes.
+
+    The kept barrier's provenance stamp wins:
+    ``meta.barrier_pathway_ref_id`` names the pathway the displayed
+    ``barrier`` was harvested from, which may differ from the newest
+    ``ready`` run (a later barrierless harvest leaves the older barrier on
+    display). Failing that, the newest COMPLETED run — ``ready`` first,
+    then ``superseded``: a superseded pathway's measures stay on display
+    until its superseder harvests, so it still counts. An in-flight
+    (``computing``) or ``failed`` run supplied nothing — ``None``, and the
+    candidate is not measured.
+    """
+    pid = candidate_meta.get("barrier_pathway_ref_id")
+    if isinstance(pid, int) and not isinstance(pid, bool):
+        for ref_id, meta in runs:
+            if ref_id == pid:
+                return meta
+    done = [m for _ref_id, m in runs if m.get("status") == "ready"]
+    if done:
+        return done[-1]
+    done = [m for _ref_id, m in runs if m.get("status") == "superseded"]
+    return done[-1] if done else None
+
+
 def protocol_histogram(store: Store, quest_id: int) -> ProtocolHistogram | None:
     """Candidates per engine version / per seed count (plus network and
-    model — the other two drift axes). ``None`` when the quest has no
-    candidate structures."""
+    model — the other two drift axes), counted under the protocol of the
+    run that supplied each candidate's displayed measures. ``None`` when
+    the quest has no candidate structures."""
     from precis.quest import compute as _compute
 
     candidate_ids = _compute._candidate_struct_ids(store, quest_id)
@@ -402,13 +483,15 @@ def protocol_histogram(store: Store, quest_id: int) -> ProtocolHistogram | None:
         return None
     hist = ProtocolHistogram(candidates=len(candidate_ids))
     by_cand = _pathways_by_candidate(store, candidate_ids)
+    cand_refs = store.fetch_refs_by_ids(set(candidate_ids))
     for cand in candidate_ids:
         runs = by_cand.get(cand)
         if not runs:
             continue
-        # Newest ready run wins; else the newest run at all.
-        ready = [r for r in runs if r[1].get("status") == "ready"]
-        _pid, meta = (ready or runs)[-1]
+        cand_meta = getattr(cand_refs.get(cand), "meta", None) or {}
+        meta = _measure_pathway(runs, cand_meta)
+        if meta is None:
+            continue
         proto = protocol_from_pathway(meta)
         if proto is None:
             continue
@@ -424,6 +507,16 @@ def protocol_histogram(store: Store, quest_id: int) -> ProtocolHistogram | None:
     return hist
 
 
+def _fmt_settings(settings: Mapping[str, Any]) -> str:
+    """``{neb_schedule: best_first, neb_optimizer: neb-ode, neb_multistart: 3}``
+    → ``schedule=best_first+optimizer=neb-ode+multistart=3`` — the ``neb_``
+    prefix is implied, a ``True`` flag renders bare."""
+    return "+".join(
+        k.removeprefix("neb_") if v is True else f"{k.removeprefix('neb_')}={v}"
+        for k, v in settings.items()
+    )
+
+
 def _fmt_protocol(p: QuestProtocol, *, tier: str | None = None) -> str:
     """``mace:medium · autocatpath 0.50.0 · coadsorbed · 3 seeds · tol 0.05 eV``."""
     bits = [p.model or "?", f"autocatpath {p.engine or '?'}", p.template or "?"]
@@ -431,6 +524,8 @@ def _fmt_protocol(p: QuestProtocol, *, tier: str | None = None) -> str:
     tol = p.tolerances.get("endpoint_tol_eV")
     if isinstance(tol, (int, float)):
         bits.append(f"endpoint tol {tol:g} eV")
+    if p.engine_settings:
+        bits.append(f"search {_fmt_settings(p.engine_settings)}")
     return "protocol" + (f" ({tier})" if tier else "") + ": " + " · ".join(bits)
 
 
@@ -489,7 +584,10 @@ def protocol_lines(store: Store, quest_id: int) -> list[str]:
         line = "measured: " + " · ".join(parts)
         unevaluated = hist.candidates - hist.measured
         if unevaluated > 0:
-            line += f" ({unevaluated} of {hist.candidates} candidates have no run yet)"
+            line += (
+                f" ({unevaluated} of {hist.candidates} candidates have no "
+                "completed run yet)"
+            )
         lines.append(line)
     return lines
 
