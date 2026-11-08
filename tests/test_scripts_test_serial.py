@@ -46,7 +46,16 @@ def _stage_pytest_tree(tmp_path: Path) -> Path:
     """A minimal project carrying the repo conftest and the same addopts."""
     tree = tmp_path / "serialproj"
     (tree / "tests").mkdir(parents=True)
-    for name in ("conftest.py", "__init__.py", "_node.py", "_testmon_shim.py"):
+    # Every module the repo conftest imports from ``tests`` rides along: a
+    # new fixture module left out here fails as "ImportError while loading
+    # conftest" on hosts that cannot resolve ``tests`` from the repo root.
+    for name in (
+        "conftest.py",
+        "__init__.py",
+        "_node.py",
+        "_repo_git.py",
+        "_testmon_shim.py",
+    ):
         shutil.copy2(REPO / "tests" / name, tree / "tests" / name)
     (tree / "tests" / "test_tiny.py").write_text(
         "def test_ok():\n    pass\n", encoding="utf-8"
