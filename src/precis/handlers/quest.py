@@ -675,6 +675,28 @@ def _budget_arg(args: dict[str, Any] | None) -> int:
     return raw
 
 
+#: ``view='results'`` ``args['format']`` values — ``'toon'`` (default) is the
+#: agent-facing rendering; ``'text'`` is the fixed-width copy the tick prompt
+#: embeds. The text copy is opt-in since gr592661: printing both doubled the
+#: payload inside the 24 kB response cap, starving the rows.
+_RESULTS_FORMATS: tuple[str, ...] = ("toon", "text")
+
+
+def _results_format_arg(args: dict[str, Any] | None) -> str:
+    """``args['format']`` for ``view='results'`` — ``'toon'`` (default) or
+    ``'text'`` (the tick prompt's fixed-width copy)."""
+    if not isinstance(args, dict) or "format" not in args:
+        return "toon"
+    raw = args["format"]
+    if raw not in _RESULTS_FORMATS:
+        raise BadInput(
+            f"args={{'format': {raw!r}}}: format must be one of "
+            f"{', '.join(_RESULTS_FORMATS)}",
+            next="get(kind='quest', id=N, view='results', args={'format': 'text'})",
+        )
+    return str(raw)
+
+
 #: Default ``view='logbook'`` page size. At the measured ~280 B/entry of
 #: qu164903's 1302-entry, 362 kB notebook (gr537834) fifty entries lands
 #: near 14 kB — well under the 24 kB transport cap; ``args={'limit': N}``
@@ -874,7 +896,9 @@ class QuestHandler(NumericRefHandler):
             "the Pareto frontier of candidate materials (banded); "
             "view='leaderboard' the same frontier as a TOON design table; "
             "view='results' a lineage-ordered results table (one row per "
-            "candidate across every band, dopant/site/co-adsorbate columns); "
+            "candidate across every band, dopant/site/co-adsorbate columns; "
+            "args={'format': 'text'} prints the tick prompt's fixed-width "
+            "copy instead); "
             "view='series' the controlled series among them (one axis varied "
             "per block); view='measures' the best live measured value per "
             "measurand over everything serving it; view='pourbaix' the "
@@ -1450,7 +1474,13 @@ class QuestHandler(NumericRefHandler):
             return Response(body=self._render_leaderboard(ref))
         if view == "results" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(body=self._render_results(ref, budget=_budget_arg(args)))
+            return Response(
+                body=self._render_results(
+                    ref,
+                    budget=_budget_arg(args),
+                    fmt=_results_format_arg(args),
+                )
+            )
         if view == "series" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_series(ref, budget=_budget_arg(args)))
@@ -1818,19 +1848,27 @@ class QuestHandler(NumericRefHandler):
             f"tier: {tier_legend}\n\n{body}"
         )
 
-    def _render_results(self, ref: Ref, *, budget: int = _DEFAULT_VIEW_BUDGET) -> str:
+    def _render_results(
+        self,
+        ref: Ref,
+        *,
+        budget: int = _DEFAULT_VIEW_BUDGET,
+        fmt: str = "toon",
+    ) -> str:
         """`view='results'` — the lineage-ordered results table
         (:mod:`precis.quest.results_table`): one row per candidate across
         every Pareto band, dopant/site/co-adsorbate + trust/blocker columns.
-        Renders the same rows twice — a TOON table (LLM-legible, same
-        ``toon.dump`` helper :func:`_render_leaderboard` uses) followed by
-        the fixed-width text table the tick prompt itself embeds — so this
-        view doubles as "what would the tick see right now".
+        Renders a TOON table (LLM-legible, same ``toon.dump`` helper
+        :func:`_render_leaderboard` uses); ``args={'format': 'text'}``
+        swaps it for the fixed-width text table the tick prompt itself
+        embeds — "what would the tick see right now". The text copy is
+        opt-in since gr592661: printing both doubled the payload inside
+        the 24 kB response cap, starving the rows.
 
-        Budgeted to ``budget`` tokens over BOTH renderings together (default
-        = the tick's own 2500; ``args={'budget': N}`` overrides), dropping
-        rows from the lineage tail but never the newest ten, and saying how
-        many were dropped (gr345353)."""
+        Budgeted to ``budget`` tokens over the rendered table (default =
+        the tick's own 2500; ``args={'budget': N}`` overrides), dropping
+        rows from the lineage tail but never the newest ten, and saying
+        how many were dropped (gr345353)."""
         from precis.format import render_agent_table
         from precis.quest import frontier as frontier_mod
         from precis.quest.results_table import (
@@ -1849,26 +1887,33 @@ class QuestHandler(NumericRefHandler):
                 "no candidate structures serve this quest yet."
             )
         schema = list(RESULTS_COLUMNS)
-
-        def _both(rs: list[dict[str, Any]]) -> str:
-            return render_agent_table(rs, schema=schema) + render_results_table(
-                rs, token_budget=budget
+        # The text copy is measured against the plain fixed-width table —
+        # ``fit_rows_to_budget``'s default render — not
+        # ``render_results_table`` itself, which trims internally and would
+        # hide drops from ``omitted``.
+        if fmt == "text":
+            kept, omitted = fit_rows_to_budget(rows, token_budget=budget)
+        else:
+            kept, omitted = fit_rows_to_budget(
+                rows,
+                token_budget=budget,
+                render=lambda rs: render_agent_table(rs, schema=schema),
             )
-
-        kept, omitted = fit_rows_to_budget(rows, token_budget=budget, render=_both)
-        toon_body = render_agent_table(kept, schema=schema)
-        text_table = render_results_table(kept, token_budget=budget)
         note = (
             f"\n(+{omitted} of {len(rows)} rows omitted for the {budget}-token "
             "budget — args={'budget': N} widens it)"
             if omitted
             else ""
         )
+        if fmt == "text":
+            return (
+                f"# results — quest {ref.id}: {head}\n\n"
+                "## text table (as embedded in the tick prompt)\n"
+                f"{render_results_table(kept, token_budget=budget)}{note}"
+            )
         return (
             f"# results — quest {ref.id}: {head}\n\n"
-            f"{toon_body}{note}\n\n"
-            "## text table (as embedded in the tick prompt)\n"
-            f"{text_table}"
+            f"{render_agent_table(kept, schema=schema)}{note}"
         )
 
     def _render_series(self, ref: Ref, *, budget: int = _DEFAULT_VIEW_BUDGET) -> str:

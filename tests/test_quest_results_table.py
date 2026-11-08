@@ -628,7 +628,9 @@ class TestTickPromptSection:
 
 
 class TestViewResults:
-    def test_view_results_renders_toon_rows_and_text_table(self, store: Any) -> None:
+    def test_view_results_renders_toon_rows_only_by_default(self, store: Any) -> None:
+        """gr592661: the default agent view carries ONE copy of the rows —
+        the tick prompt's fixed-width text table is opt-in."""
         qid = _mk_quest(store)
         sid = _mk_candidate(store, qid, "Ag n=1", _dopant_ops("Ag", 1))
         _converge(store, sid)
@@ -640,11 +642,44 @@ class TestViewResults:
         # TOON header carries every declared column.
         for col in RESULTS_COLUMNS:
             assert col in body
+        assert "text table (as embedded in the tick prompt)" not in body
+        from precis.utils import handle_registry
+
+        handle = handle_registry.try_format("structure", sid)
+        assert handle is not None and handle in body
+
+    def test_view_results_format_text_renders_tick_table(self, store: Any) -> None:
+        qid = _mk_quest(store)
+        sid = _mk_candidate(store, qid, "Ag n=1", _dopant_ops("Ag", 1))
+        _converge(store, sid)
+        store.stamp_ref_meta(sid, {"barrier": 0.4, "barrier_trusted": True})
+
+        h = QuestHandler(hub=Hub(store=store))
+        body = h.get(id=qid, view="results", args={"format": "text"}).body
+        assert "results — quest" in body
         assert "text table (as embedded in the tick prompt)" in body
         from precis.utils import handle_registry
 
         handle = handle_registry.try_format("structure", sid)
         assert handle is not None and handle in body
+
+    def test_view_results_format_toon_matches_default(self, store: Any) -> None:
+        qid = _mk_quest(store)
+        _mk_candidate(store, qid, "Ag n=1", _dopant_ops("Ag", 1))
+        h = QuestHandler(hub=Hub(store=store))
+        assert (
+            h.get(id=qid, view="results", args={"format": "toon"}).body
+            == h.get(id=qid, view="results").body
+        )
+
+    def test_view_results_bad_format_is_bad_input(self, store: Any) -> None:
+        from precis.errors import BadInput
+
+        qid = _mk_quest(store)
+        h = QuestHandler(hub=Hub(store=store))
+        for bad in ("xml", "", 5, None):
+            with pytest.raises(BadInput):
+                h.get(id=qid, view="results", args={"format": bad})
 
     def test_view_results_empty_quest(self, store: Any) -> None:
         qid = _mk_quest(store, "A lonely striving")

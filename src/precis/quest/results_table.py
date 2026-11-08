@@ -14,7 +14,9 @@ rather than by band, so a doped-slab series reads as adjacent rows.
 
 Two renderings share the same rows: :func:`render_results_table` (a
 fixed-width text table for the tick prompt) and the quest handler's
-``view='results'`` (the same rows as a TOON table, :mod:`precis.format.toon`).
+``view='results'`` (the same rows as a TOON table,
+:mod:`precis.format.toon`; the text copy is opt-in there via
+``args={'format': 'text'}`` — gr592661).
 
 Dopant/site/co-adsorbate columns are derived at READ time from the
 candidate's own ``meta.params`` when the proposer stamped one, else from the
@@ -436,8 +438,8 @@ def fit_rows_to_budget(
     dropping one of the newest :data:`_KEEP_NEWEST` candidates by ``ref_id``
     (the ones most likely to be re-discovered). ``render`` is the text the
     budget is measured against — the tick's fixed-width table by default;
-    the handler's ``view='results'`` passes its own TOON+text renderer so
-    the budget covers what it actually returns (gr345353).
+    the handler's ``view='results'`` passes its own TOON renderer so the
+    budget covers what it actually returns (gr345353).
     """
     working = list(rows)
     keep_ids = {
