@@ -671,6 +671,18 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "sweeper",
     ),
     AlertRule(
+        "jobstarve",
+        "control:{executor}",
+        "Control-class jobs sat claimable past the starvation bound "
+        "while bulk drains hold the lane.",
+        "warn",
+        "sweeper",
+        triage="Check claim.max_running.derived_drain, the host's "
+        "job_inproc claimants, and the derived_drain running count "
+        "against the cap.",
+        budget="15m",
+    ),
+    AlertRule(
         "sweeper",
         "off-lane-pin:{host}/{executor}",
         "Jobs pinned to a node that stopped running their executor's pass "

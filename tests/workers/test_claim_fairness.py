@@ -12,7 +12,6 @@ band cannot starve rows queued behind it.
 
 from __future__ import annotations
 
-import threading
 from typing import Any, cast
 
 from precis.store import Store
@@ -58,9 +57,19 @@ def _job(
     return int(ref.id)
 
 
-def _claim(store: Store, limit: int = 10) -> list[int]:
+def _claim(store: Store, limit: int = 10, *, node: str | None = "h1") -> list[int]:
+    """Claim on host ``h1``: ``node`` is the PRECIS_NODE lane name and
+    ``reserve_host_id`` the reserve/lease-host namespace — the running-cap
+    and share counts key on the latter (``meta.lease_host`` stamps), NOT
+    the node gate. Tests stamp running rows ``lease_host="h1"``."""
     with store.pool.connection() as conn:
-        rows = claim_executor_jobs(conn, executor="job_inproc", limit=limit, node="h1")
+        rows = claim_executor_jobs(
+            conn,
+            executor="job_inproc",
+            limit=limit,
+            node=node,
+            reserve_host_id="h1",
+        )
     return [int(r[0]) for r in rows]
 
 
@@ -186,9 +195,13 @@ def test_kv_override_zero_suspends_a_type(store: Store) -> None:
 def test_cap_check_is_serialized_by_advisory_lock(
     store: Store, monkeypatch: Any
 ) -> None:
-    """Two concurrent claimers can't both pass the cap: the second's
-    running-count re-read happens only after the first claim commits —
-    ``pg_advisory_xact_lock(claim-cap:<type>)`` serializes the pair."""
+    """Two concurrent claimers can't both pass the cap: while one holds
+    ``claim-cap:<type>``, a racing claim's ``pg_try_advisory_xact_lock``
+    loses and the type reads as at-cap for that pass — the racing claim
+    returns at once WITHOUT the row instead of queueing on the holder's
+    open transaction until ``lock_timeout`` kills its whole pass (the
+    ``test_job_claim_holds_a_real_row_lock_skip_locked`` boundary pin).
+    Once the holder commits, the next pass counts fresh and claims."""
     with store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO app_state (key, value) VALUES "
@@ -196,39 +209,22 @@ def test_cap_check_is_serialized_by_advisory_lock(
             "ON CONFLICT (key) DO UPDATE SET value = '1'"
         )
         conn.commit()
-    _job(store, origin="background", prio=8, job_type="serial")
+    serial = _job(store, origin="background", prio=8, job_type="serial")
     host = "h1"
     monkeypatch.setattr(
         "precis.workers.executors._common._this_worker_lease_identity",
         lambda: ("boot", "proc", host),
     )
 
-    # Hold the cap lock open on one tx; a second claim must wait it out
-    # before its running-count — that wait IS the atomicity.
+    # Hold the cap lock open on one tx: the racing claim excludes
+    # 'serial' (the only claimable row) rather than blocking on it.
     holder = store.pool.getconn()
     holder.execute("SELECT pg_advisory_xact_lock(hashtext('claim-cap:serial')::bigint)")
-    done = threading.Event()
-    second: list[int] = []
-
-    def _claim2() -> None:
-        with store.pool.connection() as conn2:
-            second.extend(
-                int(r[0])
-                for r in claim_executor_jobs(
-                    conn2, executor="job_inproc", limit=1, node=host
-                )
-            )
-            conn2.commit()
-        done.set()
-
-    t = threading.Thread(target=_claim2)
-    t.start()
-    done.wait(timeout=2.0)
-    assert not done.is_set(), "claim didn't wait on the cap advisory lock"
+    assert _claim(store, limit=1) == []
     holder.commit()
     store.pool.putconn(holder)
-    done.wait(timeout=15)
-    assert done.is_set()
+    # Released — the next pass counts fresh and takes the row.
+    assert _claim(store, limit=1) == [serial]
 
 
 def test_kill_switch_restores_aged_order(store: Store, monkeypatch: Any) -> None:
@@ -462,3 +458,64 @@ def test_yielded_keeps_class_human_first(store: Store) -> None:
     yielded = _job(store, origin="background", prio=5, status="yielded")
     human = _job(store, origin="human", prio=5)
     assert _claim(store)[:2] == [human, yielded]
+
+
+# ── gr592211: drains can never occupy every in-proc slot ──────────────
+
+
+def test_control_job_claims_next_pass_at_drain_cap(store: Store) -> None:
+    """gr592211: with the derived_drain cap full (2 running) and a
+    50-deep drain backlog queued, a recurring ``release_poll`` claims on
+    the very next pass — the last slot never fills with drains."""
+    for _ in range(2):
+        _job(
+            store,
+            origin="background",
+            prio=8,
+            job_type="derived_drain",
+            status="running",
+        )
+    poll = _job(
+        store, origin="recurring", prio=2, job_type="release_poll", status="queued"
+    )
+    for _ in range(50):
+        _job(store, origin="background", prio=8, job_type="derived_drain")
+    assert _claim(store, limit=10) == [poll]
+
+
+def test_cap_binds_by_lease_host_not_claim_node(store: Store) -> None:
+    """gr592211 regression pin: the running count keys on
+    ``meta.lease_host`` (the ``reserve_host()`` stamp), NOT ``node``
+    (PRECIS_NODE — a lane name, not a machine). Where the two diverge a
+    node-keyed count reads 0 running rows and the cap never binds."""
+    for _ in range(2):
+        _job(
+            store,
+            origin="background",
+            prio=8,
+            job_type="derived_drain",
+            status="running",  # stamped lease_host="h1" by _job
+        )
+    poll = _job(store, origin="recurring", prio=2, job_type="release_poll")
+    for _ in range(5):
+        _job(store, origin="background", prio=8, job_type="derived_drain")
+    # node="gate" names the claim lane; the host is h1 via reserve_host_id.
+    assert _claim(store, limit=10, node="gate") == [poll]
+
+
+def test_uncapped_jobs_claim_through_starved_lane(store: Store) -> None:
+    """The cap excludes only the capped type: embed_batch (no cap) still
+    claims while derived_drain sits at its cap — the free slot goes to
+    whatever ranks first, drains wait."""
+    for _ in range(2):
+        _job(
+            store,
+            origin="background",
+            prio=8,
+            job_type="derived_drain",
+            status="running",
+        )
+    for _ in range(3):
+        _job(store, origin="background", prio=8, job_type="derived_drain")
+    embed = _job(store, origin="background", prio=8, job_type="embed_batch")
+    assert _claim(store, limit=10) == [embed]

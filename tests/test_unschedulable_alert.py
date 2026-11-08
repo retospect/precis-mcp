@@ -235,3 +235,95 @@ def test_job_inproc_url_pull_not_flagged(store: Store) -> None:
     )
     _alert_unschedulable_jobs(store)
     assert _alert_open(store, f"unschedulable:{jid}") is False
+
+
+def _queue_aged_job(
+    store: Store,
+    *,
+    job_type: str,
+    origin: str | None,
+    prio: int | None,
+    queued_min_ago: float,
+) -> int:
+    """A claimable ``job_inproc`` job whose STATUS tag stamp is aged —
+    the queue clock the claim order reads (``ref_tags.created_at``)."""
+    meta: dict[str, object] = {
+        "job_type": job_type,
+        "executor": "job_inproc",
+        "params": {},
+    }
+    if origin is not None:
+        meta["origin"] = origin
+    ref = store.insert_ref(kind="job", slug=None, title="j", meta=meta, prio=prio)
+    store.add_tag(
+        ref.id, Tag.closed("STATUS", "queued"), set_by="agent", replace_prefix=True
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - "
+            "make_interval(mins => %s) WHERE ref_id = %s",
+            (queued_min_ago, int(ref.id)),
+        )
+        conn.commit()
+    return int(ref.id)
+
+
+def test_starved_control_alert_fires_on_aged_recurring(store: Store) -> None:
+    """gr592211: a recurring job_inproc job queued >15m fires the
+    starvation alert; background bulk work at the same age does not."""
+    from precis.workers.sweeper import _alert_starved_control_jobs
+
+    poll = _queue_aged_job(
+        store,
+        job_type="release_poll",
+        origin="recurring",
+        prio=2,
+        queued_min_ago=20,
+    )
+    _queue_aged_job(
+        store,
+        job_type="derived_drain",
+        origin="background",
+        prio=8,
+        queued_min_ago=60,
+    )
+    _queue_aged_job(
+        store,
+        job_type="release_poll",
+        origin="recurring",
+        prio=2,
+        queued_min_ago=2,
+    )
+    assert _alert_starved_control_jobs(store) == 1
+    assert _alert_open(store, "control:job_inproc") is True
+    with store.pool.connection() as conn:
+        detail = conn.execute(
+            "SELECT title FROM refs WHERE kind = 'alert' "
+            "AND resolved_at IS NULL "
+            "AND meta->>'fingerprint' = 'control:job_inproc'",
+        ).fetchone()
+    assert detail is not None and f"#{poll}" in str(detail[0])
+
+
+def test_starved_control_alert_self_resolves(store: Store) -> None:
+    """The alert closes itself once no control job waits past the bound
+    — a drained queue leaves no open alert."""
+    from precis.workers.sweeper import _alert_starved_control_jobs
+
+    _queue_aged_job(
+        store,
+        job_type="release_poll",
+        origin="recurring",
+        prio=2,
+        queued_min_ago=20,
+    )
+    _alert_starved_control_jobs(store)
+    assert _alert_open(store, "control:job_inproc") is True
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() "
+            "WHERE ref_id IN (SELECT ref_id FROM ref_tags)"
+        )
+        conn.commit()
+    assert _alert_starved_control_jobs(store) == 0
+    assert _alert_open(store, "control:job_inproc") is False

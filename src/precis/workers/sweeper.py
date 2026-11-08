@@ -125,6 +125,7 @@ from precis.utils.job_bubble import bubble_job_failure, remove_child_failed_tags
 from precis.workers.executors._common import (
     CLAIMABLE,
     JOB_EVENT_KIND,
+    RELEASE_LEG_JOB_TYPES,
     advertised_by_host,
     append_chunk,
     effective_requires,
@@ -168,6 +169,124 @@ log = logging.getLogger(__name__)
 #: waits on a capability no host advertises, so it belongs to dispatch,
 #: not to the sweeper that noticed it).
 _SCHEDULER_ALERT_SOURCE = RULES_BY_ID["scheduler/unschedulable:{ref_id}"].rule
+
+#: Alert source for the starved-control-job finding (``jobstarve`` — its
+#: own source, NOT ``scheduler``/``sweeper``: ``resolve_stale_alerts``
+#: resolves every open alert of a source outside the live set, so sharing
+#: a source with another detector would make them auto-resolve each
+#: other).
+_STARVED_ALERT_SOURCE = RULES_BY_ID["jobstarve/control:{executor}"].rule
+
+#: How long a control-class claimable job may wait before the starvation
+#: alert fires (gr592211: release_poll sat 15+ min behind ~500s
+#: ``derived_drain`` runs while every job_inproc slot held a drain).
+_STARVED_CONTROL_MIN_ENV = "PRECIS_CONTROL_STARVED_MINUTES"
+_DEFAULT_STARVED_CONTROL_MIN = 15.0
+
+
+def _starved_control_minutes() -> float:
+    raw = os.environ.get(_STARVED_CONTROL_MIN_ENV)
+    if raw is None:
+        return _DEFAULT_STARVED_CONTROL_MIN
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return _DEFAULT_STARVED_CONTROL_MIN
+
+
+#: Origins that rank at or above the recurring claim class (human 0,
+#: agent 1, recurring 2 — ``executors/_common.py``'s ``_CLASS_RANK_CASE``).
+_CONTROL_ORIGINS = ("human", "agent", "recurring")
+
+
+def _alert_starved_control_jobs(store: Store) -> int:
+    """gr592211: warn when control-class ``job_inproc`` work starves.
+
+    A recurring (class 2) or release-band (2.5) job's claim rank only
+    helps when a pass ticks AND a slot frees — a host whose every
+    job_inproc claimant sits inside a ~500s ``derived_drain`` lets those
+    heartbeats queue for a full drain duration per turnover, and a full
+    drain backlog starves them unboundedly (release_poll missing its
+    10-minute cadence → no release cut, factory_rescue_tick late). The
+    per-host ``max_running`` cap on ``derived_drain`` is the bound this
+    alert watches: when a control-class row sits claimable past
+    :func:`_starved_control_minutes`, the cap isn't holding (or the lane
+    is otherwise wedged) and a human should look. Self-resolving via
+    ``resolve_stale_alerts`` on the dedicated source; returns the number
+    of offenders."""
+    threshold_min = _starved_control_minutes()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.prio, r.meta,
+                   max(rt.created_at) AS queued_since
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'job' AND r.retired_at IS NULL
+               AND r.meta->>'executor' = %s
+               AND t.namespace = 'STATUS' AND t.value = ANY(%s)
+             GROUP BY r.ref_id, r.prio, r.meta
+             ORDER BY queued_since ASC
+             LIMIT %s
+            """,
+            ("job_inproc", list(CLAIMABLE), _UNSCHEDULABLE_SCAN_CAP),
+        ).fetchall()
+    now = datetime.now(UTC)
+    offenders: list[tuple[int, str, float]] = []
+    for raw_id, raw_prio, raw_meta, queued_since in rows:
+        if queued_since is None:
+            continue
+        if queued_since.tzinfo is None:
+            queued_since = queued_since.replace(tzinfo=UTC)
+        age_min = (now - queued_since).total_seconds() / 60.0
+        if age_min < threshold_min:
+            break  # oldest-first scan: everything after this is younger
+        meta = dict(raw_meta or {})
+        origin = meta.get("origin")
+        prio = float(raw_prio) if raw_prio is not None else 5.0
+        control = (
+            origin in _CONTROL_ORIGINS
+            or str(meta.get("job_type") or "") in RELEASE_LEG_JOB_TYPES
+            or (origin is None and prio <= 2)
+        )
+        if control:
+            offenders.append(
+                (
+                    int(raw_id),
+                    str(meta.get("job_type") or "?"),
+                    round(age_min, 1),
+                )
+            )
+    fingerprint = "control:job_inproc"
+    live: set[str] = set()
+    if offenders:
+        worst = ", ".join(f"#{rid} {jt} {age}m" for rid, jt, age in offenders[:5])
+        raise_alert(
+            store,
+            source=_STARVED_ALERT_SOURCE,
+            fingerprint=fingerprint,
+            title=(
+                f"{len(offenders)} control job(s) queued >"
+                f"{threshold_min:.0f}m on job_inproc — lane starved "
+                f"(worst: {worst})"
+            ),
+            detail=(
+                "Recurring/release-class jobs sat claimable past the "
+                f"{threshold_min:.0f}m bound while bulk drains hold the "
+                "lane. Check claim.max_running.derived_drain, the host's "
+                "job_inproc claimants, and whether queued derived_drain "
+                "rows occupy every slot. Offenders: "
+                + "; ".join(
+                    f"job #{rid} ({jt}, queued {age}m)" for rid, jt, age in offenders
+                )
+            ),
+            severity="warn",
+            subject_ref_id=offenders[0][0],
+        )
+        live.add(fingerprint)
+    resolve_stale_alerts(store, source=_STARVED_ALERT_SOURCE, live_fingerprints=live)
+    return len(offenders)
 
 
 def _stuck_job_hours() -> float:
@@ -820,6 +939,14 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
         log.warning(
             "sweeper: %d queued job(s) require a capability no host advertises",
             unschedulable,
+        )
+    starved = _alert_starved_control_jobs(store)
+    if starved:
+        log.warning(
+            "sweeper: %d control job(s) queued >%.0fm on job_inproc — "
+            "lane starved (gr592211)",
+            starved,
+            _starved_control_minutes(),
         )
     reaped_dft = _reap_stale_dft_containers()
     if reaped_dft:

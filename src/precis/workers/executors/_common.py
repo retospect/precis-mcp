@@ -1675,22 +1675,38 @@ def claim_executor_jobs(
     # type may be RUNNING on this host — the derived_drain band can never
     # occupy every ``job_inproc`` process. At-cap types are EXCLUDED from
     # the candidate set, so a capped band can't starve rows queued behind
-    # it. A per-type advisory lock serializes the count+claim pair in
-    # this transaction, so two concurrent claimers can't both pass the
-    # cap.
+    # it. A per-type advisory lock serializes the count+claim pair, so
+    # two concurrent claimers can't both pass the cap — a TRY lock, never
+    # a blocking one: the loser treats the type as at-cap for this pass
+    # (the cap can never be exceeded by the loser) instead of queueing on
+    # the holder's open transaction until ``lock_timeout`` kills the whole
+    # claim pass — a concurrent claim is the normal case on a multi-worker
+    # host (test_job_claim_holds_a_real_row_lock_skip_locked).
+    #
+    # "This host" is ``default_host`` — the ``reserve_host()`` namespace
+    # ``_stamp_lease_identity`` writes into ``meta.lease_host`` — NOT
+    # ``node`` (``PRECIS_NODE``): the node gate names a capability lane,
+    # not a machine, and where the two diverge a node-keyed count reads 0
+    # running rows forever, so the cap silently never binds and a bulk
+    # band can occupy every in-proc slot on the host (gr592211: 49-queued
+    # ``derived_drain`` starved release_poll/factory_rescue_tick off
+    # melchior's lanes for 15+ min per turnover).
     cap_sql = ""
     cap_params: tuple[Any, ...] = ()
     caps: dict[str, int] = {}
     running_by_type: dict[str, int] = {}
     running_by_share: dict[str, int] = {}
-    claim_host = node or reserve_host_id
+    claim_host = default_host
     if claim_host is not None:
         caps = job_type_running_caps(conn)
+        contested: set[str] = set()
         for jt in sorted(caps):
-            conn.execute(
-                "SELECT pg_advisory_xact_lock(hashtext(%s)::bigint)",
+            held = conn.execute(
+                "SELECT pg_try_advisory_xact_lock(hashtext(%s)::bigint)",
                 (f"claim-cap:{jt}",),
-            )
+            ).fetchone()
+            if not (held and held[0]):
+                contested.add(jt)
         # One grouped read feeds both the per-type cap counts and the
         # D4-share-half fair-share counts (the ``params.pass`` band
         # discriminator — :func:`_share_key_of`).
@@ -1711,7 +1727,9 @@ def claim_executor_jobs(
             running_by_type[jt_s] = running_by_type.get(jt_s, 0) + int(cnt)
             running_by_share[_share_key_of(jt_s, ps)] = int(cnt)
         at_cap = sorted(
-            jt for jt, cap in caps.items() if running_by_type.get(jt, 0) >= cap
+            jt
+            for jt, cap in caps.items()
+            if jt in contested or running_by_type.get(jt, 0) >= cap
         )
         if at_cap:
             cap_sql = " AND COALESCE(r.meta->>'job_type', '') <> ALL(%s)"

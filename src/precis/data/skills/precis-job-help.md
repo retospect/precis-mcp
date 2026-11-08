@@ -332,6 +332,8 @@ named after it — `job_claude_inproc`, `job_ssh_node`, `job_inproc`,
 names are what `--only`, `service_config` rows and `worker_logs`
 handler fields show.
 
+## Sweeper guards — unschedulable, off-lane pins, control starvation
+
 The `sweeper` also guards executability: a `STATUS:queued` job whose
 capability requirements no live host advertises in `resource_slots`
 (and no `params.target_node` pin falls back on) can never be placed —
@@ -342,7 +344,19 @@ but no longer runs the executor's drain pass (it left the lane: ran
 `job_<executor>` this week, silent past 4h, nothing leased there) fails
 as infra, tagged `reaped:off-lane-pin`, with `meta.error` naming the
 node; `sweeper/off-lane-pin:<node>/<executor>` opens at warn and
-resolves when the pass runs on that node again.
+resolves when the pass runs on that node again. The sweeper also
+watches for lane starvation: a control-class row — origin
+`human`/`agent`/`recurring`, a release-leg job_type, or unstamped
+prio ≤ 2 — claimable on `job_inproc` for over
+`PRECIS_CONTROL_STARVED_MINUTES` (default 15m) opens
+`jobstarve/control:<executor>` at warn, auto-resolved when nothing
+control-class waits past the bound (gr592211: a ~50-deep
+`derived_drain` backlog occupied every in-proc slot, so `release_poll`
+and `factory_rescue_tick` queued a full drain per turnover). The fix is
+the per-host `claim.max_running.<job_type>` cap — `derived_drain`
+defaults to 2 running per host — so the alert means the cap isn't
+holding (check `get(kind='job', id='/claim')` and the host's claimants)
+or the lane is otherwise wedged.
 
 Parenting is polymorphic (ADR 0044): a job parents on a **todo**
 (intent lane — rotation, `child-failed` bubble, `child_job_succeeded`),
