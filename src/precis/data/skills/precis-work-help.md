@@ -320,10 +320,9 @@ One gripe collects every node the same failure defeated: the signature
 (class plus a normalised failing test, error line, or last log line)
 tags the gripe `rescue-sig:<hash>`, and each rescued todo links
 `related-to` it. An engine-class signature gripe also carries
-`cluster:dark-factory`, the same cluster label triage gives engine
-design gripes — but no `fix:code` and no agent/human `filed_by`, so it
-never re-enters a build lane by the intake door (gr591017). A rescued
-gripe (three failed mints →
+`cluster:dark-factory` (a plain cluster label since gr591017) but no
+`fix:code` and no agent/human `filed_by`, so it never re-enters a build
+lane by the intake door. A rescued gripe (three failed mints →
 `rescue:intake`) is its own signature gripe. The failure's evidence (job,
 step, branch, head sha, log tail, diff stat) sits as a comment on the
 rescued node; later nodes on one signature leave a line each on the
