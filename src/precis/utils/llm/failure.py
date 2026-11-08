@@ -36,9 +36,9 @@ Classes (:data:`FailureClass`):
   bulk work (SMALL tier / a bulk purpose). No horizon: the call's shape
   can't change, another rung must take it.
 * ``subscription_op_refused`` — a subscription-profile rung refused the
-  op: ``req.source`` isn't in the profile's ``ops`` allowlist (the Kimi
-  rule, gr543829 — an empty allowlist serves no op). No horizon: another
-  rung must take it.
+  op: ``req.source`` isn't in the profile's ``ops`` allowlist (gr543829 —
+  an explicitly empty allowlist serves no op). No horizon: another rung
+  must take it.
 * ``subscription_worker_refused`` — legacy: a Kimi-subscription rung
   refused a worker/job-origin call under the 2026-11-01
   interactive-only ruling (gr543829). No longer raised since the

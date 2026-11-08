@@ -5016,3 +5016,142 @@ def test_kimi_unscrubbed_withholds_deny_paths_and_commit_lines(
     [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
     assert "KIMI_MODEL_API_KEY" not in summary
     assert run_slice._KIMI_SUBMIT_KEYS == {}
+
+
+# ── gr587234: the committed-note guards + the withheld-verdict matrix ──
+
+
+@pytest.mark.parametrize("readable", [True, False], ids=["redacted", "withheld"])
+def test_kimi_worker_commit_note_scrubs_or_withholds(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, readable: bool
+) -> None:
+    """``_commit_for_session``'s note is session-side text too — the
+    "git add failed (<stderr>)" / "worker commit failed (<stderr>)"
+    shapes can carry a key stderr echoed — so the same scrub covers it:
+    the credential readable at poll → ``[redacted:KIMI_MODEL_API_KEY]``
+    on the summary's Commit line; unreadable → the note withheld whole
+    when it names a kimi env var."""
+    from precis import secrets as _secrets
+
+    key = "sk-commit-note-key"
+    note = f"worker commit failed (stderr: KIMI_MODEL_API_KEY={key})"
+    monkeypatch.setattr(run_slice, "_commit_for_session", lambda *_a: note)
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch, key=key)
+    assert handle is not None
+    if not readable:
+        monkeypatch.setattr(_secrets, "get_secret", lambda _name, **kw: None)
+    seams["ahead"] = "abc1234 fix: work"
+    _finish(handle, 0, '{"role":"assistant","content":"tests: ran"}\n')
+    pctx = _poll_ctx(store, ctx)
+
+    assert run_slice.poll(pctx, handle) is True
+
+    assert pctx.status == "succeeded"
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    if readable:
+        assert (
+            "Commit: worker commit failed "
+            "(stderr: KIMI_MODEL_API_KEY=[redacted:KIMI_MODEL_API_KEY])" in summary
+        )
+    else:
+        assert "Commit: worker commit note withheld (credential unreadable)" in summary
+        assert note not in summary
+        assert store.comments(42) == [_WITHHELD]
+    _assert_no_keys(pctx, handle, store, key)
+
+
+def test_kimi_noop_verdict_withholds_when_unscrubbed(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The task-side ``no-op:`` cell of the withheld-verdict matrix —
+    same withheld ``Land: none, by verdict`` line as ``moot:``, without
+    the moot tag."""
+    from precis import secrets as _secrets
+
+    store = _Store()
+    store.add_todo(42, "Check gr1", meta={"op": "run_slice"})
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    monkeypatch.setattr(_secrets, "get_secret", lambda _name, **kw: None)
+    key = "sk-leaked-noop-verdict"
+    _finish(
+        handle,
+        0,
+        f'{{"role":"assistant","content":"no-op: KIMI_MODEL_API_KEY={key}"}}\n',
+    )
+    pctx = _poll_ctx(store, ctx)
+
+    assert run_slice.poll(pctx, handle) is True
+
+    assert pctx.status == "succeeded"
+    assert store.comments(42) == [_WITHHELD]
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "Land: none, by verdict `no-op: withheld: credential unreadable" in summary
+    assert "verdict:moot" not in store.tag_strings(42)
+    _assert_no_keys(pctx, handle, store, key)
+    assert "KIMI_MODEL_API_KEY" not in summary
+
+
+def test_kimi_generator_moot_verdict_withholds_when_unscrubbed(
+    tmp_path: Path, seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The generator-side ``moot:`` cell — the withheld ``Children: none``
+    line plus the ``verdict:moot`` tag the tick closes the plan on.
+    kimi_tree has no MCP so submit refuses a generator — the ctx and
+    handle are built by hand, keyed on ref 900."""
+    from precis import secrets as _secrets
+
+    store = _Store()
+    store.add_todo(42, "Slice it", meta={"generate": {"role": "slicer", "from": "x"}})
+    tree = tmp_path / "wt"
+    tree.mkdir()
+    handle = {
+        "pid": 4242,
+        "pgid": 4242,
+        "worktree": str(tree),
+        "log": str(tree / "run_slice.log"),
+        "exit_file": str(tree / "run_slice.exit"),
+    }
+    ctx = _Ctx(store, {"todo_id": 42}, lane="kimi", adapter="kimi_tree", model="k3")
+    key = "sk-leaked-gen-moot-verdict"
+    run_slice._KIMI_SUBMIT_KEYS.clear()
+    run_slice._KIMI_SUBMIT_KEYS[900] = "sk-submitted-env-key"
+    monkeypatch.setattr(_secrets, "get_secret", lambda _name, **kw: None)
+    _finish(
+        handle,
+        0,
+        f'{{"role":"assistant","content":"moot: KIMI_MODEL_API_KEY={key}"}}\n',
+    )
+
+    assert run_slice.poll(ctx, handle) is True
+
+    assert ctx.status == "succeeded"
+    assert store.comments(42) == [_WITHHELD]
+    [summary] = [t for k, t in ctx.chunks if k == "job_summary"]
+    assert (
+        "Children: none, by verdict `moot: withheld: credential unreadable" in summary
+    )
+    assert "verdict:moot" in store.tag_strings(42)
+    _assert_no_keys(ctx, handle, store, key, "sk-submitted-env-key")
+    assert "KIMI_MODEL_API_KEY" not in summary
+    assert run_slice._KIMI_SUBMIT_KEYS == {}
+
+
+def test_kimi_malformed_handle_drops_the_submit_key() -> None:
+    """Poll's malformed-handle branch is an exit path that never reaches
+    the terminal poll — it pops the job's stored submit key before the
+    failure record, like a kill or a release."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx = _Ctx(store, {"todo_id": 42}, lane="kimi", adapter="kimi_tree", model="k3")
+    run_slice._KIMI_SUBMIT_KEYS.clear()
+    run_slice._KIMI_SUBMIT_KEYS[900] = "sk-submitted-env-key"
+
+    assert run_slice.poll(ctx, "not-a-handle") is True
+
+    assert ctx.status == "failed"
+    assert ctx.failure is not None and "malformed handle" in ctx.failure
+    assert "sk-submitted-env-key" not in ctx.failure
+    assert run_slice._KIMI_SUBMIT_KEYS == {}

@@ -9079,28 +9079,44 @@ def test_profile_base_url_refusal_never_echoes_userinfo(
 
 
 @pytest.mark.parametrize(
-    ("base_url", "served"),
+    ("base_url", "served", "why"),
     [
-        ("https://exfil.example.invalid/coding/v1", False),
-        ("https://api.kimi.ai.evil.example/coding/v1", False),
-        ("http://api.kimi.ai/coding/v1", False),
+        (
+            "https://exfil.example.invalid/coding/v1",
+            False,
+            "host 'exfil.example.invalid' is not on the allowlist",
+        ),
+        (
+            "https://api.kimi.ai.evil.example/coding/v1",
+            False,
+            "host 'api.kimi.ai.evil.example' is not on the allowlist",
+        ),
+        ("http://api.kimi.ai/coding/v1", False, "scheme is not https"),
         # Userinfo — built at runtime so no inline-password URL literal
         # lands in the tree (test_deploy_tree_no_secrets).
-        ("https://u" + ":pw@api.kimi.ai/coding/v1", False),
-        ("https://api.kimi.ai:8443/coding/v1", False),
+        (
+            "https://u" + ":pw@api.kimi.ai/coding/v1",
+            False,
+            "userinfo on host 'api.kimi.ai'",
+        ),
+        (
+            "https://api.kimi.ai:8443/coding/v1",
+            False,
+            "port 8443 on host 'api.kimi.ai'",
+        ),
         # The documented overseas endpoint — the happy path.
-        (kimi.DEFAULT_BASE_URL, True),
+        (kimi.DEFAULT_BASE_URL, True, ""),
     ],
     ids=["off-allowlist", "suffix-spoof", "http", "userinfo", "port-8443", "default"],
 )
 def test_kimi_profile_base_url_allowlist_gates_before_key_or_wire(
-    monkeypatch: pytest.MonkeyPatch, base_url: str, served: bool
+    monkeypatch: pytest.MonkeyPatch, base_url: str, served: bool, why: str
 ) -> None:
     """td573681 slice 2: the kimi default profile's ``base_url`` is
     bound to :data:`kimi.BASE_URL_HOSTS` by the key allowlist
     (gr586613) — an off-list repoint refuses BEFORE the key is read:
     zero ``get_secret`` calls, zero wire calls, and the error names the
-    profile and the allowlist. The default host dispatches normally —
+    profile and the violated constraint. The default host dispatches normally —
     the gate is the allowlist, not the profile. ``_service_gate_lit``
     is stubbed lit so the allowlist, not the dark gate, is under test."""
     _set_profiles(
@@ -9133,7 +9149,7 @@ def test_kimi_profile_base_url_allowlist_gates_before_key_or_wire(
         assert resolved == [kimi.API_KEY_REF]  # the key IS read once
     else:
         assert out.error is not None
-        assert "'kimi'" in out.error and "api.kimi.ai" in out.error
+        assert "'kimi'" in out.error and why in out.error
         assert seen == []  # ZERO http calls — the client is never built
         assert resolved == []  # the key is never read
 

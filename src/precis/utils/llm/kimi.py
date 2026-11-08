@@ -195,7 +195,7 @@ def default_profile() -> dict[str, Any]:
         "kind": "subscription",
         "adapter": ADAPTER,
         "gate": SERVICE_NAME,
-        "ops": list(DEFAULT_OPS) if DEFAULT_OPS is not None else None,
+        "ops": DEFAULT_OPS,
     }
 
 

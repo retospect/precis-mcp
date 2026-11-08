@@ -133,9 +133,10 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
     ),
     SecretSpec(
         name="KIMI_CODE_API_KEY",
-        purpose="Kimi Code membership key; serves interactive calls and "
-        "the kimi_tree factory lane's headless `kimi -p` launches — the "
-        "autonomous lane is sanctioned (ruling 2026-11-07, td573681, "
+        purpose="Kimi Code membership key; serves interactive calls, "
+        "worker calls on a lit `kimi` llm.profiles rung, and the kimi_tree "
+        "factory lane's headless `kimi -p` launches — autonomous use is "
+        "sanctioned (ruling 2026-11-07, td573681, "
         "superseding gr543829's interactive-only scope). Storing a key "
         "lights nothing by itself: the account row stays disabled until "
         "an operator enables it.",
@@ -143,7 +144,8 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         get_blurb="Create a key in the Kimi Code Console (up to 5 per account) "
         "and paste it here. Use our real User-Agent; never impersonate the "
         "Kimi CLI or another client. Use key auth only, never CLI OAuth. "
-        "Serves interactive calls and the kimi_tree worker lane only — "
+        "Serves interactive calls, worker calls on a lit `kimi` "
+        "llm.profiles rung, and the kimi_tree worker lane only — "
         "never product integration or unrelated bulk calls. Read the Membership "
         "Benefits and Community Guidelines pages before enabling, and check "
         "data retention and training terms before sending production prompts.",
