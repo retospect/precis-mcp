@@ -1,16 +1,16 @@
 ---
 status: in-progress
 claimed-by: ws-import
-title: Structure workspaces — scripts build in a sandbox, se stores and inspects, relax is a service
+title: Structure workspaces — exec blocks against head, se stores and inspects, relax is a service
 pillar: 3d-design
 prio: high
 model: fable
-blocked-by: sandbox-python-script
 ---
 
-# Structure workspaces — scripts in a sandbox, inspection in MCP
+# Structure workspaces — exec blocks against head, inspection in MCP
 
-Reto, 2026-10-22 (approved direction): "agents that make structures — wean
+Reto, 2026-10-22 (approved direction; the script-and-sandbox loop it
+describes is replaced by exec blocks, §Amendment 2026-11-08): "agents that make structures — wean
 them off structures and into script land, in a special sandbox? A container
 with MCP-session-linked se context, where the agent can clear, run script,
 use MCP to investigate the structure, edit the script in the box, repeat.
@@ -23,121 +23,320 @@ script outputs are testable artifacts, so CI gets cheaper.
 Supersedes [se-modules-and-assemblies](se-modules-and-assemblies.md)
 (§What happens to the modules spec). Builds on
 [sandbox-python-script](sandbox-python-script.md) (`mode:script`, PyPI-only,
-read MCP over a socket) and [agent-workspace-containers](agent-workspace-containers.md)
+read MCP over a socket: the job lane for long runs) and
+[agent-workspace-containers](agent-workspace-containers.md)
 (persistent workspaces, disposable containers, host dirs under
-`/var/lib/precis-sandbox/ws/`).
+`/var/lib/precis-sandbox/ws/`: lane and library-module code).
+
+## Amendment 2026-11-08 — exec blocks against head; the snapshot is the source
+
+Reto, 2026-11-08 (design chat cached-wandering-river). The interactive
+loop changes from "edit `main.py`, run the whole script in a sandbox job,
+import" to "exec a small block against the design's head, inspect, keep or
+revert". Reverses the 2026-10-22 ruling "the python script is the source";
+code storage option (b) git objects in Postgres (slice 1b) is dropped.
+Replaces the 2026-10-22 workspace-as-script design and the "python
+script is the source" phrasing of the 2026-10-23 formats ruling; Core
+design, §The loop, §Commit (trusted side), §Code inside the design,
+§Packaging and §Guardrails below are written to this amendment. Everything
+else stands: the build/search convention, `recipe.json`, context staging,
+port-by-name, the step cache, frozen units, relax-as-service, traces,
+fisheye, the commit-side validation.
+
+Later 2026-11-08 rulings (R2 reworded, R2a, R3 keep modes/batching, R3a,
+R4a, the script-path ruling) are recorded as me598371 (single write
+path, keep modes, batching, script path retired, rollback deferred) and
+me598372 (`precis` proxy, lint/audit layers).
+
+- **R1 Head is the source.** The stored design state (head) is the
+  snapshot. Structures: `recipe.json` + manifest + the per-scale artifacts
+  (extXYZ, DSL text, field blobs; the 2026-10-23 formats ruling, unchanged).
+  The snapshot carries intent (parameters, generator + args, constraints),
+  not only geometry. Scripts become library modules and generators
+  (`ws-promote`, `precis_geom`), not the design. Consequences: the host git
+  repo per workspace and slice 1b are dropped; `script_sha` on blocks is
+  replaced by the (version, block index) that made them; `main.py` is not
+  the entry — a workspace is a design plus its recorded versions.
+- **R2 Versions recorded on keep, full copy, no journal.** Every keep
+  records a version: a `design_revisions` row plus the kept snapshot as a
+  `design_checkpoints` row (both tables exist, migrations 0162/0169; se
+  already does this per save). A snapshot is a full copy (design state is
+  a few MB; store deltas only if a version reaches tens of MB). No
+  append-only journal, no replay log: the snapshot is the artifact. A
+  block's text rides its candidate only while it is a candidate (for the
+  agent's debugging) and is dropped on keep. Stepping back past a keep
+  (any `revert-to-N` verb, ring length and GC, listing prior versions) is
+  **out of scope for slice 1**, deferred to its own later phase
+  (gr598376); if it comes it is forward-only — commit N's snapshot as a new version, never
+  a backward pointer move. No Postgres transaction spans calls; a keep is
+  one transaction (R2a), so a block is atomic at the storage level and a
+  block that raises writes nothing.
+- **R2a Single write path.** Head's storage (`struct_atoms` rows, the se
+  tree payload, the pcb relational tables) is written by exactly one
+  function, `commit(ref, snapshot) → version`, in one Postgres
+  transaction, always forward. A candidate never lives in the kind's own
+  tables: exec writes one `design_checkpoints` row (the candidate
+  snapshot) and nothing else; `revert` deletes that row; `keep` is
+  `commit` (diff against head, insert new rows / retire removed ones /
+  bump version / write the revision row, atomically — on any failure the
+  transaction rolls back and head is unchanged). The worker process has
+  no database handle; the exec handler's write path reaches the
+  checkpoint table only. Storage stays per kind (structure row-versioned
+  atoms, se jsonb payload, pcb relational with FKs); the **contract** is
+  unified, not the storage: each kind supplies `load(ref, version) → IR`,
+  `snapshot(IR)`, `diff(head, snapshot)` and `commit(...)` as its renter
+  interface. Agent-facing handles are natural keys (refdes, net name,
+  atom label, se block uid/name), never row ids; where a row id leaks
+  today (route/feature ids) it may renumber on keep. Acceptance, per
+  kind: hash every head row of the design before an exec block that adds,
+  moves and deletes things; the hash is unchanged after exec (candidate
+  mode) and after `revert`.
+- **R3 Exec primitive.** `put(kind='se', id=<slug>, mode='exec',
+  text=<python>, args={'keep': 'auto'|'candidate', 'target': 'fork'})`
+  (`target: 'fork'` runs the block against a scratch fork design; exact
+  arg names the builder's). The block runs with the design in scope (`d`), may call
+  only the design library (`precis_geom` and the assembly API) and the
+  `precis` proxy (R3a), and returns prints (capped ~20 kB) + an entity
+  diff (handles created/moved/removed) + a structured error. Direct
+  construction ops become one-line blocks under the hood, so W5's
+  retirement of the ops proceeds unchanged.
+  - **`keep:'auto'` is the default:** run, validate on the trusted side
+    (schema, caps, DRC errors where the kind has them), commit if clean,
+    return diff + new version in one call ("apply and look, fix
+    forward"). If validation flags anything the call does not commit; it
+    leaves a candidate with the findings in the echo.
+  - **`keep:'candidate'`** stops at the candidate for the inspect →
+    keep/revert loop: `put(..., mode='exec', args={'keep': 'candidate'})`
+    → echo (prints, diff, candidate id) → `get(kind='se', id=<slug>,
+    view='validate', args={'version': <candidate>})` → `put(...,
+    mode='keep')` or `mode='revert'`. Peek views (`validate`, `drc`,
+    `measure`, `eye`, `trace`) read the candidate by id.
+  - A raising block writes nothing in either mode.
+  - **Batching.** `text` accepts a list of blocks. They run in order,
+    each against the result of the previous; one echo per block, all
+    returned together; stop at the first failure, later blocks reported
+    as skipped. With `keep:'auto'` each clean block commits as its own
+    version (a failure at step 3 leaves 1 and 2 kept); with
+    `keep:'candidate'` the steps stack into one candidate and one `keep`
+    commits all. Resource caps are per block, no list-length cap.
+    Separate tool calls in one turn are not ordered against each other,
+    hence the list.
+- **R3a The `precis` proxy.** The block namespace carries a `precis`
+  proxy (`precis.get`, `precis.search`, …). Calls are synchronous remote
+  calls over the pipe the child inherited from the warm worker; the
+  worker relays to the MCP server, which runs the call under the
+  session's identity against an allowlist (read verbs on any kind; write
+  verbs only into this design's own candidate — a block cannot put a
+  gripe or memory) and returns the result down the same path. The child
+  never opens a connection, holds no token, no socket. A loop of a
+  hundred lookups is fine (~1–2 ms each); ten thousand hits the wall and
+  gets the "this is a job" echo. Calls about the design itself
+  (`measure`, `validate`, `drc` on the current candidate) do **not** go
+  through the proxy: the design is in the child's memory as `d`, those
+  are local library calls. Ids the block creates are local handles
+  returned immediately.
+- **R4 Containment: forked warm worker, never in-process.** In-process
+  eval (RestrictedPython, stripped builtins) is rejected: known escapes,
+  and the target would be the MCP server with its DB handle, env and
+  vault. Per host one warm worker (`python -I -S`, `precis_geom` imported,
+  env scrubbed of `PRECIS_*` and DB URLs, no inherited sockets or
+  descriptors but the result/proxy pipe, R3a); per block it forks, and
+  the child sets `RLIMIT_AS` / `RLIMIT_CPU` / a wall alarm (10 s default,
+  requestable to ~60), runs the block, writes snapshot + prints + error
+  to a pipe and exits. Linux: `unshare -rn` for no network; on a Mac the
+  gap is accepted or the block routes to a Linux host. The trusted side
+  validates the candidate — schema, entity-count cap, blob-size cap,
+  optionally the library's own `check` — before it commits or is left as
+  a candidate (R3). The sandbox job lane (`sandbox_run` on pollux/spark)
+  stays for long things: `search()`, relax, place/route. The container is
+  the upgrade behind the same interface if the process boundary proves
+  insufficient. No clock and no random in a block unless passed as
+  parameters.
+- **R4a Lint and audit hook are layers, not boundaries.** In front of
+  the fork, in the server: an AST allowlist lint (~40 lines:
+  `ast.parse`, allowlist `Import`/`ImportFrom` modules, deny `Attribute`
+  names starting `__`, deny builtins `open eval exec compile __import__
+  globals`) gives a millisecond refusal with `next=` naming the API and
+  keeps blocks graduation-ready. Inside the forked child:
+  `sys.addaudithook` (PEP 578) vetoes `open`, `socket.*`, `subprocess.*`
+  and imports outside the allowlist at the actual operation, irremovable
+  once installed. Neither replaces the fork: a nonconvergent `while`, a
+  10⁷-entity comprehension or deep recursion is pure API-only Python
+  that passes any syntax filter, CPython cannot kill a thread,
+  `signal.alarm` only interrupts the main thread between bytecodes (not
+  C loops), and `RLIMIT_AS` is per process. Containment ladder, cheapest
+  first, all compatible: AST lint → fork + rlimits + env scrub → audit
+  hook → `unshare -rn` on Linux → container only if the boundary proves
+  insufficient. The thing that forks is a dedicated single-threaded
+  worker, not the MCP server (forking a multithreaded process with DB
+  handles is undefined, and macOS ObjC aborts fork-after-threads); fork
+  of a ~300 MB warm process is 1–3 ms copy-on-write, below the Postgres
+  write that follows. After keep the worker swaps its in-memory design to
+  the new head.
+- **R5 Step cache in the worker.** The 2026-10-23 build-step stack ruling
+  stands: the parent worker holds head + the high-water-mark cache; a
+  child's new entries are content-addressed (key = hash(name, params,
+  parent keys)) and merge back on keep.
+- **R6 Size.** No line cap; resource caps and a nudge. Hard limits: wall,
+  memory, prints, entity count, blob size. Past ~80 lines the echo prints
+  one line suggesting promotion to a module. A block that hits the wall
+  gets the echo "this is a job: run on the lane / search()".
+- **R7 Graduation path** (gr596135). A `graduate:block` gripe carries a
+  useful block verbatim; the echo pre-fills the call after a long or
+  recurring kept block; surface-review clusters kept blocks and files the
+  gripe itself on recurrence; the skill teaches it.
+- **R8 Provenance.** Atoms/parts created in a block carry (version, block
+  index, frame anchors) instead of raw stack frames — the same
+  information, resolvable through the code-anchor mechanism (gr595549,
+  `an<N>` handles), smaller. Per-atom construction traces (slices 2, 2t,
+  2p) stay.
+- **R9 Skill content** (`precis-se-workspace-help`, slice 6): the loop
+  (look → one block → apply and look, fix forward); the default is apply
+  and look; ask for a candidate (`keep:'candidate'`) when the block is
+  exploratory or the check is slow; one intent per block either way so a
+  fix-forward is small; use the list form when you want per-step diffs;
+  `precis.*` for other kinds, `d` for this design; handles and port
+  names, never coordinates; end the block with the check you would make
+  (print the measure, not the structure); in candidate mode keep only
+  after `validate`/`drc` is clean on the candidate, revert freely; op vs block
+  (single edit → op, dependent steps → block); library before loops (a
+  loop written twice is a module → promote); parameters at the top so a
+  re-poke is a one-number edit; long-running things are requests (relax,
+  place, route, search) with the `hit | queued` echo; anti-patterns named
+  (rebuild from scratch inside a block, `try/except` swallowing errors,
+  coordinate literals, 300-line blocks, checking by render instead of
+  measure). Metrics for surface-review: blocks per kept change,
+  keep/revert ratio, median block length, wall-limit hits.
+- **R10 Open measurement.** Direct ops vs blocks: expect direct to win at
+  ≤ 3 dependent steps and blocks above; measure per task (dependent-step
+  count, turns, tokens, wall, defect rate) rather than rule globally.
+- **The script path is not a surface** (Reto, 2026-11-08). `main.py` as
+  source, host git per design, a venv per lock sha and a hand-run import
+  step are gone as agent-facing modes. What survives: the library the
+  blocks call (`precis_geom`, `pga`); where recurring blocks graduate to
+  (R7); and the job lane, where a block that hits the wall runs as the
+  same code under the same namespace and commits through the same
+  `commit`. The importer code (`workspace_import.py`) stays with its role
+  renamed: it **is** `commit`. Two surfaces would be two places head can
+  be written from, which R2a forbids.
+
+Long runs (`search`, relax, place/route) still need the sandbox lane;
+the interactive loop does not. Slices 1 (re-cut), 1b (dropped) and 1g
+below.
 
 ## Core design
 
-1. **A workspace is a small Python repo linked to one se design.** Files
-   live in the DB (a `folder` ref, `meta.workspace = {design, created_by}`)
-   so the session MCP can edit them; each `run` stages them into the
-   container exactly as `code_ref` folders are staged today
-   (`executors/_sandbox_inputs.py::stage_code`) and commits the staged tree
-   into the workspace's host git repo (`ws/<slug>/.git`, no remote, no
-   creds) — git history is a by-product of running, the commit sha is the
-   run's `script_sha`. One workspace ↔ one design; a design may have several
-   workspaces; a run may target a scratch fork.
-2. **The agent edits and runs; the container runs the script.** The agent
-   never enters the container (v1; agent-in-container is the
-   `mode:build` lane, gr329258 closed but the socket bridge is unbuilt).
-   `run` = `sandbox_run mode:script` with `workspace:<slug>` on pollux or
-   spark (W1: castor stays LLM-only) — never a Mac, never melchior
-   (`sandbox_run.py::_sandbox_hosts`).
-   No DB creds, `--network none`, cgroup caps, PyPI wheels only
-   (`_sandbox_script.py::stage_deps`). The script reads existing blocks
-   through the per-run read-only MCP socket (`_sandbox_read_mcp.py::spawn_read_mcp`).
-3. **The script never writes the DB.** It writes `/work/out/manifest.json`
-   plus one geometry file per block. Trusted service code validates and
-   imports (§Import boundary) into the linked design as blocks carrying
-   provenance. The sandbox ends at `/work/out`; the importer is the trust
-   boundary.
-4. **Replace, not clear.** A run replaces the blocks it made last time,
-   keyed `(workspace, block name)`; blocks the new manifest omits are
-   retired through the soft-delete trail (`store.retire_ref`/`restore_ref`,
-   `src/precis/store/_refs_ops.py`; the se rows already carry `retired_at`,
-   `precis_se/persist.py::save_tree`). An empty manifest = clear, undoable.
+1. **The design is its head plus recorded versions** (R1, R2). An agent
+   changes it with exec blocks (R3) in a forked warm worker (R4); each
+   keep is a version, a `design_revisions` row plus a `design_checkpoints`
+   snapshot. There is no per-design code folder, host git repo or
+   `main.py`; the snapshot carries intent (generator + args, constraints,
+   `recipe.json`). A design fork is a copy of the snapshot.
+2. **The job lane runs what does not fit a block.** `search()`, relax,
+   place/route and any block that hits the wall run as `sandbox_run
+   mode:script` on pollux or spark (W1: castor stays LLM-only) — never a
+   Mac, never melchior (`sandbox_run.py::_sandbox_hosts`): the same code
+   under the same namespace, staged as `code_ref` folders are today
+   (`executors/_sandbox_inputs.py::stage_code`). No DB creds, `--network
+   none`, cgroup caps, PyPI wheels only (`_sandbox_script.py::stage_deps`);
+   existing blocks are read through the per-run read-only MCP socket
+   (`_sandbox_read_mcp.py::spawn_read_mcp`). The agent never enters the
+   container (v1; agent-in-container is the `mode:build` lane, gr329258
+   closed but the socket bridge is unbuilt). Lane results commit through
+   `commit` like any block (§Commit).
+3. **Blocks never write the DB.** A block, in the worker or on the lane,
+   produces a snapshot (lane: `/work/out`, the harvest). The trusted side
+   validates it and `commit`s it (R2a, §Commit); the sandbox ends at the
+   snapshot, `commit` is the trust boundary. The worker has no database
+   handle.
+4. **Replace, not clear.** `commit` diffs the snapshot against head,
+   keyed by block name: blocks the snapshot omits are retired through
+   the soft-delete trail (`store.retire_ref`/`restore_ref`,
+   `src/precis/store/_refs_ops.py`; the se rows already carry
+   `retired_at`, `precis_se/persist.py::save_tree`). An empty snapshot =
+   clear, undoable.
 5. **No start-over.** se keeps storage, views, `validate`, `drc`, `measure`,
    renders, relax dispatch, catalogue. The generators become the importable
    core library (§Packaging); the construction-op surface shrinks on a
    timeline (§MCP surface).
-6. **Relax is a service, cached.** Scripts never relax (amended
+6. **Relax is a service, cached.** Blocks never relax (amended
    2026-10-29 for a cached quick collapse check only —
    [molecular-workspace-code](molecular-workspace-code.md) §Collapse
-   check; the service relax stays the record). A block's manifest
-   entry declares `relax: {method, constraints}`; the importer dispatches
-   the existing compute path and links the relaxed variant `derived-from`
-   its seed. Lookups are keyed `(function, version, params sha, method)`
-   so a script fetches "relaxed `prism(cccRcccRcccR, 4, 6)`, GFN2" instead
-   of recomputing (§Relax).
+   check; the service relax stays the record). A block declares
+   `relax: {method, constraints}`; commit dispatches the existing compute
+   path and links the relaxed variant `derived-from` its seed. Lookups
+   are keyed `(function, version, params sha, method)` so a block fetches
+   "relaxed `prism(cccRcccRcccR, 4, 6)`, GFN2" instead of recomputing
+   (§Relax).
 7. **Offline is a design property.** The `precis-geom` wheel is DB-free
-   (§Packaging; the import-graph test). A script builds, evaluates and
-   optimises with no DB and no se interaction — "a digital twin of the
-   twin" (Reto, 2026-10-22). Only the final manifest imports, and the
-   server re-checks it on import with the same code
+   (§Packaging; the import-graph test). A block or lane job builds,
+   evaluates and optimises with no DB handle — "a digital twin of the
+   twin" (Reto, 2026-10-22). Only the snapshot commits, and the server
+   re-checks it with the same code
    ([se-native-fields](se-native-fields.md) §Server-side re-check).
-   Inputs that live in the DB (process limits, materials) are staged as
-   files (`/work/materials.json`, `params.json`) or passed as params, so
-   the same script runs in CI and on a laptop.
+   Inputs that live in the DB (process limits, materials) reach a block
+   through `precis.*` (R3a) and a lane job as staged files
+   (`/work/materials.json`, `params.json`) or params, so the same
+   library code runs in CI and on a laptop.
 
 Seam flavour, H side, cell lists, pitch: plain Python arguments.
 
 ## The loop, as the agent sees it
 
+The agent execs one small block against head (R3), reads the diff,
+inspects, and fixes forward or reverts:
+
 ```
-put(kind='workspace', id='hcol', args={'design': 'se:hcol-array-1'})
-edit(kind='workspace', id='hcol/main.py', mode='replace', text='...')
-put(kind='workspace', id='hcol', mode='run', args={'params': {'R': 4, 'P': 6}})
-   → job id; the result inline when it finishes within wait_s (default 30)
+put(kind='se', id='hcol-array-1', mode='exec', text='<block>')
+   → prints + entity diff + new version  (default keep:'auto': commit if clean)
 get(kind='se', id='hcol-array-1', view='validate')      # inspect in MCP
 get(kind='se', id='hcol-array-1', view='clearance', args={'a': 'p', 'b': 'guest'})
+put(kind='se', id='hcol-array-1', mode='exec', text='<block>', args={'keep': 'candidate'})
+   → echo with a candidate id; get(..., view='validate', args={'version': <candidate>});
+     then put(..., mode='keep') or mode='revert'
 ```
 
-`main.py` is the entry: it reads `/work/params.json`, builds with the core
-library and writes `out/`. A `precis_ws` helper (staged like
-`/work/precis_client.py`) does the boilerplate:
+A block builds with the design library, reads the design as `d` and
+other kinds through the `precis` proxy (R3a):
 
 ```python
-from precis_ws import out, params, blocks
 from hexfold.sheetnet import prism
 import precis_geom.assembly as pga
-P = params()
-p = prism(seams="cccRcccRcccR", rows=P["R"], periods=P["P"], junction="sp3-z")
-out.block("p", p, ports=p.rims(), relax={"method": "gfn2", "periodic": True})
-guest = blocks.get("guests#c60")          # read MCP, existing block
-out.instance("guest", template="guests#c60", parent="p", pose="[0 0 2] nm")
+p = prism(seams="cccRcccRcccR", rows=4, periods=6, junction="sp3-z")
 pair = pga.assembly("pair", children=[p, pga.mirror(p, plane="yz")])
-out.block("pair", pga.tile(pair, n=3, pitch="[0 0 1.2] nm"))
+tiled = pga.tile(pair, n=3, pitch="[0 0 1.2] nm")
 ```
 
+(The `d` surface that adds `tiled` as a block is the slice-1 builder's.)
 Core modules import under short stable aliases — `pg` for `precis_geom`,
 `pga` for `precis_geom.assembly` — so examples, traces and skill text
 spend no tokens on dotted paths (`pga.tile(...)` in a frame line).
 
-**Build/search convention** (Reto, 2026-10-22). A script that searches
+**Build/search convention** (Reto, 2026-10-22). A generator that searches
 splits into `build(recipe)` — pure, deterministic — and `search()`,
 which edits the recipe, builds, evaluates, accepts or rejects and
-returns the best recipe. `recipe.json` is the full recipe (every input
-`build` needs: dimensions, ports, features, material/process refs,
-units), stored with the run beside the code at `script_sha`, the built
-blocks and the search summary (seed, iterations, cost curve, best
-score, parent recipe hash — recipes form a lineage chain). `uv run
-main.py` builds from `recipe.json`; `uv run main.py search` warm-starts
-from it by default (`--fresh` for the base design). Rebuild, import
-re-check, `regenerate` and the frozen-unit cache call `build(recipe)`,
-never `search`; a search reproduces with its seed within one toolkit
-version only. `build(recipe)` runs as a step stack with a
+returns the best recipe (a lane job, not a block). `recipe.json` is the
+full recipe (every input `build` needs: dimensions, ports, features,
+material/process refs, units), stored in the version's snapshot beside
+the built blocks and the search summary (seed, iterations, cost curve,
+best score, parent recipe hash — recipes form a lineage chain). A
+search job warm-starts from the recipe in head by default. Rebuild,
+commit re-check, `regenerate` and the frozen-unit cache call
+`build(recipe)`, never `search`; a search reproduces with its seed
+within one toolkit version only. `build(recipe)` runs as a step stack with a
 high-water-mark cache (Reto 2026-10-23; se-flow-kernel slice 4b
 §Build-step stack cache): a recipe edit rebuilds only the steps whose
-key changed, undo is a cache hit, the cache lives in the container.
+key changed, undo is a cache hit, the cache lives in the worker (R5) or
+the lane container.
 Worked example: se-flow-kernel slice 4b `chamber-anneal`;
-a script that fits a part to existing blocks: se-native-fields slice 2
+a generator that fits a part to existing blocks: se-native-fields slice 2
 `bracket`.
 
 **Design context, staged** (Reto, 2026-10-22: a recipe references
-ports by name, never coordinates). The server writes
-`/work/in/context.json` at `run` for every block the recipe's `context`
-names (`{design, version, anchor_ports, payload_ports, keepout_blocks}`):
+ports by name, never coordinates). In a block the design is `d` and
+other designs' ports come through `precis.get` (R3a). For a lane job the
+server writes `/work/in/context.json` at job start for every block the
+recipe's `context` names (`{design, version, anchor_ports, payload_ports, keepout_blocks}`):
 per block, its ports in the world frame (pose, direction, role,
 annotations such as `{thread: 'M5x0.8', depth}`), its shape as cad JSON
 (the same format as the `blocks/<name>.cad.json` outputs) and mass
@@ -147,122 +346,96 @@ dependent block stale and a plain rebuild follows the port — `search`
 only when the limits then fail. Anything else goes through the read
 MCP. Helper `pga.find_holes(block)` proposes fastener ports from the
 cylindrical cuts in a block's cad CSG tree (axis, diameter, depth), for
-blocks that have holes but no ports. `precis_ws.out.connect` already
-writes the manifest's `connects` (§Import boundary), so a fitted part
-emits its own connects.
+blocks that have holes but no ports. `out.connect` (the library's
+snapshot writer) records the snapshot's `connects` (§Commit), so a
+fitted part emits its own connects.
 
-Loop latency target: < ~10 s for small structures. Budget: claim tick ≤ 2 s
-(the `job_claude_docker` lane polls on its own interval), warm venv 0–1 s
-(a pre-built venv per lock sha, §Packaging), build 1–5 s, import 1–2 s.
-Staging a new lock is the existing async stage job (gr496426) and happens
-once per dependency set.
+Loop latency target: < ~10 s for small structures. An exec block on a
+warm worker returns in < 2 s wall (slice 1; fork 1–3 ms). Lane budget:
+claim tick ≤ 2 s (the `job_claude_docker` lane polls on its own
+interval), pre-built venv 0–1 s (lane-internal, §Packaging), build 1–5 s,
+commit 1–2 s. Staging a new dependency set is the existing async stage
+job (gr496426), once per set.
 
-## Import boundary (trusted side)
+## Commit (trusted side)
 
-`src/precis_se/workspace_import.py` (new; pure over the harvested tree,
-store access only through the existing persist path):
+`src/precis_se/workspace_import.py` (landed as the slice-0 importer; its
+role is now `commit`, R2a: pure over the snapshot, store access only
+through the existing persist path). Everything below runs before a head
+write: under `keep:'auto'` before the commit, under `keep:'candidate'`
+before the candidate is offered (R3). Elsewhere in this spec "the
+importer" means this code.
 
-- **Manifest** `out/manifest.json`: `{schema: 1, blocks: [{name, file,
+- **Snapshot** (the per-scale form of R1: `manifest.json` +
+  artifacts + `trace.json`): `{schema: 1, blocks: [{name, file,
   scale: 'atomic'|'macro', ports?, relax?, desc?, frame?}], instances: [...],
-  connects: [...], notes?}`. `additionalProperties: false`; a bad manifest
-  is the run's failure with `next=` naming the key. `out/trace.json`
-  beside it is the run's construction trace (§Construction traces);
-  a missing trace imports with `trace.missing` INFO, never a refusal.
+  connects: [...], notes?}`. `additionalProperties: false`; a bad snapshot
+  is the block's failure with `next=` naming the key. `trace.json`
+  beside it is the construction trace (§Construction traces);
+  a missing trace commits with `trace.missing` INFO, never a refusal.
 - **Geometry files.** Atomic: `blocks/<name>.extxyz` (ASE is a core dep;
   `precis.structure` already exports extXYZ, the importer adds the reader
   beside `handlers/structure.py::_put_cif`). Macro: `blocks/<name>.cad.json`
   — the `precis.cad` graph (`precis/cad/graph.py`), the same object the
-  DSL parses to, so a script may also emit the DSL string. Meshes (STL/3MF)
+  DSL parses to, so a block may also emit the DSL string. Meshes (STL/3MF)
   are not accepted in v1: an imported mesh has no CSG distance field, so
   `relate`, `mold` and printability go blind.
-- **Caps**, refused before any write: atoms per block, blocks per run,
-  bytes per file, total `out/` bytes (the harvest cap, `_sandbox_harvest.py`).
-- **Writes**, inside one `tree_mutation`: atomic → structure ref +
-  `add_block` + `bind_structure` (the op `generate.py::finish_generate`
-  already emits, `generate.py:1179`); macro → cad design + `add_block` +
-  `set_binding(kind='cad')`; instances and connects as the ordinary ops.
-  Every block's `meta.generated = {generator: 'workspace', workspace,
-  run_job, script_sha, lock_sha, image_digest, params, requested_by}`
-  (`generate.py::generated_record` gains the key set); `regenerate` on a
-  workspace block means "re-run the workspace at that script sha".
-- **Replace.** Blocks of this workspace absent from the manifest: retire
+- **Caps**, refused before any write: atoms per block, blocks per
+  snapshot, bytes per file, total snapshot bytes (the harvest cap,
+  `_sandbox_harvest.py`); R4's entity-count and blob-size caps.
+- **Writes**, inside one `tree_mutation` (one transaction, R2a): atomic →
+  structure ref + `add_block` + `bind_structure` (the op
+  `generate.py::finish_generate` already emits, `generate.py:1179`);
+  macro → cad design + `add_block` + `set_binding(kind='cad')`; instances
+  and connects as the ordinary ops. Every block's `meta.generated =
+  {generator: 'workspace', version, block index, anchors, params,
+  requested_by}` (`generate.py::generated_record` gains the key set; R8:
+  no `script_sha`/`lock_sha`; a lane run adds its `run_job` and
+  `image_digest`); `regenerate` on such a block means `build(recipe)`
+  from the recorded recipe at the pinned `precis-geom` version.
+- **Replace.** Blocks absent from the snapshot: retire
   (block rows via `save_tree`, the structure ref via `retire_ref`); the
-  run echo lists them with the `restore` call. Same name present: the new
+  commit echo lists them with the `restore` call. Same name present: the new
   block takes over the name, ports and connects re-resolve, a port that
   vanished is `port.missing` in the echo, not a silent drop.
-- **Targets.** `args.target`: `'design'` (default) or `'fork'` — a copy of
-  the linked design under `<slug>--<run>` (`persist.tree_to_json` →
-  `tree_from_json`), linked `derived-from`; variants compare through the
-  ordinary views and are promoted by the agent with `instance_block`
-  (cross-design templates, `blocktree.types.parse_template_ref`) or by
-  re-running against `'design'`.
-- **Identity.** `requested_by` is the S10 `caller()` of the `run` call
+- **Targets.** A block or lane job may target a scratch fork of the design
+  instead of head: a copy of the design under `<slug>--<n>`
+  (`persist.tree_to_json` → `tree_from_json`), linked `derived-from`;
+  variants compare through the ordinary views and are promoted by the
+  agent with `instance_block` (cross-design templates,
+  `blocktree.types.parse_template_ref`) or by re-running the block against
+  the original design.
+- **Identity.** `requested_by` is the S10 `caller()` of the `exec` call
   (`multi-user-overhaul.md` §S10: credential id for launched agents,
   `agent_id` for stamped subagents); until S10 lands, the connection
-  principal. It is stored on the job and in `generated`, so a block says
-  which agent, which workspace, which script made it.
+  principal. It is stored in `generated` (and on the job for a lane run),
+  so a block says which agent made it, in which version and block.
 
 ## Code inside the design
 
-Reto, 2026-10-22: the code and its uv environment are part of the se
-design they generated — an se design is self-contained and regenerable
-anywhere with `uv run`, not only referenced by sha.
+The design carries its snapshot (R1), not code. There is no per-design
+code folder, no host git repo, no `script_sha`/`lock_sha` on blocks, and
+no `uv run main.py` to regenerate from; the snapshot holds the intent
+(generator + args in `recipe.json`) and `regenerate` is `build(recipe)`
+at the pinned `precis-geom` version. Provenance on a block is
+(version, block index, code anchors) (R8). Export (`persist.tree_to_json`)
+carries the snapshot and its recorded versions plus the pinned
+`precis-geom` (and promoted-module) wheels, so `build(recipe)` runs
+offline through the DB-free library (the 2026-10-22 Export ruling,
+confirmed 2026-11-08).
+A design fork copies the snapshot; two designs never share state.
+Reto's 2026-10-22 aim, a design self-contained and regenerable anywhere,
+is met by the snapshot instead of by code.
 
-- **Storage.** The workspace folder ref (`main.py`, helpers,
-  `pyproject.toml`, `uv.lock`, `README.md`) is linked `part-of` the se
-  design (the existing `part-of`/`contains` pair, `precis-relations`);
-  `view='block'` and the design card list it. No new attachment kind:
-  the folder is already what `stage_code` stages and the session MCP
-  edits. Each run's import records `script_sha` + `lock_sha` on every
-  block (`generated`), so the design always names the exact file set
-  that made it; the folder's head may be ahead of the last run, and the
-  echo says "2 files edited since run 17".
-- **Self-contained export.** `persist.tree_to_json` gains a `workspaces`
-  section: for each `part-of` folder, the files at the last run's
-  `script_sha`, `uv.lock`, `params.json`, and the `precis-geom` wheel the
-  lock pins (a few MB; `pyproject.toml` gets `[tool.uv.sources]` /
-  `find-links = wheels/` so `uv run main.py` resolves offline except
-  PyPI). Promoted agent-module wheels ride along the same way; OCP-sized
-  deps do not (named, PyPI-resolved). `tree_from_json` restores the
-  folder and relinks it. A design exported this way regenerates on a
-  laptop with `uv run`, and on the cluster with `run`.
-- **Fork.** `target:'fork'` and a design fork copy the folder ref to
-  `<slug>--<run>` (`derived-from` the original workspace, `part-of` the
-  fork) at the forking run's `script_sha`; the fork's host git repo is
-  cloned lazily at its first run. Two designs never share a folder, so
-  an edit in one cannot silently regenerate the other.
+### Code storage (closed)
 
-### Code storage — files in the DB, or git objects in the DB? (discussion, not ruled)
+The 2026-10-22 question, plain files in the DB vs git objects in
+Postgres vs bundles, was a choice among ways to store the script as the
+source. Block text rides its candidate only and is dropped on keep (R2),
+and versions are `design_checkpoints` rows (R2a), so the choice is moot
+and slice 1b is dropped.
 
-Reto, 2026-10-22, on W3: "I side with Fable" (files in the DB as a folder
-`part-of` the design + a host git log — ruled) and "can we have git
-blobs in the DB, or just the files in the DB? I kinda like that." The
-three shapes, concretely:
-
-| | (a) plain files in the DB (ruled baseline) | (b) git objects in Postgres | (c) files in DB + git bundle blobs |
-|---|---|---|---|
-| what is stored | one `folder` ref, one chunk per file, current content only; `script_sha` on blocks points at the host repo | tables `git_objects(sha PK, type, zlib bytes)` and `git_refs(repo, name, sha)`; a run = a commit row; se `design_revisions`/`generated.script_sha` FK to `git_objects.sha`; the DB **is** the repo | (a) plus a `git bundle` blob per run (or per N runs) attached to the run job |
-| dedup across runs / forks | none in the DB (host git dedups on the host only); a fork copies every file | full: identical blobs share one row across runs, forks and workspaces; a fork is one new commit row | bundles repeat shared history unless incremental (`--since`), then restore needs the chain |
-| diff / history cost | no history in the DB; "what changed since run 17" asks the sandbox host; history lost if the host dir dies | `git diff` semantics in SQL: walk two trees, compare blob shas — pure Python over rows or pygit2 with a custom Odb/Refdb backend; cheap, no host | unpack the bundle into a temp repo first (seconds, disk) |
-| integrity | `script_sha` is a string nobody checks; the host repo can be reset (§Risks) | `generated.script_sha` is an FK; a block cannot name a commit the DB lacks; content-addressed rows verify themselves (`sha == sha1(header+bytes)`) | FK to the bundle row only; the sha inside is unchecked unless unpacked |
-| tooling — can a human clone? | no; `tree_to_json` export + `uv run` | yes via export: `git fast-import` stream from the rows, or write loose objects + refs into an empty repo; pygit2 backends make it a live remote if ever wanted; no native `git clone pg://` | yes: `git clone <bundle>` directly, the most human-friendly |
-| backup | rides the nightly dump | rides the nightly dump; rows are immutable so incremental backup is trivial | rides the dump; bundles are opaque blobs, larger |
-| effort | 0 beyond slice 1 | M: migration (2 tables), a writer (`stage_code` → tree + commit rows, ~300 lines of plumbing: hashing, zlib, tree sorting), a reader for `view='source'`/diff, export via fast-import; pygit2 backends optional later | S: `git bundle create` on the host after each run, one blob column |
-
-Recommendation (for discussion): **(b), as slice 1b after slice 1
-lands** — not instead of it. (a) ships the loop; (b) gives the two
-things (a) cannot: a real FK from an se revision to the code that made
-it, and dedup when forks and reruns multiply. The host git repo then
-becomes a cache materialised from the rows (no more two-sources-of-truth
-risk; the host dir can vanish). Write path stays simple: the stager
-already has the file set, hashing it into blob/tree/commit rows is
-deterministic Python (no pygit2 needed to *write*); pygit2's custom
-backends are the read/clone path only if someone wants `git clone`
-against the DB. (c) is cheap but buys the least: humans can clone, the
-DB still cannot check what a block cites. Not for this spec's slices
-0–2; the decision gates slice 1b only.
-
-## Assembly API — one implementation for ops and scripts
+## Assembly API — one implementation for ops and blocks
 
 Reto, 2026-10-22: the programmatic interface includes tile (fused and
 packed), mirror, rotate/translate/transform, and hierarchical assembly
@@ -283,7 +456,7 @@ relative to parent ports/anchors); each records a trace frame.
 DRY rule: the geometry math (pitch expansion, pose composition, port
 alignment, fused-tile seam) lives once in `precis_geom.assembly` (`pga`);
 `precis_se/ops.py` keeps naming, validation and tree bookkeeping and
-calls the library for the numbers. A script and an MCP op on the same
+calls the library for the numbers. A block and an MCP op on the same
 inputs produce the same block (a golden asserts it). Sub-assemblies: an
 `assembly` is a block with children; poses compose through the parent
 chain as today (`blocktree` parents); its own frame is the `assembly`
@@ -293,9 +466,9 @@ subtree. Op-path calls record an `op` frame (`tool_ledger` call id as
 
 ## Relax — one interface, two scales
 
-The script emits a seed plus declared constraints; relax is MCP compute,
-never inside the sandbox; the service returns solved geometry plus
-findings. The manifest entry is the same shape at both scales:
+A block emits a seed plus declared constraints; relax is MCP compute,
+never inside the worker or the sandbox; the service returns solved
+geometry plus findings. The manifest entry is the same shape at both scales:
 
 ```json
 "relax": {"method": "gfn2" | "uff" | "mlip" | "assembly",
@@ -329,7 +502,7 @@ findings are and where each comes from:
 So macro relax v1 is a **check-and-report** service: it runs the existing
 checkers over the imported blocks as one findings list, adds the
 redundancy analysis and RSS, and solves geometry only where formfind
-applies. The script, being code, emits exact poses; a solver that moves
+applies. A block, being code, emits exact poses; a solver that moves
 parts arrives when a case needs it. The result shape is the same object
 at both scales: `{geometry, findings[], method, seed, constraints}`.
 
@@ -519,13 +692,14 @@ not one monolithic script. The relaxed-unit catalogue above is the
 atomic case of one rule; the same rule holds for macro modules.
 
 - **Key.** A frozen unit/module is identified by `(fn, wheel version +
-  sha, params_sha, script_sha, context version)` — the context version
-  is the design version of the blocks `/work/in/context.json` staged
+  sha, params_sha, version + block index, context version)` (R1/R8;
+  was `script_sha`) — the context version
+  is the design version of the blocks the build read as context
   (§The loop), absent for a module that references none; the relaxed atomic variant adds
   `(method, cell, supercell, kspacing)` as today. `relaxed_units` is
   widened to `frozen_units` with a nullable relax half and a `scale`
   column (`atomic` | `macro`); the macro row's `ref` is a cad design
-  (`blocks/<name>.cad.json` at that `script_sha`), the atomic row's a
+  (`blocks/<name>.cad.json` at that version), the atomic row's a
   `pbc` structure ref.
 - **Module = its own workspace/design.** A module is built by its own
   workspace (an agent module or a core example, §Packaging), frozen
@@ -541,7 +715,7 @@ atomic case of one rule; the same rule holds for macro modules.
   root; a miss returns the seed, queues the build (and relax, when
   asked) and the echo says the next run will hit. The assembly then
   `tile`s and `place`s it; co-optimisation covers only what the
-  assembly script owns (placement, interface params) unless the author
+  assembly block owns (placement, interface params) unless the author
   re-opens the module's workspace.
 - **Trace.** The consuming run's trace gets one `unit` frame per
   fetched module whose children are the module's own trace, linked not
@@ -589,7 +763,7 @@ did it place."
 **The object.** A run's **construction trace** is a tree of **frames**.
 A frame is one call that placed or changed geometry: `{key, parent,
 qual, file, line, occ, kind, args, made, touched}`. `kind` is `user`
-(a function in `/work/**.py` — `main.py` and the agent's helpers),
+(a function in block code, an agent module or lane code under `/work/**.py`),
 `core` (a public `precis-geom` function: `sheetnet.strip|pore|place|
 junction|assemble|decorate`, the layouts `prism|cells|...`,
 `precis.cad.graph.Design.prim|merge|subtract|intersect|pattern|instance`,
@@ -605,6 +779,18 @@ also carries `step` (its step key) and `recipe_key` (the recipe path
 that set its params, `holes[3].x`). `made`/`touched` are counts per
 entity type (atoms, bonds, instances, faces, blocks, ports) for the
 frame alone; the subtree sum is derived.
+
+**Provenance under exec blocks (R8).** Atoms and parts created in a
+block carry (version, block index, frame anchors); anchors resolve
+through the code-anchor mechanism (gr595549, `an<N>` handles), since a
+kept block's text is dropped (R2). The worked renderings in this
+section and in §Structure fisheye write a user frame as
+`main.py:30 bundle`, the form slices 2, 2t and 2p landed under the
+script workflow; module and lane frames still read file:line. An
+exec-block frame renders as `v<version> b<block index>` plus the
+code-anchor handle `an<N>` when one exists, never a line number
+(`docs/conventions/code-anchors.md`); an illustration, the builder's
+format.
 
 **Stable key.** `key = sha8(parent.key, qual, line, occ)` — the path of
 call sites from the root. It does not depend on run id, memory address or
@@ -696,7 +882,9 @@ each side — §Frozen units/modules). Surviving small ops (`add_block`, `set_po
 `line`) so "who made it" has one answer at both paths (§Guardrails, one
 way).
 
-**Join with the `python` kind.** Workspace code gets a python-kind root
+**Join with the `python` kind** *(landed under the script workflow;
+provenance now per R8; ruled under R2/R8: the root serves promoted
+modules and lane code, exec blocks resolve through their anchors)*. Workspace code gets a python-kind root
 `ws-<slug>` (beside `main`, `repo`, `wt-<tree>`;
 `handlers/python.py::parse_python_roots` gains a DB-backed root that
 indexes the folder ref at the last run's `script_sha`), so a user frame
@@ -1111,6 +1299,10 @@ rewritten in place, so only structure versions are addressable);
 
 ## Packaging
 
+The `precis-geom` wheel is the library blocks call (the warm worker
+imports it, R4) and the job lane runs. A venv per lock sha is lane
+infrastructure, not an agent-facing mode.
+
 - **Core packages** (maintained, golden-tested, in this repo): `hexfold`
   (the `sheetnet` layer after multicell slice 1 is the atomic API),
   `precis.cad` (dsl, primitives, relate, mold, printability; manifold3d
@@ -1153,13 +1345,13 @@ rewritten in place, so only structure versions are addressable);
   S2 decision), fed by `ws-promote` and the release build. No server:
   `pip download --find-links` already reads it; `deps` may name
   `precis-geom==<ver>` and promoted modules. PyPI stays the only network.
-- **Warm venv**: the stage job builds `/var/lib/precis-sandbox/venvs/<lock sha>/`
+- **Warm venv** (lane only): the stage job builds `/var/lib/precis-sandbox/venvs/<lock sha>/`
   once; `build_script_argv` mounts it read-only instead of `uv venv` per
-  run (`claude_docker.py::build_script_argv`).
+  job (`claude_docker.py::build_script_argv`). The exec worker needs none.
 - **Scales.** Atomic: hexfold, RDKit, ASE. Macro: `precis.cad` is the
   core; build123d or CadQuery are allowed agent-module deps (PyPI wheels,
   OCP ~200 MB, inside the 500 MB wheel cap) but the importer accepts only
-  the `precis.cad` graph, so a build123d script converts at the end — the
+  the `precis.cad` graph, so a build123d module converts at the end — the
   conversion helper is an agent module until someone needs it in core.
   **pcb does not belong** in v1: boards have their own placer, netlist
   and round trip; a pcb block enters se through `set_binding(kind='pcb')`
@@ -1172,79 +1364,87 @@ Ops that **stay** (small edits, placement, declarations): `add_block`,
 `update_port`, `instance_block`, `array_block`, `connect`/`disconnect`, `set_joint`,
 `set_load`, measures, pockets, `set_mode`, `set_binding`, bom, notes,
 `declare_*`, states, chain ops, `formfind`, `set_envelope` with a DSL
-string (a one-line macro edit is not a script).
+string (a one-line macro edit is not a block).
 
-Ops that **move to Python** (construction): `generate` (every
+Ops that **move to exec blocks** (construction): `generate` (every
 `hexfold_scene` feature type, `typed_features._BUILDERS`), `join`
 (`precis_se/atomic/join.py`), `terminate`, and the never-built `stamp`,
 `cap`, `decorate` ops of the modules spec. Ruled W5 (Reto, 2026-10-22):
 they are legacy — "revision, uv and code will displace it; no real users,
 all is dev for now". No 30-day clock, no thin-wrapper phase: the slice
-that makes workspace `run` usable (slice 1) removes them in the same
-change — the op refuses with `next=` naming the workspace path (the
+that makes `exec` usable (slice 1) removes them in the same
+change — the op refuses with `next=` naming `exec` (the
 `seam.sp2_retired` pattern) and their skill text goes with them; stored
 blocks keep their coordinates and `regenerate` keeps working through the
 core wheel (same functions). Until slice 1 lands they stay as-is (nothing
 else to build with). Pose, connect and the small edits stay.
-**Amended (Reto 2026-10-29):** the removal no longer waits for the
-sandbox lane — it ships once [molecular-workspace-code](molecular-workspace-code.md)
-slices 1, 2 and 5 cover what the ops build, with `next=` naming the
-`import_workspace` path (script on the host, tar upload).
+**Amended (Reto 2026-10-29), then 2026-11-08:** the removal never waits
+for the sandbox lane; it ships with slice 1 and `next=` names `exec`.
+The 2026-10-29 `next=` target `import_workspace` (script on the host, tar
+upload) is the hand-run import step, retired as a surface; the
+[molecular-workspace-code](molecular-workspace-code.md) slices 1, 2 and 5
+that cover what the ops build are library code the blocks call.
 
-**Script-made rows are read-only to construction ops** (Reto,
-2026-10-22). A surviving op that would change geometry a workspace run
-produced (`set_pose`, `add_port`/`remove_port`/`update_port`, `set_envelope`,
-`array_block`, `instance_block` on a block whose `generated.generator ==
-'workspace'`, or any op on its ports/pockets/measures the manifest
-owns) refuses with `next=` naming the workspace param or script edit
-plus `run` — the next run would overwrite the edit. Declarations the
-manifest does not own (`set_desc`, notes, `declare_*`, `user` measures,
-states) stay allowed; `remove_block` is allowed and the echo says the
-next run restores it unless the manifest drops it.
+**Block-made rows are ordinary rows** (reverses the 2026-10-22
+"script-made rows are read-only" ruling). Head is the source (R1) and
+nothing regenerates over an edit, so every surviving op may change a
+block-made row (`set_pose`, `add_port`/`remove_port`/`update_port`,
+`set_envelope`, `array_block`, `instance_block`, `remove_block`, its
+pockets and measures); the next block sees the edit. A row's
+`generated` provenance (R8) says which version and block made it, not who
+owns it. The verbs that change head are `exec`, `keep` and `revert`;
+`run` is gone.
 
 Inspection stays and grows in MCP: `validate`, `drc`, `clearance`, `sites`,
 `catalogue`, `mold`, `stability`, `freedom`, renders, `view='block'` now
-rendering the workspace provenance with the one `run` call that reproduces
-the block, `view='trace'` with the `frame:` selector (§Construction
+rendering the provenance (version, block index, anchors; R8),
+`view='trace'` with the `frame:` selector (§Construction
 traces), and the atom/frame/region eye on `extent=` (§Structure
-fisheye).
+fisheye). The peek views read a candidate by id (R3).
 
 ## Guardrails, checked
 
 - DRY: one builder layer (`sheetnet`), one op table, one relax interface,
-  one import path; definitions are functions, examples are tests.
-- Tools, not black boxes: every block is a script sha + params anyone can
-  re-run; the echo names the reproducing call.
+  one write path (`commit`, R2a); definitions are functions, examples are
+  tests.
+- Tools, not black boxes: every block records (version, block index,
+  anchors) and its snapshot carries the intent (R1, R8); the echo names
+  the version.
 - Retire broken things: `prism-k3-120-z` refusal stands; `generate`/`join`/
   `terminate` retire with slice 1 (W5).
-- Secrets: the container has none; the read MCP token rides the child's
-  env (`_sandbox_read_mcp.py::build_serve_env`); the agent sees a job id.
-- One way: a structure is made by a script or by a surviving small op,
-  never by both for the same block (`generated.generator` says which).
-- Reproducibility: `regenerate` = re-run at `script_sha` with `params`
-  against `lock_sha` and `image_digest`.
+- Secrets: the exec child holds no token, socket or DB handle (R3a, R4);
+  a lane container has none either, its read MCP token rides the child's
+  env (`_sandbox_read_mcp.py::build_serve_env`) and the agent sees a job id.
+- One way: a structure is made by an exec block (direct construction ops
+  are one-line blocks under the hood, R3), a lane job, or a surviving
+  small op, all writing head through `commit` (`generated.generator`
+  says which).
+- Reproducibility: `regenerate` = `build(recipe)` from the recorded recipe
+  at the pinned `precis-geom` version (R2: the recorded version is the
+  artifact).
 
 ## Slices (smallest useful first)
 
 | # | delivers | extends | acceptance | size |
 |---|---|---|---|---|
 | 0 | **Importer + goldens, no container.** ·landed 2026-10-22 (sw-s0)· `precis_se/workspace_import.py`, manifest schema, extXYZ reader (with the `maker` per-atom column), cad graph import (`frame` on instances), `trace.json` reader stored once on the run, replace/retire semantics; `tests/workspaces/` with a fixture tree and golden JSON (counts, coordinate SHA as `tests/test_hexfold/data/goldens`, findings, trace key set) | `atomic/generate.py::finish_generate` (bind path), `persist.save_tree`, `handlers/structure.py` readers | Importing the fixture into a dev design makes blocks with full `generated` (incl. `trace`); a second import with one block dropped retires it and `restore_ref` brings it back; a manifest with an unknown key refuses naming it; a 25k-frame trace imports with `trace.truncated`; goldens pass on main | M, 1 build |
-| 1 | **Workspace kind + `run`.** `folder`-backed workspace ref linked `part-of` its design, with `edit` on files; `sandbox_run` `params.workspace`; staged files committed to the host git; import on exit; `requested_by` from `caller()` when present; inline result within `wait_s`; fork copies the folder; `tree_to_json` embeds files + lock + wheel; **removes `generate`, `join`, `terminate` (refusal naming the workspace path) and their skill sections (W5)** | `sandbox_run.PARAMS_SCHEMA`/`semantic_rejection`, `_sandbox_inputs.stage_code`, `_sandbox_harvest`, `claude_docker` terminate path, `persist.tree_to_json`/`tree_from_json` | The loop above runs end to end on the dev lane; the block's `generated.script_sha` equals the host repo's HEAD; two runs on one workspace serialize (the agent-workspace-containers lease); an exported design restores with its folder and `uv run main.py` rebuilds the block byte-identical on a laptop; `generate` refuses with the workspace `next=` and no skill names it | L, 2–3 builds; needs sandbox slice 4 (lane live) |
-| 1b | **Git objects in Postgres** (ruled 2026-10-22, §Code storage option b). `git_objects`/`git_refs` migration, stager writes blob/tree/commit rows, `generated.script_sha` FK, `view='source'`/diff over rows, export via `git fast-import`; host repo becomes a materialised cache | `_sandbox_inputs.stage_code`, `persist`, `tree_to_json` | Two runs sharing files share blob rows; a block cannot cite a commit sha the DB lacks (FK); `fast-import` export clones and `uv run` rebuilds byte-identical | M, 1–2 builds; after 1 |
-| 2 | **`precis-geom` wheel, index dir, warm venv, trace capture.** ·landed 2026-10-23 (sw-s2)· `packaging/geom/` (core packages + `precis_flow` + the DB-free `precis_geom.flow` adapter; `precis_fields` when built), import-graph test (no DB import, physics modules included), `scripts/ws-promote` (build only), venv per lock sha; `precis_geom.trace` (`@traced`, user-frame walk, `occ` counters, sibling collapse) on every `sheetnet` and `cad.graph` public function, `precis_ws.out` writing `trace.json` | `_sandbox_script.stage_deps`, `build_script_argv`, release scripts; `sheetnet.py`, `cad/graph.py` | Container imports `hexfold.sheetnet` and `precis.cad` offline; a small prism run completes in < 10 s wall from `run` to echo on a warm lane (measured: trace ~30 µs per traced call — 109 % on the thin strip+pore fixture where a primitive call costs ~60 µs, amortised under 5 % on real builds whose junction/assemble calls run ms-scale; per-call bound asserted in tests/workspaces/test_geom_trace.py::test_overhead_budget; **<10 s run→echo on a warm lane owed — the sandbox lane is not live**); two runs of an unchanged script give identical trace keys; three `junction` calls in one loop are `#0..#2`; a fixture with 2k same-site calls collapses past 64 | M, 2 builds |
-| 2t | **Trace views + selector.** ·landed 2026-10-23 (sw-2t)· `view='trace'` (atom→trace, frame→placed, set→LCA + coverage, touched, run diff); `frame:<key>` in the regions family; `frame` column on `validate`/`drc` reports (nearest user frame) | `precis_se/handler.py` views, the region-selector parser (`precis-se-regions-help`), `atomic/validate.py` report render | A seam atom's trace names `junction#k` and a `main.py:<line>`; LCA of one strip's atoms is its `strip` frame at 100 %, of one atom from each of two strips the layout frame; a pocket over `frame:<key>` holds exactly the frame's `made` count; a finding row carries the script line; token count of a 6-frame trace ≤ 150 | M, 1 build; after 2, before 3 so the proof records trace cost |
-| 2p | **Python-kind join.** ·landed 2026-10-24 (sw-2p)· `ws-<slug>` DB-backed root, python id on user-frame trace lines, `view='placed'` with `frame:qual=` selector; the **Placed** group in the python eye's ring 1 and the **made-by** line on block eyes (§Structure fisheye) | `handlers/python.py` roots, `_python_render.py`, `_python_eye.py::_ring1_symbol`, `view='trace'`, the se `view='block'` render | `get(kind='python', id='ws-hcol::main.bundle', view='placed')` lists the design, 3 occurrences and counts; the selector resolves to the same atoms as the three frames' union; an unrun workspace has no root; `extent='fisheye+1hop'` on that id shows `Placed:` with the same three numbers and the `frame:qual=` selector, and on `main::…` shows none; the block eye's `made-by:` id resolves with `get(kind='python')` | S–M, 1 build; after 2t |
-| 2e | **Structure fisheye: navigating atoms** (§Structure fisheye). `~<focus>` handles (atom, `frame:`, any selector) on `se` and `structure` eyes; rungs kwd→+2hop; the bonded shell (BFS, seam-crossing, graduated 1 / 2–3 / 4–6 / beyond); the `Up:`/`Down:` ladder; `structure_pi` migration + perception at save + `pi:` selector + `pi.perception_differs`; the relax block and `relax mix:` line (level/frozen rows fill in after 4a); `+1hop` block ring; `/eye/` handle forms; viewer `?focus=` pointer | `_eye.py::eye_handle` (`~` focus past the digit-only chunk selector), `eye_render.py`, the se handler `eye` override and `handlers/structure.py`, `datums.py::parse_selector` (`pi:`), `structure/probe.py`, `persist.save_tree`/structure save path, `routes/eye.py::linkify_handles` | On the (4, 6) A2 block: `~p#aC12` at `fisheye` lists 3 hop-1 bonds with order and Å, hop-2/3 groups and counts to hop 6, an `Up:` ladder ending in `junction#k ← … main.py:<line>`, rings `6,6,6` and one π system whose selector resolves to the system's atom count; a seam atom two bonds from a frozen unit atom renders the `relax mix:` line and the WARN; `~frame:<key>` at `fisheye` shows children and the boundary shell, never an atom list; a `from_smiles` benzene block reports one aromatic 6-ring and RDKit cross-check agrees (no finding); a pyrrole block records `pi.perception_differs` or agrees, either way stated; `pi_key` changes when a bond order changes with geometry fixed and `structure_sha` does not; every rung's token count ≤ its budget on the A2 atom, measured as 2t's; `/eye/hcol-array-1~p#aC12` links every neighbour handle; `+recall` refuses with `next=` | M, 1–2 builds; after 2t and 2p; relax rows complete after 4a |
+| 1 | **Exec primitive + versions + keep/revert** (Amendment 2026-11-08; replaces "Workspace kind + `run`"). The forked warm worker with `precis_geom` (R4), the AST lint in front of the fork and the audit hook inside the child (R4a); `mode='exec'` on the se handler with `keep:'auto'` (default) / `'candidate'`, list-of-blocks batching, `keep` / `revert` on a candidate (R3); the `precis` proxy (R3a); the single write path `commit` with the candidate as one `design_checkpoints` row (R2a); a version (`design_revisions` + `design_checkpoints`) recorded on every keep (R2); loaders from the stored snapshot to the in-memory design objects (the inverse of the manifest writer — the one new piece of library code); candidate-scoped views; resource caps and the length nudge (R6); block provenance (R8); **removes `generate`, `join`, `terminate` as construction ops (they run as one-line blocks; W5's refusals stay with `next=` naming `exec`) and their skill sections**. Stepping back past a keep (`revert-to-N`, ring, listing versions) is out of scope here, its own later item (gr598376) | `precis_se/handler.py` put modes, `precis_se/persist.py` (`save_tree`/`tree_from_json`), `workspace_import.py` (renamed role: it is `commit`, R2a), `precis_geom` (loaders, `out`), `_sandbox_harvest` caps as the validator's | A block that adds one prism to the (4, 6) fixture returns prints + a diff naming the new block within 2 s wall on a warm worker; the default `keep:'auto'` commits a clean block in one call and returns diff + new version; `keep:'candidate'` leaves a candidate, `view='validate'` with `args={'version': <candidate>}` reports it and head is unchanged; `keep` makes it head through `commit` (the slice-0 importer's replace/retire path); `revert` deletes the checkpoint row and leaves no other row; the head-hash test (R2a): hash every head row of the design before a block that adds, moves and deletes things, the hash is unchanged after exec in candidate mode and after `revert`; a block that raises writes nothing and returns the traceback; a list of three blocks where the third raises leaves two versions and no candidate; a block calling `precis.get` on a component returns its footprint; a block that imports `os` is refused by the lint before any fork (no worker involvement); a block that opens a socket fails at the audit hook; a block that sleeps past the wall is killed and the echo names the lane; a version is recorded on every keep; two concurrent blocks on one design serialize or the second refuses naming the candidate; the worker's env carries no `PRECIS_*` variable; `generate`/`join`/`terminate` run as one-line blocks and W5's refusals stay | L, 2–3 builds; after slice 0 (landed); needs no sandbox lane |
+| ~~1b~~ | **Dropped 2026-11-08 (R1).** Git objects in Postgres: no script history exists to store; versions are full snapshots recorded on keep | — | — | — |
+| 1g | **Graduation path** (gr596135, R7). `graduate:block` gripe carrying a kept block verbatim; the exec echo pre-fills the gripe call after a long (~80 lines) or recurring kept block; surface-review clusters kept blocks and files the gripe on recurrence; skill teaches it | exec echo (slice 1), surface-review, `ws-promote` (slice 6) | A kept block past the nudge threshold echoes a pre-filled `put(kind='gripe', ...)` carrying the block text; two kept blocks with the same normalised body in a window yield one `graduate:block` gripe from surface-review; promotion via `ws-promote` retires the recurrence | S, 1 build; after 1, with 6 |
+| 2 | **`precis-geom` wheel, index dir, warm venv, trace capture.** ·landed 2026-10-23 (sw-s2)· *(landed under the script workflow; provenance now per R8)* `packaging/geom/` (core packages + `precis_flow` + the DB-free `precis_geom.flow` adapter; `precis_fields` when built), import-graph test (no DB import, physics modules included), `scripts/ws-promote` (build only), venv per lock sha; `precis_geom.trace` (`@traced`, user-frame walk, `occ` counters, sibling collapse) on every `sheetnet` and `cad.graph` public function, `precis_ws.out` writing `trace.json` | `_sandbox_script.stage_deps`, `build_script_argv`, release scripts; `sheetnet.py`, `cad/graph.py` | Container imports `hexfold.sheetnet` and `precis.cad` offline; a small prism run completes in < 10 s wall from `run` to echo on a warm lane (measured: trace ~30 µs per traced call — 109 % on the thin strip+pore fixture where a primitive call costs ~60 µs, amortised under 5 % on real builds whose junction/assemble calls run ms-scale; per-call bound asserted in tests/workspaces/test_geom_trace.py::test_overhead_budget; **<10 s run→echo on a warm lane owed — the sandbox lane is not live**); two runs of an unchanged script give identical trace keys; three `junction` calls in one loop are `#0..#2`; a fixture with 2k same-site calls collapses past 64 | M, 2 builds |
+| 2t | **Trace views + selector.** ·landed 2026-10-23 (sw-2t)· *(landed under the script workflow; provenance now per R8)* `view='trace'` (atom→trace, frame→placed, set→LCA + coverage, touched, run diff); `frame:<key>` in the regions family; `frame` column on `validate`/`drc` reports (nearest user frame) | `precis_se/handler.py` views, the region-selector parser (`precis-se-regions-help`), `atomic/validate.py` report render | A seam atom's trace names `junction#k` and a `main.py:<line>`; LCA of one strip's atoms is its `strip` frame at 100 %, of one atom from each of two strips the layout frame; a pocket over `frame:<key>` holds exactly the frame's `made` count; a finding row carries the script line; token count of a 6-frame trace ≤ 150 | M, 1 build; after 2, before 3 so the proof records trace cost |
+| 2p | **Python-kind join.** ·landed 2026-10-24 (sw-2p)· *(landed under the script workflow; provenance now per R8)* `ws-<slug>` DB-backed root, python id on user-frame trace lines, `view='placed'` with `frame:qual=` selector; the **Placed** group in the python eye's ring 1 and the **made-by** line on block eyes (§Structure fisheye) | `handlers/python.py` roots, `_python_render.py`, `_python_eye.py::_ring1_symbol`, `view='trace'`, the se `view='block'` render | `get(kind='python', id='ws-hcol::main.bundle', view='placed')` lists the design, 3 occurrences and counts; the selector resolves to the same atoms as the three frames' union; an unrun workspace has no root; `extent='fisheye+1hop'` on that id shows `Placed:` with the same three numbers and the `frame:qual=` selector, and on `main::…` shows none; the block eye's `made-by:` id resolves with `get(kind='python')` | S–M, 1 build; after 2t |
+| 2e | **Structure fisheye: navigating atoms** *(landed under the script workflow; provenance now per R8)* (§Structure fisheye). `~<focus>` handles (atom, `frame:`, any selector) on `se` and `structure` eyes; rungs kwd→+2hop; the bonded shell (BFS, seam-crossing, graduated 1 / 2–3 / 4–6 / beyond); the `Up:`/`Down:` ladder; `structure_pi` migration + perception at save + `pi:` selector + `pi.perception_differs`; the relax block and `relax mix:` line (level/frozen rows fill in after 4a); `+1hop` block ring; `/eye/` handle forms; viewer `?focus=` pointer | `_eye.py::eye_handle` (`~` focus past the digit-only chunk selector), `eye_render.py`, the se handler `eye` override and `handlers/structure.py`, `datums.py::parse_selector` (`pi:`), `structure/probe.py`, `persist.save_tree`/structure save path, `routes/eye.py::linkify_handles` | On the (4, 6) A2 block: `~p#aC12` at `fisheye` lists 3 hop-1 bonds with order and Å, hop-2/3 groups and counts to hop 6, an `Up:` ladder ending in `junction#k ← … main.py:<line>`, rings `6,6,6` and one π system whose selector resolves to the system's atom count; a seam atom two bonds from a frozen unit atom renders the `relax mix:` line and the WARN; `~frame:<key>` at `fisheye` shows children and the boundary shell, never an atom list; a `from_smiles` benzene block reports one aromatic 6-ring and RDKit cross-check agrees (no finding); a pyrrole block records `pi.perception_differs` or agrees, either way stated; `pi_key` changes when a bond order changes with geometry fixed and `structure_sha` does not; every rung's token count ≤ its budget on the A2 atom, measured as 2t's; `/eye/hcol-array-1~p#aC12` links every neighbour handle; `+recall` refuses with `next=` | M, 1–2 builds; after 2t and 2p; relax rows complete after 4a |
 | 2r | **Observation rays = multiscale §5.4 `cast_ray` + §5.5 bookmarks, atomic leg** (§Observation rays). `probe_ray` segments wrapped into the §5.4 `Hit` shape with `fields[]`, `length` and `frame`; the atomic evaluator (`structure/probe.py::ray_hits` over `line`: `pass`, `charge`, `pi`, `frame`, `relax`, `region`; coalescing; `step`/`reach`); se dispatch by block binding along one world ray; `add_ray`/`set_ray`/`remove_ray`/`observe_ray` ops, the block-child row and the structure `ray` eye; `view='ray'`/`view='rays'`, diff against a snapshot; `~ray:<name>` eye rungs and the atom eye's `Rays:` lines; manifest `rays:` + `pga.ray`; relax-service re-observe; `/eye/` handle form; viewer `?ray=` pointer; **macro leg** (§Macro leg): event list over `fold.ray_spans`/`material_intervals` with feature + frame handles, port regions, field samples, `pga.ray.bundle`, the four ray kinds, ray rows hold definition + observation digest only (events recomputed on demand), `ray.changed` on rebuild/import recomputing the old list against the previous version, `pga.find_holes` | `cad/probe.py::probe_ray` + `handlers/cad.py` `view='ray'` (extended, not forked), `cad/fold.py`, `structure/probe.py::line`, `precis_se/pockets.py` pattern, `persist.save_tree`, `ops_export.py`, `structure/scene.py::Measure` eyes, `cad/relate.py`, `workspace_import.py`, `hexfold_relax_job.py` write-back, `routes/eye.py` | The cad `view='ray'` output is unchanged for existing callers (`fasten.py` golden); a ray down the (4, 6) A2 axis renders ≤ 600 tokens with `pass` hits whose `d`/`∠` match `view='line'`; a ray through a `from_smiles` benzene fires `pi` enter/leave once each with the ring's selector; a ray across a `join` seam fires one `frame` hit naming `junction#k` and, after 4a, one `relax` hit; without stored charges `charge` is absent from the header and every other hit renders; a mixed cad+structure design concatenates macro segments and atomic hits in `s` order; a ray on a block then `set_pose`d reports the same hits (block frame); `observe_ray` then a relax: `against='last'` lists moved `pass` hits with `Δd` and folds the unchanged; `out.ray` imports as a block child with `made-by:`; the A2 atom's eye lists the axis ray; a `bolt_axis` ray on the bracket fixture renders the §Macro leg example (engagement, stack, screw length) and a `tool_access` bundle on it reports no hits; moving `base.h2` by 1 mm and re-importing yields `ray.changed` on `bolt-a2` with both lists; `pga.find_holes` on a plate with three M5 cuts proposes three fastener ports with the right axes | M, 1–2 builds; after 2e; `charge` complete after slice 4 stores charges; `basin_transitions` with the density field (multiscale §4) |
 | 2a | **Assembly API.** `precis_geom.assembly`: `tile` (packed, fused), `mirror`, `translate`/`rotate`/`transform`, `place` (port-to-port), `assembly`/`instance`; `array_block`'s spec normalisation delegates to `pga.array_spec` (byte-identical stored axes); `instance_block`/`set_pose`/`connect` keep the shared `cad.vec.Transform` pose path `pga.transform`/`place` use — `connect` records an intent edge, no math to share; frames per call; `op` frames on the op path | `precis_se/ops.py`, `blocktree/ops.py`, `cad/vec.py` (improper transforms), `sheetnet.junction` | `array_block` and `tile(fused=False)` on one template give byte-identical trees; `tile(fused=True, n=3)` of a 2-period prism equals the 6-period prism's SHA; `mirror` of a chiral tube flips the chiral index and emits the INFO; a nested `assembly` places through its parent's port and `frame:` on it selects every child atom | M–L, 2 builds; after 2, before 6 |
-| 3 | **Proof: the 12-wall H-column prism both ways.** `cccRcccRcccR` at (4, 6) via `generate` and via a workspace script; record tokens (`tool_ledger` bytes per path), wall time, errors/retries, and SHA equality of the two blocks (the `generate` leg runs at the pre-slice-1 sha or through the core wheel directly, since the op is gone by then) | multicell slice 3 (fold tokens) must have landed | Numbers in this item; both blocks byte-identical; the script path is cheaper or the gap is explained | S, after multicell slice 3 |
+| 3 | **Proof: the 12-wall H-column prism both ways.** `cccRcccRcccR` at (4, 6) via `generate` and via a block under `keep:'auto'`; record tokens (`tool_ledger` bytes per path), wall time, errors/retries, and SHA equality of the two blocks (the `generate` leg runs at the pre-slice-1 sha or through the core wheel directly, since the op is gone by then) | multicell slice 3 (fold tokens) must have landed | Numbers in this item; both blocks byte-identical; the exec block is cheaper or the gap is explained | S, after multicell slice 3 |
 | 4 | **Relax interface, atomic + cache.** Manifest `relax:` incl. `periodic`/`kspacing`/`supercell`, `relaxed_units` migration, `derived-from` link, read-MCP `relaxed` lookup, importer dispatch to the existing job types, vacuum padding and `relax.period_mismatch`; a `charges` payload on `struct_runs` beside `forces` (per-atom partial charges with method and level, `xtb`/`dft-*` runs; §Observation rays, must exist first) | `hexfold_relax_job.py`, `handlers/structure.py::_dispatch_relax`, `_sandbox_read_mcp.kind_refusal`, `structure/cache.py` key | A second run after the relax finished reads the relaxed geometry; the variant links to its seed; the cache key matches across runs with equal params and differs by `cell`/`supercell`/`kspacing`; relaxed atoms keep their creator frames and the trace gains one `service` frame whose `touched` equals the displaced set; a 1D-periodic manifest relaxes a `pbc` unit, not the capped block; an `xtb` relax stores per-atom charges with method and level, read back without recomputation | M, 1 build; GFN2 route is the known dependency |
 | 4p | **Infinite-relax ladder gaps.** `cell='axis'` mask; supercell rule for Γ-only rungs; `kspacing` → `kpts` on the `dft-*` request path and in the GPAW container; `gfnff` rung (xtb-python extra); `tile` + `terminate` + tethered end relax as the unit→finite path | `structure/relax.py` (`CELL_MODES`, `_CELL_MASKS`), `workers/job_types/struct_relax.py`, `sheetnet`, `hexfold-tethered-relax-op` | A 1D unit relaxed `axis` at `xtb` reports the period change; the same unit at `dft-fast` records `kpts` from 0.2 Å⁻¹; `tile(unit, 6)` + H caps gives the census of the (4, 6) A2 target with interior coordinates equal to the unit's; `gfnff` on a periodic cell runs or refuses with the install hint | M, 1–2 builds; DFT part needs `PRECIS_DFT_NODE` |
 | 4m | **Motif templates.** `relaxed_motifs` migration, extraction from relaxed units through their frames, `motif=` on `junction`/`decorate`/`_block_from_net`, `seed` fallback, versioning | `sheetnet.py`, `hexfold_relax_job.py` write-back, `relaxed_units` | Motif-seeded A2 and tri-tube seeds: RMSD vs GFN2 minimum and step counts recorded before/after; slice-0 goldens unchanged under `method: 'seed'` | M, 1 build; after 4u |
 | 4a | **Interface relax.** `relax.scope` interfaces/full, frame-derived free region, frozen-atom residual force loop, `assembly.strain`, `relax.method_mix` refusal, per-atom level in `touched`, `fixed` ranges and pass number on each `interfaces` frame (the eye's `frozen|free` row, §Structure fisheye) | `relax_block.py` fragments, `hexfold_relax_job.py`, `view='trace'`, the 2e relax block | Tri-tube from three cached units: interfaces relax within 0.05 Å RMSD of full or names the strain; a mixed-method fetch refuses; every atom reports its level; a frozen unit atom's eye reads `frozen (pass 2)` and a shell atom's `free` | M, 1 build; after 4u, 2t |
 | 4u | **Frozen-unit catalogue, both scales** (§Frozen units/modules). Units and macro modules as library-design blocks with `generated.generator='unit'`, `frozen_units` (the widened `relaxed_units`), `blocks.unit()`/`blocks.relaxed()` fetch, the `unit` trace frame linking the unit's trace, golden-diff `stale` on wheel bump, `unit.stale` finding, `view='units'`, `tags=['unit']` search, port/connect frames resolvable in `view='trace'` | `precis_se/library.py`, `workspace_import.py`, `view='trace'`, slice 7 goldens, `scripts/release` (the stale pass) | Two runs with equal `(fn, params, method, cell)` compute once; a fetched unit's atom trace crosses into the unit's frames and ends in its relax frame; a wheel bump that changes `prism`'s golden flags its units stale and a no-op bump flags none; `regenerate` on a stale unit retires it | M, 1 build; after 4 and 7 |
 | 5 | **Macro relax v1: check-and-report.** `method:'assembly'` = findings from the table above as one list; new redundancy analysis and RSS; formfind where axial. **Landed 2026-10-22 (sw-s5)** as `precis_se.assembly_check.assembly_check()` + read-only `view='assembly_check'` (`tests/test_se_assembly_check.py`); TODO when slice 0 lands — the manifest key `relax: {method: 'assembly'}` wires to that function | `drc`, `freedom`, `cad.relate`, `measures.stackup`, `mold`, `formfind` | A fixture with a redundant mate names the redundant set; an over-tight stack names the failing chain under worst-case and RSS; an interfering pair reports depth | M–L, 2 builds |
-| 6 | **Agent modules + skill.** `module` tag, catalogue search, `ws-promote` publish, `precis-workspace-help` (loop, manifest, relax, packaging, the Å-vs-macro table from the modules spec), pointer lines in `precis-se-help`, `precis-se-atomic-help`, `precis-job-observe-help`; a trace section (the five asks, `frame:`, the build123d limit) and the alias convention (`pg`, `pga`; every example uses them) in the workspace skill and a line in `precis-se-regions-help`; glossary: workspace, run, promote | `src/precis/data/skills/`, the repo-dev vocabulary taxonomy (tn559460), `precis_se/library.py` | A second workspace depends on a promoted module by name and runs | M, 1 build |
+| 6 | **Agent modules + skill.** `module` tag, catalogue search, `ws-promote` publish, the skill `precis-se-workspace-help` (R9; slice 6 renames `precis-workspace-help`, landed 2026-10-24 and teaching the script loop and the manifest, to this and rewrites it for the exec loop; the landed file stays until slice 6 ships): the exec loop (look → one block → apply and look, fix forward; `keep:'candidate'` for exploratory or slow checks), the op-vs-block rule, library-before-loops, handles and port names, the named anti-patterns, long runs as requests (`hit | queued`), the graduation path, relax, the Å-vs-macro table from the modules spec; pointer lines in `precis-se-help`, `precis-se-atomic-help`, `precis-job-observe-help`; a trace section (the five asks, `frame:`, the build123d limit) and the alias convention (`pg`, `pga`; every example uses them) in that skill and a line in `precis-se-regions-help`; **surface-review metrics** (blocks per kept change, keep/revert ratio, median block length, wall-limit hits); glossary: workspace, exec block, version/head, promote | `src/precis/data/skills/`, the repo-dev vocabulary taxonomy (tn559460), `precis_se/library.py` | A second workspace depends on a promoted module by name and runs | M, 1 build |
 | 7 | **CI goldens for core scripts.** Each core generator gets an `examples/` script whose output goldens (counts, SHA, findings) run in `scripts/test` without a container — the multicell slice-0 goldens become this | `tests/workspaces/`, `scripts/impacted-tests` | A change to `sheetnet` that alters a golden fails the selected test naming the script | S per generator, with each slice |
 
 Later, named: agent-inside-container (socket bridge for `mode:build`);
@@ -1268,11 +1468,23 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
 
 ## Risks
 
-- **Two sources of truth for files** (DB folder vs host git). The DB is
-  truth; git is a run log. A host repo that diverges (manual edits on the
-  host) is reset to the staged tree at the next run, and the echo says so.
-  Ruled W3: the DB folder is truth. Slice 1b (ruled) makes the host
-  repo a materialised cache of the rows and this risk goes away.
+- **Two writers of head.** One write path: head's storage is written
+  only by `commit` in one transaction (R2a); a candidate is one
+  `design_checkpoints` row and never touches the kind's tables, and the
+  worker has no database handle. A lane job commits through the same
+  function. Slice 1's head-hash test guards it. (The 2026-10-22 risk,
+  DB folder vs host git, went with the host git repo and slice 1b, R1.)
+- **The process boundary is not a hardened sandbox** (Amendment
+  2026-11-08, R4/R4a). AST lint + fork + rlimits + env scrub + audit hook
+  + no-network `unshare` contain accidents and naive escapes, not a
+  determined kernel exploit, and a Mac worker has no network isolation.
+  The `precis` proxy (R3a) is the one new channel out of the child: it
+  relays to the server under the session's identity against an
+  allowlist (read verbs; writes only into this design's candidate).
+  Mitigation: the worker's user owns no secrets and holds no DB handle
+  (R2a: its write path reaches the checkpoint table only); the trusted
+  side validates every candidate before commit; the container remains
+  the upgrade behind the same interface.
 - **Export size.** Embedding the `precis-geom` wheel per design export
   is a few MB each; a design with many promoted modules grows. The
   export lists wheel shas and skips a wheel already present in the
@@ -1283,7 +1495,7 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
 - **Import caps vs real structures.** A 7k-atom tunnel scene is normal;
   caps are per-block atoms and bytes, set from the largest stored block
   plus margin, not a guess.
-- **Core wheel drift.** A script pinned to `precis-geom==N` regenerates
+- **Core wheel drift.** A recipe pinned to `precis-geom==N` regenerates
   differently under N+1. `regenerate` pins the recorded version; the
   goldens catch the drift in CI.
 - **Agent modules as a dumping ground.** Promotion needs review; an
@@ -1297,14 +1509,14 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
   hosts, no index server.
 - **W4 macro relax v1:** check-and-report + existing formfind; mate
   solver, settle and FEA later.
-- **W5 construction ops:** legacy; retired in the slice that makes `run`
-  usable, no clock, no wrapper phase (§MCP surface).
+- **W5 construction ops:** legacy; retired in the slice that makes `exec`
+  usable (was `run`), no clock, no wrapper phase (§MCP surface).
 - **W6 agent-in-container:** stays outside until a case needs it.
 - **W3 workspace file storage:** files in the DB as a folder `part-of`
   the design + a host git log ("I side with Fable"). Git objects in
   Postgres: **ruled yes** (Reto 2026-10-22, "I like the git row model,
-  do that. 1b yes") — option (b) of §Code storage, built as slice 1b
-  after slice 1.
+  do that. 1b yes") — **reversed 2026-11-08 (R1)**: no script is stored
+  as the source; slice 1b dropped, §Code storage closed.
 - **Trace granularity:** per-atom `maker` column; every `/work/**.py`
   frame is a user frame.
 - **Relax cache:** holds the periodic unit; consumers tile and cap it —
@@ -1313,7 +1525,8 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
   compare; a unit goes stale only when its generator's output changed,
   never on version equality alone.
 - **Export:** designs embed their `precis-geom` and promoted-module
-  wheels (`uv run` offline except PyPI).
+  wheels, so `build(recipe)` runs offline through the DB-free library
+  (was "`uv run` offline except PyPI"; confirmed 2026-11-08).
 - **Interface relax:** 6 Å free shell around assembly frames, widened
   by 2 Å (≤ 3×) while residual force on frozen atoms exceeds 0.1 eV/Å;
   `assembly.strain` reports what remains.
@@ -1363,6 +1576,22 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
   `struct_runs` (slice 4) is confirmed with slice 4's builder before 2r
   starts; the simple aromaticity rule is enough for v1. Rays are
   scale-independent (one `cast_ray` verb, multiscale spec §5.4–5.5).
+
+2026-11-08 (§Amendment 2026-11-08):
+
+- **R1 head is the source:** reverses "the python script is the source" (2026-10-22); slice 1b and the host git repo per workspace are dropped; `script_sha` becomes (version, block index).
+- **R2 versions (reworded):** a version is recorded on every keep (`design_revisions` row + the kept snapshot as a `design_checkpoints` row); no movable head, no ring; stepping back past a keep is out of scope for slice 1 (gr598376) and forward-only if it comes; no journal, block text only while a candidate (me598371).
+- **R2a single write path:** head's storage written only by `commit(ref, snapshot) → version`, one transaction, always forward; a candidate is one `design_checkpoints` row, never in the kind's tables; the worker has no DB handle; storage per kind, contract unified (`load`/`snapshot`/`diff`/`commit`); natural-key handles; head-hash acceptance test per kind (me598371).
+- **R3 exec, keep modes, batching:** `put(kind='se', mode='exec', text=...)`, design in scope, prints + diff + error; default `keep:'auto'` commits a clean block and returns diff + version, `keep:'candidate'` stops for the inspect → keep/revert loop; a flagged block leaves a candidate; `text` may be a list (ordered, stop at first failure, per-block commit under auto, one stacked candidate under candidate, caps per block); direct ops become one-line blocks (me598371).
+- **R3a `precis` proxy:** synchronous relay over the child's inherited pipe via the worker to the MCP server, session identity, read verbs plus writes only into this design's candidate; the child holds no connection or token; design-local calls (`measure`, `validate`, `drc`) stay local on `d` (me598372).
+- **R4 containment:** forked warm worker with rlimits, scrubbed env and no network; never in-process eval; the sandbox lane stays for long jobs; the container is the upgrade.
+- **R4a lint and audit hook:** AST allowlist lint before the fork (millisecond refusal, `next=` naming the API), PEP 578 audit hook in the child; layers, not replacements for the fork; containment ladder lint → fork + rlimits + env scrub → audit hook → `unshare -rn` → container; a dedicated single-threaded worker forks, never the MCP server; the worker swaps to the new head after keep (me598372).
+- **Script path is not a surface:** `main.py` as source, host git per design, a venv per lock sha and a hand-run import step are gone as agent-facing modes; the library, graduation (R7) and the job lane (same code, same namespace, same `commit`) survive; the importer is `commit` (me598371); the old sections are rewritten to match (gr596199).
+- **R5 step cache:** held in the worker, content-addressed, merged on keep.
+- **R6 size:** no line cap; resource caps, a ~80-line nudge, a wall-limit echo naming the lane.
+- **R7 graduation:** `graduate:block` gripe (gr596135), echo pre-fill, surface-review on recurrence.
+- **R8 provenance:** (version, block index, frame anchors) via `an<N>` handles (gr595549) instead of raw frames; slices 2/2t/2p traces stay.
+- **R9/R10:** skill content in slice 6; direct-op vs block is measured per task, not ruled.
 
 ## Open questions for Reto
 
