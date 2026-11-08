@@ -619,6 +619,9 @@ CORE_PARAMS: dict[str, tuple[str, ...]] = {
         "id",
         "mode",
         "text",
+        # gr592766: same spelling as put — draft/memory/pres/finding/gripe/
+        # paper all retitle via edit's own title= param.
+        "title",
         "body",
         "find",
         "where",

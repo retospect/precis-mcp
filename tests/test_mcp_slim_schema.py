@@ -201,6 +201,33 @@ def test_title_on_a_text_kind_points_at_text(mcp_runtime: None) -> None:
     assert not re.search(r"(?<![a-z_])text: ", out), out
 
 
+def test_edit_title_top_level_no_deprecation_note(
+    mcp_runtime: None, store: Store
+) -> None:
+    """gr592766: ``title=`` is one field — put and edit advertise the same
+    top-level spelling, and the args= spelling lifts without a note either."""
+    store.drafts.create_draft(name="ren", title="Old Name")
+    out = _call("edit", {"kind": "draft", "id": "ren", "title": "New Name"})
+    assert "[error" not in out, out
+    assert "'Old Name' → 'New Name'" in out, out
+    assert "deprecated" not in out
+    out = _call("edit", {"kind": "draft", "id": "ren", "args": {"title": "Third Name"}})
+    assert "[error" not in out, out
+    assert "'New Name' → 'Third Name'" in out, out
+    assert "deprecated" not in out
+
+
+def test_edit_title_on_a_text_kind_points_at_text(
+    mcp_runtime: None, store: Store
+) -> None:
+    """A kind whose edit has no ``title=`` param refuses the now-advertised
+    key with the same text= hint put gives (gr592766)."""
+    ref = store.insert_ref(kind="todo", slug=None, title="retitle me")
+    out = _call("edit", {"kind": "todo", "id": ref.id, "title": "x"})
+    assert "[error:BadInput]" in out, out
+    assert "todo: the title is the first line of text=" in out, out
+
+
 def test_legacy_top_level_json_string_list_is_parsed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
