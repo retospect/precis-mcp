@@ -531,6 +531,27 @@ def test_cut_only_a_refused_recut_restores_the_r1_marker(rig: Rig) -> None:
     assert "release in flight" not in out.stdout
 
 
+def test_cut_only_retires_a_dead_record_and_recuts(rig: Rig) -> None:
+    """gr582590: the marker still names release/r1 after its branch was
+    deleted on origin and prod moved past its base — the stale record is
+    retired, the stale marker discarded, and --cut-only cuts r2 at main."""
+    c2 = rig.shas["c2"]
+    assert _release(rig, "--cut-only", "--sha", c2, *FAST).returncode == 0
+    # A hand-cut release elsewhere superseded r1: the branch is deleted on
+    # origin and prod already holds its base.
+    _git(rig.root, "push", "-q", "origin", ":refs/heads/release/r1")
+    _push_branch(rig, "prod", c2)
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "retiring the stale record" in out.stdout
+    assert "discarded" in out.stdout
+    assert f"RELEASE_CUT: r2 {rig.shas['c3']}" in out.stdout.splitlines()
+    assert rig.origin_ref("release/r2") == rig.shas["c3"]
+    assert _rel(_round_json(rig), 1)["state"] == "abandoned"
+    mark = json.loads(_marker(rig).read_text(encoding="utf-8"))
+    assert (mark["branch"], mark["base"]) == ("release/r2", rig.shas["c3"])
+
+
 def test_cut_only_adopts_an_unowned_pending_cut_and_pushes_it(rig: Rig) -> None:
     """gr593418: a hand-run `round cut` whose push had no credentials leaves
     cut_pending in this clone's record and no marker. --cut-only adopts it
@@ -1541,6 +1562,56 @@ def test_reconciling_anothers_pending_cut_does_not_claim_ownership(
     if not claims:  # an owner whose marker pre-existed keeps it on reconcile
         mod.write_owner("release/r1", sha, "t")
         assert mod.cut_and_finish(args, sha) == 77
+
+
+def test_cut_and_finish_refuses_a_sha_already_on_prod(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """gr582590: a cut whose base prod already holds arms a rollback —
+    cut_and_finish refuses before `round cut` runs or a marker lands."""
+    mod = _load_release(tmp_path, monkeypatch)
+    sha, prod = "a" * 40, "b" * 40
+    monkeypatch.setattr(
+        mod, "remote", lambda ref: prod if ref == "refs/heads/prod" else ""
+    )
+    monkeypatch.setattr(mod, "rev", lambda name: name)
+    monkeypatch.setattr(mod, "ancestor", lambda a, b: True)
+
+    def boom(*a: str, **k: object) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("round cut must not run")
+
+    monkeypatch.setattr(mod, "rnd", boom)
+    assert mod.cut_and_finish(mod.argparse.Namespace(), sha, "release/r1") == 1
+    assert "already on origin/prod" in capsys.readouterr().err
+    assert not (tmp_path / ".release-owner").exists()
+
+
+def test_live_releases_prefers_the_shared_row_over_a_forked_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr582590: the shared release.round row adjudicates open records —
+    a forked clone's cut record is not live; a deploying journal is."""
+    mod = _load_release(tmp_path, monkeypatch)
+    state = {
+        "releases": [
+            {"n": 9, "branch": "release/r9", "state": "cut"},
+            {"n": 8, "branch": "release/r8", "state": "confirmed"},
+            {"n": 10, "branch": "release/r10", "state": "deploying"},
+        ]
+    }
+    # The shared row moved past the local open record: a fork, not live.
+    live = mod.live_releases(state, {"n": 10, "branch": "release/r10", "state": "cut"})
+    assert [r["n"] for r in live] == [10]
+    # Same release terminal in the shared row: retired elsewhere.
+    live = mod.live_releases(
+        state, {"n": 9, "branch": "release/r9", "state": "confirmed"}
+    )
+    assert [r["n"] for r in live] == [10]
+    # An older shared row: the local record is newer — it stands.
+    live = mod.live_releases(state, {"n": 9, "branch": "release/r9", "state": "cut"})
+    assert [r["n"] for r in live] == [9, 10]
+    # No row: the local record stands alone.
+    assert [r["n"] for r in mod.live_releases(state)] == [9, 10]
 
 
 def test_stale_round_number_mints_the_origin_number(rig: Rig) -> None:

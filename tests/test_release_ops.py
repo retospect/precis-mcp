@@ -450,6 +450,21 @@ def test_an_ordinary_poll_ignores_the_attempt(
     assert gates.read_ci_verdicts(store)[-1]["verdict"] == "red"
 
 
+def test_poll_refuses_a_sha_already_on_prod(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr582590: a sha prod already runs is a stale cut — the poll refuses
+    to record a verdict that would arm a deploy of a shipped sha."""
+    mint = _cut(store)
+    R.record_prod_head(store, SHA, [])
+    calls = _fake_github(monkeypatch, [_run(31, "completed", "success")])
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures and "already on prod" in ctx.failures[0]
+    assert gates.read_ci_verdicts(store) == []
+    assert calls == []  # refused before the GitHub read
+
+
 def test_poll_fails_on_a_missing_repo_or_sha(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

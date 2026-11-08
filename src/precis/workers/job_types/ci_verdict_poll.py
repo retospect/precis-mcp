@@ -69,6 +69,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from precis.plans import release as _release
+from precis.plans.gates import sha_deployed
 from precis.principal import worker_comment_meta
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.todo.guards import check_ask_meta
@@ -505,11 +506,29 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     params = dict(ctx.meta.get("params") or {})
     try:
         target = resolve_target(ctx.store, params)
-        runs = fetch_runs(target["repo"], target["sha"])
     except PollError as exc:
         ctx.record_failure(str(exc))
         return
     sha, rng = target["sha"], target["range"]
+    if ctx.store is not None:
+        try:
+            deployed = sha_deployed(ctx.store, sha)
+        except Exception:
+            deployed = None  # an unreadable prod head cannot prove shipping
+        if deployed is not None and deployed.open:
+            # gr582590: a verdict recorded for a sha prod already runs arms
+            # the deploy ask on a shipped sha — the pass is stale, not green.
+            ctx.record_failure(
+                f"{NAME}: {sha[:9]} is already on prod ({deployed.why}); "
+                "recording a verdict would arm a deploy of a shipped sha; "
+                "next: drop this release pass — the cut is stale"
+            )
+            return
+    try:
+        runs = fetch_runs(target["repo"], sha)
+    except PollError as exc:
+        ctx.record_failure(str(exc))
+        return
     picked = _picked_run(runs, sha, target["branch"]) if runs else None
     if runs is None:
         state, run_id, why = "pending", "", "GitHub unreadable (network or rate limit)"

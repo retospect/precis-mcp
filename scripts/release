@@ -691,8 +691,47 @@ def next_line(sha: str) -> str:
     )
 
 
-def live_releases(state: dict[str, Any]) -> list[dict[str, Any]]:
-    return [r for r in (state.get("releases") or []) if not _is_terminal(r)]
+def live_releases(
+    state: dict[str, Any], shared: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """Non-terminal records; the shared ``release.round`` row adjudicates a
+    forked clone's open records when it is readable (gr582590): an open
+    record a higher-numbered row has moved past, or the same release the
+    row names terminal or under another branch, is a leftover, not live.
+    The row only subtracts — a release this clone's record lacks shows on
+    origin's branches. A deploying/deployed record is never disputed: its
+    journal is a live rollout a pipelined cut legitimately passes. Row
+    terminality runs through the same predicate as the local record, so a
+    row's `failed` counts only while its journal shows the rollout never
+    launched (gr593418)."""
+    rels = [r for r in (state.get("releases") or []) if not _is_terminal(r)]
+    if not isinstance(shared, dict):
+        return rels
+    db_n = shared.get("n")
+    db_state = str(shared.get("state") or "")
+    db_branch = str(shared.get("branch") or "")
+    db_terminal = _is_terminal({"state": db_state, "deploy": shared.get("deploy")})
+    out = []
+    for r in rels:
+        n = r.get("n")
+        if (
+            r.get("state") in OPEN_STATES
+            and type(db_n) is int
+            and type(n) is int
+            and (
+                db_n > n
+                or (
+                    db_n == n
+                    and (
+                        db_terminal
+                        or (db_branch and db_branch != r.get("branch"))
+                    )
+                )
+            )
+        ):
+            continue
+        out.append(r)
+    return out
 
 
 def stale_why(rel: dict[str, Any], prod: str) -> str:
@@ -717,6 +756,39 @@ def stale_why(rel: dict[str, Any], prod: str) -> str:
         f" its pinned {pin[:9]}; clear it with `scripts/round supersede"
         f" r{rel.get('n')}`"
     )
+
+
+def _dead_open_rel(
+    rels: list[dict[str, Any]], prod: str
+) -> dict[str, Any] | None:
+    """The open record provably dead (gr582590): its branch is absent on
+    origin AND origin/prod already contains its base — a forked clone's
+    leftover whose payload shipped, not in-flight work. None when nothing
+    qualifies or the evidence is incomplete (origin, prod or the base
+    unreadable — never retire on a maybe)."""
+    if not prod or not rev(prod):
+        return None
+    rel = next((r for r in rels if r.get("state") in OPEN_STATES), None)
+    if rel is None:
+        return None
+    branch = str(rel.get("branch") or "")
+    if not branch or remote(f"refs/heads/{branch}") != "":
+        return None
+    base = str(rel.get("base") or "")
+    if not base or not rev(base) or not ancestor(base, prod):
+        return None
+    return rel
+
+
+def _owned_stale(rel: dict[str, Any]) -> bool:
+    """The marker claiming ``rel`` is stale when the branch it names is
+    gone from origin (gr582590). Open records only: a deploying record's
+    journal is its evidence, not the branch, and a pending cut keeps its
+    marker — absence is the pending record's whole point. An unreadable
+    origin never condemns."""
+    if rel.get("cut_pending") or rel.get("state") not in OPEN_STATES:
+        return False
+    return remote(f"refs/heads/{rel.get('branch')}") == ""
 
 
 def _release_by_state(state: dict[str, Any], states: tuple[str, ...]) -> dict[str, Any]:
@@ -806,7 +878,9 @@ RECORD_TIMEOUT_S = 40.0
 Transport = Callable[[list[str]], tuple[int, str, str]]
 
 
-def _prod_precis(args: list[str]) -> tuple[int, str, str]:
+def _prod_precis(
+    args: list[str], timeout: float = RECORD_TIMEOUT_S
+) -> tuple[int, str, str]:
     """The real transport: scripts/prod-precis from a tree that may write.
 
     A deploy moves origin/prod past this checkout, and prod-precis refuses a
@@ -829,7 +903,7 @@ def _prod_precis(args: list[str]) -> tuple[int, str, str]:
         if cli
         else [str(gn.write_tree(HERE.parent) / "scripts" / "prod-precis")]
     )
-    cp = gn.run_capped([*base, *args], RECORD_TIMEOUT_S)
+    cp = gn.run_capped([*base, *args], timeout)
     return cp.returncode, cp.stdout, cp.stderr
 
 
@@ -947,6 +1021,47 @@ def record_prod_head(
         detail = re.sub(r"[a-z]+://\S+", "<url>", err.strip())
         return f"prod head not recorded (exit {rc}): {detail}"
     return f"prod head recorded: {head[:9]} (+{len(shas)} landed)"
+
+
+# ── the shared release.round row ─────────────────────────────────
+#
+#: ``app_settings`` key ``scripts/round`` publishes the active release's
+#: record to (same literal in ``scripts/round.ROUND_KEY`` and
+#: ``precis.plans.release.ROUND_KEY`` — tests pin them). Read-only here:
+#: the row adjudicates a clone-local record that may have forked
+#: (gr582590), so a stale ``round.json`` is not the only say on which
+#: release is live.
+ROUND_KEY = "release.round"
+#: Cap on the shared-record read — a status read must never stall a release.
+STATUS_TIMEOUT_S = 3.0
+
+_ROUND_ROW_RE = re.compile(
+    rf"^{re.escape(ROUND_KEY)} = (.*) \(layer=(\w+)\)$", re.MULTILINE
+)
+
+
+def read_round_record() -> dict[str, Any] | None:
+    """The shared ``release.round`` row (``scripts/round._read_round_record``),
+    or None on any failure — a read problem prints nothing and the local
+    record stands alone."""
+    if _record_skip_reason():
+        return None
+    try:
+        rc, out, _err = _prod_precis(
+            ["settings", "get", ROUND_KEY], timeout=STATUS_TIMEOUT_S
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if rc != 0:
+        return None
+    m = _ROUND_ROW_RE.search(out)
+    if m is None or m.group(2) != "db":
+        return None
+    try:
+        row = json.loads(m.group(1))
+    except ValueError:
+        return None
+    return row if isinstance(row, dict) else None
 
 
 #: The prod record of CI verdicts on release candidates (``app_settings``,
@@ -1409,7 +1524,31 @@ def run(args: argparse.Namespace) -> int:
         cur = round_state()
         if cur is None:
             return die(1, "scripts/release: cannot read `scripts/round status --json`")
-        live = live_releases(cur)
+        live = live_releases(cur, read_round_record())
+        prod = remote("refs/heads/prod") or ""
+        if prod and not rev(prod):
+            git("fetch", "-q", "origin", "prod")
+        dead = _dead_open_rel(live, prod)
+        if dead is not None:
+            # gr582590: a [cut] record whose branch origin lost and whose
+            # base prod holds is a forked clone's leftover, not in-flight
+            # work — retire it rather than block on it forever.
+            if args.dry_run:
+                say(
+                    f"would retire stale {dead['branch']} (gone from origin, "
+                    f"base {str(dead.get('base'))[:9]} on prod)"
+                )
+            else:
+                say(
+                    f"{dead['branch']} is gone from origin and prod holds its "
+                    f"base {str(dead.get('base'))[:9]} — retiring the stale record"
+                )
+                cp = rnd("cut", "--abandon")
+                sys.stdout.write(cp.stdout)
+                if cp.returncode:
+                    sys.stderr.write(cp.stderr)
+                cur = round_state() or cur
+                live = live_releases(cur, read_round_record())
         open_rel = next((r for r in live if r.get("state") in OPEN_STATES), None)
         if (
             open_rel is not None
@@ -1425,6 +1564,12 @@ def run(args: argparse.Namespace) -> int:
             open_rel = None
         dep_rel = _release_deploying(cur) or None
         owned = next((r for r in live if owns(r)), None)
+        if owned is not None and _owned_stale(owned):
+            # A marker is evidence only while the branch exists on origin
+            # (gr582590): a dead branch's marker is discarded, not resumed.
+            say(f".release-owner for {owned['branch']} is stale — discarded")
+            clear_owner()
+            owned = None
         rel = owned or open_rel or dep_rel or {}
         mine = owned is not None
         if args.adopt and rel and not args.dry_run and not mine:
@@ -1458,12 +1603,14 @@ def run(args: argparse.Namespace) -> int:
                 clear_owner()
                 cur = round_state() or cur
         elif owner and not mine and not args.dry_run:
-            clear_owner()  # recorded release is gone/retired or someone else's
+            # recorded release is gone/retired or someone else's
+            say(
+                f".release-owner for {owner.get('branch', '?')} is stale "
+                "(no matching live release) — discarded"
+            )
+            clear_owner()
         dep = rel.get("deployment") or {}
         dsha = str(dep.get("sha") or "")
-        prod = remote("refs/heads/prod") or ""
-        if prod and not rev(prod):
-            git("fetch", "-q", "origin", "prod")
         if mine and (why := stale_why(rel, prod)):
             # Ownership does not revive a corpse: an owned record prod
             # moved past is the same blocker a foreign one is (gr573151).
@@ -1732,6 +1879,17 @@ def cut_and_finish(args: argparse.Namespace, s: str, branch: str = "") -> int:
     if not branch:
         n = next_round_n() or (round_state() or {}).get("n")
         branch = f"release/r{n}"
+    prod = remote("refs/heads/prod") or ""
+    if prod and not rev(prod):
+        git("fetch", "-q", "origin", "prod")
+    if prod and rev(prod) and ancestor(s, prod):
+        # gr582590: a cut whose base prod already contains arms a rollback —
+        # refuse before `round cut` runs or a marker claims the corpse.
+        return die(
+            1,
+            f"scripts/release: the cut sha {s[:9]} is already on origin/prod "
+            f"{prod[:9]} — cutting it would ship a rollback",
+        )
     pre = read_owner()
     preowned = pre.get("branch") == branch and pre.get("base") == s
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
