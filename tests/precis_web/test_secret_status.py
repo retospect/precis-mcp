@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from html import unescape
 from typing import TYPE_CHECKING, Any, cast
@@ -24,6 +25,7 @@ from fastapi.testclient import TestClient
 
 from precis import secret_status
 from precis import secrets as vault
+from precis.utils.http import reset_circuit
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -32,6 +34,30 @@ if TYPE_CHECKING:
 #: below — those tests monkeypatch is_available/get_secret directly, so the
 #: store itself is never actually touched; it only needs to type-check.
 _FAKE_STORE = cast("Store", object())
+
+
+@pytest.fixture(autouse=True)
+def _fresh_probe_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Blank the probe layer's two pieces of process-global state — both
+    can make this file's probe never run, depending on which test the
+    worker executed before (gr588029):
+
+    * :data:`secret_status._probed`, the per-target result cache. Its
+      fingerprint is ``hash((fn, values))``; a function hashes by
+      identity and CPython recycles freed function objects, so a
+      *different* fake probe an earlier test installed can land on the
+      same fingerprint and re-serve its result — the probe body (and its
+      ``calls`` recording) never executes.
+    * ``precis.utils.http``'s per-service breaker — a probe stub's
+      service key is ``probe:<fn.__name__>``, so every ``probe``-named
+      stub shares ``probe:probe``; enough consecutive failures on it
+      refuse this test's call inside ``_safe_probe``.
+    """
+    monkeypatch.setattr(secret_status, "_probed", {})
+    reset_circuit()
+    yield
+    reset_circuit()
+
 
 # ── (a) registry hygiene ───────────────────────────────────────────────────
 
@@ -296,6 +322,15 @@ def test_scheduled_run_skips_kimi_while_lane_dark(
         monkeypatch, {"KIMI_CODE_API_KEY": "sk", "GROQ_API_KEY": "synthetic"}
     )
     _kimi_lane(monkeypatch, enabled=False if row == "disabled" else None)
+    # Stand the exact probe table the test asserts on: the registry-
+    # derived map is a mutable module global, so what another test left
+    # in it (extra members, a renamed group) must not decide which
+    # probes run here (gr588029).
+    monkeypatch.setattr(
+        secret_status,
+        "_PROBE_GROUP_MEMBERS",
+        {"kimi": ("KIMI_CODE_API_KEY",), "groq": ("GROQ_API_KEY",)},
+    )
     calls: list[str] = []
     monkeypatch.setitem(secret_status._PROBES, "kimi", _recording_probe(calls))
     monkeypatch.setitem(secret_status._PROBES, "groq", _recording_probe(calls))
@@ -312,6 +347,9 @@ def test_scheduled_run_probes_kimi_when_lane_enabled(
 ) -> None:
     _patch_presence(monkeypatch, {"KIMI_CODE_API_KEY": "sk"})
     _kimi_lane(monkeypatch, enabled=True)
+    monkeypatch.setattr(
+        secret_status, "_PROBE_GROUP_MEMBERS", {"kimi": ("KIMI_CODE_API_KEY",)}
+    )
     calls: list[str] = []
     monkeypatch.setitem(secret_status._PROBES, "kimi", _recording_probe(calls))
 
@@ -329,6 +367,9 @@ def test_explicit_run_probes_kimi_while_lane_disabled(
     accepted/rejected."""
     _patch_presence(monkeypatch, {"KIMI_CODE_API_KEY": "sk"})
     _kimi_lane(monkeypatch, enabled=False)
+    monkeypatch.setattr(
+        secret_status, "_PROBE_GROUP_MEMBERS", {"kimi": ("KIMI_CODE_API_KEY",)}
+    )
     calls: list[str] = []
     monkeypatch.setitem(secret_status._PROBES, "kimi", _recording_probe(calls))
 

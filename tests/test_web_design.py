@@ -24,6 +24,8 @@ from fastapi.testclient import TestClient
 
 from precis.handlers.structure import StructureHandler
 from precis.store import Store
+from precis.store import pool as _pool
+from precis.store import revision_context as _revision_context
 from precis_se.handler import SeHandler
 from precis_web.app import create_app
 from precis_web.config import WebConfig
@@ -61,13 +63,25 @@ def design_client(store: Store, runtime_with_store: Any, tmp_path: Path) -> Test
 
 
 @contextlib.contextmanager
-def _counting(store: Store) -> Iterator[list[int]]:
+def _counting(store: Store) -> Iterator[list[str]]:
     """Monkeypatch ``store.pool.connection`` so every ``conn.execute``
-    inside the ``with`` block increments a counter — the S1 acceptance
+    inside the ``with`` block records its statement — the S1 acceptance
     criterion's "≤ 3 SELECTs per render" check, without needing a real
-    query-log sidecar."""
-    calls: list[int] = []
+    query-log sidecar.
+
+    The count is only meaningful when no foreign statement can land on a
+    patched conn, so the block also clears the two pieces of
+    context-local pool state an earlier test in this worker can leak in
+    (gr588029): a live ``revision_context``, which makes every checkout
+    send ``set_config`` — on a shared conn that execute lands while the
+    patch is on; and ``pin_connection``'s ``_PINNED``, which makes every
+    checkout share one conn — another holder's statements then count
+    too, and a closed pin fails the checkout outright.
+    """
+    calls: list[str] = []
     original = store.pool.connection
+    rc_token = _revision_context._current.set(None)
+    pin_token = _pool._PINNED.set(None)
 
     @contextlib.contextmanager
     def counting_connection() -> Iterator[Any]:
@@ -75,7 +89,7 @@ def _counting(store: Store) -> Iterator[list[int]]:
             real_execute = conn.execute
 
             def counted(*args: Any, **kwargs: Any) -> Any:
-                calls.append(1)
+                calls.append(str(args[0]) if args else "")
                 return real_execute(*args, **kwargs)
 
             conn.execute = counted  # type: ignore[method-assign]
@@ -89,6 +103,19 @@ def _counting(store: Store) -> Iterator[list[int]]:
         yield calls
     finally:
         store.pool.connection = original  # type: ignore[method-assign]
+        _pool._PINNED.reset(pin_token)
+        _revision_context._current.reset(rc_token)
+
+
+#: The tables the route's three helpers read — what "the route's own
+#: queries" means for the ≤-3 budget. Infra statements a checkout or a
+#: foreign holder can land inside the counted window (``set_config``
+#: revision contexts, ``SET LOCAL ROLE``, savepoints, pg_catalog type
+#: probes) never match, so worker order can't inflate the count
+#: (gr588029).
+_ROUTE_TABLES = re.compile(
+    r"\b(refs|ref_identifiers|se_blocks|links|struct_runs)\b", re.IGNORECASE
+)
 
 
 def _seed(runtime_with_store: Any, store: Store) -> dict[str, str]:
@@ -203,7 +230,10 @@ def test_design_route_queries_issue_at_most_three_selects(
         ref_ids = [s["ref_id"] for s in structures.values()]
         design_route._lineage_counts(store, ref_ids)
         design_route._build_designs(se_rows, structures)
-    assert len(calls) <= 3, f"{len(calls)} SELECTs issued: {calls}"
+    route_selects = [sql for sql in calls if _ROUTE_TABLES.search(sql)]
+    assert len(route_selects) <= 3, (
+        f"{len(route_selects)} SELECTs issued: {route_selects}"
+    )
 
 
 def test_design_list_empty_renders_zero_designs_and_zero_structures(
