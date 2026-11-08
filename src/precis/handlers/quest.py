@@ -1617,6 +1617,9 @@ class QuestHandler(NumericRefHandler):
         else:
             fr = frontier_mod.quest_frontier(self.store, ref.id)
             lines.append(_objective_line(fr, meta))
+            from precis.quest import protocol as protocol_mod
+
+            lines += protocol_mod.protocol_lines(self.store, ref.id)
             if not (fr.frontier or fr.dominated or fr.provisional or fr.unevaluated):
                 lines.append("candidates: none yet")
             else:
@@ -1932,11 +1935,13 @@ class QuestHandler(NumericRefHandler):
                 "capability-ledger chunk)."
             )
         from precis.quest import frontier as frontier_mod
+        from precis.quest import protocol as protocol_mod
 
         fr = frontier_mod.quest_frontier(self.store, ref.id)
         lines = [
             f"# frontier — quest {ref.id}: {head}",
             _objective_line(fr, meta),
+            *protocol_mod.protocol_lines(self.store, ref.id),
             "",
         ]
 
@@ -2018,15 +2023,19 @@ class QuestHandler(NumericRefHandler):
         }
         rows, schema = frontier_mod.leaderboard(fr, graduated=graduated)
         body = render_agent_table(rows, schema=schema)
+        from precis.quest import protocol as protocol_mod
+
+        protocol = protocol_mod.protocol_lines(self.store, ref.id)
         # A TOON cell has no title-attribute equivalent for the glyph's own
         # word, so the legend is printed once here rather than repeated
         # per row.
         tier_legend = " · ".join(
             f"{glyph} {tier}" for tier, glyph in frontier_mod.TIER_GLYPH.items()
         )
+        proto_block = "\n".join(protocol) + "\n" if protocol else ""
         return (
             f"# leaderboard — quest {ref.id}: {head}\n{obj_line}\n"
-            f"tier: {tier_legend}\n\n{body}"
+            f"{proto_block}tier: {tier_legend}\n\n{body}"
         )
 
     def _render_results(

@@ -85,6 +85,9 @@ class QuestStatus:
     sim_jobs: list[SimJobRow]
     tick_events: list[TickEvent]
     llm_spend: LlmSpend
+    #: The quest's current protocol record + the per-candidate protocol
+    #: histogram (gr593142) — empty for a config-less quest with no runs.
+    protocol: list[str] = field(default_factory=list)
 
 
 def _logbook_tail(store: Store, quest_id: int, *, n: int) -> list[LogbookLine]:
@@ -274,6 +277,8 @@ def gather_quest_status(
     title = (qref.title or "").splitlines()[0] if qref.title else handle
 
     candidates, candidate_ids = _candidate_rows(store, quest_id)
+    from precis.quest import protocol as protocol_mod
+
     return QuestStatus(
         quest_id=quest_id,
         handle=handle,
@@ -283,6 +288,7 @@ def gather_quest_status(
         sim_jobs=_sim_job_rows(store, candidate_ids, limit=sim_job_limit),
         tick_events=_tick_events(store, quest_id, n=tick_n),
         llm_spend=_llm_spend(store, quest_id),
+        protocol=protocol_mod.protocol_lines(store, quest_id),
     )
 
 
@@ -316,6 +322,10 @@ def render_quest_status(status: QuestStatus) -> str:
             out += f" — {', '.join(c.ruled_out)}"
         lines.append(out)
     lines.append("")
+
+    if status.protocol:
+        lines += status.protocol
+        lines.append("")
 
     lines.append(f"sim jobs ({len(status.sim_jobs)}, newest first):")
     if not status.sim_jobs:

@@ -5,7 +5,10 @@ Design-of-record ``quest-layer`` (git-only); kind + logbook surface in
 ``serves`` DAG into rotation/acquisition/reading), `gaps` (health + the
 exploration queue), `logbook` (WORM entries), `dossier` (the living
 synthesis), `tick` (one bounded LLM step), `compute` (candidates →
-``structure`` sims), `frontier` (Pareto rank), `environment_basis` (the
+``structure`` sims), `frontier` (Pareto rank), `protocol` (the per-quest
+measurement-protocol record, the deduped logbook "protocol drift" line when
+a dispatched/harvested run departs from it, and the frontier-header +
+status-report protocol histogram — gr593142), `environment_basis` (the
 engine-free kinetics v2 environment hash folded into the network basis),
 `atomcost` (static
 element-price table → the ``atom_cost`` economic axis), `figures` (static matplotlib

@@ -1065,7 +1065,13 @@ def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> 
         fr = quest_frontier(store, quest_id)
     if not (fr.frontier or fr.dominated or fr.provisional or fr.unevaluated):
         return "(no candidate materials simulated yet)"
+    from precis.quest import protocol as _protocol_mod
+
     lines = [f"objective: {' · '.join(f'{k} ({s})' for k, s in fr.objectives)}"]
+    # The protocol record + candidate histogram (gr593142) — a comparison
+    # across runs is only honest while model/engine/network/seeds agree;
+    # the model must see the spread before trusting or proposing.
+    lines += _protocol_mod.protocol_lines(store, quest_id)
     for c in fr.frontier:
         ms = " ".join(f"{k}={v:g}" for k, v in sorted(c.measures.items()))
         lines.append(f"- FRONTIER {c.handle} {c.name} — {ms}")

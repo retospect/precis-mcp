@@ -2272,6 +2272,24 @@ def dispatch_autocatpath(
     except Exception as e:
         return f"autocatpath dispatch failed for {ref.slug}: tree mint ({e})"
 
+    # Protocol drift (gr593142): a run dispatched under a config that differs
+    # from the quest's current protocol for this tier gets one deduped
+    # logbook line — a re-dispatch deduping onto the same tree repeats the
+    # same key, so it stays quiet.
+    from precis.quest import protocol as _protocol
+    from precis.utils import handle_registry as _handle_registry
+
+    _protocol.note_dispatch_drift(
+        store,
+        structure_ref_id,
+        run_config,
+        tier=tier,
+        subject=(
+            f"{_handle_registry.try_format('structure', structure_ref_id) or ref.slug} "
+            f"pw{pathway_ref_id}"
+        ),
+    )
+
     total = len(specs) * len(seeds)
     if total and held == total:
         # Nothing could run: every seed sits under a paused seed todo. Report it
@@ -4924,6 +4942,23 @@ def harvest_measures(
                 entry_type="result",
                 by=MEASURED_BY,
             )
+            # Protocol drift (gr593142): the harvested run's stamped protocol
+            # vs the quest's current protocol for the pathway's own tier —
+            # one deduped line naming what drifted (engine/seeds/network/
+            # model/tolerances). Never breaks the harvest.
+            if (
+                isinstance(pw_meta, dict)
+                and isinstance(pathway_ref, int)
+                and not isinstance(pathway_ref, bool)
+            ):
+                from precis.quest import protocol as _protocol
+
+                _protocol.note_harvest_drift(
+                    store,
+                    quest_id,
+                    subject=f"{handle} pw{pathway_ref}",
+                    pw_meta=pw_meta,
+                )
             blocked_by = measures.get("barrier_blocked_by")
             if (
                 measures.get("barrier_trusted") is False
