@@ -4750,23 +4750,19 @@ class JobHandler(NumericRefHandler):
         hidden: list[tuple[tuple[str | None, ...], int, Any]],
         facets: list[tuple[str, str]],
         *,
-        group_by: Any,
-        page: int,
-        page_size: int,
+        next_call: str,
         sql_capped: bool,
     ) -> str:
         """Jobs page through a wide facet (gr592971): the ``next:``
-        re-runs the same count one page later, and the collapsed
-        ``other:`` tail names the folded groups with their job total.
-        Past the SQL-side ``_COUNT_GROUP_LIMIT`` the honest answer is
-        still narrowing with ``job_type=``/``since=`` — the filters
-        that produced a 200-group page."""
+        re-runs the same count one page later over the same filtered
+        set (td595880 — the filters that produced the page ride the
+        call now), and the collapsed ``other:`` tail names the folded
+        groups with their job total. Past the SQL-side
+        ``_COUNT_GROUP_LIMIT`` the honest answer is still narrowing
+        with ``job_type=``/``since=`` — the filters that produced a
+        200-group page."""
         tail = self._count_other_tail(hidden, facets, more=sql_capped)
-        gb = f", args={{'group_by': {group_by!r}}}" if group_by is not None else ""
-        line = (
-            f"  {tail} — next: search(kind='job', view='count'{gb}, "
-            f"page={page + 1}, page_size={page_size})"
-        )
+        line = f"  {tail} — next: {next_call}"
         if sql_capped:
             line += (
                 f"; only the top {_COUNT_GROUP_LIMIT} groups are counted — "
@@ -5117,6 +5113,17 @@ class JobHandler(NumericRefHandler):
             f"{root.kind}:{root.id}"
         )
         if view == "count":
+            # The page-advance call re-spells the scope as under=/depth=
+            # (JobHandler owns its under= — dispatch never materialises
+            # it), not as the resolved job-id list; status= and the
+            # caller's own id channels replay too (td595880).
+            next_args: dict[str, Any] = {}
+            if job_type is not None:
+                next_args["job_type"] = job_type
+            if include_ref_ids:
+                next_args["include_ref_ids"] = sorted({int(i) for i in include_ref_ids})
+            if exclude_ref_ids:
+                next_args["exclude_ref_ids"] = sorted({int(i) for i in exclude_ref_ids})
             resp = self._count_view(
                 q=None,
                 tags=None,
@@ -5131,6 +5138,10 @@ class JobHandler(NumericRefHandler):
                 until=until,
                 page_size=page_size,
                 page=page,
+                status=status,
+                next_top={"under": under, "depth": n_depth},
+                next_args=next_args or None,
+                next_drop={"include_ref_ids", "exclude_ref_ids"},
             )
             scope = (
                 f"jobs under {root_label} "
@@ -5399,6 +5410,8 @@ class JobHandler(NumericRefHandler):
                 id_max=id_hi,
                 page_size=page_size,
                 page=page,
+                status=status,
+                next_args=({"job_type": job_type} if job_type is not None else None),
             )
         link_ref_id: int | None = None
         if link is not None and str(link).strip():

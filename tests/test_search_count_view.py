@@ -371,7 +371,7 @@ class TestCountGroupPaging:
         tail = resp.body.split("other:", 1)[1]
         assert "type_" in tail
         assert "next: search(kind='job', view='count'" in tail
-        assert "page=2" in tail
+        assert "'page': 2" in tail
         assert "page_size=10" in tail
 
     def test_page_size_expands_the_facet_listing(
@@ -401,7 +401,7 @@ class TestCountGroupPaging:
         m = re.search(r"other: (\d+) groups, (\d+) job entries", resp.body)
         assert m is not None, resp.body
         assert (int(m.group(1)), int(m.group(2))) == (5, 5)
-        assert "page=3" in resp.body
+        assert "'page': 3" in resp.body
         resp3 = jobs.search(view="count", group_by="meta.job_type", status="*", page=3)
         assert "other:" not in resp3.body
         assert list(_facet_counts(resp3.body)) == [
@@ -435,6 +435,140 @@ class TestCountGroupPaging:
         assert sum(got.values()) == 5
         assert "other:" not in resp.body
         assert "# 15 job entries" in resp.body
+
+    def test_next_call_replays_status_since_and_query(
+        self, jobs: JobHandler, store: Store
+    ) -> None:
+        """td595880: the next-page call used to re-run the facet bare —
+        page 2 counted the unfiltered population. It now replays the
+        caller's filters so the continuation counts the same set."""
+        since = datetime.now(UTC) - timedelta(hours=1)
+
+        def _needle(job_type: str, status: str) -> int:
+            ref = store.insert_ref(
+                kind="job",
+                slug=None,
+                title="needle job",
+                meta={"job_type": job_type},
+            )
+            store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="system")
+            return ref.id
+
+        for i in range(12):
+            _needle(f"type_{i:02d}", "succeeded")
+        _needle("zzother", "succeeded")
+        # Outside the filtered set on the status and window axes — a
+        # bare page-2 count would pick these up.
+        _needle("zzfail", "failed")
+        old = _needle("zzold", "succeeded")
+        _backdate(store, old, datetime.now(UTC) - timedelta(days=2))
+
+        resp = jobs.search(
+            q="needle",
+            view="count",
+            group_by="meta.job_type",
+            status="succeeded",
+            since=since.isoformat(),
+        )
+        assert resp.body.startswith("# 13 job entries"), resp.body
+        tail = resp.body.split("other:", 1)[1]
+        assert "q='needle'" in tail
+        assert "status='succeeded'" in tail
+        assert re.search(r"since='\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z'", tail)
+        assert "'group_by': 'meta.job_type'" in tail
+        assert "'page': 2" in tail
+        # Following the call keeps the filtered set — the failed and
+        # out-of-window rows a filter-less page would recount stay out.
+        page2 = jobs.search(
+            q="needle",
+            view="count",
+            group_by="meta.job_type",
+            status="succeeded",
+            since=since.isoformat(),
+            page=2,
+        )
+        assert page2.body.startswith("# 13 job entries"), page2.body
+        assert "zzfail" not in page2.body
+        assert "zzold" not in page2.body
+
+    def test_next_call_replays_job_type(self, jobs: JobHandler, store: Store) -> None:
+        """``args={'job_type': …}`` rides the continuation's args= —
+        without it page 2 would count every type's statuses."""
+        for i in range(15):
+            _job(store, job_type="sweep", status=f"s{i:02d}")
+        for i in range(3):
+            _job(store, job_type="zzother", status=f"z{i}")
+        resp = jobs.search(job_type="sweep", view="count", group_by="state", status="*")
+        assert resp.body.startswith("# 15 job entries"), resp.body
+        tail = resp.body.split("other:", 1)[1]
+        assert "'job_type': 'sweep'" in tail
+        assert "status='*'" in tail
+        page2 = jobs.search(
+            job_type="sweep", view="count", group_by="state", status="*", page=2
+        )
+        assert page2.body.startswith("# 15 job entries"), page2.body
+        assert "STATUS:z" not in page2.body
+
+    def test_next_call_replays_the_under_scope(
+        self, jobs: JobHandler, store: Store
+    ) -> None:
+        """The under= count's resolved job-id list re-spells as the
+        ``under=``/``depth=`` scope it came from — a materialised
+        id dump would both bloat the call and detach it from the
+        tree."""
+        root = store.insert_ref(kind="quest", slug=None, title="q", meta={})
+        for i in range(12):
+            ref = store.insert_ref(
+                kind="job",
+                slug=None,
+                title="jt",
+                meta={"job_type": f"type_{i:02d}"},
+                parent_id=root.id,
+            )
+            store.add_tag(ref.id, Tag.closed("STATUS", "queued"), set_by="system")
+        done = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="jt",
+            meta={"job_type": "zzdone"},
+            parent_id=root.id,
+        )
+        store.add_tag(done.id, Tag.closed("STATUS", "done"), set_by="system")
+        _job(store, job_type="zzoutside", status="queued")
+
+        resp = jobs.search(
+            under=root.id, view="count", group_by="meta.job_type", status="queued"
+        )
+        assert "# 12 job entries" in resp.body, resp.body
+        tail = resp.body.split("other:", 1)[1]
+        assert f"under={root.id!r}" in tail
+        assert "depth=" in tail
+        assert "status='queued'" in tail
+        assert "include_ref_ids" not in tail
+        page2 = jobs.search(
+            under=root.id,
+            view="count",
+            group_by="meta.job_type",
+            status="queued",
+            page=2,
+        )
+        assert "# 12 job entries" in page2.body, page2.body
+        assert "zzoutside" not in page2.body
+        assert "zzdone" not in page2.body
+
+    def test_next_call_folds_the_live_default_into_tags(
+        self, gripes: GripeHandler, store: Store
+    ) -> None:
+        """A gripe browse count's implicit live-cohort exclusion has no
+        status= spelling to replay — it folds into ``tags=`` as
+        ``!``-negations so the next page still subtracts terminals."""
+        for i in range(12):
+            _gripe(store, f"gripe {i}", tags=(f"area:{i:02d}",))
+        resp = gripes.search(view="count", group_by="tag:area")
+        assert resp.body.startswith("# 12 gripe entries"), resp.body
+        tail = resp.body.split("other:", 1)[1]
+        assert "!STATUS:done" in tail
+        assert "!STATUS:wontfix" in tail
 
     def test_few_groups_no_overflow_line(self, jobs: JobHandler, store: Store) -> None:
         _job(store, job_type="sweep", status="succeeded")

@@ -164,7 +164,13 @@ def _removed_search_arg_error(
         # Memory index and reads listings are bounded enumerations —
         # args={'page': N} pages them (gr538490, gr563563). Ranked
         # search and every other kind still refuse.
-        if _memory_listing_call(kind, kwargs, args):
+        # view='count' pages its facet groups the same way (gr592971) —
+        # the other:-tail next: call is issued with the same filters
+        # plus args={'page': N+1} (td595880).
+        count_view = str(kwargs.get("view") or args.get("view") or "").strip() == (
+            "count"
+        )
+        if count_view or _memory_listing_call(kind, kwargs, args):
             if "page" in kwargs:
                 args["page"] = kwargs.pop("page")
         else:

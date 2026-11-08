@@ -691,20 +691,34 @@ class TodoHandler(NumericRefHandler):
                     "under= is not supported with view='count' on todo search",
                     next="search(kind='todo', view='count', tags=['<tag>'])",
                 )
-            unknown = sorted(set(rest) - {"group_by", "since", "until"})
+            # The ref-id channels stay admitted: a paged count's next:
+            # call re-spells dispatch-resolved filters (uncited=/cited=/
+            # folder=) as args={'include_ref_ids'/'exclude_ref_ids': […]}
+            # — refusing them would dead-end its own continuation.
+            count_args = {
+                "group_by",
+                "since",
+                "until",
+                "page",
+                "include_ref_ids",
+                "exclude_ref_ids",
+            }
+            unknown = sorted(set(rest) - count_args)
             if unknown:
                 raise BadInput(
                     f"args= keys {unknown!r} not supported with view='count' "
                     f"on kind={self.kind!r}",
-                    options=["group_by", "since", "until"],
+                    options=sorted(count_args),
                 )
             merged = dict(_kw)
             group_by = merged.pop("group_by", rest.get("group_by"))
-            # args={'since'/'until'} spell the same created_at window the
-            # top-level kwargs do (mcp-introspection gap closures
-            # 2026-10-14) — forwarded only when the kwarg wasn't set.
-            for bound in ("since", "until"):
-                merged.setdefault(bound, rest.get(bound))
+            # ``page`` windows the facet groups (gr592971) — the paged
+            # count's own next: call is issued with it inside args=;
+            # the ref-id channels are the continuation's replayed
+            # dispatch-scope filters.
+            for key in ("since", "until", "page", "include_ref_ids", "exclude_ref_ids"):
+                if rest.get(key) is not None:
+                    merged.setdefault(key, rest[key])
             return super().search(
                 q=q,
                 tags=tags,

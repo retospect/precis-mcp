@@ -47,7 +47,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any, ClassVar
@@ -1267,6 +1267,7 @@ class NumericRefHandler(Handler):
                 id_max=id_hi,
                 page_size=page_size,
                 page=page,
+                status=status,
             )
         if since is not None or until is not None:
             # Reached only on a direct handler call — dispatch routes
@@ -1741,6 +1742,18 @@ class NumericRefHandler(Handler):
         id_max: int | None = None,
         page_size: int = 10,
         page: int = 1,
+        # Continuation spelling (td595880): ``status`` is the caller's
+        # verbatim ``status=`` — the paged ``next:`` call replays it, since
+        # a folded-away '*' would otherwise re-acquire the kind's implicit
+        # status default on the next page. ``next_top``/``next_args`` add
+        # spellings the resolved filter set can't re-express (job's
+        # ``under=`` scope top-level, ``job_type=`` inside ``args={}``);
+        # ``next_drop`` suppresses a resolved channel (the under= scope's
+        # materialised job-id list) when a better spelling replaced it.
+        status: str | None = None,
+        next_top: dict[str, Any] | None = None,
+        next_args: dict[str, Any] | None = None,
+        next_drop: Collection[str] = (),
     ) -> Response:
         """``search(kind=K, view='count')`` — filtered total + facet counts.
 
@@ -1859,9 +1872,25 @@ class NumericRefHandler(Handler):
                     self._count_groups_overflow(
                         hidden_rows,
                         facets,
-                        group_by=group_by,
-                        page=pg,
-                        page_size=ps,
+                        next_call=self._count_next_call(
+                            group_by=group_by,
+                            page=pg + 1,
+                            page_size=ps,
+                            q=q,
+                            status=status,
+                            tags=tags,
+                            exclude_tags=exclude_tags,
+                            link=link,
+                            since=since_dt,
+                            until=until_dt,
+                            id_min=id_min,
+                            id_max=id_max,
+                            include_ref_ids=include_ref_ids,
+                            exclude_ref_ids=exclude_ref_ids,
+                            extra_top=next_top,
+                            extra_args=next_args,
+                            drop=next_drop,
+                        ),
                         sql_capped=len(groups) == _COUNT_GROUP_LIMIT,
                     )
                 )
@@ -1962,30 +1991,112 @@ class NumericRefHandler(Handler):
             text += f" ({', '.join(names)}{f', … +{dropped}' if dropped else ''})"
         return text
 
+    def _count_next_call(
+        self,
+        *,
+        group_by: Any,
+        page: int,
+        page_size: int,
+        q: str | None,
+        status: str | None,
+        tags: list[str] | None,
+        exclude_tags: list[str] | None,
+        link: str | None,
+        since: datetime | None,
+        until: datetime | None,
+        id_min: int | None,
+        id_max: int | None,
+        include_ref_ids: list[int] | None,
+        exclude_ref_ids: list[int] | None,
+        extra_top: dict[str, Any] | None,
+        extra_args: dict[str, Any] | None,
+        drop: Collection[str],
+    ) -> str:
+        """The paged count's ``next:`` call — the same filtered
+        population one page deeper (td595880: it used to re-run the
+        facet bare, silently counting a different set).
+
+        Every active filter replays in the spelling that survives the
+        verb boundary — ``q``/``status``/``tags``/``link``/``since``/
+        ``until``/``page_size`` top-level; ``page``, ``group_by`` and
+        the ref-id channels inside ``args={}``. Two re-spellings:
+
+        * the resolved ``exclude_tags`` fold into ``tags=[…, '!STATUS:x']``
+          — a replayed ``status=`` re-derives the exclusions it owns (the
+          STATUS-axis ``!`` entries strip and re-form identically), and
+          the ``!`` entries carry what no status spelling re-expresses:
+          the implicit live-cohort default and the gripe ``project=``
+          exclusion;
+        * ``since``/``until`` emit the resolved instant, not the
+          caller's spelling — ``since='24'`` re-read relative to the
+          next call's now would slide the counted window.
+        """
+        top: dict[str, Any] = {}
+        if q and q.strip():
+            top["q"] = q
+        if status is not None:
+            top["status"] = status
+        replay_tags = list(tags or [])
+        replay_tags += [f"!{t}" for t in exclude_tags or []]
+        if replay_tags:
+            top["tags"] = replay_tags
+        if link is not None and str(link).strip():
+            top["link"] = link
+        if since is not None:
+            top["since"] = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+        if until is not None:
+            top["until"] = until.strftime("%Y-%m-%dT%H:%M:%SZ")
+        for key in drop:
+            top.pop(key, None)
+        top.update(extra_top or {})
+        args: dict[str, Any] = {}
+        if group_by is not None:
+            # Kinds that normalise the facet list before _count_view
+            # (job's ``job_type`` → ``meta.job_type`` rewrite hands a
+            # list) re-emit the comma spelling the caller could have
+            # written — one term collapses to the bare scalar.
+            args["group_by"] = (
+                ",".join(str(t) for t in group_by)
+                if isinstance(group_by, list)
+                else group_by
+            )
+        if id_min is not None:
+            args["id_min"] = id_min
+        if id_max is not None:
+            args["id_max"] = id_max
+        if include_ref_ids:
+            args["include_ref_ids"] = sorted({int(i) for i in include_ref_ids})
+        if exclude_ref_ids:
+            args["exclude_ref_ids"] = sorted({int(i) for i in exclude_ref_ids})
+        for key in drop:
+            args.pop(key, None)
+        args.update(extra_args or {})
+        args["page"] = page
+        parts = [f"kind={self.kind!r}", "view='count'"]
+        parts += [f"{k}={v!r}" for k, v in top.items()]
+        parts.append(f"args={args!r}")
+        parts.append(f"page_size={page_size}")
+        return f"search({', '.join(parts)})"
+
     def _count_groups_overflow(
         self,
         hidden: list[tuple[tuple[str | None, ...], int, Any]],
         facets: list[tuple[str, str]],
         *,
-        group_by: Any,
-        page: int,
-        page_size: int,
+        next_call: str,
         sql_capped: bool,
     ) -> str:
         """One-line stand-in for facet rows past the current page.
 
         The collapsed ``other:`` tail (gr592971) plus a working
-        ``next:`` — the next page of the same facet — so an agent that
-        hit the wall has a real call to make, not a dead end. Kinds
-        with their own narrowing filters (the job kind's
-        ``job_type=``/``since=``) override the wording.
+        ``next:`` — the next page of the same facet over the same
+        filtered set — so an agent that hit the wall has a real call
+        to make, not a dead end. Kinds with their own narrowing
+        filters (the job kind's ``job_type=``/``since=``) override the
+        wording.
         """
         tail = self._count_other_tail(hidden, facets, more=sql_capped)
-        gb = f", args={{'group_by': {group_by!r}}}" if group_by is not None else ""
-        line = (
-            f"  {tail} — next: search(kind={self.kind!r}, view='count'{gb}, "
-            f"page={page + 1}, page_size={page_size})"
-        )
+        line = f"  {tail} — next: {next_call}"
         if sql_capped:
             line += (
                 f"; only the top {_COUNT_GROUP_LIMIT} groups are counted — "
