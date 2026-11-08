@@ -83,7 +83,7 @@ from collections.abc import Callable
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from precis.errors import BadInput, Unsupported
+from precis.errors import BadInput, Gone, Unsupported
 from precis.handlers import _comment_timeline as tl
 from precis.handlers._eye import is_eye_view
 from precis.handlers._interpret import interpreted
@@ -1900,6 +1900,36 @@ class TodoHandler(NumericRefHandler):
             )
         return f"td{int(digits)}"
 
+    @staticmethod
+    def _gate_fill_verdict(
+        ref_id: int, gate: Any, sha_norm: str
+    ) -> dict[str, Any] | Response:
+        """The gate's ``args`` when it may be filled with ``sha_norm`` —
+        else the refusal: the idempotent ack ``Response`` when it already
+        holds ``sha_norm``, ``BadInput`` for a non-``sha-in-prod`` gate or
+        one filled with a different sha. Runs on the resolved ref and again
+        on the ``FOR UPDATE`` row inside the fill transaction, so a
+        concurrent fill is rechecked under the lock, never overwritten."""
+        if not isinstance(gate, dict) or gate.get("kind") != "sha-in-prod":
+            kind = gate.get("kind") if isinstance(gate, dict) else gate
+            raise BadInput(
+                f"todo id={ref_id} is not a sha-in-prod gate (meta.gate.kind={kind!r})",
+                next="mode='gate' only fills a pending sha-in-prod gate's "
+                "args.sha — other gate kinds have no sha to fill",
+            )
+        gate_args = dict(gate.get("args") or {})
+        current = str(gate_args.get("sha") or "")
+        if current == sha_norm:
+            return Response(body=f"gate td{ref_id}: sha-in-prod sha already {sha_norm}")
+        if current != plan_templates.PENDING_SHA:
+            raise BadInput(
+                f"gate td{ref_id} already holds sha '{current}' — mode='gate' "
+                f"only fills the {plan_templates.PENDING_SHA} placeholder",
+                next="a filled gate is rewritten wholesale via "
+                "edit(kind='todo', id=N, meta={'gate': {...}})",
+            )
+        return gate_args
+
     def _edit_gate_sha(
         self,
         *,
@@ -1913,7 +1943,11 @@ class TodoHandler(NumericRefHandler):
         after a factory land, as the door for a slice landed by hand
         (``scripts/ship --quick`` never reaches the lander, gr597921).
         Restricted to gates still at :data:`PENDING_SHA`: the write is a
-        fill, never a rewrite."""
+        fill, never a rewrite. The placeholder check re-runs on the
+        ``FOR UPDATE`` row inside ``store.atomic()`` and the
+        ``sha: <sha>`` audit comment commits in the same transaction, so a
+        concurrent fill is refused rather than overwritten and a failed
+        comment leaves nothing half-written for a retry to skip."""
         sha_norm = sha.strip().lower() if isinstance(sha, str) else ""
         if not plan_nodes._SHA_RE.fullmatch(sha_norm):
             raise BadInput(
@@ -1935,25 +1969,11 @@ class TodoHandler(NumericRefHandler):
         )
         guards.check_owner_only_ref(self.store, ref_id)
         ref = self._resolve_live_ref(ref_id)
-        gate = (ref.meta or {}).get("gate")
-        if not isinstance(gate, dict) or gate.get("kind") != "sha-in-prod":
-            kind = gate.get("kind") if isinstance(gate, dict) else gate
-            raise BadInput(
-                f"todo id={ref.id} is not a sha-in-prod gate (meta.gate.kind={kind!r})",
-                next="mode='gate' only fills a pending sha-in-prod gate's "
-                "args.sha — other gate kinds have no sha to fill",
-            )
-        gate_args = dict(gate.get("args") or {})
-        current = str(gate_args.get("sha") or "")
-        if current == sha_norm:
-            return Response(body=f"gate td{ref.id}: sha-in-prod sha already {sha_norm}")
-        if current != plan_templates.PENDING_SHA:
-            raise BadInput(
-                f"gate td{ref.id} already holds sha '{current}' — mode='gate' "
-                f"only fills the {plan_templates.PENDING_SHA} placeholder",
-                next="a filled gate is rewritten wholesale via "
-                "edit(kind='todo', id=N, meta={'gate': {...}})",
-            )
+        verdict = self._gate_fill_verdict(
+            ref_id, (ref.meta or {}).get("gate"), sha_norm
+        )
+        if isinstance(verdict, Response):
+            return verdict
         if dry_run:
             return Response(
                 body=(
@@ -1961,23 +1981,44 @@ class TodoHandler(NumericRefHandler):
                     f"sha-in-prod args.sha = {sha_norm}."
                 )
             )
-        new_gate = {**gate, "args": {**gate_args, "sha": sha_norm}}
-        with self.store.tx() as conn:
+        with self.store.atomic() as conn:
+            # Lock the row and re-run the verdict on the locked meta: a
+            # concurrent fill committed between the resolve above and this
+            # lock is seen here, never overwritten.
+            row = conn.execute(
+                "SELECT meta->'gate' FROM refs "
+                "WHERE ref_id = %s AND retired_at IS NULL FOR UPDATE",
+                (ref_id,),
+            ).fetchone()
+            if row is None:
+                raise Gone(
+                    f"todo id={ref_id} was deleted concurrently",
+                    next=f"get(kind='todo', id={ref_id}) — a soft-delete "
+                    "is post-mortem only, recoverable at the SQL layer",
+                )
+            live_gate = row[0]
+            verdict = self._gate_fill_verdict(ref_id, live_gate, sha_norm)
+            if isinstance(verdict, Response):
+                return verdict
+            new_gate = {**live_gate, "args": {**verdict, "sha": sha_norm}}
             self.store.stamp_ref_meta(ref_id, {"gate": new_gate}, conn=conn)
             self.store.append_event(
                 ref_id,
                 source="agent",
                 event="meta_patched",
-                payload={"old": {"gate": gate}, "new": {"gate": new_gate}},
+                payload={"old": {"gate": live_gate}, "new": {"gate": new_gate}},
                 conn=conn,
             )
-        tl.append_comment(
-            self.store,
-            ref,
-            kind=self.kind,
-            comment_kind=_COMMENT_KIND,
-            text=f"sha: {sha_norm}{who}",
-        )
+            # The audit comment joins the same transaction (its inner
+            # checkouts savepoint-join under ``atomic``): a comment failure
+            # rolls the fill back, so a retry still finds the placeholder.
+            tl.append_comment(
+                self.store,
+                ref,
+                kind=self.kind,
+                comment_kind=_COMMENT_KIND,
+                text=f"sha: {sha_norm}{who}",
+            )
         return Response(body=f"gate td{ref.id}: sha-in-prod sha set to {sha_norm}")
 
     def _edit_anchored(

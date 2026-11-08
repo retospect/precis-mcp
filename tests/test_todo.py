@@ -8,6 +8,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput, Gone, NotFound
+from precis.handlers import _comment_timeline as tl
 from precis.handlers.todo import TodoHandler
 from precis.runtime import PrecisRuntime
 
@@ -549,6 +550,84 @@ def test_edit_gate_survives_dispatch(
     ref = handler.store.get_ref(kind="todo", id=tid)
     assert ref is not None
     assert ref.meta["gate"]["args"]["sha"] == "abc1234"
+
+
+def test_edit_gate_comment_failure_rolls_the_fill_back(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fill and its audit comment are one transaction: a comment
+    failure leaves the gate at the placeholder, so the retry writes both
+    halves instead of skipping the comment on an already-filled gate."""
+    tid = _put_sha_gate(handler)
+    calls = {"n": 0}
+    orig = tl.append_comment
+
+    def _flaky(*a: Any, **kw: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("comment insert failed")
+        return orig(*a, **kw)
+
+    monkeypatch.setattr(tl, "append_comment", _flaky)
+    with pytest.raises(RuntimeError, match="comment insert failed"):
+        handler.edit(id=tid, mode="gate", sha="abc1234")
+    ref = handler.store.get_ref(kind="todo", id=tid)
+    assert ref is not None
+    assert ref.meta["gate"]["args"]["sha"] == "0000000"
+    assert _comment_texts(handler, tid) == []
+    assert not handler.store.events_for(tid, source="agent", event="meta_patched")
+    # The retry still finds the placeholder and writes both halves.
+    r = handler.edit(id=tid, mode="gate", sha="abc1234")
+    assert f"gate td{tid}: sha-in-prod sha set to abc1234" in r.body
+    assert "sha: abc1234" in _comment_texts(handler, tid)
+
+
+def test_edit_gate_rechecks_the_placeholder_under_the_lock(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fill committed between the placeholder check and the row lock is
+    rechecked on the locked row — refused, never overwritten."""
+    tid = _put_sha_gate(handler)
+    orig_resolve = handler._resolve_live_ref
+
+    def _racing_resolve(ref_id: int) -> Any:
+        ref = orig_resolve(ref_id)
+        # A concurrent fill lands after this call resolved the ref but
+        # before its FOR UPDATE recheck.
+        handler.store.stamp_ref_meta(
+            tid,
+            {"gate": {"kind": "sha-in-prod", "args": {"sha": "bbbbbbb"}}},
+        )
+        return ref
+
+    monkeypatch.setattr(handler, "_resolve_live_ref", _racing_resolve)
+    with pytest.raises(BadInput, match="already holds sha 'bbbbbbb'"):
+        handler.edit(id=tid, mode="gate", sha="abc1234")
+    ref = handler.store.get_ref(kind="todo", id=tid)
+    assert ref is not None
+    assert ref.meta["gate"]["args"]["sha"] == "bbbbbbb"
+    assert _comment_texts(handler, tid) == []
+
+
+def test_edit_gate_concurrent_same_sha_acks(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recheck under the lock sees its own sha — the losing call's ack
+    is idempotent, not a refusal."""
+    tid = _put_sha_gate(handler)
+    orig_resolve = handler._resolve_live_ref
+
+    def _racing_resolve(ref_id: int) -> Any:
+        ref = orig_resolve(ref_id)
+        handler.store.stamp_ref_meta(
+            tid,
+            {"gate": {"kind": "sha-in-prod", "args": {"sha": "abc1234"}}},
+        )
+        return ref
+
+    monkeypatch.setattr(handler, "_resolve_live_ref", _racing_resolve)
+    r = handler.edit(id=tid, mode="gate", sha="abc1234")
+    assert f"gate td{tid}: sha-in-prod sha already abc1234" in r.body
 
 
 # ── put: status transitions ──────────────────────────────────────────
