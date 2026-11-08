@@ -25,7 +25,10 @@ import json
 import logging
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from precis.viz3d.camera import Camera
 
 from precis.render.sandbox import DEFAULT_TIMEOUT_S, render_python
 
@@ -60,9 +63,14 @@ def invalidation_key(input_shas: list[str]) -> str:
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
-#: Roll to retire every cached view render (append-only key scheme).
+#: Roll to retire every cached view render (append-only key scheme). The
+#: roll only retires because ``_view_fresh`` also requires the stamped
+#: ``code_version`` to match — without that check the version/ref
+#: short-circuit kept a stale image fresh forever (gr592796).
 #: 2: full Jmol CPK palette in stickfig (gr592814) recolours prior renders.
-VIZ3D_CODE_VERSION = "2"
+#: 3: bond-less scenes get detected MIC bonds, periodic scenes an oblique
+#:    camera default, and ``color:'layer'`` z-shading is new (gr592796).
+VIZ3D_CODE_VERSION = "3"
 
 #: Hard cost bounds for a structure view. The render runs in-process (viz3d is
 #: pure Python/numpy, no sandbox), so cost is bounded by atom count instead of
@@ -74,10 +82,23 @@ _VIEW_R2_MAX_ATOMS = 2000
 _VIEW_R1_MAX_ATOMS = 6000
 
 _VIEW_CAMERA_KEYS = ("azimuth_deg", "elevation_deg", "twist_deg", "projection", "zoom")
-_VIEW_STYLE_KEYS = ("stick_radius", "ball_scale", "color")
+_VIEW_STYLE_KEYS = ("stick_radius", "ball_scale", "color", "halo", "fog", "scalebar")
 _VIEW_ERRORS = {"no-source", "view-error", "rasterise", "too-large"}
 _VIEW_PROJECTIONS = ("ortho", "persp")
-_VIEW_COLORS = ("cpk", "mono")
+_VIEW_COLORS = ("cpk", "mono", "layer")
+
+#: Oblique default for a periodic scene (gr592796): ``Camera()``'s az/el 0
+#: stares straight down a lattice axis, stacking a slab's atoms into
+#: columns of hidden depth. Matches ``precis_web.structure_package``'s
+#: fixed view so a package image and a draft figure of one structure agree.
+_OBLIQUE_AZIMUTH_DEG = 35.0
+_OBLIQUE_ELEVATION_DEG = 25.0
+
+#: The flat recipe ``style`` splits two ways — geometry knobs consumed by
+#: :class:`precis.viz3d.stickfig.Style`, render knobs forwarded verbatim
+#: into :class:`precis.viz3d.render.Style`.
+_STICK_STYLE_KEYS = ("stick_radius", "ball_scale")
+_RENDER_STYLE_KEYS = ("halo", "fog", "scalebar")
 
 
 def _finite(
@@ -134,6 +155,22 @@ def view_recipe(
         if style["color"] not in _VIEW_COLORS:
             raise ValueError(f"color must be one of {list(_VIEW_COLORS)}")
         sty["color"] = style["color"]
+    for k in ("halo", "fog"):
+        if k in style:
+            if not isinstance(style[k], bool):
+                raise ValueError(f"{k} must be a boolean, got {style[k]!r}")
+            sty[k] = style[k]
+    if "scalebar" in style:
+        sb = style["scalebar"]
+        if sb is False or sb == "auto":
+            sty["scalebar"] = sb
+        elif isinstance(sb, dict) and set(sb) == {"length"}:
+            v = _finite("scalebar.length", sb["length"])
+            if v <= 0.0:
+                raise ValueError(f"scalebar.length must be positive, got {v!r}")
+            sty["scalebar"] = {"length": v}
+        else:
+            raise ValueError("scalebar must be 'auto', false, or {'length': <number>}")
     if (
         isinstance(refine, bool)
         or not isinstance(refine, int)
@@ -192,7 +229,14 @@ def view_key(scene: Any, recipe: dict[str, Any]) -> str:
     params = {
         k: v
         for k, v in recipe.items()
-        if k not in ("cached_key", "source_version", "source_ref", "failed")
+        if k
+        not in (
+            "cached_key",
+            "source_version",
+            "source_ref",
+            "failed",
+            "code_version",
+        )
     }
     canon = json.dumps(params, sort_keys=True, separators=(",", ":"))
     joined = "\n".join(
@@ -201,12 +245,42 @@ def view_key(scene: Any, recipe: dict[str, Any]) -> str:
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
+def _view_camera(scene: Any, camera: dict[str, Any]) -> Camera:
+    """The recipe's camera with the periodic-scene default filled in: keys
+    the recipe names win (an explicit camera stays honoured); a recipe that
+    omits azimuth/elevation on a periodic scene gets the oblique view
+    (gr592796) instead of the axis-aligned ``Camera()`` default."""
+    from precis.viz3d.camera import Camera
+
+    cam = dict(camera)
+    if any(scene.cell.pbc):
+        cam.setdefault("azimuth_deg", _OBLIQUE_AZIMUTH_DEG)
+        cam.setdefault("elevation_deg", _OBLIQUE_ELEVATION_DEG)
+    return Camera(**cam)
+
+
+def _view_styles(style: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split the flat recipe ``style`` into ``(stickfig kwargs, render
+    kwargs)`` — see ``_STICK_STYLE_KEYS``/``_RENDER_STYLE_KEYS``.
+    ``color: 'layer'`` (gr592796) is element colour shaded by cartesian z —
+    buried layers darken, so a dopant's hue still reads inside its layer."""
+    stick = {k: style[k] for k in _STICK_STYLE_KEYS if k in style}
+    color = style.get("color")
+    if color == "layer":
+        stick["color"], stick["z_shade"] = "cpk", True
+    elif color is not None:
+        stick["color"] = color
+    render = {k: style[k] for k in _RENDER_STYLE_KEYS if k in style}
+    return stick, render
+
+
 def _render_view_png(scene: Any, recipe: dict[str, Any]) -> bytes | None:
     """Rasterise a structure scene per ``recipe`` (viz3d stick figure → resvg)."""
     import numpy as np
 
+    from precis.structure.probe import detect_bonds
     from precis.utils.figure_source import _svg_to_png
-    from precis.viz3d.camera import Camera
+    from precis.viz3d.render import Style as RenderStyle
     from precis.viz3d.render import render_svg
     from precis.viz3d.stickfig import Style, stick_scene
 
@@ -216,19 +290,23 @@ def _render_view_png(scene: Any, recipe: dict[str, Any]) -> bytes | None:
         [scene.cell.frac_to_cart(scene.atoms[lab].frac) for lab in labels],
         dtype=np.float64,
     ).reshape(len(labels), 3)
-    # Periodic-image bonds are not drawn (molecular scenes only, v1).
+    # A structure with no stored bonds (metals never record any — gr592796)
+    # gets MIC covalent-cutoff detection, as the structure package does, so
+    # its nearest-neighbour coordination still draws. Periodic-image bonds
+    # are not drawn.
+    all_bonds = scene.bonds or detect_bonds(scene)
     bonds = [
         (index[b.i], index[b.j])
-        for b in scene.bonds
-        if b.i in index and b.j in index and tuple(b.image) == (0, 0, 0)
+        for b in all_bonds
+        if b.i != b.j and b.i in index and b.j in index and tuple(b.image) == (0, 0, 0)
     ]
     elements = [scene.atoms[lab].element for lab in labels]
+    stick_kw, render_kw = _view_styles(recipe.get("style") or {})
     svg = render_svg(
-        stick_scene(
-            elements, coords, bonds, style=Style(**(recipe.get("style") or {}))
-        ),
-        Camera(**(recipe.get("camera") or {})),
+        stick_scene(elements, coords, bonds, style=Style(**stick_kw)),
+        _view_camera(scene, recipe.get("camera") or {}),
         refine=effective_refine(recipe, len(labels)),
+        style=RenderStyle(**render_kw),
     )
     return _svg_to_png(svg)
 
@@ -257,6 +335,7 @@ def _render_view_chunk(
                 "failed": {
                     "version": version,
                     "ref": source_ref,
+                    "code_version": VIZ3D_CODE_VERSION,
                     "message": _failure_message(error, detail),
                 }
             },
@@ -277,7 +356,12 @@ def _render_view_chunk(
     key = view_key(scene, recipe)
     store.drafts.stamp_render_fields(
         figure_chunk_id,
-        {"cached_key": key, "source_version": version, "source_ref": source_ref},
+        {
+            "cached_key": key,
+            "source_version": version,
+            "source_ref": source_ref,
+            "code_version": VIZ3D_CODE_VERSION,
+        },
         drop=("failed",),
     )
     return RenderOutcome(ok=True, cached_key=key)
@@ -354,11 +438,14 @@ def _view_fresh(store: Any, meta: dict[str, Any]) -> Any:
         return _STALE if pending else None  # a vanished source keeps its image
     version = int((ref.meta or {}).get("version", 0))
     # Stamps from before ``source_ref`` existed carry no ref: treat as same.
+    # ``code_version`` retires the stamp (success OR failure) when
+    # ``VIZ3D_CODE_VERSION`` rolls — a code fix must be able to re-render.
     failed = render.get("failed")
     if (
         isinstance(failed, dict)
         and failed.get("version") == version
         and failed.get("ref", ref.id) == ref.id
+        and failed.get("code_version") == VIZ3D_CODE_VERSION
     ):
         return str(failed.get("message") or "view render failed")
     if pending or not render.get("cached_key"):
@@ -366,6 +453,7 @@ def _view_fresh(store: Any, meta: dict[str, Any]) -> Any:
     if (
         render.get("source_version") == version
         and render.get("source_ref", ref.id) == ref.id
+        and render.get("code_version") == VIZ3D_CODE_VERSION
     ):
         return None
     loaded = view_load(store, render)

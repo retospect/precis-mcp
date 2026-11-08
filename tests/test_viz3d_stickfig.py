@@ -115,6 +115,27 @@ def test_stick_scene_color_by_overrides_present_atoms_only() -> None:
     assert balls[4].color == "#ffffff"
 
 
+def test_stick_scene_z_shade_darkens_buried_layers() -> None:
+    """``z_shade`` (the figure recipe's ``color: 'layer'``, gr592796):
+    the top of the z-span keeps its element hue, deeper atoms darken —
+    same-element layers read as a stack while a dopant keeps its colour."""
+    elements = ["Pd", "Pd", "Ir"]
+    coords = np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 1.0], [0.7, 1.2, 2.0]])
+    scene = stick_scene(elements, coords, [], style=Style(z_shade=True))
+    balls = [p for p in scene.primitives if isinstance(p, Ball)]
+    assert balls[2].color == "#175487"  # top atom: Ir's own CPK hue, unshaded
+    assert balls[0].color != balls[1].color  # bottom Pd darker than middle Pd
+    assert balls[0].color != "#006985"  # and darker than Pd's own CPK hue
+
+
+def test_stick_scene_z_shade_flat_scene_keeps_colors() -> None:
+    elements = ["Pd", "Pd"]
+    coords = np.array([[0.0, 0.0, 3.0], [1.5, 0.0, 3.0]])
+    scene = stick_scene(elements, coords, [], style=Style(z_shade=True))
+    balls = [p for p in scene.primitives if isinstance(p, Ball)]
+    assert {b.color for b in balls} == {"#006985"}
+
+
 def test_stick_scene_rejects_coords_length_mismatch() -> None:
     with pytest.raises(ValueError, match="coords"):
         stick_scene(_ELEMENTS, _COORDS[:3], _BONDS, style=Style())

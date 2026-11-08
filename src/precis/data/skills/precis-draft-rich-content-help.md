@@ -113,14 +113,22 @@ put(kind="draft", id="nanotrans", chunk_kind="figure",
 ```
 
 `camera` takes `azimuth_deg`, `elevation_deg`, `twist_deg`, `projection`
-(`ortho`|`persp`), `zoom`; `style` takes `stick_radius`, `ball_scale`,
-`color` (`cpk`|`mono`). Rendering is lazy like a graph: first export/view
+(`ortho`|`persp`), `zoom`; a periodic structure with no camera keys gets an
+oblique default view (azimuth 35, elevation 25) — a bare `Camera()` would
+stare straight down a lattice axis. `style` takes `stick_radius`,
+`ball_scale`, `color` (`cpk`|`mono`|`layer` — `layer` darkens each element
+colour by the atom's z so a slab's layer stack and a dopant inside it read
+at a glance), plus the render knobs `halo`/`fog` (booleans; `fog` is the
+depth cue) and `scalebar` (`"auto"`, `false`, or `{"length": Å}`). A
+structure with no stored bonds — metal slabs never record any — renders
+its nearest-neighbour coordination detected by distance (MIC, covalent
+cutoff), not floating balls. Rendering is lazy like a graph: first export/view
 renders, and a later geometry edit to the structure re-renders on the next
 export. Limits: values are validated at `put` (zoom 0.1-20, `stick_radius`
 0.01-2 Å, `ball_scale` 0.05-3, `refine` an int); structures over 20000
 atoms are refused, and large ones render at reduced `refine`. **Bonds that
-cross a periodic cell wall are not drawn** (molecular structures only; a
-periodic sheet shows missing bonds at the edges). It pins the live slug.
+cross a periodic cell wall are not drawn** (a periodic sheet shows missing
+bonds at the edges). It pins the live slug.
 
 From an `se` design, name the block instead of the structure:
 `meta={'view': {'source': 'se:nanobud-review-figs', 'block': 'bud22', ...}}`.

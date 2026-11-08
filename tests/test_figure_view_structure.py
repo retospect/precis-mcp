@@ -9,6 +9,7 @@ import hashlib
 import itertools
 import json
 from pathlib import Path
+from typing import Any
 
 import docx
 import pytest
@@ -141,6 +142,11 @@ def test_view_figure_rerenders_after_geometry_edit(hub: Hub, tmp_path: Path) -> 
         {"source": "structure:co", "style": {"stick_radius": 5}},
         {"source": "structure:co", "style": {"ball_scale": 0.0}},
         {"source": "structure:co", "style": {"color": "red"}},
+        {"source": "structure:co", "style": {"fog": "yes"}},
+        {"source": "structure:co", "style": {"halo": 1}},
+        {"source": "structure:co", "style": {"scalebar": "wide"}},
+        {"source": "structure:co", "style": {"scalebar": {"length": -1}}},
+        {"source": "structure:co", "style": {"scalebar": {"length": 2, "x": 1}}},
     ],
 )
 def test_view_figure_rejects_bad_recipe(hub: Hub, view: dict) -> None:
@@ -177,6 +183,25 @@ def test_view_recipe_normalises_angles() -> None:
 
     r = view_recipe("co", {"azimuth_deg": 390, "elevation_deg": -90}, None, 2)
     assert r["camera"] == {"azimuth_deg": 30.0, "elevation_deg": 270.0}
+
+
+def test_view_recipe_accepts_render_knobs_and_layer_color() -> None:
+    """gr592796's new surface: ``halo``/``fog``/``scalebar`` pass validation
+    into the canonical recipe, and ``color: 'layer'`` is a legal colour."""
+    from precis.render.figure import view_recipe
+
+    r = view_recipe(
+        "co",
+        None,
+        {"color": "layer", "fog": True, "halo": False, "scalebar": {"length": 5}},
+        1,
+    )
+    assert r["style"] == {
+        "color": "layer",
+        "fog": True,
+        "halo": False,
+        "scalebar": {"length": 5.0},
+    }
 
 
 def test_view_put_refuses_oversize_structure(
@@ -523,3 +548,135 @@ def test_se_source_design_without_bindings(hub: Hub) -> None:
 def test_se_source_unknown_design(hub: Hub) -> None:
     with pytest.raises(NotFound, match="se design"):
         _draft_with(hub, {"source": "se:nope"})
+
+
+# ── gr592796: periodic slabs — oblique default, detected bonds, layer cue ──
+
+#: A small periodic Pd slab + one Ir dopant, no ``add_bond`` ops (metallic
+#: slabs never record bonds — the gripe's shape). 8 Å square cell, in-plane
+#: neighbours at 2.8 Å (inside the 1.2 × covalent-sum cutoff).
+_SLAB = json.dumps(
+    {
+        "cell": {"a": 8.0, "b": 8.0, "c": 12.0, "pbc": [True, True, False]},
+        "ops": [
+            {"op": "add_atom", "element": "Pd", "frac": [0.1, 0.1, 0.2]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.45, 0.1, 0.2]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.1, 0.45, 0.2]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.45, 0.45, 0.2]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.275, 0.275, 0.4]},
+            {"op": "add_atom", "element": "Ir", "frac": [0.275, 0.625, 0.4]},
+        ],
+    }
+)
+
+
+def _scene(hub: Hub, slug: str):
+    ref = hub.live_store.get_ref(kind="structure", id=slug)
+    assert ref is not None
+    scene, _handles = hub.live_store.structure_load(ref.id)
+    return scene
+
+
+def test_view_camera_oblique_default_for_periodic_only(hub: Hub) -> None:
+    """A periodic scene with no camera keys gets the oblique default
+    (gr592796 want (a)); keys the recipe names win, and a molecular scene
+    keeps ``Camera()``'s defaults."""
+    import precis.render.figure as rf
+
+    sh = StructureHandler(hub=hub)
+    sh.put(id="slab", text=_SLAB)
+    sh.put(id="co", text=_PD)
+    slab, mol = _scene(hub, "slab"), _scene(hub, "co")
+
+    cam = rf._view_camera(slab, {})
+    assert cam.azimuth_deg == 35.0 and cam.elevation_deg == 25.0
+    cam = rf._view_camera(slab, {"azimuth_deg": 10.0, "projection": "persp"})
+    assert cam.azimuth_deg == 10.0  # recipe wins
+    assert cam.elevation_deg == 25.0  # still filled for a periodic scene
+    assert cam.projection == "persp"
+    cam = rf._view_camera(mol, {})
+    assert cam.azimuth_deg == 0.0 and cam.elevation_deg == 0.0
+
+
+def test_view_styles_split_and_layer_color() -> None:
+    """``_view_styles`` sends geometry knobs to stickfig and render knobs
+    to ``viz3d.render.Style``; ``color: 'layer'`` becomes cpk + z_shade."""
+    import precis.render.figure as rf
+
+    stick, render = rf._view_styles(
+        {
+            "stick_radius": 0.1,
+            "ball_scale": 0.4,
+            "color": "layer",
+            "fog": True,
+            "halo": False,
+            "scalebar": {"length": 5.0},
+        }
+    )
+    assert stick == {
+        "stick_radius": 0.1,
+        "ball_scale": 0.4,
+        "color": "cpk",
+        "z_shade": True,
+    }
+    assert render == {"fog": True, "halo": False, "scalebar": {"length": 5.0}}
+    stick, render = rf._view_styles({"color": "mono"})
+    assert stick == {"color": "mono"} and render == {}
+
+
+def test_view_render_detects_bonds_when_structure_has_none(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr592796 want (b): a bond-less slab renders its MIC nearest-neighbour
+    coordination (sticks change the picture); a structure WITH stored bonds
+    never pays the detection pass."""
+    import precis.render.figure as rf
+    import precis.structure.probe as probe
+
+    sh = StructureHandler(hub=hub)
+    sh.put(id="slab", text=_SLAB)
+    sh.put(id="co", text=_PD)
+    slab, mol = _scene(hub, "slab"), _scene(hub, "co")
+    assert not slab.bonds and mol.bonds
+    recipe = rf.view_recipe("slab", None, None, 1)
+
+    calls: list[int] = []
+    real = probe.detect_bonds
+
+    def spy(scene: Any, tolerance: float = 1.2) -> Any:
+        calls.append(1)
+        return real(scene, tolerance)
+
+    monkeypatch.setattr(probe, "detect_bonds", spy)
+    png = rf._render_view_png(slab, recipe)
+    assert calls == [1] and png is not None and png[:8] == b"\x89PNG\r\n\x1a\n"
+
+    rf._render_view_png(mol, recipe)
+    assert calls == [1]  # stored bonds: detection never ran
+
+    monkeypatch.setattr(probe, "detect_bonds", lambda s, tolerance=1.2: [])
+    bare = rf._render_view_png(slab, recipe)
+    assert bare is not None and bare != png  # no sticks drawn
+
+
+def test_view_code_version_roll_retires_cached_render(
+    hub: Hub, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rolling ``VIZ3D_CODE_VERSION`` must actually retire a cached image —
+    the version/ref short-circuit used to keep it fresh forever, which is
+    how gr592796's figure kept its bad render."""
+    import precis.render.figure as rf
+
+    ref, fig = _draft(hub)
+    drafts = hub.live_store.drafts
+    export_docx(hub.live_store, ref, target_path=tmp_path / "a.docx")
+    meta = drafts.draft_chunk_meta(fig.handle)
+    assert meta["render"]["code_version"] == rf.VIZ3D_CODE_VERSION
+    assert not needs_render(hub.live_store, drafts.get_draft_chunk(fig.dc))
+
+    monkeypatch.setattr(rf, "VIZ3D_CODE_VERSION", "9")
+    assert needs_render(hub.live_store, drafts.get_draft_chunk(fig.dc))
+    export_docx(hub.live_store, ref, target_path=tmp_path / "b.docx")
+    meta = drafts.draft_chunk_meta(fig.handle)
+    assert meta["render"]["code_version"] == "9"
+    assert not needs_render(hub.live_store, drafts.get_draft_chunk(fig.dc))

@@ -84,15 +84,15 @@ _COLORMAP_STOPS: tuple[tuple[float, tuple[int, int, int]], ...] = (
 class Style:
     """Stick-figure construction knobs.
 
-    ``stick_radius``/``ball_scale`` and ``color``/``color_by`` are consumed
-    HERE — they shape the geometry :func:`stick_scene` builds. ``halo``/
-    ``fog``/``scalebar`` mirror :class:`precis.viz3d.render.Style`'s fields
-    of the same name 1:1 (matching the ``se-view-figures`` recipe's flat
-    JSON ``style`` block) but are inert in this module: :class:`.Scene3`
-    carries no rendering knobs, so a caller wiring this up to
+    ``stick_radius``/``ball_scale``, ``color``/``color_by`` and ``z_shade``
+    are consumed HERE — they shape the geometry :func:`stick_scene` builds.
+    ``halo``/``fog``/``scalebar`` mirror
+    :class:`precis.viz3d.render.Style`'s fields of the same name 1:1
+    (matching the ``se-view-figures`` recipe's flat JSON ``style`` block)
+    but are inert in this module: :class:`.Scene3` carries no rendering
+    knobs, so a caller wiring this up to
     :func:`precis.viz3d.render.render_svg` forwards them verbatim into that
-    module's own ``Style`` — the (later) view-figure wiring slice, not
-    built here.
+    module's own ``Style`` (``precis.render.figure._view_styles`` does).
     """
 
     stick_radius: float = 0.12
@@ -102,6 +102,12 @@ class Style:
     fog: bool = False
     scalebar: ScalebarSpec = "auto"
     color_by: dict[int, float] | None = None
+    #: ``z_shade`` (the figure recipe's ``color: 'layer'``, gr592796)
+    #: darkens each atom's colour by its z within the scene's z-span:
+    #: buried layers sit at ``_Z_SHADE_FLOOR`` of their own hue, the top
+    #: layer keeps its colour untouched — a slab's layer stack (and a
+    #: dopant inside it, whose element hue survives) reads at a glance.
+    z_shade: bool = False
 
 
 def _colormap(t: float) -> str:
@@ -122,6 +128,42 @@ def cpk_color(element: str) -> str:
     """The CPK colour a ``cpk`` stick figure draws ``element`` in — for a
     legend that must match the picture."""
     return _CPK.get(element, _CPK_DEFAULT)
+
+
+#: ``style.z_shade`` brightness floor for the deepest atom — the top of
+#: the z-span always keeps its own colour (factor 1.0), so shading never
+#: brightens one element's hue into another's.
+_Z_SHADE_FLOOR = 0.55
+
+
+def _shade_color(hex_color: str, factor: float) -> str:
+    """Scale RGB channels by ``factor`` (same convention as
+    :func:`precis.viz3d.render._shade`, kept local to preserve this
+    module's "no engine internals" import surface)."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return (
+        f"#{min(255, round(r * factor)):02x}"
+        f"{min(255, round(g * factor)):02x}"
+        f"{min(255, round(b * factor)):02x}"
+    )
+
+
+def _z_shade_colors(colors: list[str], z: NDArray[np.floating]) -> list[str]:
+    """Darken each atom colour by its z within the scene's z-span (see
+    :attr:`Style.z_shade`). A flat scene (no z-span) keeps its colours."""
+    if not colors:
+        return colors
+    zmin, zmax = float(z.min()), float(z.max())
+    span = zmax - zmin
+    if span < 1e-9:
+        return colors
+    return [
+        _shade_color(
+            c, _Z_SHADE_FLOOR + (1.0 - _Z_SHADE_FLOOR) * (float(zi) - zmin) / span
+        )
+        for c, zi in zip(colors, z)
+    ]
 
 
 def _element_color(element: str, style: Style) -> str:
@@ -171,6 +213,8 @@ def stick_scene(
         )
 
     colors = _atom_colors(elements, style)
+    if style.z_shade:
+        colors = _z_shade_colors(colors, xyz[:, 2])
     primitives: list[Primitive] = []
     for element, pos, color in zip(elements, xyz, colors):
         center: Point3 = (float(pos[0]), float(pos[1]), float(pos[2]))
