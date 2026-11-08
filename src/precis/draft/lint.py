@@ -19,8 +19,10 @@ notation, ``$…$`` math spans the exporters would demote to literal text
 and — reported
 distinctly from a plain dangling reference — a ``[...]`` cite whose target
 is a real ref that has since been soft-deleted (a tombstone, gr265228),
-and a cite of a paper whose ingest flagged glyph damage
-(:func:`glyph_cite_hint`, gr228652).
+a cite of a paper whose ingest flagged glyph damage
+(:func:`glyph_cite_hint`, gr228652), and a figure/table caption that
+starts with its own float label, which the exporters' auto-numbering
+would print doubled (:func:`caption_number_hint`, gr592852).
 Pure functions over an explicit :class:`~precis.store.store.Store` (no
 handler `self`) — ``handlers/draft.py::DraftHandler`` is the sole caller,
 wiring these into its ``put``/``edit``/``get`` bodies.
@@ -33,7 +35,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from precis.utils import handle_registry
 
@@ -641,6 +643,63 @@ def bare_xref_hint(new_text: str, old_text: str = "") -> str:
         return ""
     return "".join(
         f"\n\n⚠ bare cross-ref {t}: write 'see [¶…]' or '([¶…])'" for t in bare[:5]
+    )
+
+
+#: A figure/table caption that opens with its own float label — both
+#: exporters prepend the assigned number themselves ("Figure 3: …" /
+#: "Table 2: …"), so an authored "Figure 1b. …"/"Table 0. …" prints
+#: doubled and can never match the exporter's count (gr592852).
+_CAPTION_SELF_LABEL_RE = re.compile(r"^\s*(?:figure|fig\.?|table)\s*\d", re.IGNORECASE)
+
+
+def caption_self_label(caption: str) -> str | None:
+    """The float label a caption opens with ("Figure 1b", "table 0"), or
+    ``None`` — shared by the write-path hint and the hygiene report."""
+    m = _CAPTION_SELF_LABEL_RE.match(caption or "")
+    return m.group(0).strip() if m else None
+
+
+def table_caption_text(meta: dict[str, Any] | None, text: str | None) -> str:
+    """A table chunk's legend as the exporters see it — canonical
+    ``meta.caption``, else the ``**…**`` lead-in or a raw ``\\caption{}``
+    in the text (:func:`table_payload`). ``""`` when there is none."""
+    from precis.utils.table_data import table_payload
+
+    return (table_payload(meta, text) or {}).get("caption") or ""
+
+
+def caption_number_hint(
+    text: str = "",
+    chunk_kind: str | None = None,
+    caption: str | None = None,
+    meta: dict[str, Any] | None = None,
+) -> str:
+    """Advisory ⚠ for a figure/table caption that begins with its own
+    float label ("Figure 1b. …", "Table 0. …"): the exporters prepend
+    "Figure N:"/"Table N:" themselves, so the authored label prints
+    doubled ("Figure 3: Figure 1b. …"). ``text`` is the written chunk
+    text (a figure's caption IS its text); ``caption`` the resolved table
+    legend when the caller already has it — else a table's legend is
+    recovered the same way the exporters do (:func:`table_payload`: the
+    canonical ``meta.caption``, else the ``**…**`` lead-in or a raw
+    ``\\caption{}`` in the text). A hint, never a refusal: the write
+    still lands."""
+    if chunk_kind not in ("figure", "table"):
+        return ""
+    cap = caption
+    if cap is None:
+        cap = text if chunk_kind == "figure" else table_caption_text(meta, text)
+    if caption_self_label(cap) is None:
+        return ""
+    shown = cap.strip()[:60]
+    noun = "Figure" if chunk_kind == "figure" else "Table"
+    return (
+        f"\n\n⚠ caption starts with its own float label ({shown!r}): the "
+        f"export prepends '{noun} N:' itself, so this prints doubled "
+        f"('{noun} 3: {shown}'). Drop the authored number — reference the "
+        "float from prose with [dc<chunk-id>], which renders the assigned "
+        "number, so a re-ordered draft never goes stale."
     )
 
 

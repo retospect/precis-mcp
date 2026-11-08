@@ -948,10 +948,60 @@ def test_export_renders_table(draft: DraftHandler, hub: Hub, tmp_path: Path) -> 
     assert [c.text for c in t.rows[0].cells] == ["ID", "Title"]
     assert [c.text for c in t.rows[1].cells] == ["I1", "alpha"]
     assert t.rows[0].cells[0].paragraphs[0].runs[0].bold  # header bold
-    # caption rendered as a bold lead-in paragraph; pipe markdown not dumped
+    # caption renders auto-numbered, like a figure's "Figure N:" (gr592852);
+    # pipe markdown not dumped
     paras = [p.text for p in doc.paragraphs]
-    assert "Issue register" in paras
+    assert "Table 1: Issue register" in paras
     assert not any("| ID | Title |" in p for p in paras)
+
+
+def test_table_numbers_in_document_order_and_cross_reference(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """gr592852: tables number in document order like figures (each on its
+    own counter), and a ``[dc<id>]`` cross-ref to a table prints "table N"
+    — never the enclosing section's number."""
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="tn", title="T", project=pid)
+    t1 = draft.put(
+        id="tn",
+        chunk_kind="table",
+        table={"header": ["a"], "rows": [[1]]},
+        caption="first legend",
+        at={"last": True},
+    )
+    m1 = re.search(r"dc\d+", t1.body)
+    assert m1
+    t1_dc = m1.group(0)
+    t2 = draft.put(
+        id="tn",
+        chunk_kind="table",
+        table={"header": ["b"], "rows": [[2]]},
+        at={"last": True},
+    )
+    m2 = re.search(r"dc\d+", t2.body)
+    assert m2
+    t2_dc = m2.group(0)
+    draft.put(
+        id="tn",
+        chunk_kind="paragraph",
+        text=f"Compare [{t1_dc}] with [{t2_dc}] here.",
+        at={"last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="tn")
+    out = tmp_path / "tn.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+
+    text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
+    assert "Table 1: first legend" in text
+    assert "Table 2" in text  # caption-less table still shows its number
+    assert "Compare table 1 with table 2 here." in text
 
 
 def test_render_byline_names_marks_and_ror_link() -> None:

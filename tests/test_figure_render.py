@@ -432,7 +432,7 @@ def _put_graph_figure(hub: Hub, slug: str, src: str, table_dc: str) -> Any:
         chunk_kind="figure",
         render=src,
         plots=[table_dc],
-        text="Fig 1. y vs x.",
+        text="y vs x.",
         at={"last": True},
     )
     ref = hub.live_store.get_ref(kind="draft", id=slug)

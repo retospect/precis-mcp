@@ -262,6 +262,8 @@ def test_number_xrefs_reads_structure_only() -> None:
         C(dc="dc3", chunk_kind="paragraph", depth=2, text="$$x$$ [§a]"),
         C(dc="dc4", chunk_kind="paragraph", depth=2, text="$$y$$"),
         C(dc="dc5", chunk_kind="figure", depth=2, text="cap [§b]"),
+        C(dc="dc6", chunk_kind="table", depth=2, text="| A |\n|---|\n| 1 |"),
+        C(dc="dc7", chunk_kind="table", depth=2, text="| B |\n|---|\n| 2 |"),
     ]
     nums = walker.number_xrefs(chunks, "T", equation_of=latex._standalone_equation)
     assert nums.labels == {
@@ -269,6 +271,8 @@ def test_number_xrefs_reads_structure_only() -> None:
         "dc3": ("section", "1"),
         "dc4": ("section", "1"),
         "dc5": ("fig.", "1"),
+        "dc6": ("table", "1"),
+        "dc7": ("table", "2"),
     }
     assert nums.numbered_headings == {"dc2"} and nums.equations == {"dc4": 1}
 

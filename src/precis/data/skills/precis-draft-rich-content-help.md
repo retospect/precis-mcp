@@ -156,6 +156,17 @@ replaced wholesale). A rewrite marks the figure render-pending, so the
 next export/view re-rasterises; `view=` doesn't combine with
 `render=`/`plots=`, and a caption still rewrites with `text=`.
 
+**Numbering and cross-references.** The exporters auto-number every
+figure and table in document order and prepend the assigned label to its
+caption — "Figure 3: …", "Table 2: …" — so the chunk text is the caption
+ONLY: never write your own "Figure 1b."/"Table 0." lead (it prints
+doubled — "Figure 3: Figure 1b. …" — and trips the caption hint on
+write plus the hygiene report). Reference a float from prose by its
+chunk handle — `[dc<id>]` renders as the target's label+number
+("fig. 2", "table 1", capitalised at a sentence start) — never hard-code
+a number: the assigned one shifts when a sibling figure/table is added,
+moved or removed.
+
 ## Code blocks
 
 A `chunk_kind='code'` chunk holds a **verbatim code payload** — an exact

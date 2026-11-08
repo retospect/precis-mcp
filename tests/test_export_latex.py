@@ -2347,11 +2347,62 @@ def test_export_renders_table_as_longtable(hub, tmp_path) -> None:
     assert "\\begin{longtable}" in body and "\\end{longtable}" in body
     assert "\\toprule" in body and "\\midrule" in body and "\\bottomrule" in body
     assert "ID & Title \\\\" in body
-    # cells go through the inline escaper (& → \&); caption is a bold lead-in
+    # cells go through the inline escaper (& → \&); caption is a bold,
+    # auto-numbered lead-in (gr592852) whose \label binds the table counter
     assert "I1 & loss \\& gain \\\\" in body
-    assert "\\textbf{Issue register}" in body
+    assert "\\refstepcounter{table}" in body
+    assert "\\textbf{Table \\thetable: Issue register}" in body
     # the derived pipe markdown is NOT dumped as prose
     assert "| ID | Title |" not in body
+
+
+def test_export_table_numbers_like_figures_and_cross_refs(hub, tmp_path) -> None:
+    """gr592852: a table chunk gets its own number in document order (a
+    ``\\refstepcounter{table}`` + a cleveref-typed label), separate from
+    the figure counter, and a ``[dc<id>]`` cross-ref to it goes out as
+    ``\\cref{chunk:<dc>}`` — resolving to "table N" at compile time."""
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    d = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    d.put(id="tn", title="T", project=proj)
+    t1 = d.put(
+        id="tn",
+        chunk_kind="table",
+        table={"header": ["a"], "rows": [[1]]},
+        caption="first",
+        at={"last": True},
+    )
+    m1 = re.search(r"dc\d+", t1.body)
+    assert m1
+    t1_dc = m1.group(0)
+    t2 = d.put(
+        id="tn",
+        chunk_kind="table",
+        table={"header": ["b"], "rows": [[2]]},
+        at={"last": True},
+    )
+    m2 = re.search(r"dc\d+", t2.body)
+    assert m2
+    t2_dc = m2.group(0)
+    d.put(
+        id="tn",
+        chunk_kind="paragraph",
+        text=f"See [{t1_dc}] and [{t2_dc}] here.",
+        at={"last": True},
+    )
+
+    ref = store.get_ref(kind="draft", id="tn")
+    body = latex.render_body(store, ref).body
+    # every table steps the table counter once, caption or not
+    assert body.count("\\refstepcounter{table}") == 2
+    assert "\\textbf{Table \\thetable: first}" in body
+    assert "\\textbf{Table \\thetable}" in body  # no caption → label only
+    assert f"\\cref{{chunk:{t1_dc}}}" in body and f"\\cref{{chunk:{t2_dc}}}" in body
+    # a table's label binds the table counter, not the enclosing section
+    t1_lines = [ln for ln in body.splitlines() if f"chunk:{t1_dc}" in ln]
+    assert any("\\refstepcounter{table}" in ln for ln in t1_lines)
 
 
 def test_standalone_equation_numbers_and_cross_refs(hub, tmp_path) -> None:

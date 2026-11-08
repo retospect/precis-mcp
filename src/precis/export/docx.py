@@ -703,9 +703,15 @@ def _render_table(doc: Any, chunk: Any, ctx: _Ctx) -> None:
         _render_inline(chunk.text, ctx, doc.add_paragraph())
         return
     header, rows, caption = payload["header"], payload["rows"], payload["caption"]
-    if caption:
+    # "Table N:" — the same reading-order number a ``[dc<id>]`` cross-ref
+    # prints as "table N", like the figure caption's "Figure N:" (gr592852).
+    number = ctx.xref.get(chunk.dc, ("", ""))[1]
+    if number or caption:
         cap = doc.add_paragraph()
-        _render_inline(caption, ctx, cap)
+        if number:
+            cap.add_run(f"Table {number}: " if caption else f"Table {number}")
+        if caption:
+            _render_inline(caption, ctx, cap)
         for run in cap.runs:
             run.bold = True
     ncols = len(header)

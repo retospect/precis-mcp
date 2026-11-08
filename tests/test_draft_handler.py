@@ -3387,6 +3387,71 @@ def test_bare_xref_hint(draft: DraftHandler, hub: Hub) -> None:
         assert "bare cross-ref" not in r2.body, ok
 
 
+def test_caption_number_hint(draft: DraftHandler, hub: Hub) -> None:
+    """A figure/table caption opening with its own float label ("Figure
+    1b.", "Table 0.") trips the caption hint on write — the exporters
+    prepend the assigned "Figure N:"/"Table N:" themselves, so the
+    authored label prints doubled (gr592852). A caption without a
+    self-label is silent."""
+    proj = _proj(hub)
+    draft.put(id="cn", title="T", project=proj)
+
+    r = draft.put(
+        id="cn",
+        chunk_kind="figure",
+        text="Figure 1b. Top view.",
+        image="aGk=",
+        origin="original",
+        at={"last": True},
+    )
+    assert "caption starts with its own float label" in r.body
+
+    r = draft.put(
+        id="cn",
+        chunk_kind="table",
+        table={"header": ["day", "n"], "rows": [["Mon", 3]]},
+        caption="Table 0. Numbers for the week",
+        at={"last": True},
+    )
+    assert "caption starts with its own float label" in r.body
+
+    # clean captions stay silent
+    r = draft.put(
+        id="cn",
+        chunk_kind="figure",
+        text="Top view of the lattice.",
+        image="aGk=",
+        origin="original",
+        at={"last": True},
+    )
+    assert "float label" not in r.body
+    r = draft.put(
+        id="cn",
+        chunk_kind="table",
+        table={"header": ["day", "n"], "rows": [["Tue", 4]]},
+        caption="Numbers for the week",
+        at={"last": True},
+    )
+    assert "float label" not in r.body
+
+
+def test_hygiene_flags_self_labeled_captions(draft: DraftHandler, hub: Hub) -> None:
+    """The hygiene report catches a self-labeled caption already sitting
+    in the draft (gr592852) — not just captions written through the
+    hinted put/edit path."""
+    proj = _proj(hub)
+    draft.put(id="hc", title="T", project=proj)
+    draft.put(
+        id="hc",
+        chunk_kind="table",
+        table={"header": ["day", "n"], "rows": [["Mon", 3]]},
+        caption="Table 0. Numbers for the week",
+        at={"last": True},
+    )
+    r = draft.get(id="hc", view="hygiene")
+    assert "carry their own Figure/Table number" in r.body
+
+
 def test_title_heading_dup_hint(draft: DraftHandler, hub: Hub) -> None:
     """A heading first in reading order that repeats the draft title warns."""
     from precis.draft import lint as _draft_lint

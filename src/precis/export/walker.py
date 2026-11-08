@@ -40,8 +40,8 @@ the rules are :mod:`precis.export._abbrev`'s); :meth:`Renderer.term`
 only formats each use (``\\gls`` family; ``long (SHORT)`` text).
 
 Cross-references: :func:`number_xrefs` is the numbering pre-pass over chunk
-structure (sections, figures, equations; it reads no inline text, so it
-cannot renumber a cite); :func:`resolve_xref` decides liveness, the
+structure (sections, figures, tables, equations; it reads no inline text,
+so it cannot renumber a cite); :func:`resolve_xref` decides liveness, the
 downgrade warning and what number to print; :func:`merge_xref_runs` joins
 whitespace-separated refs (LaTeX's ``\\cref{a,b}``). LaTeX lets cleveref
 count at compile time; docx prints the pre-pass numbers. A legacy ``¶``
@@ -524,21 +524,24 @@ def number_xrefs(
     *,
     equation_of: Callable[[str | None], tuple[str, bool] | None],
 ) -> XrefNumbers:
-    """Section / figure / equation numbers in reading order, the way the
-    LaTeX layout counts them: a heading's depth picks section, subsection or
-    subsubsection (the seeded title heading is skipped and, when the body is
-    nested under it, every depth is lifted one level); the draft's own
-    Glossary heading and its terms are skipped; journal back matter is
-    unnumbered and a cross-ref to it prints its name; every figure steps the
-    figure counter; like ``\\cref`` on a label inside a section, a plain
-    paragraph/item/table resolves to the enclosing numbered section. An
-    unstarred standalone equation (``equation_of``, the one detector both
-    backends use) takes the next equation number. Reads chunk structure
-    only: no inline text is resolved here, so no cite is numbered."""
+    """Section / figure / table / equation numbers in reading order, the
+    way the LaTeX layout counts them: a heading's depth picks section,
+    subsection or subsubsection (the seeded title heading is skipped and,
+    when the body is nested under it, every depth is lifted one level);
+    the draft's own Glossary heading and its terms are skipped; journal
+    back matter is unnumbered and a cross-ref to it prints its name; every
+    figure steps the figure counter and every table the table counter
+    (gr592852 — a table used to borrow its enclosing section's number);
+    like ``\\cref`` on a label inside a section, a plain paragraph/item
+    resolves to the enclosing numbered section. An unstarred standalone
+    equation (``equation_of``, the one detector both backends use) takes
+    the next equation number. Reads chunk structure only: no inline text
+    is resolved here, so no cite is numbered."""
     labels: dict[str, tuple[str, str]] = {}
     shown: set[str] = set()
     counters = [0] * NUMBERED_DEPTHS
     figs = 0
+    tabs = 0
     title_dc = title_heading_dc(chunks, title)
     shift = depth_shift(chunks, title_dc)
     back_matter = back_matter_handles(chunks)
@@ -547,6 +550,9 @@ def number_xrefs(
         if c.chunk_kind == "figure":
             figs += 1
             labels[c.dc] = ("fig.", str(figs))
+        elif c.chunk_kind == "table":
+            tabs += 1
+            labels[c.dc] = ("table", str(tabs))
         elif c.chunk_kind == "heading":
             if is_glossary_heading(c) or c.dc == title_dc:
                 continue

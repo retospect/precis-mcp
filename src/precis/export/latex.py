@@ -2305,12 +2305,17 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
     cells wrap and the table never overflows the text width. Cells go through
     the same inline grammar as prose (citations / math / abbreviations
     resolve in-cell). Falls back to a plain paragraph if no table is
-    recoverable. The optional legend renders as a bold lead-in line."""
+    recoverable. Auto-numbered like a figure: a bold ``Table N: legend``
+    lead-in line above the rules (gr592852)."""
     from precis.utils.table_data import table_payload
 
     payload = table_payload(getattr(chunk, "meta", None), chunk.text)
     if payload is None:
-        return [f"{_render_inline(chunk.text or '', ctx)}{label}"]
+        # No grid recoverable → prose. Still step the table counter so the
+        # number the xref pre-pass assigned stays true and a ``[dc<id>]``
+        # cross-ref resolves to it (gr592852).
+        pre = "" if ctx.poster else "\\refstepcounter{table}"
+        return [f"{pre}{_render_inline(chunk.text or '', ctx)}{label}"]
     header, rows, caption = payload["header"], payload["rows"], payload["caption"]
     n = max(1, len(header))
     width = f"\\dimexpr(\\linewidth-\\tabcolsep*{2 * n})/{n}\\relax"
@@ -2318,9 +2323,22 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
         f">{{\\raggedright\\arraybackslash}}p{{{width}}}" for _ in range(n)
     )
     out: list[str] = []
-    if caption:
+    if ctx.poster:
+        # Poster tables number nothing, like poster figures.
+        if caption:
+            out.append(
+                f"\\noindent\\textbf{{{_render_inline(caption, ctx)}}}\\par\\nopagebreak"
+            )
+    else:
+        # Auto-numbered like a figure (gr592852): ``\refstepcounter{table}``
+        # binds ``\label`` to the table counter so a ``[dc<id>]`` cross-ref
+        # prints "table N" via cleveref; the bold lead-in carries the
+        # number, with the caption when the chunk has one.
+        caption_tex = _render_inline(caption, ctx) if caption else ""
         out.append(
-            f"\\noindent\\textbf{{{_render_inline(caption, ctx)}}}\\par\\nopagebreak"
+            f"\\noindent\\refstepcounter{{table}}{label}"
+            f"\\textbf{{Table \\thetable{f': {caption_tex}' if caption_tex else ''}}}"
+            "\\par\\nopagebreak"
         )
     rendered_header = " & ".join(_render_inline(h, ctx) for h in header) + r" \\"
     rendered_rows: list[str] = []
@@ -2355,7 +2373,6 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
     out.append("\\bottomrule\\endlastfoot")
     out.extend(rendered_rows)
     out.append("\\end{longtable}")
-    out.append(label)
     return out
 
 

@@ -1966,6 +1966,7 @@ class DraftHandler(Handler):
                 body += _draft_lint.math_form_hint(str(text))
                 body += _draft_lint.house_style_hint(str(text), kind)
                 body += _draft_lint.bare_xref_hint(str(text))
+                body += _draft_lint.caption_number_hint(str(text), kind, meta=meta)
                 for _c in chunks:
                     body += _draft_lint.title_heading_dup_hint(
                         self.store, ref.id, _c.chunk_id, _c.chunk_kind, _c.text
@@ -2352,6 +2353,7 @@ class DraftHandler(Handler):
         self.sync_draft_links(ref_id)
         return Response(
             body=f"added figure {chunk.dc} [{org}] to {slug} ({len(raw)} bytes)"
+            + _draft_lint.caption_number_hint(str(caption), "figure")
         )
 
     def _add_view_figure(
@@ -2400,6 +2402,7 @@ class DraftHandler(Handler):
                 f"added structure view figure {chunk.dc} to {slug} ({prov}); "
                 "image renders on first export/view — render pending"
             )
+            + _draft_lint.caption_number_hint(str(caption), "figure")
         )
 
     def _validated_view_recipe(
@@ -2563,6 +2566,7 @@ class DraftHandler(Handler):
                 f"(plots {n} data source{'' if n == 1 else 's'}); "
                 "image renders on first export/view — render pending"
             )
+            + _draft_lint.caption_number_hint(str(caption), "figure")
         )
 
     def _resolve_plot_targets(
@@ -3461,6 +3465,7 @@ class DraftHandler(Handler):
                     body += _draft_lint.math_form_hint(new_text, old_text)
                     body += _draft_lint.house_style_hint(new_text, c.chunk_kind)
                     body += _draft_lint.bare_xref_hint(new_text, old_text)
+                    body += _draft_lint.caption_number_hint(new_text, c.chunk_kind)
                     body += _draft_lint.title_heading_dup_hint(
                         self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text
                     )
@@ -3508,6 +3513,7 @@ class DraftHandler(Handler):
                     body += _draft_lint.temperature_form_hint(str(text))
                     body += _draft_lint.math_form_hint(str(text), old_text)
                     body += _draft_lint.bare_xref_hint(str(text), old_text)
+                    body += _draft_lint.caption_number_hint(str(text), c.chunk_kind)
                     body += _draft_lint.title_heading_dup_hint(
                         self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text
                     )
@@ -3672,6 +3678,7 @@ class DraftHandler(Handler):
         body += _draft_lint.math_form_hint(new_raw, old_text)
         body += _draft_lint.house_style_hint(new_raw, "paragraph")
         body += _draft_lint.bare_xref_hint(new_raw, old_text)
+        body += _draft_lint.caption_number_hint(new_raw, block.chunk_kind)
         body += _draft_lint.title_heading_dup_hint(
             self.store,
             int(block.ref_id),
@@ -4397,6 +4404,7 @@ class DraftHandler(Handler):
                 f"{'' if n_cols == 1 else 's'}); text is the derived markdown — "
                 f"edit table=/caption=/regen=, not text={eval_tail}"
             )
+            + _draft_lint.caption_number_hint(chunk_kind="table", caption=cap)
         )
 
     def _edit_table(
@@ -5205,6 +5213,13 @@ class DraftHandler(Handler):
             cap = caption.strip() or None
         else:
             cap = cur.get("caption") or recovered_caption or None
+        # A legend written THIS edit gets the float-label lint; a stored
+        # caption the write didn't touch is not re-nagged.
+        cap_hint = (
+            _draft_lint.caption_number_hint(chunk_kind="table", caption=caption)
+            if caption is not None
+            else ""
+        )
         md = table_to_markdown(norm, caption=cap)
         mpatch: dict[str, Any] = {"table": norm}
         # Carry a recovered `\label{...}` into `meta.label` (gripe 271129):
@@ -5282,12 +5297,13 @@ class DraftHandler(Handler):
                     eval_tail=eval_tail,
                 )
                 + label_loss_hint
+                + cap_hint
             )
         n_rows, n_cols = len(norm["rows"]), len(norm["header"])
         extra = f" ({replace_count} replacement(s))" if replace_count else ""
         return Response(
             body=f"edited table {(c or chunk).dc} ({n_rows}×{n_cols}){extra}; "
-            f"markdown re-derived{eval_tail}{label_loss_hint}{ctrl_note}"
+            f"markdown re-derived{eval_tail}{label_loss_hint}{ctrl_note}{cap_hint}"
             f"{_landed_sha_line(c.text) if c is not None else ''}"
         )
 
@@ -6032,6 +6048,10 @@ class DraftHandler(Handler):
         surface only inside the ``draft_export`` job — see
         :meth:`_hygiene_figure_lines`.
 
+        A tenth line — figure/table captions opening with their own
+        "Figure N."/"Table N." label, which the exporters' auto-numbering
+        prints doubled (gr592852) — see :meth:`_hygiene_caption_lines`.
+
         ``elide=True`` (the outline footer's default) truncates each list to
         8 entries with a "``+N more``" tail and points at
         ``view='hygiene'`` for the rest. ``elide=False``
@@ -6133,6 +6153,8 @@ class DraftHandler(Handler):
 
         out.extend(self._hygiene_figure_lines(chunks, limit=limit))
 
+        out.extend(self._hygiene_caption_lines(chunks, limit=limit))
+
         if not out:
             return []
         return ["", "## Hygiene", *out]
@@ -6224,6 +6246,45 @@ class DraftHandler(Handler):
             "Run the render check now — get(kind='draft', id='<slug>', "
             "view='render') for all, or id='dc<figure>' for one — a "
             "failure otherwise surfaces inside the draft_export job."
+        ]
+
+    def _hygiene_caption_lines(
+        self, chunks: list[Any], *, limit: int | None
+    ) -> list[str]:
+        """Caption self-label line (gr592852): figure/table chunks whose
+        caption opens with its own "Figure N."/"Table N." label — the
+        exporters prepend the assigned number themselves, so the authored
+        label prints doubled ("Figure 3: Figure 1b. …"). Catches captions
+        already in the draft that the write-path hint
+        (:func:`~precis.draft.lint.caption_number_hint`) never saw. Same
+        elide-with-a-pointer convention; ``[]`` when no caption carries a
+        self-label."""
+        bad: list[str] = []
+        for c in chunks:
+            if c.chunk_kind == "figure":
+                cap = c.text or ""
+            elif c.chunk_kind == "table":
+                cap = _draft_lint.table_caption_text(
+                    getattr(c, "meta", None), c.text or ""
+                )
+            else:
+                continue
+            if _draft_lint.caption_self_label(cap) is not None:
+                bad.append(c.dc)
+        if not bad:
+            return []
+        shown = ", ".join(bad if limit is None else bad[:limit])
+        tail = (
+            f" (+{len(bad) - limit} more — see "
+            "get(kind='draft', id=<slug>, view='hygiene') for the full list)"
+            if limit is not None and len(bad) > limit
+            else ""
+        )
+        return [
+            f"⚠ {len(bad)} figure/table caption(s) carry their own "
+            f"Figure/Table number: {shown}{tail}. The export prepends the "
+            "assigned 'Figure N:'/'Table N:' itself — drop the authored "
+            "label and reference the float from prose with [dc<id>]."
         ]
 
     def _render_hygiene(
