@@ -339,6 +339,92 @@ def wall_seconds() -> float:
     return float(n if n > 0 else _DEFAULT_WALL_S)
 
 
+#: Deadline a ``--full`` ship relaunch renews (gr598110): the full local
+#: gate on a contended factory host runs past the 1 h slice wall
+#: (jo595597 died at 5463 s with the gate still running), so a relaunched
+#: ``--full`` gets its own budget — ``PRECIS_LAND_FULL_WALL_S``, default
+#: 3 h. The general 1 h land wall is unchanged.
+_DEFAULT_FULL_WALL_S = 10800
+
+
+def full_wall_seconds() -> float:
+    """Deadline a ``--full`` relaunch renews (``PRECIS_LAND_FULL_WALL_S``,
+    default :data:`_DEFAULT_FULL_WALL_S`)."""
+    try:
+        n = int(os.environ.get("PRECIS_LAND_FULL_WALL_S", ""))
+    except ValueError:
+        return float(_DEFAULT_FULL_WALL_S)
+    return float(n if n > 0 else _DEFAULT_FULL_WALL_S)
+
+
+def _flag_wall_s(flag: str) -> float:
+    """The wall budget a relaunch with ``flag`` renews."""
+    return full_wall_seconds() if flag == "--full" else wall_seconds()
+
+
+# ── The last full-gate duration on this host ───────────────────────
+#
+# ``scripts/test --selected`` on a diff the selector answers FULL for —
+# and a ``--full`` ship run itself — is the full suite: on a contended
+# factory host that outruns the job wall (gr598110). Whether such a run
+# may start at all is decided from the last full gate's measured
+# duration, kept in the worker-owned ops dir (per host, so a slow host
+# refuses while a fast one still lands). A killed run never records —
+# it did not finish, so its wall is no sample.
+
+
+def _full_gate_stats_path() -> Path:
+    """The host-local record of the last full gate's duration (seconds)."""
+    return _rs.ops_root() / "land-full-gate-s"
+
+
+def _last_full_gate_s() -> float | None:
+    """Seconds the last full gate on this host took, or ``None``."""
+    try:
+        raw = _full_gate_stats_path().read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _record_full_gate_s(seconds: float) -> None:
+    if seconds <= 0:
+        return
+    try:
+        _full_gate_stats_path().write_text(f"{seconds:.0f}\n", encoding="utf-8")
+    except OSError:  # pragma: no cover — a stat miss never stops the land
+        log.warning("land_slice: full-gate duration record failed", exc_info=True)
+
+
+def _gate_started_at(row: dict[str, Any]) -> datetime | None:
+    """The launch time a handle or verify recorded, parsed."""
+    try:
+        return datetime.strptime(str(row["started_at"]), _TS_FMT).replace(tzinfo=UTC)
+    except (KeyError, ValueError):
+        return None
+
+
+def _record_full_gate_duration(row: dict[str, Any]) -> None:
+    """Record a finished ``--full`` ship run's (or a full-selection
+    deselect gate's) elapsed seconds as this host's last full-gate
+    duration."""
+    started = _gate_started_at(row)
+    if started is not None:
+        _record_full_gate_s((_now() - started).total_seconds())
+
+
+def full_gate_fits() -> bool:
+    """True when a full gate may start inside its deadline: the last
+    full-gate duration on this host fits :func:`full_wall_seconds`, or
+    no run has been measured yet (the first one gathers the data)."""
+    last = _last_full_gate_s()
+    return last is None or last <= full_wall_seconds()
+
+
 def refusal_backoff_s() -> int:
     """Deferral wait (``PRECIS_LAND_REFUSAL_BACKOFF_S``, default
     :data:`MAIN_REFUSAL_BACKOFF_S`; never negative)."""
@@ -680,6 +766,37 @@ def outside_diff_ids(tree: Path, ids: list[str]) -> list[str]:
     return [i for i in ids if i.split("::", 1)[0] not in changed]
 
 
+def _checked_selection_full(tree: Path) -> bool | None:
+    """``True`` when this diff's checked selection IS the suite — the
+    ``scripts/impacted-tests --stdin`` FULL answer ``scripts/ship
+    --checked`` refuses and ``scripts/test --selected`` expands to the
+    whole suite. Then the deselect gate runs full-gate minutes and the
+    ``--full`` budget decides whether it may start at all (gr598110).
+    ``None`` — unreadable selector — counts as non-FULL: the deselect
+    run bounds itself by what it actually is."""
+    diff = _git(["diff", "--name-only", "origin/main...HEAD"], tree)
+    sel = tree / "scripts" / "impacted-tests"
+    if diff.returncode != 0 or not sel.is_file():
+        return None
+    try:
+        cp = subprocess.run(
+            [str(sel), "--stdin"],
+            input=diff.stdout,
+            cwd=str(tree),
+            env={**os.environ, "UV_PYTHON": ship_python()},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if cp.returncode != 0:
+        return None
+    return cp.stdout.strip() == "FULL"
+
+
 def is_main_refusal(cross: str | None) -> bool:
     """True when ``cross`` (a :func:`cross_line` result) is ship refusing on
     main's state (:data:`MAIN_REFUSAL_MARKS`), not on the branch."""
@@ -733,6 +850,39 @@ def nothing_new(log_text: str) -> bool:
     """True when ship took its nothing-new guard (:data:`_NOTHING_NEW_MARK`):
     a green exit that squashed nothing, so no sha is the slice's."""
     return any(_NOTHING_NEW_MARK in line for line in _lines(log_text))
+
+
+#: Lines ship's ``gate_slot_acquire`` prints while it queues (the lib's
+#: wait banner, the position re-announce and the per-slot holder dump).
+#: While the newest log line is one of these the land is parked behind
+#: sibling gates — the slot wait is real queueing, so it does not eat
+#: the job's wall (gr598110 item 4: the wall clock starts when the gate
+#: starts).
+_GATE_SLOT_CHATTER_RE = re.compile(
+    r"^(?:waiting for a gate slot|gate slot: (?:next up|waiting at position)"
+    r"|\s+gate slot \d+:|\(steals a slot immediately)"
+)
+#: Slot chatter that ends the wait — a steal means a slot was won, a
+#: give-up or an access refusal means ship exits next.
+_GATE_SLOT_DONE_RE = re.compile(
+    r"^(?:stole gate slot|gate slot: (?:gave up|cannot|needs write access"
+    r"|PRECIS_GATE_WAIT_MAX_S))"
+)
+
+
+def gate_slot_waiting(log_text: str) -> str | None:
+    """The newest gate-slot wait line when the live ship is queued inside
+    ``gate_slot_acquire``, else ``None``. Only slot chatter prints while
+    it waits, so the wait lasts exactly as long as the newest non-blank
+    line is chatter — any other line (the gate's own output, a steal, a
+    give-up) means it left the queue."""
+    last = ""
+    for line in _lines(log_text):
+        if line.strip():
+            last = line.strip()
+    if not last or _GATE_SLOT_DONE_RE.match(last):
+        return None
+    return last if _GATE_SLOT_CHATTER_RE.match(last) else None
 
 
 def infra_red(log_text: str, exit_code: int | None) -> str | None:
@@ -1540,8 +1690,8 @@ def _defer_to_main(
         + (f"\ndrift probe (lander identity): {probe}" if probe else ""),
     )
     # Parked time must not eat the ssh_node wall deadline: it covers the
-    # wait plus one fresh ship run.
-    deadline = _now().timestamp() + delay + wall_seconds()
+    # wait plus one fresh ship run (a ``--full`` handle's own budget).
+    deadline = _now().timestamp() + delay + _flag_wall_s(str(handle.get("flag") or ""))
     ctx.set_meta(
         compute_handle=handle, compute_handle_released=False, deadline=deadline
     )
@@ -1575,18 +1725,25 @@ def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
     ctx.set_meta(
         compute_handle=fresh,
         compute_handle_released=False,
-        deadline=_now().timestamp() + wall_seconds(),
+        deadline=_now().timestamp() + _flag_wall_s(flag),
     )
     return False
 
 
 def _launch_verify(
-    slice_tree: Path, ids: list[str], *, phase: str, run_tree: Path
+    slice_tree: Path,
+    ids: list[str],
+    *,
+    phase: str,
+    run_tree: Path,
+    argv: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """Detached ``scripts/test <ids>`` in ``run_tree``, the log and exit
     file under the SLICE tree's ``scratch/`` so they outlive a probe
-    worktree. ``None`` when the launch itself failed — the caller falls
-    back to the ordinary red."""
+    worktree. ``argv`` replaces the bare id list (the ``deselect``
+    phase's ``--selected --deselect <id>…``) while ``ids`` keeps the
+    failing ids the phase is about. ``None`` when the launch itself
+    failed — the caller falls back to the ordinary red."""
     scratch = slice_tree / "scratch"
     log_path = scratch / f"land_verify_{phase}.log"
     exit_path = scratch / f"land_verify_{phase}.exit"
@@ -1594,7 +1751,7 @@ def _launch_verify(
         scratch.mkdir(parents=True, exist_ok=True)
         exit_path.unlink(missing_ok=True)
         pid = _launch(
-            [str(run_tree / "scripts" / "test"), *ids],
+            [str(run_tree / "scripts" / "test"), *(argv if argv is not None else ids)],
             cwd=run_tree,
             log=log_path,
             exit_file=exit_path,
@@ -1617,6 +1774,7 @@ def _launch_verify(
         "log": str(log_path),
         "exit_file": str(exit_path),
         "run_tree": str(run_tree),
+        "started_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     identity = _rs._process_identity(pid)
     if identity is not None:
@@ -1877,6 +2035,47 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
             if _start_main_verify(ctx, handle, v):
                 return False
         return _ordinary_ship_red(ctx, handle)
+    if phase == "deselect":
+        # The checked selection minus the red-on-main ids (gr598110):
+        # green means the land goes through ``--quick`` — the gate of
+        # record for the engine review is this run. Any red or dead
+        # probe is the ordinary red; a launch failure already fell back.
+        if v.get("full_selection"):
+            _record_full_gate_duration(v)
+        if exit_code != 0:
+            return _ordinary_ship_red(ctx, handle)
+        tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
+        subject = str(handle.get("subject") or "")
+        try:
+            _rs._append_comment(
+                ctx.store,
+                todo_id,
+                f"handoff: {', '.join(ids)} are red on origin/main too — "
+                "not this branch's; the checked selection minus them is "
+                "green and the land goes through --quick. The reds are "
+                "main's to fix.",
+            )
+        except Exception:  # pragma: no cover — the land still goes on
+            log.warning("land_slice: deselect note on td%d failed", todo_id)
+        ctx.append_chunk(
+            "job_event",
+            "land_slice: checked selection minus "
+            f"{', '.join(ids)} is green — relaunching scripts/ship --quick",
+        )
+        Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
+        fresh = _launch_ship(ctx, tree, "--quick", subject, carry=handle)
+        if fresh is None:
+            return True
+        handle.clear()
+        handle.update(fresh)
+        if fresh.get("not_before"):
+            return False  # parked by the preflight; its deferral set the meta
+        ctx.set_meta(
+            compute_handle=fresh,
+            compute_handle_released=False,
+            deadline=_now().timestamp() + wall_seconds(),
+        )
+        return False
     # Phase "main" finished (or the probe died): the throwaway worktree
     # and its stack go away on every exit path — and the job meta forgets
     # the probe, so a later kill does not remove a tree already gone.
@@ -1895,13 +2094,44 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
         # "red on main too" needs the same evidence: a non-zero probe that
         # never ran the named tests is a probe failure, never a verdict.
         return _ordinary_ship_red(ctx, handle)
-    # td574937 E1: same rule as the main red path — an engine land
-    # relaunches ``--full`` (the full local gate), never lint.
-    flag = "--full" if (ctx.meta or {}).get("engine_paths") else full_fallback_flag()
-    if flag is None:
-        return _ordinary_ship_red(ctx, handle)
+    # td574937 E1 + gr598110: an engine land never drops to lint — but a
+    # main-side red is not the branch's debt, and the full gate on a
+    # contended factory host outruns the job's wall (jo595597 died at
+    # 5463 s). The land runs the checked selection MINUS the red-on-main
+    # ids — a detached ``scripts/test --selected --deselect <id>…`` is
+    # exactly that gate — and ``--quick`` then lands. ``--full`` stays
+    # only for the FULL-selector refusal below; when the selection
+    # itself is the suite the deselect run IS a full gate, so the last
+    # full-gate duration on this host decides whether it may start —
+    # over budget the job fails naming the ids for a human.
     tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
     subject = str(handle.get("subject") or "")
+    if (ctx.meta or {}).get("engine_paths"):
+        full_sel = _checked_selection_full(tree)
+        if full_sel and not full_gate_fits():
+            return _full_gate_over(ctx, params, ids)
+        argv = ["--selected", *[a for i in ids for a in ("--deselect", i)]]
+        verify = _launch_verify(tree, ids, phase="deselect", run_tree=tree, argv=argv)
+        if verify is None:
+            return _ordinary_ship_red(ctx, handle)
+        verify["full_selection"] = bool(full_sel)
+        _promote_verify(handle, verify)
+        ctx.append_chunk(
+            "job_event",
+            f"land_slice: {', '.join(ids)} red on origin/main too — running "
+            "the checked selection minus them (scripts/test --selected "
+            "--deselect); --quick lands on its green",
+        )
+        ctx.set_meta(
+            compute_handle=handle,
+            compute_handle_released=False,
+            deadline=_now().timestamp()
+            + (full_wall_seconds() if full_sel else wall_seconds()),
+        )
+        return False
+    flag = full_fallback_flag()
+    if flag is None:
+        return _ordinary_ship_red(ctx, handle)
     lane = "--full (the full local gate)" if flag == "--full" else "--quick (lint only)"
     try:
         _rs._append_comment(
@@ -1934,9 +2164,46 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
     ctx.set_meta(
         compute_handle=fresh,
         compute_handle_released=False,
-        deadline=_now().timestamp() + wall_seconds(),
+        deadline=_now().timestamp() + _flag_wall_s(flag),
     )
     return False
+
+
+def _full_gate_over(ctx: Any, params: dict[str, Any], ids: list[str]) -> bool:
+    """The gate left is the suite and it does not fit the job's wall on
+    this host (gr598110): fail attempt-free — the reds are main's, never
+    the branch's debt — but ``land_again_cap`` sends the tick to the
+    re-land ask, so a human sees the main-side red at once."""
+    todo_id = int(params.get("todo_id") or 0)
+    number = _pr_param(params)
+    default_branch = (
+        f"slice/pr-{number}" if number is not None else _rs.slice_branch(todo_id)
+    )
+    branch = str(params.get("branch") or default_branch)
+    last = _last_full_gate_s()
+    reason = f"full gate exceeds deadline: {', '.join(ids)} red on main"
+    ctx.set_meta(land_again_cap=True)
+    ctx.append_chunk(
+        "job_summary",
+        f"land_slice td{todo_id}: BLOCKED — {reason} (last full gate "
+        f"{last if last is not None else -1:.0f}s > {full_wall_seconds():.0f}s "
+        "budget)",
+    )
+    _fail(
+        ctx,
+        todo_id,
+        params.get("lane"),
+        reason,
+        handoff=(
+            f"land BLOCKED on {branch}: {reason}. The failing ids are red "
+            "on origin/main — not this branch's — but the only gate left "
+            "is the full suite and its last run on this host outran the "
+            "job's wall. A human fixes the red on main (or raises "
+            "PRECIS_LAND_FULL_WALL_S). Do not rebuild."
+        ),
+        attempt_free="full gate exceeds deadline",
+    )
+    return True
 
 
 def poll(ctx: Any, handle: Any) -> bool:
@@ -1951,7 +2218,26 @@ def poll(ctx: Any, handle: Any) -> bool:
         return _poll_verify(ctx, handle)
     exit_code = _rs._read_exit(handle)
     if exit_code is None and _process_alive(int(handle.get("pid") or 0)):
+        # gr598110 item 4: while ship queues inside gate_slot_acquire the
+        # wait is real queueing on the host, not gate time — the wall
+        # clock starts when the gate starts, so each poll that finds the
+        # wait re-arms the deadline and heartbeats the position line.
+        waiting = gate_slot_waiting(_rs._read_log(handle))
+        if waiting is not None:
+            if handle.get("gate_wait") != waiting:
+                handle["gate_wait"] = waiting
+                ctx.append_chunk("job_event", f"land_slice: {waiting}")
+            ctx.set_meta(
+                compute_handle=handle,
+                compute_handle_released=False,
+                deadline=_now().timestamp()
+                + _flag_wall_s(str(handle.get("flag") or "")),
+            )
+        elif handle.pop("gate_wait", None) is not None:
+            ctx.set_meta(compute_handle=handle, compute_handle_released=False)
         return False
+    if exit_code is not None and str(handle.get("flag") or "") == "--full":
+        _record_full_gate_duration(handle)
     ctx.set_meta(compute_handle_released=True)
 
     params = (ctx.meta or {}).get("params") or {}
@@ -2005,6 +2291,16 @@ def poll(ctx: Any, handle: Any) -> bool:
             "--full" if (ctx.meta or {}).get("engine_paths") else full_fallback_flag()
         )
         if (
+            fallback == "--full"
+            and FULL_SELECTOR_MARK in cross
+            and str(handle.get("flag") or ship_flag(params)) != fallback
+            and not full_gate_fits()
+        ):
+            # gr598110: the only lane left is the suite, and its last run
+            # on this host outran the job's wall — fail parked at the
+            # re-land ask rather than launch a doomed gate.
+            return _full_gate_over(ctx, params, [cross])
+        if (
             fallback
             and FULL_SELECTOR_MARK in cross
             and str(handle.get("flag") or ship_flag(params)) != fallback
@@ -2040,7 +2336,7 @@ def poll(ctx: Any, handle: Any) -> bool:
             ctx.set_meta(
                 compute_handle=fresh,
                 compute_handle_released=False,
-                deadline=_now().timestamp() + wall_seconds(),
+                deadline=_now().timestamp() + _flag_wall_s(fallback),
             )
             return False
         note = handle.pop("verify_note", None)
@@ -2255,13 +2551,39 @@ def poll(ctx: Any, handle: Any) -> bool:
     return True
 
 
+def _push_branch(tree: Path, branch: str) -> str:
+    """``git push origin <branch>`` in ``tree`` under the factory
+    credential — until then the branch lives only on this host, so a
+    killed land's commit would die with a worktree reap (gr598110,
+    jo595597). One note for the job event; never raises."""
+    try:
+        proc = subprocess.run(
+            ["git", "push", "origin", branch],
+            cwd=str(tree),
+            env=_factory_git.git_auth_env(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            check=False,
+        )
+    except Exception as exc:
+        return f"branch push of {branch}: FAILED ({exc})"
+    if proc.returncode == 0:
+        return f"branch push of {branch}: on origin"
+    err = (proc.stderr or proc.stdout or "").strip()[:200]
+    return f"branch push of {branch}: FAILED ({err})"
+
+
 def kill(ctx: Any, handle: Any) -> None:
     """Wall-clock / operator kill: SIGTERM the live phase's process group —
     a running verify's during verify, ship's otherwise (a ship that
     already exited must never be signaled: the pgid may have been
-    reused) — then drop the main-probe worktree and stack the job meta
-    recorded (:func:`_start_main_verify` writes them before the add), so
-    a killed land leaves neither behind."""
+    reused) — then push the slice branch to origin (gr598110: a killed
+    land's commit must survive a worktree reap) and drop the main-probe
+    worktree and stack the job meta recorded
+    (:func:`_start_main_verify` writes them before the add), so a killed
+    land leaves neither behind."""
     if isinstance(handle, dict):
         verify = handle.get("verify")
         live = verify if isinstance(verify, dict) else handle
@@ -2271,6 +2593,26 @@ def kill(ctx: Any, handle: Any) -> None:
                 _rs._signal_group(pgid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
+    params = (getattr(ctx, "meta", None) or {}).get("params") or {}
+    todo_id = params.get("todo_id")
+    number = _pr_param(params)
+    default_branch = (
+        f"slice/pr-{number}"
+        if number is not None
+        else _rs.slice_branch(int(todo_id or 0))
+    )
+    branch = str(params.get("branch") or default_branch)
+    worktree = (
+        str((handle or {}).get("worktree") or params.get("worktree") or "")
+        if isinstance(handle, dict)
+        else str(params.get("worktree") or "")
+    )
+    if branch and Path(worktree).is_dir():
+        note = _push_branch(Path(worktree), branch)
+        try:
+            ctx.append_chunk("job_event", f"land_slice: {note}")
+        except Exception:  # pragma: no cover — a kill never raises
+            log.info("land_slice: %s", note)
     probe = (getattr(ctx, "meta", None) or {}).get("main_probe") or {}
     tree = str(probe.get("tree") or "")
     if not tree:

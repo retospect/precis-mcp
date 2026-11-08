@@ -2142,6 +2142,68 @@ def test_poll_real_red_is_unchanged(seams: dict[str, Any]) -> None:
     assert len(seams["launch"]) == 1
 
 
+def test_poll_ship_waiting_on_a_gate_slot_eats_no_wall(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    """gr598110 item 4: a ship queued inside ``gate_slot_acquire`` is
+    waiting on the host, not gating — the deadline re-arms to a fresh
+    wall each poll and the wait line heartbeats once per change."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    Path(handle["log"]).write_text(
+        "quick ship (--quick)\n"
+        "waiting for a gate slot (2 concurrent gate containers max — "
+        "shared-VM OOM guard, gr202193)\n"
+        "gate slot: waiting at position 3 of 6 (2 slots ahead are busy)\n",
+        encoding="utf-8",
+    )
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert pctx.meta_set["deadline"] == T0.timestamp() + land_slice.wall_seconds()
+    assert handle["gate_wait"].startswith("gate slot: waiting at position")
+    assert any("waiting at position" in t for _k, t in pctx.chunks)
+    # The same line again heartbeats nothing new but re-arms the wall.
+    Path(handle["log"]).write_text(
+        "gate slot: waiting at position 2 of 6 (2 slots ahead are busy)\n",
+        encoding="utf-8",
+    )
+    clock["t"] = T0 + timedelta(seconds=30)
+    assert land_slice.poll(pctx, handle) is False
+    assert (
+        pctx.meta_set["deadline"]
+        == (T0 + timedelta(seconds=30)).timestamp() + land_slice.wall_seconds()
+    )
+    # Gate chatter over: the wait marker drops and the wall stops growing.
+    Path(handle["log"]).write_text(
+        "gate slot: waiting at position 1 of 6\nstole gate slot 0\n"
+        "gate env → synced offline\n",
+        encoding="utf-8",
+    )
+    assert land_slice.poll(pctx, handle) is False
+    assert "gate_wait" not in handle
+
+
+def test_kill_pushes_the_slice_branch_to_origin(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr598110: a killed land pushes ``slice/<id>`` to origin first —
+    the commit survives a worktree reap."""
+    pushed: list[tuple[str, str]] = []
+
+    def fake_push(tree: Path, branch: str) -> str:
+        pushed.append((str(tree), branch))
+        return "ok"
+
+    monkeypatch.setattr(land_slice, "_push_branch", fake_push)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    ctx = _Ctx(store, _params(seams))
+    land_slice.kill(ctx, handle)
+    assert pushed == [(str(seams["tree"]), "slice/42")]
+
+
 # ── outside-diff reds verified before charging (gr573347 b) ────────
 
 #: Ship's real checked-selection verdict (``die`` in ``scripts/ship``):
@@ -2330,12 +2392,13 @@ def test_poll_checked_red_outside_alone_red_main_red_relaunches_quick(
     assert any("red on origin/main too" in e and "--quick" in e for e in events)
 
 
-def test_poll_checked_red_main_red_on_an_engine_land_relaunches_full(
+def test_poll_checked_red_main_red_on_an_engine_land_deselects_checked(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An engine land whose outside-diff red is main's too still
-    relaunches ``--full`` — the same rule as the main red path; no
-    wording claims ``--quick``."""
+    """gr598110: an engine land whose outside-diff red is main's too
+    gates on the checked selection MINUS the red-on-main ids — a
+    detached ``scripts/test --selected --deselect`` — and lands
+    ``--quick`` on its green. ``--full`` never launches."""
     monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
     seams["diff_names"] = "src/precis/x.py\n"
     seams["changed_paths"] = ["scripts/ship"]
@@ -2350,15 +2413,60 @@ def test_poll_checked_red_main_red_on_an_engine_land_relaunches_full(
     assert land_slice.poll(pctx, handle) is False
     _verify_finish(handle, 1)
     assert land_slice.poll(pctx, handle) is False
+    verify = handle["verify"]
+    assert verify["phase"] == "deselect" and verify["ids"] == [OUTSIDE_ID]
     argv, _kw = seams["launch"][-1]
-    assert argv[1] == "--full" and argv[2] == SUBJECT
-    assert handle["flag"] == "--full" and "verify" not in handle
-    [note] = store.comments(42)
-    assert note.startswith("handoff:") and "red on origin/main too" in note
-    assert "--full" in note and "--quick" not in note
+    assert argv == [
+        str(seams["tree"] / "scripts" / "test"),
+        "--selected",
+        "--deselect",
+        OUTSIDE_ID,
+    ]
+    _verify_finish(handle, 0)
+    assert land_slice.poll(pctx, handle) is False
+    argv, _kw = seams["launch"][-1]
+    assert argv[1] == "--quick" and argv[2] == SUBJECT
+    assert handle["flag"] == "--quick" and "verify" not in handle
+    assert all("--full" not in call[0] for call in seams["launch"])
     events = [t for k, t in pctx.chunks if k == "job_event"]
-    assert any("red on origin/main too" in e and "--full" in e for e in events)
-    assert not any("lint only" in e for e in events)
+    assert any("red on origin/main too" in e for e in events)
+
+
+def test_poll_checked_red_main_red_full_budget_over_fails_with_ids(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr598110: when the selection is the suite (FULL) a deselect run
+    is a full gate — and the last full gate on this host outran the
+    wall, so the job fails naming the main-red ids instead of launching
+    a doomed gate (parked at the re-land ask, no attempt)."""
+    monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    monkeypatch.setattr(land_slice, "_checked_selection_full", lambda tree: True)
+    monkeypatch.setattr(land_slice, "_last_full_gate_s", lambda: 20000.0)
+    monkeypatch.setenv("PRECIS_LAND_FULL_WALL_S", "10800")
+    seams["diff_names"] = "src/precis/x.py\n"
+    seams["changed_paths"] = ["scripts/ship"]
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    pctx.meta["engine_paths"] = ["scripts/ship"]
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "full gate exceeds deadline" in (pctx.failure or "")
+    assert OUTSIDE_ID in (pctx.failure or "")
+    assert pctx.meta_set["land_again_cap"] is True
+    assert pctx.meta_set["attempt_free"] == "infra-land"
+    assert pctx.meta_set["red_class"] == "full gate exceeds deadline"
+    # no deselect launch, no --full relaunch
+    assert all("--full" not in call[0] for call in seams["launch"])
+    assert all("--deselect" not in call[0] for call in seams["launch"])
+    handoff = store.comments(42)[-1]
+    assert "full gate exceeds deadline" in handoff and OUTSIDE_ID in handoff
 
 
 def test_poll_checked_red_outside_alone_red_main_green_is_ordinary(

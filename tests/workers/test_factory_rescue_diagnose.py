@@ -957,3 +957,71 @@ def test_tick_runs_rescue_pass_after_stall_pass(
     assert seen == ["rescue"]
     assert "factory_rescue_diagnose" in meta_seen
     assert failures and "raised" in failures[0]
+
+
+# ── one open ask per node and class (gr598110) ─────────────────────
+
+
+def _rescue_ask(
+    store: Store, root: int, task: int, cls: str, *, status: str = "open"
+) -> int:
+    """An open ruling ask blocking ``task``, shaped like ``_ask_node``'s."""
+    ask = _node(
+        store,
+        root,
+        title=f"td{task}: in rescue ({cls}) — stalled: retry?",
+        meta={
+            "ask": {
+                "kind": "ruling",
+                "options": ["retry"],
+                "blocks": f"td{task}",
+                "context": "test",
+            },
+            "rescue_cls": cls,
+        },
+        status=status,
+        tags=("ask-user",),
+    )
+    store.add_link(
+        src_ref_id=task, dst_ref_id=ask, relation="blocked-by", set_by="system"
+    )
+    return ask
+
+
+def test_open_same_class_ask_gets_a_comment_not_a_new_ask(store: Store) -> None:
+    """gr598110: a tick that finds the same class ask open comments on
+    it — never a second ask (td597226/td597612/td597977). The ask here
+    predates the tag: a re-tag moved ``tag_at`` past its mint, so the
+    ``_episode_ask`` bound no longer covers it — the class check does."""
+    root = _root(store)
+    task = _node(store, root)
+    ask = _rescue_ask(store, root, task, "stalled")
+    fr.enter_rescue(store, task, "stalled", _ev())
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.asked == [] and res.diagnosing == []
+    assert _ask_refs(store) == [ask]
+    assert any("no new ask" in c for c in _comments(store, ask))
+
+
+def test_retag_after_answered_ask_rearms_releases_the_claim(store: Store) -> None:
+    """gr598110 root cause: ``_step_rearm`` cleared ``rescue:stalled``
+    on the answer, the dead ``claimed-by:`` kept the node undispatched
+    and the watchdog re-tagged — the same episode re-arms (claim
+    released), it never re-asks."""
+    root = _root(store)
+    task = _rescued(store, root, cls="stalled", status="doing")
+    job = _newest_job(store, task)
+    ask = _rescue_ask(store, root, task, "stalled", status="done")
+    store.stamp_ref_meta(
+        task, {"rescue_answered": {"cls": "stalled", "ask": ask, "job": job}}
+    )
+    store.add_tag(task, Tag.open("claimed-by:lane-devin"), set_by="system")
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.asked == [] and res.rearmed == [task]
+    assert _rescue_tags(store, task) == []
+    assert "claimed-by:lane-devin" not in _open_tags(store, task)
+    assert _status(store, task) == "open"

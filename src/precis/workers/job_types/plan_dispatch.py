@@ -1443,17 +1443,38 @@ def _step_rearm(plan: _Plan, w: _Writer, res: PassResult) -> None:
         else:
             stamp["rearmed_answer"] = None
             stamp["rearmed_ask_at"] = None
-        w.stamp_meta(n, stamp)
         # A node whose rescue ended in the rescue pass's own ask: the
         # human's answer IS the clearing (td584381 S1a F1) — the
         # ``rescue:<cls>`` tag would otherwise keep it excluded from
         # dispatch and hygiene forever. ``meta.rescue.n`` stays: a
         # second exhaustion re-enters rescue and asks the human again.
+        # ``rescue_answered`` records the episode for the rescue pass
+        # (gr598110): a re-tag of the answered class with no newer job
+        # re-arms instead of re-asking.
         cleared = [v for v in n.open_tags if v.startswith("rescue:")]
+        if cleared:
+            stamp["rescue_answered"] = {
+                "cls": cleared[0][len("rescue:") :],
+                "ask": newest_ask.id,
+                "job": ended[-1].id if ended else None,
+            }
+        w.stamp_meta(n, stamp)
         if cleared:
             w.remove_tags(n, cleared)
             if n.status == "doing":
                 w.set_status(n, "open")
+        # gr598110: the re-arm must also drop the dead ``claimed-by:``
+        # lease — ``_step_dispatch`` skips every claimed node, so a
+        # re-armed node whose newest job had ended sat claimed until
+        # hygiene's CLAIM_STALE wait, and the stall watchdog re-tagged it
+        # (td598406 asked the same question again on the re-tag).
+        released: list[str] = []
+        if not plan.live_job(n):
+            released = _claims(n)
+            if released:
+                w.remove_tags(n, released)
+                if n.status == "doing":
+                    w.set_status(n, "open")
         res.notes.append(
             f"td{n.id}: ask td{newest_ask.id} answered; retry budget reset"
             + (f" after job:{ended[-1].id}" if ended and not landed else "")
@@ -1463,6 +1484,7 @@ def _step_rearm(plan: _Plan, w: _Writer, res: PassResult) -> None:
                 else ""
             )
             + ("; rescue tag cleared" if cleared else "")
+            + (f"; released {', '.join(released)}" if released else "")
         )
 
 

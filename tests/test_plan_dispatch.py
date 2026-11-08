@@ -4327,3 +4327,49 @@ def test_the_tick_lock_connection_shows_in_pg_stat_activity(
     monkeypatch.setattr(pd, "_load", _spy)
     pd.run_pass(store)
     assert names == [pd.TICK_LOCK_APP_NAME]
+
+
+def test_rearm_releases_dead_claim_and_stamps_rescue_answered(store: Store) -> None:
+    """gr598110: an answered rescue ask re-arms the node AND drops the
+    dead ``claimed-by:`` lease — ``_step_dispatch`` skips every claimed
+    node, so the stuck claim re-tagged the node (td598406)."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    job = _failed_job(store, task, "boom")
+    store.add_tag(task, Tag.open("rescue:stalled"), set_by="system")
+    store.add_tag(task, Tag.open("claimed-by:lane-devin"), set_by="system")
+    store.stamp_ref_meta(task, {"rescue": {"n": 1}})
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="rescue ruling",
+            meta={
+                "ask": {
+                    "kind": "ruling",
+                    "options": ["retry with a different lane/model"],
+                    "blocks": f"td{task}",
+                    "context": "in rescue",
+                }
+            },
+            parent_id=mint.root_id,
+            conn=conn,
+        )
+        ask = int(ref.id)
+        store.add_tag(
+            ask,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        store.add_tag(ask, Tag.open("ask-user"), set_by="system", conn=conn)
+        store.add_link(
+            src_ref_id=task, dst_ref_id=ask, relation="blocked-by", conn=conn
+        )
+    _answer_ask(store, ask, "retry with a different lane/model")
+    res = pd.run_pass(store)
+    assert "rescue:stalled" not in _open_tags(store, task)
+    assert "claimed-by:lane-devin" not in _open_tags(store, task)
+    meta = _meta(store, task)
+    assert meta["rescue_answered"] == {"cls": "stalled", "ask": ask, "job": job}

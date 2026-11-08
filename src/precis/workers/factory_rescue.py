@@ -1532,6 +1532,38 @@ def _episode_ask(conn: Any, ref_id: int, tag_at: Any) -> int | None:
     return int(row[0]) if row else None
 
 
+def _open_class_ask(conn: Any, ref_id: int, cls: str) -> int | None:
+    """The OPEN ask-shaped ``blocked-by`` target already covering this
+    rescue class — stamped ``meta.rescue_cls`` at mint, or titled like
+    the pre-stamp shape (``td<N>: in rescue (<cls>) — …``). One open ask
+    per node and class (gr598110): a tick that finds it comments, never
+    mints a second — the ``_episode_ask`` bound misses it only because
+    a re-tag moved ``tag_at``."""
+    rows = conn.execute(
+        """
+        SELECT b.ref_id, b.title, b.meta->>'rescue_cls'
+          FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
+         WHERE l.src_ref_id = %s AND l.relation = 'blocked-by'
+           AND b.retired_at IS NULL
+           AND (b.meta ? 'ask' OR EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = b.ref_id AND t.namespace = 'OPEN'
+                    AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')))
+           AND COALESCE(
+                 (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                   WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
+                   LIMIT 1),
+                 'open') <> ALL(%s)
+         ORDER BY b.ref_id
+        """,
+        (ref_id, sorted(BLOCKER_TERMINAL_STATUSES)),
+    ).fetchall()
+    for bid, title, rcls in rows:
+        if rcls == cls or f"in rescue ({cls})" in str(title or ""):
+            return int(bid)
+    return None
+
+
 def _diagnose_task_id(conn: Any, ref_id: int, tag_at: Any) -> int | None:
     """The live todo minted to diagnose this node in this episode
     (``meta.rescue_for`` and minted at or after the tag), or ``None``."""
@@ -2055,7 +2087,10 @@ def _ask_node(
             "options": list(pd._ASK_OPTIONS),
             "blocks": f"td{n.id}",
             "context": _cap(f"{branch} @ {head or '?'}: {why}", _ASK_CONTEXT_CAP),
-        }
+        },
+        # The class this ask covers — ``_open_class_ask`` dedups a
+        # re-flagged episode on it (gr598110).
+        "rescue_cls": cls,
     }
     check_ask_meta(meta)
     lines = [f"td{n.id} sits in rescue ({cls}): {why}."]
@@ -2085,6 +2120,30 @@ def _ask_node(
         # committed here; this pass files no second one.
         if _episode_ask(conn, n.id, tag_at) is not None:
             res.notes.append(f"td{n.id}: an ask appeared under the lock; skipped")
+            return None
+        open_ask = _open_class_ask(conn, n.id, cls)
+        if open_ask is not None:
+            # One open ask per node and class (gr598110): a racer's — or
+            # an older episode's still-open — same-class ask gets the
+            # comment, the node gets no second ask.
+            _comment(
+                store,
+                conn,
+                open_ask,
+                "todo_comment",
+                f"rescue: still {cls} — td{n.id} re-flagged this class; "
+                "this open ask covers it (no new ask filed)",
+            )
+            _comment(
+                store,
+                conn,
+                n.id,
+                "todo_comment",
+                f"rescue: {cls} re-flagged; ask td{open_ask} still open",
+            )
+            res.notes.append(
+                f"td{n.id}: ask td{open_ask} ({cls}) still open; commented"
+            )
             return None
         ref = store.insert_ref(
             kind="todo",
@@ -2138,6 +2197,99 @@ def _ask_node(
             store, n.id, f"ask td{ref.id} raised (blocks td{n.id})", root=root
         )
     return int(ref.id)
+
+
+def _nudge_open_ask(
+    store: Store,
+    res: RescuePassResult,
+    n: Any,
+    cls: str,
+    ask_id: int,
+) -> None:
+    """The same-class ask is already open: the tick leaves the repeat on
+    it (one open ask per node and class, gr598110) and notes it on the
+    node — never a new ask."""
+    if res.dry_run:
+        res.would.append((n.id, "ask"))
+        res.notes.append(f"td{n.id}: would comment on open ask td{ask_id} ({cls})")
+        return
+    with store.atomic() as conn:
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (_RESCUE_PASS_LOCK_KEY,))
+        _comment(
+            store,
+            conn,
+            ask_id,
+            "todo_comment",
+            f"rescue: still {cls} — td{n.id} re-flagged this class; this "
+            "open ask covers it (no new ask filed)",
+        )
+        _comment(
+            store,
+            conn,
+            n.id,
+            "todo_comment",
+            f"rescue: {cls} re-flagged; ask td{ask_id} still open",
+        )
+    res.waiting += 1
+    res.notes.append(f"td{n.id}: ask td{ask_id} ({cls}) still open; commented")
+
+
+def _rearm_answered(
+    store: Store,
+    res: RescuePassResult,
+    n: Any,
+    cls: str,
+    stamp: dict[str, Any],
+) -> None:
+    """A ``rescue:<cls>`` re-tag after ``_step_rearm`` already cleared it
+    on the answered ask — and no job ran since — is the same episode:
+    the answer stands (gr598110, td598406). The tag off, ``STATUS:doing``
+    back to ``open`` and every dead ``claimed-by:`` lease released (a
+    stuck claim kept ``_step_dispatch`` from the node — the reason it
+    re-tagged at all). Never a second ask for the same class."""
+    ask = stamp.get("ask")
+    if res.dry_run:
+        res.would.append((n.id, "rearm"))
+        res.notes.append(f"td{n.id}: would re-arm (ask td{ask} answered)")
+        return
+    released: list[str] = []
+    with store.atomic() as conn:
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (_RESCUE_PASS_LOCK_KEY,))
+        # Recheck under the lock (the ``_rearm_node`` pattern): a racer
+        # that removed the tag (or moved the node) wins; this pass
+        # writes nothing.
+        tags_now = store.tags_for(n.id, conn=conn)
+        current = [str(t.value) for t in tags_now if t.namespace == "open"]
+        if f"rescue:{cls}" not in current:
+            res.notes.append(f"td{n.id}: rescue tag gone under the lock; not re-armed")
+            return
+        status = next((str(t.value) for t in tags_now if t.prefix == "STATUS"), "open")
+        if status not in ("open", "doing"):
+            res.notes.append(f"td{n.id}: STATUS {status} under the lock; not re-armed")
+            return
+        store.remove_tag(n.id, Tag.open(f"rescue:{cls}"), conn=conn)
+        if status == "doing":
+            store.add_tag(
+                n.id,
+                Tag.closed("STATUS", "open"),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )
+        released = [v for v in current if v.startswith("claimed-by:")]
+        for v in released:
+            store.remove_tag(n.id, Tag.open(v), conn=conn)
+        _comment(
+            store,
+            conn,
+            n.id,
+            "todo_comment",
+            f"rescue: {cls} re-tagged after ask td{ask} was answered — the "
+            "answer stands; re-armed, no new ask",
+        )
+    res.rearmed.append(n.id)
+    suffix = f"; released {', '.join(released)}" if released else ""
+    res.notes.append(f"td{n.id}: re-armed (ask td{ask} already answered){suffix}")
 
 
 def _close_orphan(
@@ -2406,11 +2558,24 @@ def _judge_rescued(
             return
         _close_orphan(store, now, res, n, cls, term)
         return
+    # gr598110: a re-tag of the class whose ask ``_step_rearm`` already
+    # cleared on the answer — and no job ran since — is the same
+    # episode: re-arm (the answer stands), never a second ask.
+    answered = n.meta.get("rescue_answered")
+    if isinstance(answered, dict) and answered.get("cls") == cls:
+        jobs = plan.jobs(n)
+        if (jobs[-1].id if jobs else None) == answered.get("job"):
+            _rearm_answered(store, res, n, cls, answered)
+            return
     with store.pool.connection() as conn:
         ask = _episode_ask(conn, ref_id, tag_at)
         task_id = _diagnose_task_id(conn, ref_id, tag_at)
+        open_ask = _open_class_ask(conn, ref_id, cls)
     if ask is not None:
         res.notes.append(f"td{ref_id}: ask td{ask} already covers this episode")
+        return
+    if open_ask is not None:
+        _nudge_open_ask(store, res, n, cls, open_ask)
         return
     if task_id is not None:
         _judge_diagnose(store, now, res, plan, n, cls, tag_at, task_id, pd)
