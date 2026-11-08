@@ -29,7 +29,15 @@ container has the git binary, just not this checkout's metadata. Known
 blind spots (same as the posix guard's): argv in a variable, a string
 ``shell=True`` command, and chdir'd modules are not resolved.
 
-Failure means: declare the test — ``from tests._repo_git import
+Coverage is per call, not per file: a flagged spawn is covered when a
+scope enclosing it carries the declaration — ``@needs_repo_git`` (or a
+``require_repo_git`` parameter, the fixture it wraps) on the function or
+class, or a module ``pytestmark``. Importing the name covers nothing, and
+one marked test does not cover an unmarked sibling's calls — the
+whole-file ``"needs_repo_git" in source`` exemption this replaced hid
+exactly that.
+
+Failure means: declare the covering scope — ``from tests._repo_git import
 needs_repo_git`` on the test or a module ``pytestmark`` — or give the call
 a no-checkout fallback (``tests/test_ruff_scripts_excludes.py`` and
 ``scripts/ci-shard-plan``'s walks are the shape), or vet + ``_EXEMPT`` it
@@ -237,34 +245,28 @@ def _is_repo_name(node: ast.expr) -> bool:
     )
 
 
-def _git_spawns(tree: ast.AST, from_subprocess: set[str]) -> list[ast.Call]:
-    """``subprocess.*`` calls whose argv[0] is a literal ``"git"``."""
-    out = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not node.args:
-            continue
-        func = node.func
-        is_spawn = (
-            isinstance(func, ast.Attribute)
-            and func.attr in _SPAWN
-            and isinstance(func.value, ast.Name)
-            and func.value.id == "subprocess"
-        ) or (
-            isinstance(func, ast.Name)
-            and func.id in _SPAWN
-            and func.id in from_subprocess
-        )
-        if not is_spawn:
-            continue
-        argv = node.args[0]
-        if (
-            isinstance(argv, (ast.List, ast.Tuple))
-            and argv.elts
-            and isinstance(argv.elts[0], ast.Constant)
-            and argv.elts[0].value == "git"
-        ):
-            out.append(node)
-    return out
+def _is_git_spawn(call: ast.Call, from_subprocess: set[str]) -> bool:
+    """A ``subprocess.*`` call whose argv[0] is a literal ``"git"``."""
+    if not call.args:
+        return False
+    func = call.func
+    is_spawn = (
+        isinstance(func, ast.Attribute)
+        and func.attr in _SPAWN
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "subprocess"
+    ) or (
+        isinstance(func, ast.Name) and func.id in _SPAWN and func.id in from_subprocess
+    )
+    if not is_spawn:
+        return False
+    argv = call.args[0]
+    return (
+        isinstance(argv, (ast.List, ast.Tuple))
+        and bool(argv.elts)
+        and isinstance(argv.elts[0], ast.Constant)
+        and argv.elts[0].value == "git"
+    )
 
 
 def _flag_reason(call: ast.Call, chdir_free: bool) -> str | None:
@@ -294,6 +296,86 @@ def _reason(argv_and_kwargs: str, chdir_free: bool = True) -> str | None:
     tree = ast.parse(f"subprocess.run({argv_and_kwargs})")
     call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call))
     return _flag_reason(call, chdir_free)
+
+
+#: Names a declaration may use — the mark itself or the fixture it wraps
+#: (``@pytest.mark.usefixtures("require_repo_git")``, a plain parameter;
+#: conftest exports the fixture for both spellings).
+_DECL_NAMES = ("needs_repo_git", "require_repo_git")
+
+
+def _declares(node: ast.AST) -> bool:
+    """The unparsed form asks for the repo-git mark or its fixture."""
+    return any(name in ast.unparse(node) for name in _DECL_NAMES)
+
+
+def _pytestmark(stmt: ast.stmt) -> ast.expr | None:
+    """The value of a ``pytestmark = …`` statement, else ``None``."""
+    if isinstance(stmt, ast.Assign) and any(
+        isinstance(t, ast.Name) and t.id == "pytestmark" for t in stmt.targets
+    ):
+        return stmt.value
+    if (
+        isinstance(stmt, ast.AnnAssign)
+        and isinstance(stmt.target, ast.Name)
+        and stmt.target.id == "pytestmark"
+    ):
+        return stmt.value
+    return None
+
+
+def _scope_declares(
+    defn: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+) -> bool:
+    """This scope itself carries the declaration for everything inside."""
+    if any(_declares(d) for d in defn.decorator_list):
+        return True
+    if isinstance(defn, ast.ClassDef):
+        return any(
+            (v := _pytestmark(s)) is not None and _declares(v) for s in defn.body
+        )
+    args = defn.args
+    params = {a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)}
+    if args.vararg:
+        params.add(args.vararg.arg)
+    if args.kwarg:
+        params.add(args.kwarg.arg)
+    return "require_repo_git" in params
+
+
+def _uncovered_flags(
+    tree: ast.Module, from_subprocess: set[str], chdir_free: bool
+) -> list[tuple[ast.Call, str]]:
+    """``(call, why)`` for flagged spawns no enclosing scope declares.
+
+    Coverage is lexical: a module ``pytestmark``, or the declaration on a
+    function/class the call sits inside. A flagged call in a plain helper
+    is uncovered even when every caller is a marked test — the walk cannot
+    see the call edge, so mark the helper's module or inline the call.
+    """
+    out: list[tuple[ast.Call, str]] = []
+    module_marked = any(
+        (v := _pytestmark(s)) is not None and _declares(v) for s in tree.body
+    )
+
+    def visit(node: ast.AST, covered: bool) -> None:
+        for child in ast.iter_child_nodes(node):
+            cov = covered
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                cov = covered or _scope_declares(child)
+            elif isinstance(child, ast.Call) and _is_git_spawn(child, from_subprocess):
+                why = _flag_reason(child, chdir_free)
+                if why and not cov:
+                    out.append((child, why))
+            visit(child, cov)
+
+    visit(tree, module_marked)
+    return out
+
+
+def _uncovered_in(source: str) -> list[tuple[ast.Call, str]]:
+    """``_uncovered_flags`` on a source snippet, for the truth table."""
+    return _uncovered_flags(ast.parse(source), set(), True)
 
 
 @pytest.mark.parametrize(
@@ -346,6 +428,74 @@ def test_flag_reason_classifies_argv_shapes(
         assert got is None
 
 
+_GIT_STATUS = 'subprocess.run(["git", "status"])'
+
+
+@pytest.mark.parametrize(
+    ("source", "uncovered"),
+    [
+        # a marked test covers its own spawn
+        (f"@needs_repo_git\ndef test_a():\n    {_GIT_STATUS}", 0),
+        # …but not an unmarked sibling's — the hole the whole-file
+        # `"needs_repo_git" in source` exemption hid
+        (
+            "@needs_repo_git\n"
+            "def test_a():\n"
+            f"    {_GIT_STATUS}\n\n"
+            "def test_b():\n"
+            f"    {_GIT_STATUS}",
+            1,
+        ),
+        # importing the name covers nothing on its own
+        (
+            "from tests._repo_git import needs_repo_git\n\n"
+            "def test_b():\n"
+            f"    {_GIT_STATUS}",
+            1,
+        ),
+        # the other declaration spellings all count
+        (f"pytestmark = needs_repo_git\n\ndef test_b():\n    {_GIT_STATUS}", 0),
+        (f"def test_b(require_repo_git):\n    {_GIT_STATUS}", 0),
+        (
+            '@pytest.mark.usefixtures("require_repo_git")\n'
+            "def test_b():\n"
+            f"    {_GIT_STATUS}",
+            0,
+        ),
+        (
+            "@needs_repo_git\n"
+            "class TestG:\n"
+            "    def test_b(self):\n"
+            f"        {_GIT_STATUS}",
+            0,
+        ),
+        (
+            "class TestG:\n"
+            "    pytestmark = needs_repo_git\n"
+            "    def test_b(self):\n"
+            f"        {_GIT_STATUS}",
+            0,
+        ),
+        # a plain helper's spawn is uncovered even under a marked caller —
+        # the walk is lexical and cannot see the call edge
+        (
+            "def _git():\n"
+            f"    return {_GIT_STATUS}\n\n"
+            "@needs_repo_git\n"
+            "def test_b():\n"
+            "    _git()",
+            1,
+        ),
+    ],
+)
+def test_each_flagged_call_needs_a_covering_declaration(
+    source: str, uncovered: int
+) -> None:
+    """Coverage truth table — a marked sibling or a bare import must not
+    exempt an unguarded call the way the old file-level check did."""
+    assert len(_uncovered_in(source)) == uncovered
+
+
 def test_repo_git_spawns_are_marked_or_resilient() -> None:
     bad: list[str] = []
     for path in walk_files(_ROOT / "tests", "test_*.py"):
@@ -353,8 +503,6 @@ def test_repo_git_spawns_are_marked_or_resilient() -> None:
         if rel in _EXEMPT:
             continue
         source = path.read_text(encoding="utf-8")
-        if "needs_repo_git" in source:
-            continue
         tree = ast.parse(source)
         from_subprocess = {
             alias.asname or alias.name
@@ -365,16 +513,16 @@ def test_repo_git_spawns_are_marked_or_resilient() -> None:
         # `monkeypatch.chdir`/`os.chdir` anywhere means an inheriting call may
         # still be tmp-targeted — the module opted into cwd semantics.
         chdir_free = "chdir" not in source
-        for call in _git_spawns(tree, from_subprocess):
-            why = _flag_reason(call, chdir_free)
-            if why:
-                bad.append(f"{rel}:{call.lineno}: {why}")
+        for call, why in _uncovered_flags(tree, from_subprocess, chdir_free):
+            bad.append(f"{rel}:{call.lineno}: {why}")
     assert not bad, (
-        f"{len(bad)} git spawn(s) target this checkout and nothing declares "
-        "it — the gate container has no .git, so the test reddens every "
-        "scripts/ship --checked land it is selected for while CI stays green "
-        "(gr581556). Mark the test (from tests._repo_git import "
-        "needs_repo_git), give the call a no-checkout fallback, or vet it "
+        f"{len(bad)} git spawn(s) target this checkout with no enclosing "
+        "declaration — the gate container has no .git, so the test reddens "
+        "every scripts/ship --checked land it is selected for while CI "
+        "stays green (gr581556). Cover the call: @needs_repo_git (or a "
+        "require_repo_git parameter) on the test, or a module pytestmark "
+        "(from tests._repo_git import needs_repo_git — importing it alone "
+        "covers nothing), give the call a no-checkout fallback, or vet it "
         "into _EXEMPT with the reason:\n" + "\n".join(bad)
     )
 
