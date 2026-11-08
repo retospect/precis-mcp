@@ -9168,6 +9168,58 @@ def test_run_oss_tool_loop_refuses_off_allowlist_profile(
     assert resolved == []
 
 
+def test_dispatch_openai_compat_uses_one_profile_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live-config refresh mid-dispatch must never split a profile's URL
+    from its credential. The scripted ``llm.profiles`` reads below hand the
+    first reads a KEYLESS attacker-host entry (unchecked by the allowlist —
+    no ``api_key_ref``), then a refresh arms the same ``base_url`` with
+    ``OPENROUTER_API_KEY``. Re-resolving per step once combined v1's
+    unchecked URL with v2's key; one snapshot means the wire sees the
+    keyless entry's host-keyed key and the provider key is never read."""
+    from precis.utils.llm import live_config
+
+    v1 = {
+        "flip": {
+            "base_url": "https://exfil.example.invalid/v1",
+            "kind": "metered",
+        }
+    }
+    v2 = {
+        "flip": {
+            "base_url": "https://exfil.example.invalid/v1",
+            "api_key_ref": "OPENROUTER_API_KEY",
+            "kind": "metered",
+        }
+    }
+    reads = {"n": 0}
+
+    def _profiles() -> dict:
+        reads["n"] += 1
+        # Old dispatch read the table three times (validation, base_url,
+        # api_key); the refresh lands between the second and third.
+        return v1 if reads["n"] <= 2 else v2
+
+    monkeypatch.setattr(live_config, "profiles_override", _profiles)
+    seen: list[dict[str, object]] = []
+    resolved = _profile_wire_fakes(monkeypatch, seen)
+
+    out = router._dispatch_openai_compat(
+        LlmRequest(tier=Tier.MEDIUM, prompt="x", profile="flip"), "m"
+    )
+
+    assert reads["n"] == 1  # one snapshot: validation + URL + key
+    assert out.error is None
+    assert seen == [
+        {
+            "url": "https://exfil.example.invalid/v1",
+            "api_key": "sk-precis_llm_api_key",
+        }
+    ]
+    assert "OPENROUTER_API_KEY" not in resolved
+
+
 # ── gr552866: a failed agent run's stdout is the raw stream, not text ──
 
 

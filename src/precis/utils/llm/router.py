@@ -6085,28 +6085,36 @@ def _profile_api_key(profile: ProviderProfile) -> str:
     return _provider_api_key(profile.base_url)
 
 
-def _req_base_url(req: LlmRequest) -> str:
-    """The hosted base url this call targets: the rung's named profile,
-    else the process-wide ``PRECIS_LLM_BASE_URL``. A profile name that
-    fails to resolve yields ``""`` so the caller's own missing-url guard
-    names the fault — never a silent fall-back to a *different* provider
-    than the chain pinned. A profile whose ``base_url`` fails its key's
-    host allowlist (:func:`_profile_base_url_refusal`) yields ``""`` too:
-    the call must never reach a wire — the dispatch path's own refusal
-    check names why before this fallback ever fires."""
+def _req_base_url(req: LlmRequest, profile: ProviderProfile | None) -> str:
+    """The hosted base url this call targets: ``profile`` — the single
+    snapshot the dispatch already resolved for ``req.profile`` — else the
+    process-wide ``PRECIS_LLM_BASE_URL``. A profile name that fails to
+    resolve yields ``""`` so the caller's own missing-url guard names the
+    fault — never a silent fall-back to a *different* provider than the
+    chain pinned. A profile whose ``base_url`` fails its key's host
+    allowlist (:func:`_profile_base_url_refusal`) yields ``""`` too: the
+    call must never reach a wire — the dispatch path's own refusal check
+    names why before this fallback ever fires.
+
+    ``profile`` is a parameter, not a re-resolve: the live config can
+    refresh between reads, and one version's unchecked ``base_url``
+    combined with another version's key would bypass the allowlist."""
     if req.profile:
-        profile = resolve_profile(req.profile)
         if profile is None or _profile_base_url_refusal(profile) is not None:
             return ""
         return profile.base_url
     return os.environ.get("PRECIS_LLM_BASE_URL", "")
 
 
-def _req_api_key(req: LlmRequest, base_url: str) -> str:
-    """The key for the call's endpoint, resolved at call time: a named
-    profile's ``api_key_ref``, else the host-keyed default."""
+def _req_api_key(
+    req: LlmRequest, profile: ProviderProfile | None, base_url: str
+) -> str:
+    """The key for the call's endpoint, resolved at call time: the
+    snapshot ``profile``'s ``api_key_ref``, else the host-keyed default.
+    Same one-snapshot rule as :func:`_req_base_url` — the credential is
+    read from the exact profile version whose ``base_url`` passed the
+    allowlist, never a post-refresh re-resolve."""
     if req.profile:
-        profile = resolve_profile(req.profile)
         return _profile_api_key(profile) if profile is not None else ""
     return _provider_api_key(base_url)
 
@@ -6201,6 +6209,11 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
 
     from precis.workers.llm_summarize import LlmClient, LlmConfig
 
+    # ONE profile snapshot for the whole dispatch — the gate/refusal
+    # checks below, the base_url and the credential all read this object.
+    # A live-config refresh between re-resolves could pair one version's
+    # unchecked base_url with another version's provider key, bypassing
+    # the allowlist (gr586613's bound only holds per version).
     profile = resolve_profile(req.profile) if req.profile else None
     if profile is not None:
         # Gate + per-call lane guards: a pinned dispatch bypasses
@@ -6225,7 +6238,7 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
                 error=refused,
                 paused=False,
             )
-    base_url = _req_base_url(req)
+    base_url = _req_base_url(req, profile)
     parsed_base_url = urlparse(base_url)
     if not parsed_base_url.scheme or not parsed_base_url.netloc:
         # An empty/malformed PRECIS_LLM_BASE_URL (or an unresolvable rung
@@ -6249,7 +6262,7 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
             ),
             paused=False,
         )
-    api_key = _req_api_key(req, base_url)
+    api_key = _req_api_key(req, profile, base_url)
     cfg = replace(
         LlmConfig.from_env(),
         url=base_url,
