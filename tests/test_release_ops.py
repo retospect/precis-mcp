@@ -680,6 +680,131 @@ def test_an_unreadable_github_walks_no_rung(
     assert _poll_comments(store, mint.ids["poll"]) == []
 
 
+def test_a_comment_failure_after_the_dispatch_cannot_re_fire(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one-shot claim is stamped BEFORE ``gh`` runs: a comment-write
+    failure after a refused dispatch still leaves the marker, so the
+    next tick does not re-dispatch (the repeat-dispatch bug)."""
+    mint = _aged_cut(store, 45)
+    _fake_github(monkeypatch, [])
+    gh = _fake_gh(monkeypatch, rc=1, stderr="gh: Resource not accessible (HTTP 403)")
+    real_comment = cvp._node_comment
+
+    def flaky_comment(store_: Any, todo_id: int, text: str, **kw: Any) -> None:
+        if "gh workflow run" in text:
+            raise RuntimeError("comment write failed")
+        real_comment(store_, todo_id, text, **kw)
+
+    monkeypatch.setattr(cvp, "_node_comment", flaky_comment)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert len(gh) == 1
+    assert "dispatched" in _meta(store, mint.ids["poll"])["ci_verdict_stall"]
+    monkeypatch.setattr(cvp, "_node_comment", real_comment)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert len(gh) == 1
+    # The lost detail comment is not retried — only the note remains.
+    [note] = _poll_comments(store, mint.ids["poll"])
+    assert "after 20 min" in note
+
+
+def test_a_failed_note_stamp_writes_neither_note_nor_marker(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The note and its marker commit in one transaction: a stamp
+    failure rolls the comment back too, and the next tick posts the
+    note exactly once."""
+    mint = _aged_cut(store, 21)
+    _fake_github(monkeypatch, [])
+    _fake_gh(monkeypatch)
+    real_stamp = store.stamp_ref_meta
+
+    def flaky_stamp(ref_id: int, updates: dict[str, Any], **kw: Any) -> None:
+        marker = updates.get(cvp.STALL_META_KEY, {})
+        if isinstance(marker, dict) and "noted" in marker:
+            raise RuntimeError("stamp failed")
+        real_stamp(ref_id, updates, **kw)
+
+    monkeypatch.setattr(store, "stamp_ref_meta", flaky_stamp)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert _poll_comments(store, mint.ids["poll"]) == []
+    assert "ci_verdict_stall" not in _meta(store, mint.ids["poll"])
+    monkeypatch.setattr(store, "stamp_ref_meta", real_stamp)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    [note] = _poll_comments(store, mint.ids["poll"])
+    assert "after 20 min" in note
+
+
+def test_an_unstampable_claim_never_invokes_gh(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The claim precedes the call: when the dispatch marker cannot
+    persist, ``gh`` is not invoked at all — an unrecorded dispatch is
+    the repeat-dispatch bug."""
+    mint = _aged_cut(store, 45)
+    _fake_github(monkeypatch, [])
+    gh = _fake_gh(monkeypatch)
+    real_stamp = store.stamp_ref_meta
+
+    def flaky_stamp(ref_id: int, updates: dict[str, Any], **kw: Any) -> None:
+        marker = updates.get(cvp.STALL_META_KEY, {})
+        if isinstance(marker, dict) and "dispatched" in marker:
+            raise RuntimeError("stamp failed")
+        real_stamp(ref_id, updates, **kw)
+
+    monkeypatch.setattr(store, "stamp_ref_meta", flaky_stamp)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert gh == []
+    assert "dispatched" not in _meta(store, mint.ids["poll"])["ci_verdict_stall"]
+    monkeypatch.setattr(store, "stamp_ref_meta", real_stamp)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert len(gh) == 1
+
+
+def test_the_ask_and_its_marker_commit_together(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 90-min ask mints in the same transaction as the ``asked``
+    marker: a stamp failure leaves no ask, and the next tick files
+    exactly one."""
+    mint = _aged_cut(store, 91)
+    _fake_github(monkeypatch, [])
+    gh = _fake_gh(monkeypatch)
+    real_stamp = store.stamp_ref_meta
+
+    def flaky_stamp(ref_id: int, updates: dict[str, Any], **kw: Any) -> None:
+        marker = updates.get(cvp.STALL_META_KEY, {})
+        if isinstance(marker, dict) and "asked" in marker:
+            raise RuntimeError("stamp failed")
+        real_stamp(ref_id, updates, **kw)
+
+    monkeypatch.setattr(store, "stamp_ref_meta", flaky_stamp)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert _ruling_asks(store, mint.root_id) == []
+    marker = _meta(store, mint.ids["poll"])["ci_verdict_stall"]
+    assert "asked" not in marker and "dispatched" in marker
+    monkeypatch.setattr(store, "stamp_ref_meta", real_stamp)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert len(_ruling_asks(store, mint.root_id)) == 1
+    assert len(gh) == 1
+
+
 # ── release_cut / release_deploy (detached) ─────────────────────────
 
 

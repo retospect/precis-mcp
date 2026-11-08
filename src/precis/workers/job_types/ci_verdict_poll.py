@@ -52,9 +52,11 @@ Actions write scope is unverified, gr588028 — so a refusal is noted,
 never retried), and one ``ask-user`` ruling on the plan root at 90.
 Each rung records the sha it fired for on the node's
 ``meta.ci_verdict_stall``, so re-parks and re-dispatched jobs fire
-once per cut; a run appearing takes the normal path. An unreadable
-GitHub (``runs`` ``None``) is not a confirmed absence and walks no
-rung.
+once per cut; the note and the ask commit in one transaction with
+their marker, and the dispatch claim is stamped before ``gh`` runs,
+so no failure path re-fires the one-shot. A run appearing takes the
+normal path. An unreadable GitHub (``runs`` ``None``) is not a
+confirmed absence and walks no rung.
 """
 
 from __future__ import annotations
@@ -300,10 +302,10 @@ def _gh(args: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args, 127, stdout="", stderr=str(exc))
 
 
-def _node_comment(store: Any, todo_id: int, text: str) -> None:
+def _node_comment(store: Any, todo_id: int, text: str, *, conn: Any = None) -> None:
     """Append ``text`` as a ``todo_comment`` on the poll node (the
     run_slice ``_append_comment`` shape, worker-stamped)."""
-    existing = list(store.chunks.list_chunks_for_ref(todo_id))
+    existing = list(store.chunks.list_chunks_for_ref(todo_id, conn=conn))
     ord_ = max((int(c.ord) for c in existing), default=0) + 1
     store.chunks.insert_chunks(
         todo_id,
@@ -314,6 +316,7 @@ def _node_comment(store: Any, todo_id: int, text: str) -> None:
                 meta={"chunk_kind": _COMMENT_KIND, **worker_comment_meta()},
             )
         ],
+        conn=conn,
     )
 
 
@@ -340,10 +343,20 @@ def _stall_marker(store: Any, todo_id: int, sha: str) -> dict[str, Any] | None:
     return dict(marker)
 
 
-def _mint_no_run_ask(store: Any, root: int, target: dict[str, str], mins: int) -> int:
+def _mint_no_run_ask(
+    store: Any,
+    node_id: int,
+    root: int,
+    target: dict[str, str],
+    mins: int,
+    marker: dict[str, Any],
+) -> int:
     """The ONE ruling todo the ladder files under the plan root at 90
     minutes (the ``_mint_rerun_ask`` shape): it RECORDS the missing run —
-    ``blocks: "nothing"``, ``acknowledged`` the only option."""
+    ``blocks: "nothing"``, ``acknowledged`` the only option. The poll
+    node's ``asked`` marker commits in the same transaction, so a failed
+    write leaves neither and the rung retries next tick instead of
+    filing a second ask."""
     branch, sha = target["branch"], target["sha"]
     where = branch or "the release branch"
     context = (
@@ -393,6 +406,7 @@ def _mint_no_run_ask(store: Any, root: int, target: dict[str, str], mins: int) -
             [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
             conn=conn,
         )
+        store.stamp_ref_meta(node_id, {STALL_META_KEY: marker}, conn=conn)
     return int(ref.id)
 
 
@@ -402,11 +416,14 @@ def _no_run_stall(
     """The gr589270 ladder for a confirmed-absent run (module docstring):
     note at :data:`STALL_NOTE_AFTER`, one dispatch at
     :data:`STALL_DISPATCH_AFTER`, one ask at :data:`STALL_ASK_AFTER`,
-    each deduped by the node's :data:`STALL_META_KEY` marker. Returns the
-    actions taken, for the summary; ``[]`` without a poll node, a clock
-    or a readable marker — and on any write failure (the poll's park is
-    the verdict path; a ladder fault degrades to next tick, never a job
-    failure)."""
+    each deduped by the node's :data:`STALL_META_KEY` marker. Each rung
+    persists its own marker: the note and the ask commit with the write
+    they dedupe, and the dispatch claim is stamped BEFORE ``gh`` runs —
+    a later failure (comment write, job crash) can never re-fire the
+    one-shot. Returns the actions taken, for the summary; ``[]`` without
+    a poll node, a clock or a readable marker — and on any write failure
+    (the poll's park is the verdict path; a ladder fault degrades to
+    next tick, never a job failure)."""
     if not isinstance(todo_id, int) or isinstance(todo_id, bool) or ctx.store is None:
         return []
     cut_at = _cut_stamp(target.get("cut_at"))
@@ -428,14 +445,17 @@ def _no_run_stall(
     actions: list[str] = []
     try:
         if "noted" not in marker:
-            _node_comment(
-                ctx.store,
-                todo_id,
-                f"{NAME}: no {WORKFLOW_FILE} run{where} for {sha[:9]} after "
-                "20 min — the push event may have been dropped; the poll "
-                "keeps watching and re-fires the gate once at 40 min",
-            )
             marker["noted"] = stamp
+            with ctx.store.tx() as conn:
+                _node_comment(
+                    ctx.store,
+                    todo_id,
+                    f"{NAME}: no {WORKFLOW_FILE} run{where} for {sha[:9]} after "
+                    "20 min — the push event may have been dropped; the poll "
+                    "keeps watching and re-fires the gate once at 40 min",
+                    conn=conn,
+                )
+                ctx.store.stamp_ref_meta(todo_id, {STALL_META_KEY: marker}, conn=conn)
             actions.append("posted the 20-min stall note on the poll node")
         if age >= STALL_DISPATCH_AFTER and "dispatched" not in marker and branch:
             argv = [
@@ -447,8 +467,13 @@ def _no_run_stall(
                 "--repo",
                 repo,
             ]
-            proc = _gh(argv)
             shown = f"gh {' '.join(argv)}"
+            # The one-shot claim must persist BEFORE gh fires — an
+            # unrecorded dispatch (a later comment-write failure or a
+            # crash) is the repeat-dispatch bug, including after a 403.
+            marker["dispatched"] = stamp
+            ctx.store.stamp_ref_meta(todo_id, {STALL_META_KEY: marker})
+            proc = _gh(argv)
             if proc.returncode == 0:
                 detail = (
                     f"{NAME}: {shown} — the gate re-fires under "
@@ -461,17 +486,14 @@ def _no_run_stall(
                     f"{NAME}: {shown} refused (exit {proc.returncode}{tail}) "
                     "— not retried; the poll keeps watching"
                 )
-            _node_comment(ctx.store, todo_id, detail)
-            marker["dispatched"] = stamp
             actions.append(f"fired the one-shot gate dispatch ({shown})")
+            _node_comment(ctx.store, todo_id, detail)
         if age >= STALL_ASK_AFTER and "asked" not in marker:
             root = _release.plan_root(ctx.store, todo_id)
             mins = int(age.total_seconds() // 60)
-            ask_id = _mint_no_run_ask(ctx.store, root, target, mins)
             marker["asked"] = stamp
+            ask_id = _mint_no_run_ask(ctx.store, todo_id, root, target, mins, marker)
             actions.append(f"filed the stall ask td{ask_id} on plan td{root}")
-        if len(marker) > 1:
-            ctx.store.stamp_ref_meta(todo_id, {STALL_META_KEY: marker})
     except Exception:
         log.warning("%s: no-run stall ladder failed", NAME, exc_info=True)
     return actions
