@@ -1648,6 +1648,31 @@ def _candidate_from_structure(
             )
         ):
             flags["barrier_trusted"] = False
+        # gr592670 (S4, defence in depth): the credit anchor must name the
+        # pathway the barrier VALUE came from — ``barrier_pathway_ref_id``
+        # (stamped alongside the kept barrier, gr592668). A manual stamp or
+        # a partial harvest can still leave an anchor computed for a
+        # DIFFERENT pathway beside this barrier: that anchor is not its
+        # credit, so the verdict beside it isn't either. Both present and
+        # differing → distrust (a missing stamp stays "unknown, rides
+        # through" — the pre-provenance row and the struct_neb lane, whose
+        # anchor names ``struct_neb:<run>`` while the ref is null, carry
+        # nothing to cross-check).
+        src_ref = meta.get("barrier_pathway_ref_id")
+        src_handle = (
+            (handle_registry.try_format("pathway", src_ref) or f"pw{src_ref}")
+            if isinstance(src_ref, int) and not isinstance(src_ref, bool)
+            else None
+        )
+        anchor_pw = anchor.get("pathway") if isinstance(anchor, dict) else None
+        if (
+            src_handle is not None
+            and isinstance(anchor_pw, str)
+            and anchor_pw
+            and anchor_pw != src_handle
+        ):
+            flags["barrier_trusted"] = False
+            flags["barrier_trust_note"] = "anchor/source mismatch"
 
     # An untrusted barrier (its pathway had non-converged NEB edges / desorbed
     # or mis-bound adsorbates) is noise, not a measurement — exclude it (and
@@ -2006,6 +2031,15 @@ def _provisional_reasons(
                 else "see view='trust'"
             )
             reasons.append("barrier untrusted: " + ", ".join(detail) + f" — {pointer}")
+        # A ``barrier_trust_note`` names WHY the verdict flipped when the
+        # counters/blockers don't — a read-time demotion
+        # (``absurd-magnitude-preguard`` gr356741, ``anchor/source
+        # mismatch`` gr592670) or the harvest's own annotation (a
+        # trust_schema the reader fell back on). Same shape as
+        # ``kinetics_note`` below.
+        note = c.flags.get("barrier_trust_note")
+        if isinstance(note, str) and note:
+            reasons.append(f"barrier untrusted: {note}")
         if not reasons:
             reasons.append("barrier untrusted")
     if c.flags.get("selectivity_trusted") is False:

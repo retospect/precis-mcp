@@ -4060,6 +4060,129 @@ class TestBarrierVerdictConsistency:
         assert c.flags["barrier_trusted"] is True
         assert c.measures["barrier"] == 0.8
 
+    def test_anchor_pathway_mismatch_demotes(self, store: Any) -> None:
+        """gr592670 (S4): the credit anchor must name the pathway the
+        barrier VALUE came from — ``barrier_pathway_ref_id`` (gr592668).
+        A barrier harvested from pwA beside an anchor crediting pwB (a
+        manual stamp, a partial harvest) is not that anchor's credit; it
+        demotes to untrusted with the ``anchor/source mismatch`` note and
+        renders ≈-marked with the reason."""
+        from precis.quest.frontier import leaderboard
+
+        qid = _mk_quest(store, "A striving")
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        pw_a = store.insert_ref(
+            kind="pathway", slug="pw-a", title="pw", meta={}, parent_id=sid
+        ).id
+        pw_b = store.insert_ref(
+            kind="pathway", slug="pw-b", title="pw", meta={}, parent_id=sid
+        ).id
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=5,
+            max_disp=0.0,
+            energy=-12.0,
+        )
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.648,
+                "barrier_trusted": True,
+                "barrier_source": "autocatpath",
+                "barrier_pathway_ref_id": pw_a,
+                "barrier_anchor": {
+                    "pathway": f"pw{pw_b}",
+                    "gates": ["neb_convergence"],
+                    "not_run": [],
+                    "over": [],
+                    "seeds": [0, 1],
+                },
+            },
+        )
+        c = _cand(store, sid)
+        assert c.flags["barrier_trusted"] is False
+        assert c.flags["barrier_trust_note"] == "anchor/source mismatch"
+        assert "barrier" not in c.measures
+        assert c.flags["barrier_untrusted_value"] == 0.648
+        assert _provisional_reasons(c, ["barrier"], {"barrier": 0.648}) == [
+            "barrier untrusted: anchor/source mismatch"
+        ]
+        fr = quest_frontier(store, qid)
+        assert [pc.candidate.ref_id for pc in fr.provisional] == [sid]
+        rows, _schema = leaderboard(fr)
+        assert rows[0]["band"] == "provisional"
+        assert rows[0]["barrier"] == "≈0.648"
+        assert "anchor/source mismatch" in rows[0]["quality"]
+
+    def test_anchor_pathway_match_still_rides_trusted(self, store: Any) -> None:
+        """The consistent stamp is untouched: the anchor names the same
+        pathway ``barrier_pathway_ref_id`` does — keeps ranking."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        pw_a = store.insert_ref(
+            kind="pathway", slug="pw-a", title="pw", meta={}, parent_id=sid
+        ).id
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.8,
+                "barrier_trusted": True,
+                "barrier_source": "autocatpath",
+                "barrier_pathway_ref_id": pw_a,
+                "barrier_anchor": {
+                    "pathway": f"pw{pw_a}",
+                    "gates": ["neb_convergence"],
+                    "not_run": [],
+                    "over": [],
+                    "seeds": [0, 1],
+                },
+            },
+        )
+        c = _cand(store, sid)
+        assert c.flags["barrier_trusted"] is True
+        assert "barrier_trust_note" not in c.flags
+        assert c.measures["barrier"] == 0.8
+
+    def test_anchor_without_source_ref_rides_through(self, store: Any) -> None:
+        """A pre-provenance (pre-gr592668) row carries no
+        ``barrier_pathway_ref_id`` — nothing to cross-check, so an anchor
+        dict beside a trusted barrier stays "unknown, rides through"."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.8,
+                "barrier_trusted": True,
+                "barrier_source": "autocatpath",
+                "barrier_anchor": {
+                    "pathway": "pw5",
+                    "gates": ["neb_convergence"],
+                    "not_run": [],
+                    "over": [],
+                    "seeds": [0, 1],
+                },
+            },
+        )
+        c = _cand(store, sid)
+        assert c.flags["barrier_trusted"] is True
+        assert c.measures["barrier"] == 0.8
+
 
 class TestProvisionalReasonsSelectivityBlockers:
     def test_selectivity_blocker_prose_names_competitor_fork_and_record(
