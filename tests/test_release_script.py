@@ -651,6 +651,81 @@ def test_cut_only_an_unreadable_origin_keeps_the_open_record_in_flight(
     assert calls == []  # no cut, no supersede probe — the record stays live
 
 
+def test_cut_only_retires_a_dead_pending_cut_the_shared_row_hides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """td597858 review: a newer shared row supersedes the stale cut_pending
+    record — the row's filter hides it from `live`, but `round cut` still
+    reads the local record and refuses the fresh main sha ("pending cut
+    pins a different SHA"). The dead-open probe runs on the local records
+    BEFORE the filter: r1 is abandoned and the run reaches the cut."""
+    mod = _load_release(tmp_path, monkeypatch)
+    base, prod, head = "a" * 40, "b" * 40, "c" * 40
+    rel = {
+        "n": 1,
+        "branch": "release/r1",
+        "base": base,
+        "state": "cut",
+        "cut_pending": True,
+        "cut_at": "2026-11-08T00:00:00Z",
+    }
+    cur = {"open": True, "n": 1, "releases": [rel]}
+    monkeypatch.setattr(mod, "warn_hook_drift", lambda: None)
+    monkeypatch.setattr(mod, "fetch", lambda: None)
+    monkeypatch.setattr(mod, "rev", lambda name: {"origin/main": head}.get(name, name))
+    monkeypatch.setattr(mod, "git", lambda *a: head)
+    monkeypatch.setattr(
+        mod,
+        "remote",
+        lambda ref: {"refs/heads/prod": prod}.get(ref, ""),
+    )
+    monkeypatch.setattr(
+        mod, "ancestor", lambda older, newer: (older, newer) == (base, prod)
+    )
+    monkeypatch.setattr(mod, "round_state", lambda: cur)
+    monkeypatch.setattr(mod, "read_owner", lambda: {})
+    monkeypatch.setattr(mod, "release_branches", lambda: [])
+    monkeypatch.setattr(mod, "head_containing", lambda *a: ("", False))
+    monkeypatch.setattr(
+        mod,
+        "read_round_record",
+        lambda: {"n": 2, "branch": "release/r2", "state": "cut"},
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def _rnd(*a: str, **k: object) -> subprocess.CompletedProcess[str]:
+        calls.append(a)
+        if a == ("cut", "--abandon"):
+            rel["state"] = "abandoned"
+            rel.pop("cut_pending", None)
+        return subprocess.CompletedProcess(a, 0, "", "")
+
+    monkeypatch.setattr(mod, "rnd", _rnd)
+    cuts: list[str] = []
+
+    def _cut_and_finish(args: object, s: str, branch: str = "") -> int:
+        cuts.append(s)
+        return 0
+
+    monkeypatch.setattr(mod, "cut_and_finish", _cut_and_finish)
+    args = mod.argparse.Namespace(
+        deploy_only="",
+        sha="",
+        adopt=False,
+        dry_run=False,
+        cut_only=True,
+        ci_timeout=0.0,
+        poll=0.0,
+    )
+    assert mod.run(args) == 0
+    assert "retiring the stale record" in capsys.readouterr().out
+    assert calls == [("cut", "--abandon")]
+    assert cuts == [head]
+    assert rel["state"] == "abandoned"
+
+
 def test_cut_only_a_present_open_release_is_still_in_flight(rig: Rig) -> None:
     """The gone-branch rule does not weaken the in-flight guard: an open
     record whose branch IS on origin reports in flight exactly as today."""

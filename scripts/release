@@ -1524,15 +1524,17 @@ def run(args: argparse.Namespace) -> int:
         cur = round_state()
         if cur is None:
             return die(1, "scripts/release: cannot read `scripts/round status --json`")
-        live = live_releases(cur, read_round_record())
         prod = remote("refs/heads/prod") or ""
         if prod and not rev(prod):
             git("fetch", "-q", "origin", "prod")
-        dead = _dead_open_rel(live, prod)
+        dead = _dead_open_rel(live_releases(cur), prod)
         if dead is not None:
             # gr582590: a [cut] record whose branch origin lost and whose
             # base prod holds is a forked clone's leftover, not in-flight
-            # work — retire it rather than block on it forever.
+            # work — retire it rather than block on it forever. The probe
+            # reads the local records BEFORE the shared row's filter: a
+            # row that supersedes the record hides it from `live` but not
+            # from `round cut`, which still refuses on its cut_pending.
             if args.dry_run:
                 say(
                     f"would retire stale {dead['branch']} (gone from origin, "
@@ -1548,7 +1550,7 @@ def run(args: argparse.Namespace) -> int:
                 if cp.returncode:
                     sys.stderr.write(cp.stderr)
                 cur = round_state() or cur
-                live = live_releases(cur, read_round_record())
+        live = live_releases(cur, read_round_record())
         open_rel = next((r for r in live if r.get("state") in OPEN_STATES), None)
         if (
             open_rel is not None
