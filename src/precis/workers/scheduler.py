@@ -805,6 +805,25 @@ def _run_memory_recall(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_quest_traps(store: Store, batch_size: int) -> None:
+    """One planted-trap quest regression (``precis.workers.quest_traps``,
+    gr593141), fired from the weekly host-agnostic ``quest_traps``
+    cadence — any live worker can win it, except the ``eligible`` gate
+    keeps hosts without a runnable LLM lane from claiming a fire they
+    would only fail. ``batch_size`` is unused — the pass scores the whole
+    fixture (DEFAULT_RUNS ticks) each fire. See workers/quest_traps.py;
+    spends=True: each tick bills one routed model call."""
+    from precis.workers.quest_traps import run_quest_traps_pass
+
+    result = run_quest_traps_pass(store)
+    log.info(
+        "scheduler: quest_traps inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_memory_recall_harvest(store: Store, batch_size: int) -> None:
     """Propose trace-backed pairs only when the service_config gate is lit."""
     from precis.workers.memory_recall_harvest import run_memory_recall_harvest_pass
@@ -999,6 +1018,14 @@ def _memory_recall_eligible() -> bool:
 
     cfg = load_config()
     return cfg.embedder != "remote" or bool(cfg.embedder_url)
+
+
+def _quest_traps_eligible() -> bool:
+    """The regression ticks through the LLM router — a host without a
+    runnable agent lane would claim the lease only to pause every tick;
+    it skips instead and a capable host still gets the fire (drop-no-fire,
+    gr518089 — the same probe the other spends=True cadences share)."""
+    return _claude_agent_lane()
 
 
 def _dream_resolve_interval(store: Store) -> int:
@@ -1429,6 +1456,21 @@ CADENCES: tuple[Cadence, ...] = (
         name="secret_check",
         interval_s=7 * 24 * 3600 + 29 * 60,
         run=_run_secret_check,
+    ),
+    # gr593141: the planted-trap quest regression — score the tick against
+    # a sandbox quest carrying a stale-engine measure, a swapped endpoint
+    # and an absurd barrier (does the frontier exclude them, does the
+    # model ask rather than propose on them), record the score in
+    # app_settings, WARN on a drop. Host-agnostic, off the exact week
+    # (+41m, clear of the other weekly fires). `eligible` keeps LLM-less
+    # hosts from claiming a fire they'd only fail. spends=True: each
+    # fixture tick bills one routed model call.
+    Cadence(
+        name="quest_traps",
+        interval_s=7 * 24 * 3600 + 41 * 60,
+        run=_run_quest_traps,
+        eligible=_quest_traps_eligible,
+        spends=True,
     ),
     # The /secrets stored-status refresher: mints one `secret_status`
     # checker job per fire (the page itself never probes — it reads the

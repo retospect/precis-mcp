@@ -73,6 +73,7 @@ from precis.utils.llm.router import DispatchClient, Tier
 from precis.utils.text import excerpt
 from precis.workers.briefing import _complete_with_retry
 from precis.workers.memory_recall import memory_recall_summary
+from precis.workers.quest_traps import quest_traps_summary
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -714,6 +715,9 @@ def _lane_system_activity(
 
     if recall_summary := memory_recall_summary(store):
         parts.append(recall_summary)
+
+    if traps_summary := quest_traps_summary(store):
+        parts.append(traps_summary)
 
     # "Needs you" / failed-job attention — count only, the detail is a tap away.
     try:

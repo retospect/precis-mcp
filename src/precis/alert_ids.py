@@ -775,6 +775,21 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "titles/hooks, index path or render cost, then resolve.",
     ),
     AlertRule(
+        "quest_traps",
+        "score-dropped",
+        "The weekly planted-trap quest regression dropped: the frontier "
+        "gate leaked a planted untrusted row into the confirmed bands, or "
+        "fewer ticks filed an ask (needs/reruns) instead of proposing on "
+        "the planted rows than the last recorded run.",
+        "warn",
+        "scheduler",
+        triage="Read app_settings['quest_traps:last'] for the per-run "
+        "score and the sandbox quest id, then that quest's logbook for "
+        "each tick's reasoning; fix the regressed frontier trust path or "
+        "the tick's provisional-row handling, then resolve.",
+        budget="weekly cadence",
+    ),
+    AlertRule(
         "plan_dispatch",
         "plan-moot:{root}",
         "A plan closed itself as moot — its open nodes were set to won't-do.",

@@ -17,7 +17,12 @@ pareto/profile renderers + frozen data snapshots for draft export; CLI
 milestones), `loop` (the reconciler), `catalyst_seed` (human seeding),
 `explore` (tried-set summary), `rulings` (code-minted measurement rulings),
 `narrative_budget` (the growth-ratchet gate,
-owner-agnostic — reusable by any rolling-context rewrite). The perpetual loop itself is the
+owner-agnostic — reusable by any rolling-context rewrite), `trap_check`
+(the planted-trap regression: a dormant sandbox quest whose candidate
+network carries a stale-engine measure, a swapped endpoint and an absurd
+barrier beside one control, ticked N times and scored on the frontier
+gate + the ask-vs-propose leg, gr593141 — the weekly ``quest_traps``
+cadence in :mod:`precis.workers.quest_traps` lands the score). The perpetual loop itself is the
 ``quest_tick`` coordinator job (``precis.workers.job_types.quest_tick``).
 
 Package-level invariants (detail lives on the named module):

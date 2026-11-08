@@ -175,6 +175,7 @@ def test_exactly_the_llm_cadences_are_marked_spending():
         "gripe_triage",
         "gripe_parked",
         "idea_feed",
+        "quest_traps",
     }
 
 
