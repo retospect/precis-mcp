@@ -19,7 +19,7 @@ from precis import settings as psettings
 from precis.plans import release as R
 from precis.plans import templates as T
 from precis.store import Store
-from precis.store.types import ChunkInsert, Tag
+from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers.job_types import plan_dispatch as pd
 from tests._script import load_script
 
@@ -561,3 +561,173 @@ def test_a_non_release_loop_keeps_its_stamped_cap(
     assert res.asks == 0
     assert _meta(store, mint.ids["loop"])["loop"]["count"] == 3
     assert _status(store, mint.ids["loop"]) == "open"
+
+
+# ── gr595272: armed, the ask mints off the human queue ──────────────
+
+
+def _armed_pass(store: Store) -> T.PlanMint:
+    """A release-pass minted while ``release.auto_deploy`` is on, the cut
+    recorded and a green verdict on the cut's exact sha."""
+    psettings.set_setting("release.auto_deploy", "true", store=store)
+    mint = T.mint_release_pass(store)
+    R.record_cut(store, mint.ids["cut"], "r7", SHA, RNG, repo="o/r")
+    R.record_ci_verdict(store, SHA, RNG, "green", "31")
+    return mint
+
+
+def _has_ask_tag(store: Store, ref_id: int) -> bool:
+    return store.has_tag(ref_id, "OPEN", "ask-user")
+
+
+@pytest.mark.parametrize(
+    ("armed", "tagged"),
+    [("true", False), ("false", True)],
+    ids=["armed-hidden", "disarmed-human"],
+)
+def test_the_ask_user_tag_follows_the_setting_at_mint(
+    store: Store, armed: str, tagged: bool
+) -> None:
+    """gr595272 (1): minted under ``release.auto_deploy`` the approval
+    ask carries no ``ask-user`` tag — the standing approval answers it.
+    Disarmed (or a read fault) it mints as the human item it always was."""
+    psettings.set_setting("release.auto_deploy", armed, store=store)
+    mint = T.mint_release_pass(store)
+    assert _has_ask_tag(store, mint.ids["approval"]) is tagged
+
+
+def test_the_cut_fills_the_asks_title_and_body(store: Store) -> None:
+    """gr595272 (3): once ``release_cut`` has run, the ask names r<N> —
+    title, body and options — so an answer never guesses N."""
+    mint = T.mint_release_pass(store)
+    approval = mint.ids["approval"]
+    R.record_cut(store, mint.ids["cut"], "r7", SHA, RNG, repo="o/r")
+    ref = store.get_ref(kind="todo", id=approval)
+    assert ref is not None
+    assert "r7" in ref.title and "r<N>" not in ref.title
+    bodies = [
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(approval)
+        if c.chunk_kind == TODO_BODY_KIND
+    ]
+    assert len(bodies) == 1
+    assert "answer: deploy r7" in bodies[0] and "r<N>" not in bodies[0]
+    # A re-cut renames it to the new release.
+    R.record_cut(store, mint.ids["cut"], "r8", SHA2, RNG2, repo="o/r")
+    ref = store.get_ref(kind="todo", id=approval)
+    assert ref is not None
+    assert "r8" in ref.title and "r7" not in ref.title
+    bodies = [
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(approval)
+        if c.chunk_kind == TODO_BODY_KIND
+    ]
+    assert len(bodies) == 1 and "deploy r8" in bodies[0]
+
+
+def test_an_armed_mint_still_auto_answers(store: Store) -> None:
+    """The hidden ask is still the tick's to answer: armed, green
+    verdict, open round — the answer posts, no tag ever appears."""
+    mint = _armed_pass(store)
+    _open_round(store)
+    approval = mint.ids["approval"]
+    ok, why = R.auto_answer_approval(store, approval)
+    assert ok, why
+    comments = _comments(store, approval)
+    assert len(comments) == 1
+    assert comments[0].startswith("answer: deploy r7")
+    assert not _has_ask_tag(store, approval)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "round-unparsable",
+        "round-json-list",
+        "round-other-n",
+        "round-deploying",
+        "round-confirmed",
+        "round-other-sha",
+        "round-no-base",
+    ],
+)
+def test_a_definitive_refusal_resurfaces_the_hidden_ask(
+    store: Store, case: str
+) -> None:
+    """gr595272 (1+2): a refusal no later write can heal re-tags the
+    armed-minted ask ``ask-user`` and posts one comment naming the state
+    the auto-answer itself writes — the cut sha, r<N>, the CI verdict
+    and the round record."""
+    mint = _armed_pass(store)
+    approval = mint.ids["approval"]
+    if case == "round-unparsable":
+        psettings.set_setting("release.round", "not json", store=store)
+    elif case == "round-json-list":
+        psettings.set_setting("release.round", "[1,2]", store=store)
+    elif case == "round-other-n":
+        _round_row(store, n=8)
+    elif case in ("round-deploying", "round-confirmed"):
+        _round_row(store, state=case.removeprefix("round-"))
+    elif case == "round-other-sha":
+        _round_row(store, base=SHA2)
+    elif case == "round-no-base":
+        psettings.set_setting("release.round", '{"n":7,"state":"green"}', store=store)
+
+    ok, why = R.auto_answer_approval(store, approval)
+    assert not ok and "re-tagged" in why
+    assert _has_ask_tag(store, approval)
+    comments = _comments(store, approval)
+    assert len(comments) == 1
+    for piece in ("needs a human:", "r7", SHA[:12], "green", "31"):
+        assert piece in comments[0], piece
+    # A second tick does not double-post.
+    R.auto_answer_approval(store, approval)
+    assert _comments(store, approval) == comments
+
+
+@pytest.mark.parametrize("case", ["no-verdict", "round-absent", "round-raw-raises"])
+def test_a_transient_refusal_keeps_the_ask_hidden(
+    store: Store, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """A refusal a later write can still heal leaves the ask hidden —
+    no verdict yet, the round row unpublished yet, or a database
+    fault."""
+    psettings.set_setting("release.auto_deploy", "true", store=store)
+    mint = T.mint_release_pass(store)
+    R.record_cut(store, mint.ids["cut"], "r7", SHA, RNG, repo="o/r")
+    if case != "no-verdict":
+        R.record_ci_verdict(store, SHA, RNG, "green", "31")
+    if case == "round-raw-raises":
+
+        def boom(store_: Store) -> str | None:
+            raise OSError("db gone")
+
+        monkeypatch.setattr(R, "_round_raw", boom)
+    ok, _why = R.auto_answer_approval(store, mint.ids["approval"])
+    assert not ok
+    assert not _has_ask_tag(store, mint.ids["approval"])
+    assert _comments(store, mint.ids["approval"]) == []
+
+
+def test_disarming_after_an_armed_mint_resurfaces_the_ask(store: Store) -> None:
+    """The setting flipped off mid-pass is definitive for the auto path —
+    it can never answer, so the ask goes back to a human."""
+    mint = _armed_pass(store)
+    psettings.set_setting("release.auto_deploy", "false", store=store)
+    ok, why = R.auto_answer_approval(store, mint.ids["approval"])
+    assert not ok and "re-tagged" in why
+    assert _has_ask_tag(store, mint.ids["approval"])
+    comments = _comments(store, mint.ids["approval"])
+    assert len(comments) == 1 and comments[0].startswith("needs a human:")
+
+
+def test_a_red_verdict_keeps_the_ask_hidden(store: Store) -> None:
+    """The second-red case is the loop's own ruling ask, not this one —
+    a red verdict on the cut's sha never resurfaces the approval ask."""
+    mint = _armed_pass(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "33")
+    _open_round(store)
+    ok, _why = R.auto_answer_approval(store, mint.ids["approval"])
+    assert not ok
+    assert not _has_ask_tag(store, mint.ids["approval"])
+    assert _comments(store, mint.ids["approval"]) == []

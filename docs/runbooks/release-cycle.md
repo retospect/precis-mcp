@@ -50,7 +50,7 @@ release loop (td570415) runs the stages below unattended through
 |---|---|---|
 | Cut | `release_cut` | retry cap exhausted → a human ask |
 | Gate | `ci_verdict_poll`; a red verdict runs `ci_red_digest` → fix → `release_cut` recut, at most 2 automatic loops | the second red files a ruling ask; a third fix is a human call |
-| Approval | the `approval` ask | `release.auto_deploy` auto-answers `deploy r<N>` on a green verdict for the cut's exact sha; otherwise a human answers |
+| Approval | the `approval` ask | `release.auto_deploy` auto-answers `deploy r<N>` on a green verdict for the cut's exact sha; minted armed it stays off the ask queue until a definitive refusal re-tags it; otherwise a human answers |
 | Deploy | `release_deploy` | retry cap exhausted → a human ask |
 | Confirm | `release_confirm`: mechanical runtime attestation | a mismatch or gap fails the job and asks a human; there is no rollback |
 | Stuck watchdog (any stage) | `release_poll`'s pass | files one ruling ask per `(round, stage)` once `release.stage_deadlines` is exceeded — observation only; answering it executes nothing |

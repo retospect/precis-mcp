@@ -12,7 +12,9 @@ what lives here:
   ``meta.release = {rN, sha, range, repo, host, checkout, cut_at}`` on the plan root and
   rewrites the plan's open ``tests-green`` gates and loop ``until`` specs
   from the :data:`PENDING_RANGE` placeholder to the real range, and the
-  approval ask's options to ``['deploy r<N>', 'hold']``. The later ops read
+  approval ask's options to ``['deploy r<N>', 'hold']``, title and body —
+  the ask names the cut it gates, never the ``r<N>`` placeholder a human
+  answer would have to guess (gr595272). The later ops read
   :func:`release_of` with their own ``todo_id``. The ``release-fix`` loop's
   re-cut is a second ``release_cut`` (td543855): the same call overwrites
   ``meta.release`` whole, rewrites the still-open gate / loop / ask to the
@@ -55,6 +57,12 @@ what lives here:
   posts the ``deploy r<N>`` answer itself once CI is recorded green on the
   cut's exact sha and ``release.round`` names an open round on that head
   sha — fail closed on any doubt, an existing answer never overwritten.
+  Armed, the ask mints without the ``ask-user`` tag (gr595272 — the human
+  queue is for what the auto path cannot settle); a definitive refusal —
+  the setting flipped off, or a round record naming another release, a
+  non-open state or another head — re-tags it with one comment naming
+  the same state the auto-answer writes. A second red ``release-fix``
+  loop files its own ruling ask, not this one.
 """
 
 from __future__ import annotations
@@ -72,7 +80,7 @@ from precis.plans.gates import (
     read_prod_head,
 )
 from precis.principal import worker_comment_meta
-from precis.store.types import ChunkInsert, Tag
+from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
@@ -235,6 +243,22 @@ def approval_options(rn: str) -> list[str]:
     return [APPROVE_OPTION.format(rn=rn), HOLD_OPTION]
 
 
+def approval_title(rn: str) -> str:
+    """The approval ask's title — ``"r<N>"`` at mint, the cut's release
+    once :func:`record_cut` fills it."""
+    return f"Deploy the release? (answer 'deploy {rn}' or 'hold')"
+
+
+def approval_body(rn: str) -> str:
+    """The approval ask's body — ``"r<N>"`` at mint, the cut's release
+    once :func:`record_cut` fills it."""
+    return (
+        "The release this plan cut is green. Answer with "
+        f"put(kind='todo', id=<this>, text='answer: deploy {rn}') and close "
+        "this todo; 'hold' (or any other answer) deploys nothing."
+    )
+
+
 def record_cut(
     store: Store,
     todo_id: int,
@@ -295,6 +319,16 @@ def record_cut(
                 "options": approval_options(rn),
                 "context": f"release/{rn} at {sha[:9]} ({rng}); green CI gates this ask",
             }
+            # The ask names its release once the cut exists — no 'r<N>'
+            # placeholder left for a human answer to guess (gr595272).
+            store.chunks.set_ref_title(node_id, approval_title(rn), source="system")
+            store.chunks.replace_body_chunk(
+                node_id,
+                approval_body(rn),
+                chunk_kind=TODO_BODY_KIND,
+                source="system",
+                reason=f"the {rn} cut is recorded; the ask names it",
+            )
         if updates:
             store.stamp_ref_meta(node_id, updates)
             notes.append(f"td{node_id}: {', '.join(sorted(updates))} -> {rn}")
@@ -370,6 +404,18 @@ _AUTO_DEPLOY_KEY = "release.auto_deploy"
 _ROUND_OPEN_STATES = frozenset({"cut", "gating", "fixing", "green"})
 
 
+def auto_deploy_armed(store: Store) -> bool:
+    """``release.auto_deploy`` resolved fresh; a read fault answers
+    ``False`` — the ask then mints as the human item it always was."""
+    from precis import settings
+
+    try:
+        settings.invalidate(_AUTO_DEPLOY_KEY)
+        return settings.get_bool(_AUTO_DEPLOY_KEY, store=store) is True
+    except Exception:
+        return False
+
+
 def _round_raw(store: Store) -> str | None:
     """The ``app_settings`` row for ``release.round`` — raises on a
     database error (``settings._db_read`` swallows one as ``None``, which
@@ -412,39 +458,114 @@ def _newest_sha_verdict(store: Store, sha12: str) -> dict[str, Any] | None:
 
 def _open_round_record(
     store: Store, rn: str, sha12: str
-) -> tuple[dict[str, Any] | None, str]:
-    """``(row, "")`` when ``release.round`` names an open round on
-    ``sha12``, else ``(None, <refusal>)``. Unlike ``release_poll`` — where
-    absent means no round — an absent record refuses the deploy answer:
-    at approval time a round must be open and name this release's head
-    sha (me573231)."""
+) -> tuple[dict[str, Any] | None, str, bool]:
+    """``(row, "", False)`` when ``release.round`` names an open round on
+    ``sha12``, else ``(None, <refusal>, <final>)``. Unlike ``release_poll``
+    — where absent means no round — an absent record refuses the deploy
+    answer: at approval time a round must be open and name this release's
+    head sha (me573231).
+
+    ``final`` marks the refusals no later write can heal — the ask goes
+    back to a human on them (gr595272): a row naming another release, a
+    non-open state or another head sha, and a row no writer can repair
+    (unparsable, non-dict or stateless — ``update_round`` never
+    overwrites one). An absent row is not final: the cut skips the
+    ``update_round`` write when its host is unknown, so a later
+    ``scripts/round`` publish can still land it; a database fault
+    retries."""
     try:
         raw = _round_raw(store)
     except Exception as exc:
-        return None, f"{ROUND_KEY} unreadable ({type(exc).__name__})"
+        return None, f"{ROUND_KEY} unreadable ({type(exc).__name__})", False
     if not raw or not raw.strip():
-        return None, f"no open round: {ROUND_KEY} is absent"
+        return None, f"no open round: {ROUND_KEY} is absent", False
     try:
         rec = json.loads(raw)
     except ValueError:
-        return None, f"{ROUND_KEY} is unparsable"
+        return None, f"{ROUND_KEY} is unparsable", True
     if not isinstance(rec, dict):
-        return None, f"{ROUND_KEY} is not a record"
+        return None, f"{ROUND_KEY} is not a record", True
     state = rec.get("state")
     if not isinstance(state, str) or not state:
-        return None, f"{ROUND_KEY} carries no state"
+        return None, f"{ROUND_KEY} carries no state", True
     want_n = int(rn[1:])
     if rec.get("n") != want_n:
-        return None, f"{ROUND_KEY} is r{rec.get('n', '?')}, not {rn}"
+        return None, f"{ROUND_KEY} is r{rec.get('n', '?')}, not {rn}", True
     if state not in _ROUND_OPEN_STATES:
-        return None, f"round r{want_n} is not open ({state})"
+        return None, f"round r{want_n} is not open ({state})", True
     base = str(rec.get("base") or "").strip().lower()
     if base[:LANDED_SHA_LEN] != sha12:
-        return None, (
-            f"round r{want_n} names {base[:LANDED_SHA_LEN] or 'no head sha'}, "
-            f"not {sha12}"
+        return (
+            None,
+            (
+                f"round r{want_n} names {base[:LANDED_SHA_LEN] or 'no head sha'}, "
+                f"not {sha12}"
+            ),
+            True,
         )
-    return rec, ""
+    return rec, "", False
+
+
+def _resurface_approval_ask(
+    store: Store, approval_id: int, why: str, *, now: datetime | None
+) -> str:
+    """Re-tag the armed-mint approval ask ``ask-user`` and say why, once.
+
+    Minted under ``release.auto_deploy`` the ask carries no ``ask-user``
+    tag (gr595272); a definitive auto-answer refusal puts it back on the
+    human queue with one comment naming the same state the auto-answer
+    itself writes — the cut's sha, r<N> and range, the CI verdict and the
+    ``release.round`` record — so the human never guesses N. An ask that
+    already carries the tag (minted while disarmed) is left alone and
+    returns ``""``; a re-tag after an operator stripped it posts no
+    second comment (the ``needs a human:`` line is the mark)."""
+    if store.has_tag(approval_id, "OPEN", "ask-user"):
+        return ""
+    store.add_tag(approval_id, Tag.open("ask-user"), set_by="system")
+    rel = release_of(store, approval_id) or {}
+    rn = str(rel.get("rN") or "r?")
+    sha12 = str(rel.get("sha") or "")[:LANDED_SHA_LEN] or "unrecorded"
+    rng = str(rel.get("range") or "")[:80] or "unrecorded"
+    verdict = (
+        _newest_sha_verdict(store, sha12) if len(sha12) == LANDED_SHA_LEN else None
+    )
+    vtext = (
+        f"{verdict.get('verdict')} run {verdict.get('run_id') or 'unrecorded'} "
+        f"at {verdict.get('at') or 'unknown time'}"
+        if verdict is not None
+        else "none recorded"
+    )
+    row = read_round(store)
+    rtext = (
+        f"r{row.get('n', '?')} {row.get('state') or 'no state'}"
+        if isinstance(row, dict)
+        else "none on record"
+    )
+    text = (
+        f"needs a human: {_AUTO_DEPLOY_KEY} cannot answer this ask — {why}. "
+        f"release {rn} sha {sha12} ({rng}); CI verdict {vtext}; "
+        f"{ROUND_KEY} {rtext}; surfaced {_stamp(now or datetime.now(UTC))}. "
+        f"Answer 'deploy {rn}' or 'hold'."
+    )
+    existing = list(store.chunks.list_chunks_for_ref(approval_id))
+    marked = any(
+        c.chunk_kind == _COMMENT_KIND and str(c.text or "").startswith("needs a human:")
+        for c in existing
+    )
+    if not marked:
+        ord_ = max((int(c.ord) for c in existing), default=0) + 1
+        store.chunks.insert_chunks(
+            approval_id,
+            [
+                ChunkInsert(
+                    ord=ord_,
+                    text=text,
+                    # worker-stamped — the G2 trust boundary (td575705).
+                    meta={"chunk_kind": _COMMENT_KIND, **worker_comment_meta()},
+                )
+            ],
+        )
+    return f"re-tagged td{approval_id} ask-user: {why}"
 
 
 def _auto_answer_approval(
@@ -452,11 +573,6 @@ def _auto_answer_approval(
 ) -> tuple[bool, str]:
     from precis import settings
 
-    # The armed check is read fresh: the setting is the switch, a stale
-    # cache must not answer a deploy after the owner turned it off.
-    settings.invalidate(_AUTO_DEPLOY_KEY)
-    if settings.get_bool(_AUTO_DEPLOY_KEY, store=store) is not True:
-        return False, ""
     ref = store.get_ref(kind="todo", id=approval_id)
     ask = (ref.meta or {}).get("ask") if ref is not None else None
     rel = release_of(store, approval_id)
@@ -469,6 +585,16 @@ def _auto_answer_approval(
         or not _blocks_release_deploy(store, ask.get("blocks"))
     ):
         return False, ""
+    # The armed check is read fresh: the setting is the switch, a stale
+    # cache must not answer a deploy after the owner turned it off.
+    settings.invalidate(_AUTO_DEPLOY_KEY)
+    if settings.get_bool(_AUTO_DEPLOY_KEY, store=store) is not True:
+        # A pass minted while armed left the ask off the human queue
+        # (gr595272); disarmed, the auto path can never answer it — hand
+        # it back (a no-op for an ask minted with the tag).
+        return False, _resurface_approval_ask(
+            store, approval_id, f"{_AUTO_DEPLOY_KEY} is off", now=now
+        )
     if _newest_answer(store, approval_id) is not None:
         return False, ""
     nope = f"{_AUTO_DEPLOY_KEY} is on but td{approval_id} is not auto-answered"
@@ -480,9 +606,14 @@ def _auto_answer_approval(
     verdict = _newest_sha_verdict(store, sha12)
     if verdict is None or verdict["verdict"] != "green":
         return False, f"{nope}: no recorded green CI verdict for {sha12}"
-    rec, why = _open_round_record(store, rn, sha12)
+    rec, why, final = _open_round_record(store, rn, sha12)
     if rec is None:
-        return False, f"{nope}: {why}"
+        note = f"{nope}: {why}"
+        if final:
+            resurfaced = _resurface_approval_ask(store, approval_id, why, now=now)
+            if resurfaced:
+                note = f"{note}; {resurfaced}"
+        return False, note
     # The comment is the only write and it comes last, after every check.
     run = str(verdict.get("run_id") or "") or "unrecorded"
     text = (
@@ -1071,8 +1202,11 @@ __all__ = [
     "PENDING_RANGE",
     "ROUND_KEY",
     "approval",
+    "approval_body",
     "approval_options",
+    "approval_title",
     "auto_answer_approval",
+    "auto_deploy_armed",
     "ci_rerun_fired",
     "ci_verdict_rows",
     "is_terminal",

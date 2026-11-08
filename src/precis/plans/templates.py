@@ -636,7 +636,11 @@ def mint_release_pass(
     GitHub verdict, parking itself while CI runs. The gate and the loop are
     siblings blocked-by the poll, so the loop sees a recorded verdict: green
     closes it empty, red mints a fixer. ``approval`` is an ``answer`` gate
-    that is also the ask-user todo Reto answers (``deploy r<N>`` | ``hold``);
+    that is also the ask Reto answers (``deploy r<N>`` | ``hold``) —
+    minted with the ``ask-user`` tag only while ``release.auto_deploy``
+    is disarmed; armed, the tick's standing approval answers it and a
+    definitive refusal re-tags it
+    (:func:`precis.plans.release.auto_answer_approval`, gr595272).
     ``deploy`` (``release_deploy``) refuses unless that answer names
     ``deploy r<N>`` (:func:`precis.plans.release.approval`). ``confirm``
     (``release_confirm``) then attests the deployed runtime — every live
@@ -655,6 +659,9 @@ def mint_release_pass(
         "blocks": "nothing",
         "context": "release/r<N> is cut by this plan; green CI gates this ask",
     }
+    # gr595272: armed, the standing approval answers the ask — it stays
+    # off the human queue until a definitive refusal re-tags it.
+    human_ask = not _release.auto_deploy_armed(store)
 
     def build(m: _Minter) -> None:
         root = m.node("root", "Release pass", _phase())
@@ -696,16 +703,13 @@ def mint_release_pass(
         )
         approval = m.node(
             "approval",
-            "Deploy the release? (answer 'deploy r<N>' or 'hold')",
+            _release.approval_title("r<N>"),
             {"gate": {"kind": "answer"}, "ask": ask},
-            body=(
-                "The release this plan cut is green. Answer with "
-                "put(kind='todo', id=<this>, text='answer: deploy r<N>') and close "
-                "this todo; 'hold' (or any other answer) deploys nothing."
-            ),
+            body=_release.approval_body("r<N>"),
             blocked_by=("gate",),
         )
-        _tag(m, approval, "ask-user")
+        if human_ask:
+            _tag(m, approval, "ask-user")
         deploy = m.node(
             "deploy",
             "Deploy the release",
