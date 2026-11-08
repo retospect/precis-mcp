@@ -440,7 +440,10 @@ def test_a_closure_blocked_net_gets_one_earlier_net_to_yield() -> None:
     )
     d = _two_gap_channel_board(side=0, zones=zones)
     mesh, w, by_net = _route(d, via_dia=50.0, n_nets=3)
-    assert w.negotiated == ((1, 0, True),)
+    # the canonical mesh sends the loop's one-shot negotiation home
+    # rolled back; the shove phase retries the same pair and keeps it —
+    # the geometric outcome below is unchanged (gr591020)
+    assert w.negotiated == ((1, 0, False), (1, 0, True))
     wall = LineString([(20.0, 0.0), (20.0, 40.0)])
     y0 = LineString(by_net[0].points).intersection(wall).y
     y1 = LineString(by_net[1].points).intersection(wall).y

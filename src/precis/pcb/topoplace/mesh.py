@@ -15,6 +15,10 @@ not refused: the crossing point becomes a vertex both rings recover
 through (real poses legitimately overlap — courtyard margins are
 advisory, edge connectors hang over the outline). An unrecoverable
 cavity or a runaway flip loop still raises :class:`MeshConflictError`.
+The Delaunay call sees a micro-joggled copy of the vertices
+(:func:`_joggled`): Qhull resolves exact cocircular/collinear ties from
+floating-point noise, which differs across CPU builds — the joggle
+makes every such tie verdict decisive and identical on every platform.
 
 Constraint ownership (:attr:`TopoMesh.edge_owner`) is what lets a wire
 leave its own part: a ring edge knows WHICH part's courtyard it is (two
@@ -77,6 +81,34 @@ _MAX_FLIPS = 10000
 _GROW_MARGIN = 1e-6
 #: How far outside a foreign grown ring a moved pin anchor must sit.
 _ANCHOR_MARGIN = 1e-3
+#: Half-range (mm) of the per-vertex jitter fed to Qhull (see
+#: :func:`_joggled`). ~1 nm dwarfs the ~1e-15 mm predicate noise that
+#: otherwise breaks exact cocircular/collinear ties differently per
+#: build, and stays orders of magnitude under the smallest feature
+#: spacing a grown ring or minted crossing vertex can produce.
+_JOGGLE_MM = 1e-6
+
+
+def _joggled(varr: np.ndarray) -> np.ndarray:
+    """``varr`` plus a per-vertex micro-jitter drawn from a splitmix64
+    hash of the vertex index — integer arithmetic, so the perturbed set
+    is bitwise identical on every platform. Qhull resolves exact
+    cocircular/collinear ties from floating-point noise, which differs
+    across builds: arm64 macOS and x86_64 Linux handed the same vertex
+    set back different (each valid) diagonals, and every downstream
+    dual-path decision — corridor, via siting — inherited the split
+    (gr591020). A jitter far above the noise makes every degenerate
+    quadrilateral's verdict decisive and identical everywhere. Only the
+    connectivity sees it: simplices index back into ``varr``, so the
+    mesh keeps the true vertices and recovery works on the true
+    coordinates."""
+    k = np.arange(len(varr), dtype=np.uint64) * np.uint64(0x9E3779B97F4A7C15)
+    k ^= k >> np.uint64(29)
+    k *= np.uint64(0xBF58476D1CE4E5B9)
+    k ^= k >> np.uint64(32)
+    bits, span = np.uint64(21), np.uint64(1 << 21)
+    xy = np.column_stack([k & (span - 1), (k >> bits) & (span - 1)])
+    return varr + _JOGGLE_MM * (2.0 * xy / span - 1.0)
 
 
 class MeshConflictError(BadInput):
@@ -1316,7 +1348,7 @@ def build_mesh(
     if len(varr) < 3:
         raise MeshConflictError("fewer than 3 mesh vertices — nothing to triangulate")
     try:
-        soup = _Soup(Delaunay(varr).simplices)
+        soup = _Soup(Delaunay(_joggled(varr)).simplices)
     except QhullError as exc:
         raise MeshConflictError(
             f"degenerate vertex set — Qhull refused: {exc}"
