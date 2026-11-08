@@ -73,16 +73,19 @@ _SEARCH_TIERS = ("screening", "neb", "verify")
 #: ``args={'tier'}`` search filter (gr592660): the stamped ``meta.tier``
 #: wins; an unstamped run derives from ``results`` (``screening: true`` →
 #: 'screening', ``template='coadsorbed'`` with a falsy ``neb_schedule`` →
-#: 'verify'), else 'neb'. The pathway refs alias is ``p``.
+#: 'verify'), else 'neb'. The pathway refs alias is ``p``. The falsy list
+#: is every JSON spelling Python's ``not`` reads as false — ``null``
+#: included: ``#>`` on an explicit ``"neb_schedule": null`` yields the
+#: jsonb literal 'null', not SQL NULL (missing key is the COALESCE arm).
 _TIER_CASE = """\
 CASE WHEN p.meta->>'tier' IN ('screening', 'neb', 'verify')
           THEN p.meta->>'tier'
      WHEN p.meta #> '{results,screening}' = 'true'::jsonb
           THEN 'screening'
      WHEN p.meta #>> '{results,template}' = 'coadsorbed'
-          AND (p.meta #> '{results,neb_schedule}' IS NULL
-               OR p.meta #> '{results,neb_schedule}'
-                  IN ('{}'::jsonb, '[]'::jsonb, 'false'::jsonb))
+          AND COALESCE(p.meta #> '{results,neb_schedule}', 'null'::jsonb)
+              IN ('null'::jsonb, 'false'::jsonb, '0'::jsonb,
+                  '""'::jsonb, '[]'::jsonb, '{}'::jsonb)
           THEN 'verify'
      ELSE 'neb' END"""
 

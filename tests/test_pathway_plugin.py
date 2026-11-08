@@ -4129,6 +4129,36 @@ def test_search_args_filters_and_bad_input(pathway_store: Store) -> None:
         title="t",
         meta={"status": "ready", "results": {"template": "coadsorbed"}},
     )
+    # Every JSON-falsy spelling of results.neb_schedule reads as verify —
+    # _pathway_tier's `not results.get("neb_schedule")`. An explicit null
+    # regressed to 'neb' once: #> yields 'null'::jsonb, not SQL NULL.
+    falsy_runs = []
+    falsy_spellings: tuple[Any, ...] = (None, False, 0, "", [], {})
+    for i, falsy in enumerate(falsy_spellings):
+        slug = f"falsy-sched-{i}-run"
+        falsy_runs.append(slug)
+        pathway_store.insert_ref(
+            kind="pathway",
+            slug=slug,
+            title="t",
+            meta={
+                "status": "ready",
+                "results": {"template": "coadsorbed", "neb_schedule": falsy},
+            },
+        )
+    # …while a best_first-pruned coadsorbed result stays 'neb'.
+    pathway_store.insert_ref(
+        kind="pathway",
+        slug="pruned-run",
+        title="t",
+        meta={
+            "status": "ready",
+            "results": {
+                "template": "coadsorbed",
+                "neb_schedule": {"NO->N+O": "refined"},
+            },
+        },
+    )
     pathway_store.insert_ref(
         kind="pathway",
         slug="neb-run",
@@ -4144,7 +4174,12 @@ def test_search_args_filters_and_bad_input(pathway_store: Store) -> None:
     assert "neb-run" not in body
     body = h.search(q="run", args={"tier": "verify"}).body
     assert "verify-run" in body and "neb-run" not in body
-    assert "neb-run" in h.search(q="run", args={"tier": "neb"}).body
+    for slug in falsy_runs:
+        assert slug in body, slug
+    assert "pruned-run" not in body
+    body = h.search(q="run", args={"tier": "neb"}).body
+    assert "neb-run" in body and "pruned-run" in body
+    assert all(slug not in body for slug in falsy_runs)
     # engine is a substring match on meta.autocatpath_version.
     assert "alpha-run" in h.search(q="run", args={"engine": "0.9"}).body
     assert "neb-run" not in h.search(q="run", args={"engine": "0.9"}).body
