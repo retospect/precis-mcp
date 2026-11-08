@@ -3084,6 +3084,7 @@ class DraftStore(_AbbrevMixin):
         data_chunk_ids: list[int],
         *,
         replace: bool = False,
+        conn: psycopg.Connection | None = None,
     ) -> int:
         """Create the figure→data `plots` edges for a computed figure, by
         chunk_id. Resolves each chunk's `(ref_id, ord)` and routes through
@@ -3091,11 +3092,14 @@ class DraftStore(_AbbrevMixin):
         chunks must already exist. ``replace`` drops the figure's
         existing ``plots`` edges first (the edit path re-targets the data
         set wholesale — a kept stale edge would keep plotting the old
-        chunk too)."""
-        with self.tx() as conn:
+        chunk too). Optional ``conn`` (like :meth:`unlink_figure_plots`)
+        lets the recipe edit commit the edge swap in the same transaction
+        as the ``meta.render`` rewrite."""
+
+        def _do(c: psycopg.Connection) -> int:
             if replace:
-                self.unlink_figure_plots(figure_chunk_id, conn=conn)
-            rows = conn.execute(
+                self.unlink_figure_plots(figure_chunk_id, conn=c)
+            rows = c.execute(
                 "SELECT chunk_id, ref_id, ord FROM chunks WHERE chunk_id = ANY(%s)",
                 ([figure_chunk_id, *data_chunk_ids],),
             ).fetchall()
@@ -3110,10 +3114,15 @@ class DraftStore(_AbbrevMixin):
                     dst_ref_id=d_ref,
                     dst_pos=d_ord,
                     relation="plots",
-                    conn=conn,
+                    conn=c,
                 )
                 n += 1
             return n
+
+        if conn is not None:
+            return _do(conn)
+        with self.tx() as c:
+            return _do(c)
 
     def link_figure_canvas(self, figure_chunk_id: int, canvas_ref_id: int) -> None:
         """Wire a draft figure chunk → a ``kind='figure'`` canvas via a
@@ -3287,40 +3296,57 @@ class DraftStore(_AbbrevMixin):
         if transform is None and not patch:
             return False
         with self.tx() as conn:
-            row = conn.execute(
-                "SELECT chunk_id, meta, retired_at FROM chunks "
-                "WHERE handle = %s FOR UPDATE",
-                (_bare(handle),),
-            ).fetchone()
-            if row is None:
-                raise NotFound(f"no draft chunk ¶{_bare(handle)}")
-            chunk_id, meta, retired = row
-            if retired is not None:
-                raise Gone(
-                    f"¶{_bare(handle)} is retired — it was removed or replaced; "
-                    "edit the current live chunk instead"
-                )
-            new_meta = dict(meta or {})
-            if transform is not None:
-                patch = transform(new_meta)
-                if not patch:
-                    return False
-            assert patch is not None
-            for k, v in patch.items():
-                if v is None:
-                    new_meta.pop(k, None)
-                else:
-                    new_meta[k] = v
-            conn.execute(
-                "UPDATE chunks SET meta = %s WHERE chunk_id = %s",
-                (Jsonb(new_meta), chunk_id),
+            return self._patch_chunk_meta_tx(conn, handle, patch, transform)
+
+    def _patch_chunk_meta_tx(
+        self,
+        conn: psycopg.Connection,
+        handle: str,
+        patch: dict[str, Any] | None,
+        transform: Callable[[dict[str, Any]], dict[str, Any] | None] | None,
+    ) -> bool:
+        """``patch_chunk_meta``'s transaction body on a caller-owned
+        connection — the figure recipe edit
+        (:meth:`precis.handlers.draft.DraftHandler._edit_figure_recipe`)
+        folds the meta merge and its ``plots`` edge rewrite into one
+        commit (td593639), so a mid-write failure can't leave the recipe
+        stamped under stale edges. The caller's ``tx()`` owns
+        commit/rollback — no ``_write_retried`` here; retry belongs to
+        the outer op."""
+        row = conn.execute(
+            "SELECT chunk_id, meta, retired_at FROM chunks "
+            "WHERE handle = %s FOR UPDATE",
+            (_bare(handle),),
+        ).fetchone()
+        if row is None:
+            raise NotFound(f"no draft chunk ¶{_bare(handle)}")
+        chunk_id, meta, retired = row
+        if retired is not None:
+            raise Gone(
+                f"¶{_bare(handle)} is retired — it was removed or replaced; "
+                "edit the current live chunk instead"
             )
-            conn.execute(
-                "INSERT INTO chunk_events (chunk_id, event_kind, source) "
-                "VALUES (%s, 'edited', %s)",
-                (chunk_id, Jsonb({"reason": "patch-meta", "keys": list(patch)})),
-            )
-            return True
+        new_meta = dict(meta or {})
+        if transform is not None:
+            patch = transform(new_meta)
+            if not patch:
+                return False
+        assert patch is not None
+        for k, v in patch.items():
+            if v is None:
+                new_meta.pop(k, None)
+            else:
+                new_meta[k] = v
+        conn.execute(
+            "UPDATE chunks SET meta = %s WHERE chunk_id = %s",
+            (Jsonb(new_meta), chunk_id),
+        )
+        conn.execute(
+            "INSERT INTO chunk_events (chunk_id, event_kind, source) "
+            "VALUES (%s, 'edited', %s)",
+            (chunk_id, Jsonb({"reason": "patch-meta", "keys": list(patch)})),
+        )
+        return True
 
     #: The manufacturing-part attribute bag + hover surfaces that
     #: :meth:`set_term_attrs` may patch in place. ``registry``

@@ -40,6 +40,8 @@ from collections.abc import Sequence
 from datetime import UTC
 from typing import Any, ClassVar, cast
 
+from psycopg import Connection
+
 from precis._result_budget import (
     body_bytes,
     result_context_cap,
@@ -2560,6 +2562,7 @@ class DraftHandler(Handler):
         recipe: dict[str, Any] | None,
         *,
         origin: str | None = None,
+        conn: Connection | None = None,
     ) -> None:
         """Re-arm a figure chunk for the lazy render pass after a recipe
         or ``plots=`` edit — the write :meth:`_edit_figure_recipe` shares
@@ -2571,7 +2574,9 @@ class DraftHandler(Handler):
         and ``origin=`` re-classes ``meta.figure.origin`` when the recipe
         kind changed — a figure that stops being ``third_party`` drops
         its stale ``permission`` paper-trail with it. One meta merge via
-        ``patch_chunk_meta``'s in-tx ``transform``."""
+        ``patch_chunk_meta``'s in-tx ``transform``. ``conn`` folds the
+        merge into the caller's transaction — the recipe edit commits
+        meta and ``plots`` edge rewrites atomically (td593639)."""
 
         def _tf(meta: dict[str, Any]) -> dict[str, Any]:
             fig = dict(meta.get("figure") or {})
@@ -2585,7 +2590,10 @@ class DraftHandler(Handler):
                 patch["render"] = recipe
             return patch
 
-        self.store.drafts.patch_chunk_meta(handle, transform=_tf)
+        if conn is None:
+            self.store.drafts.patch_chunk_meta(handle, transform=_tf)
+        else:
+            self.store.drafts._patch_chunk_meta_tx(conn, handle, None, _tf)
 
     def _edit_figure_recipe(
         self,
@@ -2606,7 +2614,10 @@ class DraftHandler(Handler):
         Python, ``plots=`` the data chunks it plots (wholesale — the
         edge set is replaced, not appended). A rewrite drops the stamped
         ``cached_key`` and re-arms ``meta.figure.render_pending``, so
-        the lazy render pass re-rasterises on next export/view."""
+        the lazy render pass re-rasterises on next export/view. The
+        ``plots`` targets are validated before any write and the recipe
+        + edge rewrite commits atomically — a refused edit leaves the
+        figure untouched (td593639)."""
         if view is None and render is None and plots is None:
             raise BadInput(
                 "a figure recipe edit needs view=, render= or plots=",
@@ -2643,8 +2654,11 @@ class DraftHandler(Handler):
                     "'se:<design>', 'block': '<block>'}}"
                 ),
             )
-            self._stamp_figure_recipe(handle, recipe, origin="original")
-            dropped = self.store.drafts.unlink_figure_plots(base.chunk_id)
+            with self.store.drafts.tx() as conn:
+                self._stamp_figure_recipe(handle, recipe, origin="original", conn=conn)
+                dropped = self.store.drafts.unlink_figure_plots(
+                    base.chunk_id, conn=conn
+                )
             self.sync_draft_links(int(base.ref_id))
             self._attribute_touch([base.chunk_id])
             tail = (
@@ -2682,23 +2696,34 @@ class DraftHandler(Handler):
                 next="edit(kind='draft', id='dc<id>', "
                 "args={'render': 'import …', 'plots': ['dc<data-id>']})",
             )
-        if render is not None:
-            self._stamp_figure_recipe(
-                handle,
-                {"kind": "code", "lang": "python", "src": str(render)},
-                origin="own_graph",
-            )
-        n_linked = 0
+        # Resolve the plots targets BEFORE any write (td593639 — the
+        # recipe used to commit first, so a missing or cross-draft
+        # target surfaced its refusal after the figure was already
+        # rewritten). The stamp + edge swap then land in one commit.
+        targets: list[Any] | None = None
         if plots is not None:
             ref = self.store.get_ref(kind="draft", id=int(base.ref_id))
             targets = self._resolve_plot_targets(
                 int(base.ref_id), str(ref.slug or ref.id) if ref else "?", plots
             )
-            n_linked = self.store.drafts.link_figure_plots(
-                base.chunk_id, [t.chunk_id for t in targets], replace=True
-            )
-            if render is None:
-                self._stamp_figure_recipe(handle, None)
+        n_linked = 0
+        with self.store.drafts.tx() as conn:
+            if render is not None:
+                self._stamp_figure_recipe(
+                    handle,
+                    {"kind": "code", "lang": "python", "src": str(render)},
+                    origin="own_graph",
+                    conn=conn,
+                )
+            if targets is not None:
+                n_linked = self.store.drafts.link_figure_plots(
+                    base.chunk_id,
+                    [t.chunk_id for t in targets],
+                    replace=True,
+                    conn=conn,
+                )
+                if render is None:
+                    self._stamp_figure_recipe(handle, None, conn=conn)
         self.sync_draft_links(int(base.ref_id))
         self._attribute_touch([base.chunk_id])
         bits = ["render recipe"] if render is not None else []

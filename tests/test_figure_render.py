@@ -11,7 +11,7 @@ import pytest
 from psycopg.types.json import Jsonb
 
 from precis.dispatch import Hub
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.handlers.draft import DraftHandler
 from precis.render.figure import invalidation_key, render_figure_chunk
 
@@ -290,6 +290,63 @@ def test_edit_figure_recipe_refusals(hub: Hub) -> None:
         d.edit(id=fig.dc, view={"source": "structure:x"}, render="x = 1")
     with pytest.raises(BadInput, match="caption separately"):
         d.edit(id=fig.dc, render="x = 1", text="new caption")
+
+
+def test_edit_figure_rejected_plots_edit_preserves_state(hub: Hub) -> None:
+    """A ``plots=`` target that fails validation leaves the figure
+    untouched — recipe src, figure meta, the live ``plots`` edges and
+    the event log — even when ``render=`` rode along (td593639: the
+    recipe used to commit before the targets resolved, so the refusal
+    surfaced *after* the rewrite)."""
+    fig_id, _ref_id = _graph_figure(hub, "x = 1")
+    drafts = hub.live_store.drafts
+    fig = drafts.get_draft_chunk(f"dc{fig_id}")
+    assert fig is not None
+    before_meta = drafts.draft_chunk_meta(fig.handle)
+
+    def _state() -> tuple[set[int], int]:
+        with hub.live_store.pool.connection() as conn:
+            dsts = {
+                int(row[0])
+                for row in conn.execute(
+                    "SELECT dst_chunk_id FROM links "
+                    "WHERE src_chunk_id = %s AND relation = 'plots'",
+                    (fig_id,),
+                ).fetchall()
+            }
+            events = conn.execute(
+                "SELECT count(*) FROM chunk_events WHERE chunk_id = %s",
+                (fig_id,),
+            ).fetchone()
+        assert events is not None
+        return dsts, int(events[0])
+
+    before_edges, before_events = _state()
+
+    d = DraftHandler(hub=hub)
+    # missing target — render= rides along, so the old order would have
+    # committed the new recipe before the refusal
+    with pytest.raises(NotFound, match="plots target"):
+        d.edit(id=fig.dc, render="y = 2", plots=["dc999999999"])
+    # cross-draft target
+    d.put(id="h", title="O", project=_proj(hub))
+    d.put(
+        id="h",
+        chunk_kind="table",
+        table={"header": ["a"], "rows": [[9]]},
+        at={"last": True},
+    )
+    other_ref = hub.live_store.get_ref(kind="draft", id="h")
+    assert other_ref is not None
+    other_table = next(
+        c for c in drafts.reading_order(other_ref.id) if c.chunk_kind == "table"
+    )
+    with pytest.raises(BadInput, match="not a chunk in draft"):
+        d.edit(id=fig.dc, render="y = 2", plots=[other_table.dc])
+
+    # neither refusal touched the figure: meta, plots edges, event log
+    assert drafts.draft_chunk_meta(fig.handle) == before_meta
+    assert _state() == (before_edges, before_events)
 
 
 def test_edit_figure_recipe_requires_a_graph_to_target(hub: Hub) -> None:
