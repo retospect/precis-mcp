@@ -1478,6 +1478,30 @@ def run(args: argparse.Namespace) -> int:
                 foreign.append(b)
 
         if live or foreign:
+            if (
+                not mine
+                and args.cut_only
+                and not args.dry_run
+                and open_rel
+                and open_rel.get("cut_pending")
+                and not remote(f"refs/heads/{open_rel['branch']}")
+            ):
+                # gr593418: a pending cut is this clone's record alone
+                # (round.json is per checkout) — a hand-run `round cut`
+                # whose push had no credentials leaves it without a
+                # marker. No other session can own an unpushed branch, so
+                # the dark pass adopts it and `round cut` finishes the push
+                # at the recorded base instead of reporting it in flight.
+                say(
+                    f"adopting pending cut {open_rel['branch']} recorded in "
+                    "this checkout"
+                )
+                write_owner(
+                    str(open_rel["branch"]),
+                    str(open_rel["base"]),
+                    str(open_rel.get("cut_at") or ""),
+                )
+                rel, mine = open_rel, True
             if rel and mine:
                 tip, has = head_containing(s, rel["branch"], rel.get("base", ""))
                 return resume(args, s, rel, tip, has)

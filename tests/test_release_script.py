@@ -529,6 +529,30 @@ def test_cut_only_a_refused_recut_restores_the_r1_marker(rig: Rig) -> None:
     assert "release in flight" not in out.stdout
 
 
+def test_cut_only_adopts_an_unowned_pending_cut_and_pushes_it(rig: Rig) -> None:
+    """gr593418: a hand-run `round cut` whose push had no credentials leaves
+    cut_pending in this clone's record and no marker. --cut-only adopts it
+    and finishes the push at the recorded base; a dry run only reports."""
+    c2 = rig.shas["c2"]
+    hook = _reject_release_pushes(rig)
+    assert _release(rig, "--cut-only", "--sha", c2, *FAST).returncode == 1
+    assert _rel(_round_json(rig))["cut_pending"] is True
+    _marker(rig).unlink()  # the hand-run cut writes no owner marker
+    hook.unlink()
+    dry = _release(rig, "--cut-only", "--dry-run", *FAST)
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert "release in flight: release/r1" in dry.stdout
+    assert rig.origin_ref("release/r1") == ""
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "adopting pending cut release/r1" in out.stdout
+    assert "release in flight" not in out.stdout
+    assert f"RELEASE_CUT: r1 {c2}" in out.stdout.splitlines()
+    assert rig.origin_ref("release/r1") == c2
+    assert "cut_pending" not in _rel(_round_json(rig))
+    assert json.loads(_marker(rig).read_text(encoding="utf-8"))["base"] == c2
+
+
 def test_deploy_only_deploys_the_cut_pinned(rig: Rig) -> None:
     s = rig.shas["c3"]
     assert _release(rig, "--cut-only", *FAST).returncode == 0
