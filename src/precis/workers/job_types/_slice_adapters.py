@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,6 +71,21 @@ def kimi_bin() -> str:
         or shutil.which("kimi")
         or str(Path.home() / ".kimi-code" / "bin" / "kimi")
     )
+
+
+_ADAPTER_BINS: dict[str, Callable[[], str]] = {
+    "claude_p": claude_bin,
+    "codex_exec": codex_bin,
+    "devin_tree": devin_bin,
+    "kimi_tree": kimi_bin,
+}
+
+
+def adapter_bin(name: str) -> str:
+    """The adapter's own binary, resolved exactly as its argv does —
+    the name a ``cli-missing`` verdict must see on the process's own
+    last line (``KeyError`` on an unknown adapter)."""
+    return _ADAPTER_BINS[name]()
 
 
 def deny_settings(deny_paths: tuple[str, ...], tree: Path) -> str:

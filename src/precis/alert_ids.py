@@ -782,6 +782,16 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         triage="The alert detail carries the refusal's own next step; the "
         "lane probes again after the backoff, and a launch resolves this.",
     ),
+    AlertRule(
+        "lane_health",
+        "lane-parked:{lane}",
+        "A lane has been parked on a failed health probe for over six hours.",
+        "warn",
+        "lane_health",
+        triage="Re-login or repair the lane's credential on its host "
+        "(the alert detail names the parked reason); a green probe "
+        "unparks the lane and resolves this — `enabled` stays human.",
+    ),
 )
 
 RULES_BY_ID: dict[str, AlertRule] = {r.id: r for r in ALERT_RULES}

@@ -1503,6 +1503,19 @@ SERVICES: tuple[ServiceSpec, ...] = (
         one_line="Close STATUS:verify gripes whose resolved sha is in prod.",
         doc_skill="precis-job-help",
     ),
+    ServiceSpec(
+        name="lane_health",
+        label="Lane health probe (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        # The probe must run where the sessions run (gr588221 review):
+        # same host affinity as run_slice — the lane CLIs and their
+        # logins are the probe surface.
+        placement=frozenset({"repo_checkout", "claude_bin", "git"}),
+        one_line="Hourly credential probe per enabled lane: red parks it "
+        "out of dispatch, green unparks; enabled stays the human switch.",
+        doc_skill="precis-job-help",
+    ),
     # Inbound pull requests (td543749): the poll is DB/HTTP-only; dep_check
     # (git + uv) and pr_action (gh) run on a slice host with the checkout.
     ServiceSpec(

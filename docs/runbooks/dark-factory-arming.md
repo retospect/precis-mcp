@@ -429,10 +429,22 @@ The kill switch is unchanged: `PRECIS_FACTORY=off` on the lane's
 environment, or a `service_config` row for `plan_dispatch` with `prio = 0`;
 either makes each tick read-only (it logs what it would have done).
 
+Lane health self-heals (gr588221): the hourly `lane_health` job probes
+each enabled lane's credential (a one-word `claude -p` ping on the slice
+env, the devin/codex login status, the kimi membership check while its
+lane is on); a red probe parks the lane on `parked_reason` — skipped in
+dispatch exactly like `enabled=False` — and the next green probe unparks
+it, while a lane still parked after 6 h files one `lane-parked:<lane>`
+alert. The probe itself runs on a slice host — a detached child of the
+claiming `ssh_node` worker — so it sees the same binaries and logins the
+sessions do; a probe that cannot run reports `unprobed` and never parks.
+`enabled` stays the human switch: nothing in the probe writes it.
+
 ## Slice hosts
 
 A slice host is any worker whose heartbeat advertises `repo_checkout`,
-`claude_bin` and `git`. No host is named anywhere: `run_slice` is claimed
+`claude_bin` and `git`. No host is named anywhere: `run_slice` and
+`lane_health` are claimed
 only by a worker advertising all three; `land_slice`, `release_cut`,
 `release_deploy` and `release_confirm` need `repo_checkout` + `git` (the
 lander and a re-cut, deploy or confirm stay pinned to the host that ran

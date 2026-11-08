@@ -2599,6 +2599,402 @@ def test_poll_plain_error_is_still_a_failed_attempt(seams: dict[str, Any]) -> No
     assert "attempt:1" in store.tag_strings(42)
 
 
+# ── lane health park on auth (gr588221) ────────────────────────────
+
+
+def _auth_result(**kw: Any) -> dict[str, Any]:
+    """The 2026-11-08 03:13Z claude-sub answer: a logged-out OAuth lane —
+    api_error, zero work done."""
+    return {
+        "type": "result",
+        "is_error": True,
+        "result": "Not logged in · Please run /login",
+        "api_error_status": 401,
+        "api_error": "authentication_error",
+        **kw,
+    }
+
+
+def _parks(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
+    """Capture ``lanes.park_lane`` calls (the account-row write is unit-
+    tested against a real store in test_lanes_accounts)."""
+    calls: list[tuple[Any, ...]] = []
+
+    def park(*a: Any, **kw: Any) -> bool:
+        calls.append((*a, *kw.values()))
+        return True
+
+    monkeypatch.setattr(lanes, "park_lane", park)
+    return calls
+
+
+def test_lane_outage_classifies_auth(seams: dict[str, Any]) -> None:
+    """The auth allowlist: a logged-out lane, a 401/403 from the lane's
+    API, a rejected key and a missing binary all classify ``auth`` with
+    the PHRASE KEY, never raw session text. An ordinary red, a timeout
+    and a 429/rate limit do not — the rate path stays quota/rate."""
+    log = json.dumps(_auth_result())
+    assert run_slice._lane_outage("Not logged in · Please run /login", log) == (
+        "auth",
+        None,
+        "not-logged-in",
+    )
+    for status in (401, 403):
+        tail = json.dumps({"api_error_status": status})
+        cls, _retry, key = run_slice._lane_outage("", tail) or (None, None, None)
+        assert (cls, key) == ("auth", f"http-{status}")
+    for text, want in (
+        ("Invalid API key", "invalid-key"),
+        ("authentication_error: check your credentials", "auth"),
+    ):
+        cls, _retry, key = run_slice._lane_outage(text, "") or (None, None, None)
+        assert (cls, key) == ("auth", want), text
+    # Binary missing rides the last log line, not the result text.
+    assert run_slice._lane_outage(None, "sh: claude: command not found\n") == (
+        "auth",
+        None,
+        "cli-missing",
+    )
+    # Not auth: an ordinary failure, a timeout, a rate limit.
+    assert run_slice._lane_outage("tests: red — 3 failed", "") is None
+    assert run_slice._lane_outage("the session timed out", "") is None
+    # Quota-family wording wins over a bare 429 again (the window's own
+    # classifier runs first — review S4 restored the pre-gr588221 order).
+    outage = run_slice._lane_outage(
+        "You've hit your weekly limit", '{"api_error_status": 429}'
+    )
+    assert outage is not None and outage[0] == "quota"
+
+
+def test_poll_auth_failure_parks_the_lane_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr588221: the logged-out claude-sub session parks the LANE (not the
+    job) with ``auth:`` reason, burns no attempt — ``attempt_free`` — and
+    the relaunch lands on another vendor's lane; ``enabled`` is never
+    written by the park."""
+    parked = _parks(monkeypatch)
+    codex, sub = _codex_and_sub()
+    use_lanes(monkeypatch, codex, sub)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams, lane="claude-sub", model="claude-test-model")
+    assert handle is not None and ctx.meta_set["lane"] == "claude-sub"
+    _finish(handle, 1, json.dumps(_auth_result()) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    # No attempt burned and no handoff; the todo's lease went back.
+    assert pctx.status is None and pctx.failure is None
+    assert pctx.meta_set["attempt_free"] == "lane-auth"
+    assert "STATUS:open" in store.tag_strings(42)
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+    assert store.comments(42) == []
+    # The lane, not the job, is parked — the account row gets
+    # ``auth:<phrase key>``, never raw session text.
+    assert handle["outage"] == "auth"
+    assert len(parked) == 1
+    _store_arg, name, reason, _now = parked[0]
+    assert name == "claude-sub" and str(reason).startswith("auth:")
+    assert "Not logged in" not in str(reason)
+    # The relaunch picks another vendor — the parked lane is skipped like
+    # a disabled one (belt under exclude_vendor).
+    assert pctx.meta_set["exclude_vendor"] == "anthropic"
+    launches = len(seams["launch"])
+    rctx = _poll_ctx(store, ctx)
+    rctx.meta["exclude_vendor"] = "anthropic"
+    assert run_slice.poll(rctx, handle) is False
+    assert len(seams["launch"]) == launches + 1
+    argv = seams["launch"][-1][0]
+    assert argv[0].endswith("codex") and argv[1] == "exec"
+    assert rctx.meta_set["lane"] == "codex"
+
+
+def test_poll_devin_log_with_auth_phrases_is_not_a_lane_park(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review B2: a devin session's result IS the whole log — auth
+    phrases inside quoted test output and a ``bash: pytest: command
+    not found`` tail are the task's text, never the lane's credential:
+    no park, no ``attempt_free``, the attempt counts."""
+    parked = _parks(monkeypatch)
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None and ctx.meta_set["adapter"] == "devin_tree"
+    _finish(
+        handle,
+        1,
+        "$ pytest\n"
+        'assert "authentication error" in body  # 401 Not logged in\n'
+        "FAILED tests/test_auth.py::test_login\n"
+        "3 failed, 1 passed\n"
+        "bash: pytest: command not found\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "attempt:1" in store.tag_strings(42)
+    assert "attempt_free" not in pctx.meta_set
+    assert parked == []
+
+
+def test_lane_outage_429_quota_wording_still_classifies_quota(
+    seams: dict[str, Any],
+) -> None:
+    """Review S4: the auth classes slot in AFTER the window checks —
+    a 429 whose wording names the quota window is ``quota`` (the +2 h
+    reset horizon), not ``rate``."""
+    outage = run_slice._lane_outage(
+        "Claude AI usage limit reached", '{"api_error_status": 429}'
+    )
+    assert outage is not None and outage[0] == "quota"
+
+
+def test_lane_outage_auth_scan_reads_structured_fields_only(
+    seams: dict[str, Any],
+) -> None:
+    """Review B2: the auth allowlist reads the tail JSON's ``api_error``
+    and a BOUNDED result — a long answer quoting auth wording, and the
+    devin adapter's whole-log result, are session text, never a park."""
+    # The devin whole-log result is never scanned at all.
+    assert (
+        run_slice._lane_outage(
+            "pytest failed: authentication error\nNot logged in",
+            "session transcript tail",
+            adapter="devin_tree",
+            exit_code=1,
+        )
+        is None
+    )
+    # A claude result past the whole-message cap is not scanned either.
+    long_result = "report:\n" + "x" * 300 + "\nauthentication_error"
+    assert run_slice._lane_outage(long_result, "") is None
+    # The structured api_error field always is.
+    log = json.dumps({"is_error": True, "result": "", "api_error": "invalid x-api-key"})
+    assert run_slice._lane_outage("", log) == ("auth", None, "auth")
+
+
+def test_lane_outage_cli_missing_needs_the_processes_own_binary(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review B2: ``cli-missing`` is the process's own report — exit
+    127, or a near-empty log — and it must name the LANE's own binary;
+    ``bash: pytest: command not found`` is the task's tool."""
+    monkeypatch.setenv("PRECIS_DEVIN_BIN", "/vendor/devin")
+    monkeypatch.delenv("PRECIS_CLAUDE_BIN", raising=False)
+    # exit 127 naming the lane's binary.
+    assert run_slice._lane_outage(
+        None,
+        "bash: /vendor/devin: command not found\n",
+        adapter="devin_tree",
+        exit_code=127,
+    ) == ("auth", None, "cli-missing")
+    # exit 127 naming a different tool — never a lane verdict.
+    assert (
+        run_slice._lane_outage(
+            None,
+            "bash: pytest: command not found\n",
+            adapter="devin_tree",
+            exit_code=127,
+        )
+        is None
+    )
+    # A near-empty log naming the lane's binary (no exit record).
+    assert run_slice._lane_outage(
+        None, "sh: claude: command not found\n", adapter="claude_p"
+    ) == ("auth", None, "cli-missing")
+    # A real session log ending in another tool's miss: long log, exit 1.
+    long_log = "session output line\n" * 10 + "bash: pytest: command not found\n"
+    assert (
+        run_slice._lane_outage(None, long_log, adapter="claude_p", exit_code=1) is None
+    )
+
+
+def test_lane_outage_cli_missing_needs_exit_127_or_no_exit_record(
+    seams: dict[str, Any],
+) -> None:
+    """Review R2-4: a short not-found log under a REAL non-127 exit is a
+    failed session, not the lane's missing binary — exit 127 (the
+    process's own report) or no exit record at all are the only
+    qualifiers, and the no-record path still needs a near-empty log."""
+    assert (
+        run_slice._lane_outage(
+            None,
+            "sh: claude: command not found\n",
+            adapter="claude_p",
+            exit_code=1,
+        )
+        is None
+    )
+    assert run_slice._lane_outage(
+        None, "sh: claude: command not found\n", adapter="claude_p", exit_code=127
+    ) == ("auth", None, "cli-missing")
+    assert run_slice._lane_outage(
+        None, "sh: claude: command not found\n", adapter="claude_p"
+    ) == ("auth", None, "cli-missing")
+    # No exit record but a real session log: still not the lane's binary.
+    long_log = "session output\n" * 5 + "sh: claude: command not found\n"
+    assert run_slice._lane_outage(None, long_log, adapter="claude_p") is None
+
+
+def test_lane_outage_auth_scan_is_claude_p_only(
+    seams: dict[str, Any],
+) -> None:
+    """Review R2-3: the bounded result scan reads ``claude_p``'s own
+    ``result`` only — kimi's last assistant message, codex's
+    ``last-message.md`` and devin's whole log are session text, never a
+    park. The structured ``api_error``/status path still classifies for
+    every adapter."""
+    for adapter in ("kimi_tree", "codex_exec", "devin_tree"):
+        assert (
+            run_slice._lane_outage(
+                "Stopping: the login test hits an authentication error",
+                "session tail",
+                adapter=adapter,
+                exit_code=1,
+            )
+            is None
+        ), adapter
+        assert (
+            run_slice._lane_outage(
+                "Not logged in · Please run /login",
+                "session tail",
+                adapter=adapter,
+                exit_code=1,
+            )
+            is None
+        ), adapter
+    log = json.dumps({"is_error": True, "result": "", "api_error": "invalid x-api-key"})
+    assert run_slice._lane_outage("", log, adapter="kimi_tree", exit_code=1) == (
+        "auth",
+        None,
+        "auth",
+    )
+
+
+def test_kimi_session_ending_in_auth_wording_does_not_park(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review R2-3: a kimi session whose last assistant message names an
+    ``authentication error`` is the TASK's text — the lane is NOT
+    parked and the attempt counts."""
+    parked = _parks(monkeypatch)
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch)
+    assert handle is not None and ctx.meta_set["adapter"] == "kimi_tree"
+    _finish(
+        handle,
+        1,
+        json.dumps(
+            {
+                "role": "assistant",
+                "content": ("Stopping: the login test hits an authentication error"),
+            }
+        )
+        + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "attempt:1" in store.tag_strings(42)
+    assert "attempt_free" not in pctx.meta_set
+    assert parked == []
+
+
+def test_codex_session_ending_in_auth_wording_does_not_park(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Review R2-3: a codex ``last-message.md`` ending in ``Not logged
+    in`` is session text — the lane is NOT parked, the attempt counts."""
+    parked = _parks(monkeypatch)
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL", raising=False)
+    monkeypatch.setenv("PRECIS_CODEX_BIN", "/vendor/codex")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    use_lanes(monkeypatch, _vendor_lane("codex", "codex_exec"))
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, lane="codex")
+    assert handle is not None and ctx.meta_set["adapter"] == "codex_exec"
+    tree = Path(handle["worktree"])
+    (tree / "scratch").mkdir(parents=True, exist_ok=True)
+    (tree / "scratch" / "last-message.md").write_text(
+        "Not logged in\n", encoding="utf-8"
+    )
+    _finish(handle, 1, "codex exec output\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "attempt:1" in store.tag_strings(42)
+    assert "attempt_free" not in pctx.meta_set
+    assert parked == []
+
+
+def test_auth_park_relaunch_clears_attempt_free_and_counts_failures(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review S1: ``attempt_free`` rides the park, not the job — the
+    relaunch clears it, so a REAL failure of the relaunched session
+    counts as an attempt."""
+    _parks(monkeypatch)
+    codex, sub = _codex_and_sub()
+    use_lanes(monkeypatch, codex, sub)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams, lane="claude-sub", model="claude-test-model")
+    _finish(handle, 1, json.dumps(_auth_result()) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert pctx.meta_set["attempt_free"] == "lane-auth"
+    # The outage park's relaunch (the switch test's shape): the stamp
+    # clears and the fresh session's failure counts.
+    rctx = _poll_ctx(store, ctx)
+    rctx.meta["exclude_vendor"] = "anthropic"
+    assert run_slice.poll(rctx, handle) is False
+    assert rctx.meta_set["attempt_free"] is None
+    _finish(
+        handle,
+        1,
+        json.dumps({"is_error": True, "result": "Tool crashed."}) + "\n",
+    )
+    fctx = _poll_ctx(store, rctx)
+    assert run_slice.poll(fctx, handle) is True
+    assert fctx.status == "failed"
+    assert "attempt:1" in store.tag_strings(42)
+
+
+def test_submit_never_picks_a_parked_lane(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dispatcher's view: a parked lane is skipped exactly like
+    ``enabled=False`` — an unpinned pick lands on the next fit lane and a
+    lane pinned on the parked one fails like a disabled pin."""
+    from dataclasses import replace as _replace
+
+    devin = Lane(
+        "devin",
+        "devin_tree",
+        "free-promo",
+        3,
+        frozenset({"code", "review", "validate"}),
+        vendor="cognition",
+        models=("swe-2-high",),
+        default_model="swe-2-high",
+    )
+    sub = _replace(seed_lane("claude-sub"), parked_reason="auth:not-logged-in")
+    use_lanes(monkeypatch, devin, sub)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _Ctx(store, {"todo_id": 42})
+    assert run_slice.submit(ctx, None) is not None
+    assert ctx.meta_set["lane"] == "devin"
+    # The human's own pin on a parked lane is refused like a disabled one.
+    store.add_todo(43, "t")
+    pinned = _Ctx(store, {"todo_id": 43, "lane": "claude-sub"})
+    assert run_slice.submit(pinned, None) is None
+    assert pinned.failure is not None and "unknown or disabled" in pinned.failure
+
+
 def test_submit_skips_the_excluded_vendor(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

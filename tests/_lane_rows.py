@@ -13,6 +13,7 @@ stood lane on an unlaunchable adapter derives to nothing.
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime
 
 import pytest
@@ -82,6 +83,20 @@ def seed_lane(name: str) -> Lane:
 
 def _account_of(lane: Lane, rank: int) -> Account:
     """The ``llm_account`` row that derives back to ``lane``."""
+    # Lane health fields (gr588221): carried when both sides grew them —
+    # the field filter keeps a lane/account pair built before the columns
+    # landed from breaking on the unexpected kwarg.
+    acct_fields = {f.name for f in dataclasses.fields(Account)}
+    health = {
+        f: getattr(lane, f, None)
+        for f in (
+            "parked_reason",
+            "parked_at",
+            "health_checked_at",
+            "health_outcome",
+        )
+        if f in acct_fields
+    }
     return Account(
         name=lane.name,
         vendor=lane.vendor,
@@ -100,6 +115,7 @@ def _account_of(lane: Lane, rank: int) -> Account:
         pools=(),
         updated_at=datetime.now(UTC),
         lane_rank=rank,
+        **health,
     )
 
 

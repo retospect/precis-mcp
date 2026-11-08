@@ -1305,6 +1305,13 @@ class LlmHandler(NumericRefHandler):
         """``id='/accounts'`` — every ``llm_account`` row. ``key`` names the
         vault secret only (never a value); unknown/absent fields render as
         ``unknown``."""
+
+        def fmt_ts(v: Any) -> str:
+            if v is None:
+                return "unknown"
+            stamp = as_utc(v)
+            return stamp.strftime("%Y-%m-%dT%H:%M:%SZ") if stamp else "unknown"
+
         accounts = llm_accounts.list_accounts(self.store)
         lines = [f"# llm accounts ({len(accounts)})"]
         if not accounts:
@@ -1320,13 +1327,23 @@ class LlmHandler(NumericRefHandler):
                     else "MISSING"
                 )
                 key = f"{a.api_key_ref} ({has_it})"
+            parked = (
+                f" parked={a.parked_reason}@{fmt_ts(a.parked_at)}"
+                if a.parked_reason
+                else ""
+            )
+            health = (
+                f" health={a.health_outcome}@{fmt_ts(a.health_checked_at)}"
+                if a.health_outcome
+                else ""
+            )
             lines.append(
                 f"  {a.name}: vendor={a.vendor} plan={a.plan} "
                 f"adapter={a.adapter} enabled={a.enabled} "
                 f"concurrency={a.concurrency} "
                 f"task_classes={','.join(a.task_classes) or 'unknown'} "
                 f"default_model={a.default_model or 'unknown'} key={key} "
-                f"pools={','.join(a.pools) or 'unknown'}"
+                f"pools={','.join(a.pools) or 'unknown'}{parked}{health}"
             )
         return "\n".join(lines)
 

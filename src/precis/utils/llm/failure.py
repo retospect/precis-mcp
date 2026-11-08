@@ -234,6 +234,48 @@ def classify(
     return classify_text(text, now=now)
 
 
+#: Lane-auth wording → the phrase key stamped on the parked lane
+#: (``auth:<key>``, gr588221) — a logged-out CLI, a rejected credential.
+#: A deliberate allowlist, matched case-insensitively, first match wins;
+#: anything else stays unclassified rather than park a lane on a guess.
+#: ``http-<status>`` and ``cli-missing`` are not text keys: the caller
+#: derives them from ``api_error_status`` and the process's last log line.
+_AUTH_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "not-logged-in",
+        re.compile(
+            r"not logged in|logged out|please (?:run /?login|log ?in)"
+            r"|sign[- ]in required|login required",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "invalid-key",
+        re.compile(
+            r"invalid (?:api )?key|incorrect api key|api key (?:is )?(?:invalid|expired|revoked)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "auth",
+        re.compile(
+            r"authentication_error|authentication (?:failed|error)"
+            r"|invalid x-api-key|invalid authentication",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def lane_auth_key(text: str) -> str | None:
+    """The lane-auth phrase key for ``text`` (:data:`_AUTH_PATTERNS`),
+    else ``None``. Never raw session text — the key IS the mark."""
+    for key, pattern in _AUTH_PATTERNS:
+        if pattern.search(text):
+            return key
+    return None
+
+
 def backoff_hours(reason: str, *, now: datetime | None = None) -> float | None:
     """Hours until :func:`classify_text`'s horizon, or ``None`` when the
     wording is unclassified or has no horizon (``content``). The executor's
@@ -255,4 +297,5 @@ __all__ = [
     "backoff_hours",
     "classify",
     "classify_text",
+    "lane_auth_key",
 ]

@@ -699,6 +699,27 @@ def _run_secret_status(store: Store, batch_size: int) -> None:
         log.info("scheduler: minted secret_status job %d", ref_id)
 
 
+def _run_lane_health(store: Store, batch_size: int) -> None:
+    """Mint one ``lane_health`` probe job, fired from the hourly
+    ``lane_health`` cadence — the job (not the scheduler) runs the
+    per-lane auth probes, claimed by a slice-capable ``ssh_node``
+    worker (the placement row pins it there — the lane CLIs and logins
+    are the probe surface).
+    ``batch_size`` is unused — ``mint_health_job``'s pending-job dedup
+    IS the cap. Skips the mint entirely when no lane is enabled (the
+    whole lane table off = nothing to probe). See
+    job_types/lane_health.py."""
+    del batch_size
+    from precis.plans import lanes
+    from precis.workers.job_types.lane_health import mint_health_job
+
+    if not any(ln.enabled for ln in lanes.load_lanes(store)):
+        return
+    ref_id = mint_health_job(store, origin="background", title="lane_health (periodic)")
+    if ref_id is not None:
+        log.info("scheduler: minted lane_health job %d", ref_id)
+
+
 def _run_memory_thread_sweep(store: Store, batch_size: int) -> None:
     """One ``section:threads`` retirement sweep (gr485358 item 1) plus the
     ``SPACE:scratch`` TTL sweep (gr568398 rule s), fired from the daily
@@ -1420,6 +1441,18 @@ CADENCES: tuple[Cadence, ...] = (
         name="secret_status",
         interval_s=4 * 3600 + 19 * 60,
         run=_run_secret_status,
+    ),
+    # The lane credential probe (gr588221): mints one `lane_health`
+    # job per fire while any lane is enabled; the job probes each
+    # enabled lane's auth path (claude ping, devin/codex login, kimi
+    # key), parks a red lane out of dispatch and unparks a green one —
+    # `enabled` stays the human switch. Hourly +13m so it doesn't pile
+    # onto the watch_poll/health_digest ticks. spends=False: one-word
+    # CLI pings and fixed-endpoint checks, no LLM.
+    Cadence(
+        name="lane_health",
+        interval_s=3600 + 13 * 60,
+        run=_run_lane_health,
     ),
     # local-mesh-upkeep §2's nightly count: how many `revisions` rows
     # landed with reason='(unrecorded)', grouped by the write path

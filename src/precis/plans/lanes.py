@@ -47,6 +47,13 @@ Retry (:func:`ladder`): the table in order is also the escalation chain
 ``plan_dispatch`` climbs when a slice fails — each enabled fit lane's
 models from its default upward, free vendor lanes before the Claude
 subscription (Reto td559457).
+
+Park (gr588221): the account row's ``parked_reason`` set holds the lane
+out of every pick — ``pick_lane``, ``ladder`` and a ``params.lane`` pin
+skip it exactly like ``enabled=False`` — while ``enabled`` stays the
+human switch no writer here touches. A run_slice auth failure parks the
+lane itself (:func:`park_lane`); the hourly ``lane_health`` probe's
+green result unparks it (:func:`unpark_lane`) — the lane self-heals.
 """
 
 from __future__ import annotations
@@ -357,6 +364,9 @@ class Lane:
     ``cost_class`` is what a launch on the lane costs (one of
     :data:`COST_ORDER`, cheapest first); :func:`pick_lane` spends free
     capacity before paid.
+    ``parked_reason`` is the lane-health park (gr588221): set, the lane
+    is held out of dispatch like ``enabled=False`` without touching the
+    human ``enabled`` switch; ``parked_at`` the park's first sighting.
     """
 
     name: str
@@ -371,6 +381,15 @@ class Lane:
     default_model: str | None = None
     model_prefix: str = ""
     cost_class: str = COST_SUBSCRIPTION
+    parked_reason: str | None = None
+    parked_at: datetime | None = None
+
+    @property
+    def parked(self) -> bool:
+        """``True`` while the lane-health park holds this lane out of
+        dispatch — skipped like ``enabled=False``, the human switch
+        untouched."""
+        return self.parked_reason is not None
 
     def fits(self, task_class: str) -> bool:
         """``True`` when this lane takes ``task_class`` work."""
@@ -453,6 +472,8 @@ def derive_lanes(
             default_model=a.default_model,
             model_prefix=_ADAPTER_MODEL_PREFIX.get(a.adapter, ""),
             cost_class=_cost_class(a),
+            parked_reason=getattr(a, "parked_reason", None),
+            parked_at=getattr(a, "parked_at", None),
         )
         for a in sorted(rows, key=lambda a: (a.lane_rank, a.name))
         if a.adapter in LAUNCHABLE_ADAPTERS
@@ -585,7 +606,11 @@ def pick_lane(
     for, not bypassed).
     """
     table = load_lanes(store) if lanes is None else lanes
-    fit = [lane for lane in table if lane.enabled and lane.fits(task_class)]
+    fit = [
+        lane
+        for lane in table
+        if lane.enabled and not lane.parked and lane.fits(task_class)
+    ]
     if model:
         fit = [lane for lane in fit if lane.accepts_model(model)]
     backed = (
@@ -643,7 +668,7 @@ def ladder(
         lanes = load_lanes(store)
     out: list[Rung] = []
     for lane in lanes:
-        if not lane.enabled or not lane.fits(task_class):
+        if not lane.enabled or lane.parked or not lane.fits(task_class):
             continue
         if not lane.models:
             out.append(Rung(lane.name, None))
@@ -674,6 +699,59 @@ def rung_index(
     return next((i for i, r in enumerate(rungs) if r.lane == lane), None)
 
 
+# ── lane-health writers (gr588221) ──────────────────────────────────
+#
+# These three write ONLY the health columns (0288) — ``enabled`` is the
+# human switch and no writer in this module touches it.
+
+
+def park_lane(store: Any, name: str, reason: str, now: datetime) -> bool:
+    """Park the lane named ``name`` — ``False`` when no such account row.
+
+    Stamps ``parked_reason`` (a short ``<class>:<key>`` mark — the probe's
+    outcome prefix becomes ``health_outcome``), ``parked_at`` on first
+    sighting only (a re-park keeps the original instant so a flap does not
+    extend the >6h alert clock) and the probe stamp. Never writes
+    ``enabled``.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "UPDATE llm_account SET parked_reason = %s, "
+            "parked_at = COALESCE(parked_at, %s), "
+            "health_checked_at = %s, health_outcome = %s, "
+            "updated_at = now() WHERE name = %s RETURNING name",
+            (reason, now, now, reason.split(":", 1)[0], name),
+        ).fetchone()
+    return row is not None
+
+
+def unpark_lane(store: Any, name: str, now: datetime) -> bool:
+    """Clear the park on the lane named ``name`` — ``False`` when no such
+    account row. Records the green outcome; ``enabled`` is untouched."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "UPDATE llm_account SET parked_reason = NULL, parked_at = NULL, "
+            "health_checked_at = %s, health_outcome = 'ok', "
+            "updated_at = now() WHERE name = %s RETURNING name",
+            (now, name),
+        ).fetchone()
+    return row is not None
+
+
+def record_lane_health(store: Any, name: str, outcome: str, now: datetime) -> bool:
+    """Stamp the probe's outcome on the lane named ``name`` — ``False``
+    when no such account row. Moves the stamp only; the park state is
+    untouched (a still-red lane stays parked)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "UPDATE llm_account SET health_checked_at = %s, "
+            "health_outcome = %s, updated_at = now() "
+            "WHERE name = %s RETURNING name",
+            (now, outcome, name),
+        ).fetchone()
+    return row is not None
+
+
 __all__ = [
     "ANY_CLASS",
     "COST_FREE",
@@ -699,6 +777,9 @@ __all__ = [
     "lane_backoffs",
     "live_lane_counts",
     "load_lanes",
+    "park_lane",
     "pick_lane",
+    "record_lane_health",
     "rung_index",
+    "unpark_lane",
 ]

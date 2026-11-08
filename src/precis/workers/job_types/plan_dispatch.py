@@ -2235,7 +2235,7 @@ def _review_lane(
     ]
     for excluded, label in steps:
         table = tuple(ln for ln in lane_table if ln.vendor not in excluded)
-        if not any(ln.enabled and ln.fits(cls) for ln in table):
+        if not any(ln.enabled and not ln.parked and ln.fits(cls) for ln in table):
             continue  # nothing of another vendor is enabled: next step
         lane = _lanes.pick_lane(w.store, cls, lanes=table)
         if lane is None:

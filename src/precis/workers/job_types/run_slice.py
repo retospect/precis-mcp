@@ -145,6 +145,7 @@ from precis.principal import worker_comment_meta
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers.job_types._slice_adapters import (
     PERMISSION_MODE,
+    adapter_bin,
     deny_settings,
     devin_bin,
     get_adapter,
@@ -1982,7 +1983,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         )
     if params.get("lane") and not left_pin:
         lane = pinned
-        if lane is None or not lane.enabled:
+        if lane is None or not lane.enabled or lane.parked:
             ctx.record_failure(
                 f"run_slice: lane {params['lane']!r} unknown or disabled"
             )
@@ -2039,7 +2040,10 @@ def submit(ctx: Any, spec: Any) -> Any:
         )
         if lane is None:
             if model_pin and not any(
-                ln.enabled and ln.fits(task_class) and ln.accepts_model(model_pin)
+                ln.enabled
+                and not ln.parked
+                and ln.fits(task_class)
+                and ln.accepts_model(model_pin)
                 for ln in lane_table
             ):
                 # A config error, not capacity: parking would wait forever.
@@ -2053,6 +2057,7 @@ def submit(ctx: Any, spec: Any) -> Any:
                 ln
                 for ln in table
                 if ln.enabled
+                and not ln.parked
                 and ln.fits(task_class)
                 and (model_pin is None or ln.accepts_model(model_pin))
             ]
@@ -2693,21 +2698,76 @@ def _todo_pins_lane(store: Any, todo_id: int) -> bool:
     return isinstance(p, dict) and bool(p.get("lane"))
 
 
+#: A ``cli-missing`` verdict needs the process's own report: exit 127,
+#: or — when no exit code was recorded — a log short enough that the
+#: miss IS the story. A real non-127 exit never qualifies: a 3-line
+#: log under exit 1 is a failed session, not a missing binary (review
+#: R2-4). A long session log ending in ``bash: pytest: command not
+#: found`` is the task's tool either way (review B2).
+_CLI_MISSING_LOG_LINES = 3
+
+#: Bound on the result text the auth scan reads — the same whole-message
+#: cap style as ``_MAX_QUOTA_TEXT_CHARS``: a short final message is the
+#: CLI's own notice; a long answer quoting auth wording is session text.
+_AUTH_TEXT_CAP = 240
+
+
+def _cli_missing_on_tail(
+    adapter: str, tail: str, exit_code: int | None, lines: int
+) -> bool:
+    """The lane's own binary missing, reported by the process itself:
+    the tail names the adapter's binary in a not-found line AND the
+    report is the process's own — exit 127, or no exit record under a
+    near-empty log (the probe's own call); a real non-127 exit is the
+    session's, never the lane's (review R2-4)."""
+    if not re.search(r"command not found|no such file or directory", tail):
+        return False
+    if exit_code != 127 and (exit_code is not None or lines > _CLI_MISSING_LOG_LINES):
+        return False
+    try:
+        binary = Path(adapter_bin(adapter)).name
+    except KeyError:
+        return False
+    return bool(binary) and re.search(rf"\b{re.escape(binary)}\b", tail) is not None
+
+
 def _lane_outage(
-    result: str | None, log_text: str
-) -> tuple[str, datetime | None] | None:
-    """``(class, retry_at)`` when the session died of its lane's window —
-    the result wording classifies ``quota``/``rate``, or the CLI's final
-    JSON carries ``api_error_status`` 429 — else ``None``.
+    result: str | None,
+    log_text: str,
+    *,
+    adapter: str = "claude_p",
+    exit_code: int | None = None,
+) -> tuple[str, datetime | None, str] | None:
+    """``(class, retry_at, key)`` when the session died of its lane's
+    window or its credential — else ``None``.
+
+    The lane's window first: the result wording classifies
+    ``quota``/``rate``, or the CLI's final JSON carries
+    ``api_error_status`` 429 (key ``""`` — no phrase). Its credential
+    (gr588221, review B2): the auth allowlist
+    (:func:`~precis.utils.llm.failure.lane_auth_key`) on STRUCTURED
+    fields only — the final JSON's ``api_error`` marker always, and the
+    result text only for ``claude_p`` — the CLI's own bounded final
+    ``result`` under :data:`_AUTH_TEXT_CAP` (review R2-3: every other
+    adapter's final message is session text — ``devin_tree``'s whole
+    log, kimi's last assistant message, codex's ``last-message.md`` —
+    and quoting auth-shaped prose must never park a lane) — then the
+    401/403 status, then the lane's own binary reported missing by the
+    process itself (exit 127, or no exit record under a near-empty log,
+    never a line inside a session transcript). The ``key`` is the
+    phrase mark (``not-logged-in``, ``http-401``, ``cli-missing``),
+    never session text.
 
     jo565344: ``claude -p`` answered in 644 ms with a 429 and "You've hit
     your weekly limit · resets 11am (UTC)"; the poll read that as a failed
     attempt, which with the earlier sandbox miss hit the retry cap."""
-    from precis.utils.llm.failure import classify_text
+    from precis.utils.llm.failure import classify_text, lane_auth_key
 
     text = result or ""
     status: Any = None
-    tail = log_text.strip().splitlines()[-1].strip() if log_text.strip() else ""
+    api_error = ""
+    lines = log_text.strip().splitlines() if log_text.strip() else []
+    tail = lines[-1].strip() if lines else ""
     if tail.startswith("{"):
         try:
             obj = json.loads(tail)
@@ -2717,12 +2777,24 @@ def _lane_outage(
             status = obj.get("api_error_status")
             extra = obj.get("api_error")
             if isinstance(extra, str) and extra:
+                api_error = extra
                 text = f"{text} {extra}".strip()
     found = classify_text(text)
     if found.reason_class in _OUTAGE_CLASSES:
-        return str(found.reason_class), found.retry_at
+        return str(found.reason_class), found.retry_at, ""
     if status == 429:
-        return "rate", None
+        return "rate", None, ""
+    scan = api_error
+    bounded = " ".join((result or "").split())
+    if adapter == "claude_p" and bounded and len(bounded) <= _AUTH_TEXT_CAP:
+        scan = f"{scan} {bounded}".strip()
+    auth_key = lane_auth_key(scan) if scan else None
+    if auth_key is not None:
+        return "auth", None, auth_key
+    if status in (401, 403):
+        return "auth", None, f"http-{status}"
+    if _cli_missing_on_tail(adapter, tail, exit_code, len(lines)):
+        return "auth", None, "cli-missing"
     return None
 
 
@@ -2757,6 +2829,7 @@ def _park_outage(
     lane: str | None,
     cls: str,
     retry_at: datetime | None,
+    phrase: str | None = None,
 ) -> bool:
     """The lane's window closed on the session: hand the lease back with
     no attempt burned, drop the dead process from the handle and park it
@@ -2764,8 +2837,18 @@ def _park_outage(
     slice (``meta.exclude_vendor`` steers the relaunch there), else the
     parsed reset (or :data:`OUTAGE_BACKOFF`). The job stays running, as
     land_slice's deferral does; :func:`_relaunch_when_due` resubmits.
-    Always ``False``."""
+    Always ``False``.
+
+    An ``auth`` class (gr588221) is the LANE's credential, not a window:
+    it also parks the lane itself (``parked_reason = auth:<phrase key>`` —
+    the mark, never session text) so the whole fleet skips it until the
+    ``lane_health`` probe's green result unparks it; ``enabled`` stays
+    the human switch. The park stamp rides ``meta.attempt_free`` like
+    ``lane-wait``."""
     now = datetime.now(UTC)
+    if cls == "auth":
+        _lanes.park_lane(ctx.store, str(lane), f"auth:{phrase or 'unclassified'}", now)
+        ctx.set_meta(**{ATTEMPT_FREE_KEY: "lane-auth"})
     lane_table = _lanes.load_lanes(ctx.store)
     lane_obj = next((ln for ln in lane_table if ln.name == str(lane)), None)
     vendor = lane_obj.vendor if lane_obj is not None else ""
@@ -2790,9 +2873,14 @@ def _park_outage(
     handle.update(
         not_before=due.strftime(_NOT_BEFORE_FMT), outage=cls, outage_parks=parks
     )
+    what = (
+        f"auth failure (auth:{phrase or 'unclassified'}); lane parked"
+        if cls == "auth"
+        else f"{cls} window closed"
+    )
     ctx.append_chunk(
         "job_event",
-        f"run_slice: lane {lane} {cls} window closed on td{todo_id}; lease back "
+        f"run_slice: lane {lane} {what} on td{todo_id}; lease back "
         f"with no attempt burned; relaunch after {due:%Y-%m-%dT%H:%M}Z on {where} "
         f"(park {parks}/{OUTAGE_PARK_CAP})",
     )
@@ -2832,6 +2920,9 @@ def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
         compute_handle_released=False,
         deadline=datetime.now(UTC).timestamp() + wall_seconds(),
         exclude_vendor=None,
+        # The park stamp rides the park, not the job: a relaunched
+        # session's real failure must count as an attempt (review S1).
+        attempt_free=None,
     )
     return False
 
@@ -2887,7 +2978,9 @@ def poll(ctx: Any, handle: Any) -> bool:
         return True
     result, is_error = adapter.parse_result(log_text, tree, exit_code=exit_code)
     if is_error and not vanished:
-        outage = _lane_outage(result, log_text)
+        outage = _lane_outage(
+            result, log_text, adapter=adapter.name, exit_code=exit_code
+        )
         if outage is not None:
             parks = int(handle.get("outage_parks") or 0)
             if parks < OUTAGE_PARK_CAP:

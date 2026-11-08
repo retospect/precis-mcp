@@ -113,6 +113,16 @@ class Account:
     #: Preference order for the derived lane table (0283): the LANES seed
     #: held it in tuple position; 100 = unrated.
     lane_rank: int = 100
+    #: Lane health (0288, gr588221): ``parked_reason`` set holds the lane
+    #: out of dispatch exactly like ``enabled=False`` — a short
+    #: ``<class>:<key>`` mark ("auth:not-logged-in") — while ``enabled``
+    #: stays the human switch no writer here touches. ``parked_at`` is
+    #: the first sighting of the current park; the ``health_*`` pair is
+    #: the lane_health probe's last stamp.
+    parked_reason: str | None = None
+    parked_at: datetime | None = None
+    health_checked_at: datetime | None = None
+    health_outcome: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,7 +158,8 @@ class Pool:
 _ACCOUNT_COLS = (
     "name, vendor, plan, adapter, profile, api_key_ref, concurrency, "
     "task_classes, models, default_model, enabled, entitlement, privacy, "
-    "promo_expiry, pools, updated_at, lane_rank"
+    "promo_expiry, pools, updated_at, lane_rank, "
+    "parked_reason, parked_at, health_checked_at, health_outcome"
 )
 
 
@@ -171,6 +182,10 @@ def _account_from_row(row: tuple[Any, ...]) -> Account:
         pools=tuple(row[14] or ()),
         updated_at=row[15],
         lane_rank=row[16],
+        parked_reason=row[17],
+        parked_at=row[18],
+        health_checked_at=row[19],
+        health_outcome=row[20],
     )
 
 

@@ -1033,6 +1033,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "pr_action",
     "youtube_bulk",
     "cite_resolve",
+    "lane_health",
 )
 
 
@@ -1266,6 +1267,15 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     # lookup so subsequent calls are cheap.
     if name == "cite_resolve":
         from precis.workers.job_types.cite_resolve import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
+    if name == "lane_health":
+        # Hourly per-lane credential probe: red parks the lane out of
+        # dispatch, green unparks it; enabled stays the human switch.
+        # Detached submit/poll under ssh_node — the probe runs where
+        # the sessions run.
+        from precis.workers.job_types.lane_health import SPEC
 
         _REGISTRY[name] = SPEC
         return SPEC

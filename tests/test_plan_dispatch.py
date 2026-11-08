@@ -1292,6 +1292,77 @@ def test_escalate_skips_a_lane_in_backoff(
     assert params["lane"] == "claude-sub" and params["model"] == "claude-sonnet-5"
 
 
+def test_escalate_skips_a_parked_lane(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr588221: a parked lane (``parked_reason`` set — the lane's health,
+    not the human ``enabled`` switch) drops out of the ladder entirely,
+    so the retry climbs to the next lane like a backed-off one."""
+    low = L.Lane(
+        name="low",
+        adapter="devin_tree",
+        credential_pool="low",
+        cap=1,
+        task_classes=frozenset({"code"}),
+        vendor="cognition",
+    )
+    mid = L.Lane(
+        name="mid",
+        adapter="codex_exec",
+        credential_pool="mid",
+        cap=1,
+        task_classes=frozenset({"code"}),
+        vendor="openai",
+        parked_reason="auth:not-logged-in",
+    )
+    sub = seed_lane("claude-sub")
+    use_lanes(monkeypatch, low, mid, sub)
+    # The parked lane contributes no rungs at all.
+    assert [(r.lane, r.model) for r in L.ladder("code", store=store)] == [
+        ("low", None),
+        ("claude-sub", "claude-sonnet-5"),
+        ("claude-sub", "claude-opus-4-8"),
+    ]
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(store, task, "real failure on the foot rung", lane="low")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    params = _jobs_under(store, task)[-1][1]["params"]
+    assert params["lane"] == "claude-sub" and params["model"] == "claude-sonnet-5"
+
+
+def test_every_fit_lane_parked_asks_like_no_lane(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A class whose only fit lane is parked behaves like the
+    no-enabled-lane case (gr588221): the cap is DEFAULT_RETRIES and the
+    ask names the lane gap — rescue still needs a lane to diagnose on."""
+    dead = L.Lane(
+        name="devin",
+        adapter="devin_tree",
+        credential_pool="free-promo",
+        cap=3,
+        task_classes=frozenset({"code", "review", "validate"}),
+        enabled=True,
+        vendor="cognition",
+        models=("swe-2-medium", "swe-2-high", "swe-2-max"),
+        default_model="swe-2-high",
+        cost_class=L.COST_FREE,
+        parked_reason="outage:timeout",
+    )
+    use_lanes(monkeypatch, dead)
+    assert L.ladder("code", store=store) == ()
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(store, task, "first failure")
+    _failed_job(store, task, "second failure")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 1, 0)
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    assert "no enabled lane" in _meta(store, ask)["ask"]["context"]
+
+
 def test_escalate_climbs_from_the_last_real_attempt(store: Store) -> None:
     """gr571395: a host-refusal job is no attempt (:func:`pd._no_attempt`),
     so it is no rung to climb from either — the retry goes one rung up
