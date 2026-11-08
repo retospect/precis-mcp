@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._repo_git import needs_repo_git
 from tests._script import load_script
 
 pytestmark = pytest.mark.skipif(
@@ -166,6 +167,7 @@ def test_fleet_wave_wires_the_seed() -> None:
     assert "seed-worktree-venv" in src
 
 
+@needs_repo_git
 def test_main_checkout_resolves_via_git_common_dir() -> None:
     """In a real worktree, ``_main_checkout`` resolves the shared git dir's
     parent — the same path scripts/devin-tree computes."""
@@ -176,8 +178,6 @@ def test_main_checkout_resolves_via_git_common_dir() -> None:
         capture_output=True,
         text=True,
         encoding="utf-8",
-        check=False,
+        check=True,
     )
-    if out.returncode:
-        pytest.skip(f"git rev-parse unavailable here: {out.stderr.strip()}")
     assert mod._main_checkout(Path.cwd()) == Path(out.stdout.strip()).parent

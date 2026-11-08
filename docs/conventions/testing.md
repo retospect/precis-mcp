@@ -425,6 +425,24 @@ plus fake PATH bins — the `tests/test_scripts_test_*`,
 `test_bash32_gotchas` cluster); the wider suite still needs the
 container (the host venv is torch-free and has no test DB).
 
+## The gate container's git can't see the checkout (gr581556)
+
+`scripts/test` and `scripts/ship` run pytest where `git` cannot see the
+repo under test: the warm precis-gate gets `git archive HEAD` (no `.git`
+at all) and the bind fallback mounts a worktree whose `.git` file names
+a gitdir outside the mount. A test that shells `git` at the checkout —
+`rev-parse`, `ls-files`, `status` with no `-C`/`cwd`, or either pointing
+at the repo root — exits 128 there while CI (a real checkout) stays
+green, which is how seven selected tests reddened every
+`scripts/ship --checked` on 2026-11-07. Declare such a test with
+`@needs_repo_git` (from `tests/_repo_git.py`; skip where
+`rev-parse --git-dir` fails, fail under `CI=true`) or give the call a
+no-checkout fallback like `test_ruff_scripts_excludes`' walk;
+`tests/test_repo_git_guard.py` (in the checked CONTRACT set) flags any
+unmarked repo-targeting spawn. Git calls against a `tmp_path` repo or a
+stub `git` on PATH need nothing — the container has the binary, just not
+the metadata.
+
 ## Long runs: `--bg` then `--await`, never a hand-rolled log poll
 
 A gate-length run outlives a foreground tool call. `scripts/test --bg` detaches

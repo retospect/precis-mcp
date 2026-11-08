@@ -119,6 +119,7 @@ from precis.runtime import PrecisRuntime
 from precis.store import Migrator, Store
 from tests import _testmon_shim
 from tests._node import require_node  # noqa: F401  (fixture for needs_node)
+from tests._repo_git import require_repo_git  # noqa: F401  (fixture for needs_repo_git)
 
 # Test DSN. Default targets the local-dev convention
 # (postgres at host.docker.internal:5432, role + db both
