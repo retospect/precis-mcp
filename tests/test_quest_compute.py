@@ -5499,6 +5499,130 @@ class TestAutocatpathHarvest:
         assert meta["barrier_anchor"] == kept_anchor
         assert "anchor:none" not in (meta.get("barrier_blocked_by") or [])
 
+    def _wrong_binder_refused_pathway(self, store: Any, sid: int) -> int:
+        """gr592667's pw339066 shape: a neb-tier pathway whose own
+        ``trust_summary`` refuses the barrier (fatal ``wrong_binder``
+        fails on both seeds — an endpoint bound the wrong atom). Two
+        clean seeds keep the precis-side seed gate out of the way so the
+        only verdict under test is the engine's own refusal."""
+        return store.insert_ref(
+            kind="pathway",
+            slug="pw-wrong-binder",
+            title="pw",
+            meta={
+                "status": "ready",
+                "candidate_ref": sid,
+                "autocatpath_version": "0.39.0",
+                "tier": "neb",
+                "reaction_key": "rk-shared",
+                "validation_manifest": {"inputs": {"slab_extxyz_sha256": "slabsha"}},
+                "results": {
+                    "trust_schema": 2,
+                    "route_steps": ["R->A"],
+                    "seeds": [0, 1],
+                    "trust": [
+                        {
+                            "id": f"R->A#s{s}#neb_convergence",
+                            "check": "neb_convergence",
+                            "verdict": "pass",
+                            "severity": "fatal",
+                            "seed": s,
+                            "step": "R->A",
+                            "evidence": {},
+                        }
+                        for s in (0, 1)
+                    ]
+                    + [
+                        {
+                            "id": f"R->A#s{s}#wrong_binder",
+                            "check": "wrong_binder",
+                            "verdict": "fail",
+                            "severity": "fatal",
+                            "seed": s,
+                            "step": "R->A",
+                            "state": "R",
+                            "evidence": {},
+                        }
+                        for s in (0, 1)
+                    ],
+                    "trust_summary": {
+                        "barrier": {
+                            "available": False,
+                            "blocked_by": [
+                                "R->A#s0#wrong_binder",
+                                "R->A#s1#wrong_binder",
+                            ],
+                        },
+                    },
+                },
+            },
+            parent_id=sid,
+        ).id
+
+    def test_barrierless_screening_keeps_a_refused_neb_verdict(
+        self, store: Any
+    ) -> None:
+        """gr592667 (blocked neb lands first): a screening pathway's
+        barrier verdict is vacuously ``available`` — its barrierless
+        harvest must not overwrite the refused verdict, the blocker list
+        or the anchor of the canonical barrier it never measured."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw1 = self._wrong_binder_refused_pathway(store, sid)
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 2.83}, "pathway_ref": pw1}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_blocked_by"] == [
+            "R->A#s0#wrong_binder",
+            "R->A#s1#wrong_binder",
+        ]
+        assert meta["barrier_anchor"] is None
+
+        pw2 = self._trust_pathway(store, sid, seeds=[0], tier="screening")
+        self._autocatpath_job(store, sid, {"result": {"span": 0.9}, "pathway_ref": pw2})
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 2.83
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_blocked_by"] == [
+            "R->A#s0#wrong_binder",
+            "R->A#s1#wrong_binder",
+        ]
+        assert meta["barrier_anchor"] is None
+
+    def test_barrierless_screening_first_leaves_no_barrier_stamp(
+        self, store: Any
+    ) -> None:
+        """gr592667 (screening lands first): a barrierless harvest writes
+        no barrier-scoped stamp at all — whichever job lands last, the
+        verdict belongs to the pathway that produced the barrier."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw1 = self._trust_pathway(store, sid, seeds=[0], tier="screening")
+        self._autocatpath_job(store, sid, {"result": {"span": 0.9}, "pathway_ref": pw1})
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert "barrier" not in meta
+        assert "barrier_trusted" not in meta
+        assert "barrier_anchor" not in meta
+
+        pw2 = self._wrong_binder_refused_pathway(store, sid)
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 2.83}, "pathway_ref": pw2}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 2.83
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_blocked_by"] == [
+            "R->A#s0#wrong_binder",
+            "R->A#s1#wrong_binder",
+        ]
+        assert meta["barrier_anchor"] is None
+
     def test_stale_screening_tier_barrier_demotes_engine_stale(
         self, store: Any
     ) -> None:
