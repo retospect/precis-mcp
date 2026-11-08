@@ -276,3 +276,54 @@ def test_find_acronyms_still_flags_tokens_this_corpus_reads_as_domain_terms() ->
     found = find_acronyms("CD spectra, the OS of Nb, an IP of 5.2 eV, 0.3 ML coverage.")
 
     assert found == {"CD", "OS", "IP", "ML"}
+
+
+# ── gr592768: species formulas and slice labels are not abbreviations ──
+
+
+def test_find_acronyms_skips_the_gr592768_report_set() -> None:
+    """The chemistry report that filed the gripe: every species formula
+    (NO, NH3, OH, N2O) and every slice label (S1–S7, B1, A1–A5) earned an
+    undefined-abbreviation finding."""
+    found = find_acronyms(
+        "Slices S1 through S7 plus B1 and A1 to A5 cover NO, NH3, OH and N2O."
+    )
+
+    assert found == set()
+
+
+def test_find_acronyms_skips_digit_bearing_formulas() -> None:
+    """Anything that letter-parses as Element(count)+ with a digit is a
+    formula: stoichiometry (CO2, H2SO4), caps-spelt compounds (FE2O3,
+    SIO2), fullerenes (C60) and isotope shorthand (C14, U235)."""
+    found = find_acronyms(
+        "CO2 reduction over FE2O3 on SIO2; a H2SO4 rinse, C60 filler and "
+        "C14 / U235 tracers."
+    )
+
+    assert found == set()
+
+
+def test_find_acronyms_skips_curated_undigit_ed_species() -> None:
+    """Undigit-ed species never clear by letter-parse alone — the curated
+    list carries the common ones plus the NOx/SOx family notations."""
+    found = find_acronyms("The NO, OH, CO, HCN and NOX channels closed.")
+
+    assert found == set()
+
+
+def test_find_acronyms_still_flags_undigit_ed_letter_parses() -> None:
+    """OS/IP letter-parse as element runs but the corpus reads them as
+    domain terms (oxidation state, ionization potential); ordinary words
+    parse too (NOSE = No+Se) — only the curated species clear."""
+    found = find_acronyms("A MOF with OS and IP data under a NOSE audit.")
+
+    assert found == {"MOF", "OS", "IP", "NOSE"}
+
+
+def test_find_acronyms_skips_handle_like_labels_only() -> None:
+    """One/two capitals + digits is a label; three letters + digits is
+    still an acronym-shaped token worth a hint."""
+    found = find_acronyms("See A5 and AB12 for the ABC1 result.")
+
+    assert found == {"ABC1"}

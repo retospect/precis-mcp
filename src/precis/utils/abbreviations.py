@@ -206,8 +206,9 @@ def strip_trailing_aside(long_form: str) -> str:
 # like ``GNR-FET`` is flagged whole — and the leading ``GNR`` still matches
 # on its own when the tail is lower-cased (``GNR-FETs`` / ``GNR-based``),
 # since the regex backtracks to the boundary at the hyphen. Deliberately
-# dumb — opus decides what's a real abbreviation; the only cost of a false
-# positive (a formula like ``CO2``) is a one-time prompt it dismisses.
+# dumb — ``_is_noise`` drops the shapes this corpus reads as not-an-abbrev
+# (household acronyms, shouted words, species formulas, slice labels) and
+# opus decides the rest.
 _ACRONYM_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,7}(?:-[A-Z0-9]{1,7})*\b")
 
 #: Acronyms nobody is asked to define. The check exists so a reader meets
@@ -397,24 +398,235 @@ _SHOUTED_WORDS: frozenset[str] = frozenset(
 )
 
 
+#: The periodic table, canonical case — the alphabet for
+#: :func:`_parses_as_formula`. Compared against ``str.title()`` of each
+#: 1–2 char candidate, so an all-caps token like ``SIO2`` reads ``Si,O2``.
+_ELEMENT_SYMBOLS: frozenset[str] = frozenset(
+    {
+        "H",
+        "He",
+        "Li",
+        "Be",
+        "B",
+        "C",
+        "N",
+        "O",
+        "F",
+        "Ne",
+        "Na",
+        "Mg",
+        "Al",
+        "Si",
+        "P",
+        "S",
+        "Cl",
+        "Ar",
+        "K",
+        "Ca",
+        "Sc",
+        "Ti",
+        "V",
+        "Cr",
+        "Mn",
+        "Fe",
+        "Co",
+        "Ni",
+        "Cu",
+        "Zn",
+        "Ga",
+        "Ge",
+        "As",
+        "Se",
+        "Br",
+        "Kr",
+        "Rb",
+        "Sr",
+        "Y",
+        "Zr",
+        "Nb",
+        "Mo",
+        "Tc",
+        "Ru",
+        "Rh",
+        "Pd",
+        "Ag",
+        "Cd",
+        "In",
+        "Sn",
+        "Sb",
+        "Te",
+        "I",
+        "Xe",
+        "Cs",
+        "Ba",
+        "La",
+        "Ce",
+        "Pr",
+        "Nd",
+        "Pm",
+        "Sm",
+        "Eu",
+        "Gd",
+        "Tb",
+        "Dy",
+        "Ho",
+        "Er",
+        "Tm",
+        "Yb",
+        "Lu",
+        "Hf",
+        "Ta",
+        "W",
+        "Re",
+        "Os",
+        "Ir",
+        "Pt",
+        "Au",
+        "Hg",
+        "Tl",
+        "Pb",
+        "Bi",
+        "Po",
+        "At",
+        "Rn",
+        "Fr",
+        "Ra",
+        "Ac",
+        "Th",
+        "Pa",
+        "U",
+        "Np",
+        "Pu",
+        "Am",
+        "Cm",
+        "Bk",
+        "Cf",
+        "Es",
+        "Fm",
+        "Md",
+        "No",
+        "Lr",
+        "Rf",
+        "Db",
+        "Sg",
+        "Bh",
+        "Hs",
+        "Mt",
+        "Ds",
+        "Rg",
+        "Cn",
+        "Nh",
+        "Fl",
+        "Mc",
+        "Lv",
+        "Ts",
+        "Og",
+    }
+)
+
+#: Undigit-ed all-caps species this corpus reads as formulas, not
+#: abbreviations (gr592768): common diatomics/radicals (``NO``, ``OH``,
+#: ``CO``, ``CN`` …), small polyatomics (``HCN``, ``SCN``, ``OCS`` …) and
+#: the ``NOx``/``SOx`` family notations. An undigit-ed token is NEVER
+#: cleared by letter-parsing alone — ``OS``, ``IP``, ``CI``, ``PCB`` and
+#: the polymer set (``PP``, ``PS``, ``PU``, ``PC``, ``PI``) all parse as
+#: element runs yet the corpus flags them as domain terms, and ordinary
+#: words parse too (``CASE`` = Ca+Se, ``NOSE`` = No+Se). A species missing
+#: from this list costs one ``edit(not_abbrev=…)``; a domain acronym
+#: wrongly silenced is a hint that never fires — the wrong direction.
+_COMMON_SPECIES: frozenset[str] = frozenset(
+    {
+        "NO",
+        "OH",
+        "CO",
+        "CN",
+        "NH",
+        "SO",
+        "PO",
+        "SH",
+        "CH",
+        "PH",
+        "HF",
+        "BH",
+        "HCN",
+        "SCN",
+        "NCO",
+        "OCN",
+        "OCS",
+        "COS",
+        "HCO",
+        "HNO",
+        "NOX",
+        "SOX",
+    }
+)
+
+#: Handle-like labels — one or two capitals then digits (``S1``–``S7``,
+#: ``B1``, ``A1``–``A5``): slice/section/panel labels, never an
+#: abbreviation to expand (gr592768). Vitamin-like terms (``B12``) and
+#: bio shorthand (``IL6``) lose their hint as a side effect — a missed
+#: nag, tolerable next to a finding on every label of every draft.
+_SLICE_LABEL_RE = re.compile(r"[A-Z]{1,2}\d+")
+
+
+def _parses_as_formula(tok: str) -> bool:
+    """``tok`` (an acronym-shaped all-caps token) segments fully into
+    element symbols each optionally followed by a digit count, and
+    carries at least one digit — the formula regex for ``NH3``, ``N2O``,
+    ``CO2``, ``Fe2O3``-in-caps, ``C60``, isotope shorthand (``C14``,
+    ``U235``) and stoichiometry strings (``H2SO4``).
+
+    Undigit-ed tokens always fail: the letter-parse alone can't tell
+    ``OS`` (oxidation state — flagged) from ``NO`` (nitric oxide — not),
+    so digit-free species come from :data:`_COMMON_SPECIES` instead."""
+    if not any(ch.isdigit() for ch in tok):
+        return False
+    n = len(tok)
+    reach = [False] * (n + 1)
+    reach[0] = True
+    for i in range(n):
+        if not reach[i]:
+            continue
+        for ln in (1, 2):
+            sym = tok[i : i + ln]
+            if len(sym) == ln and sym.title() in _ELEMENT_SYMBOLS:
+                j = i + ln
+                while j < n and tok[j].isdigit():
+                    j += 1
+                reach[j] = True
+    return reach[n]
+
+
 def _is_noise(token: str) -> bool:
     """A token the writer should not be nagged about: a household acronym,
-    or an ordinary word in caps for emphasis."""
-    return token in WELL_KNOWN_ACRONYMS or (
+    an ordinary word in caps for emphasis, a chemical-species spelling
+    (``NO``, ``NH3``, ``N2O``, ``CO2``) or a slice label (``S1``, ``B1``,
+    ``A5``) — gr592768: on a chemistry report the check flagged every
+    species formula and slice label as an undefined abbreviation."""
+    if token in WELL_KNOWN_ACRONYMS or (
         token.isalpha() and token.lower() in _SHOUTED_WORDS
+    ):
+        return True
+    return all(
+        part in _COMMON_SPECIES
+        or _SLICE_LABEL_RE.fullmatch(part)
+        or _parses_as_formula(part)
+        for part in token.split("-")
     )
 
 
 def find_acronyms(text: str) -> set[str]:
     """Every acronym-shaped token in ``text`` (e.g. ``KSJW``, ``PEI``,
-    ``CO2``, ``GNR-FET``). Used to flag undefined abbreviations on a draft
+    ``MOF``, ``GNR-FET``). Used to flag undefined abbreviations on a draft
     write. A hyphenated compound surfaces both forms — the whole
     ``GNR-FET`` and (via a second match) the base ``GNR``.
 
-    Household acronyms (:data:`WELL_KNOWN_ACRONYMS`) and ordinary English
-    words written in caps are filtered out: a hint to define ``UTC`` or
-    ``AUDIT`` is noise, and a check that fires on every operations draft
-    stops being read at all."""
+    Household acronyms (:data:`WELL_KNOWN_ACRONYMS`), ordinary English
+    words written in caps, chemical-species spellings
+    (:data:`_COMMON_SPECIES` + digit-bearing formulas) and slice labels
+    (:data:`_SLICE_LABEL_RE`) are filtered out: a hint to define ``UTC``,
+    ``AUDIT``, ``NO`` or ``S1`` is noise, and a check that fires on every
+    operations or chemistry draft stops being read at all (gr592768)."""
     out: set[str] = set()
     for tok in _ACRONYM_RE.findall(text or ""):
         if not _is_noise(tok):

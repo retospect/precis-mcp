@@ -1287,6 +1287,29 @@ def test_abbrev_loop_hint_define_and_silence(draft: DraftHandler, hub: Hub) -> N
     assert "undefined abbreviation" not in r2.body
 
 
+def test_abbrev_loop_skips_species_and_slice_labels(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr592768: a chemistry report drew an undefined-abbrev finding for
+    every species formula (NO, NH3, OH, N2O) and slice label (S1–S7, B1,
+    A1–A5). Those shapes are corpus noise now; real acronyms still hint."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+
+    r = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=(
+            "Slices S1 to S7, B1 and A1 to A5: NO, NH3, OH and N2O rise over the MOF."
+        ),
+        at={"after": "¶" + title_h},
+    )
+    assert "MOF" in r.body
+    for tok in ("NO", "NH3", "OH", "N2O", "S1", "S7", "B1", "A1", "A5"):
+        assert tok not in r.body
+
+
 def test_temperature_form_hint(draft: DraftHandler, hub: Hub) -> None:
     """A malformed temperature/unit notation lands but trips the
     ``temperature/unit formatting`` hint; the canonical ``63 °C`` / ``±1 °C``
