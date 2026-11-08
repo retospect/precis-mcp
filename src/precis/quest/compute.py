@@ -2462,6 +2462,27 @@ _KINETICS_GATED_STASH_KEYS: tuple[str, ...] = (
     "drc_note",
 )
 
+#: The ``_pathway_quality`` keys that annotate the *barrier* — they stamp
+#: onto the candidate only when the harvest actually carries one
+#: (``"barrier" in measures``): a barrierless harvest (a screening pathway
+#: emits none) must never re-write the canonical barrier's verdict,
+#: anchor or diagnostics with a different pathway's evidence — the same
+#: "stamps describe the same value" rule the trust-first stash
+#: (:func:`_stash_untrusted_autocatpath`) and the seed gate's own
+#: barrierless guard already encode (gr592573: a later screening harvest
+#: flipped ``barrier_trusted`` back to True over the seed-blocked neb
+#: barrier the candidate still carried).
+_BARRIER_SCOPED_QUALITY_KEYS: tuple[str, ...] = (
+    "barrier_trusted",
+    "barrier_blocked_by",
+    "barrier_marginal_count",
+    "barrier_neb_failed",
+    "barrier_desorbed",
+    "barrier_wrong_site",
+    "barrier_low_confidence",
+    "barrier_trust_note",
+)
+
 #: Per-run verdicts, flags and counters a stashed job must never stamp
 #: over the kept barrier — they describe ITS pathway, not the kept one
 #: (an absurd 12 eV job's ``barrier_absurd`` would otherwise flag the
@@ -2928,9 +2949,10 @@ def _flag_few_independent_seeds(
     harvest drops a stale blocker; on a shortfall stamps
     ``barrier_trusted=False`` + ``barrier_seed_blocker`` carrying the
     synthetic id (``seeds:<n>-independent`` / ``seeds:unknown`` /
-    ``endpoint:union-*``) that ``view='trust'`` renders. The clears only
-    run when ``measures`` actually carries a barrier — a barrierless
-    (or other-tier) harvest leaves the canonical barrier's verdict alone.
+    ``endpoint:union-*``) that ``view='trust'`` renders. The whole gate
+    runs only when ``measures`` actually carries a barrier — a barrierless
+    harvest (screening, or a neb run with no rate-limiting step) leaves
+    the canonical barrier's verdict alone entirely (gr592573).
     Like :func:`_flag_absurd_barrier` it only ever ADDS distrust — it
     never resets a ``False`` back to ``True``.
     Returns the blocker id or ``None``.
@@ -2951,14 +2973,18 @@ def _flag_few_independent_seeds(
         and trust_gate.engine_version_stale(engine, current_version)
     )
     tier = _pathway_tier(pw_meta)
+    if "barrier" not in measures:
+        # A barrierless harvest must not re-judge the canonical barrier's
+        # seed verdict at all — it rides with the barrier that earned it
+        # (gr592573; the non-neb branch below already held this, the neb
+        # lane's seed-union bookkeeping now matches).
+        return None
     if tier != _TIER_NEB:
         # A barrier landing at another tier must not carry a stale
         # neb-tier seed verdict — clear both keys, but only when this
         # harvest actually replaces the canonical barrier (round-2
         # review: a barrierless screening harvest must not wipe the
         # untrusted neb verdict still on the candidate).
-        if "barrier" not in measures:
-            return None
         measures["barrier_independent_seeds"] = None
         if not stale_engine:
             measures["barrier_seed_blocker"] = None
@@ -4680,7 +4706,15 @@ def harvest_measures(
                     pw_meta = pw_ref.meta if pw_ref is not None else None
                     pw_is_pathway = pw_ref is not None and pw_ref.kind == "pathway"
                     if isinstance(pw_meta, dict):
-                        measures.update(_pathway_quality(pw_meta))
+                        quality = _pathway_quality(pw_meta)
+                        if "barrier" not in measures:
+                            # A barrierless harvest must not reannotate the
+                            # canonical barrier with THIS pathway's verdict —
+                            # its keys ride with the barrier they describe
+                            # (:data:`_BARRIER_SCOPED_QUALITY_KEYS`, gr592573).
+                            for k in _BARRIER_SCOPED_QUALITY_KEYS:
+                                quality.pop(k, None)
+                        measures.update(quality)
                 except Exception:
                     pass
             # Guard 2 (absurd magnitude): overrides `_pathway_quality`'s
@@ -4761,6 +4795,7 @@ def harvest_measures(
             if (
                 not stashed
                 and pw_is_pathway
+                and "barrier" in measures
                 and isinstance(pw_meta, dict)
                 and isinstance(pathway_ref, int)
                 and not isinstance(pathway_ref, bool)
@@ -4780,12 +4815,16 @@ def harvest_measures(
                         s.id,
                         exc_info=True,
                     )
-            if not stashed and pw_is_pathway:
+            if not stashed and pw_is_pathway and "barrier" in measures:
                 # The anchor rule binds the pathway lane only (the guard
                 # above that computed ``anchor`` in the first place) — a
                 # non-pathway-kind barrier job (the pre-gr543165
                 # ``_pathway_quality`` warnings lane) never had an anchor
-                # to begin with and keeps its own trust verdict.
+                # to begin with and keeps its own trust verdict. And a
+                # barrierless harvest carries no barrier to anchor: it
+                # must neither credit one (a different pathway's anchor
+                # overwriting) nor refuse one (``anchor:none`` demoting
+                # the stored barrier's own verdict) — gr592573.
                 measures["barrier_anchor"] = anchor
                 if anchor is not None and anchor.get("over"):
                     measures["barrier_trusted"] = True

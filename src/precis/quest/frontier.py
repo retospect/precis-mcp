@@ -1606,6 +1606,40 @@ def _candidate_from_structure(
 
     _bound_u_opt(measures, flags)
 
+    # gr592573: barrier-scoped stamps once carried a DIFFERENT pathway's
+    # verdict — a barrierless later harvest re-wrote ``barrier_trusted``/
+    # ``barrier_anchor``/``barrier_blocked_by`` while the canonical barrier
+    # still came from the refused pathway (the harvest side is fixed in
+    # compute; rows stamped before it persist). Surviving stamps that
+    # contradict a trusted read demote here too: a live
+    # ``barrier_seed_blocker`` is cleared ONLY by a barrier-carrying pass
+    # (a blocker beside ``barrier_trusted=True`` is exactly the corrupted
+    # shape); an explicit-null ``barrier_anchor`` on the autocatpath lane
+    # is a refused credit (the anchor era only writes null on refusal —
+    # pre-anchor rows carry no key at all, and the struct_neb lane's own
+    # stamp is scoped out); and a ``barrier_fidelity``/``tier`` "neb"
+    # barrier's credit anchor can never name fewer than the two
+    # independent seeds its own gate requires — a sub-floor anchor set is
+    # a borrowed one.
+    if flags.get("barrier_trusted") is not False:
+        anchor = meta.get("barrier_anchor")
+        anchor_seeds = anchor.get("seeds") if isinstance(anchor, dict) else None
+        rung = flags.get("barrier_fidelity") or flags.get("tier")
+        if (
+            flags.get("barrier_seed_blocker")
+            or (
+                meta.get("barrier_source") != "struct_neb"
+                and "barrier_anchor" in meta
+                and anchor is None
+            )
+            or (
+                rung == "neb"
+                and isinstance(anchor_seeds, list)
+                and len({s for s in anchor_seeds}) < 2
+            )
+        ):
+            flags["barrier_trusted"] = False
+
     # An untrusted barrier (its pathway had non-converged NEB edges / desorbed
     # or mis-bound adsorbates) is noise, not a measurement — exclude it (and
     # span, plus the CHE electro scalars U_L/U_L_abs/U_opt/span_at_Uopt,

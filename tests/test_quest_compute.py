@@ -3856,6 +3856,160 @@ class TestSelectivityTrustSplit:
         assert c.measures["span"] == 1.1
 
 
+class TestBarrierVerdictConsistency:
+    """gr592573: rows stamped while a barrierless harvest could re-write
+    the canonical barrier's verdict carry contradictory evidence — the
+    read side demotes on it the same way the preguard magnitude ceiling
+    demotes a physically impossible no-key row."""
+
+    def test_live_seed_blocker_demotes_an_overwritten_true(self, store: Any) -> None:
+        """``barrier_seed_blocker`` is cleared ONLY by a barrier-carrying
+        pass — a live blocker beside ``barrier_trusted=True`` is the
+        corrupted shape (a later barrierless harvest flipped the verdict);
+        the blocker is the truth."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 2.83,
+                "barrier_trusted": True,
+                "barrier_seed_blocker": "engine:stale",
+                "barrier_independent_seeds": 1,
+            },
+        )
+        c = _cand(store, sid)
+        assert c.flags["barrier_trusted"] is False
+        assert "barrier" not in c.measures
+        assert c.flags["barrier_untrusted_value"] == 2.83
+
+    def test_sub_floor_neb_anchor_demotes(self, store: Any) -> None:
+        """A ``barrier_fidelity``/"tier" neb barrier's credit anchor can
+        never name fewer than the two independent seeds its own gate
+        requires — a sub-floor ``seeds`` set on a dict anchor is a
+        borrowed anchor (e.g. a 1-seed screening pathway's), not credit."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 2.83,
+                "barrier_trusted": True,
+                "barrier_fidelity": "neb",
+                "barrier_anchor": {
+                    "pathway": "pw5",
+                    "gates": ["neb_convergence"],
+                    "not_run": ["endpoint_agreement"],
+                    "over": [],
+                    "seeds": [0],
+                },
+            },
+        )
+        c = _cand(store, sid)
+        assert c.flags["barrier_trusted"] is False
+        assert c.flags["barrier_untrusted_value"] == 2.83
+
+    def test_two_seed_neb_anchor_still_rides_trusted(self, store: Any) -> None:
+        """The consistent state is untouched: a neb-fidelity barrier with
+        a ≥2-seed anchor and no live blocker keeps ranking."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.8,
+                "barrier_trusted": True,
+                "barrier_fidelity": "neb",
+                "barrier_anchor": {
+                    "pathway": "pw5",
+                    "gates": ["neb_convergence"],
+                    "not_run": [],
+                    "over": [],
+                    "seeds": [0, 1],
+                },
+            },
+        )
+        c = _cand(store, sid)
+        assert c.flags["barrier_trusted"] is True
+        assert c.measures["barrier"] == 0.8
+
+    def test_explicit_null_autocatpath_anchor_demotes(self, store: Any) -> None:
+        """An explicit-null ``barrier_anchor`` on the autocatpath lane is
+        a refused credit — the anchor-era harvest only writes null on
+        refusal, so a trusted verdict beside it is contradictory (the
+        struct_neb lane's own null is scoped out)."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 2.83,
+                "barrier_trusted": True,
+                "barrier_source": "autocatpath",
+                "barrier_anchor": None,
+            },
+        )
+        c = _cand(store, sid)
+        assert c.flags["barrier_trusted"] is False
+        assert c.flags["barrier_untrusted_value"] == 2.83
+
+    def test_absent_anchor_key_still_rides_through(self, store: Any) -> None:
+        """A pre-anchor row carries no ``barrier_anchor`` key at all —
+        that is "unknown", not a refusal, and keeps ranking."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid,
+            {"barrier": 0.8, "barrier_trusted": True, "barrier_source": "autocatpath"},
+        )
+        c = _cand(store, sid)
+        assert c.flags["barrier_trusted"] is True
+        assert c.measures["barrier"] == 0.8
+
+    def test_sub_floor_anchor_is_neb_only(self, store: Any) -> None:
+        """The seed floor is the neb tier's own rule — a verify-fidelity
+        barrier legitimately anchors on one seed (the rule is neb-tier
+        only), so a sub-floor anchor set there stays trusted."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.8,
+                "barrier_trusted": True,
+                "barrier_fidelity": "verify",
+                "barrier_anchor": {
+                    "pathway": "pw9",
+                    "gates": ["neb_convergence"],
+                    "not_run": ["seed independence (precis)"],
+                    "over": [],
+                    "seeds": [0],
+                },
+            },
+        )
+        c = _cand(store, sid)
+        assert c.flags["barrier_trusted"] is True
+        assert c.measures["barrier"] == 0.8
+
+
 class TestProvisionalReasonsSelectivityBlockers:
     def test_selectivity_blocker_prose_names_competitor_fork_and_record(
         self,
@@ -5292,7 +5446,10 @@ class TestAutocatpathHarvest:
     def test_barrierless_non_neb_harvest_keeps_seed_blocker(self, store: Any) -> None:
         """Round-2 recheck item 8: a later screening-tier harvest that
         carries no barrier must NOT wipe the untrusted neb verdict — the
-        canonical barrier is still the seed-blocked neb one."""
+        canonical barrier is still the seed-blocked neb one. gr592573:
+        that includes the verdict itself — the screening pathway's own
+        ``_pathway_quality``/anchor must not reannotate a barrier its
+        pathway never produced."""
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         pw1 = self._trust_pathway(store, sid, seeds=[0])
@@ -5309,6 +5466,38 @@ class TestAutocatpathHarvest:
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert meta["barrier_seed_blocker"] == "seeds:1-independent"
         assert meta["barrier_independent_seeds"] == 1
+        assert meta["barrier"] == 0.4
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_anchor"] is None
+
+    def test_barrierless_harvest_neither_credits_nor_refuses(self, store: Any) -> None:
+        """gr592573, both directions: a barrierless harvest carries no
+        barrier to judge, so it must not stamp a verdict at all — a stored
+        TRUSTED barrier keeps its verdict AND its own anchor (a screening
+        pathway's anchor must not replace them, and a pathway that would
+        itself refuse credit must not ``anchor:none`` the stored one)."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw1 = self._trust_pathway(store, sid, seeds=[0, 1])
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw1}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True
+        kept_anchor = meta["barrier_anchor"]
+        assert kept_anchor["pathway"] and kept_anchor["seeds"] == [0, 1]
+        # a stale screening-tier harvest whose own gate would refuse credit
+        pw2 = self._trust_pathway(
+            store, sid, seeds=[0], engine="0.37.0", tier="screening"
+        )
+        self._autocatpath_job(store, sid, {"result": {"span": 0.9}, "pathway_ref": pw2})
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.4
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_anchor"] == kept_anchor
+        assert "anchor:none" not in (meta.get("barrier_blocked_by") or [])
 
     def test_stale_screening_tier_barrier_demotes_engine_stale(
         self, store: Any
