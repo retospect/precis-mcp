@@ -14,6 +14,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -86,6 +87,20 @@ def test_slice_env_probe_flags_a_dsn_on_the_allowlist(
     assert _load_probe("slice_env").main([str(REPO)]) == 1
 
 
+def test_slice_env_probe_flags_a_credential_shaped_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The harvested set only covers credentials the tree already reads —
+    an unreferenced ``ARCHIVE_DSN`` on the allowlist must still breach by
+    name SHAPE (td598968)."""
+    monkeypatch.setattr(
+        run_slice,
+        "ENV_ALLOWLIST",
+        (*run_slice.ENV_ALLOWLIST, "ARCHIVE_DSN"),
+    )
+    assert _load_probe("slice_env").main([str(REPO)]) == 1
+
+
 def test_safe_fetch_probe_passes() -> None:
     assert _load_probe("safe_fetch").main([str(REPO)]) == 0
 
@@ -107,6 +122,34 @@ def test_deny_list_probe_flags_an_open_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(run_slice, "deny_violations", lambda _p, _d: [])
+    assert _load_probe("deny_list").main([str(REPO)]) == 1
+
+
+def test_deny_list_probe_flags_a_dropped_protected_glob(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A glob removed CONSISTENTLY from the lanes tuples — the attack the
+    registry floor exists for: every derived set stays self-consistent,
+    so only the probe-pinned floor can see ``scripts/ship`` is gone
+    (td598968)."""
+    from precis.plans import lanes
+
+    factory = tuple(g for g in lanes.FACTORY_DENY_WRITE_PATHS if g != "scripts/ship")
+    strict = tuple(dict.fromkeys(factory + lanes.HUMAN_ONLY_PATHS))
+    engine = tuple(
+        dict.fromkeys(
+            g for g in factory + lanes.INTERIM_DENY if g not in lanes.HUMAN_ONLY_PATHS
+        )
+    )
+    monkeypatch.setattr(lanes, "FACTORY_DENY_WRITE_PATHS", factory)
+    monkeypatch.setattr(lanes, "STRICT_DENY", strict)
+    monkeypatch.setattr(lanes, "ENGINE_PATHS", engine)
+    monkeypatch.setattr(lanes, "_ENGINE_PATHS_LOWER", tuple(g.lower() for g in engine))
+    monkeypatch.setattr(
+        lanes,
+        "Lane",
+        lambda **_kw: SimpleNamespace(deny_write_paths=strict),
+    )
     assert _load_probe("deny_list").main([str(REPO)]) == 1
 
 
@@ -279,12 +322,21 @@ def test_plan_missing_probe_everywhere_is_unprobed(
 
 
 def test_container_argv_shape() -> None:
-    argv = bp._container_argv("/probe-src/x.py", Path("/wt"), "precis-dev")
+    argv = bp._container_argv(
+        "/probe-src/x.py",
+        Path("/wt"),
+        "precis-dev",
+        name="precis-bprobe-job-7-0",
+        tag="job-7",
+    )
     assert argv[:2] == [argv[0], "run"]
     assert "--network" in argv and "none" in argv
     joined = " ".join(argv)
     assert "--env" not in joined  # no DSN crosses
     assert "/app:ro" in joined  # the branch tree read-only
+    # named + labelled so a dead client can't orphan the container
+    assert argv[argv.index("--name") + 1] == "precis-bprobe-job-7-0"
+    assert argv[argv.index("--label") + 1] == "precis.boundary-probe=job-7"
     assert argv[-2:] == ["python", "/probe.py"]
 
 
@@ -296,9 +348,94 @@ def test_run_probe_classifies(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
 
     monkeypatch.setattr(subprocess, "run", _ok)
-    code, out = bp._run_probe({"file": "/p/x.py"}, tmp_path, "precis-dev")
+    code, out = bp._run_probe(
+        {"file": "/p/x.py"}, tmp_path, "precis-dev", name="n0", tag="job-1"
+    )
     assert code == 0 and "ok" in out
     assert calls and calls[0][1] == "run"
+
+
+def test_run_probe_timeout_removes_the_container(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A timed-out ``docker run`` client leaves the container running —
+    the probe must force-remove it by name before reporting."""
+    calls: list[list[str]] = []
+
+    def _run(argv: list[str], **_kw: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        if argv[1] == "run":
+            raise subprocess.TimeoutExpired(argv, 600)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    code, out = bp._run_probe(
+        {"file": "/p/x.py"},
+        tmp_path,
+        "precis-dev",
+        name="precis-bprobe-job-1-0",
+        tag="job-1",
+    )
+    assert code is None and "exceeded" in out
+    verbs = [c[1] for c in calls]
+    assert calls[verbs.index("rm")][1:4] == ["rm", "-f", "precis-bprobe-job-1-0"]
+
+
+def test_run_probe_launch_failure_removes_the_container(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A crashed client may have created the container before dying —
+    sweep it too."""
+    calls: list[list[str]] = []
+
+    def _run(argv: list[str], **_kw: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        if argv[1] == "run":
+            raise OSError("daemon gone")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    code, out = bp._run_probe(
+        {"file": "/p/x.py"}, tmp_path, "precis-dev", name="n0", tag="job-1"
+    )
+    assert code is None and "launch failed" in out
+    assert any(c[1:3] == ["rm", "-f"] for c in calls)
+
+
+def test_kill_removes_tagged_containers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Job cancellation: after SIGTERMing the child, every container
+    labelled with the run tag is force-removed."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(bp._rc, "kill", lambda *_a, **_k: None)
+    monkeypatch.setattr(bp, "_container_bin", lambda: "docker")
+
+    def _run(argv: list[str], **_kw: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        out = "cid1\ncid2\n" if argv[1] == "ps" else ""
+        return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    bp.kill(None, {"pid": 0, "container_tag": "job-9"})
+    ps = next(c for c in calls if c[1] == "ps")
+    assert "label=precis.boundary-probe=job-9" in ps
+    removed = [c[3] for c in calls if c[1:3] == ["rm", "-f"]]
+    assert removed == ["cid1", "cid2"]
+
+
+def test_kill_without_tag_only_signals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    killed: list[Any] = []
+    monkeypatch.setattr(bp._rc, "kill", lambda *a: killed.append(a))
+    monkeypatch.setattr(
+        bp,
+        "_rm_tagged",
+        lambda _tag: pytest.fail("no containers without a tag"),
+    )
+    bp.kill(None, {"pid": 0})
+    assert len(killed) == 1
 
 
 def test_main_writes_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -347,7 +484,7 @@ def test_main_writes_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(
         bp,
         "_run_probe",
-        lambda run, _tree, _img: (next(codes), "finding-text"),
+        lambda run, _tree, _img, **_kw: (next(codes), "finding-text"),
     )
     assert bp._main(["run", "--plan", str(plan), "--out", str(out)]) == 0
     records = json.loads(out.read_text(encoding="utf-8"))["records"]

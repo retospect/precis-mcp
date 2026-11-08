@@ -21,7 +21,10 @@ shape), mechanical — no LLM, no store writes:
   the ``precis-dev`` image with the branch worktree mounted read-only
   at ``/app`` and the probe file at ``/probe.py``: ``--network none``,
   no env (no DSN), no HOME mount. It writes every run's record to the
-  results file.
+  results file. Each container is deterministically named and labelled
+  with the job's tag because a dead ``docker run`` *client* leaves the
+  container running server-side — ``--rm`` only fires on container exit
+  — so the timeout path and :func:`kill` force-remove it (td598968).
 * :func:`poll` records ``meta.probes`` —
   ``[{boundary, probe, probe_sha, head_sha, exit, class}]`` — and a
   summary chunk. Probe provenance: the ``origin/main`` blob runs first;
@@ -40,6 +43,7 @@ import fnmatch
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -61,6 +65,14 @@ _PROBE_TIMEOUT_S = 600
 #: The job's own wall cap: four boundaries, main + branch versions each,
 #: plus container start overhead — serial worst case sits under this.
 _WALL_S = 5400.0
+
+#: Container naming/labeling (td598968): each probe container is
+#: ``precis-bprobe-<tag>-<i>`` and carries ``precis.boundary-probe=<tag>``
+#: so the timeout path can force-remove it by name and :func:`kill` /
+#: the finished-child path can sweep every container the job left —
+#: killing the ``docker run`` client never kills the container.
+_CONTAINER_PREFIX = "precis-bprobe-"
+_CONTAINER_LABEL = "precis.boundary-probe"
 
 #: Boundary name → repo paths a branch may not touch unverified.
 #: TODO A2: take this from ``precis.plans.boundary.BOUNDARIES`` when A2's
@@ -331,16 +343,24 @@ def _container_bin() -> str:
     return _ac._container_bin()
 
 
-def _container_argv(probe_file: str, tree: Path, image: str) -> list[str]:
+def _container_argv(
+    probe_file: str, tree: Path, image: str, *, name: str, tag: str
+) -> list[str]:
     """``docker run`` for one probe: the branch tree read-only at
     ``/app``, the probe file at ``/probe.py`` — ``--network none``, no
-    env (no DSN), no HOME mount, the image's own user and PATH."""
+    env (no DSN), no HOME mount, the image's own user and PATH.
+    ``--name``/``--label`` tag the container so a client killed under it
+    (timeout, job kill) can still be force-removed."""
     from precis.utils.container_limits import container_limit_flags
 
     return [
         _container_bin(),
         "run",
         "--rm",
+        "--name",
+        name,
+        "--label",
+        f"{_CONTAINER_LABEL}={tag}",
         *container_limit_flags(),
         "--network",
         "none",
@@ -356,9 +376,106 @@ def _container_argv(probe_file: str, tree: Path, image: str) -> list[str]:
     ]
 
 
-def _run_probe(run: dict[str, Any], tree: Path, image: str) -> tuple[int | None, str]:
-    """One containerized probe → ``(exit code or None, stdout+stderr)``."""
-    argv = _container_argv(str(run["file"]), tree, image)
+def _container_present(bin_: str, name: str) -> bool:
+    """``True`` while a container named exactly ``name`` still lists
+    (``ps -a``, anchored like struct_relax's check). Fails conservative:
+    a listing error reads as present — the honest report when the CLI
+    cannot answer."""
+    try:
+        res = subprocess.run(
+            [
+                bin_,
+                "ps",
+                "-a",
+                "--filter",
+                f"name=^/{name}$",
+                "--format",
+                "{{.Names}}",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return res.returncode == 0 and bool((res.stdout or "").strip())
+
+
+def _rm_container(name: str) -> str:
+    """Force-remove probe container ``name``; ``""`` when it is confirmed
+    gone, else a short operator-facing note (never raises)."""
+    try:
+        bin_ = _container_bin()
+    except Exception:
+        return f"; container {name} may still be running (container CLI unresolvable)"
+    try:
+        subprocess.run(
+            [bin_, "rm", "-f", name],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if _container_present(bin_, name):
+        note = (
+            f"container {name} may still be running — "
+            f"next: {bin_} rm -f {name} on the probe host"
+        )
+        log.warning("%s: %s", NAME, note)
+        return f"; {note}"
+    return ""
+
+
+def _rm_tagged(tag: str) -> None:
+    """Force-remove every probe container labelled with this run's tag —
+    the job-cancellation and dead-child paths. Best-effort, never raises."""
+    try:
+        bin_ = _container_bin()
+    except Exception:
+        log.warning("%s: container sweep for tag %s skipped — no CLI", NAME, tag)
+        return
+    try:
+        ps = subprocess.run(
+            [bin_, "ps", "-aq", "--filter", f"label={_CONTAINER_LABEL}={tag}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        log.warning("%s: container listing for tag %s failed", NAME, tag, exc_info=True)
+        return
+    if ps.returncode != 0:
+        log.warning("%s: container listing for tag %s rc=%d", NAME, tag, ps.returncode)
+        return
+    for cid in (ps.stdout or "").split():
+        try:
+            subprocess.run(
+                [bin_, "rm", "-f", cid],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            log.warning("%s: rm -f %s failed", NAME, cid, exc_info=True)
+
+
+def _run_probe(
+    run: dict[str, Any], tree: Path, image: str, *, name: str, tag: str
+) -> tuple[int | None, str]:
+    """One containerized probe → ``(exit code or None, stdout+stderr)``.
+    A timed-out or crashed ``docker run`` client leaves the container
+    running server-side, so both paths force-remove ``name`` first
+    (td598968)."""
+    argv = _container_argv(str(run["file"]), tree, image, name=name, tag=tag)
     try:
         proc = subprocess.run(
             argv,
@@ -369,9 +486,9 @@ def _run_probe(run: dict[str, Any], tree: Path, image: str) -> tuple[int | None,
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return None, f"probe exceeded {_PROBE_TIMEOUT_S}s"
+        return None, f"probe exceeded {_PROBE_TIMEOUT_S}s" + _rm_container(name)
     except (OSError, subprocess.SubprocessError) as exc:
-        return None, f"container launch failed: {exc}"
+        return None, f"container launch failed: {exc}" + _rm_container(name)
     out = (proc.stdout or "") + (
         f"\n--- stderr ---\n{proc.stderr}" if proc.stderr else ""
     )
@@ -425,7 +542,8 @@ def submit(ctx: Any, spec: Any) -> Any:
     hits = boundary_hits(changed)
     if not hits:
         return {"no_boundary": True, "head_sha": head_sha}
-    run_dir = _rs.ops_root() / NAME / f"job-{ctx.ref_id}"
+    run_tag = f"job-{ctx.ref_id}"
+    run_dir = _rs.ops_root() / NAME / run_tag
     run_dir.mkdir(parents=True, exist_ok=True)
     runs, records = probe_plan(tree, changed, head_sha, run_dir)
     plan_file = run_dir / "plan.json"
@@ -436,6 +554,7 @@ def submit(ctx: Any, spec: Any) -> Any:
             {
                 "tree": str(tree),
                 "image": _image(),
+                "tag": run_tag,
                 "runs": runs,
                 "records": records,
             }
@@ -480,6 +599,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         "out": str(out_file),
         "head_sha": head_sha,
         "boundary_hits": hits,
+        "container_tag": run_tag,
         "started_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     identity = _rs._process_identity(pid)
@@ -500,6 +620,10 @@ def poll(ctx: Any, handle: Any) -> bool:
     if done is None:
         return False
     exit_code, log_text = done
+    # The child is gone; sweep any probe container it orphaned (a child
+    # killed mid-run leaves the docker-run client's container behind).
+    if isinstance(handle, dict) and handle.get("container_tag"):
+        _rm_tagged(str(handle["container_tag"]))
     out = Path(str(handle.get("out", ""))) if isinstance(handle, dict) else None
     records: list[dict[str, Any]] | None = None
     if out is not None and out.is_file():
@@ -536,8 +660,13 @@ def poll(ctx: Any, handle: Any) -> bool:
 
 
 def kill(ctx: Any, handle: Any) -> None:
-    """Wall-clock / operator kill: SIGTERM the child's process group."""
+    """Wall-clock / operator kill: SIGTERM the child's process group,
+    then force-remove any probe containers its tag still owns — a killed
+    ``docker run`` client leaves its container running server-side
+    (``--rm`` only fires on container exit, td598968)."""
     _rc.kill(ctx, handle)
+    if isinstance(handle, dict) and handle.get("container_tag"):
+        _rm_tagged(str(handle["container_tag"]))
 
 
 def _main(argv: list[str]) -> int:
@@ -554,9 +683,11 @@ def _main(argv: list[str]) -> int:
     plan = json.loads(plan_file.read_text(encoding="utf-8"))
     tree = Path(plan["tree"])
     image = plan["image"]
+    tag = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(plan.get("tag") or "run"))
     records: list[dict[str, Any]] = []
-    for run in plan.get("runs", []):
-        exit_code, output = _run_probe(run, tree, image)
+    for i, run in enumerate(plan.get("runs", [])):
+        name = f"{_CONTAINER_PREFIX}{tag}-{i}"
+        exit_code, output = _run_probe(run, tree, image, name=name, tag=tag)
         cls = _classify_exit(exit_code)
         rec = _record(
             run["boundary"],

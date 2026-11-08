@@ -12,7 +12,13 @@ The name set checked is derived, not hard-coded: every literal
 ``reveal_unbound(…)`` vault name in the tree's ``src/``, every
 ``*_REF``/``*_VAR`` env-name constant, plus the fixed connect/auth family
 (``PG*``, ``*_DATABASE_URL``, the vendor keys) — so a newly introduced
-credential is covered without editing the probe. Two names are
+credential is covered without editing the probe. Harvesting still only
+covers names the tree already reads, so a *shape* check runs on top
+(td598968): any allowlisted/emitted name matching
+:data:`_CREDENTIAL_NAME_RE` — ``*_DSN``, ``*_SECRET*``, ``*_TOKEN``,
+``*_PASSWORD``, ``*_KEY``, ``*_DATABASE_*``, ``*_DB_*``, ``*_VAULT_*``,
+``PG*`` and friends — is denied whether or not anything references it,
+which is what refuses a freshly coined ``ARCHIVE_DSN``. Two names are
 sanctioned by design and exempt: ``PRECIS_MCP_TOKEN`` (the session's own
 scoped bearer) and ``CLAUDE_CODE_OAUTH_TOKEN`` (the subscription login —
 the allowlist's whole point, filled from the vault when absent). Under
@@ -54,7 +60,47 @@ _FIXED_DENY = frozenset(
         "DEVIN_API_TOKEN",
         "GH_TOKEN",
         "PRECIS_SECRETS_FILE_DIR",
+        # Credential-CARRYING config rather than a credential-shaped name:
+        # kubeconfig embeds client certs, docker config registry auth,
+        # netrc and askpass helpers login material.
+        "KUBECONFIG",
+        "DOCKER_CONFIG",
+        "NETRC",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
     }
+)
+
+#: Name SHAPES that mean credential whatever the rest of the word is
+#: (td598968 — the harvested set only covers credentials the tree
+#: already reads, so an unreferenced ``ARCHIVE_DSN`` used to pass).
+#: Matched on whole ``A-Z0-9`` components: ``SSH_AUTH_SOCK``'s ``AUTH``
+#: and ``PRECIS_NO_AUTOREAP`` deliberately do not trip it.
+_CRED_NAME_PARTS = (
+    "DSN",
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "PASSWD",
+    "PASSPHRASE",
+    "PASSFILE",
+    "PASS",
+    "KEY",
+    "CREDENTIALS",
+    "CREDENTIAL",
+    "CREDS",
+    "BEARER",
+    "OAUTH",
+    "DATABASE",
+    "DB",
+    "VAULT",
+    "JWT",
+    "CERTIFICATE",
+    "CERT",
+    "PEM",
+)
+_CREDENTIAL_NAME_RE = re.compile(
+    r"(?:^|_)(?:" + "|".join(_CRED_NAME_PARTS) + r")(?:_|$)|^PG[A-Z0-9_]*$"
 )
 
 #: Literal vault names: ``get_secret("NAME")`` & friends.
@@ -108,6 +154,15 @@ def check(root: Path) -> list[str]:
     if bad_plain:
         findings.append(
             "slice_env(mcp=False) emits credential names: " + ", ".join(bad_plain)
+        )
+    shaped = sorted(
+        n
+        for n in set(run_slice.ENV_ALLOWLIST) | set(env_mcp) | set(env_plain)
+        if n not in _SANCTIONED and _CREDENTIAL_NAME_RE.search(n)
+    )
+    if shaped:
+        findings.append(
+            "credential-shaped name(s) reach the session: " + ", ".join(shaped)
         )
     return findings
 
