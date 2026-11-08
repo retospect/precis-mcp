@@ -6,6 +6,7 @@ its task done) between passes."""
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -19,6 +20,7 @@ from precis.workers._mint import mint_background_job
 from precis.workers.job_types import get_job_type, known_job_types, run_slice
 from precis.workers.job_types import plan_dispatch as pd
 from tests._lane_rows import seed_lane, use_lanes
+from tests._refs import insert_gripe
 
 PAST = {"kind": "not-before", "args": {"ts": "2020-01-01T00:00:00Z"}}
 FUTURE = {"kind": "not-before", "args": {"ts": "2999-01-01T00:00:00Z"}}
@@ -1751,6 +1753,587 @@ def test_moot_generator_closes_the_plan(store: Store) -> None:
     # Idempotent: nothing left to close, no second note.
     res = pd.run_pass(store)
     assert not any("closed as won't-do" in n for n in res.notes)
+
+
+def test_verified_moot_build_closes_the_chain_and_the_gripe(
+    store: Store,
+) -> None:
+    """td584381 S1d: a build whose ``run_slice`` verified its ``moot:``
+    claim carries ``verdict:moot`` + ``meta.moot_verified.sha`` — the
+    tick closes the whole chain (review, gate, validate, root) won't-do
+    and resolves the plan's gripe on that sha exactly as a land does:
+    ``resolved: <sha9>`` + ``STATUS:verify``, no ask, no job minted."""
+    from precis.plans.nodes import MOOT_TAG
+
+    gid = int(insert_gripe(store, "the flaky gate", status="fixing").id)
+    mint = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True)
+    build = mint.ids["build"]
+    sha = "f628e681f"
+    _slice_job(
+        store,
+        build,
+        "run_slice",
+        "succeeded",
+        meta={
+            "moot_verified": {
+                "sha": sha,
+                "line": f"moot: gr{gid} already fixed by {sha}",
+            }
+        },
+    )
+    _mark_done(store, build)
+    store.add_tag(build, Tag.open(MOOT_TAG), set_by="system")
+
+    res = pd.run_pass(store)
+    for key in ("review", "gate", "validate"):
+        assert _status(store, mint.ids[key]) == "won't-do", key
+    assert _status(store, mint.root_id) == "won't-do"
+    assert MOOT_TAG not in _open_tags(store, build)
+    assert (res.asks, res.dispatched) == (0, 0)
+    # The gripe got the land's record.
+    assert _status(store, gid) == "verify"
+    assert any(
+        c.lstrip().lower().startswith("resolved:") and sha[:9] in c
+        for c in _comments(store, gid)
+    )
+    # Idempotent: a second pass stamps nothing.
+    res2 = pd.run_pass(store)
+    assert (res2.asks, res2.dispatched) == (0, 0)
+    assert not any("closed as won't-do" in n for n in res2.notes)
+    assert len(_comments(store, gid)) == 1
+
+
+def test_moot_key_matches_run_slice() -> None:
+    """``plan_dispatch`` restates the key ``run_slice`` stamps on a
+    verified-moot job (the dependency stays one-way)."""
+    assert pd.MOOT_VERIFIED_KEY == run_slice.MOOT_VERIFIED_KEY == "moot_verified"
+
+
+def _moot_tag(store: Store, todo: int, sha: str = "f628e681f", gripe: int = 1) -> None:
+    """The state ``run_slice.poll`` leaves after a VERIFIED moot: the
+    succeeded job carries ``meta.moot_verified``, the todo is done and
+    tagged ``verdict:moot``."""
+    from precis.plans.nodes import MOOT_TAG
+
+    _slice_job(
+        store,
+        todo,
+        "run_slice",
+        "succeeded",
+        meta={
+            "moot_verified": {
+                "sha": sha,
+                "line": f"moot: gr{gripe} already fixed by {sha}",
+            }
+        },
+    )
+    _mark_done(store, todo)
+    store.add_tag(todo, Tag.open(MOOT_TAG), set_by="system")
+
+
+def test_task_moot_closes_only_its_own_chain(store: Store) -> None:
+    """td584381 S1d review round 1: a verified task moot closes only the
+    moot node's ``blocked-by`` descendants — a second open build under
+    the same root is untouched and the root stays open, the note naming
+    the still-open node."""
+    from precis.plans.nodes import MOOT_TAG
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Fix gr1", {"auto_close": True})
+        m.node("b1", "Build one", {"op": "run_slice"})
+        m.node("r1", "Review one", {"op": "run_slice"}, blocked_by=("b1",))
+        m.node("v1", "Validate one", {"op": "run_slice"}, blocked_by=("r1",))
+        m.node("b2", "Build two", {"op": "run_slice"})
+
+    mint = T._run(store, None, build)
+    b1, r1, v1, b2 = (mint.ids[k] for k in ("b1", "r1", "v1", "b2"))
+    _moot_tag(store, b1)
+
+    res = pd.run_pass(store)
+    # Only b1's own chain closed; the sibling build and the root stay.
+    assert _status(store, r1) == "won't-do"
+    assert _status(store, v1) == "won't-do"
+    assert _status(store, b2) != "won't-do"
+    assert _status(store, mint.root_id) not in pd.TERMINAL_TODO_STATUSES
+    assert MOOT_TAG in _open_tags(store, b1)
+    assert any(
+        f"plan td{mint.root_id} not closed: td{b2} still open" in n for n in res.notes
+    )
+    # The gripe stamp waits on the root close.
+    assert not any("closed as won't-do" in n for n in res.notes)
+
+
+def test_task_moot_defers_a_descendant_with_a_live_job(store: Store) -> None:
+    """td584381 S1d review round 1: a descendant carrying a live job is
+    never closed — the note says deferred and the tag stays for the next
+    tick; once the job ends the pass closes it, the root and the gripe."""
+    from precis.plans.nodes import MOOT_TAG
+
+    gid = int(insert_gripe(store, "the flaky gate", status="fixing").id)
+    mint = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _moot_tag(store, build)
+    live = _slice_job(store, review, "run_slice", "queued")
+
+    res = pd.run_pass(store)
+    assert _status(store, review) == "open"
+    assert _status(store, mint.ids["gate"]) == "won't-do"
+    assert _status(store, mint.ids["validate"]) == "won't-do"
+    assert _status(store, mint.root_id) == "open"
+    assert MOOT_TAG in _open_tags(store, build)
+    assert any(
+        f"td{review} has a live job; moot close deferred" in n for n in res.notes
+    )
+    # No root close yet, so no gripe stamp either.
+    assert _status(store, gid) == "fixing"
+
+    # The job ends: the next pass closes the review, the root, stamps.
+    _set_job_status(store, live, "failed")
+    res = pd.run_pass(store)
+    assert _status(store, review) == "won't-do"
+    assert _status(store, mint.root_id) == "won't-do"
+    assert MOOT_TAG not in _open_tags(store, build)
+    assert _status(store, gid) == "verify"
+    assert len(_comments(store, gid)) == 1
+
+
+def test_task_moot_stamp_failure_keeps_the_tag(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1d review round 1: ``_notify_gripe`` runs BEFORE
+    ``MOOT_TAG`` drops — a raise leaves the tag so the next tick stamps
+    and clears it; a pass after that stamps nothing (comment count 1)."""
+    from precis.plans.nodes import MOOT_TAG
+    from precis.workers.job_types import land_slice
+
+    gid = int(insert_gripe(store, "the flaky gate", status="fixing").id)
+    mint = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True)
+    build = mint.ids["build"]
+    _moot_tag(store, build, gripe=gid)
+
+    real = land_slice._notify_gripe
+    calls = {"n": 0}
+
+    def flaky(*args: Any) -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("db blip")
+        return real(*args)
+
+    monkeypatch.setattr(land_slice, "_notify_gripe", flaky)
+
+    res = pd.run_pass(store)
+    assert calls["n"] == 1
+    # The root stays open — a closed root would drop the plan from the
+    # candidates and the retained tag could never retry the stamp.
+    assert _status(store, mint.root_id) not in pd.TERMINAL_TODO_STATUSES
+    # The tag survived the raise: the stamp is retried next tick.
+    assert MOOT_TAG in _open_tags(store, build)
+    assert any("gripe stamp failed" in n for n in res.notes)
+    assert _status(store, gid) == "fixing"
+
+    res = pd.run_pass(store)
+    assert calls["n"] == 2
+    assert MOOT_TAG not in _open_tags(store, build)
+    assert _status(store, mint.root_id) == "won't-do"
+    assert _status(store, gid) == "verify"
+    assert len(_comments(store, gid)) == 1
+
+    pd.run_pass(store)
+    assert calls["n"] == 2
+    assert len(_comments(store, gid)) == 1
+
+
+def test_task_moot_stamp_failure_asks_after_three_ticks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1d review round 2: a persistently raising
+    ``_notify_gripe`` is bounded — ``meta.moot_stamp_failures`` counts
+    the ticks, the third files ONE ask on the plan root (the exception
+    TYPE, never its message), and later ticks neither retry nor ask
+    while it stays open — no silent res.notes loop."""
+    from precis.plans.nodes import MOOT_TAG
+    from precis.workers.job_types import land_slice
+
+    gid = int(insert_gripe(store, "the flaky gate", status="fixing").id)
+    mint = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True)
+    build = mint.ids["build"]
+    _moot_tag(store, build, gripe=gid)
+
+    calls = {"n": 0}
+
+    def boom(*args: Any) -> str:
+        calls["n"] += 1
+        raise RuntimeError("db blip")
+
+    monkeypatch.setattr(land_slice, "_notify_gripe", boom)
+
+    for _ in range(3):
+        pd.run_pass(store)
+    assert calls["n"] == 3
+    assert _meta(store, build)["moot_stamp_failures"] == 3
+    asks = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    assert len(asks) == 1
+    body = _body_text(store, asks[0])
+    assert "moot verified but the gripe stamp fails: RuntimeError" in body
+    assert "db blip" not in body  # the exception TYPE only, no message
+    assert f"td{build}" in body and f"td{mint.root_id}" in body
+    assert f"gr{gid}" in body and "f628e681f" in body
+    assert _blocked_by_ids(store, mint.root_id) == asks
+    # The root stays open and the tag survives: the plan waits on a human.
+    assert _status(store, mint.root_id) not in pd.TERMINAL_TODO_STATUSES
+    assert MOOT_TAG in _open_tags(store, build)
+    assert _status(store, gid) == "fixing"
+
+    # Ticks 4 and 5: parked — no second ask, no ``_notify_gripe`` call.
+    res = pd.run_pass(store)
+    res = pd.run_pass(store)
+    assert calls["n"] == 3
+    assert [
+        c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)
+    ] == asks
+    assert any("gripe stamp parked" in n for n in res.notes)
+
+
+def test_task_moot_stamp_failure_counter_clears_on_success(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1d review round 2: a stamp that fails twice then
+    succeeds clears ``meta.moot_stamp_failures`` and closes the root —
+    two raises stay under the ask threshold, so no ask is ever filed."""
+    from precis.plans.nodes import MOOT_TAG
+    from precis.workers.job_types import land_slice
+
+    gid = int(insert_gripe(store, "the flaky gate", status="fixing").id)
+    mint = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True)
+    build = mint.ids["build"]
+    _moot_tag(store, build, gripe=gid)
+
+    real = land_slice._notify_gripe
+    calls = {"n": 0}
+
+    def flaky(*args: Any) -> str:
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise RuntimeError("db blip")
+        return real(*args)
+
+    monkeypatch.setattr(land_slice, "_notify_gripe", flaky)
+
+    pd.run_pass(store)
+    assert _meta(store, build)["moot_stamp_failures"] == 1
+    pd.run_pass(store)
+    assert _meta(store, build)["moot_stamp_failures"] == 2
+    pd.run_pass(store)
+    assert calls["n"] == 3
+    # Success clears the counter, drops the tag and closes the root.
+    assert _meta(store, build)["moot_stamp_failures"] == 0
+    assert MOOT_TAG not in _open_tags(store, build)
+    assert _status(store, mint.root_id) == "won't-do"
+    assert _status(store, gid) == "verify"
+    assert [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)] == []
+
+
+def test_verified_moot_end_to_end_poll_then_tick(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """td584381 S1d review round 1, end to end: ``run_slice.poll``
+    verifies the ``moot:`` claim on the fake ``_git`` (fetch, merge-base
+    ancestor, the sha's own message naming the chain), stamps
+    ``meta.moot_verified`` and tags the todo; the tick closes the chain
+    + root won't-do and resolves the gripe once — the second pass files
+    nothing."""
+    import json
+    import subprocess
+
+    from precis.plans.nodes import MOOT_TAG
+
+    gid = int(insert_gripe(store, "the flaky gate", status="fixing").id)
+    mint = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True)
+    build = mint.ids["build"]
+    sha = "f628e681f"
+    cmds: list[list[str]] = []
+
+    def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        cmds.append(list(args))
+        out = ""
+        if args[:3] == ["show", "-s", "--format=%B"]:
+            out = f"fix(plan): the fix (td{build})\n"
+        return subprocess.CompletedProcess([], 0, out, "")
+
+    monkeypatch.setattr(run_slice, "_git", fake_git)
+    monkeypatch.setattr(run_slice, "_mint_land", lambda *a, **k: 999)
+
+    job = _slice_job(
+        store,
+        build,
+        "run_slice",
+        "running",
+        meta={"lane": "claude-sub", "adapter": "claude_p"},
+    )
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    log = tmp_path / "run.log"
+    log.write_text(
+        json.dumps(
+            {
+                "is_error": False,
+                "result": f"Checked main first.\n"
+                f"moot: gr{gid} already fixed by {sha}\nDone.",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    exit_file = tmp_path / "exit"
+    exit_file.write_text("0\n", encoding="utf-8")
+    handle = {
+        "pid": 1,
+        "worktree": str(tree),
+        "log": str(log),
+        "exit_file": str(exit_file),
+    }
+
+    ctx = _PollCtx(store, job, {"todo_id": build})
+    assert run_slice.poll(ctx, handle) is True
+    assert ctx.status == "succeeded"
+    assert MOOT_TAG in _open_tags(store, build)
+    assert _status(store, build) == "done"
+    assert ["fetch", "origin", "main"] in cmds
+    assert ["merge-base", "--is-ancestor", sha, "origin/main"] in cmds
+    assert ["show", "-s", "--format=%B", sha] in cmds
+
+    res = pd.run_pass(store)
+    for key in ("review", "gate", "validate"):
+        assert _status(store, mint.ids[key]) == "won't-do", key
+    assert _status(store, mint.root_id) == "won't-do"
+    assert MOOT_TAG not in _open_tags(store, build)
+    assert (res.asks, res.dispatched) == (0, 0)
+    assert _status(store, gid) == "verify"
+    assert any(
+        c.lstrip().lower().startswith("resolved:") and sha[:9] in c
+        for c in _comments(store, gid)
+    )
+
+    # Idempotent: a second pass closes and stamps nothing.
+    res2 = pd.run_pass(store)
+    assert (res2.asks, res2.dispatched) == (0, 0)
+    assert not any("closed as won't-do" in n for n in res2.notes)
+    assert len(_comments(store, gid)) == 1
+
+
+class _PollCtx:
+    """The ctx surface ``run_slice.poll`` writes through, bound to a real
+    job row: ``set_meta`` stamps the ref so the tick reads
+    ``meta.moot_verified`` off the plan's own load."""
+
+    def __init__(self, store: Store, job_id: int, params: dict[str, Any]) -> None:
+        self.store = store
+        self.ref_id = job_id
+        self.meta: dict[str, Any] = {
+            "params": params,
+            "lane": "claude-sub",
+            "adapter": "claude_p",
+        }
+        self.status: str | None = None
+        self.failure: str | None = None
+
+    def set_status(self, value: str) -> None:
+        self.status = value
+
+    def set_meta(self, **kw: Any) -> None:
+        self.store.stamp_ref_meta(self.ref_id, kw)
+
+    def append_chunk(self, kind: str, text: str) -> None:
+        ords = [int(c.ord) for c in self.store.chunks.list_chunks_for_ref(self.ref_id)]
+        self.store.chunks.insert_chunks(
+            self.ref_id,
+            [
+                ChunkInsert(
+                    ord=max(ords, default=0) + 1,
+                    text=text,
+                    meta={"chunk_kind": kind},
+                )
+            ],
+        )
+
+    def record_failure(self, reason: str, **_kw: Any) -> None:
+        self.failure = reason
+        self.status = "failed"
+
+
+def test_no_commit_rescue_reads_the_verdict_from_the_handoff(
+    store: Store,
+) -> None:
+    """td584381 S1d: a JSON-log adapter parses the session's result out
+    of the raw log, so the job's event text can miss the ``moot:`` line —
+    the posted ``handoff:`` comment still carries it and the rescue
+    evidence shows it (the log tail keeps precedence when it has one)."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    # The job's event text carries NO ``moot:`` substring — the verdict
+    # lives only in the handoff, so ``_handoff_verdict`` stubbed out
+    # fails this test for real (review round 2).
+    _failed_job(
+        store,
+        task,
+        '{"type":"result","is_error":false,"result":"checked it"}',
+        meta={"no_commit": True},
+    )
+    _todo_comment(
+        store,
+        task,
+        "handoff: moot: gr1 already fixed by f628e681f\n\nChecked origin/main.",
+    )
+    res = pd.run_pass(store)
+    assert res.rescued == 1 and res.asks == 0
+    assert "rescue:builder" in _open_tags(store, task)
+    # The verdict must land in the rescue evidence's ``step:`` line —
+    # the log tail has no ``moot:`` to give a false pass.
+    evidence = [c for c in _todo_comments(store, task) if c.startswith("rescue:")]
+    assert evidence, "no rescue evidence comment"
+    steps = [ln for c in evidence for ln in c.splitlines() if ln.startswith("step: ")]
+    assert steps, "no step: line in the rescue evidence"
+    assert any(
+        "the session's verdict: moot: gr1 already fixed by f628e681f" in ln
+        for ln in steps
+    )
+
+
+def test_no_commit_ask_reads_the_handoff_verdict(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1d review round 1: the cap ask's body carries the
+    ``moot:`` line the log tail missed — read off the newest
+    ``handoff:`` comment (the ``_mint_ask`` path)."""
+    dead = L.Lane(
+        name="devin",
+        adapter="devin_tree",
+        credential_pool="free-promo",
+        cap=3,
+        task_classes=frozenset({"code", "review", "validate"}),
+        enabled=False,
+        vendor="cognition",
+        models=("swe-2-medium", "swe-2-high", "swe-2-max"),
+        default_model="swe-2-high",
+        cost_class=L.COST_FREE,
+    )
+    use_lanes(monkeypatch, dead)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        '{"type":"result","is_error":false,"result":"checked it"}',
+        meta={"no_commit": True},
+    )
+    _todo_comment(
+        store,
+        task,
+        "handoff: moot: gr1 already fixed by f628e681f\n\nChecked origin/main.",
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 1, 0)
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    assert "moot: gr1 already fixed by f628e681f" in _body_text(store, ask)
+
+
+def test_handoff_verdict_scopes_to_the_newest_attempt(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1d review round 1: only the newest ``handoff:`` comment
+    is read — an earlier attempt's ``moot:`` handoff is never the new
+    attempt's verdict (here the newer handoff carries none, so the ask
+    body shows no verdict)."""
+    dead = L.Lane(
+        name="devin",
+        adapter="devin_tree",
+        credential_pool="free-promo",
+        cap=3,
+        task_classes=frozenset({"code", "review", "validate"}),
+        enabled=False,
+        vendor="cognition",
+        models=("swe-2-medium", "swe-2-high", "swe-2-max"),
+        default_model="swe-2-high",
+        cost_class=L.COST_FREE,
+    )
+    use_lanes(monkeypatch, dead)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    # Attempt one left a ``moot:`` handoff; attempt two failed with no
+    # verdict anywhere — neither log tail nor its own handoff.
+    _todo_comment(store, task, "handoff: moot: gr1 already fixed by f628e681f")
+    _failed_job(
+        store,
+        task,
+        "run_slice: session left no commit\n--- log tail ---\nexit 0",
+        meta={"no_commit": True},
+    )
+    _todo_comment(store, task, "handoff: second try, still nothing to land")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 1, 0)
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    assert "moot: gr1" not in _body_text(store, ask)
+    assert "its verdict:" not in _body_text(store, ask)
+
+
+def test_handoff_verdict_rejects_a_handoff_older_than_the_attempt(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1d review round 2: ``_handoff_verdict(since=<newest
+    job's created_at>)`` returns ``None`` when the newest ``handoff:``
+    predates that job — attempt one's ``moot:`` is never attempt two's.
+    And a ``handoff:`` whose ``created_at`` cannot be read fails CLOSED
+    (no verdict): an unprovable scope is no scope."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    # Attempt one left the moot handoff; attempt two's job is newer and
+    # left no handoff of its own.
+    _todo_comment(store, task, "handoff: moot: gr1 already fixed by f628e681f")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET created_at = now() - interval '1 minute' "
+            "WHERE ref_id = %s",
+            (task,),
+        )
+    job = _failed_job(
+        store,
+        task,
+        "run_slice: session left no commit\n--- log tail ---\nexit 0",
+        meta={"no_commit": True},
+    )
+    job_ref = store.get_ref(kind="job", id=job)
+    assert job_ref is not None
+    assert pd._handoff_verdict(store, task, since=job_ref.created_at) is None
+    # Without the scope the same handoff IS the verdict.
+    assert pd._handoff_verdict(store, task) == ("moot: gr1 already fixed by f628e681f")
+    # ``created_at`` missing on the comment chunk while ``since`` is
+    # known: fail closed, never read an unscoped handoff.
+    monkeypatch.setattr(
+        pd,
+        "_comments",
+        lambda *_a: [
+            SimpleNamespace(
+                text="handoff: moot: gr1 already fixed by f628e681f",
+            )
+        ],
+    )
+    assert pd._handoff_verdict(store, task, since=job_ref.created_at) is None
+    # …but a missing ``since`` still means no scoping at all.
+    assert pd._handoff_verdict(store, task) == ("moot: gr1 already fixed by f628e681f")
+
+
+def test_review_revert_floors_on_the_newest_ended_job(store: Store) -> None:
+    """td584381 S1d: a still-queued job — a re-minted land that never
+    ran — is no re-arm boundary: the REVERT floor is the newest ENDED
+    job (the succeeded land), not the queued one."""
+    mint = _reviewed_landed(store, "review: REVERT — breaks the public API")
+    build = mint.ids["build"]
+    land = _jobs_under(store, build)[-1][0]
+    _slice_job(store, build, "land_slice", "queued")
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _meta(store, build)["rearmed_after_job"] == land
 
 
 def test_dry_run_counts_the_reopen_without_writing(store: Store) -> None:

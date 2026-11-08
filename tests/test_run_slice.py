@@ -213,6 +213,21 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
             return _proc(rc=calls.get("commit_rc", 0))
         if args[:2] == ["log", "--oneline"]:
             return _proc(calls.get("ahead", ""))
+        if calls.get("raise_prefix") is not None and args[
+            : len(calls["raise_prefix"])
+        ] == list(calls["raise_prefix"]):
+            raise calls.get("raise_exc") or subprocess.TimeoutExpired("git", 300)
+        if args == ["fetch", "origin", "main"]:
+            return _proc(rc=calls.get("fetch_rc", 0))
+        if args[:2] == ["merge-base", "--is-ancestor"]:
+            # rc 0 = the candidate sha is an ancestor of origin/main.
+            return _proc(rc=calls.get("ancestor_rc", 0))
+        if args[:3] == ["show", "-s", "--format=%B"]:
+            # The candidate sha's own commit message.
+            return _proc(calls.get("show_msg", ""), rc=calls.get("show_rc", 0))
+        if args[:2] == ["cat-file", "-e"]:
+            # rc 0 = the named path exists on origin/main.
+            return _proc(rc=calls.get("cat_rc", 0))
         return _proc()
 
     def fake_launch(argv: list[str], **kw: Any) -> int:
@@ -890,6 +905,37 @@ def test_render_brief_asks_for_the_tests_marker() -> None:
     assert "tests: ran" in brief
     assert "tests: NOT RUN" in brief
     assert "Your final message is posted on the todo as the `handoff:` comment" in brief
+
+
+def test_code_brief_pins_the_verified_moot_wording() -> None:
+    """td584381 S1d review round 2: a CODE task's brief asks for
+    ``moot: gr<N> already fixed by <sha>`` and says a bare ``moot:`` is
+    not accepted for a code build (it goes to rescue) — the verified
+    claim the tick checks; a generator's brief keeps the plain
+    ``moot: <why>`` sentence (trust, no sha check)."""
+    code = run_slice.render_brief(
+        todo_id=42,
+        title="Fix the gate",
+        body="Do it.",
+        latest=None,
+        lane="claude-sub",
+        model="m",
+        effort="high",
+    )
+    assert "moot: gr<N> already fixed by <sha>" in code
+    assert "a bare `moot: <why>` is not accepted for a code build" in code
+    gen = run_slice.render_brief(
+        todo_id=43,
+        title="Slice the work",
+        body="Split it.",
+        latest=None,
+        lane="claude-sub",
+        model="m",
+        effort="high",
+        generator=True,
+    )
+    assert "`moot: <why>` when the source is already resolved" in gen
+    assert "already fixed by <sha>" not in gen
 
 
 # ── submit / poll ──────────────────────────────────────────────────
@@ -2932,7 +2978,9 @@ def test_poll_no_commit_exit_stamps_the_job(seams: dict[str, Any]) -> None:
     """td584381 S1a F4: a clean exit on a code node that left no commit
     stamps ``meta.no_commit`` on the failed job — the durable mark the
     tick reads to send the node straight to rescue; a ``no-op:``/
-    ``moot:`` verdict exit and an ordinary red exit stamp nothing."""
+    ``validated:`` verdict exit and an ordinary red exit stamp nothing
+    (since S1d a ``moot:`` claim on a code node must verify first — an
+    unverified one stamps ``no_commit`` like any uncommitted exit)."""
     store = _Store()
     store.add_todo(42, "t")
     ctx, handle = _submit(store, seams)
@@ -2970,6 +3018,316 @@ def test_poll_no_commit_exit_stamps_the_job(seams: dict[str, Any]) -> None:
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "failed"
     assert run_slice.NO_COMMIT_KEY not in pctx.meta_set
+
+
+def _mooted_store() -> _Store:
+    """A code todo inside ``plan:50`` whose plan gripe is gr7 — the shape
+    ``_verified_moot`` resolves the plan root, the gripe and the td-chain
+    from (review round 1)."""
+    store = _Store()
+    store.add_todo(50, "Fix gr7 plan")
+    store.add_todo(42, "Fix gr7", parent_id=50, tags=("plan:50",))
+    store.add_todo(43, "Review the fix", parent_id=50, tags=("plan:50",))
+    # The plan gripe's report names its test file; it must exist on main.
+    store.chunks.rows[7] = [_Chunk(0, "repro in tests/test_widget.py", "gripe")]
+    return store
+
+
+def _pin_plan_gripe(monkeypatch: pytest.MonkeyPatch) -> None:
+    from precis.workers.job_types import land_slice
+
+    monkeypatch.setattr(land_slice, "_plan_gripe", lambda _s, _t: 7)
+
+
+def _moot_result(sha: str = "f628e681f", gripe: str = "gr7") -> str:
+    return (
+        json.dumps(
+            {
+                "is_error": False,
+                "result": f"Checked main first.\nmoot: {gripe} already fixed by {sha}\n"
+                "Nothing to land.",
+            }
+        )
+        + "\n"
+    )
+
+
+def test_poll_verified_moot_closes_and_stamps_the_sha(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1d + review round 1: a code task's ``moot:`` line
+    verifies when a best-effort ``git fetch origin main`` ran, the named
+    sha is an ancestor of ``origin/main`` AND the sha's own commit
+    message names the plan's gripe — the todo closes done tagged
+    ``verdict:moot``, the job carries ``meta.moot_verified``. No land
+    minted, no attempt burned."""
+    _pin_plan_gripe(monkeypatch)
+    store = _mooted_store()
+    seams["show_msg"] = "fix(plan): close the moot chain (gr7)\n"
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, _moot_result())
+    seams["git"].clear()
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    tags = store.tag_strings(42)
+    assert {"STATUS:done", "verdict:moot"} <= tags
+    assert not any(
+        t.startswith("attempt:") or t.startswith("claimed-by:") for t in tags
+    )
+    mv = pctx.meta_set[run_slice.MOOT_VERIFIED_KEY]
+    assert mv["sha"] == "f628e681f"
+    assert mv["line"].startswith("moot: gr7")
+    assert seams["lands"] == []
+    git_cmds = [args for args, _cwd in seams["git"]]
+    assert ["fetch", "origin", "main"] in git_cmds
+    assert ["merge-base", "--is-ancestor", "f628e681f", "origin/main"] in git_cmds
+    assert ["show", "-s", "--format=%B", "f628e681f"] in git_cmds
+    assert ["cat-file", "-e", "origin/main:tests/test_widget.py"] in git_cmds
+
+
+@pytest.mark.parametrize(
+    ("result", "show_msg", "ancestor_rc", "cat_rc", "want"),
+    [
+        # The sha's message names a ``td`` of the plan's chain instead of
+        # the gripe handle — the factory's subjects carry ``(td<build>)``.
+        ("moot: already fixed by f628e681f", "fix(x): y (td42)", 0, 0, True),
+        ("moot: already fixed by f628e681f", "fix(x): y (td50)", 0, 0, True),
+        ("moot: already fixed by f628e681f", "fix(x): y (td43)", 0, 0, True),
+        # A 7-char sha verifies.
+        ("moot: gr7 already fixed by abc1234", "fix(x): y (gr7)", 0, 0, True),
+        # An ancestor sha whose message names neither handle — verified
+        # before review round 1, unverified now.
+        ("moot: gr7 already fixed by f628e681f", "fix(x): y (td999)", 0, 0, False),
+        # A moot line pinned to a DIFFERENT gripe is rejected even when
+        # the sha's message names the plan gripe.
+        ("moot: gr99 already fixed by f628e681f", "fix(x): y (gr7)", 0, 0, False),
+        # The moot line names no sha at all.
+        ("moot: gr7 looks already fixed", "fix(x): y (gr7)", 0, 0, False),
+        # An uppercase sha is no candidate — fails closed.
+        ("moot: gr7 already fixed by F628E681F", "fix(x): y (gr7)", 0, 0, False),
+        # The named sha is no ancestor of origin/main.
+        ("moot: gr7 already fixed by f628e681f", "fix(x): y (gr7)", 1, 0, False),
+        # The named test file is missing on main (extra gate).
+        ("moot: gr7 already fixed by f628e681f", "fix(x): y (gr7)", 0, 1, False),
+        # ``gr`` inside another word is no gripe token — the line names
+        # no ``gr<N>``, so the message check alone verifies.
+        ("moot: group7 already fixed by f628e681f", "fix(x): y (gr7)", 0, 0, True),
+    ],
+    ids=[
+        "td-build",
+        "td-root",
+        "td-review",
+        "short-sha",
+        "message-names-neither",
+        "different-gripe",
+        "no-sha",
+        "uppercase-sha",
+        "not-an-ancestor",
+        "named-test-missing",
+        "gr-in-word",
+    ],
+)
+def test_poll_moot_verifies_on_ancestor_and_own_message(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    result: str,
+    show_msg: str,
+    ancestor_rc: int,
+    cat_rc: int,
+    want: bool,
+) -> None:
+    """td584381 S1d review round 1: verification is ancestor AND the
+    sha's own message naming the plan's gripe (its ``gr`` or a chain
+    ``td``); everything else is the ordinary no-commit failure
+    (``meta.no_commit``, ``attempt:1``, straight to rescue)."""
+    _pin_plan_gripe(monkeypatch)
+    store = _mooted_store()
+    seams["show_msg"] = show_msg + "\n"
+    seams["ancestor_rc"] = ancestor_rc
+    seams["cat_rc"] = cat_rc
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, json.dumps({"is_error": False, "result": result}) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    if want:
+        assert pctx.status == "succeeded"
+        assert run_slice.MOOT_VERIFIED_KEY in pctx.meta_set
+        assert "verdict:moot" in store.tag_strings(42)
+    else:
+        assert pctx.status == "failed"
+        assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
+        assert run_slice.MOOT_VERIFIED_KEY not in pctx.meta_set
+        assert "verdict:moot" not in store.tag_strings(42)
+        assert "attempt:1" in store.tag_strings(42)
+
+
+@pytest.mark.parametrize("how", ["rc", "raise"], ids=["fetch-rc1", "fetch-timeout"])
+def test_poll_verified_moot_survives_a_failed_fetch(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """td584381 S1d review round 1: the fetch is best-effort — a nonzero
+    rc or a ``TimeoutExpired`` only means the ancestor+message checks
+    run on whatever ``origin/main`` ref exists."""
+    _pin_plan_gripe(monkeypatch)
+    store = _mooted_store()
+    seams["show_msg"] = "fix(x): y (gr7)\n"
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, _moot_result())
+    # Submit's own fetch already ran; only the poll's is broken here.
+    if how == "rc":
+        seams["fetch_rc"] = 1
+    else:
+        seams["raise_prefix"] = ["fetch", "origin", "main"]
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert pctx.meta_set[run_slice.MOOT_VERIFIED_KEY]["sha"] == "f628e681f"
+
+
+def test_poll_moot_fails_closed_on_git_error(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1d review round 1: a git error on the ancestor or the
+    message check is unverified — the no-commit exit, never a close."""
+    _pin_plan_gripe(monkeypatch)
+    store = _mooted_store()
+    seams["show_rc"] = 1
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, _moot_result())
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
+    assert "verdict:moot" not in store.tag_strings(42)
+
+    # A ``git`` call that raises is likewise no verification.
+    _pin_plan_gripe(monkeypatch)
+    store = _mooted_store()
+    seams["show_rc"] = 0
+    seams["show_msg"] = "fix(x): y (gr7)\n"
+    seams["raise_prefix"] = ["merge-base", "--is-ancestor"]
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, _moot_result())
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "verdict:moot" not in store.tag_strings(42)
+
+
+def test_poll_moot_cat_file_raise_fails_closed(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1d review round 2: a ``cat-file -e`` that raises
+    (``TimeoutExpired``/``OSError``) on the named-test gate is
+    UNVERIFIED — the S1a no-commit path — never a crash out of poll."""
+    _pin_plan_gripe(monkeypatch)
+    store = _mooted_store()
+    seams["show_msg"] = "fix(x): y (gr7)\n"
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, _moot_result())
+    seams["raise_prefix"] = ["cat-file", "-e"]
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
+    assert run_slice.MOOT_VERIFIED_KEY not in pctx.meta_set
+    assert "verdict:moot" not in store.tag_strings(42)
+
+
+def test_poll_moot_plan_gripe_raise_fails_closed(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1d review round 2: a raise out of
+    ``land_slice._plan_gripe`` (the DB read) is UNVERIFIED — the
+    no-commit path — never a crash out of poll."""
+    from precis.workers.job_types import land_slice
+
+    def boom(_s: Any, _t: str) -> int:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(land_slice, "_plan_gripe", boom)
+    store = _mooted_store()
+    seams["show_msg"] = "fix(x): y (gr7)\n"
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, _moot_result())
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
+    assert "verdict:moot" not in store.tag_strings(42)
+
+
+def test_poll_moot_without_a_plan_fails_closed(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td584381 S1d review round 1: no ``plan:`` tag (a standalone code
+    todo) or no plan gripe means no handle to verify against — the
+    no-commit exit, never a close."""
+    _pin_plan_gripe(monkeypatch)
+    store = _Store()
+    store.add_todo(42, "Fix gr7")
+    seams["show_msg"] = "fix(x): y (gr7)\n"
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, _moot_result())
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "verdict:moot" not in store.tag_strings(42)
+
+    from precis.workers.job_types import land_slice
+
+    monkeypatch.setattr(land_slice, "_plan_gripe", lambda _s, _t: None)
+    store = _mooted_store()
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, _moot_result())
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "verdict:moot" not in store.tag_strings(42)
+
+
+@pytest.mark.parametrize("task_class", ["review", "diagnose"])
+def test_poll_document_task_class_no_commit_succeeds(
+    seams: dict[str, Any], task_class: str
+) -> None:
+    """td584381 S1d: a ``task_class`` off ``code`` (a reviewer's read, a
+    diagnose) delivers a document, not a branch — a clean exit with no
+    commit is the node's success: succeeded, no ``no_commit`` stamp."""
+    store = _Store()
+    store.add_todo(42, "t", meta={"task_class": task_class})
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "Read it; notes in the handoff."})
+        + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert run_slice.NO_COMMIT_KEY not in pctx.meta_set
+    assert "STATUS:done" in store.tag_strings(42)
+
+
+def test_poll_document_task_class_moot_keeps_trust(seams: dict[str, Any]) -> None:
+    """td584381 S1d: verification is the CODE node's gate — a
+    ``task_class`` node's first-line ``moot:`` keeps today's trust and
+    closes tagged, no sha check."""
+    store = _Store()
+    store.add_todo(42, "t", meta={"task_class": "validate"})
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "moot: gr1 already fixed"}) + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    tags = store.tag_strings(42)
+    assert {"STATUS:done", "verdict:moot"} <= tags
+    assert run_slice.MOOT_VERIFIED_KEY not in pctx.meta_set
 
 
 def test_poll_deny_check_fails_closed_when_git_fails(seams: dict[str, Any]) -> None:
@@ -4525,13 +4883,16 @@ def test_kimi_kill_and_release_drop_the_submit_key(
 def test_kimi_moot_verdict_withholds_when_unscrubbed(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A task node's ``moot:`` first line is session text: when the
+    """A document node's ``moot:`` first line is session text: when the
     credential cannot be re-read the verdict's ``why`` is withheld from
-    the job summary like the handoff is from the comments."""
+    the job summary like the handoff is from the comments. (A code
+    node's bare ``moot:`` is no verdict since td584381 S1d — it must
+    verify a sha; the trusted path this pins is the ``task_class``
+    one.)"""
     from precis import secrets as _secrets
 
     store = _Store()
-    store.add_todo(42, "Check gr1", meta={"op": "run_slice"})
+    store.add_todo(42, "Check gr1", meta={"task_class": "validate"})
     ctx, handle = _kimi_lane_submit(store, seams, monkeypatch)
     assert handle is not None
     monkeypatch.setattr(_secrets, "get_secret", lambda _name, **kw: None)

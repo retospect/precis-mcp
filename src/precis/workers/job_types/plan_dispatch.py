@@ -256,6 +256,29 @@ HUMAN_ONLY_KEY = "human_only_hit"
 #: not to, so the tick caps at once (td584381 S1a F4).
 NO_COMMIT_KEY = "no_commit"
 
+#: ``run_slice.MOOT_VERIFIED_KEY``, restated — the same one-way rule. A
+#: code task's VERIFIED ``moot:`` close carries ``{"sha", "line"}`` on
+#: the succeeded job; :func:`_step_moot` resolves the plan's gripe on
+#: that sha exactly as a land does (td584381 S1d).
+MOOT_VERIFIED_KEY = "moot_verified"
+
+#: Consecutive ``_notify_gripe`` raises on a verified task moot —
+#: stamped on the moot node's meta by :func:`_step_moot` (td584381 S1d
+#: review round 2). At :data:`_MOOT_STAMP_ASK_AFTER` the tick files one
+#: ask on the plan root and parks the stamp: a silent ``res.notes``
+#: loop would page nobody. The park lifts when the ask is answered or a
+#: human clears the key.
+MOOT_STAMP_KEY = "moot_stamp_failures"
+
+#: Failed gripe-stamp ticks before the moot close parks behind an ask.
+_MOOT_STAMP_ASK_AFTER = 3
+
+#: Options of the ask a parked moot stamp files (review round 2).
+_MOOT_STAMP_ASK_OPTIONS: list[str] = [
+    "retry the gripe stamp",
+    "won't do",
+]
+
 #: Consecutive infra-red lands (:func:`_infra_red_lands`) before the tick
 #: parks the node behind a "land again" ask (gr570187): the re-land is
 #: bounded so a broken gate environment cannot loop the lander forever.
@@ -1123,9 +1146,13 @@ def _review_revert(
         claims = _claims(t)
         if claims:
             w.remove_tags(t, claims)
-        newest = plan.jobs(t)
-        if newest:
-            w.stamp_meta(t, {"rearmed_after_job": newest[-1].id})
+        # The floor is the newest ENDED job (td584381 S1d, the gr586688
+        # rule): a still-queued job — a re-minted land that never ran —
+        # is no re-arm boundary, and the ended land must be floored or
+        # the phases backstop would close the todo under it.
+        ended = [j for j in plan.jobs(t) if j.status in _JOB_ENDED]
+        if ended:
+            w.stamp_meta(t, {"rearmed_after_job": ended[-1].id})
         w.comment(
             t,
             f"handoff: review: REVERT — {why}\n\n(review td{n.id}; reverted by "
@@ -1373,28 +1400,223 @@ def _step_rearm(plan: _Plan, w: _Writer, res: PassResult) -> None:
         )
 
 
+def _moot_descendants(plan: _Plan, n: _Node) -> list[_Node]:
+    """The open todos under ``n.root`` ``blocked-by``-dependent on ``n``,
+    transitively — the review / wait-for-prod / validate chain a task
+    moot closes (td584381 S1d review). A closed link in the chain still
+    transmits: the closure walks through it, it is just not re-closed."""
+    dependents: dict[int, set[int]] = {}
+    for src, targets in plan.blockers.items():
+        for b in targets:
+            dependents.setdefault(b.id, set()).add(src)
+    seen = {n.id}
+    frontier = [n.id]
+    out: list[_Node] = []
+    while frontier:
+        cur = frontier.pop()
+        for dep_id in dependents.get(cur, ()):
+            if dep_id in seen:
+                continue
+            seen.add(dep_id)
+            m = plan.nodes.get(dep_id)
+            if m is None or m.kind != "todo" or m.root != n.root:
+                continue
+            frontier.append(dep_id)
+            if not _closed(m):
+                out.append(m)
+    return sorted(out, key=lambda m: m.id)
+
+
+def _is_ask_node(m: _Node) -> bool:
+    """An ask todo (``meta.ask`` or the ``ask-user`` tag): a question to a
+    human, not build work the moot close waits on."""
+    return isinstance(m.meta.get("ask"), dict) or any(
+        t.startswith("ask-user") for t in m.open_tags
+    )
+
+
 def _step_moot(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
-    """A generator ``run_slice`` closed on a ``moot:`` verdict carries
-    ``MOOT_TAG`` (gr548813): the plan's reason is gone (its gripe already
-    resolved, its section deleted). Close every other open node of that plan
-    and its root as won't-do, each with a comment naming the verdict, raise
-    one alert on the root so a human sees the plan went away, drop the tag."""
+    """A node closed on a ``moot:`` verdict carries ``MOOT_TAG``
+    (gr548813): the plan's reason is gone (its gripe already resolved,
+    its section deleted). Since td584381 S1d a CODE task can carry it
+    too — ``run_slice`` only tags one whose ``moot:`` claim VERIFIED on
+    the worker host and stamps the job's ``meta.moot_verified =
+    {sha, line}``; a generator's first-line ``moot:`` still rides on
+    trust (no record).
+
+    A GENERATOR moot keeps the whole-plan close: every open node of the
+    plan and its root go won't-do. A TASK moot is scoped (review round
+    1): only the moot node's ``blocked-by`` descendants — review,
+    wait-for-prod, validate — close won't-do, then the root, and only
+    when no other open work node under the root remains (a second open
+    build refuses with ``plan td<root> not closed: td<N> still open``);
+    a node with a live job is never closed (``td<N> has a live job;
+    moot close deferred`` — the tag stays and the next tick retries).
+    The gripe stamp happens only once the root closed, and BEFORE the
+    tag drops: ``_notify_gripe`` is idempotent, so a raise leaves the
+    tag for the next tick instead of losing the resolution. The retry
+    is bounded (review round 2): ``meta.moot_stamp_failures`` counts
+    consecutive raises — at ``_MOOT_STAMP_ASK_AFTER`` one ask files on
+    the plan root (:func:`_mint_stamp_ask`) and the stamp parks until
+    the ask is answered or the key is cleared. A verified sha resolves
+    the plan's gripe exactly as a land does (the same
+    ``resolved: <sha>`` + ``STATUS:verify`` ``land_slice`` writes);
+    one alert on the root tells a human the plan went away."""
+    from precis.workers.job_types import land_slice as _land_slice
+
     for n in plan.todos():
         if MOOT_TAG not in n.open_tags:
             continue
         why = f"td{n.id} reported `moot:` (its handoff comment has the why)"
-        closed = 0
-        for m in plan.todos():
-            if m.root != n.root or m.id == n.id or _closed(m):
+        jobs = plan.jobs(n)
+        mv = jobs[-1].meta.get(MOOT_VERIFIED_KEY) if jobs else None
+        sha: str | None = None
+        mv_line: Any = None
+        if isinstance(mv, dict) and mv.get("sha"):
+            sha, mv_line = str(mv["sha"]), mv.get("line")
+        gid = _land_slice._plan_gripe(store, f"plan:{n.root}")
+        stamped = False
+        if node_kind(n.meta) == "generator":
+            # Whole-plan close (gr548813, unchanged): every open node of
+            # the plan and its root go won't-do.
+            closed = 0
+            for m in plan.todos():
+                if m.root != n.root or m.id == n.id or _closed(m):
+                    continue
+                w.comment(m, f"plan_dispatch: plan closed — {why}")
+                w.set_status(m, "won't-do")
+                closed += 1
+            res.phases_closed += closed
+            res.notes.append(
+                f"plan td{n.root} closed as won't-do: {why}; {closed} node(s)"
+            )
+        else:
+            # A task moot is scoped to its own chain (review round 1):
+            # its ``blocked-by`` descendants close won't-do — a node
+            # with a live job defers to the next tick — then the root
+            # once no other open work node under it remains.
+            closed = 0
+            for m in _moot_descendants(plan, n):
+                if plan.live_job(m):
+                    res.notes.append(f"td{m.id} has a live job; moot close deferred")
+                    continue
+                w.comment(m, f"plan_dispatch: plan closed — {why}")
+                w.set_status(m, "won't-do")
+                closed += 1
+            res.phases_closed += closed
+            open_work = [
+                m
+                for m in plan.todos()
+                if m.root == n.root
+                and m.id not in (n.id, n.root)
+                and not _closed(m)
+                and not _is_ask_node(m)
+            ]
+            if open_work:
+                res.notes.append(
+                    f"plan td{n.root} not closed: td{open_work[0].id} still open"
+                )
                 continue
-            w.comment(m, f"plan_dispatch: plan closed — {why}")
-            w.set_status(m, "won't-do")
-            closed += 1
-        w.remove_tags(n, [MOOT_TAG])
-        res.phases_closed += closed
-        res.notes.append(f"plan td{n.root} closed as won't-do: {why}; {closed} node(s)")
+            root = plan.nodes.get(n.root)
+            if root is not None and not _closed(root) and plan.live_job(root):
+                res.notes.append(f"td{root.id} has a live job; moot close deferred")
+                continue
+            if w.dry_run:
+                if sha is not None and gid is not None:
+                    res.notes.append(
+                        f"would resolve gripe gr{gid} on verified moot sha {sha[:9]}"
+                    )
+                continue
+            if sha is not None and gid is not None:
+                # The verified moot IS the fix's land — resolve the
+                # plan's gripe on its sha exactly as ``land_slice``
+                # would (td584381 S1d). Stamped BEFORE the root closes
+                # (review round 1): a raise leaves the root open — the
+                # plan stays a candidate — and ``MOOT_TAG`` for the next
+                # tick's retry instead of losing the resolution. The
+                # retry is bounded (review round 2): consecutive raises
+                # count on ``meta.moot_stamp_failures``; at
+                # ``_MOOT_STAMP_ASK_AFTER`` one ask files on the root and
+                # the stamp parks — a silent res.notes loop would page
+                # nobody. The park lifts when that ask is answered or a
+                # human clears the meta key.
+                fails_raw = n.meta.get(MOOT_STAMP_KEY)
+                try:
+                    fails = int(fails_raw or 0)
+                except (TypeError, ValueError):
+                    fails = 0
+                if fails >= _MOOT_STAMP_ASK_AFTER:
+                    root_node = plan.nodes.get(n.root)
+                    if root_node is not None and plan.open_asks(root_node):
+                        res.notes.append(
+                            f"td{n.id}: gripe stamp parked after {fails} "
+                            f"failed ticks — asked on td{n.root}"
+                        )
+                        continue
+                    # The parked ask was answered (or never filed): the
+                    # human's ruling re-arms the stamp retry.
+                    w.stamp_meta(n, {MOOT_STAMP_KEY: 0})
+                    fails = 0
+                try:
+                    res.notes.append(
+                        _land_slice._notify_gripe(
+                            store, gid, sha, str(mv_line or n.title)[:200], n.id
+                        )
+                    )
+                    stamped = True
+                    if fails:
+                        w.stamp_meta(n, {MOOT_STAMP_KEY: 0})
+                except Exception as exc:
+                    fails += 1
+                    w.stamp_meta(n, {MOOT_STAMP_KEY: fails})
+                    res.notes.append(
+                        f"td{n.id}: gripe stamp failed ({exc}); moot close deferred"
+                    )
+                    root_node = plan.nodes.get(n.root)
+                    if (
+                        fails >= _MOOT_STAMP_ASK_AFTER
+                        and root_node is not None
+                        and not plan.open_asks(root_node)
+                    ):
+                        ask_id = _mint_stamp_ask(
+                            w.store, n, gid, sha, type(exc).__name__
+                        )
+                        res.asks += 1
+                        res.notes.append(
+                            f"td{n.id}: gripe stamp raised {fails} ticks "
+                            f"running — asked in td{ask_id}"
+                        )
+                    continue
+            if root is not None and not _closed(root):
+                w.comment(root, f"plan_dispatch: plan closed — {why}")
+                w.set_status(root, "won't-do")
+                closed += 1
+                res.phases_closed += 1
+            res.notes.append(
+                f"plan td{n.root} closed as won't-do: {why}; {closed} node(s)"
+            )
         if w.dry_run:
+            if sha is not None and gid is not None:
+                res.notes.append(
+                    f"would resolve gripe gr{gid} on verified moot sha {sha[:9]}"
+                )
             continue
+        if not stamped and sha is not None and gid is not None:
+            # Generator path: the close ran above, so a raise here is
+            # not retried — the plan is gone from the candidates. Kept
+            # for parity; the task path stamps before its root close.
+            try:
+                res.notes.append(
+                    _land_slice._notify_gripe(
+                        store, gid, sha, str(mv_line or n.title)[:200], n.id
+                    )
+                )
+            except Exception as exc:
+                res.notes.append(
+                    f"td{n.id}: gripe stamp failed ({exc}); moot close deferred"
+                )
+                continue
+        w.remove_tags(n, [MOOT_TAG])
         root = plan.nodes.get(n.root)
         raise_alert(
             store,
@@ -1429,11 +1651,19 @@ def _analysis_posted(plan: _Plan, store: Any, n: _Node) -> bool:
 
 
 def _step_phases(plan: _Plan, w: _Writer, res: PassResult) -> None:
+    # A root whose plan still carries an open ``MOOT_TAG`` is never
+    # auto-closed here: ``_step_moot`` keeps the tag (and the root open)
+    # when the gripe stamp fails so the next tick can retry — a
+    # ``done`` root would drop the whole plan out of the candidates and
+    # the retained tag could never fire (td584381 review round 1).
+    mooted_roots = {n.root for n in plan.todos() if MOOT_TAG in n.open_tags}
     for n in sorted(plan.todos(), key=lambda x: (-x.depth, x.id)):
         if _closed(n) or n.status == "paused":
             continue
         kind = node_kind(n.meta)
         kids = plan.child_todos(n)
+        if n.id == n.root and n.root in mooted_roots:
+            continue
         if kind in ("phase", "generator"):
             if kind == "generator" and plan.live_job(n):
                 continue
@@ -2107,6 +2337,39 @@ def _verdict_line(text: str) -> str | None:
     return None
 
 
+def _handoff_verdict(
+    store: Any, todo_id: int, *, since: datetime | None = None
+) -> str | None:
+    """The ``moot:``/``no-op:`` line of the single NEWEST ``handoff:``
+    comment (the ``handoff:`` prefix stripped first, the line read by
+    :func:`_verdict_line`), or ``None`` (td584381 S1d). Scoped to the
+    newest attempt (review round 1): older handoffs are never consulted
+    — an earlier attempt's ``moot:`` cannot be read as this attempt's —
+    and ``since`` (the newest attempt job's ``created_at``) rejects a
+    ``handoff:`` older than it. The session's verdict survives on the
+    todo when the job's event text never carried it — a JSON-log
+    adapter parses the session's result out of the raw log, so the log
+    tail alone can miss it."""
+    newest = next(
+        (
+            c
+            for c in _comments(store, todo_id)
+            if str(c.text).strip().lower().startswith("handoff:")
+        ),
+        None,
+    )
+    if newest is None:
+        return None
+    created = getattr(newest, "created_at", None)
+    # Fail closed (review round 2): with a ``since`` in hand a handoff
+    # whose ``created_at`` cannot be read is NOT this attempt's — an
+    # unprovable scope is no scope.
+    if since is not None and (not isinstance(created, datetime) or created < since):
+        return None
+    text = str(newest.text).strip()
+    return _verdict_line(text[len("handoff:") :])
+
+
 #: Options of the ask a node parked at :data:`LAND_AGAIN_CAP` infra-red
 #: lands gets (gr570187): the default retry ladder cannot help — nothing
 #: on the diff failed.
@@ -2230,6 +2493,12 @@ def _mint_ask(
             # human (or S1d) acts on the why, not just the what
             # (td584381 S1a F4).
             vline = _verdict_line(_job_event_text(store, newest.id))
+            if vline is None:
+                # The log tail missed it (a JSON-log adapter parses the
+                # result out of the raw log) — the posted ``handoff:``
+                # comment still carries it (td584381 S1d); scoped to the
+                # newest attempt's handoff.
+                vline = _handoff_verdict(store, n.id, since=newest.created_at)
             if vline is not None:
                 body += f" The session left no commit; its verdict: {vline}."
     with store.tx() as conn:
@@ -2257,6 +2526,71 @@ def _mint_ask(
         )
         store.add_link(
             src_ref_id=n.id, dst_ref_id=ref.id, relation="blocked-by", conn=conn
+        )
+    return int(ref.id)
+
+
+def _mint_stamp_ask(store: Any, n: _Node, gid: int, sha: str, err: str) -> int:
+    """The ONE ask a persistently failing verified-moot gripe stamp
+    files on the plan root (td584381 S1d review round 2):
+    ``_notify_gripe`` raised :data:`_MOOT_STAMP_ASK_AFTER` ticks in a
+    row, so the retry becomes a human call — a silent ``res.notes``
+    loop would page nobody. ``err`` is the exception TYPE only (the
+    message may carry internals). Insert shape of :func:`_mint_ask`;
+    the ``blocked-by`` lands on the ROOT — ``_Plan.open_asks`` then
+    dedupes the ask and :func:`_step_moot` reads the park off it."""
+    context = (
+        f"moot verified but the gripe stamp fails: {err} "
+        f"(moot td{n.id}, plan td{n.root}, gripe gr{gid}, sha {sha})"
+    )
+    meta: dict[str, Any] = {
+        "ask": {
+            "kind": "ruling",
+            "options": list(_MOOT_STAMP_ASK_OPTIONS),
+            "blocks": f"td{n.root}",
+            "context": context[:_ASK_CONTEXT_CAP],
+        }
+    }
+    check_ask_meta(meta)
+    title = (
+        f"plan td{n.root}: verified moot td{n.id} cannot stamp gr{gid} — "
+        "retry or drop the plan?"
+    )
+    body = (
+        f"moot verified but the gripe stamp fails: {err}. The tick "
+        f"verified the `moot:` claim of td{n.id} (sha {sha}) and closed "
+        f"its chain won't-do, but resolving the plan's gripe gr{gid} on "
+        f"that sha raised {_MOOT_STAMP_ASK_AFTER} ticks running — plan "
+        f"td{n.root} stays open and the stamp is not retried while this "
+        "ask is open. Answer and close this todo to re-arm the stamp "
+        f"retry (or clear td{n.id}'s meta.{MOOT_STAMP_KEY} to retry at "
+        f"once); pick 'won't do' by closing td{n.root} STATUS:won't-do."
+    )
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=title,
+            meta=meta,
+            parent_id=n.root,
+            conn=conn,
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        for value in ("ask-user", "showstopper", f"plan:{n.root}"):
+            store.add_tag(ref.id, Tag.open(value), set_by="system", conn=conn)
+        store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
+            conn=conn,
+        )
+        store.add_link(
+            src_ref_id=n.root, dst_ref_id=ref.id, relation="blocked-by", conn=conn
         )
     return int(ref.id)
 
@@ -2502,6 +2836,12 @@ def _rescue_node(
         f"({attempts} attempts; rungs tried: {rungs_tried or 'unrecorded'})"
     )
     verdict = _verdict_line(text)
+    if verdict is None:
+        # The log tail missed it — the posted ``handoff:`` comment still
+        # carries the verdict (td584381 S1d); the log tail keeps
+        # precedence when it has one, and only the newest attempt's
+        # ``handoff:`` counts (``last`` is that attempt's job).
+        verdict = _handoff_verdict(w.store, n.id, since=last.created_at)
     if verdict is not None:
         # The session's own read on a no-commit exit — what a human or
         # the diagnose task acts on (td584381 S1a F4).

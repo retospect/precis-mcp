@@ -1812,6 +1812,15 @@ def _rearm_node(
         res.notes.append(f"td{n.id}: would re-arm from td{task_id}")
         return
     ended = [j for j in plan.jobs(n) if j.status in pd._JOB_ENDED]
+    # The ``_step_rearm`` rule (gr586688, td584381 S1d): a succeeded
+    # ``land_slice`` as the newest ended job means the slice already
+    # landed — flooring the todo on its own land would hold it open for
+    # a duplicate build of landed work.
+    landed = bool(
+        ended
+        and ended[-1].status == "succeeded"
+        and ended[-1].meta.get("job_type") == "land_slice"
+    )
     evidence = _newest_comment(store, n.id, "rescue:")
     branch, head = _branch_of(plan, n, evidence)
     stamp: dict[str, Any] = {
@@ -1824,7 +1833,7 @@ def _rearm_node(
         "rearmed_ask_at": _iso(now),
         "rearmed_answer": "rescue: REARM",
     }
-    if ended:
+    if ended and not landed:
         stamp["rearmed_after_job"] = ended[-1].id
     at = f" at {head}" if head else ""
     resume = (

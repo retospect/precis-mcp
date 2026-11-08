@@ -415,6 +415,26 @@ def test_rearm_after_infra_red_land_mints_a_builder_not_a_reland(
     assert any(f"td{task}: would dispatch run_slice" in note for note in pres.notes)
 
 
+def test_rearm_after_a_succeeded_land_stamps_no_floor(store: Store) -> None:
+    """gr586688's rule in the rescue pass (td584381 S1d): the newest
+    ended job being a succeeded ``land_slice`` means the slice already
+    landed — flooring the todo on its own land would hold it open for a
+    duplicate build of landed work, so no ``rearmed_after_job``."""
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, status="succeeded")
+    _job(store, task, job_type="land_slice", status="succeeded")
+    fr.enter_rescue(store, task, "builder", _ev())
+    diag = _minted_diagnose(store, task, root)
+    _job(store, diag, status="succeeded")
+    _comment(store, diag, "rescue: REARM — rebuild on the corrected brief")
+
+    res = fr.run_rescue_pass(store, NOW + timedelta(minutes=1))
+
+    assert res.rearmed == [task]
+    assert "rearmed_after_job" not in _meta(store, task)
+
+
 # ── ASK outcomes ───────────────────────────────────────────────────
 
 
@@ -441,7 +461,8 @@ def test_nofix_files_one_ask_blocking_the_node(store: Store) -> None:
     assert "denied path" in body
     assert "rescue: builder" in body
     assert f"slice/{task}" in body and "abc1234" in body
-    # the tag stays: clearing it is the human's step after the ask
+    # the tag stays for now: the tick's ``_step_rearm`` clears it on the
+    # answered ask (td584381 S1a F1) — the rescue pass never clears it
     assert _rescue_tags(store, task) == ["rescue:builder"]
     assert _meta(store, task)["rescue"]["n"] == 1
     assert _meta(store, task)["rescue"]["ask"] == f"td{ask}"
@@ -539,7 +560,8 @@ def test_engine_class_asks_without_a_diagnose_task(store: Store, cls: str) -> No
 
 def test_ask_is_not_repeated_after_it_is_answered(store: Store) -> None:
     """A node still tagged after its ask was answered is NOT asked again;
-    clearing ``rescue:<cls>`` stays the human's step."""
+    clearing ``rescue:<cls>`` is the tick's ``_step_rearm`` step on the
+    answered ask (td584381 S1a F1), never the rescue pass's."""
     root = _root(store)
     task = _rescued(store, root)
     diag = _minted_diagnose(store, task, root)

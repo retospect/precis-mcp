@@ -60,8 +60,20 @@ that holds the lane's credentials with ``params.target_node``):
   no land — when the node's work is a document, not a branch
   (:func:`_no_commit_kind`: ``task_class`` off ``code``, or a
   ``_NO_COMMIT_ROLES`` generate role; gr570534): the todo closes done
-  with no attempt burned, as a ``no-op:``/``moot:``/``validated:``
-  first-line verdict does on a code node. Otherwise (non-zero exit, a
+  with no attempt burned, as a ``no-op:``/``validated:`` first-line
+  verdict does on a code node. A code node's ``moot:`` claim — first
+  line or anywhere in the result — must VERIFY before it may close
+  (:func:`_verified_moot`, td584381 S1d): after a best-effort ``git
+  fetch origin main`` it names a sha ``git merge-base --is-ancestor``
+  confirms on ``origin/main`` AND whose own commit message (``git show
+  -s --format=%B``) names the plan's gripe — its ``gr<N>`` or a
+  ``td<M>`` of the plan's chain — as a whole token; a line naming a
+  different ``gr<N>`` is rejected, and every ``tests/…​.py`` the plan
+  gripe's text names must exist on main.
+  Verified, the todo closes done tagged ``verdict:moot`` and the job
+  carries ``meta.moot_verified = {sha, line}`` so the tick resolves the
+  plan's gripe on that sha exactly as a land does; unverified, the
+  no-commit exit is the failure below. Otherwise (non-zero exit, a
   deny-path hit, a code node with no commit to land) it ends ``failed``
   with the log tail and releases the lease; a deny hit on a
   :data:`precis.plans.lanes.HUMAN_ONLY_PATHS` glob also stamps
@@ -185,6 +197,12 @@ HUMAN_ONLY_KEY = "human_only_hit"
 #: the tick sends the node straight to rescue. Restated in
 #: ``plan_dispatch`` (the same one-way rule).
 NO_COMMIT_KEY = "no_commit"
+
+#: Job-meta record ``poll`` stamps on a code task whose no-commit
+#: ``moot:`` line it could VERIFY (``{"sha", "line"}``; :func:`_verified_moot`,
+#: td584381 S1d): the tick resolves the plan's gripe on that sha exactly
+#: as a land does. Restated in ``plan_dispatch`` (the same one-way rule).
+MOOT_VERIFIED_KEY = "moot_verified"
 
 #: Lane-wait parks before the wait is given up (~6 h at
 #: :data:`LANE_FULL_BACKOFF` each). Lane waits count under
@@ -1147,9 +1165,11 @@ def render_brief(
         "Nothing to commit on purpose? Say so as the FIRST line of your final "
         "message: `validated: <why>` when the check you were asked for passed, "
         "`no-op: <why>` when there is nothing to change and the plan should go "
-        "on, `moot: <why>` when the plan's reason is gone (already fixed, "
-        "closed). The todo then closes done. Any other commit-less exit counts "
-        "as a failed attempt and is retried.",
+        "on, `moot: gr<N> already fixed by <sha>` when the plan's reason is "
+        "gone — `<sha>` the commit on origin/main that fixed it, whose own "
+        "message names the gripe; a bare `moot: <why>` is not accepted for a "
+        "code build (it goes to rescue). The todo then closes done. Any other "
+        "commit-less exit counts as a failed attempt and is retried.",
         "",
         "Your final message is posted on the todo as the `handoff:` comment the "
         "next session starts from: what you committed, what is left, what you "
@@ -2398,6 +2418,143 @@ def tests_ran(text: str | None) -> bool:
     return last is not None and last.group(1).lower() == "ran"
 
 
+#: A ``moot:`` line anywhere in the session's result (the ``handoff:``
+#: comment's source text — the clean source; a JSON-log adapter already
+#: parsed it out, so a ``moot:`` inside the raw log's JSON strings never
+#: reaches here, td584381 S1d). Position-free: unlike
+#: :func:`generator_verdict` the line need not be first.
+_MOOT_LINE_RE = re.compile(r"^\s*moot\s*:\s*(.*?)\s*$", re.IGNORECASE)
+#: A sha candidate in the moot why (7–40 lowercase hex, whole token).
+_MOOT_SHA_RE = re.compile(r"(?<![0-9A-Za-z])([0-9a-f]{7,40})(?![0-9A-Za-z])")
+#: The gripe a moot line names (``gr<N>``); its text may name test files.
+_MOOT_GRIPE_RE = re.compile(r"\bgr(\d+)\b", re.IGNORECASE)
+#: A test-file path a gripe's text can name (``tests/….py``).
+_MOOT_TEST_RE = re.compile(r"\btests/[\w./-]+\.py\b")
+
+
+def _moot_line(result: str | None) -> str | None:
+    """The first ``moot:`` line in the session's result, stripped."""
+    for ln in (result or "").splitlines():
+        if _MOOT_LINE_RE.match(ln):
+            return ln.strip()
+    return None
+
+
+def _plan_root(store: Any, todo_id: int) -> int | None:
+    """The ``plan:<id>`` open tag on the todo — its plan root — or ``None``."""
+    for t in store.tags_for(todo_id):
+        value = str(t.value)
+        if value.startswith("plan:") and value[5:].isdigit():
+            return int(value[5:])
+    return None
+
+
+def _plan_chain_ids(store: Any, root: int, todo_id: int) -> set[int]:
+    """The ``td`` ids a verified-moot commit message may name (td584381
+    S1d review): the moot node itself, its plan root and every todo under
+    the root — the factory's commit subjects carry ``(td<build>)``."""
+    ids = {int(todo_id), int(root)}
+    frontier = [int(root)]
+    while frontier:
+        parent = frontier.pop()
+        for r in store.recent_refs(["todo"], parent_id=parent, limit=1000):
+            rid = int(r.id)
+            if rid not in ids:
+                ids.add(rid)
+                frontier.append(rid)
+    return ids
+
+
+def _verified_moot(
+    store: Any, tree: Path, result: str | None, todo_id: int
+) -> dict[str, str] | None:
+    """``{"sha", "line"}`` when the result's ``moot:`` claim checks out on
+    the worker host (td584381 S1d), else ``None``.
+
+    Verified means: after a best-effort ``git fetch origin main`` (a
+    failure, a timeout or an ``OSError`` only means the check runs on
+    whatever ref exists) the line names a sha that ``git merge-base
+    --is-ancestor`` confirms on ``origin/main`` — AND that sha's own
+    commit message (``git show -s --format=%B``) names the plan's gripe
+    as a whole token: the ``gr<N>`` ``land_slice._plan_gripe`` resolves
+    for the root, or a ``td<M>`` of its chain (the moot node, the root,
+    any node under it — :func:`_plan_chain_ids`). Every sha-shaped token
+    in the line is tried; the first satisfying both wins. A line naming
+    a ``gr<N>`` different from the plan's gripe is rejected outright;
+    one naming none verifies only through the message. When the plan
+    gripe's text names test files every ``tests/….py`` must still exist
+    on main (``git cat-file -e origin/main:<path>``) — an extra gate,
+    never a verification by itself. No line, no plan tag, no plan
+    gripe, a ``_plan_gripe`` raise, an unreadable gripe, no ancestor, a
+    ``cat-file`` timeout/OSError or a message naming neither handle
+    fails closed: the no-commit exit stays a failed attempt
+    (S1a's straight-to-rescue path, the moot line in the evidence).
+    """
+    line = _moot_line(result)
+    if line is None:
+        return None
+    root = _plan_root(store, todo_id)
+    if root is None:
+        return None
+    from precis.workers.job_types import land_slice as _land_slice
+
+    try:
+        gid = _land_slice._plan_gripe(store, f"plan:{root}")
+    except Exception:  # a DB fault on the plan gripe fails closed
+        log.warning("run_slice: plan gripe lookup for td%s raised", todo_id)
+        return None
+    if gid is None:
+        return None
+    named = _MOOT_GRIPE_RE.search(line)
+    if named is not None and int(named.group(1)) != gid:
+        # A moot pinned to a different gripe can never be this plan's.
+        return None
+    try:
+        paths = {
+            p
+            for c in store.chunks.list_chunks_for_ref(gid)
+            for p in _MOOT_TEST_RE.findall(str(c.text or ""))
+        }
+    except Exception:  # an unreadable gripe fails closed
+        log.warning("run_slice: moot gripe gr%s unreadable", gid)
+        return None
+    chain = sorted(_plan_chain_ids(store, root, todo_id))
+    handles = [
+        re.compile(rf"\bgr{gid}\b", re.IGNORECASE),
+        re.compile(rf"\btd(?:{'|'.join(str(i) for i in chain)})\b", re.IGNORECASE),
+    ]
+    try:
+        # Best-effort: the checks below run on whatever ``origin/main``
+        # ref the fetch leaves.
+        _git(["fetch", "origin", "main"], tree)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    sha = None
+    for cand in _MOOT_SHA_RE.findall(line):
+        try:
+            check = _git(["merge-base", "--is-ancestor", cand, "origin/main"], tree)
+            if check.returncode != 0:
+                continue
+            msg = _git(["show", "-s", "--format=%B", cand], tree)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if msg.returncode != 0:
+            continue
+        if any(h.search(msg.stdout) for h in handles):
+            sha = cand
+            break
+    if sha is None:
+        return None
+    for p in sorted(paths):
+        try:
+            if _git(["cat-file", "-e", f"origin/main:{p}"], tree).returncode != 0:
+                return None
+        except (OSError, subprocess.TimeoutExpired):
+            # A cat-file that cannot answer fails closed like a miss.
+            return None
+    return {"sha": sha, "line": line[:300]}
+
+
 def changed_paths(tree: Path) -> list[str] | None:
     """Repo-relative paths the slice touched: the branch diff from its
     merge base with ``origin/main`` (renames split into delete + add) plus
@@ -2769,33 +2926,44 @@ def poll(ctx: Any, handle: Any) -> bool:
     nothing = None
     if land and not commits:
         verdict = generator_verdict(result)
-        if verdict is None:
-            no_commit = _no_commit_kind(ctx.store, todo_id)
-            if no_commit is None:
-                nothing = (
-                    f"left no commit on {slice_branch(todo_id)} ahead of "
-                    "origin/main (nothing to land)"
-                )
-                summary.append(f"Land: {nothing}.")
-                # The durable mark the tick reads (td584381 S1a F4): one
-                # such attempt exhausts the cap — rescue, no ladder.
-                ctx.set_meta(**{NO_COMMIT_KEY: True})
-            else:
-                # gr570534 / jo570327: a brief-writer (or any node whose
-                # class or role delivers a document, not a branch) leaves
-                # no commit on purpose — that is its success, not a failed
-                # attempt to retry.
-                land = False
-                close_todo(ctx.store, todo_id, str(lane) if lane else None)
-                summary.append(
-                    f"Land: none — td{todo_id} is a {no_commit} node; a "
-                    "clean exit with no commit is its success. Closed done."
-                )
-        else:
+        no_commit = _no_commit_kind(ctx.store, todo_id)
+        # A ``moot:`` claim on a CODE task must verify before it may
+        # close the plan (td584381 S1d): first line or anywhere in the
+        # result — the ``handoff:`` comment's source text, already
+        # parsed out of a JSON log. A document node keeps today's trust.
+        verified = (
+            _verified_moot(ctx.store, tree, result, todo_id)
+            if no_commit is None
+            else None
+        )
+        if verified is not None:
+            # td584381 S1d (td584601): the session found the fix already
+            # on main and named a sha the worker could verify. That is a
+            # success with nothing to land: close done, tag for the tick
+            # to close the plan, and stamp the sha so the tick resolves
+            # the gripe exactly as a land does — no attempt, no ask, no
+            # rescue.
+            land = False
+            line_ = _WITHHELD_TEXT if unscrubbed else verified["line"]
+            close_todo(
+                ctx.store,
+                todo_id,
+                str(lane) if lane else None,
+                tags=(MOOT_TAG,),
+            )
+            ctx.set_meta(**{MOOT_VERIFIED_KEY: {"sha": verified["sha"], "line": line_}})
+            summary.append(
+                f"Land: none — verified moot (sha {verified['sha']} on "
+                f"origin/main; `{line_[:160]}`); td{todo_id} "
+                "closed and tagged for the tick to close the plan."
+            )
+        elif verdict is not None and (verdict[0] != "moot" or no_commit is not None):
             # gr561132: a task that checked and found nothing to change (a
             # validation that passed, a fix already on main) says so on its
             # first line; that is a success with nothing to land, not a
-            # failed attempt to retry and escalate.
+            # failed attempt to retry and escalate. On a CODE node a
+            # ``moot:`` is no verdict any more — it needs the verified sha
+            # above (S1d); a document node keeps its trust.
             kind_, why = verdict
             moot = kind_ == "moot"
             land = False
@@ -2811,6 +2979,26 @@ def poll(ctx: Any, handle: Any) -> bool:
                 f"td{todo_id} "
                 f"closed{' and tagged for the tick to close the plan' if moot else ''}."
             )
+        elif no_commit is not None:
+            # gr570534 / jo570327: a brief-writer (or any node whose
+            # class or role delivers a document, not a branch) leaves
+            # no commit on purpose — that is its success, not a failed
+            # attempt to retry.
+            land = False
+            close_todo(ctx.store, todo_id, str(lane) if lane else None)
+            summary.append(
+                f"Land: none — td{todo_id} is a {no_commit} node; a "
+                "clean exit with no commit is its success. Closed done."
+            )
+        else:
+            nothing = (
+                f"left no commit on {slice_branch(todo_id)} ahead of "
+                "origin/main (nothing to land)"
+            )
+            summary.append(f"Land: {nothing}.")
+            # The durable mark the tick reads (td584381 S1a F4): one
+            # such attempt exhausts the cap — rescue, no ladder.
+            ctx.set_meta(**{NO_COMMIT_KEY: True})
     elif (
         clean
         and not land
