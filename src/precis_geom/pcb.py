@@ -2046,6 +2046,7 @@ class _ObjectiveShares(dict[str, float]):
     ref: Any = "seed"
 
 
+@traced
 def objective(*, ref: Any = "seed", **shares: float) -> _ObjectiveShares:
     """A named share vector for ``pcb.local.topo_place(objective=...)``
     (pcb-intent-api §Weights, Decision 18): each kwarg is that term's
@@ -2064,7 +2065,10 @@ def objective(*, ref: Any = "seed", **shares: float) -> _ObjectiveShares:
     unrelated object) raises. At least one term is required, and an
     unknown term name raises rather than silently falling back to that
     term's class default (a typo'd kwarg would otherwise mean something
-    other than what was written)."""
+    other than what was written). ``@traced`` (pcb-intent-api
+    §Recording): this call is a frame like any other builder call, so
+    the shares and ``ref`` a script declared show up in the construction
+    trace next to the room/keepout/route_rule calls around it."""
     if ref != "seed" and not hasattr(ref, "ref_values"):
         raise PcbBuilderError(
             f'pcb.objective: ref={ref!r} not supported — pass "seed" or '

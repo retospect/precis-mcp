@@ -38,8 +38,12 @@ from precis.pcb.topoplace.writeback import lock_payload
 #: ``manifest.json``'s schema tag — bump on any shape change (the
 #: objective dict gained ``silkroom`` at /2, ``margin`` at /3,
 #: ``measures`` at /4, 2026-11-01; ``result.ref_values`` — the run's R_i
-#: vector, pcb-intent-api §Weights — at /5).
-RUN_SCHEMA = "precis.topo-run/5"
+#: vector, pcb-intent-api §Weights — at /5; ``result.ref`` — the
+#: objective's ``ref=`` argument, ``"seed"`` or the referenced run's
+#: ``out`` directory, pcb-intent-api §Recording — at /6; ``run_hash``
+#: and ``result.ref``'s ``{"run","job","label"}`` identity dict,
+#: pcb-intent-api round 2 — at /7).
+RUN_SCHEMA = "precis.topo-run/7"
 #: Kernel version stamped on every manifest: bump when the solver's
 #: output changes for equal inputs (the route job's ``CODE_VERSION``
 #: convention — a stored run must name the code that made it).
@@ -84,11 +88,37 @@ def footprint_shas(
     }
 
 
+def manifest_run_hash(m: Mapping[str, Any]) -> str:
+    """The run's content identity (pcb-intent-api §Recording, round 2):
+    sha256 over a canonical JSON of the manifest fields that determine
+    the run's result — ``seed``, ``effort``, ``objective``,
+    ``board_hash``, ``parts``, ``footprints`` and the ``result`` row
+    minus ``ref`` — truncated to 16 hex. Excluded by design: the
+    ``schema`` tag, the ``code_version``/``wheel_version`` provenance
+    stamps, ``run_hash`` itself and ``result.ref`` (what this run
+    referenced, not what it is); a manifest carries no timestamp, out
+    path, hostname, job handle or label for the hash to skip. Equal
+    inputs and results are therefore the same run on any machine —
+    which is exactly what ``result.ref.run`` needs when a later run
+    references this one. A ``/6`` manifest carries no ``run_hash`` key
+    but hashes by the same rule, so an old run identifies without a
+    rewrite."""
+    doc = {
+        k: m.get(k)
+        for k in ("seed", "effort", "objective", "board_hash", "parts", "footprints")
+    }
+    doc["result"] = {k: v for k, v in (m.get("result") or {}).items() if k != "ref"}
+    return hashlib.sha256(
+        json.dumps(doc, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+
+
 def manifest(
     d: TopoDesign,
     result: TopoPlaceResult,
     *,
     objective: ObjectiveShares,
+    objective_ref: str | Mapping[str, Any] = "seed",
     effort: int,
     board_hash: str,
     parts: list[dict[str, Any]],
@@ -97,8 +127,15 @@ def manifest(
     """The ``manifest.json`` payload. ``parts`` is the 0c provenance
     list (one ``{"refdes", "lcsc", "source"}`` row per design part, in
     ``d.parts`` order — the drill-down diff names poses through it);
-    ``footprints`` the footprint rows read, ``{refdes: content sha}``."""
-    return {
+    ``footprints`` the footprint rows read, ``{refdes: content sha}``.
+    ``objective_ref`` is what ``pcb.objective(ref=...)`` named for this
+    run's R_i (pcb-intent-api §Recording): ``"seed"`` (the default,
+    self-measured) or the referenced run's identity dict
+    ``{"run": <manifest_run_hash>, "job": "jo<N>" | None,
+    "label": <optional>}`` — machine-portable where /6's
+    ``"run:<out dir>"`` was not. ``run_hash`` is this manifest's own
+    identity, :func:`manifest_run_hash` over the payload below."""
+    payload = {
         "schema": RUN_SCHEMA,
         "code_version": CODE_VERSION,
         "wheel_version": precis_geom.__version__,
@@ -126,6 +163,16 @@ def manifest(
             # <run>``) carried over from an earlier run — what a later
             # ``ref=<this run>`` reuses for cross-run comparability.
             "ref_values": {k: float(v) for k, v in result.ref_values.items()},
+            # pcb-intent-api §Recording: what ``objective=pcb.objective(
+            # ref=...)`` named for ``ref_values`` above — "seed" (the
+            # default) or the referenced run's {"run","job","label"}
+            # identity dict (round 2's machine-portable run id; /6's
+            # "run:<out dir>" string still reads).
+            "ref": (
+                dict(objective_ref)
+                if isinstance(objective_ref, Mapping)
+                else str(objective_ref)
+            ),
             # post-pass reports (additive — readers ignore absent keys)
             "legalize": (
                 {
@@ -154,6 +201,8 @@ def manifest(
             ),
         },
     }
+    payload["run_hash"] = manifest_run_hash(payload)
+    return payload
 
 
 def pairs_json(d: TopoDesign, pm: PairMap) -> dict[str, Any]:
@@ -323,6 +372,7 @@ __all__ = [
     "footprint_shas",
     "manifest",
     "manifest_parts",
+    "manifest_run_hash",
     "pairs_json",
     "placement_svg",
     "run_files",

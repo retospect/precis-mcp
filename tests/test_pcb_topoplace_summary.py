@@ -181,6 +181,58 @@ def test_manifest_carries_the_run_provenance() -> None:
     assert files["placement.svg"].startswith("<svg")
 
 
+def test_manifest_run_hash_is_content_identity() -> None:
+    """``run_hash`` (td598638 round 2, pcb-intent-api §Recording): the
+    run's identity, 16 hex over the manifest fields that determine the
+    result — the inputs and the result row minus ``ref``. A manifest
+    differing only in the schema tag, the version stamps or what it
+    referenced hashes the same (no timestamp/path/hostname/label field
+    ever enters it); a changed result value is a different run."""
+    d, result, assignment, pm = _run()
+    m = _files(d, result, assignment, pm)["manifest.json"]
+    assert m["run_hash"] == runstore.manifest_run_hash(m)
+    assert len(m["run_hash"]) == 16
+
+    provenance_only = {
+        **m,
+        "schema": "precis.topo-run/999",
+        "code_version": m["code_version"] + 100,
+        "wheel_version": "0.0.0",
+        "result": {**m["result"], "ref": {"run": "0" * 16, "job": None}},
+    }
+    assert runstore.manifest_run_hash(provenance_only) == m["run_hash"]
+
+    changed = {
+        **m,
+        "result": {**m["result"], "crossings": m["result"]["crossings"] + 1},
+    }
+    assert runstore.manifest_run_hash(changed) != m["run_hash"]
+
+    changed_ref = {
+        **m,
+        "result": {
+            **m["result"],
+            "ref_values": {**m["result"]["ref_values"], "ratsnest": -1.0},
+        },
+    }
+    assert runstore.manifest_run_hash(changed_ref) != m["run_hash"]
+
+
+def test_manifest_run_hash_reads_a_6_manifest() -> None:
+    """The /6 reader: a manifest written before ``run_hash`` existed —
+    schema ``/6``, ``result.ref`` a bare string — still loads and
+    hashes by the same rule (``run_hash`` and ``ref`` never enter the
+    hash), so a /7 run can reference a /6 run without a rewrite."""
+    d, result, assignment, pm = _run()
+    m = _files(d, result, assignment, pm)["manifest.json"]
+    v6 = {
+        **{k: v for k, v in m.items() if k != "run_hash"},
+        "schema": "precis.topo-run/6",
+        "result": {**m["result"], "ref": "run:out/earlier"},
+    }
+    assert runstore.manifest_run_hash(v6) == m["run_hash"]
+
+
 def test_objective_terms_match_shares() -> None:
     """gr549293: the manifest's objective dict records EVERY
     ``ObjectiveShares`` term — the keys are the dataclass's own field

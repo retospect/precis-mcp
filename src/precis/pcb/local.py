@@ -49,12 +49,13 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import hashlib
 import json
 import logging
 import math
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1308,6 +1309,71 @@ def _objective_ref_values(objective: Any) -> dict[str, float] | None:
     return dict(ref_values)
 
 
+def _run_manifest(run: Any) -> dict[str, Any] | None:
+    """The run object's own manifest when it carries one — a
+    :class:`TopoRun` keeps the parsed ``files["manifest.json"]`` dict; a
+    rehydrated document (JSON text, or a ``.manifest`` attribute)
+    parses the same way. Both a ``/6`` and a ``/7`` manifest return
+    here — the reference path reads only keys it needs (``run_hash``,
+    ``job``, ``label``), and :func:`manifest_run_hash` hashes old and
+    new by the same rule. ``None`` for a manifest-less stand-in (a bare
+    ``ref_values`` result)."""
+    manifest = getattr(run, "manifest", None)
+    if manifest is None:
+        files = getattr(run, "files", None)
+        manifest = files.get("manifest.json") if isinstance(files, Mapping) else None
+    if isinstance(manifest, str):
+        try:
+            manifest = json.loads(manifest)
+        except ValueError as exc:
+            raise LocalError(
+                f"pcb.objective: the referenced run's manifest is not JSON ({exc})"
+            ) from exc
+    return dict(manifest) if isinstance(manifest, Mapping) else None
+
+
+def _objective_ref(objective: Any) -> Any:
+    """The manifest's ``result.ref`` (pcb-intent-api §Recording, round
+    2): ``"seed"`` for the default self-measured R_i, else the
+    referenced run's identity dict — ``run`` the referenced manifest's
+    content hash (its ``run_hash`` key, or
+    :func:`precis.pcb.topoplace.runstore.manifest_run_hash` computed
+    from a ``/6`` manifest that carries none; a manifest-less run
+    object identifies by a hash of its ``ref_values``, the only run
+    content it can name), ``job`` the ``jo<N>`` handle the run records
+    (``None`` for a DB-free laptop run), ``label`` its label when it
+    has one — cosmetic, never compared."""
+    from precis.pcb.topoplace import runstore as _runstore
+
+    ref = getattr(objective, "ref", "seed")
+    if ref == "seed":
+        return "seed"
+    manifest = _run_manifest(ref)
+    if manifest is not None:
+        run_hash = manifest.get("run_hash") or _runstore.manifest_run_hash(manifest)
+    else:
+        run_hash = hashlib.sha256(
+            json.dumps(
+                {"ref_values": getattr(ref, "ref_values", {})},
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+    job = getattr(ref, "job", None) or (manifest or {}).get("job")
+    label = (
+        getattr(ref, "label", None)
+        or getattr(ref, "slug", None)
+        or (manifest or {}).get("label")
+    )
+    out: dict[str, Any] = {
+        "run": str(run_hash),
+        "job": f"jo{job}" if isinstance(job, int) else (str(job) if job else None),
+    }
+    if label:
+        out["label"] = str(label)
+    return out
+
+
 @pcb_diag.op("topo_place")
 def topo_place(
     board: Any,
@@ -1447,6 +1513,7 @@ def topo_place(
             td,
             result,
             objective=obj,
+            objective_ref=_objective_ref(objective),
             effort=effort,
             board_hash=board_hash,
             parts=_runstore.manifest_parts(td, design.graph),
