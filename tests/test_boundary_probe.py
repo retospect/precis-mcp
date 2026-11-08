@@ -25,6 +25,11 @@ from precis.workers.job_types import run_slice
 REPO = Path(__file__).resolve().parent.parent
 PROBE_DIR = REPO / "scripts" / "probes"
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: the probes run scripts/ship and git in subprocesses",
+)
+
 
 def _load_probe(name: str) -> Any:
     """Import a ``scripts/probes/<name>.py`` file as a module."""
