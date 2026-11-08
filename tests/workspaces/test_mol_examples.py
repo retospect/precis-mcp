@@ -317,8 +317,9 @@ def test_decorated_prism_latency_cold_and_one_late_step_changed(
     assert late["first_miss"] == "relax#0" and late["rebuilt"] == 1, late
     assert late["hits"] >= 4, late
     # The hits/rebuilt asserts above carry the invariant; this wall bound only
-    # catches a gross regression. 4 s: local ~0.9 s, a CI runner hit 2.09 s.
-    assert late_s < 4.0, f"one-late-step re-run {late_s:.2f} s"
+    # catches a gross regression. 10 s: local ~0.9 s, a CI runner hit 2.09 s,
+    # a loaded gate runner 4.80 s (release/r258, 2026-11-08).
+    assert late_s < 10.0, f"one-late-step re-run {late_s:.2f} s"
     # an early edit rebuilds from the decoration down
     rec["every"] = 4
     (src / "recipe.json").write_text(json.dumps(rec), encoding="utf-8")
