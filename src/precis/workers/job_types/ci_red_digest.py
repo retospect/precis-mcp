@@ -23,7 +23,14 @@ pinned to that host the same way.
   ``ssh_node`` wires no ``ctx.defer``) and re-digests, so a brief always
   reflects a finished run; past :data:`_PARK_CAP` waits the job fails
   "still in progress" and the tick re-dispatches within the node's
-  retries.
+  retries. A digest whose ``== job ==`` sections are all blind (the
+  ``(no signal lines`` tail — the shared stream carrying only step
+  headers, gr587536) is never posted: the job first re-reads the failed
+  jobs' own logs through ``gh api actions/jobs/<id>/logs``
+  (:func:`_jobs_logs_rescue`) and appends the failure lines it finds;
+  still blind, it posts a ``blocked:`` note on each fix node and fails
+  instead, so no session is claimed on an empty brief — the tick's
+  retry cap files the ask.
 * Probe mode (``params.probe`` + ``params.run_id``; ``todo_id``
   optional): ``scripts/ci-failed <run_id> --probe`` prints one
   ``probe: status=<code> accepted-permissions=<value|absent> run=<id>``
@@ -39,9 +46,11 @@ while ``PRECIS_FACTORY=off``.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import subprocess
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -49,6 +58,7 @@ from typing import Any
 
 from precis.plans import release as _release
 from precis.utils.secret_scan import mask_secrets
+from precis.workers import factory_git as _factory_git
 from precis.workers.job_types import release_cut as _rc
 from precis.workers.job_types import run_slice as _rs
 
@@ -108,6 +118,25 @@ _RULE = (
     "Fix forward on main; never skip, xfail or loosen a test. Land the "
     "fix with scripts/ship --quick; the loop then re-cuts."
 )
+
+#: ci-failed's per-job section head, and the marker it prints when the
+#: (shared or per-job) log carried no signal lines — the step-header
+#: tail of gr587536. A digest whose every section is blind is an empty
+#: brief: it must never dispatch a fix session (td587533).
+_SECTION = re.compile(r"^== (.+?) ==$", re.MULTILINE)
+_BLIND = "(no signal lines"
+
+#: The jobs-logs rescue's failure-line matcher — the coordinator's list
+#: on gr587536: pytest's summary ids, the ``= N failed`` count and the
+#: E-lines of the failure detail, after ANSI/timestamp stripping.
+_JOBLOG_SIGNAL = re.compile(r"^(?:FAILED|ERROR|E\s)|=+ *\d+ failed\b")
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_TS = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z\s+")
+_UNKNOWN_FLAG = re.compile(r"unknown (flag|shorthand)", re.IGNORECASE)
+
+#: Per-job cap on the rescued failure lines; the brief's _DIGEST_CAP
+#: bounds the whole comment either way.
+_RESCUE_CAP = 40
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -192,6 +221,106 @@ def _fix_targets(store: Any, digest_id: int) -> list[int]:
             (digest_id,),
         ).fetchall()
     return [int(r[0]) for r in rows]
+
+
+def _sections(text: str) -> list[tuple[str, bool]]:
+    """``[(job name, blind)]`` per ``== job ==`` section of a ci-failed
+    digest — blind when the section carries the no-signal tail marker."""
+    marks = list(_SECTION.finditer(text))
+    out: list[tuple[str, bool]] = []
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        out.append((m.group(1), _BLIND in text[m.end() : end]))
+    return out
+
+
+def _gh(args: list[str]) -> subprocess.CompletedProcess[str] | None:
+    """One ``gh`` call in the checkout with the factory credential — the
+    same env :func:`release_cut.launch_script` hands ``ci-failed`` —
+    ``cwd`` the checkout so ``{owner}/{repo}`` resolves. ``None`` when
+    ``gh`` or the checkout is unavailable; callers read it as no read."""
+    try:
+        root = _rs.slice_root()
+    except RuntimeError:
+        return None
+    try:
+        return subprocess.run(
+            ["gh", *args],
+            cwd=root,
+            env=_factory_git.git_auth_env(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _gh_api(args: list[str]) -> subprocess.CompletedProcess[str] | None:
+    """``gh api --allow-escape-sequences <args>``, retried once without
+    the flag on a gh that predates it (scripts/ci-failed's ``_gh_api``)."""
+    cp = _gh(["api", "--allow-escape-sequences", *args])
+    if (
+        cp is not None
+        and cp.returncode != 0
+        and _UNKNOWN_FLAG.search(cp.stderr or cp.stdout)
+    ):
+        cp = _gh(["api", *args])
+    return cp
+
+
+def _jobs_logs_rescue(
+    run_id: str, blind: list[str]
+) -> tuple[list[tuple[str, list[str]]], str]:
+    """Re-read the blind jobs through ``actions/jobs/<id>/logs`` and pull
+    their pytest failure lines (gr587536, coordinator addition): the
+    shared ``--log-failed`` stream can carry only the step header where
+    the job's own log has the FAILED ids. ``[(name, deduped lines)]``
+    for the jobs that yielded any, and the reason when none did."""
+    cp = _gh_api([f"repos/{{owner}}/{{repo}}/actions/runs/{run_id}/jobs?per_page=100"])
+    if cp is None or cp.returncode != 0:
+        return [], "the run's jobs list is unreadable"
+    try:
+        jobs = json.loads(cp.stdout).get("jobs") or []
+    except ValueError:
+        return [], "the run's jobs list is unreadable"
+    ids = {
+        str(j.get("name") or ""): j.get("id")
+        for j in jobs
+        if isinstance(j, dict) and j.get("conclusion") == "failure"
+    }
+    out: list[tuple[str, list[str]]] = []
+    for name in blind:
+        jid = ids.get(name)
+        if jid is None:
+            continue
+        cp = _gh_api([f"repos/{{owner}}/{{repo}}/actions/jobs/{jid}/logs"])
+        if cp is None or cp.returncode != 0:
+            continue
+        lines: list[str] = []
+        for raw in cp.stdout.splitlines():
+            line = _TS.sub("", _ANSI.sub("", raw), count=1)
+            if _JOBLOG_SIGNAL.search(line) and line not in lines:
+                lines.append(line)
+        if lines:
+            out.append((name, lines[:_RESCUE_CAP]))
+    if not out:
+        return [], "the jobs-logs read found no FAILED lines either"
+    return out, ""
+
+
+def _blocked_posted(store: Any, todo_id: int, run_id: str) -> bool:
+    """``True`` when the fix node already carries this run's ``blocked:``
+    note — a retried digest must not spam one per attempt."""
+    for c in _rs._todo_chunks(store, todo_id):
+        if c.chunk_kind != "todo_comment":
+            continue
+        text = str(c.text or "").lstrip()
+        if text.startswith("blocked:") and f"run {run_id}" in text:
+            return True
+    return False
 
 
 def _refusal(store: Any, params: dict[str, Any]) -> str | None:
@@ -304,7 +433,42 @@ def _digest_done(
         )
         ctx.set_status("succeeded")
         return True
-    digest = mask_secrets(log_text or "")[:_DIGEST_CAP]
+    sections = _sections(log_text)
+    blind = [name for name, is_blind in sections if is_blind]
+    rescue = ""
+    if blind:
+        rescued, why = _jobs_logs_rescue(run_id, blind)
+        if rescued:
+            parts = [
+                "jobs-logs read (gh api actions/jobs/<id>/logs — the "
+                "shared log carried only the step headers):"
+            ]
+            for name, lines in rescued:
+                parts.append(f"== {name} ==")
+                parts.extend(f"  {line}" for line in lines)
+            rescue = "\n" + "\n".join(parts)
+        elif len(blind) == len(sections):
+            # A fully blind digest is an empty brief: no fix session is
+            # dispatched on it (gr587536 — td587533 was claimed on one).
+            # The fix nodes get the blocked: note; the job fails so the
+            # plan tick retries, then files the ask.
+            note = (
+                f"blocked: release {rn} is red at {sha9} (run {run_id}) "
+                "but its logs carry no failure lines the digest can read "
+                f"— {why}. No fix session is dispatched on an empty "
+                "brief; the digest job failed so the plan tick retries, "
+                "then files the ask."
+            )
+            for tid in targets:
+                if not _blocked_posted(ctx.store, tid, run_id):
+                    _rs._append_comment(ctx.store, tid, note)
+            ctx.append_chunk("job_summary", f"{NAME}: {note}")
+            ctx.record_failure(
+                f"{NAME}: run {run_id} digest is blind ({why}); no brief "
+                "posted — blocked: notes on the fix nodes"
+            )
+            return True
+    digest = mask_secrets((log_text or "") + rescue)[:_DIGEST_CAP]
     text = "\n".join(
         [
             f"brief: release {rn} is red at {sha9} (range {rng}), "

@@ -2074,6 +2074,162 @@ def test_digest_dispatch_is_pinned_to_the_cut_host(store: Store) -> None:
     assert _jobs_under(store, fix_id) == []  # still blocked by the digest
 
 
+def _todo_comments(store: Store, todo_id: int) -> list[str]:
+    return [
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(todo_id)
+        if c.chunk_kind == "todo_comment"
+    ]
+
+
+def _gh_stub_responses(jobs: list[dict[str, Any]], logs: dict[str, str]) -> Any:
+    """A ``crd._gh`` fake: the run's jobs list on the runs endpoint, the
+    per-job log text on each ``actions/jobs/<id>/logs`` read."""
+
+    def fake(args: list[str]) -> Any:
+        endpoint = args[-1]
+        if "/actions/runs/" in endpoint:
+            return SimpleNamespace(
+                returncode=0, stdout=json.dumps({"jobs": jobs}), stderr=""
+            )
+        for jid, text in logs.items():
+            if f"/actions/jobs/{jid}/logs" in endpoint:
+                return SimpleNamespace(returncode=0, stdout=text, stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    return fake
+
+
+def test_digest_blind_sections_are_rescued_through_the_job_log(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr587536 (coordinator addition): the shared stream carried only
+    step headers, so the digest is blind; the job itself re-reads the
+    failed jobs' logs and posts the FAILED lines it finds — never a
+    header-only brief."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    monkeypatch.setattr(
+        crd,
+        "_gh",
+        _gh_stub_responses(
+            [{"name": "gate-fast (3.13, 1)", "id": 555, "conclusion": "failure"}],
+            {
+                "555": (
+                    "\x1b[36m+ pytest -q\x1b[0m\n"
+                    "FAILED tests/x.py::t - assert 1 == 2\n"
+                    "= 1 failed, 9 passed in 3.2s =\n"
+                )
+            },
+        ),
+    )
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    assert ctx.failures == []
+    _exit(
+        checkout,
+        0,
+        "== gate-fast (3.13, 1) ==\n"
+        "  (no signal lines — last 2 of 2 lines)\n"
+        "  next: if the job log has FAILED lines, re-read it via gh api\n"
+        "  Run pytest\n",
+    )
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    comments = _todo_comments(store, fix_id)
+    assert len(comments) == 1
+    text = comments[0]
+    assert text.startswith("brief:")
+    assert "jobs-logs read" in text
+    assert "FAILED tests/x.py::t - assert 1 == 2" in text
+    assert "1 failed, 9 passed in 3.2s" in text
+
+
+def test_digest_still_blind_after_the_rescue_blocks_the_fix(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No FAILED lines anywhere — even in the job logs: the fix node is
+    never dispatched on an empty brief. It gets one ``blocked:`` note
+    per run (a retried digest does not double-post) and the job fails so
+    the tick retries, then files the ask."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    monkeypatch.setattr(
+        crd,
+        "_gh",
+        _gh_stub_responses(
+            [{"name": "gate-fast (3.13, 1)", "id": 555, "conclusion": "failure"}],
+            {"555": "+ pytest -q\nenv:\n"},
+        ),
+    )
+    blind = (
+        "== gate-fast (3.13, 1) ==\n"
+        "  (no signal lines — last 1 of 1 lines)\n"
+        "  Run pytest\n"
+    )
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    _exit(checkout, 0, blind)
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status is None
+    assert "digest is blind" in ctx.failures[0]
+    assert _status(store, fix_id) == "open"  # not dispatched, not closed
+    comments = _todo_comments(store, fix_id)
+    assert len(comments) == 1
+    assert comments[0].startswith("blocked:")
+    assert "run 31" in comments[0]
+    assert "empty brief" in comments[0]
+
+    # A retried digest on the same run posts no second blocked: note.
+    ctx2 = Ctx(store, {"todo_id": digest_id})
+    handle2 = crd.submit(ctx2, None)
+    _exit(checkout, 0, blind)
+    assert crd.poll(ctx2, handle2) is True
+    assert "digest is blind" in ctx2.failures[0]
+    assert _todo_comments(store, fix_id) == comments
+
+
+def test_digest_partly_blind_posts_the_signal_it_has(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One shard's FAILED lines plus another's step-header tail is not
+    'a blind digest': the rescue still runs for the blind section and
+    the brief posts what it has."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    monkeypatch.setattr(
+        crd,
+        "_gh",
+        _gh_stub_responses(
+            [{"name": "gate-fast (3.13, 2)", "id": 556, "conclusion": "failure"}],
+            {"556": "+ pytest -q\n"},
+        ),
+    )
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    _exit(
+        checkout,
+        0,
+        "== gate-fast (3.13, 1) ==\n"
+        "  FAILED tests/a.py::t1 - boom\n"
+        "== gate-fast (3.13, 2) ==\n"
+        "  (no signal lines — last 1 of 1 lines)\n"
+        "  Run pytest\n",
+    )
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    comments = _todo_comments(store, fix_id)
+    assert len(comments) == 1
+    assert comments[0].startswith("brief:")
+    assert "FAILED tests/a.py::t1 - boom" in comments[0]
+
+
 # ── release_confirm (td573432) ────────────────────────────────────
 
 

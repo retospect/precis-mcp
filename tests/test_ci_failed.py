@@ -504,3 +504,81 @@ def test_log_failed_in_progress_refusal_falls_back_to_per_job(tmp_path: Path) ->
     calls = Path(env["_argv_file"]).read_text(encoding="utf-8")
     assert "--log-failed" in calls  # attempted first, then the per-job path
     assert "/actions/jobs/333/logs" in calls
+
+
+_COMPLETED_BLIND_RUN = {
+    "status": "completed",
+    "conclusion": "failure",
+    "jobs": [
+        {
+            "name": "gate-fast (3.13, 1)",
+            "databaseId": 555,
+            "status": "completed",
+            "conclusion": "failure",
+        }
+    ],
+}
+
+
+def test_blind_shared_log_is_backfilled_from_the_job_log(tmp_path: Path) -> None:
+    """gr587536: the shared ``--log-failed`` stream can carry only the
+    step header for a failed shard — the digest re-reads the job's own
+    log through the jobs-logs endpoint and finds the pytest failure
+    lines (FAILED ids, the ``= N failed`` count, the E-lines) after
+    stripping the log's escape sequences."""
+    env = _api_dir(
+        tmp_path,
+        {
+            "555": (
+                f"{TS} \x1b[36m+ pytest -q\x1b[0m\n"
+                f"{TS} E       assert [] == ['GROQ_API_KEY']\n"
+                f"{TS} \x1b[31mFAILED\x1b[0m tests/x.py::t - assert [] == ['GROQ_API_KEY']\n"
+                f"{TS} = \x1b[31m1 failed\x1b[0m, 9 passed in 3.2s =\n"
+            ),
+        },
+    )
+    (tmp_path / "ghstate").write_text(
+        f"gate-fast (3.13, 1)\tRun pytest\t{TS} + pytest -q\n"
+        f"gate-fast (3.13, 1)\tRun pytest\t{TS} env:\n"
+        f"gate-fast (3.13, 1)\tRun pytest\t{TS}   GROQ_API_KEY: ***\n",
+        encoding="utf-8",
+    )
+    env["GH_STUB_RUN"] = json.dumps(_COMPLETED_BLIND_RUN)
+    cp = _run(["223355"], env)
+    assert cp.returncode == 0, cp.stderr
+    assert "== gate-fast (3.13, 1) ==" in cp.stdout
+    assert "FAILED tests/x.py::t - assert [] == ['GROQ_API_KEY']" in cp.stdout
+    assert "E       assert [] == ['GROQ_API_KEY']" in cp.stdout
+    assert "1 failed, 9 passed in 3.2s" in cp.stdout
+    assert "no signal lines" not in cp.stdout
+    assert "\x1b" not in cp.stdout
+    calls = Path(env["_argv_file"]).read_text(encoding="utf-8")
+    assert "--log-failed" in calls  # the shared stream came first
+    assert "/actions/jobs/555/logs" in calls  # then the job's own log
+
+
+def test_blind_shared_and_job_log_fall_back_to_the_tail(tmp_path: Path) -> None:
+    """A job log that is itself just the step header keeps the tail
+    fallback — now the fuller per-job log's tail — plus the jobs-logs
+    next-step line."""
+    env = _api_dir(
+        tmp_path,
+        {
+            "555": (
+                f"{TS} + pytest -q\n"
+                f"{TS} env:\n"
+                f"{TS}   GROQ_API_KEY: ***\n"
+                f"{TS} step aborted before pytest ran\n"
+            ),
+        },
+    )
+    (tmp_path / "ghstate").write_text(
+        f"gate-fast (3.13, 1)\tRun pytest\t{TS} + pytest -q\n",
+        encoding="utf-8",
+    )
+    env["GH_STUB_RUN"] = json.dumps(_COMPLETED_BLIND_RUN)
+    cp = _run(["223355"], env)
+    assert cp.returncode == 0, cp.stderr
+    assert "no signal lines" in cp.stdout
+    assert "actions/jobs/<id>/logs" in cp.stdout  # the next-step hint
+    assert "step aborted before pytest ran" in cp.stdout  # the job-log tail
