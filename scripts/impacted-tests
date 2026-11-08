@@ -286,6 +286,14 @@ PATH_MAP: list[tuple[str, list[str]]] = [
             "tests/test_skill_refs.py",
             "tests/test_skill_ingest.py",
             "tests/test_skill_plugin_group.py",
+            # the content gates — a skill edit that passes --checked must
+            # have met them (gr592564: a0bab063c landed 3 bytes over the
+            # size cap and reddened main and the r252 gate)
+            "tests/test_skill_size.py",
+            "tests/test_skill_prose.py",
+            "tests/test_skill_recipe_pins.py",
+            "tests/test_skill_vocabulary.py",
+            "tests/test_skill_gates.py",
         ],
     ),
     # hexfold examples: the snapshot tables enumerate hexfold/examples/*.hx.
