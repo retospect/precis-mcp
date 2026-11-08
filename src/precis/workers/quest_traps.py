@@ -3,8 +3,11 @@
 ``precis.quest.trap_check`` scores the quest loop against a sandbox quest
 whose candidate network carries three planted untrusted rows (a
 stale-engine measure, a swapped endpoint, an absurd barrier — one clean
-control): the frontier must exclude every planted row, and the tick must
-file an ask (``needs`` / ``reruns``) rather than propose on them. A
+control): the frontier must exclude every planted row, the rewritten
+dossier must not claim one as a normal result, and the tick must file a
+trap-related ask (a ``needs`` entry that lands its marker gripe —
+``reruns`` are recorded but cannot land under ``compute=False``) rather
+than propose on them. A
 hand-run score nobody watches is a score that rots; this makes it
 durable, fired from the weekly host-agnostic ``quest_traps`` scheduler
 cadence:
@@ -54,6 +57,7 @@ _HISTORY_KEYS = (
     "computed_at",
     "n_runs",
     "gate_ok",
+    "report_ok",
     "ask_hits",
     "trap_proposals",
     "passed",

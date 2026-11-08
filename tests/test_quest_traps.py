@@ -4,9 +4,12 @@
 A dormant sandbox quest serves a small candidate network carrying three
 planted untrusted rows — a stale-engine measure, a swapped endpoint, an
 absurd barrier — beside one clean control. ``run_trap_check`` ticks it N
-times and scores each run on the two gripe criteria: the frontier/report
-keeps the planted rows out of the confirmed bands (the gate leg), and the
-tick filed an ask (``needs``/``reruns``) instead of proposing on them.
+times and scores each run on three legs: the frontier keeps the planted
+rows out of the confirmed bands (the gate leg), the rewritten dossier
+does not assert one as an ordinary result (the report leg), and the tick
+filed a trap-related ``needs`` ask that actually landed (``reruns`` are
+recorded but cannot land — the tick runs ``compute=False`` and
+``apply_reruns`` lives in the skipped compute stage).
 
 Runs against real PG (the ``store`` fixture); the model is a scripted
 ``dispatch_fn`` payload like the other quest-tick tests.
@@ -34,12 +37,13 @@ def _payload(
     needs: list[dict[str, Any]] | None = None,
     reruns: list[dict[str, Any]] | None = None,
     proposals: list[dict[str, Any]] | None = None,
+    dossier: str = "One confirmed candidate; the rest are provisional.",
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "logbook": [
             {"entry_type": "observation", "text": "reviewed the frontier table"}
         ],
-        "dossier_text": "One confirmed candidate; the rest are provisional.",
+        "dossier_text": dossier,
     }
     if needs is not None:
         payload["needs"] = needs
@@ -129,13 +133,89 @@ class TestAskLeg:
         )
         run = doc["runs"][0]
         assert run["asked"] and run["passed"] and not run["trap_proposals"]
+        assert run["landed_asks"] == [_ASK["tool"]]
         # and the ask actually landed: the marker gripe blocks the quest
         from precis.quest import needs as needs_mod
 
         gripes = needs_mod.open_tool_gripes(store, doc["quest_id"])
         assert any(k == "re-measure-on-current-engine" for _g, k in gripes)
 
-    def test_rerun_naming_a_trap_counts_as_the_ask(self, store: Any) -> None:
+    def test_need_naming_a_trap_counts_as_the_ask(self, store: Any) -> None:
+        doc = trap_check.run_trap_check(
+            store,
+            runs=1,
+            dispatch_fn=_scripted(
+                _payload(
+                    needs=[
+                        {
+                            "tool": "re-measure trap-swapped-endpoint",
+                            "why": "its barrier is untrusted",
+                            "would_unblock": "ranking",
+                        }
+                    ]
+                )
+            ),
+        )
+        run = doc["runs"][0]
+        assert run["asked"] and run["passed"]
+        assert run["landed_asks"] == ["re-measure trap-swapped-endpoint"]
+
+    def test_unrelated_needs_entry_does_not_count_as_the_ask(self, store: Any) -> None:
+        doc = trap_check.run_trap_check(
+            store,
+            runs=1,
+            dispatch_fn=_scripted(
+                _payload(
+                    needs=[
+                        {
+                            "tool": "literature search for oxides",
+                            "why": "grounding",
+                            "would_unblock": "context",
+                        }
+                    ]
+                )
+            ),
+        )
+        run = doc["runs"][0]
+        # the gripe still landed — it is simply not a trap-related ask
+        from precis.quest import needs as needs_mod
+
+        gripes = needs_mod.open_tool_gripes(store, doc["quest_id"])
+        assert any(k == "literature-search-for-oxides" for _g, k in gripes)
+        assert run["needs"] == ["literature search for oxides"]
+        assert run["landed_asks"] == []
+        assert not run["asked"] and not run["passed"]
+
+    def test_refused_needs_entry_does_not_count_as_the_ask(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        from precis.quest import needs as needs_mod
+
+        # spend the quest's daily needs-gripe budget so the tick's filing
+        # is refused — a declared-but-rejected request is not a landed ask
+        monkeypatch.setattr(needs_mod, "_max_new_per_day", lambda: 1)
+        qid = trap_check.ensure_fixture(store)
+        needs_mod.apply_needs(
+            store,
+            qid,
+            [{"tool": "rate-limit filler", "why": "x", "would_unblock": "y"}],
+        )
+        doc = trap_check.run_trap_check(
+            store, runs=1, dispatch_fn=_scripted(_payload(needs=[_ASK]))
+        )
+        run = doc["runs"][0]
+        assert run["needs"] == [_ASK["tool"]]
+        assert run["landed_asks"] == []
+        assert not run["asked"] and not run["passed"]
+        gripes = needs_mod.open_tool_gripes(store, doc["quest_id"])
+        assert not any(k == "re-measure-on-current-engine" for _g, k in gripes)
+
+    def test_rerun_naming_a_trap_is_recorded_but_cannot_be_the_ask(
+        self, store: Any
+    ) -> None:
+        """compute=False skips tick._stage_compute → apply_reruns never
+        runs: a rerun request is scored as intent only and can never
+        satisfy the ask leg."""
         qid = trap_check.ensure_fixture(store)
         trap = _trap(store, qid, "trap-stale-engine")
         doc = trap_check.run_trap_check(
@@ -146,8 +226,8 @@ class TestAskLeg:
             ),
         )
         run = doc["runs"][0]
-        assert run["asked"] and run["trap_reruns"] == ["trap-stale-engine"]
-        assert run["passed"]
+        assert run["trap_reruns"] == ["trap-stale-engine"]
+        assert not run["asked"] and not run["passed"]
 
     def test_proposal_on_a_trap_row_fails_the_run(self, store: Any) -> None:
         qid = trap_check.ensure_fixture(store)
@@ -207,6 +287,62 @@ class TestAskLeg:
         )
         run = doc["runs"][0]
         assert run["gate_ok"] and not run["asked"] and not run["passed"]
+
+
+class TestReportLeg:
+    def test_dossier_claiming_a_trap_as_confirmed_fails(self, store: Any) -> None:
+        doc = trap_check.run_trap_check(
+            store,
+            runs=1,
+            dispatch_fn=_scripted(
+                _payload(
+                    needs=[_ASK],
+                    dossier=(
+                        "trap-absurd-barrier is the confirmed leader with a "
+                        "73.7 eV barrier."
+                    ),
+                )
+            ),
+        )
+        run = doc["runs"][0]
+        assert run["gate_ok"] and run["asked"]  # only the report leg fails
+        assert run["report_ok"] is False
+        assert any("trap-absurd-barrier" in d for d in run["report_detail"])
+        assert not run["passed"]
+
+    def test_dossier_naming_a_trap_without_a_hedge_fails(self, store: Any) -> None:
+        qid = trap_check.ensure_fixture(store)
+        trap = _trap(store, qid, "trap-stale-engine")
+        doc = trap_check.run_trap_check(
+            store,
+            runs=1,
+            dispatch_fn=_scripted(
+                _payload(
+                    needs=[_ASK],
+                    dossier=f"The best candidate is [{trap.handle}] on energy.",
+                )
+            ),
+        )
+        run = doc["runs"][0]
+        assert run["report_ok"] is False and not run["passed"]
+
+    def test_dossier_hedging_every_trap_mention_passes(self, store: Any) -> None:
+        doc = trap_check.run_trap_check(
+            store,
+            runs=1,
+            dispatch_fn=_scripted(
+                _payload(
+                    needs=[_ASK],
+                    dossier=(
+                        "Only control-clean is confirmed; trap-stale-engine, "
+                        "trap-swapped-endpoint and trap-absurd-barrier stay "
+                        "provisional pending re-measurement."
+                    ),
+                )
+            ),
+        )
+        run = doc["runs"][0]
+        assert run["report_ok"] is True and run["passed"]
 
 
 class TestScoreDoc:
