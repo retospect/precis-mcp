@@ -999,28 +999,42 @@ def _verdict_candidates(body: str) -> list[tuple[str, str]]:
     return out
 
 
-def _verdict_lines(body: str) -> list[str]:
-    """The verdict words of ``body``'s verdict LINES — a ``review:``
-    token at a line start, markdown ``- ``/``* ``/``**``/``#``/``> ``
-    markers allowed before it (the line-start half of
-    :func:`_token_boundary`). A token glued mid-line after sentence-final
-    punctuation is narration here, not a verdict line (gr574380)."""
-    out: list[str] = []
+def _verdict_lines(body: str) -> list[tuple[str, str]]:
+    """The ``(verdict word, rest)`` pairs of ``body``'s verdict LINES — a
+    ``review:`` token at a line start, markdown ``- ``/``* ``/``**``/``#``/
+    ``> `` markers allowed before it (the line-start half of
+    :func:`_token_boundary`). ``rest`` is that line's own text after the
+    word and its lead, to end of line. A token glued mid-line after
+    sentence-final punctuation is narration here, not a verdict line
+    (gr574380)."""
+    out: list[tuple[str, str]] = []
     for m in _VERDICT_LINE_RE.finditer(body):
         i = m.start() - 1
         while i >= 0 and body[i] in _MD_MARKERS:
             i -= 1
         if i < 0 or body[i] == "\n":
-            out.append(m.group(1).upper())
+            end = body.find("\n", m.end())
+            line = body[m.end() : end if end >= 0 else len(body)]
+            lead = _VERDICT_LEAD_RE.match(line)
+            out.append((m.group(1).upper(), line[lead.end() if lead else 0 :].strip()))
     return out
+
+
+#: Verdict strictness, strictest first: disagreeing verdict lines in one
+#: message resolve to the earliest of these present (coordinator ruling
+#: 2026-11-08, gr574380).
+_VERDICT_STRICTNESS = ("REVERT", "FIX", "LAND")
 
 
 def parse_verdict(text: str) -> tuple[str, str] | None:
     """``(LAND|FIX|REVERT, rest)`` of one ``review:`` line, or ``None``
     when it is not a verdict. ``FIX`` and ``REVERT`` need a non-empty rest
     (the list / the why); a ``handoff:`` prefix is stripped first. Verdict
-    lines that disagree are no verdict — a later ``review:`` line is
-    never swallowed into the rest (gr574380); lines that agree keep it.
+    lines that disagree resolve strictest-first (REVERT, then FIX, then
+    LAND): the winner's own line is the rest, with a note naming the other
+    verdict(s) present; a placeholder ``<…>`` line among them marks a
+    grammar echo and is no verdict — a later ``review:`` line is never swallowed into
+    the rest (gr574380); lines that agree keep it.
     When the text as a whole is no verdict line — a hand-off that glues
     the token to its narration (``… on landed main.review: FIX — …``,
     gr573564) — the fallback's surviving candidates rule: a FIX with
@@ -1030,8 +1044,17 @@ def parse_verdict(text: str) -> tuple[str, str] | None:
     if body.lower().startswith("handoff:"):
         body = body[len("handoff:") :].strip()
     body = _READONLY_MARKER_RE.sub("", body)
-    if len(set(_verdict_lines(body))) > 1:
-        return None
+    lines = _verdict_lines(body)
+    words = {word for word, _ in lines}
+    if len(words) > 1:
+        if any(r.startswith("<") for _, r in lines):
+            return None  # a grammar echo (``FIX — <list>``), not a verdict
+        winner = next(w for w in _VERDICT_STRICTNESS if w in words)
+        rest = next((r for w, r in lines if w == winner and r), "")
+        if not rest:
+            return None
+        others = "/".join(w for w in _VERDICT_STRICTNESS if w in words and w != winner)
+        return winner, f"{rest} (also a {others} line in the same message)"
     m = _VERDICT_RE.fullmatch(body)
     if m is not None:
         verdict, rest = m.group(1).upper(), m.group(2).strip()
@@ -1473,6 +1496,14 @@ def _is_ask_node(m: _Node) -> bool:
     )
 
 
+def _informational_ask(m: _Node) -> bool:
+    """An ask with ``meta.ask.blocks == "nothing"``: a record for the
+    human, not a gate — it never holds a phase or generator open
+    (gr589823). An ask that names a todo handle in ``blocks`` still does."""
+    ask = m.meta.get("ask")
+    return isinstance(ask, dict) and ask.get("blocks") == "nothing"
+
+
 def _step_moot(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
     """A node closed on a ``moot:`` verdict carries ``MOOT_TAG``
     (gr548813): the plan's reason is gone (its gripe already resolved,
@@ -1705,7 +1736,10 @@ def _step_phases(plan: _Plan, w: _Writer, res: PassResult) -> None:
         if kind in ("phase", "generator"):
             if kind == "generator" and plan.live_job(n):
                 continue
-            if kids and all(_closed(c) for c in kids):
+            # An informational ask (``blocks: "nothing"``) is a record, not
+            # a gate: it stays open for the human and does not hold the
+            # phase (gr589823).
+            if kids and all(_closed(c) or _informational_ask(c) for c in kids):
                 w.set_status(n, "done")
                 res.phases_closed += 1
                 res.notes.append(f"{kind} td{n.id} closed: every child is closed")
@@ -2997,7 +3031,9 @@ def _mint_loop_ask(store: Any, n: _Node, count: int, why: str) -> int:
     ``count`` automatic iterations ended red — named with the round, the
     head sha and the failing CI — and a further fix never starts by
     itself. Insert shape of :func:`_mint_ask`, minus the ``blocked-by``
-    link (the ask parks the whole pass, not one node)."""
+    link (the ask parks the whole pass, not one node). ``blocks`` names the
+    pass root, not ``"nothing"``: an informational ask no longer holds its
+    root open (gr589823), and this one must — the parking is the point."""
     rel = _release.release_of(store, n.id)
     rn = str((rel or {}).get("rN") or "?")
     sha12 = str((rel or {}).get("sha") or "")[: _release.LANDED_SHA_LEN] or "?"
@@ -3006,7 +3042,7 @@ def _mint_loop_ask(store: Any, n: _Node, count: int, why: str) -> int:
         "ask": {
             "kind": "ruling",
             "options": list(_LOOP_ASK_OPTIONS),
-            "blocks": "nothing",
+            "blocks": f"td{n.root}",
             "context": context,
         }
     }
@@ -3020,7 +3056,8 @@ def _mint_loop_ask(store: Any, n: _Node, count: int, why: str) -> int:
         f"and every one ended red ({why}). No further iteration is minted: "
         "two run unattended, a third is a human call (me573231). "
         "release_poll mints no fresh pass while this pass's root stays "
-        "open. Fix main by hand, then close this todo and the pass root "
+        "open, and this ask holds the root open until it is closed. Fix "
+        "main by hand, then close this todo and the pass root "
         "STATUS:won't-do — release_poll starts a fresh pass on the fixed "
         "main — or answer 'hand release with /go' to run the release "
         "yourself."

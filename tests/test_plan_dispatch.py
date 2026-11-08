@@ -2315,6 +2315,74 @@ def test_done_generator_without_open_children_is_left_closed(store: Store) -> No
     assert _status(store, mint.ids["gen"]) == "done"
 
 
+def _ask_child(store: Store, root: int, blocks: str) -> int:
+    """An open ask todo under ``root`` carrying ``meta.ask.blocks``."""
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="an ask",
+            meta={"ask": {"kind": "ruling", "options": ["ok"], "blocks": blocks}},
+            parent_id=root,
+            conn=conn,
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        store.add_tag(ref.id, Tag.open("ask-user"), set_by="system", conn=conn)
+    return int(ref.id)
+
+
+def test_informational_ask_does_not_hold_the_root_open(store: Store) -> None:
+    """gr589823: an open ``blocks: "nothing"`` ask is a record, not a
+    gate — the root closes over it and the ask stays open for the human.
+    With the root closed, release_poll no longer sees an open pass."""
+    from precis.workers.job_types import release_poll
+
+    mint = _one_task_plan(store)
+    task, root = mint.ids["task"], mint.root_id
+    store.add_tag(root, Tag.open("release-pass"), set_by="system")
+    _mark_done(store, task)
+    ask = _ask_child(store, root, "nothing")
+    assert release_poll._open_pass_id(store) == root
+    res = pd.run_pass(store)
+    assert res.phases_closed == 1
+    assert _status(store, root) == "done"
+    assert _status(store, ask) == "open"
+    assert release_poll._open_pass_id(store) is None
+
+
+def test_blocking_ask_still_holds_the_root_open(store: Store) -> None:
+    """gr589823: an ask whose ``blocks`` names a todo handle is a gate —
+    the root stays open while it is."""
+    mint = _one_task_plan(store)
+    task, root = mint.ids["task"], mint.root_id
+    _mark_done(store, task)
+    ask = _ask_child(store, root, f"td{task}")
+    res = pd.run_pass(store)
+    assert res.phases_closed == 0
+    assert _status(store, root) == "open"
+    assert _status(store, ask) == "open"
+
+
+def test_loop_ask_blocks_its_pass_root(store: Store) -> None:
+    """gr589823 / me573231: the exhausted release-fix ask parks the pass,
+    so it names the pass root in ``blocks`` (not ``"nothing"``) and the
+    root stays open while it is."""
+    mint = _one_task_plan(store)
+    task, root = mint.ids["task"], mint.root_id
+    _mark_done(store, task)
+    node: Any = SimpleNamespace(id=task, root=root)
+    ask = pd._mint_loop_ask(store, node, 2, "CI red")
+    assert _meta(store, ask)["ask"]["blocks"] == f"td{root}"
+    assert pd.run_pass(store).phases_closed == 0
+    assert _status(store, root) == "open"
+
+
 def _moot_plan(store: Store) -> T.PlanMint:
     """root -> childless triage generator -> after (blocked-by it)."""
 
@@ -3248,18 +3316,30 @@ def test_parse_verdict_marker_in_grammar_echo_is_not_a_verdict() -> None:
     assert pd.parse_verdict(echo) is None
 
 
-def test_parse_verdict_disagreeing_verdict_lines_is_no_verdict() -> None:
-    """gr574380: verdict lines that disagree are no verdict — the DOTALL
-    tail must not swallow a later ``review:`` line. Lines that all agree
-    keep the verdict."""
-    assert (
-        pd.parse_verdict("review: LAND\nreview: FIX — a.py misses the empty case")
-        is None
+def test_parse_verdict_disagreeing_verdict_lines_strictest_wins() -> None:
+    """gr574380: verdict lines that disagree resolve strictest-first
+    (REVERT > FIX > LAND), the winner's own line as the rest plus a note
+    naming the other verdict; the DOTALL tail never swallows a later
+    ``review:`` line. A winner with an empty rest is still a miss; lines
+    that all agree keep the verdict."""
+    for text in (
+        "review: LAND\nreview: FIX — real bug in a.py",
+        "review: FIX — real bug in a.py\nreview: LAND",
+    ):
+        got = pd.parse_verdict(text)
+        assert got is not None and got[0] == "FIX"
+        assert got[1] == "real bug in a.py (also a LAND line in the same message)"
+    got = pd.parse_verdict("review: LAND\nreview: REVERT — breaks the API")
+    assert got == (
+        "REVERT",
+        "breaks the API (also a LAND line in the same message)",
     )
-    assert (
-        pd.parse_verdict("review: FIX — a.py misses the empty case\nreview: LAND")
-        is None
-    )
+    got = pd.parse_verdict("review: FIX — a.py\nreview: REVERT — b.py\nreview: LAND")
+    assert got == ("REVERT", "b.py (also a FIX/LAND line in the same message)")
+    assert pd.parse_verdict("review: FIX\nreview: LAND") is None
+    # A placeholder line is a grammar echo, never a winner.
+    assert pd.parse_verdict("review: LAND\nreview: FIX — <list>") is None
+    assert pd.parse_verdict("review: LAND\nreview: REVERT") is None
     got = pd.parse_verdict("review: LAND\nreview: LAND")
     assert got is not None and got[0] == "LAND"
 
