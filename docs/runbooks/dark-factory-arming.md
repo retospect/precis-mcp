@@ -326,11 +326,15 @@ node's class), queued 30 min, build 5 h, land 6 h, review 45 min, gate
 judged by their own deadlines. `release-pass` plans are skipped (the
 `release-stuck` watchdog owns release stages).
 
-The `tick-silent` heartbeat rescues the recurring `plan_dispatch` todo
-once when no `plan_dispatch` job succeeded in 30 min. Known limit: the
-lane ticker (`--only plan_tick`) runs the pass with no job row, so a
-factory ticked only by the lane is not covered by the heartbeat — the
-paused tick todo is exactly that setup and is never judged.
+The `tick-silent` heartbeat reads the dispatcher's real liveness — the
+newest `plan_dispatch`/`plan_tick` pass heartbeat in `worker_logs` or a
+succeeded `plan_dispatch` job's STATUS stamp, whichever moved last —
+with the recurring todo's own signals as a second source: silent only
+when neither moved in 30 min, then it rescues the recurring todo once.
+A live lane ticker (`--only plan_tick`) counts by its pass heartbeat,
+so a factory ticked only by the lane (the prod setup — the recurring
+todo paused, no job rows) reads alive; with no live recurring todo and
+nothing moving there is nothing to tag, so the pass notes the gap.
 
 ### Diagnose and re-arm
 

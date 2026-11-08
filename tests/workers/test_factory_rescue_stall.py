@@ -159,6 +159,23 @@ def _tick_todo(store: Store, *, status: str = "open") -> int:
     return int(ref.id)
 
 
+def _pass_heartbeat(store: Store, *, age: timedelta = timedelta(0)) -> None:
+    """One ``worker_logs`` liveness row for the lane ticker's pass (the
+    runner's BatchResult digest shape, ``payload->>'handler' =
+    'plan_tick'``) stamped ``age`` ago — the service-pass half of the
+    tick's liveness (gr576145)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO worker_logs (ts, host, process, level, logger, "
+            "message, payload) VALUES (now() - %s::interval, 'h', 'p', "
+            "'INFO', 'precis.workers.runner', 'worker: batch', "
+            "jsonb_build_object('handler', 'plan_tick', 'claimed', 0, "
+            "'ok', 0, 'failed', 0))",
+            (f"{age.total_seconds()} seconds",),
+        )
+        conn.commit()
+
+
 def _comment(store: Store, ref_id: int, text: str) -> None:
     ords = [int(c.ord) for c in store.chunks.list_chunks_for_ref(ref_id)]
     store.chunks.insert_chunks(
@@ -726,6 +743,46 @@ def test_tick_silent_paused_tick_todo_is_not_judged(store: Store) -> None:
     assert res.rescued == []
     assert _rescue_tags(store, tid) == []
     assert any("tick" in n for n in res.notes)
+
+
+def test_tick_silent_live_service_pass_needs_no_recurring_todo(
+    store: Store,
+) -> None:
+    """The lane ticker (``--only plan_tick``) mints no job and keeps no
+    live recurring todo: its ``worker_logs`` pass heartbeat alone means
+    not silent — the prod setup the guard misread (gr576145)."""
+    _pass_heartbeat(store)
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=10))
+
+    assert res.rescued == []
+    assert not any("tick-silent" in n for n in res.notes)
+
+
+def test_tick_silent_live_service_pass_spares_the_stale_todo(
+    store: Store,
+) -> None:
+    """A stale recurring todo is not rescued while the pass heartbeats:
+    the dispatcher moved, so the todo's own silence is not a stall."""
+    tid = _tick_todo(store)
+    _pass_heartbeat(store)
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=10))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, tid) == []
+
+
+def test_tick_silent_when_neither_source_moves(store: Store) -> None:
+    """A stale pass heartbeat plus a stale recurring todo is silent —
+    rescues the todo once, same as a dead job-path tick."""
+    tid = _tick_todo(store)
+    _pass_heartbeat(store, age=timedelta(minutes=45))
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == [(tid, "tick-silent", "heartbeat")]
+    assert _rescue_tags(store, tid) == ["rescue:tick-silent"]
 
 
 # ── the job type ──────────────────────────────────────────────────

@@ -432,10 +432,18 @@ def enter_rescue(
 # ``release_poll::watch_stuck`` and are skipped. Read-only (kill switch
 # or ``dry_run``) it lists ``would_rescue`` and writes nothing.
 
-#: ``plan_dispatch`` is silent once its newest succeeded job's STATUS
-#: stamp is this old (its recurring todo is rescued once, class
-#: ``tick-silent``).
+#: ``plan_dispatch`` is silent once its newest tick signal — a
+#: ``worker_logs`` pass heartbeat or a succeeded job's STATUS stamp —
+#: is this old, with the recurring tick todo's own signals as the
+#: second source (the todo is rescued once, class ``tick-silent``).
 TICK_SILENT_AFTER = timedelta(minutes=30)
+
+#: ``worker_logs`` identities a dispatcher tick records liveness under:
+#: ``plan_tick`` is the lane ticker's pass (``cli/worker._plan_tick_pass``
+#: mints ``payload.handler='plan_tick'`` rows each cycle); ``plan_dispatch``
+#: covers the pass ever registering under the service's own name. Same
+#: name list ``health_checks.liveness_by_handler`` would answer for.
+_TICK_PASS_NAMES: tuple[str, ...] = ("plan_tick", "plan_dispatch")
 
 #: Per-stage stall deadlines. Release stages are deliberately absent —
 #: ``release_poll::watch_stuck`` owns them.
@@ -1055,11 +1063,19 @@ def _terminal_root_ids(conn: Any) -> list[int]:
 
 
 def _heartbeat(store: Store, now: datetime, res: StallResult) -> None:
-    """The tick-silent check: plan_dispatch's newest succeeded job by
-    STATUS stamp older than ``TICK_SILENT_AFTER`` (or none ever) rescues
-    the ONE recurring tick todo, once — its ``rescue:`` tag then exempts
-    it. A lane ticker (``--only plan_tick``) runs the pass with no job
-    row, so a factory ticked only by the lane is not covered."""
+    """The tick-silent check: plan_dispatch is silent once every source
+    that records a tick is older than ``TICK_SILENT_AFTER`` — the
+    newest ``worker_logs`` heartbeat of the service pass (the lane
+    ticker's ``plan_tick`` handler rows; the
+    ``health_checks.liveness_by_handler`` attribution shape, inlined so
+    a read error fails the pass instead of reading as silence), a
+    succeeded ``plan_dispatch`` job's STATUS stamp, and — the second
+    source — the recurring tick todo's own signals. Silent rescues the
+    ONE live recurring tick todo, once — its ``rescue:`` tag then
+    exempts it. A lane ticker (``--only plan_tick``) ticks with no job
+    row and a paused recurring todo in prod: its pass heartbeat alone
+    answers "alive" (gr576145); with no live todo and nothing moving
+    there is nothing to tag, so the check just notes the gap."""
     with store.pool.connection() as conn:
         row = conn.execute(
             """
@@ -1072,7 +1088,19 @@ def _heartbeat(store: Store, now: datetime, res: StallResult) -> None:
                AND t.namespace = 'STATUS' AND t.value = 'succeeded'
             """
         ).fetchone()
-        last_pass = row[0] if row else None
+        job_at = row[0] if row else None
+        row = conn.execute(
+            """
+            SELECT max(ts) FROM worker_logs
+             WHERE ((payload ? 'handler'
+                     AND payload->>'handler' = ANY(%s))
+                    OR pass = ANY(%s))
+               AND ts > now() - interval '7 days'
+            """,
+            (list(_TICK_PASS_NAMES), list(_TICK_PASS_NAMES)),
+        ).fetchone()
+        pass_at = row[0] if row else None
+        last_pass = max((t for t in (job_at, pass_at) if t is not None), default=None)
         if last_pass is not None and now - last_pass <= TICK_SILENT_AFTER:
             return
         rows = conn.execute(
@@ -1091,7 +1119,13 @@ def _heartbeat(store: Store, now: datetime, res: StallResult) -> None:
             (sorted(TERMINAL_TODO_STATUSES),),
         ).fetchall()
     if not rows:
-        res.notes.append("tick-silent: no live recurring plan_dispatch todo")
+        note = "tick-silent: no live recurring plan_dispatch todo"
+        note += (
+            f"; newest tick signal {_iso(last_pass)} is stale"
+            if last_pass is not None
+            else "; no pass heartbeat or succeeded job recorded"
+        )
+        res.notes.append(note)
         return
     tid = int(rows[0][0])
     held = _held_db(store, tid)
@@ -1110,21 +1144,28 @@ def _heartbeat(store: Store, now: datetime, res: StallResult) -> None:
         if ts is not None
     ]
     newest = max(ts for _lbl, ts in signals)
-    lines = [f"signals for td{tid}:"] + [f"- {lbl}: {_iso(ts)}" for lbl, ts in signals]
+    # Second source: a todo whose own signals moved inside the window is
+    # not silent — a todo armed under TICK_SILENT_AFTER ago had no
+    # window to pass even with no recorded pass.
+    if now - newest <= TICK_SILENT_AFTER:
+        return
+    lines = [
+        f"signals for td{tid}:",
+        f"- newest pass heartbeat: {_iso(pass_at) if pass_at else 'none in 7d'}",
+        f"- newest succeeded job: {_iso(job_at) if job_at else 'none'}",
+    ]
+    lines += [f"- {lbl}: {_iso(ts)}" for lbl, ts in signals]
     if last_pass is None:
-        # No pass ever ran: the tick todo's own signal is the clock — a
-        # todo armed under TICK_SILENT_AFTER ago had no window to pass.
-        if now - newest <= TICK_SILENT_AFTER:
-            return
         age_min = int((now - newest).total_seconds() // 60)
         step = (
-            f"plan_dispatch ran no pass in {age_min} min (no succeeded pass recorded)"
+            f"plan_dispatch ran no pass in {age_min} min "
+            "(no pass heartbeat or succeeded job recorded)"
         )
     else:
         age_min = int((now - last_pass).total_seconds() // 60)
         step = (
             f"plan_dispatch ran no pass in {age_min} min "
-            f"(newest succeeded pass at {_iso(last_pass)})"
+            f"(newest tick signal at {_iso(last_pass)})"
         )
     ev = RescueEvidence(
         step=step, log_tail="\n".join(lines), error_line="plan_dispatch has run no pass"
