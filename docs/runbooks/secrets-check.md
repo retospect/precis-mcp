@@ -48,6 +48,12 @@ script only keeps the clock — it never probes anything.
   scheduler cadence (~4h) mints that job; the page's "Check now" button
   mints it on demand (`origin='human'`). Infra-class secrets
   (`svc/infra/*`) are presence-checked only — never probed.
+- `KIMI_CODE_API_KEY` is probed since td573681 (the `kimi` group: a
+  Bearer GET on the membership endpoint's `/models`) — it was
+  presence-only until the kimi_tree lane made it a serving key. The kimi
+  key is probed only by the operator's "Check now" on /secrets (and
+  `precis secret check`), never by the periodic job while the lane is
+  disabled; storing or changing the key does not probe.
 
 ## Log
 

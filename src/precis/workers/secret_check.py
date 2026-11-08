@@ -134,7 +134,7 @@ def run_secret_check_pass(store: Store) -> BatchResult:
     rows not ``failed``, ``failed`` = rows that raised/refreshed an alert.
     Also refreshes the stored /secrets status — its probes are the same
     ones the status record needs, so persisting them is free."""
-    probe_results = asyncio.run(secret_status.run_checks(store))
+    probe_results = asyncio.run(secret_status.run_checks(store, scheduled=True))
     rows = asyncio.run(secret_status.weekly_report(store, results=probe_results))
     live = [_fingerprint(row.name) for row in rows if row.state != "ok"]
     n_failed = 0

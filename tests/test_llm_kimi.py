@@ -609,3 +609,100 @@ def test_offering_billing_validation() -> None:
     assert meta["offerings"][0]["billing"] == "subscription"
     with pytest.raises(BadInput):
         build_meta(model_id="m", offerings=[{"billing": "free"}])
+
+
+# ── shared base-URL resolver (td573681 round 1) ───────────────────────────
+
+
+def test_base_url_defaults_to_overseas(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No profile, no ``base_url`` on it — the documented overseas
+    endpoint stands."""
+    monkeypatch.delenv("PRECIS_LLM_PROFILES", raising=False)
+    assert kimi.base_url() == kimi.BASE_URL_OVERSEAS
+
+
+def test_base_url_reads_the_kimi_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The account's region decides: a ``base_url`` on the ``kimi``
+    profile wins (China's ``api.kimi.com`` host)."""
+    monkeypatch.setenv(
+        "PRECIS_LLM_PROFILES",
+        json.dumps({"kimi": {"base_url": kimi.BASE_URL_CHINA}}),
+    )
+    assert kimi.base_url() == kimi.BASE_URL_CHINA
+
+
+@pytest.mark.parametrize("override", ["", 123], ids=["empty", "non-str"])
+def test_base_url_unset_override_defaults(
+    monkeypatch: pytest.MonkeyPatch, override: Any
+) -> None:
+    """An empty or non-string ``base_url`` reads as unset — the overseas
+    default stands."""
+    monkeypatch.setenv(
+        "PRECIS_LLM_PROFILES", json.dumps({"kimi": {"base_url": override}})
+    )
+    assert kimi.base_url() == kimi.BASE_URL_OVERSEAS
+    assert kimi.base_url_refusal() is None
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        "https://api.kimi.com/coding/v1",
+        "https://API.KIMI.AI./coding/v1",
+        "https://api.kimi.ai:443/coding/v1",
+    ],
+    ids=["china", "case-trailing-dot", "port-443"],
+)
+def test_base_url_accepts_allowlisted_hosts(
+    monkeypatch: pytest.MonkeyPatch, override: str
+) -> None:
+    """The documented endpoints pass — case and a trailing dot normalise
+    before the exact-host check, and port 443 is the https default."""
+    monkeypatch.setenv(
+        "PRECIS_LLM_PROFILES", json.dumps({"kimi": {"base_url": override}})
+    )
+    assert kimi.base_url() == override
+    assert kimi.base_url_refusal() is None
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        "http://api.kimi.com/coding/v1",
+        "not-a-url",
+        "https://evil.example.invalid/v1",
+        "https://user:pass@api.kimi.ai/coding/v1",
+        "https://api.kimi.ai:8443/coding/v1",
+        "https://1.2.3.4/v1",
+        "https://api.kimi.ai.evil.example/v1",
+    ],
+    ids=[
+        "http",
+        "garbage",
+        "other-host",
+        "userinfo",
+        "port",
+        "ip-literal",
+        "suffix-host",
+    ],
+)
+def test_base_url_refuses_off_allowlist(
+    monkeypatch: pytest.MonkeyPatch, override: str
+) -> None:
+    """Review round 2 item 3: any host off the documented pair — and any
+    non-https, userinfo or non-443-port spelling — is refused, never a
+    silent fallback to overseas: the key is Bearer-sent to whatever this
+    resolves to, so a bad override is an exfiltration path. The refusal
+    names the setting and the allowlist."""
+    from precis.errors import BadInput
+
+    monkeypatch.setenv(
+        "PRECIS_LLM_PROFILES", json.dumps({"kimi": {"base_url": override}})
+    )
+    with pytest.raises(BadInput, match="llm.profiles"):
+        kimi.base_url()
+    refused = kimi.base_url_refusal()
+    assert refused is not None
+    assert "llm.profiles" in refused
+    assert "api.kimi.ai" in refused and "api.kimi.com" in refused
+    assert "pass" not in refused  # never the raw URL — userinfo could carry one

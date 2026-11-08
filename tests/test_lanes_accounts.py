@@ -23,14 +23,44 @@ from tests._lane_rows import SEED_LANES, use_lanes
 def test_derived_table_equals_the_seed(store: Any) -> None:
     """``load_lanes`` on the seeded accounts reproduces the seed
     table row for row, order included — behaviour is identical to the
-    code seed it replaces. The ``kimi``/``metered`` account rows stay
-    accounts: ``kimi_tree`` and ``api`` are not launchable, so they
-    derive to no lane. ``cost_class`` is compared apart (td573580
+    code seed it replaces. The ``kimi`` row derives a lane since
+    td573681 (``kimi_tree`` is launchable) but stays disabled; the
+    ``metered`` row stays an account — ``api`` is not launchable, so
+    it derives to no lane. ``cost_class`` is compared apart (td573580
     review): devin's seed promo expiry passes on 2026-12-01 and the
     literal pin would go red that day."""
     assert [replace(ln, cost_class="") for ln in lanes.load_lanes(store)] == [
         replace(ln, cost_class="") for ln in SEED_LANES
     ]
+
+
+def test_kimi_row_derives_a_disabled_lane(store: Any) -> None:
+    """td573681: the seeded kimi account row now derives a lane — it
+    keeps the row's ``enabled=False``, so the pick never offers it
+    until an operator lights the row."""
+    kimi = lanes.get_lane("kimi", store)
+    assert kimi is not None and kimi.adapter == "kimi_tree"
+    assert kimi.enabled is False
+    enabled = {ln.name for ln in lanes.load_lanes(store) if ln.enabled}
+    assert "kimi" not in enabled
+
+
+def test_an_enabled_kimi_lane_is_pickable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once the kimi row is lit, its lane picks like any other."""
+    kimi = Lane(
+        name="kimi",
+        adapter="kimi_tree",
+        credential_pool="subscription",
+        cap=1,
+        task_classes=frozenset({"code"}),
+        enabled=True,
+    )
+    use_lanes(monkeypatch, kimi)
+    (derived,) = lanes.load_lanes(object())
+    assert derived == kimi
+    assert lanes.pick_lane(object(), "code", lanes=(derived,), counts={}) == kimi
 
 
 def test_cost_class_from_the_account_row() -> None:

@@ -36,7 +36,12 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     from precis import secret_status
 
     try:
-        snap = secret_status.record_status(ctx.store)
+        # Anything but an explicit human mint ("Check now") is cadence
+        # work: scheduled probes leave lane-gated groups alone while the
+        # lane's account row is disabled (the kimi probe group).
+        snap = secret_status.record_status(
+            ctx.store, scheduled=str((ctx.meta or {}).get("origin") or "") != "human"
+        )
     except Exception as exc:  # a failed check must not wedge the lane
         # Type name only — str(exc)/traceback can echo a key-bearing URL.
         log.warning("secret_status job: record_status raised (%s)", type(exc).__name__)

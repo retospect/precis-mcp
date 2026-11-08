@@ -18,12 +18,26 @@ Observed with installed ``codex exec --json`` on 2026-11-04 (a trivial
 "type":"agent_message","text":"ADAPTER_OK"}}``, followed by
 ``turn.completed`` with usage. ``codex exec --json --help`` confirms
 ``-`` reads stdin and ``-o`` writes the last message.
+
+Kimi's headless mode (``kimi -p``, installed 2.3.3, verified 2026-11-07
+against a fake provider) takes the prompt in argv and emits JSONL on
+``--output-format stream-json`` — the last ``{"role":"assistant"}``
+line is the final message. The CLI authenticates through a synthesized
+provider env (``KIMI_MODEL_*``) the worker fills from the vault key at
+launch — the only env channel for it — and answers the folder-trust
+prompt with ``KIMI_CODE_TRUST_WORKSPACE=1``. It is exec'd directly,
+like devin, never through scripts/kimi-tree (its ``-p`` refusal is for
+interactive launches). No ``-m`` — it would rebind to the config's
+managed provider — and no UA or identity override: the subscription
+terms forbid tampering (td573681; autonomous lane sanctioned
+2026-11-07).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,6 +59,17 @@ def devin_bin() -> str:
     """``PRECIS_DEVIN_BIN`` or ``devin`` on PATH — resolved on the worker
     at submit, for argv and the preflight alike (gr570688)."""
     return os.environ.get("PRECIS_DEVIN_BIN") or "devin"
+
+
+def kimi_bin() -> str:
+    """``PRECIS_KIMI_BIN``, else ``kimi`` on ``PATH``, else the user
+    install at ``~/.kimi-code/bin/kimi`` — resolved on the worker at
+    submit, for argv and the preflight alike (mirrors scripts/kimi-tree)."""
+    return (
+        os.environ.get("PRECIS_KIMI_BIN")
+        or shutil.which("kimi")
+        or str(Path.home() / ".kimi-code" / "bin" / "kimi")
+    )
 
 
 def deny_settings(deny_paths: tuple[str, ...], tree: Path) -> str:
@@ -72,6 +97,42 @@ def parse_claude_result(log_text: str) -> tuple[str | None, bool]:
         if isinstance(obj, dict) and "result" in obj:
             return str(obj.get("result") or ""), bool(obj.get("is_error"))
     return None, True
+
+
+def parse_kimi_result(
+    log_text: str, *, exit_code: int | None = 0
+) -> tuple[str | None, bool]:
+    """The last ``{"role":"assistant"}`` stream-json line's content —
+    the session's final message. ``content`` is a string or a list of
+    text parts. No usable assistant line, or a non-zero exit, is an
+    error."""
+    text: str | None = None
+    for line in log_text.strip().splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict) or obj.get("role") != "assistant":
+            continue
+        content = obj.get("content")
+        if isinstance(content, str):
+            candidate = content
+        elif isinstance(content, list):
+            candidate = "".join(
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            )
+        else:
+            continue
+        if candidate.strip():
+            text = candidate
+    if text is None:
+        return None, True
+    return text, exit_code != 0
 
 
 @dataclass(frozen=True)
@@ -166,11 +227,23 @@ class Adapter:
             if model is not None:
                 argv += ["--model", model]
             return argv
+        if self.name == "kimi_tree":
+            # The prompt rides argv, not stdin (``kimi -p``). The model
+            # never becomes ``-m`` — it would rebind to the config's
+            # managed/OAuth provider; ``KIMI_MODEL_NAME`` carries it.
+            return [
+                kimi_bin(),
+                "-p",
+                brief_path.read_text(encoding="utf-8"),
+                "--output-format",
+                "stream-json",
+            ]
         raise KeyError(self.name)
 
     def stdin(self, brief_path: Path) -> Path | None:
-        """Devin reads its prompt file; the other CLIs consume stdin."""
-        return None if self.name == "devin_tree" else brief_path
+        """Devin and kimi carry the prompt in argv; the other CLIs
+        consume stdin."""
+        return None if self.name in ("devin_tree", "kimi_tree") else brief_path
 
     def parse_result(
         self, log_text: str, tree: Path, *, exit_code: int | None = 0
@@ -181,6 +254,8 @@ class Adapter:
             return parse_claude_result(log_text)
         if self.name == "devin_tree":
             return log_text.strip(), exit_code != 0
+        if self.name == "kimi_tree":
+            return parse_kimi_result(log_text, exit_code=exit_code)
         if self.name == "codex_exec":
             try:
                 message = (
@@ -212,6 +287,7 @@ ADAPTERS: dict[str, Adapter] = {
     "claude_p": Adapter("claude_p", mcp=True),
     "codex_exec": Adapter("codex_exec", mcp=False, read_mcp=True),
     "devin_tree": Adapter("devin_tree", mcp=False, read_mcp=True),
+    "kimi_tree": Adapter("kimi_tree", mcp=False),
 }
 
 

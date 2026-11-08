@@ -301,8 +301,9 @@ def _lane(name: str, cap: int, classes: set[str], enabled: bool = True) -> Lane:
 
 def test_seed_table_enabled_lanes() -> None:
     """td562568: devin and codex are on (free vendor lanes, table-first);
-    kimi and metered stay seeded accounts — an unlaunchable adapter
-    derives no lane."""
+    kimi derives a lane since td573681 but stays disabled until an
+    operator lights the row, and metered stays a seeded account — the
+    ``api`` adapter derives no lane."""
     enabled = [ln.name for ln in SEED_LANES if ln.enabled]
     assert enabled == ["devin", "codex", "claude-sub"]
     devin = seed_lane("devin")
@@ -325,7 +326,7 @@ def test_seed_table_enabled_lanes() -> None:
         "subscription",
         2,
     )
-    assert {ln.name for ln in SEED_LANES} == {"claude-sub", "codex", "devin"}
+    assert {ln.name for ln in SEED_LANES} == {"claude-sub", "codex", "devin", "kimi"}
 
 
 def test_claude_sub_accepts_models_and_defaults_to_sonnet() -> None:
@@ -569,8 +570,8 @@ def test_validate_submit_refuses_when_factory_off(
 def test_validate_submit_refusals(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
     off = Lane("off", "claude_p", "sub", 1, frozenset({ANY_CLASS}), enabled=False)
-    kimi = Lane("kimi", "api", "api", 1, frozenset({"code"}))
-    use_lanes(monkeypatch, *SEED_LANES, off, kimi)
+    metered = Lane("metered", "api", "metered", 1, frozenset({"code"}))
+    use_lanes(monkeypatch, *SEED_LANES, off, metered)
     store = _Store()
     store.add_todo(7, "open one")
     store.add_todo(8, "closed one", status="done")
@@ -586,9 +587,9 @@ def test_validate_submit_refusals(monkeypatch: pytest.MonkeyPatch) -> None:
     assert bad is not None and "positive integer" in bad
     unknown = run_slice.validate_submit(store, params={"todo_id": 7, "lane": "nope"})
     assert unknown is not None and "unknown lane" in unknown
-    # An enabled account on an unlaunchable adapter (kimi: api) derives
-    # to no lane, so a pin on it reads unknown, not disabled.
-    api = run_slice.validate_submit(store, params={"todo_id": 7, "lane": "kimi"})
+    # An enabled account on an unlaunchable adapter (metered: api)
+    # derives to no lane, so a pin on it reads unknown, not disabled.
+    api = run_slice.validate_submit(store, params={"todo_id": 7, "lane": "metered"})
     assert api is not None and "unknown lane" in api
     disabled = run_slice.validate_submit(store, params={"todo_id": 7, "lane": "off"})
     assert disabled is not None and "disabled" in disabled
@@ -3972,3 +3973,489 @@ def test_launch_none_stdin_uses_devnull(
     assert kwargs["env"]["RS_IN"] == os.devnull
     assert kwargs["stdin"] == subprocess.DEVNULL
     assert kwargs["start_new_session"] is True
+
+
+# ── kimi_tree (td573681) ────────────────────────────────────────────
+
+
+def _kimi_lane_submit(
+    store: _Store,
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    key: str | None = "sk-test-not-a-key",
+    bin_ok: bool = True,
+    **params: Any,
+) -> tuple[_Ctx, Any]:
+    """Submit td42 on a pinned kimi lane with the bin + key seams stubbed."""
+    from precis import secrets as _secrets
+
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL", raising=False)
+    monkeypatch.setenv("PRECIS_KIMI_BIN", "/vendor/kimi")
+    monkeypatch.setattr(run_slice, "_kimi_bin_ok", lambda _bin: bin_ok)
+    monkeypatch.setattr(_secrets, "get_secret", lambda _name, **kw: key)
+    use_lanes(monkeypatch, _vendor_lane("kimi", "kimi_tree"))
+    return _submit(store, seams, lane="kimi", **params)
+
+
+def test_kimi_submit_launches_headless_with_key_env(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td573681: a kimi slice is ``kimi -p <brief> --output-format
+    stream-json`` — the prompt rides argv (no stdin), and the session
+    authenticates through the synthesized ``KIMI_MODEL_*`` provider env
+    the worker fills from the vault key, never the user's Kimi config."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch)
+    assert handle is not None and ctx.failure is None
+    [(argv, kw)] = seams["launch"]
+    tree = Path(handle["worktree"])
+    brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
+    assert argv == [
+        "/vendor/kimi",
+        "-p",
+        brief,
+        "--output-format",
+        "stream-json",
+    ]
+    assert kw["stdin"] is None and kw["cwd"] == tree
+    env = kw["env"]
+    assert {name for name in env if name.startswith("KIMI_")} == {
+        "KIMI_MODEL_API_KEY",
+        "KIMI_MODEL_BASE_URL",
+        "KIMI_MODEL_NAME",
+        "KIMI_MODEL_PROVIDER_TYPE",
+        "KIMI_CODE_TRUST_WORKSPACE",
+    }
+    assert env["KIMI_MODEL_API_KEY"] == "sk-test-not-a-key"
+    assert env["KIMI_MODEL_BASE_URL"] == "https://api.kimi.ai/coding/v1"
+    assert env["KIMI_MODEL_NAME"] == "kimi-for-coding"
+    assert env["KIMI_MODEL_PROVIDER_TYPE"] == "kimi"
+    assert env["KIMI_CODE_TRUST_WORKSPACE"] == "1"
+    # No -m (it would rebind to the config's managed provider) and no
+    # User-Agent/identity/telemetry override — the CLI's defaults ship as
+    # shipped; the subscription terms forbid tampering.
+    assert "-m" not in argv
+    assert not any(
+        mark in name
+        for name in env
+        for mark in ("USER_AGENT", "CUSTOM_HEADERS", "IDENTITY", "TELEMETRY")
+    )
+    # The key rides the env only — never argv or a persisted job surface.
+    assert all("sk-test-not-a-key" not in s for s in _kimi_surfaces(ctx, handle, argv))
+    assert any("(mcp token: none)" in text for _kind, text in ctx.chunks)
+    assert ctx.meta_set["adapter"] == "kimi_tree"
+
+
+def test_kimi_submit_refuses_a_missing_key(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No KIMI_CODE_API_KEY anywhere is a host problem, not the task's:
+    the refusal names the fix and burns no attempt (mirrors the devin
+    preflight's shape, gr570688)."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch, key=None)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.failure is not None
+    assert "KIMI_CODE_API_KEY" in ctx.failure and "next:" in ctx.failure
+    assert seams["launch"] == []
+    assert store.tag_strings(42) == {"STATUS:open"}
+    assert ctx.meta_set["host_refusal"]["lane"] == "kimi"
+
+
+def test_kimi_submit_refuses_a_missing_binary(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same host-refusal shape when the kimi binary does not resolve."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch, bin_ok=False)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.failure is not None
+    assert "PRECIS_KIMI_BIN" in ctx.failure and "next:" in ctx.failure
+    assert seams["launch"] == []
+    assert store.tag_strings(42) == {"STATUS:open"}
+    assert ctx.meta_set["host_refusal"]["lane"] == "kimi"
+
+
+@pytest.mark.parametrize("model,want", [("k3", "k3"), (None, "kimi-for-coding")])
+def test_kimi_model_rides_kimi_model_name(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    model: str | None,
+    want: str,
+) -> None:
+    """The model id is exported as ``KIMI_MODEL_NAME`` — never ``-m``,
+    which would rebind the CLI to the config's managed/OAuth provider."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    params: dict[str, Any] = {"model": model} if model else {}
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch, **params)
+    assert handle is not None
+    [(argv, kw)] = seams["launch"]
+    assert kw["env"]["KIMI_MODEL_NAME"] == want
+    assert "-m" not in argv
+
+
+def test_kimi_parse_last_assistant_line(tmp_path: Path) -> None:
+    log = (
+        '{"role":"meta","type":"system.version"}\n'
+        '{"role":"assistant","content":"first"}\n'
+        '{"role":"meta","type":"session.resume_hint"}\n'
+        '{"role":"assistant","content":"last"}\n'
+    )
+    assert get_adapter("kimi_tree").parse_result(log, tmp_path) == ("last", False)
+
+
+def test_kimi_parse_tolerates_content_parts(tmp_path: Path) -> None:
+    log = (
+        '{"role":"assistant","content":'
+        '[{"type":"text","text":"a"},{"type":"text","text":"b"}]}\n'
+    )
+    assert get_adapter("kimi_tree").parse_result(log, tmp_path) == ("ab", False)
+
+
+@pytest.mark.parametrize("exit_code", [1, 3, None])
+def test_kimi_parse_bad_exit_is_error(tmp_path: Path, exit_code: int | None) -> None:
+    log = '{"role":"assistant","content":"done"}\n'
+    assert get_adapter("kimi_tree").parse_result(
+        log, tmp_path, exit_code=exit_code
+    ) == ("done", exit_code != 0)
+
+
+@pytest.mark.parametrize(
+    "log", ["", "noise\n", '{"role":"meta","type":"x"}', "{broken"]
+)
+def test_kimi_parse_missing_assistant_is_error(tmp_path: Path, log: str) -> None:
+    assert get_adapter("kimi_tree").parse_result(log, tmp_path) == (None, True)
+
+
+def _kimi_surfaces(
+    ctx: _Ctx, handle: Any, argv: list[str], store: _Store | None = None
+) -> list[str]:
+    """Every persisted/visible surface a key leak could land on: argv,
+    job chunks, the failure record, meta, the handle and the todo's
+    comments."""
+    surfaces = list(argv) + [text for _kind, text in ctx.chunks]
+    surfaces += [ctx.failure or "", str(ctx.meta_set), str(handle)]
+    if store is not None:
+        surfaces += store.comments(42)
+    return surfaces
+
+
+@pytest.mark.parametrize("source", ["env", "vault"])
+def test_kimi_key_reaches_child_env_from_env_or_vault(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    """The membership key resolves through ``get_secret``'s env-var
+    fallback or the vault — either way it lands on
+    ``KIMI_MODEL_API_KEY`` in the child env and on no stored surface."""
+    key = f"sk-src-{source}-key"
+    store = _Store()
+    store.add_todo(42, "Build")
+    if source == "env":
+        # No get_secret patch: the real resolver's env-first order is
+        # what the worker runs.
+        monkeypatch.setenv("KIMI_CODE_API_KEY", key)
+        monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL", raising=False)
+        monkeypatch.setenv("PRECIS_KIMI_BIN", "/vendor/kimi")
+        monkeypatch.setattr(run_slice, "_kimi_bin_ok", lambda _bin: True)
+        use_lanes(monkeypatch, _vendor_lane("kimi", "kimi_tree"))
+        ctx, handle = _submit(store, seams, lane="kimi")
+    else:
+        ctx, handle = _kimi_lane_submit(store, seams, monkeypatch, key=key)
+    assert handle is not None and ctx.failure is None
+    [(argv, kw)] = seams["launch"]
+    assert kw["env"]["KIMI_MODEL_API_KEY"] == key
+    assert all(key not in s for s in _kimi_surfaces(ctx, handle, argv))
+
+
+def test_kimi_launch_base_url_comes_from_the_profile(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The account's region decides the endpoint: a ``base_url`` on the
+    ``kimi`` profile reaches the child's ``KIMI_MODEL_BASE_URL``."""
+    monkeypatch.setenv(
+        "PRECIS_LLM_PROFILES",
+        json.dumps({"kimi": {"base_url": "https://api.kimi.com/coding/v1"}}),
+    )
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch)
+    assert handle is not None and ctx.failure is None
+    [(_argv, kw)] = seams["launch"]
+    assert kw["env"]["KIMI_MODEL_BASE_URL"] == "https://api.kimi.com/coding/v1"
+
+
+#: A key spelled so its plain, URL-encoded and JSON-escaped forms all
+#: differ — the scrub must catch all three.
+_LEAKY_KEY = 'sk-x+a/b="c'
+
+
+def test_kimi_poll_scrubs_key_from_failure_and_handoff(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session that echoes its key gets it scrubbed before the log tail
+    reaches the failure record and before the last assistant line posts
+    as the handoff — plain, URL-encoded and JSON-escaped forms alike."""
+    import urllib.parse
+
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch, key=_LEAKY_KEY)
+    assert handle is not None
+    escaped = json.dumps(_LEAKY_KEY)[1:-1]
+    encoded = urllib.parse.quote(_LEAKY_KEY, safe="")
+    log = (
+        '{"role":"meta","type":"system.version"}\n'
+        f'{{"role":"tool_result","content":"env says {escaped}"}}\n'
+        f"tool echoed {_LEAKY_KEY} and urlencoded {encoded}\n"
+        f'{{"role":"assistant","content":"handoff text with {escaped}"}}\n'
+    )
+    _finish(handle, 1, log)
+    pctx = _poll_ctx(store, ctx)
+
+    assert run_slice.poll(pctx, handle) is True
+
+    assert pctx.status == "failed"
+    assert pctx.failure is not None
+    assert "failed (exit 1)" in pctx.failure
+    assert "[redacted:KIMI_MODEL_API_KEY]" in pctx.failure
+    handoff = store.comments(42)[-1]
+    assert handoff.startswith("handoff: ")
+    assert "[redacted:KIMI_MODEL_API_KEY]" in handoff
+    surfaces = _kimi_surfaces(pctx, handle, [], store)
+    surfaces += [text for _kind, text in pctx.chunks]
+    for surface in surfaces:
+        for form in (_LEAKY_KEY, escaped, encoded):
+            assert form not in surface
+
+
+def test_kimi_poll_clean_exit_posts_a_scrubbed_handoff(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A successful stream-json run posts the last assistant line as the
+    handoff — key scrubbed the same way."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch, key=_LEAKY_KEY)
+    assert handle is not None
+    escaped = json.dumps(_LEAKY_KEY)[1:-1]
+    _finish(
+        handle,
+        0,
+        f'{{"role":"assistant","content":"done, key was {escaped}"}}\n',
+    )
+    pctx = _poll_ctx(store, ctx)
+
+    assert run_slice.poll(pctx, handle) is True
+
+    handoff = store.comments(42)[-1]
+    assert "[redacted:KIMI_MODEL_API_KEY]" in handoff
+    assert _LEAKY_KEY not in handoff
+
+
+def test_kimi_poll_unreadable_secret_stores_no_key_lines(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The key gone at poll: nothing is redacted (the value is unknown),
+    so the stored tail is truncated before the first line that names a
+    kimi env var — the one place a key value could sit."""
+    from precis import secrets as _secrets
+
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    monkeypatch.setattr(_secrets, "get_secret", lambda _name, **kw: None)
+    log = (
+        "plain earlier line\nKIMI_MODEL_API_KEY=sk-test-not-a-key spilled\nlater line\n"
+    )
+    _finish(handle, 1, log)
+    pctx = _poll_ctx(store, ctx)
+
+    assert run_slice.poll(pctx, handle) is True
+
+    assert pctx.status == "failed"
+    assert pctx.failure is not None
+    assert "sk-test-not-a-key" not in pctx.failure
+    assert "KIMI_MODEL_API_KEY" not in pctx.failure
+    assert "plain earlier line" in pctx.failure
+
+
+#: The comment a poll posts instead of the raw handoff when a key value
+#: the child may have carried could not be re-read (review round 2).
+_WITHHELD = (
+    "handoff withheld: credential unreadable at poll; log tail retained redacted"
+)
+
+
+def _assert_no_keys(pctx: _Ctx, handle: Any, store: _Store, *keys: str) -> None:
+    """Every persisted surface a key could land on is clean."""
+    surfaces = _kimi_surfaces(pctx, handle, [], store)
+    surfaces += [text for _kind, text in pctx.chunks]
+    for surface in surfaces:
+        for key in keys:
+            assert key not in surface
+
+
+def test_kimi_poll_unreadable_secret_withholds_the_handoff(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review round 2 item 1: the credential unreadable at poll — the
+    session's last message could carry a key the poll cannot name, so
+    the todo gets the withheld comment and the key lands on no stored
+    surface (failure record, comments, job summary, events)."""
+    from precis import secrets as _secrets
+
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    monkeypatch.setattr(_secrets, "get_secret", lambda _name, **kw: None)
+    key = "sk-leaked-in-handoff"
+    _finish(
+        handle,
+        1,
+        "plain earlier line\n"
+        f'{{"role":"assistant","content":"env says KIMI_MODEL_API_KEY={key}"}}\n',
+    )
+    pctx = _poll_ctx(store, ctx)
+
+    assert run_slice.poll(pctx, handle) is True
+
+    assert pctx.status == "failed"
+    assert store.comments(42) == [_WITHHELD]
+    assert pctx.failure is not None and "plain earlier line" in pctx.failure
+    _assert_no_keys(pctx, handle, store, key)
+
+
+def test_kimi_poll_unreadable_secret_withholds_a_clean_exit(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exit 0 changes nothing: the last assistant message still carries
+    session text, so the withheld comment stands on a succeeded run."""
+    from precis import secrets as _secrets
+
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    monkeypatch.setattr(_secrets, "get_secret", lambda _name, **kw: None)
+    seams["ahead"] = "abc1234 feat(slice): work"
+    key = "sk-leaked-clean-exit"
+    _finish(
+        handle,
+        0,
+        f'{{"role":"assistant","content":"KIMI_MODEL_API_KEY={key}"}}\n',
+    )
+    pctx = _poll_ctx(store, ctx)
+
+    assert run_slice.poll(pctx, handle) is True
+
+    assert pctx.status == "succeeded"
+    assert store.comments(42) == [_WITHHELD]
+    _assert_no_keys(pctx, handle, store, key)
+
+
+def test_kimi_poll_rotated_key_scrubs_both_values(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review round 2 item 2: a key rotated mid-run — the child env got
+    A, the vault answers B at poll. The submit-time value rides process
+    memory (never a stored surface), so the log naming either key is
+    scrubbed everywhere, and the memory is cleared when the poll ends."""
+    from precis import secrets as _secrets
+
+    key_a, key_b = "sk-first-secret", "sk-rotated-secret"
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch, key=key_a)
+    assert handle is not None
+    monkeypatch.setattr(_secrets, "get_secret", lambda _name, **kw: key_b)
+    _finish(
+        handle,
+        1,
+        f'{{"role":"assistant","content":"saw {key_a} then {key_b}"}}\n'
+        "later log noise\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+
+    assert run_slice.poll(pctx, handle) is True
+
+    handoff = store.comments(42)[-1]
+    assert handoff.startswith("handoff: ")
+    assert handoff.count("[redacted:KIMI_MODEL_API_KEY]") == 2
+    assert pctx.failure is not None and "later log noise" in pctx.failure
+    _assert_no_keys(pctx, handle, store, key_a, key_b)
+    assert run_slice._KIMI_SUBMIT_KEYS == {}
+
+
+def test_kimi_poll_lost_submit_value_withholds_and_drops(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The restart case of item 2: the in-memory submit value is gone,
+    so the unknown key A cannot be scrubbed — the stored tail drops the
+    env-naming lines and the handoff is withheld, as when the credential
+    is unreadable."""
+    from precis import secrets as _secrets
+
+    key_a, key_b = "sk-first-secret", "sk-rotated-secret"
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch, key=key_a)
+    assert handle is not None
+    run_slice._KIMI_SUBMIT_KEYS.clear()  # a worker restart loses the dict
+    monkeypatch.setattr(_secrets, "get_secret", lambda _name, **kw: key_b)
+    _finish(
+        handle,
+        1,
+        "plain earlier line\n"
+        f'{{"role":"assistant","content":"KIMI_MODEL_API_KEY={key_a}"}}\n',
+    )
+    pctx = _poll_ctx(store, ctx)
+
+    assert run_slice.poll(pctx, handle) is True
+
+    assert store.comments(42) == [_WITHHELD]
+    assert pctx.failure is not None
+    assert "plain earlier line" in pctx.failure
+    assert "KIMI_MODEL_API_KEY" not in pctx.failure
+    _assert_no_keys(pctx, handle, store, key_a, key_b)
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://evil.example.invalid/coding/v1",
+        "https://user:pass@api.kimi.ai/coding/v1",
+        "https://api.kimi.ai:8443/coding/v1",
+        "http://api.kimi.ai/coding/v1",
+        "https://1.2.3.4/coding/v1",
+        "https://api.kimi.ai.evil.example/coding/v1",
+    ],
+    ids=["other-host", "userinfo", "port", "http", "ip-literal", "suffix-host"],
+)
+def test_kimi_submit_refuses_a_base_url_off_the_allowlist(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, base_url: str
+) -> None:
+    """Review round 2 item 3: a profile ``base_url`` off the documented
+    Kimi Code hosts is a launch refusal — the key never leaves the
+    process for an unlisted host — and the refusal names the
+    ``llm.profiles`` ``kimi`` ``base_url`` setting and the allowlist."""
+    monkeypatch.setenv(
+        "PRECIS_LLM_PROFILES", json.dumps({"kimi": {"base_url": base_url}})
+    )
+    store = _Store()
+    store.add_todo(42, "Build")
+
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch)
+
+    assert handle is None and ctx.status == "failed"
+    assert seams["launch"] == []
+    assert "llm.profiles" in (ctx.failure or "")
+    assert "api.kimi.ai" in (ctx.failure or "")
+    assert ctx.meta_set["host_refusal"]["lane"] == "kimi"
+    assert "sk-test-not-a-key" not in str(ctx.meta_set)

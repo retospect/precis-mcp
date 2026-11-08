@@ -19,15 +19,19 @@ that holds the lane's credentials with ``params.target_node``):
   cuts worktree ``slice-td<id>`` on branch ``slice/<id>`` from
   ``origin/main`` under the checkout root (:func:`slice_root`), writes
   ``scratch/brief.md`` there and launches the lane's adapter (``claude_p``,
-  ``codex_exec`` or ``devin_tree``) detached. Claude's argv and MCP grant
-  are unchanged; the other vendors receive no precis MCP token. A
+  ``codex_exec``, ``devin_tree`` or ``kimi_tree``) detached. Claude's argv
+  and MCP grant are unchanged; the other vendors receive no precis MCP
+  token. A
   ``devin_tree`` launch is gated by :func:`_devin_preflight` (the binary
   resolves, ``devin auth status`` reports a login, and the checkout's
   ``.claude/worktrees`` is seeded into Devin's trusted workspaces —
   gr570688): a refusal fails the job in seconds with the next step —
   a host problem (:class:`_HostRefusal`), so the todo's lease goes back
   clean with no ``attempt:`` burned — rather than burning a session that
-  dies at spawn or stalls on the trust prompt. The refusal also stamps
+  dies at spawn or stalls on the trust prompt. A ``kimi_tree`` launch is
+  gated the same way (:func:`_kimi_preflight` + :func:`_kimi_launch_env`,
+  td573681): the binary resolves and the ``KIMI_CODE_API_KEY`` membership
+  key lands on the session env as a synthesized provider. The refusal also stamps
   ``meta.host_refusal`` on the failed job, backing the lane off
   :data:`precis.plans.lanes.HOST_REFUSAL_BACKOFF` in the pick, raising
   one deduped alert, and counting as no attempt at the retry cap
@@ -64,7 +68,13 @@ that holds the lane's credentials with ``params.target_node``):
   ``meta.human_only_hit`` on the job, so the tick asks for a human edit
   instead of retrying (td584381 S1a), and a code node that left no
   commit stamps ``meta.no_commit`` — one such attempt is the last, the
-  tick sends it straight to rescue. The
+  tick sends it straight to rescue. Log text is secret-scrubbed
+  before anything stores it (:func:`_child_env_secrets` +
+  :func:`_redact`) — a session that echoes its env key must not leak it
+  into the failure record or the handoff comment; a key value the poll
+  cannot name (the credential unreadable at poll, or the submit-time
+  value lost on a worker restart) drops the env-naming lines from the
+  tail and withholds the raw handoff for a fixed marker. The
   claim tag goes, the todo returns to ``STATUS:open`` and gains
   ``attempt:<n>``.
 * :func:`kill` SIGTERMs the session's process group. :func:`release`
@@ -107,8 +117,9 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -124,6 +135,7 @@ from precis.workers.job_types._slice_adapters import (
     deny_settings,
     devin_bin,
     get_adapter,
+    kimi_bin,
 )
 from precis.workers.job_types._slice_adapters import (
     parse_claude_result as parse_result,
@@ -426,7 +438,9 @@ def slice_env(
     under ``mcp=False`` a ``mcp_token`` still lands on
     ``PRECIS_MCP_TOKEN`` (beating an inherited one) while the Claude
     OAuth login stays popped, so the vendor's precis reads ride its own
-    bearer and its own account login."""
+    bearer and its own account login. The other named exception is
+    ``kimi_tree`` (td573681): :func:`_kimi_launch_env` adds the
+    synthesized provider env, key included, after this returns."""
     env = {k: os.environ[k] for k in ENV_ALLOWLIST if os.environ.get(k)}
     if mcp:
         from precis.utils.claude_oauth import ensure_oauth_token
@@ -1519,6 +1533,168 @@ def _devin_preflight(under: Path) -> None:
         )
 
 
+def _kimi_bin_ok(bin: str) -> bool:
+    """The kimi binary resolves — an explicit ``PRECIS_KIMI_BIN`` path is
+    an executable file; a bare name is on ``PATH`` (same rule as
+    :func:`_devin_bin_ok`, its own seam so tests patch each lane alone)."""
+    if os.sep in bin or (os.altsep and os.altsep in bin):
+        return os.path.isfile(bin) and os.access(bin, os.X_OK)
+    return shutil.which(bin) is not None
+
+
+def _kimi_preflight() -> None:
+    """Refuse a kimi slice launch the session could only die inside
+    (td573681): no binary. The membership key is checked in
+    :func:`_kimi_launch_env`; both are :class:`_HostRefusal` — host
+    problems, so the todo's lease goes back clean with no ``attempt:``
+    burned."""
+    binary = kimi_bin()
+    if not _kimi_bin_ok(binary):
+        raise _HostRefusal(
+            f"kimi preflight: binary {binary!r} is not executable or not on "
+            "PATH; next: install the Kimi Code CLI for the worker's user or "
+            "point PRECIS_KIMI_BIN at it"
+        )
+
+
+def _kimi_launch_env(model: str | None, *, store: Any) -> dict[str, str]:
+    """The ``KIMI_*`` env a ``kimi_tree`` session authenticates with
+    (td573681).
+
+    ``KIMI_MODEL_API_KEY``/``KIMI_MODEL_BASE_URL``/``KIMI_MODEL_NAME``/
+    ``KIMI_MODEL_PROVIDER_TYPE`` synthesize an in-memory provider — the
+    only env channel for the key — so the launch never edits the user's
+    Kimi config. The model id rides ``KIMI_MODEL_NAME`` (never ``-m``,
+    which would rebind to the config's managed/OAuth provider), and
+    ``KIMI_CODE_TRUST_WORKSPACE=1`` answers the folder-trust prompt a
+    headless session cannot. The base URL is :func:`kimi.base_url`'s —
+    the profile's ``base_url`` — so launch and probe hit the same host.
+    The key resolves from the worker's secret store; a miss is a
+    :class:`_HostRefusal`. Nothing else is set: no User-Agent, identity
+    or telemetry override — the CLI ships as shipped (the subscription
+    terms forbid tampering). Names verified against the installed 2.3.3
+    binary by the author only; confirm at the melchior preflight."""
+    from precis import secrets
+    from precis.errors import BadInput
+    from precis.utils.llm import kimi
+
+    try:
+        url = kimi.base_url()
+    except BadInput as exc:
+        # A profile base_url off the resolver's allowlist: a config/host
+        # problem — the key must never leave the process for an unlisted
+        # host, so the refusal precedes the vault read.
+        raise _HostRefusal(f"kimi launch refused: {exc}") from exc
+    key = secrets.get_secret(kimi.API_KEY_REF, store=store)
+    if not key:
+        raise _HostRefusal(
+            f"kimi preflight: {kimi.API_KEY_REF} is not set; next: store the "
+            "Kimi Code membership key for the worker's user (the /secrets "
+            "page entry) or export it in the worker's environment"
+        )
+    return {
+        "KIMI_MODEL_API_KEY": key,
+        "KIMI_MODEL_BASE_URL": url,
+        "KIMI_MODEL_NAME": model or kimi.MODELS[0],
+        "KIMI_MODEL_PROVIDER_TYPE": "kimi",
+        "KIMI_CODE_TRUST_WORKSPACE": "1",
+    }
+
+
+def _redact(text: str, secrets: Iterable[tuple[str, str]]) -> str:
+    """Replace every occurrence of each secret value with
+    ``[redacted:<NAME>]`` — the plain spelling plus its URL-encoded and
+    JSON-escaped forms, so a key a session echoed (or a stream-json
+    record embedded) never reaches a stored surface. Values shorter
+    than 8 chars are skipped: a short string's false-positive cost is
+    too high."""
+    for name, value in secrets:
+        if not value or len(value) < 8:
+            continue
+        forms = {
+            value,
+            json.dumps(value)[1:-1],
+            urllib.parse.quote(value, safe=""),
+        }
+        for form in sorted(forms, key=len, reverse=True):
+            if form:
+                text = text.replace(form, f"[redacted:{name}]")
+    return text
+
+
+#: The kimi key each in-flight job's child env actually received at
+#: submit, keyed by job ref id — process memory only, never the job meta,
+#: the handle or a log. The poll pops it (so the memory dies with the
+#: run) to scrub the submit-time value the vault no longer holds after a
+#: mid-run rotation; a worker restart loses it, in which case the poll
+#: treats that value like any unreadable secret — env-naming lines drop
+#: and the raw handoff is withheld.
+_KIMI_SUBMIT_KEYS: dict[int, str] = {}
+
+#: The comment a poll posts instead of the raw handoff when a key value
+#: the child may have carried could not be re-read (review round 2): the
+#: session's last message is session text, so it stays off the todo.
+#: Deliberately not a ``handoff:``-prefixed line — the next session's
+#: brief must not inherit it.
+_HANDOFF_WITHHELD = (
+    "handoff withheld: credential unreadable at poll; log tail retained redacted"
+)
+
+
+def _child_env_secrets(
+    adapter_name: str, store: Any, *, job: int | None = None
+) -> tuple[list[tuple[str, str]], bool]:
+    """``(name/value pairs to scrub, unscrubbed)`` — the secret values a
+    slice's child env carried, for the poll to redact from the log before
+    any stored surface sees it. Never taken from job meta or the handle.
+
+    ``unscrubbed`` marks a value the poll cannot name: the credential
+    unreadable at poll, or the submit-time value lost (worker restart —
+    :data:`_KIMI_SUBMIT_KEYS` is process memory). The stored tail then
+    drops the lines that could carry a key and the raw handoff is
+    withheld. ``kimi_tree`` is the only lane whose env holds a vault/env
+    credential (``KIMI_MODEL_API_KEY``); it scrubs BOTH the value
+    re-read at poll and the submit-time value a mid-run rotation would
+    otherwise leave visible. Other lanes authenticate by host login or
+    the minted MCP grant, which dies with its file at poll and is never
+    a ``get_secret`` name.
+    """
+    if adapter_name != "kimi_tree":
+        return [], False
+    from precis import secrets
+    from precis.utils.llm import kimi
+
+    submitted = _KIMI_SUBMIT_KEYS.pop(job, None) if job is not None else None
+    try:
+        current = secrets.get_secret(kimi.API_KEY_REF, store=store)
+    except Exception:
+        log.warning(
+            "run_slice: could not re-read %s for the log scrub",
+            kimi.API_KEY_REF,
+            exc_info=True,
+        )
+        current = None
+    values = {v for v in (current, submitted) if isinstance(v, str) and v}
+    pairs = [("KIMI_MODEL_API_KEY", v) for v in sorted(values)]
+    return pairs, not current or submitted is None
+
+
+#: Env-var names a stored line must not carry when the key behind them
+#: could not be re-read (a line naming the variable may hold its value).
+_KIMI_ENV_NAMES: tuple[str, ...] = ("KIMI_MODEL_", "KIMI_CODE_API_KEY")
+
+
+def _drop_secret_lines(text: str) -> str:
+    """The unreadable-secret fallback for the stored tail: keep only the
+    lines before the first that names a kimi env var."""
+    kept: list[str] = []
+    for line in text.splitlines():
+        if any(name in line for name in _KIMI_ENV_NAMES):
+            break
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
 def _mint_slice_token(
     ctx: Any,
     todo_id: int,
@@ -1989,6 +2165,16 @@ def submit(ctx: Any, spec: Any) -> Any:
             # The checkout's worktrees dir is the slice's parent; seed it
             # before launch or the session stalls on the trust prompt.
             _devin_preflight(tree.parent)
+        if adapter.name == "kimi_tree":
+            # Binary + the membership key it authenticates with — both
+            # host problems that burn no attempt.
+            _kimi_preflight()
+            env.update(_kimi_launch_env(model, store=store))
+            # The value the child actually got — process memory only, so
+            # the poll can still scrub it after a mid-run vault rotation.
+            job = getattr(ctx, "ref_id", None)
+            if isinstance(job, int) and not isinstance(job, bool):
+                _KIMI_SUBMIT_KEYS[job] = env["KIMI_MODEL_API_KEY"]
         if adapter.mcp:
             _preflight_mcp(tree, env.get("PRECIS_MCP_TOKEN"))
         pid = _launch(
@@ -2243,6 +2429,12 @@ def _deny_reason(
     )
 
 
+#: What the job summary shows where session text (a verdict's ``why``)
+#: would go when a key value could not be re-read — the text is withheld,
+#: never quoted.
+_WITHHELD_TEXT = "withheld: credential unreadable at poll"
+
+
 #: Failure classes that are the lane's window, not the task's verdict
 #: (gr565359): a Claude quota notice, a 429. The router's classifier
 #: (:mod:`precis.utils.llm.failure`) names them.
@@ -2435,6 +2627,19 @@ def poll(ctx: Any, handle: Any) -> bool:
         # Jobs submitted before adapters existed carry only the lane name.
         lane_obj = _lanes.get_lane(str(lane), ctx.store) if lane else None
         adapter_name = lane_obj.adapter if lane_obj else "claude_p"
+    # Scrub the child env's secrets before anything below stores log text
+    # (handoff comment, job summary, failure tail): a session that runs
+    # `env`/`printenv` puts its key in the log (td573681 review S1), and
+    # a key rotated mid-run leaves the submit-time value to catch (round
+    # 2). ``unscrubbed`` means a value the child may have carried could
+    # not be re-read — the stored tail then drops the lines that could
+    # carry it and the raw handoff is withheld, since it may quote the
+    # unnameable value.
+    pairs, unscrubbed = _child_env_secrets(
+        str(adapter_name), ctx.store, job=getattr(ctx, "ref_id", None)
+    )
+    if pairs:
+        log_text = _redact(log_text, pairs)
     try:
         adapter = get_adapter(str(adapter_name))
     except KeyError:
@@ -2465,6 +2670,21 @@ def poll(ctx: Any, handle: Any) -> bool:
     # Server-side deny check, before the handoff lands: independent of
     # whether the session honoured its deny rules (Bash writes included).
     denied, human_hits = _deny_reason(tree, _lanes.deny_paths_for(ctx.store))
+    # Deny paths and commit lines are session text too (the session names
+    # its files and writes its messages): the same scrub applies — redact
+    # the known values; when a value could not be re-read, the entries
+    # that could carry it drop.
+    if pairs:
+        denied = _redact(denied, pairs) if denied else denied
+        human_hits = [_redact(hit, pairs) for hit in human_hits]
+    if unscrubbed:
+        human_hits = [
+            hit
+            for hit in human_hits
+            if not any(name in hit for name in _KIMI_ENV_NAMES)
+        ]
+        if denied and any(name in denied for name in _KIMI_ENV_NAMES):
+            denied = "touched deny_write_paths (path withheld)"
     if human_hits:
         # The failed attempt's durable mark (td584381 S1a): the tick
         # reads it on the ended job and asks instead of retrying.
@@ -2473,7 +2693,15 @@ def poll(ctx: Any, handle: Any) -> bool:
     handoff = (result or "").strip()
     if denied:
         handoff = f"attempt FAILED, {denied}.\n\n{handoff}".strip()
-    if handoff:
+    if unscrubbed:
+        # The raw result may quote a key the poll cannot name — the todo
+        # gets the withheld comment instead of any session text (review
+        # round 2); the failure record keeps the line-dropped tail.
+        try:
+            _append_comment(ctx.store, todo_id, _HANDOFF_WITHHELD)
+        except Exception:  # pragma: no cover — the job outcome still lands
+            log.warning("run_slice: withheld comment on td%d failed", todo_id)
+    elif handoff:
         if len(handoff) > _HANDOFF_CAP:
             handoff = (
                 handoff[:_HANDOFF_HEAD].rstrip()
@@ -2489,7 +2717,16 @@ def poll(ctx: Any, handle: Any) -> bool:
     if exit_code == 0 and not is_error and not denied and not vanished:
         if not _is_generator(ctx.store, todo_id):
             committed = _commit_for_session(tree, todo_id)
+    if committed:
+        if pairs:
+            committed = _redact(committed, pairs)
+        if unscrubbed and any(n in committed for n in _KIMI_ENV_NAMES):
+            committed = "worker commit note withheld (credential unreadable)"
     dirty, commits = _branch_state(tree)
+    if pairs:
+        commits = [_redact(ln, pairs) for ln in commits]
+    if unscrubbed:
+        commits = [ln for ln in commits if not any(n in ln for n in _KIMI_ENV_NAMES)]
     ctx.set_meta(exit_code=exit_code, branch_dirty=dirty, branch_commits=commits[:50])
     vendor = "claude" if adapter.name == "claude_p" else adapter.name
     error_note = (
@@ -2551,7 +2788,9 @@ def poll(ctx: Any, handle: Any) -> bool:
                 tags=(MOOT_TAG,) if moot else (),
             )
             summary.append(
-                f"Land: none, by verdict `{kind_}: {why[:200]}`; td{todo_id} "
+                f"Land: none, by verdict "
+                f"`{kind_}: {_WITHHELD_TEXT if unscrubbed else why[:200]}`; "
+                f"td{todo_id} "
                 f"closed{' and tagged for the tick to close the plan' if moot else ''}."
             )
     elif (
@@ -2583,7 +2822,9 @@ def poll(ctx: Any, handle: Any) -> bool:
                 tags=(MOOT_TAG,) if moot else (),
             )
             summary.append(
-                f"Children: none, by verdict `{kind_}: {why[:200]}`; td{todo_id} "
+                f"Children: none, by verdict "
+                f"`{kind_}: {_WITHHELD_TEXT if unscrubbed else why[:200]}`; "
+                f"td{todo_id} "
                 f"closed{' and tagged for the tick to close the plan' if moot else ''}."
             )
     elif land:
@@ -2620,6 +2861,8 @@ def poll(ctx: Any, handle: Any) -> bool:
     except Exception:  # pragma: no cover — defensive; the job still fails
         log.warning("run_slice: lease release on td%d failed", todo_id, exc_info=True)
     tail = log_text[-_TAIL_CAP:].strip()
+    if unscrubbed:
+        tail = _drop_secret_lines(tail)
     if vanished:
         gone = f"worktree {tree} vanished while the session ran (reaped?)"
     else:

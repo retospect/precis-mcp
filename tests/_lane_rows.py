@@ -2,8 +2,9 @@
 
 ``SEED_LANES`` is the permanent pin: a literal copy of the table the
 ``llm_account`` rows must keep deriving, row for row, order included —
-the launchable-adapter rows only (``kimi``/``metered`` stay account
-rows, pinned in ``tests/test_llm_accounts.py``). ``use_lanes`` stands an
+the launchable-adapter rows only (``metered`` stays an account
+row, pinned in ``tests/test_llm_accounts.py``; ``kimi`` derives a lane
+but stays disabled until an operator lights the row). ``use_lanes`` stands an
 arbitrary table for fake-store tests by patching
 ``precis.utils.llm.accounts.list_accounts`` — ``lanes.load_lanes`` reads
 the seam through the module attribute, so no test here needs a DB. A
@@ -58,6 +59,18 @@ SEED_LANES: tuple[Lane, ...] = (
         ),
         default_model="claude-sonnet-5",
         model_prefix="claude-",
+    ),
+    # The ``kimi`` account row (adapter ``kimi_tree``, lane_rank 40)
+    # derives since td573681 — and stays disabled: nothing lights the row
+    # in this tree, so the lane never offers a slot.
+    Lane(
+        name="kimi",
+        adapter="kimi_tree",
+        credential_pool="subscription",
+        cap=1,
+        task_classes=frozenset({"code", "docs"}),
+        enabled=False,
+        vendor="moonshot",
     ),
 )
 

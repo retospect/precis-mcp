@@ -38,7 +38,9 @@ def _patch_report(
     """Canned probe outcomes (a name absent from the map classifies
     unprobed, never failed); names in ``absent`` report missing."""
 
-    async def fake_run_checks(_store: Any) -> dict[str, CheckResult]:
+    async def fake_run_checks(
+        _store: Any, *, scheduled: bool = False, **_kw: Any
+    ) -> dict[str, CheckResult]:
         return results
 
     monkeypatch.setattr(secret_status, "run_checks", fake_run_checks)
@@ -217,10 +219,17 @@ def test_real_probe_path_never_leaks_the_sentinel(
 
     _patch_real_probes(monkeypatch, handler)
     r = run_secret_check_pass(store)
+    # The pass probes scheduled=True, so lane-gated groups on a dark lane
+    # (kimi — no account row in this store) never reach a probe.
+    lane_dark = {
+        g
+        for g, account in secret_status._LANE_GATED_GROUPS.items()
+        if not secret_status._lane_enabled(store, account)
+    }
     expected = sum(
         len(names)
         for g, names in secret_status._PROBE_GROUP_MEMBERS.items()
-        if g != "mailto"
+        if g != "mailto" and g not in lane_dark
     )
     # Wolfram and OpenAlex don't treat 401 as a rejection (their bad codes
     # are 403 / 501-with-appid-complaint), so those members classify
@@ -445,7 +454,7 @@ def test_dispatch_failure_names_exception_type_only(
 
     caplog.set_level(logging.DEBUG)
 
-    def boom(_store: Any) -> Any:
+    def boom(_store: Any, **_kw: Any) -> Any:
         raise ValueError("https://probe.invalid/?api_key=" + _SENTINEL)
 
     monkeypatch.setattr(secret_status, "record_status", boom)

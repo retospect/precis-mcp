@@ -26,7 +26,10 @@ no-decrypt presence check and persists one :class:`StatusEntry` per secret
 in ``app_state``. The ``/secrets`` render path reads only that stored
 status (:func:`stored_status`) — it never probes, never decrypts. Infra-
 class secrets (``svc/infra/*``, db-own's vault class rule) are checked for
-presence only and are never probed, here or anywhere.
+presence only and are never probed, here or anywhere. Scheduled passes
+additionally skip :data:`_LANE_GATED_GROUPS` — the probe groups behind a
+factory lane — while the lane's account row is disabled; an explicit
+check still probes them.
 
 :func:`weekly_report` / ``precis secret check`` run the same probes outside the
 web page for ``/whatneedsdoing`` (gr496305): one state per registry secret
@@ -130,20 +133,22 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
     ),
     SecretSpec(
         name="KIMI_CODE_API_KEY",
-        purpose="Kimi Code membership key; presence-only provisioning for "
-        "the planned coding adapter, not enabled by storing a key. "
-        "Interactive use only — the subscription never serves worker ops "
-        "(ruling 2026-11-01, gr543829).",
+        purpose="Kimi Code membership key; serves interactive calls and "
+        "the kimi_tree factory lane's headless `kimi -p` launches — the "
+        "autonomous lane is sanctioned (ruling 2026-11-07, td573681, "
+        "superseding gr543829's interactive-only scope). Storing a key "
+        "lights nothing by itself: the account row stays disabled until "
+        "an operator enables it.",
         get_url="https://www.kimi.com/coding/docs/en/",
         get_blurb="Create a key in the Kimi Code Console (up to 5 per account) "
         "and paste it here. Use our real User-Agent; never impersonate the "
         "Kimi CLI or another client. Use key auth only, never CLI OAuth. "
-        "Interactive calls only — never autonomous worker/job ops, bulk "
-        "background or product integration calls. Read the Membership "
+        "Serves interactive calls and the kimi_tree worker lane only — "
+        "never product integration or unrelated bulk calls. Read the Membership "
         "Benefits and Community Guidelines pages before enabling, and check "
         "data retention and training terms before sending production prompts.",
         cost="included with a Kimi Code membership",
-        probe_group=None,
+        probe_group="kimi",
         optional=True,
     ),
     SecretSpec(
@@ -817,6 +822,27 @@ async def _probe_discord(
     return _classify_status(r.status_code)
 
 
+async def _probe_kimi(client: httpx.AsyncClient, values: dict[str, str]) -> CheckResult:
+    # The Kimi Code membership endpoint's model list is auth-gated (a bare
+    # GET answers 401, observed 2026-11-07), so a Bearer here verifies the
+    # key and costs nothing. The lazy import keeps the llm package's router
+    # out of this leaf; the base is the shared resolver's — the account's
+    # region decides, same as the kimi_tree lane's launches. A base_url
+    # off the resolver's allowlist is refused before any request leaves:
+    # the key goes to no other host, and the refusal is a distinct note —
+    # not a Kimi rejection.
+    from precis.utils.llm import kimi
+
+    refused = kimi.base_url_refusal()
+    if refused is not None:
+        return CheckResult("unknown", f"base_url refused — {refused}")
+    r = await client.get(
+        f"{kimi.base_url()}/models",
+        headers={"Authorization": f"Bearer {values['KIMI_CODE_API_KEY']}"},
+    )
+    return _classify_status(r.status_code)
+
+
 async def _probe_mailto(
     client: httpx.AsyncClient, values: dict[str, str]
 ) -> CheckResult:
@@ -841,6 +867,7 @@ _PROBES: dict[str, ProbeFn] = {
     "groq": _probe_groq,
     "cerebras": _probe_cerebras,
     "discord": _probe_discord,
+    "kimi": _probe_kimi,
     "mailto": _probe_mailto,
 }
 
@@ -928,7 +955,37 @@ async def _safe_probe(
         return CheckResult("unknown", f"{type(exc).__name__} — could not verify")
 
 
-async def run_checks(store: Store) -> dict[str, CheckResult]:
+#: Probe groups a *scheduled* pass skips while the account row behind the
+#: lane is disabled — the ``kimi_tree`` lane ships dark, and a disabled
+#: lane must not draw vendor calls on a cadence (td573681 review). An
+#: explicit check (the /secrets "Check now" mint, ``precis secret
+#: check``, ``precis doctor``) always probes so a freshly stored key
+#: shows accepted/rejected. Map: probe group → ``llm_account`` name.
+_LANE_GATED_GROUPS: dict[str, str] = {"kimi": "kimi"}
+
+
+def _lane_enabled(store: Store, account_name: str) -> bool:
+    """The ``llm_account`` row's enabled flag — fail closed: no row, no
+    store or a lookup error all read as a dark lane, so a scheduled pass
+    skips the probe rather than spend calls on a lane that cannot run."""
+    try:
+        from precis.utils.llm import accounts
+
+        account = accounts.get_account(store, account_name)
+        return bool(account and account.enabled)
+    except Exception:
+        log.warning(
+            "secret_status: lane-enabled lookup for %r failed — "
+            "treating the lane as dark",
+            account_name,
+            exc_info=True,
+        )
+        return False
+
+
+async def run_checks(
+    store: Store, *, scheduled: bool = False
+) -> dict[str, CheckResult]:
     """Probe every KNOWN_SECRETS group that has at least one member present.
 
     Returns one :class:`CheckResult` per *present* member of a probed group:
@@ -938,6 +995,11 @@ async def run_checks(store: Store) -> dict[str, CheckResult]:
     names. Presence-only specs (``probe_group is None``) and the
     ``oss_llm`` group when ``PRECIS_LLM_BASE_URL`` is unset get no entry —
     the caller treats "known, present, no entry" as unverified-but-present.
+
+    ``scheduled=True`` (the cadence-minted status job and the weekly
+    ``secret_check`` pass — never an explicit check) additionally skips
+    each :data:`_LANE_GATED_GROUPS` group whose lane's account row is
+    disabled or unreadable.
     """
     results: dict[str, CheckResult] = {}
     group_order: list[str] = []
@@ -957,6 +1019,12 @@ async def run_checks(store: Store) -> dict[str, CheckResult]:
                     continue
                 members = [n for n in names if is_available(n, store=store)]
                 if not members:
+                    continue
+                if (
+                    scheduled
+                    and group in _LANE_GATED_GROUPS
+                    and not _lane_enabled(store, _LANE_GATED_GROUPS[group])
+                ):
                     continue
                 if len(members) < len(names):
                     for n in members:
@@ -1109,13 +1177,15 @@ def record_status(
     *,
     results: dict[str, CheckResult] | None = None,
     now: datetime | None = None,
+    scheduled: bool = False,
 ) -> StatusSnapshot:
     """The checker job's work: probe, presence-check, persist — the one
     writer of the /secrets page's status. Pass ``results`` when the caller
     already ran :func:`run_checks` (the weekly alert pass) so its probes
-    aren't run twice."""
+    aren't run twice; ``scheduled`` is the caller's — the cadence-minted
+    job passes it so lane-gated groups stay dark."""
     if results is None:
-        results = asyncio.run(run_checks(store))
+        results = asyncio.run(run_checks(store, scheduled=scheduled))
     snap = _build_status(store, results, now or datetime.now(UTC))
     store.set_setting(_STATUS_KEY, _dump_status(snap))
     return snap

@@ -19,9 +19,9 @@ Conservative rules, per those docs:
 * **Key auth only** — ``api_key_ref: KIMI_CODE_API_KEY`` resolved at call
   time; never the CLI's OAuth login (the docs scope that to official
   clients).
-* **Interactive use only — never worker ops** — Reto ruled 2026-11-01
-  (gr543829): NO autonomous use of the Kimi Code subscription. The
-  router refuses a kimi-rung call whose effective
+* **Interactive wire; one sanctioned headless lane** — Reto ruled
+  2026-11-01 (gr543829): no autonomous use of the Kimi Code
+  subscription. The router refuses a kimi-rung call whose effective
   :mod:`~precis.budget.work_class` isn't ``interactive``
   (``subscription_worker_refused``), and the shipped ``ops`` allowlist
   is **empty** so the default profile routes nothing even once lit. The
@@ -30,7 +30,12 @@ Conservative rules, per those docs:
   normal use") and send product-integration/enterprise traffic to the
   pay-as-you-go Kimi Platform — an operator widening ``ops`` lists only
   interactive-driven ops; bulk background ops stay refused by the bulk
-  guard regardless.
+  guard regardless. The one exception, sanctioned by the account
+  owner's 2026-11-07 ruling (me573727, td573681 comment 4): the
+  unattended ``kimi_tree`` slice lane, which runs the CLI headless on
+  the membership key — key auth only, the CLI's own User-Agent and
+  defaults untouched. The router-side refusals above still stand:
+  lifting them is a separate slice.
 * **Quota** — a rolling 5-hour rate window plus a monthly total (new
   plans; legacy plans keep a 7-day refresh), shared across every device
   and API key. Account-side limits surface as HTTP 429 with documented
@@ -56,17 +61,24 @@ endpoint takes a flat ``reasoning_effort`` field (levels
 ``k3.1-pro`` rejects thinking-disabled requests outright — so the SMALL
 ``reasoning.enabled: false`` default is never sent on this wire; with
 nothing sent the model uses its own default (``max`` for k3.1-pro).
+
+Probes: the ``KIMI_CODE_API_KEY`` probe is manual-only — the operator's
+"Check now" on /secrets (and ``precis secret check``), never the
+periodic job while the lane is disabled; storing or changing the key
+does not probe.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+import urllib.parse
 from dataclasses import replace as _replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.error import HTTPError
 
+from precis.errors import BadInput
 from precis.utils.http import retry_after_seconds
 from precis.utils.llm.failure import Classified
 
@@ -95,6 +107,13 @@ API_KEY_REF = "KIMI_CODE_API_KEY"
 BASE_URL_OVERSEAS = "https://api.kimi.ai/coding/v1"
 BASE_URL_CHINA = "https://api.kimi.com/coding/v1"
 DEFAULT_BASE_URL = BASE_URL_OVERSEAS
+
+#: The only hosts a profile ``base_url`` may name — the two documented
+#: membership endpoints. :func:`base_url` feeds the ``kimi_tree`` launch
+#: env and the secrets probe, both of which Bearer-auth whatever it
+#: resolves to, so any other host is a key-exfiltration path. Widening
+#: the set is a reviewed land, never a DB write.
+BASE_URL_HOSTS: frozenset[str] = frozenset({"api.kimi.ai", "api.kimi.com"})
 
 #: The model ids the Kimi Code endpoint accepts (docs, 2026-11-01 — six
 #: ids; the gripe named the first four). ``kimi-for-coding`` is the K2.8
@@ -176,6 +195,93 @@ def default_profile() -> dict[str, Any]:
         "gate": SERVICE_NAME,
         "ops": list(DEFAULT_OPS),
     }
+
+
+def _profile_base_url() -> str | None:
+    """The ``kimi`` profile's configured ``base_url`` (stripped), or
+    ``None`` when unset or not a non-empty string."""
+    from precis.utils.llm import live_config
+
+    profiles = live_config.profiles_override() or {}
+    raw = profiles.get(PROFILE_NAME)
+    url = raw.get("base_url") if isinstance(raw, dict) else None
+    if isinstance(url, str) and url.strip():
+        return url.strip().rstrip("/")
+    return None
+
+
+def _base_url_refusal(url: str) -> str | None:
+    """Why ``url`` must not receive the membership key, or ``None`` —
+    ``https`` only, an exact :data:`BASE_URL_HOSTS` member (hostname is
+    compared lowercased with a trailing dot stripped), no userinfo, no
+    port but 443. Never returns the raw URL: a userinfo override could
+    carry a password."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        port = parts.port  # a malformed port raises here
+    except ValueError:
+        return "unparseable URL"
+    host = (parts.hostname or "").rstrip(".")
+    if parts.scheme != "https":
+        return "scheme is not https"
+    if parts.username is not None or parts.password is not None:
+        return f"userinfo on host {host or '<none>'!r}"
+    if port not in (None, 443):
+        return f"port {port} on host {host!r}"
+    if host not in BASE_URL_HOSTS:
+        return f"host {host or '<none>'!r} is not an allowed endpoint"
+    return None
+
+
+def _base_url_message(why: str) -> str:
+    return (
+        f"llm.profiles 'kimi' 'base_url' refused: {why}; the key is sent "
+        f"only to hosts {', '.join(sorted(BASE_URL_HOSTS))}"
+    )
+
+
+def base_url_refusal() -> str | None:
+    """The refusal message for the configured ``base_url`` override —
+    the same text :func:`base_url` raises — or ``None`` when it resolves
+    an allowed host. The secrets probe reports this instead of sending a
+    request (a refused override must be visible, never silently
+    skipped)."""
+    override = _profile_base_url()
+    if override is None:
+        return None
+    why = _base_url_refusal(override)
+    return _base_url_message(why) if why is not None else None
+
+
+def base_url() -> str:
+    """The membership endpoint's base URL — the ``kimi`` profile's
+    ``base_url`` (``llm.profiles``) when set, else
+    :data:`BASE_URL_OVERSEAS`. The account's region decides (China is
+    :data:`BASE_URL_CHINA`). An override is honoured only when it names
+    a :data:`BASE_URL_HOSTS` member over plain https — the launch env
+    and the probe Bearer-auth whatever this returns, so anything else
+    raises :class:`~precis.errors.BadInput` naming the setting and the
+    allowlist rather than silently fall back to overseas. The
+    ``kimi_tree`` launch env
+    (:func:`precis.workers.job_types.run_slice._kimi_launch_env`) and
+    the secrets probe (:func:`precis.secret_status._probe_kimi`) share
+    this resolver so both hit the same host.
+    """
+    override = _profile_base_url()
+    if override is None:
+        return BASE_URL_OVERSEAS
+    why = _base_url_refusal(override)
+    if why is not None:
+        raise BadInput(
+            _base_url_message(why),
+            next=(
+                "set llm.profiles 'kimi' 'base_url' to an allowed host "
+                f"({', '.join(sorted(BASE_URL_HOSTS))}) or drop the override "
+                f"(default {BASE_URL_OVERSEAS}); the allowlist widens only by "
+                "a reviewed land"
+            ),
+        )
+    return override
 
 
 def service_gate_lit(name: str) -> bool:
@@ -408,6 +514,7 @@ __all__ = [
     "ADAPTER",
     "API_KEY_REF",
     "BASE_URL_CHINA",
+    "BASE_URL_HOSTS",
     "BASE_URL_OVERSEAS",
     "DEFAULT_BASE_URL",
     "DEFAULT_OPS",
@@ -416,6 +523,8 @@ __all__ = [
     "SERVICE_NAME",
     "THINKING_REQUIRED_MODELS",
     "adjust_failure",
+    "base_url",
+    "base_url_refusal",
     "classify_failure",
     "default_profile",
     "enabled",

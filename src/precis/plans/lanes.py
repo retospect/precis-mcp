@@ -16,9 +16,11 @@ The table derives from ``llm_account`` rows at call time (td568401 S1c:
 preference order the code seed held by position). ``devin``, ``codex``
 and ``claude-sub`` are enabled (Reto 2026-11-03: "ok both devin and codex
 are ok. Lets make them go."; devin on once its CLI login on the slice
-host was confirmed, 2026-11-06, td562568); the others stay account rows —
-an account on an adapter the builder cannot launch (``kimi_tree``,
-``api``; :data:`LAUNCHABLE_ADAPTERS`) never becomes a lane, so enabling
+host was confirmed, 2026-11-06, td562568). ``kimi`` derives a lane since
+td573681 (``kimi_tree`` is launchable) but stays disabled until an
+operator lights the row; ``metered`` stays an account row — an account on
+an adapter the builder cannot launch (``api``;
+:data:`LAUNCHABLE_ADAPTERS`) never becomes a lane, so enabling
 an api-adapter account can never mint a lane a submit would die on at
 ``get_adapter``. :func:`pick_lane` never returns a disabled lane.
 
@@ -331,8 +333,9 @@ class Lane:
     """One scheduler slot: adapter + credential pool + concurrency cap.
 
     ``adapter`` names how a slice is launched (``claude_p`` is
-    ``claude -p`` in a worktree; ``codex_exec``, ``kimi_tree``,
-    ``devin_tree`` and ``api`` are declared, not built). ``task_classes``
+    ``claude -p`` in a worktree; ``codex_exec``, ``kimi_tree`` and
+    ``devin_tree`` are the vendor CLIs; ``api`` is declared, not built).
+    ``task_classes``
     is the fit set; :data:`ANY_CLASS` fits every class. An MCP-less lane
     takes ``code``, plus ``review`` and ``validate`` whose one verdict rides
     the session's final message (``handoff: review: …``, ``validated: …``;
@@ -391,10 +394,10 @@ _ADAPTER_MODEL_PREFIX: dict[str, str] = {"claude_p": "claude-"}
 #: ``precis.workers.job_types._slice_adapters.ADAPTERS`` (restated so
 #: this package stays below the workers layer, like
 #: ``_TERMINAL_STATUSES``; a drift test pins the two equal). An account
-#: on any other adapter — ``api`` (metered), ``kimi_tree`` (declared,
-#: unbuilt) — derives to no lane, whatever its ``enabled`` flag.
+#: on any other adapter — ``api`` (metered) — derives to no lane,
+#: whatever its ``enabled`` flag.
 LAUNCHABLE_ADAPTERS: frozenset[str] = frozenset(
-    {"claude_p", "codex_exec", "devin_tree"}
+    {"claude_p", "codex_exec", "devin_tree", "kimi_tree"}
 )
 
 

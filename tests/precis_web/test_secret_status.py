@@ -11,6 +11,7 @@ with a real ``httpx.AsyncClient`` in this file.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime
 from html import unescape
 from typing import TYPE_CHECKING, Any, cast
@@ -207,7 +208,9 @@ def test_run_checks_absent_secret_is_skipped(monkeypatch: pytest.MonkeyPatch) ->
 def test_llm_subscription_secrets_are_never_resolved_or_probed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    names = {"KIMI_CODE_API_KEY", "OPENAI_API_KEY", "DEVIN_API_TOKEN"}
+    # KIMI_CODE_API_KEY left this set in td573681: it now resolves and
+    # probes under the "kimi" group (the kimi_tree lane's key).
+    names = {"OPENAI_API_KEY", "DEVIN_API_TOKEN"}
     monkeypatch.setattr(
         secret_status, "is_available", lambda name, *, store: name in names
     )
@@ -256,6 +259,143 @@ def test_run_checks_groq_single_member_group(monkeypatch: pytest.MonkeyPatch) ->
     results = asyncio.run(secret_status.run_checks(store=_FAKE_STORE))
 
     assert results == {"GROQ_API_KEY": secret_status.CheckResult("ok", "verified")}
+
+
+# ── (c2) lane-gated groups: a scheduled pass leaves a dark lane alone ──────
+
+
+def _kimi_lane(monkeypatch: pytest.MonkeyPatch, enabled: bool | None) -> None:
+    """Stand the ``kimi`` account row's enabled flag (``None`` = no row —
+    the lookup must fail closed, reading as a dark lane)."""
+    import types
+
+    monkeypatch.setattr(
+        "precis.utils.llm.accounts.get_account",
+        lambda store, name: (
+            None if enabled is None else types.SimpleNamespace(enabled=enabled)
+        ),
+    )
+
+
+def _recording_probe(calls: list[str]) -> Any:
+    async def probe(client: Any, values: dict[str, str]) -> secret_status.CheckResult:
+        calls.extend(values)
+        return secret_status.CheckResult("ok", "verified")
+
+    return probe
+
+
+@pytest.mark.parametrize("row", ["disabled", "missing"])
+def test_scheduled_run_skips_kimi_while_lane_dark(
+    monkeypatch: pytest.MonkeyPatch, row: str
+) -> None:
+    """A scheduled pass (the 4h status job, the weekly alert pass) must
+    not call the Kimi host while the lane's account row is disabled —
+    or unreadable: the lookup fails closed. Other groups are untouched."""
+    _patch_presence(
+        monkeypatch, {"KIMI_CODE_API_KEY": "sk", "GROQ_API_KEY": "synthetic"}
+    )
+    _kimi_lane(monkeypatch, enabled=False if row == "disabled" else None)
+    calls: list[str] = []
+    monkeypatch.setitem(secret_status._PROBES, "kimi", _recording_probe(calls))
+    monkeypatch.setitem(secret_status._PROBES, "groq", _recording_probe(calls))
+
+    results = asyncio.run(secret_status.run_checks(store=_FAKE_STORE, scheduled=True))
+
+    assert calls == ["GROQ_API_KEY"]
+    assert "KIMI_CODE_API_KEY" not in results
+    assert results["GROQ_API_KEY"].state == "ok"
+
+
+def test_scheduled_run_probes_kimi_when_lane_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_presence(monkeypatch, {"KIMI_CODE_API_KEY": "sk"})
+    _kimi_lane(monkeypatch, enabled=True)
+    calls: list[str] = []
+    monkeypatch.setitem(secret_status._PROBES, "kimi", _recording_probe(calls))
+
+    results = asyncio.run(secret_status.run_checks(store=_FAKE_STORE, scheduled=True))
+
+    assert calls == ["KIMI_CODE_API_KEY"]
+    assert results["KIMI_CODE_API_KEY"].state == "ok"
+
+
+def test_explicit_run_probes_kimi_while_lane_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one-shot path — a "Check now" mint or `precis secret check` —
+    still probes while the lane is dark, so a freshly stored key shows
+    accepted/rejected."""
+    _patch_presence(monkeypatch, {"KIMI_CODE_API_KEY": "sk"})
+    _kimi_lane(monkeypatch, enabled=False)
+    calls: list[str] = []
+    monkeypatch.setitem(secret_status._PROBES, "kimi", _recording_probe(calls))
+
+    results = asyncio.run(secret_status.run_checks(store=_FAKE_STORE))
+
+    assert calls == ["KIMI_CODE_API_KEY"]
+    assert results["KIMI_CODE_API_KEY"].state == "ok"
+
+
+def test_status_job_marks_periodic_origin_scheduled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ``secret_status`` job maps the mint's origin onto the
+    scheduled flag: ``background`` (the cadence mint) skips dark lanes,
+    ``human`` (the /secrets "Check now") always probes."""
+    from types import SimpleNamespace
+
+    from precis.workers.job_types import secret_status as job_mod
+
+    seen: list[bool] = []
+
+    def fake_record_status(
+        store: Any, *, results: Any = None, now: Any = None, scheduled: bool = False
+    ) -> secret_status.StatusSnapshot:
+        seen.append(scheduled)
+        return secret_status.StatusSnapshot(None, {})
+
+    monkeypatch.setattr(secret_status, "record_status", fake_record_status)
+
+    def ctx(origin: str) -> Any:
+        return SimpleNamespace(
+            store=object(),
+            meta={"origin": origin},
+            set_meta=lambda **kw: None,
+            append_chunk=lambda *a: None,
+            record_failure=lambda *a, **kw: None,
+        )
+
+    job_mod._dispatch(ctx("background"), job_mod.SPEC)
+    job_mod._dispatch(ctx("human"), job_mod.SPEC)
+    assert seen == [True, False]
+
+
+def test_weekly_pass_marks_its_probes_scheduled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The weekly ``secret_check`` alert pass probes with
+    ``scheduled=True`` — it is cadence work, not an explicit check."""
+    from precis.workers import secret_check
+
+    seen: list[bool] = []
+
+    async def fake_run_checks(store: Any, *, scheduled: bool = False) -> dict:
+        seen.append(scheduled)
+        return {}
+
+    async def fake_weekly(store: Any, *, results: Any = None) -> list:
+        return []
+
+    monkeypatch.setattr(secret_status, "run_checks", fake_run_checks)
+    monkeypatch.setattr(secret_status, "weekly_report", fake_weekly)
+    monkeypatch.setattr(secret_status, "record_status", lambda store, **kw: None)
+    monkeypatch.setattr(secret_check, "resolve_stale_alerts", lambda *a, **kw: 0)
+
+    secret_check.run_secret_check_pass(_FAKE_STORE)
+
+    assert seen == [True]
 
 
 # ── (d) index route rendering ──────────────────────────────────────────────
@@ -324,7 +464,7 @@ def _patch_page(
         (
             "KIMI_CODE_API_KEY",
             "https://www.kimi.com/coding/docs/en/",
-            None,
+            "kimi",
             (
                 "Kimi Code Console",
                 "up to 5",
@@ -332,8 +472,7 @@ def _patch_page(
                 "never impersonate",
                 "key auth only",
                 "CLI OAuth",
-                "Interactive calls only",
-                "never autonomous worker/job ops",
+                "kimi_tree",
                 "product integration",
                 "Membership Benefits",
                 "Community Guidelines",
@@ -547,10 +686,11 @@ def test_core_probe_429_is_rate_limited_with_code() -> None:
     [
         ("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1/models"),
         ("cerebras", "CEREBRAS_API_KEY", "https://api.cerebras.ai/v1/models"),
+        ("kimi", "KIMI_CODE_API_KEY", "https://api.kimi.ai/coding/v1/models"),
     ],
-    ids=["groq", "cerebras"],
+    ids=["groq", "cerebras", "kimi"],
 )
-def test_groq_cerebras_probes_get_models_with_bearer(
+def test_models_probes_get_with_bearer(
     probe_name: str, secret_name: str, url: str
 ) -> None:
     import httpx
@@ -576,14 +716,18 @@ def test_groq_cerebras_probes_get_models_with_bearer(
 
 @pytest.mark.parametrize(
     "probe_name, secret_name",
-    [("groq", "GROQ_API_KEY"), ("cerebras", "CEREBRAS_API_KEY")],
-    ids=["groq", "cerebras"],
+    [
+        ("groq", "GROQ_API_KEY"),
+        ("cerebras", "CEREBRAS_API_KEY"),
+        ("kimi", "KIMI_CODE_API_KEY"),
+    ],
+    ids=["groq", "cerebras", "kimi"],
 )
 @pytest.mark.parametrize(
     "status, expected_state",
     [(401, "bad"), (403, "bad"), (429, "unknown"), (500, "unknown")],
 )
-def test_groq_cerebras_probe_status_mapping(
+def test_models_probe_status_mapping(
     probe_name: str, secret_name: str, status: int, expected_state: str
 ) -> None:
     import httpx
@@ -597,3 +741,72 @@ def test_groq_cerebras_probe_status_mapping(
             )
 
     assert asyncio.run(run()).state == expected_state
+
+
+def test_kimi_probe_shares_the_profile_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe hits the same host the lane launches against: the
+    ``kimi`` profile's ``base_url`` (the account's region decides)."""
+    import httpx
+
+    monkeypatch.setenv(
+        "PRECIS_LLM_PROFILES",
+        json.dumps({"kimi": {"base_url": "https://api.kimi.com/coding/v1"}}),
+    )
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            return await secret_status._probe_kimi(
+                client, {"KIMI_CODE_API_KEY": "synthetic"}
+            )
+
+    assert asyncio.run(run()).state == "ok"
+    assert [str(r.url) for r in requests] == ["https://api.kimi.com/coding/v1/models"]
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        "http://api.kimi.com/coding/v1",
+        "https://evil.example.invalid/v1",
+        "https://api.kimi.ai.evil.example/coding/v1",
+        "https://user:pass@api.kimi.ai/coding/v1",
+    ],
+    ids=["http", "other-host", "suffix-host", "userinfo"],
+)
+def test_kimi_probe_refuses_a_base_url_off_the_allowlist(
+    monkeypatch: pytest.MonkeyPatch, override: str
+) -> None:
+    """Review round 2 item 3: a ``base_url`` off the documented hosts is
+    refused before any request leaves — no key on the wire, and the
+    report is a distinct "refused" note, never a Kimi rejection."""
+    import httpx
+
+    monkeypatch.setenv(
+        "PRECIS_LLM_PROFILES",
+        json.dumps({"kimi": {"base_url": override}}),
+    )
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            return await secret_status._probe_kimi(
+                client, {"KIMI_CODE_API_KEY": "synthetic"}
+            )
+
+    result = asyncio.run(run())
+    assert requests == []
+    assert result.state != "ok"
+    assert "rejected" not in result.detail
+    assert "llm.profiles" in result.detail and "api.kimi.ai" in result.detail
+    assert "synthetic" not in result.detail

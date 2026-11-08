@@ -480,6 +480,15 @@ The other settings a slice host reads:
   gates die on OOM-137 and address-pool exhaustion (gr570133).
 - `PRECIS_CLAUDE_BIN`: the `claude` binary the slice session execs
   (default `claude` on PATH). Point it at a stub in tests.
+- `PRECIS_KIMI_BIN`: the `kimi` binary a `kimi_tree` slice execs —
+  `kimi -p <brief> --output-format stream-json` headless, like the devin
+  lane's direct exec (never through `scripts/kimi-tree`, whose `-p`
+  refusal is for interactive launches). Resolution is `PRECIS_KIMI_BIN`,
+  then `kimi` on PATH, then `~/.kimi-code/bin/kimi`. The lane carries no
+  precis MCP; the session authenticates through the `KIMI_MODEL_*`
+  provider env the worker synthesizes from `KIMI_CODE_API_KEY` at submit,
+  so it never touches the user's Kimi config. A missing binary or key is
+  a host refusal — the same no-attempt shape as the devin preflight.
 - `PRECIS_MCP_SLICE_TOKEN_DIR`: the shared session MCP's per-slice grant
   registry (`<mcp-http state dir>/slice-tokens`, created by the ensure
   script). Needed when the worker runs as a different user from the one
