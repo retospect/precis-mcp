@@ -71,7 +71,7 @@ from precis.quest.weave_tick import (
     QUEST_BODY_ROADMAP,
     QUEST_BODY_WEAVE,
 )
-from precis.store._todo_sql import _doable_exclusion_clause
+from precis.store._todo_sql import parent_gate_exclusion_sql
 from precis.utils.env import env_int
 from precis.workers.executors._yield import Done, WakeWhen, Yield
 from precis.workers.job_types import JobTypeSpec
@@ -288,11 +288,12 @@ def _pending_sim_ids(store: Store, quest_id: int) -> list[int]:
     signal (empty ⇒ safe to propose the next batch).
 
     A job the ``ssh_node`` claim gate can never pick up — its parent todo
-    carries a pause tag (``parent_not_paused``'s
-    :func:`_doable_exclusion_clause` — ``child-failed:*``/``halt:*``/
-    ``ask-user*``/``waiting-for:*``/live ``claimed-by:``) — is BLOCKED, not
-    pending: it sits ``STATUS:queued`` forever, so waiting on it deadlocks
-    the loop (gr498683). Such rows split out via
+    carries a pause tag (the shared ``parent_not_paused`` predicate,
+    :func:`parent_gate_exclusion_sql` — ``child-failed:*``/``halt:*``/
+    ``ask-user*``/``waiting-for:*``/live ``claimed-by:``, with the
+    gr575883 carve-out: a terminal parent's stale tags don't gate) — is
+    BLOCKED, not pending: it sits ``STATUS:queued`` forever, so waiting on
+    it deadlocks the loop (gr498683). Such rows split out via
     :func:`_blocked_sim_ids` instead of being awaited.
     """
     return _sim_wait_ids(store, quest_id)[0]
@@ -309,10 +310,11 @@ def _blocked_sim_ids(store: Store, quest_id: int) -> list[int]:
 def _sim_wait_ids(store: Store, quest_id: int) -> tuple[list[int], list[int]]:
     """``(claimable_pending, parent_gated_blocked)`` — one subtree scan,
     split on the same ``parent_not_paused`` predicate the ``ssh_node``
-    claim gate applies (:func:`_doable_exclusion_clause` on the job's
+    claim gate applies (:func:`parent_gate_exclusion_sql` on the job's
     ``parent_id``), so "await waits on X" and "a worker can claim X" can
     never drift apart again."""
-    clause = _doable_exclusion_clause("pt", "prt")
+    from precis.todo import TERMINAL_TODO_STATUSES
+
     with store.pool.connection() as conn:
         rows = conn.execute(
             f"""
@@ -330,13 +332,7 @@ def _sim_wait_ids(store: Store, quest_id: int) -> tuple[list[int], list[int]]:
                  WHERE r.retired_at IS NULL
             )
             SELECT j.ref_id,
-                   EXISTS (
-                     SELECT 1 FROM ref_tags prt
-                       JOIN tags pt ON pt.tag_id = prt.tag_id
-                      WHERE prt.ref_id = j.parent_id
-                        AND pt.namespace = 'OPEN'
-                        AND {clause}
-                   ) AS parent_gated
+                   {parent_gate_exclusion_sql("j")} AS parent_gated
               FROM refs j
               JOIN subtree s ON s.ref_id = j.ref_id
              WHERE j.kind = 'job'
@@ -350,7 +346,7 @@ def _sim_wait_ids(store: Store, quest_id: int) -> tuple[list[int], list[int]]:
                      'queued'
                    ) NOT IN ('succeeded', 'failed', 'cancelled')
             """,
-            (quest_id, list(_SIM_JOB_TYPES)),
+            (quest_id, sorted(TERMINAL_TODO_STATUSES), list(_SIM_JOB_TYPES)),
         ).fetchall()
     pending = [int(r[0]) for r in rows if not r[1]]
     blocked = [int(r[0]) for r in rows if r[1]]
@@ -361,12 +357,14 @@ def _queued_sim_count(store: Store) -> int:
     """Count non-terminal sim jobs across ALL quests — the node-load signal for
     the starvation gate (don't stack a new batch onto an already-deep queue).
 
-    Parent-gated rows (the ``ssh_node`` claim's ``parent_not_paused``
-    predicate on the job's ``parent_id``) are excluded — an unclaimable job
+    Parent-gated rows (the shared ``parent_not_paused`` predicate on the
+    job's ``parent_id`` — :func:`parent_gate_exclusion_sql`, terminal
+    parents exempt per gr575883) are excluded — an unclaimable job
     occupies no compute, and counting it starves every quest behind a
     queue that can never drain (gr498683).
     """
-    clause = _doable_exclusion_clause("pt", "prt")
+    from precis.todo import TERMINAL_TODO_STATUSES
+
     with store.pool.connection() as conn:
         row = conn.execute(
             f"""
@@ -375,13 +373,7 @@ def _queued_sim_count(store: Store) -> int:
              WHERE j.kind = 'job'
                AND j.retired_at IS NULL
                AND (j.meta->>'job_type') = ANY(%s)
-               AND NOT EXISTS (
-                     SELECT 1 FROM ref_tags prt
-                       JOIN tags pt ON pt.tag_id = prt.tag_id
-                      WHERE prt.ref_id = j.parent_id
-                        AND pt.namespace = 'OPEN'
-                        AND {clause}
-                   )
+               AND NOT {parent_gate_exclusion_sql("j")}
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt
                         JOIN tags t ON t.tag_id = rt.tag_id
@@ -390,7 +382,7 @@ def _queued_sim_count(store: Store) -> int:
                      'queued'
                    ) NOT IN ('succeeded', 'failed', 'cancelled')
             """,
-            (list(_SIM_JOB_TYPES),),
+            (list(_SIM_JOB_TYPES), sorted(TERMINAL_TODO_STATUSES)),
         ).fetchone()
     return int(row[0]) if row else 0
 

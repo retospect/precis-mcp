@@ -80,6 +80,44 @@ def _doable_exclusion_clause(tag_alias: str = "t", reftag_alias: str = "rt") -> 
     return "(" + " OR ".join(parts) + ")"
 
 
+def parent_gate_exclusion_sql(job_alias: str = "r") -> str:
+    """SQL predicate: the job row ``job_alias`` is parent-gated — its
+    parent carries an open-namespace exclusion tag while NOT itself
+    terminal.
+
+    One shared home for the ``parent_not_paused`` claim gate
+    (``workers/executors/_common.py::claim_executor_jobs``) and every
+    reader that must agree with it — ``quest_tick``'s blocked-sim split,
+    ``health_checks.idle_lanes``'s paused count, the sweeper's
+    parent-pause alert — so "a worker can claim this job" and "this job
+    reads as blocked" can never drift apart (the gr498683 contract).
+
+    gr575883: the gate exists so a paused LIVE project doesn't burn
+    compute — a TERMINAL parent (``done`` / ``won't-do`` /
+    ``auto-timeout``, :data:`precis.todo.TERMINAL_TODO_STATUSES`) is
+    finished, so its stale pause tags (a leftover ``waiting-for:fleet``)
+    must not pin the parent's queued jobs forever; the ``NOT EXISTS``
+    arm carves terminal parents out of the gate.
+
+    The predicate carries ONE ``%s`` param slot — the caller binds
+    ``sorted(TERMINAL_TODO_STATUSES)`` (:mod:`precis.todo` must not be
+    imported here: store is the bottom layer). ``job_alias`` is a
+    trusted table alias — never user input.
+    """
+    return (
+        "EXISTS ("
+        "SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+        f"WHERE rt.ref_id = {job_alias}.parent_id "
+        "AND t.namespace = 'OPEN' "
+        f"AND {_doable_exclusion_clause()} "
+        "AND NOT EXISTS ("
+        "SELECT 1 FROM ref_tags xrt JOIN tags xt ON xt.tag_id = xrt.tag_id "
+        f"WHERE xrt.ref_id = {job_alias}.parent_id "
+        "AND xt.namespace = 'STATUS' AND xt.value = ANY(%s)"
+        "))"
+    )
+
+
 def plan_control_node_sql(alias: str) -> str:
     """SQL predicate: the ``alias`` row is a plan **control** node — a
     gate, loop, generator or phase (``precis.plans.nodes.node_kind`` not

@@ -3440,6 +3440,25 @@ def test_lanes_idle_names_a_queue_behind_a_paused_parent(store) -> None:
     assert "ssh_node_t7 (1 queued" in out
 
 
+def test_lanes_idle_terminal_parent_not_counted_as_paused(store) -> None:
+    """gr575883: the paused-parent count reads the shared parent gate — a
+    DONE parent's stale tag does not block the claim, so its queued job
+    doesn't excuse the lane: an unclaimed queue is a real stall."""
+    parent = seed_ref(store, title="done seed todo", kind="todo")
+    store.add_tag(parent, Tag.open("child-failed:1"), set_by="system")
+    store.add_tag(parent, Tag.closed("STATUS", "done"), set_by="system")
+    job = _seed_job(store, executor="ssh_node_t8", status="queued", age_min=90)
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET parent_id = %s WHERE ref_id = %s", (parent, job))
+        conn.commit()
+
+    res = _lanes_check(store)
+    assert res.status == "stale"
+    assert "ssh_node_t8: 1 queued, oldest " in res.detail
+    assert "no claim in 1h" in res.detail
+    assert "behind a paused parent" not in res.detail
+
+
 def test_lanes_idle_unknown_when_the_probe_fails(store, monkeypatch) -> None:
     def boom(conn, **_kw):
         conn.execute("SELECT 1/0")

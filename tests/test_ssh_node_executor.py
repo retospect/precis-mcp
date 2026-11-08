@@ -281,6 +281,42 @@ def test_parent_gate_skips_paused_project(
     assert _status(store, ok) == "succeeded"  # live parent → claimed
 
 
+def test_parent_gate_skips_open_parent_with_any_pause_tag(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate is the whole pause vocabulary: an OPEN parent carrying
+    ``waiting-for:`` or ``ask-user`` still blocks its jobs — gr575883's
+    carve-out is terminal-parent-only."""
+    _succeeds(ssh_node, monkeypatch)
+    waiting = store.insert_ref(kind="todo", slug=None, title="waiting", meta={})
+    store.add_tag(waiting.id, Tag.parse_strict("waiting-for:fleet"), set_by="agent")
+    blocked_w = _mk_job(store, parent_id=waiting.id)
+    asking = store.insert_ref(kind="todo", slug=None, title="asking", meta={})
+    store.add_tag(asking.id, Tag.parse_strict("ask-user"), set_by="agent")
+    blocked_a = _mk_job(store, parent_id=asking.id)
+
+    ssh_node.run_ssh_node_pass(store, limit=5)
+    assert _status(store, blocked_w) == "queued"
+    assert _status(store, blocked_a) == "queued"
+
+
+@pytest.mark.parametrize("terminal", ["done", "won't-do"])
+def test_parent_gate_ignores_terminal_parent(
+    store: Store, monkeypatch: pytest.MonkeyPatch, terminal: str
+) -> None:
+    """gr575883: a parent closed ``done``/``won't-do`` whose
+    ``waiting-for:`` tag was never cleared is finished — the stale pause
+    tag must not pin its queued jobs forever."""
+    _succeeds(ssh_node, monkeypatch)
+    done = store.insert_ref(kind="todo", slug=None, title="done", meta={})
+    store.add_tag(done.id, Tag.parse_strict(f"STATUS:{terminal}"), set_by="agent")
+    store.add_tag(done.id, Tag.parse_strict("waiting-for:fleet"), set_by="agent")
+    rid = _mk_job(store, parent_id=done.id)
+
+    assert ssh_node.run_ssh_node_pass(store, limit=2)["claimed"] == 1
+    assert _status(store, rid) == "succeeded"
+
+
 # ── crash recovery: reclaim expired-lease STATUS:running jobs ─────
 
 

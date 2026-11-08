@@ -743,8 +743,11 @@ class IdleLane:
     queued: int
     oldest_queued_minutes: int
     #: Of ``queued``, jobs whose parent todo carries an open pause tag
-    #: (``child-failed:``, ``halt``, …): the ``parent_not_paused`` claim gate
-    #: skips them, so an idle lane beside them is not a dead lane (gr497891).
+    #: (``child-failed:``, ``halt``, …) while NOT terminal: the
+    #: ``parent_not_paused`` claim gate skips them, so an idle lane beside
+    #: them is not a dead lane (gr497891). Terminal parents are exempt —
+    #: a finished todo's stale tags don't block the claim (gr575883), so
+    #: its jobs don't count here either.
     behind_paused_parent: int = 0
 
     @property
@@ -786,7 +789,8 @@ def idle_lanes(
     # for a running or recently started job. The probes stop at the first
     # hit, so the expensive no-match walk only happens when a lane really is
     # idle beside its queue.
-    from precis.store._todo_sql import _doable_exclusion_clause
+    from precis.store._todo_sql import parent_gate_exclusion_sql
+    from precis.todo import TERMINAL_TODO_STATUSES
     from precis.workers.executors._common import CLAIMABLE
 
     rows = conn.execute(
@@ -794,20 +798,18 @@ def idle_lanes(
         WITH q AS (
           SELECT r.meta->>'executor' AS executor,
                  count(*)::int        AS queued,
-                 count(*) FILTER (WHERE EXISTS (
-                   SELECT 1 FROM ref_tags prt JOIN tags pt ON pt.tag_id = prt.tag_id
-                    WHERE prt.ref_id = r.parent_id AND pt.namespace = 'OPEN'
-                      AND {_doable_exclusion_clause("pt", "prt")}))::int AS paused,
+                 count(*) FILTER (WHERE {parent_gate_exclusion_sql("r")})::int
+                                      AS paused,
                  min(rt.created_at)   AS oldest
             FROM refs r
             JOIN ref_tags rt ON rt.ref_id = r.ref_id
             JOIN tags t ON t.tag_id = rt.tag_id
            WHERE r.kind = 'job' AND r.retired_at IS NULL
-             AND t.namespace = 'STATUS' AND t.value = ANY(%(claimable)s)
+             AND t.namespace = 'STATUS' AND t.value = ANY(%s)
              AND r.meta->>'executor' IS NOT NULL
-             AND r.meta->>'executor' <> ALL(%(exempt)s)
+             AND r.meta->>'executor' <> ALL(%s)
            GROUP BY 1
-          HAVING min(rt.created_at) < now() - make_interval(mins => %(mins)s)
+          HAVING min(rt.created_at) < now() - make_interval(mins => %s)
         )
         SELECT q.executor, q.queued,
                floor(extract(epoch FROM now() - q.oldest) / 60)::int,
@@ -825,15 +827,16 @@ def idle_lanes(
                   WHERE r.kind = 'job' AND r.retired_at IS NULL
                     AND r.meta->>'executor' = q.executor
                     AND (r.meta->>'started_at')::timestamptz
-                          >= now() - make_interval(secs => %(w)s))
+                          >= now() - make_interval(secs => %s))
          ORDER BY q.executor
         """,
-        {
-            "exempt": list(_IDLE_LANE_EXEMPT_EXECUTORS),
-            "mins": queued_min_minutes,
-            "w": window_s,
-            "claimable": list(CLAIMABLE),
-        },
+        (
+            sorted(TERMINAL_TODO_STATUSES),
+            list(CLAIMABLE),
+            list(_IDLE_LANE_EXEMPT_EXECUTORS),
+            queued_min_minutes,
+            window_s,
+        ),
     ).fetchall()
     return [
         IdleLane(

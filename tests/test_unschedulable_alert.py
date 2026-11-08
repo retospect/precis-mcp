@@ -20,8 +20,10 @@ from precis.store.types import Tag
 from precis.workers.sweeper import _alert_unschedulable_jobs
 
 
-def _queue(store: Store, meta: dict[str, object]) -> int:
-    ref = store.insert_ref(kind="job", slug=None, title="j", meta=meta)
+def _queue(store: Store, meta: dict[str, object], parent_id: int | None = None) -> int:
+    ref = store.insert_ref(
+        kind="job", slug=None, title="j", meta=meta, parent_id=parent_id
+    )
     store.add_tag(
         ref.id, Tag.closed("STATUS", "queued"), set_by="agent", replace_prefix=True
     )
@@ -359,3 +361,58 @@ def test_starved_control_alert_not_hidden_by_bulk_backlog(
     )
     assert _alert_starved_control_jobs(store) == 1
     assert _alert_open(store, "control:job_inproc") is True
+
+
+# ── parent-pause alert (gr575883) ────────────────────────────────────────
+#
+# A queued job on a parent-gated executor (ssh_node / claude_docker /
+# devin_api) whose parent todo carries an open pause tag can never be
+# claimed — the alert names the blocking tags, the operator-visible twin
+# of the claim gate's parent exclusion.
+
+
+def _paused_parent(store: Store, *tags: str, status: str | None = None) -> int:
+    parent = store.insert_ref(kind="todo", slug=None, title="p", meta={})
+    if status is not None:
+        store.add_tag(
+            parent.id,
+            Tag.closed("STATUS", status),
+            set_by="agent",
+            replace_prefix=True,
+        )
+    for tag in tags:
+        store.add_tag(parent.id, Tag.open(tag), set_by="system")
+    return parent.id
+
+
+def test_parent_paused_job_is_flagged(store: Store) -> None:
+    parent = _paused_parent(store, "waiting-for:fleet")
+    jid = _queue(
+        store, {"job_type": "demo", "executor": "ssh_node", "params": {}}, parent
+    )
+    assert _alert_unschedulable_jobs(store) == 1
+    assert _alert_open(store, f"parent-paused:{jid}") is True
+
+
+def test_terminal_parent_not_flagged(store: Store) -> None:
+    """The alert reads the SAME predicate as the claim gate: a done
+    parent's stale ``waiting-for:`` tag neither blocks the claim nor
+    flags an alert."""
+    parent = _paused_parent(store, "waiting-for:fleet", status="done")
+    jid = _queue(
+        store, {"job_type": "demo", "executor": "ssh_node", "params": {}}, parent
+    )
+    assert _alert_unschedulable_jobs(store) == 0
+    assert _alert_open(store, f"parent-paused:{jid}") is False
+
+
+def test_unparent_gated_executor_not_flagged(store: Store) -> None:
+    """``coordinator`` never passes ``parent_not_paused`` — the claim
+    gate doesn't bind its jobs, so no parent-pause alert (the unschedulable
+    check below stays the only scheduler surface for that lane)."""
+    parent = _paused_parent(store, "halt:manual")
+    jid = _queue(
+        store, {"job_type": "demo", "executor": "coordinator", "params": {}}, parent
+    )
+    assert _alert_unschedulable_jobs(store) == 0
+    assert _alert_open(store, f"parent-paused:{jid}") is False

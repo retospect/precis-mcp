@@ -126,11 +126,13 @@ from precis.workers.executors._common import (
     _DEFAULT_JOB_PRIO,
     CLAIMABLE,
     JOB_EVENT_KIND,
+    PARENT_GATED_EXECUTORS,
     RELEASE_LEG_JOB_TYPES,
     advertised_by_host,
     append_chunk,
     effective_requires,
     job_type_requires,
+    parent_pause_gaps,
     placement_gap,
     placement_requires,
     release_job_reservation,
@@ -778,6 +780,17 @@ def _alert_unschedulable_jobs(store: Store) -> int:
     one live host advertises ALL of them (:func:`placement_gap`); that
     applies to pinned rows too (only the pinned host is looked at).
 
+    gr575883: a job on a parent-gated executor (``ssh_node`` /
+    ``claude_docker`` / ``devin_api`` — the ``parent_not_paused`` claim
+    gate) whose parent todo carries an open pause tag while NOT terminal
+    is equally stuck — no claim will ever pick it up while the tag
+    stands. Raise a second ``warn`` alert naming the blocking tags
+    (:func:`parent_pause_gaps`, the operator-visible twin of the claim
+    gate), so a parked job says WHY it waits, as ``placement_gap`` does
+    for placement. A terminal parent (done / won't-do / auto-timeout)
+    neither blocks the claim nor flags — the same shared predicate
+    decides both.
+
     Also resolves any open ``scheduler`` alert whose fingerprint isn't in
     this pass's live set — the job left ``STATUS:queued`` or the capability
     got advertised — so alerts don't accumulate forever (gr254322).
@@ -812,11 +825,33 @@ def _alert_unschedulable_jobs(store: Store) -> int:
             """,
             (list(CLAIMABLE), _UNSCHEDULABLE_SCAN_CAP),
         ).fetchall()
+        paused_parents = parent_pause_gaps(conn)
     n = 0
     live: set[str] = set()
     for raw_id, raw_meta in rows:
         ref_id = int(raw_id)
         meta = dict(raw_meta or {})
+        blocking = paused_parents.get(ref_id)
+        if blocking:
+            fingerprint = f"parent-paused:{ref_id}"
+            tags = sorted(blocking)
+            raise_alert(
+                store,
+                source=_SCHEDULER_ALERT_SOURCE,
+                fingerprint=fingerprint,
+                title=f"Job #{ref_id} queued behind paused parent ({', '.join(tags)})",
+                detail=(
+                    f"Parent todo carries open pause tag(s) {tags} and is "
+                    "not terminal, so the parent_not_paused claim gate skips "
+                    f"this job on every parent-gated executor "
+                    f"({', '.join(PARENT_GATED_EXECUTORS)}). Clear the tag "
+                    "(or close the parent) to release it."
+                ),
+                severity="warn",
+                subject_ref_id=ref_id,
+            )
+            live.add(fingerprint)
+            n += 1
         requires = effective_requires(meta)
         if meta.get("executor") in ("coordinator", "job_inproc"):
             # gr335087/gr537770: a job_type's declared capability on a lane

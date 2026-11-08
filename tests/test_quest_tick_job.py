@@ -1231,6 +1231,22 @@ class TestSimWaitSetReachesBarrierFanout:
         )
         assert qt._queued_sim_count(store) == 0
 
+    def test_terminal_parent_seed_is_pending_not_blocked(self, store: Any) -> None:
+        """gr575883: a seed whose parent todo is DONE but still carries
+        its ``child-failed:`` tag is claimable again — the shared parent
+        gate exempts terminal parents — so await must count it PENDING,
+        and the starvation gate must count it as occupying compute."""
+        from precis.store import Tag
+
+        qid, cand = self._serving_candidate(store)
+        seed = self._nested_seed_job(store, cand)
+        parent = self._parent_todo_of(store, seed)
+        store.add_tag(parent, Tag.open("child-failed:1"), set_by="system")
+        store.add_tag(parent, Tag.closed("STATUS", "done"), set_by="agent")
+        assert seed in qt._pending_sim_ids(store, qid)
+        assert seed not in qt._blocked_sim_ids(store, qid)
+        assert qt._queued_sim_count(store) == 1
+
     def test_seed_counts_toward_global_starvation_gate(self, store: Any) -> None:
         _qid, cand = self._serving_candidate(store)
         self._nested_seed_job(store, cand)  # non-terminal

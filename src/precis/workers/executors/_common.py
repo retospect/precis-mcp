@@ -33,8 +33,12 @@ from precis.store._resource_slots_ops import (
     release_resource_slots,
     reserve_resource_slots,
 )
-from precis.store._todo_sql import _doable_exclusion_clause
+from precis.store._todo_sql import (
+    _doable_exclusion_clause,
+    parent_gate_exclusion_sql,
+)
 from precis.store.types import ChunkInsert, Tag
+from precis.todo import TERMINAL_TODO_STATUSES
 from precis.utils.llm.failure import backoff_hours as _failure_backoff_hours
 from precis.utils.secret_scan import mask_secrets, mask_secrets_deep
 from precis.workers.executors import suspended_job_types
@@ -745,6 +749,56 @@ def placement_gap(
     return tokens
 
 
+#: Executors whose claim passes ``parent_not_paused=True`` — the parent
+#: gate binds their queued jobs, so a non-terminal paused parent is a
+#: real claim block worth surfacing. Keep in sync with the
+#: ``claim_executor_jobs(parent_not_paused=True)`` call sites
+#: (``ssh_node``, ``claude_docker``, ``devin_api``).
+PARENT_GATED_EXECUTORS: tuple[str, ...] = ("ssh_node", "claude_docker", "devin_api")
+
+
+def parent_pause_gaps(conn: Connection) -> dict[int, frozenset[str]]:
+    """``ref_id -> the parent's blocking open tags`` for every claimable
+    (``STATUS:queued``/``yielded``) job on a parent-gated executor whose
+    parent is live and paused.
+
+    The operator-visible twin of the claim gate's parent exclusion
+    (gr575883): the sweeper's scheduler alert names these tags so a
+    parked job says WHY it waits — the same contract ``placement_gap``
+    gives a placement-blocked job. The read IS the shared
+    :func:`~precis.store._todo_sql.parent_gate_exclusion_sql` predicate,
+    so the alert fires exactly when (and only when) the claim gate
+    blocks; a terminal parent's stale tags appear in no value."""
+    rows = conn.execute(
+        f"""
+        SELECT r.ref_id, pt.value
+          FROM refs r
+          JOIN ref_tags prt ON prt.ref_id = r.parent_id
+          JOIN tags pt ON pt.tag_id = prt.tag_id
+         WHERE r.kind = 'job' AND r.retired_at IS NULL
+           AND r.meta->>'executor' = ANY(%s)
+           AND pt.namespace = 'OPEN'
+           AND {_doable_exclusion_clause("pt", "prt")}
+           AND {parent_gate_exclusion_sql("r")}
+           AND EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = %s AND t.value = ANY(%s)
+               )
+        """,
+        (
+            list(PARENT_GATED_EXECUTORS),
+            sorted(TERMINAL_TODO_STATUSES),
+            STATUS_NAMESPACE,
+            list(CLAIMABLE),
+        ),
+    ).fetchall()
+    gaps: dict[int, set[str]] = {}
+    for ref_id, value in rows:
+        gaps.setdefault(int(ref_id), set()).add(str(value))
+    return {ref_id: frozenset(v) for ref_id, v in gaps.items()}
+
+
 def _advertised_by_host(conn: Connection) -> dict[str, set[str]]:
     """``host -> {resources it currently advertises}`` from ``resource_slots``.
 
@@ -1279,7 +1333,12 @@ def claim_executor_jobs(
     **Parent gate (§23 #3).** When ``parent_not_paused`` is True, skip a
     job whose *parent* todo carries an open-namespace pause tag — a
     halted / asking-user / child-failed project must not burn heavy
-    compute until the owner unblocks it.
+    compute until the owner unblocks it. The gate reads the shared
+    :func:`~precis.store._todo_sql.parent_gate_exclusion_sql` predicate,
+    and a TERMINAL parent (``done`` / ``won't-do`` / ``auto-timeout``)
+    is exempt: a finished todo's stale pause tags (a leftover
+    ``waiting-for:fleet``) must not pin its queued jobs forever
+    (gr575883).
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -1300,14 +1359,16 @@ def claim_executor_jobs(
                )"""
 
     parent_sql = ""
+    parent_params: tuple[Any, ...] = ()
     if parent_not_paused:
+        # gr575883: the gate exists so a paused LIVE project doesn't burn
+        # compute — a terminal parent (done / won't-do / auto-timeout) is
+        # finished, so its stale pause tags (a leftover
+        # ``waiting-for:fleet``) must not pin the parent's queued jobs
+        # forever. The shared predicate carries the terminal carve-out.
         parent_sql = f"""
-           AND NOT EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                  WHERE rt.ref_id = r.parent_id
-                    AND t.namespace = 'OPEN'
-                    AND {_doable_exclusion_clause()}
-               )"""
+           AND NOT {parent_gate_exclusion_sql("r")}"""
+        parent_params = (sorted(TERMINAL_TODO_STATUSES),)
 
     # Operator hold switch (``PRECIS_SUSPENDED_JOB_TYPES``): a suspended
     # job_type is never claimed — fresh or reclaimed — so its queued rows
@@ -1656,6 +1717,7 @@ def claim_executor_jobs(
                 _NO_ADVERTISED_BOOT_ID,
                 STATUS_NAMESPACE,
                 list(TERMINAL),
+                *parent_params,
                 *suspend_params,
                 reclaim_limit,
             ),
@@ -1873,6 +1935,7 @@ def claim_executor_jobs(
             list(CLAIMABLE),
             STATUS_NAMESPACE,
             list(TERMINAL),
+            *parent_params,
             *suspend_params,
             *cap_params,
             fresh_limit * _CLAIM_OVERFETCH,
@@ -2406,6 +2469,7 @@ __all__ = [
     "JOB_SUMMARY_KIND",
     "MAX_ATTEMPTS",
     "MAX_PAUSE_PARKS",
+    "PARENT_GATED_EXECUTORS",
     "PAUSE_BACKOFF",
     "QUEUED",
     "RECLAIM_WHY_EPOCH",
@@ -2429,6 +2493,7 @@ __all__ = [
     "job_type_requires",
     "max_job_attempts",
     "maybe_reset_gpu_after_kill",
+    "parent_pause_gaps",
     "park_job_until",
     "placement_gap",
     "placement_requires",
