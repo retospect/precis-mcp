@@ -27,10 +27,11 @@ pinned to that host the same way.
   ``(no signal lines`` tail — the shared stream carrying only step
   headers, gr587536) is never posted: the job first re-reads the failed
   jobs' own logs through ``gh api actions/jobs/<id>/logs``
-  (:func:`_jobs_logs_rescue`) and appends the failure lines it finds;
-  still blind, it posts a ``blocked:`` note on each fix node and fails
-  instead, so no session is claimed on an empty brief — the tick's
-  retry cap files the ask.
+  (:func:`_jobs_logs_rescue`) and appends the failure lines it finds —
+  reserved the tail room under :data:`_DIGEST_CAP` so a long blind dump
+  cannot push them off the brief; still blind, it posts a ``blocked:``
+  note on the plan and each fix node and fails instead, so no session
+  is claimed on an empty brief — the tick's retry cap files the ask.
 * Probe mode (``params.probe`` + ``params.run_id``; ``todo_id``
   optional): ``scripts/ci-failed <run_id> --probe`` prints one
   ``probe: status=<code> accepted-permissions=<value|absent> run=<id>``
@@ -312,7 +313,7 @@ def _jobs_logs_rescue(
 
 
 def _blocked_posted(store: Any, todo_id: int, run_id: str) -> bool:
-    """``True`` when the fix node already carries this run's ``blocked:``
+    """``True`` when the todo already carries this run's ``blocked:``
     note — a retried digest must not spam one per attempt."""
     for c in _rs._todo_chunks(store, todo_id):
         if c.chunk_kind != "todo_comment":
@@ -401,6 +402,15 @@ def _probe_done(ctx: Any, log_text: str) -> bool:
     return True
 
 
+def _compose_digest(log_text: str, rescue: str) -> str:
+    """The masked digest through :data:`_DIGEST_CAP`, the rescued lines
+    reserved the tail room: they are the brief's only real signal, so a
+    blind dump past the cap loses the room, never them."""
+    tail = mask_secrets(rescue)
+    head = mask_secrets(log_text)[: max(0, _DIGEST_CAP - len(tail))]
+    return (head + tail)[:_DIGEST_CAP]
+
+
 def _digest_done(
     ctx: Any, handle: dict[str, Any], params: dict[str, Any], log_text: str
 ) -> bool:
@@ -450,8 +460,8 @@ def _digest_done(
         elif len(blind) == len(sections):
             # A fully blind digest is an empty brief: no fix session is
             # dispatched on it (gr587536 — td587533 was claimed on one).
-            # The fix nodes get the blocked: note; the job fails so the
-            # plan tick retries, then files the ask.
+            # The plan and the fix nodes get the blocked: note; the job
+            # fails so the plan tick retries, then files the ask.
             note = (
                 f"blocked: release {rn} is red at {sha9} (run {run_id}) "
                 "but its logs carry no failure lines the digest can read "
@@ -459,16 +469,17 @@ def _digest_done(
                 "brief; the digest job failed so the plan tick retries, "
                 "then files the ask."
             )
-            for tid in targets:
+            root = _release.plan_root(ctx.store, todo_id)
+            for tid in dict.fromkeys([root, *targets]):
                 if not _blocked_posted(ctx.store, tid, run_id):
                     _rs._append_comment(ctx.store, tid, note)
             ctx.append_chunk("job_summary", f"{NAME}: {note}")
             ctx.record_failure(
                 f"{NAME}: run {run_id} digest is blind ({why}); no brief "
-                "posted — blocked: notes on the fix nodes"
+                "posted — blocked: notes on the plan and the fix nodes"
             )
             return True
-    digest = mask_secrets((log_text or "") + rescue)[:_DIGEST_CAP]
+    digest = _compose_digest(log_text or "", rescue)
     text = "\n".join(
         [
             f"brief: release {rn} is red at {sha9} (range {rng}), "

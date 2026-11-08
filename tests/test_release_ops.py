@@ -2276,9 +2276,10 @@ def test_digest_still_blind_after_the_rescue_blocks_the_fix(
     store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No FAILED lines anywhere — even in the job logs: the fix node is
-    never dispatched on an empty brief. It gets one ``blocked:`` note
-    per run (a retried digest does not double-post) and the job fails so
-    the tick retries, then files the ask."""
+    never dispatched on an empty brief. The plan and the fix node each
+    get one ``blocked:`` note per run (a retried digest does not
+    double-post) and the job fails so the tick retries, then files the
+    ask."""
     mint = _cut(store)
     R.record_ci_verdict(store, SHA, RNG, "red", "31")
     digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
@@ -2308,6 +2309,12 @@ def test_digest_still_blind_after_the_rescue_blocks_the_fix(
     assert comments[0].startswith("blocked:")
     assert "run 31" in comments[0]
     assert "empty brief" in comments[0]
+    # The plan carries the same note — the blocked state is a plan-level
+    # fact, not only a fix-node one.
+    plan_blocked = [
+        c for c in _todo_comments(store, mint.root_id) if c.startswith("blocked:")
+    ]
+    assert plan_blocked == [comments[0]]
 
     # A retried digest on the same run posts no second blocked: note.
     ctx2 = Ctx(store, {"todo_id": digest_id})
@@ -2316,6 +2323,9 @@ def test_digest_still_blind_after_the_rescue_blocks_the_fix(
     assert crd.poll(ctx2, handle2) is True
     assert "digest is blind" in ctx2.failures[0]
     assert _todo_comments(store, fix_id) == comments
+    assert [
+        c for c in _todo_comments(store, mint.root_id) if c.startswith("blocked:")
+    ] == plan_blocked
 
 
 def test_digest_partly_blind_posts_the_signal_it_has(
@@ -2353,6 +2363,45 @@ def test_digest_partly_blind_posts_the_signal_it_has(
     assert len(comments) == 1
     assert comments[0].startswith("brief:")
     assert "FAILED tests/a.py::t1 - boom" in comments[0]
+
+
+def test_digest_rescue_survives_a_blind_dump_past_the_cap(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rescued FAILED lines are the brief's only real signal: a
+    blind dump past ``_DIGEST_CAP`` must not push them off the posted
+    comment — the log tail loses the room, the rescue keeps it."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    monkeypatch.setattr(
+        crd,
+        "_gh",
+        _gh_stub_responses(
+            [{"name": "gate-fast (3.13, 1)", "id": 555, "conclusion": "failure"}],
+            {"555": "+ pytest -q\nFAILED tests/x.py::t - assert 1 == 2\n"},
+        ),
+    )
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    assert ctx.failures == []
+    _exit(
+        checkout,
+        0,
+        "== gate-fast (3.13, 1) ==\n"
+        "  (no signal lines — last 2 of 2 lines)\n"
+        + "  step noise\n"
+        * (crd._DIGEST_CAP // 11 + 50),
+    )
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    comments = _todo_comments(store, fix_id)
+    assert len(comments) == 1
+    text = comments[0]
+    assert text.startswith("brief:")
+    assert "jobs-logs read" in text
+    assert "FAILED tests/x.py::t - assert 1 == 2" in text
 
 
 # ── release_confirm (td573432) ────────────────────────────────────
