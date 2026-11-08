@@ -620,15 +620,17 @@ def test_submit_hands_resolved_credentials_to_the_child_env(
     probe credentials on the WORKER — read-only — and hands them down
     through ``env`` only, each only when its adapter is probed
     (gr592265). Presence is asserted by key NAME; the values never reach
-    the handle, a chunk or meta."""
+    the handle, a chunk or meta. Both credentials start INHERITED in the
+    worker's env (td592904): the kimi key must be stripped, not ride the
+    copy of ``os.environ`` down to the child."""
     from precis import secrets
     from precis.utils import claude_oauth
     from precis.utils.llm import kimi
     from precis.workers.job_types import run_slice
 
     monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(tmp_path))
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    monkeypatch.delenv(kimi.API_KEY_REF, raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "inherited-oauth")
+    monkeypatch.setenv(kimi.API_KEY_REF, "inherited-kimi")
 
     def fake_ensure(env: dict[str, str]) -> None:
         env["CLAUDE_CODE_OAUTH_TOKEN"] = "oauth-test-value"
@@ -666,13 +668,16 @@ def test_probe_child_env_resolves_only_the_probed_adapters_credentials(
     credentials of the adapters in its argv — a devin-only pass carries
     neither the OAuth token nor the kimi key, a claude-only pass the
     token but no key, a kimi-only pass the key but no token. The
-    resolvers themselves run only when their adapter is probed."""
+    resolvers themselves run only when their adapter is probed. Both
+    credentials start INHERITED in the worker's env (td592904): the
+    child env is a copy of ``os.environ``, so an adapter's absence must
+    strip its credential, not just skip resolving it."""
     from precis import secrets
     from precis.utils import claude_oauth
     from precis.utils.llm import kimi
 
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    monkeypatch.delenv(kimi.API_KEY_REF, raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "inherited-oauth")
+    monkeypatch.setenv(kimi.API_KEY_REF, "inherited-kimi")
     resolved: list[str] = []
 
     def fake_ensure(env: dict[str, str]) -> None:

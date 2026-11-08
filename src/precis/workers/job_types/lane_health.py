@@ -455,18 +455,24 @@ def _probe_child_env(store: Store, adapters: list[str]) -> dict[str, str]:
     only for a ``claude_p`` pass and the kimi key only for a
     ``kimi_tree`` one: a devin/codex-only pass carries neither
     (gr592265). Both reads are read-only (review R2-5):
-    :func:`ensure_oauth_token` reveals the vault token, never mints or
+    :func:`claude_oauth.ensure_oauth_token` reveals the vault token, never mints or
     refreshes; the kimi key resolves against the worker's bound store
     the way :func:`run_slice._kimi_launch_env` does. The values go into
     the child's env on this host and nowhere else — never the handle,
-    meta, a chunk or the log (review R2-1)."""
+    meta, a chunk or the log (review R2-1). Because the base is the
+    worker's whole ``os.environ``, each credential is also REMOVED when
+    its adapter is absent — an inherited ``CLAUDE_CODE_OAUTH_TOKEN`` or
+    ``KIMI_CODE_API_KEY`` must not ride a devin/codex-only pass down to
+    the child (td592904)."""
     from precis import secrets
-    from precis.utils.claude_oauth import ensure_oauth_token
+    from precis.utils import claude_oauth
     from precis.utils.llm import kimi
 
     env = dict(os.environ)
     if "claude_p" in adapters:
-        ensure_oauth_token(env)
+        claude_oauth.ensure_oauth_token(env)
+    else:
+        env.pop(claude_oauth.ENV_VAR, None)
     if "kimi_tree" in adapters:
         try:
             key = secrets.get_secret(kimi.API_KEY_REF, store=store)
@@ -475,6 +481,8 @@ def _probe_child_env(store: Store, adapters: list[str]) -> dict[str, str]:
             key = None
         if key:
             env[kimi.API_KEY_REF] = key
+    else:
+        env.pop(kimi.API_KEY_REF, None)
     return env
 
 
