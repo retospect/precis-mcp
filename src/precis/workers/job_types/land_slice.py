@@ -10,11 +10,16 @@ the deny-path check.
 
 Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
 
-* :func:`submit` reads the squash subject from the branch
-  (:func:`squash_subject`: the slice's commit subject, its trailing handle
-  list made to carry ``(td<id>)`` so ``scripts/lib/land_notify.py`` moves
-  the todo, capped at 72 bytes) and launches ``scripts/ship --quick
-  "<subject>"`` detached in the worktree (``PRECIS_SHIP_BIN`` overrides the
+* :func:`submit` reads the squash subject (:func:`squash_subject`): the
+  brief's stated ``subject:`` line (:func:`_node_subject` — the todo body,
+  then the newest ``brief:``/``handoff:`` comment) when present, else the
+  oldest non-test/wip commit subject naming ``td<todo_id>``, else the
+  last non-test/wip commit; its trailing handle list is made to carry
+  ``(td<id>)`` so ``scripts/lib/land_notify.py`` moves the todo, the
+  whole capped at :data:`SUBJECT_CAP` characters cut at a word boundary
+  (gr574383). Then it launches
+  ``scripts/ship --quick "<subject>"`` detached in the worktree
+  (``PRECIS_SHIP_BIN`` overrides the
   path; ``PRECIS_SHIP_VERBOSE=1`` so the log holds the whole transcript;
   ``PRECIS_GATE_N`` caps the checked gate's xdist workers at
   :func:`test_nproc` — ``PRECIS_LAND_TEST_NPROC``, default 3 — because a
@@ -176,8 +181,12 @@ log = logging.getLogger(__name__)
 
 NAME = "land_slice"
 
-#: ``scripts/ship``'s subject cap, in bytes.
-SUBJECT_CAP = 72
+#: ``scripts/ship``'s subject hard limit, in CHARACTERS
+#: (``ship_subject_lint`` counts UTF-8 code points and refuses past 120;
+#: 72 is only its "aim for <=72" note). This used to be a 72-BYTE cap, so
+#: a subject that fit the real limit was shortened for the appended
+#: handles — and cut mid-word (gr574383).
+SUBJECT_CAP = 120
 _DEFAULT_WALL_S = 3600
 _TAIL_CAP = 2000
 
@@ -317,8 +326,9 @@ COMPATIBLE_EXECUTORS: frozenset[str] = frozenset({"ssh_node"})
 REQUIRES: frozenset[str] = frozenset()
 
 DESCRIPTION: str = (
-    "Land one finished slice: scripts/ship --quick with the slice's commit "
-    "subject in its worktree, the landed sha on the todo and into the plan's "
+    "Land one finished slice: scripts/ship --quick with the squash subject "
+    "(the brief's `subject:` line, else the last non-test commit's) in its "
+    "worktree, the landed sha on the todo and into the plan's "
     "pending sha-in-prod gate, then delete the worktree and the slice/<id> "
     "branch (local and origin). A red ship reopens the todo with attempt:<n>; "
     "a refusal about main's state (drift guard) retries ship every 30 min, up to 8 times. "
@@ -579,15 +589,11 @@ def _pending_gates(store: Any, plan_tag: str, todo_id: int) -> list[tuple[int, b
 # ── Subject ────────────────────────────────────────────────────────
 
 
-def _cap_bytes(text: str, cap: int) -> str:
-    return text.encode("utf-8")[: max(cap, 0)].decode("utf-8", errors="ignore")
-
-
 def with_handle(subject: str, todo_id: int) -> str:
     """``subject`` with ``td<todo_id>`` in its trailing handle list (added
     to an existing ``(grN)`` list, else appended as `` (td<id>)``), the
     text before the list trimmed so the whole fits :data:`SUBJECT_CAP`
-    bytes."""
+    characters."""
     subject = " ".join(subject.split())
     handle = f"td{todo_id}"
     m = _HANDLES_RE.search(subject)
@@ -599,24 +605,70 @@ def with_handle(subject: str, todo_id: int) -> str:
             handles = f"{handles}, {handle}"
     tail = f" ({handles})"
     head = head.rstrip()
-    if len((head + tail).encode("utf-8")) > SUBJECT_CAP:
-        head = _cap_bytes(head, SUBJECT_CAP - len(tail.encode("utf-8"))).rstrip()
+    if len(head + tail) > SUBJECT_CAP:
+        head = _rs.cap_subject_chars(head, SUBJECT_CAP - len(tail))
     return head + tail
 
 
-def squash_subject(subjects: list[str], todo_id: int) -> str | None:
-    """The squash subject from the branch's commit subjects (oldest
-    first): the oldest naming ``td<todo_id>`` in its handle list, else the
-    oldest, through :func:`with_handle`. ``None`` for no commits."""
+#: Commit subjects that never label the squash (gr574383): a
+#: red-test-first ``test`` commit and ship's own ``wip(<branch>):``
+#: snapshot. When every commit is one, the last stands in — a test
+#: subject still lands.
+_NO_LAND_RE = re.compile(r"^(?:test|wip)(?:\([^)]*\))?!?:")
+
+
+def squash_subject(
+    subjects: list[str], todo_id: int, node: str | None = None
+) -> str | None:
+    """The squash subject: ``node`` — the brief's stated ``subject:`` line
+    (:func:`_node_subject`) — when given; else from the branch's commit
+    subjects (oldest first), the oldest non-test/wip naming ``td<todo_id>``
+    in its handle list, else the LAST non-test/wip commit — never the
+    first commit blindly (gr574383: a red-test-first commit used to win,
+    and the slice landed under its test subject). Through
+    :func:`with_handle`. ``None`` for no commits."""
     subjects = [s.strip() for s in subjects if s.strip()]
     if not subjects:
         return None
+    if node and node.strip():
+        return with_handle(node, todo_id)
+    pool = [s for s in subjects if not _NO_LAND_RE.match(s)]
+    if not pool:
+        # Every commit is a test/wip: the last stands in — a test subject
+        # still lands, and the newest is still not the first blindly.
+        return with_handle(subjects[-1], todo_id)
     handle = f"td{todo_id}"
-    for s in subjects:
+    for s in pool:
         m = _HANDLES_RE.search(s)
         if m and handle in re.findall(_HANDLE, m.group(1)):
             return with_handle(s, todo_id)
-    return with_handle(subjects[0], todo_id)
+    return with_handle(pool[-1], todo_id)
+
+
+#: A ``subject:`` line's value is taken only when it already looks
+#: conventional — the same type set ``scripts/ship``'s subject lint
+#: enforces — so a prose "subject:" in a brief cannot poison the land.
+_SUBJECT_LINE_RE = re.compile(
+    r"^subject:\s*("
+    r"(?:feat|fix|docs|test|chore|build|refactor|perf|ci|release|revert)"
+    r"(?:\([^)]*\))?!?: \S.*)$"
+)
+
+
+def _node_subject(store: Any, todo_id: int) -> str | None:
+    """The brief's stated squash subject: the first conventional
+    ``subject:`` line on the todo — its body first, then the newest
+    ``brief:``/``handoff:`` comment (the builder's final hand-off may
+    carry one). ``None`` when the brief states none (gr574383)."""
+    if store is None:
+        return None
+    body, latest = _rs._brief_parts(store, todo_id)
+    for text in (body, latest or ""):
+        for line in text.splitlines():
+            m = _SUBJECT_LINE_RE.match(line.strip())
+            if m:
+                return m.group(1).strip()
+    return None
 
 
 def _branch_subjects(tree: Path) -> list[str] | None:
@@ -1346,7 +1398,9 @@ def submit(ctx: Any, spec: Any) -> Any:
             )
             return None
     subjects = _branch_subjects(tree)
-    subject = squash_subject(subjects or [], todo_id)
+    subject = squash_subject(
+        subjects or [], todo_id, node=_node_subject(ctx.store, todo_id)
+    )
     if subject is not None and pr is not None and pr.get("title"):
         from precis.plans import pr_class
 

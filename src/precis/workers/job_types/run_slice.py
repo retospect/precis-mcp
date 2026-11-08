@@ -1183,7 +1183,9 @@ def render_brief(
         f"{n + 2}. Commit on `{slice_branch(todo_id)}` with a conventional "
         f"subject (`type(scope): what (td{todo_id})`, at most 72 bytes), "
         "message via `git commit -F scratch/commit-msg.txt`. One commit "
-        "is best: the lander squashes the branch under that subject.",
+        "is best: the lander squashes the branch under that subject — or "
+        "under a `subject: type(scope): what` line in your final message "
+        "when you state one (it wins over every commit subject).",
         f"{n + 3}. Leave the working tree clean (`git status --porcelain` "
         "prints nothing). If your sandbox refuses `git commit` (a "
         "read-only `.git`), stop with the changes in the working tree and "
@@ -2371,15 +2373,36 @@ def _branch_state(tree: Path) -> tuple[int | None, list[str]]:
 #: :func:`_commit_for_session` commits with it.
 COMMIT_MSG_REL = Path("scratch") / "commit-msg.txt"
 _SUBJECT_RE = re.compile(r"^[a-z]+(\([^)\s]+\))?!?: \S")
-_SUBJECT_CAP = 72
+#: ``scripts/ship``'s subject hard limit, in CHARACTERS
+#: (``ship_subject_lint`` counts UTF-8 code points and refuses past 120;
+#: 72 is only its "aim for <=72" note). Used to be a 72-BYTE cut, which
+#: mangled a subject the ship limit would have taken whole — mid-word
+#: (gr574383).
+_SUBJECT_CAP = 120
+
+
+def cap_subject_chars(text: str, cap: int = _SUBJECT_CAP) -> str:
+    """``text`` shortened to ``cap`` characters at the last word boundary
+    inside the cut — never inside a word (gr574383: a mid-word cut turned
+    "not" into "n" and the subject stopped saying what changed). The
+    boundary right after the first token — the ``type(scope):`` prefix —
+    does not count: that cut would drop the whole "what changed" clause,
+    so a text with no later boundary takes the hard character cut —
+    ship's lint counts characters, and the limit still has to hold."""
+    cut = text[: max(cap, 0)]
+    boundary = cut.rfind(" ")
+    if boundary > 0 and boundary != text.find(" "):
+        cut = cut[:boundary]
+    return cut.rstrip()
 
 
 def _commit_message(tree: Path, todo_id: int) -> str | None:
     """The session's ``scratch/commit-msg.txt`` with a landable subject, or
     ``None`` when the file is missing or empty. A first line that is not a
     conventional subject is demoted to the body under a synthesised one, and
-    an overlong subject is cut at :data:`_SUBJECT_CAP` bytes: the lander
-    squashes under that subject and refuses unprefixed ones."""
+    an overlong subject is cut at :data:`_SUBJECT_CAP` characters at a
+    word boundary: the lander squashes under that subject and refuses
+    unprefixed ones."""
     try:
         text = (tree / COMMIT_MSG_REL).read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -2392,10 +2415,8 @@ def _commit_message(tree: Path, todo_id: int) -> str | None:
     if not _SUBJECT_RE.match(subject):
         body = [subject, *body]
         subject = f"fix(slice): td{todo_id} session commit"
-    if len(subject.encode("utf-8")) > _SUBJECT_CAP:
-        subject = (
-            subject.encode("utf-8")[:_SUBJECT_CAP].decode("utf-8", "ignore").rstrip()
-        )
+    if len(subject) > _SUBJECT_CAP:
+        subject = cap_subject_chars(subject)
     return "\n".join([subject, *body]).strip() + "\n"
 
 
@@ -3424,6 +3445,7 @@ __all__ = [
     "PARAMS_SCHEMA",
     "PERMISSION_MODE",
     "REQUIRES",
+    "cap_subject_chars",
     "changed_paths",
     "deny_settings",
     "deny_violations",

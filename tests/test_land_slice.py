@@ -336,12 +336,85 @@ def test_validate_submit(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_squash_subject_picks_the_slice_commit() -> None:
     subjects = ["wip: scratch", "feat(a): the thing (td42)", "fix(a): lint (td42)"]
     assert land_slice.squash_subject(subjects, 42) == "feat(a): the thing (td42)"
-    # no commit names the slice: the oldest, with the handle appended
-    assert land_slice.squash_subject(["feat(a): b", "fix: c"], 42) == (
-        "feat(a): b (td42)"
+    # no commit names the slice: the LAST non-test commit, never the first
+    # commit blindly (gr574383)
+    assert land_slice.squash_subject(["feat(a): b", "fix: c"], 42) == ("fix: c (td42)")
+    # a red-test-first commit never labels the squash (gr574383)
+    assert (
+        land_slice.squash_subject(
+            [
+                "test(f): red tests for the thing (td42)",
+                "feat(f): the thing (td42)",
+            ],
+            42,
+        )
+        == "feat(f): the thing (td42)"
+    )
+    # nor does ship's wip snapshot commit
+    assert (
+        land_slice.squash_subject(
+            ["wip(slice/42): end-of-session snapshot", "fix(f): the thing"], 42
+        )
+        == "fix(f): the thing (td42)"
+    )
+    # every commit a test/wip: the last stands in — a test subject still
+    # lands rather than nothing
+    assert (
+        land_slice.squash_subject(
+            ["test(f): red (td42)", "test(f): still red (td42)"], 42
+        )
+        == "test(f): still red (td42)"
     )
     assert land_slice.squash_subject([], 42) is None
     assert land_slice.squash_subject(["  ", ""], 42) is None
+
+
+def test_squash_subject_prefers_the_stated_subject() -> None:
+    """gr574383: the brief's `subject:` line beats every commit subject."""
+    assert (
+        land_slice.squash_subject(
+            ["test(f): red tests (td42)", "feat(f): the commits (td42)"],
+            42,
+            node="fix(f): the stated subject (gr9)",
+        )
+        == "fix(f): the stated subject (gr9, td42)"
+    )
+    assert land_slice.squash_subject([], 42, node="fix(f): x") is None
+
+
+def test_node_subject_reads_the_brief() -> None:
+    """A conventional `subject:` line on the todo body wins; then the
+    newest brief:/handoff: comment (the builder's final hand-off); a
+    non-conventional line is prose, not a subject (gr574383)."""
+    store = _Store()
+    store.add_todo(42)
+    assert land_slice._node_subject(store, 42) is None
+    store.chunks.rows[42] = [
+        _Chunk(1, "the brief\n\nsubject: fix(b): the stated one (gr9)", "todo_body"),
+        _Chunk(
+            2,
+            "handoff: finished\nsubject: fix(c): the handoff one",
+            "todo_comment",
+        ),
+    ]
+    assert land_slice._node_subject(store, 42) == "fix(b): the stated one (gr9)"
+    # no body line: the newest handoff's line stands in
+    store.chunks.rows[42] = [
+        _Chunk(1, "the brief", "todo_body"),
+        _Chunk(2, "note: not a brief comment", "todo_comment"),
+        _Chunk(
+            3,
+            "handoff: finished\nsubject: fix(c): the handoff one",
+            "todo_comment",
+        ),
+    ]
+    assert land_slice._node_subject(store, 42) == "fix(c): the handoff one"
+    # prose "subject:" that is not a conventional subject is ignored
+    store.chunks.rows[42] = [
+        _Chunk(1, "subject: make it a one-line conventional subject", "todo_body")
+    ]
+    assert land_slice._node_subject(store, 42) is None
+    assert land_slice._node_subject(None, 42) is None
 
 
 def test_with_handle_merges_and_caps() -> None:
@@ -349,10 +422,31 @@ def test_with_handle_merges_and_caps() -> None:
     assert land_slice.with_handle("fix(x): y (gr7, td42)", 42) == (
         "fix(x): y (gr7, td42)"
     )
-    long = "feat(scope): " + "é" * 80 + " (td42)"
+    # The cap is ship's hard limit of 120 CHARACTERS — a subject that fits
+    # lands whole, handles appended (gr574383: this one is 95 characters
+    # and used to be shortened to 72 bytes, cut inside "not").
+    brief = (
+        "fix(extract): an index row such as m = 0 is data, not a "
+        "column-label row (gr573944)"
+    )
+    assert land_slice.with_handle(brief, 574224) == (
+        "fix(extract): an index row such as m = 0 is data, not a "
+        "column-label row (gr573944, td574224)"
+    )
+    # over the cap: cut at a word boundary, never inside a word
+    long = "feat(scope): " + "alpha " * 40 + "beta (td42)"
     capped = land_slice.with_handle(long, 42)
-    assert len(capped.encode("utf-8")) <= land_slice.SUBJECT_CAP
-    assert capped.endswith(" (td42)") and capped.startswith("feat(scope): é")
+    assert len(capped) <= land_slice.SUBJECT_CAP
+    assert capped.endswith(" (td42)")
+    head = capped[: -len(" (td42)")]
+    assert head.split()[-1] == "alpha"
+    # one giant word: no boundary after the prefix, so a hard character
+    # cut keeps the start of the clause rather than dropping it all
+    assert land_slice.with_handle("fix: " + "x" * 200, 42).startswith("fix: x")
+    long = "feat(scope): " + "é " * 80 + "(td42)"
+    capped = land_slice.with_handle(long, 42)
+    assert len(capped) <= land_slice.SUBJECT_CAP
+    assert capped.endswith("(td42)") and capped.startswith("feat(scope): é")
 
 
 # ── ship output ────────────────────────────────────────────────────
@@ -414,6 +508,42 @@ def test_submit_launches_ship_with_the_slice_subject(seams: dict[str, Any]) -> N
     assert (["log", "--reverse", "--format=%s", "origin/main..HEAD"], tree) in seams[
         "git"
     ]
+
+
+def test_submit_uses_the_stated_subject(seams: dict[str, Any]) -> None:
+    """gr574383: a `subject:` line on the todo beats the branch's commit
+    subjects — here a red-test-first commit that used to win."""
+    store = _Store()
+    store.add_todo(
+        42,
+        tags=("claimed-by:lane-claude-sub",),
+        comments=("handoff: done\nsubject: fix(stated): the brief said so",),
+    )
+    seams["subjects"] = [
+        "test(x): red tests for the thing (td42)",
+        "feat(x): the thing (td42)",
+    ]
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None
+    [(argv, _kw)] = seams["launch"]
+    assert argv[2] == "fix(stated): the brief said so (td42)"
+    assert handle["subject"] == argv[2]
+
+
+def test_submit_skips_a_red_test_first_subject(seams: dict[str, Any]) -> None:
+    """gr574383: no stated subject — the last non-test commit labels the
+    squash, never the red-tests-first one."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    seams["subjects"] = [
+        "test(x): red tests for the thing (td42)",
+        "feat(x): the thing (td42)",
+    ]
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None
+    [(argv, _kw)] = seams["launch"]
+    assert argv[2] == "feat(x): the thing (td42)"
+    assert handle["subject"] == argv[2]
 
 
 def test_submit_honours_the_ship_bin_seam(

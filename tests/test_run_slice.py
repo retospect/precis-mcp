@@ -3022,10 +3022,23 @@ def test_commit_message_demotes_a_bare_subject(tmp_path: Path) -> None:
     msg.write_text("Implemented the four fixes\nmore\n", encoding="utf-8")
     out = run_slice._commit_message(tmp_path, 42)
     assert out == "fix(slice): td42 session commit\nImplemented the four fixes\nmore\n"
+    # a subject inside ship's 120-character hard limit rides through
+    # whole (gr574383: 90 y's used to be cut at 72 BYTES, mid-word)
     msg.write_text("feat(x): " + "y" * 90 + "\n", encoding="utf-8")
     out = run_slice._commit_message(tmp_path, 42)
+    assert out == "feat(x): " + "y" * 90 + "\n"
+    # over the cap: a word-boundary cut, never inside a word
+    msg.write_text("feat(x): " + "alpha " * 40 + "beta\n", encoding="utf-8")
+    out = run_slice._commit_message(tmp_path, 42)
     assert out is not None
-    assert len(out.splitlines()[0].encode("utf-8")) <= 72
+    head = out.splitlines()[0]
+    assert len(head) <= 120 and head.split()[-1] == "alpha"
+    # one giant word: no boundary after the prefix, so a hard character
+    # cut keeps the clause's start
+    msg.write_text("feat(x): " + "y" * 200 + "\n", encoding="utf-8")
+    out = run_slice._commit_message(tmp_path, 42)
+    assert out is not None
+    assert len(out.splitlines()[0]) <= 120
     assert out.startswith("feat(x): yyy")
     msg.write_text("\n\n", encoding="utf-8")
     assert run_slice._commit_message(tmp_path, 42) is None
