@@ -188,6 +188,31 @@ def test_sub_refuses_to_break_a_reference(
     assert seeded["s1"] in draft.get(id=plain_h).body  # not half-applied
 
 
+def test_sub_skips_dangling_gate_on_code_chunk(
+    draft: DraftHandler, seeded: dict[str, str]
+) -> None:
+    """A ``code`` chunk's payload is verbatim source (gr592769): a
+    ``[dc…]`` token inside it is literal text, never a reference — the
+    same carve-out ``put``/``edit(text=)``/``edit(find=)`` already give
+    it. ``_substitute`` must too: a regex that lands a literal
+    ``[dc999999999]`` in code applies instead of refusing (and so
+    blocking) the whole draft-wide substitution."""
+    code = draft.put(
+        id=seeded["slug"],
+        chunk_kind="code",
+        text='example = "[HANDLE_HERE]"  # literal source, not a cite',
+        at={"last": True},
+    )
+    code_h = _h(code.body)
+    out = draft.edit(
+        id=seeded["slug"],
+        sub={"find": "HANDLE_HERE", "replace": "dc999999999"},
+        apply=True,
+    )
+    assert "1 replacement(s)" in out.body
+    assert '"[dc999999999]"' in draft.get(id=code_h).body
+
+
 def test_sub_leaves_a_preexisting_dead_ref_alone(
     draft: DraftHandler, seeded: dict[str, str], hub: Hub
 ) -> None:

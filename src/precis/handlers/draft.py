@@ -1564,9 +1564,13 @@ class DraftHandler(Handler):
 
         # Hard dangling-ref gate over EVERY chunk before the first write —
         # a regex that mangles a handle inside a `[…]` cite must not land,
-        # and must never land half-applied across the scope.
+        # and must never land half-applied across the scope. A ``code``
+        # chunk's payload is verbatim source (gr592769): a `[dc…]` token
+        # inside it is literal text, never a reference — the same carve-out
+        # put/edit(text=)/edit(find=) already apply.
         for _slug, c, new_text, _n in changes:
-            self._raise_on_new_dangling_refs(new_text, c.text or "")
+            if c.chunk_kind != "code":
+                self._raise_on_new_dangling_refs(new_text, c.text or "")
 
         from precis.pcb import datasheets
 
