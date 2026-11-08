@@ -4,8 +4,10 @@ gr588221 — the 2026-11-08 03:13Z incident: claude-sub's ``claude -p``
 answered "Not logged in" and every session on the lane failed until a
 human flipped ``enabled`` by hand. The hourly ``lane_health`` scheduler
 cadence mints one of these jobs (:func:`mint_health_job`); each enabled
-account on a launchable adapter gets a cheap auth probe — a one-turn
-CLI ping or the fixed provider endpoint, never an LLM call.
+account on a launchable adapter gets a cheap auth probe — the claude
+ping is a single one-word ``claude -p`` turn (``--max-turns 1``, a 20 s
+timeout) and every other probe is a read-only status call or one HTTPS
+GET (gr592265).
 
 The probe runs WHERE the sessions run (review B1): a detached
 submit/poll pair under ``ssh_node`` (the ``ci_red_digest`` shape), so
@@ -444,38 +446,44 @@ def _probe_adapters(store: Store) -> list[str]:
     )
 
 
-def _probe_child_env(store: Store) -> dict[str, str]:
+def _probe_child_env(store: Store, adapters: list[str]) -> dict[str, str]:
     """The detached probe child's env: the worker's own (its HOME/PATH/
-    logins ARE the probe surface — review B1) plus the two credentials
-    the child cannot resolve itself — it binds no store
-    (:func:`~precis.secrets.adopt_process_store` popped the DSN). Both
-    reads are read-only (review R2-5): :func:`ensure_oauth_token`
-    reveals the vault token, never mints or refreshes; the kimi key
-    resolves against the worker's bound store the way
-    :func:`run_slice._kimi_launch_env` does. The values go into the
-    child's env on this host and nowhere else — never the handle, meta,
-    a chunk or the log (review R2-1)."""
+    logins ARE the probe surface — review B1) plus ONLY the credentials
+    of the adapters the child actually probes — it binds no store
+    (:func:`~precis.secrets.adopt_process_store` popped the DSN), so
+    ``submit`` resolves them on the worker. The OAuth token resolves
+    only for a ``claude_p`` pass and the kimi key only for a
+    ``kimi_tree`` one: a devin/codex-only pass carries neither
+    (gr592265). Both reads are read-only (review R2-5):
+    :func:`ensure_oauth_token` reveals the vault token, never mints or
+    refreshes; the kimi key resolves against the worker's bound store
+    the way :func:`run_slice._kimi_launch_env` does. The values go into
+    the child's env on this host and nowhere else — never the handle,
+    meta, a chunk or the log (review R2-1)."""
     from precis import secrets
     from precis.utils.claude_oauth import ensure_oauth_token
     from precis.utils.llm import kimi
 
     env = dict(os.environ)
-    ensure_oauth_token(env)
-    try:
-        key = secrets.get_secret(kimi.API_KEY_REF, store=store)
-    except Exception:
-        log.warning("%s: %s unreadable at submit", NAME, kimi.API_KEY_REF)
-        key = None
-    if key:
-        env[kimi.API_KEY_REF] = key
+    if "claude_p" in adapters:
+        ensure_oauth_token(env)
+    if "kimi_tree" in adapters:
+        try:
+            key = secrets.get_secret(kimi.API_KEY_REF, store=store)
+        except Exception:
+            log.warning("%s: %s unreadable at submit", NAME, kimi.API_KEY_REF)
+            key = None
+        if key:
+            env[kimi.API_KEY_REF] = key
     return env
 
 
 def submit(ctx: Any, spec: Any) -> Any:
     """Detached submit half: launch ``python -m … lane_health probe``
-    under :func:`_probe_child_env` (the worker's env plus the resolved
-    credentials). Files land under ``ops_root()``'s ``lane-health/`` so
-    a reaped tree keeps the poll's reads."""
+    under :func:`_probe_child_env` (the worker's env plus only the
+    credentials of the adapters probed). Files land under
+    ``ops_root()``'s ``lane-health/`` so a reaped tree keeps the poll's
+    reads."""
     del spec
     adapters = _probe_adapters(ctx.store)
     if not adapters:
@@ -493,7 +501,7 @@ def submit(ctx: Any, spec: Any) -> Any:
             stdin=None,
             log=log_path,
             exit_file=exit_file,
-            env=_probe_child_env(ctx.store),
+            env=_probe_child_env(ctx.store, adapters),
         )
     except Exception as exc:
         log.warning("%s: probe launch failed", NAME, exc_info=True)

@@ -616,10 +616,11 @@ def test_submit_hands_resolved_credentials_to_the_child_env(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Review R2-1: the detached child binds no store (the worker's
-    ``adopt_process_store`` popped the DSN), so ``submit`` resolves both
+    ``adopt_process_store`` popped the DSN), so ``submit`` resolves the
     probe credentials on the WORKER — read-only — and hands them down
-    through ``env`` only. Presence is asserted by key NAME; the values
-    never reach the handle, a chunk or meta."""
+    through ``env`` only, each only when its adapter is probed
+    (gr592265). Presence is asserted by key NAME; the values never reach
+    the handle, a chunk or meta."""
     from precis import secrets
     from precis.utils import claude_oauth
     from precis.utils.llm import kimi
@@ -652,10 +653,53 @@ def test_submit_hands_resolved_credentials_to_the_child_env(
     [(_argv, kw)] = launches
     env = kw["env"]
     assert "CLAUDE_CODE_OAUTH_TOKEN" in env
-    assert kimi.API_KEY_REF in env
+    assert kimi.API_KEY_REF not in env  # no enabled kimi lane — not resolved
     surfaces = repr(handle) + repr(ctx.chunks) + repr(ctx.meta_set)
     assert "oauth-test-value" not in surfaces
     assert "kimi-test-value" not in surfaces
+
+
+def test_probe_child_env_resolves_only_the_probed_adapters_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr592265: a probe pass hands the detached child ONLY the
+    credentials of the adapters in its argv — a devin-only pass carries
+    neither the OAuth token nor the kimi key, a claude-only pass the
+    token but no key, a kimi-only pass the key but no token. The
+    resolvers themselves run only when their adapter is probed."""
+    from precis import secrets
+    from precis.utils import claude_oauth
+    from precis.utils.llm import kimi
+
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv(kimi.API_KEY_REF, raising=False)
+    resolved: list[str] = []
+
+    def fake_ensure(env: dict[str, str]) -> None:
+        resolved.append("oauth")
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = "oauth-test-value"
+
+    def fake_get(name: str, **kw: Any) -> str | None:
+        resolved.append(name)
+        return "kimi-test-value"
+
+    monkeypatch.setattr(claude_oauth, "ensure_oauth_token", fake_ensure)
+    monkeypatch.setattr(secrets, "get_secret", fake_get)
+
+    env = lane_health._probe_child_env(_STORE, ["devin_tree"])
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+    assert kimi.API_KEY_REF not in env
+    assert resolved == []
+
+    env = lane_health._probe_child_env(_STORE, ["claude_p"])
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-test-value"
+    assert kimi.API_KEY_REF not in env
+    assert resolved == ["oauth"]
+
+    env = lane_health._probe_child_env(_STORE, ["kimi_tree"])
+    assert env[kimi.API_KEY_REF] == "kimi-test-value"
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+    assert resolved == ["oauth", kimi.API_KEY_REF]
 
 
 def test_probe_kimi_tree_a_missing_key_is_unprobed(
