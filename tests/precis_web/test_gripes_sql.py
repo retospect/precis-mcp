@@ -176,17 +176,18 @@ def test_rows_serves_the_drift_status_the_count_surfaces(store: Any) -> None:
     assert rows[0]["status"] == "closed"
 
 
-def test_rows_offset_paging_distinct_ids_under_tied_updated_at(
+def test_rows_offset_paging_distinct_ids_under_tied_created_at(
     store: Any,
 ) -> None:
     """The lazy fragment's offset paging must not repeat or drop rows
-    when ``updated_at`` ties — the ``ref_id DESC`` tiebreaker is what
-    keeps pages disjoint. Seven ``done`` gripes on one timestamp page
-    3-at-a-time to 7 distinct ids in ref_id-descending order."""
+    when ``created_at`` ties — under the drain default (gr595573) the
+    ``ref_id ASC`` tail is what keeps pages disjoint. Seven ``done``
+    gripes on one timestamp page 3-at-a-time to 7 distinct ids in
+    ref_id-ascending order."""
     ids = _seed_cohort(store, "done", 7, "tied")
     with store.tx() as conn:
         conn.execute(
-            "UPDATE refs SET updated_at = '2026-01-01 00:00:00+00' WHERE kind = 'gripe'"
+            "UPDATE refs SET created_at = '2026-01-01 00:00:00+00' WHERE kind = 'gripe'"
         )
 
     pages = [
@@ -196,7 +197,7 @@ def test_rows_offset_paging_distinct_ids_under_tied_updated_at(
 
     assert len(got) == len(set(got)) == 7
     assert set(got) == set(ids)
-    assert got == sorted(ids, reverse=True)
+    assert got == sorted(ids)
 
 
 def test_rows_fetches_page_plus_one_to_detect_the_cap(store: Any) -> None:

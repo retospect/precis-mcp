@@ -208,11 +208,15 @@ search(kind="gripe", tags=["STATUS:open"])  # untriaged only — a literal tag p
 get(kind="gripe", id="/open")  # the live cohort (all non-terminal), 20 per page
 ```
 
-Queryless gripe browse sorts by PRIO, oldest first within a PRIO
-(unset PRIO counts as 5), so the longest-waiting gripe is on page 1.
-Under the header one line reads `N open · M older than 3d · oldest grX
-(D days) · K more past this page`. `sort='recency'` gives the
-newest-touched order instead.
+Queryless gripe browse sorts by the shared **drain** order (gr595573 —
+the same default the `/gripes` web view shows): explicit PRIO first
+where set (lower = hotter), then size `s` < `m` < `l` < unsized, then
+oldest first within a size — the queue that drains. Under the header
+one line reads `N open · M older than 3d · oldest grX
+(D days) · K more past this page`. `sort=` re-groups the queue:
+`drain` (default) | `oldest` | `newest` | `size` | `source` (human /
+agent / watchdog) | `status`; the legacy `prio` (unset sorts at 5) and
+`recency` (newest-touched) spellings still work.
 
 Need every id in a filtered set — a triage pass, a batch `get`?
 `view='ids'` renders one handle per line and nothing else, so a full

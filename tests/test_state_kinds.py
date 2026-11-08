@@ -456,7 +456,9 @@ class TestGripe:
             ).id
         )
 
-    def test_open_view_sorts_prio_then_oldest(self, gripe: GripeHandler) -> None:
+    def test_open_view_sorts_drain(self, gripe: GripeHandler) -> None:
+        """gr595573: /open and queryless search share the drain order —
+        explicit PRIO first, then size, then oldest."""
         fresh = self._gid(gripe, "fresh unprioritised")
         old = self._gid(gripe, "old unprioritised")
         urgent = self._gid(gripe, "urgent but new")
@@ -473,7 +475,7 @@ class TestGripe:
             pos = [body.index(t) for t in ("urgent but new", "old unprio", "fresh unp")]
             assert pos == sorted(pos), body
 
-        assert "(by prio)" in gripe.get(id="/open").body
+        assert "(by drain)" in gripe.get(id="/open").body
         recency = gripe.search(tags=["STATUS:open"], sort="recency").body
         assert "(by recency)" in recency
 

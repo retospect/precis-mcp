@@ -72,7 +72,7 @@ from precis.store._tag_filter import (
     wiki_fence,
 )
 from precis.store.types import ActorSlug, Ref, ResolvedHandle, Tag
-from precis.utils import handle_registry
+from precis.utils import gripe_order, handle_registry
 from precis.utils.authors import author_row_from_entry, entry_from_author_row
 from precis.utils.canon import lexical_q
 from precis.utils.title_views import title_plain_sql
@@ -3458,6 +3458,15 @@ class RefsMixin:
         "opens_on_asc": (
             "r.meta->>'opens_on' ASC NULLS LAST, r.updated_at DESC, r.ref_id DESC"
         ),
+        # The gripe ``sort=`` vocabulary (gr595573) — ``/gripes`` and the
+        # gripe MCP browse share ``precis.utils.gripe_order``, so one
+        # helper emits these fragments and the surfaces can't drift.
+        # ``gripe_drain`` is the default queue order: explicit PRIO first
+        # (lower = hotter), size s<m<l<unsized, oldest first.
+        **{
+            f"gripe_{name}": gripe_order.order_by_sql(name)
+            for name in gripe_order.SORT_VALUES
+        },
     }
 
     def touch_viewed(self, ref_id: int) -> None:

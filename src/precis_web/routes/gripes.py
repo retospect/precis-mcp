@@ -8,27 +8,33 @@ data-layer work: every mutation dispatches an existing verb (``tag`` /
 ``put`` / ``delete``) through the in-process runtime so validation and
 tree guards stay single-sourced with the MCP surface (see ``deps.py``).
 
-* ``GET /gripes[?status=<s>]`` — the selected filter's gripes inline
-  (default ``triaged``, the pick list; ``attention`` — the cohort the
-  nav badge counts — plus ``live`` / ``all`` / any one status by
-  ``status=``) under a row of real filter buttons with counts
-  (gr549794): the daily cohorts as buttons, every other status the
-  grouped count surfaces behind a ``more`` overflow, each carrying a
-  ``title=`` tooltip naming what it covers (gr549769). Only the
+* ``GET /gripes[?status=<s>][&sort=<k>]`` — the selected filter's
+  gripes inline (default ``triaged``, the pick list; ``attention`` —
+  the cohort the nav badge counts — plus ``live`` / ``all`` / any one
+  status by ``status=``) under a row of real filter buttons with
+  counts (gr549794): the daily cohorts as buttons, every other status
+  the grouped count surfaces behind a ``more`` overflow, each carrying
+  a ``title=`` tooltip naming what it covers (gr549769). Only the
   selected filter's rows render — the earlier per-status sections
   duplicated a cohort filter's rows across the status sections below
   it. The load is a single ``COUNT … GROUP BY`` status plus the
   selected rows. Retired gripes (merged/duplicate/junk soft-deletes)
   bucket under a ``retired`` pseudo-status; carries the filing form.
-* ``GET /gripes/rows?status=<s>[&offset=<n>]`` — the rows paging
-  fragment: one status's rows, on the same ``_rows`` query. Paged
-  ``_ROWS_PAGE`` at a time — the done bucket alone is ~1.9k rows, so
-  one filter switch must not ship the whole cohort; a trailing
+  ``sort=`` picks the queue order (gr595573) — ``drain`` (default:
+  explicit PRIO first, then size s<m<l<unsized, then oldest),
+  ``oldest``/``newest``/``size``/``source``/``status`` — the same
+  vocabulary ``search(kind='gripe', sort=…)`` takes, from the shared
+  :mod:`precis.utils.gripe_order` helper.
+* ``GET /gripes/rows?status=<s>[&offset=<n>][&sort=<k>]`` — the rows
+  paging fragment: one status's rows, on the same ``_rows`` query.
+  Paged ``_ROWS_PAGE`` at a time — the done bucket alone is ~1.9k rows,
+  so one filter switch must not ship the whole cohort; a trailing
   "show more" row fetches the next page and swaps into the tbody.
   ``status`` is allowlisted to ``_STATUS_PARAM_VALUES`` plus whatever
   the grouped count surfaces — a drift status's filter stays
   reachable; an unknown value not in the DB is a 400 naming the
-  allowed list.
+  allowed list. ``sort`` is allowlisted to
+  ``gripe_order.SORT_VALUES`` the same way.
 * ``POST /gripes`` — ``put`` verb create. The filed text gets an
   attribution line naming the signed-in user appended to it (see
   ``_attribute``): a gripe's stored text *is* its whole record, and
@@ -67,6 +73,14 @@ from precis.errors import NotFound
 from precis.filing_origin import agentlog_model
 from precis.handlers._gripe_title import first_line
 from precis.runtime.trust_verb import trust_footer
+from precis.utils.gripe_order import (
+    DEFAULT_SORT,
+    SORT_VALUES,
+    STATUS_RANK,
+    order_by_sql,
+    size_letter_sql,
+    source_label_sql,
+)
 from precis_web.auth import current_user
 from precis_web.deps import (
     await_dispatch,
@@ -123,27 +137,9 @@ TERMINAL_VALUES: tuple[str, ...] = ("done", "wontfix")
 
 #: Every STATUS value the list can render, in display order — the
 #: transition vocabulary plus the ``done`` terminal state, terminal
-#: states last. Drives the list's CASE-rank sort and grouping.
-_RANKED_VALUES: tuple[str, ...] = (
-    "open",
-    "triaged",
-    "fixing",
-    "ready_for_fix",
-    "in_review",
-    "verify",
-    "auto_verify",
-    "user_verify",
-    "needs_spec",
-    "parked",
-    "done",
-    "wontfix",
-)
-
-#: SQL ``CASE`` fragment for the _RANKED_VALUES workflow rank — built
-#: once since the vocabulary is fixed, not user input.
-_STATUS_RANK_SQL = " ".join(
-    f"WHEN '{v}' THEN {i}" for i, v in enumerate(_RANKED_VALUES)
-)
+#: states last. Shared with the ``sort='status'`` rank and the MCP
+#: browse's drain order via ``precis.utils.gripe_order``.
+_RANKED_VALUES: tuple[str, ...] = STATUS_RANK
 
 #: Values ``GET /gripes/rows?status=`` accepts: the renderable STATUS
 #: vocabulary plus the ``retired`` pseudo-status (the soft-deleted
@@ -203,6 +199,20 @@ _STATUS_TOOLTIPS: dict[str, str] = {
     "retired": "soft-deleted gripes — merged, duplicate or junk",
     "live": "every live gripe — all statuses except done and wontfix",
     "all": "every gripe, including the retired bucket",
+}
+
+#: ``title=`` mouseover per ``?sort=`` value (gr595573) — what the queue
+#: order means, in the same row-of-links style as the status filters.
+_SORT_TOOLTIPS: dict[str, str] = {
+    "drain": (
+        "the drain order — explicit PRIO first (lower = hotter), then "
+        "size s < m < l < unsized, oldest first within a size"
+    ),
+    "oldest": "oldest filed first",
+    "newest": "newest filed first",
+    "size": "size s < m < l < unsized, oldest first inside",
+    "source": "who filed — human, then agent, then watchdog",
+    "status": "workflow order — open through wontfix, oldest first inside",
 }
 
 #: Rows per ``/gripes/rows`` page — the cap that keeps a closed-status
@@ -325,10 +335,11 @@ def _rows(
     store: Store,
     *,
     status_filter: str,
+    sort: str = DEFAULT_SORT,
     limit: int | None = None,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
-    """Live gripes with their STATUS/PRIO tags, workflow- then recency-sorted.
+    """Live gripes with their STATUS/PRIO tags, ``sort=``-ordered.
 
     ``status_filter``: ``'live'`` (everything but the TERMINAL_VALUES),
     ``'all'``, ``'retired'`` (the soft-deleted merged/duplicate/junk
@@ -336,7 +347,12 @@ def _rows(
     or any one status value. The ``/gripes/rows`` route
     allowlists to ``_STATUS_PARAM_VALUES`` first; this helper itself
     still takes any string — the status value is always a bind
-    parameter, never interpolated. ``limit``/``offset`` page the result
+    parameter, never interpolated. ``sort`` is a
+    ``gripe_order.SORT_VALUES`` name (allowlisted by the routes); its
+    ORDER BY comes from ``gripe_order.order_by_sql`` — the same
+    fragment the MCP browse reads, so the web list and
+    ``search(kind='gripe')`` can't order differently (gr595573).
+    ``limit``/``offset`` page the result
     (both bind parameters; callers fetch ``_ROWS_PAGE + 1`` to detect a
     next page). Shape mirrors ``alerts.py::_rows`` — one
     ``refs``/``ref_tags``/``tags`` join keyed on the STATUS axis, plus
@@ -373,23 +389,24 @@ def _rows(
                r.created_at,
                r.updated_at,
                COALESCE(t.value, 'open') AS status,
-               (SELECT p.value FROM ref_tags prt
-                  JOIN tags p ON p.tag_id = prt.tag_id
-                 WHERE prt.ref_id = r.ref_id AND p.namespace = 'PRIO'
-                 LIMIT 1) AS prio,
+               COALESCE(r.prio::text,
+                        (SELECT p.value FROM ref_tags prt
+                           JOIN tags p ON p.tag_id = prt.tag_id
+                          WHERE prt.ref_id = r.ref_id AND p.namespace = 'PRIO'
+                          LIMIT 1)) AS prio,
                (SELECT pj.value FROM ref_tags prj
                   JOIN tags pj ON pj.tag_id = prj.tag_id
                  WHERE prj.ref_id = r.ref_id AND pj.namespace = 'OPEN'
                    AND pj.value LIKE 'project:%%'
-                 ORDER BY pj.value LIMIT 1) AS project
+                 ORDER BY pj.value LIMIT 1) AS project,
+               {size_letter_sql()} AS size,
+               {source_label_sql()} AS source
           FROM refs r
           LEFT JOIN ref_tags rt ON rt.ref_id = r.ref_id
                AND rt.tag_id IN (SELECT tag_id FROM tags WHERE namespace = 'STATUS')
           LEFT JOIN tags t ON t.tag_id = rt.tag_id
          WHERE {" AND ".join(clauses)}
-         ORDER BY CASE COALESCE(t.value, 'open') {_STATUS_RANK_SQL} ELSE {len(_RANKED_VALUES)} END,
-                  r.updated_at DESC,
-                  r.ref_id DESC
+         ORDER BY {order_by_sql(sort)}
          {page}
     """
     with store.pool.connection() as conn:
@@ -405,6 +422,8 @@ def _rows(
                 "status": r[4] or "open",
                 "prio": r[5],
                 "project": r[6],
+                "size": r[7],
+                "source": r[8],
             }
         )
     return out
@@ -539,7 +558,9 @@ def _comment_stamp(dt: Any) -> str:
 
 
 @router.get("", response_class=HTMLResponse)
-async def gripes(request: Request, status: str = DEFAULT_STATUS) -> HTMLResponse:
+async def gripes(
+    request: Request, status: str = DEFAULT_STATUS, sort: str = DEFAULT_SORT
+) -> HTMLResponse:
     """The filter button row + the selected filter's rows (gr549794).
 
     The default filter is ``triaged`` — the pick list. The nav badge
@@ -548,18 +569,22 @@ async def gripes(request: Request, status: str = DEFAULT_STATUS) -> HTMLResponse
     ``?status=live`` / ``all`` / any one status reaches the rest — the
     buttons link to all of them with counts; statuses outside
     ``_FILTER_BUTTONS`` sit behind ``more`` so the row stays short.
+    ``sort=`` picks the shared queue order (gr595573, default
+    ``drain``) and rides along on every filter link.
 
     Two queries at load: the grouped count and the selected rows — the
     terminal/retired cohort (thousands of rows in prod) never leaves
     the DB until its filter is picked. ``status`` takes the same
     allowlist as ``/gripes/rows``."""
+    if sort not in SORT_VALUES:
+        return _unknown_sort(request, sort)
     store = get_store(request)
     counts = _status_counts(store)
     allowed = _allowed_statuses(counts)
     if status not in allowed:
         return _unknown_status(request, status, allowed)
     buttons, more_filters = _filter_buttons(counts, status)
-    selected_rows = _rows(store, status_filter=status, limit=_ROWS_PAGE + 1)
+    selected_rows = _rows(store, status_filter=status, sort=sort, limit=_ROWS_PAGE + 1)
     return templates.TemplateResponse(
         request,
         "gripes/list.html.j2",
@@ -568,6 +593,9 @@ async def gripes(request: Request, status: str = DEFAULT_STATUS) -> HTMLResponse
             "buttons": buttons,
             "more_filters": more_filters,
             "selected": status,
+            "sort": sort,
+            "sorts": _sort_links(status, sort),
+            "sort_qs": _sort_qs(sort),
             "selected_rows": selected_rows[:_ROWS_PAGE],
             "selected_next_offset": (
                 _ROWS_PAGE if len(selected_rows) > _ROWS_PAGE else None
@@ -600,9 +628,44 @@ def _unknown_status(
     )
 
 
+def _unknown_sort(request: Request, sort: str) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "error.html.j2",
+        {
+            "title": "Unknown gripe sort",
+            "detail": f"unknown sort {sort!r} — allowed: " + ", ".join(SORT_VALUES),
+            "status": 400,
+        },
+        status_code=400,
+    )
+
+
+def _sort_qs(sort: str) -> str:
+    """The ``&sort=`` query-string tail a link carries — empty at the
+    default so ``?status=open`` stays the canonical clean URL."""
+    return "" if sort == DEFAULT_SORT else f"&sort={sort}"
+
+
+def _sort_links(status: str, sort: str) -> list[dict[str, Any]]:
+    """The sort picker row under the filter buttons (gr595573): one
+    link per ``SORT_VALUES`` name preserving the selected filter. The
+    default sorts to the bare ``?status=`` URL — clicking ``drain`` is
+    how a non-default sort resets."""
+    return [
+        {
+            "sort": s,
+            "selected": s == sort,
+            "href": f"/gripes?status={status}{_sort_qs(s)}",
+            "tooltip": _SORT_TOOLTIPS[s],
+        }
+        for s in SORT_VALUES
+    ]
+
+
 @router.get("/rows", response_class=HTMLResponse)
 async def status_rows(
-    request: Request, status: str = "open", offset: int = 0
+    request: Request, status: str = "open", offset: int = 0, sort: str = DEFAULT_SORT
 ) -> HTMLResponse:
     """One status's rows — the shared lazy fragment every chip loads on
     first expand (gr520298), paged ``_ROWS_PAGE`` at a time.
@@ -615,13 +678,19 @@ async def status_rows(
     empty state that read as "no gripes". ``offset`` is the show-more
     row's continuation: an offset render is a bare ``<tr>`` page that
     swaps into the tbody in place of the show-more row that fetched
-    it."""
+    it. ``sort`` is the same ``SORT_VALUES`` allowlist as ``/gripes``
+    — the fragment re-lists under the picker's order, so the
+    continuation URL carries it along."""
+    if sort not in SORT_VALUES:
+        return _unknown_sort(request, sort)
     store = get_store(request)
     allowed = _allowed_statuses(_status_counts(store))
     if status not in allowed:
         return _unknown_status(request, status, allowed)
     offset = max(offset, 0)
-    rows = _rows(store, status_filter=status, limit=_ROWS_PAGE + 1, offset=offset)
+    rows = _rows(
+        store, status_filter=status, sort=sort, limit=_ROWS_PAGE + 1, offset=offset
+    )
     return templates.TemplateResponse(
         request,
         "gripes/_rows.html.j2",
@@ -630,6 +699,7 @@ async def status_rows(
             "rows_status": status,
             "next_offset": (offset + _ROWS_PAGE if len(rows) > _ROWS_PAGE else None),
             "append": offset > 0,
+            "sort_qs": _sort_qs(sort),
         },
     )
 

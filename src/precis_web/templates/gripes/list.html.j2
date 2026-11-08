@@ -47,9 +47,9 @@
    (gr549769). Less-used statuses sit behind ``more`` — same links.
    Only the selected filter's rows render: a cohort filter used to
    duplicate its rows across the per-status sections below. #}
-<div class="flex flex-wrap items-center gap-2 mb-4">
+<div class="flex flex-wrap items-center gap-2 mb-2">
   {% for b in buttons %}
-  <a href="/gripes?status={{ b.status | urlencode }}" title="{{ b.tooltip }}"
+  <a href="/gripes?status={{ b.status | urlencode }}{{ sort_qs }}" title="{{ b.tooltip }}"
      class="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition {% if b.selected %}border-accent-strong bg-accent-muted text-accent-deep{% else %}border-line bg-surface text-fg-secondary hover:bg-surface-subtle{% endif %}">
     {{ b.status }}
     <span class="rounded-full px-1 text-xs {% if b.selected %}text-accent-deep{% else %}text-fg-faint{% endif %}">{{ b.count }}</span>
@@ -62,7 +62,7 @@
     </summary>
     <div class="absolute z-10 mt-1 min-w-[11rem] rounded-md border border-line bg-surface py-1 shadow-lg">
       {% for m in more_filters %}
-      <a href="/gripes?status={{ m.status | urlencode }}" title="{{ m.tooltip }}"
+      <a href="/gripes?status={{ m.status | urlencode }}{{ sort_qs }}" title="{{ m.tooltip }}"
          class="flex items-center justify-between gap-4 px-3 py-1.5 text-sm {% if m.selected %}bg-accent-muted text-accent-deep font-medium{% else %}text-fg-secondary hover:bg-surface-subtle{% endif %}">
         {{ m.status }}
         <span class="text-xs text-fg-faint">{{ m.count }}</span>
@@ -71,6 +71,17 @@
     </div>
   </details>
   {% endif %}
+</div>
+
+{# Sort picker (gr595573): the shared queue orders — drain is the
+   default and links to the bare ?status= URL, so clicking it resets a
+   non-default sort. Every link preserves the selected filter. #}
+<div class="flex flex-wrap items-center gap-2 mb-4 text-sm">
+  <span class="text-fg-faint">sort:</span>
+  {% for s in sorts %}
+  <a href="{{ s.href }}" title="{{ s.tooltip }}"
+     class="inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-medium transition {% if s.selected %}border-accent-strong bg-accent-muted text-accent-deep{% else %}border-line bg-surface text-fg-secondary hover:bg-surface-subtle{% endif %}">{{ s.sort }}</a>
+  {% endfor %}
 </div>
 
 {% set rows = selected_rows %}{% set rows_status = selected %}{% set next_offset = selected_next_offset %}{% set append = false %}{% include "gripes/_rows.html.j2" %}

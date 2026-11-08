@@ -54,7 +54,9 @@ Surface (see ``precis-gripe-help``):
   via the chunk substrate, but the verb itself never reached the
   chunk table.)
 - Queryless browse (``get(id='/open')``, ``search(kind='gripe')``)
-  sorts by PRIO, oldest first within a PRIO, under an
+  sorts by the shared ``drain`` order (gr595573: explicit PRIO first
+  where set, then size s<m<l<unsized, then oldest first —
+  :mod:`precis.utils.gripe_order`), under an
   ``N open · M older than 3d · oldest grX (D days)`` line
   (:func:`age_summary`, also the session-start digest line). ``/open``
   and the ``status='open'`` shorthand both mean the live cohort —
@@ -115,6 +117,7 @@ from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store import Store, Tag
 from precis.store.types import ChunkInsert, Ref
+from precis.utils import gripe_order
 from precis.utils.db_retry import retry_locked
 from precis.utils.secret_scan import mask_secrets
 
@@ -556,11 +559,13 @@ class GripeHandler(NumericRefHandler):
     # tags=['STATUS:open'].
     live_status_spellings: ClassVar[frozenset[str]] = frozenset({"open"})
 
-    # Queryless browse is a triage queue: PRIO first, oldest first within a
-    # PRIO, so the long-waiting gripe is on page 1 instead of past it.
-    # sort='recency' still gives the newest-touched order.
-    browse_default_sort: ClassVar[str] = "prio"
+    # Queryless browse is the drain queue (gr595573 ruling): explicit
+    # PRIO first where set, then size s<m<l<unsized, then oldest first —
+    # the same order /gripes shows; ``sort=`` takes the shared
+    # vocabulary plus the legacy ``prio``/``recency`` spellings.
+    browse_default_sort: ClassVar[str] = "drain"
     prio_order_by: ClassVar[str] = "prio_age"
+    EXTRA_SORTS: ClassVar[frozenset[str]] = frozenset(gripe_order.SORT_VALUES)
 
     # gr572710: a gripe listing's tag cell shows only its ``cluster:``
     # chip — the tag that groups the queue. ``size:``, ``theme:``,
@@ -620,7 +625,7 @@ class GripeHandler(NumericRefHandler):
             page_size=size,
             page=page,
             offset=offset,
-            sort="prio" if view == "open" else "recency",
+            sort="drain" if view == "open" else "recency",
             exclude_tags=exclude,
             more_call=f"get(kind='gripe', id='/{view}', args={{{{{more_args}}}}})",
         )

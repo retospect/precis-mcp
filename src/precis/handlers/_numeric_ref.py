@@ -1176,14 +1176,15 @@ class NumericRefHandler(Handler):
         id_lo, id_hi = _parse_id_range(id_min, id_max, kind=self.kind)
         if sort is not None:
             sort = sort.strip().lower()
+            browse_sorts = {"prio", "recency"} | self.EXTRA_SORTS
             if (
                 self.kind not in {"gripe", "todo", "quest"}
                 or (q and q.strip())
-                or sort not in {"prio", "recency"}
+                or sort not in browse_sorts
             ):
                 raise BadInput(
                     "sort= is supported here only for queryless gripe/todo/quest browse",
-                    next="use sort='prio' or sort='recency' without q=",
+                    next=f"use one of {sorted(browse_sorts)} without q=",
                 )
         # A named browse sort also permits an unfiltered enumeration.
         # page=N → offset = (page-1) * page_size. Clamped to >= 0 so a
@@ -2207,6 +2208,20 @@ class NumericRefHandler(Handler):
             lines.append(handle)
         return "\n".join(lines)
 
+    def _order_key_for_sort(self, sort: str) -> str:
+        """``sort=`` name → the ``list_refs`` ``order_by`` key.
+
+        ``prio`` takes the kind's PRIO tie-break (``prio_order_by``); a
+        handler-declared :attr:`EXTRA_SORTS` value names its per-kind
+        ``<kind>_<sort>`` key on ``Store._LIST_ORDER_BY`` (gripe's
+        ``gripe_drain`` and friends, gr595573); anything else is recency.
+        """
+        if sort == "prio":
+            return self.prio_order_by
+        if sort in self.EXTRA_SORTS:
+            return f"{self.kind}_{sort}"
+        return "updated_desc"
+
     def _list_by_tags(
         self,
         tags: list[str],
@@ -2243,7 +2258,7 @@ class NumericRefHandler(Handler):
             tags=tags,
             limit=page_size,
             offset=offset,
-            order_by=self.prio_order_by if sort == "prio" else "updated_desc",
+            order_by=self._order_key_for_sort(sort),
             id_min=id_min,
             id_max=id_max,
             **filters,
