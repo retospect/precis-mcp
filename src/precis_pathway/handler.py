@@ -64,6 +64,33 @@ log = logging.getLogger(__name__)
 #: 'staircase' re-tilts the affine export — SPSO slice 3).
 _POTENTIAL_VIEWS = ("analysis", "profile", "compare", "staircase")
 
+#: The ladder rungs ``args={'tier'}`` accepts — the same vocabulary
+#: ``precis.quest.compute._TIERS`` declares, duplicated here (with
+#: :data:`_TIER_CASE`) so a search filter never imports the orchestrator.
+_SEARCH_TIERS = ("screening", "neb", "verify")
+
+#: SQL mirror of :func:`precis.quest.compute._pathway_tier` behind the
+#: ``args={'tier'}`` search filter (gr592660): the stamped ``meta.tier``
+#: wins; an unstamped run derives from ``results`` (``screening: true`` →
+#: 'screening', ``template='coadsorbed'`` with a falsy ``neb_schedule`` →
+#: 'verify'), else 'neb'. The pathway refs alias is ``p``.
+_TIER_CASE = """\
+CASE WHEN p.meta->>'tier' IN ('screening', 'neb', 'verify')
+          THEN p.meta->>'tier'
+     WHEN p.meta #> '{results,screening}' = 'true'::jsonb
+          THEN 'screening'
+     WHEN p.meta #>> '{results,template}' = 'coadsorbed'
+          AND (p.meta #> '{results,neb_schedule}' IS NULL
+               OR p.meta #> '{results,neb_schedule}'
+                  IN ('{}'::jsonb, '[]'::jsonb, 'false'::jsonb))
+          THEN 'verify'
+     ELSE 'neb' END"""
+
+
+def _like_escape(text: str) -> str:
+    """A literal LIKE pattern for ``text`` — the default ``\\`` escape."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
 
 def _finite(raw: Any, name: str, unit: str) -> float:
     if (
@@ -200,6 +227,9 @@ class PathwayHandler(Handler):
         # kinetics v2 D1 blocks, overlaid onto the YAML body (_env_overlay);
         # 'seeds' is mode='verify' only (the multi-seed dispatch count/list).
         "put": ArgsSpec({"environment", "objective", "manifest", "sweep", "seeds"}),
+        # Search filters on stored meta (gr592660) — the declaration is
+        # also what lets dispatch reject a bogus args= key naming these.
+        "search": ArgsSpec({"candidate", "engine", "status", "tier"}),
     }
 
     spec: ClassVar[KindSpec] = KindSpec(
@@ -216,7 +246,8 @@ class PathwayHandler(Handler):
             "get(kind='pathway', id='<name>', view='network'|'profile'|"
             "'methods'|'config'). search(kind='pathway', q='NO→NH3') finds "
             "pathways by slug/title/body text or a linked structure/quest "
-            "handle. Slice 0 runs EMT in-process (qualitative). "
+            "handle, filtered by args={'status'|'tier'|'engine'|'candidate'}. "
+            "Slice 0 runs EMT in-process (qualitative). "
             "See precis-pathway-help."
         ),
         supports_get=True,
@@ -926,61 +957,155 @@ class PathwayHandler(Handler):
         *,
         q: str | None = None,
         page_size: int = 10,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         """Find pathways by reaction label / slug words, or by a linked
         structure / quest handle (gr489581 — search used to be
-        Unsupported; agents detoured through structure fisheyes)."""
+        Unsupported; agents detoured through structure fisheyes).
+
+        A structure handle pivots on the pathway's ``meta.candidate_ref``
+        stamp — the same rows ``view='pathways'`` lists — plus link rows
+        either direction (gr592660: links alone found nothing, the stamp
+        is the live mark). A quest handle resolves the population
+        ``view='kinetics-summary'`` counts: direct ``serves`` links plus
+        pathways whose candidate serves the quest. ``args=`` filters the
+        matches on stored meta — ``status`` / ``tier`` / ``engine``
+        (a substring of ``meta.autocatpath_version``) / ``candidate``
+        (an ``st<N>`` handle, ref id or structure slug)."""
         store = self.hub.live_store
-        if not q or not q.strip():
+        text = (q or "").strip()
+        extra = args or {}
+        status_f = extra.get("status")
+        tier_f = extra.get("tier")
+        engine_f = extra.get("engine")
+        candidate_f = extra.get("candidate")
+        if not text and not any(
+            v is not None for v in (status_f, tier_f, engine_f, candidate_f)
+        ):
             raise BadInput(
                 "pathway search needs q= (a reaction label, slug words, "
-                "or a structure/quest handle)",
+                "or a structure/quest handle) or an args= filter",
                 next="search(kind='pathway', q='NO→NH3') · "
-                "search(kind='pathway', q='se123') · get(kind='pathway') "
-                "lists all",
+                "search(kind='pathway', q='se123') · "
+                "search(kind='pathway', args={'status': 'ready'}) · "
+                "get(kind='pathway') lists all",
             )
-        text = q.strip()
+        tier: str | None = None
+        if tier_f is not None:
+            tier = str(tier_f).strip().lower()
+            if tier not in _SEARCH_TIERS:
+                raise BadInput(
+                    f"unknown pathway tier {tier_f!r}",
+                    options=list(_SEARCH_TIERS),
+                    next="search(kind='pathway', args={'tier': 'screening'})",
+                )
+        cand_filter: str | None = None
+        if candidate_f is not None:
+            cand_txt = str(candidate_f).strip()
+            pc = handle_registry.parse(cand_txt)
+            if pc is not None and not pc[1] and pc[0] == "structure":
+                cand_filter = str(pc[2])
+            elif cand_txt.isdigit():
+                cand_filter = cand_txt
+            else:
+                c = store.get_ref(kind="structure", id=cand_txt)
+                if c is None:
+                    raise BadInput(
+                        f"args['candidate'] {candidate_f!r} names no live "
+                        "structure (an st<N> handle, ref id or slug)",
+                        next="search(kind='pathway', args={'candidate': 'st123'})",
+                    )
+                cand_filter = str(c.id)
 
-        # A handle (se123 / qu7 / pw12) names a neighbour to pivot from:
-        # every inbound 'related-to'/'serves' link from a pathway.
+        # A handle (st123 / qu7) names a neighbour to pivot from: inbound
+        # links for any kind; a structure adds its candidate_ref stamp
+        # and outgoing links, a quest the kinetics-summary scope.
         parsed = handle_registry.parse(text)
         via_handle: dict[int, str] = {}
-        if parsed is not None and not parsed[1]:
+        cand_ref = ""
+        quest_id = -1
+        if parsed is not None and not parsed[1] and parsed[0] != "pathway":
             tgt = store.get_ref(kind=parsed[0], id=parsed[2])
-            if tgt is not None and parsed[0] != "pathway":
+            if tgt is not None:
                 for ln in store.links_for(tgt.id, direction="in"):
                     via_handle[ln.src_ref_id] = f"linked from {text}"
+                if parsed[0] == "structure":
+                    cand_ref = str(tgt.id)
+                    for ln in store.links_for(tgt.id, direction="out"):
+                        via_handle.setdefault(ln.dst_ref_id, f"linked to {text}")
+                elif parsed[0] == "quest":
+                    quest_id = int(tgt.id)
 
-        esc = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        # ``_QUEST_SCOPE`` verbatim — one definition with
+        # view='kinetics-summary' (gr592660). It binds the ``p`` alias and
+        # %(quest_id)s, which this query provides.
+        from precis.utils.pathway_kinetics_summary import _QUEST_SCOPE
+
+        quest_cond = _QUEST_SCOPE.strip().removeprefix("AND ")
+
+        esc = _like_escape(text)
+        clauses = ""
+        params: dict[str, Any] = {
+            "pat": f"%{esc}%",
+            "via": sorted(via_handle) or [-1],
+            "cand_ref": cand_ref,
+            "quest_id": quest_id,
+            "lim": page_size,
+        }
+        if status_f is not None:
+            clauses += " AND p.meta->>'status' ILIKE %(status_f)s"
+            params["status_f"] = str(status_f)
+        if tier is not None:
+            clauses += f" AND ({_TIER_CASE}) = %(tier)s"
+            params["tier"] = tier
+        if engine_f is not None:
+            clauses += " AND p.meta->>'autocatpath_version' ILIKE %(engine_f)s"
+            params["engine_f"] = f"%{_like_escape(str(engine_f))}%"
+        if cand_filter is not None:
+            clauses += " AND p.meta->>'candidate_ref' = %(cand_filter)s"
+            params["cand_filter"] = cand_filter
+
         with store.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT r.ref_id, slug_id.id_value, r.title, "
-                "       r.meta->>'status', "
-                "       CASE WHEN slug_id.id_value ILIKE %(p)s "
-                "            OR r.title ILIKE %(p)s THEN 'slug/title' "
-                "            ELSE 'body' END AS matched_on "
-                "FROM refs r "
+                "SELECT p.ref_id, slug_id.id_value, p.title, "
+                "       p.meta->>'status', "
+                "       CASE WHEN slug_id.id_value ILIKE %(pat)s "
+                "            OR p.title ILIKE %(pat)s THEN 'slug/title' "
+                "            ELSE 'body' END AS matched_on, "
+                "       (%(cand_ref)s <> '' "
+                "        AND p.meta->>'candidate_ref' = %(cand_ref)s)"
+                "           AS is_candidate, "
+                f"       (%(quest_id)s > 0 AND {quest_cond}) AS via_quest "
+                "FROM refs p "
                 "LEFT JOIN ref_identifiers slug_id "
-                "  ON slug_id.ref_id = r.ref_id AND slug_id.id_kind = 'cite_key' "
-                "WHERE r.kind = 'pathway' AND r.retired_at IS NULL AND ("
-                "  slug_id.id_value ILIKE %(p)s OR r.title ILIKE %(p)s "
+                "  ON slug_id.ref_id = p.ref_id AND slug_id.id_kind = 'cite_key' "
+                "WHERE p.kind = 'pathway' AND p.retired_at IS NULL AND ("
+                "  slug_id.id_value ILIKE %(pat)s OR p.title ILIKE %(pat)s "
                 "  OR EXISTS (SELECT 1 FROM chunks c "
-                "             WHERE c.ref_id = r.ref_id "
-                "             AND c.retired_at IS NULL AND c.text ILIKE %(p)s)"
-                "  OR r.ref_id = ANY(%(via)s)"
-                ") ORDER BY r.updated_at DESC LIMIT %(lim)s",
-                {"p": f"%{esc}%", "via": sorted(via_handle) or [-1], "lim": page_size},
+                "             WHERE c.ref_id = p.ref_id "
+                "             AND c.retired_at IS NULL AND c.text ILIKE %(pat)s)"
+                "  OR p.ref_id = ANY(%(via)s)"
+                "  OR (%(cand_ref)s <> '' "
+                "      AND p.meta->>'candidate_ref' = %(cand_ref)s)"
+                f"  OR (%(quest_id)s > 0 AND {quest_cond})"
+                f"){clauses} ORDER BY p.updated_at DESC LIMIT %(lim)s",
+                params,
             ).fetchall()
+        label = text or "the args= filters"
         if not rows:
             return Response(
-                body=f"no pathways match {text!r} — get(kind='pathway') "
+                body=f"no pathways match {label!r} — get(kind='pathway') "
                 "lists all; a structure or quest handle finds linked pathways"
             )
-        lines = [f"# {len(rows)} pathway(s) matching {text!r}"]
-        for ref_id, slug, title, status, matched_on in rows:
-            via = via_handle.get(ref_id)
-            note = via or matched_on
+        lines = [f"# {len(rows)} pathway(s) matching {label!r}"]
+        for ref_id, slug, title, status, matched_on, is_cand, via_quest in rows:
+            note = (
+                f"candidate of {text}"
+                if is_cand
+                else via_handle.get(ref_id)
+                or (f"via {text}" if via_quest else matched_on)
+            )
             # gr553326: the pw<id> handle beside the slug — the slug alone
             # never reached the ref id the web reader keys on.
             handle = handle_registry.try_format("pathway", ref_id) or f"pw{ref_id}"

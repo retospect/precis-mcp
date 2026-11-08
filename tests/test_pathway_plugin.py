@@ -4038,3 +4038,126 @@ def test_search_finds_pathways_by_text_and_handle(pathway_store: Store) -> None:
     assert f"pw{ref.id}" in hit
     assert "no-to-nh3-pd" in h.search(q=f"st{other.id}").body
     assert "no pathways match" in h.search(q="zzzzz-nothing").body
+
+
+def test_search_resolves_candidate_stamp_and_quest_handle(
+    pathway_store: Store,
+) -> None:
+    """gr592660: a structure's pathways name it via ``meta.candidate_ref``
+    (the quest-harvest stamp — no link row), so a bare ``st<N>`` handle
+    returned "no pathways match" while ``view='pathways'`` listed them.
+    A ``qu<N>`` handle resolves the same population
+    ``view='kinetics-summary'`` counts."""
+    cand = pathway_store.insert_ref(
+        kind="structure", slug="se-cand", title="slab", meta={}
+    )
+    pathway_store.insert_ref(
+        kind="pathway",
+        slug="stamped-run",
+        title="NO → NH3 on Pd",
+        meta={"status": "ready", "candidate_ref": str(cand.id)},
+    )
+    # A structure → pathway related-to edge is a pivot too (related-to
+    # is symmetric; it can sit on either side).
+    linked = pathway_store.insert_ref(
+        kind="pathway", slug="linked-run", title="x", meta={"status": "ready"}
+    )
+    pathway_store.add_link(
+        src_ref_id=cand.id, dst_ref_id=linked.id, relation="related-to"
+    )
+    h = _handler(pathway_store)
+    body = h.search(q=f"st{cand.id}").body
+    assert "stamped-run" in body and "linked-run" in body
+    assert "candidate of" in next(l for l in body.splitlines() if "stamped-run" in l)
+
+    quest = pathway_store.insert_ref(
+        kind="quest", slug=None, title="the striving", meta={}
+    )
+    server = pathway_store.insert_ref(
+        kind="structure", slug="se-server", title="slab 2", meta={}
+    )
+    pathway_store.add_link(src_ref_id=server.id, dst_ref_id=quest.id, relation="serves")
+    pathway_store.insert_ref(
+        kind="pathway",
+        slug="quest-run",
+        title="y",
+        meta={"status": "ready", "candidate_ref": str(server.id)},
+    )
+    direct = pathway_store.insert_ref(
+        kind="pathway", slug="direct-serve", title="z", meta={"status": "ready"}
+    )
+    pathway_store.add_link(src_ref_id=direct.id, dst_ref_id=quest.id, relation="serves")
+    body = h.search(q=f"qu{quest.id}").body
+    # The serving structure's candidate, and the direct serves link.
+    assert "quest-run" in body and "direct-serve" in body
+    assert "stamped-run" not in body
+
+
+def test_search_args_filters_and_bad_input(pathway_store: Store) -> None:
+    """gr592660: ``args={'status','tier','engine','candidate'}`` filter the
+    matches on stored meta; declaring them is what lets dispatch reject a
+    bogus args= key naming the real ones (``ARGS_KEYS['search']``)."""
+    from precis.errors import BadInput
+
+    assert PathwayHandler.ARGS_KEYS["search"] == frozenset(
+        {"candidate", "engine", "status", "tier"}
+    )
+    cand = pathway_store.insert_ref(
+        kind="structure", slug="se-filter", title="slab", meta={}
+    )
+    pathway_store.insert_ref(
+        kind="pathway",
+        slug="alpha-run",
+        title="t",
+        meta={
+            "status": "ready",
+            "candidate_ref": str(cand.id),
+            "tier": "screening",
+            "autocatpath_version": "0.9.1",
+        },
+    )
+    # No tier stamp — the _pathway_tier derivation kicks in off results.
+    pathway_store.insert_ref(
+        kind="pathway",
+        slug="legacy-run",
+        title="t",
+        meta={"status": "failed", "results": {"screening": True}},
+    )
+    pathway_store.insert_ref(
+        kind="pathway",
+        slug="verify-run",
+        title="t",
+        meta={"status": "ready", "results": {"template": "coadsorbed"}},
+    )
+    pathway_store.insert_ref(
+        kind="pathway",
+        slug="neb-run",
+        title="t",
+        meta={"status": "ready", "autocatpath_version": "0.10.0"},
+    )
+    h = _handler(pathway_store)
+    body = h.search(q="run", args={"status": "ready"}).body
+    assert "alpha-run" in body and "neb-run" in body
+    assert "legacy-run" not in body
+    body = h.search(q="run", args={"tier": "screening"}).body
+    assert "alpha-run" in body and "legacy-run" in body
+    assert "neb-run" not in body
+    body = h.search(q="run", args={"tier": "verify"}).body
+    assert "verify-run" in body and "neb-run" not in body
+    assert "neb-run" in h.search(q="run", args={"tier": "neb"}).body
+    # engine is a substring match on meta.autocatpath_version.
+    assert "alpha-run" in h.search(q="run", args={"engine": "0.9"}).body
+    assert "neb-run" not in h.search(q="run", args={"engine": "0.9"}).body
+    # candidate takes the st<N> handle, a bare ref id or the slug.
+    for key in (f"st{cand.id}", str(cand.id), "se-filter"):
+        body = h.search(q="run", args={"candidate": key}).body
+        assert "alpha-run" in body and "neb-run" not in body, key
+    # A filter alone is a q-less browse.
+    assert "alpha-run" in h.search(args={"status": "ready"}).body
+    # Bad inputs refuse with the real vocabulary.
+    with pytest.raises(BadInput):
+        h.search(q="run", args={"tier": "bogus"})
+    with pytest.raises(BadInput):
+        h.search(q="run", args={"candidate": "no-such-structure"})
+    with pytest.raises(BadInput):
+        h.search()

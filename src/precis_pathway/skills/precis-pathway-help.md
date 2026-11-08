@@ -54,7 +54,13 @@ of them ranks
 it against every computed pathway for the same substrate→target.
 
 `search(kind='pathway', q='<reaction|slug words|st/qu handle>')` finds
-one by label or a linked neighbour; `get(kind='structure',
+one by label or a linked neighbour — a structure handle resolves both its
+`meta.candidate_ref` stamp and link rows, a quest handle the same
+population `view='kinetics-summary'` counts. `args=` filters on stored
+meta: `{'status': 'ready'}`, `{'tier': 'screening'|'neb'|'verify'}`,
+`{'engine': '<substring of meta.autocatpath_version>'}` and
+`{'candidate': '<st<N> handle|ref id|structure slug>'}`; a filter alone
+(without `q`) browses. `get(kind='structure',
 id='<candidate>', view='pathways')` lists every pathway that ran on that
 candidate (`meta.candidate_ref`) with status and a results-keys summary —
 the "which ready pathways of stN carry `che_affine`/`her`" read.

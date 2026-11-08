@@ -67,6 +67,9 @@ PASSTHROUGH = [
     ("estimate", "get"),
     ("pathway", "get"),
     ("pathway", "put"),
+    # pathway.search's meta filters (candidate/engine/status/tier) ride
+    # args= (gr592660).
+    ("pathway", "search"),
     ("se", "get"),
     ("se", "put"),
     ("se", "edit"),
