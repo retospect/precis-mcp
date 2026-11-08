@@ -881,6 +881,7 @@ class QuestHandler(NumericRefHandler):
                 "axis",
                 "page_size",
                 "offset",
+                "format",
             }
         ),
     }

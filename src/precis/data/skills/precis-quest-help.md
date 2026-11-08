@@ -279,7 +279,8 @@ panels, servers-lite) — readable without calling `get(view=…)`.
 
 `view='results'` is one row per candidate across
 *every* band (not just the frontier), grouped by lineage (dopant, then
-what varies) rather than band. It renders a TOON table by default;
+what varies) rather than band. It renders the compact agent table
+`precis-toon` documents by default;
 `args={'format': 'text'}` swaps in the fixed-width copy the tick
 prompt embeds — "what the next tick would see now". `view='results'`
 and `view='frontier'` are **budgeted** like the tick's copy (2500

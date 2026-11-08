@@ -177,6 +177,8 @@ def test_draft_outline_aliases_return_the_same_rows(
     assert aliased.startswith("interpreted:")
     assert not canonical.startswith("interpreted:")
     # The interpreted: note differs by spelling; the payload under it
-    # must not.
+    # must not. Inserts sharing one after: anchor queue in call order
+    # (gr592767), so rows 3–4 are para1/para2.
     assert aliased.split("\n", 1)[1] == canonical
-    assert "para4" in canonical and "para3" in canonical and "para5" not in canonical
+    assert "para1" in canonical and "para2" in canonical
+    assert "para0" not in canonical and "para3" not in canonical
