@@ -699,6 +699,119 @@ class TestStatusAndRubricViews:
         body = h.get(id=qid, view="status").body
         assert "striving dormant" in body
 
+    def test_status_view_fresh_quest_degrades(self, store: Any) -> None:
+        """gr592666 — a fresh quest reports every section empty rather
+        than raising."""
+        h = _handler(store)
+        qid = _created_id(h.put(text="A lone striving"))
+        body = h.get(id=qid, view="status").body
+        assert "momentum:" in body
+        assert "candidates: none yet" in body
+        assert "gaps (1):" in body and "thin-support" in body
+        assert "last tick: never" in body
+        assert "holds:" not in body
+
+    def test_status_view_carries_frontier_counts(self, store: Any) -> None:
+        """gr592666 — bands, trusted-per-axis counts and frontier handles,
+        the orientation data that used to need frontier+gaps+results."""
+        from precis.quest import compute as compute_mod
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A NO→NH₃ catalyst"))
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        cell = {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]}
+        sid = compute_mod.ensure_candidate(
+            store,
+            qid,
+            {
+                "name": "Fe",
+                "structure": {
+                    "cell": cell,
+                    "ops": [{"op": "add_atom", "element": "Fe", "frac": [0, 0, 0.5]}],
+                },
+            },
+        )
+        assert sid is not None
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=1,
+            max_disp=0.0,
+            energy=-9.5,
+        )
+        store.stamp_ref_meta(sid, {"barrier": 0.4, "barrier_trusted": True})
+        sid2 = compute_mod.ensure_candidate(
+            store,
+            qid,
+            {
+                "name": "Co",
+                "structure": {
+                    "cell": cell,
+                    "ops": [{"op": "add_atom", "element": "Co", "frac": [0, 0, 0.5]}],
+                },
+            },
+        )
+        assert sid2 is not None
+
+        body = h.get(id=qid, view="status").body
+        assert "objective: barrier (min)" in body
+        assert "1 frontier" in body
+        assert "1 awaiting" in body
+        # trusted-per-axis coverage: Fe's converged relax + trusted barrier
+        assert "barrier 1" in body
+        assert "energy 1" in body
+        assert f"st{sid} Fe" in body
+        assert "no-literature" in body
+
+    def test_status_view_names_last_tick(self, store: Any) -> None:
+        """gr592666 — the newest ``quest_tick`` job's created_at is the
+        last coordinator tick (same lookup the ops roll-up uses)."""
+        h = _handler(store)
+        qid = _created_id(h.put(text="A ticked striving"))
+        todo = store.insert_ref(kind="todo", slug=None, title="drive the quest")
+        store.insert_ref(
+            kind="job",
+            slug=None,
+            title="quest_tick",
+            meta={"job_type": "quest_tick", "params": {"quest_id": qid}},
+            parent_id=todo.id,
+        )
+        body = h.get(id=qid, view="status").body
+        assert re.search(r"last tick: \d{4}-\d{2}-\d{2} \d{2}:\d{2}Z", body)
+
+    def test_status_view_lists_holds_in_force(self, store: Any) -> None:
+        """gr592666 — operator holds surface so an agent doesn't re-dispatch
+        into them."""
+        h = _handler(store)
+        qid = _created_id(h.put(text="A held striving"))
+        store.stamp_ref_meta(
+            qid,
+            {
+                "fidelity_restale_cap": 0,
+                "fidelity_promote_neb": 0,
+                "compute_lane": "off",
+            },
+        )
+        body = h.get(id=qid, view="status").body
+        assert "holds:" in body
+        assert "fidelity_restale_cap=0" in body
+        assert "fidelity_promote_neb=0" in body
+        assert "compute_lane=off" in body
+
+    def test_status_view_inquiry_body_has_no_frontier_block(self, store: Any) -> None:
+        """An inquiry-body quest has no Pareto frontier at all (the frontier
+        view says so plainly) — status says it in one line."""
+        h = _handler(store)
+        qid = _created_id(h.put(text="An inquiry striving"))
+        store.stamp_ref_meta(qid, {"quest_body": "inquiry"})
+        body = h.get(id=qid, view="status").body
+        assert "inquiry body: no Pareto frontier" in body
+        assert "trusted:" not in body
+
     def test_rubric_view_empty(self, store: Any) -> None:
         h = _handler(store)
         qid = _created_id(h.put(text="An unrubriced striving"))

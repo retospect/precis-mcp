@@ -139,6 +139,13 @@ _META_ALLOWED_KEYS: frozenset[str] = frozenset(
     }
 )
 
+#: ``view='status'`` (gr592666) row caps — the read is a ~1 kB orientation
+#: digest that replaces a frontier+gaps+results round-trip; the full
+#: listings stay at those views.
+_STATUS_AXIS_CAP = 8
+_STATUS_FRONTIER_CAP = 4
+_STATUS_GAP_CAP = 5
+
 #: ``meta.reaction_config``'s allowed keys — the autocatpath ``Config``
 #: dataclass's field names (``autocatpath.config.Config``). The engine is an
 #: optional extra (``catalyst``) absent from the MCP-server install, so the
@@ -1552,9 +1559,21 @@ class QuestHandler(NumericRefHandler):
         return super().get(id=id, view=view, q=q, **_kw)
 
     def _render_status(self, ref: Ref) -> str:
-        """``view='status'`` — the lifecycle line only: STATUS value, prio,
-        horizon. The read ``get(id=N, view='status')`` agents reach for to
-        check whether a quest is still striving (gr489411)."""
+        """``view='status'`` — the one-call orientation read (gr592666).
+
+        The lifecycle line (STATUS, prio, horizon — the read agents reach
+        for to check whether a quest is still striving, gr489411) plus the
+        counts that used to need a frontier+gaps+results round-trip:
+        candidate bands + fidelity tiers and the trusted-per-axis coverage
+        the frontier header computes, the open exploration queue
+        (``view='gaps'``), the last coordinator tick, and the operator
+        holds in force (``fidelity_restale_cap=0`` is the master hold;
+        ``fidelity_promote_*=0`` holds one pass; ``compute_lane`` /
+        ``lit_lane`` ``off``). Sized to ~1 kB — listings cap at
+        ``_STATUS_*_CAP`` and point at the full views."""
+        from precis.quest import frontier as frontier_mod
+        from precis.quest import gaps as gapmod
+
         tags = self.store.tags_for(ref.id)
         status = _status_of(tags) or "active"
         meta = ref.meta or {}
@@ -1563,6 +1582,145 @@ class QuestHandler(NumericRefHandler):
             lines.append(f"priority: {ref.prio}")
         if meta.get("horizon"):
             lines.append(f"horizon: {meta['horizon']}")
+
+        live = gapmod._live_servers(self.store, ref.id)
+        m = gapmod.quest_momentum(self.store, ref.id, servers=live)
+        momentum = (
+            f"momentum: {m.label} · {m.recent_entries} recent log · "
+            f"{m.recent_server_events} server event"
+            f"{'' if m.recent_server_events == 1 else 's'}/"
+            f"{gapmod.MOMENTUM_WINDOW_DAYS}d"
+        )
+        if m.open_todo_servers:
+            momentum += (
+                f" · {m.open_todo_servers} open todo"
+                f"{'' if m.open_todo_servers == 1 else 's'}"
+            )
+        if m.blocked_todo_servers:
+            momentum += f" · {m.blocked_todo_servers} blocked (child-failed)"
+        lines.append(momentum)
+
+        # An inquiry or roadmap body has no Pareto frontier at all (the
+        # frontier view says so plainly) — say it in one line rather than
+        # emitting empty bands.
+        body = meta.get(_weave_tick.QUEST_BODY_META_KEY)
+        if body in (_weave_tick.QUEST_BODY_INQUIRY, _weave_tick.QUEST_BODY_ROADMAP):
+            lines.append(f"candidates: — ({body} body: no Pareto frontier)")
+        else:
+            fr = frontier_mod.quest_frontier(self.store, ref.id)
+            lines.append(_objective_line(fr, meta))
+            if not (fr.frontier or fr.dominated or fr.provisional or fr.unevaluated):
+                lines.append("candidates: none yet")
+            else:
+                bands = (
+                    f"candidates: {len(fr.frontier)} frontier · "
+                    f"{len(fr.dominated)} beaten · {len(fr.provisional)} "
+                    f"provisional · {len(fr.unevaluated)} awaiting"
+                )
+                tiers: Counter[str] = Counter()
+                for c in (*fr.frontier, *fr.dominated, *fr.unevaluated):
+                    tiers[str(c.flags.get("tier") or "")] += 1
+                for pc in fr.provisional:
+                    tiers[str(pc.candidate.flags.get("tier") or "")] += 1
+                tier_bits = [
+                    f"{tier} {tiers[tier]}"
+                    for tier in frontier_mod.TIER_GLYPH
+                    if tiers.get(tier)
+                ]
+                if tiers.get(""):
+                    tier_bits.append(f"unstamped {tiers['']}")
+                if tier_bits:
+                    bands += " — " + " · ".join(tier_bits)
+                lines.append(bands)
+
+                # Trusted-per-axis coverage — the counts the frontier
+                # header computes (the hub's axis picker labels), but
+                # trusted only: a provisional candidate's untrusted-value
+                # backfill (``pc.untrusted_keys``) is noise, not coverage.
+                trusted: Counter[str] = Counter()
+                for c in (*fr.frontier, *fr.dominated):
+                    for k in c.measures:
+                        trusted[k] += 1
+                for pc in fr.provisional:
+                    for k in pc.measures:
+                        if k not in pc.untrusted_keys:
+                            trusted[k] += 1
+                if trusted:
+                    shown = trusted.most_common(_STATUS_AXIS_CAP)
+                    bits = " · ".join(f"{k} {n}" for k, n in shown)
+                    more_axes = len(trusted) - len(shown)
+                    lines.append(
+                        f"trusted: {bits}"
+                        + (f" (+{more_axes} axes)" if more_axes else "")
+                    )
+                if fr.frontier:
+                    head = fr.frontier[:_STATUS_FRONTIER_CAP]
+                    lead = " · ".join(f"{c.handle} {c.name[:30]}" for c in head)
+                    more_frontier = len(fr.frontier) - len(head)
+                    lines.append(
+                        f"frontier: {lead}"
+                        + (f" +{more_frontier} more" if more_frontier else "")
+                    )
+
+        gap_list = gapmod.quest_gaps(self.store, ref.id, servers=live)
+        if gap_list:
+            lines.append(f"gaps ({len(gap_list)}):")
+            for g in gap_list[:_STATUS_GAP_CAP]:
+                where = f" [{g.handle}]" if g.handle else ""
+                lines.append(f"  ▫ {g.kind}: {g.detail}{where}")
+            if len(gap_list) > _STATUS_GAP_CAP:
+                lines.append(
+                    f"  (+{len(gap_list) - _STATUS_GAP_CAP} more — view='gaps')"
+                )
+        else:
+            lines.append("gaps: none")
+
+        # Last coordinator tick — the newest quest_tick job minted for
+        # this quest (same lookup quest.status's tick-event trail uses).
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT created_at FROM refs "
+                "WHERE kind = 'job' AND retired_at IS NULL "
+                "AND meta->>'job_type' = 'quest_tick' "
+                "AND (meta #>> '{params,quest_id}')::bigint = %s "
+                "ORDER BY ref_id DESC LIMIT 1",
+                (ref.id,),
+            ).fetchone()
+        last_tick = row[0] if row else None
+        lines.append(
+            "last tick: "
+            + (
+                _utc_aware(last_tick).strftime("%Y-%m-%d %H:%MZ")
+                if last_tick is not None
+                else "never"
+            )
+        )
+
+        holds: list[str] = []
+
+        def _fval(key: str) -> int | None:
+            v = meta.get(key)
+            if v is None:
+                return None
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return None
+
+        cap = _fval("fidelity_restale_cap")
+        if cap is not None and cap <= 0:
+            holds.append(
+                "fidelity_restale_cap=0 (every automatic pathway re-mint held)"
+            )
+        for key in ("fidelity_promote_neb", "fidelity_promote_verify"):
+            v = _fval(key)
+            if v is not None and v <= 0:
+                holds.append(f"{key}=0 (promote pass off)")
+        for lane in ("compute_lane", "lit_lane"):
+            if str(meta.get(lane) or "") == "off":
+                holds.append(f"{lane}=off")
+        if holds:
+            lines.append("holds: " + " · ".join(holds))
         return "\n".join(lines)
 
     def _render_meta(self, ref: Ref) -> str:

@@ -242,9 +242,14 @@ notebook paged newest-first (default `limit` 50 — `args={'since': '7d',
 `next:` names the call for the older page); `view='log'` is the raw
 ref-events ledger, a different
 (generic) thing.
-`view='status'` is the one-line lifecycle read (striving status · priority ·
-horizon) for "is this quest still live"; `view='rubric'` prints just the
-measured axes (`rubric_objectives` + demand/supply). `view='raw'` shows
+`view='status'` is the one-call orientation read (~1 kB): the lifecycle
+line (striving status · priority · horizon) plus the frontier counts —
+candidates by band and fidelity tier, trusted-per-axis coverage, the
+frontier handles — then momentum, the open gaps, the last `quest_tick`
+time, and the operator holds in force (`fidelity_restale_cap=0`,
+`compute_lane`/`lit_lane` `off`). It replaces a frontier+gaps+results
+round-trip for "where does this quest stand". `view='rubric'` prints just
+the measured axes (`rubric_objectives` + demand/supply). `view='raw'` shows
 scalars + meta + a capped links section (`view='links'` is the full graph).
 
 `view='served'` lists every live ref with an inbound `serves` edge, one
