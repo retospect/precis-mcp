@@ -1319,6 +1319,10 @@ _META_NON_MEASURE: frozenset[str] = frozenset(
         # the pooled-seed count both lanes stamp — bookkeeping, not a
         # Pareto axis.
         "neb_edge_fs_ref_id",
+        # ``barrier_pathway_ref_id`` names the pathway the kept barrier was
+        # harvested from (:func:`precis.quest.compute._kept_barrier_basis`)
+        # — a ref id, so numeric and otherwise a bogus rank measure.
+        "barrier_pathway_ref_id",
         "barrier_independent_seeds",
         "barrier_neb_failed",
         "barrier_desorbed",
@@ -1574,6 +1578,11 @@ def _candidate_from_structure(
     # with no autocatpath barrier harvested yet.
     if "barrier_fidelity" in meta:
         flags["barrier_fidelity"] = meta.get("barrier_fidelity")
+    # Which lane the canonical barrier came from (``autocatpath`` pathway vs
+    # direct ``struct_neb``) — the network demotion scopes its
+    # missing-basis rule to the pathway lane only (gr592668).
+    if "barrier_source" in meta:
+        flags["barrier_source"] = meta["barrier_source"]
     # The candidate's OWN tier-ladder rung (highest tier with a completed
     # run, :func:`precis.quest.compute._bump_tier_stamp` — distinct from
     # ``barrier_fidelity`` above, which tracks the ranked barrier specifically).
@@ -1888,7 +1897,15 @@ def apply_network_demotion(
     demoted keys, for the note/status views) and
     ``flags['network_stale_basis']`` (the first stale basis, for the reason
     text). A key with no stamped basis (legacy, pre-stamp candidate) is
-    left alone.
+    left alone — with one exception (gr592668): a ``barrier`` measure
+    still riding with no basis on a candidate whose stamp map EXISTS (a
+    stamping-era harvest wrote ``network_basis_by_key`` but never
+    re-measured the barrier) is pre-stamp evidence, demoted whenever the
+    current basis carries a version it cannot match — same as a
+    stamped-old one. A ``struct_neb`` barrier carries no network basis by
+    design (the neb lane's own engine token governs its staleness), and a
+    candidate with no stamp map at all stays untouched legacy, like every
+    other key.
 
     What counts as a mismatch is per key kind (gr510764): a competitor-set
     measure (:data:`NETWORK_DEPENDENT_KEYS`) demotes on ANY
@@ -1912,7 +1929,8 @@ def apply_network_demotion(
     cur_v = current.get("version")
     for c in cands:
         stale_keys: list[str] = []
-        for k, basis in _key_bases(c).items():
+        bases = _key_bases(c)
+        for k, basis in bases.items():
             if same_network_basis(basis, current):
                 continue
             if k not in NETWORK_DEPENDENT_KEYS and not engine_version_stale(
@@ -1924,6 +1942,22 @@ def apply_network_demotion(
                 c.flags.setdefault(f"{k}{_UNTRUSTED_VALUE_SUFFIX}", v)
             stale_keys.append(k)
             c.flags.setdefault("network_stale_basis", basis)
+        if (
+            "barrier" in c.measures
+            and "barrier" not in bases
+            and isinstance(c.flags.get("network_basis_by_key"), dict)
+            and c.flags.get("barrier_fidelity") != "struct_neb"
+            and c.flags.get("barrier_source") != "struct_neb"
+            and engine_version_stale(None, cur_v)
+        ):
+            v = c.measures.pop("barrier", None)
+            if v is not None:
+                c.flags.setdefault(f"barrier{_UNTRUSTED_VALUE_SUFFIX}", v)
+            stale_keys.append("barrier")
+            c.flags.setdefault(
+                "network_stale_basis",
+                {"template": "pre-stamp", "version": None},
+            )
         if stale_keys:
             c.flags["network_stale"] = True
             c.flags.setdefault("network_stale_keys", sorted(stale_keys))

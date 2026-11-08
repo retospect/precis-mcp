@@ -3578,6 +3578,7 @@ def _neb_candidate_stamp(
         "barrier_trusted": bool(trusted_edges),
         "barrier_source": "struct_neb",
         "barrier_fidelity": "struct_neb",
+        "barrier_pathway_ref_id": None,
         "neb_run_id": pick.get("neb_run_id"),
         "neb_edge_fs_ref_id": pick.get("fs_ref_id"),
         "warnings": warnings,
@@ -3591,6 +3592,15 @@ def _neb_candidate_stamp(
     }
     for flag in ("barrier_absurd", "barrier_unrelaxed_geometry"):
         stamp[flag] = True if pick.get(flag) else None
+    by_key = candidate_meta.get("network_basis_by_key")
+    if isinstance(by_key, dict) and "barrier" in by_key:
+        # The kept barrier now comes from a direct-NEB run, not a pathway —
+        # drop the old pathway basis so engine-staleness demotion can't
+        # fire on a foreign stamp (gr592668); the neb lane's own engine
+        # token governs this value's staleness.
+        stamp["network_basis_by_key"] = {
+            k: v for k, v in by_key.items() if k != "barrier"
+        }
     twin = candidate_meta.get("barrier_twin_disagreement")
     if twin:
         # The twin guard's verdict is sticky and wins over a fresh
@@ -3704,6 +3714,24 @@ def _network_basis_by_key(
         if measures.get(k) is not None:
             by_key[k] = basis
     return by_key
+
+
+def _kept_barrier_basis(
+    store: Store, candidate_meta: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The network basis of the pathway the candidate's KEPT barrier was
+    harvested from — ``meta.barrier_pathway_ref_id`` (stamped alongside
+    ``barrier_source="autocatpath"`` on every landed autocatpath barrier,
+    gr592668). A barrierless harvest restamps
+    ``network_basis_by_key["barrier"]`` with THIS basis, never its own
+    pathway's — the kept barrier's provenance, not the harvest's.
+    ``None`` for a ``struct_neb`` barrier (no pathway — its stamp nulls
+    the ref), a pre-provenance row or an unresolvable pathway."""
+    pid = candidate_meta.get("barrier_pathway_ref_id")
+    if not isinstance(pid, int) or isinstance(pid, bool):
+        return None
+    pw = store.fetch_refs_by_ids({pid}).get(pid)
+    return _network_basis(pw.meta if pw is not None else None)
 
 
 def _resolved_template(config: Mapping[str, Any]) -> str:
@@ -4455,6 +4483,10 @@ def _fold_viewport_updates(
     still widens correctly rather than the second stamp clobbering the
     first. See :func:`_ratchet_frontier_viewport`, which this feeds."""
     for key, raw in measures.items():
+        if key.endswith("_ref_id"):
+            # Provenance ids (``barrier_pathway_ref_id``, …) name refs —
+            # numeric, but never a measure axis.
+            continue
         v = _num_measure(raw)
         if v is None or not math.isfinite(v):
             continue
@@ -4784,6 +4816,16 @@ def harvest_measures(
                     measures["barrier_source"] = "autocatpath"
                     measures["neb_run_id"] = None
                     measures["neb_edge_fs_ref_id"] = None
+                    # Provenance for the kept barrier (gr592668): the pathway
+                    # ref this barrier came from, so a later barrierless
+                    # harvest can restamp ``network_basis_by_key["barrier"]``
+                    # with ITS basis and the backfill can name the source job.
+                    measures["barrier_pathway_ref_id"] = (
+                        pathway_ref
+                        if isinstance(pathway_ref, int)
+                        and not isinstance(pathway_ref, bool)
+                        else None
+                    )
             tier = _pathway_tier(pw_meta)
             _canonicalize_barrier(candidate_meta, measures, tier)
             # Credit anchor (gr543165): a barrier is credited only
@@ -4839,11 +4881,31 @@ def harvest_measures(
                 # untrusted pathway's evidence.
                 _bump_tier_stamp(candidate_meta, measures, tier)
             basis = _network_basis(pw_meta)
-            if basis is not None and not stashed:
-                measures["network_basis"] = basis  # latest harvest, display
-                measures["network_basis_by_key"] = _network_basis_by_key(
-                    candidate_meta, measures, basis
-                )
+            if not stashed:
+                if basis is not None:
+                    measures["network_basis"] = basis  # latest harvest, display
+                    measures["network_basis_by_key"] = _network_basis_by_key(
+                        candidate_meta, measures, basis
+                    )
+                if (
+                    "barrier" not in measures
+                    and _num_measure(candidate_meta.get("barrier")) is not None
+                ):
+                    # The kept barrier is a PREVIOUS pathway's — restamp its
+                    # basis from the pathway it actually came from
+                    # (gr592668), never from this barrierless harvest's, so
+                    # engine-staleness demotion sees the kept value's own
+                    # provenance. A pre-provenance row stays unstamped here;
+                    # ``backfill_network_basis`` and the demotion's
+                    # missing-basis rule cover it.
+                    kept_basis = _kept_barrier_basis(store, candidate_meta)
+                    if kept_basis is not None:
+                        by_key = measures.get("network_basis_by_key")
+                        if not isinstance(by_key, dict):
+                            prior = candidate_meta.get("network_basis_by_key")
+                            by_key = dict(prior) if isinstance(prior, dict) else {}
+                        by_key["barrier"] = kept_basis
+                        measures["network_basis_by_key"] = by_key
             store.stamp_ref_meta(s.id, measures)
             candidate_meta.update(measures)
             _fold_viewport_updates(viewport_updates, measures)
@@ -5606,6 +5668,31 @@ def _candidate_struct_ids(store: Store, quest_id: int) -> list[int]:
 _BACKFILL_MATCH_TOL = 1e-6
 
 
+def _stored_barrier_basis(
+    store: Store,
+    meta: dict[str, Any],
+    matches: list[tuple[dict[str, Any], dict[str, Any], int]],
+) -> dict[str, Any] | None:
+    """The basis of the pathway that SOURCED the candidate's stored barrier —
+    :func:`backfill_network_basis`'s barrier fallback when the value match
+    cannot name one network (gr592668). The harvest-stamped
+    ``meta.barrier_pathway_ref_id`` first — it names the source even when no
+    surviving job reproduces the value; else the NEWEST reproducing job
+    (jobs arrive oldest-first and a landed barrier overwrites, so the newest
+    match is the one the stored value came from). ``None`` when no source
+    resolves."""
+    pid = meta.get("barrier_pathway_ref_id")
+    if isinstance(pid, int) and not isinstance(pid, bool):
+        for _m, basis, p in matches:
+            if p == pid:
+                return basis
+        pw = store.fetch_refs_by_ids({pid}).get(pid)
+        return _network_basis(pw.meta if pw is not None else None)
+    if matches:
+        return matches[-1][1]
+    return None
+
+
 def backfill_network_basis(
     store: Store, quest_id: int, *, apply: bool = False
 ) -> dict[str, Any]:
@@ -5622,6 +5709,13 @@ def backfill_network_basis(
     jobs on two networks → ``ambiguous``; both stay unstamped (legacy: never
     demoted). Never by tier: a pruned neb run emits no margin, so a neb-tier
     candidate can still carry a parked screening margin.
+
+    ``barrier`` is the one exception (gr592668): its source is recorded —
+    when the value match cannot name one network the stamp falls back to
+    the job that sourced the stored barrier (:func:`_stored_barrier_basis` —
+    the harvest's ``meta.barrier_pathway_ref_id`` first, else the newest
+    reproducing job), so a legacy barrier doesn't ride un-demoted against
+    a newer pin.
 
     ``apply=False`` (the default) is a dry run: counts only, nothing written.
     Idempotent: a stamped key is skipped on the next run.
@@ -5658,7 +5752,7 @@ def backfill_network_basis(
         counts["candidates_with_unstamped"] += 1
         counts["keys_unstamped"] += len(todo)
 
-        jobs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        jobs: list[tuple[dict[str, Any], dict[str, Any], int]] = []
         for _job_id, jmeta in _fresh_autocatpath_jobs(store, sid, 0):
             measures = _autocatpath_measures_from_job(jmeta)
             pid = jmeta.get("pathway_ref")
@@ -5667,24 +5761,32 @@ def backfill_network_basis(
             pw = store.fetch_refs_by_ids({pid}).get(pid)
             basis = _network_basis(pw.meta if pw is not None else None)
             if basis is not None:
-                jobs.append((measures, basis))
+                jobs.append((measures, basis, pid))
 
         new: dict[str, Any] = {}
         for k in todo:
             value = float(meta[k])
+            matches: list[tuple[dict[str, Any], dict[str, Any], int]] = []
             bases: list[dict[str, Any]] = []
-            for measures, basis in jobs:
+            for measures, basis, pid in jobs:
                 v = _num_measure(measures.get(k))
                 if v is None or abs(v - value) > _BACKFILL_MATCH_TOL:
                     continue
+                matches.append((measures, basis, pid))
                 if not any(same_network_basis(basis, b) for b in bases):
                     bases.append(basis)
-            if not bases:
-                counts["no_match"] += 1
-            elif len(bases) > 1:
-                counts["ambiguous"] += 1
+            pick: dict[str, Any] | None = None
+            if len(bases) == 1:
+                pick = bases[0]
+            elif k == "barrier":
+                # The barrier's source is known even when the value match
+                # is not: fall back to the job that sourced the stored
+                # barrier (gr592668).
+                pick = _stored_barrier_basis(store, meta, matches)
+            if pick is None:
+                counts["ambiguous" if bases else "no_match"] += 1
             else:
-                new[k] = bases[0]
+                new[k] = pick
                 counts["stamped"] += 1
                 counts["stamped_by_key"][k] = counts["stamped_by_key"].get(k, 0) + 1
         if new and apply:
@@ -6576,6 +6678,7 @@ _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
     "barrier_source",
     "neb_run_id",
     "neb_edge_fs_ref_id",
+    "barrier_pathway_ref_id",
     "warnings",
     "barrier_absurd",
     "barrier_unrelaxed_geometry",

@@ -3216,6 +3216,57 @@ class TestNetworkLikeWithLike:
             "selectivity_margin",
         ]
 
+    def test_unstamped_barrier_on_a_stamped_candidate_demotes(self, store: Any) -> None:
+        """gr592668: a barrier harvested before the stamp era rides with
+        NO basis — on a candidate whose ``network_basis_by_key`` exists
+        (a stamping-era harvest re-measured other keys but never the
+        barrier) it is stale whenever the pin is newer, exactly like a
+        stamped-old one, instead of riding un-demoted into the frontier.
+        A fully-unstamped candidate stays untouched legacy, and a
+        ``struct_neb`` barrier is exempt (its staleness is the neb lane's
+        own engine token, never a pathway's network)."""
+        _qid, ids = self._cands(store)
+        pin = {"digest": None, "template": "coadsorbed", "version": "0.50.0"}
+        # stamped-era candidate: a screening harvest wrote by_key for the
+        # CHE scalars but the stored barrier was never re-measured.
+        store.stamp_ref_meta(
+            ids[0],
+            {
+                "barrier": 0.6,
+                "U_L": -0.3,
+                "network_basis_by_key": {"U_L": pin},
+            },
+        )
+        # fully legacy: no stamp map at all — left alone like every key.
+        store.stamp_ref_meta(ids[1], {"barrier": 0.7})
+        # direct-NEB barrier on a stamped candidate: no network basis BY
+        # DESIGN — exempt from the missing-basis rule.
+        store.stamp_ref_meta(
+            ids[2],
+            {
+                "barrier": 0.4,
+                "barrier_source": "struct_neb",
+                "barrier_fidelity": "struct_neb",
+                "network_basis_by_key": {"U_L": pin},
+            },
+        )
+        cands = [_cand(store, i) for i in ids]
+        apply_network_demotion(cands, pin)
+        stamped, legacy, neb = cands
+        assert "barrier" not in stamped.measures
+        assert stamped.flags["barrier_untrusted_value"] == 0.6
+        assert stamped.flags["network_stale"] is True
+        assert stamped.flags["network_stale_keys"] == ["barrier"]
+        assert stamped.measures["U_L"] == -0.3  # pin-stamped: stays
+        assert legacy.measures["barrier"] == 0.7
+        assert "network_stale" not in legacy.flags
+        assert neb.measures["barrier"] == 0.4
+        assert "network_stale" not in neb.flags
+        # a current basis with no version cannot be "newer" — kept.
+        again = [_cand(store, ids[0])]
+        apply_network_demotion(again, {"digest": None, "template": "coadsorbed"})
+        assert again[0].measures["barrier"] == 0.6
+
     def test_quest_frontier_never_ranks_the_older_margin(self, store: Any) -> None:
         qid, ids = self._cands(store)
         store.stamp_ref_meta(
@@ -8173,6 +8224,65 @@ class TestTierLadderHarvest:
         assert "poison_margin" not in by_key  # adsorption-only: no network
         assert meta["selectivity_margin"] == 0.4
 
+    def test_barrierless_harvest_restamps_barrier_basis_from_its_source(
+        self, store: Any
+    ) -> None:
+        """gr592668: the kept barrier's basis names the pathway IT came
+        from (``meta.barrier_pathway_ref_id``), never a barrierless
+        harvest's own — a screening run stamps its CHE scalars with its
+        parked basis but re-asserts the neb pathway's basis on the kept
+        barrier, so engine-staleness demotion sees the kept value's own
+        engine."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+
+        def _pw(template: str, version: str, tier: str) -> int:
+            return store.insert_ref(
+                kind="job",
+                slug=None,
+                title="pw",
+                meta={
+                    "tier": tier,
+                    "warnings": [],
+                    "low_confidence": False,
+                    "config": {"network": "ammonia", "template": template},
+                    "autocatpath_version": version,
+                },
+                parent_id=sid,
+            ).id
+
+        neb_pw = _pw("coadsorbed", "0.42.0", "neb")
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.5}, "pathway_ref": neb_pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        neb_basis = {
+            "digest": None,
+            "template": "coadsorbed",
+            "version": "0.42.0",
+            "environment_basis": _LEGACY_ENV_BASIS,
+            "tpd_basis": "none",
+        }
+        # basis names the neb pathway's engine and template
+        assert meta["network_basis_by_key"]["barrier"] == neb_basis
+        assert meta["barrier_pathway_ref_id"] == neb_pw
+
+        # the stamp lost (pre-stamp row shape), then a barrierless
+        # screening harvest on a DIFFERENT pathway+engine lands.
+        store.stamp_ref_meta(sid, {"network_basis_by_key": {}})
+        scr_pw = _pw("parked", "0.50.0", "screening")
+        self._autocatpath_job(
+            store, sid, {"result": {"U_L": -0.4}, "pathway_ref": scr_pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        by_key = meta["network_basis_by_key"]
+        assert by_key["barrier"] == neb_basis  # the kept barrier's own pathway
+        assert by_key["U_L"]["template"] == "parked"  # this harvest's
+        assert by_key["U_L"]["version"] == "0.50.0"
+        assert meta["barrier_pathway_ref_id"] == neb_pw  # kept, untouched
+
     def test_harvest_without_pathway_config_stamps_no_basis(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
@@ -8340,6 +8450,134 @@ class TestTierLadderHarvest:
         assert out["keys_unstamped"] == 0
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert meta["network_basis_by_key"] == {"barrier": mine}
+
+    def test_backfill_barrier_falls_back_to_the_source_job(self, store: Any) -> None:
+        """gr592668: when the value match cannot name ONE network for
+        ``barrier``, the stamp falls back to the job that sourced it —
+        ``meta.barrier_pathway_ref_id`` first (it names the source even
+        with NO reproducing job), else the newest reproducing job (the
+        harvest overwrites: newest wins)."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+
+        def _pw(template: str, version: str) -> int:
+            return store.insert_ref(
+                kind="job",
+                slug=None,
+                title="pw",
+                meta={
+                    "tier": "neb",
+                    "config": {"network": "ammonia", "template": template},
+                    "autocatpath_version": version,
+                },
+                parent_id=sid,
+            ).id
+
+        parked_pw = _pw("parked", "0.20.0")
+        coads_pw = _pw("coadsorbed", "0.22.0")
+        # Two jobs produced the SAME barrier (and the same U_L) on
+        # different networks — ambiguous by value alone.
+        self._autocatpath_job(
+            store,
+            sid,
+            {
+                "result": {"barrier": 0.5, "U_L": -0.5},
+                "pathway_ref": parked_pw,
+            },
+        )
+        self._autocatpath_job(
+            store,
+            sid,
+            {
+                "result": {"barrier": 0.5, "U_L": -0.5},
+                "pathway_ref": coads_pw,
+            },
+        )
+        env = {"environment_basis": _LEGACY_ENV_BASIS, "tpd_basis": "none"}
+
+        # provenance names the parked pathway — resolves the ambiguity.
+        store.stamp_ref_meta(sid, {"barrier": 0.5, "barrier_pathway_ref_id": parked_pw})
+        out = compute_mod.backfill_network_basis(store, qid, apply=True)
+        assert out["stamped"] == 1 and out["ambiguous"] == 0
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["network_basis_by_key"]["barrier"] == {
+            "digest": None,
+            "template": "parked",
+            "version": "0.20.0",
+            **env,
+        }
+
+        # no provenance: the NEWEST reproducing job sourced it.
+        store.stamp_ref_meta(
+            sid, {"network_basis_by_key": {}, "barrier_pathway_ref_id": None}
+        )
+        out = compute_mod.backfill_network_basis(store, qid, apply=True)
+        assert out["stamped"] == 1 and out["ambiguous"] == 0
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["network_basis_by_key"]["barrier"]["template"] == "coadsorbed"
+
+        # provenance names a pathway NO job reproduces — still stamps.
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.9,  # no job produced this value
+                "network_basis_by_key": {},
+                "barrier_pathway_ref_id": parked_pw,
+            },
+        )
+        out = compute_mod.backfill_network_basis(store, qid, apply=True)
+        assert out["stamped"] == 1 and out["no_match"] == 0
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["network_basis_by_key"]["barrier"]["template"] == "parked"
+
+        # other keys keep the strict rule: still ambiguous, never guessed.
+        store.stamp_ref_meta(
+            sid,
+            {
+                "U_L": -0.5,  # both jobs carry it on different networks
+                "network_basis_by_key": {},
+                "barrier_pathway_ref_id": None,
+            },
+        )
+        out = compute_mod.backfill_network_basis(store, qid, apply=True)
+        assert out["ambiguous"] == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert "U_L" not in meta["network_basis_by_key"]
+
+    def test_struct_neb_pick_drops_the_foreign_pathway_basis(
+        self, monkeypatch: Any
+    ) -> None:
+        """gr592668: a struct_neb barrier came from no pathway — the
+        selection stamp clears ``barrier_pathway_ref_id`` and prunes the
+        superseded autocatpath barrier's basis so engine-staleness
+        demotion can't fire on a foreign network."""
+        monkeypatch.setattr(
+            "precis.structure.neb.neb_engine_token", lambda: "neb-eng-1"
+        )
+        sel = compute_mod._neb_candidate_stamp(
+            {
+                "7": {
+                    "fs_ref_id": 7,
+                    "neb_run_id": 3,
+                    "engine": "neb-eng-1",
+                    "barrier": 0.4,
+                    "trusted": True,
+                }
+            },
+            {
+                "barrier": 0.6,
+                "barrier_pathway_ref_id": 55,
+                "network_basis_by_key": {
+                    "barrier": {"version": "0.20.0"},
+                    "U_L": {"version": "0.20.0"},
+                },
+            },
+        )
+        assert sel is not None
+        assert sel["barrier_source"] == "struct_neb"
+        assert sel["barrier_trusted"] is True
+        assert sel["barrier_pathway_ref_id"] is None
+        assert sel["network_basis_by_key"] == {"U_L": {"version": "0.20.0"}}
 
     def test_verify_supersedes_neb_moves_parked_value_to_barrier_screen(
         self, store: Any
@@ -10939,7 +11177,13 @@ class TestTierPromotion:
                 {
                     "tier": "neb",
                     "selectivity_margin": margin,
-                    "network_basis_by_key": {"selectivity_margin": basis},
+                    # the barrier itself rides on the pin — this test orders
+                    # by margin staleness; an unstamped barrier would demote
+                    # out of measures too (gr592668) and block verify.
+                    "network_basis_by_key": {
+                        "selectivity_margin": basis,
+                        "barrier": self._NEW,
+                    },
                 },
             )
             sids[name] = sid
