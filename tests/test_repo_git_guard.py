@@ -65,6 +65,10 @@ _EXEMPT: set[str] = {
     # `_git(*args)` splat helper; every caller passes `-C`/an explicit tmp
     # path, so nothing inherits the checkout cwd.
     "tests/test_autocatpath_wheel.py",
+    # `ls-files` under a `.git` existence check, else the .gitignore walk —
+    # the fallback is the point: the registry globs must still be checked
+    # in the no-.git gate container, not skipped.
+    "tests/test_boundary.py",
     # `ls-files` under a `.git` existence check, else the .gitignore walk.
     "tests/test_lanes_deny.py",
     # Same probe + walk pair; the "git present but refuses" leg fails loudly

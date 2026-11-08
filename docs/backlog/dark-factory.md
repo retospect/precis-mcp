@@ -723,6 +723,18 @@ line. Guards:
   pass, lane table code, authority, alert rules = harness diff: full
   gate, human `/go`, never the dark lane. An agent may *propose* a
   change to them as a decision row;
+- **the security boundary is a registry, not a deny list.**
+  `src/precis/plans/boundary.py` (td574934 A2) names the path sets whose
+  change always wants a security review — the agent envelope
+  (`run_slice`, the slice adapters, the grant/scope code), the SSRF
+  guard, the factory's dispatch-and-land path, the credential modules —
+  plus `CONTENT_RULES`, added-line regexes like privilege SQL in a
+  migration. `boundary.py`, `lanes.py` and `scripts/probes/**` are on the
+  list themselves, so the fence cannot quietly move. A hit marks the
+  land for the `security-review` lane (`claude_p` only — the boundary
+  reviewer is never the builder's own vendor CLI); a probe under
+  `scripts/probes/` may clear it. The registry is read-only today:
+  nothing calls `boundary_hits` from `land_slice` yet (A3 wires that);
 - **a self-fix loop has a breaker.** N factory-minted slices from one
   fingerprint in a window, or a fix that re-fires the same alert, trip
   it: the fingerprint parks, a showstopper row is filed, and nothing

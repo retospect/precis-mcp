@@ -23,6 +23,10 @@ Modules (each lands as its own slice under td540836):
 - :mod:`precis.plans.lanes` — lane records (adapter + credential pool +
   concurrency cap) derived from ``llm_account`` rows, which the
   ``run_slice`` job type picks from;
+- :mod:`precis.plans.boundary` — the security-boundary registry: the
+  path sets and added-line rules a factory diff may trip, marking the
+  land for the ``security-review`` lane (read-only until the A3 land
+  wiring);
 - :mod:`precis.plans.templates` — subtree minters (gripe-fix, slice-tree,
   release-pass, pcb-pipeline) behind ``put(kind='todo', mode='plan')``.
 
