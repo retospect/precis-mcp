@@ -138,7 +138,11 @@ def test_call_codex_exec_argv_shape_and_throwaway_cwd(
     assert args[-2:] == ["--", "-not-a-flag prompt"]
     cd = Path(args[args.index("--cd") + 1])
     cwd = Path((tmp_path / "cwd.txt").read_text(encoding="utf-8").strip())
-    assert cwd == cd and not cd.exists()  # throwaway, removed after the run
+    # resolve(): the stub's pwd is resolved while --cd carries the raw mkdtemp
+    # path — on macOS /var → /private/var makes them differ textually.
+    assert (
+        cwd.resolve() == cd.resolve() and not cd.exists()
+    )  # throwaway, removed after the run
 
 
 def test_call_codex_exec_drops_claude_model_id(
