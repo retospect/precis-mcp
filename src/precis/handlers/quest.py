@@ -1637,8 +1637,18 @@ class QuestHandler(NumericRefHandler):
                 # header computes (the hub's axis picker labels), but
                 # trusted only: a provisional candidate's untrusted-value
                 # backfill (``pc.untrusted_keys``) is noise, not coverage.
+                # Declared objectives seed at 0 so an axis nothing has
+                # measured yet still shows (the picker's "(0)"); a
+                # truly-unevaluated candidate's measures count too —
+                # ``unevaluated`` means missing a required *objective*
+                # value, and every value on a plain Candidate's
+                # ``measures`` is trusted by construction (untrusted
+                # values never land there — they route to provisional
+                # via flags).
                 trusted: Counter[str] = Counter()
-                for c in (*fr.frontier, *fr.dominated):
+                for k, _sense in fr.objectives:
+                    trusted.setdefault(k, 0)
+                for c in (*fr.frontier, *fr.dominated, *fr.unevaluated):
                     for k in c.measures:
                         trusted[k] += 1
                 for pc in fr.provisional:
@@ -1675,15 +1685,21 @@ class QuestHandler(NumericRefHandler):
         else:
             lines.append("gaps: none")
 
-        # Last coordinator tick — the newest quest_tick job minted for
-        # this quest (same lookup quest.status's tick-event trail uses).
+        # Last coordinator tick — the newest tick ACTIVITY on this quest's
+        # quest_tick jobs, not a job's mint time: one coordinator job
+        # executes many ticks over its life, each writing a ``job_event``
+        # chunk (the same trail quest.status's tick-events read), so the
+        # max chunk timestamp is the last real tick. A freshly re-minted
+        # job still queued (never claimed → no chunks yet) contributes
+        # nothing and can't mask the previous loop's activity.
         with self.store.pool.connection() as conn:
             row = conn.execute(
-                "SELECT created_at FROM refs "
-                "WHERE kind = 'job' AND retired_at IS NULL "
-                "AND meta->>'job_type' = 'quest_tick' "
-                "AND (meta #>> '{params,quest_id}')::bigint = %s "
-                "ORDER BY ref_id DESC LIMIT 1",
+                "SELECT MAX(c.created_at) FROM chunks c "
+                "JOIN refs j ON j.ref_id = c.ref_id "
+                "WHERE j.kind = 'job' AND j.retired_at IS NULL "
+                "AND j.meta->>'job_type' = 'quest_tick' "
+                "AND (j.meta #>> '{params,quest_id}')::bigint = %s "
+                "AND c.chunk_kind = 'job_event'",
                 (ref.id,),
             ).fetchone()
         last_tick = row[0] if row else None

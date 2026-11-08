@@ -244,13 +244,17 @@ ref-events ledger, a different
 (generic) thing.
 `view='status'` is the one-call orientation read (~1 kB): the lifecycle
 line (striving status · priority · horizon) plus the frontier counts —
-candidates by band and fidelity tier, trusted-per-axis coverage, the
-frontier handles — then momentum, the open gaps, the last `quest_tick`
-time, and the operator holds in force (`fidelity_restale_cap=0`,
+candidates by band and fidelity tier, trusted-per-axis coverage
+(including declared axes at zero coverage), the frontier handles — then
+momentum, the open gaps, the last `quest_tick` coordinator tick (real
+tick activity, `never` while every minted job is still queued), and the
+operator holds in force (`fidelity_restale_cap=0`,
 `compute_lane`/`lit_lane` `off`). It replaces a frontier+gaps+results
 round-trip for "where does this quest stand". `view='rubric'` prints just
 the measured axes (`rubric_objectives` + demand/supply). `view='raw'` shows
 scalars + meta + a capped links section (`view='links'` is the full graph).
+
+## Read a quest — served refs, the tree and the web hub
 
 `view='served'` lists every live ref with an inbound `serves` edge, one
 row each with a `fulltext` flag (body chunks held), plus a count line.

@@ -767,21 +767,131 @@ class TestStatusAndRubricViews:
         assert f"st{sid} Fe" in body
         assert "no-literature" in body
 
-    def test_status_view_names_last_tick(self, store: Any) -> None:
-        """gr592666 — the newest ``quest_tick`` job's created_at is the
-        last coordinator tick (same lookup the ops roll-up uses)."""
-        h = _handler(store)
-        qid = _created_id(h.put(text="A ticked striving"))
+    def _mint_quest_tick_job(self, store: Any, qid: int) -> Any:
+        """A queued ``quest_tick`` coordinator job for ``qid`` — minted,
+        never claimed (no ``job_event`` chunks: zero tick activity)."""
         todo = store.insert_ref(kind="todo", slug=None, title="drive the quest")
-        store.insert_ref(
+        return store.insert_ref(
             kind="job",
             slug=None,
             title="quest_tick",
             meta={"job_type": "quest_tick", "params": {"quest_id": qid}},
             parent_id=todo.id,
         )
+
+    def test_status_view_names_last_tick(self, store: Any) -> None:
+        """gr592666 — 'last tick' is actual tick activity: the newest
+        ``job_event`` chunk on the quest's ``quest_tick`` job (the trail
+        quest.status reads), not the job's mint time (td594198)."""
+        from precis.workers.executors._common import append_chunk
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A ticked striving"))
+        job = self._mint_quest_tick_job(store, qid)
+        append_chunk(store, job.id, "job_event", "tick #1: 2 proposals")
         body = h.get(id=qid, view="status").body
         assert re.search(r"last tick: \d{4}-\d{2}-\d{2} \d{2}:\d{2}Z", body)
+
+    def test_status_view_queued_unrun_job_reports_never(self, store: Any) -> None:
+        """td594198 — a minted-but-never-claimed ``quest_tick`` job has no
+        tick activity: its mint time is not a tick."""
+        h = _handler(store)
+        qid = _created_id(h.put(text="A queued striving"))
+        self._mint_quest_tick_job(store, qid)
+        body = h.get(id=qid, view="status").body
+        assert "last tick: never" in body
+
+    def test_status_view_last_tick_is_latest_tick_activity(self, store: Any) -> None:
+        """td594198 — one coordinator job executes many ticks: 'last tick'
+        is the newest ``job_event`` chunk, and a queued re-mint can't mask
+        the previous loop's activity."""
+        from datetime import UTC, datetime, timedelta
+
+        from precis.workers.executors._common import append_chunk
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A long-running striving"))
+        job = self._mint_quest_tick_job(store, qid)
+        append_chunk(store, job.id, "job_event", "tick #1: 2 proposals")
+        append_chunk(store, job.id, "job_event", "tick #2: 1 proposal")
+        # Re-minted after a rest: queued, never claimed — contributes no
+        # tick activity of its own.
+        fresh = self._mint_quest_tick_job(store, qid)
+        now = datetime.now(UTC)
+        minted = now - timedelta(days=2)
+        first, second = now - timedelta(hours=5), now - timedelta(hours=1)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET created_at=%s WHERE ref_id=%s",
+                (minted, job.id),
+            )
+            conn.execute(
+                "UPDATE chunks SET created_at=%s WHERE ref_id=%s AND ord=0",
+                (first, job.id),
+            )
+            conn.execute(
+                "UPDATE chunks SET created_at=%s WHERE ref_id=%s AND ord=1",
+                (second, job.id),
+            )
+            conn.execute(
+                "UPDATE refs SET created_at=%s WHERE ref_id=%s",
+                (now - timedelta(minutes=10), fresh.id),
+            )
+            conn.commit()
+        body = h.get(id=qid, view="status").body
+        assert f"last tick: {second.strftime('%Y-%m-%d %H:%MZ')}" in body
+        assert minted.strftime("%Y-%m-%d %H:%MZ") not in body
+
+    def test_status_view_trusted_covers_unevaluated_and_zero_axes(
+        self, store: Any
+    ) -> None:
+        """td594198 — trusted-per-axis counts include a truly-unevaluated
+        candidate's trusted measures (``unevaluated`` means missing a
+        required objective value, not unmeasured) and declared axes with
+        zero coverage, matching the web picker's counts."""
+        from precis.quest import compute as compute_mod
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A NO→NH₃ catalyst"))
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_objectives": [
+                    {"key": "barrier", "sense": "min"},
+                    {"key": "selectivity_margin", "sense": "min"},
+                ]
+            },
+        )
+        cell = {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]}
+        sid = compute_mod.ensure_candidate(
+            store,
+            qid,
+            {
+                "name": "Fe",
+                "structure": {
+                    "cell": cell,
+                    "ops": [{"op": "add_atom", "element": "Fe", "frac": [0, 0, 0.5]}],
+                },
+            },
+        )
+        assert sid is not None
+        # Converged relax but no barrier sim: no declared-objective value,
+        # so Fe lands in `unevaluated` — yet its `energy` measure IS
+        # trusted coverage.
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=1,
+            max_disp=0.0,
+            energy=-9.5,
+        )
+        body = h.get(id=qid, view="status").body
+        assert "1 awaiting" in body
+        assert "energy 1" in body
+        assert "barrier 0" in body
+        assert "selectivity_margin 0" in body
 
     def test_status_view_lists_holds_in_force(self, store: Any) -> None:
         """gr592666 — operator holds surface so an agent doesn't re-dispatch
