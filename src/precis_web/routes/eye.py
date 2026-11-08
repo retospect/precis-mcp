@@ -67,8 +67,12 @@ _SKILL_PREFIX = "sk:"
 #: selector alphabet (``: / ( ) [ ] , ! * + - _ .``) but not trailing
 #: sentence punctuation (stripped below); the ``#`` focus requires the
 #: ``#a<El><n>`` atom shape so ``issue#5`` and ``c#1`` stay text.
+#: A ``/`` boundary keeps tokens out of URL path segments
+#: (``/eye/td573348`` in a pasted URL stays text) — unless the slash
+#: follows a digit, i.e. a handle chained off a handle
+#: (``gr592999/gr592563``, gr594855).
 _TOKEN_IN_TEXT = re.compile(
-    r"(?<![\w/:.-])("
+    r"(?:(?<![\w/:.-])|(?<=\d/))("
     r"sk:[a-z0-9][a-z0-9-]*"
     r"|[a-z0-9][a-z0-9-]*~[A-Za-z0-9_.#:/()\[\],!*+-]+"
     r"|[a-z0-9][a-z0-9-]*#a[A-Z][a-z]?\d+"

@@ -353,6 +353,17 @@ def test_linkify_handles_links_only_real_handles() -> None:
     assert linkify_handles("<b>") == "&lt;b&gt;"
 
 
+def test_linkify_handles_links_slash_chained_handles() -> None:
+    """gr594855: ``gr592999/gr592563`` links BOTH handles — a ``/`` after
+    a digit is a chained handle, not a URL path segment; a ``/`` after a
+    letter stays the path guard."""
+    out = linkify_handles("starts on sub-pieces like gr592999/gr592563.")
+    assert 'href="/eye/gr592999?extent=fisheye%2B1hop">gr592999</a>' in out
+    assert 'href="/eye/gr592563?extent=fisheye%2B1hop">gr592563</a>' in out
+    out = linkify_handles("see https://x.ts.net/eye/td573348 and x/gr12")
+    assert 'href="/eye/td573348' not in out and 'href="/eye/gr12' not in out
+
+
 # ── gr490266: /eye must not leak another owner's profile ─────────────
 
 
