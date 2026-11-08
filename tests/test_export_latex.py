@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import base64
 import re
+import shutil
 import sys
 from pathlib import Path
 
 import pytest
 
 from precis.export import latex
+from precis.export.compile import compile_pdf, have_latexmk
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import attach_evidence, mint_hub
 from precis.utils import handle_registry as _handle_registry
@@ -34,6 +36,13 @@ _PNG_B64 = base64.b64encode(_PNG).decode()
 _needs_posix_stub = pytest.mark.skipif(
     sys.platform == "win32",
     reason="POSIX execute-shebang support required for the latexmk stub-binary pattern",
+)
+
+# Compiled-numbering tests build a real project and compile it — they need
+# the TeX toolchain, same gate as tests/test_preamble_smoke.py.
+_needs_tex = pytest.mark.skipif(
+    not (have_latexmk() and shutil.which("lualatex")),
+    reason="TeX toolchain absent (runs in the gate container; skip on bare hosts)",
 )
 
 # ── inline rendering (no DB) ──────────────────────────────────────────
@@ -2403,6 +2412,74 @@ def test_export_table_numbers_like_figures_and_cross_refs(hub, tmp_path) -> None
     # a table's label binds the table counter, not the enclosing section
     t1_lines = [ln for ln in body.splitlines() if f"chunk:{t1_dc}" in ln]
     assert any("\\refstepcounter{table}" in ln for ln in t1_lines)
+
+
+@_needs_tex
+def test_export_tables_compile_with_contiguous_numbers(hub, tmp_path) -> None:
+    """gr592852 follow-up (td595579): the source assertions above count
+    ``\\refstepcounter{table}`` calls, but ``\\begin{longtable}`` ALSO
+    refsteps ``table`` itself — under whatever name the vintage uses
+    (``\\refstepcounter``, hyperref-patched ``\\H@refstepcounter``,
+    ``\\@kernel@refstepcounter``) — and a source check can't see it: a
+    compiled PDF numbered Table 1, 3, … while the xref pre-pass (and
+    DOCX) said 1, 2. The ``_LT_COUNTER_GUARD`` wrapper gobbles the
+    environment's step; compile the real project and read the numbers
+    LaTeX actually assigned from ``main.aux``'s ``\\newlabel`` entries —
+    contiguous, cleveref-typed ``table``, matching the pre-pass."""
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    d = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    d.put(id="tc", title="T", project=proj)
+    t_dcs: list[str] = []
+    for caption in ("first", "second"):
+        t = d.put(
+            id="tc",
+            chunk_kind="table",
+            table={"header": ["h"], "rows": [["r"]]},
+            caption=caption,
+            at={"last": True},
+        )
+        m = re.search(r"dc\d+", t.body)
+        assert m
+        t_dcs.append(m.group(0))
+    t1 = d.put(
+        id="tc",
+        chunk_kind="paragraph",
+        text=f"See [{t_dcs[0]}] then [{t_dcs[1]}].",
+        at={"last": True},
+    )
+    assert re.search(r"dc\d+", t1.body)
+
+    ref = store.get_ref(kind="draft", id="tc")
+    body = latex.render_body(store, ref).body
+    main = latex.assemble_document(
+        title="Table numbering",
+        author_block="\\author{precis}",
+        body=body,
+        acronyms="",
+    )
+    (tmp_path / "main.tex").write_text(main, encoding="utf-8")
+    (tmp_path / "refs.bib").write_text("", encoding="utf-8")
+    (tmp_path / ".latexmkrc").write_text(
+        latex._template_text("latexmkrc"), encoding="utf-8"
+    )
+    res = compile_pdf(tmp_path, timeout_s=300)
+    assert not res.skipped
+    assert res.ok, f"table-numbering compile failed:\n{res.log_tail}"
+
+    aux = (tmp_path / "main.aux").read_text(encoding="utf-8")
+    numbers = {
+        m.group(1): int(m.group(2))
+        for m in re.finditer(r"\\newlabel\{chunk:(dc\d+)\}\{\{(\d+)\}", aux)
+    }
+    # The two table labels carry contiguous numbers 1, 2 — not 1, 3 (the
+    # double-step) — matching the pre-pass numbers DOCX prints.
+    assert numbers[t_dcs[0]] == 1 and numbers[t_dcs[1]] == 2
+    # cleveref recorded the counter TYPE too — the [dc<id>] cross-refs in
+    # the trailing paragraph print "table 1" / "table 2", not a section.
+    assert "{[table][1][]1}" in aux and "{[table][2][]2}" in aux
 
 
 def test_standalone_equation_numbers_and_cross_refs(hub, tmp_path) -> None:

@@ -2300,6 +2300,37 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
     return _polish_xrefs(s.replace("\x02", ""))
 
 
+#: ``\begin{longtable}`` refsteps ``table`` itself, under whichever name
+#: the vintage uses — ``\refstepcounter{table}`` hard-coded in longtable
+#: 4.14–4.17 (rewritten by hyperref's ``\LT@array`` patch to
+#: ``\H@refstepcounter``) and ``\@kernel@refstepcounter{\LTcaptype}``
+#: since 4.18 — on top of the explicit ``\refstepcounter`` a numbered
+#: table's lead-in already emits (gr592852), double-stepping to Table 1,
+#: 3, …. Wrap every generated longtable in a group that gobbles all three
+#: stepper names so the renderer's is the only ``table`` step on any
+#: longtable/hyperref vintage; an unnumbered longtable (data supplement)
+#: then consumes no number either. ``\MakeLinkTarget`` and
+#: ``\hyper@makecurrent`` go too: the head target would otherwise
+#: re-create the same ``table.N`` destination the lead-in's refstep just
+#: made (a duplicate-destination warning) — ``\@currentHref`` gets a
+#: per-table-unique ``lt.<n>`` instead so the anchor stays unique and a
+#: label following the table keeps pointing at its lead-in once
+#: ``\endgroup`` restores ``\@currentHref``. ``\let`` on
+#: possibly-undefined macros is safe (older vintages never call them),
+#: and nothing inside these longtables — header, cells,
+#: ``\endhead``/``\endlastfoot`` templates — legitimately refsteps or
+#: needs an anchor: no ``\caption`` is ever emitted.
+_LT_COUNTER_GUARD_OPEN = [
+    "\\begingroup\\makeatletter",
+    "\\let\\refstepcounter\\@gobble \\let\\H@refstepcounter\\@gobble"
+    " \\let\\@kernel@refstepcounter\\@gobble",
+    "\\let\\MakeLinkTarget\\@gobble \\let\\hyper@makecurrent\\@gobble"
+    " \\def\\@currentHref{lt.\\thetable}",
+    "\\makeatother",
+]
+_LT_COUNTER_GUARD_CLOSE = ["\\endgroup"]
+
+
 def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
     """Render a ``chunk_kind='table'`` chunk as a ``longtable`` — page-breaking, booktabs-ruled, equal-width ``p{}`` columns so long
     cells wrap and the table never overflows the text width. Cells go through
@@ -2333,7 +2364,10 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
         # Auto-numbered like a figure (gr592852): ``\refstepcounter{table}``
         # binds ``\label`` to the table counter so a ``[dc<id>]`` cross-ref
         # prints "table N" via cleveref; the bold lead-in carries the
-        # number, with the caption when the chunk has one.
+        # number, with the caption when the chunk has one. The ONE step:
+        # the ``_LT_COUNTER_GUARD`` wrapper gobbles ``\begin{longtable}``'s
+        # own counter refstep, so the environment can't double-step
+        # ``table`` into Table 1, 3, … (td595579).
         caption_tex = _render_inline(caption, ctx) if caption else ""
         out.append(
             f"\\noindent\\refstepcounter{{table}}{label}"
@@ -2366,6 +2400,7 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
         out.append("\\end{center}")
         out.append(label)
         return out
+    out += _LT_COUNTER_GUARD_OPEN
     out.append(f"\\begin{{longtable}}{{{colspec}}}")
     out.append("\\toprule")
     out.append(rendered_header)
@@ -2373,6 +2408,7 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
     out.append("\\bottomrule\\endlastfoot")
     out.extend(rendered_rows)
     out.append("\\end{longtable}")
+    out += _LT_COUNTER_GUARD_CLOSE
     return out
 
 
@@ -3309,6 +3345,7 @@ def build_supplement_section(entries: list[Any]) -> str:
     """Format the shared supplement entries without assigning numbers here."""
     rows = [
         r"\section*{Data Supplement}",
+        *_LT_COUNTER_GUARD_OPEN,
         r"\begin{longtable}{p{0.10\linewidth}p{0.16\linewidth}p{0.64\linewidth}}",
         r"Entry & Kind & Description \\ \hline",
     ]
@@ -3317,6 +3354,7 @@ def build_supplement_section(entries: list[Any]) -> str:
         for e in entries
     )
     rows.append(r"\end{longtable}")
+    rows += _LT_COUNTER_GUARD_CLOSE
     return "\n".join(rows) + "\n"
 
 

@@ -193,6 +193,10 @@ print('listing')
 \begin{precisaside}\label{chunk:dc27}An aside with a cite {\textquotedblleft}No identifier paper{\textquotedblright}.\end{precisaside}
 
 \noindent\refstepcounter{table}\label{chunk:dc28}\textbf{Table \thetable}\par\nopagebreak
+\begingroup\makeatletter
+\let\refstepcounter\@gobble \let\H@refstepcounter\@gobble \let\@kernel@refstepcounter\@gobble
+\let\MakeLinkTarget\@gobble \let\hyper@makecurrent\@gobble \def\@currentHref{lt.\thetable}
+\makeatother
 \begin{longtable}{>{\raggedright\arraybackslash}p{\dimexpr(\linewidth-\tabcolsep*4)/2\relax}>{\raggedright\arraybackslash}p{\dimexpr(\linewidth-\tabcolsep*4)/2\relax}}
 \toprule
 Material & Source \\
@@ -201,6 +205,7 @@ Material & Source \\
 \glstip{mof} & {\textquotedblleft}Arxiv-only preprint{\textquotedblright} \\
 \glstip{fmof} & none \\
 \end{longtable}
+\endgroup
 
 \$\$a + b\$\$\label{chunk:dc29}
 
