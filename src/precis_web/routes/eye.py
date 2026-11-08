@@ -68,16 +68,18 @@ _SKILL_PREFIX = "sk:"
 #: sentence punctuation (stripped below); the ``#`` focus requires the
 #: ``#a<El><n>`` atom shape so ``issue#5`` and ``c#1`` stay text.
 #: A ``/`` boundary keeps tokens out of URL path segments
-#: (``/eye/td573348`` in a pasted URL stays text) — unless the slash
-#: follows a digit, i.e. a handle chained off a handle
-#: (``gr592999/gr592563``, gr594855).
+#: (``/eye/td573348`` in a pasted URL stays text). A token admitted on
+#: its own boundary may carry ``/<handle>`` tails — a handle chained
+#: off a handle (``gr592999/gr592563``, gr594855); a ``/`` after
+#: anything else stays the path guard, so ``/2026/gr592563`` in a URL
+#: keeps ``gr592563`` text.
 _TOKEN_IN_TEXT = re.compile(
-    r"(?:(?<![\w/:.-])|(?<=\d/))("
+    r"(?<![\w/:.-])("
     r"sk:[a-z0-9][a-z0-9-]*"
     r"|[a-z0-9][a-z0-9-]*~[A-Za-z0-9_.#:/()\[\],!*+-]+"
     r"|[a-z0-9][a-z0-9-]*#a[A-Z][a-z]?\d+"
     r"|[a-z]{2}\d+"
-    r")(?![\w-])"
+    r")((?:/[a-z]{2}\d+)*)(?![\w-])"
 )
 
 #: A ``fisheye+2hop`` count line as rendered (already HTML-escaped) by
@@ -129,26 +131,39 @@ def linkify_handles(
     costs a plain word, never a dead link."""
 
     def _link(m: re.Match[str]) -> str:
-        tok = m.group(1)
+        # A match is a head token plus its chained ``/<handle>`` tails
+        # (group 2 — ``gr592999/gr592563``). Each segment links only
+        # while the chain stays live: a segment that is not a handle
+        # ends it, so text after ``foo/zz99`` stays a path tail.
+        segs = [m.group(1)] + m.group(2).split("/")[1:]
         # Sentence punctuation clinging to a focus handle
         # (``hcol-a2~p#aC12,``) is not part of the link; a trailing ``)``
         # only splits when it never opened — ``~p/w3/(2,1,A)` legitimately
         # ends on it.
-        h = tok.rstrip(",.;")
+        h = segs[-1].rstrip(",.;")
         while h.endswith(")") and h.count(")") > h.count("("):
             h = h[:-1]
-        tail = tok[len(h) :]
+        tail = segs[-1][len(h) :]
         if not h:
-            return tok
-        if h.startswith(_SKILL_PREFIX) or "~" in h or "#a" in h:
-            href = _eye_href(h, extent, kinds=kinds, spaces=spaces)
-            return (
-                f'<a class="eye-handle text-info underline" href="{href}">{h}</a>{tail}'
-            )
-        if handle_registry.parse(h) is None:
-            return tok  # ``sp2``/``mx3``-shaped non-handles stay text
-        href = _eye_href(h, extent, kinds=kinds, spaces=spaces)
-        return f'<a class="eye-handle text-info underline" href="{href}">{h}</a>{tail}'
+            return m.group(0)
+        segs[-1] = h
+        out: list[str] = []
+        live = True
+        for seg in segs:
+            if live and (
+                seg.startswith(_SKILL_PREFIX)
+                or "~" in seg
+                or "#a" in seg
+                or handle_registry.parse(seg) is not None
+            ):
+                href = _eye_href(seg, extent, kinds=kinds, spaces=spaces)
+                out.append(
+                    f'<a class="eye-handle text-info underline" href="{href}">{seg}</a>'
+                )
+            else:
+                live = False  # ``sp2``/``zz9``-shaped non-handles stay text
+                out.append(seg)
+        return "/".join(out) + tail
 
     escaped = html.escape(text, quote=False)
     return _TOKEN_IN_TEXT.sub(_link, escaped)

@@ -354,14 +354,35 @@ def test_linkify_handles_links_only_real_handles() -> None:
 
 
 def test_linkify_handles_links_slash_chained_handles() -> None:
-    """gr594855: ``gr592999/gr592563`` links BOTH handles — a ``/`` after
-    a digit is a chained handle, not a URL path segment; a ``/`` after a
+    """gr594855: ``gr592999/gr592563`` links BOTH handles — the chain
+    roots at a handle admitted on its own boundary; a ``/`` after a
     letter stays the path guard."""
     out = linkify_handles("starts on sub-pieces like gr592999/gr592563.")
     assert 'href="/eye/gr592999?extent=fisheye%2B1hop">gr592999</a>' in out
     assert 'href="/eye/gr592563?extent=fisheye%2B1hop">gr592563</a>' in out
     out = linkify_handles("see https://x.ts.net/eye/td573348 and x/gr12")
     assert 'href="/eye/td573348' not in out and 'href="/eye/gr12' not in out
+
+
+def test_linkify_handles_chains_only_off_recognized_handles() -> None:
+    """td596055 (review of td595891): a bare ``\\d/`` boundary admitted
+    the tail, so ``https://example.org/2026/gr592563`` linked
+    ``gr592563``. Chaining requires the segment before the ``/`` to be
+    a recognized handle itself."""
+    out = linkify_handles("see https://example.org/2026/gr592563 today")
+    assert 'href="/eye/gr592563' not in out
+    # a digit run is not a handle, nor is a handle inside a path
+    out = linkify_handles("paths 12345/td42 and x/gr12/zz9/qu3")
+    assert 'href="/eye/td42' not in out
+    assert 'href="/eye/gr12' not in out and 'href="/eye/qu3' not in out
+    # an unrecognized code breaks the chain; the head still links
+    out = linkify_handles("gr1/zz9/td2 here")
+    assert 'href="/eye/gr1?' in out
+    assert 'href="/eye/zz9' not in out and 'href="/eye/td2' not in out
+    # a transitive chain of recognized handles links every segment
+    out = linkify_handles("gr1/td2/qu3 all link")
+    for h in ("gr1", "td2", "qu3"):
+        assert f'href="/eye/{h}?extent=fisheye%2B1hop">{h}</a>' in out
 
 
 # ── gr490266: /eye must not leak another owner's profile ─────────────
