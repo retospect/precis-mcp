@@ -263,6 +263,12 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         ("draft", "edit", "at"),
         ("draft", "edit", "drop_rows"),
         ("draft", "edit", "sort"),
+        # -- edit: draft figure recipe rewrite (gr592839), args= by
+        # design — chunk_kind='figure'-only params, same reasoning as
+        # the table ops above.
+        ("draft", "edit", "view"),
+        ("draft", "edit", "render"),
+        ("draft", "edit", "plots"),
         # -- edit: finding acquisition-mode's dead-end flip side ----------
         ("finding", "edit", "unacquirable_mode"),
         ("finding", "edit", "unacquirable_note"),

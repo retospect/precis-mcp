@@ -2340,8 +2340,6 @@ class DraftHandler(Handler):
         when the structure's geometry changes or its slug is re-minted (a
         re-generate deletes and re-mints ``<design>-<block>``).
         ``origin='original'``."""
-        from precis.render.figure import VIEW_MAX_ATOMS, view_recipe
-
         nxt = (
             "put(kind='draft', id='…', chunk_kind='figure', text='Fig 1. …', "
             "meta={'view': {'source': 'structure:<slug>', "
@@ -2350,6 +2348,38 @@ class DraftHandler(Handler):
         )
         if caption is None or not str(caption).strip():
             raise BadInput("a figure requires text= (the caption)", next=nxt)
+        recipe, prov = self._validated_view_recipe(view, nxt=nxt)
+        chunk = self.store.drafts.add_figure(
+            ref_id=ref_id,
+            caption=str(caption),
+            origin="original",
+            image=_PLACEHOLDER_PNG,  # deferred — rendered at export/view time
+            mime="image/png",
+            at=at,
+            figure_meta={"render_pending": True},
+        )
+        self.store.drafts.set_render_recipe(chunk.chunk_id, recipe)
+        self.sync_draft_links(ref_id)
+        self._attribute_touch([chunk.chunk_id])
+        return Response(
+            body=(
+                f"added structure view figure {chunk.dc} to {slug} ({prov}); "
+                "image renders on first export/view — render pending"
+            )
+        )
+
+    def _validated_view_recipe(
+        self, view: Any, *, nxt: str
+    ) -> tuple[dict[str, Any], str]:
+        """Validate a structure-view payload into its canonical
+        ``meta.render`` recipe — shared by the figure put
+        (:meth:`_add_view_figure`, ``meta={'view': …}``) and the recipe
+        edit (:meth:`_edit_figure_recipe`, ``args={'view': …}`` /
+        ``meta={'view': …}``; gr592839). ``nxt`` is the caller's
+        call-shape hint for the refusals. Returns ``(recipe, provenance
+        blurb)``."""
+        from precis.render.figure import VIEW_MAX_ATOMS, view_recipe
+
         if not isinstance(view, dict):
             raise BadInput("meta['view'] must be an object", next=nxt)
         kind, _, src_slug = str(view.get("source") or "").partition(":")
@@ -2393,18 +2423,6 @@ class DraftHandler(Handler):
                 f"figure is capped at {VIEW_MAX_ATOMS}",
                 next="render a smaller structure (a fragment or sub-block)",
             )
-        chunk = self.store.drafts.add_figure(
-            ref_id=ref_id,
-            caption=str(caption),
-            origin="original",
-            image=_PLACEHOLDER_PNG,  # deferred — rendered at export/view time
-            mime="image/png",
-            at=at,
-            figure_meta={"render_pending": True},
-        )
-        self.store.drafts.set_render_recipe(chunk.chunk_id, recipe)
-        self.sync_draft_links(ref_id)
-        self._attribute_touch([chunk.chunk_id])
         smeta = sref.meta or {}
         prov = f"structure:{src_slug} v{int(smeta.get('version', 0))}"
         generated = smeta.get("generated")
@@ -2412,12 +2430,7 @@ class DraftHandler(Handler):
             prov += f", generator {generated['generator']}"
         if se_block is not None:
             prov = f"se:{se_block[0]} block {se_block[1]!r} -> {prov}"
-        return Response(
-            body=(
-                f"added structure view figure {chunk.dc} to {slug} ({prov}); "
-                "image renders on first export/view — render pending"
-            )
-        )
+        return recipe, prov
 
     def _view_se_block(self, design: str, block: Any) -> tuple[str, str]:
         """``(block, structure slug)`` for an ``se:<design>`` view source.
@@ -2490,22 +2503,7 @@ class DraftHandler(Handler):
                 "a figure requires text= (the caption)",
                 next="put(kind='draft', …, chunk_kind='figure', render=…, plots=[…], text='Fig 1. …')",
             )
-        # Resolve each plots target to a live chunk in *this* draft.
-        targets = []
-        for p in plots:
-            c = self.store.drafts.get_draft_chunk(str(p))
-            if c is None:
-                raise NotFound(
-                    f"plots target {p!r} not found",
-                    next="get(kind='draft', id='<slug>', view='toc') lists "
-                    "this draft's live chunk handles for plots=",
-                )
-            if int(c.ref_id) != ref_id:
-                raise BadInput(
-                    f"plots target {p!r} is not a chunk in draft {slug!r}",
-                    next="plots= must reference data chunks in the same draft",
-                )
-            targets.append(c)
+        targets = self._resolve_plot_targets(ref_id, slug, plots)
 
         chunk = self.store.drafts.add_figure(
             ref_id=ref_id,
@@ -2530,6 +2528,186 @@ class DraftHandler(Handler):
                 f"added graph figure {chunk.dc} to {slug} "
                 f"(plots {n} data source{'' if n == 1 else 's'}); "
                 "image renders on first export/view — render pending"
+            )
+        )
+
+    def _resolve_plot_targets(
+        self, ref_id: int, slug: str, plots: list[Any]
+    ) -> list[Any]:
+        """``plots=[dc<id>, …]`` resolved to live chunks of *this* draft —
+        shared by the graph-figure put (:meth:`_add_graph_figure`) and the
+        recipe edit (:meth:`_edit_figure_recipe`, gr592839)."""
+        targets = []
+        for p in plots:
+            c = self.store.drafts.get_draft_chunk(str(p))
+            if c is None:
+                raise NotFound(
+                    f"plots target {p!r} not found",
+                    next="get(kind='draft', id='<slug>', view='toc') lists "
+                    "this draft's live chunk handles for plots=",
+                )
+            if int(c.ref_id) != ref_id:
+                raise BadInput(
+                    f"plots target {p!r} is not a chunk in draft {slug!r}",
+                    next="plots= must reference data chunks in the same draft",
+                )
+            targets.append(c)
+        return targets
+
+    def _stamp_figure_recipe(
+        self,
+        handle: str,
+        recipe: dict[str, Any] | None,
+        *,
+        origin: str | None = None,
+    ) -> None:
+        """Re-arm a figure chunk for the lazy render pass after a recipe
+        or ``plots=`` edit — the write :meth:`_edit_figure_recipe` shares
+        for every recipe mutation. ``meta.figure.render_pending`` goes
+        back on (the visible blob is stale), a ``recipe`` rewrites
+        ``meta.render`` wholesale (dropping the old ``cached_key`` /
+        ``failed`` / ``source_version`` stamps — same effect as
+        :meth:`~precis.store._draft_ops.DraftStore.set_render_recipe`),
+        and ``origin=`` re-classes ``meta.figure.origin`` when the recipe
+        kind changed — a figure that stops being ``third_party`` drops
+        its stale ``permission`` paper-trail with it. One meta merge via
+        ``patch_chunk_meta``'s in-tx ``transform``."""
+
+        def _tf(meta: dict[str, Any]) -> dict[str, Any]:
+            fig = dict(meta.get("figure") or {})
+            fig["render_pending"] = True
+            if origin is not None and fig.get("origin") != origin:
+                fig["origin"] = origin
+                if origin != "third_party":
+                    fig.pop("permission", None)
+            patch: dict[str, Any] = {"figure": fig}
+            if recipe is not None:
+                patch["render"] = recipe
+            return patch
+
+        self.store.drafts.patch_chunk_meta(handle, transform=_tf)
+
+    def _edit_figure_recipe(
+        self,
+        handle: str,
+        base: Any,
+        *,
+        view: Any = None,
+        render: str | None = None,
+        plots: list[Any] | None = None,
+        text: str | None = None,
+        find: str | None = None,
+    ) -> Response:
+        """In-place recipe edit on a ``figure`` chunk (gr592839) — the
+        put-side ``meta={'view': …}`` and ``render=``/``plots=``
+        spellings, applied to the live chunk so its ``dc<id>`` handle
+        (and every cross-ref into it) survives the edit: ``view=``
+        rewrites a structure-view recipe, ``render=`` a computed graph's
+        Python, ``plots=`` the data chunks it plots (wholesale — the
+        edge set is replaced, not appended). A rewrite drops the stamped
+        ``cached_key`` and re-arms ``meta.figure.render_pending``, so
+        the lazy render pass re-rasterises on next export/view."""
+        if view is None and render is None and plots is None:
+            raise BadInput(
+                "a figure recipe edit needs view=, render= or plots=",
+                next="edit(kind='draft', id='dc<id>', "
+                "args={'render': '…', 'plots': ['dc<data-id>']})",
+            )
+        if base.chunk_kind != "figure":
+            raise BadInput(
+                f"view=/render=/plots= rewrite a figure chunk's render "
+                f"recipe; {base.dc} is a {base.chunk_kind}",
+                next="get(kind='draft', id='<slug>', view='toc') lists the "
+                "draft's figure handles; a caption rewrites with text=",
+            )
+        if view is not None and (render is not None or plots is not None):
+            raise BadInput(
+                "view= doesn't combine with render=/plots= — a structure "
+                "view recipe has no code or plotted data",
+                next="edit(kind='draft', id='dc<id>', "
+                "args={'view': {'source': 'structure:<slug>'}})",
+            )
+        if text is not None or find is not None:
+            raise BadInput(
+                "a recipe edit doesn't combine with a text edit — rewrite "
+                "the caption separately",
+                next=f"edit(kind='draft', id={base.dc!r}, text='Fig 1. …')",
+            )
+        if view is not None:
+            recipe, prov = self._validated_view_recipe(
+                view,
+                nxt=(
+                    "edit(kind='draft', id='dc<id>', args={'view': "
+                    "{'source': 'structure:<slug>', 'camera': {'azimuth_deg': "
+                    "30, 'elevation_deg': 15}}})  or args={'view': {'source': "
+                    "'se:<design>', 'block': '<block>'}}"
+                ),
+            )
+            self._stamp_figure_recipe(handle, recipe, origin="original")
+            dropped = self.store.drafts.unlink_figure_plots(base.chunk_id)
+            self.sync_draft_links(int(base.ref_id))
+            self._attribute_touch([base.chunk_id])
+            tail = (
+                ""
+                if not dropped
+                else f"; dropped {dropped} stale plots link{'' if dropped == 1 else 's'}"
+            )
+            return Response(
+                body=(
+                    f"updated view recipe on {base.dc} ({prov}){tail}; "
+                    "image re-renders on next export/view — render pending"
+                )
+            )
+        # graph path: render= and/or plots= on a computed figure
+        bundle = self.store.drafts.figure_render_bundle(base.chunk_id)
+        n_plotted = len(bundle["input_shas"]) - 1 if bundle else 0
+        if render is not None and not str(render).strip():
+            raise BadInput(
+                "render= must be non-empty Python source (to retire the "
+                "figure instead, delete the chunk)",
+                next="edit(kind='draft', id='dc<id>', "
+                "args={'render': 'import …', 'plots': ['dc<data-id>']})",
+            )
+        if plots is not None and render is None and bundle is None:
+            raise BadInput(
+                "plots= re-targets a graph's data — this figure has no "
+                "render recipe yet; pass render= with it",
+                next="edit(kind='draft', id='dc<id>', "
+                "args={'render': 'import …', 'plots': ['dc<data-id>']})",
+            )
+        if render is not None and plots is None and n_plotted == 0:
+            raise BadInput(
+                "a graph figure requires plots=[dc<id>] — the data "
+                "chunk(s) it renders; this figure has none yet",
+                next="edit(kind='draft', id='dc<id>', "
+                "args={'render': 'import …', 'plots': ['dc<data-id>']})",
+            )
+        if render is not None:
+            self._stamp_figure_recipe(
+                handle,
+                {"kind": "code", "lang": "python", "src": str(render)},
+                origin="own_graph",
+            )
+        n_linked = 0
+        if plots is not None:
+            ref = self.store.get_ref(kind="draft", id=int(base.ref_id))
+            targets = self._resolve_plot_targets(
+                int(base.ref_id), str(ref.slug or ref.id) if ref else "?", plots
+            )
+            n_linked = self.store.drafts.link_figure_plots(
+                base.chunk_id, [t.chunk_id for t in targets], replace=True
+            )
+            if render is None:
+                self._stamp_figure_recipe(handle, None)
+        self.sync_draft_links(int(base.ref_id))
+        self._attribute_touch([base.chunk_id])
+        bits = ["render recipe"] if render is not None else []
+        if plots is not None:
+            bits.append(f"plots {n_linked} data source{'' if n_linked == 1 else 's'}")
+        return Response(
+            body=(
+                f"updated graph figure {base.dc} ({', '.join(bits)}); "
+                "image re-renders on next export/view — render pending"
             )
         )
 
@@ -2597,6 +2775,14 @@ class DraftHandler(Handler):
         scaffold: str | None = None,
         dry_run: bool | str = False,
         source: dict[str, Any] | None = None,
+        # figure recipe edit (gr592839): args={'view': …} rewrites a
+        # structure-view figure's recipe (the put-side meta={'view': …}
+        # spelling, also routed below); args={'render': '…',
+        # 'plots': [dc<id>, …]} rewrites a computed graph's code / data
+        # edges. All in place — the dc<id> handle is kept.
+        view: dict[str, Any] | None = None,
+        render: str | None = None,
+        plots: list[Any] | None = None,
         # spreadsheet-tables 1b — the TOON patch/replace surface and the
         # id-addressed structure ops (all chunk_kind='table' only):
         # patch='<toon>' (subset edit; mode='update'|'upsert'),
@@ -2719,6 +2905,9 @@ class DraftHandler(Handler):
                     "verdict": verdict if verdict != "approved" else None,
                     "authoring": authoring,
                     "scaffold": scaffold,
+                    "view": view,
+                    "render": render,
+                    "plots": plots,
                 },
             )
         # ``title`` is a draft-level op (rename the document) — id is the slug
@@ -2910,6 +3099,9 @@ class DraftHandler(Handler):
             or voice is not None
             or lang is not None
             or review is not None
+            or view is not None
+            or render is not None
+            or plots is not None
         ):
             _reject_dry_run("structural", _base)
         if review is not None:
@@ -2978,11 +3170,36 @@ class DraftHandler(Handler):
                 ) from exc
             self.store.drafts.patch_chunk_meta(handle, {"voice": _v, "lang": _lg})
             return Response(body=f"set narration on {_base.dc}: voice={_v} lang={_lg}")
+        if view is not None or render is not None or plots is not None:
+            # Figure recipe edit (gr592839): args={'view': …} /
+            # args={'render': '…', 'plots': […]} rewrite the live figure
+            # chunk's meta.render recipe + plots edges in place — the
+            # dc<id> handle survives.
+            return self._edit_figure_recipe(
+                handle,
+                _base,
+                view=view,
+                render=render,
+                plots=plots,
+                text=text,
+                find=find,
+            )
         if meta is not None:
+            _reject_dry_run("meta", _base)
+            if _base.chunk_kind == "figure" and "view" in meta:
+                # The put-side spelling (gr592839): meta={'view': …} is a
+                # figure's structure-view recipe, not a term-attrs patch.
+                extra = sorted(set(meta) - {"view"})
+                if extra:
+                    raise BadInput(
+                        f"on a figure chunk meta= carries only 'view' — got {extra}",
+                        next="edit(kind='draft', id='dc<id>', "
+                        "args={'view': {'source': 'structure:<slug>'}})",
+                    )
+                return self._edit_figure_recipe(handle, _base, view=meta["view"])
             # Patch a registry ``term`` leaf's attribute bag / hover surfaces
             # in place: manufacturer / mpn / url / ordering, and the
             # short / surface_forms surfaces. Metadata-only — no re-embed.
-            _reject_dry_run("meta", _base)
             c = self.store.drafts.set_term_attrs(handle, meta)
             return Response(body=f"updated term attributes {c.dc}" if c else "updated")
         if char_target is not None:

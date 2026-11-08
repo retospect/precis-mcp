@@ -3055,12 +3055,46 @@ class DraftStore(_AbbrevMixin):
             with self.tx() as c:
                 _do(c)
 
-    def link_figure_plots(self, figure_chunk_id: int, data_chunk_ids: list[int]) -> int:
+    def unlink_figure_plots(
+        self,
+        figure_chunk_id: int,
+        *,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Delete every ``plots`` edge out of a figure chunk — a graph →
+        view recipe switch leaves them stale, and ``plots=`` on the edit
+        path re-targets the set wholesale (:meth:`link_figure_plots`'s
+        ``replace``). Returns the count removed."""
+
+        def _do(c: psycopg.Connection) -> int:
+            cur = c.execute(
+                "DELETE FROM links WHERE src_chunk_id = %s AND relation = 'plots'",
+                (figure_chunk_id,),
+            )
+            return cur.rowcount or 0
+
+        if conn is not None:
+            return _do(conn)
+        with self.tx() as c:
+            return _do(c)
+
+    def link_figure_plots(
+        self,
+        figure_chunk_id: int,
+        data_chunk_ids: list[int],
+        *,
+        replace: bool = False,
+    ) -> int:
         """Create the figure→data `plots` edges for a computed figure, by
         chunk_id. Resolves each chunk's `(ref_id, ord)` and routes through
         :meth:`add_link` (dedup + validation). Returns the count. All
-        chunks must already exist."""
+        chunks must already exist. ``replace`` drops the figure's
+        existing ``plots`` edges first (the edit path re-targets the data
+        set wholesale — a kept stale edge would keep plotting the old
+        chunk too)."""
         with self.tx() as conn:
+            if replace:
+                self.unlink_figure_plots(figure_chunk_id, conn=conn)
             rows = conn.execute(
                 "SELECT chunk_id, ref_id, ord FROM chunks WHERE chunk_id = ANY(%s)",
                 ([figure_chunk_id, *data_chunk_ids],),

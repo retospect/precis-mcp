@@ -261,6 +261,169 @@ def _se_design(hub: Hub, slug: str, bindings: dict[str, str]) -> None:
     hub.sibling("se").put(id=slug, text=json.dumps({"ops": ops}))
 
 
+# ── the edit surface: view= / meta={'view': …} rewrite the recipe ────
+# (gr592839 — the edit used to refuse with the term-attrs error, forcing
+# a delete/re-put that lost the dc<id> handle)
+
+
+def test_view_figure_edit_recipe_in_place(hub: Hub) -> None:
+    """``edit(id=dc<fig>, view={…})`` rewrites a structure-view figure's
+    recipe on the live chunk — same handle, ``cached_key``/stamp state
+    dropped, ``render_pending`` re-armed."""
+    _ref, fig = _draft(hub)
+    d = DraftHandler(hub=hub)
+    r = d.edit(
+        id=fig.dc,
+        view={"source": "structure:co", "camera": {"azimuth_deg": 90}},
+    )
+    assert "updated view recipe" in r.body and str(fig.dc) in r.body
+    drafts = hub.live_store.drafts
+    meta = drafts.draft_chunk_meta(fig.handle)
+    assert meta["render"]["kind"] == "view"
+    assert meta["render"]["camera"] == {"azimuth_deg": 90.0}
+    assert meta["figure"]["render_pending"] is True
+    assert "cached_key" not in meta["render"]
+    assert meta["figure"]["origin"] == "original"
+
+    again = drafts.get_draft_chunk(fig.dc)
+    assert again is not None and again.chunk_id == fig.chunk_id
+
+
+def test_view_figure_edit_meta_view_spelling(hub: Hub) -> None:
+    """``meta={'view': …}`` — the put-side spelling — routes to the same
+    recipe rewrite instead of landing in the term-attrs refusal the
+    gripe hit (gr592839)."""
+    _ref, fig = _draft(hub)
+    d = DraftHandler(hub=hub)
+    r = d.edit(
+        id=fig.dc,
+        meta={"view": {"source": "structure:co", "camera": {"elevation_deg": 45}}},
+    )
+    assert "updated view recipe" in r.body
+    meta = hub.live_store.drafts.draft_chunk_meta(fig.handle)
+    assert meta["render"]["camera"] == {"elevation_deg": 45.0}
+
+
+def test_view_figure_edit_marks_stale_and_rerenders(hub: Hub, tmp_path: Path) -> None:
+    """A recipe rewrite drops the stamped key: the next export
+    re-rasterises under the new camera (gr592839)."""
+    ref, fig = _draft(hub)
+    drafts = hub.live_store.drafts
+    export_docx(hub.live_store, ref, target_path=tmp_path / "a.docx")
+    meta1 = drafts.draft_chunk_meta(fig.handle)
+    assert meta1["render"]["cached_key"]
+    assert "render_pending" not in meta1["figure"]
+
+    d = DraftHandler(hub=hub)
+    d.edit(
+        id=fig.dc,
+        view={
+            "source": "structure:co",
+            "camera": {"azimuth_deg": 120},
+            "refine": 1,
+        },
+    )
+    meta2 = drafts.draft_chunk_meta(fig.handle)
+    assert "cached_key" not in meta2["render"]
+    assert meta2["figure"]["render_pending"] is True
+    assert needs_render(hub.live_store, drafts.get_draft_chunk(fig.dc))
+
+    export_docx(hub.live_store, ref, target_path=tmp_path / "b.docx")
+    meta3 = drafts.draft_chunk_meta(fig.handle)
+    assert meta3["render"]["cached_key"] != meta1["render"]["cached_key"]
+    assert "render_pending" not in meta3["figure"]
+
+
+def test_view_edit_replaces_graph_recipe_and_drops_plots(hub: Hub) -> None:
+    """Switching a computed graph to a view recipe retires the stale
+    ``plots`` edges and re-classes origin — a view figure plots nothing
+    (gr592839)."""
+    StructureHandler(hub=hub).put(id="co", text=_PD)
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    d = DraftHandler(hub=hub)
+    d.put(id="g", title="T", project=pid)
+    ref = hub.live_store.get_ref(kind="draft", id="g")
+    assert ref is not None
+    d.put(
+        id="g",
+        chunk_kind="table",
+        table={"header": ["x", "y"], "rows": [[1, 2]]},
+        at={"last": True},
+    )
+    drafts = hub.live_store.drafts
+    data_c = next(c for c in drafts.reading_order(ref.id) if c.chunk_kind == "table")
+    d.put(
+        id="g",
+        chunk_kind="figure",
+        render="x = 1",
+        plots=[data_c.dc],
+        text="Fig.",
+        at={"last": True},
+    )
+    fig = next(c for c in drafts.reading_order(ref.id) if c.chunk_kind == "figure")
+    assert fig.meta["figure"]["origin"] == "own_graph"
+
+    r = d.edit(id=fig.dc, view={"source": "structure:co"})
+    assert "updated view recipe" in r.body
+    assert "dropped 1 stale plots link" in r.body
+    meta = drafts.draft_chunk_meta(fig.handle)
+    assert meta["render"]["kind"] == "view"
+    assert meta["figure"]["origin"] == "original"
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM links WHERE src_chunk_id = %s AND relation = 'plots'",
+            (fig.chunk_id,),
+        ).fetchone()
+    assert row is not None and int(row[0]) == 0
+
+
+def test_view_figure_edit_refusals(hub: Hub) -> None:
+    """A bad recipe refuses through the same validation as put, and
+    ``meta=`` on a figure carries 'view' alone (gr592839)."""
+    _ref, fig = _draft(hub)
+    d = DraftHandler(hub=hub)
+    with pytest.raises(BadInput):
+        d.edit(id=fig.dc, view={"source": "structure:co", "refine": 7})
+    with pytest.raises(NotFound):
+        d.edit(id=fig.dc, view={"source": "structure:nope"})
+    with pytest.raises(BadInput, match="only 'view'"):
+        d.edit(
+            id=fig.dc,
+            meta={"view": {"source": "structure:co"}, "bogus": 1},
+        )
+
+
+def test_meta_view_on_a_non_figure_keeps_term_attrs_refusal(hub: Hub) -> None:
+    """The reroute is figure-only: ``meta={'view': …}`` on prose still
+    lands the term-attrs refusal — the gripe's error, kept for the
+    chunks where it was always correct."""
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    d = DraftHandler(hub=hub)
+    d.put(id="g", title="T", project=pid)
+    d.put(id="g", chunk_kind="paragraph", text="plain prose", at={"last": True})
+    ref = hub.live_store.get_ref(kind="draft", id="g")
+    assert ref is not None
+    para = next(
+        c
+        for c in hub.live_store.drafts.reading_order(ref.id)
+        if c.chunk_kind == "paragraph"
+    )
+    with pytest.raises(BadInput, match="term attributes"):
+        d.edit(id=para.dc, meta={"view": {"source": "structure:co"}})
+
+
 def test_se_source_resolves_block_and_renders(hub: Hub, tmp_path: Path) -> None:
     StructureHandler(hub=hub).put(id="co-b", text=_PD)
     _se_design(hub, "buds", {"hub": "co-b"})

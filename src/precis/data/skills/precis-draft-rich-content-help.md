@@ -121,6 +121,17 @@ structure:<slug> v<N>, generator <g>`); copy what the reader needs into
 the caption, nothing is added to it for you. One block per figure; a
 composite of several posed blocks is not supported.
 
+**Editing a recipe in place.** `edit(kind='draft', id='dc<figure>', …)`
+rewrites a computed figure's recipe on the live chunk — the `dc<id>`
+handle (and every cross-ref into it) is kept:
+`args={'view': {'source': 'structure:<slug>', …}}` for a structure view
+(the put-side `meta={'view': …}` spelling works too),
+`args={'render': '…', 'plots': ['dc<id>', …]}` for a graph — `render=`
+alone re-codes, `plots=` alone re-targets the data (the edge set is
+replaced wholesale). A rewrite marks the figure render-pending, so the
+next export/view re-rasterises; `view=` doesn't combine with
+`render=`/`plots=`, and a caption still rewrites with `text=`.
+
 ## Data / table chunks
 
 A `chunk_kind='table'` chunk holds **structured data, not prose** — pass
