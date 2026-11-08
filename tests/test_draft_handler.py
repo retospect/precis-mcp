@@ -3356,6 +3356,45 @@ def test_house_style_write_hint_and_hygiene_view(draft: DraftHandler, hub: Hub) 
     assert "✓ house style" not in out
 
 
+def test_sentence_start_identifier_hint_and_hygiene(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr592934: a sentence opening with a known lowercase identifier —
+    a built-in or a glossary ``term`` short — trips the write-path hint
+    and the hygiene line; 'The <identifier>' and `backticks` are the
+    offered fixes, mid-sentence uses stay silent."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="term",
+        text="A coined fullerene.",
+        meta={"short": "nanobud"},
+    )
+
+    ok = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="The nanobud synthesis works, and precis stores it.",
+        at={"after": "¶" + th},
+    )
+    assert "lowercase identifier" not in ok.body
+    assert "lowercase identifier" not in draft.get(id="nt").body
+
+    bad = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="nanobud, the coined fullerene, works. land_slice then ships it.",
+        at={"after": "¶" + th},
+    )
+    assert "sentence opens with lowercase identifier(s): land_slice" in bad.body
+
+    out = draft.get(id="nt", view="hygiene").body
+    assert "2 sentence(s) open with a lowercase identifier" in out
+    assert "('nanobud')" in out and "('land_slice')" in out
+
+
 def test_bare_xref_hint(draft: DraftHandler, hub: Hub) -> None:
     """A ``[¶…]`` cross-ref with no lead-in word warns; 'see'/'section'/
     ' + (' /',' lead-ins and chained refs are silent."""

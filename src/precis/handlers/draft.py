@@ -1965,6 +1965,9 @@ class DraftHandler(Handler):
                 body += _draft_lint.temperature_form_hint(str(text))
                 body += _draft_lint.math_form_hint(str(text))
                 body += _draft_lint.house_style_hint(str(text), kind)
+                body += _draft_lint.sentence_start_hint(
+                    self.store, ref.id, str(text), chunk_kind=kind
+                )
                 body += _draft_lint.bare_xref_hint(str(text))
                 body += _draft_lint.caption_number_hint(str(text), kind, meta=meta)
                 for _c in chunks:
@@ -3464,6 +3467,9 @@ class DraftHandler(Handler):
                     body += _draft_lint.temperature_form_hint(new_text)
                     body += _draft_lint.math_form_hint(new_text, old_text)
                     body += _draft_lint.house_style_hint(new_text, c.chunk_kind)
+                    body += _draft_lint.sentence_start_hint(
+                        self.store, c.ref_id, new_text, old_text, c.chunk_kind
+                    )
                     body += _draft_lint.bare_xref_hint(new_text, old_text)
                     body += _draft_lint.caption_number_hint(new_text, c.chunk_kind)
                     body += _draft_lint.title_heading_dup_hint(
@@ -3512,6 +3518,9 @@ class DraftHandler(Handler):
                     body += _draft_lint.bare_identifier_hint(str(text))
                     body += _draft_lint.temperature_form_hint(str(text))
                     body += _draft_lint.math_form_hint(str(text), old_text)
+                    body += _draft_lint.sentence_start_hint(
+                        self.store, c.ref_id, str(text), old_text, c.chunk_kind
+                    )
                     body += _draft_lint.bare_xref_hint(str(text), old_text)
                     body += _draft_lint.caption_number_hint(str(text), c.chunk_kind)
                     body += _draft_lint.title_heading_dup_hint(
@@ -3677,6 +3686,9 @@ class DraftHandler(Handler):
         body += _draft_lint.temperature_form_hint(new_raw)
         body += _draft_lint.math_form_hint(new_raw, old_text)
         body += _draft_lint.house_style_hint(new_raw, "paragraph")
+        body += _draft_lint.sentence_start_hint(
+            self.store, int(block.ref_id), new_raw, old_text
+        )
         body += _draft_lint.bare_xref_hint(new_raw, old_text)
         body += _draft_lint.caption_number_hint(new_raw, block.chunk_kind)
         body += _draft_lint.title_heading_dup_hint(
@@ -6052,6 +6064,11 @@ class DraftHandler(Handler):
         "Figure N."/"Table N." label, which the exporters' auto-numbering
         prints doubled (gr592852) — see :meth:`_hygiene_caption_lines`.
 
+        An eleventh line — sentences that open with a known lowercase
+        identifier (a glossary ``term`` short or a built-in), which reads
+        as a typo at line start and has no emphasis rescue under house
+        style (gr592934) — see :meth:`_hygiene_sentence_start_lines`.
+
         ``elide=True`` (the outline footer's default) truncates each list to
         8 entries with a "``+N more``" tail and points at
         ``view='hygiene'`` for the rest. ``elide=False``
@@ -6151,6 +6168,8 @@ class DraftHandler(Handler):
 
         out.extend(self._hygiene_house_style_lines(chunks, clear_line=not elide))
 
+        out.extend(self._hygiene_sentence_start_lines(ref_id, chunks, limit=limit))
+
         out.extend(self._hygiene_figure_lines(chunks, limit=limit))
 
         out.extend(self._hygiene_caption_lines(chunks, limit=limit))
@@ -6195,6 +6214,53 @@ class DraftHandler(Handler):
             f"{len(examples)} chunk(s) ({per_rule}): {shown}{tail}. "
             "Read the chunk and edit it: no em-dash (split the sentence, or "
             "colon/comma), no **bold**/*italic*/_italic_, no `--`."
+        ]
+
+    def _hygiene_sentence_start_lines(
+        self, ref_id: int, chunks: list[Any], *, limit: int | None
+    ) -> list[str]:
+        """Sentence-opener line (gr592934): a sentence in prose or a
+        figure caption that opens with a *known* lowercase identifier —
+        a lowercase glossary ``term`` short or a built-in
+        (:func:`~precis.draft.lint.lowercase_identifiers`) — reads as a
+        typo in the export ("autocatpath, the reaction engine, …") and
+        house style forbids an italic/bold rescue. The fix: open with
+        'The <identifier> …' or set the identifier in `backticks` — both
+        exporters render the code span (``\\texttt`` in the PDF, Consolas
+        in docx), so the lowercase form stays true. Boundaries are the
+        exporter's own (:func:`~precis.export._abbrev.at_sentence_start`),
+        so "e.g. precis" mid-sentence never fires. Each distinct
+        (``dc``, identifier) opener is one entry — same
+        elide-with-a-pointer convention; ``[]`` when clean."""
+        from precis.utils.house_style import find_sentence_start_identifiers
+        from precis.utils.wordcount import PROSE_CHUNK_KINDS
+
+        ids = _draft_lint.lowercase_identifiers(self.store, ref_id)
+        seen: set[tuple[str, str]] = set()
+        for c in chunks:
+            if not c.text or (
+                c.chunk_kind not in PROSE_CHUNK_KINDS and c.chunk_kind != "figure"
+            ):
+                continue
+            flags = find_sentence_start_identifiers(c.text, ids)
+            for word in {f.snippet for f in flags}:
+                seen.add((c.dc, word))
+        if not seen:
+            return []
+        entries = sorted(f"{dc} ({word!r})" for dc, word in seen)
+        shown = ", ".join(entries if limit is None else entries[:limit])
+        tail = (
+            f" (+{len(entries) - limit} more — see "
+            "get(kind='draft', id=<slug>, view='hygiene') for the full list)"
+            if limit is not None and len(entries) > limit
+            else ""
+        )
+        return [
+            f"⚠ {len(entries)} sentence(s) open with a lowercase "
+            f"identifier: {shown}{tail}. A lowercase-by-nature name reads "
+            "as a typo at line start — open with 'The <identifier> …' or "
+            "set it in `backticks` (renders \\texttt in the PDF, Consolas "
+            "in docx)."
         ]
 
     def _hygiene_figure_lines(

@@ -263,6 +263,14 @@ Math (`$P_5$`), backtick code, URLs and `[handles]` are exempt. A
 violation trips a `⚠ house style` hint on write, and `view='hygiene'`
 counts them per rule with example `dc` handles.
 
+**No sentence opens with a lowercase identifier** — `autocatpath`,
+`precis`, a lowercase glossary short ("autocatpath, the reaction
+engine, …") reads as a typo at line start, and the ban on emphasis
+means no italic rescue. Open with "The <identifier> …" instead, or set
+the identifier in `backticks` — inline code is the documented form for
+identifiers in prose and renders `\texttt` in the PDF, Consolas in
+docx. Write/edit hint the opener and `view='hygiene'` flags it.
+
 **Units & temperatures: literal sign, spaced off the value.** `63 °C` —
 space, then degree sign `°` (U+00B0), then `C`. Range `63–65 °C`;
 tolerance `±1 °C` (`±` = U+00B1, not `+/-`). Not a superscript, not `℃`,

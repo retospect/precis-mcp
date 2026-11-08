@@ -21,11 +21,20 @@ markup are masked to ``\\x00`` (newlines kept, so line/col stay true):
   ``[[surface]]``) and the ``(¶term)`` target of a markdown link.
 
 ``_italic_`` is word-bounded, so ``snake_case`` never fires.
+
+A sibling finder, :func:`find_sentence_start_identifiers`, covers the
+house-style rule a plain pattern cannot: a sentence that opens with a
+*known* lowercase identifier (``autocatpath``, a lowercase glossary
+short) reads as a typo in the export, and the no-emphasis rules above
+forbid an italic/bold rescue (gr592934). It needs the draft's identifier
+set, so it takes ``identifiers`` as a parameter rather than living in
+``RULES`` — same masked scan, same :class:`StyleFlag` out.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 
 _MASK = "\x00"
@@ -112,4 +121,59 @@ def find_style_flags(text: str) -> list[StyleFlag]:
             if rule == "bold":
                 masked = masked[:start] + _blank(m) + masked[m.end() :]
     flags.sort(key=lambda f: (f.line, f.col))
+    return flags
+
+
+#: A word that can open a sentence: ASCII identifier shape (``precis``,
+#: ``land_slice``, ``g-c3n4``). Runs on the masked text, so a word inside
+#: a code/math/URL/handle span is never a candidate.
+_IDENT_WORD = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
+
+
+def find_sentence_start_identifiers(
+    text: str, identifiers: Collection[str]
+) -> list[StyleFlag]:
+    """Every sentence in ``text`` that opens with a *known* lowercase
+    identifier (gr592934): "autocatpath, the reaction engine, …" reads
+    as a typo in the export, and house style forbids an italic/bold
+    rescue — the fix is a leading 'The <identifier> …' or `` `…` ``
+    inline code (renders ``\\texttt``).
+
+    ``identifiers`` is the draft's known-lowercase set — glossary
+    ``term`` shorts plus the built-ins
+    (``draft/lint.py::lowercase_identifiers``). Only an exact,
+    all-lowercase token match flags: ``Autocatpath`` capitalised or an
+    unknown lowercase word is silent.
+
+    Sentence starts use the exporter's own boundary predicate
+    (:func:`precis.export._abbrev.at_sentence_start`): text start, a
+    paragraph break, or a terminal ``.?!`` — except a mark closing a
+    non-terminal abbreviation (``e.g.``, ``et al.``, ``Fig.``), so
+    "e.g. autocatpath runs" mid-sentence never fires and the lint can
+    never disagree with the first-use capitalisation pass. Opening
+    quotes/brackets before the word still count as a sentence start."""
+    if not text or not identifiers:
+        return []
+    from precis.export._abbrev import at_sentence_start
+
+    masked = mask_non_prose(text)
+    flags: list[StyleFlag] = []
+    for m in _IDENT_WORD.finditer(masked):
+        word = m.group(0)
+        if word != word.lower() or word not in identifiers:
+            continue
+        if not at_sentence_start(masked[: m.start()]):
+            continue
+        line = text.count("\n", 0, m.start()) + 1
+        col = m.start() - (text.rfind("\n", 0, m.start()) + 1) + 1
+        flags.append(
+            StyleFlag(
+                "sentence_start_identifier",
+                line,
+                col,
+                text[m.start() : m.end()],
+                "open with 'The <identifier> …' or set it in `backticks` "
+                "(renders \\texttt in the export)",
+            )
+        )
     return flags

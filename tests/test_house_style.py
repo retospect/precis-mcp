@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from precis.utils.house_style import find_style_flags
+from precis.utils.house_style import (
+    find_sentence_start_identifiers,
+    find_style_flags,
+)
 
 
 def test_math_subscripts_do_not_fire() -> None:
@@ -48,3 +51,47 @@ def test_write_hint_skips_non_prose_chunk_kinds() -> None:
     assert "house style" in house_style_hint(text, "paragraph")
     assert "house style" in house_style_hint(text, "figure")
     assert "house style" in house_style_hint(text)
+
+
+_IDS = {"autocatpath", "catpath", "land_slice", "precis"}
+
+
+def test_sentence_start_identifier_flagged() -> None:
+    """gr592934: a sentence opening with a known lowercase identifier flags."""
+    flags = find_sentence_start_identifiers(
+        "autocatpath, the reaction engine, computes it.", _IDS
+    )
+    assert [(f.rule, f.line, f.col, f.snippet) for f in flags] == [
+        ("sentence_start_identifier", 1, 1, "autocatpath")
+    ]
+    # A sentence after a terminal mark, a newline, and a paragraph break
+    # are all sentence starts; a hard-wrapped line is not.
+    text = "Done.\nprecis stores it.\n\ncatpath runs.\nWrapped\nprecis mid."
+    flags = find_sentence_start_identifiers(text, _IDS)
+    assert [(f.line, f.snippet) for f in flags] == [
+        (2, "precis"),
+        (4, "catpath"),
+    ]
+
+
+def test_sentence_start_identifier_silent_cases() -> None:
+    """Mid-sentence identifiers, non-terminal abbreviations, backticked
+    (already-fixed) spans, capitalised forms and unknown lowercase words
+    never fire."""
+    for text in (
+        "The engine autocatpath computes it.",
+        "It uses autocatpath. The precis graph stores them.",
+        "See e.g. autocatpath for details.",
+        "Per et al. precis handles the rest.",
+        "In Fig. precis style it works.",
+        "`autocatpath` does the work.",
+        "Autocatpath does the work.",
+        "nanobud does the work.",
+        "autocatpath2 does the work.",
+    ):
+        assert find_sentence_start_identifiers(text, _IDS) == [], text
+
+
+def test_sentence_start_identifier_empty() -> None:
+    assert find_sentence_start_identifiers("", _IDS) == []
+    assert find_sentence_start_identifiers("precis does X.", set()) == []

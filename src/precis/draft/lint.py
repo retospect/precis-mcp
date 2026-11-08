@@ -20,9 +20,11 @@ and — reported
 distinctly from a plain dangling reference — a ``[...]`` cite whose target
 is a real ref that has since been soft-deleted (a tombstone, gr265228),
 a cite of a paper whose ingest flagged glyph damage
-(:func:`glyph_cite_hint`, gr228652), and a figure/table caption that
+(:func:`glyph_cite_hint`, gr228652), a figure/table caption that
 starts with its own float label, which the exporters' auto-numbering
-would print doubled (:func:`caption_number_hint`, gr592852).
+would print doubled (:func:`caption_number_hint`, gr592852), and a
+sentence that opens with a known lowercase identifier, which reads as a
+typo at line start (:func:`sentence_start_hint`, gr592934).
 Pure functions over an explicit :class:`~precis.store.store.Store` (no
 handler `self`) — ``handlers/draft.py::DraftHandler`` is the sole caller,
 wiring these into its ``put``/``edit``/``get`` bodies.
@@ -576,6 +578,76 @@ def house_style_hint(text: str, chunk_kind: str | None = None) -> str:
         "(no em-dash, no **bold**/*italic*/_italic_, no `--`):\n"
         + "\n".join(lines)
         + more
+    )
+
+
+#: Built-in lowercase-by-nature identifiers — product/tool names a draft
+#: sentence may legitimately open with, which read as a typo lowercased
+#: at line start (gr592934). The draft's glossary ``term`` shorts join
+#: this set via :func:`lowercase_identifiers`.
+LOWERCASE_IDENTIFIERS: frozenset[str] = frozenset(
+    {"autocatpath", "catpath", "land_slice", "precis"}
+)
+
+#: Identifier shape for a lowercase-by-nature glossary short: two or more
+#: chars of lowercase/digit/underscore/hyphen — ``land_slice``,
+#: ``g-c3n4``. ``GFET`` (uppercase is a fine sentence start), ``e.g.``
+#: (dotted) and a single letter (too FP-prone — "a", "i") never qualify.
+_LOWERCASE_IDENT = re.compile(r"[a-z][a-z0-9_-]+")
+
+
+def lowercase_identifiers(store: Store, ref_id: int) -> frozenset[str]:
+    """The draft's known lowercase identifiers — the element list
+    :func:`~precis.utils.house_style.find_sentence_start_identifiers`
+    checks sentence openers against: the built-in
+    :data:`LOWERCASE_IDENTIFIERS` plus every identifier-shaped
+    all-lowercase glossary ``term`` short."""
+    ids = set(LOWERCASE_IDENTIFIERS)
+    ids.update(
+        s
+        for s in store.drafts.draft_term_shorts(ref_id)
+        if _LOWERCASE_IDENT.fullmatch(s)
+    )
+    return frozenset(ids)
+
+
+def sentence_start_hint(
+    store: Store,
+    ref_id: int,
+    text: str,
+    old_text: str = "",
+    chunk_kind: str | None = None,
+) -> str:
+    """Advisory ⚠ for a sentence that opens with a known lowercase
+    identifier (gr592934): "autocatpath, the reaction engine, …" reads
+    as a typo in the export and house style forbids an italic/bold
+    rescue, so the fix is a leading 'The <identifier> …' or `` `…` ``
+    inline code — both exporters render the code span (``\\texttt`` in
+    the PDF, Consolas in docx), keeping the lowercase form true. Scoped
+    to identifiers this write introduced (mirroring the abbrev hint).
+    A hint, never a refusal. Same prose-only chunk-kind skip as
+    :func:`house_style_hint`."""
+    from precis.utils.house_style import find_sentence_start_identifiers
+    from precis.utils.wordcount import PROSE_CHUNK_KINDS
+
+    if (
+        chunk_kind is not None
+        and chunk_kind not in PROSE_CHUNK_KINDS
+        and chunk_kind != "figure"
+    ):
+        return ""
+    ids = lowercase_identifiers(store, ref_id)
+    new = {f.snippet for f in find_sentence_start_identifiers(text, ids)}
+    if old_text:
+        new -= {f.snippet for f in find_sentence_start_identifiers(old_text, ids)}
+    if not new:
+        return ""
+    shown = ", ".join(sorted(new)[:5])
+    return (
+        f"\n\n⚠ sentence opens with lowercase identifier(s): {shown}. "
+        "A lowercase-by-nature name reads as a typo at line start — open "
+        "with 'The <identifier> …' or set it in `backticks` (renders "
+        "\\texttt in the PDF, Consolas in docx)."
     )
 
 
