@@ -8544,6 +8544,108 @@ class TestTierLadderHarvest:
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert "U_L" not in meta["network_basis_by_key"]
 
+    def test_backfill_barrier_provenance_beats_a_unique_match(self, store: Any) -> None:
+        """A unique value match is not a source: ``barrier_pathway_ref_id``
+        wins even when ONE surviving job reproduces the stored barrier on
+        another network — whether the source's own job is gone entirely or
+        reports a different value."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+
+        def _pw(template: str, version: str) -> int:
+            return store.insert_ref(
+                kind="job",
+                slug=None,
+                title="pw",
+                meta={
+                    "tier": "neb",
+                    "config": {"network": "ammonia", "template": template},
+                    "autocatpath_version": version,
+                },
+                parent_id=sid,
+            ).id
+
+        parked_pw = _pw("parked", "0.20.0")
+        coads_pw = _pw("coadsorbed", "0.22.0")
+
+        # The recorded source's job is GONE; a job on another network is
+        # the only reproducing one — provenance still names parked.
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.5}, "pathway_ref": coads_pw}
+        )
+        store.stamp_ref_meta(sid, {"barrier": 0.5, "barrier_pathway_ref_id": parked_pw})
+        out = compute_mod.backfill_network_basis(store, qid, apply=True)
+        assert out["stamped"] == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["network_basis_by_key"]["barrier"]["template"] == "parked"
+        assert meta["network_basis_by_key"]["barrier"]["version"] == "0.20.0"
+
+        # The source's job survives but reports a DIFFERENT value — the
+        # foreign job still uniquely matches, provenance still wins.
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.9}, "pathway_ref": parked_pw}
+        )
+        store.stamp_ref_meta(sid, {"network_basis_by_key": {}})
+        out = compute_mod.backfill_network_basis(store, qid, apply=True)
+        assert out["stamped"] == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["network_basis_by_key"]["barrier"]["template"] == "parked"
+
+    def test_backfill_never_stamps_a_struct_neb_barrier(self, store: Any) -> None:
+        """A ``struct_neb`` barrier came from no pathway — stamping it a
+        pathway basis would restore the foreign-network stamp
+        ``_neb_candidate_stamp`` prunes on purpose, and
+        ``apply_network_demotion`` would then demote direct-NEB evidence.
+        Other keys on the same candidate still stamp."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="pw",
+            meta={
+                "tier": "neb",
+                "config": {"network": "ammonia", "template": "parked"},
+                "autocatpath_version": "0.22.0",
+            },
+            parent_id=sid,
+        ).id
+        self._autocatpath_job(
+            store,
+            sid,
+            {
+                "result": {"barrier": 0.5, "selectivity_margin": 0.4},
+                "pathway_ref": pw,
+            },
+        )
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.5,  # the pathway job happens to reproduce it
+                "selectivity_margin": 0.4,
+                "barrier_source": "struct_neb",
+                "barrier_fidelity": "struct_neb",
+                "barrier_pathway_ref_id": None,
+            },
+        )
+        out = compute_mod.backfill_network_basis(store, qid, apply=True)
+        assert out["keys_unstamped"] == 1  # selectivity_margin, never the neb barrier
+        assert out["stamped_by_key"] == {"selectivity_margin": 1}
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["network_basis_by_key"] == {
+            "selectivity_margin": {
+                "digest": None,
+                "template": "parked",
+                "version": "0.22.0",
+                "environment_basis": _LEGACY_ENV_BASIS,
+                "tpd_basis": "none",
+            }
+        }
+        # Not a skip-once: a re-run still finds nothing to stamp.
+        again = compute_mod.backfill_network_basis(store, qid)
+        assert again["keys_unstamped"] == 0
+        assert again["stamped"] == 0
+
     def test_struct_neb_pick_drops_the_foreign_pathway_basis(
         self, monkeypatch: Any
     ) -> None:

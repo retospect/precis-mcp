@@ -5674,13 +5674,13 @@ def _stored_barrier_basis(
     matches: list[tuple[dict[str, Any], dict[str, Any], int]],
 ) -> dict[str, Any] | None:
     """The basis of the pathway that SOURCED the candidate's stored barrier —
-    :func:`backfill_network_basis`'s barrier fallback when the value match
-    cannot name one network (gr592668). The harvest-stamped
-    ``meta.barrier_pathway_ref_id`` first — it names the source even when no
-    surviving job reproduces the value; else the NEWEST reproducing job
-    (jobs arrive oldest-first and a landed barrier overwrites, so the newest
-    match is the one the stored value came from). ``None`` when no source
-    resolves."""
+    :func:`backfill_network_basis`'s barrier resolution (gr592668). The
+    harvest-stamped ``meta.barrier_pathway_ref_id`` first — it names the
+    source even when no surviving job reproduces the value, and wins over
+    a job that does (a value match is a coincidence, not a source); else
+    the NEWEST reproducing job (jobs arrive oldest-first and a landed
+    barrier overwrites, so the newest match is the one the stored value
+    came from). ``None`` when no source resolves."""
     pid = meta.get("barrier_pathway_ref_id")
     if isinstance(pid, int) and not isinstance(pid, bool):
         for _m, basis, p in matches:
@@ -5711,11 +5711,16 @@ def backfill_network_basis(
     candidate can still carry a parked screening margin.
 
     ``barrier`` is the one exception (gr592668): its source is recorded —
-    when the value match cannot name one network the stamp falls back to
-    the job that sourced the stored barrier (:func:`_stored_barrier_basis` —
-    the harvest's ``meta.barrier_pathway_ref_id`` first, else the newest
-    reproducing job), so a legacy barrier doesn't ride un-demoted against
-    a newer pin.
+    the harvest's ``meta.barrier_pathway_ref_id`` names the pathway the
+    stored barrier came from and wins over the value match (a job that
+    reproduces the value on another network did not source it); without
+    provenance the newest reproducing job's basis is stamped
+    (:func:`_stored_barrier_basis`), so a legacy barrier doesn't ride
+    un-demoted against a newer pin. A ``struct_neb`` barrier is never
+    stamped at all — it came from no pathway (:func:`_neb_candidate_stamp`
+    strips the foreign pathway basis on purpose; restoring one would let
+    :func:`precis.quest.frontier.apply_network_demotion` demote direct-NEB
+    evidence on a network it was never measured on).
 
     ``apply=False`` (the default) is a dry run: counts only, nothing written.
     Idempotent: a stamped key is skipped on the next run.
@@ -5742,10 +5747,21 @@ def backfill_network_basis(
         meta = dict(ref.meta or {})
         prior = meta.get("network_basis_by_key")
         by_key: dict[str, Any] = dict(prior) if isinstance(prior, dict) else {}
+        # A struct_neb barrier came from no pathway — the neb lane's own
+        # engine token governs its staleness and ``_neb_candidate_stamp``
+        # strips ``network_basis_by_key["barrier"]`` on purpose. Backfilling
+        # one would restore a foreign pathway basis and let the demotion
+        # fire on direct-NEB evidence.
+        neb_barrier = (
+            meta.get("barrier_source") == "struct_neb"
+            or meta.get("barrier_fidelity") == "struct_neb"
+        )
         todo = [
             k
             for k in _NETWORK_BASIS_KEYS
-            if k not in by_key and _num_measure(meta.get(k)) is not None
+            if k not in by_key
+            and _num_measure(meta.get(k)) is not None
+            and not (k == "barrier" and neb_barrier)
         ]
         if not todo:
             continue
@@ -5776,13 +5792,15 @@ def backfill_network_basis(
                 if not any(same_network_basis(basis, b) for b in bases):
                     bases.append(basis)
             pick: dict[str, Any] | None = None
-            if len(bases) == 1:
-                pick = bases[0]
-            elif k == "barrier":
-                # The barrier's source is known even when the value match
-                # is not: fall back to the job that sourced the stored
-                # barrier (gr592668).
+            if k == "barrier":
+                # The barrier's source is recorded (gr592668): the
+                # harvest-stamped ``barrier_pathway_ref_id`` names it even
+                # when the value match names a single different network —
+                # a job that reproduces the VALUE did not source the
+                # stored barrier.
                 pick = _stored_barrier_basis(store, meta, matches)
+            if pick is None and len(bases) == 1:
+                pick = bases[0]
             if pick is None:
                 counts["ambiguous" if bases else "no_match"] += 1
             else:
