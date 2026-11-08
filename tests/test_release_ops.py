@@ -477,6 +477,209 @@ def test_poll_takes_explicit_params(
     assert gates.read_ci_verdicts(store)[-1]["range"] == "x..y"
 
 
+# ── the no-run ladder (gr589270) ────────────────────────────────────
+
+
+def _aged_cut(store: Store, minutes: float) -> T.PlanMint:
+    """A minted pass whose cut was recorded ``minutes`` ago — the
+    ladder's clock is ``meta.release.cut_at``."""
+    mint = T.mint_release_pass(store)
+    R.record_cut(
+        store,
+        mint.ids["cut"],
+        "r7",
+        SHA,
+        RNG,
+        repo="o/r",
+        now=datetime.now(UTC) - timedelta(minutes=minutes),
+    )
+    return mint
+
+
+def _poll_comments(store: Store, todo_id: int) -> list[str]:
+    return [
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(todo_id)
+        if c.chunk_kind == "todo_comment"
+    ]
+
+
+def _fake_gh(
+    monkeypatch: pytest.MonkeyPatch, rc: int = 0, stderr: str = ""
+) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def gh(args: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(list(args))
+        return subprocess.CompletedProcess(args, rc, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(cvp, "_gh", gh)
+    return calls
+
+
+def _parks(ctx: Ctx) -> list[tuple[datetime, str]]:
+    parks: list[tuple[datetime, str]] = []
+
+    def defer(at: datetime, note: str) -> bool:
+        parks.append((at, note))
+        return True
+
+    ctx.defer = defer
+    return parks
+
+
+def _ruling_asks(store: Store, root: int) -> list[tuple[int, dict[str, Any]]]:
+    """``(id, meta)`` of the ruling asks minted under the plan root."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE kind = 'todo' "
+            "AND parent_id = %s AND retired_at IS NULL "
+            "AND meta -> 'ask' ->> 'kind' = 'ruling' ORDER BY ref_id",
+            (root,),
+        ).fetchall()
+    return [(int(r[0]), dict(r[1])) for r in rows]
+
+
+def test_no_run_at_10_min_pends_without_stall_writes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr589270: a push event still queueing at 10 min is ordinary
+    pending — parked, no note, no dispatch, no marker."""
+    mint = _aged_cut(store, 10)
+    _fake_github(monkeypatch, [])
+    gh = _fake_gh(monkeypatch)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert _poll_comments(store, mint.ids["poll"]) == []
+    assert gh == []
+    assert "ci_verdict_stall" not in _meta(store, mint.ids["poll"])
+
+
+def test_no_run_at_21_min_posts_one_stall_note(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past 20 min the poll comments once on the poll node — a second
+    tick adds none (the node marker dedupes) — and dispatches nothing."""
+    mint = _aged_cut(store, 21)
+    _fake_github(monkeypatch, [])
+    gh = _fake_gh(monkeypatch)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    [note] = _poll_comments(store, mint.ids["poll"])
+    assert f"no check.yml run on release/r7 for {SHA[:9]} after 20 min" in note
+    assert gh == []
+    assert _meta(store, mint.ids["poll"])["ci_verdict_stall"]["sha"] == SHA
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert _poll_comments(store, mint.ids["poll"]) == [note]
+
+
+def test_no_run_at_41_min_dispatches_the_gate_once(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past 40 min: one ``gh workflow run check.yml --ref release/r7``
+    through the fake seam — and the dispatch marker survives a second
+    tick, so the gate never re-fires for the same sha."""
+    mint = _aged_cut(store, 41)
+    _fake_github(monkeypatch, [])
+    gh = _fake_gh(monkeypatch)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert gh == [
+        ["workflow", "run", "check.yml", "--ref", "release/r7", "--repo", "o/r"]
+    ]
+    comments = _poll_comments(store, mint.ids["poll"])
+    assert any("after 20 min" in c for c in comments)
+    assert any("workflow_dispatch" in c for c in comments)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert len(gh) == 1
+
+
+def test_no_run_at_91_min_files_one_ask_on_the_plan_root(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past 90 min the note and the dispatch have fired, and one
+    records-only ruling ask sits under the plan root — once."""
+    mint = _aged_cut(store, 91)
+    _fake_github(monkeypatch, [])
+    _fake_gh(monkeypatch)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    asks = _ruling_asks(store, mint.root_id)
+    assert len(asks) == 1
+    ask_id, meta = asks[0]
+    assert meta["ask"]["options"] == ["acknowledged"]
+    assert meta["ask"]["blocks"] == "nothing"
+    assert "no check.yml run on release/r7" in meta["ask"]["context"]
+    tags = {str(t.value) for t in store.tags_for(ask_id)}
+    assert {"ask-user", "showstopper", f"plan:{mint.root_id}"} <= tags
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert len(_ruling_asks(store, mint.root_id)) == 1
+
+
+def test_a_run_appearing_takes_the_normal_path(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ladder only walks a confirmed absence: a run on the branch
+    at any age is the ordinary verdict — no notes, no dispatch."""
+    mint = _aged_cut(store, 45)
+    _fake_github(monkeypatch, [_run(44, "completed", "success")])
+    gh = _fake_gh(monkeypatch)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    assert gates.read_ci_verdicts(store)[-1]["verdict"] == "green"
+    assert gh == []
+    assert _poll_comments(store, mint.ids["poll"]) == []
+
+
+def test_a_refused_dispatch_is_noted_not_looped(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 403 from ``gh workflow run`` (the token's Actions write scope
+    is unverified, gr588028) is one comment plus the marker — the poll
+    keeps watching, it does not loop the dispatch."""
+    mint = _aged_cut(store, 45)
+    _fake_github(monkeypatch, [])
+    gh = _fake_gh(monkeypatch, rc=1, stderr="gh: Resource not accessible (HTTP 403)")
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert len(gh) == 1
+    comments = _poll_comments(store, mint.ids["poll"])
+    assert any("refused" in c and "403" in c for c in comments)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert len(gh) == 1
+
+
+def test_an_unreadable_github_walks_no_rung(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``runs`` ``None`` is not a confirmed absence: past 40 min an
+    unreadable GitHub is still plain pending — no note, no dispatch."""
+    mint = _aged_cut(store, 45)
+    _fake_github(monkeypatch, None)
+    gh = _fake_gh(monkeypatch)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert len(parks) == 1
+    assert gh == []
+    assert _poll_comments(store, mint.ids["poll"]) == []
+
+
 # ── release_cut / release_deploy (detached) ─────────────────────────
 
 
