@@ -46,10 +46,12 @@ Guards (in order, per the plan):
    ``ref_events`` row instead (no child to stamp). Either way, a second
    pass on the same tick is a no-op.
 4. **Collision-skip** (queue-mode only) — when the previous spawned
-   child is still open (no ``STATUS:done``-class tag), the new tick is
-   skipped. A stalled queue doesn't pile up; the nursery sweep surfaces
-   the stuck leaf. Delivery-mode has no queue item to collide with, so
-   this guard doesn't apply there.
+   child is still genuinely in flight (no ``STATUS:done``-class tag
+   AND its dispatched work isn't finished — no job minted yet, or a
+   job still non-terminal), the new tick is skipped. A stalled queue
+   doesn't pile up; the nursery sweep surfaces the stuck leaf.
+   Delivery-mode has no queue item to collide with, so this guard
+   doesn't apply there.
 5. **Backfill policy** — when the schedule's ``backfill_missed`` is
    ``False`` (the default), only the most recent tick is considered;
    missed ticks for weather / news are dropped. ``True`` walks every
@@ -84,6 +86,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from precis.store import Store
+from precis.workers._mint import JOB_TERMINAL_STATUSES
 from precis.workers.runner import BatchResult
 from precis.workers.schedule.parse import (
     Schedule,
@@ -645,6 +648,22 @@ def _has_open_previous_tick_conn(
     ticks can't pile up regardless); for a frequent cron (e.g. an
     every-30-min ``news_poll``) a genuinely in-flight *recent* child
     (younger than ``stuck_hours``) still blocks, to prevent pile-up.
+
+    The child-job clause below bounds it from the other side: once every
+    ``kind='job'`` minted under the tick child has gone terminal
+    (``succeeded`` / ``failed`` / ``cancelled`` — the set
+    ``workers._mint.JOB_TERMINAL_STATUSES`` defines), the tick's work is
+    over and the child is settled-for-scheduling even though its own
+    ``STATUS:open`` hasn't flipped yet. That flip is the auto_check
+    pass's ``child_job_succeeded`` evaluator — a *sampled* sweep whose
+    latency is unbounded (leaf-count over the pass limit starves it),
+    while the job's terminal write is the fact. gr592215: a
+    ``job_inproc`` tick whose job succeeded three seconds after mint sat
+    ``STATUS:open`` for over an hour and skipped every following tick on
+    two recurrings until the ``stuck_hours`` bound aged it out — the
+    close lag must not hold the cadence. A child with no job yet (the
+    dispatch sweep hasn't minted, or the tick is plain agentic work) is
+    still pending and blocks as before.
     """
     row = conn.execute(
         """
@@ -670,9 +689,37 @@ def _has_open_previous_tick_conn(
            -- (see docstring), not in-flight progress — exclude it so it
            -- can't wedge the cadence forever.
            AND c.created_at >= now() - %s::interval
+           -- The tick's dispatched work is still pending or in flight:
+           -- either no job was minted under the child yet, or at least
+           -- one is non-terminal. Once every child job is terminal the
+           -- tick is settled even while the todo still reads
+           -- STATUS:open — the auto_check flip that closes it is a
+           -- sampled sweep and can lag the job's own terminal write
+           -- (gr592215).
+           AND (
+                 NOT EXISTS (
+                     SELECT 1 FROM refs j
+                      WHERE j.parent_id = c.ref_id
+                        AND j.kind = 'job'
+                        AND j.retired_at IS NULL
+                 )
+                 OR EXISTS (
+                     SELECT 1 FROM refs j
+                      WHERE j.parent_id = c.ref_id
+                        AND j.kind = 'job'
+                        AND j.retired_at IS NULL
+                        AND COALESCE(
+                              (SELECT t.value
+                                 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                                WHERE rt.ref_id = j.ref_id
+                                  AND t.namespace = 'STATUS' LIMIT 1),
+                              'open'
+                            ) <> ALL(%s)
+                 )
+               )
          LIMIT 1
         """,
-        (parent_id, f"{stuck_hours} hours"),
+        (parent_id, f"{stuck_hours} hours", sorted(JOB_TERMINAL_STATUSES)),
     ).fetchone()
     return row is not None
 

@@ -718,6 +718,102 @@ def test_has_open_previous_tick_conn_failed_child_never_blocks(
     assert blocked is False, "a failed tick must not block regardless of age"
 
 
+def _mint_job_under_child(store: Store, child_id: int, *, status: str) -> int:
+    """Hand-mint a ``kind='job'`` under a spawned tick child with a given
+    STATUS, for :func:`_has_open_previous_tick_conn` unit tests."""
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="tick job",
+        meta={"job_type": "release_poll"},
+        parent_id=child_id,
+    )
+    store.add_tag(job.id, Tag.closed("STATUS", status), set_by="system")
+    return int(job.id)
+
+
+def test_has_open_previous_tick_conn_terminal_job_never_blocks(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A still-open tick child whose dispatched job already went
+    terminal must not block — the auto_check flip to ``STATUS:done``
+    lags the job's own terminal write (gr592215)."""
+    recent_created = datetime.now(UTC) - timedelta(minutes=5)
+    for job_status in ("succeeded", "failed", "cancelled"):
+        resp = handler.put(
+            text="Hourly",
+            meta={"schedule": {"cron": "0 * * * *"}},
+        )
+        rid = _id_of(resp.body)
+        child_id = _spawn_open_child(
+            store, rid, status="open", created_at=recent_created
+        )
+        _mint_job_under_child(store, child_id, status=job_status)
+
+        with store.pool.connection() as conn:
+            blocked = _has_open_previous_tick_conn(conn, rid, stuck_hours=1.0)
+        assert blocked is False, (
+            f"a tick child whose job is {job_status} is settled, not in flight"
+        )
+
+
+def test_has_open_previous_tick_conn_live_job_still_blocks(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A genuinely in-flight tick — a queued or running job under the
+    still-open child — still blocks: that's real pile-up, not lag."""
+    recent_created = datetime.now(UTC) - timedelta(minutes=5)
+    for job_status in ("queued", "running"):
+        resp = handler.put(
+            text="Hourly",
+            meta={"schedule": {"cron": "0 * * * *"}},
+        )
+        rid = _id_of(resp.body)
+        child_id = _spawn_open_child(
+            store, rid, status="open", created_at=recent_created
+        )
+        _mint_job_under_child(store, child_id, status=job_status)
+
+        with store.pool.connection() as conn:
+            blocked = _has_open_previous_tick_conn(conn, rid, stuck_hours=1.0)
+        assert blocked is True, (
+            f"a tick child whose job is {job_status} is still in flight"
+        )
+
+
+def test_schedule_pass_succeeded_job_on_open_tick_does_not_wedge(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Regression for gr592215: a spawned tick whose job succeeded but
+    whose todo still reads ``STATUS:open`` (the auto_check flip hasn't
+    landed) must not skip the next tick — the collision guard keys on
+    the job's terminal state, not the lagging todo tag."""
+    resp = handler.put(
+        text="Every-10-min poll",
+        meta={"schedule": {"cron": "*/10 * * * *"}},
+    )
+    rid = _id_of(resp.body)
+
+    # The prior tick: spawned recently, still STATUS:open, and its
+    # dispatched job already succeeded — the exact wedge shape.
+    old_created = datetime.now(UTC) - timedelta(minutes=15)
+    old_stamp = old_created.isoformat(timespec="minutes")
+    child_id = _spawn_open_child(store, rid, status="open", created_at=old_created)
+    _mint_job_under_child(store, child_id, status="succeeded")
+
+    _set_last_tick(store, rid, old_created)
+    result = run_schedule_pass(store, limit=50)
+    assert result.ok == 1, "a settled prior tick must not block the next one"
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE parent_id = %s AND retired_at IS NULL "
+            "AND meta->>'spawned_for_tick' <> %s",
+            (rid, old_stamp),
+        ).fetchone()
+    assert row is not None
+    assert int(row[0]) == 1, "a fresh tick should have been minted"
+
+
 def test_schedule_pass_skips_folder_umbrella(store: Store) -> None:
     # Watches root has schedule=None; sweep should walk past it.
     umbrella = ensure_watches_root(store)
