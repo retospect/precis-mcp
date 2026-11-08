@@ -544,6 +544,10 @@ cancel_requested|cancelled;
 running/submitted/waiting_* -> cancel_requested|failed; cancel_requested ->
 cancelled. Any other STATUS (running, succeeded, queued) is
 worker-owned and refused; re-run a failed job with `mode='retry'`.
+Under a `plan:<id>` node the tick re-queues a cancelled job free —
+`run_slice` and allowlisted read-only ops only (`ci_verdict_poll`); a
+cancelled `land_slice`/`release_*`/`pr_action` waits for the rescue
+pass. Stop the node: `halt:`/`waiting-for:`, `STATUS:paused`, won't-do.
 
 ## Move a queued pinned job to another node
 

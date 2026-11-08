@@ -325,6 +325,125 @@ def test_retry_on_a_direct_job_promises_no_re_mint(
     assert [c["id"] for c in _child_jobs(store, rid)] == [job.id]
 
 
+def test_retry_cancelled_under_a_plan_node_names_the_plan_tick(
+    todos: TodoHandler, jobs: JobHandler, store: Store
+) -> None:
+    """gr587772: a cancelled job under a plan node (a ``plan:<id>``-tagged
+    todo — no executor by design, the plan tick owns its dispatch) must
+    not get the "no executor / nothing re-mints" ack: the plan tick
+    re-queues the node free on its next pass. The bubble still clears;
+    nothing is minted by hand."""
+    rid = id_of(todos.put(text="a fix node in a plan").body)
+    store.add_tag(rid, Tag.open(f"plan:{rid}"), set_by="system")
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="run_slice",
+        meta={"job_type": "run_slice"},
+        parent_id=rid,
+    )
+    store.add_tag(
+        job.id,
+        Tag.closed("STATUS", "cancelled"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    store.add_tag(rid, Tag.open(f"child-failed:{job.id}"), set_by="system")
+
+    resp = jobs.put(id=job.id, mode="retry")
+
+    assert f"child-failed:{job.id}" not in _parent_tags(store, rid)
+    assert f"td{rid} is a plan node" in resp.body
+    assert "plan tick" in resp.body and "nothing to mint by hand" in resp.body
+    assert "no executor" not in resp.body and "nothing re-mints" not in resp.body
+    # The handler mints no job itself.
+    assert [c["id"] for c in _child_jobs(store, rid)] == [job.id]
+
+
+def test_retry_cancelled_on_a_plain_todo_keeps_the_no_executor_ack(
+    todos: TodoHandler, jobs: JobHandler, store: Store
+) -> None:
+    """gr587772: the plan-tick ack is for plan nodes only — a cancelled
+    job under a plain todo still gets the old no-executor ack."""
+    rid = id_of(todos.put(text="plain todo").body)
+    job = store.insert_ref(
+        kind="job", slug=None, title="manual", meta={}, parent_id=rid
+    )
+    store.add_tag(
+        job.id,
+        Tag.closed("STATUS", "cancelled"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    resp = jobs.put(id=job.id, mode="retry")
+    assert "no executor" in resp.body and "nothing re-mints" in resp.body
+    assert "plan tick" not in resp.body
+
+
+def _cancelled_plan_job(
+    store: Store, rid: int, job_type: str, *, root: int | None = None
+) -> int:
+    """A cancelled ``job_type`` job under ``rid`` with the bubble set;
+    ``rid`` is tagged a plan node (``plan:<root>``, own id by default)."""
+    store.add_tag(
+        rid, Tag.open(f"plan:{root if root is not None else rid}"), set_by="system"
+    )
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title=job_type,
+        meta={"job_type": job_type},
+        parent_id=rid,
+    )
+    store.add_tag(
+        job.id,
+        Tag.closed("STATUS", "cancelled"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    store.add_tag(rid, Tag.open(f"child-failed:{job.id}"), set_by="system")
+    return int(job.id)
+
+
+def test_retry_cancelled_side_effecting_op_names_the_rescue_watchdog(
+    todos: TodoHandler, jobs: JobHandler, store: Store
+) -> None:
+    """gr587772 review S2: a cancelled land_slice is not on the tick's
+    re-queue allowlist — the tick leaves it for the rescue watchdog, so
+    the retry ack must not promise a re-dispatch that never comes."""
+    rid = id_of(todos.put(text="a land node in a plan").body)
+    job_id = _cancelled_plan_job(store, rid, "land_slice")
+
+    resp = jobs.put(id=job_id, mode="retry")
+
+    assert f"child-failed:{job_id}" not in _parent_tags(store, rid)
+    assert f"td{rid} is a plan node" in resp.body
+    assert "does NOT re-queue a cancelled land_slice" in resp.body
+    assert "rescue watchdog" in resp.body
+    assert "re-dispatches it within one tick" not in resp.body
+
+
+def test_retry_cancelled_run_slice_under_a_plan_root_gets_the_conditional_ack(
+    todos: TodoHandler, jobs: JobHandler, store: Store
+) -> None:
+    """gr587772 review S2: a node tagged ``plan:<root>`` (root != the
+    node) is a plan node — the ack promises the re-dispatch only under
+    the conditions the tick actually checks: open, unclaimed, unblocked,
+    under the retry cap."""
+    root = id_of(todos.put(text="the plan root").body)
+    store.add_tag(root, Tag.open(f"plan:{root}"), set_by="system")
+    rid = id_of(todos.put(text="a slice node").body)
+    job_id = _cancelled_plan_job(store, rid, "run_slice", root=root)
+
+    resp = jobs.put(id=job_id, mode="retry")
+
+    assert f"td{rid} is a plan node" in resp.body
+    assert "re-dispatches it within one tick" in resp.body
+    assert "open, unclaimed, unblocked and under its retry cap" in resp.body
+    assert "nothing to mint by hand" in resp.body
+    assert "does NOT re-queue" not in resp.body
+
+
 def test_retry_rejects_bad_model(
     todos: TodoHandler, jobs: JobHandler, store: Store
 ) -> None:

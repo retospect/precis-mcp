@@ -3828,7 +3828,13 @@ class JobHandler(NumericRefHandler):
         tag — e.g. a job hand-submitted under a plain todo, gr515804),
         nothing ever re-mints: the bubble is still cleared (the tag is
         handled) but the ack says there is no executor and names the
-        resubmit path instead of promising a sweep that cannot happen.
+        resubmit path instead of promising a sweep that cannot happen —
+        unless the parent is a plan node (an OPEN ``plan:<id>`` tag):
+        then the plan tick owns its dispatch, so the ack names the tick
+        rather than the dead end — conditional on the job's type: an op
+        on the tick's re-queue allowlist re-queues free on the next
+        pass, any other cancelled type is left for the rescue watchdog
+        (gr587772).
         """
         if id is None:
             raise BadInput(
@@ -3867,13 +3873,26 @@ class JobHandler(NumericRefHandler):
         # is still right, but promising a re-mint is a lie.
         parent_ref = self.store.fetch_refs_by_ids({parent_id}).get(parent_id)
         parent_meta = dict(parent_ref.meta or {}) if parent_ref is not None else {}
+        parent_tags = list(self.store.tags_for(parent_id))
         parent_dispatchable = (
             "executor" in parent_meta
             or "llm_tier" in parent_meta
             or any(
                 t.namespace == "open" and t.value.startswith("executor:")
-                for t in self.store.tags_for(parent_id)
+                for t in parent_tags
             )
+        )
+        # An OPEN ``plan:<id>`` tag marks a plan node (the templates tag
+        # every minted node, the root included): it carries no executor by
+        # design — the plan_dispatch tick owns its dispatch and re-queues
+        # the node free on its next pass (a cancelled job only when its
+        # type is on the tick's allowlist), so "no executor" is no dead
+        # end here (gr587772).
+        parent_plan_node = any(
+            t.namespace == "open"
+            and t.value.startswith("plan:")
+            and t.value[5:].isdigit()
+            for t in parent_tags
         )
 
         new_llm_tier: str | None = None
@@ -3974,6 +3993,30 @@ class JobHandler(NumericRefHandler):
             outcome = (
                 ". The dispatch worker re-mints a fresh job on its next sweep (~1 min)"
             )
+        elif parent_plan_node:
+            # gr587772: the plan tick re-queues the node itself — minting
+            # a job by hand would race it. But only an op on the tick's
+            # re-queue allowlist re-runs blind: a cancelled job of any
+            # other type may have side effects the kill did not roll
+            # back, so the tick leaves the node for the rescue watchdog
+            # and the ack must not promise a re-dispatch.
+            from precis.workers.job_types.plan_dispatch import _REQUEUE_ON_CANCEL
+
+            jt_name = str((job_ref.meta or {}).get("job_type") or "")
+            if status == "cancelled" and jt_name not in _REQUEUE_ON_CANCEL:
+                outcome = (
+                    f". td{parent_id} is a plan node: the plan tick does NOT "
+                    f"re-queue a cancelled {jt_name or 'job'} (it may have side "
+                    "effects); the rescue watchdog will surface it after "
+                    "its idle deadline, or close/re-mint the node by hand"
+                )
+            else:
+                outcome = (
+                    f". td{parent_id} is a plan node: the plan tick "
+                    "re-dispatches it within one tick if it is open, "
+                    "unclaimed, unblocked and under its retry cap; "
+                    "nothing to mint by hand"
+                )
         else:
             # gr515804: no executor/llm_tier on the parent means the
             # dispatcher has nothing to mint from — say so, and name the

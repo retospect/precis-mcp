@@ -736,7 +736,11 @@ def _stage_for(
     jobs = plan.jobs(n)
     j = jobs[-1] if jobs else None
     if not is_gate and j is not None and j.status == "cancelled":
-        # gr574402: the tick notes the cancelled job but never redispatches.
+        # The tick re-queues a cancelled newest job — but only an op on
+        # its re-queue allowlist (run_slice plus read-only ops; a
+        # side-effecting cancel — a land, a release step, a pr_action —
+        # keeps the old skip, gr587772): what reaches rescue is one of
+        # those or a node a silent tick cannot reach.
         return "cancelled", "idle", j, "newest job cancelled"
     if is_gate:
         sha = ((n.meta.get("gate") or {}).get("args") or {}).get("sha")

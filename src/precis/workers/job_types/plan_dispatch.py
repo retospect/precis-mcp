@@ -137,8 +137,15 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    ``meta.host_refusal``: the lane's host refused the launch, so nothing
    was tried (gr571395); a job carrying ``meta.attempt_free`` failed for
    a reason outside the slice's diff (``"lane-wait"``, gr572118;
-   ``"infra-land"``, gr570187) and likewise burned no attempt. A job still
-   queued is never an
+   ``"infra-land"``, gr570187) and likewise burned no attempt; an
+   operator-cancelled job is likewise free — its node re-queues on the
+   next dispatch, but only when the job's type is on
+   :data:`_REQUEUE_ON_CANCEL` (the default op plus confirmed
+   read-only/idempotent ops). Any other cancelled type may carry side
+   effects a kill did not roll back — a land killed mid-ship may
+   already have merged, a ``pr_action`` may already have posted — so it
+   keeps the "not redispatched" skip for the rescue pass (gr587772).
+   A job still queued is never an
    attempt; one queued over 10 min whose ``ServiceSpec.placement``
    capabilities no live host advertises gets the note ``td<id>: job jo<N>
    queued <m> min — no host advertises {tokens}`` (td543917).
@@ -235,6 +242,17 @@ _GRIPE_COMMENT_KIND = "gripe_comment"
 _JOB_TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 _JOB_ENDED = frozenset({"succeeded", "failed"})
 _ATTEMPT_RE = re.compile(r"^attempt:(\d+)$")
+
+#: The ONLY cancelled-job types the tick re-queues blind
+#: (:func:`_step_dispatch`): the default op plus ops confirmed
+#: read-only/idempotent — ``ci_verdict_poll`` is one GitHub GET plus a
+#: verdict row keyed per sha. Every other type may carry side effects a
+#: kill cannot be assumed to have rolled back (a land may already have
+#: merged, a ``pr_action`` may already have posted), so it keeps the
+#: "not redispatched" skip for the rescue tick; an unregistered type
+#: defaults to the same safe side (gr587772). ``handlers.job``'s
+#: ``mode='retry'`` ack reads this set.
+_REQUEUE_ON_CANCEL = frozenset({DEFAULT_OP, "ci_verdict_poll"})
 
 #: ``run_slice.ATTEMPT_FREE_KEY``, restated — the dependency stays
 #: one-way (a test pins the two spellings equal). A job carrying the key
@@ -1977,7 +1995,11 @@ def _retry_cap(n: _Node, rungs: tuple[_lanes.Rung, ...]) -> int:
 
 def _capped(plan: _Plan, n: _Node, cap: int) -> bool:
     jobs = plan.jobs(n)
-    if not jobs or jobs[-1].status not in _JOB_ENDED:
+    # The newest job need only be TERMINAL: a cancelled job burns no
+    # attempt itself (:func:`_attempt_jobs` skips it), but the attempts
+    # below it still cap — an operator's cancel is a free re-queue,
+    # never a bypass of the retry budget (gr587772).
+    if not jobs or jobs[-1].status not in _JOB_TERMINAL:
         return False
     # A human-only hit caps at once: no lane may write those paths, so
     # no rung and no rescue can fix the failure (td584381 S1a).
@@ -2228,12 +2250,31 @@ def _step_dispatch(
         if plan.blocked(n) or plan.paused(n) or _capped(plan, n, cap):
             continue
         jobs = plan.jobs(n)
-        if jobs and jobs[-1].status == "cancelled":
-            res.notes.append(
-                f"td{n.id}: newest job:{jobs[-1].id} was cancelled; not redispatched"
-            )
-            continue
-        free_reason = jobs[-1].meta.get(ATTEMPT_FREE_KEY) if jobs else None
+        newest = jobs[-1] if jobs else None
+        requeued_cancel: int | None = None
+        if newest is not None and newest.status == "cancelled":
+            if newest.meta.get("job_type") not in _REQUEUE_ON_CANCEL:
+                # The cancel the tick leaves alone: an op off the
+                # re-queue allowlist may carry side effects a kill did
+                # not roll back — a land killed mid-ship may already
+                # have merged, a release step or ``pr_action`` may
+                # already have fired — so a blind re-run is never safe
+                # (gr587772). The rescue tick's ``cancelled`` class owns
+                # the node.
+                res.notes.append(
+                    f"td{n.id}: newest job:{newest.id} was cancelled; not redispatched"
+                )
+                continue
+            # gr587772: every guard above already passed, so the cancel
+            # is a free re-queue — dispatch exactly as for an
+            # ``attempt_free`` job (the job burns no attempt: it is not
+            # in ``_JOB_ENDED``). Stopping the node stays a tag's job:
+            # ``halt:``/``waiting-for:``, ``STATUS:paused``, won't-do.
+            # The note lands at the mint below: a node that parks on the
+            # way (no fit review lane, a refused submit) was not
+            # re-queued this pass.
+            requeued_cancel = newest.id
+        free_reason = newest.meta.get(ATTEMPT_FREE_KEY) if newest else None
         if free_reason:
             res.notes.append(f"td{n.id}: re-queued after {free_reason}, not an attempt")
         reland = _reland_params(plan, n, w.store)
@@ -2292,6 +2333,11 @@ def _step_dispatch(
                 # slice, however it was minted.
                 idem_key=(f"land_slice:td{n.id}" if reland is not None else None),
             )
+            if requeued_cancel is not None:
+                res.notes.append(
+                    f"td{n.id}: newest job:{requeued_cancel} was cancelled; "
+                    "re-queued, not an attempt"
+                )
             res.notes.append(
                 f"td{n.id}: dispatched {job_type} job:{job_id} on {executor}"
             )

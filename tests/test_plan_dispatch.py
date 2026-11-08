@@ -1414,6 +1414,231 @@ def test_zero_attempts_never_mints_the_cap_ask(store: Store) -> None:
     assert (res.dispatched, res.asks) == (1, 0)
 
 
+def test_a_cancelled_job_requeues_its_node_free(store: Store) -> None:
+    """gr587772: an operator's cancel is a free re-queue — the next pass
+    mints a fresh ``run_slice`` under the node, burns no attempt, and two
+    consecutive cancels still do not reach the cap."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "cancelled")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    assert any(
+        f"td{task}: newest job:" in n
+        and "was cancelled; re-queued, not an attempt" in n
+        for n in res.notes
+    )
+    job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["job_type"] == "run_slice" and meta["params"]["todo_id"] == task
+
+    # A second consecutive cancel burns no attempt either: no cap, no ask,
+    # no rescue — the node re-queues again.
+    _set_job_status(store, job_id, "cancelled")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
+    plan = pd._load(store)
+    assert pd._attempts(plan, plan.nodes[task]) == 0
+
+
+def test_a_cancelled_job_keeps_the_stop_guards(store: Store) -> None:
+    """gr587772: the re-queue fires only once every ordinary guard has
+    passed — a claimed, held, in-rescue, blocked or paused node stays
+    stopped; stopping a node stays a tag's job, never the cancel's."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        for key in ("claimed", "held", "rescued", "paused"):
+            m.node(key, f"Task {key}", {"op": "run_slice"})
+        m.node("blocker", "Blocker", {"op": "run_slice"})
+        m.node("blocked", "Blocked task", {"op": "run_slice"}, blocked_by=("blocker",))
+
+    mint = T._run(store, None, build)
+    ids = mint.ids
+    held_keys = ("claimed", "held", "rescued", "blocked", "paused")
+    for key in held_keys:
+        _slice_job(store, ids[key], "run_slice", "cancelled")
+    store.add_tag(
+        ids["claimed"], Tag.open("claimed-by:lane-claude-sub"), set_by="system"
+    )
+    store.add_tag(ids["held"], Tag.open("waiting-for:human"), set_by="system")
+    store.add_tag(ids["rescued"], Tag.open("rescue:builder"), set_by="system")
+    store.add_tag(
+        ids["paused"],
+        Tag.closed("STATUS", "paused"),
+        set_by="system",
+        replace_prefix=True,
+    )
+
+    res = pd.run_pass(store)
+    # Only the blocker itself mints; every guarded node keeps its
+    # cancelled job as the newest and gets nothing fresh.
+    assert res.dispatched == 1
+    for key in held_keys:
+        assert len(_jobs_under(store, ids[key])) == 1
+        assert not any(
+            f"td{ids[key]}: newest job:" in n and "re-queued" in n for n in res.notes
+        )
+
+
+def test_a_cancelled_job_at_the_cap_takes_the_cap_path(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr587772: a cancel buys no retry budget — a node already at its
+    retry cap (the failed attempt below the cancelled job) is not
+    redispatched; it enters the cap path like a failed newest job:
+    rescue, not a silent freeze."""
+    use_lanes(monkeypatch)  # the seed table: a four-rung code ladder
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("task", "The task", {"op": "run_slice", "retries": 1}, body="Do it.")
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    _failed_job(store, task, "boom", lane="devin", model="swe-2-high")
+    _slice_job(store, task, "run_slice", "cancelled")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 1)
+    assert "rescue:builder" in _open_tags(store, task)
+    assert [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)] == []
+
+
+def test_a_cancelled_review_requeues_through_the_review_lane(store: Store) -> None:
+    """gr587772: a cancelled reviewer job re-queues like any other — the
+    retry is a fresh review pinned to the lane ``_review_lane`` picks (a
+    vendor that did not build), not a free-for-all dispatch."""
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    _mark_done(store, build)
+    _job(store, review, status="cancelled")
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert any(
+        f"td{review}: newest job:" in n and "re-queued, not an attempt" in n
+        for n in res.notes
+    )
+    jobs = _jobs_under(store, review)
+    assert len(jobs) == 2
+    assert jobs[-1][1]["params"]["todo_id"] == review
+    # The builder ran on claude-sub; the cross-vendor pick is devin (as
+    # test_review_miss_retry_is_not_escalated pins under this table).
+    assert jobs[-1][1]["params"]["lane"] == "devin"
+
+
+def test_a_cancelled_land_is_never_re_run_by_the_tick(store: Store) -> None:
+    """gr587772: a land the operator killed mid-ship is the ONE cancel the
+    tick leaves alone — whether the merge reached main is ambiguous and a
+    blind re-run could double-land, so the old "not redispatched" note
+    stays and the rescue tick's ``cancelled`` class owns the node."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    _slice_job(store, task, "land_slice", "cancelled")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
+    assert any(
+        f"td{task}: newest job:" in n and "was cancelled; not redispatched" in n
+        for n in res.notes
+    )
+    # Idempotent: the next pass still leaves it for the rescue tick.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    ("op", "job_type"),
+    [
+        ("release_deploy", "release_deploy"),
+        ("release_cut", "release_cut"),
+        ("release_confirm", "release_confirm"),
+        ("pr_action", "pr_action"),
+        ("dep_check", "dep_check"),
+        ("ci_red_digest", "ci_red_digest"),
+        # An op the registry does not know defaults to the safe side.
+        ("run_slice", "never_registered_op"),
+    ],
+)
+def test_a_cancelled_side_effecting_op_keeps_the_old_skip(
+    store: Store, op: str, job_type: str
+) -> None:
+    """gr587772 review S1: the free re-queue is allowlisted by job_type —
+    only ops confirmed read-only/idempotent may re-run blind. A cancelled
+    ``release_*`` step may already have fired, a ``pr_action`` may already
+    have posted, ``dep_check`` and ``ci_red_digest`` write outside the
+    node, and an unknown op defaults to the safe side: every one keeps
+    the "not redispatched" skip for the rescue tick's ``cancelled``
+    class."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("task", "The task", {"op": op})
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    _slice_job(store, task, job_type, "cancelled")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
+    assert len(_jobs_under(store, task)) == 1
+    assert any(
+        f"td{task}: newest job:" in n and "was cancelled; not redispatched" in n
+        for n in res.notes
+    )
+
+
+def test_a_cancelled_allowlisted_op_requeues(store: Store) -> None:
+    """gr587772 review S1: ``ci_verdict_poll`` is on the re-queue
+    allowlist — one unauthenticated GitHub GET plus a verdict row keyed
+    per sha (:func:`precis.plans.release.ci_verdict_rows` replaces, never
+    appends a second row), so a re-run after a cancel re-reads and
+    re-writes the same state."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("poll", "Poll CI", {"op": "ci_verdict_poll"})
+
+    mint = T._run(store, None, build)
+    poll = mint.ids["poll"]
+    _slice_job(store, poll, "ci_verdict_poll", "cancelled")
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert any(
+        f"td{poll}: newest job:" in n and "re-queued, not an attempt" in n
+        for n in res.notes
+    )
+    _job_id, meta = _jobs_under(store, poll)[-1]
+    assert meta["job_type"] == "ci_verdict_poll"
+    assert meta["executor"] == "job_inproc"
+
+
+def test_a_cancelled_review_on_full_lanes_logs_no_requeue_note(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr587772 review nit: the 're-queued' note claims a fresh job was
+    minted — a cancelled reviewer whose every fit lane outside the
+    builder's vendor is at cap parks on the lane instead, and must log
+    no re-queue note that pass."""
+    use_lanes(monkeypatch)  # the real multi-lane seed table
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    _mark_done(store, build)
+    _job(store, review, status="cancelled")
+    # Fill every review-fit lane outside the builder's vendor: devin
+    # (cap 3) and codex (cap 1). Live = queued, meta.lane set.
+    for _ in range(3):
+        _job(store, mint.root_id, status="queued", lane="devin")
+    _job(store, mint.root_id, status="queued", lane="codex")
+
+    res = pd.run_pass(store)
+    assert res.dispatched == 0
+    assert any(
+        f"td{review}: review not dispatched" in n and "at its cap" in n
+        for n in res.notes
+    )
+    assert not any("re-queued" in n for n in res.notes)
+
+
 def test_answered_ask_rearms_despite_jobs_run_in_between(store: Store) -> None:
     """gr561075: jobs hand-run between a cap ask and its answer must not keep
     the node capped (td548989 got a second ask the tick after its first was
