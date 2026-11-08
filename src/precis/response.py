@@ -10,6 +10,24 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
+class ResponseImage:
+    """A binary payload a :class:`Response` delivers alongside ``body``.
+
+    Currently only the draft figure render check's PNG (gr592765):
+    ``view='render'`` was specified to hand the caller the picture, and
+    a byte count plus a blob path is a report, not a delivery. The MCP
+    tool surface emits each item as an ``ImageContent`` block (the
+    per-call sink in :mod:`precis.runtime.dispatch` carries them past
+    the text-only ``(body, is_error)`` contract); surfaces that cannot
+    carry binary — the CLI, in-process ``runtime.dispatch`` — keep just
+    ``body``, which still reports the byte count and blob path.
+    """
+
+    data: bytes
+    mime: str
+
+
+@dataclass(frozen=True, slots=True)
 class Response:
     """What every handler returns from get/search/put/move.
 
@@ -64,3 +82,8 @@ class Response:
     #: hint/cost suffix first. The callback owns the continuation and
     #: must use the already-loaded content, without another store read.
     budget_fit: Callable[[int], str] | None = None
+
+    #: Binary payloads delivered alongside ``body`` — see
+    #: :class:`ResponseImage`. Empty on nearly every response. Kept last
+    #: so positional construction is unaffected.
+    images: tuple[ResponseImage, ...] = ()

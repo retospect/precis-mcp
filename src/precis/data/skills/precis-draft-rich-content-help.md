@@ -84,10 +84,12 @@ re-renders on mismatch, so editing a plotted table refreshes the graph (the
 caption, export all apply identically.
 
 **Check the render before export.** `get(kind='draft', id='dc<figure>',
-view='render')` executes the render NOW: on success it reports the PNG it
-wrote (the reader serves it at `/drafts/blob/<dc>`; exports embed it
-as-is), on failure the error tag plus the sandbox's stderr — the
-traceback. `get(kind='draft', id='<slug>', view='render')` is the same
+view='render')` executes the render NOW: on success the PNG comes back
+in the result itself (an image block on the MCP surface — you see the
+rendered figure, not just its byte count; the reader also serves it at
+`/drafts/blob/<dc>`, exports embed it as-is), on failure the error tag
+plus the sandbox's stderr — the traceback. `get(kind='draft',
+id='<slug>', view='render')` is the same
 check across every figure in the draft (pending/stale figures render;
 fresh and known-failed ones just report their stamp) — run it before
 `draft_export` so a broken recipe surfaces there, not mid-job. The

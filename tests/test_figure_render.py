@@ -7,6 +7,7 @@ run anywhere; one gated case renders a real matplotlib chart end-to-end.
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 import pytest
@@ -473,6 +474,10 @@ def test_render_view_executes_and_writes_the_png(hub: Hub) -> None:
     )
     r = DraftHandler(hub=hub).get(id=fig.dc, view="render")
     assert fig.dc in r.body and "render ok" in r.body and "chunk_blobs" in r.body
+    # td594437 — the rendered PNG is delivered back, not just reported
+    assert len(r.images) == 1
+    assert r.images[0].data == b"\x89PNG\r\n\x1a\n" + b"ok"
+    assert r.images[0].mime == "image/png"
     meta = hub.live_store.drafts.draft_chunk_meta(fig.handle)
     assert "render_pending" not in meta["figure"]  # cleared
     assert meta["render"]["cached_key"]
@@ -487,6 +492,7 @@ def test_render_view_returns_the_sandbox_traceback(hub: Hub) -> None:
     assert "render failed (exit:" in r.body
     assert "ValueError: bad recipe" in r.body  # the child's stderr
     assert "edit(kind='draft'" in r.body  # the fix pointer
+    assert r.images == ()  # no image rides a failure
     # still render-pending: the figure stays retryable, as on export
     meta = hub.live_store.drafts.draft_chunk_meta(fig.handle)
     assert meta["figure"]["render_pending"] is True
@@ -510,6 +516,9 @@ def test_render_view_on_an_uploaded_image_reports_no_recipe(hub: Hub) -> None:
     )
     r = DraftHandler(hub=hub).get(id=fig.dc, view="render")
     assert fig.dc in r.body and "no render recipe" in r.body
+    # the stored image still comes back — the figure's served picture
+    assert len(r.images) == 1
+    assert r.images[0].data == b"\x89PNG\r\n\x1a\nimg"
 
 
 def test_draft_render_view_checks_every_figure(hub: Hub) -> None:
@@ -537,6 +546,9 @@ def test_draft_render_view_checks_every_figure(hub: Hub) -> None:
     assert "broken" in r.body  # the stderr tail rides the failure line
     assert f"{img.dc}  skipped" in r.body
     assert "1 rendered now, 0 fresh, 1 uploaded image(s), 1 failed" in r.body
+    # the draft-level sweep is a checklist report — no image payloads;
+    # the per-figure dc<id> view is the one that delivers the PNG
+    assert r.images == ()
 
     # second pass: the good figure is fresh, the failure still reported
     r2 = d.get(id=ref.slug, view="render")
@@ -560,3 +572,45 @@ def test_hygiene_flags_figures_not_export_ready(hub: Hub) -> None:
     d.get(id=fig.dc, view="render")
     r2 = d.get(id=ref.slug, view="hygiene")
     assert fig.dc not in r2.body
+
+
+def test_render_view_delivers_the_png_on_the_mcp_wire(
+    hub: Hub, runtime_with_store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td594437 — end to end through the tool surface: a successful
+    ``view='render'`` returns a ``CallToolResult`` whose content carries
+    the rendered PNG as an ``ImageContent`` block next to the text
+    report, so a vision-capable caller actually receives the picture."""
+    from precis.tools import core as tools_core
+
+    ref, table = _draft_with_table(hub)
+    fig = _put_graph_figure(
+        hub,
+        ref.slug,
+        "open(out, 'wb').write(b'\\x89PNG\\r\\n\\x1a\\n' + b'ok')",
+        table.dc,
+    )
+    monkeypatch.setattr(tools_core, "_runtime", runtime_with_store)
+    out: Any = tools_core.get(kind="draft", id=fig.dc, view="render")
+    parts = list(out.content)
+    texts = [p for p in parts if getattr(p, "type", "") == "text"]
+    images = [p for p in parts if getattr(p, "type", "") == "image"]
+    assert "render ok" in texts[0].text
+    assert len(images) == 1
+    assert base64.b64decode(images[0].data) == b"\x89PNG\r\n\x1a\n" + b"ok"
+    assert images[0].mimeType == "image/png"
+
+
+def test_render_view_failure_stays_a_text_result(
+    hub: Hub, runtime_with_store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed render has no image to deliver — the wire result is the
+    plain error-report string, not a mixed-content envelope."""
+    from precis.tools import core as tools_core
+
+    ref, table = _draft_with_table(hub)
+    fig = _put_graph_figure(hub, ref.slug, "raise ValueError('nope')\n", table.dc)
+    monkeypatch.setattr(tools_core, "_runtime", runtime_with_store)
+    out = tools_core.get(kind="draft", id=fig.dc, view="render")
+    assert isinstance(out, str)
+    assert "render failed" in out

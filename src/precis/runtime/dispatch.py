@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import contextvars
 import copy
 import functools
 import inspect
@@ -110,6 +111,17 @@ log = logging.getLogger(__name__)
 
 
 _VERBS: tuple[Verb, ...] = _ALL_VERBS
+
+#: Per-call image sink — the MCP tool layer binds a list around a
+#: dispatch so a handler's ``Response.images`` (the figure render
+#: check's PNG, gr592765) reach the wire as ``ImageContent`` blocks
+#: instead of dying inside the text-only ``(body, is_error)`` contract.
+#: A ContextVar — same pattern as ``search_trace.CURRENT`` — so
+#: concurrent dispatches on one runtime never mix payloads; unbound
+#: (``None``) on every in-process caller, where binary has no consumer.
+_RESPONSE_IMAGES: contextvars.ContextVar[list[Any] | None] = contextvars.ContextVar(
+    "precis_response_images", default=None
+)
 
 #: Top-level ``tools/core.py`` verb kwargs whose declared default is
 #: **not** ``None``, or that the verb forwards unconditionally
@@ -1636,6 +1648,9 @@ class DispatchMixin(RuntimeShape):
                     budget_fitted=budget_fitted,
                     scope_verdict=scope_verdict,
                 )
+                images_sink = _RESPONSE_IMAGES.get()
+                if images_sink is not None and response.images:
+                    images_sink.extend(response.images)
                 return body, False
             except PrecisError as e:
                 scrub_upstream(e)

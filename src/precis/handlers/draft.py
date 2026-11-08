@@ -61,7 +61,7 @@ from precis.handlers._slug_ref_shared import (
     resolve_live_slug_ref,
 )
 from precis.protocol import ArgsSpec, Handler, KindSpec
-from precis.response import Response
+from precis.response import Response, ResponseImage
 from precis.store import Ref
 from precis.store._draft_ops import (
     _HEADING_LINE_RE,
@@ -310,6 +310,17 @@ _PLACEHOLDER_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
     "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 )
+
+
+def _blob_image(
+    blob: tuple[bytes, str] | None,
+) -> tuple[ResponseImage, ...]:
+    """A ``chunk_blobs`` row as a ``Response.images`` payload — the figure's
+    rendered/stored image delivered back through the calling surface
+    (td594437). ``()`` when the row is missing or not an image mime."""
+    if not blob or not blob[1].startswith("image/"):
+        return ()
+    return (ResponseImage(data=blob[0], mime=blob[1]),)
 
 
 def _looks_like_svg(raw: bytes) -> bool:
@@ -6250,9 +6261,11 @@ class DraftHandler(Handler):
         :func:`precis.render.figure.render_figure_chunk` — not
         ``ensure_rendered`` — so the call re-runs even a fresh or
         known-failed recipe and reports the engine's own verdict: the PNG
-        it wrote into ``chunk_blobs`` (served by the reader's
-        ``/drafts/blob/<dc>`` route, embedded by the next export), or the
-        error tag plus the sandbox child's stderr — the traceback."""
+        it wrote into ``chunk_blobs``, delivered back to the caller in
+        ``Response.images`` (an ``ImageContent`` block on the MCP wire —
+        td594437: a byte count reports the render, it does not deliver
+        it) and served by the reader's ``/drafts/blob/<dc>`` route, or
+        the error tag plus the sandbox child's stderr — the traceback."""
         from precis.render.figure import needs_render, render_figure_chunk
 
         chunk = self.store.drafts.get_draft_chunk(handle)
@@ -6280,7 +6293,8 @@ class DraftHandler(Handler):
                     f"{head} — uploaded image, no render recipe ({size}); "
                     "nothing to render. view='render' executes a graph or "
                     "structure-view figure's recipe."
-                )
+                ),
+                images=_blob_image(blob),
             )
         what = "view" if render.get("kind") == "view" else "graph"
         stale = needs_render(self.store, chunk)
@@ -6298,9 +6312,11 @@ class DraftHandler(Handler):
             return Response(
                 body=(
                     f"{head} — {what} render ok ({state}): {size} written "
-                    f"to chunk_blobs, cached_key {key}…. The reader serves "
-                    f"it at /drafts/blob/{chunk.dc}; exports embed it as-is."
-                )
+                    f"to chunk_blobs, cached_key {key}…. The PNG travels "
+                    "in this result's image block; the reader also serves "
+                    f"it at /drafts/blob/{chunk.dc}, exports embed it as-is."
+                ),
+                images=_blob_image(blob),
             )
         detail = outcome.detail.strip()
         fix = (

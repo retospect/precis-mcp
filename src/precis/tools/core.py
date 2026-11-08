@@ -15,6 +15,7 @@ the scope check; install, slice and in-process callers retain their scope.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
 import logging
@@ -33,7 +34,7 @@ if TYPE_CHECKING:
 # Conditional imports for MCP types (not available in all environments)
 try:
     from mcp.server.fastmcp import Context
-    from mcp.types import CallToolResult, TextContent
+    from mcp.types import CallToolResult, ImageContent, TextContent
 
     _MCP_AVAILABLE = True
 except ImportError:
@@ -53,6 +54,12 @@ except ImportError:
         def __init__(self, type, text):
             self.type = type
             self.text = text
+
+    class ImageContent:  # type: ignore[no-redef]
+        def __init__(self, type, data, mimeType):
+            self.type = type
+            self.data = data
+            self.mimeType = mimeType
 
     class Context:  # type: ignore[no-redef]
         """Fallback when ``mcp`` isn't importable — ``ctx`` is always
@@ -383,16 +390,39 @@ def _dispatch_as_user(
             }
             _require_personal_scope(verb, filtered)
             _require_slice_grant_scope(verb, filtered, ctx)
-            body, is_error = runtime.dispatch_with_status(
-                verb,
-                payload,
-                fold=_ctx_session(ctx) is not None and not is_learning_call(payload),
-            )
+            # Bind the per-call image sink so a handler's Response.images
+            # (the figure render check's PNG, gr592765) reach the wire
+            # as ImageContent blocks — ``dispatch_with_status`` itself
+            # stays text-only for CLI/in-process callers.
+            from precis.runtime.dispatch import _RESPONSE_IMAGES
+
+            images: list[Any] = []
+            _img_token = _RESPONSE_IMAGES.set(images)
+            try:
+                body, is_error = runtime.dispatch_with_status(
+                    verb,
+                    payload,
+                    fold=_ctx_session(ctx) is not None
+                    and not is_learning_call(payload),
+                )
+            finally:
+                _RESPONSE_IMAGES.reset(_img_token)
         if is_error:
             return CallToolResult(
                 content=[TextContent(type="text", text=body)],
                 isError=True,
             )
+        if images:
+            content: list[Any] = [TextContent(type="text", text=body)]
+            content.extend(
+                ImageContent(
+                    type="image",
+                    data=base64.b64encode(img.data).decode("ascii"),
+                    mimeType=img.mime,
+                )
+                for img in images
+            )
+            return CallToolResult(content=content)
         return body
     except Exception as e:
         is_error = True

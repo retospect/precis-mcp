@@ -190,6 +190,10 @@ session start).
 Handlers return `Response`; runtime appends hints and applies result budgets.
 Indivisible content such as slides supplies `Response.budget_fit`, allowing
 the final fitter to reserve runtime suffix bytes before choosing boundaries.
+`Response.images` carries binary payloads (the figure render check's PNG);
+the tool surface emits them as MCP `ImageContent` blocks via the per-call
+`_RESPONSE_IMAGES` sink in `runtime/dispatch.py` — text-only surfaces keep
+just `body`.
 
 Most work lands at one of these. Each has a convention that bites:
 
