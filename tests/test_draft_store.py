@@ -309,6 +309,97 @@ def test_insert_before_reorders(store: Store) -> None:
     assert [t for _, t, _ in _order(store, ref.id)] == ["Title", "A", "B"]
 
 
+def test_add_chunks_after_anchor_queues_in_call_order(store: Store) -> None:
+    """gr592767: sequential ``at={'after': X}`` inserts queue behind one
+    another — a batch lands in call order. Before the fix each new chunk
+    wedged directly under the anchor, ahead of the previous one, so N
+    inserts sharing an anchor stacked reversed."""
+    proj = _project(store)
+    ref, title = store.drafts.create_draft(
+        name="seq", title="Title", project_ref_id=proj
+    )
+    store.drafts.add_chunks(
+        ref_id=ref.id, chunk_kind="heading", text="Next", split=False
+    )
+    for text in ("one", "two", "three"):
+        store.drafts.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="paragraph",
+            text=text,
+            at={"after": title.handle},
+            split=False,
+        )
+    assert [t for _, t, _ in _order(store, ref.id)] == [
+        "Title",
+        "one",
+        "two",
+        "three",
+        "Next",
+    ]
+
+
+def test_add_chunks_after_queue_is_transitive_and_bounded(store: Store) -> None:
+    """The ``after:`` queue is transitive — a chunk queued behind a queued
+    chunk counts — and ends at the first sibling not anchored into it.
+    ``after:`` on a member with an empty queue still wedges in directly
+    behind it."""
+    proj = _project(store)
+    ref, title = store.drafts.create_draft(
+        name="wed", title="Title", project_ref_id=proj
+    )
+    nxt = store.drafts.add_chunks(
+        ref_id=ref.id, chunk_kind="heading", text="Next", split=False
+    )[0]
+    one = store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="one",
+        at={"after": title.handle},
+        split=False,
+    )[0]
+    store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="two",
+        at={"after": title.handle},
+        split=False,
+    )
+    # ``one`` has nothing queued behind it — wedges in directly
+    store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="one-half",
+        at={"after": one.handle},
+        split=False,
+    )
+    # a foreign sibling — anchored at Next, not into the title queue
+    store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="other",
+        at={"before": nxt.handle},
+        split=False,
+    )
+    # queues transitively behind ``two``: ``one-half`` rides ``one``'s
+    # membership, ``other`` ends the run
+    store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="three",
+        at={"after": title.handle},
+        split=False,
+    )
+    assert [t for _, t, _ in _order(store, ref.id)] == [
+        "Title",
+        "one",
+        "one-half",
+        "two",
+        "three",
+        "other",
+        "Next",
+    ]
+
+
 def test_handles_are_unique_and_addressable(store: Store) -> None:
     proj = _project(store)
     ref, title = store.drafts.create_draft(

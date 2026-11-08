@@ -119,6 +119,11 @@ render the ORCID as a linked iD mark after the name.
 **`put`** creates: a new draft, a chunk (`at=` places it —
 `{'first'\|'last': True}`, `{'into': 'dc<id>'}`, `{'before'\|'after':
 'dc<id>'}`), or a fork — see `precis-draft-help` *Create a draft*.
+`{'after': 'dc<id>'}` queues behind the anchor: inserts sharing one
+anchor land in call order — the next `after:` goes behind what earlier
+`after:`s put there (transitively), never between the anchor and its
+queue. `{'into': 'dc<id>'}` appends inside a section; `{'last': True}`
+is the same slot at the root level.
 
 
 ## See also

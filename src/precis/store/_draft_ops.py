@@ -1915,9 +1915,14 @@ class DraftStore(_AbbrevMixin):
         conn: psycopg.Connection,
         ref_id: int,
         at: dict[str, Any] | None,
-    ) -> tuple[int | None, str | None, str | None]:
-        """Resolve an `at` intent → (parent_chunk_id, lo_pos, hi_pos).
-        New chunks get fractional keys strictly between lo and hi."""
+    ) -> tuple[int | None, str | None, str | None, int | None]:
+        """Resolve an `at` intent → (parent_chunk_id, lo_pos, hi_pos,
+        anchor_chunk_id). New chunks get fractional keys strictly between
+        lo and hi. ``anchor_chunk_id`` is the resolved ``before``/``after``
+        target (``None`` for ``into``/``first``/``last``/default) — the
+        caller stamps it into the created event's ``source.anchor`` so a
+        later ``after`` on the same anchor lands behind what already
+        queued there (gr592767)."""
         at = at or {}
         anchor = at.get("before") or at.get("after")
         if anchor is not None:
@@ -1929,15 +1934,21 @@ class DraftStore(_AbbrevMixin):
                 (i for i, s in enumerate(sibs) if s.chunk_id == tgt.chunk_id), None
             )
             if idx is None:  # anchor retired → recover into its ghost slot
+                # No queue extension here: the ghost names a fixed slot —
+                # what was queued behind it while it lived stays put
+                # (test_add_after_retired_anchor_recovers).
                 lo, hi = self._ghost_bracket(sibs, tgt, before="before" in at)
-                return tgt.parent_chunk_id, lo, hi
+                return tgt.parent_chunk_id, lo, hi, tgt.chunk_id
             if "before" in at:
                 lo = sibs[idx - 1].pos if idx > 0 else None
                 hi = tgt.pos
             else:
                 lo = tgt.pos
                 hi = sibs[idx + 1].pos if idx + 1 < len(sibs) else None
-            return tgt.parent_chunk_id, lo, hi
+                ext = self._extend_after_run(conn, tgt.chunk_id, sibs[idx + 1 :])
+                if ext is not None:
+                    lo, hi = ext
+            return tgt.parent_chunk_id, lo, hi, tgt.chunk_id
 
         into = at.get("into")
         if into is not None:
@@ -1946,13 +1957,55 @@ class DraftStore(_AbbrevMixin):
                 raise NotFound(f"at: unknown parent handle {into!r}")
             kids = self._children(conn, ref_id, parent.chunk_id)
             if at.get("first"):
-                return parent.chunk_id, None, (kids[0].pos if kids else None)
-            return parent.chunk_id, (kids[-1].pos if kids else None), None
+                return parent.chunk_id, None, (kids[0].pos if kids else None), None
+            return parent.chunk_id, (kids[-1].pos if kids else None), None, None
 
         roots = self._children(conn, ref_id, None)
         if at.get("first"):
-            return None, None, (roots[0].pos if roots else None)
-        return None, (roots[-1].pos if roots else None), None
+            return None, None, (roots[0].pos if roots else None), None
+        return None, (roots[-1].pos if roots else None), None, None
+
+    @staticmethod
+    def _extend_after_run(
+        conn: psycopg.Connection,
+        anchor_id: int,
+        after_sibs: list[DraftChunk],
+    ) -> tuple[str | None, str | None] | None:
+        """``(lo, hi)`` behind the queue already anchored at ``anchor_id``
+        — ``None`` when no queued chunk leads ``after_sibs``, so the caller
+        keeps its default slot.
+
+        ``at={'after': X}`` queues behind X: each insert records the anchor
+        it resolved on its ``created`` event (``source.anchor``), and the
+        next ``after: X`` lands behind the run instead of leapfrogging it —
+        a batch of inserts sharing one anchor lands in call order
+        (gr592767 — three figure/table puts used to stack reversed and took
+        three ``move=`` calls to undo). The queue is transitive — a chunk
+        queued behind a queued chunk counts — and ends at the first sibling
+        not anchored into it, so ``after:`` still wedges in directly behind
+        an anchor whose queue is empty.
+        """
+        if not after_sibs:
+            return None
+        rows = conn.execute(
+            """
+            SELECT chunk_id, source->>'anchor' FROM chunk_events
+             WHERE event_kind = 'created' AND chunk_id = ANY(%s)
+            """,
+            ([s.chunk_id for s in after_sibs],),
+        ).fetchall()
+        anchored = {int(r[0]): r[1] for r in rows}
+        queue = {str(anchor_id)}
+        end = -1
+        for j, sib in enumerate(after_sibs):
+            if anchored.get(sib.chunk_id) not in queue:
+                break
+            end = j
+            queue.add(str(sib.chunk_id))
+        if end < 0:
+            return None
+        hi = after_sibs[end + 1].pos if end + 1 < len(after_sibs) else None
+        return after_sibs[end].pos, hi
 
     # -- create / add --------------------------------------------------------
 
@@ -2699,8 +2752,11 @@ class DraftStore(_AbbrevMixin):
         fragment (a ``table``'s markdown render)."""
         blocks = _split_blocks(text) if split else [text]
         with self.tx() as conn:
-            parent, lo, hi = self._resolve_at(conn, ref_id, at)
+            parent, lo, hi, anchor_id = self._resolve_at(conn, ref_id, at)
             self._lock_sections(conn, ref_id, parent)
+            source: dict[str, Any] = {"reason": "add"}
+            if anchor_id is not None:
+                source["anchor"] = anchor_id
             keys = n_keys_between(lo, hi, len(blocks))
             out: list[DraftChunk] = []
             for block, key in zip(blocks, keys, strict=True):
@@ -2725,6 +2781,7 @@ class DraftStore(_AbbrevMixin):
                             pos=key,
                             meta=meta,
                             kind=kind,
+                            source={**source, "from": "markdown-list"},
                         )
                     )
                     continue
@@ -2736,7 +2793,7 @@ class DraftStore(_AbbrevMixin):
                         text=block,
                         parent_chunk_id=parent,
                         pos=key,
-                        source={"reason": "add"},
+                        source=source,
                         meta=meta,
                         kind=kind,
                     )
@@ -2810,8 +2867,11 @@ class DraftStore(_AbbrevMixin):
         width, height = _image_dims(image)
         fig = {"origin": origin, **(figure_meta or {})}
         with self.tx() as conn:
-            parent, lo, hi = self._resolve_at(conn, ref_id, at)
+            parent, lo, hi, anchor_id = self._resolve_at(conn, ref_id, at)
             self._lock_sections(conn, ref_id, parent)
+            source: dict[str, Any] = {"reason": "add-figure", "origin": origin}
+            if anchor_id is not None:
+                source["anchor"] = anchor_id
             chunk = self._insert_draft_chunk(
                 conn,
                 ref_id=ref_id,
@@ -2820,7 +2880,7 @@ class DraftStore(_AbbrevMixin):
                 parent_chunk_id=parent,
                 pos=key_between(lo, hi),
                 meta={"figure": fig},
-                source={"reason": "add-figure", "origin": origin},
+                source=source,
             )
             conn.execute(
                 """INSERT INTO chunk_blobs

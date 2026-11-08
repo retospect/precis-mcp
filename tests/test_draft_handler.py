@@ -975,10 +975,12 @@ def test_put_via_chunk_anchor_inserts_after(draft: DraftHandler, hub: Hub) -> No
     assert "at={'after': 'dc<id>'}" in (ei.value.next or "")
 
     # An explicit at= still wins placement; the anchor then only names
-    # the draft.
+    # the draft. ``after:`` queues behind the anchor's queue (gr592767) —
+    # ``first``/``second``/``created`` all anchored inside it, so
+    # ``at-end`` lands last.
     draft.put(id=a, chunk_kind="paragraph", text="at-end", at={"after": "¶" + th})
     texts = [c.text for c in _order(hub, "nt")]
-    assert texts.index("at-end") == 1  # right after the title heading
+    assert texts[-1] == "at-end"
 
     # An unknown anchor → NotFound, not a slug lookup.
     with pytest.raises(NotFound):
@@ -1046,17 +1048,18 @@ def test_outline_pages_and_caps(
 
     monkeypatch.setattr(DraftHandler, "_OUTLINE_ROW_CAP", 3)
     body = draft.get(id="nt").body
-    assert "para4" in body and "para5" in body and "para0" not in body
+    assert "para0" in body and "para1" in body and "para5" not in body
     assert "of 7" in body and "view='toc'" in body
 
     # Explicit paging: limit+offset walks the row space (insert-after-
-    # title order: T, para5, para4, para3, para2, para1, para0).
+    # title order queues in call order, gr592767: T, para0, para1, para2,
+    # para3, para4, para5).
     body = draft.get(id="nt", args={"limit": 2, "offset": 0}).body
-    assert "para5" in body and "para4" not in body and "para3" not in body
+    assert "para0" in body and "para1" not in body and "para2" not in body
     body = draft.get(id="nt", args={"limit": 2, "offset": 2}).body
-    assert "para4" in body and "para3" in body and "para5" not in body
+    assert "para1" in body and "para2" in body and "para0" not in body
     body = draft.get(id="nt", args={"offset": 6}).body
-    assert "para0" in body
+    assert "para5" in body
 
     with pytest.raises(BadInput):
         draft.get(id="nt", args={"limit": 0})

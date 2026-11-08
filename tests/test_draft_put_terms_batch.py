@@ -151,6 +151,29 @@ def test_terms_batch_explicit_at_places_entries(draft: DraftHandler, hub: Hub) -
     assert loose.parent_chunk_id is None or loose.parent_chunk_id != parent.chunk_id
 
 
+def test_terms_batch_shared_after_anchor_keeps_entry_order(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr592767: a batch sharing one ``at={'after': anchor}`` queues —
+    entries land in call order behind the anchor instead of each wedging
+    directly under it and stacking reversed."""
+    ref_id = _mk(hub, draft)
+    head = draft.put(id="nt", chunk_kind="heading", text="Anchor")
+    anchor = _term_dcs(head.body)[0]
+    draft.put(
+        id="nt",
+        chunk_kind="term",
+        at={"after": anchor},
+        terms=[
+            {"text": "first", "meta": {"short": "F1"}},
+            {"text": "second", "meta": {"short": "F2"}},
+            {"text": "third", "meta": {"short": "F3"}},
+        ],
+    )
+    texts = [c.text for c in _terms(hub, ref_id)]
+    assert texts == ["first", "second", "third"]
+
+
 # ── all-or-nothing ─────────────────────────────────────────────────
 
 
