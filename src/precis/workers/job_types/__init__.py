@@ -1034,6 +1034,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "youtube_bulk",
     "cite_resolve",
     "lane_health",
+    "boundary_probe",
 )
 
 
@@ -1276,6 +1277,14 @@ def get_job_type(name: str) -> JobTypeSpec | None:
         # Detached submit/poll under ssh_node — the probe runs where
         # the sessions run.
         from precis.workers.job_types.lane_health import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
+    if name == "boundary_probe":
+        # Mechanical boundary fence (td574934 A4): runs each registered
+        # probe a branch hits inside the slice's test container.
+        # Detached submit/poll under ssh_node, no LLM.
+        from precis.workers.job_types.boundary_probe import SPEC
 
         _REGISTRY[name] = SPEC
         return SPEC
