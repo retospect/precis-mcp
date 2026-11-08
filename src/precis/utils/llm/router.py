@@ -27,10 +27,14 @@ Four pieces:
   config row read via :mod:`precis.utils.llm.live_config`) — a rung's
   ``profile`` key pins its own hosted endpoint + credential reference, so
   one process routes several hosted providers in a single chain
-  (gr543825). A ``kind='subscription'`` profile additionally gates its
-  rung through an ops allowlist, a bulk-work guard and a window cap kept
-  in the pool ledger; a ``kimi``-adapter rung refuses worker/job-origin
-  calls outright (interactive use only — gr543829).
+  (gr543825). A profile's ``api_key_ref`` is only ever Bearer'd to hosts
+  on that key's code-constant allowlist
+  (:func:`_profile_base_url_refusal`, gr586613) — a profile write can
+  never redirect a provider key. A ``kind='subscription'`` profile
+  additionally gates its rung through an ops allowlist, a bulk-work
+  guard and a window cap kept in the pool ledger; a ``kimi``-adapter
+  rung refuses worker/job-origin calls outright (interactive use only —
+  gr543829).
 
 :class:`Tier` aligns with :class:`~precis.utils.prompt.model.Profile`: a
 ``HELPER`` (tool-less, one-shot) profile rides ``MEDIUM``/``SMALL`` on
@@ -1902,8 +1906,12 @@ class ProviderProfile:
     ``base_url`` replaces the process-wide ``PRECIS_LLM_BASE_URL`` for that
     rung; ``api_key_ref`` names a vault/env secret resolved **at call
     time** (:func:`_profile_api_key`) — the key value is never stored on
-    the profile and never logged. ``kind`` is ``'metered'`` (per-token
-    billing — the default) or ``'subscription'`` (a flat plan the bulk
+    the profile and never logged. ``base_url`` + ``api_key_ref`` are
+    bound at send time by a per-key host allowlist
+    (:func:`_profile_base_url_refusal`, gr586613): a profile write can
+    only point a provider key at hosts the code names. ``kind`` is
+    ``'metered'`` (per-token billing — the default) or
+    ``'subscription'`` (a flat plan the bulk
     guard + window cap protect). ``cap`` bounds a subscription profile's
     usage per window, metered in the pool ledger under the profile's name
     — so a capped profile's name must be a pool-key account segment
@@ -3185,6 +3193,9 @@ def _hosted_oss_unavailable(rung: Rung, model: str) -> str | None:
                 f"llm profile {profile.name!r} is dark — no live "
                 f"service_config row lights {profile.gate!r} (prio > 0)"
             )
+        refused = _profile_base_url_refusal(profile)
+        if refused is not None:
+            return refused
         if profile.api_key_ref:
             from precis.secrets import get_secret
 
@@ -5885,6 +5896,87 @@ _PROVIDER_KEY_BY_HOST: dict[str, str] = {
     "api.kimi.com": "KIMI_CODE_API_KEY",
 }
 
+#: The hosts a profile ``api_key_ref``'s secret may be Bearer'd to, keyed
+#: by the vault secret name — a code constant because ``llm.profiles`` is
+#: an agent-writable ``app_settings`` row: a write that keeps
+#: ``api_key_ref`` while repointing ``base_url`` must never redirect a
+#: provider key to a host the code does not name (gr586613). The kimi
+#: adapter's key keeps its own canonical set
+#: (:data:`precis.utils.llm.kimi.BASE_URL_HOSTS`), folded in by
+#: :func:`_profile_key_hosts`; the ``llm_account`` door's stricter 1:1
+#: map (:data:`precis.handlers.llm._ENDPOINT_KEY_HOSTS`) only ever writes
+#: profiles that satisfy this bound. Widening is a reviewed land, never
+#: a DB write.
+_PROFILE_KEY_HOST_ALLOWLISTS: dict[str, frozenset[str]] = {
+    "CEREBRAS_API_KEY": frozenset({"api.cerebras.ai"}),
+    "DEEPINFRA_API_KEY": frozenset({"api.deepinfra.com"}),
+    "GROQ_API_KEY": frozenset({"api.groq.com"}),
+    "OPENAI_API_KEY": frozenset({"api.openai.com"}),
+    "OPENROUTER_API_KEY": frozenset({"openrouter.ai", "eu.openrouter.ai"}),
+}
+
+
+def _profile_key_hosts(api_key_ref: str) -> frozenset[str] | None:
+    """The hosts ``api_key_ref``'s secret may be sent to, or ``None``
+    when the ref names no allowlisted provider key — the caller fails
+    closed. The kimi adapter's set stays canonical on its own module
+    (:data:`kimi.BASE_URL_HOSTS`); the rest live in
+    :data:`_PROFILE_KEY_HOST_ALLOWLISTS`."""
+    if api_key_ref in _PROFILE_KEY_HOST_ALLOWLISTS:
+        return _PROFILE_KEY_HOST_ALLOWLISTS[api_key_ref]
+    from precis.utils.llm import kimi as _kimi
+
+    if api_key_ref == _kimi.API_KEY_REF:
+        return _kimi.BASE_URL_HOSTS
+    return None
+
+
+def _profile_base_url_refusal(profile: ProviderProfile) -> str | None:
+    """Why ``profile.base_url`` may not receive the profile's key, or ``None``.
+
+    Enforced BEFORE the key resolves: ``llm.profiles`` is agent-writable,
+    so a repointed ``base_url`` fails here, in code — a write can never
+    send a provider key to a host the code does not name (gr586613). The
+    check: https only, no userinfo, port absent or 443, and exact
+    lower-cased hostname membership in the key's allowlist
+    (:func:`_profile_key_hosts`). A profile without ``api_key_ref`` is
+    unchecked — its key is the host-keyed default, which only resolves a
+    provider secret on that provider's own host. The returned text names
+    the profile, the allowlist and the next step (widening is a reviewed
+    land; no DB write widens it).
+    """
+    if not profile.api_key_ref:
+        return None
+    allowed = _profile_key_hosts(profile.api_key_ref)
+    if allowed is None:
+        return (
+            f"llm profile {profile.name!r}: api_key_ref "
+            f"{profile.api_key_ref!r} has no host allowlist in code — the "
+            "key is never resolved or sent (fail closed). Onboarding a "
+            "provider is a reviewed land on _PROFILE_KEY_HOST_ALLOWLISTS, "
+            "not a llm.profiles write"
+        )
+    try:
+        parsed = urlparse(profile.base_url)
+        ok = (
+            parsed.scheme.lower() == "https"
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.port in (None, 443)
+            and (parsed.hostname or "").lower() in allowed
+        )
+    except ValueError:
+        ok = False
+    if ok:
+        return None
+    return (
+        f"llm profile {profile.name!r}: base_url {profile.base_url!r} is "
+        f"not a host {profile.api_key_ref!r} may be sent to "
+        f"({sorted(allowed)}; https only, no userinfo, port 443/default) "
+        "— the key is never resolved or sent. Widening the allowlist is "
+        "a reviewed land, never a llm.profiles write"
+    )
+
 
 def _service_gate_lit(name: str) -> bool:
     """Whether a profile's ``gate`` service is lit — delegates to
@@ -5998,10 +6090,15 @@ def _req_base_url(req: LlmRequest) -> str:
     else the process-wide ``PRECIS_LLM_BASE_URL``. A profile name that
     fails to resolve yields ``""`` so the caller's own missing-url guard
     names the fault — never a silent fall-back to a *different* provider
-    than the chain pinned."""
+    than the chain pinned. A profile whose ``base_url`` fails its key's
+    host allowlist (:func:`_profile_base_url_refusal`) yields ``""`` too:
+    the call must never reach a wire — the dispatch path's own refusal
+    check names why before this fallback ever fires."""
     if req.profile:
         profile = resolve_profile(req.profile)
-        return profile.base_url if profile is not None else ""
+        if profile is None or _profile_base_url_refusal(profile) is not None:
+            return ""
+        return profile.base_url
     return os.environ.get("PRECIS_LLM_BASE_URL", "")
 
 
@@ -6114,6 +6211,20 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
         )
         if gated is not None:
             return gated
+        # The key's host allowlist — BEFORE _req_api_key resolves it: no
+        # llm.profiles write may Bearer a provider key to a host the code
+        # does not name (gr586613).
+        refused = _profile_base_url_refusal(profile)
+        if refused is not None:
+            return LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error=refused,
+                paused=False,
+            )
     base_url = _req_base_url(req)
     parsed_base_url = urlparse(base_url)
     if not parsed_base_url.scheme or not parsed_base_url.netloc:
@@ -6309,6 +6420,15 @@ def run_oss_tool_loop(
         # extension, only ever sent to the pinned local endpoint.
         extra_body: dict[str, Any] | None = {"cache_prompt": False}
     else:
+        if profile is not None:
+            # Defense in depth behind _dispatch_openai_tools' own check:
+            # a direct caller passing a profile whose base_url fails its
+            # key's host allowlist must never resolve the secret or send
+            # (gr586613). A raise, like the executor/tools build failures
+            # this signature already allows.
+            refused = _profile_base_url_refusal(profile)
+            if refused is not None:
+                raise RuntimeError(refused)
         base_url = (
             profile.base_url
             if profile is not None
@@ -6495,6 +6615,21 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
         )
         if gated is not None:
             return gated
+        # Same key host allowlist as _dispatch_openai_compat — before any
+        # secret resolves (gr586613).
+        refused = _profile_base_url_refusal(profile)
+        if refused is not None:
+            return _classified(
+                LlmResult(
+                    text="",
+                    cost_usd=None,
+                    turns_used=None,
+                    model=model,
+                    tier=req.tier,
+                    error=refused,
+                    stop_reason="error",
+                )
+            )
     ctx = _overlay_tick_context(_overlay_with_source(req))
     try:
         with tick_context(ctx) if ctx is not None else contextlib.nullcontext():

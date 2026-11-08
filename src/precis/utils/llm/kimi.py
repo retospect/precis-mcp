@@ -108,11 +108,15 @@ BASE_URL_OVERSEAS = "https://api.kimi.ai/coding/v1"
 BASE_URL_CHINA = "https://api.kimi.com/coding/v1"
 DEFAULT_BASE_URL = BASE_URL_OVERSEAS
 
-#: The only hosts a profile ``base_url`` may name — the two documented
-#: membership endpoints. :func:`base_url` feeds the ``kimi_tree`` launch
-#: env and the secrets probe, both of which Bearer-auth whatever it
-#: resolves to, so any other host is a key-exfiltration path. Widening
-#: the set is a reviewed land, never a DB write.
+#: The only hosts ``KIMI_CODE_API_KEY`` may be Bearer'd to — the two
+#: documented membership endpoints, a code constant, not config: an
+#: ``llm.profiles`` write repointing ``base_url`` must never redirect
+#: the key to a host the code does not name (gr586613).
+#: :func:`base_url` feeds the ``kimi_tree`` launch env and the secrets
+#: probe, both of which Bearer-auth whatever it resolves to, and the
+#: router enforces it in
+#: :func:`~precis.utils.llm.router._profile_base_url_refusal` before the
+#: key resolves; widening is a reviewed land, never a DB write.
 BASE_URL_HOSTS: frozenset[str] = frozenset({"api.kimi.ai", "api.kimi.com"})
 
 #: The model ids the Kimi Code endpoint accepts (docs, 2026-11-01 — six

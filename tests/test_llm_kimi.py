@@ -155,6 +155,13 @@ def _wire_fakes(monkeypatch: pytest.MonkeyPatch, seen: list[dict[str, Any]]) -> 
             "PAID_LLM_KEY": "sk-paid",
         }.get(name),
     )
+    # gr586613: the paid fallback profile's fake key needs a code
+    # allowlist entry for its fake host.
+    monkeypatch.setitem(
+        router._PROFILE_KEY_HOST_ALLOWLISTS,
+        "PAID_LLM_KEY",
+        frozenset({"paid.example.invalid"}),
+    )
 
 
 def _chain(*rungs: dict[str, Any]) -> list[dict[str, Any]]:
@@ -474,9 +481,7 @@ def test_quota_error_pauses_and_falls_through(
     _profiles(
         monkeypatch,
         {
-            **_kimi_profile(
-                base_url="https://quota5h.example.invalid/v1", ops=["my_op"]
-            ),
+            **_kimi_profile(base_url="https://api.kimi.ai/quota5h/v1", ops=["my_op"]),
             **_paid_profile(),
         },
     )

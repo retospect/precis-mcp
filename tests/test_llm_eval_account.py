@@ -130,6 +130,15 @@ def _profiles_env(
     if entry is None:
         entry = {"base_url": _BASE_URL, "api_key_ref": _KEY_REF, "kind": "metered"}
     monkeypatch.setenv("PRECIS_LLM_PROFILES", json.dumps({name: entry}))
+    # gr586613: a profile key only reaches hosts on its code allowlist —
+    # register the fake key for the fake endpoint host.
+    from precis.utils.llm import router
+
+    monkeypatch.setitem(
+        router._PROFILE_KEY_HOST_ALLOWLISTS,
+        _KEY_REF,
+        frozenset({"llm.example.invalid"}),
+    )
 
 
 def _seed_all(

@@ -8504,6 +8504,15 @@ def _profile_fakes(
             "PAID_LLM_KEY": "sk-paid",
         }.get(name),
     )
+    # gr586613: a profile key only reaches hosts on its code allowlist —
+    # register the suite's fake providers so these profiles stay live.
+    for ref, host in (
+        ("ALPHA_LLM_KEY", "alpha.example.invalid"),
+        ("BETA_LLM_KEY", "beta.example.invalid"),
+        ("SUB_LLM_KEY", "sub.example.invalid"),
+        ("PAID_LLM_KEY", "paid.example.invalid"),
+    ):
+        monkeypatch.setitem(router._PROFILE_KEY_HOST_ALLOWLISTS, ref, frozenset({host}))
 
 
 def test_chain_mixes_two_hosted_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -8751,6 +8760,11 @@ def test_profile_key_never_reaches_logs_or_errors(
 
     monkeypatch.setattr(summ, "LlmClient", FailingClient)
     monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: secret)
+    monkeypatch.setitem(
+        router._PROFILE_KEY_HOST_ALLOWLISTS,
+        "ALPHA_LLM_KEY",
+        frozenset({"alpha.example.invalid"}),
+    )
     monkeypatch.setattr(
         "precis.utils.llm.live_config.chain_override",
         lambda _tier: [
@@ -8859,6 +8873,299 @@ def test_resolve_profile_ops_empty_is_not_absent(
     assert ungated is not None and ungated.ops is None
     assert empty is not None and empty.ops == frozenset()
     assert listed is not None and listed.ops == frozenset({"plan_tick"})
+
+
+# ── gr586613: a profile's api_key_ref never leaves its host allowlist ──
+
+
+def _profile_wire_fakes(
+    monkeypatch: pytest.MonkeyPatch, seen: list[dict[str, object]]
+) -> list[str]:
+    """Fake the hosted wire AND count secret reads: every LlmClient build
+    lands in ``seen``; the returned list accumulates each ``get_secret``
+    name resolved — a refusal test asserts both stay empty."""
+    import precis.secrets as secrets
+    import precis.workers.llm_summarize as summ
+
+    resolved: list[str] = []
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            seen.append(
+                {
+                    "url": getattr(config, "url", None),
+                    "api_key": getattr(config, "api_key", None),
+                }
+            )
+
+        def complete(
+            self, messages: list[dict[str, str]], **_kw: object
+        ) -> _FakeOpenAI:
+            return _FakeOpenAI(text="ok", total_tokens=5)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+
+    def _get_secret(name: str, **kw: object) -> str:
+        resolved.append(name)
+        return f"sk-{name.lower()}"
+
+    monkeypatch.setattr(secrets, "get_secret", _get_secret)
+    return resolved
+
+
+@pytest.mark.parametrize(
+    ("api_key_ref", "base_url"),
+    [
+        ("OPENROUTER_API_KEY", "https://openrouter.ai/api/v1"),
+        ("OPENROUTER_API_KEY", "https://eu.openrouter.ai/api/v1"),
+        ("OPENROUTER_API_KEY", "https://openrouter.ai:443/api/v1"),
+        ("DEEPINFRA_API_KEY", "https://api.deepinfra.com/v1/openai"),
+        ("GROQ_API_KEY", "https://api.groq.com/openai/v1"),
+        ("CEREBRAS_API_KEY", "https://api.cerebras.ai/v1"),
+        ("OPENAI_API_KEY", "https://api.openai.com/v1"),
+        ("KIMI_CODE_API_KEY", "https://api.kimi.ai/coding/v1"),
+        ("KIMI_CODE_API_KEY", "https://api.kimi.com/coding/v1"),
+    ],
+    ids=[
+        "openrouter",
+        "openrouter-eu",
+        "openrouter-explicit-443",
+        "deepinfra",
+        "groq",
+        "cerebras",
+        "openai",
+        "kimi-overseas",
+        "kimi-china",
+    ],
+)
+def test_profile_key_host_allowlist_accepts_provider_hosts(
+    monkeypatch: pytest.MonkeyPatch, api_key_ref: str, base_url: str
+) -> None:
+    """Each provider key's documented host passes the allowlist — the
+    wire call goes out to that base_url with the resolved key."""
+    _set_profiles(
+        monkeypatch,
+        {
+            "p": {
+                "base_url": base_url,
+                "api_key_ref": api_key_ref,
+                "kind": "metered",
+            }
+        },
+    )
+    seen: list[dict[str, object]] = []
+    resolved = _profile_wire_fakes(monkeypatch, seen)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [{"transport": "openai_compat", "model": "m", "profile": "p"}],
+    )
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
+
+    assert out.error is None
+    assert [c["url"] for c in seen] == [base_url]
+    assert api_key_ref in resolved
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        # Off-allowlist host — the key exfiltration the gripe names.
+        "https://exfil.example.invalid/v1",
+        # Not https.
+        "http://openrouter.ai/api/v1",
+        # Userinfo — built at runtime so no inline-password URL literal
+        # lands in the tree (test_deploy_tree_no_secrets).
+        "https://u" + ":pw@openrouter.ai/api/v1",
+        # Non-443 port.
+        "https://openrouter.ai:444/api/v1",
+        # Suffix spoof — ends with the provider name, is not the host.
+        "https://openrouter.ai.evil.example/v1",
+        # An unlisted subdomain — membership is exact, never a suffix.
+        "https://evil.openrouter.ai/api/v1",
+    ],
+    ids=[
+        "off-allowlist",
+        "http",
+        "userinfo",
+        "port-444",
+        "suffix-spoof",
+        "unlisted-subdomain",
+    ],
+)
+def test_profile_base_url_off_allowlist_refuses_before_key_or_wire(
+    monkeypatch: pytest.MonkeyPatch, base_url: str
+) -> None:
+    """An ``llm.profiles`` write repointing ``base_url`` while keeping
+    ``api_key_ref`` must never send the key: the dispatch refuses naming
+    the profile and the allowlist, with ZERO wire calls and no secret
+    read."""
+    _set_profiles(
+        monkeypatch,
+        {
+            "evil": {
+                "base_url": base_url,
+                "api_key_ref": "OPENROUTER_API_KEY",
+                "kind": "metered",
+            }
+        },
+    )
+    seen: list[dict[str, object]] = []
+    resolved = _profile_wire_fakes(monkeypatch, seen)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [{"transport": "openai_compat", "model": "m"}],
+    )
+    # The profile-less rung needs SOME hosted base url to survive
+    # resolve_chain; req.profile pins 'evil' at dispatch regardless.
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://x.example.invalid/v1")
+
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x", profile="evil"))
+
+    assert out.error is not None
+    assert "evil" in out.error and "openrouter.ai" in out.error
+    assert seen == []  # ZERO http calls — the client is never even built
+    assert "OPENROUTER_API_KEY" not in resolved  # the key is never read
+
+
+def test_profile_unknown_api_key_ref_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ``api_key_ref`` no allowlist names refuses outright — a DB
+    write can never mint a new key→host binding; onboarding a provider
+    is a code change (a reviewed land)."""
+    _set_profiles(
+        monkeypatch,
+        {
+            "mystery": {
+                "base_url": "https://anywhere.example.invalid/v1",
+                "api_key_ref": "NOT_A_KNOWN_KEY",
+                "kind": "metered",
+            }
+        },
+    )
+    seen: list[dict[str, object]] = []
+    resolved = _profile_wire_fakes(monkeypatch, seen)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [{"transport": "openai_compat", "model": "m"}],
+    )
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://x.example.invalid/v1")
+
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x", profile="mystery"))
+
+    assert out.error is not None
+    assert "mystery" in out.error and "NOT_A_KNOWN_KEY" in out.error
+    assert "no host allowlist" in out.error
+    assert seen == []
+    assert "NOT_A_KNOWN_KEY" not in resolved
+
+
+def test_profile_without_api_key_ref_keeps_host_keyed_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The allowlist binds a named ``api_key_ref`` only: a profile with
+    no key ref still resolves the host-keyed/generic default — no
+    fail-closed refusal, the call goes out."""
+    _set_profiles(
+        monkeypatch,
+        {
+            "selfhost": {
+                "base_url": "https://selfhost.example.invalid/v1",
+                "kind": "metered",
+            }
+        },
+    )
+    seen: list[dict[str, object]] = []
+    resolved = _profile_wire_fakes(monkeypatch, seen)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [
+            {"transport": "openai_compat", "model": "m", "profile": "selfhost"}
+        ],
+    )
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
+
+    assert out.error is None
+    assert [c["url"] for c in seen] == ["https://selfhost.example.invalid/v1"]
+    assert resolved == ["PRECIS_LLM_API_KEY"]
+
+
+def test_profile_host_refusal_skips_the_rung_at_availability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The chain path refuses earlier still: an off-allowlist profile
+    fails ``_hosted_oss_unavailable`` — the rung is dropped before any
+    key read or dispatch, with the allowlist as the named reason."""
+    _set_profiles(
+        monkeypatch,
+        {
+            "evil": {
+                "base_url": "https://exfil.example.invalid/v1",
+                "api_key_ref": "OPENROUTER_API_KEY",
+                "kind": "metered",
+            }
+        },
+    )
+    rung = router.Rung(Transport.OPENAI_COMPAT, model="m", profile="evil")
+    reason = router._hosted_oss_unavailable(rung, "m")
+    assert reason is not None
+    assert "evil" in reason and "openrouter.ai" in reason
+
+
+def test_profile_host_allowlist_guards_openai_tools_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ``openai_tools`` wire binds the same profile key to
+    ``profile.base_url`` — an off-allowlist repoint refuses before the
+    loop client is built."""
+    _set_profiles(
+        monkeypatch,
+        {
+            "evil": {
+                "base_url": "https://exfil.example.invalid/v1",
+                "api_key_ref": "OPENROUTER_API_KEY",
+                "kind": "metered",
+            }
+        },
+    )
+    resolved = _profile_wire_fakes(monkeypatch, [])
+
+    out = router._dispatch_openai_tools(
+        LlmRequest(tier=Tier.BIG, prompt="x", profile="evil"), "m"
+    )
+
+    assert out.error is not None
+    assert "evil" in out.error and "openrouter.ai" in out.error
+    assert resolved == []
+
+
+def test_run_oss_tool_loop_refuses_off_allowlist_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A direct ``run_oss_tool_loop`` caller gets the same bound — a
+    refused profile raises before the key resolves."""
+    _set_profiles(
+        monkeypatch,
+        {
+            "evil": {
+                "base_url": "https://exfil.example.invalid/v1",
+                "api_key_ref": "OPENROUTER_API_KEY",
+                "kind": "metered",
+            }
+        },
+    )
+    resolved = _profile_wire_fakes(monkeypatch, [])
+    profile = router.resolve_profile("evil")
+    assert profile is not None
+
+    with pytest.raises(RuntimeError, match="evil"):
+        router.run_oss_tool_loop(prompt="x", model="m", profile=profile)
+
+    assert resolved == []
 
 
 # ── gr552866: a failed agent run's stdout is the raw stream, not text ──
