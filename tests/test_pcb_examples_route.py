@@ -1,15 +1,17 @@
 """Every example must route all multi-member nets with no DRC errors.
 
 Measured baseline: 2026-11-05, main 99de0fedb, effort=20000, seed=1.
-usbc_attiny re-measured 2026-11-06 on td569573 (the cutcap share).
-Seconds cover local.route (including placement); boards were built first.
-Boards were measured concurrently in separate local processes.
+usbc_attiny re-measured 2026-11-06 on td569573 (the cutcap share);
+esp32c3/usbc_attiny re-measured 2026-11-07 on td569571 (the rule
+ladder). Seconds cover local.route (including placement); boards were
+built first. Boards were measured concurrently in separate local
+processes.
 
 board           routable  routed  failed  drc_errors  seconds  cause
 sanity                20      20       0           0    4.644  complete
 blinky_led             1       1       0           0    0.617  complete; 1 dangling
-usbc_attiny            8       5       3          16   23.398  walled-off power pins; short/connectivity guards
-esp32c3               11       8       3           5   44.890  walled-off pins; short/connectivity guards
+usbc_attiny            8       6       2          18   23.398  walled-off power pins; short/connectivity guards
+esp32c3               11       8       3           8   44.890  walled-off pins; short/connectivity guards
 nano                  64      45      19          18 1947.002  walled-off pins; short/connectivity guards
 nano_usb_pd           64      45      19          18 1936.141  walled-off pins; short/connectivity guards
 nano_usb_pd_r2        72      32      40          38 2192.916  walled-off pins; short/connectivity guards
@@ -46,8 +48,8 @@ BOARD_MARKS = {
             strict=True,
             raises=AssertionError,
             reason=(
-                "5/8 routed, 3 failed, DRC 16: 3V3/GND/VBUS power nets walled off; "
-                "copper withdrawn by short/connectivity guards. td569573's cutcap "
+                "6/8 routed, 2 failed, DRC 18: GND/VBUS power nets walled off "
+                "(td569571's ladder recovered 3V3). td569573's cutcap "
                 "share cleared the pre-route CorridorOverflow (GND demand 2 > cap 1)"
             ),
         ),
@@ -57,8 +59,8 @@ BOARD_MARKS = {
             strict=True,
             raises=AssertionError,
             reason=(
-                "8/11 routed, 3 failed, DRC 5: BOOT pins walled off; "
-                "EN/VCC3V3 copper withdrawn by short/connectivity guards"
+                "8/11 routed, 3 failed, DRC 8: VCC3V3/GND/SDA — walled pins and "
+                "copper withdrawn by short/connectivity guards"
             ),
         ),
     ],

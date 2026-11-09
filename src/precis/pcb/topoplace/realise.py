@@ -6213,45 +6213,43 @@ def _route_signals(
     ``hv_weight`` (pcb-topo-hv-preference, default 0.0/off) is forwarded
     to both ``build_wires`` and ``plan_route`` unchanged.
 
-    Two passes (:attr:`RoutePlan.withdrawn`): the first pass's withdrawn
-    nets (crossings, stranded, no via site, short-risk, severed,
-    off-angle) are removed — their ``net_pins`` emptied — and the
-    survivors are routed again without those nets' taut polylines in
-    the corridor, spoke and chord passes. Measured on taz-leaf-local-63:
-    SDA 16 → 2 segments, SCL 12 → 3, LBST 10 → 4, VREF_SAMP 4 → 2, with
-    GND (a 35-branch failed tree) no longer shaping them. The second
-    pass is kept only when it withdraws no survivor — when it strands
-    one, pass 1 stands for the survivors and the failed nets still get
-    their re-route rounds against the survivors' pass-1 copper
-    (:func:`_strip_failed`); the withdrawn nets' final pieces and
-    problems come from their last attempt, re-indexed behind the kept
-    pass's branches."""
+    The route itself is the td569571 rule ladder, replacing the old
+    withdraw-and-rip-up passes: every signal net is first routed at
+    near-zero rules (``_LADDER_ZV`` track/via, 0 clearance — where a
+    crossing-free embedding exists for nearly every net), then the
+    rules climb to the real per-net rules in :data:`_LADDER_STEPS`
+    steps. Each step legalises the carried embedding at the wider
+    rules with the td569542 joint LP (via centres inside their tri
+    pair, per-crossing wire offsets, part translations surfaced on
+    ``legalise_sink``), re-cuts each work's corridor at the wider rule
+    (:func:`wires._Corridor.cut`), and re-routes only the nets the cut
+    or the LP named — against the kept nets' step-rule copper frozen as
+    same-net-passable ``fixed_copper`` zones (:func:`_copper_zones`). A
+    net whose cut stays feasible keeps its embedding and is only
+    re-emitted at the wider rule; a net the ladder cannot close is
+    withdrawn exactly as before, its last-attempt records and simple
+    partial copper kept for the report. Only the ``t=1`` board —
+    real-rule, legalised — is returned: intermediate emissions feed
+    zone freezing, never the caller."""
     from precis.pcb.currents import require_net_currents
+    from precis.pcb.realize import RealizeResult
+    from precis.pcb.topoplace import legalise_route as _tplegalise
     from precis.pcb.topoplace.mesh import MeshConflictError
 
     require_net_currents(zip(ir.net_name, ir.net_current_a))
+    pose_a = np.asarray(d.pose0 if pose is None else pose, dtype=np.float64)
+    n_layers = int(ir.n_layers)
+    n_nets = len(d.net_pins)
+    name_to_k = {str(n): k for k, n in enumerate(d.net_name)}
+    routable = {k for k in range(n_nets) if len(d.net_pins[k])}
+
     kw: dict[str, Any] = dict(
-        pose=pose,
-        net_rules=net_rules,
-        min_via_dia=min_via_dia,
-        min_via_drill=min_via_drill,
-        min_via_ring=min_via_ring,
         event=event,
         masks=masks,
         mesh_sink=mesh_sink,
         hv_weight=hv_weight,
         legalise_sink=legalise_sink,
     )
-    plan, rres = _route_pass(d, ir, **kw)
-    failed = _route_failed_nets(plan)
-    survivors = {p.net for p in plan.pieces} - failed
-    if not failed or not survivors:
-        return plan, rres
-    if event is not None:
-        event(
-            f"route: pass 2 — {len(failed)} net(s) withdrawn, "
-            f"re-routing {len(survivors)} survivor(s) without them"
-        )
 
     def _only(nets: set[int]) -> tuple[np.ndarray, ...]:
         return tuple(
@@ -6259,101 +6257,462 @@ def _route_signals(
             for k, pins in enumerate(d.net_pins)
         )
 
-    try:
-        plan2, rres2 = _route_pass(
-            dataclasses.replace(d, net_pins=_only(survivors)), ir, **kw
+    def _near_zero_head(at_pose: np.ndarray) -> tuple[_RouteWork, RoutePlan, Any]:
+        nr, (nd, ndr, nrg) = _ladder_rules(
+            net_rules, min_via_dia, min_via_drill, min_via_ring, 0.0
         )
-    except CorridorOverflow:
-        return plan, rres
-    if _route_failed_nets(plan2):
-        # a survivor fails without its neighbours — pass 1 stands for
-        # the survivors, but the failed set still gets its re-route
-        # rounds below, against the survivors' pass-1 copper (its own
-        # speculative pieces stripped so they neither freeze it for the
-        # co-batch nets nor double it when a round lands)
-        kept_plan, kept_rres = _strip_failed(plan, rres, failed, d, ir)
-    else:
-        kept_plan, kept_rres = plan2, rres2
-    # passes 3..: the withdrawn nets again, in rounds, each against ALL
-    # copper kept so far frozen as same-net-passable zones — a rip-up
-    # and re-route of the failed set. A round routes the remaining nets
-    # together; the ones that come out whole are then routed ONCE MORE
-    # alone (the pass-2 rule inside the round: a net that fails in the
-    # round must not shape the ones that succeed — DEC5 kept a 1.5 mm
-    # B.Cu hop under C10 for a crossing with a net that then failed),
-    # frozen, and the rest go to the next round until a round lands
-    # nothing. The per-branch guard keeps what joins pads, so a tree
-    # still lands its easy branches when it fails.
-    remaining = set(failed)
-    last_plan: RoutePlan | None = None
-    last_rres: Any = None
-    pass_no = 3
-    # the 2-3-pin nets get their rounds before the trees join: a tree's
-    # taut polyline across the board fails the trivial nets around it
+        w = _route_head(
+            d,
+            ir,
+            pose=at_pose,
+            net_rules=nr,
+            min_via_dia=nd,
+            min_via_drill=ndr,
+            min_via_ring=nrg,
+            **kw,
+        )
+        p, r = _route_emit(
+            w,
+            ir,
+            min_via_dia=nd,
+            min_via_drill=ndr,
+            event=event,
+            masks=masks,
+            hv_weight=hv_weight,
+        )
+        return w, p, r
+
+    # Step 0 — the near-zero route. A net that fails here is a topology
+    # failure (walled-off pins): wider rules cannot open a wall, so it
+    # leaves the warm embedding and is retried against each step's
+    # frozen copper instead.
+    work0, plan, rres = _near_zero_head(pose_a)
+    failed = _route_failed_nets(plan) & routable
+    live = routable - failed
+    pending = set(failed)
+    records: dict[int, tuple[RoutePlan, Any, float]] = {
+        k: (plan, rres, 0.0) for k in pending
+    }
+    works: list[_RouteWork] = [work0]
+    work_of: dict[int, _RouteWork] = {k: work0 for k in live}
+    acc_plan: RoutePlan | None = None
+    acc_rres: Any = None
+    step_cuts: list[CorridorCut] = []
+    live_rec: dict[int, tuple[RoutePlan, Any, float]] = {}
+    if live:
+        restarts = 0
+        ti = 0
+        while ti < len(_LADDER_STEPS) and live:
+            t = _LADDER_STEPS[ti]
+            is_last = t >= 1.0
+            s_net_rules, (s_dia, s_drill, s_ring) = _ladder_rules(
+                net_rules, min_via_dia, min_via_drill, min_via_ring, t
+            )
+            srules, scur = _via_choice_rules(ir, s_net_rules, s_dia, s_drill, s_ring)
+            rules_t = tuple(
+                (
+                    float(srules[d.net_name[k]].track_width_mm),
+                    float(srules[d.net_name[k]].clearance_mm),
+                    float(srules[d.net_name[k]].via_dia_mm or _VIA_DIA_MM),
+                )
+                if k < len(d.net_name) and d.net_name[k] in srules
+                else (_DEFAULT.track_width_mm, _DEFAULT.clearance_mm, _VIA_DIA_MM)
+                for k in range(n_nets)
+            )
+            rules_used = tuple((r[0], r[1]) for r in rules_t)
+            clearances = {name: float(nr.clearance_mm) for name, nr in srules.items()}
+            if event is not None:
+                event(
+                    f"route: ladder t={t:g} — legalise {len(live)} live "
+                    f"net(s), {len(pending)} pending"
+                )
+            live_works: list[_RouteWork] = []
+            seen: set[int] = set()
+            for k in sorted(live):
+                w = work_of[k]
+                if id(w) not in seen:
+                    seen.add(id(w))
+                    live_works.append(w)
+            # (a)+(b): legalise every work's embedding at the step
+            # rules, then re-cut its corridor — the nets the cut or the
+            # LP name are this step's re-route set.
+            step_cuts = []
+            cut_named: set[int] = set()
+            moved_pose: np.ndarray | None = None
+            for w in live_works:
+                owned = {k for k in live if work_of[k] is w}
+                w.wires, w.placed = _wires_only(w.wires, owned, w.placed)
+                w.reroute = frozenset(k for k in w.reroute if k in owned)
+                w.wires = _rerate_vias(w.wires, w.d, srules)
+                if not w.wires.branches:
+                    continue
+                ctx = _wires._make_ctx(w.mesh, w.d, n_layers, w.pose)
+                try:
+                    planter = _wires._ViaPlanter(
+                        ctx, w.d, w.pose, net_clearance_by_name=clearances
+                    )
+                except Exception:
+                    planter = None
+                leg = _tplegalise.legalise_route(
+                    w.d,
+                    w.mesh,
+                    w.wires,
+                    w.pose,
+                    n_layers=n_layers,
+                    net_rules=srules,
+                    rules_t=rules_t,
+                    planter=planter,
+                    part_sink=legalise_sink,
+                )
+                if leg.vias:
+                    w.wires = _tplegalise.apply_legalise(w.wires, leg.vias, {}, w.mesh)
+                w.placed = dict(leg.offsets) if leg.offsets else {}
+                w.reroute = frozenset(int(k) for k in leg.reroute if int(k) in owned)
+                if not np.array_equal(np.asarray(leg.pose), np.asarray(w.pose)):
+                    moved_pose = np.asarray(leg.pose, dtype=np.float64)
+                cor = _wires._corridor(ctx, w.mesh, w.d, n_layers, rules_used, w.pose)
+                cuts = cor.cut(w.wires.branches, w.wires.order)
+                step_cuts.extend(cuts)
+                for c in cuts:
+                    if c.refused:
+                        continue
+                    cut_named |= {name_to_k[nm] for nm in c.nets if nm in name_to_k}
+            if moved_pose is not None and restarts < _LADDER_POSE_RESTARTS:
+                # a part translation uncertifies every mesh — rebuild the
+                # warm start at the moved pose and redo this step.
+                restarts += 1
+                pose_a = moved_pose
+                work0, plan, rres = _near_zero_head(pose_a)
+                failed = _route_failed_nets(plan) & routable
+                live = routable - failed
+                pending = set(failed)
+                records.update({k: (plan, rres, 0.0) for k in failed})
+                works = [work0]
+                work_of = {k: work0 for k in live}
+                continue
+            batch = set(pending) | (cut_named & live)
+            for w in live_works:
+                batch |= set(w.reroute) & live
+            kept = live - batch
+            # (c): emit the kept nets at the step rules — their copper
+            # freezes the scoped re-route (and IS the result at t=1).
+            kept_plan: RoutePlan | None = None
+            kept_rres: Any = None
+            if batch or is_last:
+                for w in live_works:
+                    wk = {k for k in kept if work_of[k] is w}
+                    if not wk:
+                        continue
+                    vw, vplaced = _wires_only(w.wires, wk, w.placed)
+                    ew = dataclasses.replace(
+                        w,
+                        wires=vw,
+                        placed=vplaced,
+                        reroute=frozenset(k for k in w.reroute if k in wk),
+                    )
+                    pw, rw = _route_emit(
+                        ew,
+                        ir,
+                        rules=srules,
+                        via_cur=scur,
+                        min_via_dia=s_dia,
+                        min_via_drill=s_drill,
+                        event=event,
+                        masks=masks,
+                        hv_weight=hv_weight,
+                    )
+                    # Intermediates never commit: a guard/severed mark at
+                    # t<1 only means the wires' spacing is not legalised
+                    # THERE yet — the next, wider step's LP takes another
+                    # run at the same embedding rather than the net
+                    # leaving it for a risky mid-ladder re-route. Only
+                    # t=1's emit is the withdrawal authority.
+                    newly = (_route_failed_nets(pw) & wk) if is_last else set()
+                    if newly:
+                        batch |= newly
+                        kept -= newly
+                        wk -= newly
+                        for k in newly:
+                            records[k] = (pw, rw, t)
+                        # the emit's marks for the re-batched nets must not
+                        # survive onto the kept plan — the scoped attempt
+                        # owns their records from here
+                        pw, rw = _strip_failed(pw, rw, newly, d, ir)
+                        w.wires, w.placed = _wires_only(w.wires, wk, w.placed)
+                        w.reroute = frozenset(k for k in w.reroute if k in wk)
+                    if wk:
+                        for k in wk:
+                            live_rec[k] = (pw, rw, t)
+                        if kept_plan is None:
+                            kept_plan, kept_rres = pw, rw
+                        else:
+                            kept_plan, kept_rres = _merge_pass(
+                                kept_plan, kept_rres, pw, rw, wk, d, ir
+                            )
+            ws: _RouteWork | None = None
+            ps: RoutePlan | None = None
+            rs: Any = None
+            landed: set[int] = set()
+            if batch:
+                zones = (
+                    _copper_zones(kept_rres, d, ir, pose_a)
+                    if kept_rres is not None
+                    else []
+                )
+                d_s = dataclasses.replace(
+                    d, net_pins=_only(batch), zones=tuple(d.zones) + tuple(zones)
+                )
+                if event is not None:
+                    event(
+                        f"route: ladder t={t:g} — {len(batch)} net(s) "
+                        f"re-routed against {len(zones)} frozen piece(s)"
+                    )
+                try:
+                    ws = _route_head(
+                        d_s,
+                        ir,
+                        pose=pose_a,
+                        net_rules=s_net_rules,
+                        min_via_dia=s_dia,
+                        min_via_drill=s_drill,
+                        min_via_ring=s_ring,
+                        **kw,
+                    )
+                    ps, rs = _route_emit(
+                        ws,
+                        ir,
+                        min_via_dia=s_dia,
+                        min_via_drill=s_drill,
+                        event=event,
+                        masks=masks,
+                        hv_weight=hv_weight,
+                    )
+                except (CorridorOverflow, MeshConflictError):
+                    ws = None
+                if ws is not None and ps is not None:
+                    landed = batch - _route_failed_nets(ps)
+                    ps_fail, rs_fail = ps, rs
+                    if landed and landed != batch:
+                        # the landed nets once more alone — a net failing
+                        # in the batch must not shape the ones that
+                        # succeed (the old pass-2 rule inside a round)
+                        d4 = dataclasses.replace(d_s, net_pins=_only(landed))
+                        try:
+                            w4 = _route_head(
+                                d4,
+                                ir,
+                                pose=pose_a,
+                                net_rules=s_net_rules,
+                                min_via_dia=s_dia,
+                                min_via_drill=s_drill,
+                                min_via_ring=s_ring,
+                                **kw,
+                            )
+                            p4, r4 = _route_emit(
+                                w4,
+                                ir,
+                                min_via_dia=s_dia,
+                                min_via_drill=s_drill,
+                                event=event,
+                                masks=masks,
+                                hv_weight=hv_weight,
+                            )
+                            if not (_route_failed_nets(p4) & landed):
+                                ws, ps, rs = w4, p4, r4
+                        except (CorridorOverflow, MeshConflictError):
+                            pass
+                    for k in landed:
+                        work_of[k] = ws
+                        live.add(k)
+                        pending.discard(k)
+                        live_rec[k] = (ps, rs, t)
+                    if landed:
+                        ws.wires, ws.placed = _wires_only(ws.wires, landed, ws.placed)
+                        ws.reroute = frozenset(k for k in ws.reroute if k in landed)
+                        works.append(ws)
+                    for k in batch - landed:
+                        pending.add(k)
+                        live.discard(k)
+                        # the failed nets' last try is the batch attempt —
+                        # the solo retry never carried them
+                        records[k] = (ps_fail, rs_fail, t)
+                else:
+                    for k in batch:
+                        pending.add(k)
+                        live.discard(k)
+                        records.setdefault(k, live_rec.get(k, (plan, rres, 0.0)))
+            if is_last:
+                acc_plan, acc_rres = kept_plan, kept_rres
+                if ws is not None and ps is not None:
+                    acc_plan, acc_rres = (
+                        _merge_pass(acc_plan, acc_rres, ps, rs, landed, d, ir)
+                        if acc_plan is not None
+                        else (ps, rs)
+                    )
+            ti += 1
+
+    # Post-ladder rip-up at real rules: the t=1 batch co-routes every
+    # named net — mutual congestion inside the batch can fell a net a
+    # solo attempt would land, so the residue gets the old rounds until
+    # one lands nothing, each against the latest committed copper.
+    def _t1_attempt(
+        nets: set[int],
+    ) -> tuple[set[int], RoutePlan, Any] | None:
+        zones = _copper_zones(acc_rres, d, ir, pose_a) if acc_rres is not None else []
+        d_s = dataclasses.replace(
+            d, net_pins=_only(nets), zones=tuple(d.zones) + tuple(zones)
+        )
+        try:
+            ws = _route_head(
+                d_s,
+                ir,
+                pose=pose_a,
+                net_rules=net_rules,
+                min_via_dia=min_via_dia,
+                min_via_drill=min_via_drill,
+                min_via_ring=min_via_ring,
+                **kw,
+            )
+            ps, rs = _route_emit(
+                ws,
+                ir,
+                min_via_dia=min_via_dia,
+                min_via_drill=min_via_drill,
+                event=event,
+                masks=masks,
+                hv_weight=hv_weight,
+            )
+        except (CorridorOverflow, MeshConflictError):
+            return None
+        return nets - _route_failed_nets(ps), ps, rs
+
+    def _t1_commit(landed: set[int], ps: RoutePlan, rs: Any) -> None:
+        nonlocal acc_plan, acc_rres
+        for k in landed:
+            live.add(k)
+            pending.discard(k)
+            live_rec[k] = (ps, rs, 1.0)
+        acc_plan, acc_rres = (
+            _merge_pass(acc_plan, acc_rres, ps, rs, landed, d, ir)
+            if acc_plan is not None
+            else (ps, rs)
+        )
+
     small_phase = True
-    for _round in range(2 * _REROUTE_ROUNDS):
+    for _round in range(2 * _LADDER_T1_ROUNDS):
         batch = (
-            {k for k in remaining if len(d.net_pins[k]) <= 3}
+            {k for k in pending if len(d.net_pins[k]) <= 3}
             if small_phase
-            else set(remaining)
+            else set(pending)
         )
         if not batch:
             if small_phase:
                 small_phase = False
                 continue
             break
-        try:
-            frozen = _copper_zones(kept_rres, d, ir, pose)
-            d3 = dataclasses.replace(
-                d, net_pins=_only(batch), zones=tuple(d.zones) + tuple(frozen)
-            )
-            if event is not None:
-                event(
-                    f"route: pass {pass_no} — {len(batch)} withdrawn net(s) "
-                    f"re-routed against {len(frozen)} frozen copper piece(s)"
-                )
-            pass_no += 1
-            plan3, rres3 = _route_pass(d3, ir, **kw)
-        except (CorridorOverflow, MeshConflictError):
-            # the frozen copper may defeat the CDT's edge recovery — the
-            # remaining nets stay withdrawn rather than routed without it
-            break
-        last_plan, last_rres = plan3, rres3
-        landed = batch - _route_failed_nets(plan3)
-        if not landed:
+        out = _t1_attempt(batch)
+        if out is None or not out[0]:
+            for k in batch:
+                records.setdefault(k, live_rec.get(k, (plan, rres, 0.0)))
             if small_phase:
                 small_phase = False
                 continue
             break
-        if landed != batch:
-            try:
-                d4 = dataclasses.replace(d3, net_pins=_only(landed))
-                plan4, rres4 = _route_pass(d4, ir, **kw)
-                pass_no += 1
-                if not (_route_failed_nets(plan4) & landed):
-                    plan3, rres3 = plan4, rres4
-            except (CorridorOverflow, MeshConflictError):
-                pass
-        kept_plan, kept_rres = _merge_pass(
-            kept_plan, kept_rres, plan3, rres3, landed, d, ir
+        landed, ps, rs = out
+        _t1_commit(landed, ps, rs)
+        for k in batch - landed:
+            records[k] = (ps, rs, 1.0)
+    # last resort: each residue net alone — a co-batch failure says
+    # nothing about the net by itself
+    for k in sorted(pending):
+        out = _t1_attempt({k})
+        if out is not None and out[0]:
+            _t1_commit(out[0], out[1], out[2])
+        else:
+            records.setdefault(k, live_rec.get(k, (plan, rres, 0.0)))
+    still = set(pending)
+    if acc_plan is None:
+        acc_plan = RoutePlan(pieces=(), vias=(), layers=())
+        acc_rres = RealizeResult((), (), ())
+    elif acc_rres is not None and acc_rres.tracks:
+        # the cross-work sweep: per-work emissions guard their own
+        # copper against frozen zones priced one step narrower — the
+        # merged emit, judged as one set at real rules, catches what a
+        # stale zone could not.
+        real_rules, _rcur = _via_choice_rules(
+            ir, net_rules or {}, min_via_dia, min_via_drill, min_via_ring
         )
-        remaining -= landed
-    still = set(remaining)
+        emit_all = RoutePlan(
+            pieces=tuple(
+                RoutePiece(
+                    net=name_to_k[str(ir.net_name[t.net_id])],
+                    branch=i,
+                    layer=int(t.layer),
+                    points=tuple(
+                        (float(s[0]), float(s[1]))
+                        for seg in t.segments
+                        for s in (seg["start"],)
+                    )
+                    + (
+                        (
+                            float(t.segments[-1]["end"][0]),
+                            float(t.segments[-1]["end"][1]),
+                        ),
+                    ),
+                )
+                for i, t in enumerate(acc_rres.tracks)
+                if t.segments and str(ir.net_name[t.net_id]) in name_to_k
+            ),
+            vias=tuple(
+                ViaSite(
+                    net=name_to_k[str(ir.net_name[v.net_id])],
+                    branch=i,
+                    edge=-1,
+                    t=0.0,
+                    x=float(v.x),
+                    y=float(v.y),
+                    dia_mm=float(v.dia_mm),
+                    drill_mm=float(v.drill_mm),
+                )
+                for i, v in enumerate(acc_rres.vias)
+                if str(ir.net_name[v.net_id]) in name_to_k
+            ),
+            layers=(),
+        )
+        bad = _guarded_nets(emit_all, d, ir, n_layers, pose_a, real_rules)
+        if bad:
+            for k in bad & live:
+                records[k] = (acc_plan, acc_rres, 1.0)
+                pending.add(k)
+                live.discard(k)
+                still.add(k)
+            bad_names = {str(d.net_name[k]) for k in bad if k < len(d.net_name)}
+            acc_rres = dataclasses.replace(
+                acc_rres,
+                tracks=tuple(
+                    t
+                    for t in acc_rres.tracks
+                    if str(ir.net_name[t.net_id]) not in bad_names
+                ),
+                vias=tuple(
+                    v
+                    for v in acc_rres.vias
+                    if str(ir.net_name[v.net_id]) not in bad_names
+                ),
+            )
+            acc_plan = dataclasses.replace(
+                acc_plan, guarded=tuple(sorted(set(acc_plan.guarded) | bad))
+            )
     if still:
         # the still-failed nets' last attempt rides along for the record
-        # (plan pieces/problems) and its simple partial copper (below);
-        # when every round raised there IS no last attempt — pass 1's
-        # own records stand in, the pieces and stranded reports the old
-        # bail kept whole (G2h review-3 M3)
-        kept_plan, kept_rres = _merge_pass(
-            kept_plan,
-            kept_rres,
-            last_plan if last_plan is not None else plan,
-            last_rres if last_rres is not None else rres,
-            still,
-            d,
-            ir,
-        )
+        # (plan pieces/problems) and, when it ran at real rules, its
+        # simple partial copper (below); a pre-t=1 attempt's sub-rule
+        # copper never commits.
+        for k in sorted(still):
+            pk, rk, tk = records[k]
+            if tk < 1.0:
+                rk = dataclasses.replace(rk, tracks=(), vias=())
+            acc_plan, acc_rres = _merge_pass(acc_plan, acc_rres, pk, rk, {k}, d, ir)
     # A net that still fails keeps only its SIMPLE partial copper — the
     # single-layer branches that join two of its pads in a few legs (the
     # C4–C14 GND class). Its via hops and long detours are speculative
@@ -6365,16 +6724,19 @@ def _route_signals(
     # a refused cut is a fact about the FAILED nets' demand — it
     # survives onto the report even when the kept pass (re-routed
     # without those nets) cut clean, but only while a net it names is
-    # still failed: a net a later round landed owes no report (M2)
+    # still failed: a net a later round landed owes no report (M2). The
+    # t=1 step's re-cut records stand in for the old pass's overflow —
+    # dedup by midpoint, edge ids being per-mesh.
+    seen_xy = {(round(float(c.x), 3), round(float(c.y), 3)) for c in acc_plan.overflow}
     extra_cuts = tuple(
         c
-        for c in plan.overflow
-        if c.edge not in {c2.edge for c2 in kept_plan.overflow}
+        for c in step_cuts
+        if (round(float(c.x), 3), round(float(c.y), 3)) not in seen_xy
         and not still_names.isdisjoint(c.nets)
     )
     if extra_cuts:
-        kept_plan = dataclasses.replace(
-            kept_plan, overflow=tuple(kept_plan.overflow) + extra_cuts
+        acc_plan = dataclasses.replace(
+            acc_plan, overflow=tuple(acc_plan.overflow) + extra_cuts
         )
     pad_xy: dict[int, list[tuple[float, float]]] = {}
     for pid in range(ir.n_pins):
@@ -6394,24 +6756,155 @@ def _route_signals(
             and any(math.dist(b, p) < 1e-3 for p in pads_)
         )
 
-    kept_rres = dataclasses.replace(
-        kept_rres,
+    acc_rres = dataclasses.replace(
+        acc_rres,
         tracks=tuple(
             t
-            for t in kept_rres.tracks
+            for t in acc_rres.tracks
             if str(ir.net_name[t.net_id]) not in still_names or _pad_to_pad(t)
         ),
         vias=tuple(
-            v for v in kept_rres.vias if str(ir.net_name[v.net_id]) not in still_names
+            v for v in acc_rres.vias if str(ir.net_name[v.net_id]) not in still_names
         ),
     )
-    return dataclasses.replace(kept_plan, withdrawn=tuple(sorted(still))), kept_rres
+    return dataclasses.replace(acc_plan, withdrawn=tuple(sorted(still))), acc_rres
 
 
 #: The most legs a still-failed net's partial track may keep (route_design).
 _PARTIAL_MAX_SEGMENTS = 6
-#: Rip-up rounds over the withdrawn set (route_design passes 3..).
-_REROUTE_ROUNDS = 4
+
+#: Near-zero track width and via dia the ladder's step-0 route runs at —
+#: the invariant test's ``ZV`` (1 µm); the via drill floors at half of it.
+_LADDER_ZV = 0.001
+#: The ladder's ascending rule fractions, ending at the real rule (t=1).
+_LADDER_STEPS: tuple[float, ...] = (0.25, 0.5, 0.75, 1.0)
+#: How often a part-translation legalise may rebuild the warm start at
+#: the moved pose inside one ladder run before the step proceeds on the
+#: stale pose (the moved pose already rides ``legalise_sink`` for the
+#: caller's own re-route).
+_LADDER_POSE_RESTARTS = 2
+#: Real-rule rip-up rounds after the ladder's last step for nets the
+#: co-routed t=1 batch felled by mutual congestion — the old
+#: ``_REROUTE_ROUNDS`` shape, kept for the stragglers.
+_LADDER_T1_ROUNDS = 4
+
+
+def _ladder_rules(
+    net_rules: Mapping[str, NetRules] | None,
+    min_via_dia: float | None,
+    min_via_drill: float | None,
+    min_via_ring: float | None,
+    t: float,
+) -> tuple[dict[str, NetRules], tuple[float | None, float | None, float | None]]:
+    """The rule set at ladder fraction ``t``: every resolved net's
+    ``track_width_mm``, ``clearance_mm``, ``via_dia_mm`` and
+    ``via_drill_mm`` interpolated from near-zero (``t=0`` —
+    :data:`_LADDER_ZV` track and via, half that drill, 0 clearance, the
+    invariant test's ``ZV``) to the real resolved rule (``t=1``, exact),
+    and the fab-floor triple ``(min_via_dia, min_via_drill,
+    min_via_ring)`` interpolated the same way (``None`` floors stay
+    ``None``). A net absent from ``net_rules`` keeps the pass's default
+    rule at every step — it is not in the map the caller feeds
+    :func:`_via_choice_rules`, so its barrel stays the default figure
+    exactly as the real-rule path resolves it; the via CHOICE itself
+    flows through that one siting path on the scaled map and floors,
+    no second logic."""
+    real = net_rules or {}
+
+    def lerp(lo: float, hi: float) -> float:
+        if t <= 0.0:
+            return lo
+        return hi if t >= 1.0 else lo + (hi - lo) * t
+
+    out: dict[str, NetRules] = {}
+    for name, nr in real.items():
+        out[name] = dataclasses.replace(
+            nr,
+            track_width_mm=lerp(_LADDER_ZV, float(nr.track_width_mm)),
+            clearance_mm=lerp(0.0, float(nr.clearance_mm)),
+            via_dia_mm=lerp(
+                _LADDER_ZV,
+                _VIA_DIA_MM if nr.via_dia_mm is None else float(nr.via_dia_mm),
+            ),
+            via_drill_mm=lerp(
+                _LADDER_ZV / 2.0,
+                _VIA_DRILL_MM if nr.via_drill_mm is None else float(nr.via_drill_mm),
+            ),
+        )
+    floors = (
+        None if min_via_dia is None else lerp(_LADDER_ZV, float(min_via_dia)),
+        None if min_via_drill is None else lerp(_LADDER_ZV / 2.0, float(min_via_drill)),
+        None if min_via_ring is None else lerp(0.0, float(min_via_ring)),
+    )
+    return out, floors
+
+
+def _rerate_vias(wires: Any, d: TopoDesign, rules: Mapping[str, NetRules]) -> Any:
+    """Re-rate every planted via's barrel to ``rules``' resolved pair —
+    the ladder's step-0 search sites vias at near-zero, so each step's
+    re-emission redraws the barrel at the step rule's own
+    ``via_dia_mm``/``via_drill_mm`` (``r_site_mm`` follows the new
+    diameter). The SITE is the homotopy's and stays; the step's
+    legalise round and the emit guards re-verify the bigger barrel
+    there or name the net for re-route."""
+    changed = False
+    out = []
+    for b in wires.branches:
+        if not b.vias:
+            out.append(b)
+            continue
+        name = str(d.net_name[b.net]) if b.net < len(d.net_name) else str(b.net)
+        nr = rules.get(name, _DEFAULT)
+        dia = float(nr.via_dia_mm or _VIA_DIA_MM)
+        drill = float(nr.via_drill_mm or _VIA_DRILL_MM)
+        vias = [
+            v
+            if v.dia_mm == dia and v.drill_mm == drill
+            else dataclasses.replace(v, dia_mm=dia, drill_mm=drill, r_site_mm=dia / 2.0)
+            for v in b.vias
+        ]
+        changed = changed or vias != list(b.vias)
+        out.append(dataclasses.replace(b, vias=tuple(vias)))
+    return dataclasses.replace(wires, branches=tuple(out)) if changed else wires
+
+
+def _wires_only(
+    wires: Any,
+    keep: Container[int],
+    placed: Mapping[tuple[int, int], float] | None = None,
+) -> tuple[Any, dict[tuple[int, int], float]]:
+    """``wires`` viewed down to the branches of nets in ``keep`` — the
+    ``order``/``order_pos`` edge maps and ``placed`` keys re-indexed to
+    the view's branch numbering, the per-branch lineage/id maps subset
+    with the branches, and the stale corridor-overflow record dropped
+    (every re-emission re-cuts at its own rules)."""
+    idx = [i for i, b in enumerate(wires.branches) if int(b.net) in keep]
+    remap = {old: new for new, old in enumerate(idx)}
+    order = tuple(tuple(remap[b] for b in seq if b in remap) for seq in wires.order)
+    order_pos = wires.order_pos
+    if order_pos and len(order_pos) == len(wires.order):
+        order_pos = tuple(
+            tuple(pos for b, pos in zip(seq, poss) if b in remap)
+            for seq, poss in zip(wires.order, order_pos)
+        )
+    n_br = len(wires.branches)
+    lineage = wires.branch_lineage
+    ids = wires.branch_ids
+    view = dataclasses.replace(
+        wires,
+        branches=tuple(wires.branches[i] for i in idx),
+        order=order,
+        order_pos=order_pos,
+        overflow=(),
+        branch_lineage=tuple(lineage[i] for i in idx)
+        if len(lineage) == n_br
+        else lineage,
+        branch_ids=tuple(ids[i] for i in idx) if len(ids) == n_br else ids,
+    )
+    placed_view = {
+        (remap[b], pos): t for (b, pos), t in (placed or {}).items() if b in remap
+    }
+    return view, placed_view
 
 
 def _merge_pass(
@@ -6727,7 +7220,29 @@ def _via_need(
     return {k: n for k, n in need.items() if n > 1}
 
 
-def _route_pass(
+@dataclass(slots=True)
+class _RouteWork:
+    """One route pass's live search state — the mesh, the wire
+    embedding (via moves applied), the resolved rules, and the
+    legalisation round's outstanding crossing placements and re-route
+    names — carried between the rule ladder's legalise/re-cut steps so
+    a kept net's embedding is re-emitted at wider rules without being
+    re-searched (td569571). ``d`` is the design the mesh was built on
+    (a scoped re-route adds frozen-copper zones); ``pose`` the pose the
+    mesh and wires were priced at."""
+
+    d: TopoDesign
+    mesh: Any
+    wires: Any
+    rules: dict[str, NetRules]
+    via_cur: dict[str, float | None]
+    rules_t: tuple[tuple[float, float, float], ...]
+    placed: dict[tuple[int, int], float]
+    reroute: frozenset[int]
+    pose: np.ndarray
+
+
+def _route_head(
     d: TopoDesign,
     ir: Any,
     *,
@@ -6741,8 +7256,13 @@ def _route_pass(
     mesh_sink: list[Any] | None = None,
     hv_weight: float = 0.0,
     legalise_sink: list[np.ndarray] | None = None,
-) -> tuple[RoutePlan, Any]:
-    """One mesh → wires → plan → copper pass; :func:`route_design`'s body."""
+) -> _RouteWork:
+    """The search half of a route pass — mesh → wires → corridor
+    refusal → the td569542 legalisation round — returning the live
+    :class:`_RouteWork` :func:`_route_emit` plans and emits against.
+    Split from ``_route_pass`` for the rule ladder (td569571): the
+    ladder legalises and re-cuts a carried embedding at each wider
+    rule set and only ever re-searches the nets a step names."""
     from precis.pcb.topoplace.mesh import build_mesh
     from precis.pcb.topoplace.wires import build_wires
 
@@ -6848,6 +7368,40 @@ def _route_pass(
             )
     if legalise_sink is not None:
         legalise_sink.extend(part_poses)
+    return _RouteWork(
+        d=d,
+        mesh=mesh,
+        wires=wires,
+        rules=rules,
+        via_cur=via_cur,
+        rules_t=rules_t,
+        placed=dict(leg.offsets) if leg.offsets else {},
+        reroute=frozenset(int(k) for k in leg.reroute),
+        pose=np.asarray(mesh_pose, dtype=np.float64),
+    )
+
+
+def _route_emit(
+    work: _RouteWork,
+    ir: Any,
+    *,
+    rules: Mapping[str, NetRules] | None = None,
+    via_cur: Mapping[str, float | None] | None = None,
+    min_via_dia: float | None = None,
+    min_via_drill: float | None = None,
+    event: Callable[[str], None] | None = None,
+    masks: BoardMasks | None = None,
+    hv_weight: float = 0.0,
+) -> tuple[RoutePlan, Any]:
+    """The emit half of a route pass — spoke placements, layer plan,
+    via siting, the anti-short and emit-connectivity guards,
+    :func:`realize_result` — over a :class:`_RouteWork`'s carried
+    embedding. ``rules``/``via_cur`` default to the work's own
+    resolution; the ladder passes a WIDER step's re-resolution so a
+    kept net's copper is redrawn at the wider rule from the same wires."""
+    d, mesh, wires, mesh_pose = work.d, work.mesh, work.wires, work.pose
+    rules = work.rules if rules is None else rules
+    via_cur = work.via_cur if via_cur is None else via_cur
     # gr520900: the taut paths share obstacle vertices and edge
     # crossings — the spoke offsets fan coincident copper to legal
     # spacing before the plan freezes it. Legalise placements ride the
@@ -6856,7 +7410,7 @@ def _route_pass(
     # see), the placements on the flagged nets' branches are dropped
     # and emission retried — a net that recovers stays recovered, and
     # only nets still flagged after the last try are withdrawn.
-    placed = dict(leg.offsets) if leg.offsets else {}
+    placed = dict(work.placed) if work.placed else {}
     emit: Any = None
     guarded: set[int] = set()
     gbr: dict[int, set[int]] = {}
@@ -6947,9 +7501,9 @@ def _route_pass(
                 f"route: guard — {len(bad_br)} branch(es) of {len(guarded)} "
                 "net(s) withdrawn (short risk)"
             )
-    if leg.reroute:
+    if work.reroute:
         plan = dataclasses.replace(
-            plan, legalise_reroute=tuple(sorted(set(leg.reroute)))
+            plan, legalise_reroute=tuple(sorted(set(work.reroute)))
         )
     # gr537831: a net is "realized" only when its committed copper —
     # pieces, vias and the pads they must reach — is ONE connected
@@ -6976,6 +7530,47 @@ def _route_pass(
     if event is not None:
         event(f"route: emit — {len(rres.tracks)} track(s), {len(rres.vias)} via(s)")
     return plan, rres
+
+
+def _route_pass(
+    d: TopoDesign,
+    ir: Any,
+    *,
+    pose: Any = None,
+    net_rules: Mapping[str, NetRules] | None = None,
+    min_via_dia: float | None = None,
+    min_via_drill: float | None = None,
+    min_via_ring: float | None = None,
+    event: Callable[[str], None] | None = None,
+    masks: BoardMasks | None = None,
+    mesh_sink: list[Any] | None = None,
+    hv_weight: float = 0.0,
+    legalise_sink: list[np.ndarray] | None = None,
+) -> tuple[RoutePlan, Any]:
+    """One mesh → wires → plan → copper pass; :func:`route_design`'s body."""
+    work = _route_head(
+        d,
+        ir,
+        pose=pose,
+        net_rules=net_rules,
+        min_via_dia=min_via_dia,
+        min_via_drill=min_via_drill,
+        min_via_ring=min_via_ring,
+        event=event,
+        masks=masks,
+        mesh_sink=mesh_sink,
+        hv_weight=hv_weight,
+        legalise_sink=legalise_sink,
+    )
+    return _route_emit(
+        work,
+        ir,
+        min_via_dia=min_via_dia,
+        min_via_drill=min_via_drill,
+        event=event,
+        masks=masks,
+        hv_weight=hv_weight,
+    )
 
 
 def sketch_rows(
