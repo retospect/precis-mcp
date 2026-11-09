@@ -5,7 +5,10 @@ write (``meta.asserted_fingerprint``); the eye ring derives *suspect*
 lazily when the stored sha no longer matches the target's current one —
 nothing is written back onto edges when a target is edited. A reviewed
 re-link refreshes the fingerprint and records who cleared the suspect
-state (``suspect_cleared_by`` / ``suspect_cleared_at``).
+state (``suspect_cleared_by`` / ``suspect_cleared_at``). An automatic
+mention-sync re-add is not a re-link: it passes ``preserve_fingerprint``
+and leaves a stored fingerprint — and the suspect flag it proves —
+untouched.
 """
 
 from __future__ import annotations
@@ -14,9 +17,16 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.handlers.memory import MemoryHandler
 from precis.store.types import ChunkInsert, Tag
 from precis.utils import handle_registry
 from precis.utils.eye_render import render_eye
+from tests.conftest import id_of
+
+
+@pytest.fixture
+def handler(hub: Hub) -> MemoryHandler:
+    return MemoryHandler(hub=hub)
 
 
 def _mem(store, title: str) -> int:
@@ -124,6 +134,83 @@ def test_relink_without_drift_records_no_clear(hub: Hub) -> None:
     link = store.add_link(src_ref_id=src, dst_ref_id=dst)
     assert "suspect_cleared_by" not in link.meta
     assert "suspect_cleared_at" not in link.meta
+
+
+def test_mention_sync_preserves_a_suspect_manual_edge(
+    handler: MemoryHandler, hub: Hub
+) -> None:
+    """An automatic mention sync is not a reviewed re-link: re-adding a
+    still-named target must leave the stored fingerprint — and the
+    suspect flag it proves — untouched, and stamp no clear."""
+    store = hub.live_store
+    target = _mem(store, "evidence note")
+    source = id_of(handler.put(text="Original note", title="source").body)
+    handler.link(id=source, target=f"memory:{target}", rel="related-to")
+    [before] = store.links_for(source, direction="out")
+    stored_sha = before.meta["asserted_fingerprint"]
+    _add_body_chunk(store, target, "the ruling moved")
+
+    handler.edit(id=source, mode="append", text=f" memory:{target}")
+
+    [link] = store.links_for(source, direction="out")
+    assert link.id == before.id
+    assert link.meta["asserted_fingerprint"] == stored_sha
+    assert link.meta["asserted_fingerprint"] != store.target_sha("ref", target)
+    assert "suspect_cleared_by" not in link.meta
+    assert "suspect_cleared_at" not in link.meta
+    assert "auto" not in link.meta
+    eye = render_eye(
+        store, handle_registry.format_handle("memory", source), "fisheye+1hop"
+    )
+    assert "· suspect" in eye
+
+
+def test_mention_sync_keeps_a_retained_auto_edge_suspect(
+    handler: MemoryHandler, hub: Hub
+) -> None:
+    """A still-mentioned auto edge must survive the edit's sync — the old
+    remove+re-add minted a fresh row whose write-time sha silently
+    cleared the suspect flag with no provenance at all."""
+    store = hub.live_store
+    target = _mem(store, "evidence note")
+    source = id_of(handler.put(text=f"Evidence memory:{target}", title="s").body)
+    [before] = store.links_for(source, direction="out")
+    assert before.meta["auto"] == "mention"
+    stored_sha = before.meta["asserted_fingerprint"]
+    _add_body_chunk(store, target, "the ruling moved")
+
+    handler.edit(id=source, mode="find-replace", find="Evidence", text="Condensed")
+
+    [link] = store.links_for(source, direction="out")
+    assert link.id == before.id
+    assert link.meta == {"auto": "mention", "asserted_fingerprint": stored_sha}
+    eye = render_eye(
+        store, handle_registry.format_handle("memory", source), "fisheye+1hop"
+    )
+    assert "· suspect" in eye
+
+
+def test_reviewed_relink_after_sync_still_clears(
+    handler: MemoryHandler, hub: Hub
+) -> None:
+    """The flip side: a deliberate ``link`` call is still the reviewed
+    re-link — it refreshes the fingerprint and records the clear even
+    after automatic syncs have re-run over the drifted edge."""
+    store = hub.live_store
+    target = _mem(store, "evidence note")
+    source = id_of(handler.put(text=f"Evidence memory:{target}", title="s").body)
+    _add_body_chunk(store, target, "the ruling moved")
+    handler.edit(id=source, mode="find-replace", find="Evidence", text="Condensed")
+
+    handler.link(id=source, target=f"memory:{target}", rel="related-to")
+
+    [link] = store.links_for(source, direction="out")
+    assert link.meta["asserted_fingerprint"] == store.target_sha("ref", target)
+    assert link.meta["suspect_cleared_by"] == "agent"
+    eye = render_eye(
+        store, handle_registry.format_handle("memory", source), "fisheye+1hop"
+    )
+    assert "· suspect" not in eye
 
 
 def test_hub_contains_row_marks_suspect(hub: Hub) -> None:

@@ -3,7 +3,9 @@
 The sync hands this collector the links it selects for removal and the links
 returned by successful additions. Preview uses the same selection and resolver,
 without minting parts, queuing jobs or writing links. Retained mention edges
-are removed and recreated internally, but are not graph changes in a receipt.
+keep their row (and its ``asserted_fingerprint``) — an edge the rewritten
+text still names is not a graph change, not even a remove+re-add the receipt
+could hide.
 Context-local collection keeps handler instances safe for concurrent requests;
 a retry replaces its prior attempt's collector. Rendering lives here so memory
 authoring lanes need only a decorator and a preview hook in the handler.
@@ -11,7 +13,7 @@ authoring lanes need only a decorator and a preview hook in the handler.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from functools import wraps
@@ -95,6 +97,21 @@ class MentionSync:
             self.store, text, exclude_ref_id=self.ref_id
         )
 
+    def unmentioned_removals(self, targets: Iterable[LinkTarget]) -> list[Link]:
+        """Removal candidates whose target the text no longer names.
+
+        A still-named edge must survive the sync untouched: deleting and
+        re-inserting its row would stamp a fresh ``asserted_fingerprint``
+        and silently clear the suspect flag with no reviewed re-link
+        (gr568170). Only an auto edge the text dropped is removed.
+        """
+        kept = {(t.dst_ref_id, t.dst_pos) for t in targets}
+        return [
+            link
+            for link in self.removals
+            if (link.dst_ref_id, link.dst_ord) not in kept
+        ]
+
     def removed(self, link: Link) -> None:
         self.after.pop(Edge.from_link(link).key, None)
 
@@ -116,9 +133,10 @@ class MentionSync:
                     f"Mention preview: part:{lcsc} has no live ref; apply may mint "
                     "it and add a generated related-to edge."
                 )
-        for link in self.removals:
+        targets = self.resolve(text)
+        for link in self.unmentioned_removals(targets):
             self.removed(link)
-        for target in self.resolve(text):
+        for target in targets:
             machine_writer = _machine_write_context() is not None
             if target.dst_pos is not None or machine_writer:
                 try:

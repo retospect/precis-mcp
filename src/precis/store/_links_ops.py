@@ -1084,6 +1084,7 @@ class LinksMixin:
         set_by: ActorSlug = "agent",
         meta: dict[str, Any] | None = None,
         merge_meta: bool = False,
+        preserve_fingerprint: bool = False,
         conn: Connection | None = None,
     ) -> Link:
         """Insert a link row, idempotent on the unique tuple.
@@ -1134,6 +1135,13 @@ class LinksMixin:
         the reviewed clear under ``suspect_cleared_by`` /
         ``suspect_cleared_at``. These keys are store-stamped only — a
         caller-supplied one is refused above.
+
+        ``preserve_fingerprint=True`` marks the write as automatic
+        synchronisation, not a reviewed re-link (the mention sync's
+        re-add of a still-named target): the conflict path then leaves
+        a stored fingerprint — and the suspect state it carries —
+        untouched instead of refreshing it and stamping a clear nobody
+        reviewed. A fresh INSERT still stamps the write-time sha.
         """
 
         if relation == "rejects":
@@ -1279,7 +1287,7 @@ class LinksMixin:
                 ins_meta[ASSERTED_FINGERPRINT_META] = asserted_sha
 
             extra_params: tuple[Any, ...] = ()
-            if asserted_sha is not None:
+            if asserted_sha is not None and not preserve_fingerprint:
                 # A re-link always refreshes the stored sha; caller meta
                 # merges only under ``merge_meta`` (unchanged semantics).
                 # When the stored sha had drifted the edge was suspect and
@@ -1301,10 +1309,18 @@ class LinksMixin:
                     set_by,
                     datetime.now(UTC).isoformat(),
                 )
+            elif merge_meta:
+                meta_clause = ", meta = links.meta || EXCLUDED.meta"
+                if preserve_fingerprint:
+                    # ``EXCLUDED.meta`` carries the fresh stamp for the
+                    # INSERT path; the merge must not let it move a
+                    # stored fingerprint either.
+                    meta_clause = (
+                        ", meta = links.meta || (EXCLUDED.meta - "
+                        f"'{ASSERTED_FINGERPRINT_META}')"
+                    )
             else:
-                meta_clause = (
-                    ", meta = links.meta || EXCLUDED.meta" if merge_meta else ""
-                )
+                meta_clause = ""
             sql = (
                 "INSERT INTO links "
                 "  (src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, "

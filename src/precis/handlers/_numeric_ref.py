@@ -3791,28 +3791,20 @@ class NumericRefHandler(Handler):
         resolution failure must never roll back the note write, so the
         whole pass is wrapped and only ever logs.
 
-        ``replace=True`` (the edit path) first drops the previous
-        auto-mention links (those carrying ``meta={'auto': 'mention'}``)
-        so a handle removed from the body loses its link; hand-added
-        ``related-to`` links are left untouched. Returns how many
-        explicit part mentions deferred past this write's facts cap —
-        the caller folds it into its reply note.
+        ``replace=True`` (the edit path) drops the previous auto-mention
+        links (those carrying ``meta={'auto': 'mention'}``) the rewritten
+        text no longer names, so a handle removed from the body loses its
+        link; a still-named edge keeps its row and its stored
+        ``asserted_fingerprint`` — only a reviewed re-link may refresh
+        that (gr568170). Hand-added ``related-to`` links are left
+        untouched. Returns how many explicit part mentions deferred past
+        this write's facts cap — the caller folds it into its reply note.
         """
         from precis.handlers._memory_link_receipt import MentionSync
         from precis.utils import mentions
 
         try:
             sync = MentionSync(self.store, ref_id, replace_links=replace)
-            for link in sync.removals:
-                removed = self.store.remove_link(
-                    src_ref_id=ref_id,
-                    dst_ref_id=link.dst_ref_id,
-                    dst_pos=link.dst_ord,
-                    relation="related-to",
-                    conn=conn,
-                )
-                if removed:
-                    sync.removed(link)
             # Mint the lazy part ref for every C-number the text names so
             # the resolve pass below can see it (the resolver itself never
             # mints — its read-side users stay pure). An uncatalogued
@@ -3828,7 +3820,18 @@ class NumericRefHandler(Handler):
                         mint_part(lcsc)
                     except NotFound:
                         continue
-            for tgt in sync.resolve(text):
+            targets = sync.resolve(text)
+            for link in sync.unmentioned_removals(targets):
+                removed = self.store.remove_link(
+                    src_ref_id=ref_id,
+                    dst_ref_id=link.dst_ref_id,
+                    dst_pos=link.dst_ord,
+                    relation="related-to",
+                    conn=conn,
+                )
+                if removed:
+                    sync.removed(link)
+            for tgt in targets:
                 added_link = self.store.add_link(
                     src_ref_id=ref_id,
                     dst_ref_id=tgt.dst_ref_id,
@@ -3836,6 +3839,7 @@ class NumericRefHandler(Handler):
                     relation="related-to",
                     set_by="agent",
                     meta={"auto": "mention"},
+                    preserve_fingerprint=True,
                     conn=conn,
                 )
                 if sync.collecting:

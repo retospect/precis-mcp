@@ -2672,8 +2672,9 @@ class MemoryHandler(NumericRefHandler):
                 if meta_patch or applied_title is not None:
                     self.store.chunks.sync_header_card(ref_id, conn=conn)
                 # Re-sync auto-mention links to the rewritten body: drop the
-                # old auto links, add the current ones. Hand-added links
-                # survive.
+                # auto links the text no longer names, add the new mentions.
+                # A still-named edge keeps its row and fingerprint;
+                # hand-added links survive.
                 deferred = self._sync_mention_links(
                     ref_id, new_text, conn=conn, replace=True
                 )
