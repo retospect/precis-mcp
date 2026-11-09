@@ -267,14 +267,16 @@ def test_every_hold_tag_excludes(store: Store, two_lanes: Any, tag: str) -> None
     assert (res.claimed, res.ok) == (0, 0)
 
 
-def test_closed_chain_frees_its_slot_but_its_gripe_stays_out(
+def test_closed_chain_frees_its_slot_and_its_gripe_reenters(
     store: Store, two_lanes: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """gr609044: a chain that closed (done / won't-do) is dead work —
+    its gripe re-enters the lane instead of staying linked forever."""
     codex, _sub = two_lanes
     use_lanes(monkeypatch, codex)  # capacity 1
     _light(store)
     a = _gripe(store, "a", prio=1)
-    b = _gripe(store, "b", prio=2)
+    b = _gripe(store, "b", prio=5)
     assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 1
     [root] = _roots_for(store, a)
     assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 0  # full
@@ -282,10 +284,46 @@ def test_closed_chain_frees_its_slot_but_its_gripe_stays_out(
         root, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
     )
     assert gd.open_chain_count(store) == 0
+    assert a in {c.gripe_id for c in gd.candidates(store, 10)}
     res = gd.run_gripe_dispatch_pass(store, host="h1")
-    assert res.ok == 1 and _roots_for(store, b)
-    # a still has its (closed) chain linked: not re-minted
-    assert _roots_for(store, a) == [root]
+    # a's closed chain no longer blocks it; a outscores b (prio 1 over
+    # 5), so the one free slot re-mints a second chain for a
+    assert res.ok == 1 and len(_roots_for(store, a)) == 2
+    assert _roots_for(store, b) == []
+
+
+def test_linked_todo_terminal_status_frees_the_gripe(
+    store: Store, two_lanes: Any
+) -> None:
+    """gr609044: a ``related-to`` todo whose STATUS is terminal (done,
+    won't-do, auto-timeout) no longer holds its gripe out; one that is
+    open/doing/blocked — or carries no STATUS — still does."""
+    from precis.todo import TERMINAL_TODO_STATUSES
+
+    cases = [
+        ("done", "done"),
+        ("wontdo", "won't-do"),
+        ("timeout", "auto-timeout"),
+        ("open", "open"),
+        ("doing", "doing"),
+        ("blocked", "blocked"),
+        ("nostatus", None),
+    ]
+    freed: list[int] = []
+    held: list[int] = []
+    for title, status in cases:
+        gid = _gripe(store, f"linked {title}", prio=5)
+        todo = store.insert_ref(kind="todo", slug=None, title=f"work for {gid}")
+        if status is not None:
+            store.add_tag(todo.id, Tag.closed("STATUS", status), set_by="agent")
+        store.add_link(src_ref_id=todo.id, dst_ref_id=gid, relation="related-to")
+        (freed if status in TERMINAL_TODO_STATUSES else held).append(gid)
+    unlinked = _gripe(store, "unlinked", prio=5)
+    picks = {c.gripe_id for c in gd.candidates(store, 10)}
+    for gid in freed + [unlinked]:
+        assert gid in picks
+    for gid in held:
+        assert gid not in picks
 
 
 def test_hand_minted_chain_counts(store: Store, two_lanes: Any) -> None:

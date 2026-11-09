@@ -27,7 +27,9 @@ Each fire:
 * **Candidates** (:func:`candidates`): live gripes, STATUS ``open`` or
   ``triaged``, tagged ``fix:code``, older than :data:`_MIN_AGE_MINUTES`
   (the dedup and triage passes get their turn first), with no live todo
-  ``related-to`` them (a chain, hand-minted or ours, already exists), none
+  ``related-to`` them (a chain, hand-minted or ours, already exists — a
+  linked todo carrying a terminal STATUS is closed work and no longer
+  holds the gripe out, gr609044), none
   of the hold tags (``fix:reto``, ``reto:ask``, ``disagreement``,
   ``flood``, ``hold:no-dispatch``, ``hold:no-autoclose``,
   ``rescue:intake``), and **filed by a Claude Code client or a human
@@ -235,7 +237,12 @@ def candidates(store: Store, limit: int) -> list[DispatchPick]:
                               AND h.value = ANY(%s))
            AND NOT EXISTS (SELECT 1 FROM links l JOIN refs t ON t.ref_id = l.src_ref_id
                             WHERE l.dst_ref_id = r.ref_id AND l.relation = 'related-to'
-                              AND t.kind = 'todo' AND t.retired_at IS NULL)
+                              AND t.kind = 'todo' AND t.retired_at IS NULL
+                              AND NOT EXISTS (SELECT 1 FROM ref_tags lt
+                                                JOIN tags ls ON ls.tag_id = lt.tag_id
+                                               WHERE lt.ref_id = t.ref_id
+                                                 AND ls.namespace = 'STATUS'
+                                                 AND ls.value = ANY(%s)))
          ORDER BY {_dscore.score_sql()} DESC, r.created_at, r.ref_id
          LIMIT %s
     """
@@ -249,6 +256,7 @@ def candidates(store: Store, limit: int) -> list[DispatchPick]:
                 _HUMAN_ACTOR_PREFIX + "%",
                 _CI_WATCH_PRINCIPAL,
                 list(HOLD_TAGS),
+                sorted(TERMINAL_TODO_STATUSES),
                 limit,
             ),
         ).fetchall()
