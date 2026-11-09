@@ -46,6 +46,11 @@ the PRODUCING JOB (``LlmRequest.source``: ``dream``, ``plan_tick``, …) from
 ``PRECIS_CURRENT_SOURCE``, never the model tier; a containerized
 ``claude -p`` gets both vars via ``agent_container.RUN_CONTEXT_ENV_KEYS``.
 
+``result_bytes`` (the UTF-8 byte count of the response text) is also on the
+plain-text ``mcp_call`` log line as ``response_bytes``, next to
+``response_tokens_est`` (``response_bytes // 4``) — counts only, never
+content (memory-ablation-bench slice 1).
+
 Operational, **not corpus** — never embedded (peer to
 :mod:`precis.route_log` / :mod:`precis.agentlog` / alerts).
 

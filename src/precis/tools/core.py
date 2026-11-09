@@ -112,12 +112,29 @@ _TOOL_CALL_LOGGER = logging.getLogger("precis.tools.mcp_calls")
 log = logging.getLogger(__name__)
 
 
+def _result_text_bytes(result: Any) -> int:
+    """UTF-8 byte length of the text a tool call returns to the client.
+
+    A plain ``str`` counts as itself; a ``CallToolResult`` sums its text
+    parts (image blocks carry no text and add nothing). A count, never
+    content — safe for the audit line and the ``tool_calls`` ledger.
+    """
+    if isinstance(result, str):
+        return len(result.encode("utf-8", errors="replace"))
+    return sum(
+        len(part.text.encode("utf-8", errors="replace"))
+        for part in getattr(result, "content", None) or []
+        if isinstance(getattr(part, "text", None), str)
+    )
+
+
 def _log_tool_call(
     *,
     verb: str,
     payload: dict[str, Any],
     duration_ms: float,
     error: bool,
+    response_bytes: int | None = None,
 ) -> None:
     """Emit one structured log line per MCP tool call.
 
@@ -142,6 +159,12 @@ def _log_tool_call(
     at WARNING also means they survive a server deployed at
     ``log_level=WARNING`` — the diagnostic surface stays alive even
     when the INFO firehose is off.
+
+    Every line also carries ``response_bytes`` (UTF-8 bytes of the text
+    returned to the client, error text included; ``-`` when unmeasured)
+    and ``response_tokens_est`` (``response_bytes // 4``, a rough token
+    count). Counts only, never content; the same byte count lands in
+    ``tool_calls.result_bytes`` (``precis.tool_ledger``).
     """
     import os
 
@@ -207,16 +230,20 @@ def _log_tool_call(
             if key not in sample and key not in ("text", "tags", "args"):
                 sample[key] = _trunc(v, 120)
 
+    tokens_est = response_bytes // 4 if response_bytes is not None else "-"
     log_at = _TOOL_CALL_LOGGER.warning if error else _TOOL_CALL_LOGGER.info
     log_at(
         "mcp_call verb=%s parent_todo=%s workspace=%s model=%s "
-        "duration_ms=%.1f error=%s payload=%s",
+        "duration_ms=%.1f error=%s response_bytes=%s "
+        "response_tokens_est=%s payload=%s",
         verb,
         parent_todo,
         workspace,
         model,
         duration_ms,
         error,
+        response_bytes if response_bytes is not None else "-",
+        tokens_est,
         sample,
     )
 
@@ -343,6 +370,7 @@ def _dispatch_as_user(
     runtime = _get_runtime()
     started = _monotonic()
     is_error = False
+    response_bytes: int | None = None
     try:
         run_ctx = _ctx_run_context(ctx, store=getattr(runtime, "store", None))
         ctxmgr: contextlib.AbstractContextManager[None]
@@ -408,11 +436,11 @@ def _dispatch_as_user(
             finally:
                 _RESPONSE_IMAGES.reset(_img_token)
         if is_error:
-            return CallToolResult(
+            result: _ToolReturn = CallToolResult(
                 content=[TextContent(type="text", text=body)],
                 isError=True,
             )
-        if images:
+        elif images:
             content: list[Any] = [TextContent(type="text", text=body)]
             content.extend(
                 ImageContent(
@@ -422,12 +450,16 @@ def _dispatch_as_user(
                 )
                 for img in images
             )
-            return CallToolResult(content=content)
-        return body
+            result = CallToolResult(content=content)
+        else:
+            result = body
+        response_bytes = _result_text_bytes(result)
+        return result
     except Exception as e:
         is_error = True
         # Handle unexpected exceptions
         error_body = runtime.render_error(e)
+        response_bytes = len(error_body.encode("utf-8", errors="replace"))
         return CallToolResult(
             content=[TextContent(type="text", text=error_body)],
             isError=True,
@@ -446,6 +478,7 @@ def _dispatch_as_user(
                 payload={} if current_principal() is not None else payload or {},
                 duration_ms=(_monotonic() - started) * 1000.0,
                 error=is_error,
+                response_bytes=response_bytes,
             )
         except Exception:
             # Logging is best-effort — never fail a tool call because
