@@ -25,7 +25,9 @@ from precis.store.types import Tag
 from precis.workers.executors._common import (
     _EXECUTOR_CAP_KEY_PREFIX,
     _RESERVE_KEY_PREFIX,
+    _executor_lane_lock_key,
     claim_executor_jobs,
+    current_status,
 )
 
 
@@ -45,18 +47,14 @@ def _factory_advertised(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def _patched(conn: Any) -> dict[str, set[str]]:
         out = real(conn)
-        out.setdefault("lane_host_a", set()).update(
-            {"repo_checkout", "claude_bin", "git"}
-        )
-        out.setdefault("lane_host_c", set()).update(
-            {"repo_checkout", "claude_bin", "git"}
-        )
-        out.setdefault("lane_host_d", set()).update(
-            {"repo_checkout", "claude_bin", "git"}
-        )
-        out.setdefault("lane_host_f", set()).update(
-            {"repo_checkout", "claude_bin", "git"}
-        )
+        for host in (
+            "lane_host_a",
+            "lane_host_c",
+            "lane_host_d",
+            "lane_host_f",
+            "lane_host_h",
+        ):
+            out.setdefault(host, set()).update({"repo_checkout", "claude_bin", "git"})
         return out
 
     monkeypatch.setattr(_common, "_advertised_by_host", _patched)
@@ -214,6 +212,50 @@ def test_app_state_cap_and_reserve_override_code_defaults(
             ),
         )
         conn.commit()
+
+
+def test_lane_count_and_claim_is_serialized_per_host(store: Store) -> None:
+    """Two concurrent claimers used to read the SAME ``running_total``
+    and each admit a row — exceeding the cap into the reserved slots.
+    A per-(executor, host) TRY advisory lock now serializes the
+    count+claim pair: while a peer holds the lane lock this pass claims
+    nothing fresh even though a shared-band slot is nominally free."""
+    host = "lane_host_g2"
+    _fill_running(store, host, "autocatpath_seed", 5)
+    compute = _job(store, job_type="demo_compute")
+    holder = store.pool.getconn()
+    try:
+        holder.execute("BEGIN")
+        holder.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s)::bigint)",
+            (_executor_lane_lock_key("ssh_node", host),),
+        )
+        assert _claim(store, host, limit=10) == []
+        holder.execute("COMMIT")
+    finally:
+        store.pool.putconn(holder)
+    # Lock released — the free shared slot claims normally.
+    assert _claim(store, host, limit=10) == [compute]
+
+
+def test_reservation_blocked_types_do_not_fill_the_claim_window(
+    store: Store, _factory_advertised: None
+) -> None:
+    """ssh_node's default ``limit=1`` fetches ``limit × overfetch`` = 3
+    candidates. Three reservation-blocked computes queued ahead of a
+    ``run_slice`` used to fill the whole window: the pick loop skipped
+    all three and the factory job was never even fetched, so its
+    reserved slot sat free pass after pass. Blocked types are now
+    excluded in SQL before the LIMIT."""
+    host = "lane_host_h"
+    _fill_running(store, host, "autocatpath_seed", 6)  # shared band full
+    blocked = [_job(store, job_type="demo_compute") for _ in range(3)]
+    run = _job(store, job_type="run_slice")  # queued behind the blocked rows
+    assert _claim(store, host, limit=1) == [run]
+    # The blocked rows were deferred, not consumed — still queued.
+    with store.pool.connection() as conn:
+        for rid in blocked:
+            assert current_status(conn, rid) == "queued"
 
 
 def test_cap_zero_suspends_executor_claims(store: Store) -> None:

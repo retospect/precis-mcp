@@ -208,6 +208,14 @@ _EXECUTOR_RESERVE_DEFAULTS: dict[str, dict[str, int]] = {
 }
 _RESERVE_KEY_PREFIX = "claim.reserve."
 
+
+def _executor_lane_lock_key(executor: str, host: str) -> str:
+    """Advisory-lock key serializing one executor lane's count+claim on
+    one host (gr603792 review): the per-type caps lock on
+    ``claim-cap:<job_type>`` — the executor cap locks on this."""
+    return f"claim-exec-cap:{executor}:{host}"
+
+
 # ── Job slicing (docs/backlog/relax-slices.md) ────────────────────────
 #: Feature flag — OFF by default until r91 shows a real checkpoint
 #: resume on prod. Enabled per lane by env OR ``app_state``
@@ -1407,7 +1415,15 @@ def claim_executor_jobs(
     queue therefore can never hold every executor slot against a factory
     op, and the factory allotment is small enough that the science class
     keeps its band. Reclaims of already-running rows are unaffected —
-    they continue a running row, they don't take a fresh slot.
+    they continue a running row, they don't take a fresh slot. The
+    count+claim pair is serialized per ``(executor, lease_host)`` by a
+    ``pg_try_advisory_xact_lock`` — the loser skips fresh claims for the
+    pass (same rule as the per-type caps) instead of reading the same
+    occupancy and over-claiming into the reserved slots. Types already
+    blocked by the reservation at count time are excluded from the
+    candidate query itself, so a blocked backlog can't fill the
+    ``limit × _CLAIM_OVERFETCH`` window and hide a reserved-class job
+    queued behind it (ssh_node's ``limit=1`` fetches three candidates).
 
     **Node gate (the structure atomistic IR #3).** A job may pin itself to a node via
     ``meta.params.target_node`` (``struct_relax`` sets it so the GPU
@@ -1854,6 +1870,8 @@ def claim_executor_jobs(
     # melchior's lanes for 15+ min per turnover).
     cap_sql = ""
     cap_params: tuple[Any, ...] = ()
+    reserve_block_sql = ""
+    reserve_block_params: tuple[Any, ...] = ()
     caps: dict[str, int] = {}
     running_by_type: dict[str, int] = {}
     running_by_share: dict[str, int] = {}
@@ -1866,6 +1884,21 @@ def claim_executor_jobs(
         caps = job_type_running_caps(conn)
         executor_cap, executor_reserve = executor_lane_limits(conn, executor)
         reserve_total = sum(executor_reserve.values())
+        if executor_cap is not None:
+            # Serialize this lane's count+claim (td604572 review of
+            # gr603792): the per-type caps lock per job_type below, but
+            # the executor pool's own count-and-claim pair raced — two
+            # concurrent claimers read the same ``running_total`` and
+            # each admitted a row, so the cap was exceeded into the
+            # reserved slots. Same TRY-lock rule as the per-type caps:
+            # the loser treats the lane as contested and its fresh work
+            # re-gates next cycle.
+            held = conn.execute(
+                "SELECT pg_try_advisory_xact_lock(hashtext(%s)::bigint)",
+                (_executor_lane_lock_key(executor, claim_host),),
+            ).fetchone()
+            if not (held and held[0]):
+                return claimed
         contested: set[str] = set()
         for jt in sorted(caps):
             held = conn.execute(
@@ -1894,6 +1927,10 @@ def claim_executor_jobs(
             running_by_type[jt_s] = running_by_type.get(jt_s, 0) + int(cnt)
             running_by_share[_share_key_of(jt_s, ps)] = int(cnt)
         running_total = sum(running_by_type.values())
+        if executor_cap is not None and running_total >= executor_cap:
+            # Lane already full under the lane lock — no fresh claim can
+            # pass this cycle, so the candidate query is skipped too.
+            return claimed
         at_cap = sorted(
             jt
             for jt, cap in caps.items()
@@ -1902,6 +1939,36 @@ def claim_executor_jobs(
         if at_cap:
             cap_sql = " AND COALESCE(r.meta->>'job_type', '') <> ALL(%s)"
             cap_params = (at_cap,)
+        if executor_cap is not None:
+            # Reservation-blocked types are excluded BEFORE the LIMIT
+            # (td604572 review): the window below is only
+            # ``fresh_limit × _CLAIM_OVERFETCH`` rows — ssh_node's
+            # ``limit=1`` fetched three, so three blocked computes ahead
+            # of a factory job hid it every pass while its reserved slot
+            # sat free. Once the shared band fills (``running_total >=
+            # cap - reserve_total``) only the reserved set can still
+            # claim — expressible in SQL as "job_type IS one of the
+            # reserved set"; a reserved type blocks once its own
+            # allotment is used and only peers' slots remain. The
+            # pick-loop check below stays — it re-fires as this pass's
+            # own claims fill the band.
+            reserve_clauses: list[str] = []
+            if running_total >= executor_cap - reserve_total:
+                reserve_clauses.append("COALESCE(r.meta->>'job_type', '') = ANY(%s)")
+                reserve_block_params += (sorted(executor_reserve),)
+            blocked_reserved = sorted(
+                jt
+                for jt, n in executor_reserve.items()
+                if running_by_type.get(jt, 0) >= n
+                and running_total >= executor_cap - (reserve_total - n)
+            )
+            if blocked_reserved:
+                reserve_clauses.append("COALESCE(r.meta->>'job_type', '') <> ALL(%s)")
+                reserve_block_params += (blocked_reserved,)
+            if reserve_clauses:
+                reserve_block_sql = " AND " + " AND ".join(
+                    f"({c})" for c in reserve_clauses
+                )
 
     # ── Fresh-work pass (unchanged ordering/semantics) ──────────────────
     # ``q.qs`` (the queued-tag's stamp) and ``b.age_s``/``b.base_class``
@@ -2006,7 +2073,7 @@ def claim_executor_jobs(
                   WHERE rt.ref_id = r.ref_id
                     AND t.namespace = %s
                     AND t.value = ANY(%s)
-               ){exclusion_sql}{parent_sql}{suspend_sql}{cap_sql}
+               ){exclusion_sql}{parent_sql}{suspend_sql}{cap_sql}{reserve_block_sql}
          ORDER BY claim_rank ASC, {share_order_sql}aged_prio ASC,
                   q.qs ASC, r.ref_id ASC
          LIMIT %s
@@ -2033,6 +2100,7 @@ def claim_executor_jobs(
             *parent_params,
             *suspend_params,
             *cap_params,
+            *reserve_block_params,
             fresh_limit * _CLAIM_OVERFETCH,
         ),
     ).fetchall()
