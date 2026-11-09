@@ -139,7 +139,11 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    :data:`DEFAULT_ACU_USD`), ``_escalate`` skips the rung like a
    backed-off lane, the retry-cap ladder loses it too, and an
    all-blocked tail caps the node with ``meta.spend = {usd, cap_usd,
-   blocked, at}`` stamped; the rescue step names the cap. An uncapped
+   blocked, at}`` stamped; the rescue step names the cap. A climb ONTO
+   a capped rung mints the job with ``params.budget_usd`` — the cap
+   minus recorded spend — and ``run_slice`` kills the session once its
+   live usage meets the bound, so an attempt starting under the cap
+   cannot run past it (td601015). An uncapped
    rung is never spend-blocked. What
    parks it follows the failure: a failed job stamped ``no_commit``
    (a clean exit that wrote nothing — no rung teaches that) or an
@@ -2539,7 +2543,9 @@ def _escalate(
     tail was already caught by :func:`_spend_hit`'s cap, so a pick that
     runs out here means a backed-off lane shares the tail — the note
     names both. A climb onto a capped rung stamps ``meta.spend`` so the
-    node carries its spend record (``blocked: False`` = headroom left).
+    node carries its spend record (``blocked: False`` = headroom left)
+    and mints the job with ``params.budget_usd`` = the remaining
+    allowance — the bound ``run_slice`` enforces mid-run (td601015).
 
     Returns ``(go, note)``: ``go=False`` parks the node this tick — no
     job is minted — and ``note`` is the action line for the summary.
@@ -2613,6 +2619,10 @@ def _escalate(
                 }
             },
         )
+        # The remaining allowance rides the minted job: ``run_slice``
+        # kills the session once its live usage meets it, so an attempt
+        # that started under the cap cannot run past it (td601015).
+        params["budget_usd"] = round(cap_usd - spend, 4)
     params["lane"] = target.lane
     if target.model is not None:
         params["model"] = target.model

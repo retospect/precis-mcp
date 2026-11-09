@@ -36,11 +36,13 @@ terms forbid tampering (td573681; autonomous lane sanctioned
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 PERMISSION_MODE = "bypassPermissions"
 _DENY_TOOLS: tuple[str, ...] = ("Edit", "Write", "MultiEdit", "NotebookEdit")
@@ -172,6 +174,188 @@ def parse_kimi_result(
     return text, exit_code != 0
 
 
+def _num(v: Any) -> float | None:
+    """``float(v)`` for a finite number, else ``None`` — a bool or a
+    non-number never counts toward usage."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    return f if math.isfinite(f) else None
+
+
+def _dim_value(dim: Any) -> tuple[str, float] | None:
+    """``(label, value)`` of a Devin response dimension — the
+    ``/session-stats`` shape a step's ``extra.response_dimensions``
+    carries: ``{uid, group_title, kind: {CumulativeMetric|Metric:
+    {label, value}}}``. Values are cumulative, so a caller takes the
+    max, never a sum."""
+    if not isinstance(dim, dict):
+        return None
+    kind = dim.get("kind")
+    body = (
+        kind.get("CumulativeMetric") or kind.get("Metric")
+        if isinstance(kind, dict)
+        else None
+    )
+    if not isinstance(body, dict):
+        return None
+    v = _num(body.get("value"))
+    if v is None:
+        return None
+    return str(dim.get("uid") or body.get("label") or "").lower(), v
+
+
+def devin_atif_usage(path: Path | None) -> dict[str, Any] | None:
+    """``meta.usage`` for a ``devin --export`` ATIF file (gr599486
+    follow-up): the ``final_metrics`` token totals and — where the plan
+    reports cost — ``total_cost_usd``, per-step ``metrics.cost_usd``,
+    ``committed_acu_cost``/``committed_credit_cost``, and
+    ``extra.response_dimensions`` acu/credit/usd entries. ``None`` when
+    no ATIF document reads — the spend cap then sees zero, as before."""
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not str(
+        data.get("schema_version") or ""
+    ).startswith("ATIF-"):
+        return None
+    raw_fm = data.get("final_metrics")
+    fm = raw_fm if isinstance(raw_fm, dict) else {}
+    usage: dict[str, Any] = {}
+    for src, dst in (
+        ("total_prompt_tokens", "input_tokens"),
+        ("total_completion_tokens", "output_tokens"),
+        ("total_cached_tokens", "cached_tokens"),
+        ("total_steps", "steps"),
+    ):
+        v = _num(fm.get(src))
+        if v is not None:
+            usage[dst] = v
+    usd_total = _num(fm.get("total_cost_usd"))
+    acus_total = _num(fm.get("acus_consumed"))
+    if acus_total is None:
+        acus_total = _num(fm.get("committed_acu_cost"))
+    credits_total = _num(fm.get("committed_credit_cost"))
+    acus_committed = 0.0
+    credit_committed = 0.0
+    steps = data.get("steps")
+    for step in steps if isinstance(steps, list) else ():
+        if not isinstance(step, dict):
+            continue
+        metrics = step.get("metrics")
+        if isinstance(metrics, dict):
+            v = _num(metrics.get("cost_usd"))
+            if v is not None:
+                usage["cost_usd"] = round(usage.get("cost_usd", 0.0) + v, 6)
+        extra = step.get("extra")
+        if not isinstance(extra, dict):
+            continue
+        v = _num(extra.get("committed_acu_cost"))
+        if v is not None:
+            acus_committed += v
+        v = _num(extra.get("committed_credit_cost"))
+        if v is not None:
+            credit_committed += v
+        dims = extra.get("response_dimensions")
+        for dim in dims if isinstance(dims, list) else ():
+            dv = _dim_value(dim)
+            if dv is None:
+                continue
+            label, value = dv
+            if "acu" in label:
+                usage["acus_consumed"] = max(usage.get("acus_consumed", 0.0), value)
+            elif "credit" in label:
+                usage["credit_cost"] = max(usage.get("credit_cost", 0.0), value)
+            elif "usd" in label or "cost" in label:
+                usage["cost_usd"] = max(usage.get("cost_usd", 0.0), value)
+    # Per-message committed sums and cumulative dims overlap — keep the
+    # larger of either reading, never both.
+    if acus_committed > 0:
+        usage["acus_consumed"] = max(usage.get("acus_consumed", 0.0), acus_committed)
+    if credit_committed > 0:
+        usage["credit_cost"] = max(usage.get("credit_cost", 0.0), credit_committed)
+    if usd_total is not None:
+        usage["cost_usd"] = max(usage.get("cost_usd", 0.0), usd_total)
+    if acus_total is not None:
+        usage["acus_consumed"] = max(usage.get("acus_consumed", 0.0), acus_total)
+    if credits_total is not None:
+        usage["credit_cost"] = max(usage.get("credit_cost", 0.0), credits_total)
+    if not usage:
+        return None
+    session = data.get("session_id")
+    if session:
+        usage["session_id"] = str(session)
+    agent = data.get("agent")
+    if isinstance(agent, dict) and agent.get("model_name"):
+        usage["model"] = str(agent["model_name"])
+    return usage
+
+
+def _claude_usage(log_text: str) -> dict[str, Any] | None:
+    """``meta.usage`` from the claude ``--output-format json`` result
+    envelope — ``total_cost_usd`` plus the ``usage`` token counts and
+    ``num_turns``/``duration_ms`` it reports."""
+    for line in reversed(log_text.strip().splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict) or "result" not in obj:
+            continue
+        usage: dict[str, Any] = {}
+        v = _num(obj.get("total_cost_usd"))
+        if v is not None:
+            usage["cost_usd"] = v
+        inner = obj.get("usage")
+        if isinstance(inner, dict):
+            for key in (
+                "input_tokens",
+                "output_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+            ):
+                v = _num(inner.get(key))
+                if v is not None:
+                    usage[key] = v
+        for key in ("num_turns", "duration_ms"):
+            v = _num(obj.get(key))
+            if v is not None:
+                usage[key] = v
+        return usage or None
+    return None
+
+
+def _codex_usage(log_text: str) -> dict[str, Any] | None:
+    """``meta.usage`` from codex's ``turn.completed`` usage line —
+    token counts only; the subscription reports no USD."""
+    for line in reversed(log_text.strip().splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict) or ev.get("type") != "turn.completed":
+            continue
+        inner = ev.get("usage")
+        if not isinstance(inner, dict):
+            return None
+        usage = {
+            k: v
+            for k in ("input_tokens", "cached_input_tokens", "output_tokens")
+            if (v := _num(inner.get(k))) is not None
+        }
+        return usage or None
+    return None
+
+
 @dataclass(frozen=True)
 class Adapter:
     """One vendor's launch/output protocol; ``models`` in ``argv`` is the
@@ -197,6 +381,7 @@ class Adapter:
         models: tuple[str, ...] = (),
         writable_roots: tuple[Path, ...] = (),
         read_mcp_url: str | None = None,
+        export_path: Path | None = None,
     ) -> list[str]:
         """Build argv; effort remains the worker's exported metadata.
         ``writable_roots`` are the sandbox's ``--add-dir`` grants (codex
@@ -205,7 +390,8 @@ class Adapter:
         takes it as ``-c`` dotted overrides (``codex exec -c
         mcp_servers.<name>.url=…``); devin's server entry lives in the
         per-tree config file ``run_slice._devin_mcp_config`` writes, not
-        argv."""
+        argv. ``export_path`` is the ATIF file ``devin --export`` keeps
+        refreshed each turn — the poll reads ``meta.usage`` from it."""
         if self.name == "claude_p":
             argv = [
                 claude_bin(),
@@ -263,6 +449,10 @@ class Adapter:
             ]
             if model is not None:
                 argv += ["--model", model]
+            if export_path is not None:
+                # ATIF-v1.7, refreshed after each turn — the usage the
+                # poll stamps on meta.usage (gr599486 follow-up).
+                argv += ["--export", str(export_path)]
             return argv
         if self.name == "kimi_tree":
             # The prompt rides argv, not stdin (``kimi -p``). The model
@@ -318,6 +508,24 @@ class Adapter:
                         return text, False
             return None, True
         raise KeyError(self.name)
+
+    def usage(
+        self, log_text: str, tree: Path, *, export_path: Path | None = None
+    ) -> dict[str, Any] | None:
+        """The vendor's reported usage for ``meta.usage`` (gr599486
+        follow-up): devin's ATIF ``--export`` file — live, refreshed
+        after each turn — claude's result-envelope ``total_cost_usd`` +
+        ``usage``, codex's ``turn.completed`` token counts. ``None``
+        where the vendor reports nothing — the spend cap reads
+        ``cost_usd``/``acus_consumed``/``on_demand_usd`` only."""
+        del tree
+        if self.name == "devin_tree":
+            return devin_atif_usage(export_path)
+        if self.name == "claude_p":
+            return _claude_usage(log_text)
+        if self.name == "codex_exec":
+            return _codex_usage(log_text)
+        return None
 
 
 ADAPTERS: dict[str, Adapter] = {

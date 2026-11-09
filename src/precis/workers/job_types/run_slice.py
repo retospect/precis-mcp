@@ -49,6 +49,12 @@ that holds the lane's credentials with ``params.target_node``):
   signal 0. Legacy Darwin handles cannot use EPERM as evidence of liveness.
 * :func:`poll` waits for the exit file (or a dead pid), checks the branch
   against the lane's ``deny_write_paths`` (:func:`deny_violations`),
+  stamps the vendor's reported usage on ``meta.usage`` each pass —
+  devin's ATIF ``--export`` file, live per turn; claude's result
+  envelope; codex's ``turn.completed`` — and, for a job minted with
+  ``params.budget_usd`` (the rung's remaining allowance,
+  ``plan_dispatch._escalate``), SIGTERMs the group once live usage
+  meets the bound (td601015);
   posts the session's last message as a ``handoff:`` comment on the todo,
   records the branch state (dirty count, commits ahead of
   ``origin/main``) in the job summary. On a clean exit (0, no claude
@@ -134,6 +140,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -326,6 +333,11 @@ PARAMS_SCHEMA: dict[str, Any] = {
         # The PR head sha the intake classified (the 'land after fixes'
         # slice); the brief merges that sha. Informational for the job.
         "head_sha": {"type": "string"},
+        # The node's remaining USD allowance — plan_dispatch._escalate
+        # stamps cap minus recorded spend when climbing onto a rung_caps
+        # rung; the poll kills the session once its live usage meets it
+        # (td601015).
+        "budget_usd": {"type": "number"},
         # Shared job budget key; sizes the lease and the kill deadline.
         "resources": {
             "type": "object",
@@ -2221,6 +2233,12 @@ def submit(ctx: Any, spec: Any) -> Any:
         if adapter.name == "codex_exec":
             # A retry reuses the tree: never accept a previous run's handoff.
             (scratch / "last-message.md").unlink(missing_ok=True)
+        atif_path = None
+        if adapter.name == "devin_tree":
+            # The run's ATIF export (its usage feed); a retry reuses the
+            # ops dir, so a previous run's export never reads back.
+            atif_path = ops / "devin.atif.json"
+            atif_path.unlink(missing_ok=True)
         argv = adapter.argv(
             model=model,
             effort=effort,
@@ -2233,6 +2251,7 @@ def submit(ctx: Any, spec: Any) -> Any:
                 _codex_writable_roots(tree) if adapter.name == "codex_exec" else ()
             ),
             read_mcp_url=read_url if grant else None,
+            export_path=atif_path,
         )
         env = slice_env(
             todo_id,
@@ -2321,6 +2340,8 @@ def submit(ctx: Any, spec: Any) -> Any:
         "exit_file": str(exit_path),
         "started_at": started_at,
     }
+    if atif_path is not None:
+        handle["atif"] = str(atif_path)
     if grant:
         handle["slice_token_dir"] = grant["dir"]
         handle["slice_token_name"] = grant["name"]
@@ -2993,6 +3014,117 @@ def _park_outage(
     return False
 
 
+#: ``plan_dispatch.DEFAULT_ACU_USD``, restated — the dependency stays
+#: one-way (the same rule as ``ATTEMPT_FREE_KEY``). ACU→USD for
+#: ``meta.usage.acus_consumed`` when the lane's ``entitlement.acu_usd``
+#: names no rate.
+DEFAULT_ACU_USD = 2.0
+
+
+def _lane_acu_usd(store: Any, lane: str | None) -> float:
+    """The lane's ``entitlement.acu_usd`` rate, else
+    :data:`DEFAULT_ACU_USD`; any read failure defaults too — the budget
+    watch never takes a launch down over a config lookup."""
+    try:
+        from precis.utils.llm import accounts
+
+        for a in accounts.list_accounts(store):
+            if str(a.name) == str(lane):
+                ent = a.entitlement if isinstance(a.entitlement, dict) else {}
+                v = ent.get("acu_usd")
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    f = float(v)
+                    if math.isfinite(f) and f > 0:
+                        return f
+    except Exception:
+        pass
+    return DEFAULT_ACU_USD
+
+
+def _usage_usd(usage: dict[str, Any] | None, store: Any, lane: str | None) -> float:
+    """USD a ``meta.usage`` dict reports — the same shape
+    ``plan_dispatch._job_spend_usd`` sums: ``on_demand_usd``/
+    ``cost_usd`` direct, ``acus_consumed`` at the lane's rate."""
+    if not isinstance(usage, dict):
+        return 0.0
+    total = 0.0
+    for key in ("on_demand_usd", "cost_usd"):
+        v = usage.get(key)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            f = float(v)
+            if math.isfinite(f) and f > 0:
+                total += f
+    acus = usage.get("acus_consumed")
+    if isinstance(acus, (int, float)) and not isinstance(acus, bool):
+        f = float(acus)
+        if math.isfinite(f) and f > 0:
+            total += f * _lane_acu_usd(store, lane)
+    return total
+
+
+def _adapter_usage(
+    ctx: Any, handle: dict[str, Any], log_text: str = ""
+) -> dict[str, Any] | None:
+    """The usage the session's adapter reports, stamped onto
+    ``meta.usage`` — a live job's reported usage is real spend.
+    ``log_text`` is the session log; the live check passes ``""`` (only
+    devin's ATIF exists mid-run — every other vendor's usage lands at
+    the end)."""
+    adapter_name = str((ctx.meta or {}).get("adapter") or "")
+    try:
+        adapter = get_adapter(adapter_name)
+    except KeyError:
+        return None
+    atif = Path(handle["atif"]) if handle.get("atif") else None
+    usage = adapter.usage(
+        log_text, Path(str(handle.get("worktree") or "")), export_path=atif
+    )
+    if usage:
+        stamped = {
+            **usage,
+            "checked_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        ctx.set_meta(usage=stamped)
+        return stamped
+    return None
+
+
+def _watch_budget(ctx: Any, handle: dict[str, Any]) -> None:
+    """The remaining-allowance bound (td601015): ``params.budget_usd``
+    is the node's allowance ``plan_dispatch._escalate`` left after
+    recorded spend — SIGTERM the session once its live usage meets it,
+    so a job minted under the cap cannot run past it. The kill rides
+    the handle as ``budget_kill``; the dead-process path then fails the
+    attempt naming the bound. No live usage channel (a vendor reporting
+    no spend, or none yet) means the bound simply cannot trip."""
+    if handle.get("budget_kill"):
+        return
+    params = (ctx.meta or {}).get("params") or {}
+    raw = params.get("budget_usd")
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        return
+    budget = float(raw)
+    if not math.isfinite(budget) or budget <= 0:
+        return
+    usage = _adapter_usage(ctx, handle)
+    usd = _usage_usd(usage, ctx.store, (ctx.meta or {}).get("lane"))
+    if usd < budget:
+        return
+    pgid = int(handle.get("pgid") or handle.get("pid") or 0)
+    if pgid > 1:
+        try:
+            _signal_group(pgid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            pass
+    handle["budget_kill"] = {"budget_usd": budget, "usd": round(usd, 4)}
+    ctx.set_meta(compute_handle=handle)
+    ctx.append_chunk(
+        "job_event",
+        f"run_slice: session crossed its remaining budget "
+        f"(${usd:.2f} ≥ ${budget:.2f}); SIGTERM to the group",
+    )
+
+
 def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
     """Poll half of a parked outage: ``False`` before ``not_before``; at or
     after it, run :func:`submit` again (a fresh lane pick, the excluded
@@ -3039,6 +3171,7 @@ def poll(ctx: Any, handle: Any) -> bool:
     tree = Path(str(handle.get("worktree") or ""))
     vanished = not tree.is_dir()
     if exit_code is None and not vanished and _session_alive(handle):
+        _watch_budget(ctx, handle)
         return False
     ctx.set_meta(compute_handle_released=True)
 
@@ -3076,6 +3209,7 @@ def poll(ctx: Any, handle: Any) -> bool:
         )
         return True
     result, is_error = adapter.parse_result(log_text, tree, exit_code=exit_code)
+    _adapter_usage(ctx, handle, log_text)
     if is_error and not vanished:
         outage = _lane_outage(
             result, log_text, adapter=adapter.name, exit_code=exit_code
@@ -3395,7 +3529,19 @@ def poll(ctx: Any, handle: Any) -> bool:
         gone = f"worktree {tree} vanished while the session ran (reaped?)"
     else:
         gone = None
-    what = denied or nothing or gone or f"failed (exit {exit_code})"
+    budget_kill = handle.get("budget_kill")
+    what = (
+        (
+            "crossed its remaining budget "
+            f"(usage ${budget_kill['usd']:.2f} ≥ ${budget_kill['budget_usd']:.2f})"
+            if isinstance(budget_kill, dict)
+            else None
+        )
+        or denied
+        or nothing
+        or gone
+        or f"failed (exit {exit_code})"
+    )
     reason = (
         f"run_slice: session for td{todo_id} {what}; todo back to open, "
         f"attempt:{attempt}"

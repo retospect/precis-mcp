@@ -1167,6 +1167,49 @@ def test_spend_cap_maps_acu_to_usd(
     assert spend["usd"] == 45.0
 
 
+def test_spend_cap_mints_the_remaining_allowance(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601015: a climb onto the capped rung mints the job with
+    ``params.budget_usd`` — cap minus recorded spend — the bound
+    ``run_slice`` enforces mid-run so the attempt cannot exceed the
+    per-node cap it started under."""
+    use_lanes(
+        monkeypatch,
+        _paid_devin_lane(),
+        seed_lane("claude-sub"),
+        entitlements=_fable_caps(),
+    )
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "The task",
+            {"op": {"type": "run_slice", "params": {"lane": "devin"}}},
+            body="Do it.",
+        )
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "boom",
+        lane="devin",
+        model="swe-2-high",
+        meta={"usage": {"on_demand_usd": 10.0}},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
+    params = _jobs_under(store, task)[-1][1]["params"]
+    assert (params["lane"], params["model"]) == (
+        "devin",
+        "claude-fable-5-1-medium",
+    )
+    assert params["budget_usd"] == pytest.approx(15.0)
+
+
 def test_human_only_hit_files_the_ask_at_once(store: Store) -> None:
     """td584381 S1a: a failed attempt stamped ``human_only_hit`` skips
     the ladder and rescue — the ask names the paths a human must edit."""

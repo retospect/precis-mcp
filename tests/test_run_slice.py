@@ -4462,6 +4462,7 @@ def test_submit_devin_model_guard(
     ]
     if model is not None:
         expected += ["--model", model]
+    expected += ["--export", str(run_slice.run_dir(42) / "devin.atif.json")]
     assert argv == expected
     assert kw["stdin"] is None and kw["cwd"] == tree
     assert ctx.meta_set["adapter"] == "devin_tree"
@@ -5909,3 +5910,223 @@ def test_kimi_malformed_handle_drops_the_submit_key() -> None:
     assert ctx.failure is not None and "malformed handle" in ctx.failure
     assert "sk-submitted-env-key" not in ctx.failure
     assert run_slice._KIMI_SUBMIT_KEYS == {}
+
+
+# ── usage collection + remaining-budget bound (td601015) ─────────────
+
+
+def _atif(
+    path: Path,
+    *,
+    final: dict[str, Any] | None = None,
+    steps: list[dict[str, Any]] | None = None,
+) -> Path:
+    """A minimal ATIF-v1.7 export the poll reads usage from."""
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ATIF-v1.7",
+                "session_id": "atif-test",
+                "agent": {
+                    "name": "devin",
+                    "version": "3000.12.32",
+                    "model_name": "Claude Fable 5.1 Medium",
+                },
+                "steps": steps or [],
+                "final_metrics": final or {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_devin_atif_usage_shapes(tmp_path: Path) -> None:
+    """td601015: the ATIF export is the devin lane's usage channel —
+    token totals always, ``cost_usd``/``acus_consumed`` where the plan
+    reports spend; a missing or unreadable file is ``None``."""
+    from precis.workers.job_types._slice_adapters import devin_atif_usage
+
+    assert devin_atif_usage(None) is None
+    assert devin_atif_usage(tmp_path / "missing.json") is None
+    garbage = tmp_path / "garbage.json"
+    garbage.write_text("not json", encoding="utf-8")
+    assert devin_atif_usage(garbage) is None
+    # The free-rung shape: tokens and ids, no spend fields at all.
+    free = devin_atif_usage(
+        _atif(
+            tmp_path / "free.json",
+            final={
+                "total_prompt_tokens": 19361,
+                "total_completion_tokens": 11,
+                "total_cached_tokens": 0,
+                "total_steps": 9,
+            },
+        )
+    )
+    assert free == {
+        "input_tokens": 19361.0,
+        "output_tokens": 11.0,
+        "cached_tokens": 0.0,
+        "steps": 9.0,
+        "session_id": "atif-test",
+        "model": "Claude Fable 5.1 Medium",
+    }
+    # The paid shape: a committed per-step cost + ACU dims — the spend
+    # cap reads ``cost_usd``/``acus_consumed``.
+    paid = devin_atif_usage(
+        _atif(
+            tmp_path / "paid.json",
+            final={"total_prompt_tokens": 20000, "total_steps": 4},
+            steps=[
+                {
+                    "step_id": 1,
+                    "source": "agent",
+                    "metrics": {"prompt_tokens": 5000, "cost_usd": 0.3},
+                    "extra": {
+                        "committed_acu_cost": 0.15,
+                        "response_dimensions": [
+                            {
+                                "uid": "acuss",
+                                "group_title": "Usage",
+                                "kind": {
+                                    "CumulativeMetric": {
+                                        "label": "ACUs",
+                                        "value": 0.4,
+                                    }
+                                },
+                            }
+                        ],
+                    },
+                },
+                {
+                    "step_id": 2,
+                    "source": "agent",
+                    "metrics": {"prompt_tokens": 15000, "cost_usd": 0.2},
+                    "extra": {"committed_acu_cost": 0.25},
+                },
+            ],
+        )
+    )
+    assert paid is not None
+    assert paid["cost_usd"] == pytest.approx(0.5)
+    assert paid["acus_consumed"] == pytest.approx(0.4)
+    assert paid["input_tokens"] == 20000.0
+
+
+def test_devin_submit_exports_atif(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601015: a devin launch carries ``--export`` to the ops dir and
+    the handle records it for the poll's usage read."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None and ctx.failure is None
+    atif = run_slice.run_dir(42) / "devin.atif.json"
+    assert handle["atif"] == str(atif)
+    [(argv, _kw)] = seams["launch"]
+    i = argv.index("--export")
+    assert argv[i + 1] == str(atif)
+
+
+def test_poll_devin_stamps_usage_from_atif(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601015: a finished devin run's ATIF lands on ``meta.usage`` —
+    the job row ``plan_dispatch._job_spend_usd`` sums."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    _atif(
+        Path(handle["atif"]),
+        final={"total_prompt_tokens": 9000, "total_cost_usd": 0.31, "total_steps": 3},
+    )
+    _finish(handle, 1, "session transcript\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    usage = pctx.meta_set["usage"]
+    assert usage["cost_usd"] == 0.31
+    assert usage["input_tokens"] == 9000.0
+    assert usage["checked_at"].endswith("Z")
+
+
+def test_watch_budget_kills_over_allowance(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601015: ``params.budget_usd`` is the node's remaining allowance
+    — live usage at or over it SIGTERMs the group and the dead-process
+    path fails the attempt naming the bound."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch, budget_usd=5.0)
+    assert handle is not None
+    _atif(Path(handle["atif"]), final={"total_cost_usd": 6.25, "total_steps": 3})
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert seams["signals"] == [handle["pgid"]]
+    assert handle["budget_kill"] == {"budget_usd": 5.0, "usd": 6.25}
+    # The dead-process path then fails the attempt naming the bound.
+    seams["alive"] = False
+    _finish(handle, 143, "transcript tail\n")
+    pctx2 = _poll_ctx(store, pctx)
+    pctx2.meta["params"]["budget_usd"] = 5.0
+    assert run_slice.poll(pctx2, handle) is True
+    assert pctx2.status == "failed"
+    assert pctx2.failure is not None and "remaining budget" in pctx2.failure
+    assert "attempt:1" in store.tag_strings(42)
+
+
+def test_watch_budget_ignores_under_allowance_and_unreported(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601015: usage under the bound — or a vendor reporting no spend
+    fields — never kills; the allowance is a bound, not a tripwire."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch, budget_usd=5.0)
+    assert handle is not None
+    _atif(Path(handle["atif"]), final={"total_cost_usd": 4.0, "total_steps": 2})
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert seams["signals"] == [] and "budget_kill" not in handle
+    # Tokens only — no spend field means the bound cannot trip.
+    Path(handle["atif"]).write_text(
+        json.dumps(
+            {"schema_version": "ATIF-v1.7", "final_metrics": {"total_steps": 4}}
+        ),
+        encoding="utf-8",
+    )
+    assert run_slice.poll(pctx, handle) is False
+    assert seams["signals"] == [] and "budget_kill" not in handle
+
+
+def test_poll_claude_stamps_envelope_usage(
+    seams: dict[str, Any],
+) -> None:
+    """td601015: claude's ``--output-format json`` envelope contributes
+    ``total_cost_usd`` + token counts to ``meta.usage`` too."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams)
+    assert handle is not None
+    _finish(
+        handle,
+        1,
+        json.dumps(
+            {
+                "result": "half done",
+                "is_error": True,
+                "total_cost_usd": 0.42,
+                "num_turns": 7,
+                "usage": {"input_tokens": 1234, "output_tokens": 56},
+            }
+        ),
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    usage = pctx.meta_set["usage"]
+    assert usage["cost_usd"] == 0.42
+    assert usage["input_tokens"] == 1234.0
+    assert usage["num_turns"] == 7.0
