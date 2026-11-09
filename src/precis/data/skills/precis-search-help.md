@@ -224,12 +224,18 @@ Rules of thumb:
   alongside `unique_per='chunk'`.
 - Honors `mode=`, `tags=`, `scope=`, `args={'exclude': …}`, and year filters like
   any search (a `'lexical'` broad search fuses only the text legs).
+- `queries=`/`answers=`/`exclude=`/`page=` also compose with the
+  `sort=`/`since=`/`until=` source-search primitive (gr608576): a dated
+  search keeps the broad legs and exclusion filter, and `page=2` walks
+  the fused per-ref list — repeat the same knobs on every page.
 - **Refine rather than continuing** — add distinctive terms or narrow
-  `scope=` when the fused list is too broad. There is no page 2.
+  `scope=` when the fused list is too broad. There is no page 2 on the
+  default paper path (the dated source search above is the exception).
 - The headline shows a returned count with no "of K" total — there's
   no honest lexical total for a fused set.
 
-### args={'good': True} — deep search (async campaign)
+## args={'good': True} — deep search (async campaign)
+## Hand the hit-judging to a background campaign
 
 When even the fused list is too much to read yourself, hand the
 judging off: `search(kind='paper', q='…', args={'good': True})` doesn't return

@@ -107,6 +107,164 @@ def test_source_search_marks_non_production_embedder(
     assert "mock" in out
 
 
+def test_since_composes_with_exclude(runtime_with_store: PrecisRuntime) -> None:
+    """gr608576: a creation-date bound no longer refuses ``exclude=`` —
+    the slug resolves into the same ref-id channel ``uncited=`` uses."""
+    rt = runtime_with_store
+    _seed(rt, "paper", "excl-keep", "Keep study", "spintronic magnon transport alpha")
+    _seed(rt, "paper", "excl-drop", "Drop study", "spintronic magnon transport beta")
+
+    out = rt.dispatch(
+        "search",
+        {
+            "kind": "paper",
+            "q": "spintronic magnon transport",
+            "since": "2020-01-01",
+            "exclude": ["excl-drop"],
+        },
+    )
+    assert "Keep study" in out
+    assert "Drop study" not in out
+
+
+def test_since_composes_with_broad_legs(runtime_with_store: PrecisRuntime) -> None:
+    """gr608576: ``queries=``/``answers=`` fuse extra legs on the
+    source-search path instead of being refused."""
+    rt = runtime_with_store
+    _seed(rt, "paper", "broad-a", "Broad Alpha", "spintronic magnon transport alpha")
+
+    out = rt.dispatch(
+        "search",
+        {
+            "kind": "paper",
+            "q": "spintronic magnon",
+            "since": "2020-01-01",
+            "queries": ["magnon transport study"],
+            "answers": ["a passage about magnon transport"],
+        },
+    )
+    assert "Broad Alpha" in out
+
+
+def test_since_knobs_work_nested_in_args(runtime_with_store: PrecisRuntime) -> None:
+    """gr608576: the knobs callers learned as ``args={…}`` on paper
+    search hoist onto the source-search path rather than refusing."""
+    rt = runtime_with_store
+    _seed(rt, "paper", "nest-keep", "Nested Keep", "spintronic magnon transport nest")
+    _seed(rt, "paper", "nest-drop", "Nested Drop", "spintronic magnon transport nest")
+
+    out = rt.dispatch(
+        "search",
+        {
+            "kind": "paper",
+            "q": "spintronic magnon transport",
+            "since": "2020-01-01",
+            "__extras__": {
+                "exclude": ["nest-drop"],
+                "queries": ["magnon transport nested"],
+                "view": "index",
+            },
+        },
+    )
+    assert "Nested Keep" in out
+    assert "Nested Drop" not in out
+
+
+def test_source_search_pages(runtime_with_store: PrecisRuntime) -> None:
+    """gr608576: ``page=`` walks the fused per-ref list and the response
+    advertises the working ``page=N+1`` continuation."""
+    rt = runtime_with_store
+    for i in range(3):
+        _seed(rt, "paper", f"pg-{i}", f"Page study {i}", "spintronic magnon paging")
+
+    out = rt.dispatch(
+        "search",
+        {
+            "kind": "paper",
+            "q": "spintronic magnon paging",
+            "since": "2020-01-01",
+            "page_size": 2,
+        },
+    )
+    assert "Page study" in out
+    assert "page=2" in out
+
+    page2 = rt.dispatch(
+        "search",
+        {
+            "kind": "paper",
+            "q": "spintronic magnon paging",
+            "since": "2020-01-01",
+            "page_size": 2,
+            "page": 2,
+        },
+    )
+    assert "Page study" in page2
+
+
+def test_source_search_bad_page_refuses(runtime_with_store: PrecisRuntime) -> None:
+    rt = runtime_with_store
+    body, is_error = rt.dispatch_with_status(
+        "search",
+        {"kind": "paper", "q": "anything", "since": "2020-01-01", "page": 0},
+    )
+    assert is_error
+    assert "page=" in body
+
+
+def test_source_search_exclude_dead_handle_warns(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """A named handle that resolves nowhere is reported, not silently
+    skipped (same ``⚠ exclude=`` contract as the paper path)."""
+    rt = runtime_with_store
+    _seed(rt, "paper", "dead-a", "Dead study", "spintronic magnon deadhandle")
+
+    out = rt.dispatch(
+        "search",
+        {
+            "kind": "paper",
+            "q": "spintronic magnon deadhandle",
+            "since": "2020-01-01",
+            "exclude": ["pa999999"],
+        },
+    )
+    assert "Dead study" in out
+    assert "⚠ exclude=" in out
+
+
+def test_source_search_still_refuses_unknown_view(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``view='index'``/``'ids'`` are no-op aliases; any other view the
+    path can't render is still refused."""
+    rt = runtime_with_store
+    _seed(rt, "paper", "view-a", "View study", "spintronic magnon viewcheck")
+
+    out = rt.dispatch(
+        "search",
+        {
+            "kind": "paper",
+            "q": "spintronic magnon viewcheck",
+            "since": "2020-01-01",
+            "view": "index",
+        },
+    )
+    assert "View study" in out
+
+    body, is_error = rt.dispatch_with_status(
+        "search",
+        {
+            "kind": "paper",
+            "q": "spintronic magnon viewcheck",
+            "since": "2020-01-01",
+            "view": "bogus",
+        },
+    )
+    assert is_error
+    assert "not applied" in body
+
+
 def test_source_search_no_marker_for_production_embedder(store: Store) -> None:
     """The converse: a backend that reports itself production must not
     carry the warning."""

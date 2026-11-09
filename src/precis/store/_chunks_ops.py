@@ -2361,6 +2361,8 @@ class ChunkStore:
         kinds: list[str],
         q: str,
         query_vec: list[float] | None = None,
+        q_texts: list[str] | None = None,
+        query_vecs: list[list[float]] | None = None,
         mode: str | None = None,
         tags: list[str] | None = None,
         exclude_tags: list[str] | None = None,
@@ -2388,13 +2390,22 @@ class ChunkStore:
         unlike per-handler cross-kind fan-out
         (``runtime._dispatch_cross_kind``), this runs ONE SQL query over
         every kind, so exclusion never has a per-handler gap.
-        ``legs_out`` forwards to :meth:`search_chunks_multi` — per-hit
-        leg provenance over the fused pool (gr514952). Returns
-        ``(ChunkRow, Ref, score)`` one per ref; kinds with no embedded
-        chunks just contribute nothing."""
+        ``q_texts``/``query_vecs`` replace the single ``q``/``query_vec``
+        for broad (``queries=``/``answers=``) retrieval: each text runs a
+        lexical leg, each vector a semantic leg, fused like the paper
+        handler's broad path. ``legs_out`` forwards to
+        :meth:`search_chunks_multi` — per-hit leg provenance over the
+        fused pool (gr514952). Returns ``(ChunkRow, Ref, score)`` one per
+        ref; kinds with no embedded chunks just contribute nothing."""
         if not kinds:
             return []
         _sort = (sort or "relevance").strip().lower()
+        _q_texts = q_texts if q_texts else [q]
+        _query_vecs = (
+            query_vecs
+            if query_vecs is not None
+            else ([query_vec] if query_vec is not None else [])
+        )
         by_date = _sort in ("recency", "oldest", "created", "modified")
         if by_date:
             newest_first = _sort != "oldest"
@@ -2406,8 +2417,8 @@ class ChunkStore:
             # cover every page up to this ``offset``, so widen by it too.
             pool = max((offset + limit) * 5, 100)
             fused = self.search_chunks_multi(
-                q_texts=[q],
-                query_vecs=[query_vec] if query_vec is not None else [],
+                q_texts=_q_texts,
+                query_vecs=_query_vecs,
                 mode=mode,
                 kinds=kinds,
                 created_from=since,
@@ -2436,8 +2447,8 @@ class ChunkStore:
         # slicing to search_chunks_multi itself (it widens its own pool
         # by offset+limit internally).
         return self.search_chunks_multi(
-            q_texts=[q],
-            query_vecs=[query_vec] if query_vec is not None else [],
+            q_texts=_q_texts,
+            query_vecs=_query_vecs,
             mode=mode,
             kinds=kinds,
             created_from=since,

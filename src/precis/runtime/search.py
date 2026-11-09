@@ -101,10 +101,25 @@ _SOURCE_SEARCH_CONSUMED: frozenset[str] = frozenset(
         "mode",
         "page_size",
         "top_k",
+        "page",
+        "exclude",
+        "queries",
+        "answers",
         "exclude_ref_ids",
         "include_ref_ids",
     }
 )
+
+#: No-op spellings the source search accepts without applying: the
+#: paper-search ``view='index'``/``'ids'`` aliases for the default ranked
+#: render, and ``per_paper=1`` — exactly the one-chunk-per-ref collapse
+#: the primitive already applies. Any other value is refused by
+#: :func:`refuse_unapplied_args` (a view the path can't render, or a cap
+#: that would break its per-ref shape).
+_SOURCE_SEARCH_TOLERATED: dict[str, tuple[Any, ...]] = {
+    "view": ("index", "ids"),
+    "per_paper": (1,),
+}
 
 #: Same for :meth:`SearchMixin._dispatch_search_plan`. The plan accepts
 #: the real search's filters — echoed in the output and used to name the
@@ -128,6 +143,8 @@ _PLAN_CONSUMED: frozenset[str] = frozenset(
         "under",
         "depth",
         "axis",
+        "queries",
+        "answers",
         "exclude_ref_ids",
         "include_ref_ids",
     }
@@ -1145,16 +1162,48 @@ class SearchMixin(RuntimeShape):
         :meth:`_dispatch_cross_kind`'s per-handler fan-out), so this is
         the recommended route for ``uncited=``/``cited=`` when the target
         kinds include patent/edgar.
+
+        ``exclude=`` resolves slug/handle/container entries per kind into
+        the same channel (gr608576); ``queries=``/``answers=`` add
+        broad-retrieval legs fused with ``q`` (same shape as the paper
+        handler's broad path); ``page=`` pages the fused per-ref list with
+        a one-row probe for the continuation hint.
         """
         store = self.hub.store
         if store is None:
             raise Unsupported("source search needs a store-backed deployment")
+        # ``args={…}`` extras: hoist the keys this path consumes (plus the
+        # no-op spellings it tolerates) to top level — paper search takes
+        # the same knobs nested, so callers reuse that spelling here
+        # (gr608576). Anything left in extras is still refused below.
+        extras = args.get("__extras__")
+        if isinstance(extras, dict):
+            hoistable = _SOURCE_SEARCH_CONSUMED - {
+                "exclude_ref_ids",
+                "include_ref_ids",
+            }
+            for key in list(extras):
+                val = extras.get(key)
+                if val is None:
+                    continue
+                if key not in hoistable and val not in _SOURCE_SEARCH_TOLERATED.get(
+                    key, ()
+                ):
+                    continue
+                if args.get(key) is not None and not (
+                    key == "page" and args.get("page") == 1
+                ):
+                    raise BadInput(
+                        f"{key}= was passed twice — top-level and inside args=",
+                        next=f"pass {key}= once, at the top level",
+                    )
+                args[key] = extras.pop(key)
         refuse_unapplied_args(
             args,
             consumed=_SOURCE_SEARCH_CONSUMED,
             shape="a source search (sort=/since=/until=)",
             next=lambda strays: self._source_search_next(kind, args, strays),
-            tolerated=_PAGE_TOLERATED,
+            tolerated=_SOURCE_SEARCH_TOLERATED,
         )
         q = args.get("q")
         if not (isinstance(q, str) and q.strip()):
@@ -1172,6 +1221,38 @@ class SearchMixin(RuntimeShape):
         until = self._parse_search_date(args.get("until"), "until")
         sort = str(args.get("sort") or "relevance").strip().lower() or "relevance"
         top_k = int(args.get("page_size") or args.get("top_k") or 10)
+        page_raw = args.get("page")
+        try:
+            page = int(page_raw) if page_raw is not None else 1
+        except (TypeError, ValueError):
+            raise BadInput(
+                f"page= must be an integer, got {page_raw!r}",
+                next="page=1 is the first page; page_size= sizes it",
+            ) from None
+        if page < 1:
+            raise BadInput(
+                f"page= must be >= 1, got {page!r}",
+                next="page=1 is the first page; page_size= sizes it",
+            )
+        # Broad-retrieval legs (gr608576): ``queries=`` are extra
+        # reformulations, ``answers=`` hypothetical-answer passages (HyDE)
+        # — each fuses its own leg via search_chunks_multi, same as the
+        # paper handler's broad path. Re-check the leg cap here: the
+        # agentic tier bypasses the MCP tool boundary's validation.
+        from precis.handlers._paper_search import _BROAD_LEG_CAP
+
+        extra_queries = self._str_list(args.get("queries"))
+        hyde_answers = self._str_list(args.get("answers"))
+        if len(extra_queries) > _BROAD_LEG_CAP:
+            raise BadInput(
+                f"queries= has {len(extra_queries)} entries, max {_BROAD_LEG_CAP}",
+                next="pass up to 8 distinct rephrasings; merge the rest",
+            )
+        if len(hyde_answers) > _BROAD_LEG_CAP:
+            raise BadInput(
+                f"answers= has {len(hyde_answers)} entries, max {_BROAD_LEG_CAP}",
+                next="pass up to 8 hypothetical-answer passages (HyDE)",
+            )
         tags = args.get("tags")
         # gr495382: ``status=`` used to be dropped on this path, so a
         # ``sort=`` search of the status kinds returned every status. It is
@@ -1205,12 +1286,20 @@ class SearchMixin(RuntimeShape):
         mode = args.get("mode")
         mode_lexical = isinstance(mode, str) and mode.strip().lower() == "lexical"
 
-        query_vec: list[float] | None = None
+        # One batch embed covers q + every reformulation + every HyDE
+        # answer — the semantic legs fuse them in search_chunks_multi.
+        # Degrade contract is unchanged: an Upstream failure marks the
+        # semantic leg degraded and the lexical legs still answer.
+        query_vecs: list[list[float]] = []
         semantic_degraded = False
         embedder = None if mode_lexical else getattr(self.hub, "embedder", None)
         if embedder is not None:
             try:
-                query_vec = embedder.embed_one(q)
+                query_vecs = [
+                    v
+                    for v in embedder.embed([q, *extra_queries, *hyde_answers])
+                    if v is not None
+                ]
             except Upstream:
                 semantic_degraded = True
             except Exception:
@@ -1218,27 +1307,58 @@ class SearchMixin(RuntimeShape):
 
         exclude_ref_ids = args.get("exclude_ref_ids")
         include_ref_ids = args.get("include_ref_ids")
+        exclude_notice = ""
+        if args.get("exclude"):
+            # ``exclude=`` (gr608576): slug/handle/container entries resolve
+            # per requested kind into the same exclude_ref_ids channel
+            # uncited= uses, so the one SQL query drops them uniformly.
+            resolved_ids, dead_handles = self._resolve_source_exclude(
+                args["exclude"], kinds, store
+            )
+            if resolved_ids:
+                exclude_ref_ids = sorted(set(exclude_ref_ids or ()) | resolved_ids)
+            if dead_handles:
+                n_dead = len(dead_handles)
+                listed = ", ".join(repr(h) for h in dead_handles)
+                exclude_notice = (
+                    f"\n\n⚠ exclude=: {n_dead} handle"
+                    f"{'s' if n_dead != 1 else ''} "
+                    f"not found, so not excluded: {listed}"
+                )
+        # Probe one row past the page so a ``page=N+1`` continuation hint
+        # is exact; ``offset`` pages the one fused, per-ref-collapsed list.
+        offset = (page - 1) * top_k
         results = store.chunks.search_chunks_across_kinds(
             kinds=kinds,
             q=q,
-            query_vec=query_vec,
+            q_texts=[q, *extra_queries],
+            query_vecs=query_vecs,
             mode=mode,
             tags=tags,
             exclude_tags=status_excluded or None,
             since=since,
             until=until,
             sort=sort,
-            limit=top_k,
+            limit=top_k + 1,
+            offset=offset,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
         )
+        has_more = len(results) > top_k
+        results = results[:top_k]
         hits: list[SearchHit] = []
-        handle_hit = self._handle_query_hit(
-            q,
-            kinds=(None if expanded.strip().lower() in _CROSS_KIND_ALIASES else kinds),
-            include_ref_ids=include_ref_ids,
-            exclude_ref_ids=exclude_ref_ids,
+        handle_hit = (
+            self._handle_query_hit(
+                q,
+                kinds=(
+                    None if expanded.strip().lower() in _CROSS_KIND_ALIASES else kinds
+                ),
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
+            )
+            if page == 1
+            else None
         )
         if handle_hit is not None:
             hits.append(handle_hit)
@@ -1322,7 +1442,100 @@ class SearchMixin(RuntimeShape):
                     cost=response.cost,
                     result_count=response.result_count,
                 )
+        if has_more:
+            # Re-render the call verbatim with page=N+1 — dropping
+            # queries=/answers=/exclude=/since= would silently change the
+            # ordering and window (same contract as the paper broad path's
+            # continuation hint).
+            from precis.utils.next_block import render_next_section
+
+            next_args = dict(args)
+            next_args["page"] = page + 1
+            response = Response(
+                body=response.body
+                + render_next_section(
+                    [
+                        (
+                            _search_call_text(kind, next_args, set()),
+                            f"see the next {top_k} matches (page {page + 1})",
+                        )
+                    ]
+                ),
+                cost=response.cost,
+                result_count=response.result_count,
+            )
+        if exclude_notice:
+            response = Response(
+                body=response.body + exclude_notice,
+                cost=response.cost,
+                result_count=response.result_count,
+            )
         return _stamp_non_production_embedder(response, embedder)
+
+    @staticmethod
+    def _str_list(value: Any) -> list[str]:
+        """Coerce a list-or-scalar arg to a list of non-blank strings."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        return [s for s in (str(v).strip() for v in value) if s]
+
+    def _resolve_source_exclude(
+        self, entries: Any, kinds: list[str], store: Any
+    ) -> tuple[set[int], list[str]]:
+        """``exclude=`` on a source search → ref_ids to drop + dead handles.
+
+        Each entry resolves under the semantics of the kind it names —
+        the same grammar that kind's own ``search_hits`` applies on the
+        per-handler fan-out:
+
+        * paper-family kinds (``PaperHandler`` and its subclasses —
+          cfp/datasheet) use
+          :func:`precis.handlers._exclude_closure.resolve_exclude_paper_ids`,
+          which covers bare slugs, DOIs, record/chunk handles and the
+          ``dr…``/``dc…`` draft-container cite closures;
+        * every other kind resolves a universal handle to its ref (the
+          handle already encodes the ref's kind) and a bare entry as a
+          slug via ``Store.fetch_ref_ids_by_slugs``.
+
+        Dead handle entries are returned separately so the caller can
+        surface the same ``⚠ exclude=`` notice the paper path renders
+        (gr340059) — a named id that resolves nowhere must not silently
+        skip.
+        """
+        from precis.handlers._exclude_closure import resolve_exclude_paper_ids
+
+        normalized = self._str_list(entries)
+        ids: set[int] = set()
+        dead: list[str] = []
+        other_kinds: list[str] = []
+        for k in kinds:
+            handler = self.hub.handler_for(k)
+            mro = {c.__name__ for c in type(handler).__mro__} if handler else set()
+            if "PaperHandler" in mro:
+                resolved = resolve_exclude_paper_ids(normalized, store=store, kind=k)
+                ids.update(int(i) for i in resolved)
+                dead.extend(resolved.dead_handles)
+            else:
+                other_kinds.append(k)
+        if other_kinds:
+            slug_entries: list[str] = []
+            for entry in normalized:
+                if handle_registry.parse(entry) is not None:
+                    resolved_handle = store.resolve_handle(entry)
+                    if resolved_handle is not None:
+                        if resolved_handle.kind in other_kinds:
+                            ids.add(resolved_handle.ref_id)
+                    else:
+                        dead.append(entry)
+                else:
+                    slug_entries.append(entry)
+            for k in other_kinds:
+                ids.update(
+                    int(i) for i in store.fetch_ref_ids_by_slugs(slug_entries, kind=k)
+                )
+        return ids, dead
 
     def _kind_search_takes(
         self, kind: str, args: dict[str, Any], drop: set[str]
