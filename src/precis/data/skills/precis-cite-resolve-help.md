@@ -72,6 +72,16 @@ search(kind="paper", q="Miller 1921", scope="pa<citing>", mode="lexical")
 Read the hit chunk — the entry carries the cited work's authors,
 title, venue, year, and often a DOI.
 
+**A flagged entry.** `bib_parse` tags the citing paper
+`AUDIT:spliced-ref` when an entry's parsed authors/year/pages resolve
+to a Crossref record whose title shares almost no words with the title
+the entry prints — the signature of a line spliced from two references
+(gr572843). The flag never rewrites: the recorded DOI/`match_conf`
+stand for audit, and a version-bumped re-parse drops the tag when the
+fresh verdicts come back clean. See the flag on a paper → read its
+reference chunks as above and judge the flagged line yourself;
+repairing the row is a data fix, never a hand-edit of the tag.
+
 ## Is the cited paper held?
 ## Get or request the cited paper
 

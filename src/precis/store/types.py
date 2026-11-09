@@ -1495,6 +1495,12 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             "history-density",
             "missing-route",
             "title-shape",
+            # bib_parse detector (gr572843): the Crossref record an entry's
+            # authors/year/pages resolved to carries a title that disagrees
+            # with the title the entry prints — a bibliography line spliced
+            # from two references. Stamped on the citing paper by the
+            # worker; flags only, never rewrites the entry.
+            "spliced-ref",
         }
     ),
     # Argument graph — retraction-ripple marker. Set by the
@@ -1613,7 +1619,10 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # vs re-ingested). STATUS doesn't apply — papers don't have a
     # workflow state. DREAM carries the ``acquire`` provenance tag the
     # gated dream ``acquire`` tool stamps on a freshly-minted stub.
-    "paper": frozenset({"SRC", "CACHE", "DREAM"}),
+    # AUDIT carries the bib_parse spliced-reference flag (gr572843) so
+    # ``search(kind='paper', tags=['AUDIT:spliced-ref'])`` enumerates
+    # papers whose parsed bibliography holds a flagged entry.
+    "paper": frozenset({"SRC", "CACHE", "DREAM", "AUDIT"}),
     # Cache-backed kinds use CACHE (freshness state) and WATCH
     # (refresh interval for the nightly maintenance driver). The
     # MCP critic gripe:3681 phase 4 motivated WATCH — a closed-vocab

@@ -27,7 +27,9 @@ from precis.workers.bib_parse import (
     _collect_paper_entries,
     _extract_acs_fields,
     _extract_doi_from_text,
+    _is_spliced_match,
     _parse_paper_entries,
+    _printed_title_tokens,
     _resolve_crossref_candidates,
     _split_entries,
     run_bib_parse_match_pass,
@@ -1565,3 +1567,180 @@ class TestBackfillBibCites:
         applied = backfill_bib_cites(store, apply=True, limit=2)
         assert applied.links_ensured == 2
         assert len(_cites_links(store, src=c1)) == 2
+
+
+# ── spliced-reference detector (gr572843 -- pa783 ref [15], pc64792) ──
+
+#: pa783 (Torrens & Castellano 2014, J Mol Model 20:2263) bibliography
+#: entry [15] in chunk pc64792: the authors, year, journal, volume and
+#: pages of Krishnan et al. 1997 (Nature 388:451-454, DOI 10.1038/41284)
+#: carrying another reference's title -- a line spliced from two
+#: references.
+SPLICED_LINE = (
+    "Krishnan P, Dujardin E, Treacy MMJ, Hugdahl J, Lynum S, Ebbesen TW "
+    "(1997) Photoisomerization in dendrimers by harvesting of low-energy "
+    "photons. Nature 388:451-454"
+)
+
+#: The fields the parse produced for that line.
+_SPLICED_FIELDS: dict[str, Any] = {
+    "marker": 15,
+    "authors": "Krishnan P, Dujardin E, Treacy MMJ, Hugdahl J, Lynum S, Ebbesen TW",
+    "journal": "Nature",
+    "year": 1997,
+    "volume": "388",
+    "first_page": "451",
+}
+
+#: The Crossref record the entry's authors/year/pages resolve to: the
+#: real Krishnan 1997 paper, whose actual title shares nothing with the
+#: printed one.
+_KRISHNAN_1997: dict[str, Any] = {
+    "DOI": "10.1038/41284",
+    "score": 90.0,
+    "title": ["Graphitic cones and the nucleation of curved carbon surfaces"],
+    "container-title": ["Nature"],
+    "issued": {"date-parts": [[1997]]},
+    "volume": "388",
+    "page": "451-454",
+}
+
+
+def _insert_parsed_entry(
+    store: Any, ref_id: int, marker: int, raw_text: str, fields: dict[str, Any]
+) -> int:
+    """Seed a ``paper_bib_entries`` row with its parsed fields, as the
+    parse leg wrote it (matcher-only tests)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO paper_bib_entries (ref_id, marker, raw_text, "
+            "authors, journal, year, volume, first_page, parse_version) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (
+                ref_id,
+                marker,
+                raw_text,
+                fields["authors"],
+                fields["journal"],
+                fields["year"],
+                fields["volume"],
+                fields["first_page"],
+                BIB_PARSE_VERSION,
+            ),
+        ).fetchone()
+        conn.commit()
+    assert row is not None
+    return int(row[0])
+
+
+def _paper_tags(store: Any, ref_id: int) -> set[str]:
+    return {str(t) for t in store.tags_for(ref_id)}
+
+
+class TestSplicedRefDetector:
+    def test_printed_title_residual_is_the_spliced_title(self) -> None:
+        printed = _printed_title_tokens(SPLICED_LINE, _SPLICED_FIELDS)
+        assert {"photoisomerization", "dendrimers", "harvesting", "photons"} <= printed
+        assert "nature" not in printed
+        assert "krishnan" not in printed
+
+    def test_title_less_acs_line_leaves_no_residual(self) -> None:
+        fields = _extract_acs_fields(ACS_LINE)
+        assert fields is not None
+        printed = _printed_title_tokens(ACS_LINE, fields)
+        assert len(printed) < bib_parse_mod._SPLICE_MIN_TITLE_TOKENS
+
+    def test_doi_tail_does_not_counterfeit_a_title(self) -> None:
+        fields = _extract_acs_fields(ACS_LINE)
+        assert fields is not None
+        raw = ACS_LINE + " https://doi.org/10.1002/cctc.201901234."
+        printed = _printed_title_tokens(raw, fields)
+        assert len(printed) < bib_parse_mod._SPLICE_MIN_TITLE_TOKENS
+
+    def test_spliced_entry_flags(self) -> None:
+        assert _is_spliced_match(_SPLICED_FIELDS, SPLICED_LINE, _KRISHNAN_1997)
+
+    def test_correct_entry_does_not_flag(self) -> None:
+        correct = (
+            "Krishnan P, Dujardin E, Treacy MMJ, Hugdahl J, Lynum S, "
+            "Ebbesen TW (1997) Graphitic cones and the nucleation of "
+            "curved carbon surfaces. Nature 388:451-454"
+        )
+        assert not _is_spliced_match(_SPLICED_FIELDS, correct, _KRISHNAN_1997)
+
+    def test_unparsed_entry_does_not_flag(self) -> None:
+        # Without authors/journal to subtract, surnames would counterfeit
+        # a title -- the check stays silent.
+        assert not _is_spliced_match({"marker": 15}, SPLICED_LINE, _KRISHNAN_1997)
+
+    def test_record_without_title_does_not_flag(self) -> None:
+        assert not _is_spliced_match(
+            _SPLICED_FIELDS, SPLICED_LINE, {"DOI": "10.1/x", "score": 90.0}
+        )
+
+    def test_match_stamps_audit_tag_on_citing_paper(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ref_id = seed_ref(store, title="Torrens & Castellano 2014")
+        _insert_parsed_entry(store, ref_id, 15, SPLICED_LINE, _SPLICED_FIELDS)
+        _crossref_hit(monkeypatch, [_KRISHNAN_1997])
+
+        out = run_bib_parse_match_pass(store, ref_id, client=_FakeClient("{}"))
+
+        assert out == {"attempted": 1}
+        assert "AUDIT:spliced-ref" in _paper_tags(store, ref_id)
+        # The match itself is recorded as usual -- the flag never rewrites.
+        rows = _bib_rows(store, ref_id)
+        assert rows[0][7] == "10.1038/41284"  # doi
+        assert rows[0][8] == pytest.approx(0.8)  # match_conf
+
+    def test_clean_match_stamps_no_tag(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ref_id = seed_ref(store, title="citing paper")
+        fields = _extract_acs_fields(ACS_LINE)
+        assert fields is not None
+        _insert_parsed_entry(store, ref_id, 1, ACS_LINE, fields)
+        _crossref_hit(monkeypatch, _HIT)
+
+        run_bib_parse_match_pass(store, ref_id, client=_FakeClient("{}"))
+
+        assert "AUDIT:spliced-ref" not in _paper_tags(store, ref_id)
+
+    def test_version_bump_reparse_clears_the_flag(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The flag is derived, not permanent: a version-bumped re-parse
+        re-matches every entry, so a rewrite whose fresh match is clean
+        drops the tag."""
+        ref_id = seed_ref(store, title="pa783 stand-in")
+        seed_chunk(
+            store,
+            ref_id=ref_id,
+            ord=0,
+            chunk_kind="references",
+            text="- [15] " + SPLICED_LINE,
+        )
+        # The Springer-style line doesn't fit the ACS regex, so the SMALL
+        # tier supplies the parsed fields.
+        client = _FakeClient(
+            '{"entries":[{"marker":15,"authors":"Krishnan P, Dujardin E, '
+            'Treacy MMJ, Hugdahl J, Lynum S, Ebbesen TW","journal":"Nature",'
+            '"year":1997,"volume":"388","first_page":"451"}]}'
+        )
+        _crossref_hit(monkeypatch, [_KRISHNAN_1997])
+
+        first = run_bib_parse_pass(store, client=client, ref_ids=[ref_id])
+        assert first == {"claimed": 1, "ok": 1, "failed": 0}
+        assert "AUDIT:spliced-ref" in _paper_tags(store, ref_id)
+
+        monkeypatch.setattr(bib_parse_mod, "BIB_PARSE_VERSION", BIB_PARSE_VERSION + 1)
+        matching = dict(_KRISHNAN_1997)
+        matching["title"] = [
+            "Photoisomerization in dendrimers by harvesting of low-energy photons"
+        ]
+        _crossref_hit(monkeypatch, [matching])
+
+        bumped = run_bib_parse_pass(store, client=client, ref_ids=[ref_id])
+        assert bumped == {"claimed": 1, "ok": 1, "failed": 0}
+        assert "AUDIT:spliced-ref" not in _paper_tags(store, ref_id)

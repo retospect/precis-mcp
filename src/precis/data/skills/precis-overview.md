@@ -299,7 +299,7 @@ Corpus-pipeline services documenting against this skill:
 | name | what it does |
 |---|---|
 | `summarize` | RAKE keyword summary per chunk (`summarize:rake-lemma` in logs) |
-| `bib_parse` | paper bibliographies → `paper_bib_entries` (`bib_mark` extracts `[N]` markers — `precis-citation-help`) |
+| `bib_parse` | paper bibliographies → `paper_bib_entries`; a Crossref match whose record title disagrees with the entry's printed title tags the citing paper `AUDIT:spliced-ref` (`bib_mark` extracts `[N]` markers — `precis-citation-help`) |
 | `bib_retag` | retypes mis-typed biblio chunks + drops embeddings (manual) |
 | `tag_embeddings` | embeds tags for `kind='tag'` discovery |
 | `gp_fetch` | fall-back patent fetch (`fetch_google_patents` in logs) |

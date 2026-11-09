@@ -40,6 +40,12 @@ each claimed paper it:
      bibliography is reachable only through structured edges. Entries
      matched *before* that write landed are covered by the one-shot
      ``precis backfill-bib-cites`` (``precis.backfill.bib_cites``).
+    A Crossref match whose record title disagrees with the title the
+    entry prints — the signature of a *spliced* bibliography entry
+    (gr572843: authors/year/pages of one reference under another's
+    title) — tags the citing paper ``AUDIT:spliced-ref``. The detector
+    flags and never rewrites: the entry's ``doi``/``match_conf`` are
+    recorded exactly as for any other match.
 
 The pass **always stamps** ``refs.meta.bib_parse_version`` at the end,
 even when it finds no bibliography — so a no-bibliography paper converges
@@ -76,6 +82,7 @@ from precis.workers._claim import claim_batch
 if TYPE_CHECKING:
     from precis.store.store import Store
 
+from precis.store.types import Tag
 from precis.utils.boilerplate import MARKER_LINE_RE as _MARKER_LINE_RE
 from precis.utils.db_retry import retry_locked
 from precis.utils.llm.json_reply import extract_json_object
@@ -633,6 +640,99 @@ def _write_crossref_match(
     )
 
 
+# ── spliced-reference detector (gr572843) ─────────────────────────────
+
+#: The closed tag stamped on the *citing* paper when a matched Crossref
+#: record's title disagrees with the title the entry prints — the
+#: signature of a spliced bibliography entry (gr572843: pa783 ref [15]
+#: carried Krishnan 1997's authors/journal/year/pages under an unrelated
+#: dendrimer title). A flag, never a rewrite — the entry's match is
+#: recorded as usual and a human audits the row.
+_TAG_SPLICED_REF = Tag.closed("AUDIT", "spliced-ref")
+
+#: Title identity lives in words of >=3 letters; initials, digits,
+#: vol/page numbers and "et al" never count as title tokens.
+_TITLE_TOKEN_RE = re.compile(r"[a-z]{3,}")
+
+#: Stripped before tokenising so a trailing DOI/URL doesn't counterfeit
+#: a "title" — ``https``/``doi``/``org``/suffix words would otherwise
+#: survive field subtraction and look like printed title text.
+_URL_OR_DOI_TAIL_RE = re.compile(
+    r"(?:https?://|doi\.org/|10\.\d{4,9}/)\S*", re.IGNORECASE
+)
+
+#: Function words carry no title identity — excluded before comparing.
+_TITLE_STOPWORDS = frozenset(
+    {
+        "and",
+        "are",
+        "for",
+        "from",
+        "into",
+        "its",
+        "not",
+        "that",
+        "the",
+        "via",
+        "with",
+    }
+)
+
+#: A residual must carry at least this many content tokens to count as a
+#: printed title at all — a title-less ACS/Wiley line leaves ~none.
+_SPLICE_MIN_TITLE_TOKENS = 3
+
+#: Flag when fewer than this fraction of the printed title's tokens
+#: appear in the resolved record's title.
+_SPLICED_TITLE_MIN_OVERLAP = 0.34
+
+
+def _title_tokens(text: str) -> set[str]:
+    """Content tokens of one text: >=3-letter words minus stopwords."""
+    return {
+        w for w in _TITLE_TOKEN_RE.findall(text.lower()) if w not in _TITLE_STOPWORDS
+    }
+
+
+def _printed_title_tokens(raw_text: str, fields: dict[str, Any]) -> set[str]:
+    """The title the citation *prints*: ``raw_text`` tokens that none of
+    the parsed bibliographic fields account for. A title-less ACS/Wiley
+    line leaves ~none; a spliced entry leaves a title that isn't the
+    resolved record's (gr572843)."""
+    tokens = _title_tokens(_URL_OR_DOI_TAIL_RE.sub(" ", raw_text))
+    for key in ("authors", "journal", "volume", "first_page"):
+        value = fields.get(key)
+        if value:
+            tokens -= _title_tokens(str(value))
+    return tokens
+
+
+def _is_spliced_match(
+    fields: dict[str, Any], raw_text: str, item: dict[str, Any]
+) -> bool:
+    """True when the citation prints a title that disagrees with the
+    Crossref record its authors/year/pages resolved to — the signature
+    of a spliced bibliography entry (gr572843).
+
+    Silent (``False``) whenever either side carries no comparable title:
+    a title-less citation line has nothing to disagree with, a record
+    without a title can't be checked, and without parsed ``authors``/
+    ``journal`` to subtract, author surnames and the journal name would
+    counterfeit a "title" on every line.
+    """
+    if not fields.get("authors") or not fields.get("journal"):
+        return False
+    printed = _printed_title_tokens(raw_text, fields)
+    if len(printed) < _SPLICE_MIN_TITLE_TOKENS:
+        return False
+    record = _title_tokens(
+        " ".join(t for t in (item.get("title") or []) if isinstance(t, str))
+    )
+    if not record:
+        return False
+    return len(printed & record) / len(printed) < _SPLICED_TITLE_MIN_OVERLAP
+
+
 # ── cites-link minting (gr513755 slice 1) ─────────────────────────────
 
 #: ``links.meta.source`` marker for bib_parse-authored ``cites`` rows,
@@ -729,6 +829,7 @@ def _match_one_entry(
     *,
     client: Any,
     mailto: str = "",
+    fields: dict[str, Any] | None = None,
 ) -> str:
     """Match one entry and write the result. Returns ``"matched"`` (a DOI
     was written), ``"unmatched"`` (a genuine no-match, memoized at
@@ -736,6 +837,12 @@ def _match_one_entry(
     ``match_conf`` left NULL). :class:`RateLimited` propagates. Holds no
     connection across the Crossref/LLM calls (see
     :func:`run_bib_parse_match_pass`).
+
+    ``fields`` is the entry's parsed bibliographic fields
+    (``authors``/``journal``/``year``/``volume``/``first_page`` —
+    ``marker`` too, for logging); the spliced-reference check
+    (:func:`_is_spliced_match`, gr572843) needs them to subtract known
+    fields out of ``raw_text`` before comparing titles.
     """
     # Local DOI-exact match: DB reads only, no network -- fine to hold
     # a connection for the length of this lookup.
@@ -788,6 +895,26 @@ def _match_one_entry(
 
     matched_doi, match_conf = _resolve_crossref_candidates(client, raw_text, items)
 
+    spliced = False
+    if matched_doi:
+        matched_item = next(
+            (it for it in items if (it.get("DOI") or "").strip() == matched_doi),
+            None,
+        )
+        if matched_item is not None and _is_spliced_match(
+            fields or {}, raw_text, matched_item
+        ):
+            spliced = True
+            log.warning(
+                "bib_parse: entry_id=%s marker=%s prints a title that "
+                "disagrees with the resolved record %s -- tagging "
+                "AUDIT:spliced-ref on ref_id=%s",
+                entry_id,
+                (fields or {}).get("marker"),
+                matched_doi,
+                ref_id,
+            )
+
     with store.pool.connection() as conn:
         held_ref_id = _held_ref_for_doi(conn, matched_doi) if matched_doi else None
         conn.commit()
@@ -795,6 +922,8 @@ def _match_one_entry(
     def _write_crossref() -> None:
         with store.pool.connection() as wconn:
             _write_crossref_match(wconn, entry_id, matched_doi, held_ref_id, match_conf)
+            if spliced:
+                store.add_tag(ref_id, _TAG_SPLICED_REF, set_by="system", conn=wconn)
             if held_ref_id is not None:
                 ensure_bib_cites_links(
                     store, ref_id, [(entry_id, held_ref_id)], conn=wconn
@@ -838,15 +967,29 @@ def run_bib_parse_match_pass(
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT id, raw_text FROM paper_bib_entries "
+            "SELECT id, marker, raw_text, authors, journal, year, volume, "
+            "first_page FROM paper_bib_entries "
             "WHERE ref_id = %s AND match_conf IS NULL",
             (ref_id,),
         ).fetchall()
         conn.commit()
 
-    for raw_entry_id, raw_text in rows:
+    for raw_entry_id, marker, raw_text, authors, journal, year, volume, page in rows:
         _match_one_entry(
-            store, ref_id, int(raw_entry_id), raw_text, client=client, mailto=mailto
+            store,
+            ref_id,
+            int(raw_entry_id),
+            raw_text,
+            client=client,
+            mailto=mailto,
+            fields={
+                "marker": marker,
+                "authors": authors,
+                "journal": journal,
+                "year": year,
+                "volume": volume,
+                "first_page": page,
+            },
         )
 
     return {"attempted": len(rows)}
@@ -880,7 +1023,9 @@ def run_bib_rematch_sweep(
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT e.id, e.ref_id, e.raw_text FROM paper_bib_entries e "
+            "SELECT e.id, e.ref_id, e.raw_text, e.marker, e.authors, "
+            "e.journal, e.year, e.volume, e.first_page "
+            "FROM paper_bib_entries e "
             "JOIN refs r ON r.ref_id = e.ref_id "
             "WHERE e.match_conf IS NULL AND e.parse_version = %(ver)s "
             "AND r.retired_at IS NULL "
@@ -903,7 +1048,17 @@ def run_bib_rematch_sweep(
         "failed": 0,
         "rate_limited": 0,
     }
-    for entry_id, ref_id, raw_text in rows:
+    for (
+        entry_id,
+        ref_id,
+        raw_text,
+        marker,
+        authors,
+        journal,
+        year,
+        volume,
+        page,
+    ) in rows:
         try:
             outcome = _match_one_entry(
                 store,
@@ -912,6 +1067,14 @@ def run_bib_rematch_sweep(
                 raw_text,
                 client=client,
                 mailto=mailto,
+                fields={
+                    "marker": marker,
+                    "authors": authors,
+                    "journal": journal,
+                    "year": year,
+                    "volume": volume,
+                    "first_page": page,
+                },
             )
         except RateLimited:
             out["rate_limited"] = 1
@@ -966,9 +1129,9 @@ def _paper_chunks(conn: Any, ref_id: int) -> list[tuple[int, str, str]]:
     return [(int(r[0]), r[1] or "", r[2] or "") for r in rows]
 
 
-def _delete_stale_entries(conn: Any, ref_id: int) -> None:
+def _delete_stale_entries(conn: Any, ref_id: int) -> int:
     """Clear out-of-date rows before a version-bumped re-parse writes
-    fresh ones.
+    fresh ones. Returns the number deleted.
 
     ``_write_parsed_entry``'s ``ON CONFLICT (ref_id, marker) DO NOTHING``
     only dedupes chunk-overlap duplicates *within* one parse pass at the
@@ -979,10 +1142,11 @@ def _delete_stale_entries(conn: Any, ref_id: int) -> None:
     ``match_conf`` from the old version would converge forever instead of
     being refreshed.
     """
-    conn.execute(
+    cur = conn.execute(
         "DELETE FROM paper_bib_entries WHERE ref_id = %s AND parse_version < %s",
         (ref_id, BIB_PARSE_VERSION),
     )
+    return cur.rowcount
 
 
 def _write_parsed_entry(conn: Any, ref_id: int, row: dict[str, Any]) -> None:
@@ -1074,7 +1238,15 @@ def run_bib_parse_pass(
                 ref_id: int = ref_id, parsed: list[dict[str, Any]] = parsed
             ) -> None:
                 with store.pool.connection() as conn:
-                    _delete_stale_entries(conn, ref_id)
+                    if _delete_stale_entries(conn, ref_id):
+                        # A version-bumped re-parse re-evaluates every
+                        # entry (fresh rows start match_conf NULL): drop
+                        # the old flag so the recomputed verdicts —
+                        # re-added on detection — are all that remain.
+                        # Same-version re-runs keep prior rows (insert
+                        # conflicts no-op), and their verdicts keep the
+                        # tag.
+                        store.remove_tag(ref_id, _TAG_SPLICED_REF, conn=conn)
                     for parsed_row in parsed:
                         _write_parsed_entry(conn, ref_id, parsed_row)
                     conn.commit()
