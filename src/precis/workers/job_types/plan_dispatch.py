@@ -4,6 +4,14 @@ Spec: ``docs/backlog/dark-factory.md`` § "Plans" → "The dispatcher tick" and
 "Job lifecycle per task"; the kill switch is step 7's. A plan is a todo
 subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
 
+0. **dead roots** — a plan root closed by hand (``STATUS`` terminal)
+   drops out of ``_candidate_roots``' set with its whole subtree
+   invisible to the tick — its open children would sit frozen forever:
+   asks still offered, gates never judged (gr612091). The sweep closes
+   every open descendant ``won't-do``, stopping at a nested LIVE root
+   (its subtree is its own plan — ``_plan_root_of``'s highest-live-
+   ancestor rule) and deferring a node with a live job to the next
+   tick, the moot close's rule.
 1. **gates** — every live, unblocked gate todo is evaluated
    (:func:`precis.plans.gates.evaluate`); the verdict lands on
    ``meta.gate_result = {open, why, at}`` (written when it changes) and an
@@ -838,6 +846,140 @@ class _Plan:
 
 def _closed(n: _Node) -> bool:
     return n.status in TERMINAL_TODO_STATUSES
+
+
+def _dead_root_orphans(store: Any, live_ids: set[int]) -> list[tuple[int, int, str]]:
+    """``(todo id, dead root id, its STATUS)`` of every open todo under a
+    terminal plan root that no live plan owns (gr612091).
+
+    Rootlikes are ``_candidate_roots``' two shapes — the self
+    ``plan:<id>`` tag or plan-kind meta — held at ANY status. Descent
+    starts at every terminal rootlike that is itself outside every live
+    plan (``live_ids``, the loaded plans' node ids — a dead phase
+    mid-plan belongs to its live plan, not to the sweep) and takes the
+    WHOLE subtree: a live rootlike inside — a gate, a loop, a nested
+    plan root — dies with the outer plan, it is only self-rooted, not
+    live-owned. ``None``-ish statuses read as ``open``."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.meta,
+                   COALESCE(
+                     (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                       WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                       LIMIT 1),
+                     'open'),
+                   EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
+                        AND t.value = 'plan:' || r.ref_id
+                   )
+              FROM refs r
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND (EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
+                        AND t.value = 'plan:' || r.ref_id)
+                    OR r.meta ?| array['gate','loop','generate','auto_close'])
+            """,
+        ).fetchall()
+    dead = sorted(
+        int(rid)
+        for rid, meta, status, self_tag in rows
+        if (self_tag or node_kind(dict(meta or {})) not in (None, "task"))
+        and str(status) in TERMINAL_TODO_STATUSES
+        and int(rid) not in live_ids
+    )
+    if not dead:
+        return []
+    with store.pool.connection() as conn:
+        orphans = conn.execute(
+            """
+            WITH RECURSIVE down(ref_id, root, lvl) AS (
+                SELECT r.ref_id, r.ref_id, 0 FROM refs r
+                 WHERE r.ref_id = ANY(%s)
+                UNION ALL
+                SELECT c.ref_id, d.root, d.lvl + 1
+                  FROM refs c JOIN down d ON c.parent_id = d.ref_id
+                 WHERE c.retired_at IS NULL AND c.kind = 'todo' AND d.lvl < 25
+            )
+            SELECT d.ref_id, d.root,
+                   COALESCE(
+                     (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                       WHERE rt.ref_id = d.ref_id AND t.namespace = 'STATUS'
+                       LIMIT 1),
+                     'open')
+              FROM down d
+             WHERE d.ref_id <> d.root
+             ORDER BY d.ref_id
+            """,
+            (dead,),
+        ).fetchall()
+    return [
+        (int(rid), int(root), str(status or "open"))
+        for rid, root, status in orphans
+        if str(status or "open") not in TERMINAL_TODO_STATUSES
+    ]
+
+
+def _live_job_parents(store: Any, ids: list[int]) -> set[int]:
+    """The todos in ``ids`` with at least one live child job."""
+    if not ids:
+        return set()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT j.parent_id FROM refs j
+             WHERE j.kind = 'job' AND j.retired_at IS NULL
+               AND j.parent_id = ANY(%s)
+               AND NOT EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
+                        AND t.value = ANY(%s))
+            """,
+            (list(ids), sorted(_JOB_TERMINAL)),
+        ).fetchall()
+    return {int(r[0]) for r in rows if r[0] is not None}
+
+
+def _step_dead_roots(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
+    """Close a terminal plan root's open children ``won't-do`` (gr612091,
+    module docstring step 0): a won't-do'd or otherwise closed root is
+    skipped by ``_candidate_roots``, so without the sweep its open
+    children stay open forever — a release pass's approval ask still
+    offered ``deploy r<N>`` after the pass died. A node with a live job
+    defers to the next tick (the moot close's rule); dry_run counts and
+    writes nothing."""
+    victims = _dead_root_orphans(store, set(plan.nodes))
+    if not victims:
+        return
+    busy = _live_job_parents(store, [v[0] for v in victims])
+    closed = 0
+    for rid, root, status in victims:
+        if rid in busy:
+            res.notes.append(f"td{rid} has a live job; dead-root close deferred")
+            continue
+        n = _Node(
+            id=rid,
+            kind="todo",
+            parent_id=None,
+            title="",
+            meta={},
+            status=status,
+            created_at=datetime.now(UTC),
+            prio=None,
+            depth=0,
+            root=root,
+        )
+        w.comment(
+            n,
+            f"plan_dispatch: plan closed — root td{root} is closed; "
+            "this node goes won't-do with it",
+        )
+        w.set_status(n, "won't-do")
+        closed += 1
+        res.notes.append(f"td{rid}: closed won't-do — plan root td{root} is closed")
+    res.phases_closed += closed
 
 
 def _candidate_roots(conn: Any) -> list[int]:
@@ -5646,6 +5788,7 @@ def run_pass(
         lane_table = _lanes.load_lanes(store)
         rules = _spend_rules(store)
         w = _Writer(store, dry_run)
+        _step_dead_roots(store, plan, w, res)
         _step_gates(store, plan, w, res, now)
         _step_loops(store, plan, w, res, now)
         _step_reviews(store, plan, w, res, now, lane_table, rules)

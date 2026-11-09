@@ -4458,6 +4458,109 @@ def test_dead_chain_straggler_closes_once_its_job_ends(store: Store) -> None:
     assert (res.asks, res.dispatched) == (0, 0)
 
 
+def test_dead_plan_root_closes_its_open_children(store: Store) -> None:
+    """gr612091: a plan root closed ``won't-do`` by hand drops the whole
+    subtree out of ``_candidate_roots`` — without the sweep the pass's
+    open children (the approval ask still offering ``deploy r<N>``, the
+    gate, the loop) sit open forever. The tick closes each won't-do
+    with the comment, then goes quiet."""
+    mint = T.mint_release_pass(store)
+    store.add_tag(
+        mint.root_id,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+
+    res = pd.run_pass(store)
+    for key, tid in mint.ids.items():
+        if key == "root":
+            continue
+        assert _status(store, tid) == "won't-do", key
+    assert _status(store, mint.root_id) == "won't-do"
+    assert any(
+        "closed won't-do — plan root" in n and f"td{mint.root_id}" in n
+        for n in res.notes
+    )
+
+    # A second pass is quiet: nothing left open under the dead root.
+    res2 = pd.run_pass(store)
+    assert not any("dead root" in n or "closed won't-do" in n for n in res2.notes)
+
+
+def test_dead_root_defers_a_node_with_a_live_job(store: Store) -> None:
+    """A live job under the dead plan may still land its write — the
+    node defers to the next tick (the moot close's rule), then closes."""
+    mint = T.mint_release_pass(store)
+    cut = mint.ids["cut"]
+    live = _slice_job(store, cut, "release_cut", "queued")
+    store.add_tag(
+        mint.root_id,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+
+    res = pd.run_pass(store)
+    assert _status(store, cut) == "open"
+    assert _status(store, mint.ids["gate"]) == "won't-do"
+    assert any(
+        f"td{cut} has a live job; dead-root close deferred" in n for n in res.notes
+    )
+
+    _set_job_status(store, live, "failed")
+    res = pd.run_pass(store)
+    assert _status(store, cut) == "won't-do"
+
+
+def test_dead_root_takes_a_nested_plan_with_it(store: Store) -> None:
+    """A plan nested inside the dead root's subtree is dead work too —
+    self-rooted is not live-owned (its root is only a candidate because
+    the outer is gone from the candidate set): the whole inner plan
+    closes won't-do with the outer's own nodes."""
+    outer = _review_plan(store)
+    inner = T.mint_release_pass(store, parent_id=outer.root_id)
+    store.add_tag(
+        outer.root_id,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+
+    pd.run_pass(store)
+    for key, tid in inner.ids.items():
+        assert _status(store, tid) == "won't-do", f"inner {key}"
+    for key, tid in outer.ids.items():
+        if key != "root":
+            assert _status(store, tid) == "won't-do", f"outer {key}"
+
+
+def test_dead_phase_inside_a_live_plan_is_not_swept(store: Store) -> None:
+    """A dead rootlike nested in a LIVE plan is the live plan's business:
+    a phase closed won't-do under an open root does not orphan its
+    children — they belong to the running plan (its own steps judge
+    them), so the sweep leaves them open."""
+
+    def build_(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        p = m.node("phase", "Phase", {"auto_close": True}, parent=None)
+        m.node("task", "Task", {"op": "run_slice"}, parent=p)
+
+    mint = T._run(store, None, build_)
+    phase, task = mint.ids["phase"], mint.ids["task"]
+    store.add_tag(
+        phase,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+
+    res = pd.run_pass(store)
+    assert _status(store, phase) == "won't-do"
+    assert _status(store, task) != "won't-do"
+    assert not any(f"td{task}" in n and "won't-do" in n for n in res.notes)
+
+
 def test_task_moot_stamp_failure_keeps_the_tag(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -52,9 +52,25 @@ own ancestor-of-prod gate is the proof, it touches no remote ref, and a
 refusal fails the job with the log tail (no cut launched). On exit 0 the
 handle swaps onto the usual ``--cut-only`` launch, the supersede note
 carried into the cut's summary. An open ``cut``/``gating``/``fixing``/
-``green`` local record is not covered — ``supersede`` refuses those, and
-the false-``RELEASE_CUT`` hazard they carry needs ``scripts/release``'s
-resume path, a later slice (td575911).
+``green`` local record the shared row does NOT dispute is not covered —
+``supersede`` refuses open records, and the false-``RELEASE_CUT``
+hazard they carry needs ``scripts/release``'s resume path, a later
+slice (td575911).
+
+A second preflight covers the dropped pass (gr612091): a local record
+in an open state whose shared ``release.round`` row proves it dead —
+a terminal state (``release_poll``'s ``abandoned`` stamp on a
+won't-do'd pass), a higher ``n``, or a different branch, the same
+dispute ``scripts/release``'s shared-row filter applies — reads as in
+flight to ``scripts/release`` on a host that cannot read the row
+itself, so the next pass's first cut rides its retry cap into a
+showstopper ask. The job runs a detached ``abandon`` phase —
+``scripts/round cut --abandon`` with ``PRECIS_GRIPE_NOTE=0`` — which
+marks the record abandoned and deletes the origin branch while its
+head is on main; the verb's own refusals (a deployment journal,
+unforwarded commits) fail the job with the log tail, no cut launched.
+On exit 0 the handle swaps onto the ``--cut-only`` launch exactly as
+the supersede's does.
 
 The cut never waits for CI: ``ci_verdict_poll`` records the verdict and the
 ``tests-green`` gate reads it. Refused while ``PRECIS_FACTORY=off``. The
@@ -357,6 +373,69 @@ def _stale_supersede_n(ctx: Any) -> int | None:
     return n if confirmed and quiet else None
 
 
+def _local_open_round(root: Path) -> dict[str, Any] | None:
+    """The checkout's one local ``round.json`` record still in an open
+    state — ``cut``/``gating``/``fixing``/``green``, an int ``n``, no
+    pending cut (a ``cut_pending`` record is live work this clone owns;
+    ``scripts/release``'s adoption path, not a corpse) — else ``None``.
+    A missing or unparsable file, a closed round, terminal or
+    deploying records, and several open records (an invariant
+    violation — never judged) all answer ``None``."""
+    path = _round_json_path(root)
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not data.get("open"):
+        return None
+    candidates = [
+        rel
+        for rel in data.get("releases") or []
+        if isinstance(rel, dict)
+        and rel.get("state") in ("cut", "gating", "fixing", "green")
+        and type(rel.get("n")) is int
+        and not rel.get("cut_pending")
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _dead_open_round_n(ctx: Any) -> int | None:
+    """``n`` of the checkout's open record the shared ``release.round``
+    row proves dead (gr612091), else ``None``: ``release_poll``'s
+    ``abandoned`` stamp — or any terminal state, a higher ``n``, or a
+    different branch — disputes the local record exactly as
+    ``scripts/release``'s shared-row filter does, but on a host that
+    cannot read the row the record and its origin branch still read in
+    flight. ``round cut --abandon`` retires both; its own refusals
+    (deploy journal, unforwarded commits) fail closed. A read failure
+    is a warning and "no": the cut launches as today."""
+    try:
+        root = _rs.slice_root()
+    except RuntimeError:
+        return None  # launch_script below reports the same failure
+    rel = _local_open_round(root)
+    if rel is None:
+        return None
+    try:
+        shared = _release.read_round(ctx.store)
+    except Exception:
+        log.warning("%s: dead-round preflight read failed", NAME, exc_info=True)
+        return None
+    if not isinstance(shared, dict):
+        return None
+    n, db_n = rel.get("n"), shared.get("n")
+    if type(n) is not int or type(db_n) is not int:
+        return None
+    if db_n > n or (db_n == n and _release.is_terminal(shared)):
+        return int(n)
+    db_branch = str(shared.get("branch") or "")
+    if db_n == n and db_branch and db_branch != rel.get("branch"):
+        return int(n)
+    return None
+
+
 # ── release_cut ────────────────────────────────────────────────────
 
 
@@ -492,15 +571,51 @@ def submit(ctx: Any, spec: Any) -> Any:
             if isinstance(handle, dict):
                 handle.update(phase="supersede", n=n, cut_argv=argv)
             return handle
+        dead = _dead_open_round_n(ctx)
+        if dead is not None:
+            # gr612091: the shared row already retired this release —
+            # `cut --abandon` marks the record and deletes the origin
+            # branch (its own guards refuse a deploy journal and
+            # unforwarded commits). Same detached-phase shape as the
+            # supersede: PRECIS_GRIPE_NOTE=0 keeps the shared row as it
+            # is, the exit file decides.
+            handle = launch_script(
+                ctx,
+                f"{NAME}_abandon",
+                ["cut", "--abandon"],
+                script="round",
+                env={"PRECIS_GRIPE_NOTE": "0"},
+            )
+            if isinstance(handle, dict):
+                handle.update(phase="abandon", n=dead, cut_argv=argv)
+            return handle
     return launch_script(ctx, NAME, argv)
 
 
-def _superseded(ctx: Any, handle: dict[str, Any]) -> bool:
-    """The ``supersede`` phase's verdict: a refusal fails the job with
-    the log tail and cuts nothing; exit 0 swaps the handle in place onto
-    the ``--cut-only`` launch (``release_confirm._confirmed``'s pattern:
-    a fresh handle persisted as ``compute_handle`` with a fresh
-    deadline, the note carried into the cut's summary)."""
+#: The retire phases' printed verb, note and meta key — ``supersede``
+#: for the stale deploying/deployed record (td575911), ``abandon`` for
+#: the dead open one (gr612091).
+_PHASES: dict[str, tuple[str, str, str]] = {
+    "supersede": (
+        "supersede r{n}",
+        "superseded stale local r{n}, prod moved past it",
+        "stale_round_superseded",
+    ),
+    "abandon": (
+        "cut --abandon",
+        "abandoned dead local r{n}: the shared round row retired it",
+        "dead_round_abandoned",
+    ),
+}
+
+
+def _phase_done(ctx: Any, handle: dict[str, Any]) -> bool:
+    """A retire phase's verdict: a refusal fails the job with the log
+    tail and cuts nothing; exit 0 swaps the handle in place onto the
+    ``--cut-only`` launch (``release_confirm._confirmed``'s pattern: a
+    fresh handle persisted as ``compute_handle`` with a fresh deadline,
+    the note carried into the cut's summary)."""
+    verb_t, note_t, meta_key = _PHASES[str(handle.get("phase"))]
     done = finish_run(ctx, handle, NAME)
     if done is None:
         return not isinstance(handle, dict)
@@ -509,15 +624,16 @@ def _superseded(ctx: Any, handle: dict[str, Any]) -> bool:
     if exit_code != 0:
         fail_with_tail(
             ctx,
-            f"{NAME}: scripts/round supersede r{n} exit {exit_code}; no cut launched",
+            f"{NAME}: scripts/round {verb_t.format(n=n)} exit "
+            f"{exit_code}; no cut launched",
             log_text,
         )
         return True
-    note = f"superseded stale local r{n}, prod moved past it"
+    note = note_t.format(n=n)
     tail = log_text.strip()[-300:]
     fresh = launch_script(ctx, NAME, list(handle.get("cut_argv") or ["--cut-only"]))
     ctx.append_chunk("job_event", f"{NAME}: {note}" + (f" — {tail}" if tail else ""))
-    ctx.set_meta(stale_round_superseded={"n": n})
+    ctx.set_meta(**{meta_key: {"n": n}})
     if fresh is None:
         return True  # the launch failure is recorded; no cut
     handle.clear()
@@ -532,8 +648,8 @@ def _superseded(ctx: Any, handle: dict[str, Any]) -> bool:
 
 
 def poll(ctx: Any, handle: Any) -> bool:
-    if isinstance(handle, dict) and handle.get("phase") == "supersede":
-        return _superseded(ctx, handle)
+    if isinstance(handle, dict) and handle.get("phase") in _PHASES:
+        return _phase_done(ctx, handle)
     done = finish_run(ctx, handle, NAME)
     if done is None:
         return not isinstance(handle, dict)

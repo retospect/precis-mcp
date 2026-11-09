@@ -1591,12 +1591,6 @@ def test_release_cut_factory_off_runs_nothing(
             True,
             id="cut-pending",
         ),
-        pytest.param(
-            [{"branch": "release/r7", "n": 7, "base": SHA, "state": "cut"}],
-            True,
-            True,
-            id="open-cut-record",
-        ),
     ],
 )
 def test_release_cut_leaves_a_local_record_that_is_not_stale(
@@ -1609,10 +1603,11 @@ def test_release_cut_leaves_a_local_record_that_is_not_stale(
     write: bool,
 ) -> None:
     """Every non-stale local shape — no record, a missing or unparsable
-    file, a closed round, a terminal or runtime-confirmed record, a
-    pending cut, and the deferred hazard of an open ``cut`` record — is
-    left alone: no supersede, the cut launches as today even with a
-    shared confirmed r7 row."""
+    file, a closed round, a terminal or runtime-confirmed record, and a
+    pending cut — is left alone: no supersede, the cut launches as
+    today even with a shared confirmed r7 row. The open-record case the
+    confirmed row would dispute is the dead-round preflight's own
+    parametrized block below."""
     _seed_round(store, 7, "confirmed")
     _local_round(tmp_path, monkeypatch, releases, open_=open_, write=write)
     mint = T.mint_release_pass(store)
@@ -1622,6 +1617,237 @@ def test_release_cut_leaves_a_local_record_that_is_not_stale(
     assert checkout["argv"] == [
         [str(checkout["root"] / "scripts" / "release"), "--cut-only"]
     ]
+
+
+# ── release_cut abandons the dropped pass's open round (gr612091) ────
+
+
+def _open_record(n: int = 7, **over: Any) -> dict[str, Any]:
+    """The local ``round.json`` record a dropped pass leaves behind: an
+    open (``cut``) record ``scripts/round cut --abandon`` retires."""
+    rec: dict[str, Any] = {
+        "branch": f"release/r{n}",
+        "n": n,
+        "base": SHA,
+        "state": "cut",
+    }
+    rec.update(over)
+    return rec
+
+
+def test_release_cut_abandons_a_dead_open_round(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr612091: the pass that cut r7 ended won't-do, ``release_poll``
+    stamped the shared row ``abandoned`` — but the clone's ``round.json``
+    record and the origin branch still read in flight to
+    ``scripts/release``. The cut's first act is the detached
+    ``scripts/round cut --abandon`` (the shared row untouched —
+    ``PRECIS_GRIPE_NOTE=0``), then the cut."""
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    script = _round_script(checkout)
+    _local_round(tmp_path, monkeypatch, [_open_record()])
+    _seed_round(store, 7, "abandoned")
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert ctx.failures == []
+    assert handle is not None and handle["phase"] == "abandon"
+    assert checkout["argv"] == [[str(script), "cut", "--abandon"]]
+    assert checkout["env"] == [{"PRECIS_GRIPE_NOTE": "0"}]
+
+    _exit(checkout, 0, "release/r7 abandoned (abc is on main) — deleted on origin\n")
+    assert rc.poll(ctx, handle) is False  # swapped onto the cut
+    assert checkout["argv"][-1] == [
+        str(checkout["root"] / "scripts" / "release"),
+        "--cut-only",
+    ]
+    assert "PRECIS_GRIPE_NOTE" not in (checkout["env"][-1] or {})
+    assert "abandoned dead local r7" in ctx.chunks[-1][1]
+
+    _exit(checkout, 0, _cut_log())
+    assert rc.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    assert "abandoned dead local r7" in ctx.chunks[-1][1]
+    assert ctx.stamped["dead_round_abandoned"] == {"n": 7}
+    row = R.read_round(store)
+    assert row is not None and row["state"] == "abandoned"
+
+
+@pytest.mark.parametrize("state", ["abandoned", "superseded", "confirmed", "failed"])
+def test_release_cut_abandons_on_every_terminal_shared_state(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+) -> None:
+    """Every terminal shared row at the local record's number — not just
+    the dropped-pass ``abandoned`` — proves the open record dead
+    (``failed`` carries no deploy journal: a rollout that never
+    launched)."""
+    script = _round_script(checkout)
+    _local_round(tmp_path, monkeypatch, [_open_record()])
+    _seed_round(store, 7, state)
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and handle["phase"] == "abandon"
+    assert checkout["argv"] == [[str(script), "cut", "--abandon"]]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        pytest.param({"n": 8, "state": "cut"}, id="higher-n"),
+        pytest.param(
+            {"n": 7, "state": "cut", "branch": "release/r8"}, id="branch-diff"
+        ),
+    ],
+)
+def test_release_cut_abandons_a_disputed_open_round(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    row: dict[str, Any],
+) -> None:
+    """``scripts/release``'s shared-row filter, mirrored job-side: a row
+    at a higher number, or the same number naming another branch,
+    disputes the local open record the same as a terminal state."""
+    script = _round_script(checkout)
+    _local_round(tmp_path, monkeypatch, [_open_record()])
+    _seed_round(
+        store,
+        int(row["n"]),
+        str(row["state"]),
+        **{k: v for k, v in row.items() if k not in ("n", "state")},
+    )
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and handle["phase"] == "abandon"
+    assert checkout["argv"] == [[str(script), "cut", "--abandon"]]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        pytest.param({"n": 7, "state": "cut"}, id="same-row-cut"),
+        pytest.param({"n": 7, "state": "green"}, id="same-row-green"),
+        pytest.param(
+            {
+                "n": 7,
+                "state": "failed",
+                "deploy": {"sha": SHA, "rollout_at": "2026-11-06T10:05:00Z"},
+            },
+            id="failed-partial-rollout",
+        ),
+        pytest.param({"n": 6, "state": "abandoned"}, id="lower-n"),
+    ],
+)
+def test_release_cut_leaves_an_undisputed_open_round(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    row: dict[str, Any],
+) -> None:
+    """No dispute, no abandon: a same-``n`` row still in the lifecycle
+    (the live cut or a launched rollout's live partial), a lower-``n``
+    row — the cut launches as today and ``scripts/release``'s resume
+    path decides."""
+    _local_round(tmp_path, monkeypatch, [_open_record()])
+    _seed_round(
+        store,
+        int(row["n"]),
+        str(row["state"]),
+        **{k: v for k, v in row.items() if k not in ("n", "state")},
+    )
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and handle.get("phase") is None
+    assert checkout["argv"] == [
+        [str(checkout["root"] / "scripts" / "release"), "--cut-only"]
+    ]
+
+
+@pytest.mark.parametrize(
+    ("releases", "row"),
+    [
+        pytest.param(None, {"n": 7, "state": "abandoned"}, id="no-local-record"),
+        pytest.param(
+            [_open_record(cut_pending=True)],
+            {"n": 7, "state": "abandoned"},
+            id="cut-pending",
+        ),
+        pytest.param(
+            [_open_record(), _open_record(n=8)],
+            {"n": 7, "state": "abandoned"},
+            id="two-open-records",
+        ),
+        pytest.param(
+            [_open_record()],
+            None,
+            id="no-shared-row",
+        ),
+    ],
+)
+def test_release_cut_leaves_an_open_round_without_evidence(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    releases: Any,
+    row: dict[str, Any] | None,
+) -> None:
+    """The abandon needs BOTH halves: a single open local record and a
+    shared row that disputes it. No record, a pending cut (live work
+    ``scripts/release`` adopts), several open records, or no shared row
+    at all launches the cut as today."""
+    if row is not None:
+        _seed_round(store, int(row["n"]), str(row["state"]))
+    _local_round(tmp_path, monkeypatch, releases)
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and handle.get("phase") is None
+    assert checkout["argv"] == [
+        [str(checkout["root"] / "scripts" / "release"), "--cut-only"]
+    ]
+
+
+def test_release_cut_abandon_failure_fails_the_job_and_cuts_nothing(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``cut --abandon`` refusing — a branch carrying commits main lacks
+    is a human call, the gripe's "retire" never outruns it — fails the
+    job with the log tail; no cut launches."""
+    _round_script(checkout)
+    _local_round(tmp_path, monkeypatch, [_open_record()])
+    _seed_round(store, 7, "abandoned")
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and handle["phase"] == "abandon"
+    _exit(
+        checkout,
+        1,
+        "scripts/round: abandon refused — release/r7 carries commits "
+        "not on origin/main\n",
+    )
+    assert rc.poll(ctx, handle) is True
+    assert len(ctx.failures) == 1
+    assert "no cut launched" in ctx.failures[0]
+    assert "not on origin/main" in ctx.failures[0]  # the log tail
+    assert len(checkout["argv"]) == 1  # only the abandon launch
 
 
 # ── the deploy is pinned to the cut's host and checkout ──────────────
