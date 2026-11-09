@@ -64,7 +64,12 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    tests_run}`` records the job judged, so a pass never acts twice on one
    job; ``tests_run`` is always ``False`` — the reviewer is read-only —
    and only this step and its retry path read the record, so nothing
-   reads a verdict as test evidence.
+   reads a verdict as test evidence. A reviewer whose land targets ALL
+   closed with no ``landed:`` comment never dispatches: the tick closes
+   it ``won't-do`` with the dead target's other ``blocked-by``
+   descendants (the prod gate, the validate — the same close a task
+   moot runs, re-swept each pass while a straggler's live job defers
+   it), so the root settles and no ask files (gr575912).
 3. **phases** — first reopens a generator that is ``STATUS:done`` while a
    child is still open (a generator's session mints children, it does not
    close the node; counted as ``reopened``). Then closes every node whose work
@@ -1314,6 +1319,99 @@ def _reset_gates(
         res.notes.append(f"gate td{g.id}: sha {sha[:9]} reset after review REVERT")
 
 
+def _todo_status(store: Any, todo_id: int) -> str:
+    """A todo's STATUS value, ``"open"`` when it carries none — the
+    fallback for a review target the loaded plan does not reach."""
+    for t in store.tags_for(todo_id):
+        if t.prefix == "STATUS":
+            return str(t.value)
+    return "open"
+
+
+def _dead_land_targets(plan: _Plan, store: Any, n: _Node) -> list[int]:
+    """The reviewer ``n``'s land targets when EVERY one closed with no
+    ``landed:`` comment — the review has nothing left to judge
+    (gr575912). ``[]`` while any target is still live or landed one: a
+    ``won't-do`` blocker is terminal, so without this check a build the
+    coordinator killed frees its review for dispatch anyway.
+
+    Targets are ``generate.from``'s todo — its non-ask children when it
+    has them (a slicer's slices) — falling back to the non-ask
+    ``blocked-by`` edges when ``from`` resolves to no plan todo (an
+    engine-review node points out of its plan subtree)."""
+    pairs: list[tuple[int, str]] = [(t.id, t.status) for t in _review_targets(plan, n)]
+    if not pairs:
+        fid = _review_from(n)
+        if fid is not None:
+            node = plan.nodes.get(fid)
+            blocker = next(
+                (b for b in plan.blockers.get(n.id, []) if b.id == fid), None
+            )
+            pairs = [
+                (
+                    fid,
+                    node.status
+                    if node is not None
+                    else plan.status_of(blocker)
+                    if blocker is not None
+                    else _todo_status(store, fid),
+                )
+            ]
+        else:
+            pairs = [
+                (b.id, plan.status_of(b))
+                for b in plan.blockers.get(n.id, [])
+                if not b.is_ask
+            ]
+    dead = [
+        tid
+        for tid, status in pairs
+        if status in BLOCKER_TERMINAL_STATUSES and _landed_sha(store, tid) is None
+    ]
+    return dead if pairs and len(dead) == len(pairs) else []
+
+
+def _close_dead_chain(
+    plan: _Plan, w: _Writer, res: PassResult, n: _Node, dead: list[int]
+) -> None:
+    """Close reviewer ``n`` and the rest of the dead land chain ``won't-do``
+    (gr575912): the dead target's other ``blocked-by`` descendants — the
+    prod gate, the validate — starve with the review, so the pass runs
+    the same close a task moot runs (``_step_moot``) and the root can
+    settle. A node carrying a live job defers: the sweep re-runs every
+    pass while the targets stay dead (``_step_reviews`` runs it for a
+    closed reviewer too), so the straggler closes once its job ends
+    instead of holding the root open forever."""
+    why = (
+        f"review target {', '.join(f'td{t}' for t in dead)} closed with no "
+        "`landed:` comment — nothing landed to review"
+    )
+    if not _closed(n):
+        w.comment(n, f"plan_dispatch: {why}")
+        w.set_status(n, "won't-do")
+        res.phases_closed += 1
+        res.notes.append(f"td{n.id}: review closed won't-do — {why}")
+    starved = 0
+    for tid in dead:
+        target = plan.nodes.get(tid)
+        if target is None:
+            continue
+        for m in _moot_descendants(plan, target):
+            if m.id == n.id or _closed(m):
+                continue
+            if plan.live_job(m):
+                res.notes.append(f"td{m.id} has a live job; dead-chain close deferred")
+                continue
+            w.comment(m, f"plan_dispatch: {why}; its land chain is dead")
+            w.set_status(m, "won't-do")
+            res.phases_closed += 1
+            starved += 1
+    if starved:
+        res.notes.append(
+            f"td{n.id}: {starved} dead-chain node(s) closed won't-do with it"
+        )
+
+
 def _step_reviews(
     store: Any,
     plan: _Plan,
@@ -1323,9 +1421,15 @@ def _step_reviews(
     lane_table: tuple[_lanes.Lane, ...],
 ) -> None:
     for n in plan.todos():
-        if not _is_reviewer(n) or _closed(n) or plan.paused(n):
+        if not _is_reviewer(n) or plan.paused(n):
             continue
         if plan.child_todos(n) or plan.live_job(n):
+            continue
+        dead = _dead_land_targets(plan, store, n)
+        if dead:
+            _close_dead_chain(plan, w, res, n, dead)
+            continue
+        if _closed(n):
             continue
         jobs = plan.jobs(n)
         if not jobs or jobs[-1].status != "succeeded":

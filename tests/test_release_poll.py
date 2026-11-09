@@ -2289,6 +2289,7 @@ def test_an_engine_land_with_no_reviewer_mints_one(
     use_lanes(monkeypatch)  # the seed table carries review-fit lanes
     root, build = _plan_landed(store)
     _engine_land(store, build, paths=["scripts/ship"])
+    _landed_comment(store, build)
     lines, notes = rp.engine_review_blockers(store, now=NOW, file_asks=True)
     [(rid, meta)] = rp._reviewer_rows(store)
     assert meta["generate"] == {"role": "reviewer", "from": f"td{build}"}
@@ -2405,6 +2406,7 @@ def test_the_minted_reviewers_land_verdict_clears(
     use_lanes(monkeypatch)
     _root_id, build = _plan_landed(store)
     _engine_land(store, build, paths=["scripts/ship"])
+    _landed_comment(store, build)
     rp.engine_review_blockers(store, now=NOW, file_asks=True)
     [(rid, _meta)] = rp._reviewer_rows(store)
     _review_job(store, rid)
@@ -2457,6 +2459,7 @@ def test_a_minted_reviewers_fix_landed_fix_clears(
     use_lanes(monkeypatch)
     root, build = _plan_landed(store)
     _engine_land(store, build, paths=["scripts/ship"])
+    _landed_comment(store, build)
     rp.engine_review_blockers(store, now=NOW, file_asks=True)
     [(rid, _meta)] = rp._reviewer_rows(store)
     _review_job(store, rid)

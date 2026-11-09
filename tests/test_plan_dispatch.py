@@ -1639,6 +1639,7 @@ def test_a_cancelled_review_requeues_through_the_review_lane(store: Store) -> No
     mint = _review_plan(store)
     build, review = mint.ids["build"], mint.ids["review"]
     _job(store, build, lane="claude-sub")
+    _todo_comment(store, build, "landed: abc1234 — the fix")
     _mark_done(store, build)
     _job(store, review, status="cancelled")
     res = pd.run_pass(store)
@@ -1751,6 +1752,7 @@ def test_a_cancelled_review_on_full_lanes_logs_no_requeue_note(
     mint = _review_plan(store)
     build, review = mint.ids["build"], mint.ids["review"]
     _job(store, build, lane="claude-sub")
+    _todo_comment(store, build, "landed: abc1234 — the fix")
     _mark_done(store, build)
     _job(store, review, status="cancelled")
     # Fill every review-fit lane outside the builder's vendor: devin
@@ -2614,6 +2616,154 @@ def test_task_moot_defers_a_descendant_with_a_live_job(store: Store) -> None:
     assert MOOT_TAG not in _open_tags(store, build)
     assert _status(store, gid) == "verify"
     assert len(_comments(store, gid)) == 1
+
+
+def test_dead_build_closes_the_review_no_dispatch_no_ask(store: Store) -> None:
+    """gr575912: a build closed ``won't-do`` by the coordinator with no
+    ``landed:`` comment leaves its reviewer nothing to judge — the tick
+    dispatches no review job, closes the review ``won't-do`` with one
+    note, files no ask, and the root settles. The shape is the
+    ``gripe-fix-direct`` plan td575465 was (build -> review, gate,
+    validate)."""
+    gid = int(insert_gripe(store, "the dead fix", status="fixing").id)
+    mint = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True)
+    build, review = mint.ids["build"], mint.ids["review"]
+    store.add_tag(
+        build,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+
+    res = pd.run_pass(store)
+    for key in ("review", "gate", "validate"):
+        assert _status(store, mint.ids[key]) == "won't-do", key
+    assert _status(store, mint.root_id) in pd.TERMINAL_TODO_STATUSES
+    assert (res.asks, res.dispatched) == (0, 0)
+    assert _jobs_under(store, review) == []
+    assert any(
+        f"td{review}: review closed won't-do" in n and "no `landed:` comment" in n
+        for n in res.notes
+    )
+
+    # A second pass is quiet: no redispatch, no ask, no second close.
+    res2 = pd.run_pass(store)
+    assert (res2.asks, res2.dispatched) == (0, 0)
+    assert not any("won't-do" in n for n in res2.notes)
+
+
+def test_dead_review_target_via_blocked_by_only(store: Store) -> None:
+    """gr575912, engine-review shape: ``templates.mint_reviewer`` hung
+    under a DIFFERENT root points ``generate.from`` at a todo the loaded
+    plan tree does not reach — the close still reads the dead target off
+    the ``blocked-by`` edge's status."""
+    gid = int(insert_gripe(store, "the dead fix", status="fixing").id)
+    mint = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True)
+    build = mint.ids["build"]
+    store.add_tag(
+        build,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+
+    def other_(m: T._Minter) -> None:
+        m.node("root", "Other plan", {"auto_close": True})
+
+    other = T._run(store, None, other_)
+    orphan = T.mint_reviewer(store, other.root_id, build)
+
+    res = pd.run_pass(store)
+    assert _status(store, orphan) == "won't-do"
+    assert _jobs_under(store, orphan) == []
+    assert _status(store, mint.ids["review"]) == "won't-do"
+    assert _status(store, other.root_id) in pd.TERMINAL_TODO_STATUSES
+    assert (res.asks, res.dispatched) == (0, 0)
+
+
+def test_landed_build_lets_the_review_dispatch(store: Store) -> None:
+    """The dead-chain close only bites on a target with no ``landed:``
+    comment — a ``done`` build that did land keeps its review live."""
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    _todo_comment(store, build, "landed: abc1234 — the fix")
+    _mark_done(store, build)
+
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert _status(store, review) == "open"
+    ((_job_id, meta),) = _jobs_under(store, review)
+    assert meta["job_type"] == "run_slice"
+
+
+def test_partly_dead_slice_set_keeps_the_review(store: Store) -> None:
+    """A reviewer over a slicer judges each minted slice's land: one
+    slice won't-do while another landed still leaves it work — the
+    close needs EVERY target dead."""
+
+    def build_(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        s = m.node(
+            "slicer", "Slice it", {"generate": {"role": "slicer", "from": "x.md~H"}}
+        )
+        m.node("t1", "Task one", {"op": "run_slice"}, parent=s)
+        m.node("t2", "Task two", {"op": "run_slice"}, parent=s)
+        m.node(
+            "review",
+            "Review the slices",
+            T._reviewer(s),
+            body=T._reviewer_brief(s),
+            blocked_by=("slicer",),
+        )
+
+    mint = T._run(store, None, build_)
+    slicer, review = mint.ids["slicer"], mint.ids["review"]
+    _todo_comment(store, mint.ids["t1"], "landed: abc1234 — slice one")
+    _mark_done(store, mint.ids["t1"], slicer)
+    store.add_tag(
+        mint.ids["t2"],
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert _status(store, review) == "open"
+
+
+def test_dead_chain_straggler_closes_once_its_job_ends(store: Store) -> None:
+    """gr575912: a dead-chain node holding a live job defers the close —
+    it is never cancelled — and the pass re-sweeps it once the job ends
+    (a closed reviewer's targets stay dead), so nothing dispatches on
+    the dead chain and the root still settles."""
+    gid = int(insert_gripe(store, "the dead fix", status="fixing").id)
+    mint = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True)
+    build, review, validate = (mint.ids[k] for k in ("build", "review", "validate"))
+    store.add_tag(
+        build,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    live = _slice_job(store, validate, "run_slice", "queued")
+
+    res = pd.run_pass(store)
+    assert _status(store, review) == "won't-do"
+    assert _status(store, mint.ids["gate"]) == "won't-do"
+    assert _status(store, validate) == "open"
+    assert (res.asks, res.dispatched) == (0, 0)
+    assert any(
+        f"td{validate} has a live job; dead-chain close deferred" in n
+        for n in res.notes
+    )
+
+    _set_job_status(store, live, "failed")
+    res = pd.run_pass(store)
+    assert _status(store, validate) == "won't-do"
+    assert _status(store, mint.root_id) in pd.TERMINAL_TODO_STATUSES
+    assert (res.asks, res.dispatched) == (0, 0)
 
 
 def test_task_moot_stamp_failure_keeps_the_tag(
