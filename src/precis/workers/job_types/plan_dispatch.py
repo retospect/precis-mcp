@@ -80,7 +80,8 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    children yet, or a plain leaf under a plan root; ``STATUS:open``, no live
    ``blocked-by`` target on it or an ancestor, no doable-exclusion tag other
    than ``child-failed:``, no paused ancestor, no live child job, no
-   ``claimed-by:`` tag, under its retry cap) gets one job parented to it:
+   ``claimed-by:`` tag, no mint pass still in flight, under its retry cap)
+   gets one job parented to it:
    ``meta.op`` resolved to ``{type, params}`` (a bare name is
    ``{type: name, params: {todo_id}}``), default ``run_slice {todo_id}``.
    The tick owns plan retries, so a retry drops the ``child-failed:`` tags
@@ -97,7 +98,16 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    build, whichever root is older. A reviewer's ``run_slice`` is pinned to
    ``pick_lane('review', exclude_vendor=<the builder lane's vendor>)``;
    while no other vendor's lane is enabled that falls back to the
-   builder's lane and the action note says so.
+   builder's lane and the action note says so. **Mint in flight**
+   (gr590954): a session mints each child with one ``put`` — the row
+   commits open and linkless — and adds the ``blocked-by`` links in
+   later calls, so a node minted mid-session gets no job while the
+   minting session's job is in flight on an ancestor (the ``put``'s
+   ``parent_id`` default is the session's own todo) or on a
+   child-minting generator of the same plan (:func:`_mint_in_flight`).
+   A node minted while no plan session runs keeps the runbook contract
+   (me570515): mint it held — any non-``open`` status or a
+   ``waiting-for:`` tag — and release it once linked.
 5. **hygiene** — a ``claimed-by:`` tag older than 4 h on a todo with no live
    child job is released (``STATUS:open``); the same for a ``STATUS:fixing``
    gripe (lease past ``expires_at``, no live job under or ``fixes``-linked to
@@ -1873,6 +1883,50 @@ def _claims(n: _Node) -> list[str]:
     return [v for v in n.open_tags if v.startswith("claimed-by:")]
 
 
+#: ``meta.generate.role``s whose session posts a document instead of
+#: minting children (``run_slice``'s ``_NO_COMMIT_ROLES``, restated —
+#: the dependency stays one-way). A live job on any other generator
+#: role is a mint pass still in flight (:func:`_mint_in_flight`).
+_DOC_ROLES = frozenset({"reviewer", "analyst"})
+
+
+def _minting_generator(n: _Node) -> bool:
+    """A generator whose session mints child todos — any role but the
+    document roles."""
+    if node_kind(n.meta) != "generator":
+        return False
+    gen = n.meta.get("generate")
+    return (gen or {}).get("role") not in _DOC_ROLES
+
+
+def _job_in_flight(j: _Node) -> bool:
+    """Job ``j``'s session may still be writing — ``running`` or a
+    ``waiting_*`` park. A ``queued`` job has not started: nothing of
+    its mint is in flight."""
+    return j.status != "queued" and j.status not in _JOB_TERMINAL
+
+
+def _mint_in_flight(plan: _Plan, n: _Node) -> bool:
+    """A mint pass on ``n``'s plan may still be running (gr590954):
+    the links of a node minted mid-session are settled only once the
+    minting session's job ends, so ``n`` holds while an ancestor of it,
+    or a child-minting generator of the same plan, has an in-flight job
+    older than ``n``. A node older than the job cannot be the session's
+    own write — its links are already settled."""
+
+    def suspect(owner: _Node) -> bool:
+        return any(
+            _job_in_flight(j) and j.created_at < n.created_at for j in plan.jobs(owner)
+        )
+
+    if any(suspect(a) for a in plan.ancestors(n)):
+        return True
+    return any(
+        g.id != n.id and g.root == n.root and _minting_generator(g) and suspect(g)
+        for g in plan.todos()
+    )
+
+
 def _attempt_tag(n: _Node) -> int:
     best = 0
     for value in n.open_tags:
@@ -2696,7 +2750,12 @@ def _step_dispatch(
             continue
         job_type, params = _resolve_op(n)
         cap = _retry_cap(n, _cap_rungs(plan, lane_table, n, job_type, params))
-        if plan.blocked(n) or plan.paused(n) or _capped(plan, n, cap):
+        if (
+            plan.blocked(n)
+            or plan.paused(n)
+            or _mint_in_flight(plan, n)
+            or _capped(plan, n, cap)
+        ):
             continue
         jobs = plan.jobs(n)
         newest = jobs[-1] if jobs else None

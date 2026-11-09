@@ -310,6 +310,58 @@ def test_expired_claim_is_released(store: Store) -> None:
     assert pd.run_pass(store).dispatched == 1
 
 
+def test_a_node_waits_for_a_mint_pass_still_in_flight(store: Store) -> None:
+    """gr590954: a session mints each child with one ``put`` — the row
+    commits open and linkless — and adds the ``blocked-by`` links in
+    later calls, so a node minted mid-session gets no job before its
+    links land. While the minting generator's job runs, both children
+    wait (one under the generator, one under the root); once the job
+    ends the linked blocker — not the mint — holds them."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("gen", "Triage", {"generate": {"role": "triage", "from": "gr1"}})
+        m.node("b", "Blocker", {"op": "run_slice"}, body="Blocks.")
+
+    mint = T._run(store, None, build)
+    gen, blocker = mint.ids["gen"], mint.ids["b"]
+    job = _slice_job(store, gen, "run_slice", "running")
+
+    # The session's first two puts land — one child under itself, one
+    # under the root — each committed open and linkless (the put→link
+    # gap gr590954 names).
+    def kid(m: T._Minter) -> None:
+        m.node("c", "Minted mid-pass", {"op": "run_slice"}, body="Do it.")
+
+    c1 = T._run_body(store, gen, mint.root_id, kid).ids["c"]
+    c2 = T._run_body(store, mint.root_id, mint.root_id, kid).ids["c"]
+
+    # No job before the link: both hold while the session runs (the
+    # pre-existing blocker, minted before the job, still dispatches —
+    # its links are settled).
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert not _jobs_under(store, c1)
+    assert not _jobs_under(store, c2)
+
+    # The session links both and exits; the blocker now holds them.
+    store.add_link(src_ref_id=c1, dst_ref_id=blocker, relation="blocked-by")
+    store.add_link(src_ref_id=c2, dst_ref_id=blocker, relation="blocked-by")
+    _set_job_status(store, job, "succeeded")
+    pd.run_pass(store)
+    assert not _jobs_under(store, c1)
+    assert not _jobs_under(store, c2)
+
+    # The blocker closes: both dispatch.
+    store.add_tag(
+        blocker, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    res = pd.run_pass(store)
+    assert res.dispatched == 2
+    assert len(_jobs_under(store, c1)) == 1
+    assert len(_jobs_under(store, c2)) == 1
+
+
 def _failed_job(
     store: Store,
     task: int,
