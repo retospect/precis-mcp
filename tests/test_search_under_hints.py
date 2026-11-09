@@ -45,6 +45,11 @@ def test_overflowing_children_of_a_summary_node_offer_an_under_search(
 
 def test_thread_hint_offers_gotchas_deep_in_the_hubs_subtree(tree: _Tree) -> None:
     handler = MemoryHandler(hub=tree.rt.hub)
+    # gr570724: a candidate is offered only when it lexically hits the
+    # thread's title+hook query ("Pump summary" + "overview zebra") —
+    # give the two in-hub gotchas bodies sharing those terms.
+    for gid in (tree.detail, tree.direct):
+        handler.edit(id=gid, mode="replace", text="pump summary overview zebra")
     calls = [c for c, _d in link_hints(handler, tree.summary)]
     # the detail gotcha (a grandchild of the hub) and the direct one are offered
     assert any(f"id='{_h(tree.detail)}'" in c for c in calls)

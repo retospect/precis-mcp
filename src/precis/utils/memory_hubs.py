@@ -573,10 +573,10 @@ def _placement_hints(
     else:
         mine = _draft_hubs(store, _live_parents(store, draft.parents))
     body = draft.body
+    hook = str(draft.hook or body[:_QUERY_BODY_CHARS])
+    query = f"{draft.title} {hook}".strip()
 
     if not mine:
-        hook = str(draft.hook or body[:_QUERY_BODY_CHARS])
-        query = f"{draft.title} {hook}".strip()
         from precis.store import Tag
 
         hub_ids = {x.id for x in hubs}
@@ -609,7 +609,9 @@ def _placement_hints(
         else:
             direct = _live_parents(store, draft.parents)
         detail_child = bool(set(direct) - _live_hubs(store, set(direct)))
-        gotchas = [] if detail_child else _unlinked_gotchas(store, ref_id, mine)
+        gotchas = (
+            [] if detail_child else _unlinked_gotchas(handler, query, ref_id, mine)
+        )
         for gid in gotchas[:_HINT_GOTCHAS]:
             lines.append(
                 (
@@ -931,12 +933,21 @@ def _by_word_overlap(query: str, hubs: list[Any]) -> list[int]:
 
 
 def _unlinked_gotchas(
-    store: Store, thread_id: int | None, hub_ids: list[int]
+    handler: Any, query: str, thread_id: int | None, hub_ids: list[int]
 ) -> list[int]:
     """Live ``section:gotchas`` descendants of the thread's hubs (the same
     ``part-of`` subtree ``search(args={'under': hub})`` walks, detail nodes
     included) not yet linked to it with ``qualifies`` (``thread_id=None``:
-    a draft, linked to nothing yet)."""
+    a draft, linked to nothing yet), ranked against the thread's
+    ``title + hook``.
+
+    Relevance-ranked since gr570724: the same lexical ``_best_body_hits``
+    call the hub ranking above makes, scoped to the candidates with
+    ``include_ref_ids`` — only candidates the query hits are offered,
+    best match first. Id order hinted whichever gotchas happened to
+    share the hub, subject or not.
+    """
+    store: Store = handler.store
     cand_set: set[int] = set()
     for hid in hub_ids:
         cand_set |= store.part_of_descendants(hid)
@@ -948,14 +959,21 @@ def _unlinked_gotchas(
                 (thread_id,),
             ).fetchall()
         cand_set -= {int(r[0]) for r in rows} | {thread_id}
-    cand = sorted(cand_set)
-    if not cand:
-        return []
-    return [
+    gotcha_ids = {
         r
-        for r, vals in sorted(store.ref_tags_bulk(cand).items())
+        for r, vals in store.ref_tags_bulk(sorted(cand_set)).items()
         if "section:gotchas" in {v for _ns, v in vals}
-    ]
+    }
+    if not gotcha_ids or not query:
+        return []
+    hits, _total, _fold_info = handler._best_body_hits(
+        query,
+        None,
+        len(gotcha_ids),
+        mode="lexical",  # a write must not embed synchronously
+        include_ref_ids=sorted(gotcha_ids),
+    )
+    return [r.id for _b, r, _s in hits if r.id in gotcha_ids]
 
 
 #: Share of hits one hub / type tag must hold before a narrowing hint is worth a line.

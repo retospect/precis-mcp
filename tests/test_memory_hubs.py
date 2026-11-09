@@ -239,25 +239,74 @@ def test_link_hint_failure_does_not_refuse_a_committed_link(
 
 
 def test_thread_hints_unlinked_gotchas_of_its_hub(hub: Hub) -> None:
+    """gr570724: the ``qualifies`` hints are relevance-ranked — the hub's
+    ``section:gotchas`` candidates are searched lexically on the thread's
+    ``title + hook`` and only the hits are offered, best match first.
+    Id order hinted every gotcha in the subtree, subject or not."""
     store, handler = hub.live_store, MemoryHandler(hub=hub)
     root = _note(handler, "Root", "x", HUB)
-    thread = _note(handler, "Thread", "t", "section:threads")
+    # query = "Gardener trial thread coverage recall" — AND-ed per chunk
+    thread = _note(
+        handler,
+        "Gardener trial thread",
+        "Left: resume",
+        "section:threads",
+        hook="coverage recall",
+    )
     _part_of(store, thread, root)
-    gotchas = [_note(handler, f"G{i}", "g", "section:gotchas") for i in range(7)]
-    runbook = _note(handler, "RB", "r", "section:runbooks")
-    for g in [*gotchas, runbook]:
+    dense = _note(
+        handler,
+        "gardener gardener gardener trial thread coverage recall",
+        "g",
+        "section:gotchas",
+    )
+    sparse = _note(
+        handler,
+        "Gardener trial thread coverage recall notes",
+        "g",
+        "section:gotchas",
+    )
+    body_hit = _note(
+        handler,
+        "Unrelated title",
+        "gardener trial thread coverage recall",
+        "section:gotchas",
+    )
+    off = _note(handler, "Browser repro path", "clicks", "section:gotchas")
+    partial = _note(
+        handler,
+        "Gardener trial thread coverage",
+        "unrelated body",
+        "section:gotchas",
+    )
+    runbook = _note(
+        handler,
+        "Gardener trial thread coverage recall",
+        "r",
+        "section:runbooks",
+    )
+    linked = _note(
+        handler,
+        "Gardener trial thread coverage recall linked",
+        "g",
+        "section:gotchas",
+    )
+    for g in (dense, sparse, body_hit, off, partial, runbook, linked):
         _part_of(store, g, root)
-    store.add_link(src_ref_id=gotchas[0], dst_ref_id=thread, relation="qualifies")
+    store.add_link(src_ref_id=linked, dst_ref_id=thread, relation="qualifies")
 
     calls = [c for c, _d in link_hints(handler, thread)]
+    qual = [c for c in calls if "rel='qualifies'" in c]
 
-    assert len(calls) == 5
     want = {
         f"link(kind='memory', id='{_h(g)}', target='{_h(thread)}', rel='qualifies')"
-        for g in gotchas[1:]
+        for g in (dense, sparse, body_hit)
     }
-    assert set(calls) <= want
-    assert not any(_h(gotchas[0]) in c or _h(runbook) in c for c in calls)
+    assert set(qual) == want
+    # the densest lexical match leads
+    assert _h(dense) in qual[0]
+    for g in (off, partial, runbook, linked):
+        assert not any(_h(g) in c for c in qual)
 
 
 def test_part_of_child_gets_no_qualifies_hint(hub: Hub) -> None:
@@ -267,11 +316,11 @@ def test_part_of_child_gets_no_qualifies_hint(hub: Hub) -> None:
     itself still gets them."""
     store, handler = hub.live_store, MemoryHandler(hub=hub)
     root = _note(handler, "Root", "x", HUB)
-    summary = _note(handler, "Thread", "t", "section:threads")
+    summary = _note(handler, "Gardener thread", "t", "section:threads", hook="coverage")
     _part_of(store, summary, root)
-    child = _note(handler, "Thread — pass 2", "t", "section:threads")
+    child = _note(handler, "Gardener thread — pass 2", "t", "section:threads")
     _part_of(store, child, summary)
-    gotcha = _note(handler, "G0", "g", "section:gotchas")
+    gotcha = _note(handler, "Gardener thread coverage", "g", "section:gotchas")
     _part_of(store, gotcha, root)
 
     child_calls = [c for c, _d in link_hints(handler, child)]
