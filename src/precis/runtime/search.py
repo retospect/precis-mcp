@@ -17,6 +17,14 @@ forms use, so it composes with every existing entry point (``folder=``,
 ``view='keywords'``, the ``sort=``/``since=``/``until=`` primitive above,
 and the plain fan-out) for free. See
 :data:`~precis.runtime._shared.CROSS_KIND_SOURCE_ALIAS`.
+
+Domain fence (gr572720): wherever the *default* expansion runs — an
+omitted ``kind=`` or a wildcard alias, on the fan-out, the tags-only
+sweep and the source-search primitive alike — the concrete kind list
+intersects the resolved domain's ``kinds`` (``runtime.scope``), the
+footer names the skipped count and the door. An explicit ``kind=`` or
+comma list outside the domain still runs; ``'all'`` is byte-identical
+to the unfenced fan-out.
 """
 
 from __future__ import annotations
@@ -54,6 +62,7 @@ from precis.runtime._shared import (
 from precis.runtime._shared import (
     UNCITED_UNSUPPORTED_KINDS as _UNCITED_UNSUPPORTED_KINDS,
 )
+from precis.runtime.scope import DOMAINS, Domain, current_domain
 from precis.store._chunks_ops import ANN_STATEMENT_TIMEOUT_MS
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.store.types import Tag
@@ -73,6 +82,10 @@ log = logging.getLogger(__name__)
 #: :func:`refuse_unapplied_args` refuses it up front (gr524663).
 #: ``view`` joins the set only when it is ``'keywords'`` (the one view the
 #: fan-out renders); every other ``view=`` is refused.
+#: ``domain`` joins the set for gr572720: ``args={'domain': '<name>'}``
+#: is the per-call override the skipped-kinds footer names — the fence
+#: resolves it against the DOMAINS registry instead of the connection's
+#: bound domain.
 _FAN_OUT_CONSUMED: frozenset[str] = frozenset(
     {
         "q",
@@ -84,6 +97,7 @@ _FAN_OUT_CONSUMED: frozenset[str] = frozenset(
         "top_k",
         "exclude_ref_ids",
         "include_ref_ids",
+        "domain",
     }
 )
 
@@ -95,7 +109,7 @@ _FAN_OUT_CONSUMED: frozenset[str] = frozenset(
 #: real fan-out instead; a blank one is not a filter. ``n``/``top_k``
 #: are read as the page cap, matching angle/dreamable.
 _TAGS_ONLY_CONSUMED: frozenset[str] = frozenset(
-    {"q", "tags", "folder", "page_size", "top_k", "n"}
+    {"q", "tags", "folder", "page_size", "top_k", "n", "domain"}
 )
 
 #: Same for :meth:`SearchMixin._dispatch_source_search`.
@@ -117,6 +131,7 @@ _SOURCE_SEARCH_CONSUMED: frozenset[str] = frozenset(
         "answers",
         "exclude_ref_ids",
         "include_ref_ids",
+        "domain",
     }
 )
 
@@ -949,6 +964,71 @@ class SearchMixin(RuntimeShape):
                 out.append(t)
         return out
 
+    def _search_domain(self, args: dict[str, Any]) -> Domain:
+        """The domain fencing this call's default kind expansion.
+
+        ``domain=`` (top-level, or hoisted from ``args={'domain': …}``)
+        overrides the connection/env resolution for the one call — the
+        escape door the skipped-kinds footer names (gr572720). An
+        unknown name refuses loud with the registry as ``options`` —
+        never silently widens to ``'all'``, the same contract
+        ``current_domain`` gives a ``PRECIS_DOMAIN`` typo.
+        """
+        name = args.get("domain")
+        if name is None or not str(name).strip():
+            return current_domain()
+        key = str(name).strip()
+        try:
+            return DOMAINS[key]
+        except KeyError:
+            raise BadInput(
+                f"domain={key!r} names no registered domain",
+                options=sorted(DOMAINS),
+                next="pass args={'domain': 'all'} for the unrestricted surface",
+            ) from None
+
+    def _domain_fan_out_fence(
+        self, requested: str, kinds: list[str], args: dict[str, Any]
+    ) -> tuple[list[str], str | None]:
+        """Intersect a *default-expansion* fan-out with the domain's kinds.
+
+        ``requested`` is the spelling that reached
+        :meth:`_resolve_cross_kind_request` — the fence fires only when
+        the expansion was the default (a wildcard alias, which is also
+        what an omitted ``kind=`` becomes upstream). An explicit
+        ``kind=`` or comma list outside the domain still runs, and
+        ``kind='source'`` counts as explicit. Returns ``(kinds,
+        footer)`` — ``footer`` names the skipped kinds and the door,
+        ``None`` when nothing was fenced (``'all'`` included: its
+        ``kinds`` axis is unrestricted, so the output stays
+        byte-identical to the unfenced fan-out).
+        """
+        if requested.strip().lower() not in _CROSS_KIND_ALIASES:
+            return kinds, None
+        domain = self._search_domain(args)
+        if domain.kinds is None:
+            return kinds, None
+        kept = [k for k in kinds if k in domain.kinds]
+        skipped = [k for k in kinds if k not in domain.kinds]
+        if not skipped:
+            return kinds, None
+        if not kept:
+            raise BadInput(
+                f"domain {domain.name!r} leaves no cross-kind-searchable "
+                f"kinds — all {len(skipped)} eligible kinds sit outside it",
+                next=(
+                    'args={"domain": "all"} for the unrestricted fan-out, '
+                    "or kind=<list> to name kinds directly"
+                ),
+            )
+        search_trace.resolved_kinds(kept)
+        footer = (
+            f"{len(skipped)} kinds outside domain {domain.name} not searched; "
+            'args={"domain": "all"} or '
+            f"kind='{','.join(skipped)}'"
+        )
+        return kept, footer
+
     @staticmethod
     def _is_source_search_request(args: dict[str, Any]) -> bool:
         """True when a search opts into the Slice-2 source primitive.
@@ -1336,6 +1416,10 @@ class SearchMixin(RuntimeShape):
             else _CROSS_KIND_WILDCARD
         )
         kinds = self._resolve_cross_kind_request(expanded)
+        # Domain fence (gr572720): an omitted kind expands to the
+        # wildcard, which intersects the resolved domain's kinds; an
+        # explicit kind=/comma list outside the set still runs.
+        kinds, domain_footer = self._domain_fan_out_fence(expanded, kinds, args)
         since = self._parse_search_date(args.get("since"), "since")
         until = self._parse_search_date(args.get("until"), "until")
         sort = str(args.get("sort") or "relevance").strip().lower() or "relevance"
@@ -1651,6 +1735,8 @@ class SearchMixin(RuntimeShape):
                 ]
             )
         body += exclude_notice
+        if domain_footer is not None:
+            body += f"\n_({domain_footer})_"
         return replace(
             response,
             body=body,
@@ -2060,6 +2146,17 @@ class SearchMixin(RuntimeShape):
                 for key in ("n", "top_k"):
                     if extras.get(key) is not None and args.get(key) is None:
                         args[key] = extras.pop(key)
+        # ``args={'domain': …}`` is the per-call domain override the
+        # skipped-kinds footer names (gr572720) — hoist it beside the
+        # sweep's ``n``/``top_k`` so the gate sees a consumed key, not a
+        # stray. The fence below resolves it per call.
+        extras = args.get("__extras__")
+        if (
+            isinstance(extras, dict)
+            and extras.get("domain") is not None
+            and args.get("domain") is None
+        ):
+            args["domain"] = extras.pop("domain")
         refuse_unapplied_args(
             args,
             consumed=(
@@ -2103,6 +2200,10 @@ class SearchMixin(RuntimeShape):
                     "use single-kind search() against the kind you want"
                 ),
             )
+        # Domain fence (gr572720): the default expansion — omitted kind
+        # or a wildcard alias — intersects the resolved domain's kinds;
+        # an explicit kind=/comma list outside the set still runs.
+        kinds, domain_footer = self._domain_fan_out_fence(kind, kinds, args)
 
         # ``uncited=``/``cited=`` (resolved by ``_dispatch_inner`` into
         # ``args['exclude_ref_ids']``/``args['include_ref_ids']``): every
@@ -2428,6 +2529,22 @@ class SearchMixin(RuntimeShape):
                 result_count=response.result_count,
             )
 
+        # The domain fence's skipped-kinds footer (gr572720) — the same
+        # ``_(…)_`` convention as the errored/excluded trailers, naming
+        # what was fenced and the door back to the full surface.
+        if domain_footer is not None:
+            lines = response.body.splitlines()
+            tip = f"_({domain_footer})_"
+            if lines:
+                lines.insert(1, tip)
+            else:
+                lines.append(tip)
+            response = Response(
+                body="\n".join(lines),
+                cost=response.cost,
+                result_count=response.result_count,
+            )
+
         # Broad-pass finding #7: when cross-kind ran with the wildcard
         # (kind=None or kind='*'), surface the kinds that have search
         # but opt out of search_hits (python, md, citation, tag —
@@ -2551,7 +2668,10 @@ class SearchMixin(RuntimeShape):
         if args.get("folder") is not None:
             folder_scope, folder_label = self._resolve_folder_scope(args["folder"])
 
-        allowed_kinds = set(self._resolve_cross_kind_request(kind))
+        allowed_list, domain_footer = self._domain_fan_out_fence(
+            str(kind), self._resolve_cross_kind_request(kind), args
+        )
+        allowed_kinds = set(allowed_list)
         # Pull enough to cover the requested page after the kind filter.
         # 5x oversample is generous — the store's tag filter is fast and
         # the typical "find my throwaways" call returns < 20 rows.
@@ -2587,6 +2707,8 @@ class SearchMixin(RuntimeShape):
                 title = r.title or r.slug or f"#{r.id}"
                 lines.append(f"{r.kind}:{r.id}  {title}")
             body = "\n".join(lines)
+        if domain_footer is not None:
+            body += f"\n_({domain_footer})_"
         return Response(body=body, result_count=len(refs))
 
     def _resolve_folder_scope(self, value: Any) -> tuple[set[int], str]:

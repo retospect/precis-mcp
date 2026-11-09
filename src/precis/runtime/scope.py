@@ -234,6 +234,71 @@ class Domain:
 #: the import that builds it.
 DOMAINS: dict[str, Domain] = {
     "all": Domain(name="all"),
+    # The electronics surface (gr572720 — the first named domain, lands
+    # with the fan-out kinds fence that consumes it). ``kinds`` is the
+    # electronics corpus plus the shared commons
+    # :data:`ALWAYS_IN_FAMILIES` encodes for skills — work, memory,
+    # evidence, files, core — mirrored as kinds so a bound connection
+    # still tracks and recalls its own work. The other specialist
+    # clusters (se/protein/route/pathway/chem/rxn/structure/cad/
+    # estimate) stay outside, and so do the literature, drafting and
+    # external-tools families; an explicit kind= reaches any of them —
+    # the fence narrows the *default* fan-out, never the door.
+    "pcb": Domain(
+        name="pcb",
+        kinds=frozenset(
+            {
+                # the electronics corpus itself
+                "pcb",
+                "part",
+                "datasheet",
+                "component",
+                "measure",
+                "material",
+                # work commons
+                "todo",
+                "quest",
+                "job",
+                "gripe",
+                "fleet",
+                "alert",
+                "agentlog",
+                "message",
+                # memory commons
+                "memory",
+                "anki",
+                "conv",
+                "learning",
+                # evidence commons
+                "finding",
+                "citation",
+                "concept",
+                "taxon",
+                "oracle",
+                "provenance",
+                # files commons
+                "markdown",
+                "plaintext",
+                "tex",
+                "python",
+                "md",
+                "folder",
+                # core commons + the generic tools a bounded session keeps
+                "skill",
+                "tag",
+                "alias",
+                "checklist",
+                "profile",
+                "machine",
+                "llm",
+                "calc",
+                "time",
+                "math",
+                "random",
+            }
+        ),
+        families=frozenset({"pcb"}),
+    ),
 }
 
 #: The connection token's bound domain (fencing slice 4): the shared
