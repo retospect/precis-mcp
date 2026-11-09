@@ -3838,9 +3838,10 @@ class PaperHandler(Handler):
         (``_numeric_ref._count_view``); ``q=`` matches titles or any live
         body chunk. ``group_by='tag:<axis>'`` / ``'meta.<key>'`` /
         ``'fulltext'`` facet — ``'fulltext'`` buckets papers
-        ``full-text | card-only | stub`` (the ``view='status'``
-        vocabulary) and trails a ``passages:`` line counting live body
-        chunks over the same filtered set (gr518168).
+        ``full-text | thin-text | card-only | stub`` (the
+        ``view='status'`` vocabulary) and trails a ``passages:`` line
+        counting live body chunks over the same filtered set
+        (gr518168, gr608581).
 
         The ref-level cohort args the listing paths take all compose
         here (gr605583): ``serves=``/``stamp=``/``ids=`` arrive already
@@ -3960,9 +3961,13 @@ class PaperHandler(Handler):
 
     def _fetch_status_view(self, ids: list[str] | None) -> Response:
         """``search(kind='paper', view='status', ids=[…])`` — one row per
-        paper: body state (full-text / card-only / stub), has-PDF, and the
-        newest fetcher outcome. Full-text = live non-card, non-references
-        body chunks; ``card_*`` chunks are abstract/title cards only."""
+        paper: body state (full-text / thin-text / card-only / stub),
+        has-PDF, and the newest fetcher outcome. Full-text = live
+        non-card, non-references body chunks; thin-text = at most
+        :data:`~precis.store._body_predicate.THIN_BODY_MAX_CHUNKS` of
+        them with a ``no_oa_version`` newest fetcher verdict — an
+        abstract or skeleton, not article body (gr608581); ``card_*``
+        chunks are abstract/title cards only."""
         from precis.utils.next_block import render_next_section
 
         self._require_paper_kind("status")

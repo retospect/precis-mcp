@@ -328,7 +328,7 @@ terms, narrow `scope=`, or reduce `page_size=`: `precis-search-help`.
 search(kind="paper", view="count")                                  # total
 search(kind="paper", view="count", tags=["studytype:review"],
        args={"group_by": "tag:studytype"}, since="2026-10-01")      # filtered + facets
-search(kind="paper", view="count", args={"group_by": "fulltext"})   # full-text vs card-only vs stub + passages
+search(kind="paper", view="count", args={"group_by": "fulltext"})   # full-text vs thin-text vs card-only vs stub + passages
 search(kind="paper", view="ingest", args={"days": 14})              # landings per UTC day
 ```
 
@@ -344,9 +344,11 @@ search(kind="paper", view="status", args={"ids": ["pa123", "wang2020state"]})
 ```
 
 `view='status'` (up to 200 handles/slugs/DOIs): per paper
-`full-text | card-only | stub`, PDF present, and the newest fetcher
-outcome (`fetch_ok`, `fetch_failed`, `no_oa_version`, or never tried).
-Backlog to chase: `view='stubs'`.
+`full-text | thin-text | card-only | stub`, PDF present, and the newest
+fetcher outcome (`fetch_ok`, `fetch_failed`, `no_oa_version`, or never
+tried). `thin-text` = ≤12 body chunks **and** a `no_oa_version` newest
+verdict — an abstract or skeleton, not article body. Backlog to chase:
+`view='stubs'`.
 
 `view='chunks'` sizes one paper (or an `id=[...]` batch, ≤50): total
 chunks, body count, and breakdowns by `chunk_kind` and `section_path`

@@ -1,8 +1,11 @@
 """``search(kind='paper', view='count'|'status'|'ingest')`` —
-gr500649 (count), gr500651 (bulk fetch status), gr500643 (ingest rate).
+gr500649 (count), gr500651 (bulk fetch status), gr500643 (ingest rate),
+gr608581 (thin-text).
 
-Full-text = a live non-card, non-``references`` body chunk; ``card_*``
-chunks (``ord < 0``) are abstract/title cards only.
+Full-text = a live non-card, non-``references`` body chunk; thin-text =
+at most ``THIN_BODY_MAX_CHUNKS`` of those AND a ``no_oa_version`` newest
+fetcher verdict; ``card_*`` chunks (``ord < 0``) are abstract/title
+cards only.
 """
 
 from __future__ import annotations
@@ -314,6 +317,78 @@ class TestFetchStatus:
         assert "never tried" in by_slug["card2024b"][1]
         assert "summary: 1 card-only" not in body  # two card-only
         assert "2 card-only · 1 full-text · 1 stub" in body
+
+    def test_thin_text_marks_abstract_only_skeletons(
+        self, papers: PaperHandler, store: Store
+    ) -> None:
+        """gr608581: a paper whose whole body is an abstract/skeleton —
+        at most 12 non-card, non-references chunks AND a newest fetcher
+        verdict of ``no_oa_version`` — reads ``thin-text``, not
+        ``full-text``, so a census can separate real full text."""
+        thin = _paper(store, "thin2024a", body=5, card=True)
+        full = _paper(store, "full2024b", body=5, card=True)
+        big = _paper(store, "big2024c", body=13, card=True)
+        never = _paper(store, "never2024d", body=3, card=True)
+        now = datetime.now(UTC)
+        _event(
+            store,
+            thin,
+            "fetcher:unpaywall",
+            "no_oa_version",
+            now - timedelta(hours=1),
+        )
+        _event(
+            store,
+            full,
+            "fetcher:unpaywall",
+            "fetch_ok",
+            now - timedelta(hours=1),
+        )
+        _event(
+            store,
+            big,
+            "fetcher:unpaywall",
+            "no_oa_version",
+            now - timedelta(hours=1),
+        )
+        ids = [
+            handle_registry.format_handle("paper", i) for i in (thin, full, big, never)
+        ]
+        body = papers.search(view="status", ids=ids).body
+        by_slug = {}
+        for line in body.splitlines():
+            m = re.search(r"\[(\w+)\]\s+(full-text|thin-text|card-only|stub)", line)
+            if m:
+                by_slug[m.group(1)] = (m.group(2), line)
+        # ≤12 chunks + no_oa_version newest → thin-text, not full-text.
+        assert by_slug["thin2024a"][0] == "thin-text"
+        assert "(5 body chunks)" in by_slug["thin2024a"][1]
+        # Same chunk count with a successful fetch → real full-text.
+        assert by_slug["full2024b"][0] == "full-text"
+        # >12 chunks + no_oa_version → full-text (the flag is thin-only).
+        assert by_slug["big2024c"][0] == "full-text"
+        # Few chunks, never fetched → full-text (no verdict, no flag).
+        assert by_slug["never2024d"][0] == "full-text"
+        assert "1 thin-text" in body
+
+    def test_thin_text_in_fulltext_facet(
+        self, papers: PaperHandler, store: Store
+    ) -> None:
+        """gr608581: ``group_by='fulltext'`` shares the status
+        vocabulary — an abstract-only skeleton buckets as ``thin-text``,
+        out of the real full-text count."""
+        thin = _paper(store, "thinfx2024a", body=4, card=True)
+        _paper(store, "fullfx2024b", body=20, card=True)
+        _event(
+            store,
+            thin,
+            "fetcher:unpaywall",
+            "no_oa_version",
+            datetime.now(UTC) - timedelta(hours=1),
+        )
+        body = papers.search(view="count", group_by="fulltext").body
+        assert "  thin-text: 1" in body
+        assert "  full-text: 1" in body
 
     def test_unresolved_counted_and_slugs_accepted(
         self, papers: PaperHandler, store: Store

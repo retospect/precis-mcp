@@ -47,6 +47,7 @@ from psycopg_pool import ConnectionPool
 from precis.errors import BadInput, Conflict, NotFound
 from precis.hints import Hint, converted_redirect_hint, merged_redirect_hint
 from precis.store._body_predicate import (
+    THIN_BODY_MAX_CHUNKS,
     body_state_sql,
     has_body_sql,
     unusable_body_tag_sql,
@@ -1482,14 +1483,17 @@ class RefsMixin:
         """Per-ref ingest state + last fetch outcome for a set of ids.
 
         ``body`` is ``'full-text'`` (a live non-card, non-``references``
-        body chunk exists), ``'card-only'`` (only ``card_*`` chunks —
-        abstract/title cards) or ``'stub'`` (no chunks at all).
-        ``last_event`` / ``last_source`` / ``last_ts`` are the strictly
-        newest ``fetcher:%`` ref_event (empty when never tried — a
-        datasheet never has any). Ids that are not live ``kind`` refs
-        are simply absent from the result. ``kind='datasheet'`` backs
-        ``search(kind='datasheet', view='status')`` (gr520077). One
-        query; rows come back in ``ref_ids`` order.
+        body chunk exists), ``'thin-text'`` (those chunks exist but
+        number at most :data:`THIN_BODY_MAX_CHUNKS` AND the newest
+        fetcher event is ``no_oa_version`` — an abstract or skeleton,
+        not article body; gr608581), ``'card-only'`` (only ``card_*``
+        chunks — abstract/title cards) or ``'stub'`` (no chunks at
+        all). ``last_event`` / ``last_source`` / ``last_ts`` are the
+        strictly newest ``fetcher:%`` ref_event (empty when never tried
+        — a datasheet never has any). Ids that are not live ``kind``
+        refs are simply absent from the result. ``kind='datasheet'``
+        backs ``search(kind='datasheet', view='status')`` (gr520077).
+        One query; rows come back in ``ref_ids`` order.
         """
         if not ref_ids:
             return []
@@ -1518,13 +1522,19 @@ class RefsMixin:
             rows = conn.execute(sql, (list(ref_ids), kind)).fetchall()
         by_id: dict[int, dict[str, Any]] = {}
         for rid, cite, has_pdf, n_full, n_card, ts, src, ev in rows:
+            if 0 < n_full <= THIN_BODY_MAX_CHUNKS and ev == "no_oa_version":
+                body = "thin-text"
+            elif n_full:
+                body = "full-text"
+            elif n_card:
+                body = "card-only"
+            else:
+                body = "stub"
             by_id[int(rid)] = {
                 "ref_id": int(rid),
                 "cite_key": cite or "",
                 "has_pdf": bool(has_pdf),
-                "body": (
-                    "full-text" if n_full else ("card-only" if n_card else "stub")
-                ),
+                "body": body,
                 "full_chunks": int(n_full),
                 "last_ts": ts.isoformat() if ts is not None else "",
                 "last_source": src or "",
@@ -4710,8 +4720,9 @@ class RefsMixin:
           tag the ref carries (a ref with two ``area:`` tags counts in
           both groups);
         * ``("fulltext", _)`` — group by the ref's body state
-          (``'full-text'`` / ``'card-only'`` / ``'stub'``, the
-          :func:`body_state_sql` vocabulary; gr518168);
+          (``'full-text'`` / ``'thin-text'`` / ``'card-only'`` /
+          ``'stub'``, the :func:`body_state_sql` vocabulary;
+          gr518168, gr608581);
         * ``("touched", _)`` — group by the ref's last-touched recency
           bucket (``<=7d`` / ``<=30d`` / ``>30d`` on
           ``GREATEST(last_viewed_at, last_recalled_at, updated_at)``,
@@ -4764,8 +4775,9 @@ class RefsMixin:
                 select_params.append(key)
                 continue
             if ftype == "fulltext":
-                # 'full-text' | 'card-only' | 'stub' — the
-                # paper_fetch_status vocabulary (gr518168).
+                # 'full-text' | 'thin-text' | 'card-only' | 'stub' —
+                # the paper_fetch_status vocabulary (gr518168,
+                # gr608581).
                 select_exprs.append(body_state_sql("r"))
                 continue
             if ftype == "touched":

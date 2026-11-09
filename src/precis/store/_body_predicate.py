@@ -54,20 +54,42 @@ def unusable_body_tag_sql(alias: str = "r") -> str:
     )
 
 
+#: Ceiling on the live non-``references`` body-chunk count below which a
+#: body is *thin* — the abstract-only / skeleton shape gr608581 caught a
+#: census counting as full text. The same bound
+#: ``paper_hygiene._FRONT_MATTER_MAX_CHUNKS`` measures the Elsevier
+#: entitlement preview against (~8 front-matter chunks); a genuine paper
+#: runs into the dozens. Only meaningful next to a fetcher verdict — a
+#: short real paper keeps ``'full-text'``.
+THIN_BODY_MAX_CHUNKS: int = 12
+
+
 def body_state_sql(alias: str = "r") -> str:
-    """``CASE`` expression → ``'full-text'`` | ``'card-only'`` | ``'stub'``.
+    """``CASE`` expression → ``'full-text'`` | ``'thin-text'`` |
+    ``'card-only'`` | ``'stub'``.
 
     'full-text' = a live non-card, non-``references`` body chunk exists
     (``ord >= 0`` — stricter than :func:`has_body_sql`, which counts any
-    body chunk including ``references``); 'card-only' = only ``card_*``
+    body chunk including ``references``); 'thin-text' = those chunks
+    exist but number at most :data:`THIN_BODY_MAX_CHUNKS` AND the ref's
+    newest ``fetcher:`` event is ``no_oa_version`` — an abstract or
+    skeleton, not article body (gr608581); 'card-only' = only ``card_*``
     chunks (``ord < 0``); 'stub' = no live chunks at all. The same
-    three-way vocabulary :meth:`Store.paper_fetch_status` reports per
+    four-way vocabulary :meth:`Store.paper_fetch_status` reports per
     paper — kept here so facet/grouping SQL shares it. References
     ``<alias>.ref_id``; contains no ``%``, safe inside parameterised
     queries.
     """
     return (
-        "CASE WHEN EXISTS (SELECT 1 FROM chunks f "
+        "CASE WHEN (SELECT count(*) FROM chunks f "
+        f"WHERE f.ref_id = {alias}.ref_id AND f.retired_at IS NULL "
+        "AND f.ord >= 0 AND f.chunk_kind <> 'references') "
+        f"BETWEEN 1 AND {THIN_BODY_MAX_CHUNKS} "
+        "AND (SELECT e.event FROM ref_events e "
+        f"WHERE e.ref_id = {alias}.ref_id "
+        "AND starts_with(e.source, 'fetcher:') "
+        "ORDER BY e.ts DESC LIMIT 1) = 'no_oa_version' THEN 'thin-text' "
+        "WHEN EXISTS (SELECT 1 FROM chunks f "
         f"WHERE f.ref_id = {alias}.ref_id AND f.retired_at IS NULL "
         "AND f.ord >= 0 AND f.chunk_kind <> 'references') THEN 'full-text' "
         "WHEN EXISTS (SELECT 1 FROM chunks cd "
@@ -78,6 +100,7 @@ def body_state_sql(alias: str = "r") -> str:
 
 
 __all__ = [
+    "THIN_BODY_MAX_CHUNKS",
     "UNUSABLE_BODY_TAGS",
     "body_state_sql",
     "has_body_sql",
