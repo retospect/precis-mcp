@@ -2256,11 +2256,14 @@ def set_status(
 
     A terminal value also refunds any resource reservation the job holds
     (slice 6c) — release rides the same status write so a job's slots come
-    back the instant it stops running, in the caller's transaction.
+    back the instant it stops running, in the caller's transaction. A
+    ``run_slice`` job's terminal write also wakes the oldest job parked for
+    its lane's capacity (:func:`_wake_lane_waiter`, gr611299).
     """
     from precis.store import Tag
 
     tag = Tag.parse_strict(f"STATUS:{value}")
+    lane = _freed_lane(store, ref_id, conn) if value in TERMINAL else None
     store.add_tag(
         ref_id,
         tag,
@@ -2280,6 +2283,50 @@ def set_status(
             with store.pool.connection() as c:
                 with c.transaction():
                     release_job_reservation(c, ref_id)
+        if lane is not None:
+            _wake_lane_waiter(store, lane, conn)
+
+
+def _freed_lane(store: Store, ref_id: int, conn: Connection | None) -> str | None:
+    """The lane a live ``run_slice`` job is about to free, read before its
+    terminal write (see :func:`precis.plans.lanes.freed_lane`; one PK
+    SELECT, empty for any other job type). Never raises:
+    a missed wake only leaves the job on its ``LANE_FULL_BACKOFF`` timer."""
+    from precis.plans import lanes
+
+    # A plain read-only SELECT by primary key: no savepoint needed.
+    try:
+        if conn is not None:
+            return lanes.freed_lane(conn, ref_id)
+        with store.pool.connection() as c:
+            return lanes.freed_lane(c, ref_id)
+    except Exception:  # pragma: no cover — the status write still lands
+        log.warning(
+            "lane-free wake: lane lookup failed for ref %s", ref_id, exc_info=True
+        )
+        return None
+
+
+def _wake_lane_waiter(store: Store, lane: str, conn: Connection | None) -> None:
+    """Pull the oldest job parked for ``lane`` forward to now (gr611299).
+    Rides the terminal status write's transaction when there is one (a
+    savepoint, so a failed wake cannot abort the caller's write). Never
+    raises: the parked job's ``LANE_FULL_BACKOFF`` timer is the fallback."""
+    from precis.plans import lanes
+
+    try:
+        if conn is not None:
+            with conn.transaction():
+                woken = lanes.wake_lane_waiter(conn, lane)
+        else:
+            with store.pool.connection() as c:
+                with c.transaction():
+                    woken = lanes.wake_lane_waiter(c, lane)
+    except Exception:  # pragma: no cover — the status write still lands
+        log.warning("lane-free wake: wake on lane %r failed", lane, exc_info=True)
+        return
+    if woken is not None:
+        log.info("lane-free wake: lane %r freed a slot, woke jo%s", lane, woken)
 
 
 def is_cancel_requested(conn: Connection, ref_id: int) -> bool:

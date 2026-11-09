@@ -73,6 +73,11 @@ ANY_CLASS = "*"
 #: The job type whose live rows count against a lane's cap.
 RUN_SLICE = "run_slice"
 
+#: Prefix of the ``wake_when.payload.why`` a lane-full park writes (gr611299).
+#: :func:`wake_lane_waiter` requires it, so a job that ran and was later
+#: parked for another reason (a quota window) is never woken as a lane wait.
+LANE_PARK_WHY = "lane-wait: "
+
 #: The cost classes a lane falls in — what :func:`pick_lane` minimises
 #: before the live count (gr573563: free builder capacity first, paid
 #: only once the free wait has run out, td573580).
@@ -576,6 +581,80 @@ def missing_class_reason(lanes: Iterable[Lane], task_class: str) -> str | None:
     )
 
 
+def freed_lane(conn: Any, ref_id: int) -> str | None:
+    """The lane a still-live ``run_slice`` job holds a slot on, else ``None``.
+
+    Read BEFORE the job's terminal ``STATUS`` write: a job already terminal
+    holds no slot, so a second terminal write on it frees nothing and must
+    not wake a second waiter (gr611299)."""
+    row = conn.execute(
+        """
+        SELECT r.meta->>'lane'
+          FROM refs r
+         WHERE r.ref_id = %s
+           AND r.kind = 'job'
+           AND r.meta->>'job_type' = %s
+           AND r.meta ? 'lane'
+           AND NOT EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = 'STATUS'
+                    AND t.value = ANY(%s)
+               )
+        """,
+        (ref_id, RUN_SLICE, list(_TERMINAL_STATUSES)),
+    ).fetchone()
+    return str(row[0]) if row and row[0] else None
+
+
+def wake_lane_waiter(conn: Any, lane: str, now: datetime | None = None) -> int | None:
+    """Wake the oldest ``run_slice`` job parked for ``lane``'s capacity.
+
+    A slot just freed on ``lane`` (gr611299): the oldest (lowest ref id)
+    ``waiting_time`` run_slice job whose ``meta.lane_wait`` names the lane
+    and whose ``at_time`` wake is still in the future gets that wake pulled
+    to ``now`` — the ``wake_runner`` re-queues it on its next pass instead of
+    after :data:`~precis.workers.job_types.run_slice.LANE_FULL_BACKOFF`.
+    ``meta.lane_woken`` marks the early wake so the job's next park, if it
+    loses the race for the slot, does not count a full backoff of waiting.
+
+    One UPDATE, one waiter per freed slot (``SKIP LOCKED`` so concurrent
+    finishes wake different jobs, never a herd). A job already woken has
+    ``ts <= now`` and is not picked again. Returns the woken job's ref id,
+    or ``None`` when nothing is parked for the lane. Caller commits."""
+    ts = int((now or datetime.now(UTC)).timestamp())
+    row = conn.execute(
+        """
+        UPDATE refs SET meta = jsonb_set(
+                   jsonb_set(meta, '{wake_when,payload,ts}', to_jsonb(%(ts)s::bigint)),
+                   '{lane_woken}', 'true')
+         WHERE ref_id = (
+               SELECT r.ref_id
+                 FROM refs r
+                WHERE r.kind = 'job'
+                  AND r.retired_at IS NULL
+                  AND r.meta->>'job_type' = %(job_type)s
+                  AND r.meta->'lane_wait' ? %(lane)s
+                  AND r.meta->'wake_when'->'payload'->>'why' LIKE %(why)s
+                  AND r.meta->'wake_when'->>'kind' = 'at_time'
+                  AND (r.meta->'wake_when'->'payload'->>'ts')::bigint > %(ts)s
+                  AND EXISTS (
+                        SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                         WHERE rt.ref_id = r.ref_id
+                           AND t.namespace = 'STATUS'
+                           AND t.value = 'waiting_time'
+                      )
+                ORDER BY r.ref_id
+                LIMIT 1
+                  FOR UPDATE OF r SKIP LOCKED
+           )
+        RETURNING ref_id
+        """,
+        {"ts": ts, "job_type": RUN_SLICE, "lane": lane, "why": f"{LANE_PARK_WHY}%"},
+    ).fetchone()
+    return int(row[0]) if row else None
+
+
 def pick_lane(
     store: Any,
     task_class: str,
@@ -777,6 +856,7 @@ __all__ = [
     "HOST_REFUSAL_BACKOFF",
     "HUMAN_ONLY_PATHS",
     "INTERIM_DENY",
+    "LANE_PARK_WHY",
     "LAUNCHABLE_ADAPTERS",
     "RUN_SLICE",
     "STRICT_DENY",
@@ -785,6 +865,7 @@ __all__ = [
     "deny_paths_for",
     "derive_lanes",
     "engine_hits",
+    "freed_lane",
     "get_lane",
     "human_only_hits",
     "ladder",
@@ -797,4 +878,5 @@ __all__ = [
     "record_lane_health",
     "rung_index",
     "unpark_lane",
+    "wake_lane_waiter",
 ]

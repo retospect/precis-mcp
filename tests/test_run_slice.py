@@ -1150,6 +1150,9 @@ def test_submit_launches_and_claims(
         "adapter": "claude_p",
         "model": "claude-test-model",
         "effort": "medium",
+        # gr611299: leaving the lane-full park clears its marks.
+        "lane_wait": None,
+        "lane_woken": False,
     }
     assert {"claimed-by:lane-claude-sub", "STATUS:doing"} <= store.tag_strings(42)
     assert "STATUS:open" not in store.tag_strings(42)
@@ -1407,6 +1410,101 @@ def test_submit_parks_when_pinned_lane_full(seams: dict[str, Any]) -> None:
     seams["live"] = {"claude-sub": 1}
     ctx2, handle = _submit(store, seams, lane="claude-sub")
     assert handle is not None and ctx2.meta_set["lane"] == "claude-sub"
+
+
+def test_lane_full_park_names_the_lanes_to_wake_on(seams: dict[str, Any]) -> None:
+    """gr611299: the park stamps ``meta.lane_wait`` — the fit lanes whose
+    freeing slot unblocks the job — so a finishing run_slice can wake it;
+    a pin names its own lane."""
+    seams["live"] = {"claude-sub": 2}
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _Ctx(store, {"todo_id": 42})
+    ctx.defer = lambda wake_at, note: True
+    assert run_slice.submit(ctx, None) is None
+    assert ctx.meta_set["lane_wait"] == ["claude-sub"]
+    assert ctx.meta_set["lane_woken"] is False
+    assert ctx.meta_set["wait_parks"] == 1
+
+    pinned = _Ctx(store, {"todo_id": 42, "lane": "claude-sub"})
+    pinned.defer = lambda wake_at, note: True
+    assert run_slice.submit(pinned, None) is None
+    assert pinned.meta_set["lane_wait"] == ["claude-sub"]
+
+
+def test_early_woken_park_adds_elapsed_time_not_a_backoff(
+    seams: dict[str, Any],
+) -> None:
+    """gr611299: a job woken early that loses the race for the freed slot
+    re-parks adding its real elapsed seconds (``early_wait_s``), not a
+    ``wait_parks`` step of a full 10-min backoff."""
+    seams["live"] = {"claude-sub": 2}
+    store = _Store()
+    store.add_todo(42, "t")
+    parked_at = int(datetime.now(UTC).timestamp()) - 120
+    ctx = _Ctx(
+        store,
+        {"todo_id": 42},
+        wait_parks=3,
+        early_wait_s=30.0,
+        lane_woken=True,
+        lane_park_at=parked_at,
+    )
+    deferred: list[tuple[Any, str]] = []
+    ctx.defer = lambda wake_at, note: deferred.append((wake_at, note)) or True
+    assert run_slice.submit(ctx, None) is None
+    assert ctx.meta_set["wait_parks"] == 3
+    assert 149 <= ctx.meta_set["early_wait_s"] <= 155
+    assert ctx.meta_set["lane_woken"] is False
+    # The park's why carries the marker the wake requires.
+    assert deferred[0][1].startswith(lanes.LANE_PARK_WHY)
+
+
+def test_early_wake_churn_still_hits_the_wall_clock_cap(
+    seams: dict[str, Any],
+) -> None:
+    """gr611299: early re-parks must not stretch the park cap — the elapsed
+    seconds count, so a job that has waited ``LANE_WAIT_PARK_CAP`` backoffs of
+    wall-clock fails attempt-free even with few ``wait_parks`` steps."""
+    seams["live"] = {"claude-sub": 2}
+    store = _Store()
+    store.add_todo(42, "t")
+    cap_s = run_slice.LANE_WAIT_PARK_CAP * run_slice.LANE_FULL_BACKOFF.total_seconds()
+    ctx = _Ctx(
+        store,
+        {"todo_id": 42},
+        wait_parks=2,
+        early_wait_s=cap_s,
+        lane_woken=True,
+        lane_park_at=int(datetime.now(UTC).timestamp()),
+    )
+    ctx.defer = lambda wake_at, note: True
+    assert run_slice.submit(ctx, None) is None
+    assert ctx.failure is not None and "no lane slot" in ctx.failure
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "lane-wait"
+
+
+def test_early_wait_counts_toward_the_free_lane_clock(
+    seams: dict[str, Any],
+) -> None:
+    """The free-lane wait clock reads wall-clock lane-park time, early
+    re-parks included, and never more than that."""
+    meta = {"wait_parks": 1, "early_wait_s": 90}
+    assert run_slice._lane_waited(meta) == run_slice.LANE_FULL_BACKOFF + timedelta(
+        seconds=90
+    )
+    assert run_slice._lane_waited({}) == timedelta(0)
+
+
+def test_launch_clears_the_lane_wait_marks(seams: dict[str, Any]) -> None:
+    """Leaving the lane-full park clears ``lane_wait``/``lane_woken`` so a
+    later quota park of the same job is never read as a lane wait."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    assert handle is not None
+    assert ctx.meta_set["lane_wait"] is None
+    assert ctx.meta_set["lane_woken"] is False
 
 
 def test_lane_wait_parks_on_their_own_budget(seams: dict[str, Any]) -> None:

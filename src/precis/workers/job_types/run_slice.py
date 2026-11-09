@@ -182,7 +182,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -2096,7 +2096,12 @@ def _free_lane_wait_min(store: Any) -> int:
     return max(0, wait)
 
 
-def _park_lane_full(ctx: Any, note: str, until: datetime | None = None) -> None:
+def _park_lane_full(
+    ctx: Any,
+    note: str,
+    until: datetime | None = None,
+    lanes: Sequence[str] = (),
+) -> None:
     """Park the job ``until`` (default :data:`LANE_FULL_BACKOFF` ahead —
     gr561491) when ``ctx`` can defer and the wait is under
     :data:`LANE_WAIT_PARK_CAP`; fail it attempt-free otherwise. The todo is
@@ -2106,17 +2111,53 @@ def _park_lane_full(ctx: Any, note: str, until: datetime | None = None) -> None:
     the shared pause budget exists for window-scoped pauses, and a lane
     wait is not one (gr572118). Past the cap — or with no ``defer``, or a
     refused park — the job fails with ``meta.attempt_free = "lane-wait"``
-    so ``plan_dispatch`` re-queues the todo without counting an attempt."""
-    parks = int((ctx.meta or {}).get("wait_parks") or 0)
+    so ``plan_dispatch`` re-queues the todo without counting an attempt.
+
+    ``lanes`` are the lanes whose freeing slot would unblock this job; they
+    land on ``meta.lane_wait`` so the finishing job on one of them wakes the
+    oldest such waiter at once (:func:`precis.plans.lanes.wake_lane_waiter`,
+    gr611299) and the timer is only the fallback. The park's ``why`` carries
+    :data:`~precis.plans.lanes.LANE_PARK_WHY` — the marker the wake requires,
+    so a later quota park of the same job is never woken as a lane wait. A
+    park that follows an early wake (``meta.lane_woken``: the job lost the
+    race for the slot) adds the real elapsed seconds to ``meta.early_wait_s``
+    instead of a ``wait_parks`` step, so the cap and the free-lane wait clock
+    keep measuring wall-clock time (:func:`_lane_waited`)."""
+    meta = ctx.meta or {}
+    parks = int(meta.get("wait_parks") or 0)
+    now = datetime.now(UTC)
+    early_s = float(meta.get("early_wait_s") or 0)
+    early = bool(meta.get("lane_woken"))
+    if early:
+        parked_at = float(meta.get("lane_park_at") or now.timestamp())
+        early_s += max(0.0, now.timestamp() - parked_at)
+    waited = _lane_waited({"wait_parks": parks, "early_wait_s": early_s})
     defer = getattr(ctx, "defer", None)
-    if parks < LANE_WAIT_PARK_CAP and defer is not None:
-        wake = until if until is not None else datetime.now(UTC) + LANE_FULL_BACKOFF
-        ctx.set_meta(pause_parks=0, wait_parks=parks + 1)
-        if defer(wake, note):
+    if waited < LANE_WAIT_PARK_CAP * LANE_FULL_BACKOFF and defer is not None:
+        wake = until if until is not None else now + LANE_FULL_BACKOFF
+        ctx.set_meta(
+            pause_parks=0,
+            wait_parks=parks if early else parks + 1,
+            early_wait_s=early_s,
+            lane_wait=list(lanes),
+            lane_woken=False,
+            lane_park_at=int(now.timestamp()),
+        )
+        if defer(wake, f"{_lanes.LANE_PARK_WHY}{note}"):
             return
-    waited = int(parks * LANE_FULL_BACKOFF.total_seconds() // 60)
     ctx.set_meta(**{ATTEMPT_FREE_KEY: "lane-wait"})
-    ctx.record_failure(f"{note} — no lane slot for {waited} min")
+    ctx.record_failure(
+        f"{note} — no lane slot for {int(waited.total_seconds() // 60)} min"
+    )
+
+
+def _lane_waited(meta: Any) -> timedelta:
+    """Wall-clock time a job has spent lane-parked: ``wait_parks`` timer
+    parks of :data:`LANE_FULL_BACKOFF` plus ``early_wait_s`` seconds spent
+    in parks an early wake (gr611299) cut short."""
+    return int(meta.get("wait_parks") or 0) * LANE_FULL_BACKOFF + timedelta(
+        seconds=float(meta.get("early_wait_s") or 0)
+    )
 
 
 def submit(ctx: Any, spec: Any) -> Any:
@@ -2219,6 +2260,7 @@ def submit(ctx: Any, spec: Any) -> Any:
                 ctx,
                 f"run_slice: lane {lane.name!r} pinned by params.lane is at "
                 f"its cap ({live}/{lane.cap})",
+                lanes=(lane.name,),
             )
             return None
     else:
@@ -2247,7 +2289,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         # cap and falls through to paid only once wait_parks has covered
         # factory.free_lane_wait_min of LANE_FULL_BACKOFF parks.
         wait_min = _free_lane_wait_min(store)
-        waited = int((ctx.meta or {}).get("wait_parks") or 0) * LANE_FULL_BACKOFF
+        waited = _lane_waited(ctx.meta or {})
         paid_ok = waited >= timedelta(minutes=wait_min)
         lane = _lanes.pick_lane(
             store,
@@ -2283,12 +2325,19 @@ def submit(ctx: Any, spec: Any) -> Any:
             fit_names = [ln.name for ln in fit_lanes]
             backed = sorted(set(fit_names) & set(backoffs))
             why = "no enabled lane" if not fit_names else "every fit lane at its cap"
+            # The lanes whose freeing slot would let this job launch
+            # (gr611299): fit and not backed off, and while the free-lane
+            # wait runs (not paid_ok) only the free ones — a paid lane
+            # freeing would wake a job that cannot take it.
+            wake_lanes = [ln for ln in fit_lanes if ln.name not in backoffs]
             if not paid_ok:
                 held_free = [
                     ln.name
                     for ln in fit_lanes
                     if ln.cost_class == _lanes.COST_FREE and ln.name not in backoffs
                 ]
+                if held_free:
+                    wake_lanes = [ln for ln in wake_lanes if ln.name in held_free]
                 held_paid = [
                     ln.name
                     for ln in fit_lanes
@@ -2307,6 +2356,7 @@ def submit(ctx: Any, spec: Any) -> Any:
                 ctx,
                 f"run_slice: no {f'{cap} ' if cap else ''}lane free for "
                 f"task class {task_class!r} ({why})",
+                lanes=[ln.name for ln in wake_lanes],
             )
             return None
 
@@ -2337,7 +2387,16 @@ def submit(ctx: Any, spec: Any) -> Any:
         {k: v for k, v in params.items() if k != "model"} if left_pin else params, lane
     )
     effort = str(params.get("effort") or _DEFAULT_EFFORT)
-    ctx.set_meta(lane=lane.name, adapter=adapter.name, model=model, effort=effort)
+    # Leaving the lane-full park (gr611299): the lane wait marks must not
+    # outlive it, or a later quota park of this job would read as one.
+    ctx.set_meta(
+        lane=lane.name,
+        adapter=adapter.name,
+        model=model,
+        effort=effort,
+        lane_wait=None,
+        lane_woken=False,
+    )
     budget = params.get("budget_usd")
     budget_usd = (
         float(budget)
