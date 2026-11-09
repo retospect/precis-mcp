@@ -47,7 +47,12 @@ from psycopg import Connection
 
 from precis.errors import BadInput, NotFound
 from precis.plans.logbook import log_plan_event
-from precis.plans.nodes import any_verdict, node_kind, validate_plan_meta
+from precis.plans.nodes import (
+    any_verdict,
+    finish_mint,
+    node_kind,
+    validate_plan_meta,
+)
 from precis.plans.templates import PENDING_SHA, REVIEW_TASK_CLASS
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.todo import BLOCKER_TERMINAL_STATUSES, TERMINAL_TODO_STATUSES
@@ -1945,6 +1950,7 @@ def _mint_diagnose(
             set_by="system",
             conn=conn,
         )
+        finish_mint(store, ref.id, conn=conn)
     res.diagnosing.append(n.id)
     res.notes.append(f"td{n.id}: minted diagnose task td{ref.id} ({cls})")
 
@@ -2211,6 +2217,7 @@ def _ask_node(
             "todo_comment",
             f"rescue: asked td{ref.id} ({_line1(why, 80)})",
         )
+        finish_mint(store, ref.id, conn=conn)
     res.asked.append(n.id)
     res.notes.append(f"td{n.id}: asked td{ref.id} ({_line1(why)})")
     if root is not None:

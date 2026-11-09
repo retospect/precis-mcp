@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from precis.corpus_layout import host_name
+from precis.plans.nodes import finish_mint
 from precis.store import Store
 from precis.store.types import ChunkInsert, Ref, Tag
 from precis.workers.runner import BatchResult
@@ -213,6 +214,8 @@ def mint_audit(store: Store, chain_root_id: int, jobs: list[dict[str, Any]]) -> 
             ],
             conn=conn,
         )
+        for minted in (root.id, task.id):
+            finish_mint(store, minted, conn=conn)
     return root.id
 
 

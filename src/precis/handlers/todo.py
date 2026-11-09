@@ -193,8 +193,8 @@ class _PutState:
     #: announces it so the arming is never silent.
     stamped_default_tier: bool = False
     #: ``waiting-for:mint`` stamped because the put landed inside a live
-    #: plan with no session signal verifiably the caller's own covering
-    #: it — the ack says so, since the hold keeps the child out of
+    #: plan subtree — unconditional, no session-signal inference
+    #: (td603429); the ack says so, since the hold keeps the child out of
     #: dispatch until released.
     mint_hold: bool = False
 
@@ -1120,25 +1120,23 @@ class TodoHandler(NumericRefHandler):
 
             validate_auto_check_spec(meta["auto_check"])
         # A put landing inside a live plan subtree mints the child held
-        # (``waiting-for:mint``) when no session signal verifiably the
-        # caller's own covers it — a live signal on the ``slice:``
-        # grant's own todo, or a ``claimed-by:`` lease the caller's
-        # write principal stamped, on the ancestor chain or a
-        # mint-capable todo of the plan: the row commits open and
-        # linkless and the ``blocked-by`` links land in later calls, so
-        # an unsigned session's mint must not dispatch in the gap, and
-        # a foreign session's signal — even on the parent itself —
-        # ends on that session's clock, not the caller's (gr590954
-        # review, td601078; td601628; td602774). The minter removes the
-        # tag once its links are settled — the mint-held runbook
-        # contract (me570515) enforced; plan_dispatch hygiene releases
-        # a settled mint's hold past ``MINT_STALE`` and asks on an
-        # orphan (gr574881). A caller-supplied hold is already held.
+        # (``waiting-for:mint``), unconditionally (td603429): the row
+        # commits open and linkless and the ``blocked-by`` links land in
+        # later calls, so the child must not dispatch in the gap — and
+        # every ancestry/job/lease/principal inference the
+        # held-at-creation chain tried left a hole a review found
+        # (gr590954; td599743, td601023, td601626, td602770, td603427).
+        # The minter removes the tag once its links are settled — the
+        # mint-held runbook contract (me570515) enforced; the factory's
+        # own mint sequences end in ``plans.nodes.finish_mint``;
+        # plan_dispatch hygiene releases a settled mint's hold past
+        # ``MINT_STALE`` and asks on an orphan (gr574881). A
+        # caller-supplied hold is already held.
         mint_hold = False
         if parent_int is not None and not _mint_held(tags):
             from precis.workers.job_types import plan_dispatch as _pd
 
-            if _pd.mint_needs_hold(self.store, parent_int):
+            if _pd.in_live_plan(self.store, parent_int):
                 tags = [*(tags or []), plan_nodes.MINT_HOLD_TAG]
                 mint_hold = True
         # Delegate to the base put for the remaining D6 guardrails
@@ -2736,10 +2734,9 @@ class TodoHandler(NumericRefHandler):
             )
         if state.mint_hold:
             body += (
-                f" minted held ({plan_nodes.MINT_HOLD_TAG}) — inside a live "
-                "plan and no session signal verifiably the caller's own "
-                "covers it; remove the tag once its blocked-by links are "
-                "settled."
+                f" minted held ({plan_nodes.MINT_HOLD_TAG}) — server added "
+                "it unconditionally inside a live plan; remove the tag "
+                "once its blocked-by links are settled."
             )
         ask_blocks = guards.check_ask_meta(state.meta)
         if ask_blocks is not None:

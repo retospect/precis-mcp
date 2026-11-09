@@ -111,6 +111,7 @@ from typing import Any
 
 from precis.plans import pr_class
 from precis.plans import release as _release
+from precis.plans.nodes import finish_mint
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.todo import TERMINAL_TODO_STATUSES
 from precis.todo.guards import check_ask_meta
@@ -848,6 +849,7 @@ def _file_stuck_ask(
             [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
             conn=conn,
         )
+        finish_mint(store, ref.id, conn=conn)
     return f"stuck watch: filed {tag} as td{ref.id}"
 
 
@@ -1785,6 +1787,7 @@ def _file_review_wait_ask(
             [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
             conn=conn,
         )
+        finish_mint(store, ref.id, conn=conn)
     verb = "filed"
     if closed_ids:
         verb = f"refiled after td{', td'.join(str(i) for i in closed_ids)} closed"

@@ -70,6 +70,7 @@ from typing import Any
 
 from precis.plans import release as _release
 from precis.plans.gates import sha_deployed
+from precis.plans.nodes import finish_mint
 from precis.principal import worker_comment_meta
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.todo.guards import check_ask_meta
@@ -408,6 +409,7 @@ def _mint_no_run_ask(
             conn=conn,
         )
         store.stamp_ref_meta(node_id, {STALL_META_KEY: marker}, conn=conn)
+        finish_mint(store, ref.id, conn=conn)
     return int(ref.id)
 
 

@@ -321,18 +321,36 @@ GENERATOR_VERDICTS: tuple[str, ...] = ("no-op", "moot", "validated")
 #: plan on it (every open node and the root as won't-do) and drops it.
 MOOT_TAG = "verdict:moot"
 
-#: Open tag ``TodoHandler.put`` stamps on a todo created inside a live
-#: plan subtree while no session signal verifiably the caller's own
-#: covers the mint — a live signal on the ``slice:`` grant's own todo
-#: or a ``claimed-by:`` lease its write principal stamped
-#: (:func:`precis.workers.job_types.plan_dispatch.mint_needs_hold`)
-#: — the enforced half of the "mint it held" contract (me570515): the
-#: ``waiting-for:`` prefix keeps the linkless child out of dispatch and
-#: the minter removes it once its ``blocked-by`` links are settled. A
-#: minter that never comes back leaves it to plan_dispatch hygiene:
-#: past ``MINT_STALE`` a settled mint's hold is released and an orphan
-#: mint (no links, no body) files an ask on the plan root (gr574881).
+#: Open tag ``TodoHandler.put`` stamps on EVERY todo created inside a live
+#: plan subtree, unconditionally (td603429 — the mint barrier): the put
+#: commits the row open and linkless and the ``blocked-by`` links land in
+#: later calls, so no ancestry, job, lease or principal inference decides
+#: who is held — each inference the held-at-creation chain tried left a
+#: hole a review found (td599743, td601023, td601626, td602770, td603427).
+#: The ``waiting-for:`` prefix keeps the linkless child out of dispatch
+#: until the minter finishes: the factory's own mint sequences end in
+#: :func:`finish_mint`, an interactive minter removes the tag once its
+#: links are settled (the me570515 contract enforced), and a minter that
+#: never comes back leaves it to plan_dispatch hygiene — past
+#: ``MINT_STALE`` a settled mint's hold is released and an orphan mint
+#: (no links, no body) files an ask on the plan root (gr574881).
 MINT_HOLD_TAG = "waiting-for:mint"
+
+
+def finish_mint(store: Any, todo_id: int, *, conn: Any = None) -> bool:
+    """The mint barrier's completion call — the LAST write of a mint
+    sequence, after the minted todo's ``blocked-by``/``part-of`` links
+    and body are in (td603429): drops ``waiting-for:mint`` so the
+    settled child can dispatch. Every factory mint site calls it
+    (a put-stamped mint needs it; a store-direct mint that never
+    carried the tag is a no-op — the call is the contract, so no
+    site hand-rolls the removal and no new site forgets it). Returns
+    whether the tag was present. ``conn`` joins the mint's own
+    transaction where the site runs one."""
+    from precis.store.types import Tag
+
+    return bool(store.remove_tag(todo_id, Tag.open(MINT_HOLD_TAG), conn=conn))
+
 
 _VERDICT_RE = re.compile(r"^\s*(no-op|moot|validated):\s*(\S.*?)\s*$", re.IGNORECASE)
 

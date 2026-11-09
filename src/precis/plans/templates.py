@@ -35,7 +35,7 @@ from precis.plans import pr_class
 from precis.plans import release as _release
 from precis.plans.gates import resolve_board
 from precis.plans.logbook import first_line, log_plan_event
-from precis.plans.nodes import validate_plan_meta
+from precis.plans.nodes import finish_mint, validate_plan_meta
 from precis.store import Store, Tag
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
 from precis.todo.guards import check_ask_meta
@@ -180,6 +180,8 @@ def _run(
                 relation="related-to",
                 conn=conn,
             )
+        for tid in m.ids.values():
+            finish_mint(store, tid, conn=conn)
     _post_comments(store, m.comments)
     _log_plan_events(store, m)
     return m.result()
@@ -396,6 +398,8 @@ def mint_sha_reviewer(store: Store, sha12: str) -> int:
     with store.tx() as conn:
         m = _Minter(store, conn, None)
         build(m)
+        for tid in m.ids.values():
+            finish_mint(store, tid, conn=conn)
     return m.ids["review"]
 
 
@@ -1424,6 +1428,8 @@ def _run_body(
         m.root_id = loop_todo_id  # every node parents to the loop
         m.plan_root = plan_root
         build(m)
+        for tid in m.ids.values():
+            finish_mint(store, tid, conn=conn)
     _post_comments(store, m.comments)
     return PlanMint(root_id=loop_todo_id, ids=dict(m.ids))
 

@@ -130,31 +130,25 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    build, whichever root is older. A reviewer's ``run_slice`` is pinned to
    ``pick_lane('review', exclude_vendor=<the builder lane's vendor>)``;
    while no other vendor's lane is enabled that falls back to the
-   builder's lane and the action note says so. **Mint in flight**
-   (gr590954): a session mints each child with one ``put`` — the row
+   builder's lane and the action note says so. **Mint barrier**
+   (td603429): a session mints each child with one ``put`` — the row
    commits open and linkless — and adds the ``blocked-by`` links in
-   later calls, so a node minted mid-session gets no job while a
-   session signal older than it is live on an ancestor (the ``put``'s
-   ``parent_id`` default is the session's own todo) or on a
-   mint-capable todo of the same plan — a task session's puts may
-   parent to the root, an interactive session's anywhere
-   (:func:`_mint_in_flight`). The signal is an in-flight job for a
-   dispatched session, a live ``claimed-by:`` lease for an interactive
-   one, which mints no job — so an unsigned session's mint is born
-   held instead: ``put`` stamps ``waiting-for:mint``
-   (:data:`precis.plans.nodes.MINT_HOLD_TAG`) on a child landing
-   inside a live plan no signal verifiably the caller's own covers
-   (:func:`mint_needs_hold`): a live signal on the ``slice:`` grant's
-   own todo — the grant binds the session to it — or a
-   ``claimed-by:`` lease the caller's write principal itself stamped
-   (``ref_tags.principal``, migration 0287). Ancestry alone is not
-   ownership: an unsigned caller can mint under another session's
-   leased or job-running todo, and that foreign signal's end would
-   free the linkless child before its links settle (td601628,
-   td602774). The minter removes the tag once its ``blocked-by``
-   links are settled — the runbook contract (me570515) enforced. A
-   minter that dies or forgets leaves the hold to hygiene (step 5,
-   gr574881).
+   later calls, so ``put`` stamps ``waiting-for:mint``
+   (:data:`precis.plans.nodes.MINT_HOLD_TAG`) on EVERY child landing
+   inside a live plan subtree (:func:`in_live_plan`), unconditionally —
+   no ancestry, job, lease or principal inference decides who is held:
+   every inference the held-at-creation chain tried (gr590954;
+   td601078, td601628, td602774) left a hole the next review found
+   (td599743, td601023, td601626, td602770, td603427). The
+   ``waiting-for:`` prefix keeps the linkless child out of dispatch
+   while it still counts as open work — a loop does not close over
+   it and a done generator reopens for it — until the
+   minter finishes — the factory's own mint sequences end in
+   :func:`precis.plans.nodes.finish_mint` as their last call (a test
+   greps every site for it), an interactive minter removes the tag
+   once its links are settled — the runbook contract (me570515)
+   enforced — and a minter that dies or forgets leaves the hold to
+   hygiene (step 5, gr574881).
 5. **hygiene** — a ``claimed-by:`` tag older than 4 h on a todo with no live
    child job is released (``STATUS:open``); the same for a ``STATUS:fixing``
    gripe (lease past ``expires_at``, no live job under or ``fixes``-linked to
@@ -263,12 +257,10 @@ import logging
 import math
 import os
 import re
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from precis import principal as _principal
 from precis.alerts import raise_alert
 from precis.errors import BadInput
 from precis.plans import gates as _gates
@@ -280,6 +272,7 @@ from precis.plans.nodes import (
     MINT_HOLD_TAG,
     MOOT_TAG,
     any_verdict,
+    finish_mint,
     generator_verdict,
     node_kind,
 )
@@ -714,8 +707,7 @@ def _candidate_roots(conn: Any) -> list[int]:
 
 def _load(store: Any, roots: list[int] | None = None) -> _Plan:
     """The in-memory model of every plan subtree — or, ``roots`` given,
-    of just those (:func:`mint_needs_hold` loads the one plan a put
-    lands in)."""
+    of just those."""
     with store.pool.connection() as conn:
         candidates = _candidate_roots(conn) if roots is None else roots
     subtrees = {root: _fetch_subtree(store, root) for root in candidates}
@@ -1444,6 +1436,7 @@ def _mint_brief_ask(store: Any, n: _Node, depth: int, lineage: str) -> int:
             [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
             conn=conn,
         )
+        finish_mint(store, ref.id, conn=conn)
     return int(ref.id)
 
 
@@ -2458,76 +2451,6 @@ def _claims(n: _Node) -> list[str]:
     return [v for v in n.open_tags if v.startswith("claimed-by:")]
 
 
-#: ``meta.generate.role``s whose session posts a document instead of
-#: minting children (``run_slice``'s ``_NO_COMMIT_ROLES``, restated —
-#: the dependency stays one-way). A live session signal on any other
-#: todo of the plan is a mint pass still in flight
-#: (:func:`_mint_in_flight`).
-_DOC_ROLES = frozenset({"reviewer", "analyst"})
-
-
-def _may_mint(n: _Node) -> bool:
-    """A todo a mint pass may still be writing through — every kind but
-    the document generators (:data:`_DOC_ROLES` post a doc, they never
-    mint): a child-minting generator's session mints under itself; a
-    task or interactive session mints siblings under the plan root, or
-    wherever it points ``parent_id``."""
-    if node_kind(n.meta) != "generator":
-        return True
-    gen = n.meta.get("generate")
-    return (gen or {}).get("role") not in _DOC_ROLES
-
-
-def _job_in_flight(j: _Node) -> bool:
-    """Job ``j``'s session may still be writing — ``running`` or a
-    ``waiting_*`` park. A ``queued`` job has not started: nothing of
-    its mint is in flight."""
-    return j.status != "queued" and j.status not in _JOB_TERMINAL
-
-
-def _mint_signal(plan: _Plan, n: _Node, owner: _Node) -> bool:
-    """``owner`` carries a live session signal older than ``n``: an
-    in-flight job — a dispatched session's mark — or a live
-    ``claimed-by:`` lease — an interactive session's mark (it mints no
-    job; a closed todo's lingering tag is dead: the tick's closes do
-    not strip claims and hygiene skips them). A signal younger than
-    ``n`` cannot be the pass that minted it."""
-    if any(_job_in_flight(j) and j.created_at < n.created_at for j in plan.jobs(owner)):
-        return True
-    return not _closed(owner) and any(
-        set_at < n.created_at
-        for value, set_at in owner.open_tags.items()
-        if value.startswith("claimed-by:")
-    )
-
-
-def _mint_covered(plan: _Plan, n: _Node, covers: Callable[[_Node], bool]) -> bool:
-    """A signal ``covers`` accepts is live on a todo a mint pass may
-    still be writing through: an ancestor of ``n`` (the ``put``'s
-    ``parent_id`` default is the session's own todo) or a mint-capable
-    todo of the same plan (:func:`_may_mint`) — the two places a
-    session's puts land (a task session's may parent to the root, an
-    interactive session's anywhere)."""
-    if any(covers(a) for a in plan.ancestors(n)):
-        return True
-    return any(
-        g.id != n.id and g.root == n.root and _may_mint(g) and covers(g)
-        for g in plan.todos()
-    )
-
-
-def _mint_in_flight(plan: _Plan, n: _Node) -> bool:
-    """A mint pass on ``n``'s plan may still be running (gr590954):
-    the links of a node minted mid-session are settled only once the
-    minting session ends, so ``n`` holds while a session signal older
-    than ``n`` is live on an ancestor of it or on a mint-capable todo
-    of the same plan (:func:`_mint_covered`). The signal: an in-flight
-    job for a dispatched session, a live ``claimed-by:`` lease for an
-    interactive one, which mints no job. A node older than the signal
-    cannot be that session's write — its links are already settled."""
-    return _mint_covered(plan, n, lambda o: _mint_signal(plan, n, o))
-
-
 def _plan_root_of(store: Any, ref_id: int) -> int | None:
     """The live plan root ``ref_id`` sits under (itself included), or
     ``None`` outside a live plan: the highest live ancestor carrying the
@@ -2574,74 +2497,18 @@ def _plan_root_of(store: Any, ref_id: int) -> int | None:
     return None
 
 
-def _claimed_by(store: Any, plan: _Plan, caller: str) -> set[int]:
-    """The plan's todos carrying a live ``claimed-by:`` lease the
-    calling principal itself stamped — the lease row's
-    ``ref_tags.principal`` (migration 0287) matching the put's own
-    write principal is the verification a non-slice caller can offer:
-    an in-flight job belongs to the session it dispatched, never
-    proven by the caller, but a lease names its stamper (td602774,
-    review of td601628 — a foreign lease ends on its holder's clock
-    and must not free the linkless child). A closed todo's lingering
-    tag is dead, the same line :func:`_mint_signal` draws."""
-    ids = [t.id for t in plan.todos() if not _closed(t) and _claims(t)]
-    if not ids:
-        return set()
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            "SELECT rt.ref_id FROM ref_tags rt JOIN tags t USING (tag_id) "
-            "WHERE rt.ref_id = ANY(%s) AND t.namespace = 'OPEN' "
-            "AND t.value LIKE 'claimed-by:%%' AND rt.principal = %s",
-            (ids, caller),
-        ).fetchall()
-    return {int(r[0]) for r in rows}
-
-
-def mint_needs_hold(store: Any, parent_id: int) -> bool:
-    """Whether a ``put`` minting a todo under ``parent_id`` must mint it
-    held (``waiting-for:mint``): the put lands inside a live plan
-    subtree and no session signal *verifiably the caller's own* covers
-    the mint — the put commits the row open and linkless and the
-    ``blocked-by`` links land in later calls, so only a live signal
-    keeps the tick from dispatching it mid-mint, and an unsigned
-    session (an interactive one without a lease) has none (td601078,
-    review of gr590954). Ancestry alone is not ownership: an unsigned
-    caller can point ``parent_id`` at another session's leased or
-    job-running todo, and that foreign signal's end would free the
-    linkless child before its links settle (td602774, review of
-    td601628). Verified coverage — the same ancestor-or-mint-capable
-    reach :func:`_mint_covered` walks — is a live signal on the
-    ``slice:`` grant's own todo (the grant binds the session to it) or
-    a ``claimed-by:`` lease the caller's write principal itself
-    stamped (:func:`_claimed_by`). With covering protection the mint
-    is born open and :func:`_mint_in_flight`'s hold does the rest;
-    without it the mint is born held — explicit completion is the
-    minter removing the tag once its links settle."""
-    root = _plan_root_of(store, parent_id)
-    if root is None:
-        return False
-    plan = _load(store, roots=[root])
-    n = _Node(
-        id=-1,
-        kind="todo",
-        parent_id=parent_id,
-        title="",
-        meta={},
-        status="open",
-        created_at=datetime.now(UTC),
-        prio=None,
-        depth=0,
-        root=root,
-    )
-    caller = _principal.current()
-    parsed = _principal._parse_slice(caller)
-    if parsed is not None:
-        _, own_id, _role = parsed
-        return not _mint_covered(
-            plan, n, lambda o: o.id == own_id and _mint_signal(plan, n, o)
-        )
-    owned = _claimed_by(store, plan, caller)
-    return not _mint_covered(plan, n, lambda o: o.id in owned)
+def in_live_plan(store: Any, ref_id: int) -> bool:
+    """Whether ``ref_id`` sits under a live plan subtree — the whole of
+    the put-side mint barrier's test (td603429): every child a
+    ``TodoHandler.put`` creates under one is born held
+    (``waiting-for:mint``), unconditionally — no ancestry, job, lease
+    or principal inference, each of which left a hole a review found
+    (td599743, td601023, td601626, td602770, td603427). The minter's
+    explicit completion releases the hold:
+    :func:`precis.plans.nodes.finish_mint` for the factory's own mint
+    sequences, an untag for an interactive minter, hygiene for a
+    minter that never came back (gr574881)."""
+    return _plan_root_of(store, ref_id) is not None
 
 
 def _attempt_tag(n: _Node) -> int:
@@ -3385,6 +3252,7 @@ def _mint_rerun_ask(store: Any, n: _Node, why: str, continued: str) -> int | Non
             [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
             conn=conn,
         )
+        finish_mint(store, ref.id, conn=conn)
     return int(ref.id)
 
 
@@ -3800,7 +3668,6 @@ def _step_dispatch(
         if (
             plan.blocked(n)
             or plan.paused(n)
-            or _mint_in_flight(plan, n)
             or _capped(plan, n, cap, spend_capped=spend_hit is not None)
         ):
             continue
@@ -4134,6 +4001,7 @@ def _mint_ask(
         store.add_link(
             src_ref_id=n.id, dst_ref_id=ref.id, relation="blocked-by", conn=conn
         )
+        finish_mint(store, ref.id, conn=conn)
     return int(ref.id)
 
 
@@ -4199,6 +4067,7 @@ def _mint_stamp_ask(store: Any, n: _Node, gid: int, sha: str, err: str) -> int:
         store.add_link(
             src_ref_id=n.root, dst_ref_id=ref.id, relation="blocked-by", conn=conn
         )
+        finish_mint(store, ref.id, conn=conn)
     return int(ref.id)
 
 
@@ -4261,6 +4130,7 @@ def _mint_loop_ask(store: Any, n: _Node, count: int, why: str) -> int:
             [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
             conn=conn,
         )
+        finish_mint(store, ref.id, conn=conn)
     return int(ref.id)
 
 
@@ -4328,6 +4198,7 @@ def _mint_orphan_ask(store: Any, n: _Node, minutes: int) -> int:
         store.add_link(
             src_ref_id=n.id, dst_ref_id=ref.id, relation="blocked-by", conn=conn
         )
+        finish_mint(store, ref.id, conn=conn)
     return int(ref.id)
 
 
