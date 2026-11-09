@@ -294,6 +294,7 @@ def test_todo_spec_edit_modes() -> None:
         "find-replace",
         "insert",
         "delete",
+        "gate",
     )
 
 
