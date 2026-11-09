@@ -51,17 +51,24 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    result. ``LAND`` closes the node. ``FIX`` mints one ``run_slice`` task
    ``Fix review findings for td<id>`` (body = the list) under the plan root
    and closes the node — the mint is stamped ``meta.fix_depth``, the
-   count of consecutive FIX mints on the review→fix→land→review chain
-   walked through the ``meta.review.task`` backlinks. A fix minted at
-   :data:`FIX_BRIEF_DEPTH` or deeper is born parked on
-   ``waiting-for:brief`` with a design-call ask on the plan root
+   count of consecutive FIX mints on the review→fix→land→review chain,
+   read off the reviewed todo's own stamp so the dispatcher never
+   re-walks ``meta.review.task`` backlinks (gr604629). Escalation is by
+   round count: a fix minted at :data:`FIX_BRIEF_DEPTH` is born parked
+   on ``waiting-for:brief`` with a design-call ask on the plan root
    (gr603118): a chain that deep needs the coordinator's ``brief:``
    comment, which a slice dispatched at mint would outrun (me570353).
    ``_step_brief_holds`` releases the hold on the coordinator's tag
    removal, a ``continue`` answer on the ask, or :data:`BRIEF_WAIT_CAP`
    of silence (the ask closes ``STATUS:auto-timeout``), and the node's
    first attempt starts one ladder rung up — swe-2-max on the devin
-   table (:func:`_chain_floor`). ``REVERT`` mints one ``run_slice`` task ``Revert
+   table (:func:`_chain_floor`). A fix minted at
+   :data:`FIX_ESCALATE_DEPTH` is born model-pinned to the ladder's top
+   rung with an ``escalated: round <depth> of td<root>`` comment — no
+   second design-call window; and at :data:`FIX_CHAIN_CAP` no fix mints
+   at all: the root parks ``waiting-for:coordinator`` and an
+   ``ask-coordinator`` ask collects the chain's findings and landed
+   shas for one briefed builder. ``REVERT`` mints one ``run_slice`` task ``Revert
    <sha> on main`` (the ``landed: <sha>`` comment of each reviewed node --
    ``td<id>`` itself, or its child todos when it has them, as a slicer
    does) under the root, reopens each reviewed node ``blocked-by`` that
@@ -325,8 +332,8 @@ QUEUED_NOTE_AFTER = timedelta(minutes=10)
 #: body — is released; an unsettled orphan files an ask on its plan root.
 MINT_STALE = timedelta(minutes=10)
 
-#: The hold a fix node is minted with once its review→fix→land→review
-#: chain is :data:`FIX_BRIEF_DEPTH` or deeper (gr603118): each fix in such
+#: The hold a fix node is minted with when its review→fix→land→review
+#: chain reaches :data:`FIX_BRIEF_DEPTH` (gr603118): each fix in such
 #: a chain patches the previous reviewer's latest hole and the next
 #: reviewer finds the next one, while a fix dispatched at mint outruns
 #: the coordinator's ``brief:`` comment — the only channel a design call
@@ -338,9 +345,44 @@ MINT_STALE = timedelta(minutes=10)
 BRIEF_HOLD_TAG = "waiting-for:brief"
 
 #: The chain depth that holds a minted fix node for the design call:
-#: the first review fix dispatches at once; the fix of a fix (and every
-#: deeper generation) waits.
+#: the first review fix dispatches at once; the fix of a fix waits.
+#: Deeper generations do not wait again — they escalate by count
+#: (gr604629): the design-call window happens once per chain.
 FIX_BRIEF_DEPTH = 2
+
+#: The chain depth that escalates the minted fix to the ladder's top
+#: rung (gr604629, Reto 2026-11-09: escalation by count, not dollars):
+#: a finding two rounds could not close goes to the strongest rung on
+#: round three — the node is born ``meta.op.params.model``-pinned, so
+#: ``pick_lane(..., model=)`` routes it and ``_escalate`` never climbs
+#: it back down. It carries an ``escalated: round <depth> of td<root>``
+#: comment instead of the brief hold.
+FIX_ESCALATE_DEPTH = 3
+
+#: The chain depth that stops minting (gr604629): a fourth-round fix on
+#: the same finding is never minted — the plan root parks on
+#: :data:`COORDINATOR_HOLD_TAG` and one ``ask-coordinator`` ask collects
+#: the chain's findings and landed shas, so one briefed builder gets one
+#: brief instead of a chain of partial fixes.
+FIX_CHAIN_CAP = 4
+
+#: The tag a FIX-chain-capped plan root parks on (gr604629): a
+#: ``waiting-for:`` marker for the coordinator — no auto-release and no
+#: step settles it; removing it is the human's call once the briefed
+#: builder rides.
+COORDINATOR_HOLD_TAG = "waiting-for:coordinator"
+
+#: The routing tag of the ask the cap mints (gr604629): it rides the
+#: ``ask-user`` channel like every ruling ask; this tag names the
+#: coordinator as its audience.
+COORDINATOR_ASK_TAG = "ask-coordinator"
+
+#: Options of the ask a chain cap files under the plan root — the
+#: coordinator's real answer is the briefed builder it mints outside
+#: the chain, so the ask itself only needs the acknowledgement.
+_COORDINATOR_ASK_OPTIONS: list[str] = [
+    "acknowledged",
+]
 
 #: Silence past this lifts the brief hold — no brief and no answer came,
 #: so the ladder continues and the design-call ask closes
@@ -355,9 +397,10 @@ _BRIEF_ASK_OPTIONS: list[str] = [
 ]
 
 #: ``meta.fix_depth`` on a minted fix node — the FIX-chain generation
-#: :func:`_fix_chain` counted at mint. Stamped on every review fix
-#: (depth 1 included) so the node's place on the lineage is auditable
-#: without a re-walk; :func:`_chain_floor` reads it for the ladder
+#: :func:`_fix_depth` counts at mint. Stamped on every review fix
+#: (depth 1 included) so the next mint reads the counter off the
+#: reviewed todo instead of re-walking the ``meta.review.task``
+#: backlinks (gr604629); :func:`_chain_floor` reads it for the ladder
 #: escalation, ``meta.brief_wait`` for the hold's ask record.
 FIX_DEPTH_KEY = "fix_depth"
 
@@ -1360,14 +1403,27 @@ def _fix_minter(plan: _Plan, todo_id: int) -> _Node | None:
     return None
 
 
-def _fix_chain(plan: _Plan, n: _Node) -> tuple[int, list[int]]:
-    """``(depth, lineage)`` for the fix node the reviewer ``n`` is about
-    to mint (gr603118). ``depth`` counts the consecutive FIX mints on
-    the review→fix→land→review chain — 1 when the reviewed todo was not
-    itself minted by a FIX verdict — and ``lineage`` is the walked
-    ``generate.from`` target ids, oldest first (the chain the ask and
-    the root comment name)."""
-    depth = 1
+def _fix_depth(plan: _Plan, n: _Node) -> int:
+    """The FIX-chain generation of the fix node the reviewer ``n`` is
+    about to mint (gr604629): the reviewed todo's own
+    ``meta.fix_depth`` plus one — the counter rides the fix node's meta
+    from its mint on, so the dispatcher never re-walks the
+    ``meta.review.task`` backlinks. 1 when the ``generate.from`` target
+    was not minted a review fix."""
+    target_id = _review_from(n)
+    target = plan.nodes.get(target_id) if target_id is not None else None
+    prev = target.meta.get(FIX_DEPTH_KEY) if target is not None else None
+    if isinstance(prev, bool) or not isinstance(prev, int):
+        return 1
+    return prev + 1
+
+
+def _fix_lineage(plan: _Plan, n: _Node) -> list[int]:
+    """The ``generate.from`` target ids of ``n``'s review→fix→land→review
+    chain, oldest first — walked through the ``meta.review.task``
+    backlinks for the ask and comment text that names the chain (the
+    depth counter itself lives on the fix nodes' meta:
+    :func:`_fix_depth`)."""
     lineage: list[int] = []
     cur = _review_from(n)
     seen: set[int] = set()
@@ -1377,10 +1433,9 @@ def _fix_chain(plan: _Plan, n: _Node) -> tuple[int, list[int]]:
         minter = _fix_minter(plan, cur)
         if minter is None:
             break
-        depth += 1
         cur = _review_from(minter)
     lineage.reverse()
-    return depth, lineage
+    return lineage
 
 
 def _mint_brief_ask(store: Any, n: _Node, depth: int, lineage: str) -> int:
@@ -1449,6 +1504,101 @@ def _mint_brief_ask(store: Any, n: _Node, depth: int, lineage: str) -> int:
     return int(ref.id)
 
 
+def _chain_item(store: Any, plan: _Plan, todo_id: int) -> str:
+    """One ``- td<id> <title> — landed: <sha>; findings: <head>`` line of
+    the cap ask's collected chain: each item's own ``landed:`` sha and
+    the findings that minted it (the body's first paragraph)."""
+    node = plan.nodes.get(todo_id)
+    title = node.title.splitlines()[0][:80] if node is not None and node.title else ""
+    head = ""
+    for c in store.chunks.list_chunks_for_ref(todo_id):
+        if c.chunk_kind == TODO_BODY_KIND and str(c.text or "").strip():
+            head = _first_line(str(c.text).strip().split("\n\n", 1)[0])
+            break
+    sha = _landed_sha(store, todo_id)
+    out = f"- td{todo_id} {title}".rstrip()
+    out += f" — landed: {sha}" if sha else ""
+    out += f"; findings: {head}" if head else ""
+    return out
+
+
+def _mint_coordinator_ask(
+    store: Any,
+    plan: _Plan,
+    n: _Node,
+    handle: str,
+    findings: str,
+    depth: int,
+    lineage: list[int],
+) -> int:
+    """The ``ask-coordinator`` ask a FIX-chain cap files under the plan
+    root (gr604629): the fourth-round fix is never minted — the ask
+    collects the chain's findings and landed shas so one briefed builder
+    gets one brief. It blocks nothing: the root's
+    ``waiting-for:coordinator`` tag is the park, and the ask only routes
+    the record. Insert shape of :func:`_mint_brief_ask`."""
+    context = (
+        f"review-FIX chain capped at depth {depth} on plan td{n.root} "
+        f"(review td{n.id} of {handle}); the chain is parked for a "
+        "coordinator call"
+    )
+    meta: dict[str, Any] = {
+        "ask": {
+            "kind": "ruling",
+            "options": list(_COORDINATOR_ASK_OPTIONS),
+            "blocks": "nothing",
+            "context": context[:_ASK_CONTEXT_CAP],
+        }
+    }
+    check_ask_meta(meta)
+    title = f"td{n.root}: review-FIX chain capped at depth {depth} — a coordinator call"
+    items = "\n".join(_chain_item(store, plan, i) for i in lineage)
+    body = (
+        f"The review→fix→land→review chain under plan td{n.root} reached "
+        f"{depth} FIX verdicts on the same finding lineage: each fix "
+        "patched the previous reviewer's latest hole and the next "
+        "reviewer found another. The chain is capped — the next fix is "
+        "not minted. The root is parked on `waiting-for:coordinator` "
+        "and the chain's findings and lands are collected here so one "
+        "builder gets one brief.\n\n"
+        f"Chain, oldest first:\n{items or '- (chain unreadable)'}\n\n"
+        f"Newest findings (review td{n.id} of {handle}):\n{findings}\n\n"
+        "Next: mint one builder carrying the design call as its `brief:`, "
+        "remove `waiting-for:coordinator` when the plan may proceed, and "
+        "close this ask `acknowledged`."
+    )
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=title,
+            meta=meta,
+            parent_id=n.root,
+            conn=conn,
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        for value in (
+            COORDINATOR_ASK_TAG,
+            "ask-user",
+            "showstopper",
+            f"plan:{n.root}",
+        ):
+            store.add_tag(ref.id, Tag.open(value), set_by="system", conn=conn)
+        store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
+            conn=conn,
+        )
+        finish_mint(store, ref.id, conn=conn)
+    return int(ref.id)
+
+
 def _review_fix(
     store: Any,
     plan: _Plan,
@@ -1458,7 +1608,42 @@ def _review_fix(
     handle: str,
     findings: str,
     now: datetime,
-) -> int:
+    lane_table: tuple[_lanes.Lane, ...],
+) -> tuple[int | None, int | None]:
+    """Mint the next ``Fix review findings`` task for the reviewer
+    ``n``'s FIX verdict — or, the chain being capped, park the plan for
+    the coordinator. ``(fix_id, cap_ask_id)``: exactly one is not
+    ``None`` in a live pass (both ``None`` in a dry run that took the
+    cap path)."""
+    depth = _fix_depth(plan, n)
+    if depth >= FIX_CHAIN_CAP:
+        # gr604629: a fourth round on the same finding never mints — the
+        # root parks waiting-for:coordinator and one ask collects the
+        # chain's findings and shas for a single briefed builder.
+        lineage = _fix_lineage(plan, n)
+        chain = " → ".join(f"td{i}" for i in lineage)
+        ask_id = (
+            None
+            if w.dry_run
+            else _mint_coordinator_ask(store, plan, n, handle, findings, depth, lineage)
+        )
+        root = plan.nodes.get(n.root)
+        if root is not None:
+            w.add_tag(root, COORDINATOR_HOLD_TAG, now)
+            w.comment(
+                root,
+                f"plan_dispatch: review td{n.id} returned FIX #{depth} on "
+                f"{chain} — the chain is capped: no fix mints, the root "
+                "is parked waiting-for:coordinator and the chain rides "
+                + (f"ask td{ask_id}." if ask_id is not None else "(dry run)."),
+            )
+        res.asks += 1
+        res.notes.append(
+            f"td{n.id}: FIX chain capped at depth {depth} on {chain} — "
+            f"root parked waiting-for:coordinator"
+            + (f", ask td{ask_id}" if ask_id is not None else "")
+        )
+        return None, ask_id
     intent = (
         f"`git show {handle}` is the intent"
         if _review_sha(n) is not None
@@ -1472,33 +1657,59 @@ def _review_fix(
         store, plan, w, n.root, f"Fix review findings for {handle}", body, now
     )
     node = plan.nodes[fix_id]
-    depth, lineage = _fix_chain(plan, n)
     w.stamp_meta(node, {FIX_DEPTH_KEY: depth})
-    if depth < FIX_BRIEF_DEPTH:
-        return fix_id
-    # gr603118: a chain this deep needs the coordinator's design call
-    # before a slice starts — hold the mint behind waiting-for:brief.
-    chain = " → ".join(f"td{i}" for i in (*lineage, fix_id))
-    w.add_tag(node, BRIEF_HOLD_TAG, now)
-    ask_id = None if w.dry_run else _mint_brief_ask(store, node, depth, chain)
-    w.stamp_meta(
-        node,
-        {BRIEF_WAIT_KEY: {"ask": ask_id, "at": _iso(now), "depth": depth}},
-    )
-    root = plan.nodes.get(n.root)
-    if root is not None:
-        w.comment(
-            root,
-            f"plan_dispatch: fix td{fix_id} is held waiting-for:brief — "
-            f"chain depth {depth} on {chain}; a design call is needed "
-            + (f"(ask td{ask_id})" if ask_id is not None else "(dry run)"),
+    if depth >= FIX_ESCALATE_DEPTH:
+        # gr604629: two rounds could not close the finding — the third is
+        # born model-pinned to the ladder's top rung (the ``model`` pin
+        # routes through ``pick_lane`` and ``_escalate`` never climbs it
+        # back down), not held for another design call.
+        task_class = str(node.meta.get("task_class") or _DEFAULT_TASK_CLASS)
+        rungs = _lanes.ladder(task_class, lanes=lane_table)
+        top = rungs[-1] if rungs else None
+        if top is not None:
+            params = {"model": top.model} if top.model else {"lane": top.lane}
+            w.stamp_meta(node, {"op": {"type": DEFAULT_OP, "params": params}})
+        pin = (
+            f"lane {top.lane} model {top.model or 'default'}"
+            if top is not None
+            else "unpinned — no enabled rung for its task class"
         )
-    res.asks += 1
-    res.notes.append(
-        f"td{n.id}: minted td{fix_id} held waiting-for:brief "
-        f"(chain depth {depth} on {chain})"
-    )
-    return fix_id
+        w.comment(
+            node,
+            f"plan_dispatch: escalated: round {depth} of td{n.root} — "
+            f"pinned {pin}; two earlier rounds on the chain did not "
+            "close the finding.",
+        )
+        res.notes.append(
+            f"td{n.id}: minted td{fix_id} escalated: round {depth} of "
+            f"td{n.root} ({pin})"
+        )
+        return fix_id, None
+    if depth >= FIX_BRIEF_DEPTH:
+        # gr603118: a chain this deep needs the coordinator's design call
+        # before a slice starts — hold the mint behind waiting-for:brief.
+        lineage = _fix_lineage(plan, n)
+        chain = " → ".join(f"td{i}" for i in (*lineage, fix_id))
+        w.add_tag(node, BRIEF_HOLD_TAG, now)
+        ask_id = None if w.dry_run else _mint_brief_ask(store, node, depth, chain)
+        w.stamp_meta(
+            node,
+            {BRIEF_WAIT_KEY: {"ask": ask_id, "at": _iso(now), "depth": depth}},
+        )
+        root = plan.nodes.get(n.root)
+        if root is not None:
+            w.comment(
+                root,
+                f"plan_dispatch: fix td{fix_id} is held waiting-for:brief — "
+                f"chain depth {depth} on {chain}; a design call is needed "
+                + (f"(ask td{ask_id})" if ask_id is not None else "(dry run)"),
+            )
+        res.asks += 1
+        res.notes.append(
+            f"td{n.id}: minted td{fix_id} held waiting-for:brief "
+            f"(chain depth {depth} on {chain})"
+        )
+    return fix_id, None
 
 
 def _review_revert(
@@ -1778,11 +1989,21 @@ def _step_reviews(
             w.set_status(n, "done")
             res.notes.append(f"td{n.id}: review LAND for {handle} {marker}; closed")
         elif kind == "FIX":
-            fix_id = _review_fix(store, plan, w, res, n, handle, rest, now)
-            record["task"] = fix_id
+            fix_id, cap_ask = _review_fix(
+                store, plan, w, res, n, handle, rest, now, lane_table
+            )
+            if fix_id is not None:
+                record["task"] = fix_id
+            if cap_ask is not None:
+                record["cap_ask"] = cap_ask
             w.set_status(n, "done")
             res.notes.append(
-                f"td{n.id}: review FIX for {handle} {marker}; minted td{fix_id}, closed"
+                f"td{n.id}: review FIX for {handle} {marker}; "
+                + (
+                    f"minted td{fix_id}, closed"
+                    if fix_id is not None
+                    else "chain capped — parked for the coordinator, closed"
+                )
             )
         else:
             revert_id = _review_revert(store, plan, w, res, n, handle, rest, now)

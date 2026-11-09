@@ -5195,14 +5195,11 @@ def test_brief_hold_keeps_on_a_non_continue_answer(
     assert res.dispatched == 0
 
 
-def test_fix_chain_depth_counts_the_lineage(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The depth walk follows ``meta.review.task`` back through every
-    FIX minter on the chain: a third-generation fix mints at depth 3 and
-    holds the same way."""
-    use_lanes(monkeypatch)
-    mint, fix2, ask2 = _depth2_fix(store)
+def _depth3_fix(store: Store) -> tuple[T.PlanMint, int]:
+    """gr604629's third round: the depth-2 fix's hold timed out, it
+    landed, its reviewer said FIX — one pass mints the depth-3 fix
+    model-pinned to the ladder's top rung. Returns ``(mint, fix3)``."""
+    mint, fix2, _ask2 = _depth2_fix(store)
     # Silence releases fix2; it lands and its reviewer says FIX again.
     pd.run_pass(store, now=datetime.now(UTC) + timedelta(minutes=61))
     _land(store, fix2, "abc3333")
@@ -5217,10 +5214,84 @@ def test_fix_chain_depth_counts_the_lineage(
         if (ref := store.get_ref(kind="todo", id=c)) is not None
         and f"Fix review findings for td{fix2}" in (ref.title or "")
     )
-    assert _meta(store, f3)["fix_depth"] == 3
-    assert "waiting-for:brief" in _open_tags(store, f3)
+    return mint, f3
+
+
+def test_fix_chain_round_three_escalates_to_the_top_rung(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr604629: the depth counter rides the fix node's ``meta.fix_depth``
+    — the third-generation mint reads it off its chain parent, pins
+    ``meta.op.params.model`` to the ladder's top rung (claude-opus-4-8 on
+    the seed table) and dispatches in the same pass: no second
+    design-call hold, no re-walk."""
+    use_lanes(monkeypatch)
+    mint, f3 = _depth3_fix(store)
+    fm = _meta(store, f3)
+    assert fm["fix_depth"] == 3
+    assert fm["op"] == {
+        "type": "run_slice",
+        "params": {"model": "claude-opus-4-8"},
+    }
+    assert "waiting-for:brief" not in _open_tags(store, f3)
+    (_job_id, job_meta) = _jobs_under(store, f3)[-1]
+    params = job_meta.get("params") or {}
+    assert params.get("model") == "claude-opus-4-8"
+    assert _todo_comments(store, f3)[-1].startswith(
+        f"plan_dispatch: escalated: round 3 of td{mint.root_id}"
+    )
+    # No second design-call ask mints for the escalated round.
+    assert all(
+        (ref := store.get_ref(kind="todo", id=c)) is None
+        or "chain depth 3" not in (ref.title or "")
+        for c in _children(store, mint.root_id)
+    )
+
+
+def test_fix_chain_caps_at_round_four(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr604629: round four on the same root finding is never minted —
+    the plan root parks ``waiting-for:coordinator`` and one
+    ``ask-coordinator`` ask collects the chain's findings and landed
+    shas, so one briefed builder gets one brief."""
+    use_lanes(monkeypatch)
+    mint, f3 = _depth3_fix(store)
+    _land(store, f3, "ddd4444")
+    r4 = T.mint_reviewer(store, mint.root_id, f3)
+    _job(store, r4, lane="claude-sub")
+    _todo_comment(store, r4, "review: FIX — hole four")
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, r4) == "done"
+    assert _meta(store, r4)["review"]["verdict"] == "FIX"
+    root = mint.root_id
+    assert "waiting-for:coordinator" in _open_tags(store, root)
+    kids = _children(store, root)
+    # The round-4 fix is never minted.
+    assert not any(
+        (ref := store.get_ref(kind="todo", id=c)) is not None
+        and f"Fix review findings for td{f3}" in (ref.title or "")
+        for c in kids
+    )
+    (ask,) = [c for c in kids if "ask-coordinator" in _open_tags(store, c)]
+    assert _meta(store, r4)["review"]["cap_ask"] == ask
+    am = _meta(store, ask)["ask"]
+    assert am["kind"] == "ruling"
+    assert am["blocks"] == "nothing"
+    assert {"ask-user", "showstopper", f"plan:{root}"} <= _open_tags(store, ask)
+    body = "\n".join(
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(ask)
+        if c.chunk_kind == "todo_body"
+    )
+    # The chain's findings and landed shas, collected for one brief.
+    for sha in ("abc1234", "def2222", "abc3333", "ddd4444"):
+        assert f"landed: {sha}" in body
+    assert "hole four" in body
+    # Nothing dispatches — the chain is parked; the pass is idempotent.
     assert res.dispatched == 0
-    assert _jobs_under(store, f3) == []
+    assert pd.run_pass(store).reviews == 0
 
 
 def test_review_revert_mints_a_revert_and_requeues_the_build(store: Store) -> None:
