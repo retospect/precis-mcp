@@ -145,7 +145,21 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    re-mints ``land_slice`` with the failed job's own params (idem
    ``land_slice:td<id>``) — no builder, no ladder rung, no review lane —
    up to :data:`LAND_AGAIN_CAP` consecutive infra lands, then the hygiene
-   ask offers ``land again (no builder)``. **Order:** candidates from
+   ask offers ``land again (no builder)``. **Mechanical reds** (gr604579,
+   factory plan 3b): a builder task's newest failed attempt whose error
+   text names a known mechanical cause — a stale or colliding migration
+   number, an H2 chunk over 4000 chars, a skill file over its size cap, a
+   registry name in no skill, a rebase/merge conflict, squawk, ruff
+   (:func:`_mechanical_brief`) — gets the mapped fix posted as a
+   ``brief:`` comment and retries on the SAME rung the last builder ran
+   (:func:`_mech_pin`), never the ladder climb: a mechanical red does
+   not need a stronger model, it needs the line fixed. The budget is
+   two briefed retries of one signature (:data:`MECH_RETRY_CAP`,
+   :func:`_mech_red`); the third red stamps
+   ``meta.mech_retries.exhausted``, which step 5 reads as capped — the
+   ask files with the signature named, no rescue pass in between. An
+   unclassified red climbs the ladder exactly as before. **Order:**
+   candidates from
    every plan root are
    taken together, sorted by (``dispatch_score`` descending, todo id
    ascending; gr604593); a node with no stamped score takes its nearest
@@ -543,6 +557,87 @@ SPEND_KEY = "spend"
 #: ``entitlement.acu_usd`` names no rate — Devin's published list price
 #: per ACU (~$2 on the metered plans, gr599486).
 DEFAULT_ACU_USD = 2.0
+
+#: Briefed same-rung retries one mechanical signature gets — two
+#: briefed retries, the third red asks (gr604579, factory plan 3b): a
+#: signature back a third time is not a brief problem, a human reads
+#: it. The run counts consecutive same-signature failed attempts at the
+#: node's job tail (:func:`_mech_red`).
+MECH_RETRY_CAP = 2
+
+#: ``meta.mech_retries`` on a task node — the dispatcher's mechanical-red
+#: record ``{sig, n, job, at, exhausted?}`` (gr604579): the last
+#: classified red's signature, the consecutive repeat count it stood at,
+#: and the job it came from. ``exhausted: True`` marks the repeat past
+#: :data:`MECH_RETRY_CAP` — what :func:`_capped` turns into the ask.
+MECH_RETRIES_KEY = "mech_retries"
+
+#: Mechanical red signatures (gr604579, factory plan 3b): ``(slug, line
+#: pattern, the brief instruction)`` — the table of ship/lint reds a
+#: coordinator used to brief by hand off the error line (me588390: a
+#: ``brief:`` comment, never a cancel). The instruction's ``{paths}``
+#: fills from the failure text (:func:`_conflict_paths`). Patterns match
+#: one stripped line; ``_mech_hit`` scans the job's whole event text —
+#: the ✖ of the skill classes is a generic "lint is RED" while the
+#: decisive line sits in the log tail.
+_MECHANICAL_REDS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    (
+        "migration-number",
+        re.compile(
+            r"\bis numbered \d{3,4}\b.*\bnext free number\b"
+            r"|migration number collision",
+            re.IGNORECASE,
+        ),
+        "renumber the migration to the next free number on origin/main",
+    ),
+    (
+        "squawk",
+        re.compile(r"squawk found migration hazards", re.IGNORECASE),
+        "fix the named squawk rule on the new migration SQL",
+    ),
+    (
+        "skill-chunk",
+        re.compile(r"exceeds the chunk-size budget", re.IGNORECASE),
+        "split the named H2 section(s) under 4000 chars",
+    ),
+    (
+        "skill-size",
+        re.compile(r"\bis \d+ bytes \(cap \d+\)", re.IGNORECASE),
+        "move detail into a child skill or trim; the cap is in "
+        "tests/test_skill_size.py",
+    ),
+    (
+        "skill-vocab",
+        re.compile(r"appears? in no skill", re.IGNORECASE),
+        "mention the named registry value in the skill that owns it "
+        "(tests/test_skill_vocabulary.py)",
+    ),
+    (
+        "conflict",
+        # git's own ``CONFLICT (content|add/add|modify/delete|…):`` line
+        # or the lander's die phrases — nothing looser: a pytest tail
+        # carrying the word "conflict" is not a merge conflict.
+        re.compile(
+            r"^CONFLICT \(|rebase conflict onto origin/main"
+            r"|merge conflict integrating origin/main"
+        ),
+        "rebase on origin/main and resolve {paths}, keeping main's side "
+        "for others' changes",
+    ),
+    (
+        "ruff",
+        re.compile(r"\.py:\d+:\d+: [A-Z]{1,4}\d{2,5} |\d+ files? would be reformatted"),
+        "fix the named ruff rule (a reformat red just needs ruff format)",
+    ),
+)
+
+#: Where a conflict's file list hides in the failure text: git's own
+#: ``CONFLICT (content): Merge conflict in <path>`` lines, or a bare
+#: ``CONFLICT <path>`` as the lander's red reason carries it.
+_CONFLICT_PATH_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"Merge conflict in ([\w./-]+)"),
+    re.compile(r"^CONFLICT\s+([\w./-]+\.\w+)\s*$", re.MULTILINE),
+)
 
 #: Dispatch score of a node with no stamped score on it or any ancestor
 #: (:mod:`precis.utils.dispatch_score`, gr604593).
@@ -3055,6 +3150,172 @@ def _land_again_capped(plan: _Plan, n: _Node) -> bool:
     )
 
 
+# ── mechanical-red briefs (gr604579) ─────────────────────────
+
+
+def _conflict_paths(text: str) -> str:
+    """The conflicted paths the failure text names, or the generic
+    phrase — what ``{paths}`` in the conflict instruction fills with."""
+    seen: list[str] = []
+    for pat in _CONFLICT_PATH_RES:
+        for path in pat.findall(text):
+            if path not in seen:
+                seen.append(path)
+    if not seen:
+        return "the conflicted paths"
+    out = ", ".join(seen[:6])
+    return out + (" …" if len(seen) > 6 else "")
+
+
+def _mechanical_brief(error_line: str | None) -> str | None:
+    """The ``brief:`` fix one error line maps to (gr604579) — the
+    instruction a coordinator used to write by hand — or ``None`` when
+    no known signature matches. Pure: one stripped line in, the
+    instruction out; a ``{paths}`` hole stays literal for the caller to
+    fill (:func:`_mech_hit` fills it from the whole event text)."""
+    if not error_line:
+        return None
+    for _slug, pat, brief in _MECHANICAL_REDS:
+        if pat.search(error_line):
+            return brief
+    return None
+
+
+def _mech_hit(text: str) -> tuple[str, str, str] | None:
+    """``(signature slug, brief instruction, decisive line)`` for the
+    LAST line of ``text`` carrying a known mechanical signature — the
+    whole job event text is scanned, since the skill classes' ✖ is a
+    generic "lint is RED" and the decisive line sits in the log tail;
+    the tail-most match wins so a stray early line can't shadow the
+    real cause. The instruction comes through
+    :func:`_mechanical_brief`, its ``{paths}`` filled from the whole
+    text — a multi-file conflict names every file."""
+    found: tuple[str, str] | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        for slug, pat, _brief in _MECHANICAL_REDS:
+            if pat.search(line):
+                found = (slug, line)
+                break
+    if found is None:
+        return None
+    slug, line = found
+    brief = _mechanical_brief(line)
+    if brief is None:  # the winning line classified a moment ago
+        return None
+    if "{paths}" in brief:
+        brief = brief.replace("{paths}", _conflict_paths(text))
+    return slug, brief, line
+
+
+def _mech_red(
+    plan: _Plan, store: Any, n: _Node
+) -> tuple[str, str, str, int, int] | None:
+    """The newest attempt job's mechanical red, or ``None``.
+
+    Returns ``(slug, brief, line, repeats, job_id)`` — the signature,
+    its instruction, the decisive line, how many consecutive failed
+    attempt jobs at the tail classify to the SAME signature (1 = this
+    red is new), and the job it came from. Older jobs' event text is
+    read lazily backwards only until the count is settled: a different
+    or unclassified red, or a non-failed job, breaks the run. The count
+    lives in the job rows, not a stamp — an answered ask's re-arm floor
+    already scopes :func:`_attempt_jobs`, so the budget resets itself.
+    """
+    ended = _attempt_jobs(plan, n)
+    if not ended or ended[-1].status != "failed":
+        return None
+    last = ended[-1]
+    hit = _mech_hit(_job_event_text(store, last.id))
+    if hit is None:
+        return None
+    slug, brief, line = hit
+    repeats = 1
+    for j in reversed(ended[:-1]):
+        if repeats > MECH_RETRY_CAP or j.status != "failed":
+            break
+        prev = _mech_hit(_job_event_text(store, j.id))
+        if prev is None or prev[0] != slug:
+            break
+        repeats += 1
+    return slug, brief, line, repeats, int(last.id)
+
+
+def _mech_pin(
+    plan: _Plan,
+    w: _Writer,
+    n: _Node,
+    rungs: tuple[_lanes.Rung, ...],
+    params: dict[str, Any],
+    rules: dict[str, dict[str, Any]] | None,
+) -> bool:
+    """Pin ``params`` to the ladder rung the newest builder job ran on —
+    a mechanical red retries where it failed, not a rung up (gr604579:
+    a 4000-char skill chunk does not need swe-2-max). ``False`` when the
+    op already pins, no builder job names a rung, that rung is off
+    today's ladder, sits on a lane a host refusal backed off (gr571395
+    — :func:`_escalate` owns the skip), or its ``rung_caps`` cap is
+    already spent — the retry then climbs through :func:`_escalate` as
+    before, carrying the brief the caller posted."""
+    if params.get("lane") or params.get("model"):
+        return False
+    lane = model = None
+    for j in reversed(plan.jobs(n)):
+        if str(j.meta.get("job_type") or DEFAULT_OP) != DEFAULT_OP:
+            continue
+        lane = j.meta.get("lane") or (j.meta.get("params") or {}).get("lane")
+        model = j.meta.get("model") or (j.meta.get("params") or {}).get("model")
+        break
+    if not lane:
+        return False
+    idx = _lanes.rung_index(rungs, str(lane), str(model) if model else None)
+    if idx is None:
+        return False
+    target = rungs[idx]
+    if target.lane in _lanes.lane_backoffs(w.store):
+        return False
+    cap_usd = _rung_cap_usd(target, rules) if rules else None
+    spend = _node_spend_usd(plan, n, rules) if rules else 0.0
+    if cap_usd is not None and spend >= cap_usd:
+        return False
+    params["lane"] = target.lane
+    if target.model is not None:
+        params["model"] = target.model
+    if cap_usd is not None:
+        # Same allowance ``_escalate`` stamps onto a capped rung — the
+        # pinned retry must not outrun the node's USD bound (td601015).
+        w.stamp_meta(
+            n,
+            {
+                SPEND_KEY: {
+                    "usd": round(spend, 4),
+                    "cap_usd": cap_usd,
+                    "blocked": False,
+                    "at": _iso(datetime.now(UTC)),
+                }
+            },
+        )
+        params["budget_usd"] = round(cap_usd - spend, 4)
+    return True
+
+
+def _mech_done(plan: _Plan, n: _Node) -> str | None:
+    """The exhausted mechanical signature — ``meta.mech_retries``
+    stamped ``exhausted`` on the node's NEWEST attempt job — or
+    ``None``. A re-arm (``rearmed_after_job``) or any newer attempt
+    retires the stamp, so the next red starts a fresh count
+    (gr604579)."""
+    stamp = n.meta.get(MECH_RETRIES_KEY)
+    if not isinstance(stamp, dict) or not stamp.get("exhausted"):
+        return None
+    ended = _attempt_jobs(plan, n)
+    if ended and ended[-1].id == stamp.get("job"):
+        return str(stamp.get("sig") or "mechanical")
+    return None
+
+
 # ── per-node spend caps (gr599486) ─────────────────────────────
 
 
@@ -3267,6 +3528,11 @@ def _capped(plan: _Plan, n: _Node, cap: int, *, spend_capped: bool = False) -> b
     if _no_commit(plan, n):
         return True
     if _land_again_capped(plan, n):
+        return True
+    # A mechanical signature whose brief budget is spent counts as
+    # capped: the third repeat goes to the ask, not to a third same-rung
+    # retry (gr604579).
+    if _mech_done(plan, n) is not None:
         return True
     # A spend cap is spent money, not retries — every rung left for the
     # node sits over its per-node USD bound (gr599486).
@@ -4200,7 +4466,61 @@ def _step_dispatch(
             if not go:
                 continue
             params["lane"] = lane_name
-        if job_type == DEFAULT_OP:
+        mech_pinned = False
+        if (
+            job_type == DEFAULT_OP
+            and reland is None
+            and requeued_cancel is None
+            and not _is_reviewer(n)
+        ):
+            # gr604579 (factory plan 3b): a red whose error line names a
+            # mechanical cause gets the fix as a ``brief:`` comment and
+            # retries on the SAME rung — not the lane-ladder climb that
+            # used to land a 4000-char skill chunk on swe-2-max. Two
+            # briefed retries, the third red asks instead:
+            # ``meta.mech_retries.exhausted`` makes the node read as
+            # capped to the hygiene step below.
+            mech = _mech_red(plan, w.store, n)
+            if mech is not None:
+                slug, brief, line, repeats, last_job = mech
+                stamp = {
+                    "sig": slug,
+                    "n": repeats,
+                    "job": last_job,
+                    "at": _iso(datetime.now(UTC)),
+                }
+                if repeats > MECH_RETRY_CAP:
+                    w.stamp_meta(n, {MECH_RETRIES_KEY: {**stamp, "exhausted": True}})
+                    res.notes.append(
+                        f"td{n.id}: mechanical red '{slug}' back for repeat "
+                        f"{repeats} — the brief budget is spent; parked "
+                        "for the cap ask"
+                    )
+                    continue
+                prev = n.meta.get(MECH_RETRIES_KEY)
+                w.stamp_meta(n, {MECH_RETRIES_KEY: stamp})
+                # One brief per red job: a mint held this pass (lane-wait,
+                # a params problem, a validate_submit refusal) or an
+                # attempt_free newest job re-fires this block on the same
+                # failed attempt next tick — the stamp says the brief is
+                # already up, so it does not re-post.
+                if not (isinstance(prev, dict) and prev.get("job") == last_job):
+                    w.comment(
+                        n,
+                        f"brief: {brief} — mechanical red on jo{last_job}: "
+                        f"{line[:200]}",
+                    )
+                mech_pinned = _mech_pin(plan, w, n, rungs, params, rules)
+                res.notes.append(
+                    f"td{n.id}: mechanical red '{slug}' (repeat "
+                    f"{repeats}/{MECH_RETRY_CAP}) — briefed, retry "
+                    + (
+                        "on the same rung"
+                        if mech_pinned
+                        else "climbs the ladder (last rung unpinnable)"
+                    )
+                )
+        if job_type == DEFAULT_OP and not mech_pinned:
             go, climbed = _escalate(w, plan, n, params, lane_table, rules)
             if climbed:
                 res.notes.append(climbed)
@@ -4363,6 +4683,7 @@ def _mint_ask(
     relands: int = 0,
     human: list[str] | None = None,
     lane_gap: str | None = None,
+    mech: str | None = None,
 ) -> int:
     newest = plan.jobs(n)[-1]
     if relands:
@@ -4385,6 +4706,17 @@ def _mint_ask(
             "human edit, new brief, or drop it?"
         )
         options = list(_HUMAN_ASK_OPTIONS)
+    elif mech:
+        head = (
+            f"job:{newest.id} {newest.status} — the same mechanical red "
+            f"('{mech}') came back past its {MECH_RETRY_CAP} briefed "
+            f"retries ({attempts} attempts)"
+        )
+        title = (
+            f"td{n.id}: mechanical red keeps coming back — retry, "
+            "rewrite the brief, or drop it?"
+        )
+        options = list(_ASK_OPTIONS)
     else:
         head = (
             f"job:{newest.id} {newest.status} after {attempts} attempt(s) "
@@ -5124,8 +5456,15 @@ def _step_hygiene(
         attempts = _attempts(plan, n)
         human = _human_hit(plan, n)
         land_capped = _land_again_capped(plan, n)
+        mech_sig = _mech_done(plan, n)
         lane_gap: str | None = None
-        if not human and not land_capped and job_type == DEFAULT_OP and not rungs:
+        if (
+            not human
+            and not land_capped
+            and mech_sig is None
+            and job_type == DEFAULT_OP
+            and not rungs
+        ):
             task_class = str(n.meta.get("task_class") or _DEFAULT_TASK_CLASS)
             pinned = params.get("lane")
             lane_gap = (
@@ -5134,7 +5473,8 @@ def _step_hygiene(
                 else f"no enabled lane fits task class {task_class!r}"
             )
         rescue = (
-            not human
+            mech_sig is None
+            and not human
             and not land_capped
             and job_type == DEFAULT_OP
             and lane_gap is None
@@ -5163,9 +5503,12 @@ def _step_hygiene(
             relands=_infra_red_lands(plan, n) if land_capped else 0,
             human=human,
             lane_gap=lane_gap,
+            mech=mech_sig,
         )
         why = (
-            "human-only hit"
+            f"mechanical red loop ({mech_sig})"
+            if mech_sig
+            else "human-only hit"
             if human
             else "re-land cap hit"
             if land_capped

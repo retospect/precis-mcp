@@ -1679,6 +1679,365 @@ def test_retry_cap_climbs_the_ladder_then_rescues(
     assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
 
 
+def _red_land(
+    store: Store,
+    task: int,
+    text: str,
+    *,
+    lane: str = "devin",
+    model: str | None = "swe-2-high",
+) -> int:
+    """A build that handed to the lander and came back red: the
+    succeeded ``run_slice`` (stamped where it ran, as run_slice does at
+    submit) plus the failed ``land_slice`` carrying ``text`` as its
+    job_event — the shape ``_mech_red`` reads."""
+    _slice_job(
+        store,
+        task,
+        "run_slice",
+        "succeeded",
+        meta={"lane": lane, **({"model": model} if model else {})},
+    )
+    land = _slice_job(store, task, "land_slice", "failed")
+    store.chunks.insert_chunks(
+        land, [ChunkInsert(ord=1, text=text, meta={"chunk_kind": "job_event"})]
+    )
+    return land
+
+
+def _brief_comments(store: Store, todo_id: int) -> list[str]:
+    return [
+        c
+        for c in _todo_comments(store, todo_id)
+        if c.lstrip().lower().startswith("brief:")
+    ]
+
+
+@pytest.mark.parametrize(
+    "line,want",
+    [
+        (
+            "migration 0292_venue_metrics.sql is numbered 0292, but "
+            "origin/main's next free number in src/precis/migrations is 0291",
+            "next free number",
+        ),
+        (
+            "migration number collision: this branch adds "
+            "0292_venue_metrics.sql but origin/main already carries "
+            "0292_llm_call_log_reason_class_comment.sql",
+            "next free number",
+        ),
+        (
+            "squawk found migration hazards — fix them (or, deliberately, "
+            "PRECIS_SQUAWK=0) and re-run scripts/ship.",
+            "squawk",
+        ),
+        (
+            "chunk 'The big section' body exceeds the chunk-size budget "
+            "(4190 > 4000 chars)",
+            "4000",
+        ),
+        (
+            "precis-huge-help is 40000 bytes (cap 30720) — a whole-skill read refuses",
+            "child skill",
+        ),
+        (
+            "1 registry name(s) appear in no skill — search can't reach it",
+            "registry value",
+        ),
+        (
+            "CONFLICT (content): Merge conflict in src/precis/runtime/search.py",
+            "rebase on origin/main",
+        ),
+        ("src/precis/x.py:12:5: E501 line too long", "ruff"),
+    ],
+)
+def test_mechanical_brief_maps_each_signature(line: str, want: str) -> None:
+    brief = pd._mechanical_brief(line)
+    assert brief is not None
+    assert want in brief
+
+
+def test_mechanical_brief_unknown_line_is_none() -> None:
+    assert pd._mechanical_brief("log tail: exit 1 — something novel") is None
+    assert pd._mechanical_brief(None) is None
+    assert pd._mechanical_brief("") is None
+
+
+def test_mechanical_red_briefs_and_retries_same_rung(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr604579 (plan 3b): a red land whose error line names a mechanical
+    cause posts the mapped fix as a ``brief:`` comment and retries the
+    builder on the SAME rung — not the ladder climb that landed skill
+    reds on swe-2-max."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _red_land(
+        store,
+        task,
+        f"land_slice: ship of td{task} red: ✖ migration 0292_x.sql is "
+        "numbered 0292, but origin/main's next free number in "
+        "src/precis/migrations is 0291",
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
+    params = _jobs_under(store, task)[-1][1]["params"]
+    assert (params.get("lane"), params.get("model")) == ("devin", "swe-2-high")
+    (brief,) = _brief_comments(store, task)
+    assert "next free number" in brief
+    assert _meta(store, task)["mech_retries"]["sig"] == "migration-number"
+
+
+def test_mechanical_red_second_repeat_briefs_again(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same signature twice is still a brief, not an ask — the cap
+    counts CONSECUTIVE same-signature reds at the job tail."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    text = (
+        "land_slice: red: ✖ precis-paper-help chunk 'The big section' "
+        "body exceeds the chunk-size budget (4190 > 4000 chars)"
+    )
+    _red_land(store, task, text)
+    _red_land(store, task, text)
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
+    assert len(_brief_comments(store, task)) == 1
+    assert _meta(store, task)["mech_retries"]["n"] == 2
+
+
+def test_mechanical_red_new_signature_restarts_the_count(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A different signature between two reds of one class breaks the
+    run — the third repeat rule is per signature."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _red_land(
+        store, task, "✖ migration 0292_x.sql is numbered 0292, next free number 0291"
+    )
+    _red_land(store, task, "✖ squawk found migration hazards — fix them")
+    _red_land(
+        store, task, "✖ migration 0293_x.sql is numbered 0293, next free number 0292"
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    assert _meta(store, task)["mech_retries"]["n"] == 1
+
+
+def test_mechanical_red_third_repeat_files_the_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same mechanical red back a third time files the ask — no
+    third same-rung retry, no rescue pass. Answering it re-arms the
+    node with a fresh brief budget."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    text = "✖ migration 0292_x.sql is numbered 0292, next free number 0291"
+    for _ in range(3):
+        _red_land(store, task, text)
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 1, 0)
+    assert "rescue:builder" not in _open_tags(store, task)
+    assert _meta(store, task)["mech_retries"]["exhausted"] is True
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    ask_ref = store.get_ref(kind="todo", id=ask)
+    assert ask_ref is not None
+    assert "mechanical red" in str(ask_ref.title)
+    # Answering re-arms: the exhausted stamp's job drops below the floor.
+    _answer_ask(store, ask, "retry with a different lane/model")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+
+
+def test_unclassified_red_climbs_the_ladder(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An error line no signature knows escalates exactly as before:
+    one rung up, no ``brief:`` comment, no ask."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "run_slice: boom — exit 137 on the gate",
+        lane="devin",
+        model="swe-2-high",
+    )
+    store.add_tag(task, Tag.open("child-failed:1"), set_by="system")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    params = _jobs_under(store, task)[-1][1]["params"]
+    assert (params.get("lane"), params.get("model")) == ("devin", "swe-2-max")
+    assert _brief_comments(store, task) == []
+    assert "mech_retries" not in _meta(store, task)
+
+
+def test_mechanical_conflict_needs_gits_own_line() -> None:
+    """The word "conflict" in a failing test's output is not a merge
+    conflict — only git's ``CONFLICT (…):`` lines and the lander's die
+    phrases classify (a loose ``conflict`` pattern would read a pytest
+    assert tail as a rebase red)."""
+    pytest_tail = (
+        "tests/test_claims.py::test_x FAILED\n"
+        "E   assert 'claim conflict' in result\n"
+        "1 failed, 2 passed in 0.4s"
+    )
+    assert pd._mech_hit(pytest_tail) is None
+    git_tail = (
+        "Auto-merging src/precis/x.py\n"
+        "CONFLICT (content): Merge conflict in src/precis/x.py\n"
+        "Automatic merge failed; fix conflicts and then commit the result."
+    )
+    hit = pd._mech_hit(git_tail)
+    assert hit is not None and hit[0] == "conflict"
+    assert "src/precis/x.py" in hit[1]
+    # The lander's die phrases classify without git's marker.
+    assert (
+        pd._mechanical_brief(
+            "rebase conflict onto origin/main — resolve in /wt, then "
+            "'git add -A' and re-run scripts/ship"
+        )
+        is not None
+    )
+
+
+def test_mechanical_hit_prefers_the_tail_match() -> None:
+    """The LAST matching line wins — a stray early line can't shadow
+    the real cause sitting in the log tail."""
+    hit = pd._mech_hit(
+        "chunk 'x' body exceeds the chunk-size budget (4100 > 4000 chars)\n"
+        "noise between\n"
+        "src/precis/x.py:12:5: E501 line too long"
+    )
+    assert hit is not None
+    assert hit[0] == "ruff"
+    assert hit[2] == "src/precis/x.py:12:5: E501 line too long"
+
+
+def test_mechanical_red_held_mint_posts_one_brief(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mint held by a lane-wait re-fires the mechanical-red block on
+    the same failed attempt every tick: the ``brief:`` posts once per
+    red job, not once per pass."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _red_land(
+        store,
+        task,
+        "✖ migration 0292_x.sql is numbered 0292, next free number 0291",
+    )
+    # Back off every ladder lane: _mech_pin refuses the backed rung and
+    # _escalate finds nothing free — the mint waits (lane-wait).
+    until = (datetime.now(UTC) + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for lane in ("devin", "claude-sub"):
+        _slice_job(
+            store,
+            mint.root_id,
+            "run_slice",
+            "failed",
+            meta={
+                "lane": lane,
+                "host_refusal": {"lane": lane, "until": until, "why": "x"},
+            },
+        )
+    res = pd.run_pass(store)
+    assert res.dispatched == 0
+    assert len(_brief_comments(store, task)) == 1
+    res = pd.run_pass(store)
+    assert res.dispatched == 0
+    assert len(_brief_comments(store, task)) == 1
+
+
+def test_mechanical_red_attempt_free_retry_keeps_one_brief(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A minted retry that ends ``attempt_free`` leaves the same failed
+    attempt at the tail — the next tick re-classifies it but does not
+    re-post the brief."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _red_land(
+        store,
+        task,
+        "✖ migration 0292_x.sql is numbered 0292, next free number 0291",
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    assert len(_brief_comments(store, task)) == 1
+    job_id = _jobs_under(store, task)[-1][0]
+    store.stamp_ref_meta(job_id, {"attempt_free": "lane-wait"})
+    _set_job_status(store, job_id, "failed")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    assert len(_brief_comments(store, task)) == 1
+
+
+def test_mechanical_pin_refuses_a_backed_off_lane(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr571395: the same-rung pin never lands on a lane a host refusal
+    backed off — ``_mech_pin`` declines and ``_escalate`` climbs to the
+    next free rung as for any red."""
+    low = L.Lane(
+        name="low",
+        adapter="devin_tree",
+        credential_pool="low",
+        cap=1,
+        task_classes=frozenset({"code"}),
+        vendor="cognition",
+    )
+    mid = L.Lane(
+        name="mid",
+        adapter="codex_exec",
+        credential_pool="mid",
+        cap=1,
+        task_classes=frozenset({"code"}),
+        vendor="openai",
+    )
+    sub = seed_lane("claude-sub")
+    use_lanes(monkeypatch, low, mid, sub)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _red_land(
+        store,
+        task,
+        "✖ migration 0292_x.sql is numbered 0292, next free number 0291",
+        lane="mid",
+        model=None,
+    )
+    # Another slice's host refusal backed "mid" off (its newest
+    # run_slice job carries the mark).
+    until = (datetime.now(UTC) + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _slice_job(
+        store,
+        mint.root_id,
+        "run_slice",
+        "failed",
+        meta={
+            "lane": "mid",
+            "host_refusal": {"lane": "mid", "until": until, "why": "x"},
+        },
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    params = _jobs_under(store, task)[-1][1]["params"]
+    assert (params["lane"], params.get("model")) == (
+        "claude-sub",
+        "claude-sonnet-5",
+    )
+
+
 def _paid_devin_lane() -> L.Lane:
     """A devin lane with a paid top rung (gr599486): free swe-2 models
     below ``claude-fable-5-1-medium`` — the shape Reto armed with a
