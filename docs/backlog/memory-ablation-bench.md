@@ -91,6 +91,61 @@ reduced but not when skills are simplified, the API is the problem;
 the reverse says documentation is. The scripted caller is again the
 control.
 
+## Chunking and corpus axes (Reto, 2026-11-09, fourth ask)
+
+Chunking is index-time, so each variant is a re-ingest of the fixture
+(cheap at 30–200 papers). **Gold is therefore stored as character spans
+in the source text, never as chunk ids**; recall is span overlap with a
+rendered chunk. Without this every chunking arm would invalidate the
+gold.
+
+| arm | what changes |
+|---|---|
+| `chunk-fixed-256` / `-512` / `-1024` | fixed token windows, no sentence awareness |
+| `chunk-sentence` (today) | pysbd sentence-aware splitting |
+| `chunk-section` | structure-aware: QASPER's own paragraph/section boundaries |
+| `chunk-overlap-N` | overlap added to the winning size |
+| `chunk-parent` | retrieve small, render the parent paragraph |
+| `chunk-contextual` | contextual chunk embeddings (`contextual-chunk-embeddings.md`) |
+| `no-links` | machine-written stance/provenance edges removed (the `graph-gardener-value.md` question) |
+| `distractor-×N` | the fixture padded with N× unrelated open-access text (Gutenberg / PMC-OA) to measure recall and tokens under corpus growth |
+
+Corpus choice, settled: **QASPER is the task corpus** because it ships
+questions with evidence a stranger did not write. Open-access pools
+(Gutenberg, PMC-OA, arXiv CC-BY, S2ORC ODC-BY) carry no gold, so they
+serve only as **distractor padding** and, later, as the pool for our own
+cross-paper tasks — labelled, and flagged in the paper as self-authored.
+
+## Analysis — factorial design, not one-at-a-time (Reto, 2026-11-09)
+
+One-at-a-time ablation cannot see interactions (keywords may matter only
+when summaries are off). The six memory switches are binary, so the
+scripted tier runs the **full 2⁶ = 64-arm factorial** (deterministic,
+minutes); the LLM tier runs a resolution-IV fractional factorial (16
+arms) per model. Every run appends to one long table
+`task × arm × model × seed → tokens, calls, correct, first_pick, errors,
+wall, cost`; the analysis reads only that table.
+
+- **Axes**: PCA / factor analysis on the outcome vector → expect an
+  "efficiency" and a "quality" component; those become the paper's two
+  composite scores.
+- **Contribution per layer**: mixed model
+  `outcome ~ switches + switch pairs + model + task_type + (1|task)`;
+  main effects with CIs are the per-layer contribution, pairwise terms
+  the interaction heat map, Shapley values over switch subsets the
+  order-free headline figure.
+- **Surface and model axes** enter the same model as factors (`hints`,
+  `row_repr`, `title_style`, `api`, `skills`, `model`), so "simpler API
+  or simpler skills" is the `model × api` vs `model × skills` term.
+- **Budget**: ~100 tasks × 64 arms ≈ 6,400 scripted rows per seed; the
+  LLM tier at 16 arms × 5 models × 100 tasks is 8,000 calls per seed —
+  one seed first, judge pinned, CIs reported.
+
+Slice 11: `scripts/bench report --analysis` — factorial arm generator,
+mixed model, Shapley, PCA; depends on slice 5.
+Slice 12: chunking, `no-links` and distractor arms (re-ingest variants,
+span-based gold); depends on slices 3–5.
+
 ## Agent under test, two tiers
 
 1. **Scripted caller** — a deterministic verb sequence per task type
@@ -166,9 +221,16 @@ curve per arm.
 10. Model × surface arms: reduced-API facade and simplified-skills set
     in `agent.py`, model ladder through the existing router; depends on
     slice 5.
-0. Feasibility: import closure of the memory subsystem decides whether
-   the public artifact is a small demo clone (extracted at a pinned sha,
-   contract-tested against main) or the full image (td605609).
+0. ~~Feasibility: import closure of the memory subsystem.~~ Measured
+   2026-11-09 (`scripts/_memory_closure.py`, td605609): eager closure
+   315/1407 modules (22 %), but it reaches shapely (`store.store` →
+   `_pcb_ops`) and ase (`_measures_ops`) eagerly and rdkit/matplotlib/
+   torch one lazy import away; `precis.dispatch` alone pulls 182 modules.
+   Verdict: **ship the full image for the first paper**; the
+   `precis_memory` package extraction is its own thread, seams named in
+   the report: `precis.dispatch` handler registry, the per-domain store
+   mixins (`_pcb_ops`, `_structure_ops`, `_cad_ops`, `_measures_ops`),
+   and the `workers.scheduler`/`job_types` fan-out.
 
 ## Explicitly NOT in scope
 
