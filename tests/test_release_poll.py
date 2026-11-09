@@ -2251,6 +2251,82 @@ def test_the_pass_pins_the_cut_to_the_scanned_head(
     assert f"{API}/compare/prod...{a}" in calls
 
 
+def test_an_empty_compare_fails_closed_on_an_unverifiable_fix(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601285: the compare answers ahead with no commit list and the
+    FIX's ``landed:`` sha names no commit in the scan — corrective
+    membership cannot be verified, so the pass stays blocked instead
+    of falling back to the pin."""
+    a = "a" * 40
+    _GIT_PIN[0] = a
+    _fake_github(
+        monkeypatch,
+        compare={"status": "ahead", "ahead_by": 1, "behind_by": 0},
+    )
+    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    _landed_comment(store, int(fix.id), sha="0" * 40)
+    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None
+    assert "corrective commit" in res.blocker and "0" * 12 in res.blocker
+
+
+def test_an_empty_compare_orders_on_the_scan(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601285: no commit list in the compare — the scan's own
+    ordering stands in: [A FIX, C fixes A] mints at C and records the
+    scanned window, a ``upto`` ``release_cut`` can validate."""
+    a, c = "a" * 40, "c" * 40
+    _GIT_PIN[0] = c
+    _fake_github(
+        monkeypatch,
+        compare={"status": "ahead", "ahead_by": 2, "behind_by": 0},
+    )
+    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    _landed_comment(store, int(fix.id), sha=c)
+    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
+    # The fix commit sits inside the scanned window (a non-engine
+    # path: in ``scanned`` without being a gate unit itself).
+    _GIT_LANDS.append(
+        rp._GitLand(sha=c, subject="", committed_at=None, paths=("docs/a.md",))
+    )
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None, res.blocker
+    assert f"release-main:{c[:12]}" in _tags(store, res.minted)
+    target = R.release_target_of(store, res.minted)
+    assert target is not None
+    assert target["sha"] == c and target["upto"] == [a[:12], c[:12]]
+
+
+def test_an_empty_compare_cuts_below_a_pending_review(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601285: no commit list in the compare — the scan still
+    positions lands, so a pending review past a cleared land holds
+    only the commits at-or-after it: the pass cuts A."""
+    a, b = "a" * 40, "b" * 40
+    _GIT_PIN[0] = b
+    _fake_github(
+        monkeypatch,
+        compare={"status": "ahead", "ahead_by": 2, "behind_by": 0},
+    )
+    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
+    _engine_land(store, 43, paths=["scripts/ship"], sha=b)
+    _reviewer(store, 43)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None, res.blocker
+    assert f"release-main:{a[:12]}" in _tags(store, res.minted)
+    target = R.release_target_of(store, res.minted)
+    assert target is not None
+    assert target["sha"] == a and target["upto"] == [a[:12]]
+
+
 def test_fix_reviewer_with_an_unlanded_fix_blocks(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2273,6 +2349,17 @@ def test_fix_reviewer_with_a_landed_fix_does_not_block(
     _engine_land(store, 42, paths=["src/precis/plans/lanes.py"])
     fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
     _landed_comment(store, int(fix.id))
+    # The clearance holds only while the cut CARRIES the corrective
+    # commit (td601005): the fix's ``landed:`` sha sits inside the
+    # scanned window (a non-engine commit — in ``scanned``, not a unit).
+    _GIT_LANDS.append(
+        rp._GitLand(
+            sha="abc1234" + "0" * 33,
+            subject="",
+            committed_at=None,
+            paths=("docs/a.md",),
+        )
+    )
     _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.minted is not None
@@ -3231,5 +3318,15 @@ def test_a_sha_reviewers_revert_closes_and_the_revert_task_gates(
     assert poll.minted is None
     assert poll.blocker is not None and f"td{task}" in poll.blocker
     _todo_comment(store, task, "landed: b9c8d7e6f5 — revert")
+    # The revert lands on main inside the scanned window — the cut
+    # carries it, so the REVERT clearance holds (td601005/td601285).
+    _GIT_LANDS.append(
+        rp._GitLand(
+            sha="b9c8d7e6f5" + "0" * 30,
+            subject="",
+            committed_at=None,
+            paths=("docs/a.md",),
+        )
+    )
     poll = rp.run_pass(store, repo=REPO, now=NOW)
     assert poll.minted is not None

@@ -3060,3 +3060,60 @@ def test_the_recut_stays_blocked_on_a_pending_review(
     assert rc.submit(ctx, None) is None
     assert checkout["argv"] == []
     assert ctx.failures and f"td{rid}" in ctx.failures[0]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
+def test_the_recut_fails_closed_on_an_unverifiable_fix(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601285: the re-cut's compare comes back ahead with no commit
+    list and the FIX's corrective sha names no scanned commit — the cut
+    refuses instead of falling back to the pin."""
+    mint = _cut(store)
+    a = "a" * 40
+    _fake_gh_api(
+        monkeypatch,
+        compare={"status": "ahead", "ahead_by": 1, "behind_by": 0},
+    )
+    _engine_land(store, 42, ["scripts/ship"], sha=a)
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    _comment(store, int(fix.id), f"landed: {'0' * 40} — fix")
+    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
+    refusal = rc.validate_submit(store, params={"todo_id": mint.ids["cut"]})
+    assert refusal is not None and refusal.startswith("release_cut:")
+    assert "corrective commit" in refusal and "0" * 12 in refusal
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.submit(ctx, None) is None
+    assert checkout["argv"] == []
+    assert ctx.failures and "corrective commit" in ctx.failures[0]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
+def test_the_recut_orders_on_the_scan_when_the_compare_list_is_empty(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601285: no commit list in the re-cut's compare — the scan's
+    own ordering stands in: [A FIX, C fixes A] recomputes to C, the
+    cut CARRIES the corrective commit."""
+    mint = _cut(store)
+    a, c = "a" * 40, "c" * 40
+    _fake_gh_api(
+        monkeypatch,
+        compare={"status": "ahead", "ahead_by": 2, "behind_by": 0},
+    )
+    _engine_land(store, 42, ["scripts/ship"], sha=a)
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    _comment(store, int(fix.id), f"landed: {c} — fix")
+    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
+    # The fix commit sits inside the scanned window (a non-engine
+    # path: in ``scanned`` without being a gate unit itself).
+    _GIT_LANDS.append(
+        rc._rp._GitLand(sha=c, subject="", committed_at=None, paths=("docs/a.md",))
+    )
+    assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert ctx.failures == [] and handle is not None
+    assert checkout["argv"] == [
+        [str(checkout["root"] / "scripts" / "release"), "--cut-only", "--sha", c]
+    ]

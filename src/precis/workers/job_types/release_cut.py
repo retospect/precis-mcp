@@ -383,7 +383,7 @@ def _cut_target(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
         _release.release_target_of(store, todo_id) if isinstance(todo_id, int) else None
     )
     if target is not None:
-        verdicts, _notes, fatal, _pin = _rp._engine_verdicts(store)
+        verdicts, _notes, fatal, _pin, _scanned = _rp._engine_verdicts(store)
         if fatal is not None:
             return None, fatal
         blockers = [

@@ -59,7 +59,11 @@ the unauthenticated api.github.com budget (60/h) is shared with
    resolved — the ONE snapshot the scan, the compare's ordering, the
    minted target and ``release_cut``'s ``upto`` validation all share;
    a main move mid-pass can no longer smuggle an unreviewed land inside
-   the recorded sha. An uncleared land off the ahead-of-prod
+   the recorded sha. When the compare's ``commits`` comes back empty
+   the scan's own ordering stands in (td601285) — an empty ordering
+   cannot verify a corrective commit is carried, and an empty recorded
+   ``upto`` would leave ``release_cut`` nothing to validate. An
+   uncleared land off the ahead-of-prod
    window reads as at-or-before everything — no cleared sha, the pass
    stays blocked and the blocker names the pending reviews.
 6. In flight on origin: ``GET .../git/matching-refs/heads/release/`` and
@@ -1412,16 +1416,21 @@ class _GateLand:
         return f"{self.land}{job}"
 
 
-def _gate_lands(store: Any) -> tuple[list[_GateLand], str]:
-    """``(units, pin)`` — the gate's units, oldest land first, and the
-    pinned main head they were scanned at: every commit in the cut
-    range whose diff touches :data:`lanes.ENGINE_PATHS`, stitched to its
-    linked todos — the succeeded ``land_slice`` job whose
-    ``meta.landed_sha`` matches (the stamped path, kept as the fast
-    lookup) or the ``td<id>`` handles in the subject's trailing list.
-    A commit neither links is its own unit, and a sha-keyed reviewer
-    minted for it (or for a linked todo with no live plan root) covers
-    every unit of the commit."""
+def _gate_lands(store: Any) -> tuple[list[_GateLand], str, list[str]]:
+    """``(units, pin, scanned)`` — the gate's units, oldest land first,
+    the pinned main head they were scanned at and ``scanned`` every
+    first-parent sha in ``origin/prod..<pin>``, oldest first — the
+    ordering the callers fall back to when the compare's ``commits``
+    list comes back empty (td601285 — an empty ordering cannot verify
+    a corrective commit is carried, and an empty recorded ``upto``
+    leaves ``release_cut`` nothing to validate). A unit is every commit
+    in the cut range whose diff touches :data:`lanes.ENGINE_PATHS`,
+    stitched to its linked todos — the succeeded ``land_slice`` job
+    whose ``meta.landed_sha`` matches (the stamped path, kept as the
+    fast lookup) or the ``td<id>`` handles in the subject's trailing
+    list. A commit neither links is its own unit, and a sha-keyed
+    reviewer minted for it (or for a linked todo with no live plan
+    root) covers every unit of the commit."""
     from precis.plans import lanes as _lanes
 
     lands, pin = _git_lands()
@@ -1444,7 +1453,7 @@ def _gate_lands(store: Any) -> tuple[list[_GateLand], str]:
             )
         else:
             out.append(_GateLand(sha12, None, None, land.committed_at))
-    return out, pin
+    return out, pin, [land.sha for land in lands]
 
 
 #: The sha a ``landed: <sha>`` comment records — land-notify's land
@@ -1974,13 +1983,16 @@ def _engine_verdicts(
     now: datetime | None = None,
     file_asks: bool = False,
     dry_run: bool = False,
-) -> tuple[list[_LandVerdict] | None, list[str], str | None, str | None]:
-    """``(verdicts, notes, fatal, pin)`` — the engine-review gate's
-    per-land verdict plus the pass's side effects, and ``pin`` the
-    ``origin/main`` head the scan resolved: the one commit snapshot the
-    caller pins its compare's ordering and recorded target to
-    (td601005). ``fatal`` non-``None`` is the fail-closed line any read
-    error returns (``verdicts`` and ``pin`` are ``None`` then).
+) -> tuple[list[_LandVerdict] | None, list[str], str | None, str | None, list[str]]:
+    """``(verdicts, notes, fatal, pin, scanned)`` — the engine-review
+    gate's per-land verdict plus the pass's side effects, ``pin`` the
+    ``origin/main`` head the scan resolved and ``scanned`` the
+    first-parent shas of ``origin/prod..<pin>``, oldest first: the one
+    commit snapshot the caller pins its compare's ordering and recorded
+    target to (td601005), and the ordering it falls back to when the
+    compare's ``commits`` list is empty (td601285). ``fatal``
+    non-``None`` is the fail-closed line any read error returns
+    (``verdicts`` and ``pin`` are ``None`` then, ``scanned`` empty).
 
     Per gate unit (:func:`_gate_lands`), oldest land first: an answered
     ``release-review-wait:<key>`` ask clears it; no covering reviewer
@@ -2009,6 +2021,7 @@ def _engine_verdicts(
     notes: list[str] = []
     verdicts: list[_LandVerdict] = []
     pin: str | None = None
+    scanned: list[str] = []
     try:
         lane_table = _lanes.load_lanes(store) if file_asks else ()
         # plan_dispatch's own kill switch — the env OR a service_config
@@ -2031,7 +2044,7 @@ def _engine_verdicts(
             m = _REVIEW_FROM_SHA_RE.fullmatch(src)
             if m is not None:
                 by_sha.setdefault(m.group(1).lower(), []).append((rid, meta))
-        units, pin = _gate_lands(store)
+        units, pin, scanned = _gate_lands(store)
         for unit in units:
             verdict = _LandVerdict(unit, cleared=False)
             if _answered_wait_ask(store, unit.ask_key):
@@ -2213,8 +2226,9 @@ def _engine_verdicts(
             f"engine review gate unreadable ({type(exc).__name__}); "
             "next: retry next tick — fail closed",
             None,
+            [],
         )
-    return verdicts, notes, None, pin
+    return verdicts, notes, None, pin, scanned
 
 
 def engine_review_blockers(
@@ -2228,7 +2242,7 @@ def engine_review_blockers(
     callers that hold the whole tip (``release_cut``'s fallback for a
     pass minted without a recorded cut target; gr592271): every
     uncleared engine land's line, or the single fail-closed line."""
-    verdicts, notes, fatal, _pin = _engine_verdicts(
+    verdicts, notes, fatal, _pin, _scanned = _engine_verdicts(
         store, now=now, file_asks=file_asks, dry_run=dry_run
     )
     if fatal is not None:
@@ -2259,6 +2273,12 @@ def engine_review_blockers(
 # ordering, the minted target and ``release_cut``'s ``upto``
 # validation all name that same sha, so a land that reaches main
 # mid-pass can never ride a recorded sha the scan never saw.
+#
+# td601285: when the compare's ``commits`` comes back empty the scan's
+# own ordering stands in — an empty ordering could never verify a
+# corrective commit is carried (a FIX outside the snapshot shipped on
+# the pin fallback), and an empty recorded ``upto`` left
+# ``release_cut`` a window it cannot validate.
 
 
 def _commit_shas(cmp_: Any) -> list[str]:
@@ -2376,7 +2396,7 @@ def cleared_head(
     recorded target is stale — the scan, the compare's ordering and the
     answer all sit on the one pinned snapshot. Raises
     :class:`precis.plans.pr_class.GitHubUnreadable`."""
-    verdicts, notes, fatal, pin = _engine_verdicts(
+    verdicts, notes, fatal, pin, scanned = _engine_verdicts(
         store, now=now, file_asks=file_asks, dry_run=dry_run
     )
     if fatal is not None:
@@ -2399,12 +2419,17 @@ def cleared_head(
         return None, [f"prod has commits main lacks ({status})"], notes
     if ahead <= 0:
         return None, [f"main is not ahead of prod ({status})"], notes
-    commits = _commit_shas(cmp_)
+    # td601285: when the compare's commit list is empty the scan's own
+    # ordering stands in — an empty ordering cannot verify a corrective
+    # commit is carried, and a FIX outside the snapshot would ship.
+    commits = _commit_shas(cmp_) or scanned
     uncleared = [v for v in verdicts or () if not v.cleared]
     cut, _upto = _cut_below(verdicts or [], commits)
     if cut is None and not uncleared and not commits:
-        # ahead > 0 without a commit list: the pinned head is the only
-        # honest target.
+        # ahead > 0 with no ordering anywhere (the compare's list and
+        # the scan both empty): the pinned head is the only honest
+        # target — nothing can sit inside the window, so there is no
+        # corrective membership to verify.
         cut = pin
     if cut is None:
         lines = [v.line for v in uncleared]
@@ -2450,7 +2475,7 @@ def run_pass(
     if blocked is not None:
         res.blocker = blocked
         return res
-    verdicts, notes, fatal, pin = _engine_verdicts(
+    verdicts, notes, fatal, pin, scanned = _engine_verdicts(
         store, now=now, file_asks=True, dry_run=dry_run
     )
     res.notes.extend(notes)
@@ -2493,13 +2518,18 @@ def run_pass(
         # sha is the newest commit such that every engine land at-or-
         # before it is cleared AND carries the corrective commits its
         # clearance needs (td601005); a pending review past that point
-        # holds nothing. The compare's ``commits`` is the ordering.
-        commits = _commit_shas(cmp_)
+        # holds nothing. The compare's ``commits`` is the ordering —
+        # with the scan's own ordering standing in when the list comes
+        # back empty (td601285: an empty ordering cannot verify a
+        # corrective commit is carried, and an empty recorded ``upto``
+        # would leave ``release_cut`` nothing to validate).
+        commits = _commit_shas(cmp_) or scanned
         cut, upto = _cut_below(verdicts or [], commits)
         if cut is None and not uncleared and not commits:
-            # ahead > 0 without a commit list: the pinned head is the
-            # only honest target (the ``upto`` window stays empty, as
-            # it did when the ordering came back truncated).
+            # ahead > 0 with no ordering anywhere (the compare's list
+            # and the scan both empty): the pinned head is the only
+            # honest target — nothing can sit inside the window, so
+            # the empty ``upto`` loses nothing.
             cut, upto = pin, []
         if cut is None:
             lines = [v.line for v in uncleared]
