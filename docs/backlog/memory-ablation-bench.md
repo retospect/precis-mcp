@@ -8,6 +8,37 @@ quest: qu604835
 
 # Memory-ablation benchmark and paper
 
+## The question (settled with Reto, 2026-11-09)
+
+An agent pays for every byte a tool returns. A memory over documents adds
+layers that each claim to cut that cost or raise answer quality —
+keywords, summaries, categorizer tags, typed graph edges, the fisheye
+neighbourhood, automatic recall, hybrid search, chunking — and the
+interface adds more: tool descriptions, hints, row rendering, title
+truncation, how trivially the agent can step to the previous or next
+chunk. Precis has all of these, built on intuition. The literature
+compares memory *systems* (LongMemEval, LoCoMo, arXiv 2603.04814);
+vendors report their own tokens-per-call; nobody has measured the
+*layers*, and none of it is re-runnable from a public repo.
+
+**Primary:** for an agent answering questions over a paper corpus through
+a tool interface, which memory layers reduce tokens and calls to a
+correct answer, by how much, and how do they interact? Factorial ablation
+on QASPER with its own gold.
+
+**Secondary, same harness:** (a) surface — do description accuracy,
+hints, row representation, truncation-robust titles and prev/next
+navigation change error rate and path length? (b) model — does a weaker
+model need a simpler API or only simpler skills? (c) chunking and scale —
+which chunker and splitter, and does the benefit survive corpus growth?
+(d) edges — do machine-written graph edges add anything a retrieval call
+would not find?
+
+**Contribution:** the first per-layer ablation of an agent memory, a
+one-command benchmark a stranger can re-run on a fixed CC-BY corpus, and
+design guidance on which layers earn their tokens, which are dead weight,
+and for whom.
+
 Reto, 2026-11-09 (chat): "PRecis memory has many aspects, kwd, summary,
 categorizers, fisheye, autorag, rag. How do we show in a paper what
 contributes to low token efficient operation or other aspects?" Then:
@@ -15,6 +46,40 @@ contributes to low token efficient operation or other aspects?" Then:
 "reproducible science". Quest qu604835 (inquiry body) holds the
 striving, the logbook and the lit-search memory; strategic root td604839
 holds the work.
+
+## What we measure, and against what (Reto, 2026-11-09, fifth ask)
+
+Two quantities per task: **cost to reach the right evidence** (tokens
+returned, calls) and **answer correctness**. "Right evidence" needs a
+reference, so yes, gold — but gold from three sources, each answering a
+different question, and the cheapest one carries the factorial:
+
+| source | gold comes from | measures | role |
+|---|---|---|---|
+| **planted facts** (synthetic) | construction: we write a fact, plant it, and know where it is | the memory's write→recall function in isolation: cost to recollect a known bit; k-hop composition of planted facts; planted contradictions for stance | **primary for the factorial** — thousands of tasks, exact gold, no annotators, no OCR in the loop |
+| **QASPER** (human) | 5,049 questions by people who saw only title+abstract; evidence marked by others | external validity on real documents and natural questions | the anchor that lets a reviewer compare to published numbers |
+| **round-trip** (model) | a model reads a passage and writes the question | extends task types neither above covers (cross-paper) | flagged self-authored; smallest share |
+
+Planted facts are "feed in data bits, pull back recollections": facts
+go in both as memory nodes and as sentences injected into fixture
+paragraphs; queries are generated from the *fact* before planting at a
+controlled paraphrase level, lexical overlap between query and planted
+text is recorded, and results are binned by it — so the vocabulary-leak
+upper bound the `memory_recall` set suffers from becomes a measured
+axis instead of a hidden bias. Difficulty is a dial: distance of the
+plant from the paper's topic, number of hops, number of near-duplicate
+decoys.
+
+**OCR is not in this loop.** QASPER ships clean full text, and planted
+facts are text by construction; ingest fidelity (PDF → marker) is the
+`ingest-and-fetch` thread's axis. One optional arm, `input-pdf-ocr` (the
+same QASPER papers through the PDF path), would price OCR noise against
+the memory layers — out of the first paper unless cheap.
+
+**Correctness reference**: planted → exact match on the fact; QASPER →
+answer F1 against its answers and evidence recall against its spans;
+round-trip → pinned judge. The factorial's dependent variable is
+**tokens to a correct answer** (not reached = censored at the budget).
 
 ## What
 
@@ -59,6 +124,7 @@ not move).
 | `no-hints` | `Next:` tables and error-ack `next:` lines stripped from every result | do hints shorten the path? measured as hint uptake (next call equals a suggested call) and calls-from-error-to-success |
 | `row-title` / `row-summary` / `row-kwd` / `row-all` | search hit rows carry the title only, the gloss, the chunk keyword extract, or all three | which index representation gets the gold row opened first, at what result-page size? |
 | `title-topic` / `title-cut40` / `title-cut80` | fixture titles rewritten topic-first (against precis-firstline-help), or truncated at 40/80 chars in listings | are conclusion-first, truncation-robust first lines ("matryoshka" titles) worth their authoring cost? pick accuracy from the truncated listing |
+| `nav-none` / `nav-handles` / `nav-hinted` | stepping to the previous/next chunk: no affordance (agent must re-search), `~ord±1` addressing only, or an explicit prev/next line in every chunk result | how trivially can the agent read on? calls and tokens from a hit to its adjacent context; share of grounding answers that needed the neighbour |
 
 Extra metrics for this matrix: error rate per verb × kind, hint uptake
 rate, first-pick accuracy (gold row opened on the first `get`), result
@@ -102,7 +168,7 @@ gold.
 | arm | what changes |
 |---|---|
 | `chunk-fixed-256` / `-512` / `-1024` | fixed token windows, no sentence awareness |
-| `chunk-sentence` (today) | pysbd sentence-aware splitting |
+| `chunk-sentence-pysbd` (today) / `chunk-sentence-yasbd` | sentence-aware splitting; the splitter itself is an arm (`utils/sentences.py` wraps pysbd; a YASBD swap was proposed on its vendor benchmark — decide it here, with span gold, not there) |
 | `chunk-section` | structure-aware: QASPER's own paragraph/section boundaries |
 | `chunk-overlap-N` | overlap added to the winning size |
 | `chunk-parent` | retrieve small, render the parent paragraph |
