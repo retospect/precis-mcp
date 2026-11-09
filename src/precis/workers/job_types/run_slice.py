@@ -1138,7 +1138,19 @@ def _review_target(store: Any, meta: Any) -> str | None:
 #: ``test_brief_lint_steps_match_ship`` test pins each step to it). A
 #: build session runs the same steps so a red the land would report is
 #: fixed before the commit, not after a failed land (gr573347).
-_LAND_LINT_STEPS: tuple[str, ...] = (
+#:
+#: ``_SHIP_LINT_STEPS`` is what the lander's lint runs. The pytest members
+#: after the secret scan are the DB-free guards of the land's
+#: ``QUICK_GUARDS`` (the whole ``test_skill_ingest.py``, all DB-free, where
+#: the land names five of its node ids) plus ``tests/test_skill_size.py``
+#: (``CODE_HYGIENE``; otherwise only the release gate runs it).
+#: ``test_land_lint_steps_cover_every_quick_guard`` pins each
+#: ``QUICK_GUARDS`` file to these steps (gr610185: builders landed skill
+#: edits past the 4000-char H2 cap and cycled land → red). ``_PRELAND_STEPS``
+#: are checks the lander makes later or in its lock (squawk on a new
+#: migration, a conflict with a moved ``origin/main``): run here, the
+#: builder gets the finding, not the lander.
+_SHIP_LINT_STEPS: tuple[str, ...] = (
     "uv run ruff check --fix .",
     "uv run ruff format .",
     "uv run ruff check .",
@@ -1146,7 +1158,26 @@ _LAND_LINT_STEPS: tuple[str, ...] = (
     "uv run mypy src tests",
     "uv run lint-imports",
     "uv run pytest -q -n0 -p no:cacheprovider tests/test_deploy_tree_no_secrets.py",
+    "uv run pytest -q -n0 -p no:cacheprovider -rfE"
+    " tests/test_skill_ingest.py tests/test_skill_vocabulary.py"
+    " tests/test_render_dry_guard.py tests/test_type_ignore_ratchet.py"
+    " tests/test_mcp_raise_next_ratchet.py",
+    "uv run pytest -q -n0 -p no:cacheprovider tests/test_skill_size.py",
 )
+
+#: Squawk on the NEW migration files only (``scripts/ship``'s
+#: ``_squawk_new_migrations``: same pinned ``squawk-cli``, ``.squawk.toml``
+#: picked up from the repo root); a no-op when the branch adds none. Then
+#: the merge dry run against a fresh ``origin/main``: exit 1 lists the
+#: conflicting paths (``--name-only``); git reads committed work only.
+_PRELAND_STEPS: tuple[str, ...] = (
+    "git fetch -q origin main && git diff --name-only --no-renames"
+    " --diff-filter=A origin/main... -- '*/migrations/*.sql'"
+    " | xargs -r uvx -q --from 'squawk-cli>=2' squawk",
+    "git merge-tree --write-tree --name-only origin/main HEAD",
+)
+
+_LAND_LINT_STEPS: tuple[str, ...] = _SHIP_LINT_STEPS + _PRELAND_STEPS
 
 
 def render_brief(
@@ -1271,14 +1302,18 @@ def render_brief(
         "",
         "Land lint — the land runs these on the whole tree, in this "
         "order, and a red reopens this todo (td565331 came back for six "
-        "missing test annotations). Run each before you commit:",
+        "missing test annotations). Run each before you hand off:",
         "",
         *[f"{i}. `{step}`" for i, step in enumerate(_LAND_LINT_STEPS, 1)],
         f"{n + 1}. Run the tests you added or changed with `scripts/test "
         "<paths>` — a diff under `src/precis/data/skills/` adds "
         "`tests/test_skill_ingest.py`: the land's lint fails a skill whose "
         "H2 section runs past 4000 chars (gr610185: three builds cycled "
-        "land → red on that cap alone).",
+        "land → red on that cap alone). The last two steps read committed "
+        "work only (`git diff origin/main...`, `git merge-tree`): commit "
+        "first (amend after any fix). A `merge-tree` exit 1 lists the paths "
+        "that conflict with `origin/main` — merge or rebase `origin/main`, "
+        "resolve them, re-run the lint, before you hand off.",
         "",
         "Fix every report and re-run until all are clean — do not commit "
         "while any step is red. End your final message with exactly one "

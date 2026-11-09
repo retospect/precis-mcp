@@ -930,17 +930,111 @@ def test_brief_lint_steps_match_ship() -> None:
     scripts/ship's pre-qland lint (``QLAND_CMD`` / ``QLAND_TAIL`` /
     ``QLAND_MYPY`` / ``SECRET_SCAN``), so the prompt cannot drift from
     the land."""
+    qland = _ship_assignments(r"QLAND_(CMD|TAIL|MYPY)|SECRET_SCAN")
+    assert qland
+    guards = _ship_assignments(r"QUICK_GUARDS|CODE_HYGIENE")
+    for step in run_slice._SHIP_LINT_STEPS:
+        if step.startswith("uv run pytest"):
+            # a test step: every path it runs is one a ship lint var names
+            for path in _pytest_paths(step):
+                assert path in qland + guards, path  # file-level pins
+        else:
+            assert step in qland, step
+
+
+def _ship_assignments(names: str) -> str:
     ship = (Path(__file__).resolve().parents[1] / "scripts" / "ship").read_text(
         encoding="utf-8"
     )
-    qland = "\n".join(
-        line
-        for line in ship.splitlines()
-        if re.match(r"\s*(QLAND_(CMD|TAIL|MYPY)|SECRET_SCAN)=", line)
+    return "\n".join(
+        line for line in ship.splitlines() if re.match(rf"\s*({names})=", line)
     )
-    assert qland
-    for step in run_slice._LAND_LINT_STEPS:
-        assert step in qland, step
+
+
+def _pytest_paths(cmd: str) -> list[str]:
+    return [t for t in cmd.split() if t.startswith("tests/")]
+
+
+def test_land_lint_steps_cover_every_quick_guard() -> None:
+    """gr610185: scripts/ship's QUICK_GUARDS (the DB-free guards a quick land
+    runs, skill-ingest cap and skill vocabulary among them) all appear in
+    the builder's lint steps, so a guard added to the lander cannot go
+    unmentioned to the builder."""
+    quick = _ship_assignments("QUICK_GUARDS")
+    assert quick
+    # QUICK_GUARDS names some tests by node id and ends in a quote
+    ship_paths = {p.split("::")[0].strip("'") for p in _pytest_paths(quick)}
+    assert "tests/test_skill_vocabulary.py" in ship_paths
+    assert "tests/test_skill_ingest.py" in ship_paths
+    ran = {p for s in run_slice._LAND_LINT_STEPS for p in _pytest_paths(s)}
+    assert ship_paths <= ran, sorted(ship_paths - ran)
+    assert "tests/test_skill_size.py" in ran
+
+
+def test_preland_squawk_step_matches_ships_invocation() -> None:
+    """The squawk step runs the same pinned squawk-cli as scripts/ship's
+    ``_squawk_new_migrations`` and only on files the branch ADDS."""
+    ship = (Path(__file__).resolve().parents[1] / "scripts" / "ship").read_text(
+        encoding="utf-8"
+    )
+    step = next(s for s in run_slice._PRELAND_STEPS if "squawk" in s)
+    assert "uvx -q --from 'squawk-cli>=2' squawk" in ship
+    assert "uvx -q --from 'squawk-cli>=2' squawk" in step
+    assert "--diff-filter=A" in step and "*/migrations/*.sql" in step
+    assert "xargs -r" in step  # a branch with no new migration is a no-op
+
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            *args,
+        ],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+def test_preland_merge_tree_step_fails_naming_conflicting_paths(tmp_path: Path) -> None:
+    """gr610185: the merge-tree step exits 1 and names the conflicting file
+    when the branch collides with origin/main, and exits 0 when it does not."""
+    step = next(s for s in run_slice._PRELAND_STEPS if "merge-tree" in s)
+    assert step.startswith("git merge-tree --write-tree --name-only origin/main")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert _git(repo, "init", "-q", "-b", "main").returncode == 0
+    (repo / "f.txt").write_text("base\n", encoding="utf-8")
+    (repo / "g.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    assert _git(repo, "commit", "-qm", "base").returncode == 0
+    # a local ref stands in for the fetched origin/main
+    _git(repo, "checkout", "-q", "-b", "slice")
+    (repo / "g.txt").write_text("ours-clean\n", encoding="utf-8")
+    _git(repo, "commit", "-qam", "ours clean")
+    _git(repo, "checkout", "-q", "main")
+    (repo / "f.txt").write_text("theirs\n", encoding="utf-8")
+    _git(repo, "commit", "-qam", "main moves f")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "main")
+    _git(repo, "checkout", "-q", "slice")
+
+    clean = _git(repo, *step.removeprefix("git ").split())
+    assert clean.returncode == 0, clean.stdout + clean.stderr
+
+    (repo / "f.txt").write_text("ours\n", encoding="utf-8")
+    _git(repo, "commit", "-qam", "ours f")
+    red = _git(repo, *step.removeprefix("git ").split())
+    assert red.returncode == 1
+    assert "f.txt" in red.stdout.splitlines()
+    assert "g.txt" not in red.stdout.splitlines()
 
 
 def test_render_brief_asks_for_the_tests_marker() -> None:
