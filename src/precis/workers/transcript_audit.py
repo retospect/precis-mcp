@@ -23,6 +23,14 @@ log = logging.getLogger(__name__)
 SERVICE_NAME = "transcript_audit"
 _MAX_PER_TICK = 1
 
+#: Lane the audit task is pinned to while it is live — the write-MCP
+#: lane the audit's gripe filing needs (migration 0280's ``claude-sub``
+#: account: adapter ``claude_p``, task_classes ``*``). A dead pin falls
+#: back to ``pick_lane`` at mint
+#: (:func:`precis.workers.factory_rescue._resolve_lane_pin`, gr604579) —
+#: the hard pin used to die at submit in 0 s while the lane sat parked.
+AUDIT_LANE = "claude-sub"
+
 
 def transcript_audit_enabled(
     store: Store, *, conn: Any = None, host: str | None = None
@@ -149,8 +157,12 @@ def render_brief(chain_root: Ref, jobs: list[dict[str, Any]]) -> str:
 
 def mint_audit(store: Store, chain_root_id: int, jobs: list[dict[str, Any]]) -> int:
     """Create the two-node plan and its idempotency link atomically."""
+    from precis.workers.factory_rescue import _resolve_lane_pin
+
     chain = store.get_ref(kind="todo", id=chain_root_id)
     assert chain is not None
+    # The task carries no task_class — run_slice resolves ``code``.
+    lane, lane_note = _resolve_lane_pin(store, AUDIT_LANE, "code")
     with store.tx() as conn:
         root = store.insert_ref(
             kind="todo",
@@ -165,7 +177,12 @@ def mint_audit(store: Store, chain_root_id: int, jobs: list[dict[str, Any]]) -> 
             slug=None,
             title="Read the chain's transcripts and file inefficiency gripes",
             parent_id=root.id,
-            meta={"op": {"type": "run_slice", "params": {"lane": "claude-sub"}}},
+            meta={
+                "op": {
+                    "type": "run_slice",
+                    "params": {"lane": lane} if lane is not None else {},
+                }
+            },
             conn=conn,
         )
         for ref, tags, body in (
@@ -191,6 +208,18 @@ def mint_audit(store: Store, chain_root_id: int, jobs: list[dict[str, Any]]) -> 
             store.chunks.insert_chunks(
                 ref.id,
                 [ChunkInsert(ord=0, text=body, meta={"chunk_kind": "todo_body"})],
+                conn=conn,
+            )
+        if lane_note:
+            store.chunks.insert_chunks(
+                task.id,
+                [
+                    ChunkInsert(
+                        ord=1,
+                        text=f"lane: {lane_note}",
+                        meta={"chunk_kind": "todo_comment"},
+                    )
+                ],
                 conn=conn,
             )
         store.add_link(

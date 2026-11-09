@@ -10,6 +10,7 @@ factory kill switch holds; ``dry_run`` lists what it would do."""
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -22,6 +23,7 @@ from precis.todo.guards import check_ask_meta
 from precis.workers import factory_rescue as fr
 from precis.workers._mint import mint_background_job
 from precis.workers.job_types import plan_dispatch as pd
+from tests._lane_rows import seed_lane, use_lanes
 from tests._refs import insert_gripe
 
 # ``NOW`` is re-stamped per test (see test_factory_rescue_stall): rows carry
@@ -307,6 +309,67 @@ def test_second_tick_mints_no_second_diagnose_task(store: Store) -> None:
     res = fr.run_rescue_pass(store, NOW + timedelta(minutes=2))
     assert res.diagnosing == [] and res.waiting == 1
     assert len(_diagnose_tasks(store)) == 1
+
+
+@pytest.mark.parametrize(
+    "dead,word",
+    [
+        ({"enabled": False}, "disabled"),
+        ({"parked_reason": "lane-auth:not-logged-in"}, "parked"),
+    ],
+    ids=["disabled", "parked"],
+)
+def test_dead_lane_pin_falls_back_to_an_enabled_mcp_lane(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    dead: dict[str, Any],
+    word: str,
+) -> None:
+    """gr604579: the hard ``claude-sub`` pin died at submit in 0 s while
+    the lane sat parked, and the retry-cap ask landed on a human for a
+    mechanical cause. The mint falls back to ``pick_lane`` over the
+    write-MCP lanes — the task pins the enabled one and a comment names
+    the fallback."""
+    sub = replace(seed_lane("claude-sub"), **dead)
+    alt = replace(seed_lane("claude-sub"), name="claude-sub-2")
+    use_lanes(monkeypatch, seed_lane("devin"), seed_lane("codex"), sub, alt)
+    root = _root(store)
+    task = _rescued(store, root)
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.diagnosing == [task]
+    (diag,) = _diagnose_tasks(store)
+    ref = store.get_ref(kind="todo", id=diag)
+    assert ref is not None
+    assert ref.meta["op"] == {
+        "type": "run_slice",
+        "params": {"lane": "claude-sub-2"},
+    }
+    assert any(word in c and "claude-sub-2" in c for c in _comments(store, diag))
+    assert any("claude-sub-2" in n for n in res.notes)
+
+
+def test_dead_lane_pin_with_no_enabled_mcp_lane_mints_unpinned(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No enabled lane fits ``diagnose``: the task mints UNPINNED so
+    ``run_slice``'s lane-wait park holds it attempt-free — a free
+    code-fit lane like devin is no fallback (no MCP for the reads), and
+    the dead pin is never re-minted."""
+    sub = replace(seed_lane("claude-sub"), enabled=False)
+    use_lanes(monkeypatch, seed_lane("devin"), seed_lane("codex"), sub)
+    root = _root(store)
+    task = _rescued(store, root)
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.diagnosing == [task]
+    (diag,) = _diagnose_tasks(store)
+    ref = store.get_ref(kind="todo", id=diag)
+    assert ref is not None
+    assert ref.meta["op"] == {"type": "run_slice", "params": {}}
+    assert any("no enabled MCP lane" in c for c in _comments(store, diag))
 
 
 # ── REARM ──────────────────────────────────────────────────────────

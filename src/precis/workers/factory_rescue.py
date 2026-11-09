@@ -4,7 +4,8 @@ Dark-factory td574946: every factory failure ends in done or rescue.
 S1 built :func:`enter_rescue`; S2 built the stall watchdog
 (:func:`run_stall_pass`); S3 adds the second tick pass,
 :func:`run_rescue_pass` — a node sitting in RESCUE gets ONE read-only
-diagnose task (``claude-sub`` lane, ``meta.rescue_for``), a ``rescue:
+diagnose task (``claude-sub`` lane — or the ``pick_lane`` fallback when
+that pin is dead, gr604579 — ``meta.rescue_for``), a ``rescue:
 REARM`` verdict re-arms it once with a corrected brief, and anything
 else files ONE ask-user todo blocking the node.
 
@@ -1290,6 +1291,7 @@ def run_stall_pass(store: Store, now: datetime, dry_run: bool = False) -> StallR
 # it acts on a node that sits in RESCUE. A task-class rescue
 # (``BOUNDS[c].engine is False``) with no earlier re-arm mints ONE
 # diagnose task — a read-only Claude session on the ``claude-sub`` lane
+# (a dead pin falls back to ``pick_lane``, :data:`DIAGNOSE_LANE`)
 # whose ``meta.rescue_for`` marks it so it is judged through its node,
 # never selected — and links the node ``blocked-by`` it, so the tick
 # leaves the node alone while it waits (``rescue:`` is not in
@@ -1315,6 +1317,10 @@ def run_stall_pass(store: Store, now: datetime, dry_run: bool = False) -> StallR
 
 #: Lane the diagnose task is pinned to (migration 0280's ``claude-sub``
 #: account: task_classes ``*``, adapter ``claude_p``, the session MCP on).
+#: A dead pin — disabled or parked — falls back to ``pick_lane`` at mint
+#: (:func:`_resolve_lane_pin`, gr604579): the hard pin died at submit in
+#: 0 s while ``claude-sub`` sat parked, and every retry-cap ask landed on
+#: a human for a mechanical cause.
 DIAGNOSE_LANE = "claude-sub"
 
 #: ``meta.task_class`` of the diagnose task: off ``code`` so a clean
@@ -1869,6 +1875,56 @@ def _read_diagnosis(
     return None, None
 
 
+def _resolve_lane_pin(
+    store: Store, pin: str, task_class: str
+) -> tuple[str | None, str]:
+    """``(params.lane, fallback note)`` for a factory-minted task pinned
+    to lane ``pin`` (gr604579 — the node-pin rule: a pinned lane that is
+    disabled falls back to ``pick_lane`` with a comment naming the
+    fallback).
+
+    ``(pin, "")`` while the pin names an enabled, unparked lane. A dead
+    pin — unknown, disabled or parked — is a 0-second ``run_slice``
+    failure whose retry cap then asks a human about a mechanical cause,
+    so the mint falls back to :func:`lanes.pick_lane` over the write-MCP
+    lanes (the capability the pin was for: a diagnose reads through the
+    precis MCP, an audit files gripes through it — a free code-fit lane
+    without it is no fallback). ``(None, note)`` when no enabled MCP
+    lane fits: the task mints unpinned and the submit's lane-wait park
+    holds it instead of burning an attempt.
+    """
+    from precis.plans import lanes as _lanes
+    from precis.workers.job_types._slice_adapters import ADAPTERS
+
+    table = _lanes.load_lanes(store)
+    lane = next((ln for ln in table if ln.name == pin), None)
+    if lane is not None and lane.enabled and not lane.parked:
+        return pin, ""
+    why = (
+        "unknown"
+        if lane is None
+        else "disabled"
+        if not lane.enabled
+        else f"parked ({lane.parked_reason or '?'})"
+    )
+    mcp = tuple(
+        ln for ln in table if (a := ADAPTERS.get(ln.adapter)) is not None and a.mcp
+    )
+    picked = _lanes.pick_lane(store, task_class, lanes=mcp)
+    if picked is None:
+        note = (
+            f"pinned lane {pin!r} {why}; no enabled MCP lane fits "
+            f"{task_class!r} — minted unpinned, the lane-wait park holds it"
+        )
+    else:
+        note = (
+            f"pinned lane {pin!r} {why}; fell back to {picked.name!r} "
+            f"(pick_lane {task_class!r})"
+        )
+    log.warning("factory_rescue: %s", note)
+    return picked.name if picked is not None else None, note
+
+
 def _mint_diagnose(
     store: Store,
     res: RescuePassResult,
@@ -1886,8 +1942,12 @@ def _mint_diagnose(
         res.would.append((n.id, "diagnose"))
         res.notes.append(f"td{n.id}: would mint a diagnose task ({cls})")
         return
+    lane, lane_note = _resolve_lane_pin(store, DIAGNOSE_LANE, DIAGNOSE_TASK_CLASS)
     meta: dict[str, Any] = {
-        "op": {"type": "run_slice", "params": {"lane": DIAGNOSE_LANE}},
+        "op": {
+            "type": "run_slice",
+            "params": {"lane": lane} if lane is not None else {},
+        },
         "task_class": DIAGNOSE_TASK_CLASS,
         "retries": 1,
         "rescue_for": n.id,
@@ -1950,9 +2010,14 @@ def _mint_diagnose(
             set_by="system",
             conn=conn,
         )
+        if lane_note:
+            _comment(store, conn, ref.id, "todo_comment", f"lane: {lane_note}")
         finish_mint(store, ref.id, conn=conn)
     res.diagnosing.append(n.id)
-    res.notes.append(f"td{n.id}: minted diagnose task td{ref.id} ({cls})")
+    res.notes.append(
+        f"td{n.id}: minted diagnose task td{ref.id} ({cls})"
+        + (f"; {lane_note}" if lane_note else "")
+    )
 
 
 def _rearm_node(

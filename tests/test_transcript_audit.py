@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -10,6 +11,7 @@ import pytest
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers import transcript_audit as ta
+from tests._lane_rows import seed_lane, use_lanes
 
 
 def _chain(
@@ -107,6 +109,41 @@ def test_mint_and_second_fire(store: Store, monkeypatch: pytest.MonkeyPatch) -> 
         ).fetchall()
         assert notes == [(f"audit: td{root_id} samples this chain's transcripts",)]
     assert ta.run_transcript_audit_pass(store, host="h1").claimed == 0
+
+
+def test_audit_task_falls_back_when_the_pin_is_dead(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr604579: the audit task's ``claude-sub`` pin gets the same
+    mint-time ``pick_lane`` fallback as the rescue diagnose — the pick
+    stays on write-MCP lanes (a free code-fit lane like devin is NOT
+    one: the audit files gripes through the MCP)."""
+    sub = replace(seed_lane("claude-sub"), enabled=False)
+    alt = replace(seed_lane("claude-sub"), name="claude-sub-2")
+    use_lanes(monkeypatch, seed_lane("devin"), seed_lane("codex"), sub, alt)
+    _chain(store)
+    _light(store)
+    monkeypatch.setenv("PRECIS_TRANSCRIPT_AUDIT_PERCENT", "100")
+
+    result = ta.run_transcript_audit_pass(store, host="h1")
+
+    assert result.ok == 1
+    root_id = result.extra["minted"][0]["root"]
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE parent_id = %s", (root_id,)
+        ).fetchone()
+        assert row is not None
+        assert row[0]["op"] == {
+            "type": "run_slice",
+            "params": {"lane": "claude-sub-2"},
+        }
+        comment = conn.execute(
+            "SELECT c.text FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
+            "WHERE r.parent_id = %s AND c.chunk_kind = 'todo_comment'",
+            (root_id,),
+        ).fetchone()
+        assert comment is not None and "claude-sub-2" in str(comment[0])
 
 
 @pytest.mark.parametrize(
