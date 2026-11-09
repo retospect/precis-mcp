@@ -307,6 +307,84 @@ def test_doable_tags_bare_bang_refused(handler: TodoHandler) -> None:
         handler.search(view="doable", tags=["!"])
 
 
+def _mem(hub: Hub, title: str) -> int:
+    """Mint one memory ref; returns its ref_id."""
+    from precis.cli.memory import SPACE_TAG, _created_id
+    from precis.handlers.memory import MemoryHandler
+
+    r = MemoryHandler(hub=hub).put(text="spec body", title=title, tags=[SPACE_TAG])
+    return _created_id(r)
+
+
+def test_doable_under_memory_resolves_plan_of(
+    handler: TodoHandler, hub: Hub, store: Store
+) -> None:
+    """gr568264: a memory handle in under= scopes to the plan-of todo's
+    subtree — the "next doable slice in programme X" recipe."""
+    spec = _mem(hub, "Spec alpha")
+    plan_id = _id_of(handler.put(text="Alpha plan root.").body)
+    handler.put(text="Alpha leaf.", parent_id=plan_id)
+    store.add_link(src_ref_id=plan_id, dst_ref_id=spec, relation="plan-of")
+    other_id = _id_of(handler.put(text="Other root.").body)
+    handler.put(text="Other leaf.", parent_id=other_id)
+    out = handler.search(view="doable", args={"under": f"me{spec}"})
+    assert "Alpha leaf." in out.body
+    assert "Other leaf." not in out.body
+
+
+def test_doable_under_memory_unions_part_of_spec_roots(
+    handler: TodoHandler, hub: Hub, store: Store
+) -> None:
+    """A programme root unions its own plan-of todo with every part-of
+    spec root's plan-of todo."""
+    programme = _mem(hub, "Kinetics programme")
+    spec = _mem(hub, "Spec beta")
+    store.add_link(src_ref_id=spec, dst_ref_id=programme, relation="part-of")
+    plan_p = _id_of(handler.put(text="Programme plan.").body)
+    handler.put(text="P leaf.", parent_id=plan_p)
+    store.add_link(src_ref_id=plan_p, dst_ref_id=programme, relation="plan-of")
+    plan_s = _id_of(handler.put(text="Spec plan.").body)
+    handler.put(text="S leaf.", parent_id=plan_s)
+    store.add_link(src_ref_id=plan_s, dst_ref_id=spec, relation="plan-of")
+    stray = _id_of(handler.put(text="Stray root.").body)
+    handler.put(text="Stray leaf.", parent_id=stray)
+    out = handler.search(view="doable", args={"under": f"me{programme}"})
+    assert "P leaf." in out.body
+    assert "S leaf." in out.body
+    assert "Stray leaf." not in out.body
+
+
+def test_doable_under_todo_handle_still_scopes_one_subtree(
+    handler: TodoHandler,
+) -> None:
+    root_a = _id_of(handler.put(text="Strategic A.").body)
+    handler.put(text="A leaf.", parent_id=root_a)
+    root_b = _id_of(handler.put(text="Strategic B.").body)
+    handler.put(text="B leaf.", parent_id=root_b)
+    out = handler.search(view="doable", args={"under": f"td{root_a}"})
+    assert "A leaf." in out.body
+    assert "B leaf." not in out.body
+
+
+def test_doable_under_memory_without_plan_of_refused(
+    handler: TodoHandler, hub: Hub
+) -> None:
+    from precis.errors import BadInput
+
+    spec = _mem(hub, "Spec orphan")
+    with pytest.raises(BadInput, match="no plan-of todos"):
+        handler.search(view="doable", args={"under": f"me{spec}"})
+
+
+def test_doable_under_wrong_kind_refused(handler: TodoHandler, hub: Hub) -> None:
+    from precis.errors import BadInput
+    from tests._refs import insert_gripe
+
+    gid = insert_gripe(handler.store, "Not a todo or memory").id
+    with pytest.raises(BadInput, match="a todo id or a memory handle"):
+        handler.search(view="doable", args={"under": f"gr{gid}"})
+
+
 # ── view='waiting' ────────────────────────────────────────────────
 
 

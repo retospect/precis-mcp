@@ -1309,6 +1309,11 @@ class NumericRefHandler(Handler):
                 or excluded
                 or id_lo is not None
                 or id_hi is not None
+                # A resolved scope alone (under=/cited= with no q=/tags=)
+                # is a complete listing shape — but never lets it steal
+                # the link= branch: link + under must keep the edge
+                # filter, not degrade to a subtree list (gr568264).
+                or (link is None and (include_ref_ids is not None or exclude_ref_ids))
             ):
                 return self._list_by_tags(
                     normalized_tags or [],
@@ -1321,6 +1326,8 @@ class NumericRefHandler(Handler):
                     compact=compact,
                     id_min=id_lo,
                     id_max=id_hi,
+                    include_ref_ids=include_ref_ids,
+                    exclude_ref_ids=exclude_ref_ids,
                 )
             # gr311342: ``link=`` alone is a fully-determined filter (the
             # target ref is resolved to an exact id, not a fuzzy match),
@@ -1339,6 +1346,8 @@ class NumericRefHandler(Handler):
                     page=page,
                     exclude_tags=excluded,
                     compact=compact,
+                    include_ref_ids=include_ref_ids,
+                    exclude_ref_ids=exclude_ref_ids,
                 )
             raise BadInput(
                 "search requires q= or tags= or link=",
@@ -2236,6 +2245,8 @@ class NumericRefHandler(Handler):
         compact: str | None = None,
         id_min: int | None = None,
         id_max: int | None = None,
+        include_ref_ids: list[int] | None = None,
+        exclude_ref_ids: list[int] | None = None,
     ) -> Response:
         """Recency-ordered list of refs matching ``tags``, no ranking.
 
@@ -2253,6 +2264,14 @@ class NumericRefHandler(Handler):
         for every tag-scoped/status-scoped listing).
         """
         filters: dict[str, Any] = {"exclude_tags": exclude_tags} if exclude_tags else {}
+        # The ref-id channels carry dispatch-resolved scopes (under=,
+        # cited=) — the announced "restricted to N descendants" note is
+        # a lie without them on the SQL (gr568264: under= + tags=
+        # without q= listed the whole corpus).
+        if include_ref_ids is not None:
+            filters["include_ref_ids"] = include_ref_ids
+        if exclude_ref_ids:
+            filters["exclude_ref_ids"] = exclude_ref_ids
         refs = self.store.list_refs(
             kind=self.kind,
             tags=tags,
@@ -2272,6 +2291,8 @@ class NumericRefHandler(Handler):
         )
         if (
             exclude_tags
+            and include_ref_ids is None
+            and not exclude_ref_ids
             and (label := _hidden_excluded_label(self.kind, exclude_tags)) is not None
         ):
             hidden = self.store.count_refs(kind=self.kind, tags=tags) - total
@@ -2335,6 +2356,8 @@ class NumericRefHandler(Handler):
             past_page=total - offset - shown,
             id_min=id_min,
             id_max=id_max,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
         ):
             parts.append(summary)
         if note:
@@ -2369,6 +2392,8 @@ class NumericRefHandler(Handler):
         past_page: int,
         id_min: int | None = None,
         id_max: int | None = None,
+        include_ref_ids: list[int] | None = None,
+        exclude_ref_ids: list[int] | None = None,
     ) -> str:
         """Optional per-kind line under a queryless list's header.
 
@@ -2397,6 +2422,8 @@ class NumericRefHandler(Handler):
         page: int = 1,
         exclude_tags: list[str] | None = None,
         compact: str | None = None,
+        include_ref_ids: list[int] | None = None,
+        exclude_ref_ids: list[int] | None = None,
     ) -> Response:
         """Recency-ordered list of ``self.kind`` refs linked to ``link``.
 
@@ -2430,12 +2457,16 @@ class NumericRefHandler(Handler):
             limit=page_size,
             offset=offset,
             exclude_tags=exclude_tags,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
         )
         total = self.store.count_linked_refs(
             target.ref_id,
             kind=self.kind,
             direction="both",
             exclude_tags=exclude_tags,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
         )
         if not page_rows:
             if page > 1 and total > 0:

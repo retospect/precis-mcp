@@ -86,6 +86,35 @@ def test_under_combines_with_tags_and_via_extras(tree: _Tree) -> None:
     assert set(got) == {"- Pump summary", "- Direct gotcha"}
 
 
+def test_under_scopes_the_queryless_tag_listing(tree: _Tree) -> None:
+    """gr568264: under= + tags= without q= on the default view announced
+    the scope but listed the whole corpus."""
+    out = tree.rt.dispatch(
+        "search",
+        {"kind": "memory", "tags": ["section:gotchas"], "under": _h(tree.hub)},
+    )
+    assert "Pump detail" in out
+    assert "Direct gotcha" in out
+    assert "Stray gotcha" not in out
+
+
+def test_under_scopes_the_queryless_link_listing(tree: _Tree) -> None:
+    """The link= listing honours the same resolved scope."""
+    tree.store.add_link(
+        src_ref_id=tree.stray, dst_ref_id=tree.detail, relation="see-also"
+    )
+    out_all = tree.rt.dispatch("search", {"kind": "memory", "link": _h(tree.detail)})
+    assert "Stray gotcha" in out_all
+    out = tree.rt.dispatch(
+        "search",
+        {"kind": "memory", "link": _h(tree.detail), "under": _h(tree.hub)},
+    )
+    # The summary is linked to the detail (part-of) and in scope; the
+    # stray's see-also edge stays out — the scope is real, not announced.
+    assert "Pump summary" in out
+    assert "Stray gotcha" not in out
+
+
 def test_under_with_a_query_restricts_ranked_hits(tree: _Tree) -> None:
     out = tree.rt.dispatch(
         "search", {"kind": "memory", "q": "zebra", "under": _h(tree.hub)}

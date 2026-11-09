@@ -445,6 +445,8 @@ def age_summary(
     total: int | None = None,
     id_min: int | None = None,
     id_max: int | None = None,
+    include_ref_ids: list[int] | None = None,
+    exclude_ref_ids: list[int] | None = None,
 ) -> str:
     """``N open · M older than 3d · K unpicked ≥14d · oldest grX (D days)``.
 
@@ -465,6 +467,10 @@ def age_summary(
         filters["id_min"] = id_min
     if id_max is not None:
         filters["id_max"] = id_max
+    if include_ref_ids is not None:
+        filters["include_ref_ids"] = include_ref_ids
+    if exclude_ref_ids:
+        filters["exclude_ref_ids"] = exclude_ref_ids
     if total is None:
         total = store.count_refs(kind="gripe", tags=tags, **filters)
     statuses = [t.split(":", 1)[1] for t in tags if t.startswith("STATUS:")]
@@ -684,6 +690,8 @@ class GripeHandler(NumericRefHandler):
         past_page: int,
         id_min: int | None = None,
         id_max: int | None = None,
+        include_ref_ids: list[int] | None = None,
+        exclude_ref_ids: list[int] | None = None,
     ) -> str:
         """``N open · M older than 3d · oldest grX (D days) · K more past this page``."""
         line = age_summary(
@@ -693,6 +701,8 @@ class GripeHandler(NumericRefHandler):
             total=total,
             id_min=id_min,
             id_max=id_max,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
         )
         if past_page > 0:
             line += f" · {past_page} more past this page"

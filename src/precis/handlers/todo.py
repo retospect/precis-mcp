@@ -83,7 +83,7 @@ from collections.abc import Callable
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from precis.errors import BadInput, Gone, Unsupported
+from precis.errors import BadInput, Gone, NotFound, Unsupported
 from precis.handlers import _comment_timeline as tl
 from precis.handlers._eye import is_eye_view
 from precis.handlers._interpret import interpreted
@@ -265,6 +265,61 @@ class TodoView(StrEnum):
     RESCUE = "rescue"
 
 
+def _doable_under_ids(store: Store, raw: Any) -> list[int]:
+    """Resolve ``view='doable'``'s ``under=`` to the todo roots whose
+    subtrees the leaf walk unions.
+
+    An integer (or ``td<N>``/``todo:N``) scopes one subtree as before.
+    A memory handle (``me<N>``/``memory:N``) scopes the union of the
+    ``plan-of`` todos hanging off it and its ``part-of`` spec roots —
+    the "next doable slice in programme X" question (gr568264): with
+    specs in memory, one ``get(kind='memory')`` plus this search
+    answers it without the caller knowing a todo-root handle.
+    """
+    try:
+        return [int(raw)]
+    except (TypeError, ValueError):
+        pass
+    from precis.utils.link_target import parse_link_target
+
+    try:
+        target = parse_link_target(str(raw), store=store)
+    except (BadInput, NotFound) as exc:
+        raise BadInput(
+            f"under must be a todo id or a memory handle, got {raw!r}",
+            next="search(kind='todo', view='doable', "
+            "args={'under': 'me<spec-or-programme root>'})",
+        ) from exc
+    if target.kind == "todo":
+        return [target.ref_id]
+    if target.kind != "memory":
+        raise BadInput(
+            f"under={raw!r} is a {target.kind} ref — a todo id or a "
+            "memory handle is expected",
+            next="search(kind='todo', view='doable', "
+            "args={'under': 'me<spec-or-programme root>'})",
+        )
+    members = {target.ref_id, *store.part_of_descendants(target.ref_id)}
+    roots: set[int] = set()
+    for member in members:
+        for edge in store.links_for(member, direction="in", relation="plan-of"):
+            roots.add(edge.dst_ref_id if edge.src_ref_id == member else edge.src_ref_id)
+    live = (
+        store.list_refs(kind="todo", include_ref_ids=sorted(roots), limit=len(roots))
+        if roots
+        else []
+    )
+    if not live:
+        raise BadInput(
+            f"memory {str(raw)!r} has no plan-of todos — nothing to scope to",
+            next=(
+                f"link(kind='todo', id=<the plan todo>, target={str(raw)!r}, "
+                "rel='plan-of') — then retry"
+            ),
+        )
+    return [r.id for r in live]
+
+
 def _view_doable(
     store: Store,
     args: dict[str, Any] | None,
@@ -282,14 +337,7 @@ def _view_doable(
     """
     under = None
     if args is not None and "under" in args:
-        under_raw = args["under"]
-        try:
-            under = int(under_raw)
-        except (TypeError, ValueError) as exc:
-            raise BadInput(
-                f"under must be an integer, got {under_raw!r}",
-                next="search(kind='todo', view='doable', under=N)",
-            ) from exc
+        under = _doable_under_ids(store, args["under"])
     normalized_tags = Tag.normalize_filter(
         tags,
         kind="todo",

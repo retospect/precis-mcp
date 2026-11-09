@@ -198,6 +198,7 @@ Tree icons: `○` doable · `▶` doing · `◀ claimed-by:<x>` claimed ·
 ```python
 search(kind="todo", view="doable")
 search(kind="todo", view="doable", under=67)  # within a subtree
+search(kind="todo", view="doable", under="me568215")  # a memory scope
 search(kind="todo", view="doable", tags=["spec:task-aware-routing"])  # one spec's leaves
 search(kind="todo", view="doable", tags=["!spec:old-quest"])  # exclude a tag
 ```
@@ -205,7 +206,14 @@ search(kind="todo", view="doable", tags=["!spec:old-quest"])  # exclude a tag
 `tags=` filters the leaf set with the usual search grammar — positive
 entries AND, `'!<tag>'` excludes — and composes with `under=`. It is
 the way to ask "what's doable in programme/spec X" when the work is
-tagged (e.g. `spec:<slug>`); `under=` remains the subtree scope.
+tagged (e.g. `spec:<slug>`).
+
+`under=` scopes by subtree: a todo id/handle lists that subtree's
+leaves; a memory handle (`me<N>`) resolves the `plan-of` todos of the
+memory and its `part-of` spec roots, then unions their subtrees — so
+`get(kind='memory', id='me<programme>')` plus this one search answers
+"next doable slice in programme X" when each spec root's plan todo is
+bound with `link(kind='todo', id=<td>, target='me<spec>', rel='plan-of')`.
 
 "Doable" = leaf with no live children, status open / doing, no
 open blocked-by links, no `waiting-for:*` tag, no `ask-user`

@@ -1947,6 +1947,8 @@ class LinksMixin:
         limit: int = 20,
         offset: int = 0,
         exclude_tags: list[str] | None = None,
+        include_ref_ids: list[int] | None = None,
+        exclude_ref_ids: list[int] | None = None,
     ) -> list[Ref]:
         """Page of live ``kind`` refs linked (any relation) to ``ref_id``,
         newest-``updated_at``-first, with a true DB-level LIMIT/OFFSET.
@@ -1973,6 +1975,12 @@ class LinksMixin:
             ex_frag, ex_params = build_tag_filter([ex_tag], ref_alias="r")
             clauses.append(f"NOT ({ex_frag})")
             params.extend(ex_params)
+        if include_ref_ids is not None:
+            clauses.append("r.ref_id = ANY(%s)")
+            params.append(list(include_ref_ids))
+        if exclude_ref_ids:
+            clauses.append("NOT (r.ref_id = ANY(%s))")
+            params.append(list(exclude_ref_ids))
         params = [*params, limit, offset]
         sql = (
             f"SELECT {_REFS_COLS_ALIASED} FROM refs r WHERE "
@@ -1990,6 +1998,8 @@ class LinksMixin:
         kind: str,
         direction: Literal["out", "in", "both"] = "both",
         exclude_tags: list[str] | None = None,
+        include_ref_ids: list[int] | None = None,
+        exclude_ref_ids: list[int] | None = None,
     ) -> int:
         """Exact count for :meth:`linked_refs_page` — the honest "N of K"
         denominator for a link-scoped listing (same WHERE, no LIMIT)."""
@@ -1998,6 +2008,12 @@ class LinksMixin:
             ex_frag, ex_params = build_tag_filter([ex_tag], ref_alias="r")
             clauses.append(f"NOT ({ex_frag})")
             params.extend(ex_params)
+        if include_ref_ids is not None:
+            clauses.append("r.ref_id = ANY(%s)")
+            params.append(list(include_ref_ids))
+        if exclude_ref_ids:
+            clauses.append("NOT (r.ref_id = ANY(%s))")
+            params.append(list(exclude_ref_ids))
         sql = "SELECT count(*) FROM refs r WHERE " + " AND ".join(clauses)
         with self.pool.connection() as conn:
             row = conn.execute(sql, params).fetchone()

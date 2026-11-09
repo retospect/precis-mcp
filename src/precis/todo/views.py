@@ -921,7 +921,7 @@ def _status_icon(
 def render_doable(
     store: Store,
     *,
-    under: int | None = None,
+    under: int | list[int] | None = None,
     limit: int = 20,
     tags: list[str] | None = None,
 ) -> Response:
@@ -933,7 +933,9 @@ def render_doable(
     strategic first, then per-leaf priority, then sibling order.
     ``tags`` (already canonicalised by the handler) narrows the leaf
     set through the shared tag filter — positive entries AND,
-    ``'!<tag>'`` entries exclude (gr568264).
+    ``'!<tag>'`` entries exclude (gr568264). ``under`` scopes to the
+    union of the given todo subtrees — one id, or several when the
+    handler resolved a memory root's ``plan-of`` bindings.
     """
     leaves = _fetch_doable(store, under=under, limit=limit, tags=tags)
     if not leaves:
@@ -987,7 +989,7 @@ def render_doable(
 def _doable_rows(
     store: Store,
     *,
-    under: int | None,
+    under: int | list[int] | None,
     limit: int,
     tags: list[str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -1011,6 +1013,9 @@ def _doable_rows(
     under_clause = ""
     under_params: tuple[Any, ...] = ()
     if under is not None:
+        # A resolved-but-empty list stays scoped: ANY('{}') matches no
+        # row, never degrades to an unscoped list.
+        under_ids = [under] if isinstance(under, int) else [int(u) for u in under]
         under_clause = (
             "AND EXISTS ("
             "  WITH RECURSIVE up(ref_id, parent_id) AS ("
@@ -1019,10 +1024,10 @@ def _doable_rows(
             "    SELECT p.ref_id, p.parent_id FROM refs p"
             "      JOIN up ON p.ref_id = up.parent_id"
             "  )"
-            "  SELECT 1 FROM up WHERE ref_id = %s"
+            "  SELECT 1 FROM up WHERE ref_id = ANY(%s)"
             ")"
         )
-        under_params = (under,)
+        under_params = (under_ids,)
     # gr568264: the caller's tags= applies to the leaf itself — a leaf
     # must carry every positive tag and none of the ``'!'`` exclusions.
     tag_fragment, tag_params = build_tag_filter(tags, ref_alias="r")
@@ -1146,7 +1151,7 @@ def _doable_rows(
 def _fetch_doable(
     store: Store,
     *,
-    under: int | None,
+    under: int | list[int] | None,
     limit: int,
     tags: list[str] | None = None,
 ) -> list[dict[str, Any]]:
