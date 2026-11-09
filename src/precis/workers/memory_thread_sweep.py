@@ -181,15 +181,18 @@ _SCRATCH_DURATION_UNITS = {
 #: The ``scratch-for:<handle>`` owner tag (gr605668): an open tag naming
 #: the todo or gripe the scratch belongs to — the same tag the
 #: thread-scoped recall work reads. Any other value under the prefix is
-#: ignored (a ``scratch-for:me5`` keeps the default TTL).
+#: ignored (a ``scratch-for:me5`` keeps the default TTL), as is one whose
+#: ``td``/``gr`` prefix does not match the stored row's kind.
 _SCRATCH_FOR_RE = re.compile(r"^scratch-for:((?:td|gr)\d+)$")
 
 #: Status rows of every ``scratch-for`` owner in one fetch. The inner
 #: join keeps ``ref_tags`` rows pointing at ``STATUS`` tags only, so a
 #: ref with no STATUS at all surfaces as a single all-NULL row (still
 #: open). Expired tag rows are ignored the way search ignores them.
+#: ``r.kind`` rides along so the caller can drop a handle whose prefix
+#: lies — ``td<N>`` naming a memory row is not an owner (td606757).
 _SCRATCH_OWNER_STATUS = """
-SELECT r.ref_id, r.retired_at, t.value, rt.created_at
+SELECT r.ref_id, r.kind, r.retired_at, t.value, rt.created_at
   FROM refs r
   LEFT JOIN (ref_tags rt JOIN tags t
                ON t.tag_id = rt.tag_id AND t.namespace = 'STATUS'
@@ -435,40 +438,41 @@ class _ScratchOwner:
 
 def _scratch_owner_closes(
     conn: Connection, owner_ids: set[int]
-) -> dict[int, datetime | None]:
-    """``ref_id → close stamp`` for every owner ref that exists —
-    ``None`` while the owner is still open.
+) -> dict[int, tuple[str, datetime | None]]:
+    """``ref_id → (kind, close stamp)`` for every owner ref that exists
+    — ``None`` while the owner is still open.
 
     The close stamp is the terminal ``STATUS`` tag's
     ``ref_tags.created_at`` (the row is rewritten on every status move,
     so it is the transition time), or the owner's own ``retired_at``
     when the task was tombstoned — the earlier of the two when both
-    exist. A handle naming a nonexistent ref is absent from the map, so
-    an unresolvable owner keeps the node on the default TTL."""
-    present: set[int] = set()
+    exist. A handle naming a nonexistent ref is absent from the map, and
+    the returned kind lets the caller drop one whose ``td``/``gr``
+    prefix does not match the stored row — both keep the node on the
+    default TTL."""
+    rows: dict[int, tuple[str, datetime | None]] = {}
     status: dict[int, tuple[datetime, str]] = {}
     retired: dict[int, datetime] = {}
-    for ref_id, retired_at, value, stamped in conn.execute(
+    for ref_id, kind, retired_at, value, stamped in conn.execute(
         _SCRATCH_OWNER_STATUS, (sorted(owner_ids),)
     ).fetchall():
         rid = int(ref_id)
-        present.add(rid)
+        rows[rid] = (str(kind), None)
         if retired_at is not None:
             retired[rid] = retired_at
         if value is not None:
             prev = status.get(rid)
             if prev is None or stamped > prev[0]:
                 status[rid] = (stamped, str(value))
-    closes: dict[int, datetime | None] = {}
-    for rid in present:
+    for rid, (kind, _) in rows.items():
         stamps = []
         current = status.get(rid)
         if current is not None and current[1] in BLOCKER_TERMINAL_STATUSES:
             stamps.append(current[0])
         if rid in retired:
             stamps.append(retired[rid])
-        closes[rid] = min(stamps) if stamps else None
-    return closes
+        rows[rid] = (kind, min(stamps) if stamps else None)
+    return rows
 
 
 def _scratch_expiry(
@@ -533,10 +537,12 @@ def plan_scratch_sweep(
     now = now or datetime.now(UTC)
     with store.pool.connection() as conn:
         rows = conn.execute(_SCRATCH_CANDIDATES, (INDEX_TAG,)).fetchall()
-        parsed: list[tuple[int, str, datetime | None, Any, list[tuple[str, int]]]] = []
+        parsed: list[
+            tuple[int, str, datetime | None, Any, list[tuple[str, str, int]]]
+        ] = []
         owner_ids: set[int] = set()
         for ref_id, title, updated_at, meta, scratch_for in rows:
-            pairs: list[tuple[str, int]] = []
+            pairs: list[tuple[str, str, int]] = []
             seen: set[int] = set()
             for value in scratch_for or []:
                 m = _SCRATCH_FOR_RE.match(str(value))
@@ -547,8 +553,8 @@ def plan_scratch_sweep(
                 if p is None or p[1] or p[2] in seen:
                     continue
                 seen.add(p[2])
-                pairs.append((handle, p[2]))
-            owner_ids.update(rid for _, rid in pairs)
+                pairs.append((handle, p[0], p[2]))
+            owner_ids.update(rid for _, _, rid in pairs)
             parsed.append((int(ref_id), str(title or ""), updated_at, meta, pairs))
         closes = _scratch_owner_closes(conn, owner_ids) if owner_ids else {}
     plan: list[ScratchCandidate] = []
@@ -556,9 +562,9 @@ def plan_scratch_sweep(
         if updated_at is None:
             continue
         owners = [
-            _ScratchOwner(rid, handle, closes[rid])
-            for handle, rid in pairs
-            if rid in closes
+            _ScratchOwner(rid, handle, closes[rid][1])
+            for handle, kind, rid in pairs
+            if rid in closes and closes[rid][0] == kind
         ]
         expiry, driver = _scratch_expiry(meta, updated_at, owners=owners)
         if expiry <= now:

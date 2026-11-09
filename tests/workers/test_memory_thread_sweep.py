@@ -659,6 +659,39 @@ def test_rule_s_an_unresolvable_owner_keeps_the_default_ttl(
     assert _retired(store, not_a_task)
 
 
+def test_rule_s_a_wrong_kind_owner_keeps_the_default_ttl(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """Regression (td606757 on td606756): the owner resolves by ref_id
+    *and* kind — ``scratch-for:td<N>`` naming a memory row, or
+    ``scratch-for:gr<N>`` naming a todo, is ignored. A mistyped owner
+    can neither suspend the 7-day clock under an "open" non-task row nor
+    retire a fresh node early off a wrong-kind tombstone."""
+    memory = _memory(handler, "not a task", tags=["section:gotchas"])
+    todo = _owner_task(store)
+    tombstone = _memory(handler, "long gone", tags=["section:gotchas"])
+    store.retire_ref(tombstone)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET retired_at = now() - make_interval(days => %s) "
+            "WHERE ref_id = %s",
+            (SCRATCH_OWNER_GRACE_DAYS + 2, tombstone),
+        )
+        conn.commit()
+    by_memory = _scratch(handler, "memory owner", tags=[f"scratch-for:td{memory}"])
+    cross = _scratch(handler, "cross-kind owner", tags=[f"scratch-for:gr{todo}"])
+    for rid in (by_memory, cross):
+        _age(store, rid, SCRATCH_TTL_DAYS + 1)
+    pinned = _scratch(handler, "fresh note", tags=[f"scratch-for:td{tombstone}"])
+
+    result = run_scratch_sweep_pass(store)
+
+    assert (result.claimed, result.ok) == (2, 2)
+    assert _retired(store, by_memory)
+    assert _retired(store, cross)
+    assert not _retired(store, pinned)
+
+
 def test_rule_s_a_gripe_owner_closes_scratch_too(
     store: Any, handler: MemoryHandler
 ) -> None:
