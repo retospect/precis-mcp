@@ -506,13 +506,25 @@ def _our_interval(row: Mapping[str, Any]) -> tuple[float, float] | None:
 
 
 def ours_from_measure_row(row: Mapping[str, Any]) -> OursValue:
-    """Adapt one ``measures_for_paper`` row for :func:`diff_paper`."""
+    """Adapt one ``measures_for_paper`` row for :func:`diff_paper`.
+
+    A paper-level measure's subject IS the owning paper, so its
+    ``subject_title`` is the paper's bibliographic title, not a material
+    label — kept out of ``subject_keys`` (and the display fallback) or
+    ``_subjects_compatible`` would reject every ALCHEM material match and
+    the row would inflate ours-only/theirs-only (td609066 finding 2).
+    """
     slug = row.get("measurand_slug") or row.get("measurand") or ""
     keys = {_key(str(slug)), _key(str(row.get("measurand") or ""))}
     keys |= {_key(str(a)) for a in (row.get("measurand_aliases") or [])}
+    paper_subject = row.get("subject_kind") == "paper"
     subject_keys = {
         _subject_key(str(row["subject"]) if row.get("subject") else None),
-        _subject_key(str(row["subject_title"]) if row.get("subject_title") else None),
+        _subject_key(
+            str(row["subject_title"])
+            if row.get("subject_title") and not paper_subject
+            else None
+        ),
     }
     text = row.get("value_text") or row.get("literal")
     if text is None and row.get("value_bool") is not None:
@@ -523,7 +535,11 @@ def ours_from_measure_row(row: Mapping[str, Any]) -> OursValue:
         measurand=str(row.get("measurand") or slug),
         keys=frozenset(k for k in keys if k),
         subject_keys=frozenset(k for k in subject_keys if k),
-        subject=str(row.get("subject") or row.get("subject_title") or ""),
+        subject=str(
+            row.get("subject")
+            or ("" if paper_subject else row.get("subject_title"))
+            or ""
+        ),
         interval=_our_interval(row),
         text=str(text) if text is not None else None,
         canonical_unit=(
@@ -888,10 +904,14 @@ def render_paper(diff: PaperDiff, *, details: int = 40) -> str:
     return "\n".join(lines)
 
 
-def render_report(diffs: Sequence[PaperDiff], *, details: int = 40) -> str:
+def render_report(
+    diffs: Sequence[PaperDiff], *, details: int = 40, run: str | None = None
+) -> str:
     """The full report: a per-paper summary table, then per-paper
     sections. Agreement, not precision/recall — the ALCHEM set is itself
-    one unreviewed model pass."""
+    one unreviewed model pass. ``run`` names the ours-side scope: the
+    ``extraction_run`` token the compared rows were stamped with, or every
+    live output measure when unset."""
     total: Counter[str] = Counter()
     for d in diffs:
         total += d.counts()
@@ -900,6 +920,12 @@ def render_report(diffs: Sequence[PaperDiff], *, details: int = 40) -> str:
         "",
         "Agreement with the ALCHEM graph (one unreviewed gpt-6.1-sol pass),",
         "not precision/recall — gr606461.",
+        "",
+        (
+            f"ours: extraction_run `{run}` rows only"
+            if run
+            else "ours: every live output measure"
+        ),
         "",
         "| paper | doi | match | value≠ | unit≠ | ours-only | theirs-only |",
         "|---|---|---|---|---|---|---|",

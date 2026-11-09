@@ -410,6 +410,49 @@ class TestAdapter:
         assert o.reference == "RHE"
         assert o.text == "40.8 mV"
 
+    def test_paper_subject_title_is_not_a_material_key(self):
+        row = {
+            "id": 9,
+            "measurand_slug": "overpotential",
+            "measurand": "Overpotential",
+            "subject": None,
+            "subject_title": "A Paper About Catalysts",
+            "subject_kind": "paper",
+            "value_num": 0.0408,
+            "value_form": "point",
+            "literal": "40.8 mV",
+            "canonical_unit": "V",
+        }
+        o = ours_from_measure_row(row)
+        assert o.subject_keys == frozenset()
+        assert o.subject == ""
+        d = diff_paper(
+            [o],
+            [alv("V1", "overpotential", value=40.8, unit="mV", material="Ni foam")],
+        )
+        assert kinds(d) == ["match"]
+
+    def test_paper_subject_free_label_still_keys(self):
+        row = {
+            "id": 10,
+            "measurand_slug": "overpotential",
+            "measurand": "Overpotential",
+            "subject": "Ni foam",
+            "subject_title": "A Paper About Catalysts",
+            "subject_kind": "paper",
+            "value_num": 0.0408,
+            "value_form": "point",
+            "literal": "40.8 mV",
+            "canonical_unit": "V",
+        }
+        o = ours_from_measure_row(row)
+        assert o.subject_keys == frozenset({"ni-foam"})
+        d = diff_paper(
+            [o],
+            [alv("V1", "overpotential", value=40.8, unit="mV", material="Cu_2O")],
+        )
+        assert kinds(d) == ["ours_only", "theirs_only"]
+
 
 def test_render_report_smoke():
     d = diff_paper(

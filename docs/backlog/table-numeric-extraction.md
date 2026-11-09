@@ -589,3 +589,9 @@ tests/test_measure_kind.py` is green.
   (match / value≠ / unit≠ / ours-only / theirs-only on the 12 held
   full-text papers); because the gold set is itself one unreviewed
   model pass, the report is agreement, not precision/recall.
+  First scored pass queued 2026-11-09 (td609479): `survey_extract`
+  jobs jo609697–jo609708 under `extraction_run` token
+  `alchem-gr606461`; `scripts/_prod-run scripts/alchem-diff --run
+  alchem-gr606461` diffs exactly that run's rows. Pre-run baseline:
+  all 1,973 ALCHEM values theirs-only — the 12 papers carried no
+  measures at all.

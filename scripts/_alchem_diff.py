@@ -19,9 +19,18 @@ Usage (via the ``alchem-diff`` shell wrapper):
     scripts/alchem-diff --dois 10.1002/aenm.202505964
     scripts/alchem-diff --all-alchem                # every ALCHEM DOI we hold
     scripts/alchem-diff --tol 0.05 --details 10 --json scratch/diff.json
+    scripts/alchem-diff --extract --parent 609479   # mint the survey_extract jobs
+    scripts/alchem-diff --run alchem-gr606461       # diff one extraction run's rows
 
-READ-ONLY: every statement is a SELECT. ``PRECIS_DATABASE_URL`` picks the
-DB (dev by default; ``scripts/_prod-run`` supplies prod's).
+The ours side is every live output measure on the paper by default;
+``--run <token>`` narrows it to the rows a ``survey_extract`` pass stamped
+with ``meta.extraction_run = <token>``, so the table is attributable
+extraction-run evidence rather than whatever rows happen to exist.
+``--extract`` is the "run precis extraction" half of the gripe: it mints
+one queued ``survey_extract`` job per requested paper (idem-keyed on
+``(run, paper)``, parented on the ``--parent`` todo) — the one write path;
+everything else is SELECT-only. ``PRECIS_DATABASE_URL`` picks the DB (dev
+by default; ``scripts/_prod-run`` supplies prod's).
 """
 
 from __future__ import annotations
@@ -65,6 +74,10 @@ DEFAULT_PAPERS = (
 
 DEFAULT_TRIG = Path("scratch/alchem-data.trig")
 
+#: The ``extraction_run`` token ``--extract`` stamps when ``--run`` is not
+#: given — the gripe's first scored pass over the 12 held papers.
+DEFAULT_RUN = "alchem-gr606461"
+
 
 def fetch_trig(dest: Path) -> Path:
     """Download ``data.trig`` through the SSRF-pinned client."""
@@ -88,6 +101,16 @@ def paper_doi(store: Any, ref_id: int) -> str | None:
     return None
 
 
+def resolve_paper(store: Any, *, handle: str | None, doi: str | None) -> int | None:
+    """A request's precis paper ref_id — handle first, then DOI."""
+    if handle is not None:
+        resolved = store.resolve_handle(handle)
+        return int(resolved.ref_id) if resolved is not None else None
+    if doi is not None:
+        return store.find_paper_ref_by_identifier(doi)
+    return None
+
+
 def diff_one(
     store: Any,
     alchem: dict[str, AlchemPaper],
@@ -95,24 +118,20 @@ def diff_one(
     handle: str | None,
     doi: str | None,
     rel_tol: float,
+    run: str | None = None,
 ) -> PaperDiff:
     """One paper: resolve it, pull its live output measures, diff."""
-    ref_id: int | None = None
     label = handle or (doi or "?")
-    if handle is not None:
-        resolved = store.resolve_handle(handle)
-        if resolved is None:
-            return PaperDiff(label=f"{label} (unresolved handle)", doi=None, pairs=[])
-        ref_id = resolved.ref_id
+    ref_id = resolve_paper(store, handle=handle, doi=doi)
+    if handle is not None and ref_id is None:
+        return PaperDiff(label=f"{label} (unresolved handle)", doi=None, pairs=[])
+    if ref_id is not None and handle is not None:
         doi = paper_doi(store, ref_id) or doi
-    elif doi is not None:
-        ref_id = store.find_paper_ref_by_identifier(doi)
     gold = alchem.get((doi or "").lower())
-    ours = (
-        [ours_from_measure_row(r) for r in store.measures_for_paper(ref_id)]
-        if ref_id is not None
-        else []
-    )
+    rows = store.measures_for_paper(ref_id) if ref_id is not None else []
+    if run is not None:
+        rows = [r for r in rows if (r.get("meta") or {}).get("extraction_run") == run]
+    ours = [ours_from_measure_row(r) for r in rows]
     if gold is None:
         label += " (no ALCHEM paper)" if doi else " (no DOI on ref)"
     if ref_id is None and handle is None:
@@ -125,7 +144,67 @@ def diff_one(
     return diff
 
 
-def diff_json(diffs: list[PaperDiff]) -> str:
+def _requests(
+    args: argparse.Namespace, *, alchem: dict[str, AlchemPaper] | None = None
+) -> list[dict[str, Any]]:
+    """The paper request list shared by the diff and ``--extract`` paths."""
+    if alchem is not None:
+        return [{"handle": None, "doi": doi} for doi, p in alchem.items() if p.doi]
+    dois = [d.strip() for d in (args.dois or "").split(",") if d.strip()]
+    handles = [h.strip() for h in (args.papers or "").split(",") if h.strip()]
+    if not handles and not dois:
+        handles = list(DEFAULT_PAPERS)
+    return [{"handle": h, "doi": None} for h in handles] + [
+        {"handle": None, "doi": d} for d in dois
+    ]
+
+
+def mint_extract_jobs(
+    store: Any,
+    requests: list[dict[str, Any]],
+    *,
+    run: str,
+    parent: int,
+    accept: bool,
+) -> list[tuple[str, int | None, int | None, bool]]:
+    """``--extract``: one queued ``survey_extract`` job per request, stamped
+    ``run_token=run`` — idempotent on ``(run, paper)`` so a re-run reuses
+    the in-flight job instead of double-minting. ``parent`` is the owning
+    todo (``put``'s tree-position rule applies to hand mints too)."""
+    from precis.workers._mint import mint_job_once
+
+    out: list[tuple[str, int | None, int | None, bool]] = []
+    for req in requests:
+        label = req["handle"] or req["doi"] or "?"
+        ref_id = resolve_paper(store, handle=req["handle"], doi=req["doi"])
+        if ref_id is None:
+            print(f"{label}: unresolvable — no job minted")
+            out.append((label, None, None, False))
+            continue
+        with store.tx() as conn:
+            job_id, reused = mint_job_once(
+                store,
+                conn=conn,
+                job_type="survey_extract",
+                executor="coordinator",
+                title="survey_extract (unlinked)",
+                params={
+                    "paper": ref_id,
+                    "run_token": run,
+                    "skip_accept": not accept,
+                },
+                parent_id=parent,
+                idem_key=f"alchem-diff:{run}:{ref_id}",
+            )
+        print(
+            f"{label} (pa{ref_id}): job {job_id} "
+            + ("already active" if reused else "queued")
+        )
+        out.append((label, ref_id, job_id, reused))
+    return out
+
+
+def diff_json(diffs: list[PaperDiff], *, run: str | None = None) -> str:
     """The machine-readable form for regression tracking across runs."""
 
     def pair_dict(p: Any) -> dict[str, Any]:
@@ -162,6 +241,7 @@ def diff_json(diffs: list[PaperDiff]) -> str:
             {
                 "label": d.label,
                 "doi": d.doi,
+                "run": run,
                 "counts": dict(d.counts()),
                 "unmapped": sorted({t.term or t.prop for t in d.unmapped}),
                 "pairs": [pair_dict(p) for p in d.pairs],
@@ -199,6 +279,32 @@ def main(argv: list[str] | None = None) -> int:
         help="every ALCHEM DOI that resolves to a precis paper",
     )
     ap.add_argument(
+        "--run",
+        help=(
+            "extraction_run token — ours is only the measures that token's "
+            f"survey_extract pass stamped (default for --extract: {DEFAULT_RUN})"
+        ),
+    )
+    ap.add_argument(
+        "--extract",
+        action="store_true",
+        help=(
+            "mint one queued survey_extract job per requested paper "
+            "(run_token = --run's value) and exit — the write path"
+        ),
+    )
+    ap.add_argument(
+        "--parent",
+        type=int,
+        help="owning todo ref_id for --extract's jobs (required there)",
+    )
+    ap.add_argument(
+        "--accept",
+        action="store_true",
+        help="--extract: let each job spawn its measure_accept child "
+        "(default skips it — the diff does not need a Wilson verdict)",
+    )
+    ap.add_argument(
         "--tol",
         type=float,
         default=0.01,
@@ -216,32 +322,46 @@ def main(argv: list[str] | None = None) -> int:
     if args.fetch:
         fetch_trig(args.trig)
         return 0
+    if args.extract and args.parent is None:
+        ap.error("--extract requires --parent <todo ref_id> for the minted jobs")
+    if args.extract and args.all_alchem:
+        ap.error("--extract mints jobs for the named papers, not --all-alchem")
+
+    if args.extract:
+        # Extraction minting needs the store only — the TriG file may not
+        # be fetched yet on this host.
+        store, _cfg = open_store()
+        try:
+            requests = _requests(args)
+            mint_extract_jobs(
+                store,
+                requests,
+                run=args.run or DEFAULT_RUN,
+                parent=args.parent,
+                accept=args.accept,
+            )
+        finally:
+            store.close()
+        return 0
+
     if not args.trig.exists():
         ap.error(f"{args.trig} not found — run `scripts/alchem-diff --fetch` first")
 
     alchem = parse_alchem_trig(args.trig.read_text(encoding="utf-8"))
     store, _cfg = open_store()
     try:
-        if args.all_alchem:
-            requests = [
-                {"handle": None, "doi": doi} for doi, p in alchem.items() if p.doi
-            ]
-        else:
-            dois = [d.strip() for d in (args.dois or "").split(",") if d.strip()]
-            handles = [h.strip() for h in (args.papers or "").split(",") if h.strip()]
-            if not handles and not dois:
-                handles = list(DEFAULT_PAPERS)
-            requests = [{"handle": h, "doi": None} for h in handles] + [
-                {"handle": None, "doi": d} for d in dois
-            ]
-        diffs = [diff_one(store, alchem, rel_tol=args.tol, **req) for req in requests]
+        requests = _requests(args, alchem=alchem if args.all_alchem else None)
+        diffs = [
+            diff_one(store, alchem, rel_tol=args.tol, run=args.run, **req)
+            for req in requests
+        ]
     finally:
         store.close()
 
-    print(render_report(diffs, details=args.details))
+    print(render_report(diffs, details=args.details, run=args.run))
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
-        args.json.write_text(diff_json(diffs) + "\n", encoding="utf-8")
+        args.json.write_text(diff_json(diffs, run=args.run) + "\n", encoding="utf-8")
         print(f"wrote {args.json}")
     return 0
 
