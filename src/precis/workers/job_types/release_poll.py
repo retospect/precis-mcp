@@ -2275,7 +2275,8 @@ def _engine_verdicts(
                     # ``requires`` is non-empty only for a FIX/REVERT
                     # with an int ``review.task`` (:func:`_review_outcome`).
                     task = (meta.get("review") or {}).get("task")
-                    carried.update((r, task) for r in requires)
+                    if isinstance(task, int):
+                        carried.update((r, task) for r in requires)
                     satisfied = True
                     break
                 if outcome == "waiting" and waiting is None:
