@@ -1466,6 +1466,90 @@ class TestPrioSplit:
         assert not any(c.startswith("recommend: PRIO:") for c in _comments(store, gid))
 
 
+class TestSeverityBackfill:
+    """gr604593 review: a gripe already past ``open`` carries only the
+    0294 bridge ``meta.dispatch_score`` — a static number that never
+    recomputes over age or parked dups. The backfill claim arm stamps
+    ``meta.dispatch.severity`` so the live score takes over; the write
+    touches nothing else."""
+
+    def _triaged_bridge(self, store: Store, title: str = "already triaged") -> int:
+        """A gripe as the migration left it: ``STATUS:triaged`` +
+        bridge ``meta.dispatch_score``, no severity input."""
+        return _gripe(
+            store,
+            title,
+            age_days=30,
+            status="triaged",
+            meta={"dispatch_score": 6.0},
+        )
+
+    def test_backfill_stamps_severity_and_keeps_everything_else(
+        self, store: Store
+    ) -> None:
+        gid = self._triaged_bridge(store)
+        store.set_prio(gid, 3)
+        _light(store)
+        r = _run(store, llm=_llm({"verdicts": [_verdict(gid, severity=5)]}))
+        assert r.ok == 1
+        assert r.extra["backfilled"] == 1
+        meta = _meta(store, gid)
+        assert meta["dispatch"]["severity"] == 5
+        assert meta["dispatch_score"] == 6.0  # the bridge stays — it was a score
+        assert meta["pipeline"]["backfilled_at"].endswith("Z")
+        assert "claimed_at" not in meta["pipeline"]
+        # Nothing else moves: STATUS, the hand-set prio, the tags, and
+        # no comments — the gripe was already judged once.
+        assert _status(store, gid) == "triaged"
+        assert _prio(store, gid) == 3
+        assert _comments(store, gid) == []
+
+    def test_open_arm_wins_the_whole_batch(self, store: Store) -> None:
+        """Backfill fills only the slots the open arm leaves — a full
+        open batch means no backfill claims this tick."""
+        open_g = _gripe(store, "fresh open")
+        backfill_g = self._triaged_bridge(store)
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm({"verdicts": [_verdict(open_g, severity=1)]}),
+            limit=1,
+        )
+        assert r.ok == 1
+        assert _status(store, open_g) == "triaged"
+        # limit=1: the open gripe took the whole batch — the backfill
+        # row is untouched (still claimable next tick).
+        meta = _meta(store, backfill_g)
+        assert "dispatch" not in meta
+        assert _claimed_at(store, backfill_g) is None
+
+    def test_backfill_miss_bumps_misses_and_drops_out(self, store: Store) -> None:
+        """A backfill row the model never answers burns the same
+        ``triage_misses`` budget — at the cap it leaves the claim set
+        instead of re-billing forever."""
+        gid = self._triaged_bridge(store)
+        _light(store)
+        for _ in range(gripe_triage._MISS_LIMIT):
+            r = _run(store, llm=_llm({"verdicts": []}))
+            assert r.ok == 0
+        meta = _meta(store, gid)
+        assert meta["pipeline"]["triage_misses"] == gripe_triage._MISS_LIMIT
+        assert "claimed_at" not in meta["pipeline"]
+        assert _status(store, gid) == "triaged"  # never moved
+        # Miss-capped: no longer claimed by either arm.
+        assert gripe_triage._claim_backfill(store, 10) == []
+
+    def test_done_gripe_is_not_backfill_eligible(self, store: Store) -> None:
+        """Terminals are out of the cohort — a closed gripe gets no
+        severity stamp and keeps its lease-free meta."""
+        gid = _gripe(store, "closed", age_days=30, status="done")
+        _light(store)
+        assert gripe_triage._claim_backfill(store, 10) == []
+        r = _run(store, llm=_llm({"verdicts": [_verdict(gid, severity=5)]}))
+        assert r.claimed == 0
+        assert "dispatch" not in _meta(store, gid)
+
+
 # ── verdict parsing edge cases ────────────────────────────────────────────
 
 

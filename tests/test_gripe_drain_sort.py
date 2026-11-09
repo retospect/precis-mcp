@@ -239,6 +239,41 @@ def test_legacy_prio_and_recency_sorts_still_work(store: Store, hub: Hub) -> Non
     assert "(by recency)" in handler.search(sort="recency").body
 
 
+def test_gripe_prio_takes_only_the_named_rungs(store: Store, hub: Hub) -> None:
+    """gr604593: the gripe ``prio`` column is human-only — off-rung
+    values (the old machine band scores) refuse on both spellings and
+    both verbs; the four named rungs still write."""
+    handler = GripeHandler(hub=hub)
+    rid = _seed(store, "rung target")
+    for bad in (2, 4, 6, 7, 9, 10):
+        with pytest.raises(BadInput, match="off the named rungs"):
+            handler.put(text=f"off-rung filing prio={bad}", prio=bad)
+        with pytest.raises(BadInput, match="off the named rungs"):
+            handler.put(text=f"off-rung filing PRIO:{bad}", tags=[f"PRIO:{bad}"])
+        with pytest.raises(BadInput, match="off the named rungs"):
+            handler.tag(id=rid, prio=bad)
+        with pytest.raises(BadInput, match="off the named rungs"):
+            handler.tag(id=rid, add=[f"PRIO:{bad}"])
+    assert "STATUS:open" in {str(t) for t in store.tags_for(rid)}
+    ref = store.get_ref(kind="gripe", id=rid)
+    assert ref is not None and ref.prio is None
+    for rung in (1, 3, 5, 8):
+        assert handler.put(text=f"rung {rung} filing", prio=rung)
+        handler.tag(id=rid, prio=rung)
+        ref = store.get_ref(kind="gripe", id=rid)
+        assert ref is not None and ref.prio == rung
+
+
+def test_gripe_prio_remove_still_clears(store: Store, hub: Hub) -> None:
+    """A ``PRIO:*`` remove clears the column — clearing isn't a write,
+    so the rung rule doesn't gate it (even an off-rung spelling)."""
+    handler = GripeHandler(hub=hub)
+    rid = _seed(store, "clear target", prio=3)
+    handler.tag(id=rid, remove=["PRIO:7"])
+    ref = store.get_ref(kind="gripe", id=rid)
+    assert ref is not None and ref.prio is None
+
+
 def test_unknown_sort_refused_on_both_surfaces(
     store: Store, hub: Hub, runtime_with_store: Any, tmp_path: Any
 ) -> None:

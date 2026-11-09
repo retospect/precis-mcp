@@ -334,10 +334,15 @@ def _age_cluster(store: Any, kind: str, gid: int, days: float) -> None:
         )
 
 
-def test_pass_files_cluster_gripe_at_auto_prio(store: Any) -> None:
+def test_pass_files_cluster_gripe_at_auto_score(store: Any) -> None:
+    """gr604593: a pass-filed gripe carries ``meta.dispatch_score``
+    (machine-owned sequencing), never the human ``prio`` column."""
+    from precis.workers.auto_gripe import AUTO_SCORE
+
     _, _, gid = _filed_cluster(store)
     ref = store.get_ref(kind="gripe", id=gid)
-    assert ref is not None and ref.prio == 7
+    assert ref is not None and ref.prio is None
+    assert ref.meta.get("dispatch_score") == AUTO_SCORE
 
 
 def test_pass_closes_cluster_absent_three_days(store: Any) -> None:

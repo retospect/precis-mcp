@@ -117,6 +117,7 @@ from precis.handlers._numeric_ref import (
     plain_listing_view,
 )
 from precis.handlers._prio_tag import (
+    GRIPE_PRIO_RUNGS,
     alias_prio_tags,
     prio_display,
     prio_tag_int,
@@ -1000,7 +1001,7 @@ class GripeHandler(NumericRefHandler):
                 id=None, mode=None, untags=untags, unlink=unlink, rel=rel, link=link
             )
             with (
-                _PUT_PRIO.bind(validate_prio(prio)),
+                _PUT_PRIO.bind(validate_prio(prio, rungs=GRIPE_PRIO_RUNGS)),
                 _PUT_UNTIL.bind(until),
                 _translate_status_check(),
             ):
@@ -1074,7 +1075,7 @@ class GripeHandler(NumericRefHandler):
         # signature stays untouched). The ``PRIO:`` tag alias keeps working;
         # the explicit kwarg wins.
         with (
-            _PUT_PRIO.bind(validate_prio(prio)),
+            _PUT_PRIO.bind(validate_prio(prio, rungs=GRIPE_PRIO_RUNGS)),
             _PUT_UNTIL.bind(until),
             _translate_status_check(),
         ):
@@ -1365,7 +1366,7 @@ class GripeHandler(NumericRefHandler):
         # the sort-time default. An explicit ``prio=`` kwarg (declared at the
         # verb level alongside todo's) wins over the tag alias. Mirrors
         # QuestHandler.tag.
-        prio = validate_prio(prio)
+        prio = validate_prio(prio, rungs=GRIPE_PRIO_RUNGS)
         # Every gripe carries exactly one STATUS (migration 0176's commit-time
         # trigger), so a bare STATUS remove would fail at commit as a raw
         # check_violation. Refuse it here with the replacement idiom instead.
@@ -1383,7 +1384,7 @@ class GripeHandler(NumericRefHandler):
         if claim_reading:
             readings = [*readings, claim_reading]
         self._require_resolved_comment(id, add)
-        add, prio_from_tag = split_prio(add)
+        add, prio_from_tag = split_prio(add, rungs=GRIPE_PRIO_RUNGS)
         clear_prio = False
         if remove:
             kept = [t for t in remove if prio_tag_int(t) is None]
@@ -1904,7 +1905,7 @@ class GripeHandler(NumericRefHandler):
         # (which the backlog groomer inherits onto the fix todo), not a
         # decorative tag row. Strip it before strict tag parsing. An
         # explicit ``put(prio=)`` (plumbed via ``_PUT_PRIO``) wins.
-        tags, prio_from_tag = split_prio(tags)
+        tags, prio_from_tag = split_prio(tags, rungs=GRIPE_PRIO_RUNGS)
         readings = self._check_thread_tags(tags, create=True)
         if (put_prio := _PUT_PRIO.get()) is not None:
             prio_from_tag = put_prio

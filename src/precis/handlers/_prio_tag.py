@@ -44,6 +44,14 @@ PRIO_INT_TO_NAME: dict[int, str] = {
 #: number — ``PRIO:2`` is now the column spelling, no alias needed).
 PRIO_TAG_ALIASES: dict[str, str] = {"PRIO:medium": "PRIO:normal"}
 
+#: The rungs a gripe's ``prio`` accepts (gr604593): the named ladder,
+#: nothing between. Post-split that column is a human judgement only —
+#: the off-rung numbers were machine band scores, which now live on
+#: ``meta.dispatch_score``/``meta.dispatch.severity``
+#: (:mod:`precis.utils.dispatch_score`). Other kinds keep the full
+#: 1..10: todo's ``prio=2 (cron)`` and job prios are not this axis.
+GRIPE_PRIO_RUNGS: frozenset[int] = frozenset(PRIO_TAG_TO_INT.values())
+
 
 #: The numeric ``PRIO:`` spelling — bare ASCII digits only (``PRIO:3``,
 #: ``PRIO:10``); the p-prefixed P0..P4 shape is not the column scale.
@@ -91,13 +99,19 @@ def alias_prio_tags(tags: list[str] | None) -> tuple[list[str] | None, list[str]
     return out, readings
 
 
-def validate_prio(prio: int | None) -> int | None:
+def validate_prio(
+    prio: int | None, *, rungs: frozenset[int] | None = None
+) -> int | None:
     """Range-check a ``prio=`` kwarg (1..10) at the handler boundary.
 
     Returns ``prio`` on success (None passes through). Raises
     :class:`~precis.errors.BadInput` naming the accepted range and the
     conventional anchor values, so the agent-facing error teaches the
-    scale rather than just rejecting.
+    scale rather than just rejecting. ``rungs`` narrows the accepted
+    set to a named ladder — the gripe handler passes
+    :data:`GRIPE_PRIO_RUNGS`: its column is a human judgement, so an
+    off-rung number (a machine band score under the old shared column)
+    refuses with the real spellings.
     """
     from precis.errors import BadInput
 
@@ -112,6 +126,16 @@ def validate_prio(prio: int | None) -> int | None:
         raise BadInput(
             f"prio out of range: {prio} (must be 1..10)",
             next="prio=1 preempts strategic rotation; 3..10 ride the 1/N share",
+        )
+    if rungs is not None and prio not in rungs:
+        names = ", ".join(f"{n} ({PRIO_INT_TO_NAME[n]})" for n in sorted(rungs))
+        raise BadInput(
+            f"prio {prio} is off the named rungs — the judgement ladder is {names}",
+            options=[f"prio={n}" for n in sorted(rungs)],
+            next=(
+                "off-rung numbers were machine band scores; sequencing now "
+                "lives on meta.dispatch_score, the prio column is human-only"
+            ),
         )
     return prio
 
@@ -128,21 +152,39 @@ def prio_display(prio: int) -> str:
     return f"{prio} ({name})" if name is not None else str(prio)
 
 
-def split_prio(tags: list[str] | None) -> tuple[list[str] | None, int | None]:
+def split_prio(
+    tags: list[str] | None, *, rungs: frozenset[int] | None = None
+) -> tuple[list[str] | None, int | None]:
     """Pull the last ``PRIO:`` tag out of ``tags`` and translate it to an int.
 
     Returns ``(tags_without_prio, prio_or_none)`` — the ``PRIO:`` alias is
     stripped so it never lands as a redundant closed-tag row alongside the
     column write. Both spellings translate (:func:`prio_tag_int`); unknown
     ``PRIO:`` values pass through untouched so the strict validator surfaces
-    the typo with its options list.
+    the typo with its options list. ``rungs`` (the gripe handler's
+    :data:`GRIPE_PRIO_RUNGS`) refuses a recognised but off-rung
+    ``PRIO:<n>`` outright — passing it on would store it as a raw closed
+    tag, not the column value it spells.
     """
+    from precis.errors import BadInput
+
     if not tags:
         return tags, None
     out: list[str] = []
     found: int | None = None
     for t in tags:
         if (n := prio_tag_int(t)) is not None:
+            if rungs is not None and n not in rungs:
+                raise BadInput(
+                    f"{t.strip()!r} is off the named rungs — the judgement "
+                    "ladder takes "
+                    + ", ".join(f"{v} ({PRIO_INT_TO_NAME[v]})" for v in sorted(rungs)),
+                    options=sorted(PRIO_TAG_TO_INT),
+                    next=(
+                        "off-rung numbers were machine band scores; "
+                        "sequencing now lives on meta.dispatch_score"
+                    ),
+                )
             found = n
             continue
         out.append(t)

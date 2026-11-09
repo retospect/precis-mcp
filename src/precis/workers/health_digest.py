@@ -69,7 +69,10 @@ import anywhere, enforced by ``tests/workers/test_health_digest.py``.
    ``watchdog:<group>`` alert older than its class's self-heal budget gets
    one condition-linked ``kind='gripe'`` (dedup key: a
    ``watchdog-condition: <source>/<fingerprint>`` marker line, re-scanned
-   every eval), filed at prio 7 (4 for a critical alert) and closed when
+   every eval), filed at ``meta.dispatch_score``
+   :data:`~precis.workers.auto_gripe.AUTO_SCORE`
+   (:data:`~precis.workers.auto_gripe.CRIT_SCORE` for a critical alert —
+   the prio column is human-only now, gr604593) and closed when
    the alert clears with a ``resolved: auto-closed:`` comment +
    ``STATUS:done`` (:mod:`precis.workers.auto_gripe`). Budgets by ``group``:
    ``cadence``→6h, ``coherence``→24h, ``discovery``→12h,
@@ -2932,7 +2935,7 @@ def _file_router_gripe(
     return int(ref.id)
 
 
-def _router_prio(severity: str | None) -> float:
+def _router_score(severity: str | None) -> float:
     """Filing score: critical conditions at CRIT_SCORE, the rest at
     AUTO_SCORE (precis.workers.auto_gripe; ruling 2026-10-18)."""
     from precis.workers.auto_gripe import AUTO_SCORE, CRIT_SCORE
@@ -3097,7 +3100,7 @@ def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
                 detail=detail or "",
                 created_at=created_at,
                 budget_hours=budget,
-                score=_router_prio(severity),
+                score=_router_score(severity),
             )
         except Exception:
             log.exception(

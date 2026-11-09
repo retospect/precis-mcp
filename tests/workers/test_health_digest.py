@@ -2387,19 +2387,26 @@ def test_router_flood_cap_limits_new_gripes_per_eval(store) -> None:
     assert len(store.list_refs(kind="gripe", tags=["STATUS:open"])) == 5
 
 
-def test_router_files_at_auto_prio_and_critical_at_crit_prio(store) -> None:
-    """Auto-filed gripes sink below unset PRIO (5) in the open view; a
-    critical condition files at 4 (ruling 2026-10-18)."""
+def test_router_files_at_auto_score_and_critical_at_crit_score(store) -> None:
+    """Auto-filed gripes carry a ``meta.dispatch_score`` (machine-owned
+    sequencing, gr604593), never the human ``prio`` column: AUTO_SCORE
+    just above the unjudged floor, CRIT_SCORE for a critical condition
+    (ruling 2026-10-18)."""
+    from precis.workers.auto_gripe import AUTO_SCORE, CRIT_SCORE
+
     _seed_watchdog_alert(store, group="coherence", name="warn-pass", hours_old=30)
     _seed_watchdog_alert(
         store, group="coherence", name="crit-pass", hours_old=30, severity="critical"
     )
     _route_findings(store)
-    prio = {
-        g.title.split("/")[1].split(":")[0]: g.prio
+    filed = {
+        g.title.split("/")[1].split(":")[0]: g
         for g in store.list_refs(kind="gripe", tags=["STATUS:open"])
     }
-    assert prio == {"warn-pass": 7, "crit-pass": 4}
+    assert filed["warn-pass"].prio is None
+    assert filed["warn-pass"].meta.get("dispatch_score") == AUTO_SCORE
+    assert filed["crit-pass"].prio is None
+    assert filed["crit-pass"].meta.get("dispatch_score") == CRIT_SCORE
 
 
 def test_open_marker_gripes_parses_source_and_fingerprint(store) -> None:

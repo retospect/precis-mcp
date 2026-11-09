@@ -43,6 +43,15 @@ tags, stamps the score inputs and ``pipeline.triaged_at``, and clears
 Crashed claims age out after :data:`_CLAIM_MINUTES`; every write is a
 replace, so a doubled tick converges.
 
+A second claim arm — :func:`_claim_backfill` — fills only the batch
+slots the open arm leaves: live gripes already past ``open`` (triaged,
+needs_spec, fixing, parked, …) that lack ``meta.dispatch.severity``.
+The 0294 migration converted their machine band prios to static
+``meta.dispatch_score`` bridge values; without a severity input the
+live score can never recompute over age and parked dups. A backfill
+row rides the same batch call but takes only the severity stamp —
+its STATUS, tags and comments are untouched (gr604593).
+
 Gripe text is untrusted: title, body and parent titles sit inside a
 ``--- gripe <nonce> ---`` … ``--- end gripe <nonce> ---`` quoted block
 where ``<nonce>`` is a fresh per-tick token (a body can't forge the
@@ -805,6 +814,12 @@ class ClaimedGripe:
     #: ``precis`` default the tick may correct (gr543639). A filer-set
     #: project is never overridden.
     project: str | None = None
+    #: Claimed by the severity backfill arm (:func:`_claim_backfill`),
+    #: not the open arm — the write stamps only
+    #: ``meta.dispatch.severity`` and never touches STATUS or tags
+    #: (gr604593: a triaged gripe's 0294 bridge score is static until a
+    #: severity input lands).
+    backfill: bool = False
 
     def age_days(self, now: datetime) -> float:
         return max(0.0, (now - self.created_at).total_seconds() / 86400.0)
@@ -868,40 +883,121 @@ def _claim_batch(store: Store, limit: int) -> list[tuple[int, str]]:
         ).fetchall()
         if not cand:
             return []
-        # Conditional claim — same shape as gripe_parents._claim_batch:
-        # the WHERE re-reads the row's latest committed version under
-        # READ COMMITTED, so a racing claimant whose lease committed
-        # first fails the lease check and loses. jsonb_set creates only
-        # the LAST key in a path, so '{pipeline}' is built by hand.
-        rows = conn.execute(
-            """
-            UPDATE refs r
-               SET meta = jsonb_set(
-                            r.meta, '{pipeline}',
-                            coalesce(r.meta->'pipeline', '{}'::jsonb)
-                            || jsonb_build_object(
-                                'claimed_at',
-                                to_char(now() AT TIME ZONE 'UTC',
-                                        'YYYY-MM-DD"T"HH24:MI:SS"Z"')))
-             WHERE r.ref_id = ANY(%s)
-               AND r.retired_at IS NULL
-               AND (r.meta->'pipeline'->>'claimed_at' IS NULL
-                    OR (r.meta->'pipeline'->>'claimed_at')::timestamptz
-                       < now() - %s * interval '1 minute')
-            RETURNING r.ref_id, r.meta->'pipeline'->>'claimed_at'
-            """,
-            ([int(r[0]) for r in cand], _CLAIM_MINUTES),
-        ).fetchall()
+        won = _stamp_claims(conn, [int(r[0]) for r in cand])
     # RETURNING order is arbitrary — re-order to the SELECT's
     # (reopened-first, then oldest) so the prompt and writes follow it.
-    won = {int(r[0]): str(r[1]) for r in rows}
     return [(int(r[0]), won[int(r[0])]) for r in cand if int(r[0]) in won]
 
 
-def _batch_rows(store: Store, claimed: list[tuple[int, str]]) -> list[ClaimedGripe]:
+def _stamp_claims(conn: Any, ids: list[int]) -> dict[int, str]:
+    """The conditional ``pipeline.claimed_at`` write both claim arms
+    share — same shape as ``gripe_parents._claim_batch``: the WHERE
+    re-reads the row's latest committed version under READ COMMITTED,
+    so a racing claimant whose lease committed first fails the lease
+    check and loses. ``jsonb_set`` creates only the LAST key in a path,
+    so ``{pipeline}`` is built by hand. Returns ``{ref_id: stamp}`` of
+    the claims actually won."""
+    rows = conn.execute(
+        """
+        UPDATE refs r
+           SET meta = jsonb_set(
+                        r.meta, '{pipeline}',
+                        coalesce(r.meta->'pipeline', '{}'::jsonb)
+                        || jsonb_build_object(
+                            'claimed_at',
+                            to_char(now() AT TIME ZONE 'UTC',
+                                    'YYYY-MM-DD"T"HH24:MI:SS"Z"')))
+         WHERE r.ref_id = ANY(%s)
+           AND r.retired_at IS NULL
+           AND (r.meta->'pipeline'->>'claimed_at' IS NULL
+                OR (r.meta->'pipeline'->>'claimed_at')::timestamptz
+                   < now() - %s * interval '1 minute')
+        RETURNING r.ref_id, r.meta->'pipeline'->>'claimed_at'
+        """,
+        (ids, _CLAIM_MINUTES),
+    ).fetchall()
+    return {int(r[0]): str(r[1]) for r in rows}
+
+
+#: The statuses the severity backfill arm may hold — every non-terminal
+#: gripe STATUS minus ``open`` (the primary arm's cohort). Local
+#: literal: the terminals mirror ``_numeric_ref._BROWSE_TERMINALS``
+#: inverted; a worker keeps its don't-depend-on-what-it-watches
+#: distance.
+_BACKFILL_STATUSES: tuple[str, ...] = (
+    "triaged",
+    "fixing",
+    "ready_for_fix",
+    "in_review",
+    "verify",
+    "auto_verify",
+    "user_verify",
+    "needs_spec",
+    "parked",
+)
+
+
+def _claim_backfill(store: Store, limit: int) -> list[tuple[int, str]]:
+    """Claim up to ``limit`` already-triaged gripes for severity
+    backfill, in ONE short transaction.
+
+    Eligible: live ``kind='gripe'`` at any non-open, non-terminal
+    STATUS, lacking ``meta.dispatch.severity`` — the 0294 migration
+    converted their machine band prios to static
+    ``meta.dispatch_score`` bridge values, and without a stamped
+    severity the live ``dispatch_score`` can never recompute over age
+    and parked dups (gr604593 review). Under the miss cap and holding
+    no live lease, ordered oldest first. Called with only the batch
+    slots :func:`_claim_batch` leaves, so open triage always wins.
+    """
+    if limit <= 0:
+        return []
+    eligible = """
+            SELECT r.ref_id
+              FROM refs r
+              JOIN ref_tags st ON st.ref_id = r.ref_id
+              JOIN tags s ON s.tag_id = st.tag_id
+                         AND s.namespace = 'STATUS'
+                         AND s.value = ANY(%s)
+             WHERE r.kind = 'gripe' AND r.retired_at IS NULL
+               AND (r.meta->'dispatch'->>'severity' IS NULL)
+               AND (r.meta->'pipeline'->>'claimed_at' IS NULL
+                    OR (r.meta->'pipeline'->>'claimed_at')::timestamptz
+                       < now() - %s * interval '1 minute')
+               AND (r.meta->'pipeline'->>'triage_misses' IS NULL
+                    OR r.meta->'pipeline'->>'triage_misses' !~ %s
+                    OR (r.meta->'pipeline'->>'triage_misses')::int < %s)
+             ORDER BY r.created_at, r.ref_id
+             LIMIT %s
+    """
+    with store.tx() as conn:
+        cand = conn.execute(
+            eligible,
+            (
+                list(_BACKFILL_STATUSES),
+                _CLAIM_MINUTES,
+                _MISS_RE.pattern,
+                _MISS_LIMIT,
+                limit,
+            ),
+        ).fetchall()
+        if not cand:
+            return []
+        won = _stamp_claims(conn, [int(r[0]) for r in cand])
+    return [(int(r[0]), won[int(r[0])]) for r in cand if int(r[0]) in won]
+
+
+def _batch_rows(
+    store: Store,
+    claimed: list[tuple[int, str]],
+    *,
+    backfill: set[int] | frozenset[int] = frozenset(),
+) -> list[ClaimedGripe]:
     """The claimed gripes' prompt/write-back detail, one read query —
     run AFTER the claim tx committed, with no transaction held open
-    across the model call."""
+    across the model call. ``backfill`` names the ids claimed by the
+    severity-backfill arm — they ride the same batch but take the
+    severity-only write."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
@@ -957,6 +1053,7 @@ def _batch_rows(store: Store, claimed: list[tuple[int, str]]) -> list[ClaimedGri
                 ),
                 None,
             ),
+            backfill=int(ref_id) in backfill,
         )
     # Claim order (reopened first, then oldest) drives the prompt order.
     return [by_id[i] for i, _s in claimed if i in by_id]
@@ -1770,13 +1867,22 @@ def _write_verdict(
     return status
 
 
-def _record_miss(store: Store, g: ClaimedGripe, when: datetime) -> bool:
-    """No usable verdict for a claimed gripe: clear the lease, bump
-    ``pipeline.triage_misses``, and at :data:`_MISS_LIMIT` leave a
-    ``triage:`` note so the stall is visible (the gripe then drops out of
-    claim eligibility — it stays ``open``, never auto-closed). Same
-    ownership guard as :func:`_write_verdict`: only this tick's lease may
-    be drained. Returns False on the stale skip."""
+def _write_backfill(
+    store: Store, g: ClaimedGripe, v: Verdict, when: datetime
+) -> str | None:
+    """The severity-only write for a backfill-claimed gripe.
+
+    Stamps ``meta.dispatch.severity`` from the verdict and drops the
+    lease — nothing else moves: the gripe keeps its STATUS, its
+    triage tags and its comments (a triaged/fixing/parked gripe was
+    already judged once; this tick supplies only the score input the
+    0294 bridge left missing, so its live ``dispatch_score`` resumes
+    recomputing over age and parked dups). Same lease ownership guard
+    as :func:`_write_verdict`, except the cohort check is "still
+    non-terminal" — a gripe that closed mid-call is skipped, never
+    re-stamped. Returns ``'backfilled'`` or ``None`` on the stale skip.
+    """
+    stamp = when.strftime("%Y-%m-%dT%H:%M:%SZ")
     with store.tx() as conn:
         row = conn.execute(
             """
@@ -1787,10 +1893,64 @@ def _record_miss(store: Store, g: ClaimedGripe, when: datetime) -> bool:
                              JOIN tags t ON t.tag_id = rt.tag_id
                             WHERE rt.ref_id = r.ref_id
                               AND t.namespace = 'STATUS'
-                              AND t.value = 'open')
+                              AND t.value = ANY(%s))
              FOR UPDATE
             """,
-            (g.ref_id, g.claim_stamp),
+            (g.ref_id, g.claim_stamp, list(_BACKFILL_STATUSES)),
+        ).fetchone()
+        if row is None:
+            return None
+        meta = _drop_lease(dict(row[0] or {}))
+        pipeline = meta.get("pipeline")
+        meta["pipeline"] = {
+            **(pipeline if isinstance(pipeline, dict) else {}),
+            "backfilled_at": stamp,
+        }
+        # Same convention as _write_verdict: a successful write clears
+        # the miss counter.
+        meta["pipeline"].pop("triage_misses", None)
+        meta["pipeline"].pop("last_missed_at", None)
+        dispatch = meta.get(_dscore.DISPATCH_META_KEY)
+        meta[_dscore.DISPATCH_META_KEY] = {
+            **(dispatch if isinstance(dispatch, dict) else {}),
+            "severity": v.severity,
+        }
+        conn.execute(
+            "UPDATE refs SET meta = %s WHERE ref_id = %s",
+            (Jsonb(meta), g.ref_id),
+        )
+    return "backfilled"
+
+
+def _record_miss(
+    store: Store,
+    g: ClaimedGripe,
+    when: datetime,
+    *,
+    statuses: tuple[str, ...] = ("open",),
+) -> bool:
+    """No usable verdict for a claimed gripe: clear the lease, bump
+    ``pipeline.triage_misses``, and at :data:`_MISS_LIMIT` leave a
+    ``triage:`` note so the stall is visible (the gripe then drops out of
+    claim eligibility — it stays ``open``, never auto-closed). Same
+    ownership guard as :func:`_write_verdict`: only this tick's lease may
+    be drained. Returns False on the stale skip. ``statuses`` is the
+    claimed cohort's membership check — ``("open",)`` for the primary
+    arm, :data:`_BACKFILL_STATUSES` for a backfill-claimed gripe."""
+    with store.tx() as conn:
+        row = conn.execute(
+            """
+            SELECT r.meta FROM refs r
+             WHERE r.ref_id = %s AND r.retired_at IS NULL
+               AND r.meta->'pipeline'->>'claimed_at' = %s
+               AND EXISTS (SELECT 1 FROM ref_tags rt
+                             JOIN tags t ON t.tag_id = rt.tag_id
+                            WHERE rt.ref_id = r.ref_id
+                              AND t.namespace = 'STATUS'
+                              AND t.value = ANY(%s))
+             FOR UPDATE
+            """,
+            (g.ref_id, g.claim_stamp, list(statuses)),
         ).fetchone()
         if row is None:
             return False
@@ -2067,9 +2227,14 @@ def run_gripe_triage_pass(
     else:
         batch = max(_TIMEOUT_BATCH_FLOOR, base_batch >> timeouts)
     claimed = _claim_batch(store, batch)
-    if not claimed:
+    # Severity backfill (gr604593): already-triaged gripes whose 0294
+    # bridge ``dispatch_score`` can never recompute — they fill only the
+    # batch slots the open arm leaves, so open triage always wins.
+    backfill = _claim_backfill(store, batch - len(claimed))
+    if not claimed and not backfill:
         return BatchResult(handler=SERVICE_NAME, claimed=0, ok=0, failed=0, extra=flood)
-    gripes = _batch_rows(store, claimed)
+    backfill_ids = {i for i, _s in backfill}
+    gripes = _batch_rows(store, [*claimed, *backfill], backfill=backfill_ids)
     if threads is None:
         threads = load_threads()
     # Already-fixed evidence, from the same clone the threads hint
@@ -2080,7 +2245,9 @@ def run_gripe_triage_pass(
     if repo is None:
         td = _threads_dir()
         repo = td if td.is_dir() else _REPO_ROOT
-    evidence = collect_fix_evidence(repo, [g.ref_id for g in gripes if not g.reopened])
+    evidence = collect_fix_evidence(
+        repo, [g.ref_id for g in gripes if not g.reopened and not g.backfill]
+    )
     prompt = build_prompt(
         gripes,
         now=when,
@@ -2210,14 +2377,38 @@ def run_gripe_triage_pass(
     reto_overflow = 0
     dispute_budget = _DISPUTE_CAP
     dispute_overflow = 0
+    backfilled = 0
     for g in gripes:
         v = verdicts.get(g.ref_id)
         if v is None:
             try:
-                if not _record_miss(store, g, when):
+                if not _record_miss(
+                    store,
+                    g,
+                    when,
+                    statuses=_BACKFILL_STATUSES if g.backfill else ("open",),
+                ):
                     stale += 1
             except Exception:
                 log.exception("gripe_triage: miss write failed for gr%d", g.ref_id)
+            continue
+        if g.backfill:
+            # Backfill rows take only the severity stamp — no STATUS
+            # move, no tag churn, no reto/dispute accounting.
+            try:
+                written = _write_backfill(store, g, v, when)
+                if written is None:
+                    stale += 1
+                    continue
+                ok += 1
+                backfilled += 1
+            except Exception:
+                log.exception("gripe_triage: backfill write failed for gr%d", g.ref_id)
+                failed += 1
+                try:
+                    _record_miss(store, g, when, statuses=_BACKFILL_STATUSES)
+                except Exception:
+                    log.exception("gripe_triage: miss write failed for gr%d", g.ref_id)
             continue
         # Close gates (Opus review 4): a closing verdict needs a reason
         # and is never written on a reopened gripe — its old ruling
@@ -2288,6 +2479,7 @@ def run_gripe_triage_pass(
         "stale": stale,
         **flood,
         "misses": len(misses),
+        "backfilled": backfilled,
         "dup_suggested": sum(
             1 for v in verdicts.values() for d in v.dups if d.same is True
         ),
