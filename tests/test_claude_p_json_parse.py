@@ -190,3 +190,67 @@ def test_truncated_reply_still_unparseable() -> None:
     """The second pass relaxes control chars only — a cut object still
     has no complete block."""
     assert _parse_last_json_block('{"description": "cut mid-str') is None
+
+
+# ── gr570522: sonnet-5 flake variants the scanner now tolerates ─────────
+
+
+def test_trailing_comma_before_closer_parses() -> None:
+    """``{"a": 1,}`` — the classic model flake. Dropping the comma provably
+    loses no content (it precedes a closer), unlike a truncation repair."""
+    assert _parse_last_json_block('{"a": 1,}') == {"a": 1}
+
+
+def test_trailing_commas_nested_and_whitespace_spaced() -> None:
+    """The repair is string-aware, any depth, and tolerates whitespace
+    between the comma and the closer."""
+    text = '{"a": [1, 2, ], "b": {"c": 3 , }, "d": 4}'
+    assert _parse_last_json_block(text) == {"a": [1, 2], "b": {"c": 3}, "d": 4}
+
+
+def test_comma_inside_a_string_value_is_never_dropped() -> None:
+    """``,}`` INSIDE a quoted value is content — only the delimiter comma
+    before the object closer is dropped."""
+    text = '{"a": "x,}", "b": "y",}'
+    assert _parse_last_json_block(text) == {"a": "x,}", "b": "y"}
+
+
+def test_trailing_comma_repair_still_takes_the_last_object() -> None:
+    text = '{"old": 1} then {"new": 2,}'
+    assert _parse_last_json_block(text) == {"new": 2}
+
+
+def test_double_encoded_json_string_decodes_once() -> None:
+    """The whole reply as ONE JSON string carrying the object — a model
+    that serialized its answer twice gets exactly one inner decode."""
+    text = json.dumps('{"verdict": "yes", "score": 3}')
+    assert _parse_last_json_block(text) == {"verdict": "yes", "score": 3}
+
+
+def test_double_encoded_prose_plus_object() -> None:
+    """The decoded string is itself scanned — prose + object inside the
+    quoted reply still yields the object."""
+    text = json.dumps('Here you go: {"verdict": "yes"} — done.')
+    assert _parse_last_json_block(text) == {"verdict": "yes"}
+
+
+def test_triple_encoded_stays_unparseable() -> None:
+    """Bounded: a reply encoded three deep is not unwrapped recursively."""
+    text = json.dumps(json.dumps('{"a": 1}'))
+    assert _parse_last_json_block(text) is None
+
+
+def test_fenced_block_variants_parse() -> None:
+    """Fence spelling is irrelevant — the scanner keys on ``{`` only:
+    ``~~~``, four-backtick fences, an uppercase tag, and fence attributes."""
+    payload = json.dumps({"a": 1})
+    for fence in ("~~~json", "````json", "```JSON", "``` json {.annotate}"):
+        text = f"{fence}\n{payload}\n{fence.split()[0].rstrip('jsonJSON')}"
+        assert _parse_last_json_block(text) == {"a": 1}, fence
+
+
+def test_truncation_at_max_tokens_still_unparseable() -> None:
+    """A reply cut mid-object has no complete block under any tolerance —
+    closing open containers would launder the truncation (gr570522)."""
+    text = '```json\n{"verdict": "yes", "reason": "the evidence is concl'
+    assert _parse_last_json_block(text) is None

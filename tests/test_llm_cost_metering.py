@@ -352,3 +352,112 @@ def test_claude_p_unparseable_envelope_keeps_cost_usage_and_flags(
     assert exc.usage is not None and exc.usage["output_tokens"] == 20
     assert exc.is_error is False
     assert exc.subtype == "success"
+
+
+def test_claude_p_null_result_error_envelope_is_unparseable_not_silent(
+    monkeypatch: Any,
+) -> None:
+    """gr570522: a ``result: null`` error envelope must NOT fall back to the
+    raw-stdout path — the old string-``result`` discriminant let the block
+    scan return the metering envelope ITSELF as ``data`` (envelope-as-
+    answer: billed, marked ok, answer garbage). Metering keys are the
+    discriminant now; an empty payload raises with the envelope's flags."""
+    import json as _json
+
+    import pytest
+
+    monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
+    envelope = _json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "result": None,
+            "duration_ms": 31,
+            "num_turns": 1,
+            "total_cost_usd": 0.02,
+            "usage": {"input_tokens": 5, "output_tokens": 0},
+        }
+    )
+    monkeypatch.setattr(claude_p, "run_claude", _stub_run({}, stdout=envelope))
+
+    with pytest.raises(claude_p.ClaudePUnparseableError) as ei:
+        claude_p.call_claude_p("reply JSON {}")
+
+    exc = ei.value
+    assert exc.is_error is True
+    assert exc.subtype == "error_during_execution"
+    assert exc.cost_usd == 0.02
+
+
+def test_claude_p_structured_result_dict_is_the_answer(monkeypatch: Any) -> None:
+    """A ``result`` that is already a dict (a structured-output envelope)
+    is dumped back to text so the scan returns the answer, not the
+    envelope (gr570522)."""
+    import json as _json
+
+    monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
+    envelope = _json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": {"verdict": "yes", "score": 3},
+            "total_cost_usd": 0.01,
+            "num_turns": 1,
+            "duration_ms": 9,
+        }
+    )
+    monkeypatch.setattr(claude_p, "run_claude", _stub_run({}, stdout=envelope))
+
+    res = claude_p.call_claude_p("reply JSON {}")
+
+    assert res.data == {"verdict": "yes", "score": 3}
+    assert res.cost_usd == 0.01
+
+
+def test_claude_p_noise_lines_around_the_envelope_still_unwrap(
+    monkeypatch: Any,
+) -> None:
+    """A hook/plugin notice printed ahead of or behind the envelope must
+    not strand the metering wrapper on the raw path (gr570522)."""
+    import json as _json
+
+    monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
+    envelope = _json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": '{"verdict": "yes"}',
+            "total_cost_usd": 0.011,
+            "num_turns": 1,
+        }
+    )
+    stdout = "Warning: plugin 'x' failed to load\n" + envelope + "\nDone."
+    monkeypatch.setattr(claude_p, "run_claude", _stub_run({}, stdout=stdout))
+
+    res = claude_p.call_claude_p("reply JSON {}")
+
+    assert res.data == {"verdict": "yes"}
+    assert res.cost_usd == 0.011
+    assert res.text == '{"verdict": "yes"}'
+
+
+def test_claude_p_bare_type_result_answer_is_not_an_envelope(
+    monkeypatch: Any,
+) -> None:
+    """A judge whose own answer IS a ``type: "result"`` dict with a
+    non-string ``result`` and no metering keys stays on the raw path — it
+    parses as the model's answer (the metering-key discriminant keeps it
+    off the envelope path, gr570522)."""
+    monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
+    monkeypatch.setattr(
+        claude_p,
+        "run_claude",
+        _stub_run({}, stdout='{"type": "result", "result": null, "verdict": "yes"}'),
+    )
+
+    res = claude_p.call_claude_p("reply JSON {}")
+
+    assert res.data == {"type": "result", "result": None, "verdict": "yes"}

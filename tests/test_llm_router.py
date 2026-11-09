@@ -8362,6 +8362,62 @@ def test_error_result_is_error_refusal_is_transport_class() -> None:
     assert res.quota_exhausted is False
 
 
+def test_error_result_null_result_envelope_unwraps_to_transport() -> None:
+    """gr570522: a ``result: null`` ``is_error`` envelope — a bare-
+    constructed error's stdout — unwraps on the metering-key discriminant
+    (not on a string ``result``), so the flags still classify it
+    ``transport``, not ``unparseable``."""
+    from precis.utils.claude_p import ClaudePUnparseableError
+    from precis.utils.llm.router import _error_result
+
+    stdout = json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "result": None,
+            "num_turns": 1,
+            "duration_ms": 5,
+            "total_cost_usd": 0.02,
+        }
+    )
+    exc = ClaudePUnparseableError(
+        "claude -p returned no parseable JSON block", stdout=stdout
+    )
+    res = _error_result(exc, model="claude-sonnet-5", tier=Tier.BIG)
+
+    assert res.reason_class == "transport"
+    assert res.cost_usd == 0.02
+    assert (
+        res.error is not None and "envelope subtype=error_during_execution" in res.error
+    )
+
+
+def test_error_result_clean_success_envelope_stays_unparseable() -> None:
+    """The complement: a clean ``success`` envelope whose ``result`` never
+    arrived parseable IS the format flake — ``unparseable``, fall-through."""
+    from precis.utils.claude_p import ClaudePUnparseableError
+    from precis.utils.llm.router import _error_result
+
+    stdout = json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": None,
+            "num_turns": 1,
+            "duration_ms": 5,
+            "total_cost_usd": 0.02,
+        }
+    )
+    exc = ClaudePUnparseableError(
+        "claude -p returned no parseable JSON block", stdout=stdout
+    )
+    res = _error_result(exc, model="claude-sonnet-5", tier=Tier.BIG)
+
+    assert res.reason_class == "unparseable"
+
+
 def test_route_unparseable_row_has_class_usage_and_reply_head(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

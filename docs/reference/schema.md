@@ -2865,7 +2865,7 @@ erDiagram
 | `cache_read_tokens` | integer | — | Prompt-cache-read tokens (LlmResult.cache_read_tokens) — billed at a discount, so kept separate from input_tokens rather than folded in. |
 | `cache_creation_tokens` | integer | — | Prompt-cache-write tokens (LlmResult.cache_creation_tokens). |
 | `placement_routed` | text | — | local \| cloud for the rung the router chose before any fallback (router._routed_placement). Compare with placement (the rung that ran) for the routed-vs-landed split. NULL = pre-0179 or a non-router writer. |
-| `reason_class` | text | — | Failure class stamped by the router (LlmResult.reason_class): quota \| budget \| rate \| transport \| content. Also mirrored under features->>'reason_class' (with features->>'retry_at' carrying the horizon). NULL = success / unclassified / pre-0204 row. |
+| `reason_class` | text | — | Failure class stamped by the router (LlmResult.reason_class): quota \| budget \| rate \| transport \| content \| unparseable \| subscription_cap \| subscription_bulk_refused \| subscription_op_refused \| subscription_worker_refused. Also mirrored under features->>'reason_class' (with features->>'retry_at' carrying the horizon). NULL = success / unclassified / pre-0204 row. |
 
 ### `llm_keyword_routes`
 

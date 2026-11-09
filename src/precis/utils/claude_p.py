@@ -22,7 +22,10 @@ Output contract: the caller passes a ``json_schema_hint`` block to
 embed in the prompt (so the model knows the expected shape) and
 this helper parses the *last* ``{ … }`` block in stdout.
 Conservative on the parse: if no JSON block is present, raises
-:class:`ClaudePError` rather than returning empty dict.
+:class:`ClaudePError` rather than returning empty dict. Tolerances, each
+only after the cheaper ones fail (gr570522): ``strict=False`` strings, a
+comma directly before a closer, a whole-reply JSON string decoded once
+more — never a truncation salvage (a cut object has no complete block).
 
 Knobs (all overridable per call, project defaults via env):
 
@@ -446,6 +449,66 @@ _EMPTY_USAGE: dict[str, int | None] = {
 }
 
 
+#: Envelope-only fields a bare model answer never carries — the
+#: discriminant for a ``type: "result"`` object whose ``result`` is NOT a
+#: string. Requiring two keeps a judge schema that happens to name one of
+#: these keys on the raw-stdout path.
+_ENVELOPE_ONLY_KEYS: tuple[str, ...] = (
+    "total_cost_usd",
+    "num_turns",
+    "session_id",
+    "subtype",
+    "is_error",
+    "duration_ms",
+    "duration_api_ms",
+    "modelUsage",
+    "permission_denied",
+    "uuid",
+)
+
+
+def _looks_like_envelope(env: dict[str, Any]) -> bool:
+    """Whether ``env`` is the CLI's ``type: "result"`` metering envelope.
+
+    A string ``result`` self-identifies (the historical discriminant). When
+    ``result`` is absent, ``null`` or structured (an ``is_error`` envelope's
+    way of reporting a refusal with no model answer), the call is only the
+    CLI's when the object also carries the envelope-only metering fields —
+    a bare model answer dict of the same shape (``{"type": "result",
+    "result": null}``) must still fall through to the raw-stdout path so
+    the scanner can return it as data.
+    """
+    if env.get("type") != "result":
+        return False
+    if isinstance(env.get("result"), str):
+        return True
+    return sum(1 for key in _ENVELOPE_ONLY_KEYS if key in env) >= 2
+
+
+def _envelope_dict(text: str) -> dict[str, Any] | None:
+    """The ``type: "result"`` envelope dict in ``text``, or ``None``.
+
+    Candidates: the whole text (the normal shape), then each non-empty
+    line — a hook/plugin notice or CLI warning printed ahead of or behind
+    the envelope must not strand the metering wrapper on the raw-stdout
+    path, where the JSON-block scan would parse the *envelope itself* as
+    the model's answer (the ``result`` payload swallowed silently).
+    """
+    candidates = [text]
+    candidates.extend(ln for ln in text.splitlines() if ln.strip())
+    for candidate in candidates:
+        candidate = candidate.strip()
+        if not candidate.startswith("{"):
+            continue
+        try:
+            env = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(env, dict) and _looks_like_envelope(env):
+            return env
+    return None
+
+
 def unwrap_envelope(
     stdout: str,
 ) -> tuple[str, float | None, dict[str, int | None], bool]:
@@ -465,26 +528,26 @@ def unwrap_envelope(
     recognizable envelope is handed back unchanged with no cost/usage — the
     caller then falls back to the stderr regex for cost. That keeps the parse
     contract ("last balanced ``{ … }`` block") identical on both shapes.
+
+    A recognized envelope whose ``result`` is not a string yields an EMPTY
+    payload (a dict is dumped back to JSON text — a structured-output
+    envelope's answer; ``null``/absent/a scalar is a no-answer error
+    envelope): handing the raw stdout back instead would let the block
+    scan return the metering wrapper as the answer (gr570522).
     """
-    text = stdout.strip()
-    if not text.startswith("{"):
-        return stdout, None, dict(_EMPTY_USAGE), False
-    try:
-        env = json.loads(text)
-    except json.JSONDecodeError:
-        return stdout, None, dict(_EMPTY_USAGE), False
-    # Discriminate on ``type == "result"`` *and* a string ``result`` — the CLI
-    # envelope's own self-identification. A string ``result`` alone is too
-    # weak: no judge prompt in the tree currently defines a top-level string
-    # field named ``result``, but one plausibly could, and the misread would
-    # surface as "no parseable JSON block" pointing nowhere near the cause.
-    if not isinstance(env, dict):
-        return stdout, None, dict(_EMPTY_USAGE), False
-    if env.get("type") != "result" or not isinstance(env.get("result"), str):
+    env = _envelope_dict(stdout.strip())
+    if env is None:
         return stdout, None, dict(_EMPTY_USAGE), False
     raw_cost = env.get("total_cost_usd")
     cost = float(raw_cost) if isinstance(raw_cost, int | float) else None
-    return env["result"], cost, _extract_usage(env), env.get("is_error") is True
+    result = env.get("result")
+    if isinstance(result, str):
+        payload = result
+    elif isinstance(result, dict):
+        payload = json.dumps(result)
+    else:
+        payload = ""
+    return payload, cost, _extract_usage(env), env.get("is_error") is True
 
 
 def _envelope_subtype(stdout: str) -> str | None:
@@ -492,11 +555,8 @@ def _envelope_subtype(stdout: str) -> str | None:
     ``error_max_budget_usd``, ``error_during_execution``, …) — read on the
     failure path only, so the normal one pays no second parse. ``None``
     when stdout isn't a recognizable envelope (stub binary, bare text)."""
-    try:
-        env = json.loads(stdout.strip())
-    except Exception:
-        return None
-    if not isinstance(env, dict) or env.get("type") != "result":
+    env = _envelope_dict(stdout.strip())
+    if env is None:
         return None
     subtype = env.get("subtype")
     return subtype if isinstance(subtype, str) else None
@@ -541,20 +601,119 @@ def _parse_last_json_block(text: str) -> dict[str, Any] | None:
     re-offered as candidates. Returns ``None`` when no parseable object
     exists.
 
-    Two passes, mirroring :func:`precis.utils.llm.json_reply.extract_json_object`'s
-    documented tolerance: strict first, then ``strict=False`` — a reply
-    that is otherwise well-formed JSON but carries a raw (unescaped)
-    control character inside a string value (a literal newline instead
-    of ``\\n``, seen in prod quest-tick output, gr345336) is accepted on
-    the second pass. A truncated/unbalanced reply has no complete object
-    on either pass and still returns ``None``.
+    Tolerances, in order (gr570522):
+
+    * :func:`_drop_trailing_commas` — a comma directly preceding a
+      ``}``/``]`` closer (``{"a": 1,}``) is the classic model flake;
+      dropping it provably cannot drop content, and a no-op on valid input,
+      so it runs FIRST: a trailing-comma'd final object must still win the
+      last-object contract over an earlier clean one;
+    * strict, then ``strict=False`` — mirroring
+      :func:`precis.utils.llm.json_reply.extract_json_object`'s documented
+      tolerance: a reply otherwise well-formed JSON but carrying a raw
+      (unescaped) control character inside a string value (a literal
+      newline instead of ``\\n``, seen in prod quest-tick output,
+      gr345336) is accepted on the second pass;
+    * :func:`_double_encoded_text` — the whole reply as ONE JSON string
+      carrying the object (``"{\\"a\\": 1}"``, a model that serialized
+      its answer twice) gets exactly one inner decode.
+
+    A truncated/unbalanced reply has no complete object under any of these
+    and still returns ``None`` — closing open containers would launder a
+    truncated generation into a "successful" parse (the same refusal
+    ``extract_json_object`` documents).
     """
     if not text:
         return None
+    found = _scan_tolerant(text)
+    if found is not None:
+        return found
+    inner = _double_encoded_text(text)
+    if inner is not None:
+        return _scan_tolerant(inner)
+    return None
+
+
+def _scan_tolerant(text: str) -> dict[str, Any] | None:
+    """The trailing-comma repair plus the strict/``strict=False`` scans —
+    the full candidate-level tolerance, reused for a decoded inner
+    string."""
+    cleaned = _drop_trailing_commas(text)
+    if cleaned is not None:
+        text = cleaned
     for strict in (True, False):
         last = _scan_last_json_block(text, strict=strict)
         if last is not None:
             return last
+    return None
+
+
+def _drop_trailing_commas(text: str) -> str | None:
+    """``text`` with every comma directly preceding a ``}``/``]`` removed —
+    or ``None`` when nothing changed (the common case).
+
+    String-aware: a ``,`` inside a quoted value is content, never a
+    delimiter; whitespace between the comma and the closer is tolerated.
+    A no-op on valid JSON (a comma before a closer is never legal), so it
+    runs BEFORE the scans — a repaired trailing object must still win the
+    last-object contract — and logs the count so the repair rate stays
+    measurable (same discipline as
+    :func:`precis.utils.llm.json_reply._repair_stray_closers`).
+    """
+    out: list[str] = []
+    in_str = False
+    esc = False
+    dropped = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if in_str:
+            out.append(ch)
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ",":
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j < n and text[j] in "}]":
+                dropped += 1
+                i += 1
+                continue
+        out.append(ch)
+        i += 1
+    if dropped == 0:
+        return None
+    log.warning(
+        "claude_p: dropped %d comma(s) directly before a closer to parse the reply",
+        dropped,
+    )
+    return "".join(out)
+
+
+def _double_encoded_text(text: str) -> str | None:
+    """The inner payload when the WHOLE reply is one JSON string carrying
+    JSON — a model that serialized its answer twice. ``None`` otherwise;
+    bounded to exactly one extra decode level (a triple-encoded reply
+    stays unparseable rather than unwrap recursively)."""
+    try:
+        inner = json.loads(text.strip())
+    except Exception:
+        return None
+    if isinstance(inner, str) and "{" in inner:
+        log.warning("claude_p: reply was a JSON-encoded string — decoding once more")
+        return inner
     return None
 
 

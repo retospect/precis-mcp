@@ -82,6 +82,7 @@ from precis.utils.claude_agent import (
 from precis.utils.claude_p import (
     ClaudePResult,
     ClaudePUnparseableError,
+    _envelope_subtype,
     call_claude_p,
     unwrap_envelope,
 )
@@ -6798,7 +6799,10 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
         return result
     if not isinstance(exc, ClaudePUnparseableError):
         return _classified(result)
-    subtype = exc.subtype
+    # A bare-constructed error carries no captured ``subtype`` — re-derive it
+    # off stdout the same way the reply/cost/usage fallback above does, so
+    # the ``error_max_budget_usd`` and subtype decoration behave identically.
+    subtype = exc.subtype or _envelope_subtype(raw_stdout)
     if subtype:
         # The envelope names *how* the turn ended — keep it on the error
         # line (the shipped log record is the message, gr523669) so a

@@ -2,7 +2,7 @@
 id: precis-llm-ops-help
 family: work
 title: precis — LLM call failures, deferred calls and the budget breaker
-summary: why an LLM call failed (quota / budget / rate / transport / content reason_class + retry horizon), the deferred_llm_call job that re-runs a failed call, the budget breaker's alerts, and the catalog-reconcile / model-swap daemons
+summary: why an LLM call failed (quota / budget / rate / transport / content / unparseable / subscription_* reason_class + retry horizon), the deferred_llm_call job that re-runs a failed call, the budget breaker's alerts, and the catalog-reconcile / model-swap daemons
 answers:
   - why did an LLM call fail, and will retrying help (quota, rate limit, budget)?
   - what is deferred_llm_call?
@@ -32,7 +32,6 @@ gates. Endpoint/auth fields are omitted. Both reads make no LLM calls.
 Per-op call telemetry stays at `id='op:<source>', view='stats'`.
 
 ## Why did an LLM call fail? Quota, rate limit, retry
-## What is deferred_llm_call?
 
 Every LLM call goes through one router, which stamps each failure with a
 `reason_class` and a `retry_at` time. The class says whether waiting helps:
@@ -44,10 +43,17 @@ Every LLM call goes through one router, which stamps each failure with a
 | `rate` | bare 429 / overloaded / 529 | 15 min (the SMALL lane retries these in-process first) |
 | `transport` | timeout, connection failure, 5xx | 30 min (also retried in-process by SMALL) |
 | `content` | the model refused or a filter fired | none: another model gets the same answer |
+| `unparseable` | the call completed but the reply carried no parseable JSON block — `claude -p`'s output contract broke (prose answer, truncated object, a non-string envelope `result`) | none: a fresh sample from the next rung can still parse — it is not `content` |
+| `subscription_cap` | a named provider profile's subscription window/pool is exhausted | the profile window's own expiry |
+| `subscription_bulk_refused` | a subscription-profile rung refused bulk (SMALL-tier) work | none: the call's shape can't change |
+| `subscription_op_refused` | a subscription-profile rung refused the op (`source` not in its `ops` allowlist) | none: another rung must take it |
+| `subscription_worker_refused` | legacy Kimi-subscription refusal of worker calls, retired 2026-11-07 | none — kept so stored rows still classify |
 
 Unrecognised wording stays unclassified and keeps the generic cool-down.
-A failover chain falls through to the next model on `quota`, `rate`,
-`budget` and `transport`, never on `content`.
+A failover chain falls through to the next model on every class except
+`content` (`FALL_THROUGH_CLASSES`) — including `unparseable`: it is a
+per-sample format flake, so another rung's fresh sample may parse even
+though it is the same model on a different wire.
 
 **Quota stamping.** Claude reports an exhausted quota as ordinary answer
 text, so the router recognises the wording ("hit your session limit ...
@@ -56,6 +62,8 @@ On a live `quota` failure it also writes the exhaustion into the shared
 quota snapshot, so the next Claude call pauses instead of every caller
 rediscovering the limit. Only subscription transports do this; a
 pay-per-token rung does not.
+
+## What is deferred_llm_call? The budget breaker's alerts
 
 **`deferred_llm_call`** is the job a synchronous surface (a web follow-up)
 queues when its call fails with `quota` or `budget`. The human's turn stays
@@ -74,6 +82,8 @@ live view; nothing LLM-backed runs until the window rolls, the cap is
 raised, or an operator resumes on `/budget`. A related per-host check:
 `quota_check:auth/<host>:claude-oauth` fires when a host's Claude OAuth
 credential is expired or unreadable (re-login there).
+
+## What are llm_reconcile, llama_swap and offer_discovery?
 
 **`llm_reconcile` and `llama_swap`.** `llm_reconcile` diffs the
 catalogue against the proxy's served list — a catalogued model the proxy
