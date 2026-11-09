@@ -60,7 +60,7 @@ from precis.format import render_agent_table
 from precis.handlers._python_worktrees import WorktreeRegistry
 from precis.protocol import _ALL_VERBS, Handler, KindSpec
 from precis.response import Response
-from precis.runtime.scope import current_scope
+from precis.runtime.scope import current_domain, current_scope
 from precis.skill_index import (
     FileCorpusIndex,
     SearchHit,
@@ -1487,6 +1487,25 @@ class SkillHandler(Handler):
         )
         conn_scope = current_scope()
 
+        # gr572721: a bound domain narrows the default serve set to its
+        # skill families — post-rank, like the read fence inside
+        # ``_ranked_rows`` (the embedding index stays one index).
+        # ``family=`` is the door: an explicit family bypasses the
+        # default, even one outside the domain. Hidden rows dedup by
+        # slug for the footer.
+        domain = current_domain() if family is None else None
+        domain_name = domain.name if domain is not None else ""
+        domain_families = domain.families if domain is not None else None
+        domain_hidden: set[str] = set()
+        if domain_families is not None:
+            kept_rows = []
+            for row in all_rows:
+                if _skill_family_of(row.slug) in domain_families:
+                    kept_rows.append(row)
+                else:
+                    domain_hidden.add(row.slug)
+            all_rows = kept_rows
+
         if not all_rows:
             # Distinguish "genuinely no match" from "lexical drew blank
             # while semantic was unavailable" — the latter is recoverable
@@ -1534,6 +1553,11 @@ class SkillHandler(Handler):
                         f"{'hit' if len(hidden_slugs) == 1 else 'hits'} "
                         "hidden — read-only connection)"
                         if hidden_slugs
+                        else ""
+                    )
+                    + (
+                        f"\n\n({_domain_hidden_note(domain_hidden, domain_name)})"
+                        if domain_hidden
                         else ""
                     )
                 )
@@ -1658,16 +1682,16 @@ class SkillHandler(Handler):
         # search doubles as a peek at what else is nearby before the
         # agent commits to a full ``get()``.
         if visible:
-            # Land review: filter the write-fence BEFORE capping —
-            # capping first can drop every readable neighbour behind a
-            # front-run of ``scope: write`` skills.
+            # Land review: filter the fences BEFORE capping — capping
+            # first can drop every servable neighbour behind a front-run
+            # of ``scope: write`` or out-of-domain skills (gr572721).
             linked = _get_skill_graph().linked(visible[0].slug)
-            if conn_scope == "read":
-                related = tuple(s for s in linked if not _skill_is_write_only(s))[
-                    :_FOOTER_LINK_CAP
-                ]
-            else:
-                related = linked[:_FOOTER_LINK_CAP]
+            related = tuple(
+                s
+                for s in linked
+                if not (conn_scope == "read" and _skill_is_write_only(s))
+                and (domain_families is None or _skill_family_of(s) in domain_families)
+            )[:_FOOTER_LINK_CAP]
             if related:
                 body += "\n\nrelated: " + ", ".join(related)
 
@@ -1733,6 +1757,8 @@ class SkillHandler(Handler):
                 f"{'hit' if len(hidden_slugs) == 1 else 'hits'} hidden "
                 "— read-only connection)"
             )
+        if domain_hidden:
+            body += f"\n\n({_domain_hidden_note(domain_hidden, domain_name)})"
         return Response(body=body)
 
     def search_hits(
@@ -1771,6 +1797,11 @@ class SkillHandler(Handler):
         )
         if current_scope() == "read":
             rows = [r for r in rows if not _skill_is_write_only(r.slug)]
+        # gr572721: the cross-kind fan-out honours the same domain
+        # default — a ``family=`` door doesn't exist on this feed.
+        domain_families = current_domain().families
+        if domain_families is not None:
+            rows = [r for r in rows if _skill_family_of(r.slug) in domain_families]
         dropped = set(exclude or [])
         out: list[_MergeSearchHit] = []
         for row in rows:
@@ -2576,6 +2607,19 @@ class SkillHandler(Handler):
         if wanted is not None:
             synth = []
             file_slugs = [s for s in file_slugs if s in wanted]
+        # gr572721: a bound domain narrows the default listing to its
+        # skill families (``family=`` is the explicit door past it);
+        # the always-in five ride inside ``Domain.families`` already.
+        domain = current_domain() if family is None else None
+        domain_hidden: list[str] = []
+        if domain is not None and domain.families is not None:
+            served: list[str] = []
+            for s in file_slugs:
+                if _skill_family_of(s) in domain.families:
+                    served.append(s)
+                else:
+                    domain_hidden.append(s)
+            file_slugs = served
         # gr512233 slice 3: a read connection can't run a ``scope:
         # write`` recipe — omit those rows and count them for the
         # footer. One scope verdict per call (round-1 review).
@@ -2699,6 +2743,8 @@ class SkillHandler(Handler):
                     "hidden (read-only connection)",
                 ]
             )
+        if domain_hidden and domain is not None:
+            lines.extend(["", _domain_hidden_note(domain_hidden, domain.name)])
         return Response(body="\n".join(lines))
 
     def _index_title_for(self, slug: str) -> str:
@@ -2758,6 +2804,19 @@ class SkillHandler(Handler):
         if wanted is not None:
             synth = []
             file_slugs = [s for s in file_slugs if s in wanted]
+        # gr572721: same domain fence as the index — a bound domain
+        # narrows the default listing to its skill families;
+        # ``family=`` is the explicit door past it.
+        domain = current_domain() if family is None else None
+        domain_hidden: list[str] = []
+        if domain is not None and domain.families is not None:
+            served: list[str] = []
+            for s in file_slugs:
+                if _skill_family_of(s) in domain.families:
+                    served.append(s)
+                else:
+                    domain_hidden.append(s)
+            file_slugs = served
         # gr512233 slice 3: same write-fence omission as the index —
         # a read connection gets no ``scope: write`` rows plus a
         # footer saying how many went.
@@ -2973,6 +3032,8 @@ class SkillHandler(Handler):
                     "hidden (read-only connection)",
                 ]
             )
+        if domain_hidden and domain is not None:
+            lines.extend(["", _domain_hidden_note(domain_hidden, domain.name)])
         return "\n".join(lines)
 
     def _render_help(self) -> str:
@@ -5164,11 +5225,17 @@ def _family_rows_for_query(q: str, family: str | None) -> list[tuple[str, str]]:
     share words with the query, else the toc grouped by family."""
     if family is not None:
         return []
+    # gr572721: offers stay inside the bound domain — a row naming a
+    # fenced family would advertise a door the default just hid.
+    domain_families = current_domain().families
     qtokens = set(_content_tokens(q))
     scores: Counter[str] = Counter()
     for slug in _list_skills():
+        fam = _skill_family_of(slug)
+        if domain_families is not None and fam not in domain_families:
+            continue
         if qtokens & set(slug.split("-")):
-            scores[_skill_family_of(slug)] += 1
+            scores[fam] += 1
     rows = [
         (f"search(kind='skill', q={q!r}, args={{'family': {f!r}}})", "try this family")
         for f, _n in scores.most_common(2)
@@ -5186,6 +5253,29 @@ def _skill_family_of(slug: str) -> str:
     if slug in SkillHandler._SYNTHESIZED_SKILLS:
         return "core"
     return skill_family(slug, parse_frontmatter(_load_skill(slug) or ""))
+
+
+def _domain_hidden_note(hidden: set[str] | list[str], domain_name: str) -> str:
+    """The "N skills hidden" footer for the domain fence (gr572721).
+
+    Same shape as the read-scope ``N write-only skills hidden
+    (read-only connection)`` line: the count, the reason (the bound
+    domain's name) and the door — an explicit ``family=`` reaches a
+    hidden family even though the default serve set drops it. One
+    hidden family names the literal call; several fall back to the
+    ``<family>`` template.
+    """
+    fams = sorted({_skill_family_of(s) for s in hidden})
+    door = (
+        f"args={{'family': {fams[0]!r}}}"
+        if len(fams) == 1
+        else "args={'family': '<family>'}"
+    )
+    n = len(hidden)
+    return (
+        f"{n} {'skill' if n == 1 else 'skills'} hidden — "
+        f"domain {domain_name!r} ({door} shows a hidden family)"
+    )
 
 
 def _axis_filter_set(
