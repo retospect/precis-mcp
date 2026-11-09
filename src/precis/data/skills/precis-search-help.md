@@ -94,8 +94,11 @@ like `page_size=` (nested in `args={…}` they hoist back out; a bare
 `args={'n': 5}` with no spray trigger is still refused). Omit `kind=` for
 the default target set (paper+memory+draft); a comma-list
 (`'memory,draft'`) or single kind aims the spray. `view='dreamable'` /
-`'stubs'` / `'chase-queue'` swap in a shape that ignores `q=` — a salience
-pick, or the acquisition backlog (`precis-stubs-help`). `view='count'` on a
+`'chase-queue'` swap in a shape that ignores `q=` — a salience pick, or
+the DOI-only fetch queue. `view='stubs'` lists the acquisition backlog:
+`q=` narrows it by stub metadata (title/cite_key/identifier — stubs
+have no body to rank), `since=`/`until=` bound the request date, and
+`uncited=`/`cited=`/`hubbed=` apply (`precis-stubs-help`). `view='count'` on a
 numeric-ref kind returns the filtered total plus `group_by` facet counts
 instead of hits (below). `status=` is shorthand for
 `tags=['STATUS:<value>']` on kinds with that axis (per-kind defaults

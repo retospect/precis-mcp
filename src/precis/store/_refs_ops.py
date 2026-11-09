@@ -1163,6 +1163,11 @@ class RefsMixin:
         id_kinds: tuple[str, ...] = ("doi", "arxiv", "s2"),
         sort: Literal["oldest-request", "last-tried"] = "oldest-request",
         no_oa: bool = False,
+        q: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        include_ref_ids: Iterable[int] | None = None,
+        exclude_ref_ids: Iterable[int] | None = None,
     ) -> list[dict[str, Any]]:
         """The "papers we still need to get" backlog.
 
@@ -1221,6 +1226,18 @@ class RefsMixin:
         (:func:`no_oa_bucket_sql`: at least ``NO_OA_MIN_PASSES`` passes,
         every fetcher event ``no_oa_version``); the buy-list shape of it
         is :meth:`manual_retrieval_list` (gr453859).
+
+        The remaining kwargs are the ``search(view='stubs')`` filters
+        (gr608580): ``q`` narrows by *metadata* match — a stub has no
+        body chunks to rank, so the leg is a ``websearch_to_tsquery``
+        AND over the plain title OR a literal substring of the cite_key
+        / external identifier / datasheet part number; ``since`` /
+        ``until`` bound ``refs.created_at`` (when the stub was
+        requested); ``include_ref_ids`` / ``exclude_ref_ids`` intersect
+        / subtract explicit ref-id sets (the dispatcher's
+        ``cited=``/``uncited=``/``hubbed=`` facet channel). An empty
+        ``include_ref_ids`` list matches nothing — the same
+        ``ANY(ARRAY[])`` semantics the cited= facet relies on.
         """
         tiebreak_sql = {
             "oldest-request": "s.created_at ASC, s.ref_id ASC",
@@ -1233,6 +1250,40 @@ class RefsMixin:
         # to the bottom of the prio order together, where the existing
         # tiebreak still applies among them.
         order_sql = f"s.prio ASC NULLS LAST, {tiebreak_sql}"
+        # The view='stubs' filters (gr608580) — each an extra AND in the
+        # outer WHERE, params appended in clause order.
+        filter_sql: list[str] = []
+        filter_params: list[Any] = []
+        if since is not None:
+            filter_sql.append("s.created_at >= %s")
+            filter_params.append(since)
+        if until is not None:
+            filter_sql.append("s.created_at < %s")
+            filter_params.append(until)
+        if include_ref_ids is not None:
+            filter_sql.append("s.ref_id = ANY(%s::bigint[])")
+            filter_params.append(sorted({int(i) for i in include_ref_ids}))
+        if exclude_ref_ids:
+            filter_sql.append("NOT (s.ref_id = ANY(%s::bigint[]))")
+            filter_params.append(sorted({int(i) for i in exclude_ref_ids}))
+        if q is not None and q.strip():
+            from precis.store._tags_ops import escape_like
+
+            # Stubs have no body chunks to rank — q= is a metadata
+            # match, not a search: the websearch tsquery AND over the
+            # plain title, OR a literal substring of the cite_key /
+            # external identifier / part number.
+            needle = f"%{escape_like(q.strip())}%"
+            filter_sql.append(
+                "(to_tsvector('english', "
+                + title_plain_sql("s.title")
+                + ") @@ websearch_to_tsquery('english', %s) "
+                "OR s.cite_key ILIKE %s ESCAPE '\\' "
+                "OR s.identifier ILIKE %s ESCAPE '\\' "
+                "OR s.part_lcsc ILIKE %s ESCAPE '\\')"
+            )
+            filter_params.extend([lexical_q(q), needle, needle, needle])
+        filters_sql = "".join(f"\n               AND {clause}" for clause in filter_sql)
         sql = f"""
             WITH stubs AS (
                 SELECT r.ref_id,
@@ -1353,7 +1404,7 @@ class RefsMixin:
                      OR (le.ts < now() - INTERVAL '24 hours' AND le.event <> 'fetch_ok'))
                     AND NOT {no_oa_bucket_sql("s")}
                 ELSE TRUE END
-               AND (NOT %s::bool OR {no_oa_bucket_sql("s")})
+               AND (NOT %s::bool OR {no_oa_bucket_sql("s")}){filters_sql}
              -- Deprioritized stubs (FALSE < TRUE, so ASC) last, then
              -- the requested sort within each bucket.
              ORDER BY (dp.ref_id IS NOT NULL) ASC, {order_sql}
@@ -1361,7 +1412,9 @@ class RefsMixin:
         """
         out: list[dict[str, Any]] = []
         with self.pool.connection() as conn:
-            rows = conn.execute(sql, (awaiting, no_oa, limit, offset)).fetchall()
+            rows = conn.execute(
+                sql, (awaiting, no_oa, *filter_params, limit, offset)
+            ).fetchall()
         for row in rows:
             out.append(
                 {

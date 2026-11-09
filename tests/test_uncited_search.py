@@ -324,11 +324,13 @@ def test_uncited_wildcard_drops_unsupported_kind_with_footer(
 
 # ── shapes that pick their own seed/target set: refused with uncited= ─────
 #
-# ``view='dreamable'`` / ``view='stubs'`` / ``view='chase-queue'`` and the
+# ``view='dreamable'`` / ``view='chase-queue'`` and the
 # ``angle=``/``like=`` spray are intercepted by ``_dispatch_inner_core``
 # before ``exclude_ref_ids`` is ever consulted, and their default target
 # set includes ``paper`` — the exclusion set's own kind. Left alone they'd
 # return fully unfiltered hits underneath a note claiming a filter ran.
+# (``view='stubs''`` used to be on this list; gr608580 gave it the
+# include/exclude ref-id wiring, covered below.)
 
 
 def _mk_empty_draft(rt: PrecisRuntime, draft_id: str) -> str:
@@ -350,7 +352,6 @@ def _mk_empty_draft(rt: PrecisRuntime, draft_id: str) -> str:
 
 _UNFILTERED_SHAPES = [
     pytest.param({"view": "dreamable"}, id="view=dreamable"),
-    pytest.param({"view": "stubs"}, id="view=stubs"),
     pytest.param({"view": "chase-queue"}, id="view=chase-queue"),
     pytest.param({"angle": 0.5}, id="angle="),
     pytest.param({"like": "paper:1"}, id="like="),
@@ -443,6 +444,94 @@ def test_uncited_still_works_with_plain_search(
     token = _mk_empty_draft(rt, "uc-plain")
     body, is_error = _search(rt, uncited=token)
     assert not is_error
+
+
+def test_uncited_applies_on_stubs_view(runtime_with_store: PrecisRuntime) -> None:
+    """gr608580: ``view='stubs'`` honours ``uncited=`` — the facet's
+    exclusion set drops the already-cited stub from the backlog instead
+    of being refused (a stub has no body chunks, so the cite facets are
+    the only way to scope the backlog to a draft's gaps)."""
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+    cited_stub = store.insert_ref(kind="paper", slug="uc-stub-cited", title="Cited")
+    other_stub = store.insert_ref(kind="paper", slug="uc-stub-other", title="Other")
+    with store.pool.connection() as conn:
+        for rid, doi in (
+            (cited_stub.id, "10.1/ucstubcited"),
+            (other_stub.id, "10.1/ucstubother"),
+        ):
+            conn.execute(
+                "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+                "VALUES (%s, 'doi', %s, 'manual')",
+                (rid, doi),
+            )
+
+    proj = _proj(rt.hub)
+    draft = DraftHandler(hub=rt.hub)
+    draft.put(id="uc-stubs", title="Stubs draft", project=proj)
+    draft.put(
+        id="uc-stubs",
+        chunk_kind="paragraph",
+        text=f"See [{handle_registry.format_handle('paper', cited_stub.id)}].",
+        at={"last": True},
+    )
+    draft_ref_id = _draft_ref_id(store, "uc-stubs")
+
+    body, is_error = rt.dispatch_with_status("search", {"view": "stubs"})
+    assert not is_error
+    cited_handle = handle_registry.format_handle("paper", cited_stub.id)
+    other_handle = handle_registry.format_handle("paper", other_stub.id)
+    assert cited_handle in body and other_handle in body
+
+    body, is_error = rt.dispatch_with_status(
+        "search", {"view": "stubs", "uncited": f"dr{draft_ref_id}"}
+    )
+    assert not is_error
+    assert "1 already-cited source excluded" in body
+    assert cited_handle not in body
+    assert other_handle in body
+
+
+def test_hubbed_applies_on_stubs_view(runtime_with_store: PrecisRuntime) -> None:
+    """gr608580: ``view='stubs'`` without ``kind=`` is the paper backlog,
+    so ``hubbed=`` treats it as kind='paper' rather than refusing."""
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+    hubbed_stub = store.insert_ref(kind="paper", slug="hub-stub-in", title="In")
+    plain_stub = store.insert_ref(kind="paper", slug="hub-stub-out", title="Out")
+    with store.pool.connection() as conn:
+        for rid, doi in (
+            (hubbed_stub.id, "10.1/hubin"),
+            (plain_stub.id, "10.1/hubout"),
+        ):
+            conn.execute(
+                "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+                "VALUES (%s, 'doi', %s, 'manual')",
+                (rid, doi),
+            )
+    claim = CanonicalClaim(sentence="Copper catalyzes nitrate reduction", scope={})
+    hub_ref_id = mint_hub(store, claim)
+    attach_evidence(
+        store, hub_ref_id=hub_ref_id, paper_ref_id=hubbed_stub.id, role="corroborates"
+    )
+
+    hubbed_handle = handle_registry.format_handle("paper", hubbed_stub.id)
+    plain_handle = handle_registry.format_handle("paper", plain_stub.id)
+    body, is_error = rt.dispatch_with_status(
+        "search", {"view": "stubs", "hubbed": True}
+    )
+    assert not is_error
+    assert hubbed_handle in body
+    assert plain_handle not in body
+
+    body, is_error = rt.dispatch_with_status(
+        "search", {"view": "stubs", "hubbed": False}
+    )
+    assert not is_error
+    assert plain_handle in body
+    assert hubbed_handle not in body
 
 
 # ── the note is prepended, not appended (pagination safety) ──────────────

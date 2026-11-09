@@ -5,8 +5,9 @@ Two layers:
 - store engine (``Store.stub_backlog``): the stub predicate
   (``pdf_sha256 IS NULL`` + an external id), the latest-fetcher-event
   join, the ``awaiting`` filter, and the one-line ``state`` summary.
-- dispatch (``search(view='stubs')``): routing, rendering, ``q=``
-  ignored, paper-only — end to end through ``runtime.dispatch``.
+- dispatch (``search(view='stubs')``): routing, rendering, the ``q=`` /
+  ``since=`` / ``until=`` / ref-id filters (gr608580), paper-only —
+  end to end through ``runtime.dispatch``.
 
 Shared by ``precis stubs`` (CLI) and the MCP view, so this guards both
 (the stub surfaces; ``store/_stub_predicate.py``).
@@ -601,16 +602,30 @@ def test_view_stubs_datasheet_lists_backlog(runtime_with_store: PrecisRuntime) -
     assert f"<inbox>/datasheets/{handle}.pdf" in out
 
 
-def test_view_stubs_datasheet_ignores_q(runtime_with_store: PrecisRuntime) -> None:
+def test_view_stubs_datasheet_q_filters_backlog(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr608580: ``q=`` filters datasheet stubs by metadata match — the
+    title, the cite_key and the part number all feed the match."""
     store = runtime_with_store.hub.store
     assert store is not None
-    rid = _ds_stub(store, cite_key="dsq2024", title="q test")
+    keep = _ds_stub(store, cite_key="dsq2024", title="KXOB25 regulator")
+    drop = _ds_stub(store, cite_key="dsq2025", title="unrelated part")
+    keep_part = _ds_stub(
+        store, cite_key="dsq2026", part_lcsc="C5358484", title="buck module"
+    )
 
     out = runtime_with_store.dispatch(
-        "search",
-        {"kind": "datasheet", "view": "stubs", "q": "totally unrelated query"},
+        "search", {"kind": "datasheet", "view": "stubs", "q": "regulator"}
     )
-    assert handle_registry.format_handle("datasheet", rid) in out
+    assert handle_registry.format_handle("datasheet", keep) in out
+    assert handle_registry.format_handle("datasheet", drop) not in out
+
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "datasheet", "view": "stubs", "q": "C5358484"}
+    )
+    assert handle_registry.format_handle("datasheet", keep_part) in out
+    assert handle_registry.format_handle("datasheet", keep) not in out
 
 
 def test_view_stubs_unknown_kind_refused(runtime_with_store: PrecisRuntime) -> None:
@@ -744,15 +759,115 @@ def test_view_stubs_omits_reason_line_without_a_label(
     assert "·" not in out
 
 
-def test_view_stubs_ignores_q(runtime_with_store: PrecisRuntime) -> None:
+def test_view_stubs_q_filters_backlog(runtime_with_store: PrecisRuntime) -> None:
+    """gr608580: ``q=`` narrows the stub backlog by metadata match — a
+    stub has no body chunks to rank, so the match is the title tsquery
+    plus a literal cite_key/identifier substring."""
     store = runtime_with_store.hub.store
     assert store is not None
-    rid = _stub(store, cite_key="qignored2024", doi="10.1/qignored")
+    nitrate = _stub(store, cite_key="nitrate2024", doi="10.1/nitrate")
+    other = _stub(store, cite_key="other2024", doi="10.1/other")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET title = 'Nitrate reduction on copper' WHERE ref_id = %s",
+            (nitrate,),
+        )
+        conn.execute(
+            "UPDATE refs SET title = 'Perovskite solar cells' WHERE ref_id = %s",
+            (other,),
+        )
 
     out = runtime_with_store.dispatch(
-        "search", {"view": "stubs", "q": "totally unrelated query"}
+        "search", {"view": "stubs", "q": "nitrate reduction"}
     )
-    assert _pa(rid) in out
+    assert _pa(nitrate) in out
+    assert _pa(other) not in out
+
+    # A q that is an identifier/cite_key substring still hits.
+    out = runtime_with_store.dispatch("search", {"view": "stubs", "q": "10.1/other"})
+    assert _pa(other) in out
+    assert _pa(nitrate) not in out
+
+    out = runtime_with_store.dispatch("search", {"view": "stubs", "q": "nitrate2024"})
+    assert _pa(nitrate) in out
+
+
+def test_view_stubs_q_filter_empty_is_not_the_backlog(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr608580: a filtered miss must not read as "0 stubs" — the empty
+    message names the filters instead of claiming nothing is wanted."""
+    store = runtime_with_store.hub.store
+    assert store is not None
+    _stub(store, cite_key="stillwanted2024", doi="10.1/stillwanted")
+
+    out = runtime_with_store.dispatch(
+        "search", {"view": "stubs", "q": "zz-no-such-topic-zz"}
+    )
+    assert "no stub papers match those filters" in out
+    assert "no stub papers —" not in out
+
+
+def test_view_stubs_since_until_filter(runtime_with_store: PrecisRuntime) -> None:
+    """gr608580: ``since=``/``until=`` bound ``refs.created_at``."""
+    store = runtime_with_store.hub.store
+    assert store is not None
+    old = _stub(store, cite_key="old2020", doi="10.1/old")
+    new = _stub(store, cite_key="new2024", doi="10.1/new")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = '2020-06-01'::timestamptz WHERE ref_id = %s",
+            (old,),
+        )
+
+    out = runtime_with_store.dispatch(
+        "search", {"view": "stubs", "since": "2020-01-01"}
+    )
+    assert _pa(old) in out and _pa(new) in out
+
+    out = runtime_with_store.dispatch(
+        "search", {"view": "stubs", "since": "2099-01-01"}
+    )
+    assert "no stub papers match those filters" in out
+
+    out = runtime_with_store.dispatch(
+        "search", {"view": "stubs", "until": "2021-01-01"}
+    )
+    assert _pa(old) in out
+    assert _pa(new) not in out
+
+    out = runtime_with_store.dispatch(
+        "search", {"view": "stubs", "since": "not-a-date"}
+    )
+    assert "[error:BadInput]" in out
+    assert "since=" in out
+
+
+def test_view_stubs_include_exclude_ref_ids(runtime_with_store: PrecisRuntime) -> None:
+    """gr608580: the ref-id channel the cite facets resolve into also
+    works as direct args."""
+    store = runtime_with_store.hub.store
+    assert store is not None
+    keep = _stub(store, cite_key="keep2024", doi="10.1/keep")
+    drop = _stub(store, cite_key="drop2024", doi="10.1/drop")
+
+    out = runtime_with_store.dispatch(
+        "search", {"view": "stubs", "exclude_ref_ids": [drop]}
+    )
+    assert _pa(keep) in out
+    assert _pa(drop) not in out
+
+    out = runtime_with_store.dispatch(
+        "search", {"view": "stubs", "include_ref_ids": [drop]}
+    )
+    assert _pa(drop) in out
+    assert _pa(keep) not in out
+
+    # An empty include set means "restricted to nothing", not unfiltered.
+    out = runtime_with_store.dispatch(
+        "search", {"view": "stubs", "include_ref_ids": []}
+    )
+    assert "no stub papers match those filters" in out
 
 
 # ── dispatch: search(view='chase-queue') ─────────────────────────────

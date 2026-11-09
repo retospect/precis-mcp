@@ -65,6 +65,7 @@ from precis.protocol import (
     Verb,
 )
 from precis.response import Response
+from precis.runtime._shared import CROSS_KIND_ALIASES as _CROSS_KIND_ALIASES
 from precis.runtime._shared import CROSS_KIND_WILDCARD as _CROSS_KIND_WILDCARD
 from precis.runtime._shared import RESOLVED_FACETS_KEY as _RESOLVED_FACETS_KEY
 from precis.runtime._shared import (
@@ -2258,7 +2259,7 @@ class DispatchMixin(RuntimeShape):
         that :meth:`_dispatch_inner_core` intercepts and returns from
         *before* any ``exclude_ref_ids``/``include_ref_ids`` is consulted.
 
-        ``view='dreamable'``, ``view='stubs'``, ``view='chase-queue'`` and
+        ``view='dreamable'``, ``view='chase-queue'`` and
         the ``angle=``/``like=`` spray each pick their own seed and target
         set and never read ``exclude_ref_ids``/``include_ref_ids`` — and
         their default target set includes ``paper``, the very kind these
@@ -2275,7 +2276,7 @@ class DispatchMixin(RuntimeShape):
         view = str(args.get("view") or "").strip()
         shape = (
             view
-            if view in ("dreamable", "stubs", "chase-queue")
+            if view in ("dreamable", "chase-queue")
             else "angle="
             if "angle" in args
             else "like="
@@ -2451,6 +2452,15 @@ class DispatchMixin(RuntimeShape):
             )
         kind = args.get("kind")
         resolved_kind = self._expand_kind_code(str(kind)) if kind is not None else None
+        if (
+            resolved_kind != "paper"
+            and str(args.get("view") or "").strip() == "stubs"
+            and (kind is None or str(kind).strip().lower() in _CROSS_KIND_ALIASES)
+        ):
+            # ``search(view='stubs')`` with no kind (or a wildcard
+            # spelling) IS the paper stub backlog — the view resolves it
+            # the same way — so ``hubbed=`` applies there too (gr608580).
+            resolved_kind = "paper"
         if resolved_kind != "paper":
             raise BadInput(
                 f"hubbed= is only supported on kind='paper', got kind={kind!r}",
@@ -2578,8 +2588,9 @@ class DispatchMixin(RuntimeShape):
         # Backlog view: ``search(view='stubs')`` is the "papers we still
         # need to get" list — paper refs with an external id but no PDF
         # yet (the stub surfaces). ``kind='datasheet'`` switches to the
-        # manual-fill datasheet stub backlog (gr520099); ``q=`` is
-        # ignored. Intercept before kind resolution.
+        # manual-fill datasheet stub backlog (gr520099); ``q=`` /
+        # ``since=`` / ``until=`` and the cite facets filter the listing
+        # (gr608580). Intercept before kind resolution.
         if verb == "search" and str(args.get("view") or "").strip() == "stubs":
             return self._dispatch_stubs(kind, dict(args))
 

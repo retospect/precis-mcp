@@ -222,12 +222,12 @@ def test_angle_spray_refuses_unapplied_keys(runtime_with_store: PrecisRuntime) -
     assert "status" in out, out
 
 
-def test_stubs_view_refuses_stray_but_q_stays_a_documented_noop(
+def test_stubs_view_refuses_stray_keys(
     runtime_with_store: PrecisRuntime,
 ) -> None:
-    """``q=`` on the backlog views is a documented no-op pinned by
-    ``test_view_stubs_ignores_q`` — the gate tolerates it, but any other
-    unapplied key still refuses."""
+    """The stubs view consumes ``q=``/``since=``/``until=``/the ref-id
+    facets (gr608580) — any *other* unapplied key still refuses rather
+    than silently dropping."""
     out = runtime_with_store.dispatch("search", {"view": "stubs", "status": "open"})
     assert "[error:BadInput]" in out, out
     assert "status" in out, out

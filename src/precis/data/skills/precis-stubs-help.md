@@ -39,8 +39,15 @@ appended once the `stub_rank` pass has scored it (1=hottest..10=coldest —
 relevant-first, the same ladder spelling the todo/quest reads render:
 `prio 3 (high)`, off-ladder numbers bare; unranked stubs carry no `prio`
 suffix and sort last).
-Ties fall back to oldest-request-first. `q=` is ignored — the view *is*
-the filter.
+Ties fall back to oldest-request-first. `q=` narrows by metadata match
+(stub title / cite_key / identifier — stubs have no body to search);
+`since=`/`until=` bound when the stub was requested; `uncited=<draft>` /
+`cited=<draft>` / `hubbed=` filter by cite facets as on a plain search.
+
+```python
+search(kind="paper", view="stubs", q="nitrate reduction", since="2026-01-01")
+search(kind="paper", view="stubs", uncited="dr348633")
+```
 
 Stubs scoring in the uncertain middle of the ranking additionally carry
 a one-time LLM triage label — `· core|adjacent|explore|off` on the

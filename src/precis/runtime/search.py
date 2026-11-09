@@ -176,6 +176,22 @@ _PLAN_FILTER_KEYS: frozenset[str] = _PLAN_CONSUMED - {
 #: :meth:`SearchMixin._dispatch_chase_queue`.
 _STUBS_CONSUMED: frozenset[str] = frozenset({"view", "n", "page_size"})
 
+#: The filters ``view='stubs'`` applies on top of the backlog
+#: (gr608580): ``q=`` narrows to stubs whose title / cite_key /
+#: identifier match (a stub has no body chunks to rank — ``q=`` is a
+#: metadata match, not a search); ``since=`` / ``until=`` bound
+#: ``refs.created_at``; the ref-id channels carry the dispatcher's
+#: ``uncited=`` / ``cited=`` / ``hubbed=`` resolutions (the facets
+#: themselves are popped before this view runs). ``view='chase-queue'``
+#: keeps the narrow base — a tighter slice is not a filtered browse.
+_STUBS_VIEW_CONSUMED: frozenset[str] = _STUBS_CONSUMED | {
+    "q",
+    "since",
+    "until",
+    "include_ref_ids",
+    "exclude_ref_ids",
+}
+
 #: ``page=1`` is the verb wrapper's always-present default — the value
 #: below is what flags it as caller intent; a real ``page=N`` is refused
 #: on these paths too (search returns a bounded top-N set, not pages).
@@ -383,9 +399,13 @@ class SearchMixin(RuntimeShape):
         feed (the stub surfaces). ``kind='datasheet'`` instead lists the
         manual-fill stubs ``put(kind='datasheet', args={'part': …,
         'stub': True})`` mints (gr520099); any other kind is refused —
-        nothing else has a stub backlog. ``q=`` is ignored (the view
-        *is* the filter — a documented no-op, pinned by
-        ``test_view_stubs_ignores_q``). ``n=`` / ``page_size=``
+        nothing else has a stub backlog. ``q=`` narrows by metadata
+        match (title / cite_key / identifier — a stub has no body
+        chunks to rank, so there is no relevance ordering; gr608580),
+        ``since=`` / ``until=`` bound ``refs.created_at``, and the
+        ``uncited=`` / ``cited=`` / ``hubbed=`` facets apply through the
+        include/exclude ref-id channel like on every other search
+        shape. ``n=`` / ``page_size=``
         cap the row count;
         ``prio``-ranked first (1=hottest, unranked last), oldest request
         the tiebreak. Read-only — surfacing the backlog does not touch
@@ -395,8 +415,7 @@ class SearchMixin(RuntimeShape):
 
         refuse_unapplied_args(
             args,
-            consumed=_STUBS_CONSUMED,
-            ignored={"q"},
+            consumed=_STUBS_VIEW_CONSUMED,
             shape="a view='stubs' backlog listing",
             next="search(kind='paper', view='stubs')",
             tolerated=_PAGE_TOLERATED,
@@ -405,9 +424,20 @@ class SearchMixin(RuntimeShape):
         if store is None:
             raise Unsupported("view='stubs' needs a store-backed deployment")
 
+        q = str(args.get("q") or "").strip() or None
+        since = self._parse_search_date(args.get("since"), "since")
+        until = self._parse_search_date(args.get("until"), "until")
+        stub_filters: dict[str, Any] = {
+            "q": q,
+            "since": since,
+            "until": until,
+            "include_ref_ids": args.get("include_ref_ids"),
+            "exclude_ref_ids": args.get("exclude_ref_ids"),
+        }
+
         normalized = str(kind or "").strip().lower()
         if normalized == "datasheet":
-            return self._datasheet_stubs(args, store=store)
+            return self._datasheet_stubs(args, store=store, stub_filters=stub_filters)
         if normalized != "paper" and normalized not in _CROSS_KIND_ALIASES:
             raise BadInput(
                 f"view='stubs' has no {normalized!r} backlog",
@@ -419,8 +449,25 @@ class SearchMixin(RuntimeShape):
         if n < 1:
             raise BadInput("n must be >= 1", next="search(view='stubs', n=25)")
 
-        rows = store.stub_backlog(limit=n)
+        rows = store.stub_backlog(limit=n, **stub_filters)
+        filtered = (
+            q is not None
+            or since is not None
+            or until is not None
+            or (
+                stub_filters["include_ref_ids"] is not None
+                or bool(stub_filters["exclude_ref_ids"])
+            )
+        )
         if not rows:
+            if filtered:
+                return Response(
+                    body=(
+                        "no stub papers match those filters — the "
+                        "unfiltered backlog may still be non-empty "
+                        "(search(view='stubs'))."
+                    )
+                )
             return Response(
                 body=(
                     "no stub papers — every paper has a PDF or no external "
@@ -428,7 +475,15 @@ class SearchMixin(RuntimeShape):
                 )
             )
 
-        lines = [f"papers we still need to get ({len(rows)} shown):", ""]
+        qualifiers: list[str] = []
+        if q:
+            qualifiers.append(f"q={q!r}")
+        if since is not None:
+            qualifiers.append(f"since {since.date().isoformat()}")
+        if until is not None:
+            qualifiers.append(f"until {until.date().isoformat()}")
+        qual = f" matching {', '.join(qualifiers)}" if qualifiers else ""
+        lines = [f"papers we still need to get{qual} ({len(rows)} shown):", ""]
         for r in rows:
             ident = r["identifier"] or "(no external id)"
             # Universal handle, not the bare ref_id: a bare number in
@@ -471,7 +526,13 @@ class SearchMixin(RuntimeShape):
         )
         return Response(body=body)
 
-    def _datasheet_stubs(self, args: dict[str, Any], *, store: Any) -> Response:
+    def _datasheet_stubs(
+        self,
+        args: dict[str, Any],
+        *,
+        store: Any,
+        stub_filters: dict[str, Any],
+    ) -> Response:
         """``search(kind='datasheet', view='stubs')`` — bodiless sheets to fill.
 
         The datasheet counterpart of :meth:`_dispatch_stubs` (gr520099):
@@ -481,7 +542,9 @@ class SearchMixin(RuntimeShape):
         dropping ``da<N>.pdf`` into ``<inbox>/datasheets/`` — there is
         no fetcher, so the row's actionable bit is the named-drop
         instruction, not a fetch state. Renders the ``da<N>`` handle,
-        the part it documents, the cite_key slug and title.
+        the part it documents, the cite_key slug and title. The same
+        ``q=`` / ``since=`` / ``until=`` / ref-id filters apply
+        (gr608580) — ``q=`` additionally matches the part number.
         """
         from precis.utils.next_block import render_next_section
 
@@ -491,8 +554,20 @@ class SearchMixin(RuntimeShape):
                 "n must be >= 1", next="search(kind='datasheet', view='stubs', n=25)"
             )
 
-        rows = store.stub_backlog(kind="datasheet", limit=n)
+        rows = store.stub_backlog(kind="datasheet", limit=n, **stub_filters)
+        filtered = any(
+            v is not None and (k != "exclude_ref_ids" or bool(v))
+            for k, v in stub_filters.items()
+        )
         if not rows:
+            if filtered:
+                return Response(
+                    body=(
+                        "no datasheet stubs match those filters — the "
+                        "unfiltered backlog may still be non-empty "
+                        "(search(kind='datasheet', view='stubs'))."
+                    )
+                )
             return Response(
                 body=(
                     "no datasheet stubs — every datasheet has a body. Nothing to fill."
@@ -548,7 +623,8 @@ class SearchMixin(RuntimeShape):
         "what should I go find a PDF for right now" rather than "what's
         been waiting longest". Paper-only (gr520077: any other kind is
         refused — nothing else has a DOI-fetcher queue to list); ``q=``
-        is ignored (like ``view='stubs'`` — a documented no-op).
+        is ignored (unlike ``view='stubs'``, which filters by it —
+        gr608580 — a documented no-op here).
         ``n=`` / ``page_size=`` cap
         the row count. Read-only — surfacing the queue does not touch
         the fetch pipeline.
