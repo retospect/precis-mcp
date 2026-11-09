@@ -156,9 +156,16 @@ silently ignored on every host that still had a stale copy.
    errors, and `vault.events` shows reveals from the expected `host`/`process`
    (migration 0111 records both).
 
-Two credential locations are deliberately **outside** the automated purge and
+Three credential locations are deliberately **outside** the automated purge and
 must be handled by hand if you are rotating because of exposure:
 
+- `~/.secrets/pw/CLAUDE_CODE_OAUTH_TOKEN` on the Mac that runs the session
+  MCP container (`deploy/mcp-http/precis-mcp-http-ensure.sh` copies it into
+  the container's `/run/precis-secrets`). That container binds `agent_rw`,
+  which cannot reveal a class-`infra` secret, so the file is the only way the
+  mint door's in-process dedup judge gets a Claude credential. Rotate the
+  file, then re-run the installed ensure script (no `--recreate` needed: the
+  secrets dir is hash-synced in place).
 - `/var/root/.claude.json` on melchior — Claude Code *config*, root-owned;
   deleting it discards settings, so it is a judgement call, not a sweep.
 - any human's `~/.claude/.credentials.json` — an interactive login. Rotating
