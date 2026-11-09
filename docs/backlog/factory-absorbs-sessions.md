@@ -67,8 +67,11 @@ Ordered by what it unlocks. "Exists" names code to extend, not rebuild.
    parked handle until a deadline (10 min after the deploy finished) for
    workers that have not restarted, then runs `scripts/round deploy
    --confirm-runtime` and `scripts/round close`. Any probe failure —
-   including a pinned sha that is not the plan's release sha — files the
-   tick's retry-cap ask (`retries: 0`); no rollback, no `good/r<N>` tag.
+   including a pinned sha that is not the plan's release sha — fails the
+   job and asks a human: a web-only failure (every worker attesting,
+   only the `release.health_url` probe red) files the ruling ask itself
+   with the evidence (gr607271), anything else lets the tick's retry-cap
+   ask file it (`retries: 0`); no rollback, no `good/r<N>` tag.
    Unblocks BUILDER 7, 8, 9; still needs the authority ruling (C1).
 2. **Gripe → code todo, phase 1** (unify §6, no code): Reto or an owner
    creates the `Code work from gripes` root; GRIPE_FIX mints the code

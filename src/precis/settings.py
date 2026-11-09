@@ -399,9 +399,10 @@ REGISTRY: dict[str, SettingSpec] = {
             "release_confirm reads for the X-Precis-Boot-Sha header "
             "(precis.workers.job_types.release_confirm) — an operator "
             "setting, no address belongs in the repo. Empty: the web is "
-            "not attested and the confirm still passes on the workers. A "
-            "set URL must be one safe_get may reach (a public address), "
-            "else the confirm fails and asks.",
+            "not attested and the confirm still passes on the workers. "
+            "The fetch is a plain bounded GET — operator-set, so the "
+            "SSRF guard does not gate it (gr607271); a failing or "
+            "different-sha URL files the confirm's ask.",
         ),
         SettingSpec(
             key="release.no_release_windows",

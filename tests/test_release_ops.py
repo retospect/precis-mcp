@@ -2643,6 +2643,52 @@ def test_web_sha_mismatch_fails_the_confirm(
     assert checkout["argv"] == launches
 
 
+def test_web_probe_failure_files_its_own_ask(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr607271 (c): a failed web probe with every worker attesting
+    files the ruling ask itself with the evidence — the ``blocked-by``
+    edge on the confirm node then suppresses the tick's retry-cap
+    mint."""
+    _round_script(checkout)
+    mint, job_id, params = _walk_to_confirm(store, checkout, monkeypatch)
+    store.record_heartbeat("node-a", meta={"code_sha": SHA})
+    url = "https://health.example.invalid/healthz"
+    psettings.set_setting(rcf.HEALTH_URL_KEY, url, store=store)
+    monkeypatch.setattr(
+        rcf,
+        "_http_get",
+        lambda _url: SimpleNamespace(status_code=503, headers={}),
+    )
+    launches = list(checkout["argv"])
+    ctx = Ctx(store, params)
+    assert rcf.submit(ctx, None) is None
+    reason = ctx.failures[0]
+    assert "probe failed" in reason and "web HTTP 503" in reason
+    asks = _asks_under(store, mint.root_id)
+    assert len(asks) == 1 and f"td{asks[0]}" in reason
+    meta = _meta(store, asks[0])
+    assert meta["ask"]["blocks"] == f"td{mint.ids['confirm']}"
+    assert meta["ask"]["options"] == rcf._WEB_ASK_OPTIONS
+    assert "workers all at" in meta["ask"]["context"]
+    assert "web HTTP 503" in meta["ask"]["context"]
+    assert url not in meta["ask"]["context"]
+    with store.pool.connection() as conn:
+        link = conn.execute(
+            "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = 'blocked-by'",
+            (mint.ids["confirm"], asks[0]),
+        ).fetchone()
+    assert link is not None
+    assert checkout["argv"] == launches  # nothing launched
+
+    # The open ask suppresses the tick's retry-cap mint for the failure.
+    _fail_job(store, job_id, reason)
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert set(_asks_under(store, mint.root_id)) == set(asks)
+
+
 def test_confirm_close_failure_still_succeeds(
     store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

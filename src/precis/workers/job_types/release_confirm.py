@@ -13,11 +13,15 @@ evidence — every live worker host's ``host_heartbeat.meta->>'code_sha'``
 no network; a heartbeat inside the last 60 minutes on a non-ephemeral
 host that is not a 12-hex container id) — plus the live web's
 ``X-Precis-Boot-Sha`` header when the ``release.health_url`` operator
-setting names its ``/healthz`` (one ``polite_safe_get``; a set URL must be a
-public address the guard may reach). The workers decide; the web is
-optional. Any gap or mismatch fails the job *before* any script runs and
-the tick's retry-cap ask goes to a human — the factory attests, a failed
-probe asks, never rolls back; there is no ``good/r<N>`` tag.
+setting names its ``/healthz`` (one plain bounded ``httpx`` GET — the
+URL is operator-set, not agent-supplied, so the SSRF guard is the wrong
+gate and does not apply, gr607271). The workers decide; the web is
+optional. Any gap or mismatch fails the job *before* any script runs;
+a failure whose only problem is the web probe's — every live worker
+already at the release sha — files the ruling ask itself with the
+evidence rather than dying into the tick's retry-cap showstopper. The
+factory attests, a failed probe asks, never rolls back; there is no
+``good/r<N>`` tag.
 
 **The restart race.** Right after the rollout a worker's heartbeat can
 still carry the old sha. The probe re-reads the store until a deadline —
@@ -162,7 +166,10 @@ class Evidence:
     before any "no live host" or "unset" line). ``waiting`` names the
     live hosts whose heartbeat predates the deploy finish and whose
     ``deadline`` (the restart-race window's end) has not passed — the
-    probe parks on them instead of failing."""
+    probe parks on them instead of failing. ``web_only`` is true when
+    the web probe's is the ONLY problem — the workers already attest —
+    and the job files the ruling ask itself (gr607271) instead of dying
+    into the tick's retry-cap showstopper."""
 
     ok: bool
     sha: str | None
@@ -170,18 +177,27 @@ class Evidence:
     problems: list[str]
     waiting: tuple[str, ...] = ()
     deadline: datetime | None = None
+    web_only: bool = False
 
 
 def _http_get(url: str) -> Any:
-    """Seam: one GET of the health URL through the SSRF-pinned client under
-    the politeness core (``http_client`` + ``polite_safe_get``: host-lane
-    limiter token, backoff on transport errors and 429/5xx). The response;
-    raises on transport, SSRF or exhausted-retry refusal — the caller counts
-    every raise as "not confirmed"."""
-    from precis.utils.http import http_client, polite_safe_get
+    """Seam: one GET of the health URL — a plain bounded ``httpx`` GET
+    (10 s, no redirects). ``release.health_url`` is an operator setting,
+    not an agent-supplied URL, so ``safe_fetch``'s SSRF guard is the
+    wrong gate and refused the fleet's own address (gr607271);
+    ``http_client`` pins every connection through that guard's
+    transport, so this builds a bare client. The response; a raise is a
+    failed probe — the caller reports the exception class only (httpx
+    messages carry the URL)."""
+    from precis.utils.http import DEFAULT_USER_AGENT, require_httpx
 
-    with http_client(timeout=10) as client:
-        return polite_safe_get(client, url)
+    httpx = require_httpx()
+    with httpx.Client(
+        timeout=10,
+        follow_redirects=False,
+        headers={"User-Agent": DEFAULT_USER_AGENT},
+    ) as client:
+        return client.get(url)
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -237,8 +253,8 @@ def _web_evidence(url: str | None, sha: str) -> tuple[str, str | None]:
     """``(clause, problem)`` for the web half of the evidence.
 
     ``url`` unset is a clause, never a problem — the workers decide. A
-    raise (``SsrfBlocked`` included), a non-200 or a missing/mismatching
-    boot-sha header is a problem reported without the URL or host."""
+    raise, a non-200 or a missing/mismatching boot-sha header is a
+    problem reported without the URL or host."""
     if not url or not url.strip():
         return "not attested (release.health_url unset)", None
     try:
@@ -310,6 +326,7 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     from precis import settings
 
     url = settings.get_str(HEALTH_URL_KEY, store=store) if sha is not None else None
+    web_problem: str | None = None
     if sha is not None:
         web_clause, web_problem = _web_evidence(url, sha)
         if web_problem is not None:
@@ -343,6 +360,7 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
         problems=problems,
         waiting=tuple(waiting),
         deadline=deadline,
+        web_only=web_problem is not None and len(problems) == 1,
     )
 
 
@@ -351,6 +369,112 @@ def failure_reason(ev: Evidence) -> str:
     the problems in order, masked, capped so the retry-cap ask's
     600-character context still carries the decisive line."""
     return mask_secrets("; ".join(ev.problems))[:_FAILURE_CAP]
+
+
+#: ``meta.ask.context`` cap (``todo.guards._ASK_CONTEXT_CAP``, restated —
+#: the same 600 the retry-cap ask's context allows).
+_ASK_CONTEXT_CAP = 600
+
+#: Options of the ask a web-only probe failure files on the confirm node
+#: (gr607271 ruling): the workers already attest — the answer re-arms
+#: the node for a re-probe; ``won't do`` drops it.
+_WEB_ASK_OPTIONS: list[str] = [
+    "retry the web probe",
+    "won't do",
+]
+
+
+def _mint_web_ask(store: Store, todo_id: int, rn: str, ev: Evidence) -> int:
+    """The ruling ask a web-only probe failure files on the confirm node
+    (gr607271 ruling): every live worker already attests the sha — the
+    workers decide — and only the operator-set ``release.health_url``
+    probe failed. The ask carries the evidence the tick's retry-cap mint
+    would not, and its ``blocked-by`` edge suppresses that mint
+    (``_Plan.open_asks``); answering re-arms ``todo_id`` with a fresh
+    retry budget for the re-probe. Insert shape of
+    ``plan_dispatch._mint_ask``; returns the ask's todo id."""
+    from precis.plans.nodes import finish_mint
+    from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
+    from precis.todo.guards import check_ask_meta
+
+    root = _release.plan_root(store, todo_id)
+    short = ev.sha[:12] if ev.sha else "unset"
+    head = f"{NAME}: {rn or 'r?'} workers all at {short}; web probe failed"
+    tail = failure_reason(ev)
+    context = f"{head}: {tail[: _ASK_CONTEXT_CAP - len(head) - 3]}"
+    meta: dict[str, Any] = {
+        "ask": {
+            "kind": "ruling",
+            "options": list(_WEB_ASK_OPTIONS),
+            "blocks": f"td{todo_id}",
+            "context": context[:_ASK_CONTEXT_CAP],
+        }
+    }
+    check_ask_meta(meta)
+    title = (
+        f"{rn or 'release'}: workers attest {short} but the web probe "
+        "failed — fix or clear release.health_url, or drop the confirm?"
+    )
+    body = (
+        f"{ev.text}\n\nEvery live worker host's heartbeat already reports "
+        "the release sha — the workers decide — but the probe of the "
+        f"operator-set release.health_url failed ({tail}). Fix the web or "
+        "the setting (scripts/prod-precis settings set release.health_url "
+        "<url>; clearing it attests the workers only — the URL itself is "
+        "never printed), then answer 'retry the web probe' and close "
+        f"this todo: closing re-arms td{todo_id} with a fresh retry "
+        "budget and the confirm re-probes. Pick 'won't do' by closing "
+        f"td{todo_id} STATUS:won't-do — the release then stays "
+        "unconfirmed until a hand `scripts/round deploy "
+        "--confirm-runtime … && scripts/round close` lands."
+    )
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=title,
+            meta=meta,
+            parent_id=root,
+            conn=conn,
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        for value in ("ask-user", "showstopper", f"plan:{root}"):
+            store.add_tag(ref.id, Tag.open(value), set_by="system", conn=conn)
+        store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
+            conn=conn,
+        )
+        store.add_link(
+            src_ref_id=todo_id, dst_ref_id=ref.id, relation="blocked-by", conn=conn
+        )
+        finish_mint(store, ref.id, conn=conn)
+    return int(ref.id)
+
+
+def _probe_failed(ctx: Any, ev: Evidence, rn: str, todo_id: Any) -> None:
+    """The probe failed. A web-only failure — every live worker already
+    attests, only the optional web half did — files the ruling ask
+    itself (gr607271) and the failure names it; the tick's ``open_asks``
+    check then never mints its retry-cap showstopper. Any other problem
+    — or a failed ask mint — is a plain failure and the tick asks."""
+    if ev.web_only and isinstance(todo_id, int):
+        try:
+            ask_id = _mint_web_ask(ctx.store, todo_id, rn, ev)
+        except Exception:
+            log.warning("%s: web ask mint failed", NAME, exc_info=True)
+        else:
+            ctx.record_failure(
+                f"{NAME}: probe failed — {failure_reason(ev)}; asked in td{ask_id}"
+            )
+            return
+    ctx.record_failure(f"{NAME}: probe failed — {failure_reason(ev)}")
 
 
 # ── the job ─────────────────────────────────────────────────────────
@@ -476,7 +600,7 @@ def submit(ctx: Any, spec: Any) -> Any:
     if ev.ok and ev.sha is not None:
         return _launch_confirm(ctx, rn, ev)
     if ev.problems:
-        ctx.record_failure(f"{NAME}: probe failed — {failure_reason(ev)}")
+        _probe_failed(ctx, ev, rn, params.get("todo_id"))
         return None
     return _park_probe(ctx, ev, rn, now)
 
@@ -517,7 +641,7 @@ def _probe_poll(ctx: Any, handle: dict[str, Any]) -> bool:
         )
         return False
     if ev.problems:
-        ctx.record_failure(f"{NAME}: probe failed — {failure_reason(ev)}")
+        _probe_failed(ctx, ev, str(handle.get("rn") or rel["rN"]), todo_id)
         return True
     _park_probe(ctx, ev, str(handle.get("rn") or rel["rN"]), now, handle)
     return False

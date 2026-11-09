@@ -233,6 +233,60 @@ def test_no_web_failure_names_the_url_or_host(
     assert HEALTH_URL not in blob and HEALTH_HOST not in blob
 
 
+def test_http_get_is_a_plain_bounded_get(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr607271: the operator-set health URL is fetched by a bare bounded
+    ``httpx`` GET — the SSRF pinning transport and ``polite_safe_get``
+    must not be built (they refuse the fleet's own address)."""
+    import httpx
+
+    from precis.utils import http as _http
+    from precis.utils import safe_fetch
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("the SSRF guard must not run for release.health_url")
+
+    monkeypatch.setattr(safe_fetch, "pinning_transport", _boom)
+    monkeypatch.setattr(_http, "polite_safe_get", _boom)
+    seen: dict[str, Any] = {}
+
+    class _Client:
+        def __init__(self, **kw: Any) -> None:
+            seen.update(kw)
+
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *_a: Any) -> None:
+            return None
+
+        def get(self, url: str) -> Any:
+            seen["url"] = url
+            return SimpleNamespace(status_code=200, headers={})
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    resp = rcf._http_get(HEALTH_URL)
+    assert resp.status_code == 200 and seen["url"] == HEALTH_URL
+    assert seen["follow_redirects"] is False and seen["timeout"]
+
+
+def test_a_web_only_failure_marks_the_evidence(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr607271 (c): every worker attesting and only the web probe red
+    marks the evidence ``web_only`` — the job then files the ask itself;
+    any second problem keeps it a plain failure."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    psettings.set_setting(rcf.HEALTH_URL_KEY, HEALTH_URL, store=store)
+    _web(monkeypatch, resp=SimpleNamespace(status_code=503, headers={}))
+    ev = rcf.gather_evidence(store, REL, now=NOW)
+    assert not ev.ok and ev.web_only and ev.problems == ["web HTTP 503"]
+
+    _beat(store, "node-b", SHA2)
+    ev = rcf.gather_evidence(store, REL, now=NOW)
+    assert not ev.ok and not ev.web_only and len(ev.problems) == 2
+
+
 # ── pinned_deploy_sha ───────────────────────────────────────────────
 
 

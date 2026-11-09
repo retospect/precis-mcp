@@ -113,17 +113,21 @@ release sha, and when `release.health_url` is set the live web's
 close`, stamps the evidence on the plan root and `release.round`, and the
 release is tagged `deployed/r<N>`; a failed close still succeeds the job —
 `scripts/release` retries the close on its next run. A mismatch or gap
-fails the job before any script runs and the tick's retry-cap ask goes to
-a human; there is no rollback and no `good/r<N>` tag — the factory
-attests, a failed probe asks, never rolls back.
+fails the job before any script runs; when the web probe's is the only
+failure the job files the ruling ask itself with the evidence, anything
+else lets the tick's retry-cap ask go to a human; there is no rollback
+and no `good/r<N>` tag — the factory attests, a failed probe asks,
+never rolls back.
 
 `release.health_url` is an optional operator setting
 (`scripts/prod-precis settings set release.health_url <url>`) naming the
 live web's `/healthz`. Unset means the web is not attested — the workers
-still decide; a set URL must be a public address `safe_get` may reach (the
-SSRF guard refuses private ones, which fails the confirm), and a failing
-or different-sha URL fails the confirm too. No URL or host is printed in a
-job result or failure reason.
+still decide. The URL is operator-set, so the probe is a plain bounded
+GET, not the SSRF-guarded `safe_get` — a private fleet address is fine
+(gr607271). A failing or different-sha URL while every worker attests
+files the confirm's own ruling ask (fix or clear the setting, then
+answer to re-probe). No URL or host is printed in a job result or
+failure reason.
 
 Host needs: the slice host's checkout (`PRECIS_SLICE_ROOT`), `gh` (the
 script's gate step), and whatever `scripts/deploy` needs for the deploy.
