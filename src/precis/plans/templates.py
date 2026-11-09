@@ -284,18 +284,35 @@ def _reviewer_brief(target_id: int, *, slices: bool = False) -> str:
     return (
         "Review after land, from another lane than the builder's. "
         f"{what} Judge whether the diff does what the brief asked, and "
-        "nothing it should not.\n\n"
-        "Post exactly one comment on this todo, "
-        "`put(kind='todo', id=<this todo>, text=...)`, as one of: "
-        f"{REVIEW_GRAMMAR}. The text after the dash is what the fix or the "
-        "revert slice is built from: name files and the concrete problem.\n\n"
-        "You are read-only: run no tests, no typecheck, no lint and no "
-        "`uv` command; read the squash diff and the files. End your "
-        f"verdict line with `{REVIEW_READONLY_MARKER}`.\n\n"
-        "Mint nothing yourself: no child todos, no fix, no revert, no commit, "
-        "no land, and do not tag this todo done. The plan tick reads the "
-        "verdict: LAND closes this review, FIX mints the fix slice, REVERT "
-        "mints the revert slice and requeues the build."
+        "nothing it should not.\n\n" + _REVIEWER_BRIEF_TAIL
+    )
+
+
+#: The verdict/mint rules every reviewer brief ends with.
+_REVIEWER_BRIEF_TAIL = (
+    "Post exactly one comment on this todo, "
+    "`put(kind='todo', id=<this todo>, text=...)`, as one of: "
+    f"{REVIEW_GRAMMAR}. The text after the dash is what the fix or the "
+    "revert slice is built from: name files and the concrete problem.\n\n"
+    "You are read-only: run no tests, no typecheck, no lint and no "
+    "`uv` command; read the squash diff and the files. End your "
+    f"verdict line with `{REVIEW_READONLY_MARKER}`.\n\n"
+    "Mint nothing yourself: no child todos, no fix, no revert, no commit, "
+    "no land, and do not tag this todo done. The plan tick reads the "
+    "verdict: LAND closes this review, FIX mints the fix slice, REVERT "
+    "mints the revert slice and requeues the build."
+)
+
+
+def _sha_reviewer_brief(sha12: str) -> str:
+    """The sha-keyed reviewer's brief: the commit IS the brief — no todo
+    carried one (gr597625)."""
+    return (
+        "Review after land, from another lane than the builder's. Commit "
+        f"{sha12} is on main — an engine land no `land_slice` job or "
+        "subject handle links a todo to. Read `git show " + sha12 + "` and "
+        "judge whether the diff is fit for main, and does nothing it "
+        "should not.\n\n" + _REVIEWER_BRIEF_TAIL
     )
 
 
@@ -346,6 +363,37 @@ def mint_reviewer(store: Store, plan_root: int, target_id: int) -> int:
         )
 
     return _run_body(store, plan_root, plan_root, build).ids["review"]
+
+
+def mint_sha_reviewer(store: Store, sha12: str) -> int:
+    """Mint the sha-keyed reviewer over a hand-landed engine commit no
+    ``land_slice`` job or subject handle links a todo to (gr597625): a
+    phase root plus one reviewer child whose ``generate.from`` is
+    ``sha:<sha12>`` — the key the engine-review gate dedupes and covers
+    on. The phase root keeps the FIX/REVERT task
+    ``plan_dispatch._step_reviews`` mints under it reachable while it
+    runs, then closes once every child closed.
+    ``release_poll._mint_sha_reviewer`` calls this inside its dedupe-lock
+    transaction (``store.tx()`` joins it as a savepoint); it mints nothing
+    deferred, so there is no post-commit step. Returns the reviewer's id."""
+    sha12 = sha12[:12]
+
+    def build(m: _Minter) -> None:
+        m.node("root", f"Engine review of the {sha12} hand land", _phase())
+        m.node(
+            "review",
+            f"Review the {sha12} engine land",
+            {
+                **_generate("reviewer", f"sha:{sha12}"),
+                "task_class": REVIEW_TASK_CLASS,
+            },
+            body=_sha_reviewer_brief(sha12),
+        )
+
+    with store.tx() as conn:
+        m = _Minter(store, conn, None)
+        build(m)
+    return m.ids["review"]
 
 
 # -- gripe-fix ---------------------------------------------------------------

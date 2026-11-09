@@ -20,6 +20,7 @@ from precis.store.types import ChunkInsert, Tag
 from precis.workers._mint import mint_background_job
 from precis.workers.job_types import get_job_type, known_job_types, run_slice
 from precis.workers.job_types import plan_dispatch as pd
+from precis.workers.job_types import release_poll as rp
 from tests._lane_rows import seed_lane, use_lanes
 from tests._refs import insert_gripe
 
@@ -30,6 +31,10 @@ FUTURE = {"kind": "not-before", "args": {"ts": "2999-01-01T00:00:00Z"}}
 @pytest.fixture(autouse=True)
 def _factory_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
+    # The engine-review gate reads the cut range from git (gr597625) —
+    # stub its seam: the host checkout's real ``origin/prod..origin/main``
+    # carries engine lands that must not leak into a dispatch test.
+    monkeypatch.setattr(rp, "_git_lands", lambda: [])
 
 
 def _status(store: Store, ref_id: int) -> str | None:

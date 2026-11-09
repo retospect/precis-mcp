@@ -41,6 +41,12 @@ HEAD_SHA = "a" * 40
 MAIN_SHA = "d" * 40
 
 
+#: The fake ``origin/prod..origin/main`` range the engine-review gate
+#: reads (gr597625): tests put ``rp._GitLand`` commits here — the real
+#: ``lanes.engine_hits`` filter still applies inside the gate.
+_GIT_LANDS: list[Any] = []
+
+
 @pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
@@ -49,6 +55,8 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_RELEASE_NO_RELEASE_WINDOWS", raising=False)
     monkeypatch.delenv("PRECIS_RELEASE_REPO", raising=False)
     psettings.invalidate()
+    _GIT_LANDS.clear()
+    monkeypatch.setattr(rp, "_git_lands", lambda: list(_GIT_LANDS))
 
 
 def _at(hour: int, minute: int) -> datetime:
@@ -1942,7 +1950,10 @@ def _engine_land(
     ``meta.engine_paths`` stamp (``None`` = a pre-E1 job, no stamp).
     ``landed``: True stamps a ``landed_sha`` (a succeeded land — the only
     kind that can block), None a JSON null (a no-diff land) and False no
-    key at all (a failed land)."""
+    key at all (a failed land). A succeeded land also puts its commit in
+    the fake cut range: the gate reads lands from git (gr597625) — the
+    job is only the sha → todo lookup."""
+    sha = (f"{todo_id:x}" + "f" * 40)[:40]  # a realistic, per-todo sha
     meta: dict[str, Any] = {
         "job_type": "land_slice",
         "params": {"todo_id": todo_id},
@@ -1950,11 +1961,18 @@ def _engine_land(
     if paths is not None:
         meta["engine_paths"] = paths
     if landed is not False:
-        meta["landed_sha"] = "f" * 40 if landed else None
+        meta["landed_sha"] = sha if landed else None
     ref = store.insert_ref(kind="job", slug=None, title="land_slice", meta=meta)
+    if landed is True:
+        _GIT_LANDS.append(
+            rp._GitLand(
+                sha=sha,
+                subject="",
+                committed_at=NOW - timedelta(hours=hours_ago or 0),
+                paths=tuple(paths or []),
+            )
+        )
     if hours_ago is not None:
-        from datetime import timedelta
-
         with store.pool.connection() as conn:
             conn.execute(
                 "UPDATE refs SET created_at = %s WHERE ref_id = %s",
@@ -2765,12 +2783,169 @@ def test_engine_review_gate_unreadable_fails_closed(
 ) -> None:
     calls = _fake_github(monkeypatch)
 
-    def boom(s: Store) -> list[tuple[int, int, Any]]:
+    def boom(s: Store) -> list[tuple[str, int, int]]:
         raise OSError("db gone")
 
-    monkeypatch.setattr(rp, "_engine_landed_jobs", boom)
+    monkeypatch.setattr(rp, "_landed_jobs", boom)
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.minted is None
     assert res.blocker is not None and "unreadable" in res.blocker
     assert "fail closed" in res.blocker
-    assert calls == []
+
+
+# ── the cut range comes from git, not jobs (gr597625) ─────────────
+#
+# A ``scripts/ship`` run from a tmux tree or the coordinator seat mints
+# no ``land_slice`` job, so the stamped-job scan alone let a hand-landed
+# engine commit ride the cut unseen (186513b6e into r257 with two FIX
+# reviewers open). The gate now reads ``origin/prod..origin/main``: an
+# engine commit links its todos through the stamp or the subject's
+# trailing ``td`` handles; a commit nothing links gets a sha-keyed
+# reviewer minted and holds the cut until it closes LAND.
+
+
+def _hand_land(sha: str, subject: str, paths: list[str]) -> None:
+    """A commit on main in the cut range with no ``land_slice`` job —
+    a hand land."""
+    _GIT_LANDS.append(
+        rp._GitLand(
+            sha=sha,
+            subject=subject,
+            committed_at=NOW,
+            paths=tuple(paths),
+        )
+    )
+
+
+def test_a_hand_engine_land_with_a_fix_reviewer_blocks_the_cut(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The incident shape: an engine commit on main, no ``land_slice``
+    job, the todo its subject names carrying a FIX reviewer whose fix
+    has not landed — the pass refuses."""
+    _fake_github(monkeypatch)
+    _hand_land(
+        "186513b6e12f" + "0" * 28,
+        "fix(plan): strictest verdict wins (gr574380, td42)",
+        ["src/precis/plans/lanes.py"],
+    )
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    rid = _reviewer(
+        store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)}
+    )
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None
+    assert f"td{rid}" in res.blocker and "td42" in res.blocker
+
+
+def test_a_hand_engine_land_with_a_land_reviewer_passes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    _hand_land(
+        "186513b6e12f" + "0" * 28,
+        "fix(plan): strictest verdict wins (td42)",
+        ["src/precis/plans/lanes.py"],
+    )
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None
+
+
+def test_a_non_engine_hand_land_never_blocks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    _hand_land(
+        "9" * 40,
+        "docs(backlog): tidy up",
+        ["docs/a.md", "src/precis/foo.py"],
+    )
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None
+
+
+def test_a_stamp_less_engine_commit_gets_one_reviewer(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An engine commit no job stamp or subject handle links a todo to:
+    the gate mints one sha-keyed reviewer under a fresh phase root —
+    and exactly one, across ticks."""
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)
+    sha = "186513b6e12f34567890abcdef1234567890abcd"
+    _hand_land(sha, "fix(ship): tighten the gate", ["scripts/ship"])
+    lines, notes = rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    [(rid, meta)] = rp._reviewer_rows(store)
+    assert meta["generate"] == {"role": "reviewer", "from": f"sha:{sha[:12]}"}
+    assert meta["task_class"] == T.REVIEW_TASK_CLASS
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.parent_id is not None
+    root = store.get_ref(kind="todo", id=ref.parent_id)
+    assert root is not None and root.meta.get("auto_close") is True
+    assert f"plan:{ref.parent_id}" in _tags(store, rid)
+    assert _review_wait_asks(store) == []
+    blocker = "; ".join(lines)
+    assert sha[:12] in blocker and f"td{rid}" in blocker
+    assert any(f"minted reviewer td{rid} for {sha[:12]}" in n for n in notes)
+    # Next tick the minted reviewer covers: no second node, no ask.
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    assert len(rp._reviewer_rows(store)) == 1
+    assert _review_wait_asks(store) == []
+    # The dispatch tick picks it up on a review lane.
+    res = pd.run_pass(store, dry_run=True)
+    assert any(f"td{rid}: would dispatch run_slice" in n for n in res.notes)
+
+
+def test_a_sha_reviewers_land_verdict_clears_the_hand_land(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through the real judge: the sha-keyed reviewer's LAND verdict
+    closes it done and the pass mints."""
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)
+    _hand_land("a" * 40, "fix(ship): tighten the gate", ["scripts/ship"])
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    [(rid, _meta)] = rp._reviewer_rows(store)
+    _review_job(store, rid)
+    _todo_comment(store, rid, "review: LAND")
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, rid) == "done"
+    poll = rp.run_pass(store, repo=REPO, now=NOW)
+    assert poll.minted is not None
+
+
+def test_a_sha_reviewers_revert_closes_and_the_revert_task_gates(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sha-keyed land has no rebuild to re-read: REVERT closes the
+    reviewer like a FIX — no re-review of the same commit, no second
+    revert — and the gate waits on the minted revert task, clearing
+    once it lands (gr597625)."""
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)
+    _hand_land("a" * 40, "fix(ship): tighten the gate", ["scripts/ship"])
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    [(rid, _meta)] = rp._reviewer_rows(store)
+    _review_job(store, rid)
+    _todo_comment(store, rid, "review: REVERT - the diff is wrong")
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, rid) == "done"
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    task = (ref.meta.get("review") or {}).get("task")
+    assert isinstance(task, int)
+    # The reviewer stays closed — no re-dispatch, no second verdict —
+    # while the gate holds the cut on the unlanded revert task.
+    pd.run_pass(store)
+    assert _status(store, rid) == "done"
+    assert len(rp._reviewer_rows(store)) == 1
+    poll = rp.run_pass(store, repo=REPO, now=NOW)
+    assert poll.minted is None
+    assert poll.blocker is not None and f"td{task}" in poll.blocker
+    _todo_comment(store, task, "landed: b9c8d7e6f5 — revert")
+    poll = rp.run_pass(store, repo=REPO, now=NOW)
+    assert poll.minted is not None

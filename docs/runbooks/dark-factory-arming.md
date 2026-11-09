@@ -571,13 +571,17 @@ The other settings a slice host reads:
   touches an `ENGINE_PATHS` glob stamps `meta.engine_paths` on its job
   and ships `--checked` whatever `params.checked` says (a
   FULL-selector refusal relaunches `--full`, never lint); until every
-  succeeded engine land is cleared by a covering reviewer closing LAND
+  engine commit in `origin/prod..origin/main` — read from git, not
+  jobs, so a hand land with no `land_slice` job still gates
+  (gr597625) — is cleared by a covering reviewer closing LAND
   — or FIX whose fix task landed — `release_poll` mints no pass and
   `release_cut` refuses. A wait that can still resolve files one
   `release-review-wait:td<land>` ask once the newer of the land and
   its newest covering reviewer is 24 h old; a land with no covering
   reviewer gets one minted under the plan root its own `plan:` tag
-  names, `blocked-by` the landed todo so a REVERT verdict holds it
+  names (a commit no todo links gets a sha-keyed reviewer under a
+  fresh phase root), `blocked-by` the landed todo so a REVERT verdict
+  holds it
   through the rebuild, at most two mints a pass — the ask files at
   once only where minting cannot run (no review-fit lane, no live
   root, the mint raised), where `plan_dispatch` itself is switched

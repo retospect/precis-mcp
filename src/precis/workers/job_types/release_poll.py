@@ -183,6 +183,18 @@ _MINT_LOCK_KEY = 0x72656C5F706F6C6C
 #: its parent (:func:`engine_review_blockers`, td574937 E1).
 _REVIEW_FROM_RE = re.compile(r"\s*td(\d+)\s*")
 
+#: ``meta.generate.from`` on a sha-keyed reviewer — ``sha:<sha>`` of a
+#: hand-landed engine commit no job stamp or subject handle links a todo
+#: to (gr597625); the gate covers and dedupes on the sha prefix.
+_REVIEW_FROM_SHA_RE = re.compile(r"\s*sha:([0-9a-f]{7,40})\s*", re.IGNORECASE)
+
+#: The trailing handle list a ship squash subject carries (restated from
+#: ``land_slice._HANDLES_RE``): the ``td<id>`` handles a hand-landed
+#: commit links its todos by — a mid-subject ``td`` mention is prose, not
+#: a handle.
+_LAND_HANDLES_RE = re.compile(r"\(((?:gr|td)\d+(?:[,\s]+(?:gr|td)\d+)*)\)\s*$")
+_LAND_TD_RE = re.compile(r"td(\d+)")
+
 #: The dedupe tag on the review-wait ask — one OPEN ask per LANDED todo:
 #: ``release-review-wait:td<id>`` where id is the land's todo, and
 #: answering the ask clears that one land. An ask closed without an
@@ -1174,20 +1186,29 @@ def _pass_for_sha(store: Any, sha12: str) -> tuple[int, str] | None:
 #
 # A release never cuts over an engine land its reviewer has not read:
 # the factory may build engine paths once ``factory.deny_relaxed`` is
-# flipped, but only through the review lane. The gate is land-centric —
-# every ``land_slice`` job that SUCCEEDED (``meta.landed_sha`` not null;
-# a failed land has no key and a no-diff land a JSON null, so neither
-# blocks, and a later failed re-land cannot mask an earlier success) with
-# an engine ``meta.engine_paths`` stamp needs a reviewer covering the
-# landed todo: ``meta.generate.from`` naming the todo itself or its
-# parent — the one level ``plan_dispatch._review_targets`` reviews (a
-# slicer's slices). A land with no stamp (pre-E1) counts as non-engine.
+# flipped, but only through the review lane. The gate's lands come from
+# GIT, not jobs (gr597625): every first-parent commit in
+# ``origin/prod..origin/main`` whose diff touches
+# ``lanes.ENGINE_PATHS`` — the commits the cut would carry. A commit
+# links its todos through the succeeded ``land_slice`` job whose
+# ``meta.landed_sha`` matches it (the stamped path, kept as the fast
+# lookup) or the ``td<id>`` handles in the subject's trailing list; a
+# linked todo's covering reviewer is ``meta.generate.from`` naming the
+# todo itself or its parent — the one level
+# ``plan_dispatch._review_targets`` reviews (a slicer's slices). A
+# commit nothing links — a hand land from a tmux tree or the
+# coordinator seat mints no ``land_slice`` job — is its own unit: the
+# gate mints a sha-keyed reviewer (``generate.from`` = ``sha:<sha12>``,
+# one per commit) and holds the cut until it closes LAND.
 # A covering reviewer clears the land when it closed ``LAND``, or
-# ``FIX`` whose fix task landed; while it is open under a live root the
-# release waits, and once the NEWER of the land and its newest covering
-# reviewer is :data:`REVIEW_WAIT_AFTER` old one ``ask-user`` ruling
-# files — at once when the wait can never resolve (a dead verdict, an
-# unlanded fix that already ended, an open reviewer under a dead root).
+# ``FIX`` whose fix task landed — a sha-keyed reviewer's ``REVERT``
+# tracks its revert task the same way, since a hand land has no todo
+# to rebuild and re-read. While a reviewer is open under a live root
+# the release waits, and once the NEWER of the land and its newest
+# covering reviewer is :data:`REVIEW_WAIT_AFTER` old one ``ask-user``
+# ruling files — at once when the wait can never resolve (a dead
+# verdict, an unlanded fix that already ended, an open reviewer under
+# a dead root).
 # No covering reviewer is the factory's own job (td584381 S1b): the
 # gate mints one — a plan reviewer node under the root the landed
 # todo's own ``plan:<id>`` tag names, ``blocked-by`` that todo so a
@@ -1223,46 +1244,182 @@ def _reviewer_rows(store: Any) -> list[tuple[int, dict[str, Any]]]:
     return [(int(r[0]), dict(r[1] or {})) for r in rows]
 
 
-def _engine_landed_jobs(store: Any) -> list[tuple[int, int, Any]]:
-    """``(job ref_id, landed todo id, created_at)`` for every
-    ``land_slice`` job that SUCCEEDED and stamped engine, oldest first.
+@dataclass(frozen=True)
+class _GitLand:
+    """One first-parent commit in ``origin/prod..origin/main`` — the
+    gate's source of truth for what landed (gr597625): a ``scripts/ship``
+    run from a tmux tree or the coordinator seat mints no ``land_slice``
+    job, so a stamped-job scan alone lets a hand land ride the cut
+    unseen."""
+
+    sha: str
+    subject: str
+    committed_at: datetime | None
+    paths: tuple[str, ...]
+
+
+def _git_lands() -> list[_GitLand]:
+    """Every first-parent commit in ``origin/prod..origin/main``, oldest
+    first, with its touched paths — the engine-review gate's source of
+    truth (gr597625). ``origin`` is fetched first so a stale checkout
+    cannot hide a hand land; any failure raises (the caller fails
+    closed). Seam: tests patch it."""
+    from precis.workers.job_types import run_slice as _rs
+
+    root = _rs.slice_root()
+    # ``-c safe.directory=*``: the checkout can sit under a mount owned by
+    # a different uid — the gate container bind-mounts the host's git
+    # dir at its own path, and a service-account worker's checkout — so
+    # git otherwise refuses to read it at all; the same widening
+    # ``precis.handlers.job._git`` uses for its mounted-checkout probes.
+    proc = _rs._git(
+        ["-c", "safe.directory=*", "fetch", "-q", "origin", "main", "prod"], root
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"git fetch origin main prod: {proc.stderr.strip()[:200]}")
+    proc = _rs._git(
+        [
+            "-c",
+            "safe.directory=*",
+            "log",
+            "origin/prod..origin/main",
+            "--first-parent",
+            "--format=%x00%H%x1f%ct%x1f%s",
+            "--name-only",
+        ],
+        root,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"git log origin/prod..origin/main: {proc.stderr.strip()[:200]}"
+        )
+    out: list[_GitLand] = []
+    for rec in proc.stdout.split("\x00"):
+        lines = rec.strip("\n").splitlines()
+        if not lines or not lines[0].strip():
+            continue
+        sha, _, rest = lines[0].partition("\x1f")
+        stamp, _, subject = rest.partition("\x1f")
+        try:
+            committed = datetime.fromtimestamp(int(stamp.strip()), UTC)
+        except ValueError:
+            committed = None
+        out.append(
+            _GitLand(
+                sha=sha.strip().lower(),
+                subject=subject.strip(),
+                committed_at=committed,
+                paths=tuple(p.strip() for p in lines[1:] if p.strip()),
+            )
+        )
+    out.reverse()
+    return out
+
+
+def _landed_jobs(store: Any) -> list[tuple[str, int, int]]:
+    """``(landed sha, job ref_id, landed todo id)`` for every
+    ``land_slice`` job that SUCCEEDED — the sha → todo lookup the git
+    scan stitches its commits to (the fast lookup; the
+    ``meta.engine_paths`` stamp itself is ignored: it only ever decided
+    engine-ness, which the commit's own diff now answers).
 
     Succeeded = ``meta->>'landed_sha' IS NOT NULL``: a failed land has no
     key and a no-diff land stamps JSON null (``->>`` reads both as SQL
-    NULL) — neither blocks. ALL jobs are read, not the newest: a later
-    failed re-land must not mask an earlier engine land. Engine = the
-    ``<unreadable>`` mark or a stamp holding a path engine TODAY (the
-    globs re-check, so a glob added since the land still counts); no
-    stamp (pre-E1) or non-engine paths skip the gate.
-    """
-    from precis.plans import lanes as _lanes
-
+    NULL)."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT ref_id, meta, created_at FROM refs
+            SELECT ref_id, meta FROM refs
              WHERE kind = 'job' AND retired_at IS NULL
                AND meta->>'job_type' = 'land_slice'
                AND meta->>'landed_sha' IS NOT NULL
              ORDER BY ref_id
             """
         ).fetchall()
-    out: list[tuple[int, int, Any]] = []
-    for ref_id, meta, created_at in rows:
+    out: list[tuple[str, int, int]] = []
+    for ref_id, meta in rows:
         m = meta if isinstance(meta, dict) else {}
-        stamped = m.get("engine_paths")
-        if not isinstance(stamped, list) or not stamped:
-            continue
-        if stamped != ["<unreadable>"] and not _lanes.engine_hits(stamped):
-            continue
+        sha = m.get("landed_sha")
         raw = (m.get("params") or {}).get("todo_id")
+        if not isinstance(sha, str) or not sha.strip():
+            continue
         if not isinstance(raw, (int, str)):
             continue
         try:
             todo_id = int(raw)
         except ValueError:
             continue
-        out.append((int(ref_id), todo_id, created_at))
+        out.append((sha.strip().lower(), int(ref_id), todo_id))
+    return out
+
+
+def _land_tds(subject: str) -> list[int]:
+    """The ``td<id>`` handles in a squash subject's trailing handle list —
+    the todos a hand land links itself to (``land_slice.with_handle``
+    writes the same list)."""
+    m = _LAND_HANDLES_RE.search(subject)
+    if m is None:
+        return []
+    return [int(x) for x in _LAND_TD_RE.findall(m.group(1))]
+
+
+@dataclass(frozen=True)
+class _GateLand:
+    """One unit the engine-review gate judges: a linked todo of an
+    engine commit in the cut range, or the commit itself (``todo_id``
+    ``None``) when nothing links it."""
+
+    sha12: str
+    todo_id: int | None
+    job_id: int | None
+    committed_at: datetime | None
+
+    @property
+    def ask_key(self) -> str:
+        """The ``release-review-wait:`` tag tail — one ask per unit."""
+        return f"td{self.todo_id}" if self.todo_id is not None else f"sha:{self.sha12}"
+
+    @property
+    def land(self) -> str:
+        """The land's name in blocker and ask text."""
+        return f"td{self.todo_id}" if self.todo_id is not None else self.sha12
+
+    @property
+    def label(self) -> str:
+        """``land`` plus the landed job when one claims it."""
+        job = f" (jo{self.job_id})" if self.job_id is not None else ""
+        return f"{self.land}{job}"
+
+
+def _gate_lands(store: Any) -> list[_GateLand]:
+    """The gate's units, oldest land first: every commit in the cut
+    range whose diff touches :data:`lanes.ENGINE_PATHS`, stitched to its
+    linked todos — the succeeded ``land_slice`` job whose
+    ``meta.landed_sha`` matches (the stamped path, kept as the fast
+    lookup) or the ``td<id>`` handles in the subject's trailing list.
+    A commit neither links is its own unit: the gate mints a sha-keyed
+    reviewer for it."""
+    from precis.plans import lanes as _lanes
+
+    stamped = _landed_jobs(store)
+    out: list[_GateLand] = []
+    for land in _git_lands():
+        if not _lanes.engine_hits(land.paths):
+            continue
+        sha12 = land.sha[:12]
+        jobs = [
+            (job_id, todo_id)
+            for sha, job_id, todo_id in stamped
+            if land.sha.startswith(sha) or sha.startswith(sha12)
+        ]
+        todos = {todo_id for _job_id, todo_id in jobs} | set(_land_tds(land.subject))
+        job_id = jobs[0][0] if jobs else None
+        if todos:
+            out.extend(
+                _GateLand(sha12, t, job_id, land.committed_at) for t in sorted(todos)
+            )
+        else:
+            out.append(_GateLand(sha12, None, None, land.committed_at))
     return out
 
 
@@ -1331,8 +1488,8 @@ def _root(store: Any, todo_id: int) -> tuple[int, str]:
     return top, _status_of(store, top)
 
 
-def _answered_wait_ask(store: Any, todo_id: int) -> bool:
-    """``True`` when the ``release-review-wait:td<todo_id>`` ask carries
+def _answered_wait_ask(store: Any, ask_key: str) -> bool:
+    """``True`` when the ``release-review-wait:<ask_key>`` ask carries
     an ``answer:`` comment (the ``answer:`` convention —
     ``plans.release`` ~296, ``handlers.todo`` ~66); it clears that one
     land."""
@@ -1349,13 +1506,13 @@ def _answered_wait_ask(store: Any, todo_id: int) -> bool:
                AND lower(ltrim(c.text)) LIKE 'answer:%%'
              LIMIT 1
             """,
-            (f"{_REVIEW_WAIT_TAG_PREFIX}:td{todo_id}",),
+            (f"{_REVIEW_WAIT_TAG_PREFIX}:{ask_key}",),
         ).fetchone()
     return row is not None
 
 
-def _open_wait_ask_id(store: Any, todo_id: int) -> int | None:
-    """The id of the still-answerable ``release-review-wait:td<todo_id>``
+def _open_wait_ask_id(store: Any, ask_key: str) -> int | None:
+    """The id of the still-answerable ``release-review-wait:<ask_key>``
     ask — a live todo whose STATUS is not in :data:`_WAIT_ASK_CLOSED` —
     or ``None``. A closed (or retired) ask holds nothing whether or not
     it was answered; an answered one cleared the land upstream."""
@@ -1374,29 +1531,43 @@ def _open_wait_ask_id(store: Any, todo_id: int) -> int | None:
              ORDER BY r.ref_id
              LIMIT 1
             """,
-            (f"{_REVIEW_WAIT_TAG_PREFIX}:td{todo_id}", list(_WAIT_ASK_CLOSED)),
+            (f"{_REVIEW_WAIT_TAG_PREFIX}:{ask_key}", list(_WAIT_ASK_CLOSED)),
         ).fetchone()
     return None if row is None else int(row[0])
 
 
+def _sha_keyed(meta: dict[str, Any]) -> bool:
+    """``True`` when the reviewer's ``generate.from`` is ``sha:<sha>`` —
+    a hand-landed engine commit keyed on the sha (gr597625), not a
+    ``td<N>`` land."""
+    return (
+        _REVIEW_FROM_SHA_RE.fullmatch(
+            str((meta.get("generate") or {}).get("from") or "")
+        )
+        is not None
+    )
+
+
 def _review_outcome(
-    store: Any, rid: int, meta: dict[str, Any], todo_id: int
+    store: Any, rid: int, meta: dict[str, Any], land: str
 ) -> tuple[str, str]:
     """``(outcome, blocker line)`` for one covering reviewer on the
-    td<todo_id> land — ``satisfied`` clears it; ``waiting`` is a live
-    reviewer still holding it (the line is the blocker); ``hopeless``
-    can never resolve, so the wait ask files at once."""
+    ``land`` (``td<N>`` or the sha12) — ``satisfied`` clears it;
+    ``waiting`` is a live reviewer still holding it (the line is the
+    blocker); ``hopeless`` can never resolve, so the wait ask files at
+    once."""
     status = _status_of(store, rid)
-    base = f"engine review td{rid} on the td{todo_id} land"
+    base = f"engine review td{rid} on the {land} land"
     if status in TERMINAL_TODO_STATUSES or status == "cancelled":
         review = meta.get("review")
         review = review if isinstance(review, dict) else {}
         verdict = review.get("verdict")
         if verdict == "LAND":
             return "satisfied", ""
-        if verdict == "FIX":
+        if verdict == "FIX" or (verdict == "REVERT" and _sha_keyed(meta)):
             task = review.get("task")
             if isinstance(task, int):
+                noun = "revert" if verdict == "REVERT" else "fix"
                 if _fix_landed(store, task):
                     return "satisfied", ""
                 task_status = _status_of(store, task)
@@ -1405,18 +1576,18 @@ def _review_outcome(
                     and task_status != "cancelled"
                 ):
                     return "waiting", (
-                        f"{base} was FIX; its fix td{task} is not landed "
-                        f"yet — next: let td{task} land"
+                        f"{base} was {verdict}; its {noun} td{task} is not "
+                        f"landed yet — next: let td{task} land"
                     )
                 return "hopeless", (
-                    f"{base} was FIX; its fix td{task} ended {task_status} "
-                    "with no landed: comment — next: acknowledge the "
-                    "review-wait ask or land a fix"
+                    f"{base} was {verdict}; its {noun} td{task} ended "
+                    f"{task_status} with no landed: comment — next: "
+                    "acknowledge the review-wait ask or land a fix"
                 )
         return "hopeless", (
             f"{base} closed {status} without a usable verdict; the wait "
             "can never resolve — next: acknowledge the review-wait ask "
-            f"or re-review td{todo_id}"
+            f"or re-review {land}"
         )
     root_id, root_status = _root(store, rid)
     if root_status in TERMINAL_TODO_STATUSES or root_status in ("cancelled", "gone"):
@@ -1432,50 +1603,55 @@ def _review_outcome(
 
 def _file_review_wait_ask(
     store: Any,
-    todo_id: int,
+    ask_key: str,
     *,
+    land: str,
     rid: int | None = None,
     job_id: int | None = None,
     dry_run: bool,
     reason: str | None = None,
 ) -> tuple[str, int | None]:
-    """The review-wait ask: one OPEN ``ask-user`` ruling todo per LANDED
-    todo, deduped by its ``release-review-wait:td<todo_id>`` tag over
-    still-answerable todos inside one locked transaction — same shape as
+    """The review-wait ask: one OPEN ``ask-user`` ruling todo per gate
+    unit (a landed todo, or a sha-keyed hand land), deduped by its
+    ``release-review-wait:<ask_key>`` tag over still-answerable todos
+    inside one locked transaction — same shape as
     :func:`_file_stuck_ask`. Answering it clears that one land; one
-    closed without an ``answer:`` comment is refiled.
+    closed without an ``answer:`` comment is refiled. ``land`` names the
+    land in the text (``td<N>`` or the sha12), ``job_id`` the landed job
+    when one claims it.
 
     Returns ``(note, ask_id)`` — the live ask's todo id (filed or
     deduped) so the blocker can name it, ``None`` on dry-run/factory-off.
     """
     from precis.workers.job_types import run_slice
 
-    tag = f"{_REVIEW_WAIT_TAG_PREFIX}:td{todo_id}"
+    tag = f"{_REVIEW_WAIT_TAG_PREFIX}:{ask_key}"
+    job = f" (jo{job_id})" if job_id is not None else ""
     if rid is not None:
-        what = f"engine review td{rid} on the td{todo_id} land"
+        what = f"engine review td{rid} on the {land} land"
         title = (
-            f"engine review td{rid} on the td{todo_id} land will not "
+            f"engine review td{rid} on the {land} land will not "
             "resolve on its own — acknowledge it, or is this a false alarm?"
         )
         body = (
             f"The engine-review gate (td574937 E1) holds every release "
-            f"pass and cut while the td{todo_id} engine land is "
+            f"pass and cut while the {land} engine land is "
             f"uncleared; reviewer td{rid} cannot settle it on its own. "
             "This ask is the only write the gate makes; answering it "
             "executes nothing — 'acknowledged' and 'false alarm' both "
             "just close it, which clears this one land."
         )
     else:
-        what = f"the td{todo_id} engine land (jo{job_id})"
+        what = f"the {land} engine land{job}"
         title = (
-            f"engine land td{todo_id} (jo{job_id}) has no reviewer — "
+            f"engine land {land}{job} has no reviewer — "
             "acknowledge it, or is this a false alarm?"
         )
         why = f" The gate could not mint one itself: {reason}." if reason else ""
         body = (
             f"The engine-review gate (td574937 E1) holds every release "
-            f"pass and cut while the td{todo_id} engine land (job "
-            f"jo{job_id}) has no reviewer covering it — fix, revert and "
+            f"pass and cut while the {land} engine land{job} has no "
+            f"reviewer covering it — fix, revert and "
             f"plain lands mint none.{why} This ask is the only write the "
             "gate makes; answering it executes nothing — 'acknowledged' "
             "and 'false alarm' both just close it, which clears this one "
@@ -1516,7 +1692,7 @@ def _file_review_wait_ask(
         closed_ids = [int(r[0]) for r in dupes if r[1]]
         if open_ids:
             return (
-                f"engine review: ask for td{todo_id} already filed (td{open_ids[0]})",
+                f"engine review: ask for {land} already filed (td{open_ids[0]})",
                 open_ids[0],
             )
         if dry_run or run_slice.factory_off():
@@ -1654,6 +1830,55 @@ def _mint_engine_reviewer(
     return f"engine review: minted reviewer td{rid} for td{todo_id}", rid, True
 
 
+def _sha_hang(lane_table: tuple[Any, ...]) -> str | None:
+    """The only refusal a sha-keyed mint can hit before it starts —
+    the sha land's reviewer mints its own fresh phase root (always
+    live), so just the lane fit decides (the sha half of
+    :func:`_reviewer_hang`, gr597625)."""
+    from precis.plans import templates as _templates
+
+    if not any(
+        ln.enabled and ln.fits(_templates.REVIEW_TASK_CLASS) for ln in lane_table
+    ):
+        return "no enabled lane fits the 'review' task class"
+    return None
+
+
+def _mint_sha_reviewer(store: Any, sha12: str) -> tuple[str, int, bool]:
+    """Mint the sha-keyed reviewer over a hand-landed engine commit with
+    no linked todo; returns ``(note, reviewer id, fresh)`` — one per
+    commit: the locked re-read (a live reviewer whose ``generate.from``
+    is ``sha:<sha12>`` — either direction's prefix, so a fuller sha key
+    also dedupes) and the insert share the
+    :data:`_REVIEW_MINT_LOCK_KEY` advisory-locked transaction
+    (:func:`templates.mint_sha_reviewer`'s ``store.tx()`` joins it as a
+    savepoint)."""
+    from precis.plans import templates as _templates
+
+    with store.atomic() as conn:
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (_REVIEW_MINT_LOCK_KEY,))
+        dup = conn.execute(
+            """
+            SELECT ref_id FROM refs
+             WHERE kind = 'todo' AND retired_at IS NULL
+               AND meta->'generate'->>'role' = 'reviewer'
+               AND (%s LIKE (meta->'generate'->>'from') || '%%'
+                    OR (meta->'generate'->>'from') LIKE %s || '%%')
+             ORDER BY ref_id
+             LIMIT 1
+            """,
+            (f"sha:{sha12}", f"sha:{sha12}"),
+        ).fetchone()
+        if dup is not None:
+            return (
+                f"engine review: reviewer td{int(dup[0])} already covers {sha12}",
+                int(dup[0]),
+                False,
+            )
+        rid = _templates.mint_sha_reviewer(store, sha12)
+    return f"engine review: minted reviewer td{rid} for {sha12}", rid, True
+
+
 def engine_review_blockers(
     store: Any,
     *,
@@ -1663,21 +1888,23 @@ def engine_review_blockers(
 ) -> tuple[list[str], list[str]]:
     """``(blocker lines, notes)`` — the engine-review gate's verdict.
 
-    Per engine land — a ``land_slice`` job that SUCCEEDED with an engine
-    stamp — oldest first: an answered ``release-review-wait:td<land>``
-    ask clears it; no covering reviewer (``generate.from`` naming the
-    landed todo or its parent) mints one under the root the land's own
-    ``plan:<id>`` tag names, at most :data:`_MINT_PER_PASS` a pass —
-    the mint is covering next tick — and files the ask only when
-    minting cannot run or ``plan_dispatch`` itself is switched off
-    (td584381 S1b); covering reviewers are judged satisfied > waiting >
-    hopeless — a waiting land files its ask once the NEWER of the land
-    and its newest covering reviewer is :data:`REVIEW_WAIT_AFTER` old,
-    a hopeless one at once. An ask closed without an ``answer:``
-    comment does not dedupe — the next filing pass refiles it — and
-    blocker lines name the live ask's id. ``file_asks`` limits the
-    mint-and-ask writes to the pass (``release_cut`` asks for nothing).
-    Any exception anywhere returns a single fail-closed blocker.
+    Per gate unit (:func:`_gate_lands`), oldest land first: an answered
+    ``release-review-wait:<key>`` ask clears it; no covering reviewer
+    (``generate.from`` naming the landed todo or its parent, or the
+    commit's ``sha:<sha12>`` for a hand land nothing links) mints one —
+    under the root a linked todo's own ``plan:<id>`` tag names, under a
+    fresh phase root for a sha-keyed land — at most
+    :data:`_MINT_PER_PASS` a pass — the mint is covering next tick —
+    and files the ask only when minting cannot run or ``plan_dispatch``
+    itself is switched off (td584381 S1b); covering reviewers are judged
+    satisfied > waiting > hopeless — a waiting land files its ask once
+    the NEWER of the land and its newest covering reviewer is
+    :data:`REVIEW_WAIT_AFTER` old, a hopeless one at once. An ask
+    closed without an ``answer:`` comment does not dedupe — the next
+    filing pass refiles it — and blocker lines name the live ask's id.
+    ``file_asks`` limits the mint-and-ask writes to the pass
+    (``release_cut`` asks for nothing). Any exception anywhere returns a
+    single fail-closed blocker.
     """
     from precis.plans import lanes as _lanes
     from precis.workers.job_types import plan_dispatch as _plan_dispatch
@@ -1694,48 +1921,74 @@ def engine_review_blockers(
         factory_reason = _plan_dispatch.read_only_reason(store) if file_asks else None
         minted = 0
         by_from: dict[int, list[tuple[int, dict[str, Any]]]] = {}
+        by_sha: dict[str, list[tuple[int, dict[str, Any]]]] = {}
         for rid, meta in _reviewer_rows(store):
             gen = meta.get("generate")
             if not isinstance(gen, dict):
                 continue
-            m = _REVIEW_FROM_RE.fullmatch(str(gen.get("from") or ""))
-            if m is None:
+            src = str(gen.get("from") or "")
+            m = _REVIEW_FROM_RE.fullmatch(src)
+            if m is not None:
+                by_from.setdefault(int(m.group(1)), []).append((rid, meta))
                 continue
-            by_from.setdefault(int(m.group(1)), []).append((rid, meta))
-        for job_id, todo_id, created_at in _engine_landed_jobs(store):
-            if _answered_wait_ask(store, todo_id):
+            m = _REVIEW_FROM_SHA_RE.fullmatch(src)
+            if m is not None:
+                by_sha.setdefault(m.group(1).lower(), []).append((rid, meta))
+        for unit in _gate_lands(store):
+            if _answered_wait_ask(store, unit.ask_key):
                 continue
-            parent = _parent_of(store, todo_id)
-            covering = [
-                r
-                for fid in (todo_id, parent)
-                if fid is not None
-                for r in by_from.get(fid, ())
-            ]
+            if unit.todo_id is not None:
+                parent = _parent_of(store, unit.todo_id)
+                covering = [
+                    r
+                    for fid in (unit.todo_id, parent)
+                    if fid is not None
+                    for r in by_from.get(fid, ())
+                ]
+            else:
+                covering = [
+                    r
+                    for key, rs in by_sha.items()
+                    if unit.sha12.startswith(key) or key.startswith(unit.sha12)
+                    for r in rs
+                ]
             if not covering:
-                ask_id = _open_wait_ask_id(store, todo_id)
+                ask_id = _open_wait_ask_id(store, unit.ask_key)
                 if file_asks:
-                    plan_root, refusal = (
-                        _reviewer_hang(store, todo_id, lane_table)
-                        if factory_reason is None
-                        else (None, None)
-                    )
-                    if plan_root is not None and not dry_run:
+                    plan_root: int | None = None
+                    refusal: str | None = None
+                    mintable = False
+                    if factory_reason is None:
+                        if unit.todo_id is not None:
+                            plan_root, refusal = _reviewer_hang(
+                                store, unit.todo_id, lane_table
+                            )
+                            mintable = plan_root is not None
+                        else:
+                            refusal = _sha_hang(lane_table)
+                            mintable = refusal is None
+                    if mintable and not dry_run:
                         if minted >= _MINT_PER_PASS:
                             blockers.append(
-                                f"engine land td{todo_id} (jo{job_id}) has "
+                                f"engine land {unit.label} has "
                                 "no reviewer; reviewer mint deferred; the "
                                 "release waits — next: a later tick mints it"
                             )
                             continue
                         try:
-                            note, minted_id, fresh = _mint_engine_reviewer(
-                                store, todo_id, plan_root
-                            )
+                            if unit.todo_id is not None:
+                                assert plan_root is not None  # mintable says so
+                                note, minted_id, fresh = _mint_engine_reviewer(
+                                    store, unit.todo_id, plan_root
+                                )
+                            else:
+                                note, minted_id, fresh = _mint_sha_reviewer(
+                                    store, unit.sha12
+                                )
                         except Exception as exc:
                             log.warning(
-                                "release_poll: reviewer mint for td%s raised",
-                                todo_id,
+                                "release_poll: reviewer mint for %s raised",
+                                unit.land,
                                 exc_info=True,
                             )
                             refusal = (
@@ -1750,25 +2003,26 @@ def engine_review_blockers(
                                 else f"reviewer td{minted_id} is running"
                             )
                             blockers.append(
-                                f"engine land td{todo_id} (jo{job_id}) had "
+                                f"engine land {unit.label} had "
                                 f"no reviewer; {state} — the release waits "
                                 f"— next: let td{minted_id} run"
                             )
                             continue
-                    elif plan_root is not None:
+                    elif mintable:
                         notes.append(
-                            f"engine review: would mint a reviewer for td{todo_id}"
+                            f"engine review: would mint a reviewer for {unit.land}"
                         )
                         blockers.append(
-                            f"engine land td{todo_id} (jo{job_id}) has no "
+                            f"engine land {unit.label} has no "
                             "reviewer; the release waits — next: a live "
                             "tick with the factory on mints one"
                         )
                         continue
                     note, filed_id = _file_review_wait_ask(
                         store,
-                        todo_id,
-                        job_id=job_id,
+                        unit.ask_key,
+                        land=unit.land,
+                        job_id=unit.job_id,
                         dry_run=dry_run,
                         reason=refusal,
                     )
@@ -1778,11 +2032,11 @@ def engine_review_blockers(
                 if ask_id is not None:
                     next_step = f"answer the review-wait ask td{ask_id}"
                 elif file_asks:
-                    next_step = f"answer the review-wait ask on td{todo_id}"
+                    next_step = f"answer the review-wait ask on {unit.land}"
                 else:
                     next_step = "the review gate holds the cut"
                 blockers.append(
-                    f"engine land td{todo_id} (jo{job_id}) has no "
+                    f"engine land {unit.label} has no "
                     f"reviewer; the release waits — next: {next_step}"
                 )
                 continue
@@ -1790,7 +2044,7 @@ def engine_review_blockers(
             hopeless: tuple[int, str] | None = None
             satisfied = False
             for rid, meta in covering:
-                outcome, line = _review_outcome(store, rid, meta, todo_id)
+                outcome, line = _review_outcome(store, rid, meta, unit.land)
                 if outcome == "satisfied":
                     satisfied = True
                     break
@@ -1818,14 +2072,14 @@ def engine_review_blockers(
                 else:
                     base = max(
                         s if s.tzinfo is not None else s.replace(tzinfo=UTC)
-                        for s in (created_at, rstamp)
+                        for s in (unit.committed_at, rstamp)
                         if s is not None
                     )
                     due = now - base >= REVIEW_WAIT_AFTER
-            ask_id = _open_wait_ask_id(store, todo_id)
+            ask_id = _open_wait_ask_id(store, unit.ask_key)
             if file_asks and due:
                 note, filed_id = _file_review_wait_ask(
-                    store, todo_id, rid=rid, dry_run=dry_run
+                    store, unit.ask_key, land=unit.land, rid=rid, dry_run=dry_run
                 )
                 notes.append(note)
                 if filed_id is not None:

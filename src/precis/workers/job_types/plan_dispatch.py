@@ -361,6 +361,7 @@ _SENTENCE_END = frozenset(".!?")
 _MD_MARKERS = " \t-*#>"
 _LANDED_RE = re.compile(r"landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
 _TD_FROM_RE = re.compile(r"\s*td(\d+)\s*")
+_SHA_FROM_RE = re.compile(r"\s*sha:([0-9a-f]{7,40})\s*", re.IGNORECASE)
 
 #: Doable exclusions the tick honours: the shared registry minus
 #: ``child-failed:`` — plan retries are the tick's, not the bubble's —
@@ -881,6 +882,14 @@ def _review_from(n: _Node) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _review_sha(n: _Node) -> str | None:
+    """The sha a sha-keyed reviewer's ``meta.generate.from`` names — a
+    hand-landed engine commit with no linked todo (gr597625), ``None``
+    for a todo-keyed reviewer."""
+    m = _SHA_FROM_RE.fullmatch(str((n.meta.get("generate") or {}).get("from") or ""))
+    return m.group(1).lower() if m else None
+
+
 def _review_targets(plan: _Plan, n: _Node) -> list[_Node]:
     """The nodes whose land the reviewer judges: ``from`` itself, or its
     child todos (asks excluded) when it has them (a slicer's slices)."""
@@ -1165,10 +1174,14 @@ def _review_fix(
     findings: str,
     now: datetime,
 ) -> int:
+    intent = (
+        f"`git show {handle}` is the intent"
+        if _review_sha(n) is not None
+        else f"{handle}'s brief is the intent"
+    )
     body = (
         f"{findings}\n\nFindings of the review td{n.id} of {handle}'s land on "
-        f"main. Fix them on a fresh slice and land it; {handle}'s brief is the "
-        "intent."
+        f"main. Fix them on a fresh slice and land it; {intent}."
     )
     return _mint_task(
         store, plan, w, n.root, f"Fix review findings for {handle}", body, now
@@ -1189,6 +1202,11 @@ def _review_revert(
     targets = _review_targets(plan, n)
     landed = [(t, _landed_sha(store, t.id)) for t in targets]
     shas = [sha for _t, sha in landed if sha]
+    if not shas:
+        # A sha-keyed reviewer names the commit to revert directly.
+        from_sha = _review_sha(n)
+        if from_sha is not None:
+            shas = [from_sha]
     if len(shas) == 1:
         title = f"Revert {shas[0]} on main"
     elif shas:
@@ -1232,6 +1250,18 @@ def _review_revert(
         )
         if not w.dry_run:
             store.add_link(src_ref_id=t.id, dst_ref_id=revert_id, relation="blocked-by")
+    if not requeue and _review_sha(n) is None:
+        # A reviewer whose `from` target is not in this plan has no
+        # landed todo to hold it through the revert: the reviewer
+        # itself waits on the task — else it re-dispatches next tick
+        # and re-reviews the same land in a loop (gr597625). A
+        # sha-keyed reviewer closes at the verdict instead
+        # (_step_reviews) — its land has no rebuild to re-read.
+        if not w.dry_run:
+            store.add_link(src_ref_id=n.id, dst_ref_id=revert_id, relation="blocked-by")
+        plan.blockers.setdefault(n.id, []).append(
+            _Blocker(id=revert_id, status="open", is_ask=False, created_at=now)
+        )
     res.notes.append(
         f"td{n.id}: requeued {', '.join(f'td{t.id}' for t in requeue) or 'nothing'} "
         f"behind the revert"
@@ -1306,7 +1336,7 @@ def _step_reviews(
             "tests_run": False,
         }
         target_id = _review_from(n)
-        handle = f"td{target_id if target_id is not None else n.id}"
+        handle = _review_sha(n) or (f"td{target_id if target_id is not None else n.id}")
         if verdict is None:
             what = (
                 f"a malformed verdict {_first_line(raw)!r}"
@@ -1342,14 +1372,27 @@ def _step_reviews(
         else:
             revert_id = _review_revert(store, plan, w, res, n, handle, rest, now)
             record["task"] = revert_id
-            w.stamp_meta(n, {"rearmed_after_job": newest.id})
-            if n.status != "open":
-                w.set_status(n, "open")
-            res.notes.append(
-                f"td{n.id}: review REVERT for {handle} {marker}; "
-                f"minted td{revert_id}, "
-                "reviewer stays open for the rebuild"
-            )
+            if _review_sha(n) is not None:
+                # A sha-keyed land has no rebuild to re-read: the
+                # reviewer closes like a FIX — the gate tracks the
+                # revert task it minted (gr597625). Kept open it would
+                # re-dispatch once the revert lands, re-review the same
+                # static commit, REVERT again and mint the same revert
+                # in a loop (a second `git revert` re-applies it).
+                w.set_status(n, "done")
+                res.notes.append(
+                    f"td{n.id}: review REVERT for {handle} {marker}; "
+                    f"minted td{revert_id}, closed"
+                )
+            else:
+                w.stamp_meta(n, {"rearmed_after_job": newest.id})
+                if n.status != "open":
+                    w.set_status(n, "open")
+                res.notes.append(
+                    f"td{n.id}: review REVERT for {handle} {marker}; "
+                    f"minted td{revert_id}, "
+                    "reviewer stays open for the rebuild"
+                )
         w.stamp_meta(n, {"review": record})
         res.reviews += 1
 

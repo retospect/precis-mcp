@@ -38,6 +38,11 @@ PREV = "9" * 12
 RNG = f"{PREV}..{SHA[:12]}"
 
 
+#: The fake ``origin/prod..origin/main`` range the engine-review gate
+#: reads (gr597625): tests put ``release_poll._GitLand`` commits here.
+_GIT_LANDS: list[Any] = []
+
+
 @pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
@@ -45,6 +50,8 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_NODE", raising=False)
     monkeypatch.delenv("PRECIS_RELEASE_HEALTH_URL", raising=False)
     psettings.invalidate()
+    _GIT_LANDS.clear()
+    monkeypatch.setattr(rc._rp, "_git_lands", lambda: list(_GIT_LANDS))
 
 
 class Ctx:
@@ -2841,14 +2848,22 @@ def _reviewer(
 
 
 def _engine_land(store: Store, build_id: int, paths: list[str] | None) -> int:
+    sha = (f"{build_id:x}" + "f" * 40)[:40]  # a realistic, per-build sha
     meta: dict[str, Any] = {
         "job_type": "land_slice",
         "params": {"todo_id": build_id},
-        "landed_sha": "f" * 40,  # only a SUCCEEDED land can block
+        "landed_sha": sha,  # only a SUCCEEDED land can block
     }
     if paths is not None:
         meta["engine_paths"] = paths
     ref = store.insert_ref(kind="job", slug=None, title="land_slice", meta=meta)
+    # The gate's source of truth is the commit in the cut range; the
+    # job is only its sha → todo lookup (gr597625).
+    _GIT_LANDS.append(
+        rc._rp._GitLand(
+            sha=sha, subject="", committed_at=None, paths=tuple(paths or [])
+        )
+    )
     return int(ref.id)
 
 
