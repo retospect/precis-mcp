@@ -203,25 +203,43 @@ def test_probe_account_reports_an_unprobed_adapter(
     assert lane_health._probe_account("claude_p") == ("unprobed", "probe-error")
 
 
+def _stub_ping(
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: str,
+    *,
+    token: str | None = "sk-a" + "nt-oat01-token",
+    rc: int = 1,
+) -> None:
+    """A ``claude -p`` ping against a stubbed binary: ``env`` carries
+    ``token`` (``None`` = the child saw no token) and the run answers
+    ``CompletedProcess(rc, stdout)``."""
+    env = {} if token is None else {"CLAUDE_CODE_OAUTH_TOKEN": token}
+    monkeypatch.setattr(lane_health, "_claude_ping_env", lambda: dict(env))
+    monkeypatch.setattr(
+        lane_health.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], rc, stdout=stdout, stderr=""),
+    )
+
+
 def test_probe_claude_p_classifies_a_logged_out_ping(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The incident's own log shape: a ``claude -p`` ping answering
     "Not logged in · Please run /login" classifies
-    ``("auth", "not-logged-in")`` — the mark a park stamps."""
-    monkeypatch.setattr(lane_health, "_claude_ping_env", lambda: {})
-    monkeypatch.setattr(
-        lane_health.subprocess,
-        "run",
-        lambda *a, **k: subprocess.CompletedProcess(
-            a[0],
-            1,
-            stdout='{"type":"result","is_error":true,'
-            '"result":"Not logged in · Please run /login"}\n',
-            stderr="",
-        ),
+    ``("auth", "not-logged-in")`` — the mark a park stamps — and the
+    reading names the token it saw: ``present``/``oauth-setup``."""
+    _stub_ping(
+        monkeypatch,
+        '{"type":"result","is_error":true,'
+        '"result":"Not logged in · Please run /login"}\n',
     )
-    assert lane_health._probe_claude_p() == ("auth", "not-logged-in")
+    r = lane_health._probe_claude_p()
+    assert (r.outcome, r.key) == ("auth", "not-logged-in")
+    assert r.token == "present"
+    assert r.token_class == "oauth-setup"
+    assert r.read == "auth:not-logged-in"
+    assert r.result == "Not logged in · Please run /login"
 
 
 def test_probe_claude_p_timeout_is_unprobed(
@@ -230,13 +248,19 @@ def test_probe_claude_p_timeout_is_unprobed(
     """Review S3: a ping that hits its budget is ``unprobed`` — the
     probe could not judge the credential, so it must neither park nor
     unpark the lane."""
-    monkeypatch.setattr(lane_health, "_claude_ping_env", lambda: {})
+    monkeypatch.setattr(
+        lane_health,
+        "_claude_ping_env",
+        lambda: {"CLAUDE_CODE_OAUTH_TOKEN": "sk-a" + "nt-oat01-tok"},
+    )
 
     def _hang(*a: Any, **k: Any) -> Any:
         raise subprocess.TimeoutExpired(cmd="claude", timeout=20)
 
     monkeypatch.setattr(lane_health.subprocess, "run", _hang)
-    assert lane_health._probe_claude_p() == ("unprobed", "timeout")
+    r = lane_health._probe_claude_p()
+    assert (r.outcome, r.key) == ("unprobed", "timeout")
+    assert r.token == "present" and r.token_class == "oauth-setup"
 
 
 def test_probe_claude_p_a_missing_binary_is_unprobed(
@@ -244,13 +268,19 @@ def test_probe_claude_p_a_missing_binary_is_unprobed(
 ) -> None:
     """Review B1: the CLI absent on the probing host is a probe that
     cannot run — ``unprobed``, never a park."""
-    monkeypatch.setattr(lane_health, "_claude_ping_env", lambda: {})
+    monkeypatch.setattr(
+        lane_health,
+        "_claude_ping_env",
+        lambda: {"CLAUDE_CODE_OAUTH_TOKEN": "sk-a" + "nt-oat01-tok"},
+    )
 
     def _missing(*a: Any, **k: Any) -> Any:
         raise FileNotFoundError("claude")
 
     monkeypatch.setattr(lane_health.subprocess, "run", _missing)
-    assert lane_health._probe_claude_p() == ("unprobed", "cli-missing")
+    r = lane_health._probe_claude_p()
+    assert (r.outcome, r.key) == ("unprobed", "cli-missing")
+    assert r.token == "present"
 
 
 def test_probe_devin_tree_classes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -455,10 +485,12 @@ def test_probe_entrypoint_prints_one_classified_line_per_adapter(
     key=<k>`` per adapter — the class key, never raw output."""
     monkeypatch.setattr(
         lane_health,
-        "_probe_account",
+        "_probe_reading",
         lambda a: {
-            "claude_p": ("auth", "not-logged-in"),
-            "devin_tree": ("ok", None),
+            "claude_p": lane_health._ProbeReading(
+                "auth", "not-logged-in", token="present", read="auth:not-logged-in"
+            ),
+            "devin_tree": lane_health._ProbeReading("ok", None),
         }[a],
     )
     assert lane_health._main(["probe", "claude_p", "devin_tree"]) == 0
@@ -753,14 +785,16 @@ def test_probe_claude_p_only_a_positive_auth_classification_parks(
 
     # rc 1 with empty stdout (a crash, a network blip, a 5xx).
     monkeypatch.setattr(lane_health.subprocess, "run", _proc(""))
-    assert lane_health._probe_claude_p() == ("unprobed", "error")
+    assert (r := lane_health._probe_claude_p()).outcome == "unprobed"
+    assert r.key == "error"
     # is_error with a result the auth allowlist does not name.
     monkeypatch.setattr(
         lane_health.subprocess,
         "run",
         _proc('{"type":"result","is_error":true,"result":"tool crashed"}\n'),
     )
-    assert lane_health._probe_claude_p() == ("unprobed", "error")
+    assert (r := lane_health._probe_claude_p()).outcome == "unprobed"
+    assert r.key == "error"
     # A quota window the probe saw: unprobed — the window's own wording
     # is not a positive auth failure from the lane's binary.
     monkeypatch.setattr(
@@ -772,7 +806,8 @@ def test_probe_claude_p_only_a_positive_auth_classification_parks(
             '"api_error_status":429}\n'
         ),
     )
-    assert lane_health._probe_claude_p() == ("unprobed", "quota")
+    assert (r := lane_health._probe_claude_p()).outcome == "unprobed"
+    assert r.key == "quota"
 
 
 def test_probes_are_read_only_no_login_refresh_or_update(
@@ -802,7 +837,8 @@ def test_probes_are_read_only_no_login_refresh_or_update(
     # claude: the ping argv is a plain -p read; its env keeps the OAuth
     # token, drops the MCP bearer and arms the nonessential-traffic
     # switch so the probe can never trigger a CLI self-update.
-    assert lane_health._probe_claude_p() == ("unprobed", "error")
+    assert (r := lane_health._probe_claude_p()).outcome == "unprobed"
+    assert r.key == "error"
     cl_argv, cl_env = spawned[-1], envs[-1]
     assert cl_argv[1:] == [
         "-p",
@@ -838,3 +874,157 @@ def test_probes_are_read_only_no_login_refresh_or_update(
     calls_before = len(spawned)
     assert lane_health._probe_kimi_tree() == ("ok", None)
     assert len(spawned) == calls_before
+
+
+# ── gr601062: attribute an ``auth`` read to the token or the plumbing ──
+
+
+def test_an_auth_read_on_an_absent_token_is_vault_miss_not_a_park(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr601062: the probe env never carried the token — the CLI's
+    "Not logged in" is the host's vault state, not the lane's verdict:
+    ``unprobed``/``vault-miss`` applies (review R2 — a probe that cannot
+    judge must not park), and the raw ``auth`` read rides along for the
+    summary's attribution."""
+    _stub_ping(
+        monkeypatch,
+        '{"type":"result","is_error":true,'
+        '"result":"Not logged in · Please run /login"}\n',
+        token=None,
+    )
+    r = lane_health._probe_claude_p()
+    assert (r.outcome, r.key) == ("unprobed", "vault-miss")
+    assert r.token == "absent" and r.token_class == "-"
+    assert r.read == "auth:not-logged-in"
+    assert lane_health._probe_account("claude_p") == ("unprobed", "vault-miss")
+    use_lanes(monkeypatch, seed_lane("claude-sub"))
+    calls = _capture(monkeypatch, {"claude_p": ("unprobed", "vault-miss")})
+    assert run_lane_health_pass(_STORE, now=_NOW) == {"claude-sub": "unprobed"}
+    assert calls["health"] == [("claude-sub", "unprobed")]
+    assert calls["park"] == calls["unpark"] == []
+
+
+def test_probe_child_log_line_attributes_token_absent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One read of the probe log says the token never reached the CLI:
+    ``token=absent`` plus the raw ``auth`` read on the classified line,
+    the ``result`` wording verbatim on the next."""
+    _stub_ping(
+        monkeypatch,
+        '{"type":"result","is_error":true,'
+        '"result":"Not logged in · Please run /login"}\n',
+        token=None,
+    )
+    assert lane_health._main(["probe", "claude_p"]) == 0
+    out = capsys.readouterr().out
+    assert (
+        "probe: adapter=claude_p outcome=unprobed key=vault-miss "
+        "token=absent class=- read=auth:not-logged-in" in out
+    )
+    assert "result: adapter=claude_p text=Not logged in · Please run /login" in out
+
+
+def test_probe_child_log_line_attributes_token_rejected(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A token that reached the CLI and was refused: ``auth`` applies,
+    the class label names an ``sk-ant-oat`` setup token — and neither
+    the value nor more than the 7-char vendor prefix reaches the log."""
+    _stub_ping(
+        monkeypatch,
+        '{"type":"result","is_error":true,'
+        '"result":"Not logged in · Please run /login"}\n',
+        token="sk-a" + "nt-oat01-SENTINEL-token",
+    )
+    assert lane_health._main(["probe", "claude_p"]) == 0
+    out = capsys.readouterr().out
+    assert (
+        "probe: adapter=claude_p outcome=auth key=not-logged-in "
+        "token=present class=oauth-setup read=auth:not-logged-in" in out
+    )
+    assert "result: adapter=claude_p text=Not logged in" in out
+    assert ("sk-a" + "nt-oat01-SENTINEL-token") not in out
+    assert "sk-ant-oat" not in out
+
+
+def test_probe_child_log_line_present_ok(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Green on a handed-down token: a non-setup shape labels
+    ``class=other``, and the CLI's answer rides the ``result:`` line —
+    still never the value."""
+    _stub_ping(
+        monkeypatch,
+        '{"type":"result","is_error":false,"result":"pong"}\n',
+        token="oauth-other-shape",
+        rc=0,
+    )
+    assert lane_health._main(["probe", "claude_p"]) == 0
+    out = capsys.readouterr().out
+    assert (
+        "probe: adapter=claude_p outcome=ok key=- token=present "
+        "class=other read=ok:-" in out
+    )
+    assert "result: adapter=claude_p text=pong" in out
+    assert "oauth-other-shape" not in out
+
+
+def test_poll_summary_attributes_an_auth_read_to_the_plumbing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The job card's read of a vault-miss pass: ``auth (token absent)`` —
+    the applied ``unprobed`` parks nothing."""
+    use_lanes(monkeypatch, seed_lane("claude-sub"))
+    calls = _capture(monkeypatch, {})
+    log_path = tmp_path / "j.log"
+    exit_file = tmp_path / "j.exit"
+    log_path.write_text(
+        "probe: adapter=claude_p outcome=unprobed key=vault-miss "
+        "token=absent class=- read=auth:not-logged-in\n",
+        encoding="utf-8",
+    )
+    exit_file.write_text("0\n", encoding="utf-8")
+    ctx = _Ctx(_STORE)
+    handle = {
+        "pid": 4242,
+        "log": str(log_path),
+        "exit_file": str(exit_file),
+        "adapters": ["claude_p"],
+    }
+    assert lane_health.poll(ctx, handle) is True
+    assert ctx.status == "succeeded"
+    [summary] = [t for k, t in ctx.chunks if k == "job_summary"]
+    assert "claude-sub auth (token absent)" in summary
+    assert calls["health"] == [("claude-sub", "unprobed")]
+    assert calls["park"] == calls["unpark"] == []
+
+
+def test_poll_summary_attributes_an_auth_read_to_the_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The token reached the CLI and was refused: the summary reads
+    ``auth (token rejected)`` and the lane parks on the auth key."""
+    use_lanes(monkeypatch, seed_lane("claude-sub"))
+    calls = _capture(monkeypatch, {})
+    log_path = tmp_path / "j.log"
+    exit_file = tmp_path / "j.exit"
+    log_path.write_text(
+        "probe: adapter=claude_p outcome=auth key=not-logged-in "
+        "token=present class=oauth-setup read=auth:not-logged-in\n",
+        encoding="utf-8",
+    )
+    exit_file.write_text("0\n", encoding="utf-8")
+    ctx = _Ctx(_STORE)
+    handle = {
+        "pid": 4242,
+        "log": str(log_path),
+        "exit_file": str(exit_file),
+        "adapters": ["claude_p"],
+    }
+    assert lane_health.poll(ctx, handle) is True
+    assert ctx.status == "succeeded"
+    [summary] = [t for k, t in ctx.chunks if k == "job_summary"]
+    assert "claude-sub auth (token rejected)" in summary
+    assert calls["park"] == [("claude-sub", "auth:not-logged-in")]

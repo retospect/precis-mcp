@@ -129,7 +129,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         get_blurb="Run `claude setup-token` on any machine you're already "
         "logged into, and paste the token it prints here.",
         cost="included with a Claude subscription",
-        probe_group=None,
+        probe_group="claude_oauth",
     ),
     SecretSpec(
         name="KIMI_CODE_API_KEY",
@@ -845,6 +845,34 @@ async def _probe_kimi(client: httpx.AsyncClient, values: dict[str, str]) -> Chec
     return _classify_status(r.status_code)
 
 
+async def _probe_claude_oauth(
+    client: httpx.AsyncClient, values: dict[str, str]
+) -> CheckResult:
+    """The same ``claude -p`` auth ping the ``lane_health`` probe runs —
+    the OAuth token has no cheap auth-only HTTPS endpoint, so the check
+    is the CLI's own verdict (``client`` unused; the ping runs off the
+    event loop inside its own subprocess budget). A green ping is
+    ``ok``, the CLI's positive auth read is ``bad``, and anything the
+    ping cannot judge — no binary on this host, a timeout, an
+    unparseable answer — is ``unknown``: the check never asks for a
+    rotation it cannot prove."""
+    del client
+    from precis.utils import claude_oauth
+    from precis.workers.job_types import lane_health
+
+    env = lane_health._claude_ping_env()
+    env[claude_oauth.ENV_VAR] = values["CLAUDE_CODE_OAUTH_TOKEN"]
+    reading = await asyncio.to_thread(lane_health._probe_claude_p, env)
+    if reading.outcome == "ok":
+        return CheckResult("ok", "verified")
+    raw, _sep, raw_key = (reading.read or "").partition(":")
+    if raw == "auth":
+        return CheckResult("bad", f"token rejected ({raw_key or reading.key})")
+    return CheckResult(
+        "unknown", f"{reading.key or reading.outcome} — could not verify"
+    )
+
+
 async def _probe_mailto(
     client: httpx.AsyncClient, values: dict[str, str]
 ) -> CheckResult:
@@ -870,6 +898,7 @@ _PROBES: dict[str, ProbeFn] = {
     "cerebras": _probe_cerebras,
     "discord": _probe_discord,
     "kimi": _probe_kimi,
+    "claude_oauth": _probe_claude_oauth,
     "mailto": _probe_mailto,
 }
 

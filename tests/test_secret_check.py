@@ -58,7 +58,16 @@ def _patch_real_probes(
 ) -> None:
     """The real probe functions run against ``handler``; every secret
     resolves to the sentinel and retries never sleep. The ``mailto`` probe
-    is excluded — it is a local format check with no wire to leak onto."""
+    is excluded — it is a local format check with no wire to leak onto —
+    and ``claude_oauth`` is stubbed: its check is a ``claude -p``
+    subprocess, not an httpx call, so no real CLI may run here."""
+
+    async def _stub_claude_oauth(
+        client: httpx.AsyncClient, values: dict[str, str]
+    ) -> CheckResult:
+        return CheckResult("unknown", "stubbed — could not verify")
+
+    monkeypatch.setitem(secret_status._PROBES, "claude_oauth", _stub_claude_oauth)
 
     def client() -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -229,7 +238,7 @@ def test_real_probe_path_never_leaks_the_sentinel(
     expected = sum(
         len(names)
         for g, names in secret_status._PROBE_GROUP_MEMBERS.items()
-        if g != "mailto" and g not in lane_dark
+        if g not in ("mailto", "claude_oauth") and g not in lane_dark
     )
     # Wolfram and OpenAlex don't treat 401 as a rejection (their bad codes
     # are 403 / 501-with-appid-complaint), so those members classify
@@ -337,6 +346,14 @@ def test_infra_class_is_presence_only(
         called.extend(values)
         return _OK
 
+    # Only infra names resolve, so a *skipped* probe can only be the class
+    # gate's doing — an ambient env credential (the container's
+    # CLAUDE_CODE_OAUTH_TOKEN) must not make another group's probe run.
+    monkeypatch.setattr(
+        secret_status,
+        "is_available",
+        lambda n, *, store=None: n.startswith("svc/infra/"),
+    )
     monkeypatch.setitem(
         secret_status._PROBE_GROUP_MEMBERS, "infra_test", ("svc/infra/DB_KEY",)
     )
@@ -559,3 +576,61 @@ def test_present_and_file_refuse_traversal(
     assert vault._from_file("../x") is None
     assert vault.get_secret("../anything") is None
     outside.unlink()
+
+
+# ── gr601062: the claude_oauth probe group runs the lane's own ping ────
+
+
+def test_claude_oauth_probe_group_registered() -> None:
+    """gr601062: /secrets verifies the OAuth token by the same
+    ``claude -p`` ping the lane probe runs — ok/rejected, not bare
+    presence."""
+    (spec,) = [
+        s for s in secret_status.KNOWN_SECRETS if s.name == "CLAUDE_CODE_OAUTH_TOKEN"
+    ]
+    assert spec.probe_group == "claude_oauth"
+    assert secret_status._PROBES["claude_oauth"] is secret_status._probe_claude_oauth
+
+
+def test_claude_oauth_probe_runs_the_lane_ping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe hands ITS resolved token to the ping env and maps the
+    CLI's verdict: a green ping is ``ok``, an ``auth`` read is ``bad``
+    (token rejected), anything the ping cannot judge is ``unknown`` —
+    never a rotation it cannot prove. The value reaches the subprocess
+    env and no result text."""
+    from precis.workers.job_types import lane_health
+
+    monkeypatch.setattr(lane_health, "_claude_ping_env", lambda: {})
+    envs: list[dict[str, str]] = []
+    readings: list[Any] = [
+        lane_health._ProbeReading(
+            "auth", "not-logged-in", token="present", read="auth:not-logged-in"
+        ),
+        lane_health._ProbeReading("ok", None, token="present", read="ok:-"),
+        lane_health._ProbeReading("unprobed", "cli-missing", token="absent"),
+    ]
+
+    def fake_ping(env: dict[str, str]) -> Any:
+        envs.append(dict(env))
+        return readings.pop(0)
+
+    monkeypatch.setattr(lane_health, "_probe_claude_p", fake_ping)
+
+    async def call(values: dict[str, str]) -> CheckResult:
+        async with httpx.AsyncClient() as client:
+            return await secret_status._probe_claude_oauth(client, values)
+
+    rejected = asyncio.run(call({"CLAUDE_CODE_OAUTH_TOKEN": _SENTINEL}))
+    assert rejected.state == "bad"
+    assert "rejected" in rejected.detail
+    assert envs[0]["CLAUDE_CODE_OAUTH_TOKEN"] == _SENTINEL
+    assert _SENTINEL not in rejected.detail
+
+    ok = asyncio.run(call({"CLAUDE_CODE_OAUTH_TOKEN": "t"}))
+    assert ok.state == "ok"
+
+    unjudgeable = asyncio.run(call({"CLAUDE_CODE_OAUTH_TOKEN": "t"}))
+    assert unjudgeable.state == "unknown"
+    assert "cli-missing" in unjudgeable.detail

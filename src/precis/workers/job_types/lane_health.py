@@ -15,7 +15,15 @@ the child inherits the slice worker's HOME, PATH and ``PRECIS_*_BIN``.
 ``submit`` launches ``python -m … lane_health probe <adapter>…`` —
 the ``_main`` entry prints one ``probe: adapter=<a> outcome=<o>
 key=<k>`` line per adapter — and ``poll`` applies the outcomes through
-:func:`run_lane_health_pass`. Host affinity is the registry
+:func:`run_lane_health_pass`. The ``claude_p`` line adds
+``token=present|absent`` and the token's class (``oauth-setup`` for an
+``sk-ant-oat`` setup token, else ``other`` — the log never carries the
+value or more than the 7-char vendor prefix), the CLI's raw
+``read=outcome:key``, and a ``result:`` line with its ``result``
+wording verbatim (gr601062): an ``auth`` read on an absent token is a
+host/vault miss, not the lane's verdict, so it applies
+``unprobed``/``vault-miss`` and the summary attributes ``auth (token
+absent)`` vs ``auth (token rejected)``. Host affinity is the registry
 ``placement`` row (``repo_checkout``, ``claude_bin``, ``git`` — the
 same tokens a slice needs), so no worker without the lane CLIs can
 claim the job:
@@ -32,8 +40,9 @@ claim the job:
 * red on a parked lane only moves the health stamp (no second park —
   the first-sighting ``parked_at`` keeps the >6h alert clock);
 * ``unprobed`` (a CLI absent on the probing host, a probe that timed
-  out or could not judge) moves the stamp only — never parks, never
-  unparks;
+  out or could not judge — and a ``claude_p`` ``auth`` read whose env
+  held no token, ``vault-miss``) moves the stamp only — never parks,
+  never unparks;
 * a lane still parked past :data:`PARKED_ALERT_AFTER` raises one
   deduped ``lane-parked:<name>`` alert.
 
@@ -54,6 +63,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -101,9 +111,43 @@ _PARAMS_SCHEMA: dict[str, Any] = {
 
 #: The detached child's output contract — one classified line per
 #: adapter, the class key only (``-`` when the outcome carries none).
+#: A ``claude_p`` line adds ``token=``/``class=``/``read=`` fields: the
+#: token's presence and class label in the env the CLI was handed, and
+#: the CLI's raw ``outcome:key`` before the vault-miss rewrite.
 _PROBE_LINE_RE = re.compile(
-    r"^probe: adapter=(\S+) outcome=(\S+) key=(\S+)\s*$", re.MULTILINE
+    r"^probe: adapter=(\S+) outcome=(\S+) key=(\S+)"
+    r"(?: token=(\S+) class=(\S+)(?: read=(\S+))?)?\s*$",
+    re.MULTILINE,
 )
+
+
+@dataclass(frozen=True)
+class _ProbeReading:
+    """One probe's report: the APPLIED ``outcome``/``key`` plus, for the
+    claude ping, the attribution extras the child's log line and the job
+    summary carry — ``token`` (``present``|``absent`` in the env the CLI
+    was handed), ``token_class`` (``oauth-setup`` for an ``sk-ant-oat``
+    setup token, ``other``, ``-`` when absent — never the value or more
+    than the 7-char vendor prefix), ``read`` (the CLI's raw
+    ``outcome:key`` before the vault-miss rewrite) and ``result`` (its
+    ``result`` wording verbatim, whitespace-collapsed — no secret)."""
+
+    outcome: str
+    key: str | None
+    token: str | None = None
+    token_class: str | None = None
+    read: str | None = None
+    result: str | None = None
+
+
+#: The ``claude setup-token`` vendor prefix an ``oauth-setup`` class
+#: names — the log carries the class label, never the prefix itself.
+_OAUTH_SETUP_PREFIX = "sk-ant-oat"
+_OAUTH_SETUP_CLASS = "oauth-setup"
+
+#: The ``result:`` line's cap — the auth verdict's phrases are far
+#: shorter; a longer answer is truncated, never paraphrased.
+_PROBE_RESULT_CAP = 240
 
 
 def _fingerprint(name: str) -> str:
@@ -130,19 +174,36 @@ def _claude_ping_env() -> dict[str, str]:
     return env
 
 
-def _probe_claude_p() -> tuple[str, str | None]:
+def _probe_claude_p(env: dict[str, str] | None = None) -> _ProbeReading:
     """One ``claude -p`` ping under :func:`_claude_ping_env` (the vault
     OAuth the worker handed down), classified by the same outage
     classifier the poll applies. Only a positive ``auth`` classification
     may park the lane (COORDINATOR ruling, review R2-2): a probe-seen
     ``quota``/``rate`` window, a crash, an unparseable answer or any
     other ``is_error`` — and everything the probe cannot judge, a
-    missing binary or a timed-out ping (review S3) — is ``unprobed``."""
+    missing binary or a timed-out ping (review S3) — is ``unprobed``.
+
+    gr601062: the reading carries the token's presence and class label
+    in ``env`` so one log line attributes an ``auth`` verdict — and an
+    ``auth`` read on an env with NO token applies ``unprobed``/
+    ``vault-miss`` (a host/vault condition the ping cannot judge), never
+    ``auth:not-logged-in``'s park. ``env`` defaults to
+    :func:`_claude_ping_env`; the ``secret_status`` probe group passes
+    the token it resolved so /secrets runs the same ping."""
+    from precis.utils import claude_oauth
     from precis.workers.job_types._slice_adapters import (
         claude_bin,
         parse_claude_result,
     )
 
+    env = _claude_ping_env() if env is None else env
+    token = env.get(claude_oauth.ENV_VAR) or ""
+    token_state = "present" if token else "absent"
+    token_class = (
+        _OAUTH_SETUP_CLASS
+        if token.startswith(_OAUTH_SETUP_PREFIX)
+        else ("other" if token else "-")
+    )
     argv = [
         claude_bin(),
         "-p",
@@ -155,7 +216,7 @@ def _probe_claude_p() -> tuple[str, str | None]:
     try:
         proc = subprocess.run(
             argv,
-            env=_claude_ping_env(),
+            env=env,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -163,20 +224,40 @@ def _probe_claude_p() -> tuple[str, str | None]:
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return "unprobed", "timeout"
+        return _ProbeReading(
+            "unprobed", "timeout", token=token_state, token_class=token_class
+        )
     except OSError:
-        return "unprobed", "cli-missing"
+        return _ProbeReading(
+            "unprobed", "cli-missing", token=token_state, token_class=token_class
+        )
     result, is_error = parse_claude_result(proc.stdout)
     log_text = proc.stdout if proc.stdout.strip() else proc.stderr
     outage = _rs._lane_outage(
         result, log_text, adapter="claude_p", exit_code=proc.returncode
     )
+    raw: tuple[str, str | None]
     if outage is not None:
-        cls, _retry, key = outage
-        return ("auth", key) if cls == "auth" else ("unprobed", cls)
-    if is_error:
-        return "unprobed", "error"
-    return "ok", None
+        cls, _retry, raw_key = outage
+        raw = ("auth", raw_key) if cls == "auth" else ("unprobed", cls)
+    elif is_error:
+        raw = ("unprobed", "error")
+    else:
+        raw = ("ok", None)
+    outcome, key = raw
+    if outcome == "auth" and not token:
+        # gr601062: the CLI's auth read with no token in its env is the
+        # host's vault miss, not a lane verdict — a probe that cannot
+        # judge must not park (review R2).
+        outcome, key = "unprobed", "vault-miss"
+    return _ProbeReading(
+        outcome,
+        key,
+        token=token_state,
+        token_class=token_class,
+        read=f"{raw[0]}:{raw[1] or '-'}",
+        result=(" ".join(result.split())[:_PROBE_RESULT_CAP] if result else None),
+    )
 
 
 def _probe_devin_tree() -> tuple[str, str | None]:
@@ -260,7 +341,9 @@ def _probe_kimi_tree() -> tuple[str, str | None]:
     return "unprobed", "unverifiable"
 
 
-_PROBES: dict[str, Callable[[], tuple[str, str | None]]] = {
+#: A probe reports a bare ``(outcome, key)`` or a full
+#: :class:`_ProbeReading` (the claude ping's token attribution).
+_PROBES: dict[str, Callable[[], tuple[str, str | None] | _ProbeReading]] = {
     "claude_p": _probe_claude_p,
     "devin_tree": _probe_devin_tree,
     "codex_exec": _probe_codex_exec,
@@ -268,18 +351,29 @@ _PROBES: dict[str, Callable[[], tuple[str, str | None]]] = {
 }
 
 
+def _probe_reading(adapter: str) -> _ProbeReading:
+    """One probe's full :class:`_ProbeReading` — the applied verdict plus
+    the claude ping's attribution extras; a bare ``(outcome, key)``
+    probe or a probe that cannot run fills the extras with ``None``."""
+    probe = _PROBES.get(adapter)
+    if probe is None:
+        return _ProbeReading("unprobed", "no-probe")
+    try:
+        out = probe()
+    except Exception:
+        log.warning("lane_health: %s probe raised", adapter, exc_info=True)
+        return _ProbeReading("unprobed", "probe-error")
+    if isinstance(out, _ProbeReading):
+        return out
+    return _ProbeReading(out[0], out[1])
+
+
 def _probe_account(adapter: str) -> tuple[str, str | None]:
     """``(outcome, key)`` for one lane's adapter — ``outcome`` is
     ``ok`` | ``auth`` | ``outage`` | ``unprobed``; ``key`` the short
     mark, never raw output."""
-    probe = _PROBES.get(adapter)
-    if probe is None:
-        return "unprobed", "no-probe"
-    try:
-        return probe()
-    except Exception:
-        log.warning("lane_health: %s probe raised", adapter, exc_info=True)
-        return "unprobed", "probe-error"
+    reading = _probe_reading(adapter)
+    return reading.outcome, reading.key
 
 
 def _unparkable(parked_reason: str | None, health_outcome: str | None) -> bool:
@@ -533,13 +627,36 @@ def submit(ctx: Any, spec: Any) -> Any:
     return handle
 
 
-def _probe_lines(log_text: str) -> dict[str, tuple[str, str | None]]:
-    """``{adapter: (outcome, key)}`` from the child's ``probe:`` lines —
-    ``-`` maps back to no key."""
+def _probe_lines(log_text: str) -> dict[str, _ProbeReading]:
+    """``{adapter: reading}`` from the child's ``probe:`` lines — ``-``
+    maps back to no key; a ``claude_p`` line's ``token=``/``class=``/
+    ``read=`` fields ride along for the summary's attribution."""
     return {
-        m.group(1): (m.group(2), None if m.group(3) == "-" else m.group(3))
+        m.group(1): _ProbeReading(
+            m.group(2),
+            None if m.group(3) == "-" else m.group(3),
+            token=m.group(4),
+            token_class=m.group(5),
+            read=m.group(6),
+        )
         for m in _PROBE_LINE_RE.finditer(log_text)
     }
+
+
+def _summary_outcome(outcome: str, reading: _ProbeReading | None) -> str:
+    """The job-summary token for one lane: a ``claude_p`` pass whose CLI
+    read ``auth`` is attributed — ``auth (token absent)`` when the env
+    handed the ping no token (applied as ``unprobed``/``vault-miss``) or
+    ``auth (token rejected)`` when it reached the CLI and failed — so
+    one read of the card says which side to fix (gr601062)."""
+    if reading is None:
+        return outcome
+    raw = (reading.read or "").partition(":")[0] or reading.outcome
+    if raw != "auth":
+        return outcome
+    if reading.token == "absent":
+        return "auth (token absent)"
+    return "auth (token rejected)"
 
 
 def poll(ctx: Any, handle: Any) -> bool:
@@ -559,18 +676,29 @@ def poll(ctx: Any, handle: Any) -> bool:
     if exit_code != 0:
         _rc.fail_with_tail(ctx, f"{NAME}: probe process exit {exit_code}", log_text)
         return True
-    outcomes = _probe_lines(log_text)
+    readings = _probe_lines(log_text)
+
+    def applied(adapter: str) -> tuple[str, str | None]:
+        r = readings.get(adapter)
+        return (r.outcome, r.key) if r is not None else ("unprobed", "no-result")
+
     status = run_lane_health_pass(
         ctx.store,
-        probe=lambda a: outcomes.get(a, ("unprobed", "no-result")),
+        probe=applied,
         note=lambda line: ctx.append_chunk("job_event", line),
     )
     ctx.set_meta(status=status)
+    from precis.utils.llm import accounts
+
+    adapter_of = {a.name: a.adapter for a in accounts.list_accounts(ctx.store)}
     ctx.append_chunk(
         "job_summary",
         f"{NAME}: "
         + (
-            ", ".join(f"{name} {outcome}" for name, outcome in sorted(status.items()))
+            ", ".join(
+                f"{name} {_summary_outcome(outcome, readings.get(adapter_of.get(name, '')))}"
+                for name, outcome in sorted(status.items())
+            )
             or "no enabled lanes"
         ),
     )
@@ -585,7 +713,10 @@ def _main(argv: list[str]) -> int:
     """The detached probe child: ``python -m … lane_health probe
     <adapter>…`` prints one classified line per adapter on stdout and
     exits 0 — the park/unpark decision stays with the claiming job's
-    poll, the child only probes."""
+    poll, the child only probes. A ``claude_p`` line adds the token's
+    presence/class label and the CLI's raw read, then a ``result:`` line
+    with the ``result`` wording verbatim (gr601062: one read attributes
+    an ``auth`` verdict to the token or to the plumbing)."""
     if argv[:1] != ["probe"] or not argv[1:]:
         print(
             f"usage: python -m {__name__} probe <adapter>…",
@@ -593,11 +724,15 @@ def _main(argv: list[str]) -> int:
         )
         return 2
     for adapter in argv[1:]:
-        outcome, key = _probe_account(adapter)
-        print(
-            f"probe: adapter={adapter} outcome={outcome} key={key or '-'}",
-            flush=True,
-        )
+        r = _probe_reading(adapter)
+        line = f"probe: adapter={adapter} outcome={r.outcome} key={r.key or '-'}"
+        if r.token is not None:
+            line += f" token={r.token} class={r.token_class or '-'}"
+            if r.read:
+                line += f" read={r.read}"
+        print(line, flush=True)
+        if r.result:
+            print(f"result: adapter={adapter} text={r.result}", flush=True)
     return 0
 
 
