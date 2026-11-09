@@ -661,7 +661,15 @@ def _verbatim_pred(terms: list[str], *, scoped: bool = False) -> tuple[str, list
     :meth:`ChunkStore.search_chunks_keywords` and
     :meth:`ChunkStore.count_chunks_keywords` so results and the "N of K"
     header can never diverge.
+
+    With the memory-ablation ``kwd`` switch off (``precis.bench.switches``)
+    the keyword-containment leg is gone from the ranking: only the literal
+    phrase ``text`` ILIKE match remains, scoped or not.
     """
+    from precis.bench import switches as bench_switches
+
+    if not bench_switches.current().kwd:
+        return "c.text ILIKE %s ESCAPE '\\'", [_ilike_contains(" ".join(terms))]
     if not scoped:
         return "c.keywords @> %s::text[]", [terms]
     return "(c.keywords @> %s::text[] OR c.text ILIKE %s ESCAPE '\\')", [
@@ -3858,6 +3866,18 @@ class ChunkStore:
         Mirrors the draft reader's :meth:`block_views`, keyed by ``ord``
         (papers address by ord, not handle) plus page. ``pos_range=(lo,
         hi)`` filters inclusively."""
+        from precis.bench import switches as bench_switches
+
+        sw = bench_switches.current()
+        # Memory-ablation switches: a layer that is off is not selected.
+        kw_col = "c.keywords" if sw.kwd else "NULL::text[]"
+        summary_col = (
+            """(SELECT s.text FROM chunk_summaries s
+                          WHERE s.chunk_id = c.chunk_id
+                            AND s.summarizer = 'llm-v1' LIMIT 1)"""
+            if sw.summary
+            else "NULL::text"
+        )
         clauses = ["c.ref_id = %s", "c.ord >= 0"]
         params: list[Any] = [ref_id]
         if pos_range is not None:
@@ -3867,10 +3887,8 @@ class ChunkStore:
         with self.pool.connection() as conn:
             rows = conn.execute(
                 f"""
-                SELECT c.ord, c.page_first, c.keywords,
-                       (SELECT s.text FROM chunk_summaries s
-                          WHERE s.chunk_id = c.chunk_id
-                            AND s.summarizer = 'llm-v1' LIMIT 1) AS summary
+                SELECT c.ord, c.page_first, {kw_col},
+                       {summary_col} AS summary
                   FROM chunks c
                  WHERE {where}
                  ORDER BY c.ord ASC

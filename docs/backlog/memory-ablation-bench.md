@@ -111,6 +111,53 @@ turns one off, plus two baselines:
 | baseline `chunk-rag` | naive top-k chunk retrieval, no graph |
 | baseline `whole-paper` | read the paper(s) the gold chunk sits in |
 
+**Switches** (landed, td604843). `PRECIS_BENCH_SWITCHES` is a comma list of
+the arm names above (`no-kwd,semantic-only`); unset means all-on, which is
+byte-identical to a build without them. The set is read once per call in
+`src/precis/runtime/dispatch.py::DispatchMixin.dispatch_with_status` and held
+in a context var (`src/precis/bench/switches.py::seeded`; an in-process
+harness uses `applied(...)` instead). Nothing persisted changes. Where each
+layer is cut:
+
+- `no-kwd`: `src/precis/store/_mappers.py::_row_to_chunk` (chunk rows carry
+  no keywords, so every row, cluster label and TOC is built without them),
+  `src/precis/store/_chunks_ops.py::_verbatim_pred` (keyword-containment
+  leg of `mode='verbatim'` ranking), `ChunkStore.chunk_llm_summaries_for_ref`
+  (column not selected), `src/precis/utils/eye_render.py::_apply_bench_switches`
+  (the `kwd` rung is refused), `src/precis/utils/toc_db.py::_pending_keyword_chunks`
+  and `src/precis/handlers/paper.py::_toc_readiness_line` (no "pending"
+  or "keyworded" text for a layer that is off, not draining).
+- `no-summary`: `eye_render._apply_bench_switches` (`summary` rung refused),
+  `ChunkStore.chunk_llm_summaries_for_ref` (the `llm-v1` subquery is not run),
+  `_toc_readiness_line`.
+- `no-categorizer`: `src/precis/utils/tag_chips.py::chips_for` (axis, `topic:`
+  and `*CASCADE` chips), `src/precis/categorizers.py::ref_hint_line` (hint
+  line), and in `DispatchMixin._apply_bench_switches` / `_resolve_under` a
+  `tags=` / `exclude_tags=` entry on a categorizer axis
+  (`categorizers.is_categorizer_tag`) or a taxon `under=` is refused with a
+  `next=`, never silently broadened.
+- `no-fisheye`: `eye_render._apply_bench_switches` (via `parse_extent`, the
+  one funnel every eye render passes): any `fisheye*` rung becomes
+  `verbatim`, so `_rings`, `_first_hop` and `_second_hop` are never called.
+- `no-recall`: the same funnel drops `+recall`, so `eye_render._recall` (an
+  embedding search) never runs; the empty-ring "wider" hint stops naming it.
+- `lexical-only` / `semantic-only`: `DispatchMixin._apply_bench_switches`
+  rewrites a hybrid (default) `mode=` on `search` to the existing
+  `mode='lexical'` / `'semantic'` path, so lexical-only never embeds the
+  query and semantic-only never runs the FTS leg;
+  `src/precis/mesh_eval/retrieval.py::_search_arm` applies the same rewrite
+  for the eval's direct store call. An explicit `mode=` is left alone.
+
+Measurement caveats, not skipped-but-hidden: `no-fisheye` collapses to
+`verbatim`, and the doc-kind `verbatim` chunk eye still renders its
+within-cluster neighbour window, because that window is not a rung of its
+own; a bare `extent='+recall'` still returns its implied `fisheye+1hop`
+ring under `no-recall`; `view='keywords'` on `search` still returns its
+(now empty) keyword column; the write-time `put` acks that name `+recall`
+and the nearest-hub hints (`memory_hubs._hubless_hints`) are not gated —
+the benchmark is read-only. A refused rung or filter is an error the
+harness counts, not a degraded answer.
+
 ## Surface ablation matrix (Reto, 2026-11-09, second ask)
 
 The memory layers above change *what is stored*; these change *how the
@@ -275,6 +322,8 @@ curve per arm.
    `tool_calls` (`precis.tools.core._log_tool_call`); the one missing
    instrument. Ships first, independent of the rest.
 2. Ablation flags on the server, default all-on, read once per call.
+   Landed (td604843): `PRECIS_BENCH_SWITCHES`, see §Ablation matrix →
+   Switches; `src/precis/bench/switches.py`, `tests/test_bench_switches.py`.
 3. Fixture corpus manifest + `ingest-local` into a fresh DB. Landed
    (td604844): `bench/corpus/manifest.json` (30 quick ⊂ 200 full, QASPER
    v0.3 train+dev, archive sha256-pinned), `src/precis/bench/corpus.py`,

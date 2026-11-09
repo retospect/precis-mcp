@@ -566,7 +566,11 @@ def ref_hint_line(
     when it has one in hand (the patent overview does) — saves the
     duplicate read.
     """
+    from precis.bench import switches as bench_switches
     from precis.workers._claim import OPT_IN_KINDS
+
+    if not bench_switches.current().categorizer:
+        return None  # memory-ablation arm ``no-categorizer``
 
     kind = ref.kind
     opted_in = False
@@ -797,6 +801,19 @@ def axis_filter_ready(
         return False
     done, total = cov
     return total > 0 and done / total >= threshold
+
+
+def is_categorizer_tag(tag: Any) -> bool:
+    """Whether a tag spelling (``DOMAIN:chemistry``, ``topic:mof``) belongs to
+    the categorizer layer — a closed axis namespace or a ``topic:`` open tag.
+    The same test :func:`categorizer_filter_notes` applies; the
+    memory-ablation ``no-categorizer`` arm uses it to keep such a filter out
+    of the ranking (``precis.bench.switches``)."""
+    s = str(tag).strip()
+    prefix, _, _value = s.partition(":")
+    if prefix and prefix.isupper() and prefix in _categorizer_namespaces():
+        return True
+    return s.lower().startswith("topic:")
 
 
 def categorizer_filter_notes(store: Store, tags: Any) -> list[str]:

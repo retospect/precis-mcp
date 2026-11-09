@@ -19,6 +19,7 @@ from typing import Any
 
 from psycopg import Connection
 
+from precis.bench import switches as bench_switches
 from precis.store.types import (
     BibEntry,
     CacheEntry,
@@ -298,6 +299,10 @@ def _row_to_chunk(row: tuple) -> ChunkRow:
     keywords = row[13] if len(row) > 13 else None
     if keywords is not None and not isinstance(keywords, list):
         keywords = list(keywords)
+    if keywords is not None and not bench_switches.current().kwd:
+        # Memory-ablation arm ``no-kwd``: every render and clustering built
+        # from a chunk row sees a chunk the keyword worker never reached.
+        keywords = None
     return ChunkRow(
         id=row[0],
         ref_id=row[1],

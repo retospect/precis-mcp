@@ -1455,6 +1455,26 @@ class DispatchMixin(RuntimeShape):
     def dispatch_with_status(
         self, verb: str, args: dict[str, Any], *, fold: bool = False
     ) -> tuple[str, bool]:
+        # The memory-ablation switches (``PRECIS_BENCH_SWITCHES``) are read
+        # here, once per call, and held in a context var for the render and
+        # rank code to consult; a value an in-process harness already applied
+        # is kept (``precis.bench.switches.seeded``).
+        from precis.bench import switches as bench_switches
+
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(bench_switches.seeded())
+            except ValueError as e:
+                err = BadInput(
+                    str(e),
+                    next=f"fix or unset {bench_switches.ENV_VAR} on the server",
+                )
+                return self._render_failure(err), True
+            return self._dispatch_with_status(verb, args, fold=fold)
+
+    def _dispatch_with_status(
+        self, verb: str, args: dict[str, Any], *, fold: bool = False
+    ) -> tuple[str, bool]:
         from precis.learning_privacy import is_learning_call
 
         if is_learning_call(args):
@@ -1887,6 +1907,41 @@ class DispatchMixin(RuntimeShape):
         )
 
     @staticmethod
+    def _apply_bench_switches(args: dict[str, Any]) -> None:
+        """Memory-ablation switches (``precis.bench.switches``) on a search.
+
+        ``lexical-only`` / ``semantic-only`` rewrite a hybrid ``mode=`` to
+        the existing single-leg mode, so every handler's own lexical /
+        semantic path runs (and the lexical-only path never embeds the
+        query). With the categorizer layer off a ``tags=`` /
+        ``exclude_tags=`` entry naming a categorizer axis is refused — the
+        filter would otherwise bring the layer back into the ranking. All-on
+        touches nothing.
+        """
+        from precis.bench import switches as bench_switches
+
+        sw = bench_switches.current()
+        if sw.all_on:
+            return
+        mode = sw.search_mode(args.get("mode"))
+        if mode != args.get("mode"):
+            args["mode"] = mode
+        if not sw.categorizer:
+            from precis.categorizers import is_categorizer_tag
+
+            for key in ("tags", "exclude_tags"):
+                raw = args.get(key)
+                entries = [raw] if isinstance(raw, str) else list(raw or ())
+                bad = next((t for t in entries if is_categorizer_tag(t)), None)
+                if bad is not None:
+                    raise Unsupported(
+                        f"{key}={bad!r} names a categorizer axis, and the "
+                        "categorizer layer is switched off for this server "
+                        f"({bench_switches.ENV_VAR})",
+                        next=f"drop {bad!r} from {key}=",
+                    )
+
+    @staticmethod
     def _hoist_spray_args(args: dict[str, Any]) -> None:
         """``args={'angle':…,'like':…}`` → top-level ``angle=``/``like=``.
 
@@ -1963,6 +2018,7 @@ class DispatchMixin(RuntimeShape):
         listing_kinds: tuple[list[str] | None] | None = None
         canon_state = None
         if verb == "search":
+            self._apply_bench_switches(args)
             self._hoist_spray_args(args)
             self._hoist_source_facet_args(args)
             # ``q='*'`` is the match-all spelling (gr538071): fold
@@ -2046,6 +2102,15 @@ class DispatchMixin(RuntimeShape):
 
         under = _peek("under")
         taxon = under is not None and self._under_is_taxon(under)
+        if taxon:
+            from precis.bench import switches as bench_switches
+
+            if not bench_switches.current().categorizer:
+                raise Unsupported(
+                    "a taxon under= is a categorizer-layer match, and that "
+                    f"layer is switched off for this server ({bench_switches.ENV_VAR})",
+                    next="drop under=, or search with the layer on",
+                )
         if cross and not taxon:
             return None, None  # each handler's own under= (if any) stays put
         if taxon and "," in k:

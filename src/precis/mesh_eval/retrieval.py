@@ -305,13 +305,18 @@ def _search_arm(
     Returns ``(rendered output, retrieved handles in rank order)``. Each
     hit renders as one line — the list an agent scans before drilling.
     """
+    from precis.bench import switches as bench_switches
     from precis.utils import handle_registry
     from precis.utils.embed_query import query_vec_for
 
-    vec = query_vec_for(embedder, question, "hybrid")
+    # Memory-ablation ``lexical-only`` / ``semantic-only``: the same
+    # single-leg modes the ``search`` verb is rewritten to (all-on: hybrid).
+    mode = bench_switches.current().search_mode("hybrid")
+    vec = query_vec_for(embedder, question, mode)
     triples = store.chunks.search_chunks(
         q=question,
         query_vec=vec,
+        mode=mode,
         limit=k,
         card_kinds=("card_combined",),
     )

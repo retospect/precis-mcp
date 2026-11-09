@@ -490,9 +490,15 @@ def _pending_keyword_chunks(blocks: Sequence[Any]) -> int:
 
     The worker is lazy-imported: this module sits under
     ``precis.utils`` and stays free of the worker import chain (the
-    embedder client) at module load."""
+    embedder client) at module load.
+
+    With the ``kwd`` memory-ablation switch off the count is 0: the layer
+    is off, not pending."""
+    from precis.bench import switches as bench_switches
     from precis.workers.chunk_keywords import is_keyword_eligible
 
+    if not bench_switches.current().kwd:
+        return 0  # memory-ablation ``no-kwd``: nothing is "pending", it is off
     return sum(
         1 for b in blocks if not getattr(b, "keywords", None) and is_keyword_eligible(b)
     )

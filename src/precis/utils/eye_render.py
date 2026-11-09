@@ -74,7 +74,7 @@ from typing import TYPE_CHECKING, Any
 import psycopg
 
 from precis._result_budget import size_cell
-from precis.errors import NotFound
+from precis.errors import BadInput, NotFound
 from precis.store.types import _CLOSED_VOCAB, Tag
 from precis.utils import handle_registry
 from precis.utils.entity_courtesy import (
@@ -321,9 +321,35 @@ def parse_extent(extent: Extent | str | int) -> tuple[Extent, bool]:
     if recall:
         rung = str(extent).strip()[: -len(RECALL_SUFFIX)] or Extent.HOP1
     try:
-        return Extent.parse(rung), recall
+        ext = Extent.parse(rung)
     except (KeyError, ValueError) as e:
         raise ValueError(f"eye: unknown extent {extent!r}") from e
+    return _apply_bench_switches(ext, recall)
+
+
+def _apply_bench_switches(ext: Extent, recall: bool) -> tuple[Extent, bool]:
+    """The memory-ablation switches (``precis.bench.switches``) on a parsed
+    extent. Every eye render funnels through :func:`parse_extent`, so this
+    is the one place the ladder's layers are cut: a ``kwd`` / ``summary``
+    rung that is switched off is refused (the harness must not read a rung
+    the arm removed), any ``fisheye*`` rung collapses to ``verbatim`` — so
+    :func:`_rings` never fetches a hop — and ``+recall`` is dropped, so
+    :func:`_recall` never runs its embedding search. All-on changes nothing.
+    """
+    from precis.bench import switches as bench_switches
+
+    sw = bench_switches.current()
+    if sw.all_on:
+        return ext, recall
+    if (ext is Extent.TOC and not sw.kwd) or (ext is Extent.SUMMARY and not sw.summary):
+        raise BadInput(
+            f"eye: the {ext.label!r} rung is switched off for this server "
+            f"({bench_switches.ENV_VAR})",
+            next="extent='verbatim' reads the node whole",
+        )
+    if not sw.fisheye and ext > Extent.FULL:
+        ext = Extent.FULL
+    return ext, recall and sw.recall
 
 
 # ── shared helpers ───────────────────────────────────────────────────
@@ -2269,7 +2295,11 @@ def _rings(
             message = (
                 f"no structural neighbours at {hops} hop{'s' if hops == 2 else ''}"
             )
-            if not recall:
+            from precis.bench import switches as bench_switches
+
+            # With the recall layer switched off the "wider" call would
+            # advertise a rung the server will not run.
+            if not recall and bench_switches.current().recall:
                 focus = handle or handle_registry.format_handle(kind, ref_id)
                 filters: dict[str, list[str]] = {}
                 if ring is not None:

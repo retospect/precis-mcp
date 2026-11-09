@@ -139,6 +139,19 @@ def chips_for(
             or (ns, v, kind) in _QUIET_DEFAULTS
         )
     ]
+    if kept:
+        from precis.bench import switches as bench_switches
+
+        if not bench_switches.current().categorizer:
+            # Memory-ablation arm ``no-categorizer``: the layer's tags are
+            # absent from every row and head, not just from ranking.
+            from precis.categorizers import is_categorizer_tag
+
+            kept = [
+                (ns, v)
+                for ns, v in kept
+                if not (ns.endswith("CASCADE") or is_categorizer_tag(_chip_text(ns, v)))
+            ]
     if not kept:
         return ""
     keyed = sorted(kept, key=lambda p: (_rank(p[0], ranks), _chip_text(*p)))

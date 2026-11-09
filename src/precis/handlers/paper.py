@@ -10257,17 +10257,21 @@ def _toc_readiness_line(store: Store, ref_id: int) -> str | None:
         not_summarised = unsummarized_chunk_count(conn, ref_id=ref_id)
         eligible_keywords = keyword_eligible_chunk_count(conn, ref_id=ref_id)
         not_keyworded = unkeyworded_chunk_count(conn, ref_id=ref_id)
+    from precis.bench import switches as bench_switches
+
+    sw = bench_switches.current()
     embedded = eligible_embed - not_embedded
     summarised = eligible_summary - not_summarised
     keyworded = eligible_keywords - not_keyworded
-    line = (
-        f"readiness: embedded {embedded}/{eligible_embed} · "
-        f"summarised {summarised}/{eligible_summary} · "
-        f"keyworded {keyworded}/{eligible_keywords}"
-    )
+    line = f"readiness: embedded {embedded}/{eligible_embed}"
+    # Memory-ablation switches: an off layer is absent from the line.
+    if sw.summary:
+        line += f" · summarised {summarised}/{eligible_summary}"
+    if sw.kwd:
+        line += f" · keyworded {keyworded}/{eligible_keywords}"
     if failed:
         line += f" · failed {failed}"
-    if not_keyworded:
+    if not_keyworded and sw.kwd:
         line += (
             f" — keywords pending for {not_keyworded} chunks; "
             "labels appear as chunk_keywords drains"
