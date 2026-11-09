@@ -550,9 +550,10 @@ class Handler(ABC):
         id=…, extent=<rung>)``, where ``extent`` is ``kwd`` / ``summary``
         / ``verbatim`` / ``fisheye`` / ``fisheye+1hop`` / ``fisheye+2hop``,
         any of them ``+recall``-suffixed; ``q='<kind>:<label>'`` expands one
-        second-hop group. ``ring={'kinds': <csv|list>, 'space': <csv|list>}``
-        narrows a link or doc eye's rings by neighbour kind and/or the
-        ``SPACE:`` tag axis (``fisheye-everywhere.md`` in-scope 1).
+        second-hop group. ``ring={'kinds': <csv|list>, 'space': <csv|list>,
+        'tags': <csv|list>}`` narrows a link or doc eye's rings by neighbour
+        kind, the ``SPACE:`` tag axis and/or arbitrary tags
+        (``fisheye-everywhere.md`` in-scope 1, gr605669).
 
         Not a dispatch-table verb: the dispatcher routes a ``get`` carrying
         ``extent=`` (or a ladder label in ``view=``) here, so every kind has

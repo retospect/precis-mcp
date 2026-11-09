@@ -774,7 +774,11 @@ def test_empty_filtered_eye_wider_call_preserves_the_ring(hub: Hub) -> None:
     near = store.insert_ref(kind="memory", slug=None, title="Excluded neighbour")
     store.add_link(src_ref_id=focus.id, dst_ref_id=near.id, relation="related-to")
     handle = handle_registry.format_handle("memory", focus.id)
-    ring = {"kinds": ["paper", "finding"], "space": ["repo-dev", "research"]}
+    ring = {
+        "kinds": ["paper", "finding"],
+        "space": ["repo-dev", "research"],
+        "tags": ["scratch-for:td575121"],
+    }
 
     out = render_eye(store, handle, "fisheye+1hop", ring=ring)
 
@@ -1107,6 +1111,124 @@ def test_ring_filter_rejects_an_unknown_kind(hub: Hub) -> None:
             "fisheye+1hop",
             ring={"kinds": "nosuchkind"},
         )
+
+
+def test_ring_filter_parse_canonicalises_tag_spellings() -> None:
+    """``tags`` entries fold the way storage does — open tags lowercase —
+    so the filter set compares equal to what ``ref_tags_bulk`` reads."""
+    from precis.utils.eye_render import RingFilter
+
+    filt = RingFilter.parse({"tags": ["scratch-for:TD575121", "SPACE:scratch"]})
+    assert filt is not None
+    assert filt.tags == frozenset({"scratch-for:td575121", "SPACE:scratch"})
+    assert RingFilter.parse({"tags": "scratch-for:td575121"}) == RingFilter(
+        tags=frozenset({"scratch-for:td575121"})
+    )
+
+
+def test_ring_filter_narrows_the_first_hop_by_tag(hub: Hub) -> None:
+    """gr605669: ``ring={'tags': ['scratch-for:td<T>']}`` keeps only the
+    neighbours carrying every listed tag — the AND of ``search(tags=…)`` —
+    so one task's scratch stays out of a sibling's ring."""
+    store = hub.live_store
+    focus = store.insert_ref(kind="memory", slug=None, title="Focus")
+    mine = store.insert_ref(kind="memory", slug=None, title="My task's probe")
+    theirs = store.insert_ref(kind="memory", slug=None, title="Other task's probe")
+    store.add_tag(mine.id, Tag.open("scratch-for:td575121"), set_by="system")
+    store.add_tag(theirs.id, Tag.open("scratch-for:td606761"), set_by="system")
+    for near in (mine, theirs):
+        store.add_link(src_ref_id=focus.id, dst_ref_id=near.id, relation="related-to")
+    h = handle_registry.format_handle("memory", focus.id)
+
+    out = render_eye(store, h, "fisheye+1hop", ring={"tags": "scratch-for:td575121"})
+    assert f"related-to: me{mine.id}" in out
+    assert f"me{theirs.id}" not in out
+    # the applied tag drops off the row's chips like the SPACE: one does
+    row = next(ln for ln in out.splitlines() if f"me{mine.id}" in ln)
+    assert "[scratch-for:td575121]" not in row
+    unfiltered = render_eye(store, h, "fisheye+1hop")
+    assert "[scratch-for:td575121]" in unfiltered
+
+
+def test_ring_filter_tags_and_space_compose(hub: Hub) -> None:
+    """The scratch partition composes both dimensions: ``space`` selects
+    the bucket, ``tags`` the owner inside it — a right-owner neighbour in
+    the wrong space still drops."""
+    store = hub.live_store
+    focus = store.insert_ref(kind="memory", slug=None, title="Focus")
+    mine = store.insert_ref(kind="memory", slug=None, title="My task's probe")
+    theirs = store.insert_ref(kind="memory", slug=None, title="Sibling's probe")
+    misplaced = store.insert_ref(kind="memory", slug=None, title="Mine, wrong space")
+    for ref, owner, space in (
+        (mine, "td575121", "scratch"),
+        (theirs, "td606761", "scratch"),
+        (misplaced, "td575121", "repo-dev"),
+    ):
+        store.add_tag(ref.id, Tag.closed("SPACE", space), set_by="system")
+        store.add_tag(ref.id, Tag.open(f"scratch-for:{owner}"), set_by="system")
+        store.add_link(src_ref_id=focus.id, dst_ref_id=ref.id, relation="related-to")
+    h = handle_registry.format_handle("memory", focus.id)
+
+    out = render_eye(
+        store,
+        h,
+        "fisheye+1hop",
+        ring={"space": "scratch", "tags": ["scratch-for:td575121"]},
+    )
+    assert f"related-to: me{mine.id}" in out
+    assert f"me{theirs.id}" not in out
+    assert f"me{misplaced.id}" not in out
+
+
+def test_ring_filter_tags_reach_the_second_hop(hub: Hub) -> None:
+    """``fisheye+2hop`` counts narrow on the same tag set — only far refs
+    carrying the owner tag count (and the first hop the second walks out
+    from narrows the same way, so the middle ref carries the tag too)."""
+    store = hub.live_store
+    focus = store.insert_ref(kind="memory", slug=None, title="Focus")
+    near = store.insert_ref(kind="memory", slug=None, title="Near")
+    far_mine = store.insert_ref(kind="memory", slug=None, title="Far mine")
+    far_theirs = store.insert_ref(kind="memory", slug=None, title="Far theirs")
+    store.add_link(src_ref_id=focus.id, dst_ref_id=near.id, relation="related-to")
+    for far in (far_mine, far_theirs):
+        store.add_link(src_ref_id=near.id, dst_ref_id=far.id, relation="related-to")
+    for rid in (near.id, far_mine.id):
+        store.add_tag(rid, Tag.open("scratch-for:td575121"), set_by="system")
+
+    h = handle_registry.format_handle("memory", focus.id)
+    full = render_eye(store, h, "fisheye+2hop")
+    assert "2 memory via related-to" in full
+    narrowed = render_eye(
+        store, h, "fisheye+2hop", ring={"tags": "scratch-for:td575121"}
+    )
+    assert "1 memory via related-to" in narrowed
+
+
+def test_recall_ring_tags_scope_hits_to_the_owner(
+    runtime_with_store: Any,
+) -> None:
+    """gr605669's goal line: ``+recall`` inside one task's scratch — a
+    hit must carry the owner tag, so a sibling task's scratch probe never
+    surfaces."""
+    rt = runtime_with_store
+    text = "copper catalyses nitrate reduction"
+    focus = _embedded_memory(rt, text)
+    mine = _embedded_memory(rt, text)
+    theirs = _embedded_memory(rt, text)
+    store = rt.hub.live_store
+    for rid, owner in ((mine, "td575121"), (theirs, "td606761")):
+        store.add_tag(rid, Tag.closed("SPACE", "scratch"), set_by="system")
+        store.add_tag(rid, Tag.open(f"scratch-for:{owner}"), set_by="system")
+
+    out = render_eye(
+        store,
+        handle_registry.format_handle("memory", focus),
+        "+recall",
+        ring={"space": "scratch", "tags": ["scratch-for:td575121"]},
+    )
+    recall = out.split("— recall")[1]
+    assert f"me{mine} —" in recall
+    assert f"me{theirs}" not in recall
 
 
 def test_roadmap_lists_serving_sub_quests_before_papers(hub: Hub) -> None:

@@ -900,6 +900,97 @@ def test_bad_meta_key_names_the_allowed_keys(handler: MemoryHandler) -> None:
         handler.put(text="x", meta={"nope": "y"})
 
 
+# ---------------------------------------------------------------------------
+# args={'scratch_for': '<owner>'} — the task-scratch pair (gr605669):
+# SPACE:scratch + scratch-for:<owner> in one call
+# ---------------------------------------------------------------------------
+
+
+def _space_and_owner_tags(store: Store, mid: int) -> list[str]:
+    return sorted(str(t) for t in store.tags_for(mid))
+
+
+def test_put_scratch_for_stamps_the_task_scratch_pair(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr605669: ``scratch_for`` stamps ``SPACE:scratch`` + the owner tag
+    in one call — and the closed-axis replace evicts the default
+    ``SPACE:research``, leaving scratch the only partition the sweep
+    (and a sibling task's recall) sees."""
+    mid = id_of(handler.put(text="probe", scratch_for="td575121").body)
+    tags = _space_and_owner_tags(store, mid)
+    assert "SPACE:scratch" in tags
+    assert "scratch-for:td575121" in tags
+    assert "SPACE:research" not in tags
+
+
+def test_put_scratch_for_owner_folds_case_and_prefix(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = id_of(handler.put(text="x", scratch_for="scratch-for:TD575121").body)
+    assert "scratch-for:td575121" in _space_and_owner_tags(store, mid)
+
+
+def test_put_scratch_for_reaches_the_handler_through_args(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """The ``args=`` channel flattens into the handler kwarg — the shape
+    the skill documents."""
+    out = runtime_with_store.dispatch(
+        "put",
+        {
+            "kind": "memory",
+            "text": "probe via args",
+            "__extras__": {"scratch_for": "td575121"},
+        },
+    )
+    mid = id_of(out)
+    tags = _space_and_owner_tags(store, mid)
+    assert "SPACE:scratch" in tags
+    assert "scratch-for:td575121" in tags
+
+
+def test_put_scratch_for_idempotent_with_explicit_tags(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = id_of(
+        handler.put(
+            text="x",
+            tags=["SPACE:scratch", "scratch-for:td575121", "topic-x"],
+            scratch_for="td575121",
+        ).body
+    )
+    tags = _space_and_owner_tags(store, mid)
+    assert tags.count("SPACE:scratch") == 1
+    assert "scratch-for:td575121" in tags
+    assert "topic-x" in tags
+
+
+def test_put_scratch_for_refuses_a_conflicting_space(
+    handler: MemoryHandler,
+) -> None:
+    with pytest.raises(BadInput, match="SPACE"):
+        handler.put(text="x", tags=["SPACE:research"], scratch_for="td575121")
+
+
+def test_put_scratch_for_refuses_a_second_owner(handler: MemoryHandler) -> None:
+    with pytest.raises(BadInput, match="one task owns"):
+        handler.put(text="x", tags=["scratch-for:td606761"], scratch_for="td575121")
+
+
+def test_put_scratch_for_refuses_an_untags_clash(handler: MemoryHandler) -> None:
+    with pytest.raises(BadInput, match="untags"):
+        handler.put(text="x", untags=["SPACE:scratch"], scratch_for="td575121")
+
+
+@pytest.mark.parametrize("owner", ["575121", "not-an-owner", "td", "td1 extra"])
+def test_put_scratch_for_refuses_a_bad_owner(
+    handler: MemoryHandler, owner: str
+) -> None:
+    with pytest.raises(BadInput, match="scratch_for"):
+        handler.put(text="x", scratch_for=owner)
+
+
 def test_edit_with_nothing_to_change_names_meta(handler: MemoryHandler) -> None:
     mid = id_of(handler.put(text="x").body)
     with pytest.raises(

@@ -71,7 +71,7 @@ import psycopg
 
 from precis._result_budget import size_cell
 from precis.errors import NotFound
-from precis.store.types import _CLOSED_VOCAB
+from precis.store.types import _CLOSED_VOCAB, Tag
 from precis.utils import handle_registry
 from precis.utils.entity_courtesy import (
     courtesy_lines,
@@ -162,25 +162,33 @@ SPACE_AXIS: frozenset[str] = _CLOSED_VOCAB["SPACE"]
 
 @dataclass(frozen=True)
 class RingFilter:
-    """A narrowing on a link-kind eye's rings — by neighbour kind and/or by
-    the ``SPACE:`` tag axis (``fisheye-everywhere.md`` in-scope 1), so e.g.
-    repo-dev and research neighbourhoods can be shown apart. ``None`` on an
-    axis leaves it open; ``spaces`` drops every neighbour carrying no
-    ``SPACE:`` tag (the axis is a partition). The focus itself always
-    renders; the tree eyes (reading order, not link edges) and the atomic
-    skill eye have no ring to narrow.
+    """A narrowing on a link-kind eye's rings — by neighbour kind, by the
+    ``SPACE:`` tag axis and/or by arbitrary tags
+    (``fisheye-everywhere.md`` in-scope 1, gr605669), so e.g. repo-dev and
+    research neighbourhoods — or one task's scratch — can be shown apart.
+    ``None`` on an axis leaves it open; ``spaces`` drops every neighbour
+    carrying no ``SPACE:`` tag (the axis is a partition); ``tags`` drops
+    every neighbour not carrying *all* the listed tags (the AND of
+    ``search(tags=[…])`` — the ``scratch-for:td<N>`` owner tag that
+    partitions ``SPACE:scratch`` by task). The focus itself always
+    renders; the tree eyes (reading order, not link edges) and the
+    atomic skill eye have no ring to narrow.
     """
 
     kinds: frozenset[str] | None = None
     spaces: frozenset[str] | None = None
+    tags: frozenset[str] | None = None
 
     @classmethod
     def parse(cls, raw: Any) -> RingFilter | None:
         """``ring=``'s wire form → a :class:`RingFilter`: ``None``, an
         existing ``RingFilter``, or a dict ``{"kinds": <csv|list>,
-        "space": <csv|list>}`` (values may carry or omit the ``SPACE:``
-        prefix). Raises ``ValueError`` on a non-dict or an unknown kind —
-        the same error channel as an unknown rung."""
+        "space": <csv|list>, "tags": <csv|list>}`` (``space`` values may
+        carry or omit the ``SPACE:`` prefix; ``tags`` entries are tag
+        spellings like ``scratch-for:td575121``, canonicalised by
+        :meth:`Tag.parse` — open tags fold lowercase as stored). Raises
+        ``ValueError`` on a non-dict or an unknown kind — the same error
+        channel as an unknown rung."""
         if raw is None or isinstance(raw, cls):
             return raw
         if not isinstance(raw, dict):
@@ -190,6 +198,7 @@ class RingFilter:
             )
         kinds = _csv_set(raw.get("kinds"))
         spaces = _csv_set(raw.get("space"))
+        tags = _csv_set(raw.get("tags"))
         bad_kinds = [k for k in kinds or () if not handle_registry.is_known_kind(k)]
         if bad_kinds:
             raise ValueError(f"eye: unknown ring kind(s) {bad_kinds!r}")
@@ -201,7 +210,21 @@ class RingFilter:
             if spaces is not None
             else None
         )
-        return cls(kinds=kinds, spaces=normed)
+        normed_tags = (
+            frozenset(_canon_tag(v) for v in tags) if tags is not None else None
+        )
+        return cls(kinds=kinds, spaces=normed, tags=normed_tags)
+
+
+def _canon_tag(value: str) -> str:
+    """A tag spelling → the canonical string a ref's tags are compared
+    against: ``SPACE:scratch`` stays ``SPACE:scratch``; an open tag like
+    ``scratch-for:TD575121`` folds to ``scratch-for:td575121``, the form
+    :meth:`Tag.open` stores."""
+    t = Tag.parse(str(value))
+    if t.namespace == "closed":
+        return f"{t.prefix}:{t.value}"
+    return t.value
 
 
 def _csv_set(raw: Any) -> frozenset[str] | None:
@@ -237,8 +260,8 @@ def render_eye(
     (:func:`_second_hop`); ``q='<label>'`` (no colon) at ``fisheye+1hop`` or
     above lists one first-hop group uncapped (:func:`_expand_first_hop`) — the
     call a ``… +N more`` line carries. ``ring`` narrows every ring a link or
-    doc eye renders (first hop, second hop, recall) by neighbour kind and/or
-    ``SPACE:`` tag (:class:`RingFilter`)."""
+    doc eye renders (first hop, second hop, recall) by neighbour kind,
+    ``SPACE:`` tag and/or arbitrary tags (:class:`RingFilter`)."""
     ext, recall = parse_extent(extent)
     filt = RingFilter.parse(ring)
     if q is not None and (ext < Extent.HOP1 or (ext < Extent.HOP2 and ":" in q)):
@@ -923,13 +946,15 @@ def _row_chips(
 ) -> dict[int, str]:
     """``{ref id: chips}`` for a page of neighbour rows — one
     ``ref_tags_bulk`` read (:func:`precis.utils.tag_chips.chips_bulk`),
-    the ring's ``SPACE:`` values dropped as context-restating."""
+    the ring's ``SPACE:`` values and ``tags`` entries dropped as
+    context-restating."""
     from precis.utils import tag_chips
 
     return tag_chips.chips_bulk(
         store,
         {int(i): str(getattr(r, "kind", "") or "") for i, r in refs.items()},
         ring_spaces=ring.spaces if ring is not None else None,
+        ring_tags=ring.tags if ring is not None else None,
     )
 
 
@@ -1098,15 +1123,19 @@ def _first_body_lines(store: Store, ids: list[int]) -> dict[int, str]:
     return out
 
 
-def _space_tags(store: Store, ref_ids: Any) -> dict[int, frozenset[str]]:
-    """``{ref id: its SPACE:-axis values}`` for many refs in one query —
-    ``frozenset()`` for a ref carrying none (outside every partition)."""
+def _tag_sets(store: Store, ref_ids: Any) -> dict[int, frozenset[str]]:
+    """``{ref id: its live tags as canonical strings}`` —
+    ``SPACE:scratch``, ``scratch-for:td575121``, ``pinned`` — for many
+    refs in one ``ref_tags_bulk`` read; a ref carrying none maps to
+    ``frozenset()``. Both ring tag dimensions read this: ``space``
+    selects on the ``SPACE:``-prefixed entries (the partition), ``tags``
+    requires every listed tag in the set."""
     ids = {int(i) for i in ref_ids}
     if not ids:
         return {}
     tagged = store.ref_tags_bulk(list(ids))
     return {
-        rid: frozenset(v for ns, v in pairs if ns == "SPACE")
+        rid: frozenset(v if ns in ("OPEN", "FLAG") else f"{ns}:{v}" for ns, v in pairs)
         for rid, pairs in tagged.items()
     }
 
@@ -1118,14 +1147,18 @@ def _ring_kept(
     pairs: list[tuple[int, int | None]],
 ) -> list[tuple[int, int | None]]:
     """``pairs`` (``(neighbour ref, far chunk id)`` per edge) narrowed by
-    ``ring``: kind from the ref row, ``SPACE:`` tags in one bulk read (only
-    when the filter uses the axis)."""
+    ``ring``: kind from the ref row, tags in one bulk read (only when
+    the filter uses a tag dimension)."""
     out = pairs
     if ring.kinds is not None:
         out = [p for p in out if str(getattr(refs[p[0]], "kind", "")) in ring.kinds]
-    if ring.spaces is not None:
-        space_of = _space_tags(store, {o for o, _c in out})
-        out = [p for p in out if space_of.get(p[0], frozenset()) & ring.spaces]
+    if ring.spaces is not None or ring.tags is not None:
+        tag_of = _tag_sets(store, {o for o, _c in out})
+        if ring.spaces is not None:
+            want = {f"SPACE:{v}" for v in ring.spaces}
+            out = [p for p in out if tag_of.get(p[0], frozenset()) & want]
+        if ring.tags is not None:
+            out = [p for p in out if ring.tags <= tag_of.get(p[0], frozenset())]
     return out
 
 
@@ -1713,13 +1746,25 @@ def _second_hop(
                 str(rel), outbound=outbound, inverses=inverses, symmetric=symmetric
             )
             groups.setdefault((str(far_kind), label), set()).add(far)
-    if ring is not None and ring.spaces is not None and groups:
-        space_of = _space_tags(store, {o for ids in groups.values() for o in ids})
-        groups = {
-            key: kept
-            for key, ids in groups.items()
-            if (kept := {o for o in ids if space_of.get(o, frozenset()) & ring.spaces})
-        }
+    if (
+        ring is not None
+        and (ring.spaces is not None or ring.tags is not None)
+        and groups
+    ):
+        tag_of = _tag_sets(store, {o for ids in groups.values() for o in ids})
+        if ring.spaces is not None:
+            want = {f"SPACE:{v}" for v in ring.spaces}
+            groups = {
+                key: kept
+                for key, ids in groups.items()
+                if (kept := {o for o in ids if tag_of.get(o, frozenset()) & want})
+            }
+        if ring.tags is not None:
+            groups = {
+                key: kept
+                for key, ids in groups.items()
+                if (kept := {o for o in ids if ring.tags <= tag_of.get(o, frozenset())})
+            }
     if not groups:
         if expand is not None:
             raise ValueError(
@@ -1856,7 +1901,9 @@ def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) ->
     hit carries a promote-to-``link`` call (:func:`_recall_promote`,
     gr555999).
     A ring filter narrows this rung too: kinds intersect the same-kind +
-    ``finding`` leg, ``spaces`` override the focus's own partition.
+    ``finding`` leg, ``spaces`` override the focus's own partition, and
+    ``tags`` AND onto the tag clause — ``scratch-for:td<N>`` scopes the
+    hits to one task's scratch.
     """
     seed = store.chunks.seed_chunk_for_ref(ref_id)
     vec = store.chunks.get_chunk_vector(seed) if seed is not None else None
@@ -1874,10 +1921,14 @@ def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) ->
         space = [str(t) for t in store.tags_for(ref_id) if t.prefix == "SPACE"]
     if not kinds:
         return "— recall (nearest by embedding) —\n  — the filter excludes this leg —"
+    want_tags = [
+        *space,
+        *(sorted(ring.tags) if ring is not None and ring.tags is not None else []),
+    ]
     hits = store.chunks.search_chunks_semantic(
         query_vec=vec,
         kinds=kinds,
-        tags=space or None,
+        tags=want_tags or None,
         limit=_RECALL_K * 3,
         max_distance=RECALL_MAX_DISTANCE,
         # Refs the focus already links to or from (any rel) are structural
@@ -2000,6 +2051,8 @@ def _rings(
                         filters["kinds"] = sorted(ring.kinds)
                     if ring.spaces is not None:
                         filters["space"] = sorted(ring.spaces)
+                    if ring.tags is not None:
+                        filters["tags"] = sorted(ring.tags)
                 args = f", args={{'ring': {filters!r}}}" if filters else ""
                 message += (
                     f"; wider: get(kind={kind!r}, id={focus!r}, "

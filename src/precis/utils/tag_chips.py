@@ -15,8 +15,10 @@ rendered text.
 
 The ruling's one exception to "anything goes" — a tag that only
 restates the context is dropped *before* counting: ``STATUS:open`` on
-an open-by-default kind (:data:`OPEN_BY_DEFAULT`), and a ``SPACE:``
-value equal to the ring filter the caller already applied.
+an open-by-default kind (:data:`OPEN_BY_DEFAULT`), a ``SPACE:`` value
+equal to the ring filter the caller already applied, and a tag equal
+to a ``tags`` ring filter the same way (``[scratch-for:td575121]`` on
+every row of a ring already narrowed to it says nothing).
 
 A chip render must never break a row: the bulk read and the axis read
 are wrapped, failures read as "no chips".
@@ -111,6 +113,7 @@ def chips_for(
     kind: str,
     ranks: Mapping[str, float],
     ring_spaces: frozenset[str] | None = None,
+    ring_tags: frozenset[str] | None = None,
     keep: tuple[str, ...] | None = None,
     cap: int = ROW_CHIP_CAP,
 ) -> str:
@@ -121,7 +124,9 @@ def chips_for(
     (gr572710): when set, only chips under one of the prefixes render —
     gripe list rows cap their tag cell to ``cluster:``, the one tag a
     100-row listing still groups by. The head render passes no keep and
-    shows the full set.
+    shows the full set. ``ring_tags`` is the applied ring ``tags``
+    filter in its canonical form — a chip equal to an entry restates
+    the narrowing, so it drops like the ``SPACE:`` chip does.
     """
     kept = [
         (ns, v)
@@ -130,6 +135,7 @@ def chips_for(
         and not (
             (ns == "STATUS" and v == "open" and kind in OPEN_BY_DEFAULT)
             or (ns == "SPACE" and ring_spaces is not None and v in ring_spaces)
+            or (ring_tags is not None and _chip_text(ns, v) in ring_tags)
             or (ns, v, kind) in _QUIET_DEFAULTS
         )
     ]
@@ -147,6 +153,7 @@ def chips_bulk(
     ids_kinds: Mapping[int, str],
     *,
     ring_spaces: frozenset[str] | None = None,
+    ring_tags: frozenset[str] | None = None,
     keep: tuple[str, ...] | None = None,
     cap: int = ROW_CHIP_CAP,
     tagged: dict[int, list[tuple[str, str]]] | None = None,
@@ -178,6 +185,7 @@ def chips_bulk(
                 kind=ids_kinds.get(rid, ""),
                 ranks=ranks,
                 ring_spaces=ring_spaces,
+                ring_tags=ring_tags,
                 keep=keep,
                 cap=cap,
             )

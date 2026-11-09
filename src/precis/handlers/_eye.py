@@ -229,9 +229,10 @@ def eye_response(
     """Render the eye on ``(kind, id)`` at ``extent`` — the default body of
     :meth:`precis.protocol.Handler.eye`. ``ring`` is
     :class:`precis.utils.eye_render.RingFilter`'s wire form: ``{'kinds':
-    <csv|list>, 'space': <csv|list>}``, narrowing every ring a link or doc
-    eye renders. ``stores_cache`` marks a fetch-cache kind so the
-    no-node refusal names the missing handle, not a missing ref."""
+    <csv|list>, 'space': <csv|list>, 'tags': <csv|list>}``, narrowing every
+    ring a link or doc eye renders. ``stores_cache`` marks a fetch-cache
+    kind so the no-node refusal names the missing handle, not a missing
+    ref."""
     handle = eye_handle(store, kind=kind, id=id, stores_cache=stores_cache)
     try:
         return Response(body=render_eye(store, handle, extent, q=q, ring=ring))

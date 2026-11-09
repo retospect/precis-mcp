@@ -8,13 +8,16 @@ design-review: yes
 
 ## Resume
 
-- **Next:** Do next 2 (gr605669) — the `scratch-for:<owner>` tag and the
-  owner-keyed expiry shipped with Do next 1 (gr605668); 3 (gr605672)
-  then writes the harvest step against them. Builder tier: Opus (Reto
-  2026-11-09): every item here lands skill text (`precis-memory-help`,
-  `precis-gripe-loop-help`) in the same commit as its code; the skill text
-  is the deliverable the cluster agents read, so a mechanical tier does
-  not qualify.
+- **Next:** Do next 3 (gr605672, harvest). Do next 1 (gr605668) shipped
+  on main (`scratch-for:<owner>` tag + owner-keyed expiry, td606756);
+  Do next 2 (gr605669) is built on `slice/606761`: `RingFilter` gained
+  the `tags` dimension (first hop, second hop, `+recall`),
+  `put(args={'scratch_for': 'td<T>'})` stamps `SPACE:scratch` +
+  `scratch-for:<owner>`, and the three skills carry the text in the
+  same commit. Builder tier: Opus (Reto 2026-11-09): every item here
+  lands skill text (`precis-memory-help`, `precis-gripe-loop-help`) in
+  the same commit as its code; the skill text is the deliverable the
+  cluster agents read, so a mechanical tier does not qualify.
 - **Blocked by:** Nothing. `SPACE:scratch` and the wall-clock sweep shipped
   2026-11-06 (gr568398, on prod 04920c247).
 - **Unblocks:** Multi-agent task scratch that is invisible to the other

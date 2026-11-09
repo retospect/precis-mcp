@@ -12,6 +12,7 @@ answers:
   - who is working this gripe, on which host and session?
   - how do I hold a work item behind another fix or until a date?
   - how do I resume a wave after a crash with no files left?
+  - where does a builder's task scratch live so other tasks can't recall it?
 applies-to: put/tag/link(kind='todo') under the 'Code work from gripes' root; put(kind='gripe') work: mirrors; edit(kind='gripe', mode='fix') state stays readable
 tags: workflow
 kinds: [gripe, todo]
@@ -280,6 +281,32 @@ A never-close gripe (`hold:no-autoclose`) keeps its `done` todo and
 gets a `shipped in r<N>` note instead of `STATUS:done`. A gripe a human
 closes mid-work (dup, not-a-bug) also notes the todo via the cascade —
 close the todo `STATUS:won't-do` and say why.
+
+## Builder scratch — `scratch-for:td<T>`, not the shared bucket
+
+A builder's working notes — probes, dead ends, draft text — go to
+`SPACE:scratch` **owned by its todo** (gr605669). A bare `SPACE:scratch`
+node sits in one shared bucket: every concurrent build recalls every
+other build's probes. Own the scratch with the owner tag and read only
+your own task's by default:
+
+```python
+# write — one call stamps SPACE:scratch + the owner tag
+put(kind="memory", text="probe: <what you tried and saw>",
+    args={"scratch_for": "td<T>"})
+
+# read — this task's scratch only (the builder default)
+search(kind="memory", tags=["SPACE:scratch", "scratch-for:td<T>"])
+get(kind="memory", id="me<N>", extent="fisheye+1hop+recall",
+    args={"ring": {"space": "scratch", "tags": ["scratch-for:td<T>"]}})
+```
+
+The owner tag is the key the task-close expiry (gr605668) reads — one
+tag serves the recall partition and the close-out; until that lands the
+wall-clock TTL sweep applies as before. Durable findings still land
+where they always did: a `part-of` child on the repo-dev hub,
+`work:`/`handoff:` lines on the refs — scratch is for what nobody must
+remember to delete.
 
 ## Ask Reto mid-build, or hold the item
 

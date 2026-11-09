@@ -351,6 +351,66 @@ _META_ALLOWED = ("hook", "type", "expires")
 _EXPIRES_DURATION_RE = re.compile(r"^(\d+)\s*([mhdw])$")
 _EXPIRES_DURATION_UNITS = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
 
+#: ``args={'scratch_for': '<owner>'}`` on ``put`` — the task-scratch pair
+#: (gr605669): ``SPACE:scratch`` plus the ``scratch-for:<owner>`` tag a
+#: ring ``tags`` filter or ``search(tags=[…])`` scopes to one task. The
+#: owner is a handle-shaped id (``td575121``, ``gr605669`` — the task
+#: whose agents share the scratch); a ``scratch-for:`` prefix is
+#: tolerated and stripped, and case folds the way open tags do.
+_SCRATCH_OWNER_RE = re.compile(r"^(?:scratch-for:)?([a-z]{2}\d+)$")
+
+
+def _scratch_for_tags(
+    tags: list[str] | None,
+    untags: list[str] | None,
+    scratch_for: Any,
+) -> list[str]:
+    """``tags`` plus the task-scratch pair ``scratch_for`` spells —
+    ``SPACE:scratch`` and ``scratch-for:<owner>`` — deduped. The pair is
+    one partition: a supplied ``SPACE:`` other than scratch, a different
+    ``scratch-for:`` owner, or an ``untags`` touching either contradicts
+    it and is refused."""
+    m = _SCRATCH_OWNER_RE.match(str(scratch_for).strip().lower())
+    if m is None:
+        raise BadInput(
+            f"args['scratch_for'] must be a handle-shaped owner like "
+            f"'td575121' or 'gr605669', got {scratch_for!r}",
+            next="put(kind='memory', text='…', args={'scratch_for': 'td<N>'})",
+        )
+    owner = m.group(1)
+    out = list(tags or [])
+    foreign_space = [t for t in out if t.startswith("SPACE:") and t != "SPACE:scratch"]
+    if foreign_space:
+        raise BadInput(
+            f"args['scratch_for'] sets SPACE:scratch — it can't combine "
+            f"with the {foreign_space} tag(s) already passed",
+            next="drop the SPACE tag (the scratch pair is the partition), "
+            "or pass tags=[...] without scratch_for",
+        )
+    other_owner = [
+        t for t in out if t.startswith("scratch-for:") and t != f"scratch-for:{owner}"
+    ]
+    if other_owner:
+        raise BadInput(
+            f"args['scratch_for'] sets scratch-for:{owner} — the tags "
+            f"already name {other_owner}; one task owns a scratch node",
+            next="drop the conflicting scratch-for tag, or drop scratch_for",
+        )
+    if untags:
+        clash = [
+            t for t in untags if t == "SPACE:scratch" or t.startswith("scratch-for:")
+        ]
+        if clash:
+            raise BadInput(
+                f"args['scratch_for'] sets the task-scratch pair; untags "
+                f"{clash} contradicts it",
+                next="drop scratch_for, or drop the clashing untags",
+            )
+    for tag in ("SPACE:scratch", f"scratch-for:{owner}"):
+        if tag not in out:
+            out.append(tag)
+    return out
+
 
 def _expires_meta(value: Any) -> str:
     """Normalize a writable ``meta.expires`` to ``YYYY-MM-DDTHH:MM:SSZ`` —
@@ -1118,6 +1178,7 @@ class MemoryHandler(NumericRefHandler):
         stages: list[str] | None = None,
         action: str | None = None,
         wait_s: float | None = None,
+        scratch_for: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Create a memory. ``text=`` is the body prose, ``title=`` the short
@@ -1143,6 +1204,12 @@ class MemoryHandler(NumericRefHandler):
         ``meta={'hook': '...'}`` sets the memory's one-line index text
         (``refs.meta.hook``); ``type`` (user/feedback/project/reference) is the other writable key.
 
+        ``args={'scratch_for': 'td<N>'}`` stamps the task-scratch pair —
+        ``SPACE:scratch`` + ``scratch-for:td<N>`` — in one call
+        (gr605669): the node lives in the throwaway space and is owned
+        by the task, so a sibling task's ring ``tags`` filter or
+        ``search(tags=[…])`` never sees it.
+
         ``mode='process'`` schedules bounded current-revision embeddings;
         request/replay and refusal contracts live in :mod:`._memory_process`.
         """
@@ -1166,6 +1233,7 @@ class MemoryHandler(NumericRefHandler):
                 rule,
                 warrant,
                 meta,
+                scratch_for,
             )
             if (
                 any(value is not None for value in extras)
@@ -1185,6 +1253,8 @@ class MemoryHandler(NumericRefHandler):
                 "stages, action and wait_s require mode='process'",
                 next="put(kind='memory', id=N, mode='process', args={'stages': ['embeddings']})",
             )
+        if scratch_for is not None:
+            tags = _scratch_for_tags(tags, untags, scratch_for)
         dry = normalize_dry_run(dry_run) is not None
         if id is not None and dry:
             raise BadInput(

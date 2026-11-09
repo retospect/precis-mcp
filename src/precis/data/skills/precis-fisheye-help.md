@@ -170,17 +170,25 @@ counts edges; the handles are passages to `get`.
 A relation outside these groups (`parent`, `draft-of`, `touched`, …) is
 structural and not in the ring; `view='links'` lists everything.
 
-The rings narrow two ways — `args={'ring': {'kinds': 'memory,quest',
-'space': 'repo-dev'}}` (either axis optional; `space` selects inside the
-closed `SPACE:` tag axis and drops untagged neighbours). First hop,
-second hop and `+recall` all honour it. The same narrowing is the
-`?kind=&space=` state on the browser page `/eye/<handle>`; a draft/plan
-section eye (reading order, not link edges) and a skill eye have no ring
-to narrow.
+## Narrowing the rings — kinds, space, tags
+
+The rings narrow three ways — `args={'ring': {'kinds': 'memory,quest',
+'space': 'repo-dev', 'tags': ['scratch-for:td575121']}}` (every axis
+optional; `space` selects inside the closed `SPACE:` tag axis and drops
+untagged neighbours; `tags` keeps only neighbours carrying *all* the
+listed tags — the AND of `search(tags=[…])`). First hop, second hop and
+`+recall` all honour it. The `?kind=&space=` state on the browser page
+`/eye/<handle>` is the same narrowing; a draft/plan section eye (reading
+order, not link edges) and a skill eye have no ring to narrow.
 
 ```python
 get(kind="memory", id="me474312", extent="fisheye+1hop",
     args={"ring": {"kinds": "memory", "space": "repo-dev"}})  # repo-dev memories only
+
+# Task-scoped scratch (gr605669): one task's probes, not every task's —
+# fisheye or +recall on a scratch node narrowed to its owner tag.
+get(kind="memory", id="me88", extent="fisheye+1hop+recall",
+    args={"ring": {"space": "scratch", "tags": ["scratch-for:td575121"]}})
 ```
 
 A **quest** eye opens with its gist — the striving statement +

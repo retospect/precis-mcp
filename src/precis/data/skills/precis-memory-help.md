@@ -723,6 +723,29 @@ scratch of a task that never closes dissolves at 30 days untouched.
 doesn't resolve (dead id, or a kind outside `td`/`gr`) is ignored and
 the node keeps the 7-day default.
 
+**Task-scoped scratch.** When several builds run concurrently, a plain
+`SPACE:scratch` node is one shared bucket — every task's probes show up
+in every other task's recall. Own your scratch: `args={'scratch_for':
+'td<T>'}` on put stamps `SPACE:scratch` + `scratch-for:td<T>` (the
+owner tag, `td<N>`/`gr<N>` — the task the agents share) in one call:
+
+```python
+put(kind="memory", text="probe: ring filter tags dim — 2nd hop path",
+    args={"scratch_for": "td575121"})
+```
+
+Read scoped the same way — the owner tag ANDs with the space:
+
+```python
+search(kind="memory", tags=["SPACE:scratch", "scratch-for:td575121"])  # this task's scratch only
+get(kind="memory", id="me<N>", extent="fisheye+1hop+recall",
+    args={"ring": {"space": "scratch", "tags": ["scratch-for:td575121"]}})  # ring + recall narrowed
+```
+
+A `scratch_for` call can't combine with another `SPACE:` value or a
+different `scratch-for:` owner — one task owns a scratch node (a second
+`SPACE:` value also takes the node out of the scratch sweep's TTL).
+
 `meta.expires` accepts an ISO date/datetime or a `<n>[mhdw]` duration
 (resolved to an absolute instant at write) — shorter or longer than the
 7-day default, on any memory; on non-scratch spaces it only flags garden
